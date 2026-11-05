@@ -1,361 +1,164 @@
 # Opensteer on a phone
 
-## Scope and authority
+The mobile app is a Deployment client; execution stays on Runners. It never installs or offers to
+install apps, including [Agent Phone](agent-phone.md). Files and terminal stay on web and desktop,
+because each would add a protocol and UI to maintain. [Connections](connections.md) owns discovery
+and credentials; [Host boundaries](host-boundaries.md) owns compatibility and session authority.
+Procedures are in the [mobile skill](../.agents/skills/mobile/SKILL.md).
 
-The mobile app is a Deployment client; execution stays on Runners. It never installs
-or offers to install apps, including the separate [Agent Phone](agent-phone.md).
-Files and terminal remain web/desktop surfaces because each adds a protocol and UI
-to maintain. [Connections](connections.md) owns discovery and credentials;
-[Host boundaries](host-boundaries.md) owns compatibility and session authority.
-
-A phone has no local desktop runtime and needs none. Saved-password consent uses
-the requester's Host session from any signed-in device; the native mobile app
-confirms each Allow/Only this time with OS device-owner authentication. Account
-choices stay in transient UI memory. Adding this native module or its Face ID
-usage description requires rebuilding the native client; a JavaScript update
-alone does not enable it. Computer app approvals use the computer owner's
-authenticated Host session from any device; OS grants still happen on the
-computer. Agent Phone access follows [its owner contract](agent-phone.md#7-access-and-stop).
+Saved-password consent and computer app approvals use the person's Host session from any signed-in
+device; the native app confirms each password Allow or Only this time with OS device-owner
+authentication, and OS grants still happen on the computer.
 
 ## Attachment and identity
 
-`apps/mobile/src/client/mobile-client.ts` owns one active Host attachment. Switching
-selection disposes the old client before creating another and fences asynchronous
-results by generation. Screens never create clients, sockets or read credentials.
-Multiple Deployment sockets would multiply reconnect storms and battery use; push
-can name a Deployment without keeping it attached.
+[mobile-client.ts](../apps/mobile/src/client/mobile-client.ts) owns the one active Host attachment;
+screens never create clients or sockets or read credentials. Several Deployment sockets would
+multiply reconnect storms and battery use, and push can name a Deployment without attaching it.
+Links install the destination's Chat beneath its task so Back cannot cross Hosts.
 
-Selection is persistent context. Switching clears the previous Deployment's screens;
-links install the destination's Chat beneath its task so Back cannot cross Hosts.
-An explicitly cleared selection is distinct from a missing preference. Sign-out
-retains context; removal clears it. Startup waits for local hydration, not remote
-verification. `apps/mobile/src/navigation.tsx` and `src/client/selection-file.ts`
-(relative to `apps/mobile`) own navigation and selection.
+Host OAuth and PersonalRemote credentials have separate parsers and never cross. A stored credential
+does not override Host refusal, which stays latched until an attachment uses a new credential.
+Non-interactive selection never opens OAuth. An open link
+(`com.opensteer.mobile:/open?d=<DeploymentId>`, from a desktop's setup code) names a destination
+only: it waits across Account sign-in and selects only that exact entry in the Account's directory.
 
-Credentials never cross families: Host OAuth and PersonalRemote sessions have
-separate parsers. A locally stored credential does not override Host refusal.
-Authentication refusal stays latched until a replacement attachment uses the new
-credential. Non-interactive selection never opens OAuth; a row tap can do so only
-after verification of that exact selection and attachment.
+Sign-out, removal and Account sign-out advance the authorization epoch synchronously, before
+awaiting revocation or storage, so a late grant exchange cannot restore credentials, and sign-out
+suppression loads before selection is restored. Verify through the resolved route, never a Personal
+Host's loopback origin. Unreachable discovery is a connection state, not proof of incompatibility; a
+definitive identity or epoch refusal revokes the attachment and fences pending credential reads.
 
-An open link (`com.opensteer.mobile:/open?d=<DeploymentId>`, from a desktop's
-setup code) names a destination only. `MobileClient` holds it pending across
-Account sign-in, suppresses every singleton auto-selection meanwhile, and selects
-only the exact entry in the signed-in Account's directory; wrong Account, not
-listed and offline stay visible and retryable.
+## Drafts and decisions
 
-Sign-out, removal, Account sign-out and disposal synchronously advance the
-authorization epoch before awaiting revocation or storage. A late grant exchange
-cannot restore credentials. Persisted sign-out suppression loads before selection
-restoration, so restart and reconciliation cannot undo sign-out.
+Drafts and pending sends are scoped by Deployment, user and Thread. Persist the exact command and
+idempotency key before dispatch and retry an unknown outcome with that key. Ask puts its page on the
+destination draft, never in a route, because routes carry no reader identity and outlive sign-out.
+Drafts work offline, but approvals need a live authenticated Host, because replaying a stale
+decision is unsafe; only Host state resolves a Request, and sending does not answer one.
 
-Verify through the resolved route, never a Personal Host's canonical loopback
-origin. Unreachable discovery is a connection state, not proof of incompatibility.
-A definitive identity or epoch refusal revokes the current attachment, closes its
-sockets and fences HTTP/socket authorization, including pending credential reads.
-Keep selection and the repair verdict visible. Reattachment verifies before
-credentials flow; stale results cannot revoke a newer selection or attachment.
-When discovery changes the capture agreement, retained browser viewers resubscribe,
-including viewers reconnected before discovery finished.
-See `apps/mobile/src/client/host-port.ts` and `mobile-client.ts`.
-
-The phone enables Home prefetch through the shared hydration owner. Activation
-joins that read; prefetch never claims Chat or marks it read, including under the
-sidebar. Shared snapshot/history compatibility belongs to [Connections](connections.md).
-
-## Drafts, decisions and visibility
-
-Drafts and pending sends are scoped by Deployment, authenticated user and Thread.
-Persist the exact command and idempotency key before dispatch; retry an unknown
-outcome with that key. Acknowledgement clears only its command. Multiple mounted
-views share draft and delivery ownership; late uploads cannot restore removed files.
-New-task creation and its first message keep their keys across navigation and lost
-answers. Leaving an unsent task creates nothing. See `apps/mobile/src/thread/first-message.tsx`
-and the draft stores under `apps/mobile/src/thread`.
-
-Ask puts its page on the destination draft for the current reader, never in a
-route: routes carry no reader identity and outlive sign-out, so a stale route's
-page is ignored. Never read ownerless legacy drafts into a signed-in user's
-draft. Migration of a saved approval-plus-send drops the decision and preserves
-the unsent message, files and quote. Sending does not answer a Request. Offline drafts are editable;
-approvals require a live authenticated Host because replaying a stale decision
-is unsafe. Only Host state resolves a Request, not local command admission.
-
-Execution preferences belong to the Host. Never silently replace an unavailable
-model, account or computer. A pending execution change blocks Send. A first-message
-send waiting for an AI choice may proceed only from the Host-confirmed choice of
-that picker visit; dismissal cancels it. See `apps/mobile/src/thread/thread-mutation-registry.ts`
-and [Agent orchestration](agent-orchestration.md) for queue authority.
-
-Keep Chat mounted across task navigation and adaptive layouts, and a page's
-companion Thread through a window too narrow for two. A hidden mounted pane
-neither claims the active Thread nor marks content read; an overlaid sidebar
-also makes Chat unread. Mark only published content actually shown at latest.
-Layout changes preserve drafts, scroll, streams and navigation. Use measured pane
-geometry, reserved folds and text size, not device names; cancel a pointer gesture
-if its target geometry changes. Room alone decides whether the sidebar docks,
-except that a page in front takes its side, for itself and its occupant's
-Thread, however the page was reached: never three panes.
-Sources: `apps/mobile/src/layout.ts`, `src/sidebar` and
-`src/screens/workspace-browser*`.
-
-Integration OAuth browser return is only a wake-up: read the durable attempt back
-with the same Host credential. Transcript links use
-`packages/shared/src/transcriptLinks.ts` so generated content cannot switch Deployments.
-
-### Message dictation
-
-On supported iOS 26+ hardware, the composer offers on-device dictation beside
-Attach; Android and unsupported iOS devices hide the mic. Audio stays in native
-memory. Send finishes recognition before delivering, typing keeps the displayed
-edit, and leaving saves the words into the original draft. See
-[Dictation](dictation.md#iphone).
+Execution preferences belong to the Host: never silently replace an unavailable model, account or
+computer, and a pending execution change blocks Send. A hidden mounted pane neither claims the
+active Thread nor marks content read; mark read only published content actually shown. Layout uses
+measured geometry, folds and text size, never device names. Integration OAuth's browser return is
+only a wake-up: read the attempt back with the same Host credential. Transcript links go through
+[transcriptLinks.ts](../packages/shared/src/transcriptLinks.ts) so generated content cannot switch
+Deployments. Composer dictation is in [Dictation](dictation.md).
 
 ## Saved views
 
-Saved views contain private Chat/task text and are presentation only. They must
-never authenticate, start or replay work, send messages, answer Requests, mark
-content read, claim the active Thread or start media/input sessions. Live Host
-state remains authoritative. An offline phone cannot learn of a server revocation it
-has not observed.
+While attachment connects, Chat and the sidebar can show the remembered Deployment's last published
+Chat text and task subjects, replaced wholesale by the fresh answer. Saved views are presentation
+only: they never authenticate, start or replay work, send, answer Requests, mark read, claim the
+active Thread or open media, and hold no cursor, Requests, queue, media or capability. An offline
+phone cannot learn of a revocation it has not seen.
 
-Encrypt cached content with native AES-256-GCM and a fresh nonce per write. Keep
-one device-only, when-unlocked SecureStore key slot per Deployment, in a separate
-service from credentials, without biometric prompts. Ciphertext lives in the
-OS-purgeable cache, excluded from backup; never persist plaintext. Authenticate
-schema, Host API epoch, Deployment/Host instance/key identity, credential login ID
-and optional Account issuer, subject and login ID as associated data. Construct
-that expected scope from current credentials/catalog, never from the file.
-Missing or locked keys, unavailable native crypto, corruption or scope mismatch
-are cache misses, not grounds to weaken verification or block attachment.
+Each envelope is AES-256-GCM with a fresh nonce per write, under one device-only, when-unlocked
+SecureStore key per Deployment, in a service separate from credentials and without biometric
+prompts. Ciphertext lives in `Paths.cache`, which the OS may purge and does not back up; plaintext
+is never persisted. The associated data binds schema, Host API epoch, Deployment, Host instance and
+key, credential login ID and optional Account identity, built from current credentials and catalog,
+never the file ([saved-host-view.ts](../packages/client/src/host/saved-host-view.ts)). Missing keys,
+corruption or scope mismatch are cache misses, never grounds to weaken verification or block
+attachment.
 
-Login identity follows the credential: interactive login, pairing and Connect
-exchange mint a new ID; token refresh and pending-write retry preserve it. Legacy
-credentials gain an ID only after current authenticated bootstrap, serialized by
-the credential owner. Changed login IDs replace even a healthy attachment. If
-cache identity cannot be read, disable caching for that attempt and attach normally.
-
-Keep keys and ciphertext bounded even after OS cache purges or interrupted first
-writes: record key ownership in secure storage before a key can exist, and evict
-by that ownership. Journal replacement and fence every asynchronous read/write
-against current scope; no await may separate the last lease check from native
-atomic commit. Sources: `apps/mobile/src/platform/saved-host-view-store.ts`,
-`saved-view-keys.ts`, `saved-view-crypto.ts` and
-`packages/client/src/host/saved-host-view.ts`.
-
-### Saved launch views
-
-After local hydration, Chat and the sidebar can show the remembered Deployment's
-last published Chat text and task subjects while attachment connects in parallel.
-
-- Each surface says "Updating…", or "Offline · Saved view" / "Unavailable · Saved
-  view" from real connection evidence, and switches wholesale when its fresh
-  answer arrives, including an empty one. A late disk answer never replaces a
-  fresh surface.
-- Saved text and task rows offer no actions, media, links, read marks or
-  attention counts, and Tabs are live-only. Live task state and attention counts
-  come only from the attached Host underneath. A held first-message draft stays
-  in front once its live owner is known.
-- The load starts alongside attachment, only after local selection, credentials
-  and sign-out suppression settle. Readiness follows accepted task/read-state
-  installation and an explicit Home answer; connection or prefetch start alone is
-  not readiness. Home's initial read starts even while saved Chat is in front.
-- Capture debounces installed models for two seconds and flushes best-effort on
-  background; it starts no reads of its own. It keeps only published Chat text and
-  bounded historical task subjects and groups: no cursor, Requests, queue,
-  streams, media or capability. A killed flush can leave an older view. Each
-  Deployment holds one encrypted envelope of at most 1 MiB under `Paths.cache`.
-- Native linking and OS backup/device-transfer protection need separate device
-  qualification; unit tests with Node AES-GCM qualify adapter logic only.
-
-### Saved-view deletion
-
-One deletion owner serves credential lifecycle and presentation. Sign-out,
-removal, login replacement, authentication/Workspace refusal and definitive
-identity/epoch denial synchronously hide saved content and fence pending reads
-and writes. Attempt key erasure before asynchronous revocation or credential
-cleanup; relevant Account sign-out invalidates its Deployments too. A failed
-Personal sign-out/removal retains its credential and live attachment, but cannot
-restore the erased saved view. Fresh authenticated models may capture again only
-after cleanup, never reload the refused disk content.
-
-Before key deletion, exclusively create a content-free `.deny` marker in private
-document storage, independent of SecureStore and the evictable ciphertext cache.
-Any marker, including an interrupted creation, means cache miss and deletion retry
-across restart; unreadable denial state also denies cached content. Remove the
-marker only after successful key deletion. If marker creation fails, still attempt
-key erasure, keep memory blocked, report cleanup failure and retry on foreground.
-Content can resurface after restart only if both marker creation and secure key
-deletion fail and the app terminates before a retry succeeds. See
-`apps/mobile/src/client/saved-view-cache.ts` and its tests.
+Sign-out, removal, login replacement and authentication, Workspace or identity refusal hide saved
+content synchronously and attempt key erasure before revocation. A content-free `.deny` marker in
+document storage, created before the key is deleted and removed only after, turns any leftover
+ciphertext into a miss across restarts. Content can return after a restart only if both the marker
+and the key deletion fail and the app ends before a retry
+([saved-view-cache.ts](../apps/mobile/src/client/saved-view-cache.ts)).
 
 ## Lifecycle and viewing
 
-Backgrounding stops refresh/reconnect timers rather than proactively closing
-otherwise usable control sockets. Foreground probes or replaces them under
-`packages/client/src/host/lifecycle.ts`; mobile OSes can silently kill sockets.
-Every network notification invalidates channels even if both networks are online,
-except repeated offline. Re-read network state on foreground because Expo receives
-no listener events while suspended. Only AppState `active` is foreground.
-Resubscribe from the retained cursor; only Host resync-required resets it.
+Backgrounding stops refresh and reconnect timers without closing usable sockets; foreground probes
+or replaces them, because mobile OSes kill sockets silently. Only AppState `active` is foreground,
+and network state is re-read on foreground because Expo gets no listener events while suspended.
 
-Media retention is visibility-bound. Release browser picture channels when hidden
-or backgrounded. Clear displayed and decoding computer pictures on inactivity,
-locked/minimized/closed capture, unavailable phone display or lost access. Return
-picture credit even on decode failure, discarded slots or navigation before a callback.
-See `apps/mobile/src/browser` and `src/computers`.
+Media is visibility-bound: release pictures when hidden, backgrounded or no longer authorized, and
+return picture credit even when decoding fails. Routes name exact tabs or owner-view generations; a
+closed target stays closed and is never replaced by a sibling. Starting browsers and connecting
+Chrome stay on computers.
 
-Routes select exact tabs or exact owner-view IDs and generations. Closed targets
-stay closed; never substitute a sibling or a task holding the same app. How a tab
-was reached changes only where Back goes. Who is in it comes from its occupants,
-never the route or the screen in front. Where two panes fit, the occupant's own
-Thread sits beside the page. Owner metadata does not advance Workspace event
-cursors or enter conversation context.
-Saved tabs restore through the shared activation owner; a late result after leaving
-or switching users must not navigate. Older Hosts retain the live-session listing
-path. The phone opens the person's own views of approved Mac apps, their windows and
-Agent Phones, and manages connected Chrome profiles; approving an app, starting browsers
-and connecting Chrome stay on computers. Opening needs no authority beyond the Host's
-owner-view admission, which is per user, not per device. See `surfaceRoute`,
-`workspaceRoute` and `placeList` in `packages/client/src/host`.
+A zero-reorder H.264 stream does not guarantee immediate Android output: the software AVC decoder
+can hold pictures until more input arrives, and
+[low-latency decoding](https://source.android.com/docs/core/media/low-latency-media) is optional, so
+continuous playback does not qualify a lone or final still picture. Remote editing follows the
+[editing contract](../packages/client/src/editing/README.md).
 
-Native decoder epochs clear old pixels and queued output before a replacement
-target appears. Same-source recovery may keep its picture; static age alone is not
-failure. Suspended capture clears it until lifecycle permits restoration. Task
-Watch follows the agent's window; an owner view binds its own window. Follow the
-shared [window-group rules](computer-use.md#2-the-helper). iOS Mac window video requires a binary advertising decoder recovery; older
-binaries keep the placeholder after OTA updates. Android retains native decoding. Bundle
-exports do not qualify playback. Native H.264 viewing requires a matching binary.
-JavaScript sends media bytes, and draws browser pictures in the native view,
-only when the binary declares `binaryPresentationVersion`; an update running on
-an older binary keeps base64 decoding and Image data URIs. The iOS Simulator cannot prove Metal drawable presentation and advertises browser
-presentation identity as unsupported. Physical iOS qualification is required.
-H.264 browser selection instead requires `browserPresentationIdentityVersion` in
-the installed PhoneDisplay binary; an older binary shows an update-required state.
-Its native presenter carries each decoder output's identity into Metal presentation
-on iOS or owned texture latching/composition on Android. Touches sample that native
-record and transform, never the most recently received frame or React state.
-The last presented picture keeps its input identity until the next one presents. Background,
-revocation and target replacement clear both pixels and input identity.
-A zero-reorder H.264 stream does not guarantee immediate Android output: the
-platform software AVC decoder can retain pictures until more input arrives, and
-[low-latency decoding](https://source.android.com/docs/core/media/low-latency-media)
-is optional. Continuous playback therefore does not qualify a lone or final still
-picture.
+H.264 browser selection needs `browserPresentationIdentityVersion` in the installed PhoneDisplay
+binary; an older binary shows an update-required state. The native presenter carries each decoder
+output's identity into Metal presentation on iOS or owned texture latching on Android, and touches
+sample that record, never the most recently received frame or React state. The iOS Simulator can't
+prove drawable presentation and advertises the identity as unsupported, so physical iOS qualification
+is required. The last presented picture keeps its input identity until the next one presents;
+background, revocation and target replacement clear both.
 
-Certified browser popups belong to the exact visible tab and its current control
-admission. iOS and Android present native pickers; datalist suggestions occupy app
-space above the typing proxy and keep its keyboard open. Backgrounding, hiding,
-switching tabs or Deployments, losing media or control, and sign-out dismiss both
-the native draft and shared state. Late native callbacks cannot answer a new
-admission. There is no saved picker or answer replay.
+Browser popups belong to the exact visible tab and its control admission. iOS and Android present
+native pickers, and datalist suggestions sit above the typing proxy and keep its keyboard open.
+Backgrounding, hiding, switching tabs or Deployments, losing media or control, and sign-out dismiss
+the native draft and shared state, and late native callbacks can't answer a new admission. This needs
+a rebuilt binary; choices can disclose more than the picture
+([certified control](browser-sessions.md#certified-h264-control)).
 
-This requires a rebuilt binary advertising the browser-popup presentation contract;
-an OTA update cannot opt an older binary in. Private editing commits text with
-local preedit and refuses unsupported composition/replacement operations. Choices
-can disclose more than the picture; see [remote editing](browser-sessions.md#remote-editing).
+Expo Go lacks the native modules and OAuth scheme, so use a custom client. Face ID confirmation,
+native H.264 viewing, Opensteer Apps (`react-native-webview`) and notification previews need a
+rebuilt binary; a JavaScript update cannot add them. Expo's generated UIKit scene lifecycle is the
+sole startup and link owner, and multiple scenes stay disabled so there is one navigation history
+and draft owner.
 
-Human and agent browser input remain concurrent; viewing and pinching scale a
-page on the phone alone, and only explicit Fit resizes it. Fit asks first when an
-agent sized the page. A place's bars sit beside the picture, never over it: a
-streamed page cannot leave room for chrome it does not know about, so anything
-over it would hide its own sticky controls. Dialog responses bind to the exact
-tab and dialog.
-Finger-scroll inertia belongs to the viewer and uses the existing wheel lane;
-the runtime and OS wheel input must not add another fling. Local contact feedback
-acknowledges the finger only: the page owns hover, selection and context menus.
-Native editing needs a rebuilt custom client; its [adapter contract](../apps/mobile/modules/remote-text-input/README.md)
-owns composition and device qualification.
+## This iPhone's apps
 
-### This iPhone's apps
+While the app is open, an iPhone can serve Calendar, Contacts, Reminders, current Location and
+Photos metadata to agents as a local Runner with only the integrations module
+([native module](../apps/mobile/modules/iphone-apps/ios)). It exposes no screen, files, other apps
+or Messages. The Host decides each app's agent access; iOS separately decides whether Opensteer may
+use the store.
 
-[iPhone apps](iphone-apps.md) owns the native executor and privacy boundary.
-`apps/mobile/src/iphone-apps/controller.ts` is instantiated once. Switching the
-viewed Deployment changes the usable session, never moves or stops the enrolled iPhone.
+The Runner's Ed25519 key and enrollment token live only in the Keychain
+(`WhenUnlockedThisDeviceOnly`, not synchronized); JavaScript never sees the key, the token after
+enrollment, tickets or signatures. Discovery must name the same Deployment and Host instance before
+a token or proof is sent, and redirects are refused. The enrollment marker is excluded from backup;
+a missing marker wipes the Keychain items, and removal clears the marker first so a failed Keychain
+delete cannot restore sharing.
 
-Sign-out/removal of the enrolled Deployment, relevant Account sign-out and catalog
-removal call native disconnect synchronously before their first await. Host
-revocation follows while credentials remain; failure cannot undo the local stop.
-Every add, approval and registration is fenced across awaits. Enrollment requires
-Host support and cannot move a phone held by another Deployment.
+Only a live stream with an unexpired lease admits work; a write crosses a second fence right before
+the EventKit save, and a lost write answer is never replayed. Backgrounding closes admission and
+drains admitted work. Sign-out, removal of the enrolled Deployment, Account sign-out and catalog
+removal call native disconnect before their first await, and a failed Host revocation cannot undo
+that stop. Switching the viewed Deployment never moves or stops the enrolled iPhone.
 
-Only a person's tap may prompt or approve: an app's switch or level, a request's
-Allow, or Add. Add lists every app and level it turns on, so its tap is their
-review; it turns them on one at a time, so iOS asks about one app at once, each
-app is approved separately through the Host, and a refusal skips only that app. Switches on the add
-screen are a draft until Add. Read iOS permission back before requesting access. Calendar add-only is
-insufficient; limited Contacts/Photos are sufficient, and picker dismissal is not
-refusal. Answer only the exact currently listed request, app and access, using the computer owner’s authenticated Host session.
+Only a person's tap prompts or approves. Add lists every app and level it turns on, then enables
+them one at a time, so iOS asks about one app at once and a refusal skips only that app. Read OS
+permission back before requesting agent access. Calendar and Reminders need full access (add-only is
+not enough); Contacts takes full or limited access and is read only. Location is a When In Use fix
+labelled precise or approximate. Photos returns metadata only (no image bytes, filenames, EXIF,
+coordinates or iCloud downloads), and PhotoKit's broader permission label authorizes no writes.
 
-New setup requires both the installed permission capability and Host catalog
-definition before prompting. For an existing Location/Photos request, a known
-missing Host definition also stops prompting. If another Deployment is open or
-catalog lookup fails, the native request remains answerable: rollback may cause
-one person-triggered prompt before Host refusal, but grants no access.
+New setup needs both the installed build's permission and the Host's catalog definition. Any
+signed-in device of the owner can approve new access, but enrollment and iOS prompts need the
+iPhone. A lost approval answer is read back, never resent. Lowering and revocation need only the
+Host and work while the iPhone is offline; they stop new use and cannot undo returned data.
 
-Location and Photos are read only. Explain Allow Once expiry and approximate
-Location. PhotoKit's broader permission label does not authorize writes or image
-transfer; send photos through chat attachments.
+## Notifications
 
-Lost approval answers are read back, never blindly sent again. Keep existing
-access during expansion. Unknown status stays unverified; reconnect checks without
-approving. Usability requires Host access, OS permission and a live connection.
-Narrowing/revocation needs only the Host and works while the iPhone is offline;
-it stops new use, never promises to undo returned data or completed changes.
+Alerts are best effort; conversations are durable. Muting suppresses replies and failures, never
+Requests. Provider acceptance proves neither display nor reading, and sent alerts cannot be
+recalled.
 
-## Native compatibility
+Phone push needs an Account channel and raw APNs or FCM tokens. The Account gets routing
+identifiers, expiry and optional encrypted previews, never plaintext or preview keys: the Host seals
+title and body together in a separate envelope for each registered installation. An Account that
+predates sealed previews rejects them, and the Host resends the generic alert. Preview keys are
+native secure random, one per Deployment. iOS shares them with the notification service extension
+through an App Group Keychain group, while credentials keep their private group; Android wraps them
+with AndroidKeyStore in `noBackupFilesDir`. Backup-excluded installation markers fence surviving
+keys after a reinstall. The extension and Android service authenticate routing and expiry before
+decrypting, need no network or JavaScript, and fall back to generic text.
 
-Opensteer Apps require a rebuilt binary with `react-native-webview`.
-
-Keep Expo's generated UIKit scene lifecycle as the sole startup/link owner. The
-iOS 27 SDK requires it; multiple scenes are disabled to preserve one navigation
-history and draft owner. Generated `ios/` and `android/` are not tracked.
-Expo Go cannot provide the native modules or OAuth scheme; use a custom client.
-`apps/mobile/app.config.ts` owns configuration. Build instructions are in
-[the mobile README](../apps/mobile/README.md).
-
-## 6. Notifications
-
-Alerts are best effort; conversations are durable. Direct replies, waiting Requests,
-failures and explicitly addressed agent messages use the existing notification path.
-Muting suppresses replies/failures, never Requests. Provider acceptance proves
-neither display nor reading; queued and delivered alerts cannot be recalled.
-
-Phone push requires an Account channel and raw APNs/FCM tokens. The Account gets
-routing identifiers and expiry, plus optional encrypted preview envelopes. The Host
-seals its already-decided title/body independently for each registered installation;
-the Account never receives plaintext or preview keys. Account readers must deploy
-before rebuilt phones register keys (see
-[Active compatibility gates](host-boundaries.md#active-compatibility-gates)). Older phones/Hosts retain generic alerts.
-
-A rebuilt phone registers only after authenticated attachment, Host capability
-`notification-preview-v1`, native version 1 and successful Account push registration.
-It reuses PushRegistration's installation identity without delaying attachment.
-Keys are native secure random, one per Deployment, persisted before registration.
-iOS shares preview keys with the notification service extension through the App
-Group Keychain access group; ordinary credentials retain their private access group.
-Android wraps key records with AndroidKeyStore in noBackupFilesDir. Backup-excluded
-installation markers fence surviving keys after reinstall; launch purges stale keys.
-Sign-out fences registration and erases the local key before revoking credentials;
-starting a sign-in does not, so a cancelled flow keeps the live login and its key.
-Host keys die with the Host login session through cascading deletion; Account
-sign-out withdraws the push device. Erasure failure does not stop session revocation.
-
-The iOS extension and Android service authenticate routing and expiry before local
-decryption. They need no network or background JavaScript. Failure leaves generic
-text. Expo owns Android foreground presentation, responses and dismissal; notification
-identifiers use deploymentId:notificationId, with notifications stacked in their
-Thread group. Payload logging is
-disabled in the pinned Expo dependency in every build.
-
-Keep the last confirmed Account registration after refusal so sign-out can withdraw
-it. Account withdrawal precedes credential revocation. Re-register on foreground
-for provider recovery. APNs environment comes from signing, never a guessed default.
-Both iOS targets need the App Group in their provisioning profiles; see
-[push verification](../.agents/skills/test-mobile-push/SKILL.md). Signed delivery,
-first-unlock behavior and reinstall acceptance require Tim's device workflow.
-
-Notification deepLink is the sole navigation source, parsed by
-`packages/core/src/deep-links.ts`. It grants no authority: authenticate and read
-current state first. Suppress presentation only for a recognized destination
-already being read; unknown payloads remain visible.
+Sign-out erases the local preview key, and Account sign-out withdraws the push device, before
+credentials are revoked; a cancelled sign-in keeps the live login and its key. The pinned
+`expo-notifications` patch disables Android payload logging in every build. The APNs environment
+comes from signing, never a guess. A notification's deep link
+([deep-links.ts](../packages/core/src/deep-links.ts)) is the only navigation source and grants no
+authority: authenticate and read current state first.

@@ -198,7 +198,7 @@ async function verifySignedDesktopContents(context) {
   }
   const appArchitectures = run(
     "/usr/bin/lipo",
-    ["-archs", join(appPath, "Contents", "MacOS", context.packager.appInfo.productFilename)],
+    ["-archs", join(appPath, "Contents", "MacOS", "Opensteer")],
     true,
   ).trim();
   const helperArchitectures = run("/usr/bin/lipo", ["-archs", helperPath], true).trim();
@@ -270,14 +270,15 @@ async function verifySignedDesktopContents(context) {
     throw new Error("Packaged Personal runtime architecture does not match its release manifest.");
   }
   if (process.env.OPENSTEER_DESKTOP_RELEASE !== "1") return;
-  const identity = desktopReleaseIdentity();
+  const identity = desktopReleaseIdentity(context.packager.appInfo.version);
   const expectedTeamId = required("OPENSTEER_APPLE_TEAM_ID");
   if (expectedTeamId !== identity.teamId) {
     throw new Error(`The macOS release must use permanent Team ${identity.teamId}.`);
   }
   if (
     context.packager.appInfo.id !== identity.bundleId ||
-    context.packager.appInfo.productFilename !== identity.productName
+    context.packager.appInfo.productName !== identity.productName ||
+    context.packager.appInfo.productFilename !== "Opensteer"
   ) {
     throw new Error("The packaged macOS application identity does not match its release policy.");
   }

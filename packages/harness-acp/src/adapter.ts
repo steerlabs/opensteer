@@ -29,7 +29,6 @@ import {
   type HarnessRunInput,
   type HarnessSession,
   type HarnessSessionContext,
-  type HarnessTitleInput,
   type SupervisedProcess,
 } from "@opensteer/harness";
 import { isRecord } from "@opensteer/shared/isRecord";
@@ -144,7 +143,6 @@ export class AcpHarnessAdapter implements HarnessAdapter {
 
 class AcpHarnessSession implements HarnessSession {
   readonly events: AsyncIterable<HarnessEvent>;
-  readonly generateTitle?: (input: HarnessTitleInput) => Promise<string>;
   readonly #context: HarnessSessionContext;
   readonly #client: AcpProtocolClient;
   readonly #onClose: (session: AcpHarnessSession) => void;
@@ -184,14 +182,11 @@ class AcpHarnessSession implements HarnessSession {
     });
     this.#stderrSecrets = [
       context.agentTools.token,
-      context.integrationTools.token,
       ...Object.entries(context.environment)
         .filter(([name]) => credentialNamePattern.test(name))
         .map(([, value]) => value),
     ].filter((value) => value.length >= 4);
     this.events = this.#publisher.events;
-    const generateTitle = options.hooks.generateTitle;
-    if (generateTitle) this.generateTitle = (input) => generateTitle(context, input);
     this.#client = dependencies.createClient({
       handlers: {
         elicitation: (request, signal) => this.#elicitation(request, signal),
@@ -1059,12 +1054,6 @@ function mcpServers(context: HarnessSessionContext): readonly AcpMcpServer[] {
       name: "opensteer",
       type: "http",
       url: context.agentTools.url,
-    },
-    {
-      headers: [{ name: "Authorization", value: `Bearer ${context.integrationTools.token}` }],
-      name: "opensteer_integrations",
-      type: "http",
-      url: context.integrationTools.url,
     },
   ];
 }

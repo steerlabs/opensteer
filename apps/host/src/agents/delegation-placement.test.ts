@@ -1,4 +1,3 @@
-import { specialistPlacement } from "./specialist-placement.js";
 import { createId, HarnessIdSchema, ModelSelectionSchema, type Thread } from "@opensteer/core";
 import type { HarnessInstanceRecord, OpensteerStore } from "@opensteer/database";
 import { HarnessInstanceCatalogSchema, type HarnessInstanceCatalog } from "@opensteer/protocol";
@@ -293,7 +292,7 @@ function thread(): Thread {
   const threadId = createId("thread");
   return {
     accessMode: "full-access",
-    capabilityProfileId: "main",
+    inheritsMain: true,
     continuationIdentity: null,
     doneAt: null,
     icon: null,
@@ -316,70 +315,3 @@ function thread(): Thread {
     workspaceId: createId("workspace"),
   };
 }
-
-describe("specialist ordered models", () => {
-  it("skips unavailable engines and models, then validates options against the default account", async () => {
-    const account = harness("Default", { isDefault: true });
-    const store = placementStore(
-      [account],
-      new Map([[account.id, catalog(account.id, modelSelection.modelId)]]),
-    );
-    const result = await specialistPlacement(store, {
-      environment: { id: environmentId, name: "Mac" },
-      parent: thread(),
-      canRun: () => true,
-      specialist: {
-        fallback: "none",
-        models: [
-          { engine: "claude", model: "haiku" },
-          { engine: "native", model: "missing" },
-          { engine: "native", model: modelSelection.modelId, options: { effort: "invalid" } },
-          { engine: "native", model: modelSelection.modelId, options: { effort: "low" } },
-        ],
-      },
-    });
-    expect(result).toEqual({ harnessInstanceId: account.id, modelSelection });
-  });
-
-  it("reports every refusal and uses the caller only with explicit fallback", async () => {
-    const parent = thread();
-    const store = placementStore([], new Map());
-    const request = {
-      environment: { id: parent.environmentId, name: "Mac" },
-      parent,
-      canRun: () => false,
-    };
-    const models = [
-      { engine: "claude", model: "haiku" },
-      { engine: "codex", model: "small" },
-    ];
-    await expect(
-      specialistPlacement(store, { ...request, specialist: { models, fallback: "none" } }),
-    ).rejects.toThrow(/claude\/haiku: engine unavailable; codex\/small: engine unavailable/);
-    await expect(
-      specialistPlacement(store, { ...request, specialist: { models, fallback: "caller" } }),
-    ).resolves.toEqual({
-      harnessInstanceId: parent.harnessInstanceId,
-      modelSelection: parent.modelSelection,
-    });
-  });
-
-  it("skips accounts whose engine cannot run before starting", async () => {
-    const account = harness("Default", { isDefault: true });
-    const store = placementStore(
-      [account],
-      new Map([[account.id, catalog(account.id, modelSelection.modelId)]]),
-    );
-    await expect(
-      specialistPlacement(store, {
-        environment: { id: environmentId, name: "Mac" },
-        parent: thread(),
-        canRun: () => false,
-        specialist: {
-          models: [{ engine: "native", model: modelSelection.modelId }],
-          fallback: "none",
-        },
-      }),
-    ).rejects.toThrow("engine not runnable");
-  });
-});

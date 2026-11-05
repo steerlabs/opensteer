@@ -19,6 +19,7 @@ import { afterResponse } from "./after-response.js";
 import { requestAbortSignal } from "./request-abort-signal.js";
 
 const hostApiScopes = {
+  "automaticModels.get": "session",
   "plugins.overview.get": "session",
   "plugins.detail.get": "session",
   "plugins.directory.get": "session",
@@ -65,8 +66,6 @@ const hostApiScopes = {
   "voice.start": "mutation",
   "voice.renew": "mutation",
   "voice.say": "mutation",
-  "voice.next": "mutation",
-  "voice.answer": "mutation",
   "voice.context": "mutation",
   "voice.stop": "mutation",
   "integration.authorization.get": "session",
@@ -90,6 +89,8 @@ const hostApiScopes = {
   "run.attempts.list": "session",
   "tasks.list": "session",
   "sessions.list": "session",
+  "connections.list": "session",
+  "connections.authorization.get": "session",
   "personal.remoteAccess.get": "session",
   "thread.events.list": "session",
   "thread.messages.list": "session",

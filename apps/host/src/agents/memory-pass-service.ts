@@ -1,19 +1,30 @@
-import { OpensteerError, type AgentEvent, type WorkspaceId, TimeZoneSchema } from "@opensteer/core";
+import {
+  automaticModelWants,
+  OpensteerError,
+  TimeZoneSchema,
+  type AgentEvent,
+  type Thread,
+  type TriggerOccurrenceId,
+  type UserId,
+  type WorkspaceId,
+} from "@opensteer/core";
 import {
   createMemoryPass,
   missingMemoryPassMains,
+  recordMemoryPassWake,
   withDatabaseOperationSignal,
+  type MemoryPassExecution,
   type OpensteerStore,
 } from "@opensteer/database";
 import type { RunnerRegistry } from "@opensteer/orchestration";
-import type { TriggerSystemRole } from "@opensteer/triggers";
+import { MANAGED_MEMORY_WAKE_SKIPPED, type TriggerSystemRole } from "@opensteer/triggers";
 import type { WorkspaceFilesService } from "../workspace/files/workspace-files-service.js";
-import { matchModelSelection, storedModelSelection } from "./model-selection.js";
+import { resolveAutomaticModels, workspaceExecution } from "./automatic-models.js";
 import { memoryPassProgram } from "./memory-pass-program.js";
 import { triggerProgramCompatibilityReason } from "../triggers/trigger-program-compatibility.js";
 
-export const memoryLightModelPauseReason =
-  "This engine has no light model. Choose a model for the light pass, then resume.";
+export const memoryPassWaitingReason =
+  "Waiting for an AI account it can use on Main's computer. Connect one there, or turn one on for automatic work in AI settings; it resumes by itself.";
 
 interface MemoryPassServiceOptions {
   readonly store: OpensteerStore;
@@ -56,7 +67,7 @@ export class MemoryPassService {
   }
 
   async ensureForMain(workspaceId: WorkspaceId): Promise<void> {
-    const { store, runners, files } = this.#options;
+    const { store, files } = this.#options;
     const present = await store.database
       .selectFrom("triggers")
       .select("systemRole")
@@ -80,24 +91,9 @@ export class MemoryPassService {
     );
     if (!zone.success) return;
     const chat = await store.getThreadForOwner(workspace.homeThreadId, workspace.createdBy);
-    if (!chat || chat.capabilityProfileId !== "main") return;
-    const harness = await store.getHarnessInstance(chat.harnessInstanceId);
-    if (
-      !harness?.enabled ||
-      harness.environmentId !== chat.environmentId ||
-      !runners.isAvailable(chat.environmentId) ||
-      !runners.canRunHarness(chat.environmentId, harness.driverKind)
-    )
-      return;
-    const modes = runners.harnessAccessModes(chat.environmentId, harness.driverKind);
-    if (!modes?.includes(chat.accessMode)) return;
+    if (!chat?.inheritsMain) return;
+    // The worker is each pass's Trigger anchor, on Chat's computer.
     if (await triggerProgramCompatibilityReason(store, chat.environmentId, 3)) return;
-    const catalog = await store.getHarnessCatalog(chat.environmentId, harness.id);
-    if (
-      catalog?.status !== "ready" ||
-      matchModelSelection(catalog.models, chat.modelSelection, "carry").kind !== "offered"
-    )
-      return;
     const admission = await store.admitWorkspaceFiles(workspace.id, workspace.createdBy);
     if (!admission) return;
     let off = false;
@@ -113,36 +109,99 @@ export class MemoryPassService {
       if (!(error instanceof OpensteerError) || error.code !== "not_found") return;
     }
     for (const systemRole of missing) {
-      const light = systemRole === "memory-light";
-      const selection = light ? catalog.lightModel : undefined;
-      const match = selection ? matchModelSelection(catalog.models, selection, "refuse") : null;
-      if (selection && match?.kind !== "offered") continue;
       const created = await createMemoryPass(store.database, {
         workspaceId,
         ownerId: workspace.createdBy,
         chat,
-        catalog,
-        runtimeRevision: harness.runtimeRevision,
         systemRole,
-        modelSelection:
-          selection && match?.kind === "offered"
-            ? storedModelSelection(selection, match.model)
-            : chat.modelSelection,
         program: memoryPassProgram(systemRole),
         source: memoryPassSource(systemRole, zone.data),
-        pauseReason: off
-          ? light && !selection
-            ? `Memory is off at your request. ${memoryLightModelPauseReason}`
-            : "Memory is off at your request."
-          : light && !selection
-            ? memoryLightModelPauseReason
-            : null,
+        pauseReason: off ? "Memory is off at your request." : null,
       });
       if (created) {
         if (created.event) this.#options.onEvent(created.event);
         this.#options.onChanged(workspaceId);
       }
     }
+  }
+
+  /**
+   * The model a managed pass's own wake runs on, resolved afresh for each
+   * pass; undefined for every other Trigger, and for an occurrence whose pass
+   * was accepted, whose retry replays that receipt as is. Without a usable model
+   * the pass waits: the wake is skipped and the next one resolves again, so the
+   * schedule recovers by itself and a pause stays the person's.
+   */
+  async admissionSelection(
+    occurrenceId: TriggerOccurrenceId,
+    worker: Thread,
+  ): Promise<MemoryPassExecution | undefined> {
+    const { store } = this.#options;
+    const trigger = await store.database
+      .selectFrom("triggerOccurrences")
+      .innerJoin("triggers", "triggers.id", "triggerOccurrences.triggerId")
+      .select([
+        "triggers.id",
+        "triggers.anchorThreadId",
+        "triggers.createdBy",
+        "triggers.systemRole",
+        "triggers.workspaceId",
+      ])
+      .where("triggerOccurrences.id", "=", occurrenceId)
+      .executeTakeFirst();
+    if (!trigger?.systemRole || trigger.anchorThreadId !== worker.id) return undefined;
+    const chosen = await this.#resolve(
+      trigger.createdBy,
+      worker,
+      trigger.systemRole === "memory-light" ? "light" : "deep",
+    );
+    const { accepted, changed } = await recordMemoryPassWake(store.database, {
+      occurrenceId,
+      triggerId: trigger.id,
+      workerId: worker.id,
+      waitingReason: chosen ? null : memoryPassWaitingReason,
+    });
+    if (changed) this.#options.onChanged(trigger.workspaceId);
+    if (accepted) return undefined;
+    if (!chosen)
+      throw new OpensteerError({ code: "conflict", message: MANAGED_MEMORY_WAKE_SKIPPED });
+    return {
+      harnessInstanceId: chosen.harnessInstanceId,
+      harnessRevision: chosen.harnessRevision,
+      modelSelection: chosen.storedModelSelection,
+    };
+  }
+
+  /**
+   * Main's owner, with their current authority over Main and its files, on
+   * Main's computer in the worker's access mode. The light pass waits rather
+   * than run on Chat's model; the nightly pass ends with it.
+   */
+  async #resolve(ownerId: UserId, worker: Thread, role: "light" | "deep") {
+    const { store, runners } = this.#options;
+    const main = await store.getWorkspaceForOwner(worker.workspaceId, ownerId);
+    if (
+      main?.kind !== "main" ||
+      main.backing.kind !== "local-directory" ||
+      main.backing.ownerEnvironmentId !== worker.environmentId ||
+      !main.homeThreadId ||
+      !(await store.admitWorkspaceFiles(main.id, ownerId))
+    )
+      return undefined;
+    const chat = role === "deep" ? await store.getThreadForOwner(main.homeThreadId, ownerId) : null;
+    const { candidates } = await resolveAutomaticModels(
+      { store, runners },
+      {
+        userId: ownerId,
+        wants: (config) => automaticModelWants(config, role),
+        original: chat ?? undefined,
+        canRun: workspaceExecution(runners, {
+          environmentId: worker.environmentId,
+          accessMode: worker.accessMode,
+        }),
+      },
+    );
+    return candidates[0];
   }
 }
 

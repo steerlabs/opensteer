@@ -31,7 +31,7 @@ on:
         default: insider
         required: true
       insider_tag:
-        description: Published insider tag to promote without rebuilding
+        description: Published insider tag whose source to rebuild as Stable
         type: string
       publish:
         description: Publish the draft (false stops at draft; stable also needs approval)
@@ -102,12 +102,13 @@ jobs:
         run: node .github/scripts/release-plan.mjs discover
   build:
     needs: [preflight, discover]
-    if: needs.discover.outputs.skip == 'false' && needs.discover.outputs.reuse == 'false' && needs.preflight.outputs.channel == 'beta'
+    if: needs.discover.outputs.skip == 'false' && needs.discover.outputs.reuse == 'false'
     runs-on: macos-26
     environment: release
     timeout-minutes: 90
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      OPENSTEER_RELEASE_TRACK: ${{ needs.preflight.outputs.channel }}
       OPENSTEER_DESKTOP_TARGET_ARCH: arm64
       OPENSTEER_RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
       OPENSTEER_SOURCE_REVISION: ${{ needs.preflight.outputs.sha }}
@@ -252,7 +253,7 @@ jobs:
       - name: Prepare checked release bytes
         run: |
           cd "$RUNNER_TEMP/launch-tooling"
-          pnpm desktop:public-release prepare --channel beta \
+          pnpm desktop:public-release prepare --channel "$OPENSTEER_RELEASE_TRACK" \
             --app-zip "$RUNNER_TEMP/Opensteer.zip" --version "$OPENSTEER_RELEASE_VERSION" \
             --source-sha "$OPENSTEER_SOURCE_REVISION" --out "$RUNNER_TEMP/prepared" --launch-check-passed
       - name: Launch failure artifacts
@@ -323,8 +324,8 @@ jobs:
           echo "IMAGE_REF=$IMAGE@$digest" >> "$GITHUB_ENV"
       - run: bash .github/scripts/deploy-account.sh "$IMAGE_REF" "$SHA"
   draft:
-    needs: [preflight, build, promote]
-    if: ${{ !cancelled() && (needs.build.result == 'success' || needs.promote.result == 'success') }}
+    needs: [preflight, build]
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -375,8 +376,8 @@ jobs:
           SOURCE_SHA: ${{ needs.preflight.outputs.sha }}
         run: pnpm desktop:public-release publish --repo steerlabs/opensteer --tag "$TAG" --source-sha "$SOURCE_SHA"
   publish-stable:
-    needs: [preflight, discover, draft, promote]
-    if: ${{ !cancelled() && needs.preflight.outputs.channel == 'stable' && needs.promote.result == 'success' && needs.draft.result == 'success' && inputs.publish }}
+    needs: [preflight, discover, draft]
+    if: ${{ !cancelled() && needs.preflight.outputs.channel == 'stable' && (needs.draft.result == 'success' || needs.discover.outputs.reuse == 'true') && inputs.publish }}
     runs-on: ubuntu-latest
     environment: publish
     permissions:
@@ -399,40 +400,4 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           TAG: ${{ needs.preflight.outputs.tag }}
           SOURCE_SHA: ${{ needs.preflight.outputs.sha }}
-          CERTIFIED_ZIP_SHA256: ${{ needs.promote.outputs.zipSha256 }}
-        run: pnpm desktop:public-release publish --repo steerlabs/opensteer --tag "$TAG" --source-sha "$SOURCE_SHA" --certified-zip-sha256 "$CERTIFIED_ZIP_SHA256"
-  promote:
-    timeout-minutes: 20
-    needs:
-      - preflight
-      - discover
-    if: needs.preflight.outputs.channel == 'stable' && needs.discover.outputs.skip == 'false'
-    runs-on: macos-26
-    permissions:
-      contents: read
-    outputs:
-      zipSha256: ${{ steps.promote.outputs.zipSha256 }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with:
-          node-version-file: package.json
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - id: promote
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          INSIDER_TAG: ${{ inputs.insider_tag }}
-          SOURCE_SHA: ${{ needs.preflight.outputs.sha }}
-          VERSION: ${{ needs.preflight.outputs.version }}
-        run: pnpm desktop:public-release promote --repo steerlabs/opensteer --tag "$INSIDER_TAG" --source-sha "$SOURCE_SHA" --version "$VERSION" --out "$RUNNER_TEMP/prepared"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: desktop-stable
-          path: ${{ runner.temp }}/prepared/
-          if-no-files-found: error
+        run: pnpm desktop:public-release publish --repo steerlabs/opensteer --tag "$TAG" --source-sha "$SOURCE_SHA"

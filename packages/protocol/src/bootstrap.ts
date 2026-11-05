@@ -55,6 +55,8 @@ export const HostBootstrapHarnessSchema = z.object({
   /** Who this account talks to; one of the sources its engine declares. */
   sourceId: z.string().min(1).max(100),
   stateKind: HarnessInstanceStateKindSchema,
+  /** Whether this viewer's defaults may use it unasked; absent means they may. */
+  automaticEligible: z.boolean().optional(),
 });
 export type HostBootstrapHarness = z.infer<typeof HostBootstrapHarnessSchema>;
 

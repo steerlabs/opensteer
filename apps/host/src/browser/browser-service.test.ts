@@ -1044,6 +1044,27 @@ describe("BrowserService", () => {
           idempotencyKey: `clear-${documentId}`,
         });
       }
+      const retained = retainIcon.mock.calls.length;
+      const previous = peer.textFrames.length;
+      runtime.sendServer({
+        type: "browser.surfaces.changed",
+        surfaces: [
+          {
+            id: "page-1",
+            active: true,
+            title: "",
+            documentId: "failed",
+            favicon,
+            navigationFailed: true,
+            url: "https://never-loaded.example/",
+          },
+        ],
+      });
+      await vi.waitFor(() => expect(peer.textFrames.length).toBeGreaterThan(previous), {
+        timeout: 1_000,
+      });
+      await service.readHistory(ownerId, profile.id);
+      expect(retainIcon).toHaveBeenCalledTimes(retained);
       attachment.close();
     },
   );
@@ -3327,6 +3348,28 @@ describe("BrowserService", () => {
     ]);
   });
 
+  it("records no site for a place whose page failed to load, whatever address it shows", async () => {
+    const f = await runPlaceFixture();
+    f.runtime.sendServer({
+      type: "browser.surfaces.changed",
+      surfaces: [
+        {
+          id: "page-1",
+          active: true,
+          title: "never-loaded.example",
+          url: "https://never-loaded.example/",
+          geometryRevision: 1,
+          navigationFailed: true,
+        },
+      ],
+    });
+    await f.activity("page-1");
+    await f.drain();
+    expect(f.record.mock.calls.at(-1)?.[0]).toMatchObject({
+      data: { place: { surfaceId: "page-1" }, site: null },
+    });
+  });
+
   it("drains Run places without ending its browser binding or actor", async () => {
     const f = await runPlaceFixture();
     await f.activity("page-1");
@@ -4429,15 +4472,16 @@ describe("BrowserService", () => {
     });
   });
 
-  it("targets only owned project Workspaces and treats profile suggestions as advisory", async () => {
+  it("asks in Main or a Project, never for a profile the Workspace can already use", async () => {
     const keys = generateKeyPairSync("ed25519");
     const ownerId = createId("user");
     const workspaceId = createId("workspace");
     const signer = new BrowserAttachTicketSigner({ keyId: "host-v1", privateKey: keys.privateKey });
+    const mainRepository = new MemoryBrowserRepository(ownerId, workspaceId, "main");
     const main = new BrowserService({
       ...nativeProfileOptions(),
       ...profileStateOptions,
-      repository: new MemoryBrowserRepository(ownerId, workspaceId, "main"),
+      repository: mainRepository,
       signer,
     });
     const project = new BrowserService({
@@ -4457,11 +4501,21 @@ describe("BrowserService", () => {
       workspaceId,
     };
 
-    await expect(main.requestAccess(request)).rejects.toMatchObject({
-      code: "bad_request",
-      message:
-        "browser_access_request grants a browser profile only to a project Workspace. From Main, pass that Workspace's workspaceId. To browse in Main, open a session with an inherited profile from browser_profile_list, or with fresh: true for signed-out browsing.",
-    });
+    await expect(
+      main.requestAccess({
+        ...request,
+        suggestion: { kind: "new", suggestedName: "Brex" },
+      }),
+    ).resolves.toMatchObject({ kind: "browser.access", status: "pending" });
+    // Main reaches every profile its owner has, so asking for one would only ask for a yes.
+    const owned = await mainRepository.createBrowserProfile({ ownerId, name: "Personal" });
+    await expect(
+      main.requestAccess({
+        ...request,
+        callId: "browser-access-main-owned",
+        suggestion: { kind: "existing", profileId: owned.id },
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
     await expect(
       project.requestAccess({ ...request, workspaceId: createId("workspace") }),
     ).rejects.toMatchObject({ code: "not_found" });

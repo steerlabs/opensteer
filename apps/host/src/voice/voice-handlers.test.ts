@@ -22,7 +22,22 @@ const profile: HarnessInstanceRecord = {
   runtimeRevision: 1,
 };
 function fixture() {
+  const call = {
+    threadId: createId("thread"),
+    runId: createId("run"),
+    workspaceId: createId("workspace"),
+    environmentId,
+    sessionId,
+    admittedAt: new Date(),
+    status: "running" as const,
+    threadStatus: "running" as const,
+    revokedGrants: [],
+    events: [],
+  };
   const store = {
+    startVoiceCall: vi.fn(async () => call),
+    resolveVoiceCall: vi.fn(async (): Promise<typeof call | undefined> => call),
+    stopVoiceCall: vi.fn(async () => undefined),
     environmentIsAvailableToUser: vi.fn(async () => true),
     listAgentHarnessInstancesForUser: vi.fn(async (): Promise<readonly HarnessInstanceRecord[]> => [
       profile,
@@ -63,6 +78,7 @@ function fixture() {
     })),
   };
   return {
+    call,
     store,
     runners,
     handlers: createVoiceHandlers({ store, runners }),
@@ -70,168 +86,72 @@ function fixture() {
     input: { environmentId, harnessInstanceId, sessionId, offer: "private-offer" },
   };
 }
-describe("Host voice authorization and relay", () => {
-  it.each([false, true])(
-    "forwards find and reports its negotiation only when requested: %s",
-    async (find) => {
-      const f = fixture();
-      f.runners.voice.mockResolvedValue({ ok: true, answer: "answer", agent: true, find });
-      expect(
-        await f.handlers["voice.start"]({ ...f.input, agent: true, find: true }, f.context),
-      ).toEqual({ ok: true, data: { answer: "answer", agent: true, find } });
-      expect(f.runners.voice).toHaveBeenLastCalledWith(
-        environmentId,
-        userId,
-        expect.objectContaining({ agent: true, find: true }),
-        f.context.signal,
-      );
-      expect(await f.handlers["voice.start"]({ ...f.input, agent: true }, f.context)).toEqual({
-        ok: true,
-        data: { answer: "answer", agent: true },
-      });
-    },
-  );
-  it.each([false, true])(
-    "reports negotiated agent support %s only when requested",
-    async (agent) => {
-      const f = fixture();
-      f.runners.voice.mockResolvedValue({ ok: true, answer: "answer", agent });
-      expect(await f.handlers["voice.start"]({ ...f.input, agent: true }, f.context)).toEqual({
-        ok: true,
-        data: { answer: "answer", agent },
-      });
-      expect(f.runners.voice).toHaveBeenCalledWith(
-        environmentId,
-        userId,
-        expect.objectContaining({ agent: true }),
-        f.context.signal,
-      );
-      expect(await f.handlers["voice.start"](f.input, f.context)).toEqual({
-        ok: true,
-        data: { answer: "answer" },
-      });
-    },
-  );
-  it("relays start with the authenticated person and authorized account", async () => {
+
+describe("Host voice Run relay", () => {
+  it("starts a Run and relays SDP only to the Runner", async () => {
     const f = fixture();
     expect(await f.handlers["voice.start"](f.input, f.context)).toEqual({
       ok: true,
-      data: { answer: "answer" },
+      data: {
+        answer: "answer",
+        threadId: f.call.threadId,
+        runId: f.call.runId,
+        workspaceId: f.call.workspaceId,
+      },
     });
-    expect(f.store.environmentIsAvailableToUser).toHaveBeenCalledWith(environmentId, userId);
-    expect(f.store.listAgentHarnessInstancesForUser).toHaveBeenCalledWith(userId, {
-      id: harnessInstanceId,
-      limit: 1,
+    expect(f.store.startVoiceCall).toHaveBeenCalledWith({
+      ownerId: userId,
+      environmentId,
+      harnessInstanceId,
+      sessionId,
     });
     expect(f.runners.voice).toHaveBeenCalledWith(
       environmentId,
       userId,
-      { action: "start", sessionId, harnessInstanceId, offer: "private-offer" },
+      { action: "start", sessionId, runId: f.call.runId, offer: "private-offer" },
       f.context.signal,
     );
   });
-  it.each([
-    "unauthorized-environment",
-    "unowned-or-revoked",
-    "wrong-environment",
-    "disabled",
-    "removed",
-    "non-codex",
-    "non-subscription",
-    "disconnected",
-  ])("refuses %s before touching the Runner", async (scenario) => {
+  it("stops admission on relay failure and never exposes SDP in errors", async () => {
     const f = fixture();
-    if (scenario === "unauthorized-environment")
-      f.store.environmentIsAvailableToUser.mockResolvedValue(false);
-    if (scenario === "unowned-or-revoked")
-      f.store.listAgentHarnessInstancesForUser.mockResolvedValue([]);
-    if (scenario === "wrong-environment")
-      f.store.listAgentHarnessInstancesForUser.mockResolvedValue([
-        { ...profile, environmentId: createId("environment") },
-      ]);
-    if (scenario === "disabled")
-      f.store.listAgentHarnessInstancesForUser.mockResolvedValue([{ ...profile, enabled: false }]);
-    if (scenario === "removed")
-      f.store.listAgentHarnessInstancesForUser.mockResolvedValue([
-        { ...profile, removedAt: new Date() },
-      ]);
-    if (scenario === "non-codex")
-      f.store.listAgentHarnessInstancesForUser.mockResolvedValue([
-        { ...profile, driverKind: HarnessIdSchema.parse("claude") },
-      ]);
-    if (scenario === "non-subscription" || scenario === "disconnected") {
-      const catalog = await f.store.getHarnessCatalog();
-      f.store.getHarnessCatalog.mockResolvedValue({
-        ...catalog,
-        connections: [
-          {
-            connectionSlot: "primary",
-            label: "Codex",
-            authKind: scenario === "non-subscription" ? "api-key" : "subscription",
-            status: scenario === "disconnected" ? "authentication-required" : "connected",
-          },
-        ],
-      });
-    }
+    f.runners.voice.mockRejectedValue(new Error("private-offer"));
     await expect(f.handlers["voice.start"](f.input, f.context)).rejects.toMatchObject({
-      reason: "voice-account-unavailable",
+      message: "The voice call could not start.",
     });
-    expect(f.runners.voice).not.toHaveBeenCalled();
+    expect(f.store.stopVoiceCall).toHaveBeenCalledWith(userId, sessionId);
   });
-  it.each([
-    "voice.renew",
-    "voice.say",
-    "voice.stop",
-    "voice.next",
-    "voice.answer",
-    "voice.context",
-  ] as const)(
-    "reauthorizes %s against fresh profiles without retaining session state",
-    async (method) => {
-      const f = fixture();
-      const call = {
-        environmentId,
-        sessionId,
-        harnessInstanceId,
-        text: "hello",
-        callId: "opaque",
-        ok: true,
-      };
-      await f.handlers[method](call, f.context);
-      expect(f.runners.voice).toHaveBeenLastCalledWith(
-        environmentId,
-        userId,
-        expect.objectContaining({ action: method.slice(6), sessionId, harnessInstanceId }),
-        f.context.signal,
-      );
-      f.store.listAgentHarnessInstancesForUser.mockResolvedValue([]);
-      await expect(f.handlers[method](call, f.context)).rejects.toMatchObject({
-        reason: "voice-account-unavailable",
-      });
-      expect(f.runners.voice).toHaveBeenCalledTimes(1);
-      expect(f.store.listAgentHarnessInstancesForUser).toHaveBeenCalledTimes(2);
-    },
-  );
-  it("preserves old Runner and Runner refusal reasons without payload details", async () => {
+  it("refuses unusable accounts before admission", async () => {
     const f = fixture();
-    f.runners.voice.mockRejectedValueOnce(
-      new OpensteerError({
-        code: "conflict",
-        reason: "voice-runner-unsupported",
-        message: "Update Opensteer.",
-      }),
+    f.store.environmentIsAvailableToUser.mockResolvedValue(false);
+    await expect(f.handlers["voice.start"](f.input, f.context)).rejects.toBeInstanceOf(
+      OpensteerError,
     );
-    await expect(f.handlers["voice.start"](f.input, f.context)).rejects.toMatchObject({
-      reason: "voice-runner-unsupported",
+    expect(f.store.startVoiceCall).not.toHaveBeenCalled();
+  });
+  it("authorizes controls by the recorded owner without rechecking accounts", async () => {
+    const f = fixture();
+    f.store.environmentIsAvailableToUser.mockResolvedValue(false);
+    await f.handlers["voice.renew"]({ sessionId }, f.context);
+    await f.handlers["voice.say"]({ sessionId, id: "message", text: "Hello" }, f.context);
+    await f.handlers["voice.context"](
+      { sessionId, view: { threadId: null, tabId: null } },
+      f.context,
+    );
+    expect(f.store.environmentIsAvailableToUser).not.toHaveBeenCalled();
+    expect(f.runners.voice).toHaveBeenLastCalledWith(
+      environmentId,
+      userId,
+      { action: "context", sessionId, runId: f.call.runId, view: { threadId: null, tabId: null } },
+      f.context.signal,
+    );
+  });
+  it("refuses ended or foreign calls and keeps Stop idempotent", async () => {
+    const f = fixture();
+    f.store.resolveVoiceCall.mockResolvedValue(undefined);
+    await expect(f.handlers["voice.renew"]({ sessionId }, f.context)).rejects.toMatchObject({
+      reason: "voice-ended",
     });
-    f.runners.voice.mockResolvedValueOnce({
-      ok: false,
-      reason: "voice-refused",
-      message: "Voice refused.",
-    });
-    await expect(f.handlers["voice.start"](f.input, f.context)).rejects.toMatchObject({
-      reason: "voice-refused",
-      details: undefined,
-    });
+    await f.handlers["voice.stop"]({ sessionId }, f.context);
+    await f.handlers["voice.stop"]({ sessionId }, f.context);
   });
 });

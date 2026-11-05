@@ -303,17 +303,14 @@ assert(
   "The shared runtime callback allowlist must proxy to Host.",
 );
 for (const path of [
-  "/internal/v1/agent-control",
   "/internal/v1/browser-cdp",
   "/internal/v1/browser-cdp/*",
   "/internal/v1/browser-sources/pair",
   "/internal/v1/browser-sources/connect",
   "/internal/v1/egress",
-  "/internal/v1/integration-mcp",
   "/internal/v1/plugin-cache/*",
   "/internal/v1/computer-plugin-packages/*",
   "/internal/v1/mcp",
-  "/internal/v1/mount-grants/exchange",
   "/internal/v1/apps/tunnel",
   "/internal/v1/runners",
   "/internal/v1/runners/auxiliary/*",
@@ -321,7 +318,12 @@ for (const path of [
 ]) {
   assert(callbackPaths.includes(path), `Caddy runtime callback allowlist is missing ${path}.`);
 }
-for (const removedPath of ["/internal/v1/channel-runtime", "/internal/v1/devices/connect"]) {
+assert(caddyfile.includes("/oauth/mcp/*"), "Caddy must route MCP OAuth to Host.");
+for (const removedPath of [
+  "/internal/v1/mount-grants/exchange",
+  "/internal/v1/channel-runtime",
+  "/internal/v1/devices/connect",
+]) {
   assert(
     !caddyfile.includes(removedPath),
     `Caddy must not publish the retired identity route ${removedPath}.`,

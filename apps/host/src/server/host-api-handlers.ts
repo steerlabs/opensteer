@@ -10,6 +10,7 @@ import {
   type HostApiHandlers,
   type HostApiServerContext,
 } from "@opensteer/protocol";
+import { listedPluginRow } from "../integrations/catalog-presentation.js";
 import type { IdentityRpcHandlers } from "../identity/identity-routes.js";
 import { handleTriggerCommand } from "../triggers/trigger-routes.js";
 import type { TriggerService } from "../triggers/trigger-service.js";
@@ -90,12 +91,11 @@ export function createHostApiHandlers(
     | "attachment.content"
     | "bootstrap.get"
     | "harness.authentication.get"
+    | "automaticModels.get"
     | "harness.catalog.refresh"
     | "harness.modelServers.discover"
     | "voice.start"
     | "voice.renew"
-    | "voice.next"
-    | "voice.answer"
     | "voice.context"
     | "voice.say"
     | "voice.stop"
@@ -122,21 +122,23 @@ export function createHostApiHandlers(
     context: HostApiServerContext,
   ) => Promise<HostApiCommandOutput>,
   computerViews?: ComputerViewService,
-): Omit<HostApiHandlers, "personal.remoteAccess.get"> {
+): Omit<
+  HostApiHandlers,
+  "personal.remoteAccess.get" | "connections.list" | "connections.authorization.get"
+> {
   return {
     "plugins.overview.get": async (_input, context) => {
       const machines = await coreHandlers["machines.list"]({}, context);
       if (!machines.ok) return machines;
-      return rpcSuccess(
-        await integrationPlatform.platform.store.settings.overview(
-          requireSession(context).user.id,
-          new Set(
-            machines.data.machines
-              .filter((machine) => machine.status === "online")
-              .map((machine) => machine.id),
-          ),
+      const overview = await integrationPlatform.platform.store.settings.overview(
+        requireSession(context).user.id,
+        new Set(
+          machines.data.machines
+            .filter((machine) => machine.status === "online")
+            .map((machine) => machine.id),
         ),
       );
+      return rpcSuccess({ ...overview, rows: overview.rows.map(listedPluginRow) });
     },
     "plugins.detail.get": async (input, context) => {
       const machines = await coreHandlers["machines.list"]({}, context);
@@ -146,6 +148,7 @@ export function createHostApiHandlers(
         input.target,
         new Set(machines.data.machines.filter((m) => m.status === "online").map((m) => m.id)),
       );
+      detail.row = listedPluginRow(detail.row);
       const runnerIds = new Set<string>([
         ...detail.devices.map((d) => d.runnerId),
         ...detail.accounts.flatMap((account) => (account.runnerId ? [account.runnerId] : [])),
@@ -249,7 +252,10 @@ export function createHostApiHandlers(
         const output = await handleIntegrationCommand(integrations, command, context);
         return rpcSuccess(hostApi["commands.dispatch"].success.parse(output));
       }
-      if (command.type === "integration.authorization.cancel") {
+      if (
+        command.type === "integration.authorization.cancel" ||
+        command.type === "integration.authorization.return"
+      ) {
         const output = await handleIntegrationAuthorizationCommand(
           integrationAuthorization,
           command,
@@ -272,7 +278,10 @@ export function createHostApiHandlers(
       const output = await handleCoreCommand(command, context);
       return rpcSuccess(hostApi["commands.dispatch"].success.parse(output));
     },
-  } satisfies Omit<HostApiHandlers, "personal.remoteAccess.get">;
+  } satisfies Omit<
+    HostApiHandlers,
+    "personal.remoteAccess.get" | "connections.list" | "connections.authorization.get"
+  >;
 }
 
 type TriggerCommand = Extract<HostApiCommand, { readonly type: `trigger.${string}` }>;

@@ -12,6 +12,7 @@ import {
 } from "@opensteer/client/computers";
 import {
   passwordsElsewhere,
+  passwordsHowItWorks,
   passwordsSettingsLabel,
   passwordsSettingsSubtitle,
 } from "@opensteer/client/host";
@@ -338,7 +339,7 @@ export const projectNotificationsFooter =
 /**
  * Passwords live in the Opensteer app on the Mac that runs a Personal
  * Opensteer. A phone is never that Mac, so the row only says where they are,
- * and the one thing the phone can do about a sign-in.
+ * while approval uses the phone’s own device-owner authentication.
  */
 export interface PasswordsSettingsModel {
   readonly body: string;
@@ -362,8 +363,8 @@ export function passwordsSettingsModel(input: {
     detail: passwordsSettingsSubtitle({ homeName, personal }),
     facts: personal
       ? [
-          `You allow an account once per Workspace, on ${homeName}, with Touch ID or your Mac password. After that, agents there sign in with it on their own.`,
-          "You can say no to a sign-in from this phone.",
+          passwordsHowItWorks[0],
+          "You can allow or decline a sign-in from this phone. Allowing first confirms it’s you on this device.",
         ]
       : [],
     title: passwordsSettingsLabel,

@@ -26,6 +26,7 @@ import type { Kysely } from "kysely";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ChannelStore, createDatabase, migrateToLatest, OpensteerStore } from "./index.js";
+import { ChannelIngressDeferredError } from "./channel-store.js";
 import type { DatabaseSchema } from "./schema.js";
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
@@ -163,6 +164,13 @@ integration("channel conversation authority contexts", () => {
     harnessInstanceId = harness.id;
     // A channel Thread takes its model from what the Runner reported for the
     // account, so the fixture has to have reported something.
+    await recordReadyCatalog(harness);
+  });
+
+  async function recordReadyCatalog(harness: {
+    readonly id: HarnessInstanceId;
+    readonly runtimeRevision: number;
+  }) {
     await store.recordHarnessCatalogs({
       catalogs: [
         HarnessInstanceCatalogSchema.parse({
@@ -171,7 +179,7 @@ integration("channel conversation authority contexts", () => {
             driverKind: "native",
           },
           driverKind: "native",
-          harnessInstanceId,
+          harnessInstanceId: harness.id,
           models: [
             {
               displayName: "GPT-5.6 Sol",
@@ -187,7 +195,7 @@ integration("channel conversation authority contexts", () => {
       environmentId,
       expectedRevisions: new Map([[harness.id, harness.runtimeRevision]]),
     });
-  });
+  }
 
   afterAll(async () => {
     await database?.destroy();
@@ -197,7 +205,14 @@ integration("channel conversation authority contexts", () => {
     }
   });
 
-  async function createFixture(suffix: string, policy: ChannelAccessPolicy) {
+  async function createFixture(
+    suffix: string,
+    policy: ChannelAccessPolicy,
+    executionPolicy: {
+      readonly harness: "default" | "specific";
+      readonly harnessInstanceId: HarnessInstanceId | null;
+    } = { harness: "default", harnessInstanceId: null },
+  ) {
     const ownerId = await store.createUser(`${suffix} owner`);
     const workspace = await createTestWorkspace(store, {
       backing: {
@@ -240,7 +255,7 @@ integration("channel conversation authority contexts", () => {
         ownerId,
         provider: "channel:slack",
       },
-      executionPolicy: { harness: "default", harnessInstanceId: null },
+      executionPolicy,
       selector: { conversationId: null, conversationType: null, scopeId: null, threadId: null },
       workspaceId: workspace.id,
     });
@@ -348,12 +363,20 @@ integration("channel conversation authority contexts", () => {
     const claimed = await channels.claimIngress(`context-worker-${eventId}`);
     expect(claimed?.id).toBe(committed.ingressId);
     if (!claimed) throw new Error("Expected committed channel ingress to be claimable");
-    const adopted = await channels.adoptIngress({
-      claimToken: claimed.claimToken,
-      ingressId: claimed.id,
-      notices,
-      placementCandidates: [{ environmentId, harnessInstanceId }],
-    });
+    const adopted = await channels
+      .adoptIngress({
+        claimToken: claimed.claimToken,
+        ingressId: claimed.id,
+        notices,
+        availableEngines: [{ environmentId, driverKinds: [HarnessIdSchema.parse("native")] }],
+      })
+      .catch(async (error: unknown) => {
+        // Put a refused claim back so its lane keeps moving, as the worker does.
+        await channels.releaseIngress(claimed.id, claimed.claimToken, String(error), {
+          deferred: error instanceof ChannelIngressDeferredError,
+        });
+        throw error;
+      });
     expect(adopted.kind).toBe("adopted");
     if (adopted.kind !== "adopted") throw new Error("Expected adopted channel ingress");
     const input = await database
@@ -455,11 +478,11 @@ integration("channel conversation authority contexts", () => {
     await expect(
       database
         .selectFrom("threads")
-        .select(["capabilityProfileId", "createdBy", "parentThreadId"])
+        .select(["inheritsMain", "createdBy", "parentThreadId"])
         .where("id", "=", owner.input.threadId)
         .executeTakeFirstOrThrow(),
     ).resolves.toEqual({
-      capabilityProfileId: "workspace",
+      inheritsMain: false,
       createdBy: fixture.ownerId,
       parentThreadId: null,
     });
@@ -610,11 +633,11 @@ integration("channel conversation authority contexts", () => {
     await expect(
       database
         .selectFrom("threads")
-        .select(["capabilityProfileId", "lineageRootThreadId", "parentThreadId"])
+        .select(["inheritsMain", "lineageRootThreadId", "parentThreadId"])
         .where("id", "=", second.input.threadId)
         .executeTakeFirstOrThrow(),
     ).resolves.toEqual({
-      capabilityProfileId: "workspace",
+      inheritsMain: false,
       lineageRootThreadId: second.input.threadId,
       parentThreadId: null,
     });
@@ -633,5 +656,70 @@ integration("channel conversation authority contexts", () => {
       activeThreadId: second.input.threadId,
       bindingRevision: updated.revision,
     });
+  });
+
+  // Kept last: it adds a second account to the shared work location.
+  it("places each linked person on their own eligible account when their message is adopted", async () => {
+    const second = await store.createHarnessInstance({
+      config: { model: "test" },
+      driverKind: HarnessIdSchema.parse("native"),
+      environmentId,
+      name: "Second native",
+      stateKind: "isolated",
+    });
+    await recordReadyCatalog(second);
+    const harnessOf = async (adopted: Awaited<ReturnType<typeof adoptEvent>>) =>
+      (
+        await database
+          .selectFrom("threads")
+          .select("harnessInstanceId")
+          .where("id", "=", adopted.input.threadId)
+          .executeTakeFirstOrThrow()
+      ).harnessInstanceId;
+    const exclude = (userId: UserId, ...excludedAccounts: HarnessInstanceId[]) =>
+      store.setAutomaticModelConfig(userId, { roles: {}, excludedAccounts });
+    const linkedPair = async (route: Awaited<ReturnType<typeof createFixture>>, name: string) => {
+      const collaboratorId = await store.createUser(`${name} collaborator`);
+      await addCollaborator(route.workspace.id, route.ownerId, collaboratorId);
+      await addLinkedIdentity(route.account.id, `U-${name}-OWNER`, `${name} owner`, route.ownerId);
+      await addLinkedIdentity(
+        route.account.id,
+        `U-${name}-COLLABORATOR`,
+        `${name} collaborator`,
+        collaboratorId,
+      );
+      const send = (who: "OWNER" | "COLLABORATOR", n: number) =>
+        adoptEvent(
+          route,
+          { displayName: `${name} ${who}`, externalUserId: `U-${name}-${who}` },
+          `Ev-${name}-${who}-${n}`,
+        );
+      return { collaboratorId, send };
+    };
+
+    const route = await createFixture("accounts", accessPolicy("linked-members"));
+    const people = await linkedPair(route, "ACCOUNTS");
+    await exclude(people.collaboratorId, harnessInstanceId);
+    const ownerFirst = await people.send("OWNER", 1);
+    expect(await harnessOf(ownerFirst)).toBe(harnessInstanceId);
+    expect(await harnessOf(await people.send("COLLABORATOR", 1))).toBe(second.id);
+
+    // An explicitly bound account stays exact, whatever automatic work may use.
+    const bound = await createFixture("bound", accessPolicy("linked-members"), {
+      harness: "specific",
+      harnessInstanceId,
+    });
+    const boundPeople = await linkedPair(bound, "BOUND");
+    await exclude(boundPeople.collaboratorId, harnessInstanceId);
+    expect(await harnessOf(await boundPeople.send("COLLABORATOR", 1))).toBe(harnessInstanceId);
+
+    // The same runtime facts, with the owner's exclusions changed since: each
+    // adoption reads the person's eligibility in its own transaction.
+    await exclude(route.ownerId, harnessInstanceId);
+    const ownerMoved = await people.send("OWNER", 2);
+    expect(await harnessOf(ownerMoved)).toBe(second.id);
+    expect(ownerMoved.input.threadId).not.toBe(ownerFirst.input.threadId);
+    await exclude(route.ownerId, harnessInstanceId, second.id);
+    await expect(people.send("OWNER", 3)).rejects.toBeInstanceOf(ChannelIngressDeferredError);
   });
 });

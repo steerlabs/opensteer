@@ -1,6 +1,6 @@
 import { BrowserPopup } from "./browser-popup.js";
 import {
-  browserSiteForUrl,
+  browserSiteForTab,
   browserSiteLabel,
   browserTabCloseImpact,
   type BrowserCommand,
@@ -417,7 +417,8 @@ export function PlaceBrowserView({
       : place
         ? { active: false, id: tabId, title: place.title, url: place.site ?? "" }
         : undefined);
-  const site = url ? browserSiteForUrl(url) : null;
+  const navigationFailed = tab?.navigationFailed || catalogTab?.navigationFailed;
+  const site = browserSiteForTab({ navigationFailed, url });
   const dialog = session?.dialog && session.dialog.surfaceId === tabId ? session.dialog : null;
   const signIn = chromeSignIn && signInOpen && site !== null && live ? chromeSignIn : null;
   const blocked = signIn !== null || askingClose;
@@ -585,9 +586,8 @@ export function PlaceBrowserView({
   const nativeFitAvailable =
     geometry && (geometry.fitAvailable || geometry.sized || tab?.sizedByAgent === true);
   const notice =
-    (tab?.navigationFailed || catalogTab?.navigationFailed
-      ? "This page could not be loaded. Reload to try again."
-      : null) ?? (!ended && session?.error !== dismissedError ? session?.error : null);
+    (navigationFailed ? "This page could not be loaded. Reload to try again." : null) ??
+    (!ended && session?.error !== dismissedError ? session?.error : null);
   const blankPage = url === "" || url === "about:blank";
   return (
     <>

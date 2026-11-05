@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import { BrowserRequestOutcomeSchema, OpensteerError, type Request } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
 import {
+  integrationAccountLabel,
   IntegrationConnectionIdSchema,
   type IntegrationReadiness,
 } from "@opensteer/integration-core";
@@ -106,56 +108,89 @@ export class ContinuationService {
 
   async #drainOnce(): Promise<void> {
     const continuations = await this.#requests.listPendingContinuations();
+    const groups = new Map<string, Request[]>();
     for (const { request } of continuations) {
       if (request.kind === "browser.profile.save") {
         await this.#settleUndeliverable(request, "Guest profile saving has been removed.");
-        continue;
-      }
-      const sourceRunId = request.originatingRunId;
-      // A Trigger occurrence has no Run and no turn waiting on an answer, so
-      // there is nothing to continue. The outbox row is settled here rather
-      // than retried forever, and the next occurrence simply sees the resolved
-      // readiness for itself.
-      if (sourceRunId === null) {
+      } else if (request.originatingRunId === null) {
         await this.#settleUndeliverable(request, triggerOriginatedContinuationReason);
-        continue;
+      } else {
+        const group = groups.get(request.originatingRunId) ?? [];
+        group.push(request);
+        groups.set(request.originatingRunId, group);
       }
-      const signIn =
+    }
+    for (const group of groups.values()) {
+      const requests = group.toSorted(
+        (a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id),
+      );
+      const signIns = requests.map((request) =>
         request.payload.kind === "browser.password-sign-in"
           ? this.#passwordSignIn(request.payload.operationId)
-          : undefined;
-      if (signIn?.publishing) continue;
+          : undefined,
+      );
+      if (signIns.some((signIn) => signIn?.publishing)) continue;
+      const messages: string[] = [];
+      for (const [index, request] of requests.entries()) {
+        try {
+          const signIn = signIns[index];
+          messages.push(
+            await continuationMessage(
+              request,
+              this.#integrations,
+              signIn && !signIn.publishing ? signIn.loginRef : undefined,
+            ),
+          );
+        } catch (error) {
+          this.#onError(error);
+          messages.push(
+            `Request ${request.id} settled as ${request.status}. Use request_list to inspect its outcome before continuing.`,
+          );
+        }
+      }
+      const request =
+        requests.find(
+          (row) =>
+            (row.status === "fulfilled" || row.status === "declined") && row.settlementProvenance,
+        ) ??
+        requests.find((row) => row.status === "fulfilled" || row.status === "declined") ??
+        requests[0]!;
+      const key = createHash("sha256")
+        .update(JSON.stringify(requests.map(({ id }) => id).sort()))
+        .digest("hex");
       let disposition: ThreadInputDisposition;
       try {
         const delivered = await this.#commands.enqueueThreadInput({
           content: [
             {
-              text: await continuationMessage(request, this.#integrations, signIn?.loginRef),
+              text: messages.join("\n\n"),
               type: "text",
             },
           ],
-          idempotencyKey: `request-continuation:${request.id}`,
+          idempotencyKey: `request-continuation:${key}`,
           policy: "queue",
           requestedBy: request.requestedBy,
           source: {
             cause: "request-resolved",
             kind: "platform",
             referenceId: request.id,
-            sourceRunId,
+            sourceRunId: request.originatingRunId!,
           },
           threadId: request.originatingThreadId,
         });
         disposition = delivered.disposition;
       } catch (error) {
         if (isPermanentContinuationFailure(error)) {
-          await this.#settleUndeliverable(request, continuationFailureReason(error));
+          for (const row of requests)
+            await this.#settleUndeliverable(row, continuationFailureReason(error));
         } else {
           try {
-            await this.#requests.recordContinuationAttempt({
-              reason: null,
-              requestId: request.id,
-              status: "waiting",
-            });
+            for (const row of requests)
+              await this.#requests.recordContinuationAttempt({
+                reason: null,
+                requestId: row.id,
+                status: "waiting",
+              });
           } catch (recordError) {
             this.#onError(recordError);
           }
@@ -165,7 +200,8 @@ export class ContinuationService {
       }
       switch (disposition) {
         case "cancelled":
-          await this.#settleUndeliverable(request, cancelledContinuationReason);
+          for (const row of requests)
+            await this.#settleUndeliverable(row, cancelledContinuationReason);
           continue;
         case "pending":
         case "run-queued":
@@ -177,11 +213,12 @@ export class ContinuationService {
         }
       }
       try {
-        await this.#requests.recordContinuationAttempt({
-          reason: null,
-          requestId: request.id,
-          status: "queued",
-        });
+        for (const row of requests)
+          await this.#requests.recordContinuationAttempt({
+            reason: null,
+            requestId: row.id,
+            status: "queued",
+          });
       } catch (error) {
         this.#onError(error);
       }
@@ -231,6 +268,9 @@ export async function continuationMessage(
   integrations: IntegrationInventorySource,
   loginRef?: string,
 ): Promise<string> {
+  if (request.mode === "durable" && request.status === "cancelled") {
+    return `Request ${request.id} was cancelled (${request.cancellationReason}). The requested resource or authority is no longer available. Continue without it; use request_list to inspect the outcome if needed.`;
+  }
   if (
     request.mode !== "durable" ||
     (request.status !== "fulfilled" && request.status !== "declined")
@@ -255,10 +295,10 @@ export async function continuationMessage(
       if (!outcome.success)
         return `Request ${request.id} was fulfilled. Browser profile access is now available; browser_profile_list shows the profiles this Workspace can use. Continue the task.`;
       const { id: profileId, name } = outcome.data.profile;
-      return `Request ${request.id} was fulfilled. Browser profile ${JSON.stringify(name)} (${profileId}) is now available to this Workspace. Open it with browser_session_open and profileId ${profileId}, then continue the task.`;
+      return `Request ${request.id} was fulfilled. The person chose browser profile ${JSON.stringify(name)} (${profileId}); use it for this task even if you suggested another. Open it with browser_session_open and profileId ${profileId}, then continue the task.`;
     }
     case "browser.profile.save":
-      return `Request ${request.id} is historical. Create a browser profile before signing in; Guest sign-ins cannot be saved.`;
+      return `Request ${request.id} is historical. Open a named browser profile before signing in, or ask for one with browser_profile_request; Guest sign-ins cannot be saved.`;
     case "browser.profile.import":
       return request.status === "declined" &&
         request.response.kind === "external" &&
@@ -270,13 +310,27 @@ export async function continuationMessage(
         throw new Error("Browser sign-in Request payload is invalid");
       const { sessionId, site } = request.payload;
       if (request.status === "declined")
-        return `Request ${request.id} was declined by the user. Continue without signing in to ${site} and do not ask for it again unless the user asks.`;
+        return `Request ${request.id} to reuse the user's Chrome sign-in was declined by the user. Continue without signing in to ${site} and do not ask for it again unless the user asks.`;
       const response = BrowserSignInRequestResponseSchema.parse(
         request.response.kind === "external" ? request.response.value : undefined,
       );
-      return response.outcome === "applied"
-        ? `Request ${request.id} was fulfilled. Signed in to ${site} with ${response.sourceName} in Browser Session ${sessionId}. Reload the page and confirm the account before continuing.`
-        : `Request ${request.id} was fulfilled. The user allowed ${site}. Your Browser Session had closed; call sign_in again in your current session.`;
+      switch (response.outcome) {
+        case "applied":
+          return `Request ${request.id} was fulfilled. Signed in to ${site} with ${response.sourceName} in Browser Session ${sessionId}. Reload the page and confirm the account before continuing.`;
+        case "not-signed-in": {
+          const passwords =
+            response.passwords === "not-set-up"
+              ? ", or to set up Opensteer Passwords on their Mac so agents can sign in for them (Opensteer shows them where under your reply)"
+              : response.passwords === "no-login"
+                ? ", or to add this login in Opensteer Passwords"
+                : response.passwords === "off"
+                  ? ", or to turn agent sign-ins back on in the Passwords window"
+                  : "";
+          return `Request ${request.id} ended without signing in: Chrome is connected but not signed in to ${site}, so there is no Chrome sign-in to reuse. The user did not decline. Ask them to sign in to ${site} themselves in Browser Session ${sessionId}${passwords}, then call sign_in again.`;
+        }
+        case "session-closed":
+          return `Request ${request.id} was fulfilled. The user allowed ${site}. Your Browser Session had closed; call sign_in again in your current session.`;
+      }
     }
     case "browser.password-sign-in": {
       if (request.payload.kind !== "browser.password-sign-in")
@@ -328,7 +382,7 @@ export async function continuationMessage(
         request.response.kind === "external" ? request.response.value?.account : undefined,
       );
       const grantedAccount = account.success
-        ? ` Granted account: ${account.data.displayName}${account.data.accountIdentifier ? ` (${account.data.accountIdentifier})` : ""}.`
+        ? ` Granted account: ${integrationAccountLabel(account.data)}.`
         : "";
       const subject = target.success
         ? target.data.connectionId === null

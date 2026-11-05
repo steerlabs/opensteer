@@ -117,6 +117,7 @@ integration.sequential("unified integration access Requests", () => {
       response: { kind: "external", value: { connectionId: null, decision: "fulfilled" } },
     });
     expect(resolved.request.status).toBe("fulfilled");
+    await fixture.complete();
     await expect(platform.requests.listPendingContinuations()).resolves.toEqual([
       expect.objectContaining({ request: expect.objectContaining({ id: opened.request.id }) }),
     ]);
@@ -816,5 +817,17 @@ async function runningRunFixture(store: OpensteerStore, suffix: string) {
     workspaceId: workspace.id,
   };
   await store.commitRunnerEvent({ environmentId, event: started, runnerBootId, runnerId });
-  return { runId: admitted.run.id, threadId: thread.id, userId, workspaceId: workspace.id };
+  return {
+    runId: admitted.run.id,
+    threadId: thread.id,
+    userId,
+    workspaceId: workspace.id,
+    complete: () =>
+      store.commitRunnerEvent({
+        environmentId,
+        runnerBootId,
+        runnerId,
+        event: { ...started, ordinal: 1, type: "run.completed", data: { status: "completed" } },
+      }),
+  };
 }

@@ -8,10 +8,16 @@ import {
 } from "@opensteer/client/host";
 import {
   authorizationConnection,
+  canSetUpOwnApp,
+  connectProviderManifest,
+  connectSavedSource,
+  type IntegrationDashboard,
   integrationAccountTitle,
   integrationAuthorizationError,
   type IntegrationOAuthApplicationSource,
   type IntegrationPlatformDashboardView,
+  integrationAuthorizationSettled,
+  integrationAuthorizationCancelUnconfirmedDetail,
 } from "@opensteer/client/integrations";
 import { useHostSelector } from "@opensteer/client/react";
 import { useIsFocused } from "@react-navigation/native";
@@ -31,6 +37,8 @@ import { color, space, touchTarget } from "../theme.js";
 import { IntegrationIcon } from "../ui/integration-icon.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
 import { AppText, Notice, RowGroup, SecondaryButton, StatusDot } from "../ui/primitives.js";
+import { Sheet } from "../ui/sheet.js";
+import { IntegrationOAuthAppForm } from "../thread/integration-oauth-app-form.js";
 import { Screen, useListContentInsets, useReadingColumn } from "../ui/screen.js";
 import {
   connectedAppsModel,
@@ -89,6 +97,12 @@ function ConnectedApps(props: {
   const insets = useListContentInsets(space[32]);
   const focused = useIsFocused();
   const online = useHostSelector(hostClient, canRespondToRequests);
+  const [dashboard, setDashboard] = useState<IntegrationDashboard | null>(null);
+  const [ownApp, setOwnApp] = useState(false);
+  const [savedSource, setSavedSource] = useState<{
+    readonly definitionId: string;
+    readonly source: IntegrationOAuthApplicationSource;
+  } | null>(null);
   const [platform, setPlatform] = useState<IntegrationPlatformDashboardView | null>(null);
   const [keyValues, setKeyValues] = useState<Record<string, string>>({});
   const keyAttempt = useRef<{
@@ -105,6 +119,8 @@ function ConnectedApps(props: {
   const [done, setDone] = useState<string | null>(null);
   /** The row whose action is under way; every other action waits for it. */
   const [busy, setBusy] = useState<string | null>(null);
+  const [signingIn, setSigningIn] = useState<AbortController | null>(null);
+  const [cancelUnconfirmed, setCancelUnconfirmed] = useState(false);
   const [foreground, setForeground] = useState(AppState.currentState === "active");
   /** The GitHub account sent to choose repositories, checked again when the person is back. */
   const awaitingRepositories = useRef<{ readonly id: string; readonly title: string } | null>(null);
@@ -117,6 +133,7 @@ function ConnectedApps(props: {
         hostClient.rpc["integration.platform.get"]({}).then(unwrapRpcResult),
       ]);
       if (!current()) return null;
+      setDashboard(dashboard);
       setPlatform(platform);
       setApps(connectedAppsModel({ dashboard, hostName, platform }));
       setLoadError(null);
@@ -198,10 +215,18 @@ function ConnectedApps(props: {
   const signIn = (app: ConnectedAppModel, key: string) => {
     const start = (source: IntegrationOAuthApplicationSource) =>
       void run(key, async () => {
-        const status = await mobile.beginIntegrationAuthorization({
-          applicationSource: source,
-          definitionId: app.definitionId,
-        });
+        const controller = new AbortController();
+        setSigningIn(controller);
+        const status = await integrationAuthorizationSettled(
+          mobile
+            .beginIntegrationAuthorization({
+              applicationSource: source,
+              definitionId: app.definitionId,
+              signal: controller.signal,
+            })
+            .finally(() => setSigningIn(null)),
+          () => setCancelUnconfirmed(true),
+        ).finally(() => setCancelUnconfirmed(false));
         if (!current()) return null;
         const outcome = integrationAuthorizationError(status.status, status.failureCode);
         if (outcome !== null) throw new Error(outcome);
@@ -222,6 +247,10 @@ function ConnectedApps(props: {
           ? `${account.title} is connected.`
           : finishRepositories(account, true);
       });
+    if (savedSource && app.definitionId === savedSource.definitionId) {
+      start(savedSource.source);
+      return;
+    }
     if (app.signIn?.kind === "direct") {
       start(app.signIn.source);
       return;
@@ -260,6 +289,53 @@ function ConnectedApps(props: {
       { style: "cancel", text: "Cancel" },
     ]);
 
+  const definition = platform?.catalog.find(
+    (entry) => entry.definition.id === props.definitionId,
+  )?.definition;
+  const provider = definition?.provider ?? null;
+  const manifest = dashboard && provider ? connectProviderManifest(dashboard, provider) : null;
+  const canSetUp = dashboard && provider ? canSetUpOwnApp(dashboard, provider) : false;
+  const appEditor =
+    ownApp && manifest && provider && dashboard ? (
+      <Sheet open={ownApp} onClose={() => setOwnApp(false)} title="Your own app">
+        <View style={{ padding: space[16], gap: space[16] }}>
+          {error ? <Notice title="App could not be saved" detail={error} /> : null}
+          <IntegrationOAuthAppForm
+            busy={busy !== null}
+            callbackUrl={dashboard.callbackUrls[provider] ?? ""}
+            manifest={manifest}
+            onSave={(draft) =>
+              void run("own-app", async () => {
+                const saved = await hostClient.dispatch({
+                  idempotencyKey: mutationIdempotencyKey(`integration-app:${provider}`),
+                  input: {
+                    availability: "personal",
+                    clientId: draft.clientId,
+                    displayName: draft.displayName,
+                    expectedRevision: null,
+                    ...(draft.installationUrl ? { installationUrl: draft.installationUrl } : {}),
+                    provider,
+                    secrets: draft.secrets,
+                  },
+                  type: "integration.providerApplication.save",
+                });
+                if (saved.type !== "integration.providerApplication.save")
+                  throw new Error("Integration application command mismatch.");
+                if (!current()) return null;
+                const fresh = await load();
+                if (!fresh || !current()) return null;
+                const source = connectSavedSource(fresh, saved.application);
+                setSavedSource(
+                  source && definition ? { definitionId: definition.id, source } : null,
+                );
+                setOwnApp(false);
+                return "App saved. No account is connected yet.";
+              })
+            }
+          />
+        </View>
+      </Sheet>
+    ) : null;
   if (props.render) {
     const button = (
       key: string,
@@ -278,7 +354,16 @@ function ConnectedApps(props: {
         key: "pending",
         title: "Connecting",
         rows: [
-          { key: "pending", kind: "text", label: "Waiting for sign-in and saving placement…" },
+          {
+            key: "pending",
+            kind: "text",
+            label: cancelUnconfirmed
+              ? integrationAuthorizationCancelUnconfirmedDetail
+              : "Waiting for sign-in and saving placement…",
+          },
+          ...(signingIn
+            ? [{ ...button("cancel", "Cancel sign-in", () => signingIn.abort()), disabled: false }]
+            : []),
         ],
       });
     if (error || loadError || done)
@@ -307,9 +392,6 @@ function ConnectedApps(props: {
           ),
         ],
       });
-    const definition = platform?.catalog.find(
-      (entry) => entry.definition.id === props.definitionId,
-    )?.definition;
     for (const method of definition?.authMethods ?? []) {
       if (method.kind !== "api-key") continue;
       sections.push({
@@ -407,7 +489,23 @@ function ConnectedApps(props: {
         });
       sections.push({ key: `accounts:${app.definitionId}`, title: "Sign in", rows });
     }
-    return props.render(sections);
+    if (canSetUp)
+      sections.push({
+        key: "own-app",
+        title: "Sign-in app",
+        rows: [
+          button("own-app", "Use my own OAuth app", () => {
+            setError(null);
+            setOwnApp(true);
+          }),
+        ],
+      });
+    return (
+      <>
+        {props.render(sections)}
+        {appEditor}
+      </>
+    );
   }
   return (
     <Screen edgeToEdge>
@@ -422,6 +520,16 @@ function ConnectedApps(props: {
             tone="neutral"
           />
         )}
+        {signingIn ? (
+          <SecondaryButton label="Cancel sign-in" onPress={() => signingIn.abort()} />
+        ) : null}
+        {cancelUnconfirmed ? (
+          <Notice
+            detail={integrationAuthorizationCancelUnconfirmedDetail}
+            title="Not cancelled yet"
+            tone="neutral"
+          />
+        ) : null}
         {done === null ? null : <Notice detail={done} title="Done" tone="neutral" />}
         {error === null ? null : <Notice detail={error} title="That did not finish" />}
         {loadError === null ? null : (
@@ -436,6 +544,17 @@ function ConnectedApps(props: {
             No apps yet. Add one from Opensteer on a computer, or when an agent asks for it.
           </AppText>
         ) : null}
+        {canSetUp ? (
+          <SecondaryButton
+            label="Use my own OAuth app"
+            disabled={busy !== null || !online}
+            onPress={() => {
+              setError(null);
+              setOwnApp(true);
+            }}
+          />
+        ) : null}
+        {appEditor}
         {(apps ?? [])
           .filter((app) => !props.definitionId || app.definitionId === props.definitionId)
           .map((app) => (

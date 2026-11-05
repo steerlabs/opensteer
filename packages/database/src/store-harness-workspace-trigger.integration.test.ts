@@ -25,7 +25,6 @@ import {
   acquireDeploymentAuthorityLease,
   admitTriggerControlRequest,
   AccountDirectoryStore,
-  agentControlActionLimits,
   migrateToLatest,
 } from "./index.js";
 import {
@@ -2272,7 +2271,7 @@ describeStore("PostgreSQL store", (it) => {
       }),
     ).rejects.toMatchObject({ code: "conflict" });
 
-    const remaining = agentControlActionLimits["trigger.write"] - 1;
+    const remaining = 40;
     await Promise.all(
       Array.from({ length: remaining }, async (_, index) =>
         admitTriggerControlRequest(database, {
@@ -2292,14 +2291,8 @@ describeStore("PostgreSQL store", (it) => {
         requestFingerprint: createHash("sha256").update("write-over-limit").digest("hex"),
         requestId: randomUUID(),
       }),
-    ).rejects.toMatchObject({
-      code: "resource_exhausted",
-      details: {
-        actionClass: "trigger.write",
-        limit: agentControlActionLimits["trigger.write"],
-      },
-    });
-    // Reads are a separate class and a separate Occurrence is a separate ledger.
+    ).resolves.toMatchObject({ wasDuplicate: false });
+    // Exact retries retain their identity without limiting distinct operations.
     await expect(
       admitTriggerControlRequest(database, {
         ...triggerBinding,
@@ -2309,10 +2302,9 @@ describeStore("PostgreSQL store", (it) => {
         requestId: randomUUID(),
       }),
     ).resolves.toMatchObject({ actionClass: "trigger.read", wasDuplicate: false });
-    // A Trigger program reaches Thread operations too: without a class of their
-    // own a program could delegate in an unbounded loop.
+
     await Promise.all(
-      Array.from({ length: agentControlActionLimits["thread.delegate"] }, async (_, index) =>
+      Array.from({ length: 10 }, async (_, index) =>
         admitTriggerControlRequest(database, {
           ...triggerBinding,
           action: "thread.delegate",
@@ -2330,13 +2322,7 @@ describeStore("PostgreSQL store", (it) => {
         requestFingerprint: createHash("sha256").update("delegate-over-limit").digest("hex"),
         requestId: randomUUID(),
       }),
-    ).rejects.toMatchObject({
-      code: "resource_exhausted",
-      details: {
-        actionClass: "thread.delegate",
-        limit: agentControlActionLimits["thread.delegate"],
-      },
-    });
+    ).resolves.toMatchObject({ wasDuplicate: false });
     await expect(
       admitTriggerControlRequest(database, {
         ...triggerBinding,

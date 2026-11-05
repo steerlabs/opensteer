@@ -1,4 +1,5 @@
 export * from "./adapter.js";
+export * from "./account-label.js";
 export * from "./adapter-kind.js";
 export * from "./authorization-return.js";
 export * from "./auth-method.js";
@@ -12,7 +13,6 @@ export * from "./effect.js";
 // "@opensteer/integration-core/computer-app-tools", ".../digest",
 // ".../effective-grants" and ".../ports". computer-app.js itself stays free of
 // them so `IntegrationDefinitionSummary.computerApp` is readable everywhere.
-export * from "./gateway.js";
 export * from "./ids.js";
 export * from "./identifiers.js";
 export * from "./models.js";

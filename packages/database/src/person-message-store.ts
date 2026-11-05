@@ -7,10 +7,7 @@ import {
   type Message,
 } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
-import {
-  admitAgentControlRequestInTransaction,
-  type AgentControlAdmissionInput,
-} from "./agent-control-admission.js";
+import { admitRunToolCallInTransaction, type RunToolAdmissionInput } from "./run-tool-admission.js";
 import type { DatabaseSchema } from "./schema.js";
 import { withRequestWorkspaceLocks } from "./request-workspace-locks.js";
 import { jsonValue, systemPrincipalId } from "./store-primitives.js";
@@ -18,7 +15,7 @@ import { messageFromRow } from "./thread-row-mappers.js";
 import { appendHostWorkspaceEvent } from "./workspace-events.js";
 
 export interface PersonMessageInput {
-  readonly admission: AgentControlAdmissionInput;
+  readonly admission: RunToolAdmissionInput;
   readonly message: string;
 }
 export interface PersonMessageResult {
@@ -133,7 +130,7 @@ export async function publishPersonMessage(
       return { message, events: [event], wasDuplicate: false };
     },
     async (transaction) => {
-      await admitAgentControlRequestInTransaction(transaction, admission);
+      await admitRunToolCallInTransaction(transaction, admission);
     },
   );
 }

@@ -1,3 +1,4 @@
+import { agentTools } from "@opensteer/agent-tools";
 import { collisionSkills } from "@opensteer/shared/test-support/agentSkills";
 import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
@@ -11,8 +12,6 @@ import {
   type HarnessInstanceId,
   type Message,
 } from "@opensteer/core";
-import { toolsForCapabilityProfile } from "@opensteer/agent-tools";
-import { integrationGatewayToolNames } from "@opensteer/integration-core";
 import {
   isolatedServiceHarnessRuntimeBoundary,
   nativeUserHarnessRuntimeBoundary,
@@ -134,19 +133,18 @@ describe("OpenCode tool identity", () => {
   it("is unambiguous for every tool the two Opensteer servers actually offer", () => {
     // The split only works because no agent tool name begins with
     // `integrations_`; assert that over the real lists rather than trusting it.
-    for (const { name } of toolsForCapabilityProfile("main")) {
+    for (const { name } of agentTools.filter((tool) => tool.callers.includes("run"))) {
       expect(name.startsWith("integrations_")).toBe(false);
       expect(opencodeToolIdentity(`opensteer_${name}`)).toEqual({
         name,
         namespace: "opensteer",
       });
     }
-    for (const name of integrationGatewayToolNames) {
-      expect(opencodeToolIdentity(`opensteer_integrations_${name}`)).toEqual({
-        name,
-        namespace: "opensteer.integrations",
-      });
-    }
+    // A historical transcript's integration call still reads as an Opensteer tool.
+    expect(opencodeToolIdentity("opensteer_integrations_integration_call")).toEqual({
+      name: "integration_call",
+      namespace: "opensteer.integrations",
+    });
   });
 });
 
@@ -783,17 +781,11 @@ describe("OpenCode sessions", () => {
       type: "remote",
       url: "https://host.example/internal/v1/mcp",
     });
-    expect(mcp.opensteer_integrations).toMatchObject({
-      headers: { Authorization: "Bearer test-integration-tools-token" },
-      oauth: false,
-      type: "remote",
-    });
+    expect(Object.keys(mcp)).toEqual(["opensteer"]);
     const permission = config.permission as Record<string, string>;
-    for (const { name } of toolsForCapabilityProfile("main")) {
+    expect(permission.opensteer_host_only_tool).toBe("allow");
+    for (const { name } of agentTools.filter((tool) => tool.callers.includes("run"))) {
       expect(permission[`opensteer_${name}`]).toBe("allow");
-    }
-    for (const name of integrationGatewayToolNames) {
-      expect(permission[`opensteer_integrations_${name}`]).toBe("allow");
     }
   });
 
@@ -842,7 +834,7 @@ describe("OpenCode sessions", () => {
     // The model is told the names it must type, not just the servers: OpenCode
     // renames every MCP tool to `<server>_<tool>`.
     expect(instructions).toContain("opensteer_thread_read");
-    expect(instructions).toContain("opensteer_integrations_integration_call");
+    expect(instructions).toContain("opensteer_integration_call");
   });
 
   it("refuses to load two Agent Skills of one name", async () => {
@@ -1833,7 +1825,13 @@ async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixt
   const context: HarnessSessionContext = {
     accessMode: options.accessMode ?? "approval-required",
     agentTools: {
-      capabilityProfileId: "main",
+      tools: [
+        "host_only_tool",
+        ...agentTools.filter((tool) => tool.callers.includes("run")).map(({ name }) => name),
+      ],
+      toolsRevision: "test-tools-v1",
+      instructions: "Host Opensteer instructions",
+      skills: ["opensteer:threads"],
       token: "test-agent-tools-token",
       url: "https://host.example/internal/v1/mcp",
     },
@@ -1847,10 +1845,6 @@ async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixt
       itemCount: options.history?.length ?? 0,
     },
     instructions: "Follow the workspace instructions.",
-    integrationTools: {
-      token: "test-integration-tools-token",
-      url: "https://host.example/internal/v1/integration-mcp",
-    },
     machineAccessNotice: options.machineAccessNotice ?? noComputersNotice,
     machineAccessPlatform: undefined,
     machineAccessRelaySocket: undefined,
@@ -1918,22 +1912,26 @@ describe("opencode Thread naming", () => {
   it("names with the task model when no light model is listed", async () => {
     const fixture = await setup("happy");
     let titleArgs: readonly string[] | undefined;
-    const session = await fixture.adapter.startSession({
+    const namingContext = {
       ...fixture.context,
-      wrapProcessLaunch: (launch) => {
-        if (launch.cwd.includes("title-")) titleArgs = launch.args;
+      wrapProcessLaunch: (launch: import("@opensteer/harness").HarnessProcessLaunch) => {
+        if (launch.cwd.includes("text-")) titleArgs = launch.args;
         return launch;
       },
-    });
+    };
     try {
       expect(
-        await session.generateTitle!({ prompt: "Name it", signal: AbortSignal.timeout(2_000) }),
-      ).toBe("Support migration\nheadphones");
+        await fixture.adapter.generateText!({
+          context: { ...namingContext, scratchDirectory: namingContext.threadStateDirectory },
+          modelSelection: namingContext.modelSelection,
+          prompt: "Name it",
+          signal: AbortSignal.timeout(2_000),
+        }),
+      ).toEqual({ ok: true, text: "Support migration\nheadphones" });
       expect(titleArgs).toContain(
         `opencode/${fixture.context.modelSelection.nativeModelId ?? fixture.context.modelSelection.modelId}`,
       );
     } finally {
-      await session.stop();
       await fixture.adapter.close();
     }
   });
@@ -1942,24 +1940,34 @@ describe("opencode Thread naming", () => {
     const fixture = await setup("light-model");
     let namingConfig: unknown;
     let namingLaunch: import("@opensteer/harness").HarnessProcessLaunch | undefined;
+    let launches = 0;
     const prompt = threadTitlePrompt("Migrate support", { icon: true });
-    const session = await fixture.adapter.startSession({
+    const namingContext = {
       ...fixture.context,
-      wrapProcessLaunch: (launch) => {
-        if (!launch.cwd.includes("title-")) return launch;
+      wrapProcessLaunch: (launch: import("@opensteer/harness").HarnessProcessLaunch) => {
+        if (!launch.cwd.includes("text-")) return launch;
         namingLaunch = launch;
+        launches++;
         namingConfig = JSON.parse(readFileSync(launch.environment.OPENCODE_CONFIG!, "utf8"));
         return launch;
       },
-    });
+    };
     try {
-      expect(await session.generateTitle!({ prompt, signal: AbortSignal.timeout(2_000) })).toBe(
-        "Support migration\nheadphones",
-      );
+      expect(
+        await fixture.adapter.generateText!({
+          context: { ...namingContext, scratchDirectory: namingContext.threadStateDirectory },
+          modelSelection: namingContext.modelSelection,
+          prompt,
+          signal: AbortSignal.timeout(2_000),
+        }),
+      ).toEqual({ ok: true, text: "Support migration\nheadphones" });
+      expect(launches).toBe(1);
       const launch = namingLaunch!;
-      expect(launch.cwd).toContain("title-");
+      expect(launch.cwd).toContain("text-");
       expect(launch.args).toEqual(
-        expect.arrayContaining(["opencode/gpt-6-nano", "--variant", "low"]),
+        expect.arrayContaining([
+          `opencode/${fixture.context.modelSelection.nativeModelId ?? fixture.context.modelSelection.modelId}`,
+        ]),
       );
 
       const config = namingConfig;
@@ -1973,8 +1981,7 @@ describe("opencode Thread naming", () => {
         agent: {
           title: { disable: true },
           "opensteer-title": {
-            prompt:
-              "You name tasks. Reply exactly in the format the request asks for. Never use tools.",
+            prompt: "Follow the prompt. Never use tools.",
             tools: { "*": false },
             permission: { "*": "deny" },
           },
@@ -1983,11 +1990,10 @@ describe("opencode Thread naming", () => {
 
       expect(
         (await readdir(fixture.context.threadStateDirectory)).filter((name) =>
-          name.startsWith("title-"),
+          name.startsWith("text-"),
         ),
       ).toEqual([]);
     } finally {
-      await session.stop();
       await fixture.adapter.close();
     }
   });

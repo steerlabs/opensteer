@@ -1,38 +1,37 @@
-# Desktop development
+# Desktop
 
-Use `pnpm dev` for day-to-day development. To package a local macOS app, first
-install the repository's Node and pnpm versions, Go and Xcode command line tools,
-run `pnpm install --frozen-lockfile`, and provide these explicit inputs:
+The Electron app that bundles a Personal Host, PostgreSQL, Node, cloudflared, a Runner and the
+signed macOS helpers. Use `pnpm dev` for day-to-day work.
 
-| Input         | Environment variables and required layout                                                                                                                                                                                                                                                                                                                                            |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| PostgreSQL 17 | `OPENSTEER_PERSONAL_RUNTIME_POSTGRES_SOURCE`: distribution directory containing `bin/postgres`, `bin/initdb`, `bin/pg_isready`, `lib/` and `share/`. Include the `dict_snowball` and `plpgsql` modules in `lib/` or `lib/postgresql/`. It must be relocatable, with macOS libraries resolving through `@loader_path` or other relative paths, without external library dependencies. |
-| Node          | `OPENSTEER_PERSONAL_RUNTIME_NODE_SOURCE`: distribution directory containing `bin/node`, for this Mac's architecture.                                                                                                                                                                                                                                                                 |
-| cloudflared   | `OPENSTEER_CLOUDFLARED_BINARY_SOURCE`: executable path; `OPENSTEER_CLOUDFLARED_RELEASE_VERSION`: stable version, at least `2025.4.0`; `OPENSTEER_CLOUDFLARED_BINARY_SHA256`: the executable's lowercase SHA-256 digest.                                                                                                                                                              |
+## Contributor package
 
-With those variables exported, run:
+To package a local macOS app without signing credentials, install the repository's Node and
+pnpm, Go and the Xcode command line tools, run `pnpm install --frozen-lockfile`, and export:
+
+- `OPENSTEER_PERSONAL_RUNTIME_POSTGRES_SOURCE`: a relocatable PostgreSQL 17 distribution with
+  `bin/postgres`, `bin/initdb`, `bin/pg_isready`, `lib/` (including the `dict_snowball` and
+  `plpgsql` modules) and `share/`, whose macOS libraries resolve through `@loader_path` or other
+  relative paths.
+- `OPENSTEER_PERSONAL_RUNTIME_NODE_SOURCE`: a Node distribution with `bin/node` for this Mac.
+- `OPENSTEER_CLOUDFLARED_BINARY_SOURCE`, `OPENSTEER_CLOUDFLARED_RELEASE_VERSION` (2025.4.0 or
+  newer) and `OPENSTEER_CLOUDFLARED_BINARY_SHA256` (lowercase).
 
 ```sh
 pnpm --filter @opensteer/desktop package:mac:contributor
 ```
 
-The app is written to `apps/desktop/release/contributor/mac-arm64/Opensteer.app` (Apple
-Silicon) or `apps/desktop/release/contributor/mac/Opensteer.app` (Intel). This non-release mode
-uses development trust and ad-hoc signing, builds the runtime and helpers from
-source, and verifies the packaged resources. It requires no signing credentials
-or release channel. Agent Phone is omitted unless `pnpm build:agent-phone` has
-already produced its APK.
+The app lands in `apps/desktop/release/contributor/mac-arm64/` (Apple silicon) or
+`release/contributor/mac/` (Intel). It is ad-hoc signed with development trust and refuses any
+signing input. Agent Phone is included only if `pnpm build:agent-phone` already built its APK.
 
-An ad-hoc contributor build runs the workspace. A packaged app refuses unsigned
-helpers, so computer use and Opensteer Passwords are unavailable in it. Work on
-those features with `pnpm dev`, which trusts the helpers it builds. This command
-does not accept a signing input. Signed packages currently come only from
-`package:mac`, which also needs release inputs (see [SIGNING.md](SIGNING.md)).
+A packaged app refuses unsigned helpers, so computer use and Opensteer Passwords don't work in a
+contributor package; work on them with `pnpm dev`, which trusts the helpers it builds. Signed
+packages come only from `package:mac` with release inputs; see
+[Signing](../../docs/releases.md#signing).
 
-For an arm64 Mac, `pnpm desktop:build-release --unsigned --out /absolute/build-inputs`
-fetches pinned public inputs, builds PostgreSQL and the Agent Phone debug APK,
-and invokes the same contributor packager through `package:mac --unsigned`.
-It needs the Android SDK and JDK as well as the prerequisites above. See
-[the local proof](../../docs/releases.md#build-inputs-and-local-proof).
-Distribution builds use `package:mac` with the
-signing and release inputs described in [SIGNING.md](SIGNING.md).
+On an arm64 Mac with the Android SDK and JDK, this fetches pinned public inputs, builds
+PostgreSQL and the Agent Phone debug APK, and runs the same contributor packager:
+
+```sh
+pnpm desktop:build-release --unsigned --out /absolute/directory/outside/the/checkout
+```

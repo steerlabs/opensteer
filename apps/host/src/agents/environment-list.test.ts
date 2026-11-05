@@ -1,6 +1,7 @@
+import { EnvironmentListInputSchema } from "@opensteer/agent-tools/tools";
 import { createId, HarnessIdSchema } from "@opensteer/core";
-import { EnvironmentListInputSchema, HarnessInstanceCatalogSchema } from "@opensteer/protocol";
-import { toolsForCapabilityProfile } from "@opensteer/agent-tools";
+import { HarnessInstanceCatalogSchema } from "@opensteer/protocol";
+import { agentTools } from "@opensteer/agent-tools";
 import type { HarnessInstanceRecord } from "@opensteer/database";
 import { describe, expect, it, vi } from "vitest";
 import { delegationEngines } from "./delegation-placement.js";
@@ -71,6 +72,10 @@ describe("environment model discovery", () => {
       canRun: () => true,
     });
     expect(discovery[0]).toMatchObject({ lightModel, models: [] });
+    const tool = agentTools.find(({ name }) => name === "environment_list")!;
+    expect(tool.output.parse({ environments: [], harnesses: discovery })).toMatchObject({
+      harnesses: [{ lightModel }],
+    });
     expect((await delegationEngines(f.store, f.accounts))[0]).toMatchObject({ lightModel });
     expect(
       (
@@ -88,7 +93,9 @@ describe("environment model discovery", () => {
     expect((await delegationEngines(f.store, f.accounts))[0]).not.toHaveProperty("lightModel");
   });
   it("normalizes blank search at both boundaries and shares unfiltered cursors", async () => {
-    const tool = toolsForCapabilityProfile("main").find(({ name }) => name === "environment_list")!;
+    const tool = agentTools
+      .filter((tool) => tool.callers.some((kind) => kind === "run"))
+      .find(({ name }) => name === "environment_list")!;
     const variants = [{}, { query: "" }, { query: " \t\n " }];
     const f = fixture();
     const id = f.accounts[0]!.id;
@@ -99,7 +106,7 @@ describe("environment model discovery", () => {
       const input = { ...variant, harnessInstanceId: id };
       const parsed = EnvironmentListInputSchema.parse(input);
       expect(parsed.query).toBeUndefined();
-      expect(tool.inputSchema.parse(input)).toEqual(parsed);
+      expect(tool.input.parse(input)).toEqual(parsed);
       firstPages.push((await discover(parsed))[0]!);
     }
     for (const page of firstPages) {
@@ -110,7 +117,7 @@ describe("environment model discovery", () => {
         const input = { ...variant, harnessInstanceId: id, cursor: page.modelsNextCursor };
         const parsed = EnvironmentListInputSchema.parse(input);
         expect(parsed.query).toBeUndefined();
-        expect(tool.inputSchema.parse(input)).toEqual(parsed);
+        expect(tool.input.parse(input)).toEqual(parsed);
         const next = (await discover(parsed))[0]!;
         expect(next.models[0]?.modelId).toBe("model-8");
         expect(next.modelsOmitted).toBe(34);
@@ -118,7 +125,7 @@ describe("environment model discovery", () => {
     }
     for (const query of [null, 42, {}, "x".repeat(257)]) {
       expect(EnvironmentListInputSchema.safeParse({ query }).success).toBe(false);
-      expect(tool.inputSchema.safeParse({ query }).success).toBe(false);
+      expect(tool.input.safeParse({ query }).success).toBe(false);
     }
     for (const variant of variants) {
       expect(

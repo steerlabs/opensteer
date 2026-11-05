@@ -19,6 +19,9 @@ describe("Trigger program contract", () => {
       "utf8",
     );
     expect(content).toContain(triggerProgramContract);
+    // One MCP serves every tool; the integration aliases stay only for saved programs.
+    expect(content).not.toContain("integrationMcp");
+    expect(content).not.toContain("opensteer.integrations");
     expect(TriggerProgramSchema.description).toBeUndefined();
     expect(TriggerRevisionViewSchema.shape.program.description).toBeUndefined();
   });

@@ -215,12 +215,22 @@ it("discards a deferred overview when the attachment changes", async () => {
       },
     }),
   });
-  await press("Refresh");
+  // Another session's change makes the screen read again.
+  await act(async () => {
+    await host.dispatch({
+      type: "settings.plugin.enabled.set",
+      target: { kind: "service", definitionId: "google-gmail" },
+      enabled: false,
+      expectedRevision: 0,
+      idempotencyKey: "other-session",
+    });
+  });
+  expect(finish).toBeTypeOf("function");
   state.host = null;
   await act(async () =>
     finish({ ok: true, data: hostApi["plugins.overview.get"].success.parse({ rows: [] }) }),
   );
-  expect(state.page!.sections.some((section) => section.key === "empty")).toBe(false);
+  expect(rows().some((row) => row.label === "Gmail")).toBe(true);
 });
 it.each(["ios", "android"])(
   "sends every Messaging mutation with revision fences on %s",
@@ -403,7 +413,7 @@ it("pushes validated plugin identity so Back returns to the searchable list", as
   const result = await host.rpc["plugins.overview.get"]({});
   if (!result.ok) throw new Error("Missing overview");
   const plugin = result.data.rows[0]!;
-  await press(plugin.title === "Apple Messages" ? "iMessage" : plugin.title);
+  await press(plugin.title);
   expect(state.navigate).toHaveBeenCalledWith("SettingsPluginDetail", {
     deploymentId: "deployment",
     target: plugin.target,
@@ -413,9 +423,9 @@ it("pushes validated plugin identity so Back returns to the searchable list", as
 it("installs a folder, places it in Main and removes only after confirmation", async () => {
   await open("plugins");
   const dispatch = vi.spyOn(host, "dispatch");
-  await press("Add plugins");
-  await input("Folder on your computer", "/Users/me/plugins/notes");
-  await press("Install plugin");
+  await press("Add your own…");
+  await input("Folder path", "/Users/me/plugins/notes");
+  await press("Add plugin");
   expect(dispatch).toHaveBeenCalledWith(
     expect.objectContaining({
       type: "plugin.install",
@@ -454,8 +464,15 @@ it("withholds folder install from non-administrators", async () => {
     ...original(),
     user: { ...original().user!, instanceRole: "user" },
   }));
-  await press("Add plugins");
-  expect(rows().some((row) => row.label === "Folder on your computer")).toBe(false);
+  await act(async () =>
+    root!.render(
+      <SettingsPluginsScreen key="member" route={{ params: { deploymentId: "deployment" } }} />,
+    ),
+  );
+  await act(async () => {
+    await vi.waitFor(() => expect(rows().some((row) => row.label === "Browse")).toBe(true));
+  });
+  expect(rows().some((row) => row.label === "Add your own…")).toBe(false);
 });
 
 it.each(["ios", "android"])(
@@ -478,17 +495,22 @@ it.each(["ios", "android"])(
   async (os) => {
     state.os = os;
     await open("plugins");
-    await press("Add plugins");
     const directory = await host.rpc["plugins.directory.get"]({});
     if (!directory.ok) throw new Error("Missing directory");
     const item = directory.data.catalog.find((item) => !item.added)!;
+    const shelf = row("Browse");
+    if (shelf.kind !== "chips") throw new Error("Missing shelves");
+    await act(async () => shelf.onChange("all"));
     const dispatch = vi.spyOn(host, "dispatch");
-    await press(`${item.title} · Add`);
+    await press(item.title);
     expect(dispatch).not.toHaveBeenCalled();
     expect(rows().some((row) => row.label.startsWith("Allow "))).toBe(false);
     expect(rows().some((row) => row.kind === "toggle")).toBe(true);
-    expect(row("Add and continue to sign-in")).toMatchObject({ disabled: false });
-    await press("Add and continue to sign-in");
+    const proceed = rows().find((row) =>
+      [`Add ${item.title}`, `Connect ${item.title}`].includes(row.label),
+    )!;
+    expect(proceed).toMatchObject({ disabled: false });
+    await press(proceed.label);
     expect(dispatch.mock.calls.map(([command]) => command.type)).toEqual([
       "integration.catalog.install",
       "settings.plugin.enabled.set",
@@ -661,12 +683,29 @@ it("refreshes an open plugin detail after a plugin invalidation", async () => {
   });
 });
 
-it("opens installed mobile directory services and keeps placement as a sign-in draft", async () => {
+it("opens an installed service from the catalog and keeps placement as a sign-in draft", async () => {
   await open("plugins");
-  await press("Add plugins");
-  await press("Gmail · Added");
+  // Installed for the Deployment, but not yet this person's: the catalog still offers it.
+  const rpc = host.rpc;
+  Object.defineProperty(host, "rpc", {
+    value: new Proxy(rpc, {
+      get: (target, key) =>
+        key === "plugins.overview.get"
+          ? async () => ({ ok: true, data: { rows: [] } })
+          : Reflect.get(target, key),
+    }),
+  });
+  await act(async () =>
+    root!.render(
+      <SettingsPluginsScreen key="fresh" route={{ params: { deploymentId: "deployment" } }} />,
+    ),
+  );
+  await act(async () => {
+    await vi.waitFor(() => expect(rows().some((row) => row.label === "Gmail")).toBe(true));
+  });
+  await press("Gmail");
   const dispatch = vi.spyOn(host, "dispatch");
-  await press("Add and continue to sign-in");
+  await press("Connect Gmail");
   expect(dispatch.mock.calls.map(([command]) => command.type)).toEqual([
     "settings.plugin.enabled.set",
   ]);

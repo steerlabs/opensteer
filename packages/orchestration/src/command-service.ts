@@ -88,6 +88,9 @@ export class CommandService {
   }
 
   createThread(input: {
+    readonly specialistId?: string;
+    readonly icon?: import("@opensteer/core").WorkspaceIconName;
+    readonly authority?: import("@opensteer/database").ThreadCallerAuthority;
     readonly accessMode: ThreadAccessMode;
     readonly createdBy: UserId;
     readonly environmentId: EnvironmentId;
@@ -229,6 +232,7 @@ export class CommandService {
   }
 
   resumeThreadInputQueue(input: {
+    readonly authority?: import("@opensteer/database").ThreadCallerAuthority;
     readonly idempotencyKey: string;
     readonly requestedBy: UserId;
     readonly threadId: ThreadId;

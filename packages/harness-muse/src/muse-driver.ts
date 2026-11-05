@@ -41,7 +41,8 @@ import {
   secretInputAuthentication,
   spawnSupervised,
   toHarnessError,
-  withTitleDirectory,
+  withBackgroundTextDirectory,
+  backgroundTextResult,
   harnessTurnPreamble,
   type HarnessAdapter,
   type HarnessAuthenticationContext,
@@ -60,7 +61,8 @@ import {
   type HarnessSessionContext,
   type HarnessSourceDescriptor,
   type HarnessSteerInput,
-  type HarnessTitleInput,
+  type HarnessGenerateTextInput,
+  type HarnessGenerateTextResult,
   type ResolvedAttachment,
   type SupervisedProcess,
 } from "@opensteer/harness";
@@ -436,6 +438,130 @@ class MuseHarnessAdapter implements HarnessAdapter {
     this.#dependencies = dependencies;
   }
 
+  async generateText({
+    context,
+    modelSelection,
+    prompt,
+    signal,
+  }: HarnessGenerateTextInput): Promise<HarnessGenerateTextResult> {
+    if (context.runtimeBoundary.kind !== "native-user")
+      return { ok: false, failure: "unavailable" };
+    return backgroundTextResult(signal, async () => {
+      return withBackgroundTextDirectory(context, signal, async (directory) => {
+        signal.throwIfAborted();
+        const workspace = join(directory, "workspace");
+        const config = join(directory, "config");
+        const data = join(directory, "data");
+        const projects = join(directory, "projects");
+        await Promise.all(
+          [workspace, config, data, projects].map((path) =>
+            mkdir(path, { recursive: true, mode: 0o700 }),
+          ),
+        );
+        await copyMuseAuthentication(context, config);
+        const environment = await museEnvironment(context.environment, context.providerState, {
+          XDG_CONFIG_HOME: config,
+          XDG_DATA_HOME: data,
+          MUSE_PROJECTS_HOME: projects,
+          HOME: directory,
+        });
+        let host: MuseHost | undefined;
+        let text = "";
+        let failure: string | undefined;
+        const done = new Deferred<void>();
+        const sessionId = mintUuid();
+        try {
+          host = await MuseHost.open({
+            maxOutputBytes: 64 * 1024,
+            args: [
+              ...(this.#dependencies.arguments ?? []),
+              "serve",
+              "--disable-shell",
+              "--disable-write",
+              "--no-session-log",
+            ],
+            cwd: workspace,
+            environment,
+            executable: this.#dependencies.executable,
+            onNotification: (method, params) => {
+              if (method === "item/completed") {
+                const parsed = MuseItemEventSchema.safeParse(params);
+                if (parsed.success) {
+                  const item = parseMuseItem(parsed.data.item);
+                  if (item.kind === "agentMessage" && item.text) {
+                    text += item.text;
+                    if (text.length > 20_000) {
+                      void host?.close();
+                      done.resolve();
+                    }
+                  }
+                }
+              }
+              if (method === "turn/completed") {
+                const result = parseMuseTurnCompleted(params);
+                if (result.terminal !== "completed")
+                  failure = result.error?.message ?? result.reason ?? "failed";
+                done.resolve();
+              }
+            },
+            onProtocolError: () => {
+              failure = "failed";
+              done.resolve();
+            },
+            onServerRequest: async () => {
+              failure = "refused";
+              done.resolve();
+              void host?.close();
+              return {};
+            },
+            requestedCapabilities: [],
+            signal,
+            startupTimeoutMs: this.#config.startupTimeoutMs,
+            wrapProcessLaunch: context.wrapProcessLaunch,
+          });
+          parseMuseSessionStart(
+            await host.command("session/start", {
+              approvalMode: "denyUnmatched",
+              config: { mcpServers: {} },
+              modelId: modelSelection.nativeModelId ?? modelSelection.modelId,
+              permissionProfile: ":ask-me",
+              providerId: "meta",
+              sessionId,
+              workspaceRoot: workspace,
+              workspaceRoots: [workspace],
+            }),
+          );
+          parseMuseTurnStart(
+            await host.command("turn/start", {
+              displayText: prompt,
+              ifBusy: "reject",
+              input: [{ text: prompt, type: "text" }],
+              ...(museSelectedEffort(modelSelection.options)
+                ? { reasoningEffort: museSelectedEffort(modelSelection.options) }
+                : {}),
+              sessionId,
+              workspaceRoots: [workspace],
+            }),
+          );
+          const abort = () => void host?.close().then(() => done.resolve());
+          signal.addEventListener("abort", abort, { once: true });
+          if (signal.aborted) abort();
+          try {
+            await done.promise;
+            signal.throwIfAborted();
+            if (failure) throw new Error(failure);
+            if (!text.trim()) throw new Error("Muse Code did not return a title");
+            return text.trim();
+          } finally {
+            signal.removeEventListener("abort", abort);
+          }
+        } finally {
+          await host?.close();
+        }
+      });
+    });
+  }
+
   async startSession(context: HarnessSessionContext): Promise<HarnessSession> {
     this.#sessions.assertOpen();
     assertNativeSession(context);
@@ -737,99 +863,6 @@ class MuseHarnessSession implements HarnessSession {
       userInputId: pending.request.userInputId,
     });
     this.#pending.delete(requestId);
-  }
-
-  async generateTitle({ prompt, signal }: HarnessTitleInput): Promise<string> {
-    return withTitleDirectory(this.#context, async (directory) => {
-      signal.throwIfAborted();
-      const workspace = join(directory, "workspace");
-      const config = join(directory, "config");
-      const data = join(directory, "data");
-      const projects = join(directory, "projects");
-      await Promise.all(
-        [workspace, config, data, projects].map((path) =>
-          mkdir(path, { recursive: true, mode: 0o700 }),
-        ),
-      );
-      await copyMuseAuthentication(this.#context, config);
-      const environment = await museEnvironment(
-        this.#context.environment,
-        this.#context.providerState,
-        {
-          XDG_CONFIG_HOME: config,
-          XDG_DATA_HOME: data,
-          MUSE_PROJECTS_HOME: projects,
-          HOME: directory,
-        },
-      );
-      let host: MuseHost | undefined;
-      let text = "";
-      const done = new Deferred<void>();
-      const sessionId = mintUuid();
-      try {
-        host = await MuseHost.open({
-          args: [
-            ...(this.#dependencies.arguments ?? []),
-            "serve",
-            "--disable-shell",
-            "--disable-write",
-            "--no-session-log",
-          ],
-          cwd: workspace,
-          environment,
-          executable: this.#dependencies.executable,
-          onNotification: (method, params) => {
-            if (method === "item/completed") {
-              const parsed = MuseItemEventSchema.safeParse(params);
-              if (parsed.success) {
-                const item = parseMuseItem(parsed.data.item);
-                if (item.kind === "agentMessage" && item.text) text += item.text;
-              }
-            }
-            if (method === "turn/completed") done.resolve();
-          },
-          onProtocolError: () => done.resolve(),
-          onServerRequest: async () => ({}),
-          requestedCapabilities: [],
-          signal,
-          startupTimeoutMs: this.#config.startupTimeoutMs,
-          wrapProcessLaunch: this.#context.wrapProcessLaunch,
-        });
-        parseMuseSessionStart(
-          await host.command("session/start", {
-            approvalMode: "denyUnmatched",
-            config: { mcpServers: {} },
-            modelId: nativeModel(this.#context),
-            permissionProfile: ":ask-me",
-            providerId: "meta",
-            sessionId,
-            workspaceRoot: workspace,
-            workspaceRoots: [workspace],
-          }),
-        );
-        parseMuseTurnStart(
-          await host.startTurn({
-            displayText: prompt,
-            ifBusy: "reject",
-            input: [{ text: prompt, type: "text" }],
-            sessionId,
-            workspaceRoots: [workspace],
-          }),
-        );
-        const abort = () => void host?.close().then(() => done.resolve());
-        signal.addEventListener("abort", abort, { once: true });
-        try {
-          await done.promise;
-          signal.throwIfAborted();
-          if (!text.trim()) throw new Error("Muse Code did not return a title");
-          return text.trim();
-        } finally {
-          signal.removeEventListener("abort", abort);
-        }
-      } finally {
-        await host?.close();
-      }
-    });
   }
 
   stop(): Promise<void> {
@@ -1475,12 +1508,6 @@ function museSessionConfig(context: HarnessSessionContext): Record<string, unkno
         transport: "streamableHttp",
         url: context.agentTools.url,
       },
-      opensteer_integrations: {
-        headers: { Authorization: `Bearer ${context.integrationTools.token}` },
-        mode: "required",
-        transport: "streamableHttp",
-        url: context.integrationTools.url,
-      },
     },
   };
 }
@@ -1657,7 +1684,7 @@ function recordNumber(value: unknown, key: string): number | undefined {
 }
 
 async function copyMuseAuthentication(
-  context: HarnessSessionContext,
+  context: Pick<HarnessSessionContext, "providerState" | "environment">,
   targetConfig: string,
 ): Promise<void> {
   const sourceConfig =

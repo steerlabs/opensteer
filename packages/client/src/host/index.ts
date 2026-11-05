@@ -76,3 +76,6 @@ export type { BrowserVideoFrame, BrowserVideoStore } from "./browser-video.js";
 export * from "./browser-popup.js";
 
 export * from "./browser-popup-values.js";
+export * from "./connected-agents.js";
+
+export * from "./automatic-models.js";

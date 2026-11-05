@@ -1,3 +1,7 @@
+import {
+  withAdministrationTransaction,
+  type AdministrationCommandIdentity,
+} from "./administration-command.js";
 import { lockThreadChannelAuthorities } from "./channel-execution.js";
 import { TransactionScopeChanged, withDatabaseTransaction } from "./connection.js";
 import { prepareThreadInsertion } from "./thread-insertion.js";
@@ -37,11 +41,11 @@ import {
   type NormalizedChannelEvent,
 } from "@opensteer/channel-core";
 import type { IntegrationConnectionMethod } from "@opensteer/integration-core";
-import type { HarnessInstanceCatalog } from "@opensteer/protocol";
 import {
   deriveThreadStatus,
   DEFAULT_THREAD_ACCESS_MODE,
-  ModelSelectionSchema,
+  catalogDefaultCandidate,
+  catalogDefaultModelSelection,
   OpensteerError,
   ThreadSchema,
   createId,
@@ -49,6 +53,7 @@ import {
   type AgentEvent,
   type CredentialId,
   type EnvironmentId,
+  type HarnessId,
   type HarnessInstanceId,
   type ModelSelection,
   type Run,
@@ -68,6 +73,7 @@ import type {
   ThreadTable,
 } from "./schema.js";
 import { executionEnvironmentIsAvailableToUser } from "./execution-authority.js";
+import { getAutomaticModelConfig } from "./background-model-store.js";
 import { appendHostWorkspaceEvent, enqueueThreadInputInTransaction } from "./store.js";
 import {
   channelAccessGrantFromRow,
@@ -700,8 +706,9 @@ export class ChannelStore {
     connectionId: IntegrationConnectionId,
     ownerUserId: UserId,
     status: "connected" | "paused" | "revoked",
+    administration?: AdministrationCommandIdentity | undefined,
   ): Promise<void> {
-    await withDatabaseTransaction(this.#database, async (transaction) => {
+    await withAdministrationTransaction(this.#database, administration, async (transaction) => {
       const connection = await transaction
         .selectFrom("integrationConnections")
         .select("id")
@@ -743,33 +750,39 @@ export class ChannelStore {
    * unrouted conversation is, so nothing has to be torn down here.
    */
   async revokeBinding(input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
     readonly bindingId: ChannelBindingId;
     readonly ownerUserId: UserId;
-  }): Promise<void> {
-    await withDatabaseTransaction(this.#database, async (transaction) => {
-      const binding = await transaction
-        .selectFrom("channelBindings")
-        .innerJoin("channelAccounts", "channelAccounts.id", "channelBindings.accountId")
-        .innerJoin(
-          "integrationConnections",
-          "integrationConnections.id",
-          "channelAccounts.connectionId",
-        )
-        .select("channelBindings.id")
-        .where("channelBindings.id", "=", input.bindingId)
-        .where("channelBindings.status", "!=", "revoked")
-        .where("integrationConnections.ownerUserId", "=", input.ownerUserId)
-        .forNoKeyUpdate("channelBindings")
-        .executeTakeFirst();
-      if (!binding) {
-        throw new OpensteerError({ code: "not_found", message: "Channel route not found" });
-      }
-      await transaction
-        .updateTable("channelBindings")
-        .set({ status: "revoked", updatedAt: new Date() })
-        .where("id", "=", input.bindingId)
-        .executeTakeFirstOrThrow();
-    });
+  }): Promise<boolean> {
+    return withAdministrationTransaction(
+      this.#database,
+      input.administration,
+      async (transaction) => {
+        const binding = await transaction
+          .selectFrom("channelBindings")
+          .innerJoin("channelAccounts", "channelAccounts.id", "channelBindings.accountId")
+          .innerJoin(
+            "integrationConnections",
+            "integrationConnections.id",
+            "channelAccounts.connectionId",
+          )
+          .select(["channelBindings.id", "channelBindings.status"])
+          .where("channelBindings.id", "=", input.bindingId)
+          .where("integrationConnections.ownerUserId", "=", input.ownerUserId)
+          .forNoKeyUpdate("channelBindings")
+          .executeTakeFirst();
+        if (!binding) {
+          throw new OpensteerError({ code: "not_found", message: "Channel route not found" });
+        }
+        if (binding.status === "revoked") return false;
+        await transaction
+          .updateTable("channelBindings")
+          .set({ status: "revoked", updatedAt: new Date() })
+          .where("id", "=", input.bindingId)
+          .executeTakeFirstOrThrow();
+        return true;
+      },
+    );
   }
 
   /**
@@ -1361,20 +1374,19 @@ export class ChannelStore {
   }
 
   /**
-   * `placementCandidates` are the work locations the Host found an AI engine
-   * for, in preference order. Which one the message actually lands on can only
-   * be decided here, after the channel identity has been resolved to a user:
-   * choosing it outside the transaction would place one person's message on
-   * another person's Runner, and the Thread execution-authority trigger
-   * would reject the insert on every retry, forever.
+   * `availableEngines` are the connected work locations, in preference order,
+   * and the engines each can run now: runtime facts, never an account choice.
+   * The account is chosen here, after the channel identity resolves to a
+   * user, from that person's own authorized accounts and automatic-model
+   * exclusions, so one person's message never lands on another's account.
    */
   async adoptIngress(input: {
     readonly claimToken: string;
     readonly ingressId: ChannelIngressId;
     readonly notices: ChannelIngressNotices;
-    readonly placementCandidates: readonly {
+    readonly availableEngines: readonly {
       readonly environmentId: EnvironmentId;
-      readonly harnessInstanceId: HarnessInstanceId;
+      readonly driverKinds: readonly HarnessId[];
     }[];
   }): Promise<AdoptedChannelIngress | IgnoredChannelIngress> {
     return withDatabaseTransaction(
@@ -1552,18 +1564,12 @@ export class ChannelStore {
           .execute();
         // Placement fences precede channel authority, including grant approvals.
         // The lane and Workspace protect the discovered conversation set.
-        const candidateHarnessIds = [
-          ...new Set([
-            ...input.placementCandidates.flatMap((candidate) =>
-              candidate.harnessInstanceId ? [candidate.harnessInstanceId] : [],
-            ),
-            ...(binding.executionPolicy.harness === "specific"
-              ? [binding.executionPolicy.harnessInstanceId]
-              : []),
-          ]),
-        ];
+        const specificHarnessId =
+          binding.executionPolicy.harness === "specific"
+            ? binding.executionPolicy.harnessInstanceId
+            : null;
         const candidateEnvironmentIds = [
-          ...new Set(input.placementCandidates.map((candidate) => candidate.environmentId)),
+          ...new Set(input.availableEngines.map((available) => available.environmentId)),
         ];
         if (candidateEnvironmentIds.length)
           await transaction
@@ -1573,14 +1579,31 @@ export class ChannelStore {
             .orderBy("id", "asc")
             .forShare()
             .execute();
-        if (candidateHarnessIds.length)
-          await transaction
-            .selectFrom("harnessInstances")
-            .select("id")
-            .where("id", "in", candidateHarnessIds)
-            .orderBy("id", "asc")
-            .forShare()
-            .execute();
+        const harnesses =
+          candidateEnvironmentIds.length || specificHarnessId
+            ? await transaction
+                .selectFrom("harnessInstances")
+                .select([
+                  "driverKind",
+                  "enabled",
+                  "environmentId",
+                  "id",
+                  "isDefault",
+                  "removedAt",
+                  "sourceId",
+                ])
+                .where((eb) =>
+                  eb.or([
+                    ...(candidateEnvironmentIds.length
+                      ? [eb("environmentId", "in", candidateEnvironmentIds)]
+                      : []),
+                    ...(specificHarnessId ? [eb("id", "=", specificHarnessId)] : []),
+                  ]),
+                )
+                .orderBy("id", "asc")
+                .forShare()
+                .execute()
+            : [];
         await lockThreadChannelAuthorities(transaction, activeThreadIds, {
           bindingId: binding.id,
           ...(observedIdentity ? { identityId: observedIdentity.id } : {}),
@@ -1798,73 +1821,20 @@ export class ChannelStore {
         if (lockedWorkspace.status !== "ready") {
           throw new ChannelIngressDeferredError("Workspace storage is not ready");
         }
-        let placement: (typeof input.placementCandidates)[number] | undefined;
-        for (const candidate of input.placementCandidates) {
-          if (
-            await executionEnvironmentIsAvailableToUser(
-              transaction,
-              candidate.environmentId,
-              authority.userId,
-            )
-          ) {
-            placement = candidate;
-            break;
-          }
-        }
-        if (!placement) {
-          throw new ChannelIngressDeferredError("No work location is available with an AI engine");
-        }
-        const selectedHarnessId =
-          binding.executionPolicy.harness === "specific"
-            ? binding.executionPolicy.harnessInstanceId
-            : placement.harnessInstanceId;
-        if (!selectedHarnessId) {
-          throw new OpensteerError({
-            code: "internal",
-            message: "Channel harness policy is invalid",
-          });
-        }
-        const selectedHarness = await transaction
-          .selectFrom("harnessInstances")
-          .select(["enabled", "environmentId"])
-          .where("id", "=", selectedHarnessId)
-          .executeTakeFirst();
-        if (!selectedHarness?.enabled) {
-          throw new ChannelIngressDeferredError("Selected AI engine is unavailable");
-        }
-        if (selectedHarness.environmentId !== placement.environmentId) {
-          const matchingPlacement = input.placementCandidates.find(
-            (candidate) => candidate.environmentId === selectedHarness.environmentId,
-          );
-          if (
-            !matchingPlacement ||
-            !(await executionEnvironmentIsAvailableToUser(
-              transaction,
-              matchingPlacement.environmentId,
-              authority.userId,
-            ))
-          ) {
-            throw new ChannelIngressDeferredError(
-              "Selected AI engine belongs to an unavailable work location",
-            );
-          }
-          placement = matchingPlacement;
-        }
+        const placement = await channelPlacement(transaction, {
+          availableEngines: input.availableEngines,
+          harnesses,
+          specificHarnessId,
+          userId: authority.userId,
+        });
         const insertThread = await prepareThreadInsertion(transaction, {
           createdBy: authority.userId,
           environmentId: placement.environmentId,
-          harnessInstanceId: selectedHarnessId,
+          harnessInstanceId: placement.harnessInstanceId,
         }).catch((error: unknown) => {
           if (error instanceof OpensteerError) throw new ChannelIngressDeferredError(error.message);
           throw error;
         });
-        const storedCatalog = await transaction
-          .selectFrom("harnessCatalogs")
-          .select("catalog")
-          .where("environmentId", "=", placement.environmentId)
-          .where("harnessInstanceId", "=", selectedHarnessId)
-          .executeTakeFirst();
-        const selectedModel = modelSelectionFromCatalog(storedCatalog?.catalog ?? null);
 
         if (observedConversation) {
           existingConversation = await transaction
@@ -1928,33 +1898,31 @@ export class ChannelStore {
         // in their own Main that is their Home agent. Everyone else — an admitted
         // stranger, a channel, even the owner in a conversation others share —
         // runs as the route's creator without being them, below Main.
-        const capabilityProfileId =
+        const inheritsMain =
           event.conversation.type === "dm" &&
           identity.linkedUserId === authority.userId &&
           lockedWorkspace.kind === "main" &&
-          lockedWorkspace.createdBy === authority.userId
-            ? "main"
-            : "workspace";
+          lockedWorkspace.createdBy === authority.userId;
         const rotate =
           !thread ||
           thread.status === "archived" ||
-          thread.capabilityProfileId !== capabilityProfileId ||
+          thread.inheritsMain !== inheritsMain ||
           thread.environmentId !== placement.environmentId ||
-          thread.harnessInstanceId !== selectedHarnessId;
+          thread.harnessInstanceId !== placement.harnessInstanceId;
         const events: AgentEvent[] = [];
         if (rotate) {
           const threadId = createId("thread");
           const threadRow = await insertThread({
             accessMode: thread?.accessMode ?? DEFAULT_THREAD_ACCESS_MODE,
             // A messaging context never inherits another Thread's history:
-            // every rotation, including a change of profile, is a fresh root.
-            capabilityProfileId,
-            role: capabilityProfileId === "main" ? "conversation" : "work",
+            // every rotation, including a change of consent, is a fresh root.
+            inheritsMain,
+            role: inheritsMain ? "conversation" : "work",
             createdByPrincipalId: identity.principalId,
             id: threadId,
             lineageRootThreadId: threadId,
             listed: true,
-            modelSelection: jsonValue(selectedModel),
+            modelSelection: jsonValue(placement.modelSelection),
             parentThreadId: null,
             status: deriveThreadStatus({
               earliestActiveRunStatus: null,
@@ -2765,32 +2733,114 @@ function ingressDeferralDelayMs(receivedAt: Date | null): number {
 }
 
 /**
- * Which model a channel message runs on. Nobody chose one, so it is the
- * account's own default — the model its last reported catalog marks
- * `isDefault`, carrying the endpoint's own `nativeModelId` exactly as a
- * person's selection would. There is no bundled fallback pair: a guessed
- * model is a model the account may not offer at all, and a Thread pinned to
- * one fails on every Run instead of once, here, with a reason.
+ * Where a new channel conversation runs, decided for the person the message
+ * resolved to. An explicitly bound account stays exact; otherwise their
+ * authorized, non-excluded accounts are taken in the shared automatic order.
+ * Either way the model is the account's catalog default, carrying the
+ * endpoint's own `nativeModelId`, and never a guess the account may not offer.
  */
-function modelSelectionFromCatalog(catalog: HarnessInstanceCatalog | null): ModelSelection {
-  if (catalog?.status !== "ready") {
-    throw new ChannelIngressDeferredError("Selected AI engine has reported no models yet");
-  }
-  const model = catalog.models.find(
-    (candidate) => candidate.isDefault && !candidate.unavailableReason,
+async function channelPlacement(
+  transaction: Transaction<DatabaseSchema>,
+  input: {
+    readonly availableEngines: readonly {
+      readonly environmentId: EnvironmentId;
+      readonly driverKinds: readonly HarnessId[];
+    }[];
+    readonly harnesses: readonly Pick<
+      Selectable<DatabaseSchema["harnessInstances"]>,
+      "driverKind" | "enabled" | "environmentId" | "id" | "isDefault" | "removedAt" | "sourceId"
+    >[];
+    readonly specificHarnessId: HarnessInstanceId | null;
+    readonly userId: UserId;
+  },
+): Promise<{
+  readonly environmentId: EnvironmentId;
+  readonly harnessInstanceId: HarnessInstanceId;
+  readonly modelSelection: ModelSelection;
+}> {
+  const authorized = new Set<EnvironmentId>();
+  for (const { environmentId } of input.availableEngines)
+    if (await executionEnvironmentIsAvailableToUser(transaction, environmentId, input.userId))
+      authorized.add(environmentId);
+  const runnable = (environmentId: EnvironmentId, driverKind: HarnessId) =>
+    authorized.has(environmentId) &&
+    input.availableEngines.some(
+      (available) =>
+        available.environmentId === environmentId && available.driverKinds.includes(driverKind),
+    );
+  const accounts = input.harnesses.filter(
+    (harness) => harness.id === input.specificHarnessId || authorized.has(harness.environmentId),
   );
-  if (!model) {
-    throw new OpensteerError({
-      code: "conflict",
-      message: "Selected AI engine reports no default model",
-    });
+  const catalogs = accounts.length
+    ? await transaction
+        .selectFrom("harnessCatalogs")
+        .select(["catalog", "environmentId", "harnessInstanceId"])
+        .where(
+          "harnessInstanceId",
+          "in",
+          accounts.map((account) => account.id),
+        )
+        .execute()
+    : [];
+  const catalogFor = (harness: (typeof accounts)[number]) =>
+    catalogs.find(
+      (row) => row.harnessInstanceId === harness.id && row.environmentId === harness.environmentId,
+    )?.catalog ?? null;
+  if (input.specificHarnessId) {
+    const harness = accounts.find((account) => account.id === input.specificHarnessId);
+    if (!harness?.enabled || harness.removedAt !== null)
+      throw new ChannelIngressDeferredError("Selected AI engine is unavailable");
+    if (!runnable(harness.environmentId, harness.driverKind))
+      throw new ChannelIngressDeferredError(
+        "Selected AI engine belongs to an unavailable work location",
+      );
+    const catalog = catalogFor(harness);
+    if (catalog?.status !== "ready")
+      throw new ChannelIngressDeferredError("Selected AI engine has reported no models yet");
+    const modelSelection = catalogDefaultModelSelection(catalog);
+    if (!modelSelection)
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Selected AI engine reports no default model",
+      });
+    return { environmentId: harness.environmentId, harnessInstanceId: harness.id, modelSelection };
   }
-  return ModelSelectionSchema.parse({
-    modelId: model.modelId,
-    ...(model.nativeModelId === undefined ? {} : { nativeModelId: model.nativeModelId }),
-    options: {},
-    providerId: model.providerId,
+  if (authorized.size === 0)
+    throw new ChannelIngressDeferredError("No work location is available with an AI engine");
+  const { excludedAccounts } = await getAutomaticModelConfig(transaction, input.userId);
+  // Snapshot order follows the connected work locations' preference order.
+  const snapshot = input.availableEngines.flatMap(({ environmentId }) =>
+    accounts
+      .filter((account) => account.environmentId === environmentId)
+      .map((account) => ({
+        environmentId,
+        driverKind: account.driverKind,
+        harnessInstanceId: account.id,
+        isDefault: account.isDefault,
+        sourceId: account.sourceId,
+        enabled: account.enabled,
+        removed: account.removedAt !== null,
+        available: true,
+        catalog: catalogFor(account),
+      })),
+  );
+  const chosen = catalogDefaultCandidate({
+    accounts: snapshot,
+    excludedAccounts,
+    canRun: (account) =>
+      runnable(account.environmentId, account.driverKind)
+        ? { ok: true }
+        : { ok: false, reason: "unsupported-capability" },
   });
+  if (!chosen)
+    throw new ChannelIngressDeferredError(
+      "No AI account available to this person has a default model ready",
+    );
+  return {
+    environmentId: chosen.account.environmentId,
+    harnessInstanceId: chosen.account.harnessInstanceId,
+    modelSelection: chosen.modelSelection,
+  };
 }
 
 function digest(value: string): string {

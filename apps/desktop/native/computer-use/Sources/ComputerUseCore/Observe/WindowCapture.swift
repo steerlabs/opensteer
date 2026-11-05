@@ -6,7 +6,7 @@ import ImageIO
 import ScreenCaptureKit
 import UniformTypeIdentifiers
 
-/// The screenshot of §2 "Observation".
+/// The observation screenshot.
 ///
 /// The filter includes only windows owned by the target process, so nothing the
 /// person has in front ever occludes the picture and nothing of theirs ever

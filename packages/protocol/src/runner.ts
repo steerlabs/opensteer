@@ -6,7 +6,6 @@ import {
   AssignmentRunContextSchema,
   CommandIdSchema,
   EnvironmentIdSchema,
-  GeneratedThreadTitleSchema,
   HarnessIdSchema,
   HarnessInstanceIdSchema,
   HarnessInstanceStateKindSchema,
@@ -39,7 +38,6 @@ import {
   threadReportBatchMaxEntries,
   threadReportBatchMaxSerializedBytes,
   ThreadRoleSchema,
-  threadTitleRequestMaxLength,
   TriggerIdSchema,
   TriggerOccurrenceIdSchema,
   TriggerRevisionIdSchema,
@@ -47,7 +45,6 @@ import {
   UserIdSchema,
   utf8ByteLength,
   WorkspaceBackingKindSchema,
-  WorkspaceIconNameSchema,
   WorkspaceIdSchema,
   WorkspaceKindSchema,
   type EnvironmentId,
@@ -62,12 +59,10 @@ import { WorkspaceExecutionAccessPlanSchema } from "@opensteer/workspace";
 import { z } from "zod";
 import { RunEgressPlanSchema } from "./access.js";
 import {
-  RunAgentControlPlanSchema,
   RunAgentToolsPlanSchema,
   RunBrowserCdpPlanSchema,
   RunPluginsPlanSchema,
-  RunIntegrationToolsPlanSchema,
-} from "./agent-control.js";
+} from "./run-plans.js";
 import { RunAttachmentPlanSchema } from "./attachments.js";
 import { BrowserEngineSchema } from "./browser-profile-storage.js";
 import { CorrelationIdSchema, ProtocolErrorSchema } from "./common.js";
@@ -85,14 +80,12 @@ import {
 } from "./runner-identity.js";
 import { MachineAccessRunContextSchema, RunnerShellModuleSchema } from "./shell.js";
 import {
-  voiceAnswerMaxLength,
-  voiceContextMaxLength,
   VoiceRefusalReasonSchema,
+  VoiceSayIdSchema,
   VoiceSayTextSchema,
   VoiceSdpSchema,
   VoiceSessionIdSchema,
-  voiceToolCallIdSchema,
-  VoiceToolCallSchema,
+  VoiceViewSchema,
 } from "./voice.js";
 import {
   HostWorkspaceLocalRequestSchema,
@@ -201,12 +194,10 @@ const capabilityTokenSchema = z.string().min(1).max(4_096);
 export const RunExecutionContextSchema = z.strictObject({
   accessMode: ThreadAccessModeSchema,
   assignment: AssignmentRunContextSchema.nullable(),
-  agentControl: RunAgentControlPlanSchema,
   /** Scoped to files already admitted to this provider session and this frozen Run. */
   attachments: RunAttachmentPlanSchema.optional(),
   agentTools: RunAgentToolsPlanSchema,
   browserCdp: RunBrowserCdpPlanSchema,
-  integrationTools: RunIntegrationToolsPlanSchema,
   specialistId: z
     .string()
     .regex(/^[a-zA-Z0-9-]+$/u)
@@ -269,22 +260,19 @@ export const RunExecutionContextSchema = z.strictObject({
   runId: RunIdSchema,
   threadId: ThreadIdSchema,
   threadRole: ThreadRoleSchema,
-  threadState: RunThreadStateSchema,
   /**
-   * Present while the Thread still shows the first line of what started it,
-   * sent only to a Runner that advertises `thread-title-v1`: that first
-   * message, for this Run's engine to name the Thread with this Run's account.
-   * The Runner answers with `runner.thread-title`, or says nothing. `icon`
-   * asks for the Thread's symbol too; the Host sends it, and sends a request
-   * whose title is already settled, only to a Runner advertising
-   * `thread-icon-v1`.
+   * Present only for a voice call's one Run, sent only to a Runner advertising
+   * `voice-run-v1`. The execution holds the call until it ends and is never
+   * resumed or restarted; its offer arrives through the `start` voice command.
    */
-  titleRequest: z
+  voiceCall: z
     .strictObject({
-      icon: z.literal(true).optional(),
-      request: z.string().min(1).max(threadTitleRequestMaxLength),
+      sessionId: VoiceSessionIdSchema,
+      /** When the Host admitted the call; it ends at most `voiceMaxCallMs` later. */
+      admittedAt: IsoDateTimeSchema,
     })
     .optional(),
+  threadState: RunThreadStateSchema,
   workspaceId: WorkspaceIdSchema,
   workspaceKind: WorkspaceKindSchema,
   workspaceAccess: WorkspaceExecutionAccessPlanSchema,
@@ -370,7 +358,6 @@ export const WatchReconcileActivationSchema = z.strictObject({
   anchorThreadId: ThreadIdSchema,
   capabilities: z.strictObject({
     browserCdp: WatchCapabilityPlanSchema.nullable(),
-    integrationMcp: WatchCapabilityPlanSchema,
     mcp: WatchCapabilityPlanSchema,
   }),
   executionGeneration: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
@@ -386,7 +373,6 @@ export const TriggerExecutionContextSchema = z.strictObject({
   browserCdp: TriggerCapabilityPlanSchema.nullable(),
   event: TriggerProgramEventSchema,
   executionGeneration: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-  integrationMcp: TriggerCapabilityPlanSchema,
   mcp: TriggerCapabilityPlanSchema,
   occurrenceId: TriggerOccurrenceIdSchema,
   program: TriggerProgramSchema,
@@ -784,7 +770,7 @@ export const HarnessModelDescriptorSchema = z.strictObject({
   providerId: ModelProviderIdSchema,
   unavailableReason: z.string().trim().min(1).max(500).optional(),
 });
-const HarnessModelDescriptorViewSchema = z.object({
+export const HarnessModelDescriptorViewSchema = z.object({
   ...HarnessModelDescriptorSchema.shape,
   options: z.array(HarnessModelOptionViewSchema).max(16),
 });
@@ -1693,65 +1679,31 @@ const watchLogTailSchema = z
   .max(16 * 1_024)
   .refine((value) => utf8ByteLength(value) <= 16 * 1_024, "Watch log tail exceeds 16 KiB");
 
+/**
+ * What the Host asks of a voice call. Every command names the call's Run, so a
+ * delayed command for a replaced call never reaches its successor. Stopping a
+ * call is `run.interrupt` on its Run, like any other Stop.
+ */
+const voiceCallAddress = { sessionId: VoiceSessionIdSchema, runId: RunIdSchema };
 export const RunnerVoiceCommandSchema = z.discriminatedUnion("action", [
+  /**
+   * Hands the client's offer to this Runner's execution of the Run, which
+   * creates the call and answers. The offer travels only here.
+   */
+  z.strictObject({ action: z.literal("start"), ...voiceCallAddress, offer: VoiceSdpSchema }),
+  z.strictObject({ action: z.literal("renew"), ...voiceCallAddress }),
+  /** Speaks once per id, in the order the call accepted them. */
   z.strictObject({
-    action: z.literal("start"),
-    sessionId: VoiceSessionIdSchema,
-    harnessInstanceId: HarnessInstanceIdSchema,
-    offer: VoiceSdpSchema,
-    /** Sent only to a Runner advertising `voice-agent-v1`. */
-    agent: z.literal(true).optional(),
-    /** Sent only to a Runner advertising `voice-find-v1`. */
-    find: z.literal(true).optional(),
-  }),
-  z.strictObject({
-    action: z.literal("renew"),
-    sessionId: VoiceSessionIdSchema,
-    harnessInstanceId: HarnessInstanceIdSchema,
-  }),
-  z.strictObject({
-    harnessInstanceId: HarnessInstanceIdSchema,
     action: z.literal("say"),
-    sessionId: VoiceSessionIdSchema,
+    ...voiceCallAddress,
+    id: VoiceSayIdSchema,
     text: VoiceSayTextSchema,
   }),
-  z.strictObject({
-    action: z.literal("stop"),
-    sessionId: VoiceSessionIdSchema,
-    harnessInstanceId: HarnessInstanceIdSchema,
-  }),
-  // The agent actions below reach only a Runner advertising `voice-agent-v1`.
-  z.strictObject({
-    action: z.literal("next"),
-    sessionId: VoiceSessionIdSchema,
-    harnessInstanceId: HarnessInstanceIdSchema,
-  }),
-  z.strictObject({
-    action: z.literal("answer"),
-    sessionId: VoiceSessionIdSchema,
-    harnessInstanceId: HarnessInstanceIdSchema,
-    callId: voiceToolCallIdSchema,
-    ok: z.boolean(),
-    text: z.string().trim().min(1).max(voiceAnswerMaxLength),
-  }),
-  z.strictObject({
-    action: z.literal("context"),
-    sessionId: VoiceSessionIdSchema,
-    harnessInstanceId: HarnessInstanceIdSchema,
-    text: z.string().trim().min(1).max(voiceContextMaxLength),
-  }),
+  z.strictObject({ action: z.literal("context"), ...voiceCallAddress, view: VoiceViewSchema }),
 ]);
 export type RunnerVoiceCommand = z.infer<typeof RunnerVoiceCommandSchema>;
-/** Optional results appear only when requested, so an older Host never sees new keys. */
 export const RunnerVoiceResultSchema = z.discriminatedUnion("ok", [
-  z.strictObject({
-    ok: z.literal(true),
-    answer: VoiceSdpSchema.optional(),
-    agent: z.boolean().optional(),
-    /** Included only in the answer to a start that requested find. */
-    find: z.boolean().optional(),
-    call: VoiceToolCallSchema.nullable().optional(),
-  }),
+  z.strictObject({ ok: z.literal(true), answer: VoiceSdpSchema.optional() }),
   z.strictObject({
     ok: z.literal(false),
     reason: VoiceRefusalReasonSchema,
@@ -1760,7 +1712,46 @@ export const RunnerVoiceResultSchema = z.discriminatedUnion("ok", [
 ]);
 export type RunnerVoiceResult = z.infer<typeof RunnerVoiceResultSchema>;
 
+export const BackgroundTextAttemptIdSchema = z.string().min(1).max(200);
+/**
+ * Background text attempts one Runner runs at once. The Host sends no more than
+ * this, starting each attempt's deadline when it sends; the Runner holds any
+ * excess until a slot frees, so a busy Runner never fails a candidate.
+ */
+export const backgroundTextAttemptsPerRunner = 2;
+export const BackgroundTextFailureSchema = z.enum([
+  "refused",
+  "signed-out",
+  "usage-limit",
+  "timeout",
+  "unavailable",
+  "failed",
+]);
+export type BackgroundTextFailure = z.infer<typeof BackgroundTextFailureSchema>;
+export const BackgroundTextResultSchema = z.discriminatedUnion("ok", [
+  z.strictObject({ ok: z.literal(true), text: z.string().max(20_000) }),
+  z.strictObject({ ok: z.literal(false), failure: BackgroundTextFailureSchema }),
+]);
+export const HostBackgroundTextSchema = z.strictObject({
+  ...fencedMessageBase,
+  type: z.literal("host.background-text"),
+  attemptId: BackgroundTextAttemptIdSchema,
+  environmentId: EnvironmentIdSchema,
+  harnessInstanceId: HarnessInstanceIdSchema,
+  harnessRevision: HarnessRuntimeRevisionSchema,
+  modelSelection: ModelSelectionSchema,
+  prompt: z.string().min(1).max(20_000),
+  deadline: IsoDateTimeSchema,
+});
+export const RunnerBackgroundTextResultSchema = z.strictObject({
+  ...fencedMessageBase,
+  type: z.literal("runner.background-text-result"),
+  attemptId: BackgroundTextAttemptIdSchema,
+  result: BackgroundTextResultSchema,
+});
+
 export const RunnerOperationalMessageSchema = z.discriminatedUnion("type", [
+  RunnerBackgroundTextResultSchema,
   RunnerSkillMetadataReportSchema,
   RunnerAppResultSchema,
   ...RunnerWorkspaceLocalResultSchema.options,
@@ -1842,28 +1833,6 @@ export const RunnerOperationalMessageSchema = z.discriminatedUnion("type", [
     environmentId: EnvironmentIdSchema,
     progress: LiveRunProgressSchema,
     type: z.literal("runner.live"),
-  }),
-  /**
-   * The name a Run's engine gave its Thread, answering the Run's
-   * `titleRequest`. Like live progress it is never durable or acknowledged: a
-   * lost one leaves the Thread's first-line title, and its next Run asks again.
-   */
-  z.strictObject({
-    ...fencedMessageBase,
-    bindingGeneration: z.number().int().positive(),
-    environmentId: EnvironmentIdSchema,
-    runId: RunIdSchema,
-    threadId: ThreadIdSchema,
-    /**
-     * The symbol, only when the request asked with `icon`: one of
-     * `taskSymbolNames`, or `defaultTaskSymbol` when nothing fits. The Runner
-     * sends at least one of `title` and `icon`; a request whose title was
-     * already settled may be answered with `icon` alone.
-     */
-    icon: WorkspaceIconNameSchema.optional(),
-    title: GeneratedThreadTitleSchema.optional(),
-    type: z.literal("runner.thread-title"),
-    workspaceId: WorkspaceIdSchema,
   }),
   z.strictObject({
     ...fencedMessageBase,
@@ -1989,6 +1958,7 @@ export const RunnerToHostMessageSchema = z.discriminatedUnion("type", [
 export type RunnerToHostMessage = z.infer<typeof RunnerToHostMessageSchema>;
 
 export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
+  HostBackgroundTextSchema,
   RunnerChallengeSchema,
   ...HostWorkspaceLocalRequestSchema.options,
   ...HostAppRequestSchema.options,
@@ -2029,9 +1999,8 @@ export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
     result: z.discriminatedUnion("status", [
       z.strictObject({
         credentials: z.strictObject({
-          agentControl: capabilityTokenSchema,
+          agentTools: capabilityTokenSchema,
           attachments: capabilityTokenSchema.optional(),
-          integrationTools: capabilityTokenSchema,
         }),
         status: z.literal("issued"),
       }),

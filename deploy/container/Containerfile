@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-ARG NODE_IMAGE=node:24.13.0-bookworm-slim@sha256:4660b1ca8b28d6d1906fd644abe34b2ed81d15434d26d845ef0aced307cf4b6f
+ARG NODE_IMAGE=node:24.22.2-bookworm-slim@sha256:c86ecead9e55a5210ac1727de38a4ca840bf03dcaf34dc9749addbf383b1920c
 ARG GO_IMAGE=golang:1.26.2-bookworm@sha256:47ce5636e9936b2c5cbf708925578ef386b4f8872aec74a67bd13a627d242b19
 ARG PLAYWRIGHT_IMAGE=mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e
 ARG CADDY_IMAGE=caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
@@ -472,9 +472,13 @@ EXPOSE 4320
 CMD ["node", "dist/main.js"]
 
 FROM ${PLAYWRIGHT_IMAGE} AS browser-runtime-base
+# The Playwright image's packaged Node trails Node security releases; replace it
+# with the pinned Node every other Opensteer image runs.
+COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
 ENV NODE_ENV=production \
     OPENSTEER_RELEASE_RECORD=/usr/local/share/opensteer/release.json
-RUN groupadd --gid 10001 opensteer && \
+RUN ln -sf /usr/local/bin/node /usr/bin/node && \
+    groupadd --gid 10001 opensteer && \
     useradd --create-home --gid 10001 --shell /usr/sbin/nologin --uid 10001 opensteer && \
     install --directory --owner 10001 --group 10001 --mode 0700 /var/lib/opensteer/browser && \
     install --directory --owner root --group root --mode 0755 /usr/local/share/opensteer

@@ -1,3 +1,4 @@
+import type { AutomaticModelConfig } from "@opensteer/core";
 import type { BrowserProfileAccess } from "@opensteer/browser-profile/grant";
 import type {
   ChannelAccountId,
@@ -124,7 +125,6 @@ export type NullableTimestamp = ColumnType<
 export type JsonColumn<T> = ColumnType<T, T, T>;
 
 /** Threads never hold the Trigger profile, which belongs to Trigger occurrences. */
-export type ThreadCapabilityProfileId = "main" | "workspace" | "delegated" | "specialist";
 
 export interface DeploymentTable {
   id: DeploymentId;
@@ -776,6 +776,7 @@ interface SecurityEffectTable {
 }
 
 export interface ThreadTable {
+  voiceSessionId: Generated<string | null>;
   askedAt: Timestamp;
   doneAt: Generated<Date | null>;
   pendingRequestCount: Generated<number>;
@@ -784,7 +785,7 @@ export interface ThreadTable {
   inputQueuePausedBy: Generated<UserId | null>;
   accessMode: Generated<ThreadAccessMode>;
   specialistId: Generated<string | null>;
-  capabilityProfileId: ThreadCapabilityProfileId;
+  inheritsMain: boolean;
   role: Generated<ThreadRole>;
   id: ThreadId;
   lineageRootThreadId: ThreadId;
@@ -1143,6 +1144,7 @@ interface TriggerTable {
   nextFireAt: NullableTimestamp;
   consecutiveFailures: number;
   pauseReason: string | null;
+  waitingReason: Generated<string | null>;
   webhookRouteKey: string | null;
   webhookSecretHash: string | null;
   createdAt: Timestamp;
@@ -2017,7 +2019,23 @@ export interface AppVersionTable {
   createdAt: Timestamp;
 }
 
+export interface AgentConnectionTable {
+  id: string;
+  userId: UserId;
+  label: string;
+  clientName: string;
+  accessMode: ThreadAccessMode;
+  workspaceId: WorkspaceId | null;
+  resource: string;
+  tokenHash: string | null;
+  createdAt: Timestamp;
+  lastUsedAt: NullableTimestamp;
+  expiresAt: Timestamp;
+  revokedAt: NullableTimestamp;
+}
+
 export interface DatabaseSchema {
+  agentConnections: AgentConnectionTable;
   apps: AppTable;
   appVersions: AppVersionTable;
   attachments: AttachmentTable;
@@ -2038,6 +2056,20 @@ export interface DatabaseSchema {
     expiresAt: Timestamp;
   };
   personalRemotePairingCodes: PersonalRemotePairingCodeTable;
+  personalDesktopUpdate: {
+    position: Generated<string>;
+    id: string;
+    requestedBy: UserId;
+    idempotencyKey: string;
+    intent: JsonColumn<import("@opensteer/protocol/maintenance").DesktopUpdateIntent>;
+    state: import("@opensteer/protocol/maintenance").DesktopUpdatePhase;
+    fromVersion: string | null;
+    targetVersion: string | null;
+    incarnationId: string | null;
+    detail: import("@opensteer/protocol/maintenance").DesktopUpdateOperation["detail"];
+    createdAt: Timestamp;
+    updatedAt: Timestamp;
+  };
   personalRemoteAdministration: {
     position: Generated<string>;
     executionId: string;
@@ -2076,6 +2108,11 @@ export interface DatabaseSchema {
   executionEnvironments: ExecutionEnvironmentTable;
   harnessInstances: HarnessInstanceTable;
   harnessCatalogs: HarnessCatalogTable;
+  userBackgroundModelPreferences: {
+    userId: UserId;
+    preferences: JsonColumn<AutomaticModelConfig>;
+    updatedAt: Timestamp;
+  };
   userExecutionPreferences: UserExecutionPreferenceTable;
   workspaces: WorkspaceTable;
   workspaceMemberships: WorkspaceMembershipTable;
@@ -2196,6 +2233,7 @@ export interface DatabaseSchema {
     createdBy: UserId;
     status: "pending" | "ready" | "removing" | "removal-failed";
     bindings: JsonColumn<readonly import("@opensteer/core").SpecialistBinding[]>;
+    autoBind: Generated<boolean>;
     createdAt: Timestamp;
     updatedAt: Timestamp;
   };

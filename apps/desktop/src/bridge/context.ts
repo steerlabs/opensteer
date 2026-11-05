@@ -4,6 +4,7 @@ import type { DesktopDownloads } from "../downloads/desktop-downloads.js";
 import type { DesktopUpdater } from "../app/desktop-updater.js";
 import type { DesktopBrowserPresentationManager } from "../browser/browser-presentation.js";
 import type { IpcMain, IpcMainInvokeEvent, NativeImage, WebContents, WebFrameMain } from "electron";
+import type { DesktopUpdates } from "@opensteer/client/connections";
 import type { DeploymentId } from "@opensteer/core";
 import type {
   DesktopComputerAppSetupStatus,
@@ -30,20 +31,27 @@ export interface BridgeEnvelope {
 }
 
 export interface DesktopBridgeOptions {
+  readonly mcpAuthorizationLinks?: Pick<
+    import("../app/mcp-authorization-links.js").McpAuthorizationLinks,
+    "clear"
+  >;
   readonly accountLinkCourier?: Pick<
     import("@opensteer/client/connections").AccountDeploymentDirectoryService,
     "issuePersonalHostAccountLinkChallenge" | "completePersonalHostAccountLink"
   >;
   readonly webLinks?: DesktopWebLinks;
+  readonly integrationAuthorizations?: import("../app/integration-authorizations.js").DesktopIntegrationAuthorizations;
   readonly isWorkspaceContents?: (
     sender: Pick<WebContents, "send" | "once" | "removeListener" | "isDestroyed">,
   ) => boolean;
   readonly passkeys?: Pick<DesktopPasskeyRequests, "available" | "present">;
   readonly dictation?: import("../dictation/dictation-service.js").DictationService;
   readonly downloads: Pick<DesktopDownloads, "snapshot" | "subscribe" | "open" | "show" | "cancel">;
+  /** Pinned to one Deployment, selected or not, and independent of attachment. */
+  readonly deploymentUpdates?: (deploymentId: DeploymentId) => DesktopUpdates;
   readonly updates?: Pick<DesktopUpdater, "state" | "subscribe" | "download" | "setChannel"> & {
-    /** Restarts into the downloaded version; does nothing before one is ready. */
-    restart(): void;
+    /** Restarts into the downloaded version, refusing an unavailable or reserved action. */
+    restart(): void | Promise<void>;
   };
   readonly log?: (
     event: string,

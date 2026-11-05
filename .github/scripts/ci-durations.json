@@ -125,7 +125,7 @@
     "apps/host/src/access/session-exchange-routes.test.ts": 1571,
     "apps/host/src/agent-phone/agent-phone-display.test-support.test.ts": 1521,
     "apps/host/src/agents/advertised-schemas.test.ts": 1608,
-    "apps/host/src/agents/agent-control-service.test.ts": 1579,
+    "apps/host/src/agents/product-tool-handlers.test.ts": 1579,
     "apps/host/src/agents/agent-tools-mcp-service.test.ts": 2597,
     "apps/host/src/agents/continuation-service.test.ts": 1578,
     "apps/host/src/agents/database-allocation.test.ts": 1507,

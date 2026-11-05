@@ -19,6 +19,7 @@ import { sql } from "kysely";
 import { expect } from "vitest";
 import { runFromRow } from "./thread-row-mappers.js";
 import { ChannelStore, OpensteerStore } from "./index.js";
+import { ChannelIngressDeferredError } from "./channel-store.js";
 import {
   describeStore,
   testModelSelection,
@@ -1135,7 +1136,7 @@ describeStore("PostgreSQL store", (it) => {
       claimToken: ingress!.claimToken,
       ingressId: ingress!.id,
       notices: testChannelNotices,
-      placementCandidates: [{ environmentId, harnessInstanceId: harness.id }],
+      availableEngines: [{ environmentId, driverKinds: [harness.driverKind] }],
     });
     expect(adopted).toMatchObject({
       kind: "adopted",
@@ -1165,7 +1166,7 @@ describeStore("PostgreSQL store", (it) => {
       claimToken: followupIngress!.claimToken,
       ingressId: followupIngress!.id,
       notices: testChannelNotices,
-      placementCandidates: [{ environmentId, harnessInstanceId: harness.id }],
+      availableEngines: [{ environmentId, driverKinds: [harness.driverKind] }],
     });
     expect(followup).toMatchObject({ kind: "adopted", run: null });
     if (followup.kind !== "adopted") throw new Error("Expected channel follow-up adoption");
@@ -1188,10 +1189,10 @@ describeStore("PostgreSQL store", (it) => {
     await expect(
       database
         .selectFrom("threads")
-        .select("capabilityProfileId")
+        .select("inheritsMain")
         .where("id", "=", adopted.run.threadId)
         .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ capabilityProfileId: "workspace" });
+    ).resolves.toEqual({ inheritsMain: false });
 
     const attribution = await database
       .selectFrom("runs")
@@ -1394,7 +1395,7 @@ describeStore("PostgreSQL store", (it) => {
         claimToken: unownedIngress!.claimToken,
         ingressId: unownedIngress!.id,
         notices: testChannelNotices,
-        placementCandidates: [{ environmentId, harnessInstanceId: harness.id }],
+        availableEngines: [{ environmentId, driverKinds: [harness.driverKind] }],
       }),
     ).resolves.toEqual({ identityId: null, kind: "ignored", reason: "conversation-not-owned" });
 
@@ -1413,7 +1414,7 @@ describeStore("PostgreSQL store", (it) => {
         claimToken: foreignIngress!.claimToken,
         ingressId: foreignIngress!.id,
         notices: testChannelNotices,
-        placementCandidates: [{ environmentId, harnessInstanceId: harness.id }],
+        availableEngines: [{ environmentId, driverKinds: [harness.driverKind] }],
       }),
     ).resolves.toEqual({
       identityId: null,
@@ -1439,7 +1440,7 @@ describeStore("PostgreSQL store", (it) => {
       claimToken: secondIngress!.claimToken,
       ingressId: secondIngress!.id,
       notices: testChannelNotices,
-      placementCandidates: [{ environmentId, harnessInstanceId: harness.id }],
+      availableEngines: [{ environmentId, driverKinds: [harness.driverKind] }],
     });
     expect(secondAdopted).toMatchObject({ kind: "adopted" });
     if (secondAdopted.kind !== "adopted" || !secondAdopted.run) {
@@ -1525,25 +1526,19 @@ describeStore("PostgreSQL store", (it) => {
       },
     });
 
-    // A ready catalog that marks nothing default is a driver contract the Host
-    // cannot satisfy, and it is refused rather than guessed at — for a
-    // continued conversation as much as a new one. The refused event goes back
-    // to its lane with a backoff, so the remaining case uses the other one.
+    // A catalog that marks nothing default, or has reported nothing yet, offers
+    // no model to run. Nothing is guessed: the message waits for an account
+    // that can take it. A deferred event holds its lane, so each case uses its own.
     await record(catalog.models.map((model) => ({ ...model, isDefault: false })));
-    await expect(fixture.adopt({ eventId: "Ev-MODEL-3", type: "dm" })).rejects.toMatchObject({
-      code: "conflict",
-      message: "Selected AI engine reports no default model",
-    });
-
-    // The account has reported nothing yet: there is no bundled pair to fall
-    // back to, so the message waits for the Runner's answer instead of
-    // starting a Thread on a model the account may not offer.
+    await expect(fixture.adopt({ eventId: "Ev-MODEL-3", type: "dm" })).rejects.toThrow(
+      ChannelIngressDeferredError,
+    );
     await store.discardHarnessCatalog(
       fixture.fixture.environmentId,
       fixture.fixture.harnessInstance.id,
     );
     await expect(fixture.adopt({ eventId: "Ev-MODEL-4", type: "channel" })).rejects.toThrow(
-      /reported no models yet/u,
+      ChannelIngressDeferredError,
     );
   });
 
@@ -1601,10 +1596,10 @@ describeStore("PostgreSQL store", (it) => {
     await expect(
       database
         .selectFrom("threads")
-        .select(["capabilityProfileId", "parentThreadId"])
+        .select(["inheritsMain", "parentThreadId"])
         .where("id", "=", resent.result.run.threadId)
         .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ capabilityProfileId: "workspace", parentThreadId: null });
+    ).resolves.toEqual({ inheritsMain: false, parentThreadId: null });
 
     const revoked = await fixture.channels.reviewAccess({
       bindingId: fixture.configured.binding.id,
@@ -1649,7 +1644,7 @@ describeStore("PostgreSQL store", (it) => {
         claimToken: claimed.claimToken,
         ingressId: claimed.id,
         notices: testChannelNotices,
-        placementCandidates: fixture.placementCandidates,
+        availableEngines: fixture.availableEngines,
       }),
     ).resolves.toMatchObject({ kind: "ignored", reason: "no-route" });
     await expect(
@@ -1812,7 +1807,7 @@ describeStore("PostgreSQL store", (it) => {
       expect(externalSender.result.run.threadId).not.toBe(linkedOwner.result.run.threadId);
       const messagingThreads = await database
         .selectFrom("threads")
-        .select(["capabilityProfileId", "createdBy", "id", "parentThreadId"])
+        .select(["inheritsMain", "createdBy", "id", "parentThreadId"])
         .where("id", "in", [linkedOwner.result.run.threadId, externalSender.result.run.threadId])
         .orderBy("id", "asc")
         .execute();
@@ -1820,12 +1815,12 @@ describeStore("PostgreSQL store", (it) => {
       expect(messagingThreads).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
-            capabilityProfileId: "workspace",
+            inheritsMain: false,
             createdBy: fixture.fixture.userId,
             parentThreadId: null,
           }),
           expect.objectContaining({
-            capabilityProfileId: "workspace",
+            inheritsMain: false,
             createdBy: fixture.fixture.userId,
             parentThreadId: null,
           }),
@@ -1995,7 +1990,7 @@ describeStore("PostgreSQL store", (it) => {
         claimToken: claimed.claimToken,
         ingressId: claimed.id,
         notices: testChannelNotices,
-        placementCandidates: fixture.placementCandidates,
+        availableEngines: fixture.availableEngines,
       });
       const settled = adoption.then(
         () => "settled" as const,

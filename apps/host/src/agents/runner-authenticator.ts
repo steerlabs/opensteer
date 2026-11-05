@@ -375,10 +375,8 @@ export class RunnerAuthenticator {
   async authenticate(
     challenge: RunnerChallenge,
     wireProof: RunnerWireProof,
-    checkAdmission?: (proof: RunnerProof) => void,
   ): Promise<RunnerIdentity> {
     const proof = await this.verifyProof(challenge, wireProof);
-    checkAdmission?.(proof);
     const record =
       proof.type === "runner.enroll" ? await this.#enroll(proof) : await this.#authenticate(proof);
     const fence = {

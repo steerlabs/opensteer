@@ -16,7 +16,7 @@ import { describe, expect, it } from "vitest";
 const forbidden = [/\bthis Mac\b/iu, /\bthis computer\b/iu];
 
 /**
- * The two exceptions, fixed by `docs/computer-use.md` §3.
+ * The two exceptions.
  *
  * They are not one app's sentence: they say that the computer has no helper
  * behind the feature at all, which is why they are the answer to every

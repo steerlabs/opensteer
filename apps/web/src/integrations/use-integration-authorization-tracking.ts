@@ -4,8 +4,11 @@ import type { IntegrationAuthorizationStart } from "@opensteer/integration-core"
 
 type AttemptId = IntegrationAuthorizationStart["attemptId"];
 export interface IntegrationAuthorizationTracking {
-  readonly started: (attemptId: AttemptId) => void;
+  /** `returnsByItself`: this attempt has a port, so losing that return is something to recover. */
+  readonly started: (attemptId: AttemptId, returnsByItself: boolean) => void;
   readonly finished: (attemptId: AttemptId) => void;
+  /** Answered for one attempt, and still after `finished`, when its recovery is rendered. */
+  readonly returnsByItself: (attemptId: AttemptId) => boolean;
 }
 
 /** Router-owned recovery state contains an id only, never the launch capability. */
@@ -13,6 +16,7 @@ export function useIntegrationAuthorizationTracking(): IntegrationAuthorizationT
   const location = useLocation();
   const navigate = useNavigate();
   const mounted = useRef(true);
+  const returningByThemselves = useRef(new Set<AttemptId>());
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -42,8 +46,12 @@ export function useIntegrationAuthorizationTracking(): IntegrationAuthorizationT
       );
     };
     return {
-      started: (attemptId: AttemptId) => update(attemptId, false),
+      started: (attemptId: AttemptId, returnsByItself: boolean) => {
+        if (returnsByItself) returningByThemselves.current.add(attemptId);
+        update(attemptId, false);
+      },
       finished: (attemptId: AttemptId) => update(attemptId, true),
+      returnsByItself: (attemptId: AttemptId) => returningByThemselves.current.has(attemptId),
     };
   }, [navigate]);
 }

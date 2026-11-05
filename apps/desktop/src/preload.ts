@@ -1,4 +1,11 @@
 import {
+  DesktopIntegrationAuthorizationReturnSchema,
+  DesktopIntegrationAuthorizationSubscriptionSchema,
+  DesktopFinishIntegrationAuthorizationInputSchema,
+  type DesktopIntegrationAuthorizationReturn,
+  type DesktopFinishIntegrationAuthorizationInput,
+} from "@opensteer/protocol/desktop";
+import {
   IssuePersonalHostAccountLinkChallengeRequestSchema,
   IssuePersonalHostAccountLinkChallengeResponseSchema,
   CompletePersonalHostAccountLinkRequestSchema,
@@ -20,9 +27,16 @@ import {
   DesktopDownloadsSnapshotSchema,
   DesktopUpdateStateSchema,
   DesktopUpdateChannelSchema,
+  DesktopDeploymentUpdateRequestInputSchema,
+  DesktopDeploymentUpdateRequestResultSchema,
+  DesktopDeploymentUpdateStatusInputSchema,
+  DesktopDeploymentUpdateStatusResultSchema,
+  AgentConnectionAuthorizationTargetSchema,
+  type AgentConnectionAuthorizationTarget,
   DesktopDownloadActionResultSchema,
   DesktopDownloadTargetSchema,
   type DesktopDownloadsBridge,
+  type DesktopDeploymentUpdatesBridge,
   type DesktopUpdatesBridge,
 } from "@opensteer/protocol/desktop";
 import { BrowserPresentationResultSchema } from "./bridge/browser-presentation-result.js";
@@ -77,6 +91,8 @@ import type {
   DesktopOpenHostWebSocketResult,
   DesktopOpenIntegrationAuthorizationInput,
   DesktopOpenIntegrationAuthorizationResult,
+  DesktopPrepareIntegrationAuthorizationReturnInput,
+  DesktopPrepareIntegrationAuthorizationReturnResult,
   DesktopPickFolderResult,
   DesktopRequestFullDiskAccessResult,
   DesktopRemoveAccountDeploymentInput,
@@ -91,6 +107,7 @@ import type {
 } from "@opensteer/protocol/desktop";
 import {
   DisplayClientDiagnosticSchema,
+  RealtimeFrameDiagnosticSchema,
   DesktopWorkspaceTabCommandSchema,
   DeploymentAccessSnapshotSchema,
   DesktopChooseUsbDeviceInputSchema,
@@ -128,6 +145,8 @@ import {
   DesktopOpenHostWebSocketResultSchema,
   DesktopOpenIntegrationAuthorizationInputSchema,
   DesktopOpenIntegrationAuthorizationResultSchema,
+  DesktopPrepareIntegrationAuthorizationReturnInputSchema,
+  DesktopPrepareIntegrationAuthorizationReturnResultSchema,
   DesktopRequestFullDiskAccessResultSchema,
   DesktopRemoveAccountDeploymentInputSchema,
   DesktopBadgeCountInputSchema,
@@ -270,6 +289,15 @@ const browserPresentation: DesktopBrowserPresentationBridge =
     },
   });
 
+let pendingMcpAuthorization: AgentConnectionAuthorizationTarget | null = null;
+const mcpAuthorizationListeners = new Set<(target: AgentConnectionAuthorizationTarget) => void>();
+ipcRenderer.on(desktopBridgeChannels.mcpAuthorization, (_event, value: unknown) => {
+  const target = AgentConnectionAuthorizationTargetSchema.safeParse(value);
+  if (!target.success) return;
+  pendingMcpAuthorization = target.data;
+  for (const listener of mcpAuthorizationListeners) listener(target.data);
+});
+
 const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
   writeViewerClipboard: (items: Parameters<ViewerClipboardBridge["writeViewerClipboard"]>[0]) =>
     invoke<void>(desktopBridgeChannels.writeViewerClipboard, items),
@@ -282,6 +310,23 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
       DesktopWebLinkDeliverySchema.parse(input),
     );
     return result === null ? null : DesktopWebLinkSchema.parse(result);
+  },
+  dismissMcpAuthorization: async (requestId: string) => {
+    await invoke<void>(
+      desktopBridgeChannels.dismissMcpAuthorization,
+      z
+        .string()
+        .regex(/^[A-Za-z0-9_-]{43}$/)
+        .parse(requestId),
+    );
+    if (pendingMcpAuthorization?.requestId === requestId) pendingMcpAuthorization = null;
+  },
+  onMcpAuthorization: (listener: (target: AgentConnectionAuthorizationTarget) => void) => {
+    mcpAuthorizationListeners.add(listener);
+    if (pendingMcpAuthorization) listener(pendingMcpAuthorization);
+    return () => {
+      mcpAuthorizationListeners.delete(listener);
+    };
   },
   onWorkspaceTabCommand: (listener: (command: DesktopWorkspaceTabCommand) => void) => {
     const receive = (_event: Electron.IpcRendererEvent, value: unknown) =>
@@ -303,6 +348,12 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
     await invoke(
       desktopBridgeChannels.reportDisplayDiagnostic,
       DisplayClientDiagnosticSchema.parse(record),
+    );
+  },
+  reportRealtimeDiagnostic: async (record: z.input<typeof RealtimeFrameDiagnosticSchema>) => {
+    await invoke(
+      desktopBridgeChannels.reportRealtimeDiagnostic,
+      RealtimeFrameDiagnosticSchema.parse(record),
     );
   },
   getLocalVisibility: async () =>
@@ -378,6 +429,23 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
     download: () => invoke<void>(desktopBridgeChannels.downloadUpdate),
     restart: () => invoke<void>(desktopBridgeChannels.restartToUpdate),
   } satisfies DesktopUpdatesBridge,
+  deploymentUpdates: {
+    status: async (input) =>
+      DesktopDeploymentUpdateStatusResultSchema.parse(
+        await invoke(
+          desktopBridgeChannels.deploymentUpdateStatus,
+          DesktopDeploymentUpdateStatusInputSchema.parse(input),
+        ),
+      ),
+    request: async (input) =>
+      DesktopDeploymentUpdateRequestResultSchema.parse(
+        await invoke(
+          desktopBridgeChannels.deploymentUpdateRequest,
+          DesktopDeploymentUpdateRequestInputSchema.parse(input),
+        ),
+      ),
+    cancel: (waitId) => invoke<void>(desktopBridgeChannels.deploymentUpdateCancel, waitId),
+  } satisfies DesktopDeploymentUpdatesBridge,
   downloads: {
     get: async () =>
       DesktopDownloadsSnapshotSchema.parse(await invoke(desktopBridgeChannels.getDownloads)),
@@ -655,12 +723,49 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
         DesktopOpenHostWebSocketInputSchema.parse(input),
       ),
     ),
+  prepareIntegrationAuthorizationReturn: async (
+    input: DesktopPrepareIntegrationAuthorizationReturnInput,
+  ) =>
+    DesktopPrepareIntegrationAuthorizationReturnResultSchema.parse(
+      await invoke<DesktopPrepareIntegrationAuthorizationReturnResult>(
+        desktopBridgeChannels.prepareIntegrationAuthorizationReturn,
+        DesktopPrepareIntegrationAuthorizationReturnInputSchema.parse(input),
+      ),
+    ),
   openIntegrationAuthorization: async (input: DesktopOpenIntegrationAuthorizationInput) =>
     DesktopOpenIntegrationAuthorizationResultSchema.parse(
       await invoke<DesktopOpenIntegrationAuthorizationResult>(
         desktopBridgeChannels.openIntegrationAuthorization,
         DesktopOpenIntegrationAuthorizationInputSchema.parse(input),
       ),
+    ),
+  onIntegrationAuthorizationReturn: (
+    identity: { readonly deploymentId: string; readonly userId: string },
+    listener: (callback: DesktopIntegrationAuthorizationReturn) => void,
+  ) => {
+    const input = DesktopIntegrationAuthorizationSubscriptionSchema.parse({
+      ...identity,
+      generation: crypto.randomUUID(),
+      ready: true,
+    });
+    const receive = (_event: Electron.IpcRendererEvent, value: unknown) =>
+      listener(DesktopIntegrationAuthorizationReturnSchema.parse(value));
+    ipcRenderer.on(desktopBridgeChannels.integrationAuthorizationReturn, receive);
+    void invoke(desktopBridgeChannels.integrationAuthorizationSubscription, input).catch(
+      () => undefined,
+    );
+    return () => {
+      ipcRenderer.removeListener(desktopBridgeChannels.integrationAuthorizationReturn, receive);
+      void invoke(desktopBridgeChannels.integrationAuthorizationSubscription, {
+        ...input,
+        ready: false,
+      }).catch(() => undefined);
+    };
+  },
+  finishIntegrationAuthorization: (input: DesktopFinishIntegrationAuthorizationInput) =>
+    invoke<void>(
+      desktopBridgeChannels.finishIntegrationAuthorization,
+      DesktopFinishIntegrationAuthorizationInputSchema.parse(input),
     ),
   pickFolder: async () =>
     DesktopPickFolderResultSchema.parse(

@@ -1,7 +1,15 @@
+import type { AgentConnectionAuthorizationTarget } from "./agent-connections.js";
+// The sandboxed preload may import only this subpath: the root barrel pulls in Node modules.
+export {
+  AgentConnectionAuthorizationTargetSchema,
+  type AgentConnectionAuthorizationTarget,
+} from "./agent-connections.js";
 import { BrowserOpenIdentitySchema } from "./browser.js";
+import { type RealtimeFrameDiagnostic } from "./common.js";
 import { type DisplayClientDiagnostic } from "./display-stream.js";
 import type { DictationPort } from "./dictation.js";
 export { DisplayClientDiagnosticSchema } from "./display-stream.js";
+export { RealtimeFrameDiagnosticSchema } from "./common.js";
 import { HostCapabilitySchema } from "@opensteer/deployment-authority";
 import { ComputerViewRefSchema } from "./computer-view.js";
 import { ComputerAppIdentitySchema } from "@opensteer/core";
@@ -26,7 +34,12 @@ import {
   isSecureOrLoopbackOrigin,
 } from "@opensteer/core";
 import { z } from "zod";
-import { IntegrationAccessSchema } from "@opensteer/integration-core";
+import {
+  IntegrationAuthorizationAttemptIdSchema,
+  IntegrationAuthorizationReturnPortSchema,
+  IntegrationAuthorizationReturnProofSchema,
+  IntegrationAccessSchema,
+} from "@opensteer/integration-core";
 import {
   ComputerUsePermissionsViewSchema,
   ComputerUsePermissionPaneSchema,
@@ -343,12 +356,13 @@ export type DesktopOpenComputerUsePermissionsPanelResult = z.infer<
 >;
 
 export const DesktopOpenIntegrationAuthorizationInputSchema = z.strictObject({
-  attemptId: z
-    .string()
-    .regex(
-      /^(?:ioa|imo)_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu,
-    ),
+  attemptId: IntegrationAuthorizationAttemptIdSchema,
+  deploymentId: DeploymentIdSchema,
+  userId: UserIdSchema.optional(),
+  expiresAt: IsoDateTimeSchema,
   launchTicket: z.string().regex(/^[A-Za-z0-9_-]{43}$/u),
+  /** The preparation this attempt's port came from; a no-port attempt has none. */
+  returnPreparation: z.uuid().optional(),
 });
 export type DesktopOpenIntegrationAuthorizationInput = z.infer<
   typeof DesktopOpenIntegrationAuthorizationInputSchema
@@ -360,11 +374,46 @@ export type DesktopOpenIntegrationAuthorizationResult = z.infer<
   typeof DesktopOpenIntegrationAuthorizationResultSchema
 >;
 
+export const DesktopPrepareIntegrationAuthorizationReturnInputSchema = z.strictObject({
+  deploymentId: DeploymentIdSchema,
+});
+export type DesktopPrepareIntegrationAuthorizationReturnInput = z.infer<
+  typeof DesktopPrepareIntegrationAuthorizationReturnInputSchema
+>;
+export const DesktopPrepareIntegrationAuthorizationReturnResultSchema = z.union([
+  z.strictObject({ port: IntegrationAuthorizationReturnPortSchema, preparation: z.uuid() }),
+  z.strictObject({ port: z.null() }),
+]);
+export type DesktopPrepareIntegrationAuthorizationReturnResult = z.infer<
+  typeof DesktopPrepareIntegrationAuthorizationReturnResultSchema
+>;
+
+export const DesktopIntegrationAuthorizationReturnSchema = z.strictObject({
+  deploymentId: DeploymentIdSchema,
+  attemptId: IntegrationAuthorizationAttemptIdSchema,
+  returnProof: IntegrationAuthorizationReturnProofSchema.nullable(),
+});
+export type DesktopIntegrationAuthorizationReturn = z.infer<
+  typeof DesktopIntegrationAuthorizationReturnSchema
+>;
+export const DesktopIntegrationAuthorizationSubscriptionSchema = z.strictObject({
+  deploymentId: DeploymentIdSchema,
+  userId: UserIdSchema,
+  generation: z.uuid(),
+  ready: z.boolean(),
+});
+export const DesktopFinishIntegrationAuthorizationInputSchema = z.strictObject({
+  deploymentId: DeploymentIdSchema,
+  attemptId: IntegrationAuthorizationAttemptIdSchema.optional(),
+});
+export type DesktopFinishIntegrationAuthorizationInput = z.infer<
+  typeof DesktopFinishIntegrationAuthorizationInputSchema
+>;
+
 /**
- * HTTPS anywhere, or a Personal Deployment's Chrome connect page on this
- * computer's loopback address: the default browser is the only place the
- * Opensteer extension can be reached from. Nothing else on loopback opens, so
- * a link an engine or Runner supplies cannot reach a local service.
+ * HTTPS, the loopback Chrome connect page, or the request-only MCP completion
+ * route. The latter redirects only after owner approval and PKCE binding; no
+ * Host session is carried to the external browser. Other local services stay closed.
  */
 const loopbackExternalHostnames = new Set(["127.0.0.1", "localhost", "[::1]"]);
 /** The web app's `/connect/chrome` route; the fragment carries the one-use link. */
@@ -376,8 +425,11 @@ export function desktopExternalUrlAllowed(value: string): boolean {
   return (
     url.protocol === "http:" &&
     loopbackExternalHostnames.has(url.hostname) &&
-    url.pathname === loopbackChromeConnectPath &&
-    url.search === ""
+    ((url.pathname === loopbackChromeConnectPath && url.search === "") ||
+      (url.pathname === "/oauth/mcp/complete" &&
+        !url.hash &&
+        url.searchParams.size === 1 &&
+        /^[A-Za-z0-9_-]{43}$/.test(url.searchParams.get("request") ?? "")))
   );
 }
 export const DesktopOpenExternalUrlInputSchema = z.strictObject({
@@ -478,33 +530,19 @@ export interface DesktopDownloadsBridge {
  * This app's own release updates. Electron main checks on its own; the person
  * starts the download and the restart that installs it.
  */
-export const DesktopUpdateChannelSchema = z.enum(["stable", "beta"]);
-export type DesktopUpdateChannel = z.infer<typeof DesktopUpdateChannelSchema>;
-
-export const DesktopUpdateStateSchema = z.strictObject({
-  /** `unavailable`: this copy cannot update itself, as outside Applications. */
-  status: z.enum([
-    "unavailable",
-    "idle",
-    "checking",
-    "up-to-date",
-    "ahead",
-    "available",
-    "downloading",
-    "downloaded",
-    "error",
-  ]),
-  channel: DesktopUpdateChannelSchema,
-  latestVersion: z.string().min(1).max(64).nullable(),
-  currentVersion: z.string().min(1).max(64),
-  /** The newer version on offer, from `available` through `downloaded`, and after its download failed. */
-  availableVersion: z.string().min(1).max(64).nullable(),
-  /** Whole percent while `downloading`. */
-  downloadPercent: z.number().int().min(0).max(100).nullable(),
-  /** With `error`: whether the check or the download failed. */
-  failed: z.enum(["check", "download"]).nullable(),
-});
-export type DesktopUpdateState = z.infer<typeof DesktopUpdateStateSchema>;
+export {
+  DesktopUpdateChannelSchema,
+  DesktopUpdateStateSchema,
+  resolveDesktopAppBranding,
+} from "./desktop-update-state.js";
+export type { DesktopUpdateChannel, DesktopUpdateState } from "./desktop-update-state.js";
+import type { DesktopUpdateChannel, DesktopUpdateState } from "./desktop-update-state.js";
+import {
+  DesktopUpdateOperationSchema,
+  DesktopUpdateRequestSchema,
+  DesktopUpdateStatusQuerySchema,
+  DesktopUpdateStatusSchema,
+} from "./maintenance.js";
 
 /** This app's updates, app-wide; every app window sees the same state. */
 export interface DesktopUpdatesBridge {
@@ -515,6 +553,58 @@ export interface DesktopUpdatesBridge {
   download(): Promise<void>;
   /** Quits and relaunches into the downloaded version. */
   restart(): Promise<void>;
+}
+
+export const DesktopDeploymentUpdateStatusInputSchema = z.strictObject({
+  deploymentId: DeploymentIdSchema,
+  after: DesktopUpdateStatusQuerySchema.shape.after,
+  /** Names this wait so a closed view can cancel it. */
+  waitId: z.uuid(),
+});
+export type DesktopDeploymentUpdateStatusInput = z.infer<
+  typeof DesktopDeploymentUpdateStatusInputSchema
+>;
+export const DesktopDeploymentUpdateRequestInputSchema = z.strictObject({
+  deploymentId: DeploymentIdSchema,
+  request: DesktopUpdateRequestSchema,
+});
+export type DesktopDeploymentUpdateRequestInput = z.infer<
+  typeof DesktopDeploymentUpdateRequestInputSchema
+>;
+const DesktopDeploymentUpdateFailureSchema = z.strictObject({
+  ok: z.literal(false),
+  failure: z.enum([
+    "unsupported",
+    "unauthorized",
+    "forbidden",
+    "conflict",
+    "offline",
+    "unavailable",
+    "invalid-response",
+  ]),
+});
+export const DesktopDeploymentUpdateStatusResultSchema = z.discriminatedUnion("ok", [
+  z.strictObject({ ok: z.literal(true), data: DesktopUpdateStatusSchema }),
+  DesktopDeploymentUpdateFailureSchema,
+]);
+export type DesktopDeploymentUpdateStatusResult = z.infer<
+  typeof DesktopDeploymentUpdateStatusResultSchema
+>;
+export const DesktopDeploymentUpdateRequestResultSchema = z.discriminatedUnion("ok", [
+  z.strictObject({ ok: z.literal(true), data: DesktopUpdateOperationSchema }),
+  DesktopDeploymentUpdateFailureSchema,
+]);
+export type DesktopDeploymentUpdateRequestResult = z.infer<
+  typeof DesktopDeploymentUpdateRequestResultSchema
+>;
+
+/** Another computer's updates, held by main so they work where this app can't attach. */
+export interface DesktopDeploymentUpdatesBridge {
+  status(input: DesktopDeploymentUpdateStatusInput): Promise<DesktopDeploymentUpdateStatusResult>;
+  request(
+    input: DesktopDeploymentUpdateRequestInput,
+  ): Promise<DesktopDeploymentUpdateRequestResult>;
+  cancel(waitId: string): Promise<void>;
 }
 
 /**
@@ -942,6 +1032,7 @@ const DesktopIdempotencyKeySchema = z.string().regex(/^[\x21-\x7e]{1,255}$/u);
 const DesktopApiVersionSchema = z.string().regex(/^[0-9]{1,6}$/u);
 
 export const DesktopHostHttpRequestSchema = z.strictObject({
+  expectedDeploymentId: DeploymentIdSchema.optional(),
   body: boundedUtf8String(0, 1 * 1_024 * 1_024).optional(),
   headers: z.strictObject({
     accept: DesktopAcceptHeaderSchema.optional(),
@@ -1535,11 +1626,15 @@ export interface OpensteerDesktopBridge {
   downloads?: DesktopDownloadsBridge;
   /** Present only in the desktop app. */
   updates?: DesktopUpdatesBridge;
+  deploymentUpdates?: DesktopDeploymentUpdatesBridge;
   /** On-device dictation on this Mac. Present only in the desktop app. */
   dictation?: DictationPort;
   webLinkDelivery?(input: DesktopWebLinkDelivery): Promise<DesktopWebLink | null>;
+  dismissMcpAuthorization?(requestId: string): Promise<void>;
+  onMcpAuthorization?(listener: (target: AgentConnectionAuthorizationTarget) => void): () => void;
   onWorkspaceTabCommand(listener: (command: DesktopWorkspaceTabCommand) => void): () => void;
   reportDisplayDiagnostic?(record: DisplayClientDiagnostic): Promise<void>;
+  reportRealtimeDiagnostic?(record: RealtimeFrameDiagnostic): Promise<void>;
   getLocalVisibility(): Promise<boolean>;
   onLocalVisibilityChanged(listener: (visible: boolean) => void): () => void;
   /** The Agent Phone app this build carries, or null when it carries none. */
@@ -1629,9 +1724,18 @@ export interface OpensteerDesktopBridge {
   showNotification(input: DesktopNotificationTarget): Promise<DesktopNotificationResult>;
   setBadgeCount(input: DesktopBadgeCountInput): Promise<void>;
   openExternalUrl(input: DesktopOpenExternalUrlInput): Promise<DesktopOpenExternalUrlResult>;
+  /** Called before `begin`, because the Account seals the port into the attempt. */
+  prepareIntegrationAuthorizationReturn(
+    input: DesktopPrepareIntegrationAuthorizationReturnInput,
+  ): Promise<DesktopPrepareIntegrationAuthorizationReturnResult>;
   openIntegrationAuthorization(
     input: DesktopOpenIntegrationAuthorizationInput,
   ): Promise<DesktopOpenIntegrationAuthorizationResult>;
+  onIntegrationAuthorizationReturn(
+    identity: { readonly deploymentId: string; readonly userId: string },
+    listener: (callback: DesktopIntegrationAuthorizationReturn) => void,
+  ): () => void;
+  finishIntegrationAuthorization(input: DesktopFinishIntegrationAuthorizationInput): Promise<void>;
   openHostWebSocket(input: DesktopOpenHostWebSocketInput): Promise<DesktopOpenHostWebSocketResult>;
   pickFolder(): Promise<DesktopPickFolderResult>;
   /** The grant as the helper sees it right now, on this Mac. */

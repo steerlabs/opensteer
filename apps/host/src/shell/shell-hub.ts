@@ -24,10 +24,7 @@ import {
   type ShellSessionId,
   type ShellSessionSummary,
 } from "@opensteer/protocol";
-import type {
-  AgentControlRunScope,
-  AgentControlTokenService,
-} from "../agents/agent-control-service.js";
+import type { RunToolScope, RunToolTokenService } from "../agents/run-tool-tokens.js";
 import type { RunnerAuthenticator } from "../agents/runner-authenticator.js";
 import type { MachineAccessNotifier } from "./machine-access-events.js";
 import {
@@ -111,7 +108,7 @@ interface ShellSession {
    * not the token. Its Run and binding generation name the grant that admitted
    * it, which a refreshed token for the same grant leaves unchanged.
    */
-  readonly scope: AgentControlRunScope;
+  readonly scope: RunToolScope;
   /** One activation runs at a time; both endpoints can arrive at once. */
   activating: boolean;
   announced: boolean;
@@ -184,7 +181,7 @@ export interface ShellHubOptions {
     RunnerAuthenticator,
     "issueShellDataTicket" | "verifyShellDataTicket"
   >;
-  readonly callerTokens: Pick<AgentControlTokenService, "authenticate" | "reauthorize">;
+  readonly callerTokens: Pick<RunToolTokenService, "authenticate" | "reauthorize">;
   readonly notifier: MachineAccessNotifier;
   readonly now?: () => number;
   /** Audit persistence is diagnostic: it never affects a byte in flight. */
@@ -387,7 +384,7 @@ export class ShellHub implements ShellControlStreamHandler {
   }): Promise<ShellSessionId> {
     const shuttingDown = () => rejection("target_offline", "Opensteer is shutting down.");
     if (this.#closed) throw shuttingDown();
-    let scope: AgentControlRunScope;
+    let scope: RunToolScope;
     try {
       scope = await this.#options.callerTokens.authenticate(input.token);
     } catch {
@@ -1106,7 +1103,7 @@ export class ShellHub implements ShellControlStreamHandler {
     const early = this.#openWindowClosed(session);
     if (early) return early;
     if (!this.#servesSession(session)) return "machine-disconnected";
-    let scope: AgentControlRunScope;
+    let scope: RunToolScope;
     try {
       // A session outlives the token that opened it; its Run's grant must not.
       scope = await this.#options.callerTokens.reauthorize(session.scope);
@@ -1303,7 +1300,7 @@ export class ShellHub implements ShellControlStreamHandler {
   async #reachAdmits(
     runnerId: RunnerId,
     policy: MachineAccessPolicy,
-    scope: AgentControlRunScope,
+    scope: RunToolScope,
   ): Promise<boolean> {
     // A Run never reaches the computer it is already running on: reach is about
     // other computers, and the Run's ssh config has no alias for its own.

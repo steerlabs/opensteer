@@ -70,7 +70,58 @@ vi.mock("../ui/mobile-client-context.js", () => ({
     selection: { deploymentId: "deployment-a", hostClient: state.hostClient },
   }),
 }));
+vi.mock("../ui/sheet.js", () => ({
+  Sheet: ({
+    children,
+    open,
+    onClose,
+  }: {
+    children?: ReactNode;
+    open: boolean;
+    onClose: () => void;
+  }) =>
+    open ? (
+      <section>
+        <button onClick={onClose}>Close editor</button>
+        {children}
+      </section>
+    ) : null,
+}));
 vi.mock("../ui/primitives.js", () => ({
+  CodeBlock: ({ label, text }: { label: string; text: string }) => (
+    <code>
+      {label}: {text}
+    </code>
+  ),
+  Field: ({
+    input,
+    label,
+  }: {
+    input: { value: string; onChangeText: (text: string) => void };
+    label: string;
+  }) => (
+    <label>
+      {label}
+      <input
+        aria-label={label}
+        value={input.value}
+        onChange={(event) => input.onChangeText(event.target.value)}
+      />
+    </label>
+  ),
+  PrimaryButton: ({
+    label,
+    disabled,
+    onPress,
+  }: {
+    label: string;
+    disabled?: boolean;
+    onPress: () => void;
+  }) => (
+    <button disabled={disabled} onClick={onPress}>
+      {label}
+    </button>
+  ),
   AppText: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
   Notice: ({ detail, title }: { detail: string; title: string }) => (
     <div role="note">
@@ -105,6 +156,8 @@ vi.mock("../ui/primitives.js", () => ({
 }));
 
 const { PluginAccounts } = await import("./settings-plugin-accounts.js");
+const { IntegrationAuthorizationCancelUnconfirmedError } =
+  await import("@opensteer/client/integrations");
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 const roots: Root[] = [];
@@ -147,10 +200,96 @@ describe("Connected apps on the phone", () => {
     expect(state.begin).toHaveBeenCalledWith({
       applicationSource: dashboard.providerAuthorizations.google?.selectedSource,
       definitionId: "google-calendar",
+      signal: expect.any(AbortSignal),
     });
     await vi.waitFor(() =>
       expect(container.textContent).toContain("alex@example.com is connected."),
     );
+  });
+
+  it("says a Cancel is unconfirmed, and shows the completion that won", async () => {
+    const client = new MockHostClient({ automations: "absent", latencyMs: 0 });
+    await client.load();
+    state.hostClient = client;
+    const dashboard = unwrapRpcResult(await client.rpc["integrations.get"]({}));
+    const signIn = phoneSignIn(client);
+    let settle = (_status: unknown) => {};
+    const reconciled = new Promise((resolve) => (settle = resolve));
+    state.begin = vi.fn(
+      ({ signal }: { readonly signal: AbortSignal }) =>
+        new Promise((_, reject) => {
+          signal.addEventListener("abort", () =>
+            reject(
+              new IntegrationAuthorizationCancelUnconfirmedError(
+                "ioa_00000000-0000-4000-8000-000000000001",
+                reconciled as never,
+              ),
+            ),
+          );
+        }),
+    );
+    const container = await render();
+    await vi.waitFor(() => expect(container.textContent).toContain("Google Calendar"));
+    const button = (label: string) =>
+      [...container.querySelectorAll("button")].find(
+        (candidate) => candidate.textContent === label,
+      );
+    const row = [...container.querySelectorAll<HTMLElement>("[role=button]")].find((candidate) =>
+      candidate.getAttribute("aria-label")?.startsWith("alex@example.com,"),
+    );
+    await act(async () =>
+      [...(row?.querySelectorAll("button") ?? [])]
+        .find((candidate) => candidate.textContent === "Reconnect")
+        ?.click(),
+    );
+    await vi.waitFor(() => expect(button("Cancel sign-in")).toBeDefined());
+    await act(async () => button("Cancel sign-in")?.click());
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("Checking whether this was cancelled"),
+    );
+    expect(button("Cancel sign-in")).toBeUndefined();
+    const won = await signIn({
+      applicationSource: dashboard.providerAuthorizations.google?.selectedSource,
+      definitionId: "google-calendar",
+    });
+    await act(async () => settle(won));
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("alex@example.com is connected."),
+    );
+    expect(container.textContent).not.toContain("Checking whether");
+  });
+
+  it("cancels a sign-in that is still waiting", async () => {
+    const client = new MockHostClient({ automations: "absent", latencyMs: 0 });
+    await client.load();
+    state.hostClient = client;
+    const begin = vi.fn(
+      ({ signal }: { readonly signal: AbortSignal }) =>
+        new Promise((_, reject) => {
+          signal.addEventListener("abort", () => reject(new Error("Cancelled here.")));
+        }),
+    );
+    state.begin = begin;
+    const container = await render();
+    await vi.waitFor(() => expect(container.textContent).toContain("Google Calendar"));
+    const cancel = () =>
+      [...container.querySelectorAll("button")].find(
+        (button) => button.textContent === "Cancel sign-in",
+      );
+    expect(cancel()).toBeUndefined();
+    const row = [...container.querySelectorAll<HTMLElement>("[role=button]")].find((candidate) =>
+      candidate.getAttribute("aria-label")?.startsWith("alex@example.com,"),
+    );
+    await act(async () =>
+      [...(row?.querySelectorAll("button") ?? [])]
+        .find((button) => button.textContent === "Reconnect")
+        ?.click(),
+    );
+    await vi.waitFor(() => expect(cancel()).toBeDefined());
+    await act(async () => cancel()?.click());
+    await vi.waitFor(() => expect(container.textContent).toContain("Cancelled here."));
+    expect(begin.mock.calls[0]?.[0].signal.aborted).toBe(true);
+    expect(cancel()).toBeUndefined();
   });
 
   // The ways it could fail: a GitHub sign-in announced as connected while the
@@ -307,4 +446,96 @@ it("continues a new API-key account and retries placement without connecting twi
   } finally {
     client.dispose();
   }
+});
+
+it("sets up a custom OAuth app in Settings, then connects through the exact saved registration", async () => {
+  const client = new MockHostClient({ latencyMs: 0 });
+  await client.load();
+  const begin = vi.fn(async () => ({ status: "denied", failureCode: null, connectionId: null }));
+  state.begin = begin;
+  state.hostClient = client;
+  const draft = {
+    availability: "personal" as const,
+    provider: "slack" as const,
+    clientId: "same-client",
+    displayName: "My Google app",
+    expectedRevision: null,
+    secrets: { clientSecret: "test-only-secret" },
+  };
+  // Same label and client id: only the Host's saved id and revision identify it.
+  await client.dispatch({
+    type: "integration.providerApplication.save",
+    idempotencyKey: "existing-app",
+    input: draft,
+  });
+  const dispatch = vi.spyOn(client, "dispatch");
+  let sections: import("./native-settings-page.types.js").NativeSettingsSection[] = [];
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  roots.push(root);
+  await act(async () =>
+    root.render(
+      <PluginAccounts
+        hostClient={client}
+        hostName="Acceptance"
+        definitionId="slack"
+        render={(value) => {
+          sections = value;
+          return null;
+        }}
+      />,
+    ),
+  );
+  const press = async (label: string) => {
+    const row = sections.flatMap((section) => section.rows).find((row) => row.label === label);
+    if (row?.kind !== "button") throw new Error(`Missing ${label}`);
+    await act(async () => row.onPress());
+  };
+  await vi.waitFor(() => expect(sections.some((section) => section.key === "own-app")).toBe(true));
+  await press("Use my own OAuth app");
+  expect(container.textContent).toContain("Authorized callback URL");
+  const type = (label: string, value: string) =>
+    act(() => {
+      const input = container.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  type("App name", "My Google app");
+  type("Client ID", "same-client");
+  type("Client Secret", "test-only-secret");
+  await act(async () =>
+    [...container.querySelectorAll("button")]
+      .find((button) => button.textContent === "Save app")!
+      .click(),
+  );
+  await vi.waitFor(() =>
+    expect(
+      sections
+        .flatMap((section) => section.rows)
+        .some((row) => row.label === "App saved. No account is connected yet."),
+    ).toBe(true),
+  );
+  expect(begin).not.toHaveBeenCalled();
+  const savedCommand = dispatch.mock.results.find(
+    (_, i) => dispatch.mock.calls[i]?.[0].type === "integration.providerApplication.save",
+  )!;
+  const saved = await savedCommand.value;
+  expect(saved.type).toBe("integration.providerApplication.save");
+  const dashboard = unwrapRpcResult(await client.rpc["integrations.get"]({}));
+  expect(dashboard.applications.filter((app) => app.displayName === "My Google app")).toHaveLength(
+    2,
+  );
+  const add = sections.flatMap((section) => section.rows).find((row) => row.key === "add:slack");
+  if (add?.kind !== "button") throw new Error("Missing Connect account");
+  await act(async () => add.onPress());
+  expect(begin).toHaveBeenCalledWith({
+    definitionId: "slack",
+    signal: expect.any(AbortSignal),
+    applicationSource: expect.objectContaining({
+      providerApplicationId: saved.application.id,
+      providerApplicationRevision: saved.application.revision,
+    }),
+  });
+  client.dispose();
 });

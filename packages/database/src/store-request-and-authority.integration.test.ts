@@ -1065,6 +1065,76 @@ describeStore("PostgreSQL store", (it) => {
     },
   );
 
+  it("lets the owner answer a Main profile request with another profile, granting nothing, even at the limit", async ({
+    storeFixture,
+  }) => {
+    const { startRunFixture, store, database } = storeFixture;
+    const fixture = await startRunFixture("browser-access-main");
+    const personal = await store.createBrowserProfile({
+      idempotencyKey: "store.integration.test-browser-profile-main",
+      ownerId: fixture.userId,
+      name: "Personal",
+    });
+    const opened = await store.requests.create({
+      callId: "browser-access-main",
+      kind: "browser.access",
+      mode: "durable",
+      originatingRunId: fixture.run.id,
+      originatingThreadId: fixture.thread.id,
+      originatingWorkspaceId: fixture.workspace.id,
+      targetWorkspaceId: fixture.workspace.id,
+      requestedBy: fixture.userId,
+      requiredActor: "requester",
+      payload: {
+        kind: "browser.access",
+        reason: "Sign in to Brex",
+        suggestion: { kind: "new", suggestedName: "Brex" },
+      },
+      presentation: {
+        kind: "external",
+        title: "Browser profile",
+        subject: { id: fixture.workspace.id, kind: "workspace" },
+      },
+    });
+
+    // Approval creates profiles through the owner's one limit, like their own command.
+    for (let index = 1; index < 128; index++)
+      await store.createBrowserProfile({
+        idempotencyKey: `store.integration.test-browser-profile-main-${index}`,
+        ownerId: fixture.userId,
+        name: `Profile ${index}`,
+      });
+    await expect(
+      store.requests.resolveBrowserRequest({
+        requestId: opened.request.id,
+        resolvedBy: fixture.userId,
+        response: {
+          kind: "external",
+          value: { decision: "fulfilled", createProfile: { name: "Brex" } },
+        },
+      }),
+    ).rejects.toMatchObject({ code: "conflict", message: "Browser profile limit reached" });
+
+    // The person knows Personal is already signed in, so they choose it over the suggestion.
+    const resolved = await store.requests.resolveBrowserRequest({
+      requestId: opened.request.id,
+      resolvedBy: fixture.userId,
+      response: { kind: "external", value: { decision: "fulfilled", profileId: personal.id } },
+    });
+
+    expect(resolved.request.status).toBe("fulfilled");
+    expect(resolved.profile).toMatchObject({ id: personal.id, name: "Personal" });
+    // Main already reaches every owner profile, so it never holds grant rows.
+    expect(resolved.grant).toBeNull();
+    expect(
+      await database
+        .selectFrom("browserProfileGrants")
+        .select("id")
+        .where("workspaceId", "=", fixture.workspace.id)
+        .execute(),
+    ).toEqual([]);
+  });
+
   it("fulfills repeated browser access requests with one existing grant, including at capacity", async ({
     storeFixture,
   }) => {
@@ -1392,12 +1462,14 @@ describeStore("PostgreSQL store", (it) => {
         manifest: contract.manifest,
       }),
     ]);
-    await expect(platform.requests.listPendingContinuations()).resolves.toEqual([
-      expect.objectContaining({
-        request: expect.objectContaining({ id: opened.request.id }),
-        status: "waiting",
-      }),
-    ]);
+    await expect(platform.requests.listPendingContinuations()).resolves.toEqual([]);
+    await expect(
+      database
+        .selectFrom("requestContinuations")
+        .select("status")
+        .where("requestId", "=", opened.request.id)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({ status: "waiting" });
   });
 
   it("enriches valid integration access, rejects mismatched accounts, and preserves project grants", async ({
@@ -1803,21 +1875,22 @@ describeStore("PostgreSQL store", (it) => {
         workspaceId: project.id,
       }),
     ]);
-    await expect(platform.requests.listPendingContinuations()).resolves.toEqual([
-      expect.objectContaining({
-        request: expect.objectContaining({ id: mainRequest.request.id }),
-      }),
-      expect.objectContaining({
-        request: expect.objectContaining({ id: projectRequest.request.id }),
-      }),
-      expect.objectContaining({
-        request: expect.objectContaining({ id: declinedRequest.request.id, status: "declined" }),
-        status: "waiting",
-      }),
-      expect.objectContaining({
-        request: expect.objectContaining({ id: mcpRequest.request.id }),
-      }),
-    ]);
+    await expect(platform.requests.listPendingContinuations()).resolves.toEqual([]);
+    const storedContinuations = await database
+      .selectFrom("requestContinuations")
+      .select(["requestId", "status"])
+      .orderBy("requestId", "asc")
+      .execute();
+    expect(storedContinuations).toEqual(
+      [
+        mainRequest.request.id,
+        projectRequest.request.id,
+        declinedRequest.request.id,
+        mcpRequest.request.id,
+      ]
+        .sort()
+        .map((requestId) => ({ requestId, status: "waiting" })),
+    );
   });
 
   it("serializes catalog Request currentness by exact definition identity and preserves replay", async ({
@@ -2361,11 +2434,11 @@ describeStore("PostgreSQL store", (it) => {
       sql`
         insert into threads (
           id, workspace_id, title, environment_id, harness_instance_id, created_by,
-          created_by_principal_id, model_selection, capability_profile_id
+          created_by_principal_id, model_selection, inherits_main
         ) values (
           ${createId("thread")}, ${fixture.workspace.id}, 'Raw', ${fixture.aliceEnvironmentId},
           ${fixture.harness.id}, ${fixture.bobId}, ${bobPrincipalId},
-          ${JSON.stringify(testModelSelection)}::jsonb, 'workspace'
+          ${JSON.stringify(testModelSelection)}::jsonb, false
         )
       `.execute(database),
     ).rejects.toThrow(/thread creator cannot execute on the selected environment/u);
@@ -2707,9 +2780,9 @@ describeStore("PostgreSQL store", (it) => {
       claimToken: claimed!.claimToken,
       ingressId: claimed!.id,
       notices: testChannelNotices,
-      placementCandidates: [
-        { environmentId: fixture.aliceEnvironmentId, harnessInstanceId: fixture.harness.id },
-        { environmentId: fixture.mainEnvironmentId, harnessInstanceId: fixture.mainHarness.id },
+      availableEngines: [
+        { environmentId: fixture.aliceEnvironmentId, driverKinds: [fixture.harness.driverKind] },
+        { environmentId: fixture.mainEnvironmentId, driverKinds: [fixture.mainHarness.driverKind] },
       ],
     });
     expect(adopted).toMatchObject({
@@ -2743,8 +2816,8 @@ describeStore("PostgreSQL store", (it) => {
         claimToken: nextClaim!.claimToken,
         ingressId: nextClaim!.id,
         notices: testChannelNotices,
-        placementCandidates: [
-          { environmentId: fixture.aliceEnvironmentId, harnessInstanceId: fixture.harness.id },
+        availableEngines: [
+          { environmentId: fixture.aliceEnvironmentId, driverKinds: [fixture.harness.driverKind] },
         ],
       }),
     ).rejects.toBeInstanceOf(ChannelIngressDeferredError);

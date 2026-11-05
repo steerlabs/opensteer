@@ -26,14 +26,14 @@ import {
   type ToolIdentity,
   type UserId,
 } from "@opensteer/core";
-import { toolsForCapabilityProfile } from "@opensteer/agent-tools";
-import { integrationGatewayToolNames } from "@opensteer/integration-core";
 import { maxHarnessModelsPerCatalog } from "@opensteer/protocol";
 import {
   Deferred,
   runTitleProcess,
-  withTitleDirectory,
-  type HarnessTitleInput,
+  withBackgroundTextDirectory,
+  backgroundTextResult,
+  type HarnessGenerateTextInput,
+  type HarnessGenerateTextResult,
   HarnessSteerDeliveryUnknownError,
   HarnessSessionRegistry,
   TurnPublisher,
@@ -110,7 +110,6 @@ import {
 import {
   connectPiMcpServer,
   piAgentToolsServer,
-  piIntegrationToolsServer,
   type PiMcpConnect,
   type PiMcpConnection,
 } from "./mcp.js";
@@ -176,7 +175,6 @@ export {
 export {
   connectPiMcpServer,
   piAgentToolsServer,
-  piIntegrationToolsServer,
   piToolCallTimeoutMs,
   piToolContent,
   type PiMcpConnect,
@@ -502,6 +500,54 @@ class PiHarnessAdapter implements HarnessAdapter {
     this.#dependencies = dependencies;
   }
 
+  async generateText({
+    context,
+    modelSelection,
+    prompt,
+    signal,
+  }: HarnessGenerateTextInput): Promise<HarnessGenerateTextResult> {
+    if (context.runtimeBoundary.kind !== "native-user")
+      return { ok: false, failure: "unavailable" };
+    return backgroundTextResult(signal, async () => {
+      const environment = await piProcessEnvironment(context.environment, context.providerState);
+      return withBackgroundTextDirectory(context, signal, (directory) =>
+        runTitleProcess(
+          context,
+          {
+            executable: this.#dependencies.nodeExecutable,
+            args: [
+              this.#dependencies.executable,
+              "--print",
+              "--no-session",
+              "--no-tools",
+              "--no-extensions",
+              "--no-skills",
+              "--no-context-files",
+              "--no-prompt-templates",
+              // no-context-files excludes AGENTS.md, but 0.87.1 discovers
+              // SYSTEM.md and APPEND_SYSTEM.md separately unless overridden.
+              "--system-prompt",
+              "Follow the prompt. Never use tools.",
+              "--append-system-prompt",
+              " ",
+              "--provider",
+              this.#row.provider,
+              "--model",
+              piModelSelectionId(modelSelection),
+              "--thinking",
+              piThinkingOption(modelSelection) ?? "off",
+              "--no-approve",
+            ],
+            cwd: directory,
+            environment,
+          },
+          signal,
+          prompt,
+        ),
+      );
+    });
+  }
+
   async startSession(context: HarnessSessionContext): Promise<HarnessSession> {
     this.#sessions.assertOpen();
     assertFreshProviderSessionContext(context);
@@ -660,48 +706,6 @@ class PiHarnessSession implements HarnessSession {
       });
     }
     return this.#providerSessionReference;
-  }
-
-  async generateTitle({ prompt, signal }: HarnessTitleInput): Promise<string> {
-    const environment = await piProcessEnvironment(
-      this.#context.environment,
-      this.#context.providerState,
-    );
-    return withTitleDirectory(this.#context, (directory) =>
-      runTitleProcess(
-        this.#context,
-        {
-          executable: this.#dependencies.nodeExecutable,
-          args: [
-            this.#dependencies.executable,
-            "--print",
-            "--no-session",
-            "--no-tools",
-            "--no-extensions",
-            "--no-skills",
-            "--no-context-files",
-            "--no-prompt-templates",
-            // no-context-files excludes AGENTS.md, but 0.87.1 discovers
-            // SYSTEM.md and APPEND_SYSTEM.md separately unless overridden.
-            "--system-prompt",
-            "You name tasks. Reply exactly in the format the request asks for. Never use tools.",
-            "--append-system-prompt",
-            " ",
-            "--provider",
-            this.#row.provider,
-            "--model",
-            piModelSelectionId(this.#context.modelSelection),
-            "--thinking",
-            "off",
-            "--no-approve",
-          ],
-          cwd: directory,
-          environment,
-        },
-        signal,
-        prompt,
-      ),
-    );
   }
 
   async execute(run: HarnessRunInput): Promise<void> {
@@ -978,14 +982,14 @@ class PiHarnessSession implements HarnessSession {
   }
 
   /**
-   * Opens both Opensteer MCP servers from inside the Runner and reads their
+   * Opens the Opensteer MCP server from inside the Runner and reads their
    * tool shapes. The connections stay here for the life of the session: the
    * extension calls back through the RPC stream rather than holding a token.
    */
   async #connectToolServers(): Promise<void> {
     const context = this.#context;
     const connect = this.#dependencies.connectMcpServer ?? connectPiMcpServer;
-    // Both waits belong to session startup, so both carry its deadline and its
+    // The waits belong to session startup, so both carry its deadline and its
     // lifetime: a Host that accepts the socket and never answers would
     // otherwise hold the Run open with nothing to cancel it.
     const connectOptions = {
@@ -996,16 +1000,8 @@ class PiHarnessSession implements HarnessSession {
       {
         name: piAgentToolsServer,
         token: context.agentTools.token,
-        toolNames: toolsForCapabilityProfile(context.agentTools.capabilityProfileId).map(
-          ({ name }) => name,
-        ),
+        toolNames: context.agentTools.tools,
         url: context.agentTools.url,
-      },
-      {
-        name: piIntegrationToolsServer,
-        token: context.integrationTools.token,
-        toolNames: [...integrationGatewayToolNames],
-        url: context.integrationTools.url,
       },
     ];
     const definitions: PiExtensionToolDefinition[] = [];

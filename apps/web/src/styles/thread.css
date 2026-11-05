@@ -513,6 +513,28 @@ label.action-row input {
   color: var(--muted);
 }
 
+/* One-tap starting values for the field above; the field stays the source of truth. */
+.action-field__suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-6);
+}
+
+.action-field__suggestions .chip {
+  background: none;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.action-field__suggestions .chip:hover:not(:disabled, .chip--accent) {
+  color: var(--text);
+}
+
+.action-field__suggestions .chip:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
 /* A field that is a step to take rather than a value to read: "Reconnect …". */
 .action-field__title {
   font-weight: var(--weight-strong);
@@ -546,6 +568,55 @@ label.action-row input {
 /* The usage-limit line, under the composer it belongs to and at its measure:
    muted words, at most one quiet action, a way to dismiss it, and no surface
    of its own to sit behind the composer's corners. */
+/* Offers Opensteer Passwords at the end of a conversation: a quiet plate that
+   reads as part of the reply above it, never as something waiting on the person. */
+.passwords-suggestion {
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+  align-self: flex-start;
+  width: fit-content;
+  max-width: 100%;
+  /* Reads as part of the reply: closer to it than the rows' own gap. */
+  margin-top: calc(var(--space-10) * -1);
+  padding: var(--space-6) var(--space-6) var(--space-6) var(--space-12);
+  border: 1px solid var(--rim-plate);
+  border-radius: var(--radius-md);
+  background: var(--sheen) var(--fill-plate);
+  box-shadow: var(--edge-plate);
+  color: var(--text-soft);
+  font-size: var(--text-md);
+  line-height: 1.35;
+  animation: rise-in var(--duration-med) var(--ease-out);
+}
+
+.passwords-suggestion > svg {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  color: var(--ember);
+}
+
+.passwords-suggestion--done > svg {
+  color: var(--green);
+}
+
+.passwords-suggestion__text {
+  min-width: 0;
+  min-height: var(--control-height-sm);
+  display: flex;
+  align-items: center;
+}
+
+.passwords-suggestion__text > span {
+  min-width: 0;
+}
+
+.passwords-suggestion__text strong {
+  color: var(--text);
+  font-weight: var(--weight-medium);
+}
+
 .usage-notice {
   display: flex;
   align-items: center;

@@ -42,9 +42,7 @@ Read back edited instructions, check linked paths and exercise scripts with repr
 inputs. Use fixtures when a test would repeat an external action. Label untested approaches.
 Reread shared files before editing so other Threads' work survives.
 
-Do not save credentials or capability tokens. If the person explicitly asks you to remember
-a phone's screen-lock PIN, keep it in one private file for that phone outside AGENTS.md and
-version control; read it only to unlock that phone.
+Never save credentials, PINs or capability tokens. The person handles them in the secure UI.
 
 Files grant no access and keep no process alive. Use ordinary access Requests for resources;
 use `opensteer:triggers` for requested recurring work and verify the returned state. Remove
@@ -59,6 +57,9 @@ When repeated work needs skills, scripts or MCP servers together, package it as 
 turn on here; connections still need grants, and local MCP servers need the computer owner's launch
 approval.
 
+Name plugins specifically (`tapo-camera`, not `camera`). To change one, edit its folder and call
+`plugin_install` on it again, never on a renamed copy.
+
 A program server that needs a password, key or token declares it in `plugin.json`, never in
 `mcp.json`, files or chat: `"extensions": {"com.opensteer": {"secrets": {"<server>": [{"name":
 "CAMERA_PASSWORD", "title": "Camera password", "description": "Where to find it"}]}}}`. The computer's
@@ -68,12 +69,18 @@ variable. The owner changes values in Settings, Plugins.
 ## Turn repeated work into a specialist
 
 For repeated, well-understood work, add `specialist.json` and `INSTRUCTIONS.md` to the plugin.
-List cheaper models in preference order (`engine`, `model`, optional `options`), declare the
+List models in preference order: an exact `{"engine", "model", "options"?}`, or
+`{"role": "light"}` (fast, cheap) or `{"role": "deep"}` (strongest), which stand for the person's
+own automatic model choices in AI settings. Prefer a role unless the work needs a particular
+model. A list never names an account; it runs on the person's eligible accounts. Declare the
 access needs and reasons, and use `fallback: "caller"` only when that cost is intended (the
 default is `"none"`). Test representative inputs and check the outputs before `plugin_install`.
-Resolve the registration's access or binding choices, then call `thread_delegate` with
+Ask the person to resolve missing resource grants or specialist bindings; never grant them yourself. Then call `thread_delegate` with
 `specialist` set to its registration id or plugin name. Continue it with `threadId` to retain
 context. Instructions should name per-task outputs in `PLUGIN_DATA`, shared by this registration.
+
+`plugin_manage` lists, activates/deactivates or removes plugins, updates person-installed ones and
+removes specialist registrations within full-access and reach. Activation grants no resource access.
 
 - Read [durable context](references/durable-context.md) when choosing where a correction, fact or task state belongs.
 - Read [skills](references/skills.md) when authoring procedures.

@@ -123,10 +123,10 @@ describe("shell relay lifecycle", () => {
     const host = await fakeHost();
     const target = createId("runner");
     const relay = await startRelay(host.url);
-    const credentials = { agentControl: "token-1" };
+    const credentials = { agentTools: "token-1" };
     relay.relay.bind({ credentials, runId: createId("run"), targets: [target] });
     expect(await exchange(relay.socketPath, target)).toEqual({ ok: true });
-    credentials.agentControl = "token-2";
+    credentials.agentTools = "token-2";
     expect(await exchange(relay.socketPath, target)).toEqual({ ok: true });
     expect(host.authorizations()).toEqual(["Bearer token-1", "Bearer token-2"]);
   });
@@ -140,7 +140,7 @@ describe("shell relay lifecycle", () => {
 });
 
 function binding(token: string, targets: readonly string[]) {
-  return { credentials: { agentControl: token }, runId: createId("run"), targets };
+  return { credentials: { agentTools: token }, runId: createId("run"), targets };
 }
 
 async function startRelay(hostUrl: URL, validationTarget?: string) {

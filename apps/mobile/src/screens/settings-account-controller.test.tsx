@@ -2,6 +2,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
+import { UserIdSchema } from "@opensteer/core";
 import { MockHostClient } from "@opensteer/client/mock";
 import type { NativeSettingsPageProps } from "./native-settings-page.types.js";
 const state = vi.hoisted(() => ({
@@ -19,7 +20,9 @@ vi.mock("react-native", () => ({
 vi.mock("@react-navigation/native", () => ({
   useNavigation: () => ({ navigate: state.navigate }),
 }));
-vi.mock("@opensteer/client/react", () => ({
+vi.mock("@opensteer/client/react", async (importOriginal) => ({
+  useConnectedAgents: (await importOriginal<typeof import("@opensteer/client/react")>())
+    .useConnectedAgents,
   usePersonalRemoteAccess: () => ({
     status: state.remote,
     pairing: null,
@@ -118,5 +121,53 @@ it("keeps failed requested mode separate from committed access and exposes retry
     host.dispose();
     state.host = null;
     state.remote = null;
+  }
+});
+
+it("lists connected agents on Account on iOS and Android, revokes one, and reads only there", async () => {
+  const id = `mcn_${crypto.randomUUID()}`;
+  const host = new MockHostClient({
+    latencyMs: 0,
+    connections: [
+      {
+        id,
+        userId: UserIdSchema.parse("usr_0192f4a1-0000-4000-8000-000000000001"),
+        label: "Research agent",
+        clientName: "Example",
+        accessMode: "auto",
+        reach: { kind: "user" },
+        createdAt: "2026-11-01T00:00:00Z",
+        expiresAt: "2026-12-01T00:00:00Z",
+        lastUsedAt: null,
+      },
+    ],
+  });
+  await host.load();
+  state.host = host;
+  const list = vi.fn(host.rpc["connections.list"]);
+  Object.defineProperty(host.rpc, "connections.list", { value: list, configurable: true });
+  const dispatch = vi.spyOn(host, "dispatch");
+  const root = createRoot(document.createElement("div"));
+  try {
+    await act(async () => root.render(<AccountSettingsController detail="remote" />));
+    expect(list).not.toHaveBeenCalled();
+    await act(async () => root.render(<AccountSettingsController />));
+    const section = () =>
+      state.page!.sections.find((candidate) => candidate.key === "connected-agents")!;
+    const labels = section().rows.map((row) => row.label);
+    expect(labels.join("\n")).toContain("Research agent · Example · Automatic");
+    expect(labels.join("\n")).toContain("Everything you can access");
+    expect(labels.join("\n")).toContain("Never used");
+    const revoke = section().rows.find((row) => row.label === "Revoke Research agent")!;
+    if (revoke.kind !== "button") throw new Error("Missing revoke");
+    await act(async () => revoke.onPress());
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "connection.revoke", connectionId: id }),
+    );
+    expect(section().rows.map((row) => row.label)).toContain("No connected agents.");
+  } finally {
+    act(() => root.unmount());
+    host.dispose();
+    state.host = null;
   }
 });

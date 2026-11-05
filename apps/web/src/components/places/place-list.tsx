@@ -2,6 +2,7 @@ import { useState } from "react";
 import { deploymentStatusInfoLabel } from "@opensteer/protocol/deployment-status";
 import type { DeploymentStatusInfo } from "@opensteer/protocol/desktop";
 import type { PlaceRow } from "../../desktop/places.js";
+import { PlaceUpdate } from "./place-update.js";
 import { Icon } from "../icon.js";
 
 export interface PlaceListProps {
@@ -90,6 +91,7 @@ export function PlaceList({
             {open ? (
               <div className="place-row__explain">
                 {row.status.reason ? <p>{row.status.reason}</p> : null}
+                {row.updatable ? <PlaceUpdate row={row} /> : null}
                 <div className="place-row__actions">
                   {row.opens && !row.current ? (
                     <button

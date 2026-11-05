@@ -34,6 +34,8 @@ vi.mock("@expo/ui/swift-ui", () => {
     }),
     SwipeActions: Object.assign(view("SwipeActions"), { Actions: view("SwipeActions.Actions") }),
     Host: view("Host"),
+    HStack: view("HStack"),
+    RNHostView: view("RNHostView"),
     BottomSheet: view("BottomSheet"),
     List: view("List"),
     NavigationStack: view("NavigationStack"),
@@ -60,6 +62,9 @@ vi.mock("@expo/ui/swift-ui/modifiers", () => ({
     state.search = options;
     return {};
   },
+}));
+vi.mock("../ui/integration-icon.js", () => ({
+  IntegrationIcon: ({ definitionId }: { definitionId: string }) => <i data-mark={definitionId} />,
 }));
 const { NativeSettingsPage } = await import("./native-settings-page.ios.js");
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -95,7 +100,7 @@ it("hosts native search in one SwiftUI navigation environment and returns throug
   }
 });
 
-it("uses labeled native secondary actions and disables full-swipe execution", async () => {
+it("leads a row with its integration's mark and keeps secondary actions labeled and unswipeable", async () => {
   const container = document.createElement("div");
   const root = createRoot(container);
   const remove = vi.fn();
@@ -112,6 +117,7 @@ it("uses labeled native secondary actions and disables full-swipe execution", as
                   key: "mail",
                   kind: "button",
                   label: "Mail",
+                  mark: { definitionId: "google-gmail", name: "Mail" },
                   onPress: vi.fn(),
                   actions: [{ label: "Remove", destructive: true, onPress: remove }],
                 },
@@ -122,6 +128,9 @@ it("uses labeled native secondary actions and disables full-swipe execution", as
       ),
     );
     expect(container.querySelectorAll('[data-native="ContextMenu"]')).toHaveLength(1);
+    expect(
+      container.querySelector('[data-native="HStack"] [data-native="RNHostView"] [data-mark]'),
+    ).toHaveProperty("dataset.mark", "google-gmail");
     expect(
       container
         .querySelector('[data-native="SwipeActions.Actions"]')

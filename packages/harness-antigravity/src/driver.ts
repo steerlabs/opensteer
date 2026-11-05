@@ -1,3 +1,4 @@
+import { backgroundTextResult } from "@opensteer/harness";
 import {
   HarnessIdSchema,
   ModelIdSchema,
@@ -50,7 +51,8 @@ import {
   type HarnessProviderState,
   type HarnessSession,
   type HarnessSessionContext,
-  type HarnessTitleInput,
+  type HarnessGenerateTextInput,
+  type HarnessGenerateTextResult,
 } from "@opensteer/harness";
 import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -972,7 +974,6 @@ class AntigravityAdapter implements HarnessAdapter {
       hooks: {
         authenticationMethod: () => this.#authMethod,
         classifyError: classifyAntigravityAcpError,
-        generateTitle: (context, input) => this.#generateTitle(context, input),
         holdAssistant: {
           deadlineMs: 500,
           maxCharacters: 2_048,
@@ -1035,52 +1036,51 @@ class AntigravityAdapter implements HarnessAdapter {
     }
   }
 
-  async #generateTitle(context: HarnessSessionContext, input: HarnessTitleInput): Promise<string> {
-    await mkdir(context.providerState.privateStateRoot, { mode: 0o700, recursive: true });
-    const scratch = await mkdtemp(
-      join(context.providerState.privateStateRoot, "antigravity-title-"),
-    );
-    try {
-      const workspace = join(scratch, "workspace");
-      await mkdir(workspace, { mode: 0o700 });
-      const apiKey = await apiKeyFile(context.providerState).read();
-      const base = await prepareAntigravityTitleLaunch({
-        ...(apiKey ? { apiKey } : {}),
-        authMethod: this.#authMethod,
-        baseEnvironment: context.environment,
-        config: this.#config,
-        directory: scratch,
-        nodeExecutable: this.#options.nodeExecutable,
-        providerState: context.providerState,
-        runtime: this.#runtime,
-      });
-      const launch: HarnessProcessLaunch = context.wrapProcessLaunch({ ...base, cwd: workspace });
-      const generated = await generateContainedAcpTitle({
-        authenticationMethod: this.#authMethod,
-        clientInfo: { name: "zed", version: "0.0.0" },
-        initializeDeadlineMs,
-        launch,
-        modeId: "default",
-        onSessionId: (value) => {
-          this.#assertSessionReference(value);
-        },
-        prompt: [
-          "Name this Thread from only the input below.",
-          "Return only a short title.",
-          "",
-          input.prompt,
-        ].join("\n"),
-        protocolVersion: this.#runtime.protocolVersion,
-        sessionMetadata: { antigravity: { enabledTools: [] } },
-        signal: input.signal,
-        transformStdout: (stdout) => transformAntigravityStdout(stdout),
-      });
-      if ((await readdir(workspace)).length > 0) {
-        throw new Error("Antigravity wrote workspace files while naming the Thread");
+  async generateText(input: HarnessGenerateTextInput): Promise<HarnessGenerateTextResult> {
+    const { context } = input;
+    if (context.runtimeBoundary.kind !== "native-user")
+      return { ok: false, failure: "unavailable" };
+    return backgroundTextResult(input.signal, async () => {
+      await mkdir(context.scratchDirectory, { mode: 0o700, recursive: true });
+      const scratch = await mkdtemp(join(context.scratchDirectory, "antigravity-text-"));
+      try {
+        const workspace = join(scratch, "workspace");
+        await mkdir(workspace, { mode: 0o700 });
+        const apiKey = await apiKeyFile(context.providerState).read();
+        const base = await prepareAntigravityTitleLaunch({
+          ...(apiKey ? { apiKey } : {}),
+          authMethod: this.#authMethod,
+          baseEnvironment: context.environment,
+          config: this.#config,
+          directory: scratch,
+          nodeExecutable: this.#options.nodeExecutable,
+          providerState: context.providerState,
+          runtime: this.#runtime,
+        });
+        const launch: HarnessProcessLaunch = context.wrapProcessLaunch({ ...base, cwd: workspace });
+        const generated = await generateContainedAcpTitle({
+          authenticationMethod: this.#authMethod,
+          clientInfo: { name: "zed", version: "0.0.0" },
+          initializeDeadlineMs,
+          launch,
+          modeId: "default",
+          onSessionId: (value) => {
+            this.#assertSessionReference(value);
+          },
+          prompt: input.prompt,
+          modelId: input.modelSelection.nativeModelId ?? input.modelSelection.modelId,
+          protocolVersion: this.#runtime.protocolVersion,
+          sessionMetadata: { antigravity: { enabledTools: [] } },
+          signal: input.signal,
+          transformStdout: (stdout) => transformAntigravityStdout(stdout),
+        });
+        if ((await readdir(workspace)).length > 0) {
+          throw new Error("Antigravity wrote workspace files while naming the Thread");
+        }
+        return generated.text;
+      } finally {
+        await rm(scratch, { force: true, recursive: true });
       }
-      return generated.text;
-    } finally {
-      await rm(scratch, { force: true, recursive: true });
-    }
+    });
   }
 }

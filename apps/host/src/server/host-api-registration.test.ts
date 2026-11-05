@@ -25,6 +25,22 @@ const session: AuthenticatedSession = {
   },
 };
 const commands = [
+  {
+    type: "integration.authorization.return",
+    attemptId: createIntegrationId("oauthAttempt"),
+    returnProof: "r".repeat(43),
+  },
+  { type: "connection.revoke", connectionId: `mcn_${crypto.randomUUID()}` },
+  {
+    type: "connection.authorize",
+    requestId: "r".repeat(43),
+    decision: {
+      kind: "approve",
+      label: "Agent",
+      accessMode: "approval-required",
+      reach: { kind: "user" },
+    },
+  },
   { type: "session.revoke", sessionId: createId("authSession") },
   { type: "workspace.delete", workspaceId: createId("workspace") },
   { type: "integration.uninstall", installationId: createIntegrationId("installation") },

@@ -469,6 +469,21 @@ export const passwordsNeedsReset =
   "Set up Opensteer Passwords again. The passwords saved here before can’t be opened on this Mac.";
 export const passwordsDevelopmentBanner = "Development build: use test passwords only.";
 
+/** The line that offers Passwords after a sign-in found it not set up. */
+export const passwordsSuggestionName = "Opensteer Passwords";
+export const passwordsSuggestionLead = "lets agents sign in for you.";
+export const passwordsSuggestionAction = "Set up";
+export function passwordsSuggestionElsewhere(homeName: string | null): string {
+  return `Set it up on ${homeName ?? "your Mac"}.`;
+}
+export function passwordsSuggestionDone(site: string): string {
+  return `Passwords is set up. Add your ${browserSiteLabel(site)} login, then tell your agent.`;
+}
+/** Dismissed with the usage notices: one small per-device list, one line of it per Deployment. */
+export function passwordsSuggestionKey(deploymentId: string, userId: string): string {
+  return `passwords-suggestion:${deploymentId}:${userId}`;
+}
+
 /** What Settings shows on the Mac itself, read from what the Mac reports. */
 export type PasswordsSettingsState =
   | { readonly kind: "unsupported"; readonly message: string }

@@ -11,7 +11,7 @@ import { plist } from "@opensteer/shared/plist";
  * The validated external input selects signing; Swift derives peer authority
  * from the running helper's own signature. Non-release builds without signing input pass
  * OPENSTEER_DEV_TRUST to Swift. Distributable release builds require valid signing
- * input and never pass that condition. See ../SIGNING.md. --sign, if supplied, must match the input identity.
+ * input and never pass that condition. See docs/releases.md#signing. --sign, if supplied, must match the input identity.
  */
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
@@ -177,7 +177,7 @@ async function provisioningProfile(): Promise<string> {
     throw new Error(
       "A release Opensteer Passwords needs its Developer ID provisioning profile: set " +
         "OPENSTEER_PASSWORDS_PROVISIONING_PROFILE to the .provisionprofile file for " +
-        `${opensteerAppleTeamId}.com.opensteer.passwords (see apps/desktop/native/passwords/README.md).`,
+        `${opensteerAppleTeamId}.com.opensteer.passwords (see docs/releases.md#signing).`,
     );
   }
   const profile = path.resolve(value);

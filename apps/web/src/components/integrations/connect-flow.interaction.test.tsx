@@ -307,6 +307,71 @@ describe("ConnectFlow", () => {
     expect(operations.beginAuthorization).toHaveBeenCalledTimes(2);
   });
 
+  describe("choosing the app button after a sign-in did not finish", () => {
+    const ended = (status: "denied" | "expired" | "failed") => ({
+      connectionId: null,
+      expiresAt: started.expiresAt,
+      failureCode: null,
+      status,
+    });
+    const label = "Use the Open Opensteer button";
+
+    it("starts a fresh sign-in that returns by the button, once the person asks", async () => {
+      const operations = fakeOperations({ appButton: true });
+      render({ operations });
+      await click("Continue to");
+      await click("Cancel");
+      expect(buttons()).toContain(label);
+      await click(label);
+      expect(operations.beginAuthorization).toHaveBeenCalledTimes(2);
+      expect(vi.mocked(operations.beginAuthorization).mock.calls[0]?.[0]).not.toHaveProperty(
+        "returnRoute",
+      );
+      expect(vi.mocked(operations.beginAuthorization).mock.calls[1]?.[0]).toMatchObject({
+        returnRoute: "app-button",
+      });
+      expect(buttons()).not.toContain(label);
+    });
+
+    it.each(["expired", "failed"] as const)("offers it after a sign-in %s", async (status) => {
+      const operations = fakeOperations({ appButton: true, status: ended(status) });
+      render({ operations });
+      await click("Continue to");
+      expect(buttons()).toContain(label);
+    });
+
+    it("leaves a plain retry on the automatic return", async () => {
+      const operations = fakeOperations({ appButton: true, status: ended("expired") });
+      render({ operations });
+      await click("Continue to");
+      await click("Continue to");
+      expect(vi.mocked(operations.beginAuthorization).mock.calls[1]?.[0]).not.toHaveProperty(
+        "returnRoute",
+      );
+    });
+
+    it("does not offer it when the person declined at the provider", async () => {
+      const operations = fakeOperations({ appButton: true, status: ended("denied") });
+      render({ operations });
+      await click("Continue to");
+      expect(buttons()).not.toContain(label);
+    });
+
+    it("does not offer it where the app could not have returned by itself", async () => {
+      const operations = fakeOperations({ status: ended("expired") });
+      render({ operations });
+      await click("Continue to");
+      expect(buttons()).not.toContain(label);
+    });
+
+    it("asks about the attempt that ended", async () => {
+      const operations = fakeOperations({ appButton: true, status: ended("expired") });
+      render({ operations });
+      await click("Continue to");
+      expect(operations.appButtonOffered).toHaveBeenCalledWith(started.attemptId, "expired");
+    });
+  });
+
   it("returns to sign-in when GitHub rejects the sign-in on a recheck", async () => {
     const connectionId = createIntegrationId("connection");
     const operations = githubOperations(connectionId);
@@ -643,6 +708,7 @@ async function submit(): Promise<void> {
 
 function fakeOperations(
   input: {
+    readonly appButton?: boolean;
     readonly cancelStatus?: IntegrationAuthorizationStatus;
     readonly reloaded?: IntegrationDashboard;
     readonly saved?: IntegrationDashboard["applications"][number];
@@ -652,6 +718,10 @@ function fakeOperations(
 ): ConnectOperations {
   let repositoryCheck = 0;
   return {
+    appButtonOffered: vi.fn(
+      (_attemptId: string, status: IntegrationAuthorizationStatus["status"]) =>
+        input.appButton === true && status !== "denied",
+    ),
     // Without a status the sign-in is still waiting at the provider.
     awaitAuthorization: vi.fn((): Promise<IntegrationAuthorizationStatus> =>
       input.status ? Promise.resolve(input.status) : new Promise(() => {}),

@@ -14,6 +14,91 @@ afterEach(async () => {
 });
 
 describe("integration routes", () => {
+  it("carries a desktop return port to the service", async () => {
+    const ownerUserId = createId("user");
+    const beginAuthorization = vi.fn(async () => ({
+      attemptId: "ioa_00000000-0000-4000-8000-000000000001",
+      expiresAt: new Date("2030-01-01T00:00:00Z"),
+      launchTicket: "t".repeat(43),
+    }));
+    await handleIntegrationCommand(
+      { integrations: { beginAuthorization } } as never,
+      {
+        type: "integration.authorization.begin",
+        idempotencyKey: "begin-port",
+        input: {
+          appReturnPort: 48_203,
+          definitionId: "google",
+          finish: "app",
+          returnPath: "/integrations",
+          surface: "desktop",
+        },
+      },
+      testHostApiContext(ownerUserId),
+    );
+    expect(beginAuthorization).toHaveBeenCalledWith(
+      expect.objectContaining({ appReturnPort: 48_203, finish: "app" }),
+    );
+  });
+
+  it.each([undefined, "app"] as const)("forwards the requested finish mode: %s", async (finish) => {
+    const ownerUserId = createId("user");
+    const attemptId = createIntegrationId("oauthAttempt");
+    const beginAuthorization = vi.fn(async () => ({
+      attemptId,
+      expiresAt: new Date("2030-01-01T00:00:00Z"),
+      launchTicket: "t".repeat(43),
+    }));
+    await handleIntegrationCommand(
+      { integrations: { beginAuthorization } } as never,
+      {
+        type: "integration.authorization.begin",
+        idempotencyKey: "begin-app",
+        input: {
+          definitionId: "google",
+          returnPath: "/integrations",
+          surface: "desktop",
+          ...(finish ? { finish } : {}),
+        },
+      },
+      testHostApiContext(ownerUserId),
+    );
+    expect(beginAuthorization).toHaveBeenCalledWith({
+      definitionId: "google",
+      ownerUserId,
+      requestSurface: "canonical",
+      returnPath: "/integrations",
+      surface: "desktop",
+      ...(finish ? { finish } : {}),
+    });
+  });
+
+  it.each([false, true])(
+    "returns the API-key command's exact connection id (reconnect: %s)",
+    async (reconnect) => {
+      const ownerUserId = createId("user");
+      const connectionId = createIntegrationId("connection");
+      const connectApiKey = vi.fn(async () => ({ id: connectionId }));
+      const input = {
+        authMethodId: "api-key",
+        definitionId: "test-integration",
+        values: { apiKey: "test-api-key" },
+        ...(reconnect ? { connectionId } : {}),
+      };
+      await expect(
+        handleIntegrationCommand(
+          { integrations: { connectApiKey } } as never,
+          { type: "integration.apiKey.connect", idempotencyKey: "connect-key", input },
+          testHostApiContext(ownerUserId),
+        ),
+      ).resolves.toEqual({ type: "integration.apiKey.connect", connectionId });
+      expect(connectApiKey).toHaveBeenCalledExactlyOnceWith(input, {
+        ownerUserId,
+        requestId: "test-request",
+      });
+    },
+  );
+
   it("dispatches computer disconnects without opening provider credentials", async () => {
     const userId = createId("user");
     const connectionId = createIntegrationId("connection");

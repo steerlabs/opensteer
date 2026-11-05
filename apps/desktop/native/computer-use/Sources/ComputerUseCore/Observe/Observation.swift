@@ -1,7 +1,7 @@
 import CoreGraphics
 import Foundation
 
-/// The observation of §2. Every observation is a full snapshot and indices are
+/// One observation. Every observation is a full snapshot and indices are
 /// reassigned each time, so nothing here is a difference from anything.
 public struct Observation: Encodable, Sendable {
   public let snapshot: String

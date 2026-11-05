@@ -343,6 +343,9 @@ export function startMachineAccessHost(
   databaseUrl: string,
   options: {
     readonly logger?: Record<string, unknown>;
+    readonly phoneUpdateRelease?: NonNullable<
+      Parameters<typeof createHostRuntime>[1]
+    >["phoneUpdateRelease"];
     readonly browserActivityClock?: import("@opensteer/shared/clock").Clock;
     /** The name its administrator gave the Deployment; unnamed otherwise. */
     readonly deploymentName?: string;
@@ -396,6 +399,7 @@ async function createMachineAccessHost(
   };
   try {
     runtime = await createHostRuntime(config, {
+      ...(options.phoneUpdateRelease ? { phoneUpdateRelease: options.phoneUpdateRelease } : {}),
       ...(options.browserActivityClock
         ? { browserActivityClock: options.browserActivityClock }
         : {}),
@@ -1092,6 +1096,7 @@ export async function connectCallerMachine(
       "browser-page-input-v1",
       "thread-state-v1",
       "requester-time-zone-v1",
+      "agent-tools-plan-v1",
       "execution-plane-v2",
       ...(input.restartsRuns ? ["attempts-v1"] : []),
     ],
@@ -1224,7 +1229,7 @@ export async function connectCallerMachine(
 
 /** One execution of a Run on the caller: its binding, its bearer, and where its events resume. */
 export interface CallerAttempt {
-  readonly agentControlToken: string;
+  readonly toolsToken: string;
   readonly bindingGeneration: number;
   /** The ordinal this attempt's next event takes. */
   readonly nextOrdinal: number;
@@ -1232,7 +1237,7 @@ export interface CallerAttempt {
 
 export interface CallerRun {
   /** The bearer the Run holds now; a refresh or a later attempt replaces it. */
-  readonly agentControlToken: string;
+  readonly toolsToken: string;
   /** The attempt the caller is executing now. */
   readonly attempt: CallerAttempt;
   readonly integrationTools: { readonly token: string; readonly url: string };
@@ -1389,13 +1394,13 @@ export async function acceptCallerRun(
   };
   let current = await take(command);
   return {
-    get agentControlToken() {
-      return current.agentControlToken;
+    get toolsToken() {
+      return current.toolsToken;
     },
     get attempt() {
       return current;
     },
-    integrationTools: context.integrationTools,
+    integrationTools: context.agentTools,
     complete: async () => {
       release();
       await report(current, "run.completed", { status: "completed" });
@@ -1423,7 +1428,7 @@ export async function acceptCallerRun(
         { type: "host.grants.credentials" }
       >;
       if (result.status === "issued") {
-        current = { ...current, agentControlToken: result.credentials.agentControl };
+        current = { ...current, toolsToken: result.credentials.agentTools };
       }
       return result.status;
     },
@@ -1546,7 +1551,7 @@ function startAttempt(caller: CallerMachine, command: ExecuteCommand): CallerAtt
   );
   caller.primary.activeRunIds = [...caller.primary.activeRunIds, context.runId];
   return {
-    agentControlToken: context.agentControl.token,
+    toolsToken: context.agentTools.token,
     bindingGeneration: context.bindingGeneration,
     nextOrdinal: firstOrdinal + 1,
   };
@@ -1653,7 +1658,7 @@ export async function setUpCallerLaunchDirectory(
   host: MachineAccessHost,
   run: CallerRun,
   /** A bearer pinned for this directory, where the Run's current one would be read otherwise. */
-  agentControlToken: () => string = () => run.agentControlToken,
+  toolsToken: () => string = () => run.toolsToken,
 ): Promise<CallerLaunch> {
   const privateStateRoot = await mkdtemp(join(tmpdir(), "opensteer-ma-private-"));
   const workspacePath = await mkdtemp(join(tmpdir(), "opensteer-ma-workspace-"));
@@ -1683,8 +1688,8 @@ export async function setUpCallerLaunchDirectory(
   }
   setup.relay.bind({
     credentials: {
-      get agentControl() {
-        return agentControlToken();
+      get agentTools() {
+        return toolsToken();
       },
     },
     runId: run.runId,

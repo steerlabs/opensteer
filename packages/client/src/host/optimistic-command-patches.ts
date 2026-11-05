@@ -336,7 +336,7 @@ function replaceHarness(
   return {
     ...snapshot,
     harnesses: snapshot.harnesses.map((candidate) =>
-      candidate.id === harness.id ? harness : candidate,
+      candidate.id === harness.id ? { ...candidate, ...harness } : candidate,
     ),
   };
 }
@@ -348,7 +348,9 @@ function replaceHarnessAndNormalizeDefaults(
   return {
     ...snapshot,
     harnesses: normalizeHarnessDefaults(
-      snapshot.harnesses.map((candidate) => (candidate.id === harness.id ? harness : candidate)),
+      snapshot.harnesses.map((candidate) =>
+        candidate.id === harness.id ? { ...candidate, ...harness } : candidate,
+      ),
       harness.environmentId,
       harness.driverKind,
       harness.enabled && harness.isDefault ? harness.id : undefined,
@@ -405,7 +407,7 @@ function setDefaultHarness(
   return {
     ...snapshot,
     harnesses: snapshot.harnesses.map((candidate) => {
-      if (candidate.id === harness.id) return harness;
+      if (candidate.id === harness.id) return { ...candidate, ...harness };
       if (
         candidate.environmentId !== harness.environmentId ||
         candidate.driverKind !== harness.driverKind

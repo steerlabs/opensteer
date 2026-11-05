@@ -1,3 +1,7 @@
+import {
+  administrationCommand,
+  type AdministrationCommandIdentity,
+} from "./administration-command.js";
 import { pluginPolicyAllows } from "./plugin-settings-store.js";
 import { randomUUID } from "node:crypto";
 import {
@@ -35,16 +39,40 @@ export class SpecialistStore {
       });
   }
 
-  async add(input: { workspaceId: WorkspaceId; pluginId: string; actorUserId: UserId }) {
+  /**
+   * Adding a specialist is the owner's consent for it to use their accounts.
+   * `autoBind: false` registers it for an agent, which may not give that
+   * consent: every requirement then waits for the owner's choice.
+   */
+  async add(input: {
+    workspaceId: WorkspaceId;
+    pluginId: string;
+    actorUserId: UserId;
+    autoBind?: boolean;
+    activate?: boolean;
+  }) {
     return this.database.transaction().execute((tx) => this.addIn(tx, input));
   }
 
   async addIn(
     tx: Kysely<DatabaseSchema>,
-    input: { workspaceId: WorkspaceId; pluginId: string; actorUserId: UserId },
+    input: {
+      workspaceId: WorkspaceId;
+      pluginId: string;
+      actorUserId: UserId;
+      autoBind?: boolean;
+      activate?: boolean;
+    },
   ) {
+    const autoBind = input.autoBind ?? true;
     await new SpecialistStore(tx).authorize(input.workspaceId, input.actorUserId);
-    await new PluginStore(tx).activateIn(tx, input.pluginId, input.workspaceId, input.actorUserId);
+    if (input.activate !== false)
+      await new PluginStore(tx).activateIn(
+        tx,
+        input.pluginId,
+        input.workspaceId,
+        input.actorUserId,
+      );
     const plugin = await tx
       .selectFrom("plugins")
       .innerJoin("pluginVersions", "pluginVersions.id", "plugins.currentVersionId")
@@ -69,8 +97,16 @@ export class SpecialistStore {
         code: "conflict",
         message: "Specialist cleanup is pending; retry removal before adding it again",
       });
-    if (previous?.pluginVersionId === plugin.id)
+    if (previous?.pluginVersionId === plugin.id) {
+      // Only the owner's own add gives consent; an agent's re-add never withdraws it.
+      if (autoBind && !previous.autoBind)
+        await tx
+          .updateTable("specialists")
+          .set({ autoBind: true, updatedAt: new Date() })
+          .where("id", "=", previous.id)
+          .execute();
       return new SpecialistStore(tx).refresh(previous.id);
+    }
     const now = new Date();
     const id = previous?.id ?? randomUUID();
     await tx
@@ -84,6 +120,7 @@ export class SpecialistStore {
         createdBy: input.actorUserId,
         status: "pending",
         bindings: jsonValue([]),
+        autoBind,
         createdAt: now,
         updatedAt: now,
       })
@@ -92,6 +129,7 @@ export class SpecialistStore {
           pluginVersionId: plugin.id,
           status: "pending",
           bindings: jsonValue([]),
+          autoBind,
           updatedAt: now,
         }),
       )
@@ -187,7 +225,7 @@ export class SpecialistStore {
       const resourceId =
         previous && !previous.rebind && candidates.some((c) => c.resourceId === previous.resourceId)
           ? previous.resourceId
-          : !previous && candidates.length === 1
+          : !previous && row.autoBind && candidates.length === 1
             ? candidates[0]!.resourceId
             : null;
       const binding = resourceId
@@ -245,6 +283,24 @@ export class SpecialistStore {
     };
   }
 
+  async summaries(workspaceId: WorkspaceId, actorUserId: UserId) {
+    await this.authorize(workspaceId, actorUserId);
+    // Agent reads must not refresh: refresh can automatically bind a sole candidate.
+    return this.database
+      .selectFrom("specialists")
+      .innerJoin("plugins", "plugins.id", "specialists.pluginId")
+      .select([
+        "specialists.id",
+        "specialists.workspaceId",
+        "specialists.pluginId",
+        "specialists.status",
+        "plugins.name as plugin",
+      ])
+      .where("specialists.workspaceId", "=", workspaceId)
+      .orderBy("specialists.createdAt")
+      .execute();
+  }
+
   async list(workspaceId: WorkspaceId, actorUserId: UserId) {
     await this.authorize(workspaceId, actorUserId);
     const rows = await this.database
@@ -274,12 +330,18 @@ export class SpecialistStore {
     this.removalHandler = handler;
   }
 
-  async remove(input: { workspaceId: WorkspaceId; specialistId: string; actorUserId: UserId }) {
+  async remove(input: {
+    administration?: AdministrationCommandIdentity | undefined;
+    workspaceId: WorkspaceId;
+    specialistId: string;
+    actorUserId: UserId;
+  }) {
     await this.authorize(input.workspaceId, input.actorUserId);
     await this.cleanup(input);
   }
 
   private async cleanup(input: {
+    administration?: AdministrationCommandIdentity | undefined;
     workspaceId: WorkspaceId;
     specialistId: string;
     actorUserId: UserId;
@@ -289,7 +351,15 @@ export class SpecialistStore {
       .select("id")
       .where("id", "=", input.specialistId)
       .executeTakeFirst();
-    if (!exists) return;
+    if (!exists) {
+      if (input.administration)
+        await this.database
+          .transaction()
+          .execute((transaction) =>
+            administrationCommand(transaction, input.administration, async () => {}),
+          );
+      return;
+    }
     const removed = await this.database
       .updateTable("specialists")
       .set({ removedAt: new Date(), status: "removing" })
@@ -325,12 +395,16 @@ export class SpecialistStore {
         .execute();
       throw error;
     }
-    await this.database
-      .deleteFrom("specialists")
-      .where("id", "=", input.specialistId)
-      .where("workspaceId", "=", input.workspaceId)
-      .where("ownerUserId", "=", input.actorUserId)
-      .execute();
+    await this.database.transaction().execute((tx) =>
+      administrationCommand(tx, input.administration, async () => {
+        await tx
+          .deleteFrom("specialists")
+          .where("id", "=", input.specialistId)
+          .where("workspaceId", "=", input.workspaceId)
+          .where("ownerUserId", "=", input.actorUserId)
+          .execute();
+      }),
+    );
   }
 
   async assertRunnable(id: string, workspaceId: WorkspaceId, requester: UserId) {

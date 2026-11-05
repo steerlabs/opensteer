@@ -3,7 +3,9 @@ import { act } from "react";
 import { expect, it, vi } from "vitest";
 import { PersonShowMessageSchema, computerAppIdentityKey } from "@opensteer/protocol";
 import { createId } from "@opensteer/core";
+import { VoiceController } from "@opensteer/client/voice";
 import {
+  click,
   client,
   element,
   goTo,
@@ -165,4 +167,65 @@ it("leaves other focused work, hidden windows and other conversations alone with
   expect(history).toHaveLength(before);
   await act(async () => client.receivePersonShow(message));
   expect(history.at(-1)!.path).toBe(`/threads/${target.id}`);
+});
+
+it("keeps following its Run with a place over the conversation and the dock closed", async () => {
+  await mount("/");
+  vi.spyOn(document, "hasFocus").mockReturnValue(true);
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  const snapshot = client.getSnapshot();
+  const source = snapshot.threads.find((thread) => thread.id === snapshot.homeThreadId)!;
+  const show = (target: object) =>
+    act(async () =>
+      client.receivePersonShow(
+        PersonShowMessageSchema.parse({
+          type: "host.show",
+          runId: createId("run"),
+          workspaceId: source.workspaceId,
+          threadId: source.id,
+          target,
+        }),
+      ),
+    );
+  const place = pageTab();
+  if (place.destination.kind !== "browser") throw new Error("Expected a browser tab");
+  await show({ tabId: place.destination.tabId });
+  await click(element('[aria-label="Hide the conversation"]'));
+  const threadId = createId("thread");
+  await show({ threadId });
+  expect(history.at(-1)!.path).toBe(`/threads/${threadId}`);
+});
+
+it("opens what the voice call's agent shows from any screen, and ignores a call it replaced", async () => {
+  await mount("/");
+  // The person talks while another window or a page holds focus.
+  vi.spyOn(document, "hasFocus").mockReturnValue(false);
+  const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  const snapshot = client.getSnapshot();
+  const home = snapshot.threads.find((thread) => thread.id === snapshot.homeThreadId)!;
+  const target = snapshot.threads.find((thread) => thread.id !== home.id)!;
+  const call = {
+    threadId: createId("thread"),
+    runId: createId("run"),
+    workspaceId: home.workspaceId,
+  };
+  let current: typeof call | null = call;
+  vi.spyOn(VoiceController.prototype, "call").mockImplementation(() => current);
+  const showed = vi.spyOn(VoiceController.prototype, "showed");
+  const show = (from: typeof call) =>
+    PersonShowMessageSchema.parse({ type: "host.show", ...from, target: { threadId: target.id } });
+  await act(async () => goTo!("/settings/ai-engines"));
+  await act(async () => client.receivePersonShow(show(call)));
+  expect(history.at(-1)!.path).toBe(`/threads/${target.id}`);
+  expect(showed).toHaveBeenCalledTimes(1);
+
+  await act(async () => goTo!("/"));
+  const before = history.length;
+  visibility.mockReturnValue("hidden");
+  await act(async () => client.receivePersonShow(show(call)));
+  visibility.mockReturnValue("visible");
+  current = { ...call, runId: createId("run") };
+  await act(async () => client.receivePersonShow(show(call)));
+  expect(history).toHaveLength(before);
+  expect(showed).toHaveBeenCalledTimes(1);
 });

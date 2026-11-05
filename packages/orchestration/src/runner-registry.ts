@@ -134,10 +134,6 @@ export interface RunnerDisconnectScope {
   readonly triggerOccurrenceIds: readonly TriggerOccurrenceId[];
 }
 
-export type RunnerThreadTitle = Extract<
-  RunnerOperationalMessage,
-  { readonly type: "runner.thread-title" }
->;
 export type RunnerLive = Extract<RunnerOperationalMessage, { readonly type: "runner.live" }>;
 /** What a refused Runner report is answered for: one Run, under one binding. */
 export type RefusedRunnerReport = Pick<PendingAgentEvent, "bindingGeneration" | "runId">;
@@ -198,7 +194,6 @@ export interface RunnerRegistryHooks {
     identity: RunnerIdentity,
     report: import("@opensteer/protocol").RunnerSkillMetadataReport,
   ): Promise<void>;
-  onThreadTitle?(identity: RunnerIdentity, report: RunnerThreadTitle): Promise<void>;
   /**
    * Fires once the connection is live and reachable, which `authorize` cannot
    * do: authorization runs before the connection is inserted, so nothing it
@@ -319,6 +314,17 @@ export type WorkspaceLocalRequest = DistributiveOmit<HostWorkspaceLocalRequest, 
 
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 
+type BackgroundTextResult = Extract<
+  RunnerOperationalMessage,
+  { readonly type: "runner.background-text-result" }
+>["result"];
+
+interface PendingBackgroundText {
+  readonly expiresAt: number;
+  readonly reject: (error: unknown) => void;
+  readonly resolve: (result: BackgroundTextResult) => void;
+}
+
 interface PendingModelServers {
   readonly reject: (error: unknown) => void;
   readonly resolve: (servers: readonly ModelServer[]) => void;
@@ -366,6 +372,7 @@ interface RunnerConnection {
     string,
     { resolve: (result: RunnerVoiceResult) => void; reject: (error: unknown) => void }
   >;
+  readonly pendingBackgroundText: Map<string, PendingBackgroundText>;
   readonly pendingModelServers: Map<string, PendingModelServers>;
   readonly pendingTriggerPrograms: Map<TriggerOccurrenceId, PendingTriggerProgram>;
   readonly pendingWorkspaceLocal: Map<string, PendingWorkspaceLocal>;
@@ -587,6 +594,7 @@ export class RunnerRegistry {
       pendingHarnessAuthentications: new Map(),
       pendingModelServers: new Map(),
       pendingVoice: new Map(),
+      pendingBackgroundText: new Map(),
       pendingTriggerPrograms: new Map(),
       pendingWorkspaceLocal: new Map(),
       pendingApps: new Map(),
@@ -1331,31 +1339,12 @@ export class RunnerRegistry {
         message: "This computer is not connected",
         retryable: true,
       });
-    const agentSupported = connection.identity.capabilities.includes("voice-agent-v1");
-    const requestedAgent = command.action === "start" && command.agent === true;
-    const requestedFind = command.action === "start" && command.find === true;
-    const findSupported =
-      agentSupported && connection.identity.capabilities.includes("voice-find-v1");
-    if (!agentSupported && ["next", "answer", "context"].includes(command.action))
-      throw new OpensteerError({
-        code: "conflict",
-        reason: "voice-ended",
-        message: "This computer does not support voice agents.",
-      });
-    if (!connection.identity.capabilities.includes("voice-v1"))
+    if (!connection.identity.capabilities.includes("voice-run-v1"))
       throw new OpensteerError({
         code: "conflict",
         reason: "voice-runner-unsupported",
         message: "Update Opensteer on this computer to use voice.",
       });
-    if (command.action === "start" && !agentSupported) {
-      const { agent: _agent, find: _find, ...legacy } = command;
-      command = legacy;
-    }
-    if (command.action === "start" && (!findSupported || !requestedAgent)) {
-      const { find: _find, ...withoutFind } = command;
-      command = withoutFind;
-    }
     const requestId = CorrelationIdSchema.parse(`voice:${randomUUID()}`);
     const pending = deferred<RunnerVoiceResult>();
     connection.pendingVoice.set(requestId, pending);
@@ -1375,15 +1364,7 @@ export class RunnerRegistry {
         signal,
         "This computer didn't answer the voice request in time.",
       );
-      return requestedAgent && result.ok
-        ? {
-            ...result,
-            agent: agentSupported && result.agent === true,
-            ...(requestedFind
-              ? { find: findSupported && result.agent === true && result.find === true }
-              : {}),
-          }
-        : result;
+      return result;
     } finally {
       connection.pendingVoice.delete(requestId);
     }
@@ -1580,6 +1561,41 @@ export class RunnerRegistry {
       return result;
     } finally {
       connection.pendingWorkspaceLocal.delete(request.requestId);
+    }
+  }
+
+  /** One ephemeral request, bound to this exact authenticated connection until its deadline. */
+  async backgroundText(
+    request: Omit<
+      Extract<HostToRunnerMessage, { type: "host.background-text" }>,
+      keyof RunnerConnectionFence
+    >,
+    signal: AbortSignal,
+  ) {
+    const connection = this.#byEnvironment.get(request.environmentId);
+    if (!connection?.attached || !connection.identity.capabilities.includes("background-text-v1")) {
+      throw new OpensteerError({ code: "runner_offline", message: "Background Runner is offline" });
+    }
+    const expiresAt = Date.parse(request.deadline);
+    const pending = deferred<BackgroundTextResult>();
+    connection.pendingBackgroundText.set(request.attemptId, { ...pending, expiresAt });
+    try {
+      await connection.peer.send({ ...request, ...connection.identity.fence });
+      const result = await withDeadline(
+        pending.promise,
+        Math.max(1, expiresAt - Date.now()),
+        signal,
+        "Background text timed out",
+      );
+      if (
+        this.#byEnvironment.get(request.environmentId) !== connection ||
+        Date.now() >= expiresAt
+      ) {
+        throw new OpensteerError({ code: "conflict", message: "Background attempt expired" });
+      }
+      return result;
+    } finally {
+      connection.pendingBackgroundText.delete(request.attemptId);
     }
   }
 
@@ -2042,19 +2058,12 @@ export class RunnerRegistry {
         this.#hooks.onLive?.(connection.identity, message);
         break;
       }
-      case "runner.thread-title": {
-        const owned = connection.ownedRunBindings.get(message.runId);
-        if (
-          !owned ||
-          connection.revokedRunIds.has(message.runId) ||
-          !connection.identity.environmentIds.includes(message.environmentId) ||
-          owned.bindingGeneration !== message.bindingGeneration ||
-          owned.environmentId !== message.environmentId ||
-          owned.threadId !== message.threadId ||
-          owned.workspaceId !== message.workspaceId
-        )
-          break;
-        await this.#runHook(() => this.#hooks.onThreadTitle?.(connection.identity, message));
+      case "runner.background-text-result": {
+        const pending = connection.pendingBackgroundText.get(message.attemptId);
+        if (pending && Date.now() < pending.expiresAt) {
+          connection.pendingBackgroundText.delete(message.attemptId);
+          pending.resolve(message.result);
+        }
         break;
       }
       case "runner.trigger-result":
@@ -2464,6 +2473,7 @@ export class RunnerRegistry {
     for (const pending of connection.pendingHarnessAuthentications.values()) pending.reject(error);
     for (const pending of connection.pendingModelServers.values()) pending.reject(error);
     for (const pending of connection.pendingVoice.values()) pending.reject(error);
+    for (const pending of connection.pendingBackgroundText.values()) pending.reject(error);
     for (const pending of connection.pendingTriggerPrograms.values()) pending.reject(error);
     for (const pending of connection.pendingWorkspaceLocal.values()) pending.reject(error);
     for (const pending of connection.pendingApps.values()) pending.reject(error);
@@ -2472,6 +2482,7 @@ export class RunnerRegistry {
     connection.pendingHarnessAuthentications.clear();
     connection.pendingModelServers.clear();
     connection.pendingVoice.clear();
+    connection.pendingBackgroundText.clear();
     connection.pendingTriggerPrograms.clear();
     connection.pendingWorkspaceLocal.clear();
     connection.pendingApps.clear();

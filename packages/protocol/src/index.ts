@@ -1,6 +1,6 @@
 export * from "./access.js";
 export * from "./attachments.js";
-export * from "./agent-control.js";
+export * from "./run-plans.js";
 export * from "./browser.js";
 export * from "./browser-video.js";
 export * from "./places.js";
@@ -41,8 +41,11 @@ export * from "./voice.js";
 
 export * from "./apps.js";
 
+export * from "./agent-connections.js";
 export * from "./settings.js";
 export * from "./runner-skill-metadata.js";
 export { validateBrowserH264 } from "./h264.js";
 
 export * from "./browser-popup.js";
+
+export * from "./automatic-models.js";

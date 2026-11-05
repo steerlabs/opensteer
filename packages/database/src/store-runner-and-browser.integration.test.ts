@@ -1545,16 +1545,13 @@ describeStore("PostgreSQL store", (it) => {
       title: "Bound thread",
       workspaceId: workspace.id,
     });
-    expect(thread.capabilityProfileId).toBe("main");
+    expect(thread.inheritsMain).toBe(true);
     const ownerPrincipal = await database
       .selectFrom("principals")
       .select("id")
       .where("userId", "=", userId)
       .executeTakeFirstOrThrow();
-    // The durable rule is a ceiling, not an equality: a root Thread cannot
-    // claim a delegated child's profile, while a Thread that deliberately runs
-    // below its owner's Main authority — a channel route in "anyone" mode — is
-    // allowed exactly because it asks for less.
+    // A child cannot claim consent different from its immutable parent.
     const bypassThreadId = createId("thread");
     const rootThreadValues = {
       icon: null,
@@ -1576,25 +1573,40 @@ describeStore("PostgreSQL store", (it) => {
         .insertInto("threads")
         .values({
           ...rootThreadValues,
-          capabilityProfileId: "delegated",
+          inheritsMain: false,
+          parentThreadId: thread.id,
+          lineageRootThreadId: thread.lineageRootThreadId,
           id: bypassThreadId,
           title: "Mismatched capability bypass",
         })
         .execute(),
-    ).rejects.toThrow(/capability profile does not match/u);
+    ).rejects.toThrow(/consent does not match/u);
     const reducedThreadId = createId("thread");
     await expect(
       database
         .insertInto("threads")
         .values({
           ...rootThreadValues,
-          capabilityProfileId: "workspace",
+          inheritsMain: false,
           id: reducedThreadId,
           lineageRootThreadId: reducedThreadId,
           title: "Deliberately reduced capability",
         })
         .execute(),
     ).resolves.toHaveLength(1);
+    await expect(
+      database
+        .insertInto("threads")
+        .values({
+          ...rootThreadValues,
+          id: createId("thread"),
+          parentThreadId: reducedThreadId,
+          lineageRootThreadId: reducedThreadId,
+          inheritsMain: true,
+          title: "Escalated child",
+        })
+        .execute(),
+    ).rejects.toThrow(/consent does not match/u);
     const childInput = {
       createdBy: userId,
       environmentId,
@@ -1607,7 +1619,7 @@ describeStore("PostgreSQL store", (it) => {
     } as const;
     const { thread: child } = await store.createThread(childInput);
     expect(child.parentThreadId).toBe(thread.id);
-    expect(child.capabilityProfileId).toBe("delegated");
+    expect(child.inheritsMain).toBe(true);
     const repeatedChild = await store.createThread(childInput);
     expect(repeatedChild.wasDuplicate).toBe(true);
     expect(repeatedChild.thread.id).toBe(child.id);
@@ -1636,6 +1648,21 @@ describeStore("PostgreSQL store", (it) => {
       status: "ready",
     });
     expect(otherWorkspace.kind).toBe("project");
+    const escalatedProjectRootId = createId("thread");
+    await expect(
+      database
+        .insertInto("threads")
+        .values({
+          ...rootThreadValues,
+          workspaceId: otherWorkspace.id,
+          id: escalatedProjectRootId,
+          lineageRootThreadId: escalatedProjectRootId,
+          inheritsMain: true,
+          title: "Project cannot claim Main consent",
+        })
+        .execute(),
+    ).rejects.toThrow(/consent exceeds its durable authority/u);
+
     const crossWorkspaceCreation = await store.createThread({
       createdBy: userId,
       environmentId,
@@ -1649,7 +1676,7 @@ describeStore("PostgreSQL store", (it) => {
     const crossWorkspaceChild = crossWorkspaceCreation.thread;
     expect(crossWorkspaceChild.parentThreadId).toBe(thread.id);
     expect(crossWorkspaceChild.workspaceId).toBe(otherWorkspace.id);
-    expect(crossWorkspaceChild.capabilityProfileId).toBe("delegated");
+    expect(crossWorkspaceChild.inheritsMain).toBe(true);
     expect(crossWorkspaceCreation.event).toMatchObject({
       threadId: crossWorkspaceChild.id,
       type: "thread.created",
@@ -1704,7 +1731,7 @@ describeStore("PostgreSQL store", (it) => {
       database
         .insertInto("threads")
         .values({
-          capabilityProfileId: "workspace",
+          inheritsMain: false,
           createdBy: foreignUserId,
           createdByPrincipalId: foreignPrincipal.id,
           environmentId,
@@ -1752,10 +1779,10 @@ describeStore("PostgreSQL store", (it) => {
     await expect(
       database
         .updateTable("threads")
-        .set({ capabilityProfileId: "workspace" })
+        .set({ inheritsMain: false })
         .where("id", "=", thread.id)
         .execute(),
-    ).rejects.toThrow(/capability profile.*immutable/);
+    ).rejects.toThrow(/consent.*immutable/);
     await expect(
       database
         .updateTable("workspaces")

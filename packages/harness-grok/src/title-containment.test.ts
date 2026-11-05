@@ -1,18 +1,12 @@
 import { ModelSelectionSchema, createId, type HarnessInstanceId } from "@opensteer/core";
-import {
-  nativeUserHarnessRuntimeBoundary,
-  spawnSupervised,
-  type HarnessSessionContext,
-} from "@opensteer/harness";
+import { nativeUserHarnessRuntimeBoundary, type HarnessSessionContext } from "@opensteer/harness";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { GrokHarnessConfigSchema } from "./config.js";
 import {
   GrokHarnessDriver,
   assertGrokSessionExists,
-  generateGrokTitle,
   grokProcessEnvironment,
   inspectGrokUsage,
 } from "./grok-driver.js";
@@ -63,14 +57,23 @@ process.stdout.write("Contained title\\n");
       PATH: process.env.PATH ?? "",
     });
 
-    await expect(
-      generateGrokTitle(
-        { executable, fetch, spawn: spawnSupervised },
-        GrokHarnessConfigSchema.parse({}),
-        context,
-        { prompt: "Implement the parser", signal: new AbortController().signal },
-      ),
-    ).resolves.toBe("Contained title\n");
+    const adapter = await new GrokHarnessDriver({ executable }).create({
+      config: {},
+      instanceId: context.harnessInstanceId,
+      sourceId: "xai",
+    });
+    try {
+      await expect(
+        adapter.generateText!({
+          context: { ...context, scratchDirectory: context.threadStateDirectory },
+          modelSelection: context.modelSelection,
+          prompt: "Implement the parser",
+          signal: context.signal,
+        }),
+      ).resolves.toEqual({ ok: true, text: "Contained title\n" });
+    } finally {
+      await adapter.close();
+    }
 
     const observed = JSON.parse(await readFile(capture, "utf8")) as {
       readonly args: readonly string[];
@@ -88,11 +91,14 @@ process.stdout.write("Contained title\\n");
         "dontAsk",
       ]),
     );
+    expect(observed.args[observed.args.indexOf("--model") + 1]).toBe(
+      context.modelSelection.modelId,
+    );
     expect(observed.authExists).toBe(true);
     expect(observed.cwd).not.toBe(workspace);
     expect(observed.profile).toContain("tools: []");
     expect(observed.profile).toContain("  - Agent");
-    expect(observed.prompt).toContain("Implement the parser");
+    expect(observed.prompt).toBe("Implement the parser");
     expect(await stat(observed.cwd).catch(() => undefined)).toBeUndefined();
     expect(await stat(observed.home).catch(() => undefined)).toBeUndefined();
   });
@@ -134,7 +140,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       const session = await adapter.startSession(context);
       try {
         expect(session.providerSessionReference).toBe("grok-native-session");
-        expect(session.generateTitle).toBeTypeOf("function");
+        expect(adapter.generateText).toBeTypeOf("function");
       } finally {
         await session.stop();
       }
@@ -326,14 +332,20 @@ function sessionContext(
   const instanceId = createId("harnessInstance") as HarnessInstanceId;
   return {
     accessMode: "approval-required",
-    agentTools: { capabilityProfileId: "main", token: "agent", url: "https://host/mcp" },
+    agentTools: {
+      tools: ["thread_read", "integration_call", "computer"],
+      toolsRevision: "test-tools-v1",
+      instructions: "Host Opensteer instructions",
+      skills: ["opensteer:threads"],
+      token: "agent",
+      url: "https://host/mcp",
+    },
     environment,
     environmentId: createId("environment"),
     harnessInstanceId: instanceId,
     history: [],
     historyWindow: { byteCount: 0, hasEarlier: false, itemCount: 0 },
     instructions: undefined,
-    integrationTools: { token: "integration", url: "https://host/integrations" },
     machineAccessNotice: "No other computers are reachable.",
     machineAccessPlatform: undefined,
     machineAccessRelaySocket: undefined,

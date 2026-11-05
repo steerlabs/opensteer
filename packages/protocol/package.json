@@ -11,6 +11,8 @@
     "./browser-sources": "./src/browser-sources.ts",
     "./browser-relay": "./src/browser-relay.ts",
     "./deployment-status": "./src/deployment-status.ts",
+    "./maintenance": "./src/maintenance.ts",
+    "./desktop-supervisor": "./src/desktop-supervisor.ts",
     "./desktop": "./src/desktop.ts",
     "./dictation": "./src/dictation.ts",
     "./display-stream": "./src/display-stream.ts",

@@ -102,6 +102,7 @@ import {
   lockRequestWorkspaces,
   withRequestWorkspaceLocks,
 } from "./request-workspace-locks.js";
+import { insertBrowserProfile } from "./browser-session-store.js";
 import { runHasActiveGrant } from "./run-grants.js";
 import type { DatabaseSchema, RequestRow } from "./schema.js";
 import { jsonValue, safeGeneration } from "./store-primitives.js";
@@ -1534,7 +1535,7 @@ export class RequestStore {
               .whereRef("worker.parentThreadId", "=", "chat.id")
               .whereRef("worker.lineageRootThreadId", "=", "chat.lineageRootThreadId")
               .where("worker.listed", "=", false)
-              .where("chat.capabilityProfileId", "=", "main")
+              .where("chat.inheritsMain", "=", true)
               .where(
                 "worker.id",
                 "in",
@@ -1575,6 +1576,48 @@ export class RequestStore {
       },
       "repeatable read",
     );
+  }
+
+  async connectionPage(input: {
+    userId: UserId;
+    workspaceId?: WorkspaceId;
+    before?: string;
+    limit: number;
+  }) {
+    const limit = clampLimit(input.limit);
+    const scope = `connection:${input.userId}:${input.workspaceId ?? "user"}`;
+    const anchor = input.before ? decodeRequestCursor(input.before, scope) : null;
+    let query = this.#database
+      .selectFrom("requests")
+      .selectAll("requests")
+      .where((eb) =>
+        eb.exists(
+          eb
+            .selectFrom("workspaceMemberships")
+            .select("id")
+            .whereRef("workspaceMemberships.workspaceId", "=", "requests.originatingWorkspaceId")
+            .where("workspaceMemberships.userId", "=", input.userId)
+            .where("workspaceMemberships.state", "=", "active"),
+        ),
+      );
+    if (input.workspaceId) query = query.where("originatingWorkspaceId", "=", input.workspaceId);
+    const count = await query
+      .clearSelect()
+      .select(({ fn }) => fn.countAll<string>().as("count"))
+      .executeTakeFirstOrThrow();
+    if (anchor)
+      query = query.where((eb) =>
+        eb.or([
+          eb("createdAt", "<", anchor.createdAt),
+          eb.and([eb("createdAt", "=", anchor.createdAt), eb("id", "<", anchor.id)]),
+        ]),
+      );
+    const rows = await query
+      .orderBy("createdAt", "desc")
+      .orderBy("id", "desc")
+      .limit(limit + 1)
+      .execute();
+    return requestPage(rows, Number(count.count), limit, scope);
   }
 
   async visiblePage(input: {
@@ -2207,17 +2250,10 @@ export class RequestStore {
               });
             }
           } else if ("createProfile" in decision) {
-            await assertBrowserProfileCapacity(transaction, input.resolvedBy);
-            profile = await transaction
-              .insertInto("browserProfiles")
-              .values({
-                archivedAt: null,
-                id: createId("browserProfile"),
-                name: decision.createProfile.name,
-                ownerId: input.resolvedBy,
-              })
-              .returning(["id", "name", "ownerId"])
-              .executeTakeFirstOrThrow();
+            profile = await insertBrowserProfile(transaction, {
+              name: decision.createProfile.name,
+              ownerId: input.resolvedBy,
+            });
           } else {
             throw new OpensteerError({
               code: "bad_request",
@@ -2229,7 +2265,8 @@ export class RequestStore {
             .select("kind")
             .where("id", "=", request.targetWorkspaceId)
             .executeTakeFirstOrThrow();
-          if (request.kind === "browser.access" || targetWorkspace.kind === "project") {
+          // Main already reaches every profile its owner has; only a Project needs a grant.
+          if (targetWorkspace.kind === "project") {
             grant = await ensureBrowserGrant(transaction, {
               createdBy: input.resolvedBy,
               profileId: profile.id,
@@ -2399,6 +2436,42 @@ export class RequestStore {
       .where((eb) =>
         eb.or([eb("preferred.id", "=", input.sourceId), eb("preferred.id", "is", null)]),
       );
+    if (input.after) {
+      query = query.where(
+        sql<boolean>`(requests.created_at, requests.id) > (select created_at, id from public.requests where id = ${input.after})`,
+      );
+    }
+    const rows = await query
+      .orderBy("requests.createdAt", "asc")
+      .orderBy("requests.id", "asc")
+      .limit(input.limit)
+      .execute();
+    return rows.map(requestFromRow);
+  }
+
+  /**
+   * Pending sign-in Requests whose (Workspace, site) nobody has allowed yet,
+   * oldest first and paged like `listDeliverableBrowserSignIns`.
+   */
+  async listUngrantedBrowserSignIns(input: {
+    readonly ownerId: UserId;
+    readonly after: RequestId | null;
+    readonly limit: number;
+  }): Promise<readonly Request[]> {
+    let query = this.#database
+      .selectFrom("requests")
+      .leftJoin("browserSiteGrants", (join) =>
+        join
+          .onRef("browserSiteGrants.ownerId", "=", "requests.requestedBy")
+          .onRef("browserSiteGrants.workspaceId", "=", "requests.targetWorkspaceId")
+          .on(sql<boolean>`browser_site_grants.site = requests.payload->>'site'`)
+          .on("browserSiteGrants.revokedAt", "is", null),
+      )
+      .selectAll("requests")
+      .where("requests.kind", "=", "browser.sign-in")
+      .where("requests.status", "=", "pending")
+      .where("requests.requestedBy", "=", input.ownerId)
+      .where("browserSiteGrants.ownerId", "is", null);
     if (input.after) {
       query = query.where(
         sql<boolean>`(requests.created_at, requests.id) > (select created_at, id from public.requests where id = ${input.after})`,
@@ -2805,7 +2878,7 @@ export class RequestStore {
   }
 
   async listPendingContinuations(limit = 100): Promise<readonly PendingRequestContinuation[]> {
-    const rows = await this.#database
+    const pending = this.#database
       .selectFrom("requestContinuations")
       .innerJoin("requests", "requests.id", "requestContinuations.requestId")
       .selectAll("requests")
@@ -2815,9 +2888,69 @@ export class RequestStore {
         "requestContinuations.status as continuationStatus",
       ])
       .where("requestContinuations.status", "=", "waiting")
+      .where((eb) =>
+        eb.or([
+          eb("requests.originatingRunId", "is", null),
+          eb.exists(
+            eb
+              .selectFrom("runs as originRun")
+              .select("originRun.id")
+              .whereRef("originRun.id", "=", "requests.originatingRunId")
+              .where((origin) =>
+                origin.or([
+                  origin("originRun.status", "in", ["completed", "failed", "interrupted"]),
+                  origin("originRun.phase", "=", "background"),
+                ]),
+              )
+              .where((gate) =>
+                gate.or([
+                  gate.not(
+                    gate.exists(
+                      gate
+                        .selectFrom("requests as sibling")
+                        .select("sibling.id")
+                        .whereRef("sibling.originatingRunId", "=", "originRun.id")
+                        .where("sibling.mode", "=", "durable")
+                        .where("sibling.status", "=", "pending"),
+                    ),
+                  ),
+                  gate.exists(
+                    gate
+                      .selectFrom("runs as newerRun")
+                      .select("newerRun.id")
+                      .whereRef("newerRun.threadId", "=", "originRun.threadId")
+                      .whereRef("newerRun.runOrdinal", ">", "originRun.runOrdinal"),
+                  ),
+                ]),
+              ),
+          ),
+        ]),
+      )
       .orderBy(sql`request_continuations.attempted_at asc nulls first`)
       .orderBy("requestContinuations.createdAt", "asc")
+      .orderBy("requests.id", "asc");
+    const page = await pending
+      .clearSelect()
+      .select(["requests.id", "requests.originatingRunId"])
       .limit(clampLimit(limit))
+      .execute();
+    if (page.length === 0) return [];
+    const runIds = [
+      ...new Set(
+        page.flatMap(({ originatingRunId }) => (originatingRunId ? [originatingRunId] : [])),
+      ),
+    ];
+    const triggerIds = page
+      .filter(({ originatingRunId }) => originatingRunId === null)
+      .map(({ id }) => id);
+    // A row limit must never split the outcomes delivered for one Run.
+    const rows = await pending
+      .where((eb) =>
+        eb.or([
+          ...(runIds.length > 0 ? [eb("requests.originatingRunId", "in", runIds)] : []),
+          ...(triggerIds.length > 0 ? [eb("requests.id", "in", triggerIds)] : []),
+        ]),
+      )
       .execute();
     return rows.map((row) => ({
       attemptedAt: row.continuationAttemptedAt?.toISOString() ?? null,
@@ -3036,12 +3169,6 @@ async function createRequestInTransaction(
     !(await runAssignmentAcceptsRequests(transaction, input.originatingRunId))
   ) {
     throw new OpensteerError({ code: "conflict", message: assignmentClosedToRequestsMessage });
-  }
-  if (input.kind === "browser.access" && authority.targetWorkspace.kind !== "project") {
-    throw new OpensteerError({
-      code: "bad_request",
-      message: "Browser access Requests must target a project Workspace",
-    });
   }
   if (input.kind === "browser.sign-in") {
     if (input.payload.kind !== "browser.sign-in") {
@@ -4337,25 +4464,6 @@ async function lockActiveDurableRequestAuthority(
   const authority = await lockRequestWorkspaceAuthorities(transaction, request);
   assertActiveRequestAuthority(authority);
   return authority;
-}
-
-async function assertBrowserProfileCapacity(
-  transaction: Transaction<DatabaseSchema>,
-  ownerId: UserId,
-): Promise<void> {
-  await sql`select pg_advisory_xact_lock(hashtextextended(${`browser-profile:${ownerId}`}, 0))`.execute(
-    transaction,
-  );
-  const active = await transaction
-    .selectFrom("browserProfiles")
-    .select("id")
-    .where("ownerId", "=", ownerId)
-    .where("archivedAt", "is", null)
-    .limit(128)
-    .execute();
-  if (active.length >= 128) {
-    throw new OpensteerError({ code: "conflict", message: "Browser profile limit reached" });
-  }
 }
 
 async function ensureBrowserGrant(

@@ -1,3 +1,4 @@
+import { agentTools } from "@opensteer/agent-tools";
 import { createId as createStorageFixtureId } from "@opensteer/core";
 import { processSupervisorExecutableVariable } from "@opensteer/shared/processControl";
 import {
@@ -31,13 +32,12 @@ import {
 } from "@opensteer/core";
 import {
   BoundedEventStream,
+  backgroundTextResult,
+  runTitleProcess,
   HarnessSteerDeliveryUnknownError,
   HarnessRegistry,
   nativeUserHarnessRuntimeBoundary,
   SubagentNodes,
-  threadTitlePrompt,
-  threadTitleBudgetMs,
-  threadTitleCleanupMs,
   type HarnessAdapter,
   type HarnessAuthenticationStart,
   type HarnessCapabilities,
@@ -53,6 +53,7 @@ import {
 } from "@opensteer/harness";
 import {
   CorrelationIdSchema,
+  HostBackgroundTextSchema,
   pendingAgentEventMaxSerializedBytes,
   PendingAgentEventSchema,
   RunnerCommandSchema,
@@ -119,92 +120,164 @@ afterAll(async () => {
 });
 
 describe("RunnerRuntime", () => {
-  describe("Thread naming", () => {
-    it.each([
-      [false, "Support migration\nplane", { title: "Support migration" }],
-      [false, "Title: ** **\nplane", null],
-      [true, "Support migration\nplane", { title: "Support migration", icon: "plane" }],
-      [true, "Support migration\ninvalid", { title: "Support migration", icon: "document" }],
-      [true, "Title: ** **\nplane", { icon: "plane" }],
-      [true, "Support migration\nnone", { title: "Support migration", icon: "document" }],
-      [true, "Title: ** **\ninvalid", { icon: "document" }],
-      [true, "Support migration", { title: "Support migration", icon: "document" }],
-      [true, "", null],
-      [true, " \r\n ", null],
-    ] as const)("negotiates icon=%s for %j", async (icon, reply, expected) => {
-      const naming = vi.fn(async () => reply);
-      const session = Object.assign(new ScriptedHarnessSession([]), { generateTitle: naming });
+  it("keeps a terminal failure while execution cleanup outlives the parking deadline", async () => {
+    const host = createServer((request, response) => {
+      if (ignoreForeignTestRequest(request, response, (path) => path === "/internal/v1/mcp"))
+        return;
+      request.resume();
+      response.writeHead(200, {
+        "content-type": "application/json",
+        "x-opensteer-request-pending": "1",
+      });
+      response.end('{"jsonrpc":"2.0","id":1,"result":{"content":[]}}');
+    });
+    host.listen(0, "127.0.0.1");
+    await once(host, "listening");
+    const address = host.address();
+    if (!address || typeof address === "string") throw new Error("No fake Host address");
+    const ended = deferred<void>();
+    const released = deferred<void>();
+    const interrupt = vi.fn(async () => undefined);
+    const session: HarnessSession = {
+      providerSessionReference: "terminal-before-deadline",
+      events: (async function* () {
+        yield { type: "run.started", data: { status: "running" } } as const;
+        await ended.promise;
+        yield {
+          type: "run.failed",
+          data: {
+            status: "failed",
+            code: "real_failure",
+            message: "The engine failed",
+            retryable: false,
+          },
+        } as const;
+      })(),
+      execute: async () => released.promise,
+      interrupt,
+      resolveRequest: async () => undefined,
+      stop: async () => undefined,
+    };
+    const driver = new FakeHarnessDriver("test-driver", () => session);
+    const registry = new HarnessRegistry();
+    registry.registerDriver(driver);
+    const environmentId = createId("environment");
+    const runtime = configuredRuntime({ environmentId, registry, requestParkDeadlineMs: 1 });
+    const command = executeCommand(environmentId);
+    command.context = {
+      ...command.context,
+      agentTools: {
+        ...command.context.agentTools,
+        url: `http://127.0.0.1:${address.port}/internal/v1/mcp`,
+      },
+    };
+    const messages: RunnerOperationalReport[] = [];
+    try {
+      await probeTestServer(host);
+      await reconcile(registry, command);
+      await runtime.handleCommand(command, {
+        send: async (message) => void messages.push(message),
+      });
+      await waitUntil(() => hasEvent(messages, "run.started"));
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      await (
+        await fetch(driver.context!.agentTools.url, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${driver.context!.agentTools.token}`,
+            "content-type": "application/json",
+          },
+          body: '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"integration_request"}}',
+        })
+      ).arrayBuffer();
+      ended.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(1);
+      released.resolve();
+      vi.useRealTimers();
+      await waitUntil(() => runtime.activeRunIds().length === 0);
+      expect(
+        messages.find(
+          (message) => message.type === "runner.event" && message.event.type === "run.failed",
+        ),
+      ).toMatchObject({ event: { type: "run.failed", data: { code: "real_failure" } } });
+      expect(hasEvent(messages, "run.completed")).toBe(false);
+      expect(interrupt).not.toHaveBeenCalled();
+    } finally {
+      ended.resolve();
+      released.resolve();
+      vi.useRealTimers();
+      await runtime.close();
+      host.closeAllConnections();
+      await new Promise<void>((resolve) => host.close(() => resolve()));
+    }
+  });
+  it.each([false, true])(
+    "ends a parked Run at its deadline, preserving a person's Stop (%s)",
+    async (personStops) => {
+      const host = createServer((request, response) => {
+        if (ignoreForeignTestRequest(request, response, (path) => path === "/internal/v1/mcp"))
+          return;
+        request.resume();
+        response.writeHead(200, {
+          "content-type": "application/json",
+          "x-opensteer-request-pending": "1",
+        });
+        response.end('{"jsonrpc":"2.0","id":1,"result":{"content":[]}}');
+      });
+      host.listen(0, "127.0.0.1");
+      await once(host, "listening");
+      const address = host.address();
+      if (!address || typeof address === "string") throw new Error("No fake Host address");
+      const session = new HeldHarnessSession();
+      const steer = vi.fn(async () => undefined);
+      Object.assign(session, { steer });
+      const driver = new FakeHarnessDriver("test-driver", () => session);
       const registry = new HarnessRegistry();
-      registry.registerDriver(new FakeHarnessDriver("test-driver", () => session));
+      registry.registerDriver(driver);
       const environmentId = createId("environment");
       const runtime = configuredRuntime({ environmentId, registry });
       const command = executeCommand(environmentId);
       command.context = {
         ...command.context,
-        titleRequest: { request: "Migrate support", ...(icon ? { icon: true as const } : {}) },
+        agentTools: {
+          ...command.context.agentTools,
+          url: `http://127.0.0.1:${address.port}/internal/v1/mcp`,
+        },
       };
       const messages: RunnerOperationalReport[] = [];
+      const sink: RunnerMessageSink = { send: async (message) => void messages.push(message) };
       try {
+        await probeTestServer(host);
         await reconcile(registry, command);
-        await runtime.handleCommand(command, {
-          send: async (message) => void messages.push(message),
-        });
-        await waitUntil(() => runtime.activeRunIds().length === 0);
-        expect(naming).toHaveBeenCalledTimes(1);
-        expect(naming).toHaveBeenCalledWith({
-          prompt: threadTitlePrompt("Migrate support", { icon }),
-          signal: expect.any(AbortSignal),
-        });
-        const reports = messages.filter((message) => message.type === "runner.thread-title");
-        expect(reports).toEqual(
-          expected
-            ? [
-                {
-                  type: "runner.thread-title",
-                  workspaceId: command.context.workspaceId,
-                  runId: command.context.runId,
-                  threadId: command.context.threadId,
-                  bindingGeneration: command.context.bindingGeneration,
-                  environmentId,
-                  ...expected,
-                },
-              ]
-            : [],
+        await runtime.handleCommand(command, sink);
+        await waitUntil(() => hasEvent(messages, "run.started"));
+        const context = driver.context!;
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        await (
+          await fetch(context.agentTools.url, {
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${context.agentTools.token}`,
+              "content-type": "application/json",
+            },
+            body: '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"integration_request"}}',
+          })
+        ).arrayBuffer();
+        const refused = await runtime.handleCommand(
+          steerCommand(environmentId, {
+            runId: command.context.runId,
+            threadId: command.context.threadId,
+            messageId: createId("message"),
+          }),
+          sink,
         );
-        expect(hasEvent(messages, "run.completed")).toBe(true);
-        expect(eventCount(messages, "run.usage")).toBe(0);
-        expect(
-          JSON.stringify(messages.filter((message) => message.type === "runner.event")),
-        ).not.toContain("Support migration");
-      } finally {
-        await runtime.close();
-      }
-    });
-
-    it.each([false, true])(
-      "keeps Stop final when the engine completes after interruption (naming=%s)",
-      async (naming) => {
-        const session = new ScriptedHarnessSession([], "complete-on-interrupt");
-        if (naming)
-          Object.assign(session, { generateTitle: async () => "Support migration\nplane" });
-        const registry = new HarnessRegistry();
-        registry.registerDriver(new FakeHarnessDriver("test-driver", () => session));
-        const environmentId = createId("environment");
-        const runtime = configuredRuntime({ environmentId, registry });
-        const command = executeCommand(environmentId);
-        if (naming)
-          command.context = {
-            ...command.context,
-            titleRequest: { request: "Migrate support", icon: true },
-          };
-        const messages: RunnerOperationalReport[] = [];
-        const sink = {
-          send: async (message: RunnerOperationalReport) => void messages.push(message),
-        };
-        try {
-          await reconcile(registry, command);
-          await runtime.handleCommand(command, sink);
-          await waitUntil(() => hasEvent(messages, "run.started"));
+        expect(refused).toMatchObject({
+          status: "rejected",
+          error: { code: "conflict", reason: "request-pending" },
+        });
+        expect(steer).not.toHaveBeenCalled();
+        if (personStops)
           await runtime.handleCommand(
             {
               type: "run.interrupt",
@@ -216,158 +289,292 @@ describe("RunnerRuntime", () => {
             },
             sink,
           );
-          await waitUntil(() => runtime.activeRunIds().length === 0);
-          expect(hasEvent(messages, "run.interrupted")).toBe(true);
-          expect(hasEvent(messages, "run.completed")).toBe(false);
-        } finally {
-          await runtime.close();
+        else {
+          await vi.advanceTimersByTimeAsync(59_999);
+          expect(runtime.activeRunIds()).toContain(command.context.runId);
+          await vi.advanceTimersByTimeAsync(1);
         }
-      },
-    );
-
-    it("stops a completed turn while its naming call is still settling", async () => {
-      const session = new ScriptedHarnessSession([]);
-      let namingSignal: AbortSignal | undefined;
-      Object.assign(session, {
-        generateTitle: async ({ signal }: { signal: AbortSignal }) => {
-          namingSignal = signal;
-          await new Promise<void>((resolve) =>
-            signal.addEventListener("abort", () => resolve(), { once: true }),
-          );
-          return "Late name\nplane";
-        },
+        vi.useRealTimers();
+        await waitUntil(() => runtime.activeRunIds().length === 0);
+        expect(hasEvent(messages, personStops ? "run.interrupted" : "run.completed")).toBe(true);
+        expect(hasEvent(messages, personStops ? "run.completed" : "run.interrupted")).toBe(false);
+      } finally {
+        vi.useRealTimers();
+        await runtime.close();
+        host.closeAllConnections();
+        await new Promise<void>((resolve) => host.close(() => resolve()));
+      }
+    },
+  );
+  it.each([false, true])(
+    "releases parking before publishing background, preserving a person's Stop (%s)",
+    async (personStops) => {
+      const host = createServer((request, response) => {
+        if (ignoreForeignTestRequest(request, response, (path) => path === "/internal/v1/mcp"))
+          return;
+        let body = "";
+        request.on("data", (chunk: Buffer) => {
+          body += chunk.toString();
+        });
+        request.on("end", () => {
+          response.writeHead(200, {
+            "content-type": "application/json",
+            ...(body.includes("integration_request") ? { "x-opensteer-request-pending": "1" } : {}),
+          });
+          response.end('{"jsonrpc":"2.0","id":1,"result":{"content":[]}}');
+        });
       });
+      host.listen(0, "127.0.0.1");
+      await once(host, "listening");
+      const address = host.address();
+      if (!address || typeof address === "string") throw new Error("No fake Host address");
+      const session = new HeldHarnessSession();
+      const interrupt = vi.spyOn(session, "interrupt");
+      const steer = vi.fn(async () => undefined);
+      Object.assign(session, { steer });
+      const driver = new FakeHarnessDriver("test-driver", () => session);
       const registry = new HarnessRegistry();
-      registry.registerDriver(new FakeHarnessDriver("test-driver", () => session));
+      registry.registerDriver(driver);
       const environmentId = createId("environment");
       const runtime = configuredRuntime({ environmentId, registry });
       const command = executeCommand(environmentId);
       command.context = {
         ...command.context,
-        titleRequest: { request: "Migrate support", icon: true },
+        agentTools: {
+          ...command.context.agentTools,
+          url: `http://127.0.0.1:${address.port}/internal/v1/mcp`,
+        },
       };
       const messages: RunnerOperationalReport[] = [];
-      const sink = {
-        send: async (message: RunnerOperationalReport) => void messages.push(message),
-      };
+      const sink: RunnerMessageSink = { send: async (message) => void messages.push(message) };
       try {
+        await probeTestServer(host);
         await reconcile(registry, command);
         await runtime.handleCommand(command, sink);
-        await waitUntil(() => !!namingSignal && hasEvent(messages, "run.started"));
-        // Let the already-published terminal be consumed while naming stays held.
-        await new Promise<void>((resolve) => setImmediate(resolve));
-        expect(runtime.activeRunIds()).toContain(command.context.runId);
-        await expect(
-          runtime.relocateWorkspace(command.context.workspaceId, async () => undefined),
-        ).rejects.toThrow(/active Runs/);
-        await runtime.handleCommand(
-          {
-            type: "run.interrupt",
-            commandId: createId("command"),
-            correlationId: command.correlationId,
-            environmentId,
+        await waitUntil(() => hasEvent(messages, "run.started"));
+        const context = driver.context!;
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        await (
+          await fetch(context.agentTools.url, {
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${context.agentTools.token}`,
+              "content-type": "application/json",
+            },
+            body: '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"integration_request"}}',
+          })
+        ).arrayBuffer();
+        const refused = await runtime.handleCommand(
+          steerCommand(environmentId, {
             runId: command.context.runId,
             threadId: command.context.threadId,
-          },
+            messageId: createId("message"),
+          }),
           sink,
         );
-        await waitUntil(() => runtime.activeRunIds().length === 0);
-        expect(namingSignal?.aborted).toBe(true);
-        expect(hasEvent(messages, "run.interrupted")).toBe(true);
-        expect(hasEvent(messages, "run.completed")).toBe(false);
-        expect(messages.filter((message) => message.type === "runner.thread-title")).toEqual([]);
-      } finally {
-        await runtime.close();
-      }
-    });
-
-    it.each(["absent", "failure", "abort", "revoked", "budget"] as const)(
-      "settles naming without failing the Run (%s)",
-      async (mode) => {
-        let namingSignal: AbortSignal | undefined;
-        let settled = false;
-        let eventsAtRevocation: RunnerOperationalReport[] = [];
-        const naming = vi.fn(async ({ signal }: { signal: AbortSignal }) => {
-          namingSignal = signal;
-          if (mode === "failure") throw new Error("Naming unavailable");
-          await new Promise<void>((resolve) =>
-            signal.addEventListener(
-              "abort",
-              () => {
-                settled = true;
-                resolve();
-              },
-              { once: true },
-            ),
-          );
-          return "Late title\nplane";
+        expect(refused).toMatchObject({
+          status: "rejected",
+          error: { code: "conflict", reason: "request-pending" },
         });
-        const session = new ScriptedHarnessSession(
-          [],
-          mode === "abort" || mode === "revoked" ? "await-interrupt" : "complete",
+        expect(steer).not.toHaveBeenCalled();
+        session.publish({ type: "run.phase", data: { phase: "background" } });
+        await vi.waitFor(() => expect(hasEvent(messages, "run.phase")).toBe(true));
+        // The Host can deliver a continuation as soon as it sees background.
+        const admitted = await runtime.handleCommand(
+          steerCommand(environmentId, {
+            runId: command.context.runId,
+            threadId: command.context.threadId,
+            messageId: createId("message"),
+          }),
+          sink,
         );
-        if (mode !== "absent") Object.assign(session, { generateTitle: naming });
-        const registry = new HarnessRegistry();
-        registry.registerDriver(new FakeHarnessDriver("test-driver", () => session));
-        const environmentId = createId("environment");
-        const runtime = configuredRuntime({ environmentId, registry });
-        const command = executeCommand(environmentId);
-        command.context = {
-          ...command.context,
-          titleRequest: { request: "Migrate support", icon: true },
-        };
-        const messages: RunnerOperationalReport[] = [];
-        try {
-          await reconcile(registry, command);
-          if (mode === "budget") vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-          await runtime.handleCommand(command, {
-            send: async (message) => void messages.push(message),
-          });
-          if (mode === "budget" || mode === "abort" || mode === "revoked") {
-            // setImmediate does not advance the naming timer.
-            while (!namingSignal) await new Promise<void>((resolve) => setImmediate(resolve));
-            expect(runtime.activeRunIds()).toContain(command.context.runId);
-            if (mode === "budget") {
-              await vi.advanceTimersByTimeAsync(threadTitleBudgetMs - threadTitleCleanupMs);
-              vi.useRealTimers();
-            } else if (mode === "revoked") {
-              eventsAtRevocation = messages.filter((message) => message.type === "runner.event");
-              runtime.revokeRuns([{ runId: command.context.runId, reason: "Binding replaced" }]);
-            } else {
-              await runtime.handleCommand(
-                {
-                  type: "run.interrupt",
-                  commandId: createId("command"),
-                  correlationId: command.correlationId,
-                  environmentId,
-                  runId: command.context.runId,
-                  threadId: command.context.threadId,
-                },
-                { send: async (message) => void messages.push(message) },
-              );
-            }
-          }
-          await waitUntil(() => runtime.activeRunIds().length === 0);
-          expect(messages.filter((message) => message.type === "runner.thread-title")).toEqual([]);
-          if (mode === "revoked")
-            expect(messages.filter((message) => message.type === "runner.event")).toEqual(
-              eventsAtRevocation,
-            );
-          else
-            expect(hasEvent(messages, mode === "abort" ? "run.interrupted" : "run.completed")).toBe(
-              true,
-            );
-          if (mode === "absent") expect(naming).not.toHaveBeenCalled();
-          if (mode === "abort" || mode === "revoked" || mode === "budget") {
-            expect(namingSignal?.aborted).toBe(true);
-            expect(settled).toBe(true);
-          }
-        } finally {
-          vi.useRealTimers();
-          await runtime.close();
-        }
+        expect(admitted.status).toBe("accepted");
+        expect(steer).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(59_999);
+        expect(interrupt).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        expect(interrupt).not.toHaveBeenCalled();
+        expect(runtime.activeRunIds()).toContain(command.context.runId);
+        if (personStops)
+          await runtime.handleCommand(
+            {
+              type: "run.interrupt",
+              commandId: createId("command"),
+              correlationId: command.correlationId,
+              environmentId,
+              runId: command.context.runId,
+              threadId: command.context.threadId,
+            },
+            sink,
+          );
+        else session.publish({ type: "run.completed", data: { status: "completed" } });
+        vi.useRealTimers();
+        await waitUntil(() => runtime.activeRunIds().length === 0);
+        expect(hasEvent(messages, personStops ? "run.interrupted" : "run.completed")).toBe(true);
+        expect(hasEvent(messages, personStops ? "run.completed" : "run.interrupted")).toBe(false);
+      } finally {
+        vi.useRealTimers();
+        await runtime.close();
+        host.closeAllConnections();
+        await new Promise<void>((resolve) => host.close(() => resolve()));
+      }
+    },
+  );
+  it.each(["timeout", "shutdown"] as const)("reaps background processes on %s", async (mode) => {
+    const registry = new HarnessRegistry();
+    const driver = new FakeHarnessDriver();
+    const create = driver.create.bind(driver);
+    const pidFile = join(testPrivateStateRoot, `background-${randomUUID()}.pid`);
+    vi.spyOn(driver, "create").mockImplementation(async (input) => ({
+      ...(await create(input)),
+      generateText: async ({ context, signal }) =>
+        backgroundTextResult(signal, () =>
+          runTitleProcess(
+            context,
+            {
+              executable: process.execPath,
+              args: [
+                "-e",
+                "require('node:fs').writeFileSync(process.argv[1], String(process.pid));setInterval(()=>{},1000)",
+                pidFile,
+              ],
+              cwd: context.scratchDirectory,
+              environment: context.environment,
+            },
+            signal,
+          ),
+        ),
+    }));
+    registry.registerDriver(driver);
+    const environmentId = createId("environment");
+    const command = executeCommand(environmentId);
+    const runtime = configuredRuntime({ environmentId, registry });
+    await reconcile(registry, command);
+    const request = HostBackgroundTextSchema.parse({
+      ...testConnectionFence,
+      type: "host.background-text",
+      attemptId: randomUUID(),
+      environmentId,
+      harnessInstanceId: command.context.harnessInstanceId,
+      harnessRevision: command.context.harness.runtimeRevision,
+      modelSelection: command.context.modelSelection,
+      prompt: "hello",
+      deadline: new Date(Date.now() + (mode === "timeout" ? 1000 : 30_000)).toISOString(),
+    });
+    try {
+      const generation = runtime.generateBackgroundText(request);
+      let pid = 0;
+      await vi.waitFor(
+        async () => {
+          pid = Number(await readFile(pidFile, "utf8"));
+          expect(pid).toBeGreaterThan(0);
+        },
+        { timeout: 2_000 },
+      );
+      if (mode === "shutdown") {
+        const second = runtime.generateBackgroundText({ ...request, attemptId: randomUUID() });
+        // A third attempt waits for a slot rather than failing its candidate.
+        const third = runtime.generateBackgroundText({ ...request, attemptId: randomUUID() });
+        await runtime.close();
+        await expect(second).resolves.toEqual({ ok: false, failure: "timeout" });
+        await expect(third).resolves.toEqual({ ok: false, failure: "unavailable" });
+      }
+      await expect(generation).resolves.toEqual({ ok: false, failure: "timeout" });
+      expect(() => process.kill(pid, 0)).toThrow();
+    } finally {
+      await runtime.close();
+      await rm(pidFile, { force: true });
+    }
+  });
+
+  it("runs two background attempts at once and starts a third when a slot frees", async () => {
+    const registry = new HarnessRegistry();
+    const driver = new FakeHarnessDriver();
+    const create = driver.create.bind(driver);
+    const releases: (() => void)[] = [];
+    vi.spyOn(driver, "create").mockImplementation(async (input) => ({
+      ...(await create(input)),
+      generateText: async ({ prompt }) => {
+        await new Promise<void>((resolve) => releases.push(resolve));
+        return { ok: true, text: prompt };
       },
+    }));
+    registry.registerDriver(driver);
+    const environmentId = createId("environment");
+    const command = executeCommand(environmentId);
+    const runtime = configuredRuntime({ environmentId, registry });
+    await reconcile(registry, command);
+    const attempt = (prompt: string) =>
+      runtime.generateBackgroundText(
+        HostBackgroundTextSchema.parse({
+          ...testConnectionFence,
+          type: "host.background-text",
+          attemptId: randomUUID(),
+          environmentId,
+          harnessInstanceId: command.context.harnessInstanceId,
+          harnessRevision: command.context.harness.runtimeRevision,
+          modelSelection: command.context.modelSelection,
+          prompt,
+          deadline: new Date(Date.now() + 30_000).toISOString(),
+        }),
+      );
+    try {
+      const attempts = [attempt("first"), attempt("second"), attempt("third")];
+      await vi.waitFor(() => expect(releases).toHaveLength(2), { timeout: 2_000 });
+      releases[0]!();
+      await vi.waitFor(() => expect(releases).toHaveLength(3), { timeout: 2_000 });
+      releases[1]!();
+      releases[2]!();
+      await expect(Promise.all(attempts)).resolves.toEqual(
+        ["first", "second", "third"].map((text) => ({ ok: true, text })),
+      );
+    } finally {
+      for (const release of releases) release();
+      await runtime.close();
+    }
+  });
+
+  it("tears down a Run while independent background text is pending", async () => {
+    const registry = new HarnessRegistry();
+    const driver = new FakeHarnessDriver("test-driver", () => new ScriptedHarnessSession([]));
+    const create = driver.create.bind(driver);
+    let started = false;
+    vi.spyOn(driver, "create").mockImplementation(async (input) => ({
+      ...(await create(input)),
+      generateText: async ({ signal }) => {
+        started = true;
+        await new Promise<void>((resolve) =>
+          signal.addEventListener("abort", () => resolve(), { once: true }),
+        );
+        return { ok: false, failure: "timeout" };
+      },
+    }));
+    registry.registerDriver(driver);
+    const environmentId = createId("environment");
+    const command = executeCommand(environmentId);
+    const runtime = configuredRuntime({ environmentId, registry });
+    await reconcile(registry, command);
+    const generation = runtime.generateBackgroundText(
+      HostBackgroundTextSchema.parse({
+        ...testConnectionFence,
+        type: "host.background-text",
+        attemptId: randomUUID(),
+        environmentId,
+        harnessInstanceId: command.context.harnessInstanceId,
+        harnessRevision: command.context.harness.runtimeRevision,
+        modelSelection: command.context.modelSelection,
+        prompt: "hello",
+        deadline: new Date(Date.now() + 30_000).toISOString(),
+      }),
     );
+    try {
+      await vi.waitFor(() => expect(started).toBe(true), { timeout: 2_000 });
+      await runtime.handleCommand(command, { send: async () => undefined });
+      await vi.waitFor(() => expect(runtime.activeRunIds()).toEqual([]), { timeout: 2_000 });
+    } finally {
+      await runtime.close();
+      await generation;
+    }
   });
 
   it.each(["missing", "expired", "heartbeat", "attach", "interrupted"] as const)(
@@ -452,6 +659,78 @@ describe("RunnerRuntime", () => {
     },
   );
 
+  it("pairs a voice relay with normal Run preparation and ends it on interrupt", async () => {
+    const driver = new FakeHarnessDriver("test-driver", () => new HeldHarnessSession());
+    const create = driver.create.bind(driver);
+    vi.spyOn(driver, "create").mockImplementation(async (input) => ({
+      ...(await create(input)),
+      capabilities: { ...fakeHarnessCapabilities, voiceCalls: true },
+    }));
+    const registry = new HarnessRegistry();
+    registry.registerDriver(driver);
+    const environmentId = createId("environment");
+    const plans: HarnessSandboxRunPlan[] = [];
+    const runtime = configuredRuntime({
+      environmentId,
+      harnessSandbox: {
+        plan: async (plan) => {
+          plans.push(plan);
+          return (launch) => launch;
+        },
+        planProgram: async () => (launch) => launch,
+      },
+      registry,
+    });
+    const base = executeCommand(environmentId);
+    const sessionId = randomUUID();
+    const execute = {
+      ...base,
+      context: { ...base.context, voiceCall: { sessionId, admittedAt: new Date().toISOString() } },
+    };
+    const command = {
+      action: "start" as const,
+      sessionId,
+      runId: execute.context.runId,
+      offer: "private-offer",
+    };
+    try {
+      await reconcile(registry, execute);
+      const relay = runtime.voice(execute.context.requestedBy, command);
+      await runtime.handleCommand(execute, { send: async () => undefined });
+      await vi.waitFor(() => expect(driver.context?.voiceCall).toBeDefined(), { timeout: 2000 });
+      const call = driver.context!.voiceCall!;
+      expect(await call.offer).toBe("private-offer");
+      expect(driver.context?.agentTools.token).not.toBe(execute.context.agentTools.token);
+      expect(driver.context?.threadStateDirectory).toContain(`call-${execute.context.runId}`);
+      // The call's own directory is writable in the sandbox: its engine logs there.
+      expect(plans[0]).toMatchObject({
+        threadStateDirectory: driver.context?.threadStateDirectory,
+        threadStateWritable: true,
+      });
+      call.answer("private-answer");
+      expect(await relay).toEqual({ ok: true, answer: "private-answer" });
+      await runtime.handleCommand(
+        {
+          type: "run.interrupt",
+          commandId: createId("command"),
+          correlationId: execute.correlationId,
+          environmentId,
+          runId: execute.context.runId,
+          threadId: execute.context.threadId,
+        },
+        { send: async () => undefined },
+      );
+      expect(call.signal.aborted).toBe(true);
+      expect(await runtime.voice(execute.context.requestedBy, command)).toMatchObject({
+        ok: false,
+        reason: "voice-ended",
+      });
+      expect(driver.resumedReferences).toEqual([]);
+    } finally {
+      await runtime.close();
+    }
+  });
+
   it("starts the harness through the Runner sandbox's plan for this Run", async () => {
     const driver = new FakeHarnessDriver();
     const registry = new HarnessRegistry();
@@ -483,6 +762,7 @@ describe("RunnerRuntime", () => {
         join(testPrivateStateRoot, "threads", execute.context.threadId),
       );
       expect(plans).toHaveLength(1);
+      expect(plans[0]?.threadStateWritable).toBeUndefined();
       expect(plans[0]).toMatchObject({
         launchDirectory: undefined,
         threadStateDirectory: context?.threadStateDirectory,
@@ -552,9 +832,7 @@ describe("RunnerRuntime", () => {
       await waitUntil(() => driver.contexts.length === 1);
       const context = driver.context!;
       expect(context.agentTools.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/[\w-]+\/agent-tools$/u);
-      expect(context.integrationTools.url).toMatch(/\/integration-tools$/u);
       expect(context.agentTools.token).not.toBe(execute.context.agentTools.token);
-      expect(context.integrationTools.token).not.toBe(execute.context.integrationTools.token);
 
       const stream = await fetch(context.agentTools.url, {
         headers: {
@@ -3562,7 +3840,6 @@ describe("RunnerRuntime", () => {
         };
       if (specialist) {
         command.context.specialistId = "registration-1";
-        command.context.agentTools.capabilityProfileId = "specialist";
         command.context.plugins.versions = [
           { pluginId: "example", name: "example", digest: "a".repeat(64) },
         ];
@@ -3593,7 +3870,6 @@ describe("RunnerRuntime", () => {
         hold = true;
         const running = executeCommand(environmentId);
         running.context.specialistId = "registration-1";
-        running.context.agentTools.capabilityProfileId = "specialist";
         running.context.plugins.versions = command.context.plugins.versions;
         await reconcile(registry, running);
         await runtime.handleCommand(running, sink);
@@ -3612,6 +3888,8 @@ describe("RunnerRuntime", () => {
         });
         return;
       }
+      expect(driver.context?.platformGuide).toBe(command.context.agentTools.instructions);
+      expect(driver.context?.agentTools.tools).toEqual(command.context.agentTools.tools);
       expect(reports).toEqual([
         ["release-notes", "research"],
         ["after-run", "release-notes", "research"],
@@ -3648,6 +3926,12 @@ describe("RunnerRuntime", () => {
             localName: "computers",
             fullName: "opensteer:computers",
             path: "/runner/agent-skills/skills/computers",
+          },
+          {
+            plugin: "opensteer",
+            localName: "projects",
+            fullName: "opensteer:projects",
+            path: "/runner/agent-skills/skills/projects",
           },
           {
             plugin: "opensteer",
@@ -5486,6 +5770,11 @@ class HeldHarnessSession implements HarnessSession {
     await this.#released.promise;
   }
 
+  publish(event: HarnessEvent): void {
+    this.#stream.publish(event, { delivery: "must-deliver" });
+    if (event.type === "run.completed") this.#released.resolve();
+  }
+
   async interrupt(): Promise<void> {
     this.#released.resolve();
   }
@@ -5563,23 +5852,27 @@ function executeCommand(
     context: {
       accessMode: "full-access",
       assignment: null,
-      agentControl: {
-        token: "opaque-agent-control-token",
-        url: `${hostOrigin}/internal/v1/agent-control`,
-      },
       agentTools: {
-        capabilityProfileId: "workspace",
+        tools: agentTools.filter((tool) => tool.callers.includes("run")).map(({ name }) => name),
+        toolsRevision: "test-tools-v1",
+        instructions: "Host Opensteer instructions",
+        skills: [
+          "opensteer:skills",
+          "opensteer:integrations",
+          "opensteer:computer-use",
+          "opensteer:browser",
+          "opensteer:computers",
+          "opensteer:projects",
+          "opensteer:threads",
+          "opensteer:triggers",
+        ],
         token: "opaque-agent-tools-token",
         url: "https://host.example/internal/v1/mcp",
       },
       browserCdp: {
-        token: "opaque-browser-cdp-token",
         url: `${hostOrigin}/internal/v1/browser-cdp`,
       },
-      integrationTools: {
-        token: "opaque-agent-tools-token",
-        url: "https://host.example/internal/v1/integration-mcp",
-      },
+
       plugins: {
         versions: [],
         token: "plugin-cache-token",
@@ -5676,10 +5969,7 @@ function triggerCommand(
         trigger: { anchorThreadId, id: triggerId, revisionId, workspaceId },
       },
       executionGeneration: 1,
-      integrationMcp: {
-        token: "trigger-integration-mcp-token",
-        url: "https://host.example/internal/v1/integration-mcp",
-      },
+
       mcp: { token: "trigger-mcp-token", url: "https://host.example/internal/v1/mcp" },
       occurrenceId,
       program: {
@@ -5936,6 +6226,7 @@ function runtimeWithLeaseGrants(
 }
 
 function configuredRuntime(input: {
+  readonly requestParkDeadlineMs?: number;
   readonly containment?: ConstructorParameters<typeof RunnerRuntime>[0]["containment"];
   readonly manualLeaseGrants?: boolean;
   readonly harnessSandbox?: HarnessProcessSandbox;
@@ -5955,6 +6246,9 @@ function configuredRuntime(input: {
   return runtimeWithLeaseGrants(
     {
       nodeExecutable: process.execPath,
+      ...(input.requestParkDeadlineMs === undefined
+        ? {}
+        : { requestParkDeadlineMs: input.requestParkDeadlineMs }),
       agentSkills: testAgentSkills,
       plugins: noPlugins,
       bootId: "boot-control-test",
@@ -6090,6 +6384,13 @@ it("invalidates warm engines when the pinned package set changes, regardless of 
   expect(warmEngineKey(input)).toBe(before);
   context.plugins.versions = [{ ...first, digest: "c".repeat(64) }, second];
   expect(warmEngineKey(input)).not.toBe(before);
+  const current = warmEngineKey(input);
+  // The revision names the Host's whole inventory, guide and skills.
+  context.agentTools.tools = [...context.agentTools.tools].reverse();
+  context.agentTools.instructions = "Rephrased";
+  expect(warmEngineKey(input)).toBe(current);
+  context.agentTools.toolsRevision = "changed-tools";
+  expect(warmEngineKey(input)).not.toBe(current);
 });
 
 it("stops app servers on primary connection loss and Runner shutdown", async () => {

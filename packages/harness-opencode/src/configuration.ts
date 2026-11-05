@@ -2,7 +2,7 @@ import type { ThreadAccessMode, ToolIdentity } from "@opensteer/core";
 import { compatibleEndpointHost, opensteerToolIdentity } from "@opensteer/harness";
 import { opencodeCompatibleProviderId, opencodeCompatibleSourceId } from "./sources.js";
 
-/** The two Opensteer MCP servers, named as OpenCode will name them in tool ids. */
+/** The current server and the historical server name retained for transcript rendering. */
 export const opencodeAgentToolsServer = "opensteer";
 export const opencodeIntegrationToolsServer = "opensteer_integrations";
 
@@ -119,7 +119,6 @@ export interface OpencodeSessionConfigurationInput {
   readonly agentTools: OpencodeMcpServerPlan;
   readonly baseUrl: string | undefined;
   readonly instructionsFile: string;
-  readonly integrationTools: OpencodeMcpServerPlan;
   readonly modelId: string;
   readonly modelContextWindow?: number;
   readonly modelMaxOutputTokens?: number;
@@ -159,7 +158,6 @@ export function opencodeSessionConfiguration(
     lsp: false,
     mcp: {
       [opencodeAgentToolsServer]: opencodeMcpServer(input.agentTools),
-      [opencodeIntegrationToolsServer]: opencodeMcpServer(input.integrationTools),
     },
     model,
     permission: opencodeAccessModeConfiguration(input.accessMode, input.openSteerToolIds),
@@ -232,18 +230,22 @@ function opencodeProviderDeclaration(input: {
         name: compatibleEndpointHost(input.baseUrl),
         npm: "@ai-sdk/openai-compatible",
         options: { baseURL: input.baseUrl },
-        ...(input.modelId && input.modelContextWindow
+        ...(input.modelId
           ? {
               models: {
                 [input.modelId]: {
                   id: input.modelId,
                   name: input.modelId,
-                  limit: {
-                    context: input.modelContextWindow,
-                    output:
-                      input.modelMaxOutputTokens ??
-                      Math.max(1, Math.floor(input.modelContextWindow / 4)),
-                  },
+                  ...(input.modelContextWindow
+                    ? {
+                        limit: {
+                          context: input.modelContextWindow,
+                          output:
+                            input.modelMaxOutputTokens ??
+                            Math.max(1, Math.floor(input.modelContextWindow / 4)),
+                        },
+                      }
+                    : {}),
                   modalities: {
                     input: input.modelAcceptsImages ? ["text", "image"] : ["text"],
                     output: ["text"],

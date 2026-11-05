@@ -1,3 +1,4 @@
+import { agentTools } from "@opensteer/agent-tools";
 import { createId as createStorageFixtureId } from "@opensteer/core";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -51,20 +52,16 @@ it("records a successful Codex command with large inline arguments without faili
     context: {
       accessMode: "full-access",
       assignment: null,
-      agentControl: {
-        token: "test-control",
-        url: "https://host.example/internal/v1/agent-control",
-      },
       agentTools: {
-        capabilityProfileId: "workspace",
+        tools: agentTools.filter((tool) => tool.callers.includes("run")).map(({ name }) => name),
+        toolsRevision: "test-tools-v1",
+        instructions: "Host Opensteer instructions",
+        skills: ["opensteer:threads"],
         token: "test-tools",
         url: "https://host.example/internal/v1/mcp",
       },
-      browserCdp: { token: "test-browser", url: "https://host.example/internal/v1/browser-cdp" },
-      integrationTools: {
-        token: "test-tools",
-        url: "https://host.example/internal/v1/integration-mcp",
-      },
+      browserCdp: { url: "https://host.example/internal/v1/browser-cdp" },
+
       plugins: {
         versions: [],
         token: "test-skills",

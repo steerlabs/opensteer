@@ -24,6 +24,7 @@ vi.mock("expo-haptics", () => ({
   NotificationFeedbackType: { Error: "error", Success: "success" },
   impactAsync: vi.fn(async () => undefined),
   notificationAsync: vi.fn(async () => undefined),
+  selectionAsync: vi.fn(async () => undefined),
 }));
 vi.mock("react-native", () => ({
   Modal: ({ children, visible }: { children?: ReactNode; visible?: boolean }) =>
@@ -58,6 +59,21 @@ vi.mock("../client/mobile-client.js", () => ({
 }));
 vi.mock("../ui/primitives.js", () => ({
   AppText: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
+  Chip: ({
+    accessibilityLabel,
+    disabled,
+    label,
+    onPress,
+  }: {
+    accessibilityLabel: string;
+    disabled?: boolean;
+    label: string;
+    onPress: () => void;
+  }) => (
+    <button aria-label={accessibilityLabel} disabled={disabled} onClick={onPress}>
+      {label}
+    </button>
+  ),
   Notice: ({
     action,
     detail,
@@ -115,7 +131,9 @@ vi.mock("../ui/sheet.js", () => ({
     open ? <div>{children}</div> : null,
 }));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
-vi.mock("./integration-connect-sheet.js", () => ({ IntegrationConnectSheet: () => null }));
+vi.mock("./integration-connect-sheet.js", () => ({
+  IntegrationConnectCard: () => <span>Inline Connect card</span>,
+}));
 
 const { RequestCard } = await import("./request-card.js");
 
@@ -366,6 +384,30 @@ describe("RequestCard saved-password sign-ins", () => {
  * - promising an account or access, which installing does not give;
  * - Install sending anything but the Request's own choice.
  */
+it("renders an integration access card inline without the intermediate request sheet", async () => {
+  const base = passwordSignInRequest();
+  const request = {
+    ...base,
+    kind: "integration.access",
+    payload: {
+      kind: "integration.access",
+      installationId: null,
+      manifest: null,
+      access: "read",
+      reason: "Read messages",
+      requestedServerId: null,
+      requestedConnectionId: null,
+    },
+    presentation: { kind: "external", title: "Connect Gmail" },
+  } as Request;
+  const dispatch = vi.fn();
+  await render(surface(request), dispatch);
+  expect(text()).toContain("Inline Connect card");
+  expect(text()).not.toContain("Review connection");
+  expect(text()).not.toContain("Review request");
+  expect(dispatch).not.toHaveBeenCalled();
+});
+
 describe("RequestCard install requests", () => {
   it("reviews an agent's proposal in the web's words before Install", async () => {
     const dispatch = vi.fn(async () => ({ type: "request.respond" }));
@@ -393,6 +435,52 @@ describe("RequestCard install requests", () => {
       idempotencyKey: expect.any(String),
       requestId: installRequest().id,
       response: { kind: "choice", optionId: "installed" },
+      type: "request.respond",
+    });
+  });
+});
+
+describe("RequestCard browser profile requests", () => {
+  it("in Main, names a new profile with one tap and creates it without a grant", async () => {
+    const request = {
+      ...requestBase(),
+      kind: "browser.access",
+      payload: {
+        kind: "browser.access",
+        reason: "Sign in to Brex",
+        suggestion: { kind: "new", suggestedName: "Brex" },
+      },
+      presentation: {
+        detail: "Sign in to Brex",
+        kind: "external",
+        subject: { id: workspaceId, kind: "workspace" },
+        title: "Browser profile",
+      },
+    } as Request;
+    const dispatch = vi.fn(async () => ({ type: "request.respond" }));
+    await render(surface(request), dispatch, {
+      snapshot: {
+        browserProfileGrants: [],
+        browserProfiles: [{ id: "bpr_00000000-0000-4000-8000-000000000001", name: "Personal" }],
+        workspaces: [{ id: workspaceId, kind: "main", name: "Main" }],
+      },
+    });
+
+    await click("Review request");
+    expect(text()).toContain("Agents in Main can use every browser profile you have");
+    expect(text()).not.toContain("Already available");
+    // Personal is taken, so it is never offered as a new name.
+    expect(() => button("Name it Personal")).toThrow();
+    await click("Name it Finance");
+    await click("Create profile");
+
+    expect(dispatch).toHaveBeenCalledWith({
+      idempotencyKey: expect.any(String),
+      requestId: request.id,
+      response: {
+        kind: "external",
+        value: { createProfile: { name: "Finance" }, decision: "fulfilled" },
+      },
       type: "request.respond",
     });
   });
@@ -603,12 +691,18 @@ async function render(
     readonly machines?: readonly MachineSummary[];
     readonly passwordRead?: ReturnType<typeof vi.fn>;
     readonly review?: ReturnType<typeof vi.fn>;
+    readonly snapshot?: object;
   } = {},
 ): Promise<void> {
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
   roots.push(root);
+  const snapshot = {
+    identityConfig: { deployment: { name: "Alex’s Opensteer" } },
+    workspaces: [{ id: workspaceId, name: "Research" }],
+    ...options.snapshot,
+  };
   await act(async () => {
     root.render(
       <RequestCard
@@ -619,12 +713,10 @@ async function render(
         hostClient={
           {
             dispatch,
+            load: async () => undefined,
             refresh: async () => undefined,
             subscribe: () => () => undefined,
-            getSnapshot: () => ({
-              identityConfig: { deployment: { name: "Alex’s Opensteer" } },
-              workspaces: [{ id: workspaceId, name: "Research" }],
-            }),
+            getSnapshot: () => snapshot,
             rpc: {
               "browser.sources.inspect": options.inspect ?? vi.fn(),
               "browser.password-sign-in.get":

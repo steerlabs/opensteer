@@ -30,6 +30,7 @@ describe("contained ACP title generation", () => {
         executable: process.execPath,
       },
       modeId: "default",
+      modelId: "exact-native-model",
       prompt: "Name only this input",
       protocolVersion: 1,
       sessionMetadata: { antigravity: { enabledTools: [] } },
@@ -78,6 +79,7 @@ describe("contained ACP title generation", () => {
         executable: process.execPath,
       },
       modeId: "default",
+      modelId: "exact-native-model",
       prompt: "Name only this input",
       protocolVersion: 1,
       signal: new AbortController().signal,
@@ -133,7 +135,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       configOptions: [],
       modes: { currentModeId: "default", availableModes: [{ id: "default", name: "Default" }] }
     }});
-  } else if (message.method === "session/set_mode") {
+  } else if (message.method === "session/set_mode" || message.method === "session/set_model") {
     send({ jsonrpc: "2.0", id: message.id, result: {} });
   } else if (message.method === "session/prompt") {
     for (let sent = 0; sent < (behavior.thoughtBytes ?? 0); sent += 1_024) {

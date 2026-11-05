@@ -610,6 +610,34 @@ integration.sequential("PostgreSQL integration uninstall", () => {
     },
   });
 
+  it("reads one account identity within its owner", async ({ storeFixture }) => {
+    const { store, platform, database } = storeFixture;
+    const ownerUserId = await store.createUser("Account owner");
+    const otherOwner = await store.createUser("Other account owner");
+    const connectionId = createIntegrationId("connection");
+    const credentialId = createId("credential");
+    await insertCredential(database, credentialId, ownerUserId);
+    await insertProviderConnection(database, {
+      connectionId,
+      credentialId,
+      definitionId: "account-label",
+      ownerUserId,
+    });
+    await expect(platform.getConnectionAccount({ connectionId, ownerUserId })).resolves.toEqual({
+      displayName: "Alex",
+      accountIdentifier: "alex@example.com",
+    });
+    await expect(
+      platform.getConnectionAccount({ connectionId, ownerUserId: otherOwner }),
+    ).resolves.toBeNull();
+    await expect(
+      platform.getConnectionAccount({
+        connectionId: createIntegrationId("connection"),
+        ownerUserId,
+      }),
+    ).resolves.toBeNull();
+  });
+
   it("orders provider tool reconciliation with grant creation without a deadlock", async ({
     storeFixture,
   }) => {
@@ -737,8 +765,9 @@ integration.sequential("PostgreSQL integration uninstall", () => {
     storeFixture,
   }) => {
     const { store, platform, database } = storeFixture;
-    const userId = await store.createUser("Catalog owner");
-    const workspace = await createWorkspace(store, userId, "catalog-uninstall");
+    const run = await runningRunFixture(store, "catalog-uninstall");
+    const userId = run.userId;
+    const workspace = { id: run.workspaceId };
     const installationId = createIntegrationId("installation");
     const serverId = createIntegrationId("server");
     const tool = discoveredTool(createIntegrationId("tool"));
@@ -795,6 +824,21 @@ integration.sequential("PostgreSQL integration uninstall", () => {
         workspaceId: workspace.id,
       })
       .executeTakeFirstOrThrow();
+
+    await database
+      .updateTable("integrationConnections")
+      .set({ provider: "records" })
+      .where("id", "=", connectionId)
+      .execute();
+    const inventory = await platform.listDiscoveryInventory({
+      ownerUserId: userId,
+      workspaceId: workspace.id,
+      threadId: run.threadId,
+      providerAuthorizations: {},
+    });
+    expect(inventory[0]?.accounts).toContainEqual(
+      expect.objectContaining({ connectionId, account: "Alex (alex@example.com)" }),
+    );
 
     const mutation = await platform.uninstall({
       actorUserId: userId,
@@ -1559,7 +1603,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
     }
     async function insertLineageThread(
       sibling: ThreadId,
-      profile: "workspace" | "delegated",
       parentThreadId: ThreadId | null,
     ): Promise<ThreadId> {
       const id = createId("thread");
@@ -1575,11 +1618,11 @@ integration.sequential("PostgreSQL computer app connections", () => {
       await sql`
       insert into threads (
         id, workspace_id, parent_thread_id, title, environment_id, harness_instance_id,
-        created_by, capability_profile_id, created_by_principal_id, model_selection,
+        created_by, inherits_main, created_by_principal_id, model_selection,
         access_mode, lineage_root_thread_id, listed, color
       )
       select ${id}, workspace_id, ${parentThreadId}, ${`Lineage ${id}`}, environment_id,
-        harness_instance_id, created_by, ${profile}, created_by_principal_id, model_selection,
+        harness_instance_id, created_by, ${parentThreadId ? sql`(select inherits_main from threads where id = ${parentThreadId})` : sql`false`}, created_by_principal_id, model_selection,
         access_mode, ${lineageRoot}, ${parentThreadId === null}, color
       from threads where id = ${sibling}
     `.execute(database);
@@ -2529,6 +2572,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     storeFixture,
   }) => {
     const {
+      database,
       store,
       fixture,
       setApprovedComputerConnection,
@@ -2581,10 +2625,12 @@ integration.sequential("PostgreSQL computer app connections", () => {
       status: "pending",
     });
     expect(
-      (await platform.requests.listPendingContinuations()).some(
-        ({ request }) => request.id === opened.request.id,
-      ),
-    ).toBe(false);
+      await database
+        .selectFrom("requestContinuations")
+        .selectAll()
+        .where("requestId", "=", opened.request.id)
+        .execute(),
+    ).toEqual([]);
     const widened = await connect(setup.runnerId, "read-write");
     expect(widened.requestEvents.map((event) => event.type)).toEqual(["request.resolved"]);
     await expect(platform.requests.get(opened.request.id)).resolves.toMatchObject({
@@ -2844,6 +2890,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     storeFixture,
   }) => {
     const {
+      database,
       store,
       fixture,
       setApprovedComputerConnection,
@@ -2967,10 +3014,12 @@ integration.sequential("PostgreSQL computer app connections", () => {
             status: "pending",
           });
           expect(
-            (await platform.requests.listPendingContinuations()).some(
-              ({ request }) => request.id === opened.request.id,
-            ),
-          ).toBe(false);
+            await database
+              .selectFrom("requestContinuations")
+              .selectAll()
+              .where("requestId", "=", opened.request.id)
+              .execute(),
+          ).toEqual([]);
         }
       }
     }
@@ -3519,8 +3568,8 @@ integration.sequential("PostgreSQL computer app connections", () => {
           noRoute: "No route",
           notAMember: "Not a member",
         },
-        placementCandidates: [
-          { environmentId: placementEnvironmentId, harnessInstanceId: placementHarness.id },
+        availableEngines: [
+          { environmentId: placementEnvironmentId, driverKinds: [placementHarness.driverKind] },
         ],
       });
       void adopting.catch(() => undefined);
@@ -3731,8 +3780,8 @@ integration.sequential("PostgreSQL computer app connections", () => {
             noRoute: "No route",
             notAMember: "Not a member",
           },
-          placementCandidates: [
-            { environmentId: run.environmentId, harnessInstanceId: run.harnessInstanceId },
+          availableEngines: [
+            { environmentId: run.environmentId, driverKinds: [HarnessIdSchema.parse("native")] },
           ],
         });
       // Exercise the production revocation transaction without its outer retry:
@@ -4182,9 +4231,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     );
   });
 
-  it("inherits Main only in a lineage that starts from a Main-profile Thread", async ({
-    storeFixture,
-  }) => {
+  it("inherits Main only when the lineage root has consent", async ({ storeFixture }) => {
     const {
       store,
       fixture,
@@ -4205,11 +4252,11 @@ integration.sequential("PostgreSQL computer app connections", () => {
       tools: setup.tools("read"),
     });
     // A channel route runs as its creator without being them, so its root
-    // Thread takes `workspace` even in their own Main, and whatever it
+    // Thread withholds Main inheritance even in their own Main, and whatever it
     // delegates inherits that lineage.
-    const channelRoot = await insertLineageThread(run.threadId, "workspace", null);
-    const channelChild = await insertLineageThread(run.threadId, "delegated", channelRoot);
-    const homeChild = await insertLineageThread(run.threadId, "delegated", run.threadId);
+    const channelRoot = await insertLineageThread(run.threadId, null);
+    const channelChild = await insertLineageThread(run.threadId, channelRoot);
+    const homeChild = await insertLineageThread(run.threadId, run.threadId);
     const callable = async (threadId: ThreadId) =>
       (
         await platform.listCallableTools({
@@ -4649,6 +4696,79 @@ integration.sequential("PostgreSQL computer app connections", () => {
     expect(await platform.localMcp.secrets(server.id, setup.runnerId)).toEqual(
       Buffer.from("sealed+"),
     );
+  });
+
+  it("asks again about a declined server installed again as a launch it once approved", async ({
+    storeFixture,
+  }) => {
+    const { guiFixture, platform } = storeFixture;
+    const setup = await guiFixture("server-declined-revert");
+    const installationId = createIntegrationId("installation");
+    const serverId = createIntegrationId("server");
+    const installAs = (edition: string) =>
+      platform.install({
+        actorUserId: setup.ownerUserId,
+        adapterSnapshot: null,
+        installation: {
+          description: "",
+          id: installationId,
+          manifest: {},
+          name: "plugin-camera",
+          provenance: {},
+          sourceKind: "plugin",
+          status: "active",
+          title: "camera",
+          trust: "administrator-approved",
+          version: null,
+        },
+        requestId: `server-declined-revert-${edition}`,
+        servers: [
+          {
+            catalog: { definitions: {}, tools: [] },
+            connectionRequirement: { kind: "none" },
+            id: serverId,
+            name: "camera",
+            status: "needs-attention",
+            statusDetail: null,
+            transport: {
+              launch: {
+                args: [],
+                command: "node",
+                cwd: "/tmp",
+                env: { EDITION: edition },
+                type: "stdio" as const,
+              },
+              runnerId: setup.runnerId,
+              type: "runner",
+            },
+          },
+        ],
+      });
+    const ask = async () => {
+      await platform.localMcp.requestApprovals();
+      const asked = (await platform.listComputerAppSetupRequests(setup.ownerUserId)).find(
+        ({ kind }) => kind === "server",
+      );
+      if (!asked) throw new Error("Its computer was not asked");
+      return asked;
+    };
+    await installAs("approved");
+    await platform.localMcp.approve({
+      actorUserId: setup.ownerUserId,
+      runnerId: setup.runnerId,
+      secrets: async () => null,
+      setupRequestId: (await ask()).id,
+    });
+    await installAs("declined");
+    await platform.localMcp.decline({
+      actorUserId: setup.ownerUserId,
+      runnerId: setup.runnerId,
+      setupRequestId: (await ask()).id,
+    });
+
+    await installAs("approved");
+    expect(await platform.localMcp.get(serverId)).toMatchObject({ approvedLaunchDigest: null });
+    await ask();
   });
 
   it("asks the computer a server moves to, and keeps none of what was entered for the last", async ({
@@ -5498,13 +5618,14 @@ integration.sequential("PostgreSQL computer app connections", () => {
       sessionId,
       deviceLabel: "iPhone",
     });
-    // The Thread hears about it through the same continuation an
-    // `integration.access` answer produces.
+    await expect(platform.requests.listPendingContinuations()).resolves.toEqual([]);
     await expect(
-      platform.requests
-        .listPendingContinuations()
-        .then((entries) => entries.map(({ request }) => request.id)),
-    ).resolves.toContain(opened.request.id);
+      database
+        .selectFrom("requestContinuations")
+        .select("status")
+        .where("requestId", "=", opened.request.id)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({ status: "waiting" });
     await expect(platform.listComputerAppSetupRequests(run.userId)).resolves.toEqual([]);
   });
 

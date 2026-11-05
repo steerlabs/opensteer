@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { ModelSelectionSchema, ThreadAccessModeSchema } from "@opensteer/core";
+import {
+  catalogDefaultModelSelection,
+  ModelSelectionSchema,
+  ThreadAccessModeSchema,
+} from "@opensteer/core";
 import {
   HarnessInstanceCatalogSchema,
   HarnessModelDescriptorSchema,
@@ -454,6 +458,23 @@ describe("Chat execution selection", () => {
     });
   });
 
+  it("keeps an account the Host ruled out of every empty-choice default", () => {
+    const refused = { ...gateway, automaticEligible: false };
+    expect(rankedChatExecutionSelection([claude, refused])?.harnessInstanceId).toBe(
+      "hin-claude-55",
+    );
+    const none = { chosen: null, existing: null };
+    expect(chatExecutionSelection({ ...none, placements: [refused] })).toBeNull();
+    const remembered = {
+      environmentId: refused.environmentId,
+      harnessInstanceId: refused.harnessInstanceId,
+      modelSelection: selectionForModel(terraOnGateway),
+    };
+    expect(
+      chatExecutionSelection({ ...none, placements: [refused], remembered })?.harnessInstanceId,
+    ).toBe("hin-gateway");
+  });
+
   it("keeps placement order as the tie breaker", () => {
     const other = { ...gateway, harnessInstanceId: "hin-gateway-2" };
     expect(rankedChatExecutionSelection([other, gateway])?.harnessInstanceId).toBe("hin-gateway-2");
@@ -773,3 +794,31 @@ function serverPlacements(
   };
   return threadPlacementOptions([environment], harnesses);
 }
+
+it("uses the core catalog default for empty Chat and task previews", () => {
+  const expected = catalogDefaultModelSelection({ status: "ready", models: codexMain.models });
+  expect(
+    composerExecutionSelection({
+      chosen: null,
+      remembered: null,
+      defaultPlacement: codexMain,
+      placements: [codexMain],
+    })?.modelSelection,
+  ).toEqual(expected);
+  expect(
+    chatExecutionSelection({ chosen: null, existing: null, placements: [codexMain] })
+      ?.modelSelection,
+  ).toEqual(expected);
+  const withoutDefault = {
+    ...codexMain,
+    models: codexMain.models.map((model) => ({ ...model, isDefault: false })),
+  };
+  expect(
+    composerExecutionSelection({
+      chosen: null,
+      remembered: null,
+      defaultPlacement: withoutDefault,
+      placements: [withoutDefault],
+    }),
+  ).toBeNull();
+});

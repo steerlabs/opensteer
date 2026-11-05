@@ -38,18 +38,18 @@ describe("HostCommandDispatcher Request responses", () => {
       attachmentRunTokens: { issue: () => "attachment-token" } as never,
       attachments: { listForRun: async () => [] },
       requestResponseVault: vault,
-      agentControlTokens: {} as never,
+      runToolTokens: {} as never,
       browser: {} as never,
       egress: {} as never,
       pluginVersions: async () => [],
       pluginsTokens: {} as never,
-      integrationToolsTokens: {} as never,
+
       onWorkspaceEvent: vi.fn(),
       publicUrl: new URL("https://host.example"),
       runners: { dispatch: runnersDispatch } as never,
       store: { dispatchRequestResponse } as never,
       triggerControlTokens: {} as never,
-      triggerIntegrationToolsTokens: {} as never,
+
       triggers: {} as never,
       workspaces: {} as never,
       workspaceAccess: {} as never,
@@ -88,12 +88,12 @@ describe("HostCommandDispatcher Request responses", () => {
         open,
         seal: vi.fn(),
       } as never,
-      agentControlTokens: {} as never,
+      runToolTokens: {} as never,
       browser: {} as never,
       egress: {} as never,
       pluginVersions: async () => [],
       pluginsTokens: {} as never,
-      integrationToolsTokens: {} as never,
+
       onWorkspaceEvent: vi.fn(),
       publicUrl: new URL("https://host.example"),
       runners: { dispatch: runnersDispatch } as never,
@@ -106,7 +106,7 @@ describe("HostCommandDispatcher Request responses", () => {
         }),
       } as never,
       triggerControlTokens: {} as never,
-      triggerIntegrationToolsTokens: {} as never,
+
       triggers: {} as never,
       workspaces: {} as never,
       workspaceAccess: {} as never,
@@ -152,29 +152,44 @@ describe("HostCommandDispatcher steering", () => {
     expect(runnersDispatch).not.toHaveBeenCalled();
   });
 
-  it("compensates through the Thread Inbox when the Runner refuses steering", async () => {
-    const requeuedEvent = { type: "run.queued" } as never;
-    const refuseSteer = vi.fn(async () => [requeuedEvent]);
-    const succeedCommand = vi.fn(async () => []);
-    const onWorkspaceEvent = vi.fn();
-    const dispatcher = steerDispatcher({
-      onWorkspaceEvent,
-      refuseSteer,
-      runnersDispatch: vi.fn(async () => {
-        throw new CommandDispatchError("Harness does not support steering", "failed");
-      }),
-      succeedCommand,
-    });
-    const command = steerCommand();
+  it.each([undefined, "request-pending"])(
+    "compensates through the Thread Inbox when the Runner refuses steering (%s)",
+    async (reason) => {
+      const requeuedEvent = { type: "run.queued" } as never;
+      const refuseSteer = vi.fn(async () => [requeuedEvent]);
+      const succeedCommand = vi.fn(async () => []);
+      const onWorkspaceEvent = vi.fn();
+      const dispatcher = steerDispatcher({
+        onWorkspaceEvent,
+        refuseSteer,
+        runnersDispatch: vi.fn(async () => {
+          throw new CommandDispatchError(
+            "Harness does not support steering",
+            "failed",
+            reason
+              ? {
+                  cause: { code: "conflict", message: "Run is stopping", reason, retryable: false },
+                }
+              : undefined,
+          );
+        }),
+        succeedCommand,
+      });
+      const command = steerCommand();
 
-    await expect(
-      dispatcher.dispatch(command, new AbortController().signal),
-    ).resolves.toBeUndefined();
+      await expect(
+        dispatcher.dispatch(command, new AbortController().signal),
+      ).resolves.toBeUndefined();
 
-    expect(refuseSteer).toHaveBeenCalledWith(command.id, "Harness does not support steering");
-    expect(onWorkspaceEvent).toHaveBeenCalledWith(requeuedEvent);
-    expect(succeedCommand).not.toHaveBeenCalled();
-  });
+      expect(refuseSteer).toHaveBeenCalledWith(
+        command.id,
+        "Harness does not support steering",
+        reason,
+      );
+      expect(onWorkspaceEvent).toHaveBeenCalledWith(requeuedEvent);
+      expect(succeedCommand).not.toHaveBeenCalled();
+    },
+  );
 
   it("leaves a retryable steer to the coordinator", async () => {
     const refuseSteer = vi.fn(async () => []);
@@ -244,12 +259,12 @@ describe("HostCommandDispatcher archived Workspace demand", () => {
         attachmentRunTokens: { issue: () => "attachment-token" } as never,
         attachments: { listForRun: async () => [] },
         requestResponseVault: {} as never,
-        agentControlTokens: {} as never,
+        runToolTokens: {} as never,
         browser: {} as never,
         egress: {} as never,
         pluginVersions: async () => [],
         pluginsTokens: {} as never,
-        integrationToolsTokens: {} as never,
+
         onWorkspaceEvent: vi.fn(),
         publicUrl: new URL("https://host.example"),
         runners: {
@@ -260,6 +275,7 @@ describe("HostCommandDispatcher archived Workspace demand", () => {
               "thread-state-v1",
               "requester-time-zone-v1",
               "execution-plane-v2",
+              "agent-tools-plan-v1",
             ],
             connectionGeneration: 7,
             name: "Runner",
@@ -273,7 +289,7 @@ describe("HostCommandDispatcher archived Workspace demand", () => {
           }),
         } as never,
         triggerControlTokens: {} as never,
-        triggerIntegrationToolsTokens: {} as never,
+
         triggers: {} as never,
         workspaceAccess: {} as never,
         workspaces: {} as never,
@@ -590,6 +606,25 @@ describe("HostCommandDispatcher model selection", () => {
     );
   });
 
+  it("refuses the new tool plan on an old Runner with a visible update reason", async () => {
+    const { dispatch, run } = dispatchRun({
+      capabilities: [
+        "native-session-continuation-v1",
+        "assignments-v1",
+        "thread-state-v1",
+        "requester-time-zone-v1",
+        "execution-plane-v2",
+      ],
+      models: [gpt5],
+      modelSelection: { modelId: "gpt-5", options: {}, providerId: "openai" },
+    });
+    await expect(run()).rejects.toMatchObject({
+      disposition: "failed",
+      message: "Update this computer to use Opensteer tools.",
+    });
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
   it("asks a Runner that cannot carry the requester's time zone to update instead of running", async () => {
     const { dispatch, run, timeZoneFor } = dispatchRun({
       capabilities: [
@@ -597,6 +632,7 @@ describe("HostCommandDispatcher model selection", () => {
         "assignments-v1",
         "thread-state-v1",
         "execution-plane-v2",
+        "agent-tools-plan-v1",
       ],
       models: [gpt5],
       modelSelection: { modelId: "gpt-5", options: {}, providerId: "openai" },
@@ -618,6 +654,7 @@ describe("HostCommandDispatcher model selection", () => {
       "thread-state-v1",
       "requester-time-zone-v1",
       "execution-plane-v2",
+      "agent-tools-plan-v1",
     ];
     const conversation = dispatchRun({
       capabilities: older,
@@ -667,6 +704,7 @@ describe("HostCommandDispatcher model selection", () => {
       ...input,
       capabilities: [
         "settings-plugin-policy-v1",
+        "agent-tools-plan-v1",
         "native-session-continuation-v1",
         "assignments-v1",
         "thread-state-v1",
@@ -701,8 +739,8 @@ describe("HostCommandDispatcher model selection", () => {
       if (command.type !== "run.execute") throw new Error("Expected run.execute");
       expect(command.context.specialistId).toBe("registration");
       expect(
-        RunExecutionContextSchema.shape.agentTools.parse(command.context.agentTools),
-      ).toMatchObject({ capabilityProfileId: "specialist" });
+        RunExecutionContextSchema.shape.agentTools.parse(command.context.agentTools).instructions,
+      ).toContain("specialist lineage");
     } finally {
       admit.mockRestore();
     }
@@ -742,13 +780,13 @@ describe("HostCommandDispatcher model selection", () => {
         listForRun: async () => (input.hasHistoricalAttachments ? [{}] : []),
       } as never,
       requestResponseVault: {} as never,
-      agentControlTokens: { issue: () => "agent-token" } as never,
+      runToolTokens: { issue: () => "agent-token" } as never,
       browser: {} as never,
       egress: { issue: () => "egress-token" } as never,
       workspaceSkillPolicy: async () => input.workspaceSkillPolicy,
       pluginVersions: async () => [],
       pluginsTokens: { issue: () => "skills-token" } as never,
-      integrationToolsTokens: { issue: () => "tools-token" } as never,
+
       onWorkspaceEvent: vi.fn(),
       publicUrl: new URL("https://host.example"),
       runners: {
@@ -764,6 +802,7 @@ describe("HostCommandDispatcher model selection", () => {
             "thread-state-v1",
             "requester-time-zone-v1",
             "execution-plane-v2",
+            "agent-tools-plan-v1",
           ],
           name: "Run computer",
           runnerId: createId("runner"),
@@ -809,8 +848,8 @@ describe("HostCommandDispatcher model selection", () => {
             requestedBy,
           },
           thread: {
-            specialistId: input.specialistId,
-            capabilityProfileId: input.specialistId ? "specialist" : null,
+            inheritsMain: false,
+            ...(input.specialistId ? { specialistId: input.specialistId } : {}),
             id: threadId,
             role: input.role ?? "work",
           },
@@ -822,7 +861,7 @@ describe("HostCommandDispatcher model selection", () => {
         }: Parameters<OpensteerStore["recordHarnessCatalogs"]>[0]) => catalogs,
       } as never,
       triggerControlTokens: {} as never,
-      triggerIntegrationToolsTokens: {} as never,
+
       triggers: {} as never,
       workspaces: { ensureExecutionReady: async () => undefined } as never,
       workspaceAccess: { plan: async () => ({ kind: "test-plan" }) } as never,
@@ -863,6 +902,7 @@ describe("HostCommandDispatcher Workspace planning", () => {
           "thread-state-v1",
           "requester-time-zone-v1",
           "execution-plane-v2",
+          "agent-tools-plan-v1",
         ],
         name: "Run computer",
         runnerId: createId("runner"),
@@ -884,12 +924,12 @@ describe("HostCommandDispatcher Workspace planning", () => {
         attachmentRunTokens: { issue: () => "attachment-token" } as never,
         attachments: { listForRun: async () => [] },
         requestResponseVault: {} as never,
-        agentControlTokens: { issue: () => "agent-token" } as never,
+        runToolTokens: { issue: () => "agent-token" } as never,
         browser: {} as never,
         egress: { issue: () => "egress-token" } as never,
         pluginVersions: async () => [],
         pluginsTokens: { issue: () => "skills-token" } as never,
-        integrationToolsTokens: { issue: () => "tools-token" } as never,
+
         onWorkspaceEvent: vi.fn(),
         publicUrl: new URL("https://host.example"),
         runners: {
@@ -951,7 +991,7 @@ describe("HostCommandDispatcher Workspace planning", () => {
               modelSelection: { modelId: "gpt-5", options: {}, providerId: "openai" },
               requestedBy,
             },
-            thread: { capabilityProfileId: null, id: threadId },
+            thread: { inheritsMain: false, id: threadId },
             workspace,
           }),
           notificationState: { timeZoneFor: async () => null },
@@ -960,7 +1000,7 @@ describe("HostCommandDispatcher Workspace planning", () => {
           }: Parameters<OpensteerStore["recordHarnessCatalogs"]>[0]) => catalogs,
         } as never,
         triggerControlTokens: {} as never,
-        triggerIntegrationToolsTokens: {} as never,
+
         triggers: {} as never,
         workspaces: { ensureExecutionReady: async () => undefined } as never,
         workspaceAccess: { plan } as never,
@@ -988,12 +1028,17 @@ describe("HostCommandDispatcher Workspace planning", () => {
               hasEarlier: false,
             },
             workspaceAccess: { kind: "test-plan" },
+            // One Host credential: the tool plan's.
+            agentTools: expect.objectContaining({ token: "agent-token" }),
+            browserCdp: { url: "https://host.example/internal/v1/browser-cdp" },
           }),
           type: "run.execute",
         }),
         expect.any(AbortSignal),
         expect.objectContaining({ connectionGeneration: 7 }),
       );
+      const [sent] = dispatch.mock.lastCall as unknown as [{ readonly context: object }];
+      expect(sent.context).not.toHaveProperty("agentControl");
     },
   );
 });
@@ -1010,12 +1055,12 @@ function steerDispatcher(input: {
     attachmentRunTokens: { issue: () => "attachment-token" } as never,
     attachments: { listForRun: async () => [] },
     requestResponseVault: {} as never,
-    agentControlTokens: {} as never,
+    runToolTokens: {} as never,
     browser: {} as never,
     egress: {} as never,
     pluginVersions: async () => [],
     pluginsTokens: {} as never,
-    integrationToolsTokens: {} as never,
+
     onWorkspaceEvent: input.onWorkspaceEvent ?? vi.fn(),
     publicUrl: new URL("https://host.example"),
     runners: { dispatch: input.runnersDispatch } as never,
@@ -1030,7 +1075,7 @@ function steerDispatcher(input: {
       succeedCommand: input.succeedCommand,
     } as never,
     triggerControlTokens: {} as never,
-    triggerIntegrationToolsTokens: {} as never,
+
     triggers: {} as never,
     workspaces: {} as never,
     workspaceAccess: {} as never,

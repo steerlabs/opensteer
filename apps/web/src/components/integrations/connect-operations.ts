@@ -11,9 +11,12 @@ import type { IntegrationRepositoryAccess } from "@opensteer/integration-core";
 import { mutationIdempotencyKey, unwrapRpcResult, type HostClient } from "@opensteer/client/host";
 import { desktopBridge } from "../../desktop/desktop-bridge.js";
 import {
+  integrationAppButtonOffered,
   integrationAuthorizationSurface,
+  finishDesktopIntegrationAuthorization,
   beginIntegrationAuthorization,
   waitForIntegrationAuthorization,
+  type IntegrationAuthorizationReturnRoute,
 } from "../../integrations/integration-authorization.js";
 /**
  * Everything the Connect flow does to the Host, as one small injectable
@@ -21,6 +24,11 @@ import {
  * both entry points speak to the same typed rpc members.
  */
 export interface ConnectOperations {
+  /** Whether to offer a fresh sign-in by the app button after this attempt ended this way. */
+  readonly appButtonOffered: (
+    attemptId: IntegrationAuthorizationStart["attemptId"],
+    status: IntegrationAuthorizationStatus["status"],
+  ) => boolean;
   /**
    * Observe the same durable attempt while authorization runs in another
    * surface. It answers a terminal status, or rejects once aborted.
@@ -34,6 +42,7 @@ export interface ConnectOperations {
     readonly applicationSource: IntegrationOAuthApplicationSource | null;
     readonly definitionId: string;
     readonly returnPath: string;
+    readonly returnRoute?: IntegrationAuthorizationReturnRoute;
   }) => Promise<IntegrationAuthorizationStart>;
   readonly cancelAuthorization: (
     attemptId: IntegrationAuthorizationStart["attemptId"],
@@ -57,6 +66,8 @@ export function createConnectOperations(
   tracking: IntegrationAuthorizationTracking,
 ): ConnectOperations {
   return {
+    appButtonOffered: (attemptId, status) =>
+      integrationAppButtonOffered(tracking, attemptId, status),
     checkRepositoryAccess: async (connectionId) =>
       unwrapRpcResult(
         await client.rpc["integration.repositoryAccess.check"]({
@@ -70,15 +81,18 @@ export function createConnectOperations(
         expiresAt: started.expiresAt,
         signal,
       });
+      await finishDesktopIntegrationAuthorization(desktopBridge(), client, started.attemptId);
       tracking.finished(started.attemptId);
       return status;
     },
-    beginAuthorization: ({ applicationSource, definitionId, returnPath }) =>
+    beginAuthorization: ({ applicationSource, definitionId, returnPath, returnRoute }) =>
       beginIntegrationAuthorization({
         bridge: desktopBridge(),
+        client,
         onStarted: tracking.started,
         returnPath,
-        begin: async (authorizationReturnPath) => {
+        ...(returnRoute ? { returnRoute } : {}),
+        begin: async (authorizationReturnPath, finish) => {
           const started = await client.dispatch({
             idempotencyKey: mutationIdempotencyKey(`integration-auth:${definitionId}`),
             input: {
@@ -86,6 +100,7 @@ export function createConnectOperations(
               definitionId,
               returnPath: authorizationReturnPath,
               surface: integrationAuthorizationSurface(desktopBridge()),
+              ...finish,
             },
             type: "integration.authorization.begin",
           });
@@ -104,6 +119,7 @@ export function createConnectOperations(
       if (cancelled.type !== "integration.authorization.cancel") {
         throw new Error("Integration authorization cancellation command mismatch.");
       }
+      await finishDesktopIntegrationAuthorization(desktopBridge(), client, attemptId);
       tracking.finished(attemptId);
       return cancelled;
     },

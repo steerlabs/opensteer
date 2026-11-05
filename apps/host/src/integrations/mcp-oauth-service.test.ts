@@ -2,7 +2,7 @@ import { sealOAuthBrokerPayload } from "@opensteer/integration-auth";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { createIntegrationId } from "@opensteer/integration-core";
-import { createId } from "@opensteer/core";
+import { createId, OpensteerError } from "@opensteer/core";
 import { auth, UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
 import { canonicalAuthorizationRepair } from "../identity/auth.js";
 
@@ -433,8 +433,27 @@ describe("McpOAuthService", () => {
     { reconnect: true, relay: true },
     { reconnect: false, relay: true, badIssuer: true },
     { reconnect: false, relay: true, abandonedClaim: true },
-  ])("authorizes a new or existing MCP account (%j)", async (scenario) => {
-    const { reconnect, relay, badIssuer, abandonedClaim } = scenario;
+    { reconnect: false, relay: true, finish: "app", surface: "desktop" },
+    { reconnect: true, relay: true, finish: "app", surface: "native" },
+    { reconnect: false, relay: true, finish: "app", oldAccount: true },
+    { reconnect: false, relay: true, finish: "app", changedLink: true },
+    { reconnect: false, relay: false, finish: "app", surface: "desktop" },
+    { reconnect: false, relay: true, finish: "app", surface: "desktop", appReturnPort: 48_203 },
+    {
+      reconnect: false,
+      relay: true,
+      finish: "app",
+      surface: "desktop",
+      appReturnPort: 48_203,
+      portlessAccount: true,
+    },
+  ] as const)("authorizes a new or existing MCP account (%j)", async (scenario) => {
+    const { reconnect, relay } = scenario;
+    const badIssuer = "badIssuer" in scenario && scenario.badIssuer;
+    const abandonedClaim = "abandonedClaim" in scenario && scenario.abandonedClaim;
+    const finish = "finish" in scenario ? scenario.finish : undefined;
+    const surface = "surface" in scenario ? scenario.surface : undefined;
+    const oldAccount = "oldAccount" in scenario && scenario.oldAccount;
     const ownerUserId = createId("user");
     const requestId = createId("request");
     const installationId = createIntegrationId("installation");
@@ -508,12 +527,16 @@ describe("McpOAuthService", () => {
         status = "failed";
         failureCode = reason === "exchange-failed" ? null : reason;
       }),
-      status: vi.fn(async () => ({
-        status: status === "claimed" ? "launched" : status,
-        connectionId: resultConnectionId,
-        expiresAt: new Date(),
-        failureCode,
-      })),
+      status: vi.fn(async (input: { ownerUserId: string }) =>
+        input.ownerUserId !== ownerUserId
+          ? null
+          : {
+              status: status === "claimed" ? "launched" : status,
+              connectionId: resultConnectionId,
+              expiresAt: new Date(),
+              failureCode,
+            },
+      ),
       inspect: vi.fn(async () => attemptPayload),
       claimHosted: vi.fn(async () => {
         if (status !== "launched") return null;
@@ -554,10 +577,18 @@ describe("McpOAuthService", () => {
       linkGeneration: "g".repeat(43),
     };
     let hostPublicKey = "";
+    let returned = !finish;
     const broker = {
+      returnAttempt: vi.fn(async () => {
+        returned = true;
+      }),
       issuer: binding.issuer,
       callbackUrl: () => `${binding.issuer}/v1/oauth-broker/callback/mcp`,
-      metadata: vi.fn(async () => ({ mcpCallbackRelay: 1 })),
+      metadata: vi.fn(async () => ({
+        mcpCallbackRelay: 1,
+        ...(oldAccount ? {} : { appFinish: 1 }),
+        ...("portlessAccount" in scenario ? {} : { appReturnPort: 1 }),
+      })),
       createCallbackRelay: vi.fn(
         async (input: { hostPublicKey: string; attemptId: string; expiresAt: string }) => {
           hostPublicKey = input.hostPublicKey;
@@ -568,7 +599,7 @@ describe("McpOAuthService", () => {
           };
         },
       ),
-      status: vi.fn(async () => ({ status: "sealed" })),
+      status: vi.fn(async () => ({ status: returned ? "sealed" : "launched" })),
       pull: vi.fn(async () => ({
         status: "sealed",
         sealedResult: sealOAuthBrokerPayload(
@@ -625,15 +656,92 @@ describe("McpOAuthService", () => {
       });
     if (!relay) expect(store.getMcpOAuthServer).not.toHaveBeenCalled();
 
-    const begun = await service.beginAuthorization({
-      displayName: "Work account",
-      ownerUserId,
-      requestId,
-      requestSurface: relay ? "personal-remote" : "canonical",
-      returnPath: "/",
-      serverId,
-      surface: "desktop",
-    });
+    const begin = () =>
+      service.beginAuthorization({
+        displayName: "Work account",
+        ownerUserId,
+        requestId,
+        requestSurface: relay ? "personal-remote" : "canonical",
+        returnPath: "/",
+        serverId,
+        surface: surface ?? "desktop",
+        ...(finish ? { finish: "app" as const } : {}),
+        ...("appReturnPort" in scenario ? { appReturnPort: scenario.appReturnPort } : {}),
+      });
+    if (oldAccount) {
+      await expect(begin()).rejects.toMatchObject({
+        code: "conflict",
+        message: expect.stringContaining("Opensteer Account must be updated"),
+      });
+      expect(broker.createCallbackRelay).not.toHaveBeenCalled();
+      expect(attempts.begin).not.toHaveBeenCalled();
+      return;
+    }
+    const begun = await begin();
+    if (relay) {
+      expect(Object.hasOwn(broker.createCallbackRelay.mock.calls[0]![0], "finish")).toBe(!!finish);
+      expect(JSON.parse(attemptPayload!.payload!).relay.finish).toBe(finish);
+      expect(
+        (broker.createCallbackRelay.mock.calls[0]![0] as { appReturnPort?: number }).appReturnPort,
+      ).toBe("appReturnPort" in scenario && !("portlessAccount" in scenario) ? 48_203 : undefined);
+      expect(attemptPayload!.payload).not.toContain("appReturnPort");
+    }
+    if ("changedLink" in scenario) {
+      binding.linkGeneration = "h".repeat(43);
+      await expect(
+        service.returnAuthorization({
+          attemptId: attemptId!,
+          ownerUserId,
+          returnProof: "r".repeat(43),
+        }),
+      ).resolves.toMatchObject({ status: "failed", failureCode: "account-link-mismatch" });
+      expect(broker.returnAttempt).not.toHaveBeenCalled();
+      expect(broker.pull).not.toHaveBeenCalled();
+      return;
+    }
+    if (relay && finish) {
+      const returnInput = { attemptId: attemptId!, ownerUserId, returnProof: "r".repeat(43) };
+      await expect(service.authorizationStatus(returnInput)).resolves.toMatchObject({
+        status: "launched",
+      });
+      expect(broker.pull).not.toHaveBeenCalled();
+      await expect(
+        service.returnAuthorization({ ...returnInput, ownerUserId: createId("user") }),
+      ).resolves.toBeNull();
+      expect(broker.returnAttempt).not.toHaveBeenCalled();
+      broker.pull.mockRejectedValueOnce(
+        new OpensteerError({ code: "conflict", message: "Lost result", retryable: true }),
+      );
+      await expect(service.returnAuthorization(returnInput)).rejects.toMatchObject({
+        retryable: true,
+      });
+      expect(attempts.claimHosted).not.toHaveBeenCalled();
+      expect(attempts.fail).not.toHaveBeenCalled();
+      const returnCall = service.returnAuthorization(returnInput);
+      await vi.waitFor(() =>
+        expect(complete, "App return never committed MCP credentials").toHaveBeenCalledOnce(),
+      );
+      completionGate.resolve();
+      await expect(returnCall).resolves.toMatchObject({ status: "completed" });
+      expect(broker.returnAttempt).toHaveBeenLastCalledWith(
+        `hoa_${attemptId!.slice(4)}`,
+        returnInput.returnProof,
+      );
+      await expect(service.returnAuthorization(returnInput)).resolves.toMatchObject({
+        status: "completed",
+      });
+      expect(broker.returnAttempt).toHaveBeenCalledTimes(2);
+      expect(broker.acknowledge).toHaveBeenCalledOnce();
+      return;
+    }
+    await expect(
+      service.returnAuthorization({
+        attemptId: attemptId!,
+        ownerUserId,
+        returnProof: "r".repeat(43),
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    expect(broker.returnAttempt).not.toHaveBeenCalled();
     expect(begun).toMatchObject({ attemptId, launchTicket: "t".repeat(43) });
     if (relay) expect(attemptAuthorizationUrl).toBe(`${binding.issuer}/launch`);
     else
@@ -790,3 +898,38 @@ describe("McpOAuthService", () => {
     }
   });
 });
+
+it.each(["failed", "denied", "cancelled", "expired"] as const)(
+  "returns the owner's durable %s outcome on an app-return retry after payload erasure",
+  async (status) => {
+    const ownerUserId = createId("user");
+    const attemptId = createIntegrationId("mcpOauthAttempt");
+    const outcome = {
+      status,
+      failureCode: "provider-denied",
+      connectionId: null,
+      expiresAt: new Date(),
+    };
+    const inspect = vi.fn(async () => null);
+    const attempts = {
+      status: vi.fn(async (input: { ownerUserId: string }) =>
+        input.ownerUserId === ownerUserId ? outcome : null,
+      ),
+      inspect,
+    };
+    const service = new McpOAuthService({
+      attempts: attempts as never,
+      exposure: "loopback",
+      store: {} as never,
+      publicUrl: new URL("http://127.0.0.1:4310"),
+      onConnectionConnected: async () => undefined,
+      vault: {} as never,
+    });
+    const input = { attemptId, ownerUserId, returnProof: "r".repeat(43) };
+    await expect(service.returnAuthorization(input)).resolves.toEqual(outcome);
+    await expect(
+      service.returnAuthorization({ ...input, ownerUserId: createId("user") }),
+    ).resolves.toBeNull();
+    expect(inspect).not.toHaveBeenCalled();
+  },
+);

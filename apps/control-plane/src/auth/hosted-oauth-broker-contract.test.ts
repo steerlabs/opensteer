@@ -39,14 +39,19 @@ type Row = Omit<
   contextKeyVersion: number | null;
   launchTicketHash: string | null;
   failureCode: string | null;
-  status: "pending" | "launched" | "exchanging" | "sealed" | "failed" | "denied";
+  status: "pending" | "launched" | "exchanging" | "held" | "sealed" | "failed" | "denied";
   createdAt: Date;
   updatedAt: Date;
   retryGeneration: number;
   sealedCiphertext: OAuthBrokerSealedEnvelope | null;
 };
 
-async function scenario(response: object, surface: "desktop" | "web" | "native" = "desktop") {
+async function scenario(
+  response: object,
+  surface: "desktop" | "web" | "native" = "desktop",
+  finish?: "app",
+  appReturnPort?: number,
+) {
   const now = new Date("2026-09-18T21:50:00Z");
   const accountId = ControlPlaneAccountIdSchema.parse(`acct_${crypto.randomUUID()}`);
   const deploymentId = createId("deployment");
@@ -79,6 +84,7 @@ async function scenario(response: object, surface: "desktop" | "web" | "native" 
       deploymentBinding: vi.fn(async () => binding),
       hasDeploymentAccess: vi.fn(async () => true),
       createAttempt: vi.fn(async (input: HostedOAuthAttemptDurableInput) => {
+        if (row?.attemptId === input.attemptId) return row;
         row = {
           ...input,
           createdAt: now,
@@ -90,12 +96,14 @@ async function scenario(response: object, surface: "desktop" | "web" | "native" 
         };
         return row;
       }),
+      inspectLaunchAttempt: vi.fn(async () => current()),
       launchAttempt: vi.fn(async (input: { launchTicketHash: string }) => {
         if (current().status !== "pending" || current().launchTicketHash !== input.launchTicketHash)
           return null;
         row = { ...current(), status: "launched" };
         return row;
       }),
+      callbackAttemptId: vi.fn(async () => current().attemptId),
       claimCallback: vi.fn(
         async (input: {
           stateHash: string;
@@ -118,15 +126,22 @@ async function scenario(response: object, surface: "desktop" | "web" | "native" 
           return row;
         },
       ),
-      sealAttempt: vi.fn(async (_id: string, sealedCiphertext: OAuthBrokerSealedEnvelope) => {
-        row = {
-          ...current(),
-          status: "sealed",
-          encryptedContext: null,
-          contextKeyVersion: null,
-          sealedCiphertext,
-        };
-      }),
+      sealAttempt: vi.fn(
+        async (
+          _id: string,
+          sealedCiphertext: OAuthBrokerSealedEnvelope,
+          _now: Date,
+          held?: { contextKeyVersion: number; encryptedContext: Buffer; returnProofHash: string },
+        ) => {
+          row = {
+            ...current(),
+            status: held ? "held" : "sealed",
+            encryptedContext: held?.encryptedContext ?? null,
+            contextKeyVersion: held?.contextKeyVersion ?? null,
+            sealedCiphertext,
+          };
+        },
+      ),
       failAttempt: vi.fn(async (_id: string, status: "failed" | "denied", failureCode: string) => {
         row = {
           ...current(),
@@ -143,6 +158,8 @@ async function scenario(response: object, surface: "desktop" | "web" | "native" 
     attemptId,
     authorizationDigest: authorizationDigest(slackIntegration),
     clientSurface: surface,
+    ...(finish ? { finish } : {}),
+    ...(appReturnPort === undefined ? {} : { appReturnPort }),
     definitionId: slackIntegration.id,
     deploymentAuthorityDigest: hostedOAuthDeploymentAuthorityDigest(binding),
     expiresAt: new Date(now.getTime() + 60_000).toISOString(),
@@ -170,10 +187,155 @@ async function scenario(response: object, surface: "desktop" | "web" | "native" 
       provider: "slack",
       cookieHeader: `__Secure-opensteer.oauth.${attemptId}=${new URL(created.launchUrl).searchParams.get("ticket")!}`,
     });
-  return { attemptId, request, recipient, current, fetch, complete, state, deploymentId };
+  return {
+    attemptId,
+    authority: { credentialHash: "unused", deploymentId, hostInstanceId },
+    request,
+    recipient,
+    current,
+    fetch,
+    complete,
+    state,
+    deploymentId,
+    broker,
+  };
 }
 
 describe("managed provider authorization contract", () => {
+  it.each(["desktop", "native"] as const)(
+    "holds managed %s consent for its app",
+    async (surface) => {
+      const s = await scenario(validResponse, surface, "app");
+      const result = await s.complete();
+      expect(result.status).toBe("held");
+      expect(new URL(result.returnUrl!).searchParams.get("return")).toMatch(/^[A-Za-z0-9_-]{43}$/u);
+      expect(s.broker.metadata()).toHaveProperty("appFinish", 1);
+      expect(s.broker.metadata(false)).not.toHaveProperty("appFinish");
+    },
+  );
+
+  it.each(["desktop", "native"] as const)(
+    "returns denied and failed %s consent to the app without a proof",
+    async (surface) => {
+      for (const error of ["access_denied", "server_error"]) {
+        const s = await scenario(validResponse, surface, "app");
+        const result = await s.complete(new URLSearchParams({ state: s.state, error }));
+        expect(result.status).toBe(error === "access_denied" ? "denied" : "failed");
+        expect(new URL(result.returnUrl!).searchParams.has("return")).toBe(false);
+        if (surface === "desktop") expect(result.returnKind).toBe("open-app");
+        expect(s.fetch).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it("seals the port at creation and returns the proof in a form, not an address", async () => {
+    const s = await scenario(validResponse, "desktop", "app", 48_203);
+    const result = await s.complete();
+    expect(result.status).toBe("held");
+    const proof = new URL(result.returnUrl!).searchParams.get("return")!;
+    expect(result.returnHandoff).toEqual({
+      action: "http://127.0.0.1:48203/oauth/integration-callback",
+      fields: {
+        attempt_id: `ioa_${s.attemptId.slice(4)}`,
+        deployment_id: s.deploymentId,
+        return: proof,
+      },
+    });
+    expect(s.broker.metadata()).toHaveProperty("appReturnPort", 1);
+    expect(s.broker.metadata(false)).not.toHaveProperty("appReturnPort");
+  });
+
+  it("keeps a held consent without a port on the app link alone", async () => {
+    const s = await scenario(validResponse, "desktop", "app");
+    expect(await s.complete()).not.toHaveProperty("returnHandoff");
+  });
+
+  it("hands off nothing when consent fails", async () => {
+    const s = await scenario(validResponse, "desktop", "app", 48_203);
+    const result = await s.complete(
+      new URLSearchParams({ state: s.state, error: "access_denied" }),
+    );
+    expect(result.status).toBe("denied");
+    expect(result).not.toHaveProperty("returnHandoff");
+  });
+
+  it("refuses a repeated attempt that changes its port", async () => {
+    const s = await scenario(validResponse, "desktop", "app", 48_203);
+    await expect(
+      s.broker.createAuthorizationAttempt(s.authority, { ...s.request, appReturnPort: 48_204 }),
+    ).rejects.toMatchObject({ code: "conflict" });
+  });
+
+  it("seals an MCP relay's port the same way and returns its own attempt", async () => {
+    const s = await scenario(validResponse);
+    const uuid = crypto.randomUUID();
+    const mcp = {
+      serverId: `isv_${crypto.randomUUID()}`,
+      issuer: "https://mcp-issuer.example.test/",
+      authorizationEndpoint: "https://mcp-issuer.example.test/authorize",
+      authorizationResponseIssuerParameterSupported: true,
+    };
+    const state = "s".repeat(43);
+    const authorizationUrl = new URL(mcp.authorizationEndpoint);
+    authorizationUrl.search = new URLSearchParams({
+      state,
+      client_id: "mcp-client",
+      redirect_uri: s.broker.callbackUrl("mcp"),
+      response_type: "code",
+      code_challenge: "c".repeat(43),
+      code_challenge_method: "S256",
+    }).toString();
+    const relay = {
+      accountSubject: s.request.accountSubject,
+      appReturnPort: 48_205,
+      attemptId: `hoa_${uuid}`,
+      authorizationDigest: "d".repeat(43),
+      authorizationUrl: authorizationUrl.toString(),
+      clientId: "mcp-client",
+      clientSurface: "desktop",
+      definitionId: mcp.serverId,
+      deploymentAuthorityDigest: s.request.deploymentAuthorityDigest,
+      expiresAt: s.request.expiresAt,
+      finish: "app",
+      hostPublicKey: s.recipient.publicKey,
+      mcp,
+      provider: "mcp",
+      providerApplicationRevision: 1,
+    };
+    const created = await s.broker.createCallbackRelay(s.authority, relay);
+    await expect(
+      s.broker.createCallbackRelay(s.authority, { ...relay, appReturnPort: 48_206 }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    const ticket = new URL(created.launchUrl).searchParams.get("ticket")!;
+    await s.broker.launchAuthorization(null, relay.attemptId as never, ticket);
+    const result = await s.broker.completeAuthorization({
+      cookieHeader: `__Secure-opensteer.oauth.${relay.attemptId}=${ticket}`,
+      parameters: new URLSearchParams({ code: "mcp-code", state, iss: mcp.issuer }),
+      provider: "mcp",
+    });
+    expect(result.status).toBe("held");
+    expect(result.returnHandoff).toMatchObject({
+      action: "http://127.0.0.1:48205/oauth/integration-callback",
+      fields: { attempt_id: `imo_${uuid}` },
+    });
+  });
+
+  it.each([
+    ["native", "app"],
+    ["desktop", undefined],
+    ["web", undefined],
+  ] as const)("refuses a port from %s with finish %s", async (surface, finish) => {
+    await expect(scenario(validResponse, surface, finish, 48_203)).rejects.toMatchObject({
+      code: "bad_request",
+    });
+  });
+
+  it("refuses app finish from a web client", async () => {
+    await expect(scenario(validResponse, "web", "app")).rejects.toMatchObject({
+      code: "bad_request",
+    });
+  });
+
   it.each(["desktop", "web", "native"] as const)(
     "preserves Slack bot and workspace identity for %s",
     async (surface) => {

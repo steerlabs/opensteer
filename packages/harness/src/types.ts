@@ -23,23 +23,17 @@ import type {
   WorkspaceId,
 } from "@opensteer/core";
 import type {
-  AgentControlRequest,
-  AgentControlResponse,
   HarnessInput,
   HarnessRunReports,
   RunAgentToolsPlan,
-  RunIntegrationToolsPlan,
   RunHistoryWindow,
   RunInitialContext,
 } from "@opensteer/protocol";
 import type { z } from "zod";
 import type { InstalledEngineUpdateFacts } from "./engine-installation.js";
 
-interface AgentControlClient {
-  request(input: AgentControlRequest, signal: AbortSignal): Promise<AgentControlResponse>;
-}
-
 export interface HarnessCapabilities {
+  readonly voiceCalls?: true;
   readonly approvals: boolean;
   readonly attachments: boolean;
   readonly messageAttachments?: {
@@ -276,16 +270,25 @@ export function isHarnessLiveEvent(event: HarnessEvent): event is HarnessLiveEve
   return harnessLiveEventTypes.has(event.type);
 }
 
+/** Ephemeral rendezvous and the call's single ordered speech writer. */
+export interface HarnessVoiceCall {
+  readonly offer: Promise<string>;
+  readonly signal: AbortSignal;
+  answer(sdp: string): void;
+  connect(writer: { speak(text: string): Promise<void>; note(text: string): Promise<void> }): void;
+  speak(id: string, text: string): Promise<void>;
+  end(): void;
+}
+
 export interface HarnessSessionContext {
+  readonly voiceCall?: HarnessVoiceCall;
   /** Model-visible, verified per-Thread attachment directory, outside private state. */
   readonly attachmentDirectory?: string;
   /** Shared cache root that a provider sandbox must deny on a shared Runner. */
   readonly attachmentRoot?: string;
   /** Durable per-Thread access policy snapshotted onto this Run. */
   readonly accessMode: ThreadAccessMode;
-  readonly agentControl?: AgentControlClient;
   readonly agentTools: RunAgentToolsPlan;
-  readonly integrationTools: RunIntegrationToolsPlan;
   readonly environmentId: EnvironmentId;
   readonly history: readonly Message[];
   readonly historyWindow: RunHistoryWindow;
@@ -307,7 +310,7 @@ export interface HarnessSessionContext {
   readonly machineAccessRelaySocket: string | undefined;
   /** Host-independent Opensteer product facts and capability scope. */
   readonly platformGuide: string;
-  /** Runner-owned Agent Skills selected by the signed capability profile. */
+  /** Runner-owned Agent Skills the Host's Run plan selected. */
   readonly skills: HarnessSkillPlan | undefined;
   /** Exact provider/model/options snapshot chosen for this Run. */
   readonly modelSelection: ModelSelection;
@@ -409,12 +412,6 @@ export interface ResolvedAttachment {
 
 export type { HarnessInput, HarnessRunReports } from "@opensteer/protocol";
 
-export interface HarnessTitleInput {
-  /** `threadTitlePrompt` of the Thread's first message. */
-  readonly prompt: string;
-  readonly signal: AbortSignal;
-}
-
 export interface HarnessSession {
   readonly providerSessionReference: string;
   /**
@@ -431,17 +428,6 @@ export interface HarnessSession {
    */
   steer?(input: HarnessSteerInput): Promise<void>;
   resolveRequest(requestId: RequestId, response: RequestResponse): Promise<void>;
-  /**
-   * Present when this engine can name a Thread. Asks the session's engine,
-   * signed in with the session's account, for a reply to `prompt` alone, and
-   * resolves with that reply's text. It runs in a process of its own that it
-   * has ended, and awaited, by the time it settles, never in the Run's engine:
-   * with every tool, MCP server, skill, hook, plugin and instruction file off;
-   * leaving no session, history or file behind; asking nobody anything; and
-   * putting nothing on `events` or the Run's usage report. An aborted `signal`
-   * ends it at once, including awaiting process exit and removing scratch files.
-   */
-  generateTitle?(input: HarnessTitleInput): Promise<string>;
   /**
    * Ends the session, its provider process and any Run still in it, and frees
    * its conversation for the adapter's next session. It never waits on a
@@ -469,7 +455,30 @@ export interface HarnessSession {
  * instructions are typically rendered once per conversation and would leave a
  * resumed conversation holding an earlier Run's facts.
  */
+/** Runner-owned account state only; never a Workspace or a Run tool proxy. */
+export interface HarnessGenerateTextContext {
+  readonly environment: Readonly<Record<string, string>>;
+  readonly providerState: HarnessProviderState;
+  readonly runtimeBoundary: HarnessRuntimeBoundary;
+  readonly wrapProcessLaunch: HarnessProcessLaunchWrapper;
+  readonly scratchDirectory: string;
+}
+export interface HarnessGenerateTextInput {
+  readonly context: HarnessGenerateTextContext;
+  readonly modelSelection: ModelSelection;
+  readonly prompt: string;
+  readonly signal: AbortSignal;
+}
+export type HarnessGenerateTextResult =
+  | { readonly ok: true; readonly text: string }
+  | {
+      readonly ok: false;
+      readonly failure:
+        "refused" | "signed-out" | "usage-limit" | "timeout" | "unavailable" | "failed";
+    };
+
 export interface HarnessAdapter {
+  generateText?(input: HarnessGenerateTextInput): Promise<HarnessGenerateTextResult>;
   readonly capabilities: HarnessCapabilities;
   readonly instanceId: HarnessInstanceId;
   startSession(context: HarnessSessionContext): Promise<HarnessSession>;

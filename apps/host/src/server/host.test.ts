@@ -19,6 +19,7 @@ import { hostInternalRoutePaths } from "./internal-routes.js";
 import { injectRpcRequest } from "./test-host-api-request.js";
 import {
   createId,
+  emptyAutomaticModelConfig,
   emptyExecutionPreferences,
   OpensteerError,
   personalRemoteAuthorizationScheme,
@@ -57,6 +58,11 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  threadPlacementOptions,
+  type EnvironmentSummary,
+  type HarnessSummary,
+} from "@opensteer/client/host";
 import { HostAuthenticator } from "../identity/auth.js";
 import { LocalBootstrapService } from "../runtime/local-bootstrap.js";
 
@@ -303,7 +309,7 @@ describe("Host signing keys", () => {
     const authenticateSession = vi.fn(async () => session);
     const app = await createHostServer({
       requestResponseVault: {} as never,
-      agentControl: {} as never,
+
       agentTools: {} as never,
       authenticator: {
         authenticateSession,
@@ -339,10 +345,9 @@ describe("Host signing keys", () => {
         authority: testDiscovery,
         bootstrapMethods: ["password"],
         capabilities: [
+          "automatic-models-v1",
           "chat-attachments",
-          "voice-v1",
-          "voice-agent-v1",
-          "voice-find-v1",
+          "voice-run-v1",
           "thread-titles-v1",
           "task-marks-v1",
           "task-family-v1",
@@ -355,6 +360,8 @@ describe("Host signing keys", () => {
           "iphone-apps-v1",
           "ownerViewWindows",
           "browser-target-control-v1",
+          "integration-app-finish-v1",
+          "integration-app-return-port-v1",
           "browser-frame-window-v1",
           "browser-raster-demand-v1",
           "browser-capture-region-v1",
@@ -478,10 +485,9 @@ describe("Host signing keys", () => {
       expect(discovery.json()).toMatchObject({
         apiVersion: hostApiVersion,
         capabilities: [
+          "automatic-models-v1",
           "chat-attachments",
-          "voice-v1",
-          "voice-agent-v1",
-          "voice-find-v1",
+          "voice-run-v1",
           "thread-titles-v1",
           "task-marks-v1",
           "task-family-v1",
@@ -494,6 +500,8 @@ describe("Host signing keys", () => {
           "iphone-apps-v1",
           "ownerViewWindows",
           "browser-target-control-v1",
+          "integration-app-finish-v1",
+          "integration-app-return-port-v1",
           "browser-frame-window-v1",
           "browser-raster-demand-v1",
           "browser-capture-region-v1",
@@ -753,6 +761,44 @@ describe("rpc envelope", () => {
         allowOtherOwners: false,
       });
       expect(revokeLiveRunner).toHaveBeenCalledWith(runnerId);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("tells the person's other devices when a connected agent is approved or revoked", async () => {
+    const ownerId = createId("user");
+    const connectionId = `mcn_${crypto.randomUUID()}`;
+    const revoke = vi.fn(async () => undefined);
+    const decide = vi.fn(async () => ({
+      type: "connection.authorize" as const,
+      completionPath: "/oauth/mcp/complete?request=r",
+    }));
+    const publishConnectionsChanged = vi.fn();
+    const app = await createHostServer({
+      authenticator: { authenticateUser: async () => ownerId, identity: testIdentity } as never,
+      connections: { close: () => undefined, decide, store: { revoke } } as never,
+      discovery: testDiscovery,
+      realtime: { broadcast: () => undefined, publishConnectionsChanged } as never,
+    });
+    try {
+      const revoked = await injectRpcRequest(app, "commands.dispatch", {
+        connectionId,
+        idempotencyKey: "revoke-agent",
+        type: "connection.revoke",
+      });
+      expect(revoked.statusCode, revoked.body).toBe(200);
+      expect(revoke).toHaveBeenCalledWith(ownerId, connectionId);
+      expect(publishConnectionsChanged).toHaveBeenCalledExactlyOnceWith(ownerId);
+      const approved = await injectRpcRequest(app, "commands.dispatch", {
+        decision: { kind: "approve", label: "Agent", accessMode: "auto", reach: { kind: "user" } },
+        idempotencyKey: "approve-agent",
+        requestId: "r".repeat(43),
+        type: "connection.authorize",
+      });
+      expect(approved.statusCode, approved.body).toBe(200);
+      expect(publishConnectionsChanged).toHaveBeenCalledTimes(2);
+      expect(publishConnectionsChanged).toHaveBeenLastCalledWith(ownerId);
     } finally {
       await app.close();
     }
@@ -1496,6 +1542,64 @@ describe("rpc envelope", () => {
     }
   });
 
+  it.each(["provider", "mcp"] as const)(
+    "dispatches %s app returns to the owner service",
+    async (kind) => {
+      const session = testAuthenticatedSession(createId("user"));
+      const authenticator = new HostAuthenticator({
+        identity: {
+          ...testIdentity,
+          requireSession: async () => session,
+          userSessionProfile: async () => session.user,
+        } as never,
+        publicUrl: new URL("https://opensteer.example"),
+      });
+      const returnAuthorization = vi.fn(async () => ({
+        connectionId: null,
+        expiresAt: new Date("2030-01-01T00:00:00Z"),
+        failureCode: null,
+        status: "launched",
+      }));
+      const app = await createHostServer({
+        authenticator,
+        discovery: testDiscovery,
+        integrations: {
+          authAttempts: {} as never,
+          continuations: {} as never,
+          dashboard: {} as never,
+          service: (kind === "provider" ? { returnAuthorization } : {}) as never,
+          mcpOauth: (kind === "mcp" ? { returnAuthorization } : {}) as never,
+          platform: {} as never,
+          skills: {} as never,
+        },
+      });
+      const attemptId = createIntegrationId(
+        kind === "provider" ? "oauthAttempt" : "mcpOauthAttempt",
+      );
+      const command = {
+        type: "integration.authorization.return",
+        attemptId,
+        returnProof: "r".repeat(43),
+        idempotencyKey: "app-return",
+      };
+      try {
+        const response = await injectRpcRequest(app, "commands.dispatch", command, {
+          cookie: "opensteer.session=test",
+          origin: "https://opensteer.example",
+        });
+        expect(response.statusCode, response.body).toBe(200);
+        expect(rpcData(response)).toMatchObject({ type: command.type, status: "launched" });
+        expect(returnAuthorization).toHaveBeenCalledExactlyOnceWith({
+          attemptId,
+          ownerUserId: session.user.id,
+          returnProof: command.returnProof,
+        });
+      } finally {
+        await app.close();
+      }
+    },
+  );
+
   it("allows header integration uninstall and protects cookie mutations", async () => {
     const session = testAuthenticatedSession(createId("user"));
     const authenticator = new HostAuthenticator({
@@ -1534,7 +1638,6 @@ describe("rpc envelope", () => {
           } as never,
           service: {} as never,
           skills: {} as never,
-          tools: {} as never,
         },
       }),
     );
@@ -1608,7 +1711,6 @@ describe("rpc envelope", () => {
           } as never,
           service: { disconnect } as never,
           skills: {} as never,
-          tools: {} as never,
         },
       }),
     );
@@ -1856,7 +1958,7 @@ describe("Optional subsystem registration", () => {
     const handle = vi.fn();
     const app = await createHostServer({
       requestResponseVault: {} as never,
-      agentControl: {} as never,
+
       agentTools: { handle } as never,
       authenticator: { authenticateUser: async () => createId("user") } as never,
       browser: {} as never,
@@ -1892,7 +1994,7 @@ describe("Optional subsystem registration", () => {
   it("no longer answers on any of the replaced session-establishment paths", async () => {
     const app = await createHostServer({
       requestResponseVault: {} as never,
-      agentControl: {} as never,
+
       agentTools: {} as never,
       authenticator: { authenticateUser: async () => createId("user") } as never,
       browser: {} as never,
@@ -1934,7 +2036,7 @@ describe("Workspace route projections", () => {
     const retry = vi.fn(async () => workspace);
     const app = await createHostServer({
       requestResponseVault: {} as never,
-      agentControl: {} as never,
+
       agentTools: {} as never,
       authenticator: { authenticateUser: async () => ownerId } as never,
       browser: {} as never,
@@ -1967,7 +2069,8 @@ describe("Workspace route projections", () => {
       expect(payload.workspace).not.toHaveProperty("backing");
       expect(payload.workspace).not.toHaveProperty("capacityPolicy");
       expect(payload.workspace).not.toHaveProperty("createdBy");
-      expect(retry).toHaveBeenCalledWith(workspace.id, ownerId);
+      // A person's retry carries no MCP administration identity.
+      expect(retry).toHaveBeenCalledWith(workspace.id, ownerId, undefined);
     } finally {
       await app.close();
     }
@@ -2009,7 +2112,7 @@ describe("Personal sharing boundary", () => {
     const diagnostics = new BootstrapNoticeDiagnostics();
     const app = await createHostServer({
       requestResponseVault: {} as never,
-      agentControl: {} as never,
+
       agentTools: {} as never,
       authenticator: {
         authenticateUser: async () => ownerId,
@@ -2058,6 +2161,7 @@ describe("Personal sharing boundary", () => {
       securityEffects: {} as never,
       store: {
         getExecutionPreferences: async () => emptyExecutionPreferences,
+        getAutomaticModelConfig: async () => emptyAutomaticModelConfig,
         notificationState: {
           listWorkspacePreferences: async () => [
             { workspaceId: workspace.id, muted: false, revision: "0" },
@@ -2243,7 +2347,7 @@ describe("thread event history route", () => {
     const page = {
       thread: ThreadViewSchema.parse({
         accessMode: "full-access",
-        capabilityProfileId: "main",
+        inheritsMain: true,
         continuationIdentity: null,
         createdAt: request.createdAt,
         updatedAt: request.createdAt,
@@ -2290,7 +2394,7 @@ describe("thread event history route", () => {
     const threadEventPageForOwner = vi.fn(async () => result);
     const app = await createHostServer({
       requestResponseVault: {} as never,
-      agentControl: {} as never,
+
       agentTools: {} as never,
       authenticator: { authenticateUser: async () => ownerId } as never,
       browser: {} as never,
@@ -2430,7 +2534,7 @@ describe("Thread input command boundary", () => {
 
   const thread = {
     accessMode: "full-access" as const,
-    capabilityProfileId: "main" as const,
+    inheritsMain: true,
     continuationIdentity: null,
     createdAt: now,
     createdBy: ownerId,
@@ -2699,6 +2803,8 @@ describe("durable harness catalogs", () => {
     readonly inspectHarnesses?: () => Promise<readonly unknown[]>;
     readonly reconcileHarnesses?: () => Promise<readonly HarnessInstanceCatalog[]>;
     readonly harnessDrivers?: readonly TestRunnerHarnessDriver[];
+    /** What the Runner advertises; defaults to a current Runner. */
+    readonly runnerCapabilities?: readonly string[];
     /** Defaults to the Deployment administrator the older cases assume. */
     readonly instanceRole?: "administrator" | "user";
     /** A managed Runner outside this person's listing is not disclosed. */
@@ -2733,7 +2839,7 @@ describe("durable harness catalogs", () => {
     const createThread = vi.fn(async (input: { readonly modelSelection: unknown }) => ({
       thread: {
         accessMode: "full-access" as const,
-        capabilityProfileId: "main",
+        inheritsMain: true,
         continuationIdentity: null,
         createdAt: "2026-09-15T09:00:00.000Z",
         createdBy: ownerId,
@@ -2798,6 +2904,7 @@ describe("durable harness catalogs", () => {
       identityForEnvironment: () =>
         options.connected
           ? {
+              capabilities: options.runnerCapabilities ?? ["agent-tools-plan-v1"],
               modules: {
                 agents: {
                   harnessDrivers: options.harnessDrivers ?? [],
@@ -2818,7 +2925,7 @@ describe("durable harness catalogs", () => {
         asOfSequence: "0",
         thread: {
           accessMode: "full-access" as const,
-          capabilityProfileId: "main",
+          inheritsMain: true,
           continuationIdentity: null,
           createdAt: "2026-09-15T09:00:00.000Z",
           createdBy: ownerId,
@@ -2876,6 +2983,7 @@ describe("durable harness catalogs", () => {
       findThreadCreationByIdempotency: async () => null,
       getEnvironment: async () => environment,
       getExecutionPreferences: async () => executionPreferences,
+      getAutomaticModelConfig: async () => emptyAutomaticModelConfig,
       hasActiveRunForHarness: async () => options.activeRun ?? false,
       getHarnessCatalog: async () => options.catalog ?? null,
       getHarnessInstance: async () => harness,
@@ -2941,7 +3049,7 @@ describe("durable harness catalogs", () => {
         asOfSequence: "0",
         thread: {
           accessMode: input.accessMode,
-          capabilityProfileId: "main",
+          inheritsMain: true,
           continuationIdentity: null,
           createdAt: "2026-09-15T09:00:00.000Z",
           createdBy: ownerId,
@@ -2980,7 +3088,7 @@ describe("durable harness catalogs", () => {
       updateHarnessInstance,
       server: createHostServer({
         requestResponseVault: {} as never,
-        agentControl: {} as never,
+
         agentTools: {} as never,
         authenticator: {
           authenticateSession,
@@ -3354,6 +3462,55 @@ describe("durable harness catalogs", () => {
         ],
       });
       expect(listHarnessCatalogs).toHaveBeenCalledWith([environmentId]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("marks every engine on a Runner without the tool plan as needing an update", async () => {
+    const fixture = harnessCatalogServer({
+      catalog: readyCatalog,
+      connected: true,
+      environmentKind: "local",
+      harnessDrivers: [
+        {
+          accessModes: [...ThreadAccessModeSchema.options],
+          driverKind: "native",
+          readiness: "configured",
+          sources: [
+            {
+              fields: [],
+              kind: "first-party",
+              label: "Native",
+              quota: "none",
+              sourceId: "native",
+              stateKinds: ["ambient", "isolated"],
+            },
+          ],
+        },
+      ],
+      runnerCapabilities: [],
+      runnerOwner: ownerId,
+    });
+    const app = await fixture.server;
+    try {
+      const bootstrap = rpcData(await injectRpcRequest(app, "bootstrap.get", {})) as {
+        environments: EnvironmentSummary[];
+        harnesses: HarnessSummary[];
+      };
+      expect(bootstrap.environments[0]?.harnessDrivers).toEqual([
+        {
+          driverKind: "native",
+          readiness: "unavailable",
+          reason: "Update this computer to use Opensteer tools.",
+        },
+      ]);
+      // The shared client's picker says so before anything is sent.
+      const [placement] = threadPlacementOptions(bootstrap.environments, bootstrap.harnesses);
+      expect(placement).toMatchObject({
+        available: false,
+        detail: "Update this computer to use Opensteer tools.",
+      });
     } finally {
       await app.close();
     }
@@ -4243,7 +4400,7 @@ describe("Workspace Files routes", () => {
     );
     const app = await createHostServer({
       requestResponseVault: {} as never,
-      agentControl: {} as never,
+
       agentTools: {} as never,
       authenticator: { authenticateUser: async () => ownerId } as never,
       browser: {} as never,
@@ -4364,7 +4521,7 @@ async function requestRouteServer(options: {
         open: vi.fn(),
         seal: vi.fn(async () => ({ envelope: Buffer.from("encrypted"), keyVersion: 1 })),
       } as never),
-    agentControl: {} as never,
+
     agentTools: {} as never,
     authenticator: { authenticateUser: async () => options.ownerId } as never,
     browser: { latestPlaces: async () => [], ...options.browser } as never,

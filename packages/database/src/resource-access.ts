@@ -8,6 +8,7 @@ import {
   TriggerWatchActivationIdSchema,
   intersectResourceAccess,
   lineageCompatibleForReuse,
+  threadInReach,
   OpensteerError,
   type ResourceAccessLevel,
   type ThreadId,
@@ -20,7 +21,8 @@ import type { DatabaseSchema } from "./schema.js";
 export interface ResourceAccessInput {
   readonly ownerUserId: UserId;
   readonly workspaceId: WorkspaceId;
-  readonly threadId?: ThreadId;
+  readonly connectionId?: string;
+  readonly threadId?: ThreadId | undefined;
   readonly agentBindingId?: string;
   /** Explicit consent must already be filtered to its owner and active membership. */
   readonly explicitAccess?: ResourceAccessLevel | null;
@@ -87,16 +89,38 @@ export async function resolveResourceAccess(
     ? await database
         .selectFrom("threads as asking")
         .innerJoin("threads as root", "root.id", "asking.lineageRootThreadId")
-        .select(["root.capabilityProfileId", "asking.workspaceId", "asking.specialistId"])
+        .select(["root.inheritsMain", "asking.workspaceId", "asking.specialistId"])
         .where("asking.id", "=", threadId)
         .executeTakeFirst()
     : undefined;
-  // No agent identity means an owner client, rather than an agent Run.
+  const connection = input.connectionId
+    ? await database
+        .selectFrom("agentConnections")
+        .select("workspaceId")
+        .where("id", "=", input.connectionId)
+        .where("userId", "=", input.ownerUserId)
+        .where("revokedAt", "is", null)
+        .where("tokenHash", "is not", null)
+        .where("expiresAt", ">", new Date())
+        .executeTakeFirst()
+    : undefined;
+  if (
+    input.connectionId &&
+    (!connection || (connection.workspaceId && connection.workspaceId !== input.workspaceId))
+  )
+    throw new OpensteerError({
+      code: "forbidden",
+      message: "Connection cannot access this Workspace",
+    });
   const inheritsMain =
     main &&
-    (root
-      ? root.workspaceId === input.workspaceId && root.capabilityProfileId === "main"
-      : !input.threadId && !input.agentBindingId);
+    (input.connectionId
+      ? connection?.workspaceId === null
+      : root
+        ? root.workspaceId === input.workspaceId && root.inheritsMain
+        : !input.threadId && !input.agentBindingId);
+  // Owner Off and Main exclusion bind every agent, including connections without a Thread.
+  const agentRequester = Boolean(threadId || input.agentBindingId || input.connectionId);
   let specialistAccess = input.specialistAccess;
   const specialistId = root?.specialistId ?? input.specialistId;
   let specialistPolicyAllowed = true;
@@ -122,7 +146,7 @@ export async function resolveResourceAccess(
       .where("workspaceMemberships.userId", "=", input.ownerUserId)
       .where("workspaceMemberships.state", "=", "active")
       .executeTakeFirst();
-    if (registration && (threadId || input.agentBindingId))
+    if (registration && agentRequester)
       specialistPolicyAllowed =
         (await pluginPolicyAllows(
           database,
@@ -223,11 +247,7 @@ export async function resolveResourceAccess(
     );
   }
   let policyAllowed = true;
-  if (
-    (threadId || input.agentBindingId) &&
-    input.resource &&
-    input.resource.type !== "browser-profile"
-  ) {
+  if (agentRequester && input.resource && input.resource.type !== "browser-profile") {
     const connection = await database
       .selectFrom("integrationConnections")
       .select(["integrationDefinitionId", "connectionKind"])
@@ -271,7 +291,13 @@ export async function assertLineageCompatibleReuse(
   const roots = await database
     .selectFrom("threads as asking")
     .innerJoin("threads as root", "root.id", "asking.lineageRootThreadId")
-    .select(["asking.id", "asking.specialistId", "root.capabilityProfileId"])
+    .select([
+      "asking.id",
+      "asking.specialistId",
+      "root.inheritsMain",
+      "asking.workspaceId",
+      "asking.lineageRootThreadId",
+    ])
     .where("asking.id", "in", [callerId, targetId])
     .execute();
   const caller = roots.find((row) => row.id === callerId);
@@ -283,13 +309,16 @@ export async function assertLineageCompatibleReuse(
         "Specialists may only send reports to Threads outside their registration. Start a new task instead.",
     });
   }
-  const inherits = (id: ThreadId) =>
-    roots.find((row) => row.id === id)?.capabilityProfileId === "main";
-  if (!lineageCompatibleForReuse(inherits(callerId), inherits(targetId))) {
+  if (
+    !caller ||
+    !target ||
+    !lineageCompatibleForReuse(caller, target) ||
+    !threadInReach(caller, target)
+  ) {
     throw new OpensteerError({
       code: "forbidden",
       message:
-        "This Thread inherits Main access that your lineage does not have. Start a new task instead.",
+        "This Thread's consent scope is incompatible with your lineage. Start a new task instead.",
     });
   }
 }

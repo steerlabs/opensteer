@@ -246,6 +246,7 @@ export const hostApiVersion = 50;
  * advertise capabilities an older client has never heard of.
  */
 export const HostCapabilitySchema = z.enum([
+  "automatic-models-v1",
   "notification-preview-v1",
   "workspace-tab-reopen-v1",
   "iphone-apps-v1",
@@ -261,6 +262,17 @@ export const HostCapabilitySchema = z.enum([
   "browser-search-suggestions-v1",
   /** This Host runs its own OAuth authorization server for native clients. */
   "native-oauth",
+  /**
+   * Account-brokered consent started from an app may finish in that app: it
+   * returns the browser's one-use proof through `integration.authorization.return`
+   * instead of the browser signing into the Opensteer Account.
+   */
+  "integration-app-finish-v1",
+  /**
+   * `integration.*.authorization.begin` accepts `appReturnPort`, so a desktop
+   * app's listener can receive that proof without a click.
+   */
+  "integration-app-return-port-v1",
   /** This Host accepts a Personal remote session delivered in a request header. */
   "personal-session-header",
   /** Threads can be renamed, and a new one can ask to be named from its first message. */
@@ -286,11 +298,8 @@ export const HostCapabilitySchema = z.enum([
   "harness-update-v1",
   /** A person can rename and delete their browser profiles. */
   "browser-profile-manage-v1",
-  /** Clients can hold a voice call through `voice.*` (see docs/voice.md). */
-  "voice-v1",
-  /** A call can run its own agent: `agent` on `voice.start`, then `voice.next`, `voice.answer` and `voice.context`. */
-  "voice-agent-v1",
-  "voice-find-v1",
+  /** Clients can hold a voice call with its own agent through `voice.*`. */
+  "voice-run-v1",
 ]);
 export type HostCapability = z.infer<typeof HostCapabilitySchema>;
 

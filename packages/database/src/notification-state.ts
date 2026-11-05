@@ -1,3 +1,8 @@
+import {
+  administrationCommand,
+  withAdministrationTransaction,
+  type AdministrationCommandIdentity,
+} from "./administration-command.js";
 import { withDatabaseTransaction } from "./connection.js";
 import {
   OpensteerError,
@@ -314,54 +319,69 @@ export class NotificationStateStore {
   }
 
   async setAgentNotificationMute(input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
     readonly muted: boolean;
     readonly userId: UserId;
     readonly workspaceId: WorkspaceId;
   }): Promise<WorkspaceNotificationPreference> {
-    return withDatabaseTransaction(this.#database, async (transaction) => {
-      const authorized = await transaction
-        .selectFrom("workspaceMemberships")
-        .innerJoin("users", "users.id", "workspaceMemberships.userId")
-        .select("workspaceMemberships.workspaceId")
-        .where("workspaceMemberships.workspaceId", "=", input.workspaceId)
-        .where("workspaceMemberships.userId", "=", input.userId)
-        .where("workspaceMemberships.state", "=", "active")
-        .where("users.disabledAt", "is", null)
-        .executeTakeFirst();
-      if (!authorized)
-        throw new OpensteerError({ code: "not_found", message: "Workspace not found" });
-      const updated = await transaction
-        .insertInto("agentNotificationMutes")
-        .values({ ...input, updatedAt: new Date() })
-        .onConflict((conflict) =>
-          conflict.columns(["workspaceId", "userId"]).doUpdateSet({
+    return withAdministrationTransaction(
+      this.#database,
+      input.administration,
+      async (transaction) => {
+        const authorized = await transaction
+          .selectFrom("workspaceMemberships")
+          .innerJoin("users", "users.id", "workspaceMemberships.userId")
+          .select("workspaceMemberships.workspaceId")
+          .where("workspaceMemberships.workspaceId", "=", input.workspaceId)
+          .where("workspaceMemberships.userId", "=", input.userId)
+          .where("workspaceMemberships.state", "=", "active")
+          .where("users.disabledAt", "is", null)
+          .executeTakeFirst();
+        if (!authorized)
+          throw new OpensteerError({ code: "not_found", message: "Workspace not found" });
+        const updated = await transaction
+          .insertInto("agentNotificationMutes")
+          .values({
+            userId: input.userId,
+            workspaceId: input.workspaceId,
             muted: input.muted,
-            revision: sql<string>`agent_notification_mutes.revision + 1`,
             updatedAt: new Date(),
-          }),
-        )
-        .returning(["workspaceId", "muted", "revision"])
-        .executeTakeFirstOrThrow();
-      return WorkspaceNotificationPreferenceSchema.parse(updated);
-    });
+          })
+          .onConflict((conflict) =>
+            conflict.columns(["workspaceId", "userId"]).doUpdateSet({
+              muted: input.muted,
+              revision: sql<string>`agent_notification_mutes.revision + 1`,
+              updatedAt: new Date(),
+            }),
+          )
+          .returning(["workspaceId", "muted", "revision"])
+          .executeTakeFirstOrThrow();
+        return WorkspaceNotificationPreferenceSchema.parse(updated);
+      },
+    );
   }
 
   /** Records the zone a person's client reports, for whoever acts on their behalf. */
   async setTimeZone(input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
     readonly timeZone: TimeZone;
     readonly userId: UserId;
   }): Promise<TimeZone> {
-    const timeZone = TimeZoneSchema.parse(input.timeZone);
-    const updated = await this.#database
-      .updateTable("users")
-      .set({ timeZone, updatedAt: new Date() })
-      .where("id", "=", input.userId)
-      .where("disabledAt", "is", null)
-      .executeTakeFirst();
-    if (updated.numUpdatedRows !== 1n) {
-      throw new OpensteerError({ code: "not_found", message: "User not found" });
-    }
-    return timeZone;
+    return withDatabaseTransaction(this.#database, (transaction) =>
+      administrationCommand(transaction, input.administration, async () => {
+        const timeZone = TimeZoneSchema.parse(input.timeZone);
+        const updated = await transaction
+          .updateTable("users")
+          .set({ timeZone, updatedAt: new Date() })
+          .where("id", "=", input.userId)
+          .where("disabledAt", "is", null)
+          .executeTakeFirst();
+        if (updated.numUpdatedRows !== 1n) {
+          throw new OpensteerError({ code: "not_found", message: "User not found" });
+        }
+        return timeZone;
+      }),
+    );
   }
 
   /** The zone a person's client last reported, or null if none has. */

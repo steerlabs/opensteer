@@ -6,12 +6,14 @@ import { MockHostClient } from "@opensteer/client/mock";
 import { placeList } from "@opensteer/client/host";
 import { PersonShowMessageSchema, computerAppIdentityKey } from "@opensteer/protocol";
 import { createId } from "@opensteer/core";
+import { VoiceController } from "@opensteer/client/voice";
 import { VoiceProvider } from "./context.js";
 
 const state = vi.hoisted(() => ({
   host: null as MockHostClient | null,
   appState: "active",
   route: undefined as { key: string; name: string; params?: object } | undefined,
+  routes: [] as { key: string; name: string; params?: object }[],
   dispatch: vi.fn(),
   unsubscribeNavigation: vi.fn(),
   removeAppState: vi.fn(),
@@ -34,6 +36,7 @@ vi.mock("../navigation-ref.js", () => ({
   navigationRef: {
     isReady: () => true,
     getCurrentRoute: () => state.route,
+    getRootState: () => ({ routes: state.routes }),
     dispatch: state.dispatch,
     addListener: () => state.unsubscribeNavigation,
   },
@@ -49,7 +52,6 @@ vi.mock("../ui/mobile-client-context.js", () => ({
 vi.mock("../dictation/context.js", () => ({ useDictation: () => dictation }));
 vi.mock("../platform/voice.js", () => ({ voiceMediaPort: null }));
 vi.mock("expo-crypto", () => ({ randomUUID: () => crypto.randomUUID() }));
-vi.mock("../computers/phone-display-native.js", () => ({ macWindowVideoSupported: () => false }));
 vi.mock("./controls.js", async () => {
   const { createContext } = await vi.importActual<typeof import("react")>("react");
   return { VoiceContext: createContext(null) };
@@ -62,6 +64,7 @@ afterEach(async () => {
   state.host?.dispose();
   state.host = null;
   state.route = undefined;
+  state.routes = [];
   state.appState = "active";
   vi.clearAllMocks();
   document.body.replaceChildren();
@@ -229,4 +232,56 @@ it("ignores inactive apps, covered routes and different Threads or Deployments, 
   state.dispatch.mockClear();
   await act(async () => f.host.receivePersonShow(f.message));
   expect(state.dispatch).not.toHaveBeenCalled();
+});
+
+it("keeps following its Run from places opened over its conversation, and no other", async () => {
+  const f = await mount();
+  const home = state.route!;
+  const place = { ...home, name: "WorkspaceBrowser" };
+  state.route = place;
+  state.routes = [
+    {
+      ...home,
+      name: "Thread",
+      params: { deploymentId: f.snapshot.deploymentId, threadId: f.target.id },
+    },
+    place,
+  ];
+  await act(async () => f.host.receivePersonShow(f.message));
+  expect(state.dispatch).not.toHaveBeenCalled();
+  state.routes = [home, place, { ...place, key: "next" }];
+  await act(async () => f.host.receivePersonShow(f.message));
+  expect(state.dispatch).toHaveBeenCalledOnce();
+});
+
+it("opens what the voice call's agent shows from any screen, and ignores a call it replaced", async () => {
+  const f = await mount();
+  const call = {
+    threadId: createId("thread"),
+    runId: createId("run"),
+    workspaceId: f.source.workspaceId,
+  };
+  let current: typeof call | null = call;
+  vi.spyOn(VoiceController.prototype, "call").mockImplementation(() => current);
+  const showed = vi.spyOn(VoiceController.prototype, "showed");
+  const message = PersonShowMessageSchema.parse({ ...f.message, ...call });
+  // Settings names no conversation, and the call's own Thread is never on screen.
+  state.route = { key: "settings", name: "Settings" };
+  await act(async () => f.host.receivePersonShow(message));
+  expect(state.dispatch).toHaveBeenCalledExactlyOnceWith({
+    type: "PUSH",
+    payload: {
+      name: "Thread",
+      params: { deploymentId: f.snapshot.deploymentId, threadId: f.target.id },
+    },
+  });
+  expect(showed).toHaveBeenCalledOnce();
+  state.dispatch.mockClear();
+  state.appState = "background";
+  await act(async () => f.host.receivePersonShow(message));
+  state.appState = "active";
+  current = { ...call, runId: createId("run") };
+  await act(async () => f.host.receivePersonShow(message));
+  expect(state.dispatch).not.toHaveBeenCalled();
+  expect(showed).toHaveBeenCalledOnce();
 });

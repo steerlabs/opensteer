@@ -6,7 +6,7 @@ import { join } from "node:path";
 import WebSocket, { WebSocketServer } from "ws";
 import { describe, expect, it, vi } from "vitest";
 import { HttpHostClient, type WebSocketClient } from "../packages/client/src/host/index.js";
-import { MockHostClient } from "../packages/client/src/mock/index.js";
+import { MockDesktopUpdates, MockHostClient } from "../packages/client/src/mock/index.js";
 import { MemoryPrivateFilesystem } from "../packages/client/src/test-support/index.js";
 import {
   opensteerMobileAccountOAuthCallback,
@@ -81,6 +81,7 @@ describe("mobile retained attachment over HTTP and WebSocket", () => {
             held: async () => true,
           },
           verifyEpoch: async () => pending ?? agreement,
+          desktopUpdates: () => new MockDesktopUpdates(),
           attach: ({ authorization, capabilities }) => {
             read = capabilities;
             network = createHostNetwork({

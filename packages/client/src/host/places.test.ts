@@ -1,3 +1,4 @@
+import { defaultTaskSymbol } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import { placeIdentityKey } from "@opensteer/protocol";
 import { MockHostClient } from "../mock/mock-host-client.js";
@@ -131,7 +132,7 @@ describe("place catalog", () => {
         },
       };
       expect(threadMark(task.id, directory)).toEqual(taskMark(task));
-      expect(threadMark("unknown", directory)).toEqual({ icon: null, color: null });
+      expect(threadMark("unknown", directory)).toEqual({ icon: defaultTaskSymbol, color: null });
       const assignment = {
         workerThread: { id: task.id, icon: "hotel" as const, color: "green" as const },
       };
@@ -142,7 +143,7 @@ describe("place catalog", () => {
       });
       expect(
         assignmentMark({ workerThread: { id: task.id, icon: null } }, { threads: [] }),
-      ).toEqual({ icon: null, color: null });
+      ).toEqual({ icon: defaultTaskSymbol, color: null });
     } finally {
       client.dispose();
     }

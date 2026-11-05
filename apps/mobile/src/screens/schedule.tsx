@@ -276,9 +276,8 @@ function ScheduleBody(props: {
   const problem =
     item.status === "paused"
       ? item.pauseReason
-      : watch?.tone === "warn"
-        ? (definition.activation?.lastError ?? null)
-        : null;
+      : (item.waitingReason ??
+        (watch?.tone === "warn" ? (definition.activation?.lastError ?? null) : null));
   const changeable = item.status !== "archived";
   const reachable = useReachableThreads(props.hostClient, detail);
 
@@ -294,7 +293,15 @@ function ScheduleBody(props: {
       <View accessible accessibilityLabel={status} style={styles.status}>
         <StatusDot
           live={watch?.text === "Watching"}
-          tone={item.status === "active" ? "green" : item.pauseReason === null ? "muted" : "amber"}
+          tone={
+            item.waitingReason
+              ? "amber"
+              : item.status === "active"
+                ? "green"
+                : item.pauseReason === null
+                  ? "muted"
+                  : "amber"
+          }
         />
         <AppText role="secondary" style={styles.statusWords} tone="muted">
           {status}

@@ -58,7 +58,7 @@ import {
   MessagingFrameRouter,
   RoutedChannelHostClient,
 } from "@opensteer/messaging-module";
-import type { RunnerAuxiliaryStream } from "@opensteer/orchestration";
+import type { RunnerAuxiliaryStream, RunnerIdentity } from "@opensteer/orchestration";
 import {
   HarnessInstanceCatalogSchema,
   RunnerAuxiliaryFrameFenceSchema,
@@ -81,6 +81,10 @@ const integration = databaseUrl ? describe : describe.skip;
 
 const messagingRunnerId = RunnerIdSchema.parse("rnr_00000000-0000-4000-8000-0000000000b1");
 const canonicalOrigin = "https://messaging-e2e.invalid";
+/** The agents Runner advertises the one engine the fixture's account uses. */
+const nativeRunnerIdentity = {
+  modules: { agents: { harnessDrivers: [{ driverKind: "native" }] } },
+} as unknown as RunnerIdentity;
 
 /**
  * A Slack message timestamp this many seconds into the test. Messages carry
@@ -220,9 +224,11 @@ integration("messaging end to end", () => {
       onWorkspaceEvent: () => undefined,
       relay: hub,
       runners: {
-        canRunHarness: (candidate: string) => candidate === environmentId,
-        isAvailable: (candidate: string) => candidate === environmentId,
-      } as never,
+        canRunHarness: (candidate) => candidate === environmentId,
+        isAvailable: (candidate) => candidate === environmentId,
+        identityForEnvironment: (candidate) =>
+          candidate === environmentId ? nativeRunnerIdentity : undefined,
+      },
       store,
     });
 

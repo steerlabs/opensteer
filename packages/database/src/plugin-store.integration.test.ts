@@ -4,12 +4,47 @@ import { createIntegrationId } from "@opensteer/integration-core";
 import { pluginsMigration } from "./migrations.js";
 import { randomUUID } from "node:crypto";
 import { expect } from "vitest";
-import { createId } from "@opensteer/core";
+import { createId, HarnessIdSchema } from "@opensteer/core";
 import { IntegrationPlatformStore } from "./integration-platform-store.js";
-import { testContinuationIdentity } from "./store.integration.test-support.js";
+import {
+  testContinuationIdentity,
+  testReadyHarnessCatalog,
+} from "./store.integration.test-support.js";
 import { describeStore } from "./store.integration.test-support.js";
 
 describeStore("plugin activation", (test) => {
+  test("updates only the owning Workspace and preserves activation", async ({
+    storeFixture: fixture,
+  }) => {
+    const f = await fixture.createRunFixture("plugin-update");
+    const platform = new IntegrationPlatformStore(fixture.database);
+    const id = randomUUID();
+    await platform.plugins.install({
+      id,
+      name: "mine",
+      workspaceId: f.workspace.id,
+      actorUserId: f.userId,
+      source: {},
+      digest: "old",
+      manifest: { name: "mine" },
+    });
+    await platform.plugins.setActivation({
+      pluginId: id,
+      workspaceId: f.workspace.id,
+      actorUserId: f.userId,
+      active: false,
+    });
+    const update = { pluginId: id, digest: "new", manifest: { name: "mine" } };
+    await expect(
+      platform.plugins.update({ ...update, workspaceId: createId("workspace") }),
+    ).rejects.toThrow("Workspace");
+    await expect(platform.plugins.update(update)).rejects.toThrow("Workspace");
+    await platform.plugins.update({ ...update, workspaceId: f.workspace.id });
+    const plugin = (await platform.plugins.list()).find((p) => p.id === id)!;
+    expect(plugin.versions).toHaveLength(2);
+    expect(plugin.activations).toEqual([]);
+  });
+
   test("lists growing inventories with four queries and keeps Workspace filtering", async ({
     storeFixture: fixture,
   }) => {
@@ -70,7 +105,7 @@ describeStore("plugin activation", (test) => {
     expect(chat).toMatchObject({
       workspaceId: project.id,
       role: "conversation",
-      capabilityProfileId: "workspace",
+      inheritsMain: false,
       title: "Chat",
     });
     const turn = await fixture.enqueueHumanTrigger({
@@ -92,7 +127,6 @@ describeStore("plugin activation", (test) => {
       threadId: project.homeThreadId!,
     });
     expect(await fixture.store.runCapabilityScope(turn.run.id)).toMatchObject({
-      capabilityProfileId: "workspace",
       workspaceId: project.id,
     });
     await fixture.database
@@ -111,8 +145,127 @@ describeStore("plugin activation", (test) => {
     expect(second.homeThreadId).toBe(first.homeThreadId);
     expect(await fixture.store.getThreadForOwner(first.homeThreadId!, f.userId)).toMatchObject({
       role: "conversation",
-      capabilityProfileId: "workspace",
+      inheritsMain: false,
     });
+  });
+
+  test("a Project Chat with no history starts on the first account with a catalog default", async ({
+    storeFixture: fixture,
+  }) => {
+    const f = await fixture.createRunFixture("project-chat-default");
+    const environmentId = await fixture.store.createEnvironment({
+      kind: "local",
+      name: "Fresh computer",
+      runnerId: f.runnerId,
+    });
+    const account = (name: string) =>
+      fixture.store.createHarnessInstance({
+        config: {},
+        driverKind: HarnessIdSchema.parse("native"),
+        environmentId,
+        name,
+        sourceId: "native",
+        stateKind: "isolated",
+      });
+    // The default account has not signed in; the next account is ready.
+    const signedOut = await account("Default, signed out");
+    const ready = await account("Ready");
+    const catalog = testReadyHarnessCatalog(ready.id);
+    await fixture.store.recordHarnessCatalogs({
+      catalogs: [
+        {
+          ...testReadyHarnessCatalog(signedOut.id),
+          status: "authentication-required",
+          detail: "Sign in to continue",
+          models: [],
+        },
+        {
+          ...catalog,
+          models: catalog.models.map((model) => ({ ...model, nativeModelId: "gateway/default" })),
+        },
+      ],
+      environmentId,
+      expectedRevisions: new Map([
+        [signedOut.id, signedOut.runtimeRevision],
+        [ready.id, ready.runtimeRevision],
+      ]),
+    });
+    const project = await createTestWorkspace(fixture.store, {
+      backing: {
+        ...f.workspace.backing,
+        bindingId: createId("workspaceBinding"),
+        ownerEnvironmentId: environmentId,
+      },
+      createdBy: f.userId,
+      idempotencyKey: "chat-project-default",
+      kind: "project",
+      name: "Fresh Project",
+      status: "ready",
+    });
+    expect(signedOut.isDefault).toBe(true);
+    expect(project.homeThreadId).toBeTruthy();
+    expect(await fixture.store.getThreadForOwner(project.homeThreadId!, f.userId)).toMatchObject({
+      harnessInstanceId: ready.id,
+      modelSelection: {
+        modelId: catalog.models[0]!.modelId,
+        nativeModelId: "gateway/default",
+        options: {},
+        providerId: catalog.models[0]!.providerId,
+      },
+    });
+  });
+
+  test("a Project Chat with no history skips accounts its owner excluded, and waits while none is left", async ({
+    storeFixture: fixture,
+  }) => {
+    const f = await fixture.createRunFixture("project-chat-excluded");
+    const environmentId = await fixture.store.createEnvironment({
+      kind: "local",
+      name: "Excluding computer",
+      runnerId: f.runnerId,
+    });
+    const account = (name: string) =>
+      fixture.store.createHarnessInstance({
+        config: {},
+        driverKind: HarnessIdSchema.parse("native"),
+        environmentId,
+        name,
+        sourceId: "native",
+        stateKind: "isolated",
+      });
+    const first = await account("Default");
+    const second = await account("Second");
+    await fixture.store.recordHarnessCatalogs({
+      catalogs: [testReadyHarnessCatalog(first.id), testReadyHarnessCatalog(second.id)],
+      environmentId,
+      expectedRevisions: new Map([
+        [first.id, first.runtimeRevision],
+        [second.id, second.runtimeRevision],
+      ]),
+    });
+    const exclude = (...excludedAccounts: (typeof first.id)[]) =>
+      fixture.store.setAutomaticModelConfig(f.userId, { roles: {}, excludedAccounts });
+    await exclude(first.id, second.id);
+    const project = await createTestWorkspace(fixture.store, {
+      backing: {
+        ...f.workspace.backing,
+        bindingId: createId("workspaceBinding"),
+        ownerEnvironmentId: environmentId,
+      },
+      createdBy: f.userId,
+      idempotencyKey: "chat-project-excluded",
+      kind: "project",
+      name: "Excluded Project",
+      status: "ready",
+    });
+    expect(first.isDefault).toBe(true);
+    expect(project.homeThreadId).toBeNull();
+    await exclude(first.id);
+    const reconciled = (await fixture.store.listWorkspaces()).find((w) => w.id === project.id);
+    expect(reconciled?.homeThreadId).toBeTruthy();
+    expect(
+      await fixture.store.getThreadForOwner(reconciled!.homeThreadId!, f.userId),
+    ).toMatchObject({ harnessInstanceId: second.id });
   });
 
   test("members list only available plugins without installation paths and only owners change activation", async ({

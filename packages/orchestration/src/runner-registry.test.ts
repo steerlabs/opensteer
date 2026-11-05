@@ -32,6 +32,90 @@ import {
 } from "./index.js";
 
 describe("Runner connection registry", () => {
+  it("accepts background text only once from its live issuing connection and rejects foreign attempts", async () => {
+    const registry = new RunnerRegistry({
+      hooks: { authorize: async () => undefined, onEvent: async () => undefined },
+    });
+    const environmentId = createId("environment");
+    const identity = {
+      ...hello(createId("runner"), environmentId, "boot-1"),
+      capabilities: ["background-text-v1" as const],
+    };
+    const peer = new MemoryRunnerPeer("background");
+    const foreign = new MemoryRunnerPeer("foreign");
+    try {
+      await registerAttached(registry, identity, peer);
+      await registerAttached(
+        registry,
+        hello(createId("runner"), createId("environment"), "boot-1"),
+        foreign,
+      );
+      const request = {
+        type: "host.background-text" as const,
+        attemptId: "opaque",
+        environmentId,
+        harnessInstanceId: createId("harnessInstance"),
+        harnessRevision: 1,
+        modelSelection: ModelSelectionSchema.parse({
+          providerId: "openai",
+          modelId: "test",
+          options: {},
+        }),
+        prompt: "Name this",
+        deadline: new Date(Date.now() + 1000).toISOString(),
+      };
+      const pending = registry.backgroundText(request, AbortSignal.timeout(2000));
+      const report = {
+        type: "runner.background-text-result" as const,
+        attemptId: "opaque",
+        result: { ok: true as const, text: "Valid" },
+      };
+      await registry.handle(foreign, {
+        ...fenceOf(foreign),
+        ...report,
+        result: { ok: true, text: "Foreign" },
+      });
+      await registry.handle(peer, { ...fenceOf(peer), ...report, attemptId: "superseded" });
+      await registry.handle(peer, { ...fenceOf(peer), ...report });
+      await expect(pending).resolves.toEqual({ ok: true, text: "Valid" });
+      await registry.handle(peer, { ...fenceOf(peer), ...report });
+      const expired = registry.backgroundText(
+        { ...request, attemptId: "expired", deadline: new Date(Date.now() - 1).toISOString() },
+        AbortSignal.timeout(1000),
+      );
+      await registry.handle(peer, { ...fenceOf(peer), ...report, attemptId: "expired" });
+      await expect(expired).rejects.toThrow();
+      // A superseded connection ends its attempts at once, not at their deadline,
+      // so naming moves to its next candidate while the Runner reconnects.
+      const stale = registry.backgroundText(
+        {
+          ...request,
+          attemptId: "old-boot",
+          deadline: new Date(Date.now() + 60_000).toISOString(),
+        },
+        new AbortController().signal,
+      );
+      const rejected = expect(stale).rejects.toThrow();
+      const replacement = new MemoryRunnerPeer("replacement");
+      await registerAttached(
+        registry,
+        {
+          ...hello(identity.runnerId, environmentId, "boot-2"),
+          capabilities: ["background-text-v1"],
+        },
+        replacement,
+      );
+      await registry.handle(replacement, {
+        ...fenceOf(replacement),
+        ...report,
+        attemptId: "old-boot",
+      });
+      await rejected;
+    } finally {
+      await registry.close();
+    }
+  });
+
   it("settles specialist folder removal when its owning Runner replies", async () => {
     const registry = new RunnerRegistry({
       hooks: { authorize: async () => undefined, onEvent: async () => undefined },
@@ -1955,23 +2039,16 @@ function executeCommand(
     context: {
       accessMode: "full-access",
       assignment: null,
-      agentControl: {
-        token: "agent-token",
-        url: "https://host.example.test/internal/v1/agent-control",
-      },
       agentTools: {
-        capabilityProfileId: "workspace",
+        tools: ["thread_read", "integration_call", "computer"],
+        toolsRevision: "test-tools-v1",
+        instructions: "Host Opensteer instructions",
+        skills: ["opensteer:threads"],
         token: "agent-tools-token",
         url: "https://host.example.test/internal/v1/mcp",
       },
-      browserCdp: {
-        token: "browser-cdp-token",
-        url: "https://host.example.test/internal/v1/browser-cdp",
-      },
-      integrationTools: {
-        token: "agent-tools-token",
-        url: "https://host.example.test/internal/v1/integration-mcp",
-      },
+      browserCdp: { url: "https://host.example.test/internal/v1/browser-cdp" },
+
       plugins: {
         versions: [],
         token: "plugin-cache-token",
@@ -2092,10 +2169,7 @@ function triggerCommand(
         trigger: { anchorThreadId, id: triggerId, revisionId, workspaceId },
       },
       executionGeneration: 1,
-      integrationMcp: {
-        token: "integration-mcp-token",
-        url: "https://host.example.test/internal/v1/integration-mcp",
-      },
+
       mcp: { token: "mcp-token", url: "https://host.example.test/internal/v1/mcp" },
       occurrenceId,
       program: {
@@ -2649,14 +2723,14 @@ function ticket(fence: RunnerConnectionFence): RunnerAuxiliaryTicketClaims {
 describe("Runner voice relay", () => {
   const sessionId = "00000000-0000-4000-8000-000000000001";
   const userId = createId("user"),
-    harnessInstanceId = createId("harnessInstance");
+    runId = createId("run");
   const command = {
     action: "start" as const,
     sessionId,
-    harnessInstanceId,
+    runId,
     offer: "private-offer",
   };
-  async function fixture(voice = true, agent = false, find = false) {
+  async function fixture(voice = true) {
     const registry = new RunnerRegistry({
       hooks: { authorize: vi.fn(async () => undefined), onEvent: vi.fn(async () => undefined) },
     });
@@ -2667,98 +2741,12 @@ describe("Runner voice relay", () => {
       registry,
       {
         ...identity,
-        capabilities: voice
-          ? [
-              "voice-v1",
-              ...(agent ? ["voice-agent-v1" as const] : []),
-              ...(find ? ["voice-find-v1" as const] : []),
-            ]
-          : [],
+        capabilities: voice ? ["voice-run-v1"] : [],
       },
       peer,
     );
     return { registry, environmentId, peer };
   }
-  it.each(
-    [false, true].flatMap((client) =>
-      [false, true].flatMap((host) => [false, true].map((runner) => ({ client, host, runner }))),
-    ),
-  )(
-    "negotiates find for client=$client Host=$host Runner=$runner without extending an old strict relay",
-    async ({ client, host, runner }) => {
-      const f = await fixture(true, true, runner);
-      try {
-        const requested = client && host;
-        const pending = f.registry.voice(
-          f.environmentId,
-          userId,
-          { ...command, agent: true, ...(requested ? { find: true as const } : {}) },
-          new AbortController().signal,
-        );
-        const sent = f.peer.messages.at(-1);
-        if (sent?.type !== "host.voice") throw new Error("Voice request missing");
-        expect(sent.command).toEqual({
-          ...command,
-          agent: true,
-          ...(requested && runner ? { find: true } : {}),
-        });
-        await f.registry.handle(f.peer, {
-          ...fenceOf(f.peer),
-          type: "runner.voice",
-          requestId: sent.requestId,
-          result: {
-            ok: true,
-            answer: "answer",
-            agent: true,
-            ...(requested && runner ? { find: true } : {}),
-          },
-        });
-        expect(await pending).toEqual({
-          ok: true,
-          answer: "answer",
-          agent: true,
-          ...(requested ? { find: runner } : {}),
-        });
-      } finally {
-        await f.registry.close();
-      }
-    },
-  );
-  it.each([false, true])(
-    "negotiates agent support %s without sending new fields to old Runners",
-    async (agent) => {
-      const f = await fixture(true, agent);
-      try {
-        const pending = f.registry.voice(
-          f.environmentId,
-          userId,
-          { ...command, agent: true },
-          new AbortController().signal,
-        );
-        const sent = f.peer.messages.at(-1);
-        if (sent?.type !== "host.voice") throw new Error("Voice request missing");
-        expect(sent.command).toEqual({ ...command, ...(agent ? { agent: true } : {}) });
-        await f.registry.handle(f.peer, {
-          ...fenceOf(f.peer),
-          type: "runner.voice",
-          requestId: sent.requestId,
-          result: { ok: true, answer: "answer", ...(agent ? { agent: true } : {}) },
-        });
-        expect(await pending).toEqual({ ok: true, answer: "answer", agent });
-        if (!agent)
-          await expect(
-            f.registry.voice(
-              f.environmentId,
-              userId,
-              { action: "next", sessionId, harnessInstanceId },
-              new AbortController().signal,
-            ),
-          ).rejects.toMatchObject({ reason: "voice-ended" });
-      } finally {
-        await f.registry.close();
-      }
-    },
-  );
   it("correlates fenced answers and refusals, ignoring late replies", async () => {
     const f = await fixture();
     try {
@@ -2859,7 +2847,7 @@ describe("Runner voice relay", () => {
       const pending = f.registry.voice(
         f.environmentId,
         userId,
-        action === "start" ? command : { action, sessionId, harnessInstanceId },
+        action === "start" ? command : { action, sessionId, runId },
         new AbortController().signal,
       );
       const rejected = expect(pending).rejects.toMatchObject({ code: "timeout" });

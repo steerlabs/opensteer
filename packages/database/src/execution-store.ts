@@ -70,6 +70,7 @@ import {
  * anything the sending model wrote.
  */
 export interface RunDispatchContext {
+  readonly voiceCall?: { readonly sessionId: string; readonly admittedAt: string };
   readonly command: CommandRow;
   readonly executionBinding: ThreadExecutionBinding | null;
   readonly providerSessionStateLayout: "thread" | "session";
@@ -92,8 +93,6 @@ export interface RunDispatchContext {
   readonly firstOrdinal: number;
   readonly run: Run;
   readonly thread: Thread;
-  readonly titleProvisional: boolean;
-  readonly titleRequest?: { readonly request: string; readonly icon?: true };
   readonly workspace: Workspace;
 }
 
@@ -479,39 +478,6 @@ export async function loadRunDispatchContext(
       .limit(maxHistoryItems + 1)
       .execute(),
   ]);
-  const firstAuthored =
-    threadRow.titleSource === "provisional" || threadRow.iconSource === "provisional"
-      ? await database
-          .selectFrom("messages")
-          .selectAll()
-          .where("threadId", "=", threadRow.id)
-          .where("kind", "=", "input")
-          .where(sql<boolean>`author->>'kind' in ('human', 'agent', 'trigger', 'watch')`)
-          .orderBy("sequence", "asc")
-          .limit(1)
-          .executeTakeFirst()
-      : undefined;
-  const firstContent = firstAuthored ? messagesFromRows([firstAuthored])[0]!.content : [];
-  // A file alone has no request to name. Labels accompany the authored text,
-  // without exposing a place's address or a file's contents to the titler.
-  const hasText = firstContent.some((part) => part.type === "text" && part.text.trim().length > 0);
-  const titleText = hasText
-    ? firstContent
-        .flatMap((part) =>
-          part.type === "text"
-            ? [part.text]
-            : part.type === "artifact"
-              ? [part.name]
-              : isPlaceContentPart(part)
-                ? [placeContentLabel(part)]
-                : [],
-        )
-        .join("\n")
-        .trim()
-    : "";
-  const request = titleText
-    .slice(0, surrogateSafeCut(titleText, threadTitleRequestMaxLength))
-    .trimEnd();
   const historyWindow = newestMessageWindow(
     messagesFromRows(historyRowsDesc),
     maxHistoryItems,
@@ -552,16 +518,15 @@ export async function loadRunDispatchContext(
     membershipGeneration: safeGeneration(runRow.membershipGeneration),
     firstOrdinal: runRow.nextRunnerOrdinal,
     run: runFromRow(runRow),
-    thread: threadFromRow(threadRow),
-    titleProvisional: threadRow.titleSource === "provisional",
-    ...(request
+    ...(threadRow.voiceSessionId
       ? {
-          titleRequest: {
-            request,
-            ...(threadRow.iconSource === "provisional" ? { icon: true as const } : {}),
+          voiceCall: {
+            sessionId: threadRow.voiceSessionId,
+            admittedAt: runRow.createdAt.toISOString(),
           },
         }
       : {}),
+    thread: threadFromRow(threadRow),
     workspace: workspaceFromRow(workspaceRow),
   };
 }
@@ -1059,7 +1024,7 @@ export async function runCapabilityScope(
   runId: RunId,
 ): Promise<{
   readonly bindingGeneration: number;
-  readonly capabilityProfileId: DatabaseSchema["threads"]["capabilityProfileId"];
+  readonly specialistId?: string;
   readonly environmentId: EnvironmentId;
   readonly grantId: GrantId;
   readonly membershipGeneration: number;
@@ -1088,7 +1053,7 @@ export async function runCapabilityScope(
       "runs.membershipGeneration",
       "runs.requestedBy",
       "runs.threadId",
-      "threads.capabilityProfileId",
+      "threads.specialistId",
       "threads.workspaceId",
     ])
     .where("runs.id", "=", runId)
@@ -1096,7 +1061,7 @@ export async function runCapabilityScope(
   if (!row) return null;
   return {
     bindingGeneration: row.bindingGeneration,
-    capabilityProfileId: row.capabilityProfileId,
+    ...(row.specialistId ? { specialistId: row.specialistId } : {}),
     environmentId: row.environmentId,
     grantId: row.grantId,
     membershipGeneration: safeGeneration(row.membershipGeneration),
@@ -1107,4 +1072,110 @@ export async function runCapabilityScope(
     threadId: row.threadId,
     workspaceId: row.workspaceId,
   };
+}
+
+/** First admitted work owns naming authority, independently of its Run lifetime. */
+export async function getThreadNamingInput(database: Kysely<DatabaseSchema>, threadId: ThreadId) {
+  const thread = await database
+    .selectFrom("threads")
+    .selectAll()
+    .where("id", "=", threadId)
+    .executeTakeFirst();
+  if (!thread || thread.status === "archived") return null;
+  const workspace = await database
+    .selectFrom("workspaces")
+    .select("homeThreadId")
+    .where("id", "=", thread.workspaceId)
+    .executeTakeFirst();
+  if (!workspace || workspace.homeThreadId === threadId) return null;
+  const run = await database
+    .selectFrom("runs")
+    .selectAll()
+    .where("threadId", "=", threadId)
+    .orderBy("runOrdinal", "asc")
+    .limit(1)
+    .executeTakeFirst();
+  if (
+    !run ||
+    !(await threadExecutionIsAvailableToUser(
+      database,
+      threadId,
+      run.requestedBy,
+      safeGeneration(run.membershipGeneration),
+    ))
+  )
+    return null;
+  const firstAuthored =
+    thread.titleSource === "provisional" || thread.iconSource === "provisional"
+      ? await database
+          .selectFrom("messages")
+          .leftJoin("threadInputs", "threadInputs.messageId", "messages.id")
+          .selectAll("messages")
+          .where("messages.threadId", "=", thread.id)
+          .where((eb) =>
+            eb.or([
+              eb("threadInputs.state", "is", null),
+              eb("threadInputs.state", "!=", "cancelled"),
+            ]),
+          )
+          .where("kind", "=", "input")
+          .where(sql<boolean>`author->>'kind' in ('human', 'agent', 'trigger', 'watch')`)
+          .orderBy("messages.sequence", "asc")
+          .limit(1)
+          .executeTakeFirst()
+      : undefined;
+  const firstContent = firstAuthored ? messagesFromRows([firstAuthored])[0]!.content : [];
+  // A file alone has no request to name. Labels accompany the authored text,
+  // without exposing a place's address or a file's contents to the titler.
+  const hasText = firstContent.some((part) => part.type === "text" && part.text.trim().length > 0);
+  const titleText = hasText
+    ? firstContent
+        .flatMap((part) =>
+          part.type === "text"
+            ? [part.text]
+            : part.type === "artifact"
+              ? [part.name]
+              : isPlaceContentPart(part)
+                ? [placeContentLabel(part)]
+                : [],
+        )
+        .join("\n")
+        .trim()
+    : "";
+  const request = titleText
+    .slice(0, surrogateSafeCut(titleText, threadTitleRequestMaxLength))
+    .trimEnd();
+
+  if (!request || !firstAuthored) return null;
+  return {
+    threadId,
+    sourceMessageId: firstAuthored.id,
+    principalId: run.actorPrincipalId,
+    requestedBy: run.requestedBy,
+    membershipGeneration: safeGeneration(run.membershipGeneration),
+    environmentId: run.environmentId,
+    harnessInstanceId: run.harnessInstanceId,
+    modelSelection: run.modelSelection,
+    request,
+    icon: thread.iconSource === "provisional",
+  };
+}
+
+export async function listThreadNamingCandidates(
+  database: Kysely<DatabaseSchema>,
+  limit = 100,
+  after?: ThreadId,
+) {
+  return database
+    .selectFrom("threads")
+    .select("id")
+    .where((eb) =>
+      eb.or([eb("titleSource", "=", "provisional"), eb("iconSource", "=", "provisional")]),
+    )
+    .where("status", "!=", "archived")
+    .where("id", "in", database.selectFrom("runs").select("threadId"))
+    .$if(after !== undefined, (query) => query.where("id", ">", after!))
+    .orderBy("id", "asc")
+    .limit(Math.min(100, Math.max(1, limit)))
+    .execute();
 }

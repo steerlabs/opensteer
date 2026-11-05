@@ -2,11 +2,10 @@ import type { Stats } from "node:fs";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
-  opensteerAgentSkills,
-  skillsForCapabilityProfile,
+  opensteerAgentSkillNames,
+  OpensteerAgentSkillNameSchema,
   type OpensteerAgentSkillName,
 } from "@opensteer/agent-tools";
-import type { AgentCapabilityProfileId } from "@opensteer/core";
 import {
   maximumSkillBytes,
   parseHarnessSkillMetadata,
@@ -37,7 +36,7 @@ export async function loadAgentSkillBundle(directory: string): Promise<AgentSkil
   PluginManifestSchema.parse(JSON.parse(await readFile(manifestPath, "utf8")));
 
   const entries = await Promise.all(
-    opensteerAgentSkills.map(async ({ name }) => {
+    opensteerAgentSkillNames.map(async (name) => {
       const skillDirectory = join(rootPath, "skills", name.split(":")[1]!);
       await requireDirectory(skillDirectory, `Agent Skill ${name}`);
       const resolvedSkill = await realpath(skillDirectory);
@@ -68,17 +67,18 @@ export async function loadAgentSkillBundle(directory: string): Promise<AgentSkil
 
 export function planAgentSkills(
   bundle: AgentSkillBundle,
-  profileId: AgentCapabilityProfileId,
+  names: readonly string[],
 ): readonly HarnessSkill[] {
   return Object.freeze(
-    skillsForCapabilityProfile(profileId).map(({ name }) =>
-      Object.freeze({
+    names.map((value) => {
+      const name = OpensteerAgentSkillNameSchema.parse(value);
+      return Object.freeze({
         plugin: "opensteer",
         localName: name.split(":")[1]!,
         fullName: name,
         path: bundle.paths[name],
-      }),
-    ),
+      });
+    }),
   );
 }
 

@@ -3,7 +3,7 @@ import { createServer, type Server as HttpServer } from "node:http";
 import { once } from "node:events";
 import type { RunnerConfig } from "@opensteer/config";
 import { allowsPlaintextRunnerTransport } from "@opensteer/core";
-import { BrowserSessionIdSchema, type RunBrowserCdpPlan } from "@opensteer/protocol";
+import { BrowserSessionIdSchema } from "@opensteer/protocol";
 import WebSocket, { WebSocketServer, type RawData } from "ws";
 import { closeHttpServerNow, refuseConnection } from "@opensteer/shared/httpServer";
 import { rawDataBuffer } from "@opensteer/shared/webSocketFrame";
@@ -41,15 +41,14 @@ export class BrowserCdpRelay {
   #suspended = false;
 
   constructor(options: {
-    readonly plan: RunBrowserCdpPlan;
-    /** The Host token current when each connection opens; defaults to the plan's. */
-    readonly token?: () => string;
+    readonly url: string;
+    /** The Host token current when each connection opens. */
+    readonly token: () => string;
     readonly transport: Pick<RunnerConfig, "mode">;
   }) {
     this.#path = `/devtools/browser/${randomBytes(24).toString("base64url")}`;
-    const planToken = options.plan.token;
-    this.#upstreamToken = options.token ?? (() => planToken);
-    this.#upstreamUrl = validateUpstream(new URL(options.plan.url), options.transport);
+    this.#upstreamToken = options.token;
+    this.#upstreamUrl = validateUpstream(new URL(options.url), options.transport);
     this.#http = createServer((_request, response) => {
       response.writeHead(404, { "content-type": "application/json" });
       response.end('{"error":"not_found"}');

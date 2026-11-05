@@ -23,7 +23,6 @@ interface TriggerProgramExecutorOptions {
 /** What a program reaches Opensteer through: the Runner's stand-ins, never Host tokens. */
 export interface ProgramEndpoints {
   readonly browserCdp?: { readonly token: string; readonly url: string };
-  readonly integrationMcp: { readonly token: string; readonly url: string };
   readonly mcp: { readonly token: string; readonly url: string };
 }
 
@@ -185,8 +184,6 @@ function triggerEnvironment(
   environment.OPENSTEER_EVENT_PATH = eventFile;
   environment.OPENSTEER_MCP_URL = endpoints.mcp.url;
   environment.OPENSTEER_MCP_TOKEN = endpoints.mcp.token;
-  environment.OPENSTEER_INTEGRATION_MCP_URL = endpoints.integrationMcp.url;
-  environment.OPENSTEER_INTEGRATION_MCP_TOKEN = endpoints.integrationMcp.token;
   environment.OPENSTEER_OCCURRENCE_ID = context.occurrenceId;
   environment.OPENSTEER_TRIGGER_ID = context.triggerId;
   environment.OPENSTEER_WORKSPACE_ID = context.workspaceId;

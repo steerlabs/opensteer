@@ -1,15 +1,15 @@
 import { AppServerManager } from "../apps/app-server-manager.js";
 import { VoiceCalls } from "../voice/voice-calls.js";
-import { isCodexVoiceAdapter } from "@opensteer/harness-codex";
+
 import { systemClock, type Clock } from "@opensteer/shared/clock";
 import { setPrivateDirectoryMode } from "@opensteer/shared/privateFiles";
 import { safeMessage } from "@opensteer/shared/safeMessage";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, lstat } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, readFile, lstat } from "node:fs/promises";
 import { platform } from "node:os";
+import { setTimeout as sleep } from "node:timers/promises";
 import { join, resolve } from "node:path";
-import { platformGuideForRun } from "@opensteer/agent-tools";
 import { defaultRunnerMaxConcurrentTriggerPrograms, type RunnerConfig } from "@opensteer/config";
 import {
   createId,
@@ -47,10 +47,7 @@ import {
   identifyModelServer,
   isHarnessLiveEvent,
   LiveSessionDirectory,
-  threadTitlePrompt,
-  threadTitleBudgetMs,
-  threadTitleCleanupMs,
-  parseGeneratedThreadName,
+  type HarnessGenerateTextResult,
   type HarnessDurableEvent,
   type EngineUpdatePlan,
   type HarnessLiveEvent,
@@ -64,6 +61,7 @@ import {
   type ResolvedAttachment,
 } from "@opensteer/harness";
 import {
+  backgroundTextAttemptsPerRunner,
   HarnessInstanceCatalogSchema,
   PendingAgentEventSchema,
   pendingAgentEventMaxSerializedBytes,
@@ -84,7 +82,6 @@ import type { TriggerExecutionOutput } from "@opensteer/triggers";
 import type { ProviderContinuationIdentityProjector } from "@opensteer/runner-client";
 import { CommandLedger, type CommandDecision } from "../agent/command-ledger.js";
 import type { RunWorkspace, WorkspaceAccessManager } from "../workspace/mount-manager.js";
-import { HttpAgentControlClient } from "../agent/agent-control-client.js";
 import { planAgentSkills, type AgentSkillBundle } from "../skills/agent-skills.js";
 import type { RunnerLogger } from "../host/host-connection.js";
 import { cacheRunPlugins } from "../skills/plugin-cache.js";
@@ -169,6 +166,7 @@ export interface RunnerRuntimeOptions {
   readonly maxConcurrentTriggerPrograms?: number;
   readonly maxRunEventBytes?: number;
   readonly maxRunEvents?: number;
+  readonly requestParkDeadlineMs?: number;
   readonly machineAccess?: {
     readonly controlCaPath?: string;
     readonly helperBinary: string;
@@ -265,6 +263,8 @@ interface ActiveRun {
   revoked?: boolean;
   /** An explicit Stop wins over an engine completion while this Run is still held. */
   interrupted?: true;
+  requestParkForced?: true;
+  requestParkTimer?: NodeJS.Timeout;
   readonly saturatedToolDeltaCallIds: Set<string>;
   readonly toolDeltaBytes: Map<string, number>;
   primaryWorkspace?: RunWorkspace;
@@ -285,6 +285,7 @@ interface ActiveRun {
   readonly credentialLifetime: AbortController;
   /** The containment scope of the Run's processes: its own, or its warm engine's. */
   containmentScope: string;
+  voiceCall?: import("@opensteer/harness").HarnessVoiceCall;
   session?: HarnessSession;
   settling?: boolean;
   readonly steerTasks: Set<Promise<CommandDecision>>;
@@ -370,6 +371,7 @@ export class RunnerRuntime {
   readonly #maxConcurrentTriggerPrograms: number;
   readonly #maxRunEventBytes: number;
   readonly #maxRunEvents: number;
+  readonly #requestParkDeadlineMs: number;
   readonly #credentialRefreshClock: Pick<Clock, "schedule">;
   readonly #executionClock: Clock | undefined;
   readonly #executionNow: () => number;
@@ -488,39 +490,10 @@ export class RunnerRuntime {
       "maxRunEvents",
     );
     this.#machineAccess = options.machineAccess;
+    this.#requestParkDeadlineMs = options.requestParkDeadlineMs ?? 60_000;
     this.#mode = options.mode ?? "development";
     this.#privateStateDirectory = resolve(options.privateStateDirectory);
-    this.#voice = new VoiceCalls(
-      join(this.#privateStateDirectory, "voice"),
-      async ({ harnessInstanceId, offer, agent, find, signal, directory }) => {
-        const definition = this.#harnesses.state(harnessInstanceId)?.definition;
-        if (!definition || definition.driverKind !== "codex")
-          throw new OpensteerError({
-            code: "conflict",
-            reason: "voice-account-unavailable",
-            message: "Voice requires a Codex account.",
-          });
-        const adapter = await this.#harnesses.adapter(harnessInstanceId);
-        if (!isCodexVoiceAdapter(adapter))
-          throw new OpensteerError({
-            code: "conflict",
-            reason: "voice-engine-unsupported",
-            message: "This Codex driver does not support voice.",
-          });
-        const options = await this.#providerStateOptions(definition.driverKind);
-        const { providerState } = await prepareHarnessProviderState(definition, options);
-        return adapter.startVoiceCall({
-          agent,
-          find,
-          offer,
-          signal,
-          environment: options.environment,
-          providerState,
-          runtimeBoundary: this.#harnessRuntimeBoundary,
-          workingDirectory: directory,
-        });
-      },
-    );
+    this.#voice = new VoiceCalls(join(this.#privateStateDirectory, "voice"));
     this.#modelServerHome = options.modelServerHome;
     this.#projectContinuationIdentity = options.projectContinuationIdentity;
     this.#programExecutor =
@@ -886,7 +859,108 @@ export class RunnerRuntime {
       : [await identifyModelServer(address, options)];
   }
 
-  /** Applies the complete desired profile set before concurrent Run admission resumes. */
+  readonly #backgroundText = new Map<
+    string,
+    {
+      accountId: HarnessInstanceId;
+      driverKind: HarnessId;
+      abort: AbortController;
+      task: Promise<HarnessGenerateTextResult>;
+    }
+  >();
+
+  async generateBackgroundText(
+    request: Extract<HostToRunnerMessage, { type: "host.background-text" }>,
+  ): Promise<HarnessGenerateTextResult> {
+    if (this.#backgroundText.has(request.attemptId)) return { ok: false, failure: "unavailable" };
+    // The Host keeps within this bound; an excess (a Host deadline passing while
+    // this Runner still reaps) waits for a slot within its own deadline.
+    while (this.#backgroundText.size >= backgroundTextAttemptsPerRunner && !this.#draining) {
+      const waited = Date.parse(request.deadline) - Date.now();
+      if (waited <= 0) return { ok: false, failure: "timeout" };
+      const slot = new AbortController();
+      await Promise.race([
+        ...[...this.#backgroundText.values()].map((attempt) => attempt.task),
+        sleep(waited, undefined, { signal: slot.signal }).catch(() => undefined),
+      ]).finally(() => slot.abort());
+    }
+    const definition = this.#harnesses.state(request.harnessInstanceId)?.definition;
+    if (
+      this.#draining ||
+      request.environmentId !== this.#environmentId ||
+      !definition ||
+      definition.runtimeRevision !== request.harnessRevision ||
+      this.#harnessMaintenance.has(definition.id) ||
+      this.#driverMaintenance.has(definition.driverKind) ||
+      this.#backgroundText.has(request.attemptId)
+    )
+      return { ok: false, failure: "unavailable" };
+    const remaining = Date.parse(request.deadline) - Date.now();
+    if (remaining <= 0) return { ok: false, failure: "timeout" };
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), Math.min(remaining, 60_000));
+    const task = Promise.resolve().then(async (): Promise<HarnessGenerateTextResult> => {
+      let directory: string | undefined;
+      try {
+        const options = await this.#providerStateOptions(definition.driverKind);
+        const { providerState } = await prepareHarnessProviderState(definition, options);
+        const adapter = await this.#harnesses.adapter(definition.id);
+        if (!adapter.generateText) return { ok: false, failure: "unavailable" };
+        await mkdir(join(this.#privateStateDirectory, "background"), {
+          recursive: true,
+          mode: 0o700,
+        });
+        directory = await mkdtemp(join(this.#privateStateDirectory, "background", "text-"));
+        const wrapProcessLaunch = await this.#wrapProcessLaunch({
+          environment: options.environment,
+          providerState,
+          launchDirectory: undefined,
+          pluginCacheDirectories: [],
+          threadStateDirectory: directory,
+          workspacePath: directory,
+          writableRoots: [directory],
+        });
+        abort.signal.throwIfAborted();
+        return await adapter.generateText({
+          context: {
+            environment: options.environment,
+            providerState,
+            runtimeBoundary: this.#harnessRuntimeBoundary,
+            wrapProcessLaunch,
+            scratchDirectory: directory,
+          },
+          modelSelection: request.modelSelection,
+          prompt: request.prompt,
+          signal: abort.signal,
+        });
+      } catch {
+        return { ok: false, failure: abort.signal.aborted ? "timeout" : "failed" };
+      } finally {
+        if (directory) await rm(directory, { recursive: true, force: true });
+      }
+    });
+    this.#backgroundText.set(request.attemptId, {
+      accountId: definition.id,
+      driverKind: definition.driverKind,
+      abort,
+      task,
+    });
+    try {
+      return await task;
+    } finally {
+      clearTimeout(timer);
+      this.#backgroundText.delete(request.attemptId);
+    }
+  }
+
+  async #cancelBackgroundText(
+    predicate: (attempt: { accountId: HarnessInstanceId; driverKind: HarnessId }) => boolean,
+  ): Promise<void> {
+    const attempts = [...this.#backgroundText.values()].filter(predicate);
+    for (const attempt of attempts) attempt.abort.abort();
+    await Promise.all(attempts.map((attempt) => attempt.task));
+  }
+
   async reconcileHarnesses(
     definitions: Extract<
       HostToRunnerMessage,
@@ -897,6 +971,14 @@ export class RunnerRuntime {
     await setPrivateDirectoryMode(this.#privateStateDirectory);
     // An engine started under an account's former definition is not kept.
     await this.#warm.evict(() => true);
+    await this.#cancelBackgroundText((attempt) => {
+      const next = definitions.find((definition) => definition.id === attempt.accountId);
+      return (
+        !next ||
+        next.runtimeRevision !==
+          this.#harnesses.state(attempt.accountId)?.definition.runtimeRevision
+      );
+    });
     await this.#harnesses.reconcileInstances(definitions);
   }
 
@@ -929,12 +1011,19 @@ export class RunnerRuntime {
     ) {
       throw new OpensteerError({
         code: "conflict",
-        message: `This AI engine is busy; wait before ${action}`,
+        message: [...this.#runs.values()].some(
+          (run) =>
+            run.command.context.harnessInstanceId === harnessInstanceId &&
+            run.command.context.voiceCall,
+        )
+          ? `This account has an active voice call; end it before ${action}`
+          : `This AI engine is busy; wait before ${action}`,
         retryable: true,
       });
     }
     this.#harnessMaintenance.add(harnessInstanceId);
     try {
+      await this.#cancelBackgroundText((attempt) => attempt.accountId === harnessInstanceId);
       await this.#warm.evict((engine) => engine.harnessInstanceId === harnessInstanceId);
       return await operation();
     } finally {
@@ -1435,6 +1524,7 @@ export class RunnerRuntime {
       return reject("conflict", "This AI engine is already updating", true);
     }
     this.#driverMaintenance.add(driverKind);
+    await this.#cancelBackgroundText((attempt) => attempt.driverKind === driverKind);
     let admitted = false;
     try {
       for (const active of this.#runs.values()) {
@@ -1939,6 +2029,7 @@ export class RunnerRuntime {
 
   async close(): Promise<void> {
     this.#draining = true;
+    await this.#cancelBackgroundText(() => true);
     const voiceClosed = this.#voice.close();
     const appsClosed = this.appServers.stopAll();
     this.#stopLeaseWatchdog?.();
@@ -2106,6 +2197,16 @@ export class RunnerRuntime {
     if (settled && settled.command.context.bindingGeneration < command.context.bindingGeneration) {
       this.#settledRuns.delete(command.context.runId);
     }
+    if (context.voiceCall) {
+      active.voiceCall = this.#voice.admit({
+        owner: context.requestedBy,
+        runId: context.runId,
+        sessionId: context.voiceCall.sessionId,
+        admittedAt: Date.parse(context.voiceCall.admittedAt),
+        signal: active.abort.signal,
+        end: () => active.abort.abort(new Error("Voice call ended")),
+      });
+    }
     this.#runs.set(command.context.runId, active);
     this.#threads.set(command.context.threadId, command.context.runId);
     active.task = new Promise<void>((resolvePromise) => {
@@ -2239,11 +2340,9 @@ export class RunnerRuntime {
     let browserCdpRelay: BrowserCdpRelay | undefined;
     let credentialProxy: CredentialProxy | undefined;
     let machineAccessSetup: MachineAccessSetup | undefined;
-    let agentControl: HttpAgentControlClient | undefined;
     let plugins: Awaited<ReturnType<typeof cacheRunPlugins>> | undefined;
     let terminal: HarnessDurableEvent | undefined;
     let consumptionError: unknown;
-    let titleTask: Promise<void> | undefined;
     let internalBinding: ReturnType<LiveSessionDirectory["acquire"]> | undefined;
     // An engine this Run took from the warm pool, or one it may leave there.
     let warmEngine: WarmEngine | undefined;
@@ -2307,8 +2406,10 @@ export class RunnerRuntime {
           message: "Host did not provide a valid provider session state layout",
         });
       }
-      const threadStateDirectory =
-        context.providerSessionStateLayout === "thread"
+      if (context.voiceCall) await this.#voice.ready();
+      const threadStateDirectory = context.voiceCall
+        ? join(this.#voice.directory, `call-${context.runId}`)
+        : context.providerSessionStateLayout === "thread"
           ? join(this.#privateStateDirectory, "threads", context.threadId)
           : join(this.#privateStateDirectory, "sessions", context.providerSessionId);
       await mkdir(threadStateDirectory, { mode: 0o700, recursive: true });
@@ -2334,7 +2435,7 @@ export class RunnerRuntime {
         workspacePath: workspace.path,
       });
       // Once taken, the idle engine remains this Run’s to reuse or retire.
-      warmEngine = await this.#warm.take(context.threadId);
+      warmEngine = context.voiceCall ? undefined : await this.#warm.take(context.threadId);
       if (
         warmEngine &&
         command.inputs.some(
@@ -2391,7 +2492,7 @@ export class RunnerRuntime {
         });
       }
       const skills = resolveSkillPlan({
-        bundled: planAgentSkills(this.#agentSkills, context.agentTools.capabilityProfileId),
+        bundled: planAgentSkills(this.#agentSkills, context.agentTools.skills),
         integration: runSkills.skills,
         workspace: context.specialistId
           ? []
@@ -2433,7 +2534,7 @@ export class RunnerRuntime {
           writableRoots,
         });
       const warmKey =
-        adapter.capabilities.warmReuse === true
+        !context.voiceCall && adapter.capabilities.warmReuse === true
           ? warmKeyFor(
               context.providerSessionReference ?? null,
               machineAccessLaunchIdentity(machineAccessPlan),
@@ -2452,11 +2553,20 @@ export class RunnerRuntime {
           retryable: true,
         });
       }
+      const parkForRequest = () => {
+        if (active.requestParkTimer || active.settling || active.abort.signal.aborted) return;
+        active.requestParkTimer = setTimeout(() => {
+          if (terminal) return;
+          active.requestParkForced = true;
+          active.abort.abort(new Error("Run stopped for a pending durable Request"));
+        }, this.#requestParkDeadlineMs);
+        active.requestParkTimer.unref();
+      };
       if (warmEngine) {
         await warmEngine.plugins.cleanup();
         warmEngine = { ...warmEngine, plugins: runSkills };
         warmEngine.authority.credentials = credentials;
-        warmEngine.credentialProxy.resume();
+        warmEngine.credentialProxy.resume(parkForRequest);
         warmEngine.browserCdpRelay.resume();
         browserCdpRelay = warmEngine.browserCdpRelay;
         credentialProxy = warmEngine.credentialProxy;
@@ -2492,8 +2602,8 @@ export class RunnerRuntime {
       }
       if (!browserCdpRelay) {
         browserCdpRelay = new BrowserCdpRelay({
-          plan: context.browserCdp,
-          token: () => current().browserCdp,
+          url: context.browserCdp.url,
+          token: () => current().agentTools,
           transport,
         });
       }
@@ -2502,14 +2612,11 @@ export class RunnerRuntime {
       // with a secret that works nowhere else; Host tokens stay here.
       if (!credentialProxy) {
         credentialProxy = new CredentialProxy({
+          onPark: parkForRequest,
           routes: {
             "agent-tools": {
               token: () => current().agentTools,
               upstream: context.agentTools.url,
-            },
-            "integration-tools": {
-              token: () => current().integrationTools,
-              upstream: context.integrationTools.url,
             },
           },
           transport,
@@ -2528,6 +2635,7 @@ export class RunnerRuntime {
         pluginCacheDirectories: runSkills.directories,
         providerState,
         threadStateDirectory,
+        ...(context.voiceCall ? { threadStateWritable: true as const } : {}),
         workspacePath: workspace.path,
         writableRoots,
       } satisfies Omit<HarnessSandboxRunPlan, "launchDirectory">;
@@ -2600,22 +2708,25 @@ export class RunnerRuntime {
         OPENSTEER_BROWSER_CDP_WS: browserCdpUrl,
         OPENSTEER_BROWSER_HARNESS: this.#browserHarnessExecutable,
       });
-      agentControl = new HttpAgentControlClient({
-        plan: context.agentControl,
-        token: () => credentials.agentControl,
-        transport,
-      });
       const machineAccessContext = context.machineAccess;
+      if (
+        context.voiceCall &&
+        (!adapter.capabilities.voiceCalls || context.providerSessionReference)
+      )
+        throw new OpensteerError({
+          code: "conflict",
+          reason: "voice-engine-unsupported",
+          message: "Voice calls require a fresh Codex session.",
+        });
       const sessionContext = {
+        ...(active.voiceCall ? { voiceCall: active.voiceCall } : {}),
         ...attachmentContext,
         accessMode: context.accessMode,
-        agentControl,
         agentTools: {
           ...context.agentTools,
           token: proxied.secret,
           url: proxied.urls["agent-tools"],
         },
-        integrationTools: { token: proxied.secret, url: proxied.urls["integration-tools"] },
         environment,
         environmentId: context.environmentId,
         history: context.history,
@@ -2642,10 +2753,7 @@ export class RunnerRuntime {
         machineAccessPlatform: launch?.machineAccessPlatform,
         machineAccessRelaySocket: launch?.machineAccessRelaySocket,
         modelSelection: context.modelSelection,
-        platformGuide: platformGuideForRun({
-          capabilityProfileId: context.agentTools.capabilityProfileId,
-          role: context.threadRole,
-        }),
+        platformGuide: context.agentTools.instructions,
         providerState,
         runtimeBoundary: this.#harnessRuntimeBoundary,
         signal: engineLifetime.signal,
@@ -2739,8 +2847,6 @@ export class RunnerRuntime {
       };
       await this.#pumpJournal(active);
 
-      titleTask = this.#generateThreadTitle(active, active.session);
-
       const consume = this.#consumeHarnessEvents(active, active.session)
         .then((value) => {
           // A stream that ends while the Runner is already failing the Run
@@ -2776,7 +2882,6 @@ export class RunnerRuntime {
       // A warm engine has published its Run's end by now and must outlive it;
       // any other engine is stopped so its event stream ends.
       if (warmEngine && !active.abort.signal.aborted) await Promise.race([consume, halted]);
-      await titleTask;
       if (!terminal) {
         await this.#containment.note(active.containmentScope).catch(() => undefined);
         await Promise.race([active.session.stop(), halted]);
@@ -2799,12 +2904,12 @@ export class RunnerRuntime {
           ? { data: { status: "interrupted" }, type: "run.interrupted" }
           : failureEvent(safeMessage(error, safeMessageOptions), "runner_execution_error");
     } finally {
+      if (active.requestParkTimer) clearTimeout(active.requestParkTimer);
       if (workspace && !context.specialistId && this.#skillObserver) {
         await this.#scanWorkspaceSkills(context.workspaceId, workspace.path).catch(() => undefined);
       }
       // Naming owns another process in this containment scope. It must exit
       // before stop, the single-tree warm check, or credential teardown.
-      await titleTask;
       active.settling = true;
       unlinkEngineLifetime?.();
       // SSH ends with the Run, before anything below waits on the engine: no
@@ -2849,8 +2954,16 @@ export class RunnerRuntime {
       await this.#settleLiveStreams(active).catch(() => undefined);
       if (active.interrupted)
         terminal = { data: { status: "interrupted" }, type: "run.interrupted" };
+      else if (active.requestParkForced)
+        terminal = { data: { status: "completed" }, type: "run.completed" };
       await this.#emit(active, terminal).catch(() => undefined);
       if (active.shutdown) await this.#pumpJournal(active).catch(() => undefined);
+      active.voiceCall?.end();
+      if (context.voiceCall)
+        await rm(join(this.#voice.directory, `call-${context.runId}`), {
+          recursive: true,
+          force: true,
+        });
       this.#runs.delete(context.runId);
       if (termination === "unknown") {
         this.#holdUncontainedThread(context.threadId, context.runId, active.containmentScope);
@@ -2866,60 +2979,6 @@ export class RunnerRuntime {
           Object.assign(active, { settledAt: this.#executionNow() }),
         );
       }
-    }
-  }
-
-  async #generateThreadTitle(active: ActiveRun, session: HarnessSession): Promise<void> {
-    const { context } = active.command;
-    const request = context.titleRequest;
-    const generateTitle = session.generateTitle?.bind(session);
-    if (!request || !generateTitle || active.abort.signal.aborted) return;
-    const lifetime = new AbortController();
-    const abort = () => lifetime.abort(active.abort.signal.reason);
-    active.abort.signal.addEventListener("abort", abort, { once: true });
-    // Naming is stopped early enough that its process has exited, and the
-    // Run's teardown can go on, by the time the budget ends.
-    const timer = setTimeout(() => lifetime.abort(), threadTitleBudgetMs - threadTitleCleanupMs);
-    timer.unref?.();
-    try {
-      const reply = await withTimeout(
-        Promise.resolve().then(async () => {
-          lifetime.signal.throwIfAborted();
-          return generateTitle({
-            prompt: threadTitlePrompt(request.request, { icon: request.icon === true }),
-            signal: lifetime.signal,
-          });
-        }),
-        threadTitleBudgetMs,
-        { timeoutError: () => new Error("Thread title process did not settle") },
-      );
-      if (!reply.trim() || lifetime.signal.aborted || active.revoked || active.abort.signal.aborted)
-        return;
-      const name = parseGeneratedThreadName(reply, { icon: request.icon === true });
-      if (!name.title && !name.icon) return;
-      await this.#transmit({
-        bindingGeneration: context.bindingGeneration,
-        environmentId: context.environmentId,
-        runId: context.runId,
-        threadId: context.threadId,
-        ...(name.title ? { title: name.title } : {}),
-        ...(name.icon ? { icon: name.icon } : {}),
-        type: "runner.thread-title",
-        workspaceId: context.workspaceId,
-      });
-    } catch (error) {
-      if (!active.abort.signal.aborted)
-        this.#logger?.error("Thread title generation failed or exceeded its cleanup budget", {
-          runId: context.runId,
-          failure: error instanceof Error ? error.name : "unknown",
-          ...(error instanceof OpensteerError && typeof error.details?.exitCode === "number"
-            ? { exitCode: error.details.exitCode }
-            : {}),
-        });
-    } finally {
-      lifetime.abort();
-      clearTimeout(timer);
-      active.abort.signal.removeEventListener("abort", abort);
     }
   }
 
@@ -3038,6 +3097,12 @@ export class RunnerRuntime {
    * the stream it completes starts again from nothing.
    */
   async #emitDurable(active: ActiveRun, event: HarnessDurableEvent): Promise<void> {
+    if (event.type === "run.phase" && event.data.phase === "background") {
+      // The Host can steer the next turn as soon as it commits this event.
+      if (active.requestParkTimer) clearTimeout(active.requestParkTimer);
+      delete active.requestParkTimer;
+      active.credentialProxy?.clearParking();
+    }
     await active.live.flush();
     await this.#emit(active, event);
     switch (event.type) {
@@ -3264,6 +3329,16 @@ export class RunnerRuntime {
   ): Promise<CommandDecision> {
     const active = this.#runs.get(command.runId);
     if (!active) return reject("not_found", "Active run was not found", false);
+    if (active.requestParkTimer || active.credentialProxy?.parking)
+      return {
+        status: "rejected",
+        error: {
+          code: "conflict",
+          reason: "request-pending",
+          message: "Run is stopping for a pending Request; queue the message",
+          retryable: false,
+        },
+      };
     if (active.settling) return reject("conflict", "Run is finishing", false);
     if (active.command.context.threadId !== command.threadId) {
       return reject("forbidden", "Steer targets a different thread", false);
@@ -3550,7 +3625,8 @@ export function warmEngineKey(input: {
         context.accessMode,
         input.writableRoots,
         context.specialistId ?? null,
-        context.agentTools.capabilityProfileId,
+        // Names the Host's whole tool inventory, guide and skills.
+        context.agentTools.toolsRevision,
         context.threadRole,
         context.modelSelection,
         [...context.plugins.versions].sort((a, b) => a.pluginId.localeCompare(b.pluginId)),
@@ -3558,7 +3634,6 @@ export function warmEngineKey(input: {
         input.workspaceSkillsDigest,
         context.plugins.workspaceSkillPolicy ?? null,
         context.agentTools.url,
-        context.integrationTools.url,
         context.browserCdp.url,
         input.attachmentRoot,
         input.baseEnvironment,

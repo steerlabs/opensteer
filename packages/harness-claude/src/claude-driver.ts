@@ -1,3 +1,4 @@
+import { type ModelSelection, backgroundLightModels } from "@opensteer/core";
 import { type HarnessModelDescriptor, resolveLightModel } from "@opensteer/harness";
 import { type ClaudeExecutableInspection } from "./executable.js";
 import { delay } from "@opensteer/shared/delay";
@@ -21,8 +22,6 @@ import {
   type SDKResultMessage,
   type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
-import { toolsForCapabilityProfile } from "@opensteer/agent-tools";
-import { integrationGatewayToolNames } from "@opensteer/integration-core";
 import {
   attachmentMaxBytes,
   attachmentImageMaxPixels,
@@ -50,10 +49,12 @@ import {
 } from "@opensteer/core";
 import {
   Deferred,
-  withTitleDirectory,
+  withBackgroundTextDirectory,
+  backgroundTextResult,
   collectStreamText,
   type SupervisedProcess,
-  type HarnessTitleInput,
+  type HarnessGenerateTextInput,
+  type HarnessGenerateTextResult,
   HarnessSessionRegistry,
   SubagentNodes,
   TurnPublisher,
@@ -147,7 +148,7 @@ const claudeEffortOptionId = "effort";
  */
 const claudeEngineDefaultEffort = "default";
 const claudeFastModeOptionId = "fast";
-const opensteerMcpServerNames = new Set(["opensteer", "opensteer_integrations"]);
+const opensteerMcpServerNames = new Set(["opensteer"]);
 const currentRunContextHeading = "Opensteer current Run context — computer inventory:";
 const claudeManagedBoundarySettings = Object.freeze({
   disableAllHooks: true,
@@ -1291,6 +1292,106 @@ class ClaudeHarnessAdapter implements HarnessAdapter {
     this.#dependencies = dependencies;
   }
 
+  async generateText({
+    context,
+    modelSelection,
+    prompt,
+    signal,
+  }: HarnessGenerateTextInput): Promise<HarnessGenerateTextResult> {
+    return backgroundTextResult(signal, async () => {
+      const environment = await claudeProviderEnvironment(
+        context.environment,
+        this.#config.provider,
+        context.providerState,
+      );
+      return withBackgroundTextDirectory(context, signal, async (directory) => {
+        signal.throwIfAborted();
+        const abortController = new AbortController();
+        const abort = () => abortController.abort();
+        signal.addEventListener("abort", abort, { once: true });
+        let child: SupervisedProcess | undefined;
+        let stderr: Promise<string> | undefined;
+        let query: ClaudeQueryHandle | undefined;
+        try {
+          const options: Options = {
+            abortController,
+            cwd: directory,
+            env: environment,
+            pathToClaudeCodeExecutable: this.#dependencies.executable,
+            managedSettings: managedClaudeSettings({
+              ...context,
+              machineAccessPlatform: undefined,
+              machineAccessRelaySocket: undefined,
+            }),
+            skills: [],
+            plugins: [],
+            tools: [],
+            mcpServers: {},
+            strictMcpConfig: true,
+            settingSources: [],
+            persistSession: false,
+            maxTurns: 1,
+            permissionMode: "default",
+            title: "Thread title",
+            canUseTool: async () => ({
+              behavior: "deny",
+              message: "Tools are disabled for Thread titles",
+            }),
+            spawnClaudeCodeProcess: ({ args, command, cwd, env }) => {
+              const inherited: Record<string, string> = {};
+              for (const [name, value] of Object.entries(env))
+                if (value !== undefined) inherited[name] = value;
+              child = spawnSupervised({
+                ...context.wrapProcessLaunch({
+                  executable: command,
+                  args,
+                  cwd: cwd ?? directory,
+                  environment: inherited,
+                }),
+                maxOutputBytes: 8192,
+              });
+              stderr = collectStreamText(child.stderr);
+              void stderr.catch(() => undefined);
+              const stop = () => void child?.terminate(0).catch(() => undefined);
+              abortController.signal.addEventListener("abort", stop, { once: true });
+              if (abortController.signal.aborted) stop();
+              return child.child;
+            },
+          };
+          query = this.#dependencies.sdk.query({
+            prompt,
+            options: {
+              ...options,
+              model: modelSelection.nativeModelId ?? modelSelection.modelId,
+              ...claudeEffortOptions(modelSelection.options),
+            },
+          });
+          let text = "";
+          for await (const message of query) {
+            signal.throwIfAborted();
+            if (message.type === "result") {
+              if (message.subtype === "success") text = message.result;
+              else {
+                throw new Error(message.errors.join(" "));
+              }
+            }
+          }
+          return text;
+        } finally {
+          signal.removeEventListener("abort", abort);
+          abortController.abort();
+          try {
+            query?.close();
+          } finally {
+            await child?.terminate(0);
+            await child?.exited;
+            await stderr;
+          }
+        }
+      });
+    });
+  }
+
   async startSession(context: HarnessSessionContext): Promise<HarnessSession> {
     this.#sessions.assertOpen();
     assertFreshProviderSessionContext(context);
@@ -1432,126 +1533,6 @@ class ClaudeHarnessSession implements HarnessSession {
       onClose,
       await synthesizeSkillPlugin(context),
     );
-  }
-
-  async generateTitle({ prompt, signal }: HarnessTitleInput): Promise<string> {
-    const environment = await claudeProviderEnvironment(
-      this.#context.environment,
-      this.#config.provider,
-      this.#context.providerState,
-    );
-    return withTitleDirectory(this.#context, async (directory) => {
-      const modelRefused = (text: string) =>
-        /model/iu.test(text) &&
-        /unavailable|not found|not available|not supported|unsupported|access|invalid|permission|denied/iu.test(
-          text,
-        );
-      const attempt = async (useRunModel = false): Promise<{ text: string; refused: boolean }> => {
-        signal.throwIfAborted();
-        const abortController = new AbortController();
-        const abort = () => abortController.abort();
-        signal.addEventListener("abort", abort, { once: true });
-        let child: SupervisedProcess | undefined;
-        let stderr: Promise<string> | undefined;
-        let query: ClaudeQueryHandle | undefined;
-        try {
-          const options: Options = {
-            abortController,
-            cwd: directory,
-            env: environment,
-            pathToClaudeCodeExecutable: this.#dependencies.executable,
-            managedSettings: managedClaudeSettings(this.#context),
-            skills: [],
-            plugins: [],
-            tools: [],
-            mcpServers: {},
-            strictMcpConfig: true,
-            settingSources: [],
-            persistSession: false,
-            maxTurns: 1,
-            permissionMode: "default",
-            title: "Thread title",
-            canUseTool: async () => ({
-              behavior: "deny",
-              message: "Tools are disabled for Thread titles",
-            }),
-            spawnClaudeCodeProcess: ({ args, command, cwd, env }) => {
-              const inherited: Record<string, string> = {};
-              for (const [name, value] of Object.entries(env))
-                if (value !== undefined) inherited[name] = value;
-              child = spawnSupervised({
-                ...this.#context.wrapProcessLaunch({
-                  executable: command,
-                  args,
-                  cwd: cwd ?? directory,
-                  environment: inherited,
-                }),
-                maxOutputBytes: 8192,
-              });
-              stderr = collectStreamText(child.stderr);
-              void stderr.catch(() => undefined);
-              const stop = () => void child?.terminate(0).catch(() => undefined);
-              abortController.signal.addEventListener("abort", stop, { once: true });
-              if (abortController.signal.aborted) stop();
-              return child.child;
-            },
-          };
-          const inspection = await this.#dependencies.sdk.inspectModels?.(
-            options,
-            this.#config.startupTimeoutMs,
-            signal,
-          );
-          const light =
-            !useRunModel && inspection
-              ? resolveLightModel(claudeCatalogModels(inspection.models), claudeLightModels)
-              : undefined;
-          const selection = light ?? this.#context.modelSelection;
-          query = this.#dependencies.sdk.query({
-            prompt,
-            options: {
-              ...options,
-              model:
-                light?.modelId ??
-                this.#context.modelSelection.nativeModelId ??
-                this.#context.modelSelection.modelId,
-              ...(selection.options.effort === "low" ? { effort: "low" as const } : {}),
-            },
-          });
-          let text = "";
-          let refused = false;
-          for await (const message of query) {
-            signal.throwIfAborted();
-            if (message.type === "result") {
-              if (message.subtype === "success") text = message.result;
-              else {
-                const errorText = message.errors.join(" ");
-                refused = modelRefused(errorText);
-                if (!refused) throw new Error("Claude Thread title request failed");
-              }
-            }
-          }
-          return { text, refused };
-        } catch (error) {
-          if (!signal.aborted && error instanceof Error && modelRefused(error.message))
-            return { text: "", refused: true };
-          throw error;
-        } finally {
-          signal.removeEventListener("abort", abort);
-          abortController.abort();
-          try {
-            query?.close();
-          } finally {
-            await child?.terminate(0);
-            await child?.exited;
-            await stderr;
-          }
-        }
-      };
-      let result = await attempt();
-      if (result.refused) result = await attempt(true);
-      if (result.refused) throw new Error("Claude refused the Thread title model");
-      return result.text;
-    });
   }
 
   async execute(run: HarnessRunInput): Promise<void> {
@@ -1940,21 +1921,15 @@ class ClaudeHarnessSession implements HarnessSession {
   #queryOptions(environment: Record<string, string | undefined>, active: ActiveTurn): Options {
     const access = claudeAccessModeConfiguration(this.#context.accessMode);
     const systemAppend = this.#systemPromptAppend();
-    const opensteerTools = toolsForCapabilityProfile(
-      this.#context.agentTools.capabilityProfileId,
-    ).map(({ name }) => `mcp__opensteer__${name}`);
-    const integrationTools = integrationGatewayToolNames.map(
-      (name) => `mcp__opensteer_integrations__${name}`,
-    );
+    const opensteerTools = this.#context.agentTools.tools.map((name) => `mcp__opensteer__${name}`);
     const { options: selectedOptions } = this.#context.modelSelection;
-    const effort = selectedOptions[claudeEffortOptionId];
     const options: Options = {
       abortController: active.abortController,
-      // The signed Host profile is the authority for product tools. Letting
+      // The Host plan is the authority for product tools. Letting
       // Claude ask again would turn a durable capability decision into
       // provider-specific approval noise; the Host still reauthorizes every
       // actual call against the live Run binding.
-      allowedTools: [...new Set(["ToolSearch", ...opensteerTools, ...integrationTools])],
+      allowedTools: [...new Set(["ToolSearch", ...opensteerTools])],
       canUseTool: this.#canUseTool(active),
       // Native safe-command rules can allow Bash before canUseTool is consulted.
       // SDK hooks remain active while our settings suppress ordinary ambient hooks.
@@ -1996,13 +1971,6 @@ class ClaudeHarnessSession implements HarnessSession {
           headers: { Authorization: `Bearer ${this.#context.agentTools.token}` },
           type: "http",
           url: this.#context.agentTools.url,
-        },
-        opensteer_integrations: {
-          alwaysLoad: false,
-          timeout: 120_000,
-          headers: { Authorization: `Bearer ${this.#context.integrationTools.token}` },
-          type: "http",
-          url: this.#context.integrationTools.url,
         },
       },
       // A catalog folds a foreign endpoint's spelling onto the canonical pair
@@ -2069,9 +2037,7 @@ class ClaudeHarnessSession implements HarnessSession {
         ? { resume: this.providerSessionReference }
         : { sessionId: this.providerSessionReference }),
       // The Host admits only a level Claude Code listed for this model.
-      ...(typeof effort === "string" && effort !== claudeEngineDefaultEffort
-        ? { effort: effort as NonNullable<Options["effort"]> }
-        : {}),
+      ...claudeEffortOptions(selectedOptions),
       // Flag settings are the Agent SDK's opt-in to fast mode; without one
       // Claude Code refuses it as `sdk_opt_in_required`.
       ...(selectedOptions[claudeFastModeOptionId] === true ? { settings: { fastMode: true } } : {}),
@@ -2837,10 +2803,7 @@ class ClaudeHarnessSession implements HarnessSession {
       claudeTaskStopTool,
     ]);
     const unexpectedTools = message.tools.filter(
-      (name) =>
-        !builtinTools.has(name) &&
-        !name.startsWith("mcp__opensteer__") &&
-        !name.startsWith("mcp__opensteer_integrations__"),
+      (name) => !builtinTools.has(name) && !name.startsWith("mcp__opensteer__"),
     );
     if (unexpectedTools.length > 0) {
       this.#markUnusable(
@@ -3221,6 +3184,8 @@ function claudeMessageOrigin(input: HarnessInput, body: string): SDKMessageOrigi
       return { kind: "human" };
     case "agent":
       return { body, from: author.threadId, kind: "peer", name: author.displayName };
+    case "connection":
+      return { body, from: author.connectionId, kind: "peer", name: author.displayName };
     case "trigger":
       return author.source === "schedule"
         ? { kind: "task-notification", subkind: "scheduled-trigger" }
@@ -3552,9 +3517,7 @@ class BoundedTextCollector {
   }
 }
 
-const claudeLightModels = ["claude-haiku-5-5", "claude-haiku-4-5", "claude-haiku-4-5-20251001"].map(
-  (modelId) => ({ modelId, options: { effort: "low" } }),
-);
+const claudeLightModels = backgroundLightModels("claude");
 
 function claudeCatalogModels(models: readonly ModelInfo[]): readonly HarnessModelDescriptor[] {
   const providerId = ModelProviderIdSchema.parse("anthropic");
@@ -3627,4 +3590,11 @@ function claudeCatalogModels(models: readonly ModelInfo[]): readonly HarnessMode
       providerId,
     };
   });
+}
+
+function claudeEffortOptions(options: ModelSelection["options"]): Pick<Options, "effort"> {
+  const effort = options[claudeEffortOptionId];
+  return typeof effort === "string" && effort !== claudeEngineDefaultEffort
+    ? { effort: effort as NonNullable<Options["effort"]> }
+    : {};
 }

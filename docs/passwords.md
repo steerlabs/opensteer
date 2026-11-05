@@ -1,235 +1,154 @@
 # Opensteer Passwords
 
-Saved logins let agents fill websites or type into permitted Mac/Android apps
-without returning field values in tool results. The Personal Mac owns the vault;
-its requester can approve sign-ins from any signed-in device. [Chrome sign-ins](browser-sources.md) owns cookie reuse;
-[browser sessions](browser-sessions.md) owns the CDP boundary; surface control
-belongs to [computer use](computer-use.md) and [Agent Phone](agent-phone.md).
-
-Passkeys don't use Opensteer Passwords; they use the [OS passkey manager](browser-sessions.md#passkeys).
+Saved logins let agents fill websites or type into permitted Mac and Android apps. The Personal Mac
+owns the vault; the requester can approve a sign-in from any signed-in device. Cookie reuse is
+[Chrome sign-ins](browser-sessions.md#chrome-sign-ins); passkeys use the [OS passkey
+manager](browser-sessions.md#passkeys). Checks live in the [browser-and-passwords
+skill](../.agents/skills/browser-and-passwords/SKILL.md).
 
 ## Promise and limits
 
-Authorization/input results contain metadata and status, never saved values.
-The TOTP seed stays in the broker; release generates a current code. Agents must
-never read back, copy or reveal saved fields. A successful input proves neither
-website sign-in nor the intended account: the agent must confirm both.
-
-After browser fill, page scripts and agent main-world JavaScript can read the
-value; there is no CDP read filter. App delivery does not verify the app's
-association with the site or require separate per-app approval. The agent must
-judge package/bundle, publisher and install source. A tricked agent can expose
-the password. Secure-field observations suppress text, but screenshots and
-ordinary fields can reveal what an app displays. Revocation/off cannot recall
-input, sign out a browser/app, clear profile cookies or undo actions.
+Authorization and input results carry metadata and status, never saved values. The TOTP seed stays
+in the broker, which releases only a current code. Agents must never read back, copy or reveal a
+saved field, and a successful input proves neither a website sign-in nor the intended account: the
+agent confirms both. After a browser fill, page scripts and agent JavaScript can read the value;
+there is no CDP read filter. App delivery does not verify the app's association with the site, so
+the agent judges the package, publisher and install source. A tricked agent can expose the password.
+Secure-field observations suppress text, but screenshots and ordinary fields show what an app
+displays. Revoking or turning off cannot recall input, sign anything out or undo actions.
 
 ## Authority
 
-The broker owns keys/grants/release; desktop main owns browser checks
-and sealing; the Host owns Workspace admission and memory-only leases. Only the
-Personal bridge exposes vault authority, and only Personal's local Host can name
-its Workspace. The Host stores neither vault data nor released values.
+The broker owns keys, grants and release; desktop main owns browser checks and sealing; the Host
+owns Workspace admission and memory-only leases and stores neither vault data nor released values.
+Only Personal's local Host can name a Workspace to the vault.
 
-## Choosing the method
+Agents use one tool, `sign_in`. The probe never prompts. Given a Browser Session, the Host checks
+access to it first; a Chrome grant for the session's Workspace wins, otherwise a saved login selects
+Passwords, and Chrome can fill in when Passwords has none. Every path refuses loopback and the
+Deployment's own sites before creating a Request. A login reference never grants access to a
+browser, phone or Mac app: each use still needs the Run's current authority over that surface.
 
-Agents use one tool, `sign_in {site, reason, sessionId?}`. Without `sessionId`,
-it authorizes Passwords for the calling Workspace directly; Chrome reuse has
-no role. The probe never prompts and reports `has-login`, `no-login`, `off`,
-`not-set-up` or `unavailable` independently of Workspace grants.
-
-With `sessionId`, the Host first checks access to that live Browser Session.
-It joins existing Passwords work or a live Workspace/site lease before choosing
-a new method. A Chrome grant for the session's Workspace takes precedence;
-otherwise a `has-login` Passwords probe selects Passwords. A connected Chrome
-reporting `available` can supply a Chrome Request when Passwords has no login.
-If neither has a login, the result is `unavailable: no-saved-login`; other
-cases follow [Chrome admission](browser-sources.md#signing-in).
-Both forms refuse loopback and the Deployment's own sites before creating a
-Request. A login reference never grants access to a browser, phone or Mac app;
-each use still needs the Run's current authority over that surface.
+`sign_in` reports what Passwords still needs instead of a separate tool suggesting it, so the
+suggestion can't depend on a model remembering to call anything. Clients show it from that result
+at the end of the conversation until the person next speaks; absent, Passwords can't help here
+(a server Deployment or an unsupported Mac) and nothing offers it.
 
 ## Grants and consent
 
-A remembered grant maps `(deploymentId, workspaceId, site)` to a login ID and
-revision. Allow for another account replaces that key's grant. The encrypted,
-signed vault holds grants; Deployment and Workspace names are display context.
-The calling Workspace owns this consent, including when it uses a Browser
-Session belonging to another Workspace.
+A remembered grant in the signed vault maps Deployment, Workspace and site to a login revision. The
+calling Workspace owns the consent, even when it drives a Browser Session that belongs to another
+Workspace. Allow remembers access; Only this time creates no grant. Both pin the login ID, revision
+and consent version on the broker transaction, and the mobile app asks for device-owner
+authentication before either. The person sees the full username; the agent gets it masked.
 
-Current **permissionVersion 5** consent covers “on websites and in apps your
-agents use” and warns that a tricked agent could expose the password.
-**Allow** remembers access after the requester approves from an authenticated
-client; the mobile app first requires device-owner authentication;
-**Only this time** creates no grant. Both pin the selected login ID, revision
-and permission version on the broker transaction. The person's chooser shows
-the full username; the agent receives a masked account.
-
-Version-4 grants remain valid for legacy origin-only transactions and survive
-vault commits. They do not authorize app release: a modern version-5 request
-requires new approval, and Allow replaces that grant with version 5. A legacy
-version-4 transaction can use a version-5 grant but remains origin-only.
-Earlier unversioned grants cannot authorize use and disappear on the next
-vault commit. The [broker README](../apps/desktop/native/passwords/README.md#the-broker)
-owns lookup, release and authentication details.
-
-Each release checks the pinned login revision and, for remembered access, the
-current grant. Editing even a password or label requires approval again.
-Deleting a login or changing its websites, login page or username removes its
-grants. Grant removals and login edits have no push notification: `sign_in`
-can still return `ready` until a release detects the change and ends the lease.
-Off/reset and broker connection loss abort the authority.
+Current consent covers "websites and apps your agents use" and warns that a tricked agent could
+expose the password. Older origin-only grants stay valid for legacy browser transactions but never
+authorize app release; unversioned grants authorize nothing and disappear on the next vault commit.
+Each release rechecks the pinned revision and, for remembered access, the current grant. Editing a
+login needs approval again; changing its websites, login page or username, or deleting it, removes
+its grants. Removals send no push, so `sign_in` can return `ready` until a release notices.
 
 ## The login lease
 
-A memory-only opaque reference binds the calling Workspace/site to a live broker
-operation with pinned login ID/revision. Any Run there, including delegated work,
-can reuse it with its own surface authority; other Workspaces cannot. One absolute
-deadline covers approval and lease, without extension on reuse. Browser closure
-does not end it. Host/authority restart, cancellation, expiry, off/reset, lost
-connection or changed login/grant ends it. Reacquiring an unchanged remembered
-grant needs no prompt.
-
-Starts serialize per Workspace/site. New delegated/trigger decisions return
-needs-approval; they can use existing access. Shared pending work must not turn
-another Run into the approving caller. Replay of a terminal no-Request call cannot
-restart authorization until its original deadline; new calls still face rate
-limits. See `apps/host/src/browser/password-sign-in-service.ts`.
+A memory-only opaque reference binds the calling Workspace and site to a live broker operation with
+the pinned login. Any Run in that Workspace, including delegated work, can reuse it with its own
+surface authority; other Workspaces cannot. One absolute deadline covers approval and lease, with no
+extension on reuse. Closing the browser does not end it; restart, cancellation, expiry, turning off,
+a lost connection or a changed login or grant does. Joining pending work never makes a Run the
+approver.
 
 ## Filling a field
 
-Browser fills must bind the real focused field before release and never retry
-an unknown input outcome automatically. The supported fields and result shapes
-live in `packages/protocol/src/password-sign-in.ts` and the Browser Harness.
-
-Open shadow roots work; contenteditable/custom editors and closed roots do not.
-An out-of-process focused frame must itself have a committed HTTPS origin on the
-approved registrable site and a saved website there. Sibling subdomains can match;
-a foreign embedded login needs its own authorization.
-
-Desktop main captures the focused frame's committed origin and binds the exact
-document/input before release. It rechecks authority, focus and origin before
-dispatch; the main-world setter rechecks document and element identity and
-removes the temporary binding. Background pages need no OS window focus.
-The Host checks Workspace lease ownership and Browser Session access on every
-fill; the CDP method never reaches Chromium.
+Browser fills bind the real focused field before release and never retry an unknown outcome. Open
+shadow roots work; contenteditable editors and closed roots do not. An out-of-process focused frame
+must itself have a committed HTTPS origin on the approved site. Desktop main binds the exact
+document and input before release, rechecks authority, focus and origin before dispatch, and the
+main-world setter rechecks identity. The Host checks lease and session access on every fill.
 
 ## Typing in apps
 
-The Host resolves saved references for the calling Workspace and seals all fields
-before any action in a batch. Unsupported receivers perform no actions. Agents
-cannot supply sealed envelopes. Android uses ACTION_SET_TEXT without readback;
-Mac uses AXSelectedText or Unicode-only keystrokes and refuses CR/LF/tab before
-that saved type action. Literal text retains ordinary control-key behavior.
-Receipts identify only the saved field kind, never its value, label or length.
-
-Secure Mac fields omit value and label candidates from accessibility reads;
-secure Android nodes omit text, description and hint, using generic labels.
-This does not mask screenshots or detect an app that presents a password as
-ordinary text.
+The Host resolves saved references for the calling Workspace and seals every field before any action
+in a batch runs; agents cannot supply sealed envelopes. Android sets text without readback. Mac
+writes the selected text or, for a secure field, its value, else types Unicode keystrokes, and
+refuses CR, LF and tab before that action. Receipts name only the field kind, never value, label or
+length. Secure fields omit values and labels from accessibility reads, which does not mask
+screenshots or an app that shows a password as ordinary text.
 
 ## Sealed delivery
 
-Each authenticated receiver connection creates an ephemeral P-256 key and
-announces its public key with a connection ID/generation. Reconnect discards
-the private key and replay state. Desktop main serializes all releases for an
-operation, including browser fills, and seals app fields immediately after
-broker release using P-256 ECDH, HKDF-SHA256 and AES-256-GCM.
-
-The envelope authenticates the connection, Run, computer-use session, act ID,
-action index, field and expiry. The Host and desktop authority cap that expiry
-at the earliest of the lease deadline, act deadline and 60 seconds from their
-current time. Receivers independently check that the envelope has not expired
-and that the act still has work budget. They do not compare those deadlines or
-reapply the issuer's lifetime cap using another clock. Receivers check dispatch
-context, authenticate the whole batch before input and atomically claim replay
-identities; they decrypt again immediately before typing. Stop, cancellation,
-session/connection replacement and expiry remain authoritative during waits.
-A lost act answer is never automatically retried.
-
-The [wire schemas](../packages/protocol/src/password-sign-in.ts) own the exact
-bindings and limits; [the sealer](../apps/desktop/src/passwords/login-envelope.ts)
-owns the encoding and cryptography. Host, intermediate Runners, a receiving
-Mac's desktop main and tunnels carry ciphertext and public metadata, never the
-released app field value. No new pairing ceremony or persistent receiver key
-is involved.
+Each authenticated receiver connection makes an ephemeral P-256 key; reconnecting discards it and
+its replay state. Desktop main serializes an operation's releases and seals app fields right after
+broker release. The envelope binds connection, Run, session, act, action index, field and expiry,
+capped at the earliest of the lease deadline, the act deadline and 60 seconds. Receivers check
+expiry and work budget on their own clock, authenticate the whole batch before input, claim replay
+identities atomically and decrypt again just before typing. A lost act answer is never retried. The
+Host, Runners, a receiving Mac's main process and tunnels carry only ciphertext. The [wire
+schemas](../packages/protocol/src/password-sign-in.ts) own the bindings and the
+[sealer](../apps/desktop/src/passwords/login-envelope.ts) owns the cryptography.
 
 ## Requests and results
 
-Modern Workspace-scoped Requests retain their durable kind and consent version;
-the requester approves or declines through the same Host command from web, desktop
-or mobile. Chooser descriptors are fetched separately after first paint and never
-enter shared Request events, agent projections or persisted client caches. Generic
-request.respond refuses this kind. Names/reasons are display context, never
-authority. Reading or answering a durable sign-in Request depends on its stored
-origin and current Workspace authority, never on the asking Run still running.
-The durable Request settlement is the approval commit point. The broker
-first prepares the pinned choice without granting or releasing anything. Only
-after settlement succeeds does the Host commit the broker transaction and publish a
-lease. If broker commit fails or authority ends before publication, the current
-Request outcome becomes interrupted while durable history retains the consent
-decision and its original provenance. A lost commit response may leave only the
-exact pinned remembered grant, never a live Host lease. Losing/cancelled
-preparations have no grant to remove, so cleanup cannot erase a newer grant.
-Human settlements retain the winning session and stored
-device label; retries never replace this provenance. Automatic settlements have
-none. Failed settlement cancels the preparation and retries interruption;
-a continuation is delivered only after publication or interruption is final and
-gets its loginRef only from the live registry, never Request data.
-Settlement does not itself end an authorized lease. After restart, lost modern
-Requests settle interrupted; historical session-bound ones settle session-closed.
-See `packages/protocol/src/password-sign-in.ts` and
-`apps/host/src/browser/password-sign-in-service.ts`.
+The requester approves or declines through one Host command from any client. Chooser details are
+fetched separately and never enter shared Request events, agent projections or client caches; names
+and reasons are display context, never authority. Durable Request settlement is the commit point:
+the broker first prepares the pinned choice without granting or releasing anything, and the Host
+commits it and publishes a lease only after settlement succeeds. If the commit fails or authority
+ends first, the Request becomes interrupted. A lost commit response can leave only the exact pinned
+grant, never a live lease, and cancelling a preparation cannot erase a newer grant. A continuation
+gets its login reference only from the live registry, never from Request data.
 
 ## Runtime and compatibility
 
-[Host API epoch 50](host-boundaries.md#compatibility) requires matching clients
-for the shared requester-authorized approval commands. Historical Request/result
-variants remain readable and never create a live lease.
+Each hop negotiates the sign-in features; an unknown version or a missing hop or receiver key
+disables the feature. The broker negotiates its protocol per connection, echoes it and never
+silently upgrades. App release needs an explicit app kind, never inferred from a missing origin, and
+never falls back to the legacy session-bound protocol; browser release needs an exact HTTPS origin
+on the saved site. Historical Request and result shapes stay readable and never create a live lease.
+Versions live in the [broker wire](../packages/protocol/src/passwords-broker.ts).
 
-Authority commands and events use the Personal Runner's existing integrations
-stream and desktop computer-use bridge, independently of browser/helper
-sessions. `modules.integrations.passwordSignIn: 2` plus live status confirms
-the vault authority; `modules.integrations.loginText: 1` plus a current receiver
-key confirms saved-text delivery. The Host opts in through the auxiliary
-welcome before either optional status extension is sent. Unknown versions or
-a missing hop/key disable that feature; discovery does not start a helper.
+## The broker
 
-Mac helper hello requests `loginText: 1`; only a helper supporting that opt-in
-returns a receiver key. Its session pins the Run and sealed acts carry
-independent `loginContext`. Agent Phone integrations protocol is 4; Mac
-integrations is 6. Browser fills retain `modules.browser.signIn: {version: 3}` and the
-calling agent Runner's `modules.agents.loginFill: 1` admission. Previous-release
-browser control remains an origin-only, session-bound adapter.
-The Host still serves `browser_sign_in` with its required session ID for
-previous-release Runners' exact tool inventories, only to Runners without
-`browser-profile-create-v1` ([Host compatibility](host-boundaries.md#compatibility)).
-Current Runner profiles offer only `sign_in`.
+The [broker](../apps/desktop/native/passwords/README.md) is the only vault and key owner for a macOS
+user. It accepts only the signed Opensteer desktop under the Developer ID team taken from its own
+signature, checked by audit token before reading any byte; desktop verifies the broker's signature
+and live peer too. Development uses a separate bundle, socket and vault, and its file protection
+cannot resist same-user rollback, so it must never ship.
 
-Desktop main negotiates broker protocol **6** for modern sessionless
-transactions and **4** for the legacy adapter. The broker echoes the selected
-version per connection; app release never downgrades to 4. Protocol 6 preserves
-version-5 consent and separates
-`kind: "app"` release from `kind: "browser"` with an exact HTTPS origin.
-The [broker README](../apps/desktop/native/passwords/README.md#the-broker) and
-[broker wire](../packages/protocol/src/passwords-broker.ts) own those contracts.
+Setup, Start Fresh, opening saved logins and changing a login's websites, login page or username
+each need fresh device-owner authentication (Touch ID or the Mac password), never an earlier unlock.
+Sign-in consent never prompts on the vault Mac. An authenticated window visit covers adding,
+editing, deleting and importing, and ends on close, lock, sleep or idle; every change checks the
+live visit. Prompts use the broker's own wording, never agent text. Unreadable settings fail off.
+Transactions belong to their connection, and queued work rechecks after every wait.
+
+Keep vault work on one actor and close each unlocked vault right after selection or commit. Swift
+password strings cannot be wiped, so keep their lifetime short. No field value belongs in logs,
+errors or activity, which masks usernames and omits agent reasons.
 
 ## The vault
 
-One vault belongs to the macOS user. Device-only Secure Enclave owner keys in
-the broker's protected keychain group wrap item keys; signed commits and a
-protected checkpoint refuse rollback. Desktop verifies the installed broker's
-Developer ID signature and live peer identity; the release broker accepts only
-the signed Opensteer desktop. Development has a separate broker/socket/vault.
+One vault belongs to the macOS user. Device-only Secure Enclave owner keys wrap item keys; they need
+no user presence, so remembered sign-ins work while the Mac is locked, and the broker enforces
+presence for vault management itself. Restarts and updates keep the keys; losing, replacing or
+erasing the Mac does not, and there is no backup, sync or migration. Before the first unlock after a
+restart the broker reports unavailable, never damaged. Start Fresh deletes the vault and grants for
+good.
 
-Keys stay on the vault Mac. Restarts and updates preserve them; losing,
-replacing or erasing the Mac does not. There is no backup or sync, and Time
-Machine or Migration Assistant cannot supply the keys. Start Fresh deletes
-the vault and grants. An older owner-key policy needs reset; before the first
-unlock after restart the broker reports unavailable. Only Personal's local
-Host can name the Workspace for the vault authority.
+Signed commits and a protected checkpoint refuse rollback. Every open, unlock and commit verifies
+history against the checkpoint under a kernel lock; missing, forked or rolled-back history fails
+closed with no automatic repair. Writes publish objects, commit, checkpoint, then HEAD, and nothing
+releases from a head the checkpoint does not protect. A checkpoint write that reports an error may
+still have landed, so read it back; opens require regular files so a planted FIFO cannot stall them.
 
-## Verification
+Canonical bytes matter: reject duplicate keys, noncanonical JSON and ambiguous encodings rather than
+normalize on read. Credential bytes are never trimmed or Unicode-normalized. Unknown item versions
+are skipped with their bytes preserved; newer manifest, commit or checkpoint versions need an
+Opensteer update, never Start Fresh. Reads apply only structure and size limits, so a rule change
+never makes a saved login unreadable; writes apply the current site rules.
 
-A saved secret must reach only its intended field and appear nowhere in observations,
-logs or artifacts. Receiver unit checks do not establish a real device sign-in.
-Use the [saved-login checks](../.agents/skills/verify-saved-logins/SKILL.md).
+Sites are HTTPS DNS origins on registrable domains. The compiled suffix list and the Host's tldts
+must move together, fenced by [shared parity
+fixtures](../packages/browser-profile/src/password-site-parity.test.ts); Swift deliberately refuses
+hosts where PSL wildcard rules and tldts differ. Imports parse in a sandboxed worker, revalidated
+before one atomic commit; never guess a TOTP secret as hex or merge conflicting accounts.

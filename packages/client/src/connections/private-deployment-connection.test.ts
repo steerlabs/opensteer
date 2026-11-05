@@ -1,6 +1,7 @@
 import { createId } from "@opensteer/core";
 import { type PersonalHostAccessRouteEnvelope } from "@opensteer/control-plane-protocol";
 import {
+  hostApiVersion,
   type HostDiscoveryDocument,
   type HostDiscoveryEnvelope,
 } from "@opensteer/deployment-authority";
@@ -19,40 +20,45 @@ import {
 const pairingCode = `osp_${"p".repeat(43)}`;
 
 describe("PrivateDeploymentConnectionService", () => {
-  it("verifies the Host-signed Private route, consumes a code, and stores direct-only Personal", async () => {
-    const catalog = newCatalog();
-    const route = accessRoute();
-    const sessions = sessionPort();
-    const fetch = vi.fn(async (input: string | URL | Request) => personalResponse(route, input));
-    const service = new PrivateDeploymentConnectionService({ catalog, fetch, sessions });
+  it.each([hostApiVersion, hostApiVersion - 1])(
+    "pairs the Host-signed Private route across epoch %s for maintenance",
+    async (epoch) => {
+      const catalog = newCatalog();
+      const route = accessRoute();
+      const sessions = sessionPort();
+      const fetch = vi.fn(async (input: string | URL | Request) =>
+        personalResponse(route, input, epoch),
+      );
+      const service = new PrivateDeploymentConnectionService({ catalog, fetch, sessions });
 
-    await service.connect({
-      kind: "personal-pairing",
-      origin: route.document.route.origin,
-      pairingCode,
-    });
+      await service.connect({
+        kind: "personal-pairing",
+        origin: route.document.route.origin,
+        pairingCode,
+      });
 
-    expect(fetch).toHaveBeenCalledWith(
-      `${route.document.route.origin}/.well-known/opensteer/personal-access-route`,
-      expect.objectContaining({ credentials: "omit", redirect: "error" }),
-    );
-    expect(sessions.establish).toHaveBeenCalledWith(
-      expect.objectContaining({ access: "private", route, origin: route.document.route.origin }),
-      { pairingCode },
-    );
-    await expect(catalog.load()).resolves.toMatchObject({
-      deployments: [
-        {
-          authority: expect.objectContaining({ document: route.document.authority }),
-          endpoints: [{ kind: "direct", origin: route.document.route.origin }],
-          kind: "personal" as const,
-          source: { kind: "manual" },
-          preferredEndpointOrigin: route.document.route.origin,
-        },
-      ],
-      selectedDeploymentId: route.document.authority.deploymentId,
-    });
-  });
+      expect(fetch).toHaveBeenCalledWith(
+        `${route.document.route.origin}/.well-known/opensteer/personal-access-route`,
+        expect.objectContaining({ credentials: "omit", redirect: "error" }),
+      );
+      expect(sessions.establish).toHaveBeenCalledWith(
+        expect.objectContaining({ access: "private", route, origin: route.document.route.origin }),
+        { pairingCode },
+      );
+      await expect(catalog.load()).resolves.toMatchObject({
+        deployments: [
+          {
+            authority: expect.objectContaining({ document: route.document.authority }),
+            endpoints: [{ kind: "direct", origin: route.document.route.origin }],
+            kind: "personal" as const,
+            source: { kind: "manual" },
+            preferredEndpointOrigin: route.document.route.origin,
+          },
+        ],
+        selectedDeploymentId: route.document.authority.deploymentId,
+      });
+    },
+  );
 
   it("does not consume another one-use code when the exact session cookie already exists", async () => {
     const catalog = newCatalog();
@@ -291,14 +297,18 @@ const personalDiscoveryByDeployment = new Map<string, HostDiscoveryEnvelope>();
 function personalResponse(
   route: PersonalHostAccessRouteEnvelope,
   input: string | URL | Request,
+  epoch = hostApiVersion,
 ): Response {
   if (String(input).endsWith("/personal-access-route")) return routeResponse(route);
   const authority = personalDiscoveryByDeployment.get(route.document.authority.deploymentId);
   if (!authority) throw new Error("Personal discovery fixture is missing");
-  return new Response(JSON.stringify(testHostDescriptor(authority, ["pairing-code"])), {
-    headers: { "content-type": "application/json" },
-    status: 200,
-  });
+  return new Response(
+    JSON.stringify({ ...testHostDescriptor(authority, ["pairing-code"]), apiVersion: epoch }),
+    {
+      headers: { "content-type": "application/json" },
+      status: 200,
+    },
+  );
 }
 
 function routeResponse(route: PersonalHostAccessRouteEnvelope): Response {

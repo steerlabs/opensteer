@@ -40,6 +40,16 @@ export function grade(
   const add = (name: string, pass: boolean) => {
     checks.push({ name, pass });
   };
+  if (expect.endAfterPendingRequest) {
+    const pending = calls.findIndex(
+      (call) =>
+        partialMatch(call.result, { status: "pending" }) &&
+        call.result !== null &&
+        typeof call.result === "object" &&
+        typeof Reflect.get(call.result, "requestId") === "string",
+    );
+    add("endAfterPendingRequest", pending >= 0 && pending === calls.length - 1);
+  }
   for (const [i, required] of expect.calls.entries())
     add(
       `calls[${i}]:${required.tool}`,

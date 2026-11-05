@@ -1,4 +1,11 @@
 import { BrowserVideoHub } from "../browser/browser-video-hub.js";
+import { ThreadNaming } from "../agents/thread-naming.js";
+import { AdministrationService } from "../administration/administration-service.js";
+import { AdministrationToolHandlers } from "../mcp/handlers/administration.js";
+import { HarnessCatalogReconciliationOwner } from "../agents/harness-catalogs.js";
+import { ThreadService } from "../threads/thread-service.js";
+import { ConnectionOAuth } from "../mcp/connections/index.js";
+import { AgentConnectionStore } from "@opensteer/database";
 import { requestSpecialistRequirements } from "../integrations/specialist-access-requests.js";
 import { randomUUID } from "node:crypto";
 import { withWorkspacePluginPackage } from "../integrations/workspace-plugin-package.js";
@@ -66,6 +73,7 @@ import {
 } from "@opensteer/integration-adapters";
 import { hostedOAuthDeploymentAuthorityDigest } from "@opensteer/integration-auth";
 import { computerAppIntegrations, integrationDefinitions } from "@opensteer/integration-catalog";
+import { listedDefinitionName } from "../integrations/catalog-presentation.js";
 import {
   resolveIntegrationDeploymentPosture,
   type ComputerAppPlatform,
@@ -100,8 +108,12 @@ import { HostedOAuthBrokerClient } from "../access/hosted-oauth-broker-client.js
 import { RemotePersonalAccountGrantVerifier } from "../access/personal-account-grant-verifier.js";
 import { PersonalRemoteAccessService } from "../access/personal-remote-access-service.js";
 import type { AgentPhoneUpdateRelease } from "../agent-phone/update-release.js";
-import { AgentControlService, AgentControlTokenService } from "../agents/agent-control-service.js";
-import { AgentToolsMcpService } from "../agents/agent-tools-mcp-service.js";
+import { RunToolTokenService } from "../agents/run-tool-tokens.js";
+import { OpensteerMcpService } from "../mcp/opensteer-mcp-service.js";
+import { AgentCallerResolver } from "../mcp/agent-caller.js";
+import { ProductToolHandlers } from "../mcp/handlers/product.js";
+import { TriggerToolHandlers } from "../mcp/handlers/triggers.js";
+import { agentToolHandlers } from "../mcp/handlers/index.js";
 import { RunnerAgentWorkspaceMountService } from "../agents/agent-workspace-mount-service.js";
 import { ContinuationService } from "../agents/continuation-service.js";
 import { HostCommandDispatcher } from "../agents/dispatcher.js";
@@ -131,6 +143,7 @@ import { PasswordSignInService } from "../browser/password-sign-in-service.js";
 import { RunnerBrowserHub } from "../browser/runner-browser-hub.js";
 import { RunnerBrowserRuntimeRouter } from "../browser/runner-browser-runtime.js";
 import { ChannelService } from "../channels/channel-service.js";
+import { createVoiceFollow } from "../voice/voice-follow.js";
 import { MessagingRelayHub } from "../channels/messaging-relay-hub.js";
 import { ComputerAppHub } from "../computer-apps/computer-app-hub.js";
 import { ComputerUseService } from "../computer-use/computer-use-service.js";
@@ -156,7 +169,7 @@ import {
   type IntegrationConnectionConnected,
 } from "../integrations/integration-service.js";
 import { PluginPackageService } from "../integrations/plugin-package-service.js";
-import { IntegrationToolsMcpService } from "../integrations/integration-tools-mcp-service.js";
+import { IntegrationToolHandlers } from "../mcp/handlers/integrations.js";
 import { McpOAuthService } from "../integrations/mcp-oauth-service.js";
 import { NotificationDispatcher } from "../notifications/notification-dispatcher.js";
 import { NotificationPreviewService } from "../notifications/notification-preview-service.js";
@@ -175,18 +188,13 @@ import {
 import { MachineFullDiskAccessService } from "../shell/machine-full-disk-access-service.js";
 import { ShellHub } from "../shell/shell-hub.js";
 import { AutomationFailureService } from "../triggers/automation-failure-service.js";
-import {
-  TriggerCapabilityTokenService,
-  TriggerControlService,
-  TriggerControlTokenService,
-} from "../triggers/trigger-control-service.js";
+import { TriggerControlTokenService } from "../triggers/trigger-control-service.js";
 import { MemoryPassService } from "../agents/memory-pass-service.js";
 import { TriggerScheduleLoop, TriggerService } from "../triggers/trigger-service.js";
 import {
   WatchCapabilityTokenService,
   WatchControlTokenService,
 } from "../triggers/watch-capability.js";
-import { WatchControlService } from "../triggers/watch-control-service.js";
 import { WatchProgramService } from "../triggers/watch-program-service.js";
 import { WatchService } from "../triggers/watch-service.js";
 import {
@@ -436,6 +444,7 @@ export async function createHostRuntime(
     applicationName: "opensteer-host",
     connectionString: config.databaseUrl,
   });
+  let administrationCatalogs: HarnessCatalogReconciliationOwner | undefined;
   let authorityLease: DeploymentAuthorityLease | undefined;
   let notificationDispatcher: NotificationDispatcher | undefined;
   let threadStateLoop: WorkspaceReconcileLoop | undefined;
@@ -454,6 +463,7 @@ export async function createHostRuntime(
       ...(options.executionClock ? { executionClock: options.executionClock } : {}),
       links: { threadUrl: (threadId) => `${config.canonicalOrigin.origin}/threads/${threadId}` },
     });
+
     // What active Runs are streaming, held only in memory; it learns each Run
     // from that Run's committed durable events and forgets it at the terminal.
     const liveRuns = new LiveRunRegistry();
@@ -473,6 +483,12 @@ export async function createHostRuntime(
       canonicalOrigin: config.canonicalOrigin.origin,
       hostInstanceId: hostInstance.hostInstanceId,
       deploymentShape: config.workspace.shape,
+    });
+    const connections = new ConnectionOAuth({
+      deploymentId: deployment.id,
+      store: new AgentConnectionStore(database),
+      signingKey: keys.privateKey,
+      verificationKey: keys.publicKey,
     });
     const triggerStore = new TriggerStore(database);
     const operatorOidcProviders = await loadOidcProvidersFromFile(config.identity.oidcConfigPath, {
@@ -1280,6 +1296,11 @@ export async function createHostRuntime(
       }
       return threadStateDrain;
     };
+    const followVoiceCall = createVoiceFollow({
+      store,
+      show: (userId, message) => realtime.showToPerson(userId, message),
+      onError: (error) => app.log.warn({ err: error }, "A voice call's screen could not follow"),
+    });
     const publishWorkspaceEvent = (event: AgentEvent): void => {
       if (event.type === "thread.listed" || event.type === "assignment.updated")
         browser.invalidatePlaceAuthority(
@@ -1292,6 +1313,7 @@ export async function createHostRuntime(
         );
       liveRuns.observeCommitted([event]);
       realtime.publish(event);
+      followVoiceCall(event);
       onTerminalRun(event);
       onAssignmentReturn(event);
       notificationDispatcher?.dispatch(event);
@@ -1313,6 +1335,7 @@ export async function createHostRuntime(
     await browser.initialize();
     await passwordSignIns.sweepAfterRestart();
     const integrationPlatform = new IntegrationPlatformService({
+      personal: config.workspace.shape.kind === "personal",
       adapters: integrationAdapters,
       secretVault: integrationVault,
       listConnections: (ownerUserId) => integrationStore.listConnections(ownerUserId),
@@ -1382,7 +1405,11 @@ export async function createHostRuntime(
       publishWorkspaceEvent(event);
     const integrationDashboard = new IntegrationDashboardService({
       definitions: integrationDefinitions,
-      summarizeDefinition: (definition) => integrationPlatform.definitionSummary(definition),
+      // A person reads the listing's name; the stored definition keeps its own.
+      summarizeDefinition: (definition) => ({
+        ...integrationPlatform.definitionSummary(definition),
+        name: listedDefinitionName(definition),
+      }),
       providers: integrations,
       repository: integrationPlatformStore,
     });
@@ -1462,6 +1489,7 @@ export async function createHostRuntime(
       messaging: (runnerId, reason) => messagingRelay.detachRunner(runnerId, reason),
       shell: (runnerId, reason) => shellHub?.detachRunner(runnerId, reason),
     };
+    let naming: ThreadNaming | undefined;
     const runners: RunnerRegistry = new RunnerRegistry({
       ...(options.executionClock ? { now: executionNow } : {}),
       executionLeaseMs: config.executionLeaseMs,
@@ -1495,9 +1523,8 @@ export async function createHostRuntime(
           }
           return {
             credentials: {
-              agentControl: agentControlTokens.issue(scope),
+              agentTools: runToolTokens.issue(scope),
               attachments: attachmentRunTokens.issue(scope),
-              integrationTools: integrationToolsTokens.issue(scope),
             },
             status: "issued",
           };
@@ -1541,7 +1568,14 @@ export async function createHostRuntime(
           if (!committed.wasDuplicate) {
             liveRuns.observeCommitted([committed.event, ...committed.compensatingEvents]);
           }
-          if (!committed.wasDuplicate) publishWorkspaceEvent(committed.event);
+          if (!committed.wasDuplicate) {
+            publishWorkspaceEvent(committed.event);
+            if (
+              ["run.completed", "run.failed", "run.interrupted"].includes(committed.event.type) ||
+              (committed.event.type === "run.phase" && committed.event.data.phase === "background")
+            )
+              notifyIntegrationContinuations();
+          }
           // A restart queued the Run's next attempt.
           if (committed.event.type === "run.restarted") wakeExecutionCoordinator();
           for (const compensating of committed.compensatingEvents) {
@@ -1586,10 +1620,6 @@ export async function createHostRuntime(
             report,
           );
           if (changed) notices.notify({ workspaceId: report.binding.workspaceId });
-        },
-        onThreadTitle: async (_identity, report) => {
-          const result = await store.applyGeneratedThreadName(report);
-          for (const event of result?.events ?? []) publishWorkspaceEvent(event);
         },
         onLive: (_identity, live) => {
           const frame = liveRuns.apply(live.progress);
@@ -1758,6 +1788,7 @@ export async function createHostRuntime(
                 });
                 observeRunnerCatalogs(identity, environmentId, captured);
               }
+              void naming?.reconcile().catch(reportThreadNamingError);
             } finally {
               watchService?.runnerRegistered(identity);
             }
@@ -1833,14 +1864,14 @@ export async function createHostRuntime(
     const runCapabilityLifetime = options.runCapabilityLifetimeSeconds
       ? { lifetimeSeconds: options.runCapabilityLifetimeSeconds }
       : {};
-    const agentControlTokens = new AgentControlTokenService({
+    const runToolTokens = new RunToolTokenService({
       authorizer: store,
       tokens: runCapabilityTokens,
       ...runCapabilityLifetime,
     });
     shellHub = new ShellHub({
       authenticator: runnerAuthenticator,
-      callerTokens: agentControlTokens,
+      callerTokens: runToolTokens,
       notifier: machineAccessNotifier({
         onError: (error) => reportShellError(error),
         realtime,
@@ -1850,12 +1881,6 @@ export async function createHostRuntime(
       onControlError: (runnerId, error) => reportShellControlError(runnerId, error),
       runners,
       store,
-    });
-    const integrationToolsTokens = new RunCapabilityTokenService({
-      audience: "opensteer-integration-tools",
-      authorizer: store,
-      tokens: runCapabilityTokens,
-      ...runCapabilityLifetime,
     });
     const pluginsTokens = new RunCapabilityTokenService({
       audience: "opensteer-plugin-packages",
@@ -1879,17 +1904,7 @@ export async function createHostRuntime(
       store: triggerStore,
       tokens,
     });
-    const triggerIntegrationToolsTokens = new TriggerCapabilityTokenService({
-      audience: "opensteer-trigger-integration-tools",
-      store: triggerStore,
-      tokens,
-    });
     const watchControlTokens = new WatchControlTokenService({ store: triggerStore, tokens });
-    const watchIntegrationToolsTokens = new WatchCapabilityTokenService({
-      audience: "opensteer-watch-integration-tools",
-      store: triggerStore,
-      tokens,
-    });
     const watchBrowserTokens = new WatchCapabilityTokenService({
       audience: "opensteer-watch-browser-cdp",
       store: triggerStore,
@@ -1900,8 +1915,6 @@ export async function createHostRuntime(
       browser,
       browserCdpUrl: new URL("/internal/v1/watch-cdp", config.runtimeOrigin).toString(),
       controlTokens: watchControlTokens,
-      integrationMcpUrl: new URL("/internal/v1/integration-mcp", config.runtimeOrigin).toString(),
-      integrationTokens: watchIntegrationToolsTokens,
       mcpUrl: new URL("/internal/v1/mcp", config.runtimeOrigin).toString(),
       onChanged: (workspaceId) => realtime.publishTriggersChanged(workspaceId),
       onError: (error, environmentId) => reportWatchReconciliationError(environmentId, error),
@@ -1910,10 +1923,21 @@ export async function createHostRuntime(
       watchBrowserTokens,
       workspaceAccess,
     });
+    const reportThreadNamingError = (error: unknown) =>
+      console.error("Thread naming failed", error);
+    naming = new ThreadNaming({
+      store,
+      runners,
+      publish: publishWorkspaceEvent,
+      onError: reportThreadNamingError,
+    });
     const dispatcher = new HostCommandDispatcher({
+      onRunAdmitted: (threadId) => {
+        void naming?.request(threadId);
+      },
       ...(options.executionClock ? { executionClock: options.executionClock } : {}),
       requestResponseVault: integrationVault,
-      agentControlTokens,
+      runToolTokens,
       browser,
       egress,
       executionLeaseMs: config.executionLeaseMs,
@@ -1924,7 +1948,6 @@ export async function createHostRuntime(
           ({ id, name, digest }) => ({ pluginId: id, name, digest }),
         ),
       pluginsTokens,
-      integrationToolsTokens,
       attachmentRunTokens,
       attachments: attachmentStore,
       onWorkspaceEvent: publishWorkspaceEvent,
@@ -1933,7 +1956,6 @@ export async function createHostRuntime(
       runners,
       store,
       triggerControlTokens,
-      triggerIntegrationToolsTokens,
       triggers: triggerStore,
       workspaces,
       workspaceAccess,
@@ -2044,6 +2066,7 @@ export async function createHostRuntime(
       tokens,
     });
     const channels = new ChannelService({
+      onChanged: () => notifyMachinesChanged(realtime, "integration.connections"),
       canonicalOrigin: config.canonicalOrigin.origin,
       channels: new ChannelStore(database),
       credentials,
@@ -2078,7 +2101,23 @@ export async function createHostRuntime(
       publish: (workspaceId, ownerIds) =>
         realtime.publishBrowserSessionsChanged(workspaceId, ownerIds, "browser.groups"),
     });
-    const agentControl = new AgentControlService({
+    const threadService = new ThreadService({ store, commands, runners, placeContext, browser });
+    const memoryPasses = new MemoryPassService({
+      store,
+      runners,
+      files,
+      onEvent: publishWorkspaceEvent,
+      onChanged: (workspaceId) => realtime.publishTriggersChanged(workspaceId),
+      onError: (workspaceId, error) =>
+        app.log.warn(
+          { workspaceId, code: error instanceof OpensteerError ? error.code : "internal" },
+          "Memory pass provisioning failed",
+        ),
+    });
+    const productHandlers = new ProductToolHandlers({
+      threads: threadService,
+      memoryPasses,
+      realtime,
       computerUse,
       personShow: (userId, message) => realtime.showToPerson(userId, message),
       browserTabs,
@@ -2097,6 +2136,8 @@ export async function createHostRuntime(
       browser,
       canRunHarness: (environmentId, driverKind) =>
         runners.canRunHarness(environmentId, driverKind),
+      harnessAccessModes: (environmentId, driverKind) =>
+        runners.harnessAccessModes(environmentId, driverKind),
       commands,
       defaultWorkspaceBacking: config.workspace.shape.defaultWorkspaceBacking,
       environmentWorkspaceBackings: (environmentId) =>
@@ -2104,33 +2145,8 @@ export async function createHostRuntime(
       isEnvironmentConnected: (environmentId) => runners.isAvailable(environmentId),
       onWorkspaceEvent: publishWorkspaceEvent,
       store,
-      tokens: agentControlTokens,
-      triggers,
       workspaceMounts,
       workspaces,
-    });
-    const triggerControl = new TriggerControlService({
-      canRunHarness: (environmentId, driverKind) =>
-        runners.canRunHarness(environmentId, driverKind),
-      commands,
-      defaultWorkspaceBacking: config.workspace.shape.defaultWorkspaceBacking,
-      environmentWorkspaceBackings: (environmentId) =>
-        runners.identityForEnvironment(environmentId)?.modules.agents?.workspaceBackings ?? [],
-      isEnvironmentConnected: (environmentId) => runners.isAvailable(environmentId),
-      store,
-      tokens: triggerControlTokens,
-      triggers,
-      workspaces,
-    });
-    const watchControl = new WatchControlService({
-      environmentWorkspaceBackings: (environmentId) =>
-        runners.identityForEnvironment(environmentId)?.modules.agents?.workspaceBackings ?? [],
-      canRunHarness: (environmentId, driverKind) =>
-        runners.canRunHarness(environmentId, driverKind),
-      commands,
-      isEnvironmentConnected: (environmentId) => runners.isAvailable(environmentId),
-      store,
-      tokens: watchControlTokens,
     });
     const apps = new AppService({
       tunnels: new AppTunnelHub(runners),
@@ -2138,75 +2154,16 @@ export async function createHostRuntime(
       apps: new AppStore(database),
       store,
       files,
-      tokens: agentControlTokens,
+      tokens: runToolTokens,
       publishEvent: publishWorkspaceEvent,
     });
     await apps.collectGarbage();
-    const agentTools = new AgentToolsMcpService({
-      pluginInstall: async (scope, directory) => {
-        const admission = await store.admitWorkspaceFiles(scope.workspaceId, scope.requestedBy);
-        if (!admission) throw new Error("Workspace is unavailable");
-        if (admission.workspace.backing.kind !== "local-directory")
-          throw new Error("Plugins require a local Workspace");
-        return withWorkspacePluginPackage({
-          directory,
-          admission,
-          files,
-          install: async (directory) => {
-            const result = await integrationPlatform.installAgentPlugin({
-              directory,
-              actorUserId: scope.requestedBy,
-              workspaceId: scope.workspaceId,
-              runnerId: scope.runnerId,
-              requestId: randomUUID(),
-            });
-            const pluginId = result.installation.pluginId;
-            const registration =
-              result.specialist && pluginId
-                ? await integrationPlatform.store.specialists.add({
-                    workspaceId: scope.workspaceId,
-                    pluginId,
-                    actorUserId: scope.requestedBy,
-                  })
-                : null;
-            if (registration)
-              await requestSpecialistRequirements({
-                registration,
-                scope: { ...scope, aud: "opensteer-integration-tools" },
-                browser,
-                integrations: integrationTools,
-              });
-            return { pluginId, issues: result.issues, specialist: result.specialist, registration };
-          },
-        });
-      },
-      apps,
-      // The Runner's stored advertisement, not its live connection: a Run's
-      // engine keeps using its tools while that connection drops and returns.
-      runnerCapabilities: async (scope) => {
-        const capabilities = await store.runnerCapabilities(scope.runnerId);
-        if (!capabilities) throw new Error("The Run's Runner is not enrolled");
-        return capabilities;
-      },
-      agentControl,
-      store,
-      publicUrl: config.runtimeOrigin,
-      tokens: agentControlTokens,
-      triggerControl,
-      triggerTokens: triggerControlTokens,
-      watchControl,
-      watchTokens: watchControlTokens,
-    });
-    const integrationTools = new IntegrationToolsMcpService({
+    const integrationTools = new IntegrationToolHandlers({
       definitions: integrationDefinitions,
       getWorkspaceForOwner: (workspaceId, requestedBy) =>
         store.getWorkspaceForOwner(workspaceId, requestedBy),
       onWorkspaceEvent: publishWorkspaceEvent,
       platform: integrationPlatform,
-      publicUrl: config.runtimeOrigin,
-      runTokens: integrationToolsTokens,
-      triggerTokens: triggerIntegrationToolsTokens,
-      watchTokens: watchIntegrationToolsTokens,
     });
     const plugins = new PluginPackageService({
       computer: { tokens, store: integrationPlatformStore, publicUrl: config.runtimeOrigin },
@@ -2287,8 +2244,101 @@ export async function createHostRuntime(
       store,
       terminateRuns: (workspaceId) => securityEffects.terminateWorkspace(workspaceId),
     });
+    administrationCatalogs = new HarnessCatalogReconciliationOwner({
+      catalogs: store,
+      runners,
+      onError: (environmentId, error) =>
+        reportHarnessCatalogInvalidationError(environmentId, error),
+    });
+    const administration = new AdministrationToolHandlers(
+      new AdministrationService(
+        {
+          store,
+          commands,
+          workspaces,
+          workspaceDeletion,
+          apps,
+          browser,
+          browserSources,
+          shellControl: requiredService(shellHub, "Shell session hub"),
+          computerApps,
+          runners,
+          channels: { service: channels, relay: messagingRelay },
+          realtime,
+          publishWorkspaceEvent,
+          integrations: { platform: integrationPlatform, service: integrations, continuations },
+        },
+        (id) => administrationCatalogs?.schedule(id),
+      ),
+      (ownerId) => integrationStore.listConnections(ownerId),
+    );
+    const agentTools = new OpensteerMcpService({
+      publicUrl: config.runtimeOrigin,
+      realtime,
+      callers: new AgentCallerResolver({
+        store,
+        runs: runToolTokens,
+        triggers: triggerControlTokens,
+        watches: watchControlTokens,
+        connections: connections.authenticator,
+      }),
+      store,
+      handlers: agentToolHandlers({
+        administration,
+        apps,
+        product: productHandlers,
+        integrations: integrationTools,
+        triggers: new TriggerToolHandlers(triggers),
+        pluginInstall: async (scope, directory) => {
+          const admission = await store.admitWorkspaceFiles(scope.workspaceId, scope.requestedBy);
+          if (!admission) throw new Error("Workspace is unavailable");
+          if (admission.workspace.backing.kind !== "local-directory")
+            throw new Error("Plugins require a local Workspace");
+          return withWorkspacePluginPackage({
+            directory,
+            admission,
+            files,
+            install: async (stagedDirectory) => {
+              const result = await integrationPlatform.installAgentPlugin({
+                directory: stagedDirectory,
+                workspaceDirectory: directory,
+                actorUserId: scope.requestedBy,
+                workspaceId: scope.workspaceId,
+                runnerId: scope.runnerId,
+                requestId: randomUUID(),
+              });
+              const pluginId = result.installation.pluginId;
+              const registration =
+                result.specialist && pluginId
+                  ? await integrationPlatform.store.specialists.add({
+                      activate: false,
+                      workspaceId: scope.workspaceId,
+                      pluginId,
+                      actorUserId: scope.requestedBy,
+                      autoBind: false,
+                    })
+                  : null;
+              if (registration)
+                await requestSpecialistRequirements({
+                  registration,
+                  scope: { ...scope, aud: "opensteer-integration-tools" },
+                  browser,
+                  integrations: integrationTools,
+                });
+              return {
+                pluginId,
+                issues: result.issues,
+                specialist: result.specialist,
+                registration,
+              };
+            },
+          });
+        },
+      }),
+    });
     const app = await createHostServer(
       {
+        connections,
         passkeys: config.passkeys === true,
         ...(notificationPreviews ? { notificationPreviews } : {}),
         ...(accountAdoptionControlClient
@@ -2298,13 +2348,12 @@ export async function createHostRuntime(
               },
             }
           : {}),
-        agentControl,
         attachments,
         apps,
         liveRuns,
         machineFullDiskAccess,
         requestResponseVault: integrationVault,
-        agentControlTokens,
+        runToolTokens,
         agentTools,
         authenticator,
         browser,
@@ -2335,7 +2384,6 @@ export async function createHostRuntime(
           platform: integrationPlatform,
           service: integrations,
           skills: plugins,
-          tools: integrationTools,
         },
         ...(localBootstrap ? { localBootstrap: { service: localBootstrap } } : {}),
         ...(personalRemoteAccess
@@ -2504,19 +2552,8 @@ export async function createHostRuntime(
       }
     };
     reportWorkspaceStorageHealth(await workspaces.reconcile());
-    const memoryPasses = new MemoryPassService({
-      store,
-      runners,
-      files,
-      onEvent: publishWorkspaceEvent,
-      onChanged: (workspaceId) => realtime.publishTriggersChanged(workspaceId),
-      onError: (workspaceId, error) =>
-        app.log.warn(
-          { workspaceId, code: error instanceof OpensteerError ? error.code : "internal" },
-          "Memory pass provisioning failed",
-        ),
-    });
     await memoryPasses.reconcileMissing();
+    void naming.reconcile().catch(reportThreadNamingError);
     coordinator.start();
     continuations.start();
     automationFailures.start();
@@ -2670,7 +2707,7 @@ export async function createHostRuntime(
         await step("computer use", () => computerUse.shutdown());
         computerApps.close();
         await step("agent tools", () => agentTools.close());
-        await step("integration tools", () => integrationTools.close());
+        await step("administration catalogs", () => administrationCatalogs?.close());
         await step("integration platform", () => integrationPlatform.close());
         unsubscribePlaceMembership?.();
         await step("browser", () => browser.close());
@@ -2680,6 +2717,7 @@ export async function createHostRuntime(
         browserRelay.close();
         await step("shell hub", () => shellHub?.close());
         await step("runners", () => runners.close());
+        await step("thread naming", () => naming!.stop());
         await step("coordinator", () => coordinator.stop());
         await step("security effects", () => securityEffects.close());
         files.close();
@@ -2701,6 +2739,7 @@ export async function createHostRuntime(
       listen: () => app.listen({ host: config.bindAddress, port: config.port }),
     };
   } catch (error) {
+    await administrationCatalogs?.close();
     await notificationDispatcher?.close();
     unsubscribePlaceMembership?.();
     threadStateStopped = true;

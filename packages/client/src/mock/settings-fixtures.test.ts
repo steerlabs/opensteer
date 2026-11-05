@@ -122,4 +122,47 @@ describe("Settings mock RPC", () => {
       client.dispose();
     }
   });
+  it("updates only person-installed plugins from their folder", async () => {
+    const client = new MockHostClient({
+      latencyMs: 0,
+      agentPlugins: [{ id: "tapo-camera", name: "tapo-camera" }],
+    });
+    try {
+      await client.dispatch({
+        type: "plugin.install",
+        input: { directory: "/plugins/review" },
+        idempotencyKey: "person-install",
+      });
+      const rows = value(await client.rpc["plugin.list"]({})).plugins;
+      const person = String(rows.find((row) => row.name === "review")!.id);
+      const details = await Promise.all(
+        ["tapo-camera", person].map(async (pluginId) =>
+          value(await client.rpc["plugins.detail.get"]({ target: { kind: "plugin", pluginId } })),
+        ),
+      );
+      expect(
+        details.map((d) => [d.row.source.kind, d.row.permissions.canUpdate, d.sourceFolder]),
+      ).toEqual([
+        ["workspace", false, null],
+        ["plugin", true, "/plugins/review"],
+      ]);
+      expect(details[0]!.row.issues).toEqual([]);
+      await expect(
+        client.dispatch({
+          type: "plugin.update",
+          pluginId: "tapo-camera",
+          input: { directory: "/plugins/tapo-camera" },
+          idempotencyKey: "agent-update",
+        }),
+      ).rejects.toThrow("Agent-made plugins update when an agent installs their folder again.");
+      await client.dispatch({
+        type: "plugin.update",
+        pluginId: person,
+        input: { directory: "/plugins/review" },
+        idempotencyKey: "person-update",
+      });
+    } finally {
+      client.dispose();
+    }
+  });
 });

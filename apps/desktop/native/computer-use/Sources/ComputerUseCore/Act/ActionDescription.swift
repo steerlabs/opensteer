@@ -2,7 +2,7 @@ import CoreGraphics
 import Foundation
 
 /// What one completed action did, in the words a person reading the
-/// transcript and the model reading its result both use (§2 "Actions"):
+/// transcript and the model reading its result both use:
 /// a past-tense verb and the element as the person sees it —
 /// `Clicked "Save"`, `Typed "Venue shortlist" into "Title"`, `Pressed ⌘S`.
 ///

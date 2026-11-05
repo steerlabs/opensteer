@@ -2,8 +2,8 @@ const agentToolsUrl = /http:\/\/127\.0\.0\.1:\d+\/[\w-]+\/agent-tools/gu;
 
 /**
  * The agent-tools token and URL of the one engine process that started the
- * marked Run's turn. The capture also holds the Run's token-less naming
- * app-server, which starts after the engine, and other Runs' engines.
+ * marked Run's turn. The capture also holds token-less naming app-servers and
+ * other Runs' engines.
  */
 export function heldRunCapture(
   captured: string,

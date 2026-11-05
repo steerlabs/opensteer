@@ -6,9 +6,8 @@ import { withTimeout } from "@opensteer/shared/withTimeout";
 import { z } from "zod";
 import type { PiExtensionToolDefinition, PiToolAnswer, PiToolContent } from "./extension.js";
 
-/** The two Opensteer MCP servers, as the Runner names them to the model. */
+/** The Opensteer MCP server, as the Runner names it to the model. */
 export const piAgentToolsServer = "opensteer";
-export const piIntegrationToolsServer = "opensteer_integrations";
 
 /**
  * How long one Opensteer tool call may take. This is stated rather than
@@ -25,7 +24,7 @@ export const piToolCallTimeoutMs = 5 * 60_000;
 const piMcpCloseTimeoutMs = 5_000;
 
 export interface PiMcpServerPlan {
-  /** `opensteer` or `opensteer_integrations`. */
+  /** The managed server name. */
   readonly name: string;
   readonly token: string;
   /** The exact tool names Opensteer declares for this server; nothing else is registered. */
@@ -61,7 +60,7 @@ export type PiMcpConnect = (
  * would have to live in is loaded by Pi's own jiti from a Runner-private
  * directory with no `node_modules` beside it — in the packaged Personal runtime
  * there is no resolvable `@modelcontextprotocol/sdk` anywhere near it. So the
- * driver holds both connections, hands the extension only the tool *shapes*,
+ * driver holds the connection, hands the extension only the tool *shapes*,
  * and executes every call itself. The bearer tokens never leave the Runner
  * process, which also means they never reach a file the model's own commands
  * could read (pi-facts §11).
@@ -136,7 +135,7 @@ export async function connectPiMcpServer(
         throw toPiMcpError(error, `Opensteer's ${plan.name} tools could not be listed`);
       }
       return listed.tools.flatMap((tool) =>
-        // Only the tools Opensteer declared for this capability profile are
+        // Only the tools the Host's Run plan declared are
         // registered; a server that offered another one is not this driver's to
         // hand to the model.
         declared.has(tool.name)

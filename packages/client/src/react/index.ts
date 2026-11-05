@@ -4,12 +4,13 @@ export * from "./use-thread-input-queue.js";
 export * from "./use-conversation-surfaces.js";
 export * from "./use-places.js";
 export * from "./use-action-review.js";
-export * from "./use-voice-snapshot.js";
 export * from "./use-browser-presentation-wait.js";
 export * from "./use-schedules.js";
 export * from "./use-app-icon.js";
 export * from "./use-host-read.js";
+export * from "./use-remote-desktop-update.js";
 
 export * from "./use-computer-app-approval.js";
 export * from "./use-personal-remote-access.js";
 export * from "./use-app-view.js";
+export * from "./use-connected-agents.js";

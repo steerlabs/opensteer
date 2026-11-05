@@ -32,7 +32,7 @@ export interface WarmEngine {
   readonly machineAccess: MachineAccessSetup | undefined;
   readonly proxied: {
     readonly secret: string;
-    readonly urls: Readonly<Record<"agent-tools" | "integration-tools", string>>;
+    readonly urls: Readonly<Record<"agent-tools", string>>;
   };
   /** The containment scope of every process the engine started. */
   readonly scope: string;

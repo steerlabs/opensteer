@@ -32,6 +32,7 @@ export class IntegrationPlatformStore {
   readonly listServers: IntegrationInstallStore["listServers"];
   readonly listTools: IntegrationInstallStore["listTools"];
   readonly reconcileProviderConnectionTools: IntegrationInstallStore["reconcileProviderConnectionTools"];
+  readonly getConnectionAccount: IntegrationConnectionAuthStore["getConnectionAccount"];
   readonly getConnectionKind: IntegrationConnectionAuthStore["getConnectionKind"];
   readonly listComputerAppSetupRequests: IntegrationConnectionAuthStore["listComputerAppSetupRequests"];
   readonly getComputerAppSetupRequest: IntegrationConnectionAuthStore["getComputerAppSetupRequest"];
@@ -59,6 +60,7 @@ export class IntegrationPlatformStore {
   readonly markMcpOAuthConnectionNeedsAttention: IntegrationConnectionAuthStore["markMcpOAuthConnectionNeedsAttention"];
   readonly createGrant: IntegrationGrantStore["createGrant"];
   readonly listGrants: IntegrationGrantStore["listGrants"];
+  readonly connectionDiscoveryScope: IntegrationGrantStore["connectionDiscoveryScope"];
   readonly mainAccess: IntegrationGrantStore["mainAccess"];
   readonly isConnectionUsableForAccessRequest: IntegrationGrantStore["isConnectionUsableForAccessRequest"];
   readonly revokeGrant: IntegrationGrantStore["revokeGrant"];
@@ -91,6 +93,7 @@ export class IntegrationPlatformStore {
     this.listTools = this.installations.listTools.bind(this.installations);
     this.reconcileProviderConnectionTools =
       this.installations.reconcileProviderConnectionTools.bind(this.installations);
+    this.getConnectionAccount = this.connections.getConnectionAccount.bind(this.connections);
     this.getConnectionKind = this.connections.getConnectionKind.bind(this.connections);
     this.listComputerAppSetupRequests = this.connections.listComputerAppSetupRequests.bind(
       this.connections,
@@ -136,6 +139,7 @@ export class IntegrationPlatformStore {
       this.connections.markMcpOAuthConnectionNeedsAttention.bind(this.connections);
     this.createGrant = this.grants.createGrant.bind(this.grants);
     this.listGrants = this.grants.listGrants.bind(this.grants);
+    this.connectionDiscoveryScope = this.grants.connectionDiscoveryScope.bind(this.grants);
     this.mainAccess = this.grants.mainAccess.bind(this.grants);
     this.isConnectionUsableForAccessRequest = this.grants.isConnectionUsableForAccessRequest.bind(
       this.grants,

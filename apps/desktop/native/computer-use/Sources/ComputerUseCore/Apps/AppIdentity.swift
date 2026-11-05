@@ -62,7 +62,7 @@ public struct ResolvedApp: Encodable, Sendable {
   public let running: Bool
 }
 
-/// How much a session may do with one app, in the protocol's words (§1).
+/// How much a session may do with one app, in the protocol's words.
 public enum AppAccess: String, Codable, Sendable {
   case read
   case readWrite = "read-write"

@@ -1,3 +1,7 @@
+import {
+  administrationCommand,
+  type AdministrationCommandIdentity,
+} from "./administration-command.js";
 import { resolveResourceAccess } from "./resource-access.js";
 import { eventDataSchemas, placeIdentityKey, type EventData } from "@opensteer/core";
 import { storableText } from "./runner-event-store.js";
@@ -46,6 +50,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { lockBrowserHistory } from "./browser-history-store.js";
 import {
+  lockBrowserProfile,
   type NativeProfileDeletionResult,
   profileStorage,
   publicProfileDeletion,
@@ -143,6 +148,52 @@ function inheritedMainBrowserGrantId(
   );
 }
 
+/**
+ * Adds one profile within the owner's slots: the person's own command and an
+ * approved browser-access Request both create profiles through here.
+ */
+export async function insertBrowserProfile(
+  transaction: Transaction<DatabaseSchema>,
+  input: { readonly name: string; readonly ownerId: UserId },
+): Promise<BrowserProfileRecord> {
+  await sql`select pg_advisory_xact_lock(hashtextextended(${`browser-profile:${input.ownerId}`}, 0))`.execute(
+    transaction,
+    databaseOperationOptions(),
+  );
+  const existing = await transaction
+    .selectFrom("browserProfiles")
+    .select("id")
+    .where("ownerId", "=", input.ownerId)
+    // Deletion transfers a slot until the owning computer confirms erasure.
+    .where((eb) =>
+      eb.or([
+        eb("archivedAt", "is", null),
+        eb.exists(
+          eb
+            .selectFrom("browserProfileDeletions")
+            .select("profileId")
+            .whereRef("profileId", "=", "browserProfiles.id")
+            .where("state", "!=", "deleted"),
+        ),
+      ]),
+    )
+    .limit(128)
+    .execute(databaseOperationOptions());
+  if (existing.length >= 128) {
+    throw new OpensteerError({ code: "conflict", message: "Browser profile limit reached" });
+  }
+  return await transaction
+    .insertInto("browserProfiles")
+    .values({
+      archivedAt: null,
+      id: createId("browserProfile"),
+      name: input.name,
+      ownerId: input.ownerId,
+    })
+    .returning(["id", "name", "ownerId"])
+    .executeTakeFirstOrThrow(databaseOperationOptions());
+}
+
 export async function createBrowserProfile(
   database: Kysely<DatabaseSchema>,
   input: {
@@ -181,45 +232,7 @@ export async function createBrowserProfile(
       }
       return profile;
     }
-    await sql`select pg_advisory_xact_lock(hashtextextended(${`browser-profile:${input.ownerId}`}, 0))`.execute(
-      transaction,
-      databaseOperationOptions(),
-    );
-    const existing = await transaction
-      .selectFrom("browserProfiles")
-      .select("id")
-      .where("ownerId", "=", input.ownerId)
-      // Deletion transfers a slot until the owning computer confirms erasure.
-      .where((eb) =>
-        eb.or([
-          eb("archivedAt", "is", null),
-          eb.exists(
-            eb
-              .selectFrom("browserProfileDeletions")
-              .select("profileId")
-              .whereRef("profileId", "=", "browserProfiles.id")
-              .where("state", "!=", "deleted"),
-          ),
-        ]),
-      )
-      .limit(128)
-      .execute(databaseOperationOptions());
-    if (existing.length >= 128) {
-      throw new OpensteerError({
-        code: "conflict",
-        message: "Browser profile limit reached",
-      });
-    }
-    const profile = await transaction
-      .insertInto("browserProfiles")
-      .values({
-        archivedAt: null,
-        id: createId("browserProfile"),
-        name: input.name,
-        ownerId: input.ownerId,
-      })
-      .returning(["id", "name", "ownerId"])
-      .executeTakeFirstOrThrow(databaseOperationOptions());
+    const profile = await insertBrowserProfile(transaction, input);
     await transaction
       .insertInto("commands")
       .values({
@@ -279,21 +292,27 @@ export async function listBrowserProfiles(
 export async function renameBrowserProfile(
   database: Kysely<DatabaseSchema>,
   input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
     readonly name: string;
     readonly ownerId: UserId;
     readonly profileId: BrowserProfileId;
   },
 ): Promise<BrowserProfileRecord> {
-  const row = await database
-    .updateTable("browserProfiles")
-    .set({ name: input.name, updatedAt: new Date() })
-    .where("id", "=", input.profileId)
-    .where("ownerId", "=", input.ownerId)
-    .where("archivedAt", "is", null)
-    .returning(["id", "name", "ownerId"])
-    .executeTakeFirst(databaseOperationOptions());
-  if (!row) throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
-  return row;
+  return withDatabaseTransaction(database, (transaction) =>
+    administrationCommand(transaction, input.administration, async () => {
+      const row = await transaction
+        .updateTable("browserProfiles")
+        .set({ name: input.name, updatedAt: new Date() })
+        .where("id", "=", input.profileId)
+        .where("ownerId", "=", input.ownerId)
+        .where("archivedAt", "is", null)
+        .returning(["id", "name", "ownerId"])
+        .executeTakeFirst(databaseOperationOptions());
+      if (!row)
+        throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
+      return row;
+    }),
+  );
 }
 
 /**
@@ -309,11 +328,19 @@ export async function renameBrowserProfile(
  */
 export async function deleteBrowserProfile(
   database: Kysely<DatabaseSchema>,
-  input: { readonly ownerId: UserId; readonly profileId: BrowserProfileId },
+  input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
+    readonly ownerId: UserId;
+    readonly profileId: BrowserProfileId;
+  },
 ) {
-  return withDatabaseTransaction(database, (transaction) =>
-    deleteBrowserProfileInTransaction(transaction, input),
-  );
+  return withDatabaseTransaction(database, async (transaction) => {
+    // The profile lock ranks before the administration ledger's.
+    await lockBrowserProfile(transaction, input.profileId);
+    return administrationCommand(transaction, input.administration, () =>
+      deleteBrowserProfileInTransaction(transaction, input),
+    );
+  });
 }
 
 export async function deleteBrowserProfileInTransaction(
@@ -1997,23 +2024,28 @@ export async function revokeBrowserProfileGrant(
   database: Kysely<DatabaseSchema>,
   grantId: BrowserProfileGrantId,
   revokedBy: UserId,
+  administration?: AdministrationCommandIdentity | undefined,
 ): Promise<RevokedBrowserProfileGrantRecord> {
-  const row = await database
-    .updateTable("browserProfileGrants")
-    .set({ revokedAt: new Date() })
-    .where("id", "=", grantId)
-    .where("createdBy", "=", revokedBy)
-    .where("revokedAt", "is", null)
-    .returning(["id", "profileId", "workspaceId"])
-    .executeTakeFirst(databaseOperationOptions());
-  if (!row) {
-    throw new OpensteerError({ code: "not_found", message: "Active grant not found" });
-  }
-  return {
-    grantId: row.id,
-    profileId: row.profileId,
-    workspaceId: row.workspaceId,
-  };
+  return withDatabaseTransaction(database, (transaction) =>
+    administrationCommand(transaction, administration, async () => {
+      const row = await transaction
+        .updateTable("browserProfileGrants")
+        .set({ revokedAt: new Date() })
+        .where("id", "=", grantId)
+        .where("createdBy", "=", revokedBy)
+        .where("revokedAt", "is", null)
+        .returning(["id", "profileId", "workspaceId"])
+        .executeTakeFirst(databaseOperationOptions());
+      if (!row) {
+        throw new OpensteerError({ code: "not_found", message: "Active grant not found" });
+      }
+      return {
+        grantId: row.id,
+        profileId: row.profileId,
+        workspaceId: row.workspaceId,
+      };
+    }),
+  );
 }
 
 export async function getBrowserTabOpen(

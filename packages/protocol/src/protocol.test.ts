@@ -1,10 +1,15 @@
+import {
+  agentTools,
+  environment_list,
+  thread_read,
+  thread_list,
+  thread_message,
+} from "@opensteer/agent-tools/tools";
 import { ThreadAccessModeSchema, createId, type Message } from "@opensteer/core";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   AgentBrowserSessionSummarySchema,
-  AgentControlRequestSchema,
-  AgentControlResponseSchema,
   BrowserAttachTicketClaimsSchema,
   BrowserAttachTicketIdentitySchema,
   BrowserClientMessageSchema,
@@ -591,7 +596,7 @@ describe("wire protocol", () => {
           anchorThreadId: createId("thread"),
           capabilities: {
             browserCdp: null,
-            integrationMcp: { expiresAt, token: "integration-token", url: "https://host.test/mcp" },
+
             mcp: { expiresAt, token: "control-token", url: "https://host.test/mcp" },
           },
           executionGeneration: 2,
@@ -666,23 +671,16 @@ describe("wire protocol", () => {
         assignment: null,
         threadRole: "work",
         threadState: { previousAssignment: null, previousRun: null },
-        agentControl: {
-          token: "agent-token",
-          url: "https://host.example.test/internal/v1/agent-control",
-        },
         agentTools: {
-          capabilityProfileId: "main",
+          tools: agentTools.filter((tool) => tool.callers.includes("run")).map(({ name }) => name),
+          toolsRevision: "test-tools-v1",
+          instructions: "Host Opensteer instructions",
+          skills: ["opensteer:threads"],
           token: "agent-tools-token",
           url: "https://host.example.test/internal/v1/mcp",
         },
-        browserCdp: {
-          token: "browser-cdp-token",
-          url: "https://host.example.test/internal/v1/browser-cdp",
-        },
-        integrationTools: {
-          token: "agent-tools-token",
-          url: "https://host.example.test/internal/v1/integration-mcp",
-        },
+        browserCdp: { url: "https://host.example.test/internal/v1/browser-cdp" },
+
         plugins: {
           versions: [],
           token: "plugin-cache-token",
@@ -764,6 +762,25 @@ describe("wire protocol", () => {
       true,
     );
     expect(RunnerCommandSchema.safeParse({ ...base, inputs: [] }).success).toBe(false);
+    // The Run has one Host credential, the tool plan's.
+    expect(
+      RunnerCommandSchema.safeParse({
+        ...base,
+        context: {
+          ...base.context,
+          agentControl: { token: "agent-token", url: "https://host.example.test/internal/v1/mcp" },
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      RunnerCommandSchema.safeParse({
+        ...base,
+        context: {
+          ...base.context,
+          browserCdp: { ...base.context.browserCdp, token: "browser-cdp-token" },
+        },
+      }).success,
+    ).toBe(false);
     expect(
       RunnerCommandSchema.safeParse({
         ...base,
@@ -892,7 +909,7 @@ describe("wire protocol", () => {
       const id = createId("thread");
       return {
         accessMode: "full-access" as const,
-        capabilityProfileId: "main" as const,
+        inheritsMain: true,
         continuationIdentity: null,
         createdAt: new Date().toISOString(),
         createdBy: createId("user"),
@@ -928,7 +945,7 @@ describe("wire protocol", () => {
       modelId: `${index}`.padEnd(255, "m"),
       providerId: `p${index}`.padEnd(100, "p"),
     });
-    const catalog = AgentControlResponseSchema.parse({
+    const catalog = environment_list.output.parse({
       delegationDefault: {
         environmentId: environments[0]!.id,
         harnessInstanceId: harnessIds[0],
@@ -975,38 +992,41 @@ describe("wire protocol", () => {
       threadId,
     };
     const readWindow = { ...window, byteCount: 300 * 1_024, itemCount: 1, threadId };
-    expect(
-      AgentControlResponseSchema.safeParse({
-        assignments: [],
-        assignmentWindow: {
-          byteCount: 2,
-          hasMore: false,
-          itemCount: 0,
-          nextBefore: null,
-          totalItems: 0,
-        },
-        messages: [largeMessage],
-        requestId,
-        thread,
-        type: "thread.read.result",
-        window: readWindow,
-      }).success,
-    ).toBe(true);
-    expect(
-      AgentControlResponseSchema.safeParse({
-        messages: [largeMessage, { ...largeMessage, id: createId("message") }],
-        requestId,
-        thread,
-        type: "thread.read.result",
-        window: { ...readWindow, byteCount: 600 * 1_024, itemCount: 2 },
-      }).success,
-    ).toBe(false);
+    const readPage = {
+      execution: {
+        threadId,
+        environmentId: createId("environment"),
+        harnessInstanceId: createId("harnessInstance"),
+        modelSelection: { modelId: "gpt-5", providerId: "openai", options: {} },
+      },
+      queue: { paused: false, items: [] },
+      assignments: [],
+      assignmentWindow: {
+        byteCount: 2,
+        hasMore: false,
+        itemCount: 0,
+        nextBefore: null,
+        totalItems: 0,
+      },
+      messages: [largeMessage],
+      requestId,
+      thread,
+      type: "thread.read.result",
+      window: readWindow,
+    };
+    expect(thread_read.output.safeParse(readPage).success).toBe(true);
+    const oversized = thread_read.output.safeParse({
+      ...readPage,
+      messages: [largeMessage, { ...largeMessage, id: createId("message") }],
+      window: { ...readWindow, byteCount: 600 * 1_024, itemCount: 2 },
+    });
+    expect(oversized.error?.issues.map(({ message }) => message)).toEqual([
+      "Thread history exceeds the agent output byte limit",
+    ]);
   });
 
   it("fits a full Thread listing page and requires explicit agent message delivery", () => {
-    const requestId = randomUUID();
-    const listing = AgentControlResponseSchema.parse({
-      requestId,
+    const listing = thread_list.output.parse({
       threads: Array.from({ length: 50 }, () => ({
         environmentConnected: true,
         environmentId: createId("environment"),
@@ -1032,48 +1052,38 @@ describe("wire protocol", () => {
       agentToolPayloadMaxSerializedBytes,
     );
     expect(
-      AgentControlResponseSchema.safeParse({
+      thread_list.output.safeParse({
         ...listing,
-        threads: [...(listing.type === "thread.list.result" ? listing.threads : []), listing],
+        threads: [...listing.threads, listing],
       }).success,
     ).toBe(false);
 
-    const untitled = AgentControlRequestSchema.parse({
-      content: [{ text: "Status?", type: "text" }],
+    const untitled = thread_message.input.parse({
+      message: "Status?",
       delivery: "queue",
-      requestId,
       threadId: createId("thread"),
-      type: "thread.message",
     });
     expect(untitled).toMatchObject({ delivery: "queue" });
     expect(
-      AgentControlRequestSchema.safeParse({
-        content: [{ text: "Status?", type: "text" }],
-        requestId,
+      thread_message.input.safeParse({
+        message: "Status?",
         threadId: createId("thread"),
-        type: "thread.message",
       }).success,
     ).toBe(false);
     for (const delivery of ["turn", "notify"] as const) {
       expect(
-        AgentControlRequestSchema.safeParse({
-          content: [{ text: "Status?", type: "text" }],
+        thread_message.input.safeParse({
+          message: "Status?",
           delivery,
-          requestId,
           threadId: createId("thread"),
-          type: "thread.message",
         }).success,
       ).toBe(false);
     }
-    expect(
-      AgentControlRequestSchema.parse({ limit: 50, requestId, type: "thread.list" }),
-    ).toMatchObject({ limit: 50 });
-    expect(AgentControlRequestSchema.parse({ requestId, type: "thread.list" })).toMatchObject({
+    expect(thread_list.input.parse({ limit: 50 })).toMatchObject({ limit: 50 });
+    expect(thread_list.input.parse({})).toMatchObject({
       limit: 25,
     });
-    expect(
-      AgentControlRequestSchema.safeParse({ limit: 51, requestId, type: "thread.list" }).success,
-    ).toBe(false);
+    expect(thread_list.input.safeParse({ limit: 51 }).success).toBe(false);
   });
 
   it("rejects duplicate and unbounded Runner harness advertisements", () => {
@@ -1308,14 +1318,3 @@ function harnessSources(sourceId: string, label: string) {
     },
   ];
 }
-
-it("accepts the home alias for thread reads", () => {
-  expect(
-    AgentControlRequestSchema.parse({
-      requestId: randomUUID(),
-      type: "thread.read",
-      threadId: "home",
-      maxMessages: 1,
-    }),
-  ).toMatchObject({ threadId: "home" });
-});

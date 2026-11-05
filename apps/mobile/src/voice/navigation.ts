@@ -3,14 +3,16 @@ import { StackActions } from "@react-navigation/native";
 import { navigationRef } from "../navigation-ref.js";
 import { workspaceRoute } from "../browser/surface-route.js";
 
+/** The route naming the conversation here: the one on screen, or beneath the places over it. */
+export function conversationRoute() {
+  const route = navigationRef.getCurrentRoute();
+  if (route?.name !== "WorkspaceBrowser") return route;
+  return navigationRef.getRootState()?.routes.findLast(({ name }) => name !== "WorkspaceBrowser");
+}
+
 export function show(deploymentId: string | null, target: VoiceTarget): boolean {
   if (!deploymentId || !navigationRef.isReady()) return false;
   const route = navigationRef.getCurrentRoute();
-  if (target.kind === "back") {
-    if (!navigationRef.canGoBack()) return false;
-    navigationRef.goBack();
-    return true;
-  }
   if (target.kind === "chat") {
     if (
       route?.name === "Home" &&

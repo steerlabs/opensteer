@@ -23,7 +23,7 @@ const notices: Record<string, VoiceNotice> = {
     message: "Allow microphone access to talk to Opensteer.",
     action: "open-settings",
   },
-  ended: { kind: "ended", message: "Voice moved to another device.", action: null },
+  ended: { kind: "ended", message: "The voice call ended.", action: null },
 };
 const base: VoiceSnapshot = {
   available: true,
@@ -32,19 +32,32 @@ const base: VoiceSnapshot = {
   heard: null,
   spoken: null,
   since: Date.now() - 42_000,
+  activity: null,
   notice: null,
 };
 const snapshots: Record<string, Partial<VoiceSnapshot>> = {
   idle: { since: null },
   connecting: { phase: "connecting" },
   listening: { phase: "listening" },
-  hearing: { phase: "hearing", heard: "Show me the flight booking" },
+  hearing: { phase: "hearing", heard: "Open my reading list" },
   "hearing-long": {
     phase: "hearing",
     heard:
       "Can you find a table for four at Nopa on Friday around seven thirty and check with me before you book it",
   },
   thinking: { phase: "thinking", heard: "Book a table for four at Nopa on Friday" },
+  "working-browser": {
+    phase: "thinking",
+    heard: "Open my reading list",
+    activity: "browser",
+  },
+  "working-task": { phase: "thinking", heard: "What's left on the launch task?", activity: "list" },
+  "working-integration": {
+    phase: "thinking",
+    heard: "Anything new from Maya in Gmail?",
+    activity: "puzzle",
+  },
+  shown: { phase: "listening", heard: "Open my reading list" },
   speaking: {
     phase: "speaking",
     spoken: "Nopa has a table for four at seven thirty on Friday. Want me to book it?",
@@ -65,6 +78,12 @@ const controller: VoiceControls = {
     return () => listeners.delete(listener);
   },
   getSnapshot: () => snapshot,
+  // `state=shown` glints once the island is drawn, as when the agent opens something.
+  subscribeShown: (listener) => {
+    if (state !== "shown") return () => {};
+    const timer = setTimeout(listener, 300);
+    return () => clearTimeout(timer);
+  },
   subscribeLevel: (listener: (levels: VoiceLevels) => void) => {
     if (params.has("live")) {
       const started = performance.now();

@@ -3,9 +3,9 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MockHostClient } from "@opensteer/client/mock";
+import { MockHostClient, type MockHostClientOptions } from "@opensteer/client/mock";
 import { HostClientRequestError, unwrapRpcResult } from "@opensteer/client/host";
-import { pluginPath } from "@opensteer/client/settings";
+import { pluginCatalogProducts, pluginPath } from "@opensteer/client/settings";
 import {
   completePluginConsent,
   pluginConsentKey,
@@ -60,9 +60,10 @@ async function mount(
     sheet?: boolean;
     empty?: boolean;
     configure?: (client: MockHostClient) => Promise<void>;
+    client?: MockHostClientOptions;
   } = {},
 ) {
-  client = new MockHostClient({ latencyMs: 0 });
+  client = new MockHostClient({ latencyMs: 0, ...options.client });
   await options.configure?.(client);
   if (options.empty) {
     const rpc = client.rpc;
@@ -82,6 +83,11 @@ async function mount(
     desktopDeployment: null,
     localExecutionStatus: null,
   };
+  const gmail = options.sheet
+    ? pluginCatalogProducts(
+        unwrapRpcResult(await client.rpc["plugins.directory.get"]({})).catalog,
+      ).find(({ id }) => id === "google-gmail")!
+    : null;
   const node = document.createElement("div");
   document.body.append(node);
   root = createRoot(node);
@@ -89,8 +95,8 @@ async function mount(
     root!.render(
       <MemoryRouter initialEntries={[path]}>
         <ToastProvider>
-          {options.sheet ? (
-            <PluginAddSheet definitionId="google-gmail" personal={false} />
+          {gmail ? (
+            <PluginAddSheet personal={false} product={gmail} />
           ) : (
             <PluginsSection view={view} />
           )}
@@ -208,7 +214,7 @@ describe("Plugins settings", () => {
       await vi.waitFor(() => expect(node.textContent).toContain("Read and search mail"));
     });
     const proceed = [...node.querySelectorAll<HTMLButtonElement>("button")].find(
-      (button) => button.textContent === "Add and sign in to Gmail",
+      (button) => button.textContent === "Connect Gmail",
     )!;
     expect(proceed.disabled).toBe(true);
     expect(node.textContent).not.toContain("Everywhere");
@@ -264,14 +270,15 @@ describe("Plugins settings", () => {
     expect(node.textContent).not.toContain("Your accounts");
     expect(node.textContent).toContain("tim@example.com");
   });
-  it("offers catalog starting points when the inventory is empty", async () => {
+  it("shows the catalog's popular picks on the page itself when nothing is added", async () => {
     const node = await mount("/settings/plugins", { empty: true });
     await act(async () => {
       await vi.waitFor(() =>
-        expect(node.querySelectorAll(".settings-suggestions a").length).toBeGreaterThan(0),
+        expect(node.querySelectorAll(".settings-catalog__tile").length).toBeGreaterThan(0),
       );
     });
-    expect(node.textContent).toContain("Browse all plugins");
+    expect(node.textContent).toContain("Add more");
+    expect(node.querySelector('[aria-label="Add Gmail"]')).not.toBeNull();
     expect(node.textContent).not.toContain("Needs you");
   });
   it("shows one Gmail row and retains committed switch state while the Host is pending", async () => {
@@ -443,18 +450,90 @@ it("changes only entered server secrets from unified plugin detail", async () =>
   expect(document.body.textContent).not.toContain("new-secret");
 });
 
-it("lets an installed directory entry open account setup", async () => {
+it("leaves updating an agent-made plugin to its agent", async () => {
+  const node = await mount(pluginPath({ kind: "plugin", pluginId: "tapo-camera" }), {
+    client: { agentPlugins: [{ id: "tapo-camera", name: "tapo-camera" }] },
+  });
+  await act(async () => {
+    await vi.waitFor(() => expect(node.textContent).toContain("Installation"));
+  });
+  const buttons = [...node.querySelectorAll("button")].map((button) => button.textContent);
+  expect(buttons).not.toContain("Update");
+  expect(buttons).toContain("Remove");
+  expect(node.querySelector('[aria-label="Enable tapo-camera"]')).not.toBeNull();
+  expect(node.textContent).toContain("updates it by installing its folder again");
+  expect(node.textContent).not.toContain("Source folder unknown");
+});
+
+it("offers only what isn't yours yet, finds it by search and opens its add sheet", async () => {
   const node = await mount("/settings/plugins/add");
   await act(async () => {
-    await vi.waitFor(() => expect(node.textContent).toContain("Gmail"));
+    await vi.waitFor(() => expect(node.textContent).toContain("Add more"));
   });
-  const entry = [...node.querySelectorAll(".card__row")].find((row) =>
-    row.textContent?.includes("Gmail"),
-  )!;
-  const button = entry.querySelector<HTMLButtonElement>("button")!;
-  expect(button.disabled).toBe(false);
-  await act(async () => button.click());
-  expect(document.querySelector('[role="dialog"]')?.textContent).toContain("What it’ll access");
+  const catalog = node.querySelector(".settings-catalog")!;
+  // Gmail is already this person's, so the catalog leaves it out.
+  expect(catalog.querySelector('[aria-label="Add Gmail"]')).toBeNull();
+  const search = node.querySelector<HTMLInputElement>('input[aria-label="Search plugins"]')!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+      search,
+      "resend",
+    );
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await act(async () => {
+    await vi.waitFor(() =>
+      expect(
+        [...catalog.querySelectorAll("button[aria-label^='Add ']")].map((button) =>
+          button.getAttribute("aria-label"),
+        ),
+      ).toEqual(["Add Resend"]),
+    );
+  });
+  await act(async () =>
+    catalog.querySelector<HTMLButtonElement>('[aria-label="Add Resend"]')!.click(),
+  );
+  const dialog = document.querySelector('[role="dialog"]')!;
+  expect(dialog.textContent).toContain("What it can reach");
+  expect(dialog.querySelector(".intg-icon--mark svg path")).not.toBeNull();
+});
+
+it("paints a remembered plugin list again only for the person who saw it", async () => {
+  await mount();
+  act(() => root!.unmount());
+  const rpc = client.rpc;
+  // The return visit's own read never answers, so only a remembered list can show.
+  Object.defineProperty(client, "rpc", {
+    value: new Proxy(rpc, {
+      get: (target, key) =>
+        key === "plugins.overview.get" ? () => new Promise(() => {}) : Reflect.get(target, key),
+    }),
+  });
+  const revisit = async () => {
+    const node = document.createElement("div");
+    document.body.append(node);
+    root = createRoot(node);
+    await act(async () =>
+      root!.render(
+        <MemoryRouter initialEntries={["/settings/plugins"]}>
+          <ToastProvider>
+            <PluginsSection view={view} />
+          </ToastProvider>
+        </MemoryRouter>,
+      ),
+    );
+    return node;
+  };
+  expect((await revisit()).querySelector('[aria-label="Enable Gmail"]')).not.toBeNull();
+  act(() => root!.unmount());
+  const snapshot = client.getSnapshot();
+  vi.spyOn(client, "getSnapshot").mockReturnValue({
+    ...snapshot,
+    user: { ...snapshot.user!, id: "usr_00000000-0000-4000-8000-0000000000ff" as never },
+  });
+  const other = await revisit();
+  expect(other.querySelector('[aria-label="Enable Gmail"]')).toBeNull();
+  expect(other.querySelector('[aria-label="Loading plugins"]')).not.toBeNull();
 });
 
 it("releases a rejected switch attempt before the next click", async () => {

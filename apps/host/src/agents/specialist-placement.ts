@@ -1,63 +1,118 @@
-import { DelegationModelChoiceSchema } from "@opensteer/core";
-import { OpensteerError, type HarnessId, type SpecialistRegistration } from "@opensteer/core";
 import {
-  delegationPlacement,
-  type DelegationPlacementRequest,
-  type DelegationPlacement,
-} from "./delegation-placement.js";
-import type { OpensteerStore } from "@opensteer/database";
+  expandModelWants,
+  OpensteerError,
+  type EnvironmentId,
+  type ModelWant,
+  type SpecialistManifest,
+  type Thread,
+  type ThreadAccessMode,
+  type UserId,
+  type WorkspaceId,
+} from "@opensteer/core";
+import type { RunnerRegistry } from "@opensteer/orchestration";
+import { SpecialistStore, type OpensteerStore } from "@opensteer/database";
+import {
+  resolveAutomaticModels,
+  workspaceExecution,
+  type AutomaticModelDependencies,
+} from "./automatic-models.js";
+import type { DelegationPlacement } from "./delegation-placement.js";
 
-/** Select the default account before inspecting models; a different account is not consent. */
+/**
+ * A new specialist Thread's account and model, chosen once before admission
+ * from the persisted manifest: exact entries as written, `{ role }` entries
+ * expanded in place from the caller's own automatic models. A manifest names
+ * no account; only the caller's authorized accounts on the Workspace's
+ * computer qualify. `fallback: "caller"` ends the list with the caller's model.
+ */
 export async function specialistPlacement(
-  store: Pick<OpensteerStore, "getHarnessCatalog" | "getHarnessInstance" | "listHarnessInstances">,
-  request: Pick<DelegationPlacementRequest, "environment" | "parent"> & {
-    specialist: Pick<SpecialistRegistration, "models" | "fallback">;
-    canRun: (engine: HarnessId) => boolean;
+  dependencies: AutomaticModelDependencies & {
+    readonly runners: Pick<RunnerRegistry, "canRunHarness" | "harnessAccessModes">;
+  },
+  request: {
+    readonly userId: UserId;
+    readonly environmentId: EnvironmentId;
+    readonly accessMode: ThreadAccessMode;
+    readonly specialist: Pick<SpecialistManifest, "models" | "fallback">;
+    /** The calling Run's Thread; a connected agent has none. */
+    readonly caller?: Thread | undefined;
   },
 ): Promise<DelegationPlacement> {
-  const reasons: string[] = [];
-  const accounts = (
-    await store.listHarnessInstances({ environmentIds: [request.environment.id] })
-  ).filter((a) => a.enabled);
-  for (const candidate of request.specialist.models) {
-    try {
-      const matching = accounts.filter((a) => a.driverKind === candidate.engine);
-      const defaults = matching.filter((a) => a.isDefault);
-      const account =
-        defaults.length === 1 ? defaults[0] : matching.length === 1 ? matching[0] : undefined;
-      if (!account)
-        throw new Error(matching.length ? "ambiguous default account" : "engine unavailable");
-      if (!request.canRun(account.driverKind))
-        throw new Error("engine not runnable on this computer");
-      const catalog = await store.getHarnessCatalog(request.environment.id, account.id);
-      if (catalog?.status !== "ready")
-        throw new Error(`catalog ${catalog?.status ?? "unreported"}`);
-      const models = catalog.models.filter(
-        (m) => m.modelId === candidate.model || `${m.providerId}/${m.modelId}` === candidate.model,
-      );
-      if (models.length !== 1)
-        throw new Error(models.length ? "ambiguous model" : "model unavailable");
-      const model = models[0]!;
-      return await delegationPlacement(store, {
-        ...request,
-        existingThread: null,
-        harnessInstanceId: account.id,
-        model: DelegationModelChoiceSchema.parse({
-          modelId: model.modelId,
-          providerId: model.providerId,
-          ...(candidate.options ? { options: candidate.options } : {}),
-        }),
-      });
-    } catch (error) {
-      reasons.push(
-        `${candidate.engine}/${candidate.model}: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-  }
-  if (request.specialist.fallback === "caller")
-    return delegationPlacement(store, { ...request, existingThread: null });
+  const { candidates, skipped } = await resolveAutomaticModels(dependencies, {
+    userId: request.userId,
+    wants: (config) => expandModelWants(request.specialist.models, config),
+    original: request.specialist.fallback === "caller" ? request.caller : undefined,
+    canRun: workspaceExecution(dependencies.runners, request),
+  });
+  const chosen = candidates[0];
+  if (chosen)
+    return {
+      harnessInstanceId: chosen.harnessInstanceId,
+      harnessRevision: chosen.harnessRevision,
+      modelSelection: chosen.storedModelSelection,
+    };
+  const reasons = [
+    ...new Set(
+      skipped.map(
+        (skip) =>
+          `${wantLabel(skip.want)}: ${skip.reason}${skip.detail ? ` (${skip.detail})` : ""}`,
+      ),
+    ),
+  ];
   throw new OpensteerError({
     code: "bad_request",
-    message: `No specialist model can run: ${reasons.join("; ")}`,
+    message: `No specialist model can run: ${reasons.join("; ") || "no account here offers its models"}`,
   });
+}
+
+function wantLabel(want: ModelWant | null) {
+  if (!want) return "caller's model";
+  if ("model" in want) return `${want.engine}/${want.model}`;
+  if (!("kind" in want)) return `${want.engine} small model`;
+  return want.kind === "model"
+    ? `${want.driverKind}/${want.providerId}/${want.modelId}`
+    : `${want.driverKind} small model`;
+}
+
+export async function resolveDelegationSpecialist(
+  store: OpensteerStore,
+  userId: UserId,
+  workspaceId: WorkspaceId,
+  selector: string | undefined,
+  existingThread: Thread | null,
+) {
+  const registrations =
+    selector || existingThread?.specialistId
+      ? await new SpecialistStore(store.database).list(workspaceId, userId)
+      : [];
+  const specialist = existingThread?.specialistId
+    ? registrations.find((r) => r.id === existingThread.specialistId)
+    : (registrations.find((r) => r.id === selector) ??
+      registrations.find((r) => r.plugin === selector && r.ownerUserId === userId) ??
+      registrations.find((r) => r.plugin === selector));
+  if ((selector || existingThread?.specialistId) && !specialist)
+    throw badRequest("Specialist is not registered in this Workspace");
+  if (existingThread && selector && selector !== specialist?.id && selector !== specialist?.plugin)
+    throw badRequest("An existing Thread keeps its specialist binding");
+  if (specialist && specialist.ownerUserId !== userId)
+    throw forbidden(
+      `${specialist.plugin} uses ${specialist.ownerName ?? specialist.ownerUserId}'s accounts; add it for yourself to use your own`,
+    );
+  if (specialist?.status === "pending")
+    throw badRequest(
+      `Specialist is pending: ${specialist.access
+        .filter((a) => a.state !== "bound")
+        .map((a) => `${a.type}: ${a.state} (${a.reason})`)
+        .join("; ")}`,
+    );
+  if (specialist)
+    await new SpecialistStore(store.database).assertRunnable(specialist.id, workspaceId, userId);
+  return specialist;
+}
+
+function badRequest(message: string) {
+  return new OpensteerError({ code: "bad_request", message });
+}
+function forbidden(message: string) {
+  return new OpensteerError({ code: "forbidden", message });
 }

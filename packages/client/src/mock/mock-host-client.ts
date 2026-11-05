@@ -1,8 +1,30 @@
 import { mockBrowserPopups } from "./mock-browser-frames.js";
+import {
+  matchModelSelection,
+  storedModelSelection as coreStoredModelSelection,
+} from "@opensteer/core";
+import {
+  HarnessIdSchema,
+  HarnessInstanceIdSchema,
+  ModelIdSchema,
+  AutomaticModelConfigSchema,
+  automaticModelDefaults,
+  automaticModelWants,
+  emptyAutomaticModelConfig,
+  resolveModelCandidates,
+  type AutomaticModelConfig,
+  type AutomaticModelRole,
+} from "@opensteer/core";
+import {
+  automaticModelCatalogView,
+  AutomaticModelsViewSchema,
+  type AutomaticModelsView,
+} from "@opensteer/protocol";
+import { MockDesktopUpdates, type MockDesktopUpdateScenario } from "./mock-desktop-updates.js";
 import { MockSettingsFixtures } from "./settings-fixtures.js";
 import type { PasswordSignInCard } from "@opensteer/protocol";
 import { BrowserCursorStore } from "../host/browser-cursor.js";
-import type { PersonShowMessage } from "@opensteer/protocol";
+import type { PersonShowMessage, PluginRow } from "@opensteer/protocol";
 import { RunPlaceStore } from "../host/run-place.js";
 import { compareTaskOrder } from "../host/task-entries.js";
 import { sharedDisplayStreams } from "../integrations/phone-display-stream.js";
@@ -1776,14 +1798,20 @@ const mockMachines: readonly MachineSummary[] = [
 ];
 
 export interface MockHostClientOptions {
+  desktopUpdates?: MockDesktopUpdateScenario;
   specialistPlugins?: { id: string; name: string; manifest: SpecialistManifest }[];
+  /** Plugins an agent made in Main, from a folder in that Workspace. */
+  agentPlugins?: { id: string; name: string }[];
   readonly browserPreferencesStorage?: BrowserPreferencesStorage;
   readonly sharedTaskDoneAvailable?: boolean;
   /** The platform's lifecycle, reported to display sockets as the real client reports it. */
   readonly lifecycle?: ClientLifecycle;
   /** Automations covering every state the Automations page shows; seeded by default. */
   automations?: "seeded" | "absent";
-  memoryPasses?: "active" | "off" | "no-light-model";
+  memoryPasses?: "active" | "off" | "waiting-for-model";
+  /** `none`: no account could run background work, for Settings' empty state. */
+  automaticModels?: "seeded" | "edited" | "excluded" | "none";
+  automaticModelsAvailable?: boolean;
   places?: "seeded" | "absent";
   /** Development fixture for the first message before a Chat exists. */
   initialHome?: "seeded" | "absent";
@@ -1797,6 +1825,8 @@ export interface MockHostClientOptions {
   pendingRequests?: readonly Request[];
   /** The sessions `sessions.list` reports; one current session by default. */
   sessions?: readonly AuthSessionSummary[];
+  connections?: readonly import("@opensteer/protocol").AgentConnection[];
+  connectionConsent?: import("@opensteer/protocol").AgentConnectionConsent;
 }
 
 const mockWebhookOrigin = "https://mock.opensteer.invalid";
@@ -1891,6 +1921,9 @@ function mockVoiceEnded(message: string, reason: "voice-ended" | "voice-refused"
  */
 function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
   return {
+    "connections.list": async () => rpcSuccess({ connections: client.listConnections() }),
+    "connections.authorization.get": async ({ requestId }) =>
+      rpcSuccess(client.connectionConsent(requestId)),
     "personal.remoteAccess.get": async () => rpcSuccess(client.remoteAdministration),
     "apps.get": unsupportedMockRpc,
     "apps.view": unsupportedMockRpc,
@@ -2044,7 +2077,8 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
       const workspaceId = WorkspaceIdSchema.parse(client.getSnapshot().workspaces[0]!.id);
       client.settings.syncServices(workspaceId, await client.loadIntegrationPlatform());
       client.settings.syncPackages(workspaceId, await client.listPlugins(workspaceId));
-      return rpcSuccess(client.settings.overview(workspaceId));
+      const overview = client.settings.overview(workspaceId);
+      return rpcSuccess({ ...overview, rows: overview.rows.map(listedMockRow) });
     },
     "plugins.detail.get": async ({ target }) => {
       try {
@@ -2056,12 +2090,11 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
           WorkspaceIdSchema.parse(client.getSnapshot().workspaces[0]!.id),
           await client.listPlugins(),
         );
-        return rpcSuccess(
-          client.settings.detail(
-            WorkspaceIdSchema.parse(client.getSnapshot().workspaces[0]!.id),
-            target,
-          ),
+        const detail = client.settings.detail(
+          WorkspaceIdSchema.parse(client.getSnapshot().workspaces[0]!.id),
+          target,
         );
+        return rpcSuccess({ ...detail, row: listedMockRow(detail.row) });
       } catch (error) {
         return mockRefusal(error);
       }
@@ -2076,16 +2109,24 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
             .length > 100,
         catalog: platform.catalog.map((item) => ({
           definitionId: item.definition.id,
-          title: item.definition.name,
+          title: mockCatalogProducts[item.definition.id]?.title ?? item.definition.name,
           description: item.definition.description,
           added: item.installationId !== null,
+          ...(mockCatalogProducts[item.definition.id]
+            ? { product: { id: item.definition.id, ...mockCatalogProducts[item.definition.id]! } }
+            : {}),
           contents: (item.definition.computerApp?.operations ?? []).map(({ name }) => ({
             name,
             kind: "tool" as const,
           })),
-          access: item.definition.authMethods.flatMap((method) =>
-            method.kind === "oauth" ? method.oauth.scopes : [method.label],
-          ),
+          access: item.definition.computerApp
+            ? [
+                item.definition.computerApp.accessSummaries.read,
+                item.definition.computerApp.accessSummaries.readWrite,
+              ]
+            : item.definition.authMethods.flatMap((method) =>
+                method.kind === "oauth" ? method.oauth.scopes : [method.label],
+              ),
         })),
         requests: client
           .getSnapshot()
@@ -2108,14 +2149,13 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
         })
         .catch(mockRefusal),
     "harness.authentication.get": async () => rpcSuccess(await client.getHarnessAuthentication()),
+    "automaticModels.get": async () => rpcSuccess(mockAutomaticModelsView(client)),
     "harness.catalog.refresh": async () => rpcSuccess({}),
     "harness.modelServers.discover": async (input) =>
       rpcSuccess({ servers: mockModelServers(input.address) }),
     // The preview has no Runner to create a call, so voice never starts here.
     "voice.start": async () => mockVoiceEnded("The preview has no voice.", "voice-refused"),
     "voice.renew": async () => mockVoiceEnded("This voice call is over.", "voice-ended"),
-    "voice.next": async () => mockVoiceEnded("This voice call is over.", "voice-ended"),
-    "voice.answer": async () => mockVoiceEnded("This voice call is over.", "voice-ended"),
     "voice.context": async () => mockVoiceEnded("This voice call is over.", "voice-ended"),
     "voice.say": async () => mockVoiceEnded("This voice call is over.", "voice-ended"),
     "voice.stop": async () => rpcSuccess({}),
@@ -2714,6 +2754,13 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
     case "thread.input.move":
       client.moveThreadInput(command.threadId, command.messageId, command.beforeMessageId);
       return rpcSuccess({ type: command.type });
+    case "automaticModels.set":
+      client.automaticModelConfig = AutomaticModelConfigSchema.parse(command.config);
+      client.applyAutomaticEligibility();
+      return rpcSuccess({
+        type: command.type,
+        config: structuredClone(client.automaticModelConfig),
+      });
     case "execution.preferences.remember":
       return rpcSuccess(
         hostApi["commands.dispatch"].success.parse({
@@ -2858,6 +2905,15 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
     case "personal.accountLink.approve":
     case "personal.accountLink.complete":
       return unsupportedMockRpc();
+    case "connection.revoke":
+      client.revokeConnection(command.connectionId);
+      for (const listener of client.connectionsListeners) listener();
+      return rpcSuccess({ type: command.type });
+    case "connection.authorize": {
+      const result = client.authorizeConnection(command);
+      for (const listener of client.connectionsListeners) listener();
+      return rpcSuccess(result);
+    }
     case "session.revoke":
       await client.revokeSession(command.sessionId);
       return rpcSuccess({ type: command.type });
@@ -2890,6 +2946,11 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
         ...(await client.cancelIntegrationAuthorization(command.attemptId)),
         type: command.type,
       });
+    case "integration.authorization.return":
+      return rpcSuccess({
+        ...(await client.getIntegrationAuthorization(command.attemptId)),
+        type: command.type,
+      });
     case "integration.providerApplication.save":
       return rpcSuccess({
         application: await client.saveIntegrationProviderApplication(command.input),
@@ -2904,8 +2965,10 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
         type: command.type,
       });
     case "integration.apiKey.connect":
-      await client.connectIntegrationApiKey(command.input);
-      return rpcSuccess({ type: command.type });
+      return rpcSuccess({
+        connectionId: await client.connectIntegrationApiKey(command.input),
+        type: command.type,
+      });
     case "integration.grant.create":
       return rpcSuccess({
         grant: await client.createIntegrationGrant(command.input),
@@ -3402,7 +3465,7 @@ function mockThread(thread: ThreadSummary): Thread {
     providerSessionId: thread.providerSessionId,
     doneAt: thread.doneAt,
     accessMode: thread.accessMode,
-    capabilityProfileId: "workspace",
+    inheritsMain: false,
     continuationIdentity: thread.continuationIdentity,
     askedAt: thread.askedAt,
     createdAt: thread.createdAt,
@@ -3584,6 +3647,7 @@ const MockMacAnswerSchema = z.discriminatedUnion("kind", [
 type MockMacAnswer = z.output<typeof MockMacAnswerSchema>;
 
 export class MockHostClient implements HostClient {
+  readonly desktopUpdates: MockDesktopUpdates;
   subscribePluginsChanged(
     listener: (message: { type: "host.plugins-changed" }) => void,
   ): () => void {
@@ -3604,6 +3668,7 @@ export class MockHostClient implements HostClient {
       return;
     for (const listener of this.#personShowListeners) listener(message);
   }
+  readonly automaticModelsAvailable: () => boolean;
   readonly browserPasskeys = new BrowserPasskeys();
   readonly browserHistory: BrowserHistoryClient;
   readonly browserPreferences: BrowserPreferences;
@@ -3640,8 +3705,10 @@ export class MockHostClient implements HostClient {
   readonly #lifecycle: ClientLifecycle | null;
 
   constructor(options: MockHostClientOptions = {}) {
+    this.desktopUpdates = new MockDesktopUpdates(options.desktopUpdates);
     this.#lifecycle = options.lifecycle ?? null;
     this.#state = new MockHostState(options);
+    this.automaticModelsAvailable = () => options.automaticModelsAvailable !== false;
     this.browserPreferences = new BrowserPreferences(options.browserPreferencesStorage);
     this.browserHistory = new BrowserHistoryClient({
       get: async (profileId) =>
@@ -4303,6 +4370,10 @@ export class MockHostClient implements HostClient {
   }
 
   /** The preview projects every Thread it holds, so there is nothing to hold open. */
+  workspacePosition(_workspaceId: string): null {
+    return null;
+  }
+
   observeThread(_threadId: string): () => void {
     return () => undefined;
   }
@@ -4488,6 +4559,11 @@ export class MockHostClient implements HostClient {
   subscribePersonalRemoteAccess(listener: () => void): () => void {
     this.#state.remoteAdministrationListeners.add(listener);
     return () => this.#state.remoteAdministrationListeners.delete(listener);
+  }
+
+  subscribeConnectionsChanged(listener: () => void): () => void {
+    this.#state.connectionsListeners.add(listener);
+    return () => this.#state.connectionsListeners.delete(listener);
   }
 
   subscribeNotifications(listener: (notification: NotificationView) => void): () => void {
@@ -4831,12 +4907,80 @@ export class MockHostClient implements HostClient {
   }
 }
 
+function mockAutomaticModelsView(state: MockHostState): AutomaticModelsView {
+  const snapshot = state.getSnapshot();
+  const accounts = snapshot.harnesses.map((h) => {
+    const env = snapshot.environments.find((e) => e.id === h.environmentId);
+    return {
+      harnessInstanceId: h.id,
+      environmentId: h.environmentId,
+      harnessRevision: h.runtimeRevision,
+      driverKind: h.driverKind,
+      sourceId: h.sourceId,
+      isDefault: h.isDefault,
+      enabled: h.enabled,
+      removed: false,
+      available: state.automaticModels !== "none" && !!env?.connected,
+      catalog: env?.harnessCatalogs.find((c) => c.harnessInstanceId === h.id) ?? null,
+      eligible: !state.automaticModelConfig.excludedAccounts.includes(
+        h.id as AutomaticModelConfig["excludedAccounts"][number],
+      ),
+      reason: state.automaticModelConfig.excludedAccounts.includes(
+        h.id as AutomaticModelConfig["excludedAccounts"][number],
+      )
+        ? "excluded"
+        : null,
+      accountDisplayName: h.name,
+      computerDisplayName: env?.name ?? "Computer",
+    };
+  });
+  const parsed = AutomaticModelsViewSchema.parse({
+    config: state.automaticModelConfig,
+    maintainedDefaults: automaticModelDefaults,
+    accounts: accounts.map((a) => ({ ...a, catalog: automaticModelCatalogView(a.catalog) })),
+    light: { label: "General preference", candidates: [], skipped: [] },
+    deep: { candidates: [], skipped: [] },
+  });
+  const preview = (role: AutomaticModelRole) => {
+    const result = resolveModelCandidates({
+      wants: automaticModelWants(state.automaticModelConfig, role),
+      accounts: parsed.accounts.map((a, index) => ({
+        ...a,
+        catalog: accounts[index]!.catalog,
+        usage: [],
+      })),
+      excludedAccounts: state.automaticModelConfig.excludedAccounts,
+      canRun: () => ({ ok: true }),
+      now: Date.now(),
+    });
+    return {
+      candidates: result.candidates.map((c) => ({
+        ...c,
+        modelSelection: c.storedModelSelection,
+        accountDisplayName:
+          accounts.find((a) => a.harnessInstanceId === c.harnessInstanceId)?.accountDisplayName ??
+          "Account",
+        computerDisplayName: "Main runner",
+        providerDisplayName: c.storedModelSelection.providerId,
+        modelDisplayName:
+          c.account.catalog?.models.find((m) => m.modelId === c.storedModelSelection.modelId)
+            ?.displayName ?? c.storedModelSelection.modelId,
+      })),
+      skipped: result.skipped,
+    };
+  };
+  return AutomaticModelsViewSchema.parse({
+    ...parsed,
+    light: { ...preview("light"), label: "General preference" },
+    deep: preview("deep"),
+  });
+}
 interface MockPlugin {
   id: string;
   name: string;
   scope: "deployment" | "workspace";
   workspaceId: string | null;
-  source: { directory?: string };
+  source: { directory?: string; workspaceDirectory?: string };
   currentVersionId: string;
   versions: {
     id: string;
@@ -4849,6 +4993,66 @@ interface MockPlugin {
   updatedAt: string;
 }
 class MockHostState {
+  automaticModelConfig: AutomaticModelConfig = structuredClone(emptyAutomaticModelConfig);
+  readonly automaticModels: "seeded" | "edited" | "excluded" | "none";
+  private connections: import("@opensteer/protocol").AgentConnection[];
+  private pendingConnectionConsent: import("@opensteer/protocol").AgentConnectionConsent | null;
+  private connectionDecision: { requestId: string; fingerprint: string } | null = null;
+  connectionConsent(requestId: string) {
+    const consent = this.pendingConnectionConsent;
+    if (
+      !this.snapshot.user ||
+      !consent ||
+      consent.requestId !== requestId ||
+      Date.parse(consent.expiresAt) <= this.now().getTime()
+    )
+      throw mockConflict("This agent connection request expired.");
+    return consent;
+  }
+  authorizeConnection(command: Extract<HostApiCommand, { type: "connection.authorize" }>) {
+    const consent = this.connectionConsent(command.requestId);
+    const fingerprint = JSON.stringify(command.decision);
+    if (this.connectionDecision?.requestId === command.requestId) {
+      if (this.connectionDecision.fingerprint !== fingerprint)
+        throw mockConflict("This connection request has already been answered.");
+    } else {
+      if (command.decision.kind === "approve") {
+        const reach = command.decision.reach;
+        if (
+          reach.kind === "workspace" &&
+          !consent.workspaces.some((workspace) => workspace.id === reach.workspaceId)
+        )
+          throw mockConflict("Only a Workspace owner can connect an agent to it.");
+        this.connections.push({
+          id: `mcn_${crypto.randomUUID()}`,
+          userId: this.snapshot.user!.id,
+          label: command.decision.label,
+          clientName: consent.clientName,
+          accessMode: command.decision.accessMode,
+          reach,
+          createdAt: this.now().toISOString(),
+          lastUsedAt: null,
+          expiresAt: new Date(this.now().getTime() + 30 * 24 * 60 * 60_000).toISOString(),
+        });
+      }
+      this.connectionDecision = { requestId: command.requestId, fingerprint };
+    }
+    return {
+      type: "connection.authorize" as const,
+      completionPath: `/oauth/mcp/complete?request=${command.requestId}`,
+    };
+  }
+  listConnections() {
+    return this.connections.filter(
+      (row) =>
+        row.userId === this.snapshot.user?.id && Date.parse(row.expiresAt) > this.now().getTime(),
+    );
+  }
+  revokeConnection(id: string) {
+    this.connections = this.connections.filter(
+      (row) => row.id !== id || row.userId !== this.snapshot.user?.id,
+    );
+  }
   readonly settings = new MockSettingsFixtures(
     () => this.emit(),
     () =>
@@ -5112,6 +5316,12 @@ class MockHostState {
       for (let i = this.specialists.length - 1; i >= 0; i--)
         if (this.specialists[i]?.pluginId === command.pluginId) this.specialists.splice(i, 1);
     } else if (command.type === "plugin.update") {
+      if (plugin.scope === "workspace")
+        throw new HostClientRequestError({
+          code: "forbidden",
+          message: "Agent-made plugins update when an agent installs their folder again.",
+          status: 403,
+        });
       const id = crypto.randomUUID();
       const current = plugin.versions.find((v) => v.id === plugin.currentVersionId);
       plugin.versions.push({
@@ -5146,6 +5356,7 @@ class MockHostState {
   }
 
   readonly remoteAdministrationListeners = new Set<() => void>();
+  readonly connectionsListeners = new Set<() => void>();
   remoteAdministration: import("@opensteer/protocol").PersonalRemoteAdministrationStatus = {
     access: { accountLink: null, generation: 0, mode: "off", route: null, schemaVersion: 2 },
     accountIssuer: null,
@@ -5805,6 +6016,17 @@ class MockHostState {
   }
 
   constructor(options: MockHostClientOptions = {}) {
+    this.automaticModels = options.automaticModels ?? "seeded";
+    if (this.automaticModels === "edited")
+      this.automaticModelConfig.roles.deep = [
+        { engine: HarnessIdSchema.parse("codex"), model: ModelIdSchema.parse("gpt-6.1-sol") },
+      ];
+    if (this.automaticModels === "excluded")
+      this.automaticModelConfig.excludedAccounts = [
+        HarnessInstanceIdSchema.parse(mockClaudeHarnessInstanceId),
+      ];
+    this.connections = [...(options.connections ?? [])];
+    this.pendingConnectionConsent = options.connectionConsent ?? null;
     for (const p of options.specialistPlugins ?? []) {
       const id = crypto.randomUUID();
       const at = new Date(0).toISOString();
@@ -5824,6 +6046,22 @@ class MockHostState {
           },
         ],
         activations: [],
+        createdAt: at,
+        updatedAt: at,
+      });
+    }
+    for (const p of options.agentPlugins ?? []) {
+      const id = crypto.randomUUID();
+      const at = new Date(0).toISOString();
+      this.plugins.push({
+        id: p.id,
+        name: p.name,
+        scope: "workspace",
+        workspaceId: mockMainWorkspaceId,
+        source: { workspaceDirectory: `plugins/${p.name}` },
+        currentVersionId: id,
+        versions: [{ id, digest: id, manifest: { name: p.name, skills: [{}] } }],
+        activations: [{ workspaceId: mockMainWorkspaceId }],
         createdAt: at,
         updatedAt: at,
       });
@@ -5856,6 +6094,7 @@ class MockHostState {
       : options.initialHome === "absent"
         ? withoutInitialHome(initial)
         : initial;
+    this.applyAutomaticEligibility();
     if (options.initialHome !== "absent" && !firstRun) this.seedHomeTask();
     for (const thread of this.snapshot.threads) {
       if (thread.icon === null && thread.id !== this.snapshot.homeThreadId)
@@ -5906,18 +6145,24 @@ class MockHostState {
           },
         });
         const record = this.getTrigger(created.trigger.id);
-        const pauseReason =
-          options.memoryPasses === "off"
-            ? "Memory is off at your request."
-            : options.memoryPasses === "no-light-model" && systemRole === "memory-light"
-              ? "This engine has no light model. Choose a model for the light pass, then resume."
-              : null;
         this.triggers.set(created.trigger.id, {
           ...record,
           trigger: {
             ...record.trigger,
             systemRole,
-            ...(pauseReason ? { status: "paused", pauseReason, nextFireAt: null } : {}),
+            ...(options.memoryPasses === "off"
+              ? {
+                  status: "paused",
+                  pauseReason: "Memory is off at your request.",
+                  nextFireAt: null,
+                }
+              : {}),
+            ...(options.memoryPasses === "waiting-for-model" && systemRole === "memory-light"
+              ? {
+                  waitingReason:
+                    "Waiting for an AI account it can use on Main's computer. Connect one there, or turn one on for automatic work in AI settings; it resumes by itself.",
+                }
+              : {}),
           },
         });
       }
@@ -6873,6 +7118,7 @@ class MockHostState {
         harness.isDefault ? harness.id : undefined,
       ),
     });
+    this.applyAutomaticEligibility();
     // A model server answers its first read the way a local one usually does:
     // one model loaded, one the server won't say the size of, one it can't run.
     if (source.modelSettings) {
@@ -7090,7 +7336,7 @@ class MockHostState {
         return thread
           ? {
               ...mockThread(thread),
-              ...(record.trigger.systemRole ? { capabilityProfileId: "delegated" as const } : {}),
+              ...(record.trigger.systemRole ? { inheritsMain: true } : {}),
             }
           : null;
       })(),
@@ -8238,7 +8484,7 @@ class MockHostState {
 
   async connectIntegrationApiKey(
     input: CommandInputOf<"integration.apiKey.connect">["input"],
-  ): Promise<void> {
+  ): Promise<IntegrationConnectionId> {
     const definition = this.integrationDefinition(input.definitionId);
     if (!definition) throw new Error("Integration not found.");
     // The Host's own words when a checked key is turned away; nothing is saved.
@@ -8268,7 +8514,7 @@ class MockHostState {
           : connection,
       );
       await this.#settleMainAccessRequests(reconnected.id);
-      return;
+      return reconnected.id;
     }
     const connectionId = createIntegrationId("connection");
     this.integrations.connections.push({
@@ -8293,6 +8539,7 @@ class MockHostState {
       updatedAt: timestamp,
     });
     await this.#settleMainAccessRequests(connectionId);
+    return connectionId;
   }
 
   /**
@@ -11436,6 +11683,20 @@ class MockHostState {
     });
   }
 
+  /** What a bootstrap tells this viewer about each account, as the Host computes it. */
+  applyAutomaticEligibility(): void {
+    const { excludedAccounts } = this.automaticModelConfig;
+    this.snapshot = {
+      ...this.snapshot,
+      harnesses: this.snapshot.harnesses.map(({ automaticEligible: _stale, ...harness }) =>
+        harness.sourceId === "openai-compatible" ||
+        excludedAccounts.includes(harness.id as (typeof excludedAccounts)[number])
+          ? { ...harness, automaticEligible: false }
+          : harness,
+      ),
+    };
+  }
+
   private update(snapshot: HostSnapshot): void {
     if (
       snapshot.deploymentId !== this.snapshot.deploymentId ||
@@ -11784,22 +12045,9 @@ function storedModelSelection(
   selection: ModelSelection,
   model: HarnessModelDescriptor,
 ): ModelSelection {
-  for (const [optionId, value] of Object.entries(selection.options)) {
-    const option = model.options.find((candidate) => candidate.id === optionId);
-    const listed =
-      option?.type === "toggle"
-        ? typeof value === "boolean"
-        : option?.type === "select" &&
-          typeof value === "string" &&
-          option.values.some((candidate) => candidate.value === value);
-    if (!listed)
-      throw new Error(`Model option ${optionId} is not available for ${model.displayName}`);
-  }
-  const { nativeModelId: _clientSupplied, ...requested } = selection;
-  return {
-    ...requested,
-    ...(model.nativeModelId === undefined ? {} : { nativeModelId: model.nativeModelId }),
-  };
+  if (matchModelSelection([model], selection, "refuse").kind !== "offered")
+    throw new Error(`Model options are not available for ${model.displayName}`);
+  return coreStoredModelSelection(selection, model);
 }
 
 function buildAssistantReply(prompt: string, steered: readonly string[] = []): string {
@@ -13202,3 +13450,34 @@ export function mockPasswordSignInRequest(
 
 const mockPasswordSignInThreadId = "thr_00000000-0000-4000-8000-000000000004";
 const mockPasswordSignInWorkspaceId = "wsp_00000000-0000-4000-8000-000000000003";
+
+/** A built-in service wears its listing's name, as the Host's own rows do. */
+function listedMockRow(row: PluginRow): PluginRow {
+  const listed =
+    row.source.kind === "built-in" &&
+    (row.target.kind === "service" || row.target.kind === "device-app")
+      ? mockCatalogProducts[row.target.definitionId]
+      : undefined;
+  return listed ? { ...row, title: listed.title } : row;
+}
+
+/** The Host's catalog listing, for the definitions these fixtures carry. */
+const mockCatalogProducts: Readonly<
+  Record<string, { title: string; category: string; popular: boolean }>
+> = {
+  slack: { title: "Slack", category: "communication", popular: true },
+  "google-gmail": { title: "Gmail", category: "communication", popular: true },
+  resend: { title: "Resend", category: "communication", popular: false },
+  notion: { title: "Notion", category: "work", popular: true },
+  "google-calendar": { title: "Google Calendar", category: "work", popular: true },
+  linear: { title: "Linear", category: "developer", popular: true },
+  github: { title: "GitHub", category: "developer", popular: true },
+  "apple-messages": { title: "iMessage", category: "devices", popular: false },
+  "apple-contacts": { title: "Contacts", category: "devices", popular: false },
+  "apple-calendar": { title: "Calendar", category: "devices", popular: false },
+  "apple-reminders": { title: "Reminders", category: "devices", popular: false },
+  "iphone-photos": { title: "Photos", category: "devices", popular: false },
+  "iphone-location": { title: "Location", category: "devices", popular: false },
+  "macos-app": { title: "Computer use", category: "devices", popular: false },
+  "android-phone": { title: "Android phone", category: "devices", popular: false },
+};

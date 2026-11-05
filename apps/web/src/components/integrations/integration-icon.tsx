@@ -1,13 +1,8 @@
-import { Icon, type IconName } from "../icon.js";
-import { bundledIntegrationIconUrl } from "./bundled-icons.js";
+import { integrationMark } from "@opensteer/client/integrations";
+import { bundledIntegrationArt } from "./bundled-icons.js";
 import { integrationHue } from "./helpers.js";
 
-/**
- * Icon tile for one integration. An integration this tree ships artwork for
- * wears its own mark from this bundle; definitions may otherwise carry an emoji
- * or an image URL, and anything else falls back to a hue-tinted monogram so
- * unknown integrations still get a stable, distinguishable mark.
- */
+/** Local artwork and vector marks share the same tile treatment on every client. */
 export function IntegrationIcon({
   icon,
   id,
@@ -20,44 +15,34 @@ export function IntegrationIcon({
   readonly size?: "lg" | "md" | undefined;
 }) {
   const className = `intg-icon ${size === "lg" ? "intg-icon--lg" : ""}`;
-  const hue = integrationHue(id);
-  const bundled = bundledIntegrationIconUrl(id);
-  const deviceGlyphs: Readonly<Record<string, IconName>> = {
-    "apple-calendar": "clock",
-    "apple-notes": "file",
-    "apple-contacts": "user",
-    "apple-reminders": "check",
-    "apple-photos": "file",
-    "apple-location": "globe",
-    "android-phone": "phone",
-    "computer-use": "desktop",
-    "macos-app": "desktop",
-    "iphone-location": "globe",
-    "iphone-photos": "file",
-  };
-  if (id === "apple-calendar")
-    return (
-      <span aria-hidden className={`${className} intg-icon--calendar`}>
-        <span>31</span>
-      </span>
-    );
-  if (deviceGlyphs[id])
-    return (
-      <span className={`${className} intg-icon--device intg-icon--${id}`}>
-        <Icon name={deviceGlyphs[id]} />
-      </span>
-    );
-  if (bundled) {
-    // The mark is already a finished tile, so it fills the frame rather than
-    // sitting inside the tinted one the fallbacks use.
+  const mark = integrationMark(id);
+  if (mark?.kind === "art" || mark?.kind === "logo")
     return (
       <span
-        className={`${className} intg-icon--art${id === "apple-messages" ? "" : " intg-icon--brand"}`}
+        className={`${className} ${mark.kind === "art" ? "intg-icon--art" : "intg-icon--mark"}`}
       >
-        <img alt="" decoding="async" src={bundled} />
+        <img alt="" decoding="async" src={bundledIntegrationArt[mark.art]} />
       </span>
     );
-  }
+  if (mark)
+    return (
+      <span aria-hidden className={`${className} intg-icon--mark`}>
+        <svg viewBox="0 0 24 24">
+          {mark.kind === "brand" ? (
+            <path d={mark.d} fill={mark.color} />
+          ) : (
+            <path
+              d={mark.d}
+              fill="none"
+              stroke={mark.color}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+            />
+          )}
+        </svg>
+      </span>
+    );
   if (icon && /^https?:\/\//u.test(icon)) {
     return (
       <span className={className}>
@@ -76,7 +61,7 @@ export function IntegrationIcon({
     <span
       aria-hidden
       className={`${className} intg-icon--monogram`}
-      style={{ ["--intg-hue" as string]: hue }}
+      style={{ ["--intg-hue" as string]: integrationHue(id) }}
     >
       {name.slice(0, 2).toLocaleUpperCase()}
     </span>

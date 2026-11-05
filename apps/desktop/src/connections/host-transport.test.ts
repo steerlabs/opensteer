@@ -1,6 +1,7 @@
+import { createDesktopHostFetch } from "../../../web/src/desktop/desktop-host-transport.js";
+import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
 import type { DesktopHostWebSocketEvent } from "@opensteer/protocol/desktop";
 import { createId, type DeploymentId, type HostInstanceId } from "@opensteer/core";
-import { hostApiVersion } from "@opensteer/deployment-authority";
 import { describe, expect, it, vi } from "vitest";
 import {
   DeploymentCatalogSchema,
@@ -147,44 +148,6 @@ describe("DesktopHostTransport", () => {
       expect(JSON.stringify(log.mock.calls)).not.toMatch(
         /private\.test|access_token|PRIVATE-VALUE/,
       );
-    } finally {
-      transport.closeAllSockets();
-    }
-  });
-  it("persists realtime schema failure metadata before forwarding without payloads or credentials", async () => {
-    const selected = deployment("Home", "https://home.connect.opensteer.test");
-    const log = vi.fn();
-    let events: HostNetworkSocketEvents | undefined;
-    const received = vi.fn();
-    const transport = desktopHostTransport({
-      catalog: catalogStore([selected], selected.authority.document.deploymentId),
-      log,
-      network: {
-        openWebSocket: (_input, value) => {
-          events = value;
-          return socket();
-        },
-        request: async () => new Response("{}"),
-      },
-    });
-    await transport.openWebSocket(7, { path: "/v1/realtime" }, received);
-    try {
-      const data = JSON.stringify({
-        type: "host.events",
-        events: [{ type: "run.started", data: { status: "os_secret_PRIVATE-FRAME" } }],
-      });
-      events!.message(data);
-      expect(log).toHaveBeenCalledWith(
-        "desktop.host-socket.frame-unrecognized",
-        expect.objectContaining({
-          envelopeType: "host.events",
-          apiEpoch: hostApiVersion,
-          bytes: new TextEncoder().encode(data).byteLength,
-          issuePaths: expect.stringContaining("events.[]."),
-        }),
-      );
-      expect(JSON.stringify(log.mock.calls)).not.toMatch(/os_secret|PRIVATE-FRAME/);
-      expect(received).toHaveBeenCalledWith(expect.objectContaining({ type: "text", data }));
     } finally {
       transport.closeAllSockets();
     }
@@ -1691,5 +1654,54 @@ it("bounds app streams independently so a full app pool leaves ordinary Host req
     await Promise.all(responses.map((response) => response.body?.cancel().catch(() => undefined)));
     await vi.advanceTimersByTimeAsync(0);
     vi.useRealTimers();
+  }
+});
+
+it("refuses a return proof when main selects B before processing renderer A's request", async () => {
+  const first = deployment("A", "https://a.example.test");
+  const second = deployment("B", "https://b.example.test");
+  const deploymentId = first.authority.document.deploymentId;
+  const catalog = catalogStore([first, second], deploymentId);
+  const request = vi.fn(async () => new Response("{}"));
+  const transport = desktopHostTransport({
+    catalog,
+    network: { request, openWebSocket: () => socket() },
+  });
+  await transport.current();
+  const bridge = {
+    hostRequest: async (input: unknown) => ({ ok: true, data: await transport.request(input) }),
+  } as unknown as OpensteerDesktopBridge;
+  const fetch = createDesktopHostFetch(
+    bridge,
+    first.authority.document.canonicalOrigin,
+    deploymentId,
+  );
+  await catalog.select(second.authority.document.deploymentId);
+  try {
+    await expect(
+      fetch(new URL("/v1/rpc/commands.dispatch", first.authority.document.canonicalOrigin), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "integration.authorization.return",
+          returnProof: "r".repeat(43),
+        }),
+      }),
+    ).rejects.toMatchObject({ code: "deployment-changed" });
+    expect(request).not.toHaveBeenCalled();
+    await catalog.select(deploymentId);
+    await expect(
+      fetch(new URL("/v1/rpc/commands.dispatch", first.authority.document.canonicalOrigin), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "integration.authorization.return",
+          returnProof: "r".repeat(43),
+        }),
+      }),
+    ).resolves.toMatchObject({ status: 200 });
+    expect(request).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ deploymentId }));
+  } finally {
+    transport.closeAllSockets();
   }
 });

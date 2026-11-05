@@ -73,12 +73,25 @@ let initialized = false;
 let modelListRequests = 0;
 let threadId = "codex-thread-1";
 const ephemeralThreads = new Set();
+/** The model each naming thread was started with. */
+const ephemeralModels = new Map();
+// Opt-in: the account also lists the light models background work ranks, and
+// a model from another lab that Codex can serve.
+const backgroundModels = process.argv.includes("--background-models");
+// Opt-in: a JSON file, read at each naming turn, that scripts that turn by its
+// model: `{ "<model>": { "reply"?: string, "error"?: string, "hold"?: path } }`.
+// A held turn answers once the `hold` file exists.
+const titleScriptPath = process.argv
+  .find((argument) => argument.startsWith("--title-script="))
+  ?.slice("--title-script=".length);
 let threadConfig = {};
 /** The MCP client an `mcp-session` engine keeps across its turns. */
 let sessionTools;
 let extraSkillRoots = [];
 let turnId = "codex-turn-1";
 let runScopedApprovalCalls = 0;
+const voiceNoteTurn = "voice-note-turn";
+let voiceNoteTurnOpen = false;
 // Opt-in: each root turn gets an id of its own, as Codex mints them.
 const uniqueTurns = process.argv.includes("--unique-turns");
 // Answers model/list this late, as an engine still starting up does.
@@ -169,7 +182,6 @@ function handleClientMethod(message) {
       capture({
         fakeOpensteerTokenEnvironment: {
           agentTools: Boolean(process.env.OPENSTEER_AGENT_TOOLS_TOKEN),
-          integrationTools: Boolean(process.env.OPENSTEER_INTEGRATION_TOOLS_TOKEN),
         },
       });
       // Opt-in, for journeys that exercise exactly the token an engine holds.
@@ -208,7 +220,7 @@ function handleClientMethod(message) {
         result: {
           config: {
             log_dir:
-              scenario === "voice-policy"
+              scenario === "voice-log-elsewhere"
                 ? "/outside"
                 : JSON.parse(overrideValue("log_dir") ?? "null"),
             sqlite_home: JSON.parse(overrideValue("sqlite_home") ?? "null"),
@@ -495,6 +507,17 @@ function handleClientMethod(message) {
                 { description: "Exhaustive", reasoningEffort: "xhigh" },
               ],
             },
+            ...(backgroundModels
+              ? ["gpt-6-luna", "gpt-5.6-luna", "llama-4-scout"].map((id) => ({
+                  defaultReasoningEffort: "low",
+                  displayName: id,
+                  hidden: false,
+                  id,
+                  inputModalities: ["text"],
+                  isDefault: false,
+                  supportedReasoningEfforts: [{ reasoningEffort: "low" }],
+                }))
+              : []),
             ...(scenario === "model-modalities"
               ? [
                   // Codex offers text-only models too, and an older build
@@ -524,6 +547,7 @@ function handleClientMethod(message) {
       if (message.params.ephemeral) {
         threadId = `codex-title-${randomUUID()}`;
         ephemeralThreads.add(threadId);
+        ephemeralModels.set(threadId, message.params.model);
       } else if (process.argv.includes("--unique-threads"))
         threadId = `codex-thread-${randomUUID()}`;
       captureRunId = threadId;
@@ -591,7 +615,7 @@ function handleClientMethod(message) {
     case "mcpServerStatus/list":
       requireInitialized(message);
       const ambientNames = scenario === "ambient-extensions" ? ["company.docs", "github"] : [];
-      const managedNames = ["opensteer", "opensteer_integrations"];
+      const managedNames = ["opensteer"];
       send({
         id: message.id,
         result: {
@@ -605,12 +629,12 @@ function handleClientMethod(message) {
                 [
                   ...(threadConfig[`mcp_servers.${name}.enabled_tools`] ?? []).filter(
                     (tool) =>
-                      name !== "opensteer_integrations" ||
+                      name !== "opensteer" ||
                       ((scenario !== "previous-host" || tool !== "computer") &&
                         (scenario !== "mcp-missing-required-tool" ||
                           tool !== "integration_search")),
                   ),
-                  ...(scenario === "mcp-extra-tool" && name === "opensteer_integrations"
+                  ...(scenario === "mcp-extra-tool" && name === "opensteer"
                     ? ["unexpected_tool"]
                     : []),
                 ].map((tool) => [tool, { inputSchema: { type: "object" }, name: tool }]),
@@ -664,76 +688,78 @@ function handleClientMethod(message) {
       send({ id: message.id, result: {} });
       break;
     case "thread/realtime/start":
-      if (scenario === "voice-unsupported") {
-        send({ id: message.id, error: { code: -32601, message: "Method not found" } });
-        break;
-      }
       send({ id: message.id, result: {} });
-      if (scenario === "voice-refused" || scenario === "voice-closed") {
-        send({
-          method: scenario === "voice-refused" ? "thread/realtime/error" : "thread/realtime/closed",
-          params: { threadId, message: "private voice payload" },
-        });
-      } else {
+      if (scenario !== "voice-no-answer") {
         send({ method: "thread/realtime/sdp", params: { threadId, sdp: "fake-answer" } });
+        if (scenario === "voice-run") {
+          for (const [id, text, status] of [
+            ["v1", "first answer", "completed"],
+            ["v2", "second answer", "completed"],
+            ["v3", null, "failed"],
+          ]) {
+            send({ method: "turn/started", params: { threadId, turn: { id } } });
+            if (status === "failed") {
+              // A turn that fails part way: streamed words, a thought and a tool never finished.
+              send({
+                method: "item/agentMessage/delta",
+                params: { threadId, turnId: id, itemId: `partial-${id}`, delta: "Let me che" },
+              });
+              send({
+                method: "item/reasoning/textDelta",
+                params: { threadId, turnId: id, itemId: `thought-${id}`, delta: "Looking" },
+              });
+              send({
+                method: "item/started",
+                params: {
+                  threadId,
+                  turnId: id,
+                  item: {
+                    type: "commandExecution",
+                    id: `tool-${id}`,
+                    command: "ls",
+                    status: "inProgress",
+                  },
+                },
+              });
+            }
+            if (text)
+              send({
+                method: "item/completed",
+                params: {
+                  threadId,
+                  turnId: id,
+                  item: { type: "agentMessage", id: `answer-${id}`, phase: "final_answer", text },
+                },
+              });
+            // The model can follow its reply with an empty one; the reply still stands.
+            if (id === "v2") sendVoiceFinal(id, "");
+            send({ method: "turn/completed", params: { threadId, turn: { id, status } } });
+          }
+        }
+        if (scenario === "voice-note") {
+          send({ method: "turn/started", params: { threadId, turn: { id: voiceNoteTurn } } });
+          sendVoiceFinal(voiceNoteTurn, "the reply");
+          voiceNoteTurnOpen = true;
+          break;
+        }
         send({ method: "turn/started", params: { threadId, turn: { id: "voice-handoff" } } });
       }
       break;
     case "thread/inject_items":
       send({ id: message.id, result: {} });
+      // Real Codex samples again for anything added to a running turn; a note draws an empty reply.
+      if (voiceNoteTurnOpen) sendVoiceFinal(voiceNoteTurn, "");
       break;
     case "thread/realtime/appendText":
     case "thread/realtime/appendSpeech":
       send({ id: message.id, result: {} });
-      if (scenario === "voice-agent") {
-        const specs =
-          message.params.text === "find"
-            ? [["find", { query: "gmail", offset: 5 }]]
-            : message.params.text === "invalid"
-              ? [
-                  ["unknown", {}],
-                  ["show", { link: 4 }],
-                  ["send_to_chat", { messages: 6 }],
-                  ["show", { link: "x", extra: true }],
-                ]
-              : message.params.text === "queue"
-                ? Array.from({ length: 9 }, () => ["send_to_chat", {}])
-                : [["show", { link: "opensteer://chat" }]];
-        // The delegated speech that starts the agent's turn precedes its tool calls.
+      if (voiceNoteTurnOpen && message.params.text === "finish the turn") {
+        voiceNoteTurnOpen = false;
         send({
-          method: "item/started",
-          params: {
-            threadId,
-            turnId: `voice-turn-${message.params.text}`,
-            item: {
-              id: "spoken",
-              type: "userMessage",
-              content: [
-                {
-                  type: "text",
-                  text: "<realtime_delegation>\n  <input>Book a flight &amp; hotel</input>\n  <transcript_delta>user: Book a flight &amp; hotel</transcript_delta>\n</realtime_delegation>",
-                },
-              ],
-            },
-          },
+          method: "turn/completed",
+          params: { threadId, turn: { id: voiceNoteTurn, status: "completed" } },
         });
-        for (const [tool, args] of specs)
-          send({
-            id: randomUUID(),
-            method: "item/tool/call",
-            params: {
-              threadId,
-              turnId: `voice-turn-${message.params.text}`,
-              tool,
-              arguments: args,
-            },
-          });
       }
-      if (scenario === "voice-exit") process.exit(1);
-      if (scenario === "voice-interaction")
-        send({ id: "voice-tool", method: "item/tool/call", params: { threadId } });
-      if (scenario === "voice-close-after-say")
-        send({ method: "thread/realtime/closed", params: { threadId } });
       break;
     case "thread/realtime/stop":
       send({ id: message.id, result: {} });
@@ -781,17 +807,36 @@ function discoveredSkills() {
 /** Ephemeral, read-only naming has no tools, children or persisted conversation. */
 function handleTitleTurn(message) {
   const id = `codex-title-turn-${randomUUID()}`;
-  capture({ fakeTitleTurn: { pid: process.pid, threadId } });
+  const model = ephemeralModels.get(threadId);
+  const script =
+    titleScriptPath && existsSync(titleScriptPath)
+      ? (JSON.parse(readFileSync(titleScriptPath, "utf8"))[model] ?? {})
+      : {};
+  capture({ fakeTitleTurn: { pid: process.pid, threadId, model } });
   send({ id: message.id, result: { turn: { id, items: [], status: "inProgress" } } });
   send({ method: "turn/started", params: { threadId, turn: { id, status: "inProgress" } } });
-  if (process.argv.includes("--title-error")) {
-    sendTurnCompleted("failed", { message: "Naming unavailable" }, id);
+  if (script.hold && !existsSync(script.hold)) {
+    const held = setInterval(() => {
+      if (!existsSync(script.hold)) return;
+      clearInterval(held);
+      answerTitleTurn(id, script);
+    }, 20);
+    return;
+  }
+  answerTitleTurn(id, script);
+}
+
+function answerTitleTurn(id, script) {
+  if (script.error || process.argv.includes("--title-error")) {
+    sendTurnCompleted("failed", { message: script.error ?? "Naming unavailable" }, id);
     return;
   }
   const reply =
+    script.reply ??
     process.argv
       .find((argument) => argument.startsWith("--title-reply="))
-      ?.slice("--title-reply=".length) ?? "Support migration\nheadphones";
+      ?.slice("--title-reply=".length) ??
+    "Support migration\nheadphones";
   sendResponseUsage("naming", threadId, id, tokens(1_000, 0, 0, 20, 0));
   if (reply)
     send({
@@ -1599,6 +1644,17 @@ function conversationTurn(input) {
 
 const childThreadId = "codex-child-thread-1";
 
+function sendVoiceFinal(turnId, text) {
+  send({
+    method: "item/completed",
+    params: {
+      threadId,
+      turnId,
+      item: { type: "agentMessage", id: `final-${randomUUID()}`, phase: "final_answer", text },
+    },
+  });
+}
+
 function childTurn(id, status) {
   return { error: null, id, items: [], status };
 }
@@ -2339,7 +2395,7 @@ await cdp("DOM.setFileInputFiles", { files: ["/etc/hosts"], objectId: found.resu
   const profileId = /PROFILE_ID=(\S+)/u.exec(text)?.[1];
   if (profileId) {
     report.accessAlreadyAvailable = await tools
-      .call("browser_access_request", {
+      .call("browser_profile_request", {
         reason: "List the mattress",
         suggestion: { kind: "existing", profileId },
       })
@@ -2483,30 +2539,25 @@ async function browserProfilesTurn(input) {
       if (!report.tools.includes(name)) throw new Error(`${name} is not offered`);
       return tools.call(name, args, replayId);
     };
-    if (plan.create) {
-      report.created = await call("browser_profile_create", { name: plan.create.name }, 9001);
-      if (plan.create.replay)
-        report.replayed = await call("browser_profile_create", { name: plan.create.name }, 9001);
-      if (plan.create.independent)
-        report.independent = await call("browser_profile_create", { name: plan.create.name }, 9002);
-    }
     if (plan.delegate)
       report.delegated = await call("thread_delegate", {
         workspaceId: plan.delegate,
         task: 'Report your tool inventory. BROWSER_PROFILE_JOURNEY:{"kind":"delegated"}',
         title: "Profile authority inventory",
       });
-    if (plan.request)
-      report.request = await call("browser_access_request", {
+    if (plan.request) {
+      const input = {
         reason: "Create an isolated profile for the fixture account",
-        suggestion: { kind: "new", suggestedName: "brex-ops" },
-      });
+        suggestion: plan.request.suggestion ?? { kind: "new", suggestedName: "brex-ops" },
+        ...(plan.request.workspaceId ? { workspaceId: plan.request.workspaceId } : {}),
+      };
+      report.request = await call("browser_profile_request", input, 9001);
+      if (plan.request.replay) report.replayed = await call("browser_profile_request", input, 9001);
+      if (report.request.status === "pending") return report;
+    }
     let sessionId = plan.sessionId;
     if (plan.open) {
-      report.opened = await call(
-        "browser_session_open",
-        plan.open === "created" ? { profileId: report.created.profile.id } : plan.open,
-      );
+      report.opened = await call("browser_session_open", plan.open);
       sessionId = report.opened.session.id;
     } else if (sessionId && plan.visit) {
       report.opened = await call("browser_session_open", { sessionId });

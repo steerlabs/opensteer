@@ -25,6 +25,7 @@ export function GeneralSettingsForm(
     SettingsFormProps,
     | "page"
     | "deployment"
+    | "desktopUpdate"
     | "notifications"
     | "notificationError"
     | "agents"
@@ -38,6 +39,7 @@ export function GeneralSettingsForm(
 ): ReactNode {
   const notifications = props.notifications;
   const preferences = notifications?.preferences ?? null;
+  const update = props.desktopUpdate;
   return (
     <>
       {
@@ -62,6 +64,30 @@ export function GeneralSettingsForm(
           </Button>
         </Section>
       }
+      {update === null ? null : (
+        <Section title={update.view.title}>
+          <Lines detail={update.view.statusLine} title={update.view.headline} />
+          {update.view.versionLine === null ? null : (
+            <LabeledContent label={update.view.versionLine}>
+              <Text modifiers={[secondary]}>{update.view.channel ?? ""}</Text>
+            </LabeledContent>
+          )}
+          {update.view.result === null ? null : update.view.result.tone === "attention" ? (
+            <ErrorText detail={update.view.result.text} />
+          ) : (
+            <Text modifiers={[secondary, footnote]}>{update.view.result.text}</Text>
+          )}
+          {[update.view.action, update.view.channelAction].map((action) =>
+            action === null ? null : (
+              <Button
+                key={action.label}
+                label={action.label}
+                onPress={() => update.onAction(action)}
+              />
+            ),
+          )}
+        </Section>
+      )}
       {notifications === null ? null : (
         <Section footer={<Footer text={notifications.footer} />} title="Notifications">
           {notifications.detail === null ? null : (

@@ -1,4 +1,5 @@
 import type { PersonShowMessage } from "@opensteer/protocol";
+import type { DesktopUpdates } from "../connections/desktop-updates-contract.js";
 import type {
   ChannelAccessPolicy,
   ChannelAccount,
@@ -246,6 +247,8 @@ export interface HarnessSummary {
    */
   endpoint?: { readonly baseUrl: string; readonly runtime?: string | undefined } | undefined;
   stateKind: "ambient" | "isolated";
+  /** The Host's word on whether this viewer's defaults may use it; absent means they may. */
+  automaticEligible?: boolean | undefined;
 }
 
 export interface ThreadSummary {
@@ -463,6 +466,8 @@ export interface RequestReceiptEntry {
   id: string;
   kind: "request";
   outcome: string;
+  /** The site of a Chrome sign-in that ended with Opensteer Passwords not set up. */
+  passwordsSetUpSite?: string;
   requestId: string;
   requestKind: Request["kind"] | null;
   runId: string | null;
@@ -884,11 +889,14 @@ export interface HostSnapshot {
   threadLookups: Record<string, ThreadLookupState>;
   /**
    * The Host serves `thread-titles-v1`: a person can rename a Thread, and a new
-   * Thread started from a message is named from it by its engine.
+   * Thread started from a message is named by background work.
    */
   threadRenameAvailable: boolean;
   /** The Host serves `task-marks-v1`: task icons and project colours can be chosen. */
   taskMarksAvailable: boolean;
+  integrationAppFinishAvailable?: boolean;
+  /** The Host accepts a desktop app's return port on integration sign-in. */
+  integrationAppReturnPortAvailable?: boolean;
   sharedTaskDoneAvailable?: boolean;
   /** The Host accepts installed-engine update commands. */
   harnessUpdateAvailable?: boolean;
@@ -898,10 +906,8 @@ export interface HostSnapshot {
   searchSuggestionsAvailable?: boolean;
   iphoneAppsAvailable: boolean;
   ownerViewWindowsAvailable?: boolean;
-  /** The Host advertises voice-v1; absent on older Hosts. */
+  /** The Host advertises voice-run-v1: a call's agent runs as a Run with Opensteer's tools. */
   voiceAvailable?: boolean;
-  voiceAgentAvailable?: boolean;
-  voiceFindAvailable?: boolean;
   threads: ThreadSummary[];
   transcriptWindows: Record<string, TranscriptWindow>;
   transcripts: Record<string, TranscriptEntry[]>;
@@ -934,7 +940,7 @@ export interface CreateThreadInput {
   title?: string;
   /**
    * `title` is the first line of the message that will start the Thread, for
-   * its engine to replace. Dropped for a Host without `thread-titles-v1`.
+   * background naming to replace. Dropped for a Host without `thread-titles-v1`.
    */
   generateTitle?: true;
   workspaceId: string;
@@ -1067,6 +1073,8 @@ export type MachineAccessUpdateOutcome =
   { readonly outcome: "conflict" } | { readonly outcome: "updated"; readonly revision: number };
 
 export interface HostClient {
+  /** A Host without a network supplies its own; every other client reaches updates by route. */
+  readonly desktopUpdates?: DesktopUpdates;
   readonly browserPasskeys?: BrowserPasskeys;
   readonly browserHistory: BrowserHistoryClient;
   readonly browserPreferences: BrowserPreferences;
@@ -1125,6 +1133,12 @@ export interface HostClient {
    * Returns the release; holds are counted.
    */
   observeThread(threadId: string): () => void;
+  /**
+   * How far this client has applied the Workspace's durable events, in the
+   * Host's own sequence; null until its channel has caught up. Later durable
+   * messages carry a greater `sequence`.
+   */
+  workspacePosition(workspaceId: string): import("@opensteer/core").Sequence | null;
   activateWorkspace(workspaceId: string): void;
   /** Starts a Thread and remembers its selection and access mode as the person's latest choice. */
   createThread(input: CreateThreadInput): Promise<ThreadSummary>;
@@ -1157,6 +1171,8 @@ export interface HostClient {
     listener: (message: { type: "host.plugins-changed" }) => void,
   ): () => void;
   subscribePersonalRemoteAccess(listener: () => void): () => void;
+  /** Told when this person approves or revokes a connected agent on any device. */
+  subscribeConnectionsChanged(listener: () => void): () => void;
   subscribePersonShow(listener: (message: PersonShowMessage) => void): () => void;
   markThreadRead(threadId: string, throughSequence: string): Promise<void>;
   /** Sets shared Done or reopens the task. */
@@ -1221,6 +1237,7 @@ export interface HostClient {
     },
   ) => () => void;
   /** Reads the verified Host descriptor's optional target-control capability. */
+  readonly automaticModelsAvailable?: () => boolean;
   readonly browserTargetControlAvailable?: () => Promise<boolean | null>;
   readonly retainBrowserWatch: (
     sessionId: string,

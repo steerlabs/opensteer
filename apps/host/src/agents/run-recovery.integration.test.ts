@@ -1,3 +1,4 @@
+import { ProductToolResultSchema } from "../mcp/product-tools.test-support.js";
 import { NotificationStore } from "@opensteer/database";
 import { ManualClock } from "@opensteer/shared/test-support/clock";
 import {
@@ -25,7 +26,6 @@ import {
 import { HarnessRegistry, isolatedServiceHarnessRuntimeBoundary } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
 import {
-  AgentControlResponseSchema,
   PendingAgentEventSchema,
   RunnerConnectionFenceSchema,
   sameRunnerConnectionFence,
@@ -488,7 +488,7 @@ integration.sequential("Run recovery acceptance", () => {
           },
         });
         expect(result.isError).not.toBe(true);
-        return AgentControlResponseSchema.parse({
+        return ProductToolResultSchema.parse({
           type: "thread.delegate.result",
           requestId: randomUUID(),
           result: result.structuredContent,

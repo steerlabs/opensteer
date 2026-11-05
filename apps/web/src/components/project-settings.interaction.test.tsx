@@ -1,3 +1,4 @@
+import { ModelPolicyEntrySchema } from "@opensteer/core";
 // @vitest-environment happy-dom
 import { act } from "react";
 import { describe, expect, it, vi } from "vitest";
@@ -19,7 +20,7 @@ import {
 
 const researcher: SpecialistManifest = {
   version: 1,
-  models: [{ engine: "claude", model: "opus" }],
+  models: [ModelPolicyEntrySchema.parse({ engine: "claude", model: "opus" })],
   fallback: "caller",
   access: [
     { type: "browser-profile", level: "read", reason: "Reads the sites you research in" },
@@ -240,11 +241,12 @@ describe("Settings → Plugins", () => {
   it("installs from a folder, turns a plugin on in Main, and removes it after confirming", async () => {
     await mount("/settings/plugins/add", { mock: { specialistPlugins: plugins } });
     await settle();
+    await click(element(".settings-catalog__own"));
     await typeInto(
-      element<HTMLInputElement>('input[placeholder="/Users/you/plugins/tinycrm"]'),
+      element<HTMLInputElement>('input[placeholder="/Users/you/plugins/name"]'),
       "/Users/me/plugins/notes",
     );
-    await click(button("Install plugin"));
+    await click(button("Add plugin"));
     await settle();
     await act(async () => {
       await goTo!("/settings/plugins");

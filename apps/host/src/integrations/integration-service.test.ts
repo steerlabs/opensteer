@@ -34,6 +34,8 @@ import {
 } from "@opensteer/control-plane-protocol";
 import { OpensteerError, createId } from "@opensteer/core";
 import { describe, expect, it, vi } from "vitest";
+import { handleIntegrationAuthorizationCommand } from "./integration-authorization-routes.js";
+import { testHostApiContext } from "../server/test-host-api-context.js";
 import { canonicalAuthorizationRepair } from "../identity/auth.js";
 import {
   IntegrationService,
@@ -418,6 +420,7 @@ describe("IntegrationService fixed OAuth presets", () => {
     expect(attempts.begin).not.toHaveBeenCalled();
 
     const started = await service.beginAuthorization({
+      finish: "app",
       definitionId: definition.id,
       ownerUserId,
       requestSurface: "canonical",
@@ -1310,28 +1313,61 @@ describe("IntegrationService hosted OAuth failures", () => {
     { requestSurface: "canonical", abandonedClaim: false },
     { requestSurface: "personal-remote", abandonedClaim: false },
     { requestSurface: "personal-remote", abandonedClaim: true },
+    { requestSurface: "canonical", abandonedClaim: false, finish: "app", surface: "desktop" },
+    { requestSurface: "personal-remote", abandonedClaim: false, finish: "app", surface: "native" },
+    { requestSurface: "canonical", abandonedClaim: false, finish: "app", oldAccount: true },
+    { requestSurface: "canonical", abandonedClaim: false, finish: "app", changedLink: true },
+    {
+      requestSurface: "canonical",
+      abandonedClaim: false,
+      finish: "app",
+      surface: "desktop",
+      appReturnPort: 48_203,
+    },
+    {
+      requestSurface: "canonical",
+      abandonedClaim: false,
+      finish: "app",
+      surface: "desktop",
+      appReturnPort: 48_203,
+      portlessAccount: true,
+    },
   ] as const)(
     "honors the saved custom app through the Account relay (%j)",
-    async ({ requestSurface, abandonedClaim }) => {
+    async (scenario): Promise<void> => {
+      const { requestSurface, abandonedClaim } = scenario;
+      const finish = "finish" in scenario ? scenario.finish : undefined;
       const ownerUserId = createId("user");
       const applicationId = createIntegrationId("providerApplication");
-      const attemptId = createIntegrationId("oauthAttempt");
+      let attemptId = createIntegrationId("oauthAttempt");
       let attemptPayload: Readonly<Record<string, string>> = {};
       let failureCode: string | null = null;
+      let connected: IntegrationConnectionId | null = null;
+      let hostPublicKey = "";
+      let returned = !finish;
       const expiresAt = new Date("2026-08-20T12:10:00.000Z");
       const attempts = {
         inspect: vi.fn(async () => attemptPayload),
         status: vi.fn(async () => ({
-          connectionId: null,
+          connectionId: connected,
           expiresAt,
           failureCode,
-          status: failureCode ? ("failed" as const) : ("launched" as const),
+          status: connected
+            ? ("completed" as const)
+            : failureCode
+              ? ("failed" as const)
+              : ("launched" as const),
         })),
-        claimHosted: vi.fn(async () => null),
+        claimHosted: vi.fn(async () =>
+          finish
+            ? { id: attemptId, ownerUserId, payload: attemptPayload, surface: "desktop" as const }
+            : null,
+        ),
         fail: vi.fn(async (_id: string, reason: string) => {
           failureCode = reason;
         }),
         begin: vi.fn(async (input) => {
+          attemptId = input.id;
           attemptPayload = (await input.payload("oauth-state")).payload;
           return {
             attemptId,
@@ -1340,9 +1376,51 @@ describe("IntegrationService hosted OAuth failures", () => {
           };
         }),
       };
+      const createCallbackRelay = vi.fn(
+        async (input: { attemptId: string; expiresAt: string; hostPublicKey: string }) => {
+          hostPublicKey = input.hostPublicKey;
+          return { ...input, launchUrl: "https://account.example.test/launch" };
+        },
+      );
+      const returnAttempt = vi.fn(async () => {
+        returned = true;
+      });
+      const acknowledge = vi.fn(async () => undefined);
       const createAttempt = vi.fn();
-      const pull = vi.fn();
-      const fetch = vi.fn();
+      const pull = vi.fn(async () => {
+        const payload = JSON.parse(attemptPayload.payload!);
+        const relay = payload.callbackRelay;
+        return {
+          status: "sealed",
+          sealedResult: sealOAuthBrokerPayload({ code: "authorization-code" }, hostPublicKey, {
+            accountSubject: { issuer: relay.accountIssuer, subject: relay.accountSubject },
+            attemptId: relay.brokerAttemptId,
+            authorizationDigest: payload.authorizationDigest,
+            definitionId: payload.definitionId,
+            deploymentAuthorityDigest: relay.deploymentAuthorityDigest,
+            expiresAt: relay.brokerExpiresAt,
+            providerApplicationId: payload.providerApplicationId,
+            providerApplicationRevision: payload.providerApplicationRevision,
+            redirectUrl: relay.redirectUrl,
+            schemaVersion: 1,
+          }),
+        };
+      });
+      const fetch = vi.fn(async (url: string | URL | Request) =>
+        String(url).includes("/token")
+          ? Response.json({
+              access_token: "access-token",
+              token_type: "Bearer",
+              scope: "openid email",
+            })
+          : Response.json({ sub: "subject-1", name: "Connected user" }),
+      );
+      const completeOAuthAttempt = vi.fn(
+        async (input: { connection: { id: IntegrationConnectionId } }) => {
+          connected = input.connection.id;
+          return { ...input.connection, provider: "example" };
+        },
+      );
       const binding = {
         issuer: "https://account.example.test",
         linkGeneration: "G".repeat(43),
@@ -1362,14 +1440,15 @@ describe("IntegrationService hosted OAuth failures", () => {
               `https://account.example.test/v1/oauth-broker/callback/${provider}`,
 
             createAttempt,
-            status: vi.fn(async () => ({ status: "sealed" })),
+            status: vi.fn(async () => ({ status: returned ? "sealed" : "launched" })),
             pull,
-            createCallbackRelay: vi.fn(async (input: { attemptId: string; expiresAt: string }) => ({
-              ...input,
-              launchUrl: "https://account.example.test/launch",
-            })),
+            createCallbackRelay,
+            returnAttempt,
+            acknowledge,
             issuer: "https://account.example.test",
             metadata: vi.fn(async () => ({
+              ...("oldAccount" in scenario ? {} : { appFinish: 1 }),
+              ...("portlessAccount" in scenario ? {} : { appReturnPort: 1 }),
               callbackRelayProviders: ["example"],
               providerRevisions: { example: 1 },
             })),
@@ -1378,6 +1457,8 @@ describe("IntegrationService hosted OAuth failures", () => {
         },
         publicUrl: new URL("https://host.example.test"),
         repository: {
+          completeOAuthAttempt,
+          findReusableConnectionId: vi.fn(async () => null),
           getProviderApplication: vi.fn(async () => ({
             clientId: "deployment-client-id",
             createdAt: "2026-08-20T12:00:00.000Z",
@@ -1410,16 +1491,70 @@ describe("IntegrationService hosted OAuth failures", () => {
             },
           ]),
         } as unknown as IntegrationRepository,
-        vault: {} as never,
+        vault: {
+          open: async () => ({ clientSecret: "host-only-secret" }),
+          seal: async () => ({ envelope: Buffer.from("sealed"), keyVersion: 1 }),
+        } as never,
       });
 
-      await service.beginAuthorization({
-        definitionId: "example",
-        ownerUserId,
-        requestSurface,
-        returnPath: "/integrations",
-        surface: "desktop",
-      });
+      const begin = () =>
+        service.beginAuthorization({
+          definitionId: "example",
+          ownerUserId,
+          requestSurface,
+          returnPath: "/integrations",
+          surface: "surface" in scenario ? scenario.surface : "desktop",
+          ...(finish ? { finish } : {}),
+          ...("appReturnPort" in scenario ? { appReturnPort: scenario.appReturnPort } : {}),
+        });
+      if ("oldAccount" in scenario) {
+        await expect(begin()).rejects.toMatchObject({
+          code: "conflict",
+          message: expect.stringContaining("Opensteer Account must be updated"),
+        });
+        expect(createCallbackRelay).not.toHaveBeenCalled();
+        return;
+      }
+      await begin();
+      expect(createCallbackRelay.mock.calls[0]?.[0]).toMatchObject(finish ? { finish: "app" } : {});
+      // An older Account's strict schema would refuse the port, so Connect goes on without it.
+      expect(
+        (createCallbackRelay.mock.calls[0]![0] as { appReturnPort?: number }).appReturnPort,
+      ).toBe("appReturnPort" in scenario && !("portlessAccount" in scenario) ? 48_203 : undefined);
+      expect(attemptPayload.payload).not.toContain("appReturnPort");
+      expect(Object.hasOwn(createCallbackRelay.mock.calls[0]![0], "finish")).toBe(!!finish);
+      expect(JSON.parse(attemptPayload.payload!).callbackRelay.finish).toBe(finish);
+      if ("changedLink" in scenario) {
+        binding.linkGeneration = "H".repeat(43);
+        await expect(
+          service.returnAuthorization({ attemptId, ownerUserId, returnProof: "r".repeat(43) }),
+        ).resolves.toMatchObject({ status: "failed", failureCode: "account-link-mismatch" });
+        expect(returnAttempt).not.toHaveBeenCalled();
+        expect(pull).not.toHaveBeenCalled();
+        return;
+      }
+      if (finish) {
+        await expect(
+          service.authorizationStatus({ attemptId, ownerUserId }),
+        ).resolves.toMatchObject({
+          status: "launched",
+        });
+        expect(pull).not.toHaveBeenCalled();
+        pull.mockRejectedValueOnce(
+          new OpensteerError({ code: "conflict", message: "Lost result", retryable: true }),
+        );
+        await expect(
+          service.returnAuthorization({ attemptId, ownerUserId, returnProof: "r".repeat(43) }),
+        ).rejects.toMatchObject({ retryable: true });
+        expect(attempts.claimHosted).not.toHaveBeenCalled();
+        expect(attempts.fail).not.toHaveBeenCalled();
+        await expect(
+          service.returnAuthorization({ attemptId, ownerUserId, returnProof: "r".repeat(43) }),
+        ).resolves.toMatchObject({ status: "completed" });
+        expect(completeOAuthAttempt).toHaveBeenCalledOnce();
+        expect(acknowledge).toHaveBeenCalledOnce();
+        expect(returnAttempt).toHaveBeenCalledWith(`hoa_${attemptId.slice(4)}`, "r".repeat(43));
+      }
 
       expect(JSON.parse(attemptPayload.payload ?? "")).toMatchObject({
         applicationSource: "deployment-oauth",
@@ -1465,11 +1600,62 @@ describe("IntegrationService hosted OAuth failures", () => {
       pullFailure: "client-rejected",
       remote: false,
     },
+    {
+      identity: "userinfo",
+      ackFails: false,
+      persists: true,
+      pullFailure: null,
+      remote: false,
+      finish: "app",
+      surface: "desktop",
+    },
+    {
+      identity: "userinfo",
+      ackFails: false,
+      persists: true,
+      pullFailure: null,
+      remote: true,
+      finish: "app",
+      surface: "native",
+    },
+    {
+      identity: "userinfo",
+      ackFails: false,
+      persists: true,
+      pullFailure: null,
+      remote: false,
+      finish: "app",
+      surface: "desktop",
+      oldAccount: true,
+    },
+    {
+      identity: "userinfo",
+      ackFails: false,
+      persists: true,
+      pullFailure: null,
+      remote: false,
+      finish: "app",
+      surface: "desktop",
+      appReturnPort: 48_203,
+    },
+    {
+      identity: "userinfo",
+      ackFails: false,
+      persists: true,
+      pullFailure: null,
+      remote: false,
+      finish: "app",
+      surface: "desktop",
+      appReturnPort: 48_203,
+      portlessAccount: true,
+    },
     // A phone or another computer: the same sign-in, finished by its status poll.
     { identity: "userinfo", ackFails: false, persists: true, pullFailure: null, remote: true },
   ] as const)(
     "finishes from durable state: $identity, ACK failure=$ackFails, persisted=$persists, pull=$pullFailure, remote=$remote",
-    async ({ identity, ackFails, persists, pullFailure, remote }) => {
+    async (scenario) => {
+      const { identity, ackFails, persists, pullFailure, remote } = scenario;
+      const finish = "finish" in scenario ? scenario.finish : undefined;
       const ownerUserId = createId("user");
       const original = refreshDefinition();
       const definition =
@@ -1497,10 +1683,11 @@ describe("IntegrationService hosted OAuth failures", () => {
       const accountSubject = `acct_${crypto.randomUUID()}`;
       let storedPayload: Readonly<Record<string, string>> = {};
       let brokerRequest: Record<string, unknown> = {};
-      const attemptId = createIntegrationId("oauthAttempt");
+      let attemptId = createIntegrationId("oauthAttempt");
       const expiresAt = new Date("2026-08-20T12:10:00.000Z");
       const attempts = {
         begin: vi.fn(async (input) => {
+          attemptId = input.id;
           storedPayload = (await input.payload("unused-local-state")).payload;
           return { attemptId, expiresAt, launchTicket: "L".repeat(43) };
         }),
@@ -1512,15 +1699,21 @@ describe("IntegrationService hosted OAuth failures", () => {
         })),
         fail: vi.fn(async () => undefined),
         inspect: vi.fn(async () => storedPayload),
-        status: vi.fn(async () =>
-          savedConnectionId
-            ? { connectionId: savedConnectionId, expiresAt, status: "completed" as const }
-            : { expiresAt, status: "launched" as const },
+        status: vi.fn(async (input: { ownerUserId: string }) =>
+          input.ownerUserId !== ownerUserId
+            ? null
+            : savedConnectionId
+              ? { connectionId: savedConnectionId, expiresAt, status: "completed" as const }
+              : { expiresAt, status: "launched" as const },
         ),
       };
       // Every hop crosses the real protocol schemas the broker client parses, so a request the Host
       // sends with a field the contract does not carry fails here instead of in production.
+      let returned = !finish;
       const broker = {
+        returnAttempt: vi.fn(async () => {
+          returned = true;
+        }),
         callbackUrl: (provider: string) =>
           `https://account.example.test/v1/oauth-broker/callback/${provider}`,
         acknowledge: vi.fn(async () => {
@@ -1536,6 +1729,8 @@ describe("IntegrationService hosted OAuth failures", () => {
         }),
         issuer: "https://account.example.test",
         metadata: vi.fn(async () => ({
+          ...("oldAccount" in scenario ? {} : { appFinish: 1 }),
+          ...("portlessAccount" in scenario ? {} : { appReturnPort: 1 }),
           callbackRelayProviders: [],
           providerRevisions: { example: 1 },
         })),
@@ -1585,7 +1780,7 @@ describe("IntegrationService hosted OAuth failures", () => {
             status: "sealed",
           });
         }),
-        status: vi.fn(async () => ({ status: "sealed" as const })),
+        status: vi.fn(async () => ({ status: returned ? "sealed" : "launched" })),
       };
       const completeOAuthAttempt = vi.fn(
         async (input: { readonly connection: { readonly id: IntegrationConnectionId } }) => {
@@ -1622,14 +1817,106 @@ describe("IntegrationService hosted OAuth failures", () => {
         vault: { seal } as never,
       });
 
-      await service.beginAuthorization({
-        applicationSource: "hosted-oauth",
-        definitionId: definition.id,
-        ownerUserId,
-        requestSurface: remote ? "personal-remote" : "canonical",
-        returnPath: "/integrations",
-        surface: "web",
+      const begin = () =>
+        service.beginAuthorization({
+          applicationSource: "hosted-oauth",
+          definitionId: definition.id,
+          ownerUserId,
+          requestSurface: remote ? "personal-remote" : "canonical",
+          returnPath: "/integrations",
+          surface: "surface" in scenario ? scenario.surface : "web",
+          ...(finish ? { finish } : {}),
+          ...("appReturnPort" in scenario ? { appReturnPort: scenario.appReturnPort } : {}),
+        });
+      if ("oldAccount" in scenario) {
+        await expect(begin()).rejects.toMatchObject({
+          code: "conflict",
+          message: expect.stringContaining("Opensteer Account must be updated"),
+        });
+        expect(broker.createAttempt).not.toHaveBeenCalled();
+        return;
+      }
+      await begin();
+      expect(Object.hasOwn(brokerRequest, "finish")).toBe(!!finish);
+      expect(JSON.parse(storedPayload.payload!).finish).toBe(finish);
+      expect(brokerRequest.appReturnPort).toBe(
+        "appReturnPort" in scenario && !("portlessAccount" in scenario) ? 48_203 : undefined,
+      );
+      expect(storedPayload.payload).not.toContain("appReturnPort");
+      const returnInput = { attemptId, ownerUserId, returnProof: "r".repeat(43) };
+      if (finish) {
+        await expect(
+          service.authorizationStatus({ attemptId, ownerUserId }),
+        ).resolves.toMatchObject({ status: "launched" });
+        expect(broker.pull).not.toHaveBeenCalled();
+        await expect(
+          service.returnAuthorization({ ...returnInput, ownerUserId: createId("user") }),
+        ).resolves.toBeNull();
+        expect(broker.returnAttempt).not.toHaveBeenCalled();
+        broker.returnAttempt.mockRejectedValueOnce(
+          new OpensteerError({ code: "forbidden", message: "Return proof refused" }),
+        );
+        await expect(service.returnAuthorization(returnInput)).rejects.toMatchObject({
+          code: "forbidden",
+          retryable: false,
+        });
+        expect(attempts.fail).not.toHaveBeenCalled();
+        broker.returnAttempt.mockRejectedValueOnce(
+          new OpensteerError({ code: "conflict", message: "Account unavailable", retryable: true }),
+        );
+        await expect(service.returnAuthorization(returnInput)).rejects.toMatchObject({
+          retryable: true,
+        });
+        expect(attempts.fail).not.toHaveBeenCalled();
+        broker.pull.mockRejectedValueOnce(
+          new OpensteerError({ code: "conflict", message: "Lost result", retryable: true }),
+        );
+        await expect(service.returnAuthorization(returnInput)).rejects.toMatchObject({
+          retryable: true,
+        });
+        expect(attempts.claimHosted).not.toHaveBeenCalled();
+        expect(attempts.fail).not.toHaveBeenCalled();
+        const output = await handleIntegrationAuthorizationCommand(
+          { integrations: service } as never,
+          {
+            type: "integration.authorization.return",
+            attemptId,
+            returnProof: returnInput.returnProof,
+            idempotencyKey: "return",
+          },
+          testHostApiContext(ownerUserId),
+        );
+        expect(output).toMatchObject({
+          type: "integration.authorization.return",
+          status: "completed",
+        });
+        expect(completeOAuthAttempt).toHaveBeenCalledOnce();
+        expect(broker.acknowledge).toHaveBeenCalledOnce();
+        expect(completeOAuthAttempt).toHaveBeenCalledWith(
+          expect.objectContaining({
+            accountBinding: {
+              kind: "personal",
+              issuer: "https://account.example.test",
+              subject: accountSubject,
+              linkGeneration: "G".repeat(43),
+            },
+          }),
+        );
+        expect(broker.returnAttempt).toHaveBeenLastCalledWith(
+          `hoa_${attemptId.slice(4)}`,
+          returnInput.returnProof,
+        );
+        const calls = broker.returnAttempt.mock.calls.length;
+        await expect(service.returnAuthorization(returnInput)).resolves.toMatchObject({
+          status: "completed",
+        });
+        expect(broker.returnAttempt).toHaveBeenCalledTimes(calls);
+        return;
+      }
+      await expect(service.returnAuthorization(returnInput)).rejects.toMatchObject({
+        code: "conflict",
       });
+      expect(broker.returnAttempt).not.toHaveBeenCalled();
       // A remote browser cannot open the loopback canonical origin, so the
       // Account service ends that sign-in on its own page.
       expect(brokerRequest.returnPath).toBe(remote ? undefined : "/integrations");
@@ -2687,3 +2974,38 @@ function apiKeyService(input: {
     vault: { open: vi.fn(), seal: input.seal },
   });
 }
+
+it.each(["failed", "denied", "cancelled", "expired"] as const)(
+  "returns the owner's durable %s outcome on an app-return retry after payload erasure",
+  async (status) => {
+    const ownerUserId = createId("user");
+    const attemptId = createIntegrationId("oauthAttempt");
+    const outcome = {
+      status,
+      failureCode: "provider-denied",
+      connectionId: null,
+      expiresAt: new Date(),
+    };
+    const inspect = vi.fn(async () => null);
+    const attempts = {
+      status: vi.fn(async (input: { ownerUserId: string }) =>
+        input.ownerUserId === ownerUserId ? outcome : null,
+      ),
+      inspect,
+    };
+    const service = new IntegrationService({
+      attempts: attempts as never,
+      deploymentPosture: async () => "independent-self-hosted",
+      repository: {} as never,
+      publicUrl: new URL("http://127.0.0.1:4310"),
+      onConnectionConnected: async () => undefined,
+      vault: {} as never,
+    });
+    const input = { attemptId, ownerUserId, returnProof: "r".repeat(43) };
+    await expect(service.returnAuthorization(input)).resolves.toEqual(outcome);
+    await expect(
+      service.returnAuthorization({ ...input, ownerUserId: createId("user") }),
+    ).resolves.toBeNull();
+    expect(inspect).not.toHaveBeenCalled();
+  },
+);

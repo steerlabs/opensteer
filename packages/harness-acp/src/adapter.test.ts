@@ -526,14 +526,20 @@ async function setup(scenario: Scenario, real: { readonly agent?: string } = {})
   const environment = { PATH: process.env.PATH ?? "" };
   const context: HarnessSessionContext = {
     accessMode: "full-access",
-    agentTools: { capabilityProfileId: "main", token: "agent-token", url: "https://host/mcp" },
+    agentTools: {
+      tools: ["thread_read", "integration_call", "computer"],
+      toolsRevision: "test-tools-v1",
+      instructions: "Host Opensteer instructions",
+      skills: ["opensteer:threads"],
+      token: "agent-token",
+      url: "https://host/mcp",
+    },
     environment,
     environmentId: createId("environment"),
     harnessInstanceId: instanceId,
     history: [],
     historyWindow: { byteCount: 0, hasEarlier: false, itemCount: 0 },
     instructions: undefined,
-    integrationTools: { token: "integration-token", url: "https://host/integrations" },
     machineAccessNotice: "No other computers are reachable.",
     machineAccessPlatform: undefined,
     machineAccessRelaySocket: undefined,
@@ -623,7 +629,17 @@ function fakeClient(
       metadata: {},
       protocolVersion: 1,
     }),
-    newSession: async () => ({ configOptions: [], metadata: {}, sessionId: "new-session" }),
+    newSession: async (environment) => {
+      expect(environment.mcpServers).toEqual([
+        {
+          name: "opensteer",
+          type: "http",
+          url: "https://host/mcp",
+          headers: [{ name: "Authorization", value: "Bearer agent-token" }],
+        },
+      ]);
+      return { configOptions: [], metadata: {}, sessionId: "new-session" };
+    },
     prompt: async (_sessionId, input) => {
       prompts.push(input);
       if (scenario === "wait-interruption") {
@@ -730,7 +746,15 @@ function fakeClient(
       });
       return { stopReason: "end_turn" };
     },
-    resumeSession: async (reference) => {
+    resumeSession: async (reference, environment) => {
+      expect(environment.mcpServers).toEqual([
+        {
+          name: "opensteer",
+          type: "http",
+          url: "https://host/mcp",
+          headers: [{ name: "Authorization", value: "Bearer agent-token" }],
+        },
+      ]);
       handlers.update(reference, {
         content: { text: "historical answer", type: "text" },
         sessionUpdate: "agent_message_chunk",

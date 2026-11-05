@@ -9,16 +9,23 @@ import {
   threadActivityIndicator,
   threadStartHold,
   threadStopTarget,
+  type MessageEntry,
 } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
-import { threadActivityScenarios, withAccountPreparing } from "@opensteer/client/test-support";
+import {
+  mcpPresentationScenarios,
+  mcpPresentationTool,
+  threadActivityScenarios,
+  withAccountPreparing,
+} from "@opensteer/client/test-support";
 import { composerView, type ComposerState } from "./composer-model.js";
-import { WorkingIndicator } from "./transcript.js";
+import { Message, TranscriptGroupRow, transcriptVoice, WorkingIndicator } from "./transcript.js";
 
 // The indicator is drawn by the real component with DOM hosts; the platform
 // primitives and animation drivers are outside this check.
 vi.mock("react-native", () => ({
   Platform: { OS: "ios", Version: "26" },
+  useWindowDimensions: () => ({ fontScale: 1 }),
   View: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   Pressable: ({ children }: { children?: ReactNode }) => <button>{children}</button>,
   StyleSheet: { create: (styles: object) => styles, hairlineWidth: 1 },
@@ -78,6 +85,71 @@ const idleComposer: ComposerState = {
 };
 
 describe("a Thread's activity on the phone", () => {
+  function mount(node: ReactNode) {
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    roots.push(root);
+    act(() => root.render(node));
+    return container;
+  }
+
+  it.each(mcpPresentationScenarios)(
+    "presents %s while running and after completion",
+    (name, args, active, done) => {
+      for (const running of [true, false]) {
+        const group = groupTranscriptEntries([mcpPresentationTool(name, args, running)])[0]!;
+        const container = mount(
+          <TranscriptGroupRow
+            group={group}
+            open={true}
+            onToggleOpen={() => {}}
+            highlightRequestId={null}
+            onOpenStep={() => {}}
+            onOpenThread={() => {}}
+            spacingTop={0}
+            homeThreadId={null}
+            viewerUserId={null}
+            workspaces={[]}
+          />,
+        );
+        expect(container.textContent).toContain(running ? active : done);
+      }
+    },
+  );
+
+  it.each([true, false])(
+    "attributes connection input to its agent (conversation=%s)",
+    (conversation) => {
+      const message: MessageEntry = {
+        author: { kind: "connection", connectionId: "mcn_external", displayName: "Research agent" },
+        body: "Check these sources",
+        createdAt: "2026-11-03T10:00:00.000Z",
+        id: "message-connection",
+        kind: "message",
+        messageKind: "input",
+        runId: null,
+      };
+      const group = { kind: "message", key: message.id, entry: message } as const;
+      expect(transcriptVoice(group, "owner")).toBe("input");
+      const container = mount(
+        <Message
+          conversation={conversation}
+          message={message}
+          homeThreadId={null}
+          onReply={undefined}
+          open={true}
+          onToggle={() => {}}
+          onOpenThread={() => {}}
+          viewerUserId="owner"
+          workspaces={[]}
+        />,
+      );
+      expect(container.textContent).toContain("Research agent");
+      expect(container.textContent).toContain(message.body);
+    },
+  );
+
   it.each(threadActivityScenarios(seeded).map((scenario) => [scenario.name, scenario] as const))(
     "shows the line and Stop every client shows when %s",
     (_name, scenario) => {

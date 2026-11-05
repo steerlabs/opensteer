@@ -86,9 +86,9 @@ Object.assign(env, { OPENSTEER_SOURCE_REVISION: sha, OPENSTEER_RELEASE_VERSION: 
 
 // Official distributions, pinned independently of the runner's installed packages.
 await download(
-  "https://nodejs.org/dist/v24.13.0/node-v24.13.0-darwin-arm64.tar.gz",
+  "https://nodejs.org/dist/v24.22.2/node-v24.22.2-darwin-arm64.tar.gz",
   path.join(out, "node.tgz"),
-  "d595961e563fcae057d4a0fb992f175a54d97fcc4a14dc2d474d92ddeea3b9f8",
+  "aa9549349e47dffaa42dcf95d6e06ade8c4bdafc980979883b88767670df385a",
 );
 await run("tar", ["-xzf", path.join(out, "node.tgz"), "-C", out]);
 const postgres = path.join(out, "postgres");
@@ -164,7 +164,7 @@ for (const file of [supervisor, cloudflared]) {
 }
 Object.assign(env, {
   OPENSTEER_PERSONAL_RUNTIME_POSTGRES_SOURCE: postgres,
-  OPENSTEER_PERSONAL_RUNTIME_NODE_SOURCE: path.join(out, "node-v24.13.0-darwin-arm64"),
+  OPENSTEER_PERSONAL_RUNTIME_NODE_SOURCE: path.join(out, "node-v24.22.2-darwin-arm64"),
   OPENSTEER_PERSONAL_RUNTIME_SOURCE: path.join(out, "runtime"),
   OPENSTEER_PERSONAL_RUNTIME_OUTPUT: path.join(out, "runtime"),
   OPENSTEER_PROCESS_SUPERVISOR_BINARY_SOURCE: supervisor,

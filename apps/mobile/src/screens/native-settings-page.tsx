@@ -3,6 +3,7 @@ import { FlatList, TextInput, View, ScrollView, Pressable, Alert } from "react-n
 import { AppText, SecondaryButton, SwitchRow } from "../ui/primitives.js";
 import { Screen } from "../ui/screen.js";
 import { useState } from "react";
+import { IntegrationIcon } from "../ui/integration-icon.js";
 import type { NativeSettingsPageProps, NativeSettingsRow } from "./native-settings-page.types.js";
 export function NativeSettingsPage(props: NativeSettingsPageProps) {
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
@@ -90,12 +91,19 @@ function Row({ row }: { readonly row: NativeSettingsRow }) {
   if (row.kind === "button")
     return (
       <View>
-        <SecondaryButton
-          label={row.label}
-          disabled={row.disabled ?? false}
-          onPress={row.onPress}
-          tone={row.destructive ? "danger" : "default"}
-        />
+        <View style={{ alignItems: "center", flexDirection: "row", gap: 12 }}>
+          {row.mark ? (
+            <IntegrationIcon definitionId={row.mark.definitionId} name={row.mark.name} size={28} />
+          ) : null}
+          <View style={{ flex: 1 }}>
+            <SecondaryButton
+              label={row.label}
+              disabled={row.disabled ?? false}
+              onPress={row.onPress}
+              tone={row.destructive ? "danger" : "default"}
+            />
+          </View>
+        </View>
         {row.actions?.length ? (
           <SecondaryButton
             label={`More actions for ${row.label}`}

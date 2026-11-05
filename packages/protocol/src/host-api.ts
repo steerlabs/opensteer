@@ -1,3 +1,11 @@
+import { AutomaticModelsViewSchema } from "./automatic-models.js";
+import { AutomaticModelConfigSchema, AutomaticModelConfigViewSchema } from "@opensteer/core";
+import {
+  AgentConnectionSchema,
+  AgentConnectionIdSchema,
+  AgentConnectionReachSchema,
+  AgentConnectionConsentSchema,
+} from "./agent-connections.js";
 import {
   PluginTargetSchema,
   PluginsOverviewViewSchema,
@@ -118,6 +126,7 @@ import {
   InstallCatalogIntegrationSchema,
   InstallRemoteMcpSchema,
   IntegrationAuthorizationAttemptIdSchema,
+  IntegrationAuthorizationReturnProofSchema,
   IntegrationAuthorizationStartViewSchema,
   IntegrationAuthorizationStatusViewSchema,
   IntegrationConnectionIdSchema,
@@ -264,11 +273,8 @@ import {
   machineAccessHistoryMaxSessions,
 } from "./shell.js";
 import {
-  VoiceAnswerInputSchema,
   VoiceContextInputSchema,
   VoiceEmptyResultSchema,
-  VoiceNextInputSchema,
-  VoiceNextResultSchema,
   VoiceRenewInputSchema,
   VoiceSayInputSchema,
   VoiceStartInputSchema,
@@ -458,7 +464,7 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     home: z.literal(true).optional(),
     /**
      * `title` is the first line of the message that will start the Thread, for
-     * its engine to replace with a name of its own. Absent, `title` is a name
+     * background naming to replace with a generated name. Absent, `title` is a name
      * someone chose and nothing replaces it. Sent only to a Host that
      * advertises `thread-titles-v1`.
      */
@@ -588,6 +594,11 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     idempotencyKey: idempotencyKeySchema,
     threadId: ThreadIdSchema,
     type: z.literal("thread.access.update"),
+  }),
+  z.strictObject({
+    type: z.literal("automaticModels.set"),
+    idempotencyKey: idempotencyKeySchema,
+    config: AutomaticModelConfigSchema,
   }),
   // A choice a person just made, to start their next Thread from. The Host
   // folds it into the one record it keeps per person, so a phone and a desktop
@@ -740,6 +751,25 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
+    connectionId: AgentConnectionIdSchema,
+    type: z.literal("connection.revoke"),
+  }),
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    requestId: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+    decision: z.discriminatedUnion("kind", [
+      z.strictObject({ kind: z.literal("deny") }),
+      z.strictObject({
+        kind: z.literal("approve"),
+        label: z.string().trim().min(1).max(120),
+        accessMode: ThreadAccessModeSchema,
+        reach: AgentConnectionReachSchema,
+      }),
+    ]),
+    type: z.literal("connection.authorize"),
+  }),
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
     sessionId: AuthSessionIdSchema,
     type: z.literal("session.revoke"),
   }),
@@ -825,6 +855,17 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     attemptId: IntegrationAuthorizationAttemptIdSchema,
     idempotencyKey: idempotencyKeySchema,
     type: z.literal("integration.authorization.cancel"),
+  }),
+  /**
+   * The app that started an app-finished consent hands back the browser's
+   * one-use return proof; until then the Account service keeps the result
+   * sealed. Sent only to a Host advertising `integration-app-finish-v1`.
+   */
+  z.strictObject({
+    attemptId: IntegrationAuthorizationAttemptIdSchema,
+    idempotencyKey: idempotencyKeySchema,
+    returnProof: IntegrationAuthorizationReturnProofSchema,
+    type: z.literal("integration.authorization.return"),
   }),
   z.strictObject({
     connectionId: IntegrationConnectionIdSchema,
@@ -1263,6 +1304,7 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     preferences: ExecutionPreferencesViewSchema,
     type: z.literal("execution.preferences.remember"),
   }),
+  z.object({ type: z.literal("automaticModels.set"), config: AutomaticModelConfigViewSchema }),
   z.object({ type: z.literal("run.interrupt"), wasDuplicate: z.boolean() }),
   z.object({ type: z.literal("request.respond") }),
   z.object({ harness: harnessRecordSchema, type: z.literal("harness.create") }),
@@ -1302,6 +1344,11 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("personal.accountLink.complete"),
     access: PersonalRemoteAccessStatusSchema,
+  }),
+  z.object({ type: z.literal("connection.revoke") }),
+  z.object({
+    type: z.literal("connection.authorize"),
+    completionPath: z.string().startsWith("/oauth/mcp/complete?"),
   }),
   z.object({ type: z.literal("session.revoke") }),
   z.object({
@@ -1352,6 +1399,9 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   IntegrationAuthorizationStatusViewSchema.extend({
     type: z.literal("integration.authorization.cancel"),
   }),
+  IntegrationAuthorizationStatusViewSchema.extend({
+    type: z.literal("integration.authorization.return"),
+  }),
   z.object({ type: z.literal("integration.mcp.disconnect") }),
   z.object({ type: z.literal("plugin.update") }),
   z.object({ type: z.literal("plugin.remove") }),
@@ -1400,7 +1450,14 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   IntegrationAuthorizationStartViewSchema.extend({
     type: z.literal("integration.authorization.begin"),
   }),
-  z.object({ type: z.literal("integration.apiKey.connect") }),
+  /**
+   * The exact account the key connected or reconnected, so a card answers its
+   * request with that account and never a look-alike. Older Hosts omit it.
+   */
+  z.object({
+    connectionId: IntegrationConnectionIdSchema.optional(),
+    type: z.literal("integration.apiKey.connect"),
+  }),
   z.object({ grant: IntegrationGrantViewSchema, type: z.literal("integration.grant.create") }),
   /**
    * Revocation is best effort: the credential is always destroyed locally, and
@@ -1633,6 +1690,16 @@ export const hostApi = defineRpc({
     ChannelConnectionInspectionViewSchema,
   ),
   "channels.get": declaration("GET", emptyInputSchema, ChannelDashboardViewSchema),
+  "connections.list": declaration(
+    "GET",
+    emptyInputSchema,
+    z.object({ connections: z.array(AgentConnectionSchema) }),
+  ),
+  "connections.authorization.get": declaration(
+    "GET",
+    z.strictObject({ requestId: z.string().regex(/^[A-Za-z0-9_-]{43}$/) }),
+    AgentConnectionConsentSchema,
+  ),
   "personal.remoteAccess.get": declaration(
     "GET",
     emptyInputSchema,
@@ -1660,6 +1727,8 @@ export const hostApi = defineRpc({
     }),
     harnessAuthenticationEnvelopeSchema,
   ),
+  /** Requires automatic-models-v1; automaticModels.set is a person-only commands.dispatch mutation. */
+  "automaticModels.get": declaration("GET", z.strictObject({}), AutomaticModelsViewSchema),
   "harness.catalog.refresh": declaration(
     "POST",
     z.strictObject({
@@ -1681,27 +1750,21 @@ export const hostApi = defineRpc({
     z.object({ servers: z.array(ModelServerViewSchema).max(maxModelServers) }),
   ),
   /**
-   * A voice call on one of the person's ChatGPT accounts on that work
-   * location's computer. The client's offer goes to the Runner, which creates
-   * the call; audio then flows between the client and the vendor only.
-   * Requires `voice-v1`; errors carry a `VoiceRefusalReason`.
+   * A voice call on one of the person's ChatGPT accounts on that computer,
+   * with its own agent: one Run on a hidden child of Chat. The client's offer
+   * goes to the Runner, which creates the call; audio then flows between the
+   * client and the vendor only. Starting again with the same session id
+   * returns the same call; a new session ends the person's other call.
+   * Requires `voice-run-v1`; errors carry a `VoiceRefusalReason`.
    */
   "voice.start": declaration("POST", VoiceStartInputSchema, VoiceStartResultSchema),
   /** Keeps a call alive for another lease, rechecking the person may still use it. */
   "voice.renew": declaration("POST", VoiceRenewInputSchema, VoiceEmptyResultSchema),
-  /** Has the voice tell the person something, such as Chat's reply. */
+  /** Has the voice tell the person something once, such as Chat's reply. */
   "voice.say": declaration("POST", VoiceSayInputSchema, VoiceEmptyResultSchema),
-  /** Ends a call. Ending one that is already over succeeds. */
+  /** Ends a call by stopping its Run. Ending one that is already over succeeds. */
   "voice.stop": declaration("POST", VoiceStopInputSchema, VoiceEmptyResultSchema),
-  /**
-   * The call agent's next tool call for this device, held open briefly while
-   * there is none. Unanswered calls are delivered again. Requires
-   * `voice-agent-v1` and a call started with `agent`.
-   */
-  "voice.next": declaration("POST", VoiceNextInputSchema, VoiceNextResultSchema),
-  /** This device's result for one tool call; answering twice keeps the first. */
-  "voice.answer": declaration("POST", VoiceAnswerInputSchema, VoiceEmptyResultSchema),
-  /** Replaces what the call's agent knows the person sees and can open. */
+  /** Replaces what the call's agent knows the person is looking at. */
   "voice.context": declaration("POST", VoiceContextInputSchema, VoiceEmptyResultSchema),
   "integration.authorization.get": declaration(
     "GET",

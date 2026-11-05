@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BrowserWatchStore } from "./browser-watch.js";
 import type { WebSocketClient } from "./host-session-client.js";
+import { healthySocketMs } from "./realtime-frames.js";
 
 const sessionId = "bsn_00000000-0000-4000-8000-000000000001";
 const surfaceId = "srf_00000000-0000-4000-8000-000000000001";
@@ -51,14 +52,29 @@ class TargetSocket implements WebSocketClient {
       surfaces: [{ id: surfaceId, active: true, title: "Page", url: "about:blank" }],
     });
   }
-  picture(sequence = 1) {
+  garbled() {
+    this.#emit("message", { data: "{ not a frame" });
+  }
+  /** What the Host answers every targeted subscription with. */
+  subscribed() {
+    this.receive({ type: "browser.dialog.changed", surfaceId, dialog: null });
+  }
+  /** A binary frame carrying exactly this header, whatever it says. */
+  pictureWithHeader(text: string) {
+    const header = new TextEncoder().encode(text);
+    const bytes = new Uint8Array(4 + header.length + 4);
+    new DataView(bytes.buffer).setUint32(0, header.length);
+    bytes.set(header, 4);
+    this.receive(bytes.buffer);
+  }
+  picture(sequence = 1, target = surfaceId) {
     const header = new TextEncoder().encode(
       JSON.stringify({
         encoding: "jpeg",
         frameId: sequence,
         geometryRevision: 1,
         watchToken: `00000000-0000-4000-8000-${String(sequence).padStart(12, "0")}`,
-        surfaceId,
+        surfaceId: target,
         viewportWidth: 800,
         viewportHeight: 600,
         rasterWidth: 800,
@@ -366,6 +382,301 @@ describe("BrowserWatchStore", () => {
     );
     expect(socket.closes).toMatchObject([{ code: 4002 }]);
     release();
+  });
+});
+
+describe("frames a target cannot read", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function target() {
+    const sockets: TargetSocket[] = [];
+    const delays: Array<readonly [number, number]> = [];
+    const store = new BrowserWatchStore(
+      () => {
+        const socket = new TargetSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      "watch",
+      undefined,
+      (attempt, unreadableFrames) => {
+        delays.push([attempt, unreadableFrames]);
+        return 10 * 2 ** Math.max(attempt, unreadableFrames - 1);
+      },
+    );
+    return { delays, release: store.retain(sessionId, surfaceId), sockets, store };
+  }
+  const unreadable = { type: "browser.surfaces.changed", surfaces: "unreadable" };
+  const state = (f: ReturnType<typeof target>) => f.store.get(sessionId, surfaceId);
+  /** Fails three times right after a snapshot, which leaves a 40ms wait running. */
+  function failThrice(f: ReturnType<typeof target>) {
+    for (const delay of [10, 20]) {
+      const socket = f.sockets.at(-1)!;
+      socket.open();
+      socket.admit();
+      socket.garbled();
+      vi.advanceTimersByTime(delay);
+    }
+    const socket = f.sockets.at(-1)!;
+    socket.open();
+    socket.admit();
+    socket.garbled();
+  }
+
+  it.each([
+    ["unreadable JSON", (socket: TargetSocket) => socket.garbled()],
+    ["a message its schema refuses", (socket: TargetSocket) => socket.receive(unreadable)],
+    [
+      "a message past its size limit",
+      (socket: TargetSocket) => socket.receive("x".repeat(1024 * 1024 + 1)),
+    ],
+  ])("reconnects after %s, keeping the last picture and taking no input", (_name, lose) => {
+    const f = target();
+    const socket = f.sockets[0]!;
+    socket.open();
+    socket.admit();
+    socket.picture(1);
+    const { frame } = state(f);
+    expect(frame).not.toBeNull();
+    lose(socket);
+    expect(socket.closes).toMatchObject([{ code: 4002 }]);
+    expect(state(f)).toMatchObject({ error: null, status: "unavailable" });
+    expect(state(f).frame).toBe(frame);
+    vi.advanceTimersByTime(9);
+    expect(f.sockets).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    expect(f.sockets).toHaveLength(2);
+    expect(state(f).status).toBe("connecting");
+    f.release();
+  });
+
+  it.each([
+    ["a header that is not JSON", (socket: TargetSocket) => socket.pictureWithHeader("{ not json")],
+    ["a header its schema refuses", (socket: TargetSocket) => socket.pictureWithHeader("{}")],
+    ["a frame too short to hold one", (socket: TargetSocket) => socket.receive(new ArrayBuffer(2))],
+    [
+      "a header length past its end",
+      (socket: TargetSocket) => {
+        const bytes = new Uint8Array(16);
+        new DataView(bytes.buffer).setUint32(0, 1_000);
+        socket.receive(bytes.buffer);
+      },
+    ],
+  ])("reconnects after a picture with %s, however the decoder reports it", (_name, lose) => {
+    const f = target();
+    const socket = f.sockets[0]!;
+    socket.open();
+    socket.admit();
+    socket.picture(1);
+    const { frame } = state(f);
+    lose(socket);
+    expect(socket.closes).toMatchObject([{ code: 4002 }]);
+    expect(state(f)).toMatchObject({ error: null, status: "unavailable" });
+    expect(state(f).frame).toBe(frame);
+    vi.advanceTimersByTime(10);
+    expect(f.sockets).toHaveLength(2);
+    f.store.reconnect();
+    expect(state(f).error).toBeNull();
+    f.release();
+  });
+
+  it.each([
+    ["a picture", (socket: TargetSocket, sequence: number) => socket.picture(sequence)],
+    [
+      "a message",
+      (socket: TargetSocket) =>
+        socket.receive({
+          type: "browser.surfaces.changed",
+          surfaces: [{ id: surfaceId, active: true, title: "Page", url: "about:blank" }],
+        }),
+    ],
+  ])("keeps counting failures until %s is read on a socket that has stayed up", (_name, read) => {
+    const f = target();
+    failThrice(f);
+    expect(f.delays.at(-1)).toEqual([0, 3]);
+    vi.advanceTimersByTime(40);
+    const socket = f.sockets.at(-1)!;
+    socket.open();
+    socket.admit();
+    read(socket, 1);
+    vi.advanceTimersByTime(healthySocketMs);
+    read(socket, 2);
+    socket.garbled();
+    expect(f.delays.at(-1)).toEqual([0, 1]);
+    f.release();
+  });
+
+  it.each([
+    ["the Host's dialog reply", (socket: TargetSocket) => socket.subscribed()],
+    [
+      "a good picture",
+      (socket: TargetSocket) => {
+        socket.subscribed();
+        socket.picture(1);
+      },
+    ],
+    [
+      "the stream's state",
+      (socket: TargetSocket) =>
+        socket.receive({ type: "browser.stream.state", state: "admitted", surfaceId }),
+    ],
+  ])("grows the delay when %s precedes the same bad picture on every connect", (_name, reply) => {
+    const f = target();
+    for (const [failures, delay] of [
+      [1, 10],
+      [2, 20],
+      [3, 40],
+      [4, 80],
+    ] as const) {
+      const socket = f.sockets.at(-1)!;
+      socket.open();
+      socket.admit();
+      reply(socket);
+      socket.pictureWithHeader("{ not json");
+      expect(f.delays.at(-1)).toEqual([0, failures]);
+      vi.advanceTimersByTime(delay);
+    }
+    f.release();
+  });
+
+  it("keeps counting when the frame that fails after each snapshot is a picture", () => {
+    const f = target();
+    for (const [failures, delay] of [
+      [1, 10],
+      [2, 20],
+      [3, 40],
+    ] as const) {
+      const socket = f.sockets.at(-1)!;
+      socket.open();
+      socket.admit();
+      socket.pictureWithHeader("{ not json");
+      expect(f.delays.at(-1)).toEqual([0, failures]);
+      vi.advanceTimersByTime(delay);
+    }
+    f.release();
+  });
+
+  it("acknowledges to a new socket only the frames that socket sent", () => {
+    const f = target();
+    const token = (sequence: number) =>
+      `00000000-0000-4000-8000-${String(sequence).padStart(12, "0")}`;
+    const first = f.sockets[0]!;
+    first.open();
+    first.admit();
+    for (let sequence = 1; sequence <= 8; sequence += 1) {
+      first.picture(sequence);
+      f.store.claim(sessionId, surfaceId, token(sequence));
+    }
+    first.garbled();
+    vi.advanceTimersByTime(10);
+    const next = f.sockets[1]!;
+    next.open();
+    next.admit();
+    next.picture(9);
+    expect(next.closes).toEqual([]);
+    expect(state(f)).toMatchObject({ error: null, status: "live" });
+    f.store.accept(sessionId, surfaceId, token(9));
+    const acknowledged = next.sent
+      .map((sent) => JSON.parse(sent) as { type: string; token?: string })
+      .filter(({ type }) => type === "stream.ack")
+      .map((message) => message.token);
+    expect(acknowledged).toEqual([token(9)]);
+    f.release();
+  });
+
+  it("keeps its retry time through network changes and another holder, and a fresh view tries at once", () => {
+    const f = target();
+    failThrice(f);
+    vi.advanceTimersByTime(10);
+    f.store.reconnect();
+    f.store.reconnect();
+    const second = f.store.retain(sessionId, surfaceId);
+    expect(f.sockets).toHaveLength(3);
+    vi.advanceTimersByTime(29);
+    expect(f.sockets).toHaveLength(3);
+    vi.advanceTimersByTime(1);
+    expect(f.sockets).toHaveLength(4);
+    second();
+    f.release();
+    const fresh = f.store.retain(sessionId, surfaceId);
+    expect(f.sockets).toHaveLength(5);
+    fresh();
+  });
+
+  it("does not restart an attempt in flight", () => {
+    const f = target();
+    failThrice(f);
+    vi.advanceTimersByTime(40);
+    expect(f.sockets).toHaveLength(4);
+    f.store.reconnect();
+    expect(f.sockets).toHaveLength(4);
+    f.release();
+  });
+
+  it.each([
+    [
+      "a Host that refuses target control",
+      (socket: TargetSocket) => {
+        socket.admit();
+        socket.receive({
+          type: "browser.error",
+          error: {
+            code: "bad_message",
+            message: "Update the Host.",
+            reason: "browser-target-control-unsupported",
+            retryable: false,
+          },
+        });
+      },
+    ],
+    [
+      "a Host without targeted streaming",
+      (socket: TargetSocket) =>
+        socket.receive({
+          type: "browser.snapshot",
+          sessionId,
+          state: "ready",
+          access: "read-write",
+          dialog: null,
+          surfaces: [{ id: surfaceId, active: true, title: "Page", url: "about:blank" }],
+        }),
+    ],
+    [
+      "a picture of another target",
+      (socket: TargetSocket) => {
+        socket.admit();
+        socket.picture(1, "srf_00000000-0000-4000-8000-000000000002");
+      },
+    ],
+    [
+      "the Host closing with a protocol violation",
+      (socket: TargetSocket) => {
+        socket.admit();
+        socket.drop(4002);
+      },
+    ],
+    [
+      "access ending",
+      (socket: TargetSocket) => {
+        socket.admit();
+        socket.drop(4003);
+      },
+    ],
+  ])("still stops for good on %s", (_name, stop) => {
+    const f = target();
+    const socket = f.sockets[0]!;
+    socket.open();
+    stop(socket);
+    expect(state(f).error).not.toBeNull();
+    vi.advanceTimersByTime(600_000);
+    f.store.reconnect();
+    expect(f.sockets).toHaveLength(1);
+    f.release();
   });
 });
 

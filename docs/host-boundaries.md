@@ -1,367 +1,149 @@
 # Host boundaries
 
-Read this when changing Deployment configuration, client authentication or the
-Host API. Integration-provider OAuth has its own
-[contract](integration-oauth.md); client routing lives in [Connections](connections.md).
+Deployment configuration, Host authentication, the Host API and compatibility. Integration OAuth is
+in [Integration OAuth](integration-oauth.md); client routing is in [Connections](connections.md).
 
-Both desktop update channels configure the same Account issuer,
-`https://accounts.opensteer.com`, and portal, `https://app.opensteer.com`.
-Account authentication and forms trust only the Account origin. Portal routing,
-OAuth callback registration and portal forms use the separately configured
-portal origin. Their authentication cookies are host-only; no shared hint
-cookie crosses subdomains. Development must explicitly configure local origins.
+Both desktop update channels use the Account `https://accounts.opensteer.com` and portal
+`https://app.opensteer.com`. Account authentication and forms trust only the Account origin; portal
+routing, OAuth callback registration and portal forms use the separately configured portal origin.
+Their authentication cookies are host-only, and no shared hint cookie crosses subdomains.
+Development must configure local origins explicitly.
 
 ## Deployment configuration
 
-[Config validation](../packages/config/src/config.ts) owns the combinations of
-`DeploymentShape`, exposure, Account attachment and external Runner admission.
-Workspaces use local directories on enrolled machines.
-
-A Personal Deployment is single-user and loopback-only; an Account-attached
-Deployment must be a server. Loopback exposure requires both the canonical
-hostname and bind address to be loopback. Networked Hosts must not mint their
-own first-owner credential. Native OAuth is server-only.
-
-`acceptsExternalRunners` controls the `agents` module, not SSH-only computers.
-When enabled, `runtimeOrigin` must equal `canonicalOrigin`: external Runners
-must reach every capability URL the Host mints. See [Computers](computers.md).
+[Config validation](../packages/config/src/config.ts) owns which combinations of shape, exposure,
+Account attachment and external Runner admission are valid, with the reason for each. Loopback
+exposure needs both a loopback hostname and bind address. Native OAuth is server-only, since on a
+Personal Host it would bypass the loopback tenancy check. `acceptsExternalRunners` (the `agents`
+module, not SSH-only computers) requires `runtimeOrigin` to equal `canonicalOrigin`.
 
 ## Credentials and session authority
 
-[HostAuthenticator](../apps/host/src/identity/auth.ts) selects one Host-issued
-credential family. Duplicate Authorization fields are rejected from raw HTTP
-headers before Node can discard their ambiguity. A malformed or unsupported
-Authorization header fails rather than falling through to a browser cookie.
+[HostAuthenticator](../apps/host/src/identity/auth.ts) answers a request from exactly one
+Host-issued credential family. Duplicate Authorization fields are rejected from the raw headers
+before Node can collapse them. A malformed or unknown Authorization header fails; it never falls
+through to a browser cookie.
 
-Authority comes from the authenticated user and existing ownership, membership
-and role checks, independently of device or route. Every Personal owner session
-can administer remote access and see the linked Account identity. Server
-administration still requires an administrator; session removal is limited to
-the caller's own sessions, including the current one.
+Authority comes from the authenticated user and the existing ownership, membership and role checks,
+never from the device or route. Every Personal owner session can administer remote access and see
+the linked Account identity. Server administration needs an administrator. People can remove only
+their own sessions, including the current one.
 
-Cookie mutations require one exact Origin: the configured origin for a canonical
-browser cookie, or the stored issuance origin of a Personal remote cookie whose
-signed route generation is still current. Missing, opaque, repeated or mismatched
-Origins fail. Authenticated native OAuth Bearer and PersonalRemote header
-credentials are non-ambient and need no Origin. CORS is not an authorization
-substitute and route headers never prove who is calling.
+Cookie mutations need one exact Origin: the configured origin for a canonical cookie, or the stored
+issuance origin of a Personal remote cookie whose signed route generation is current. Missing,
+opaque, repeated or mismatched Origins fail. Native OAuth Bearer and Personal remote header
+credentials are not ambient and need no Origin. CORS is not authorization, route headers never prove
+who is calling, and Origin checks cannot protect a stolen non-browser credential.
 
-`claimLocalMachineOwner` spends the supervisor's process-launch capability to
-bootstrap a normal owner session. That session has no additional administrative
-powers. Owner actions use ordinary authenticated sessions. The process capability
-also authenticates the private desktop executor and tunnel-credential delivery;
-these credentials never go to an owner session or an administration status payload.
+`claimLocalMachineOwner` spends the supervisor's process-launch capability to create an ordinary
+owner session with no extra powers. The same capability authenticates the desktop's private executor
+and tunnel-credential delivery; those credentials never reach an owner session or an administration
+status payload.
 
-[IdentityService](../packages/identity/src/identity-service.ts) checks the native
-token's `authSessions` row on every call. Revocation commits before success; the
-request's realtime teardown follows response completion. Native OAuth revocation
-ends its session, not just its refresh token. Other devices' sessions remain
-valid unless explicitly removed.
+[IdentityService](../packages/identity/src/identity-service.ts) checks the native token's session
+row on every call. Revocation commits before success; realtime teardown follows the response.
+Revoking native OAuth ends its session, not just its refresh token, and leaves other devices signed
+in. Session lists use fixed device names, never echoed user agents.
 
-`sessions.list` describes each session through
-[`describeSessionDevice`](../packages/identity/src/session-device.ts), using fixed
-names rather than echoing user-agent headers. Desktop bootstrap sessions are
-ordinary removable entries. Personal remote exchanges store the exchanging
-client's user agent for the same labeling.
+Account Connect grants bind `clientSurface`, from which the exchange derives cookie or header
+delivery; pairing-code clients declare what they can hold. Delivery is pinned for the session's
+lifetime, and a remote session fails canonical cookie authentication even if the cookie is renamed.
+The exchange compares `Host` and `X-Forwarded-Proto` to pin a signed route origin and generation,
+but any process reaching the loopback listener can set those headers. Authorization rests on the
+signed short-lived grant and its single-use `jti`, or the single-use pairing code, plus the envelope
+hash and route generation. Rotating the route ends sessions tied to the old one.
 
-Account Connect grants bind `clientSurface`; the exchange derives cookie or
-header delivery from it. Pairing-code clients declare the delivery they can
-hold. `personalRemoteSessions.delivery` pins that choice for the session's
-lifetime. Remote sessions must fail canonical cookie authentication, even if
-the caller renames the cookie.
+First-party native clients come from [`opensteerNativeClients`](../packages/core/src/identity.ts),
+shared by Host and Account registration. Add a signed build there, never a per-Deployment allowlist.
 
-The exchange's comparison of `Host` and `X-Forwarded-Proto` pins a signed route
-origin and generation; it does not prove the request traversed that route.
-Any process reaching the loopback listener can set those headers. Authorization
-depends on the signed grant, its short lifetime and single-use `jti`, or the
-single-use pairing code, plus the envelope hash and route generation. Rotation
-invalidates sessions tied to the old generation.
+### Connected agents (MCP OAuth)
 
-First-party native client identities come from
-[`opensteerNativeClients`](../packages/core/src/identity.ts). Host and Account
-registrations converge on that registry. Add a signed build there and match its
-release identity; do not create per-Deployment client allowlists.
+External agents use the MCP OAuth issuer at `/oauth/mcp` for the single resource `/internal/v1/mcp`
+([source](../apps/host/src/mcp/connections)), with PKCE S256, stateless signed client registration
+and explicit resource binding. It works on Personal loopback without an Account and is separate from
+server-only Host-native OAuth. Discovery is pinned to the configured Host origin or its current
+signed Personal route, kept exactly through consent and code exchange. Only a signed-in owner
+approves; a Personal browser without a session hands a request ID to the signed-in desktop app, and
+the link grants nothing. Consent picks an access ceiling and either everything the person can reach
+or one Workspace they own, lost when ownership ends.
+
+MCP credentials are opaque, stored hashed in their own record, and never become Host sessions or
+authenticate Runners, Runs or programs. A connection works only on the route origin it was approved
+for, and Runs and programs only on the runtime origin. Every call rechecks expiry and revocation;
+MCP transport sessions hold no authority. Revocation stops future calls, including in an open
+session and waits that wake later, but does not cancel admitted tasks or undo their effects.
+Revoking a login leaves connections alone; people remove them in Settings → Account → Connected
+agents. Connections expire after 30 days with no refresh grant.
 
 ## API boundaries
 
-Use [hostApi](../packages/protocol/src/host-api.ts) and
-[registration](../apps/host/src/server/host-api-registration.ts) for browser-facing
-RPC. Domain mutations use `commands.dispatch`. Machine protocols, authentication,
-bootstrap, webhooks, upgrades, downloads and static distribution are REST
-exceptions, not permission to add parallel browser APIs.
+Browser-facing RPC goes in [hostApi](../packages/protocol/src/host-api.ts) and its
+[registration](../apps/host/src/server/host-api-registration.ts); domain mutations use
+`commands.dispatch`. Machine protocols, authentication, bootstrap, webhooks, upgrades, downloads and
+static files are REST exceptions, not permission for parallel browser APIs. Origin protection
+happens once, in authentication; destructive commands add no second origin check.
+The [maintenance contract](../packages/protocol/src/maintenance.ts) is a deliberate REST exception:
+it must work when a client and Host disagree on `hostApiVersion`.
 
-Mutations use credential-aware Origin protection once, during authentication;
-individual destructive commands do not impose an additional canonical-origin
-requirement. Unauthenticated browser sign-in/setup retains its browser-origin
-boundary. Origin checks cannot protect a stolen non-browser credential.
+Viewer read and mute state belongs to the person, never to shared Thread or event records; its
+updates go only to that member, ordered with snapshot and replay. Ordinary RPC failures are
+operation errors, not connection-state changes. Growing inputs need bounded bodies and validation at
+both ends. The exclusions in [response compression](../apps/host/src/server/response-compression.ts)
+keep credentials out of compression length oracles and preserve streaming.
 
-Viewer read/mute state belongs to the authenticated person, never shared durable
-Thread/event records. Viewer updates must be addressed only to that member and
-ordered with snapshot/replay. Ordinary RPC failures are operation errors, not
-connection-state changes. Growing inputs need bounded bodies and validation at
-both boundaries.
-
-Keep credentials out of compression length oracles and preserve stream/progress
-semantics. The exclusions in
-[response-compression.ts](../apps/host/src/server/response-compression.ts) are
-intentional; a gateway can compress independently.
-
-Personal Connect forwards the whole tunnel hostname without path restrictions.
-`connect-projection` publishes signed route state; it is not a traffic proxy.
-Both runtime listeners and development proxies must admit display data traffic.
-
-Display data tickets are single-use and bind the complete live integrations fence,
-producer incarnation and exact Mac window binding. Replacing the integrations
-stream invalidates them; failed upgrades never make consumed nonces reusable.
-Owner sockets require exact-source ownership and periodic/login-expiry
-reauthorization; an owner view uses its independent lease. Bound receivers must
-limit fragmented payloads before reassembly. Data failure affects only its stream.
-Phone data loss and consumed-ticket upgrade failures close viewers with retryable
-1013 while preserving their last state; Mac startup failure is terminal. See
-[the display contract](agent-phone.md#live-display) and
-[DisplayStreamHub](../apps/host/src/computer-use).
+Personal Connect forwards the whole tunnel hostname without path restrictions. `connect-projection`
+publishes signed route state; it is not a traffic proxy. Runtime listeners and development proxies
+must both admit display data traffic. Display data tickets are single-use and bind the live
+integrations fence, producer incarnation and exact Mac window; a failed upgrade never makes a
+consumed ticket reusable ([DisplayStreamHub](../apps/host/src/computer-use/display-stream-hub.ts)).
 
 ## Compatibility
 
-Host API epoch 50 deliberately removes the device-local approval paths: an
-earlier client would offer only decline for saved logins or wait for an answer on
-that Mac. Prior epochs receive the existing discovery/RPC/subscription update
-refusal.
+[`hostApiVersion`](../packages/deployment-authority/src/authority.ts) is the client protocol epoch;
+its comments record each change. Bump it only when an older counterpart would misstate a meaning or
+act unsafely, because a mismatch stops every app on the other epoch. Clients check the raw discovery
+epoch before parsing identity, so an old Host gets an upgrade message, not a parse error; RPC and
+`client.subscribe` refuse a missing or mismatched epoch before dispatch. The epoch and optional
+capabilities live outside the signed Host identity.
 
-After that boundary, compatibility targets the previous **public** release.
+Within an epoch, compatibility targets the previous public release.
 [The previous-release journey](../apps/host/src/agents/previous-release-compat.integration.test.ts)
-uses the frozen public client; move its baseline on public release and fetch that
-commit in shallow CI checkouts.
+runs that frozen client; move its baseline when a release goes public.
 
-[`hostApiVersion`](../packages/deployment-authority/src/authority.ts) owns the epoch.
-Bump only when an older counterpart would misstate meaning or act unsafely: a
-mismatch strands machines one release behind. Preserve both directions: discovery
-checks the raw epoch before identity parsing, RPC refuses missing/mismatched
-`x-opensteer-api-version` before dispatch, and subscription negotiates before admission.
-Epoch/capabilities belong outside signed Host identity; ignore unknown optional
-capabilities and never use them to gate mandatory behavior.
+- Readers tolerate added response fields and skip unknown union members and enum values instead of
+  refusing a whole list or frame. The [tolerance guard](../tests/host-response-tolerance.test.ts)
+  does not cover every path. A missing optional fact means unknown.
+- Descriptor readers drop unknown optional fields, modules, alternatives and versions. Unknown
+  inventory never erases bindings or the agents module.
+- Executable definitions, commands, requests, authenticated inputs and proof envelopes stay strict.
+  A new feature or command field needs a capability advertisement, because older Hosts reject
+  unknown strict input. Remove a field by making it optional in readers first.
+- Ignore unknown capabilities, never let one gate mandatory behavior, and never rely on an optional
+  feature a peer did not advertise.
 
-- Added response fields are tolerated, including opaque values parsed later and
-  other sockets. The [tolerance guard](../tests/host-response-tolerance.test.ts)
-  does not cover every such path. Missing optional facts mean unknown; a turn with no known automatic start is one a person waited on.
-- Readers skip/fall back on unknown union members and enum values rather than
-  refusing a whole list/frame. Presentation tolerance also covers stored consent
-  manifests; executable definitions and authenticated inputs remain strict.
-- Descriptor readers strip/filter unknown optional fields, modules, alternatives
-  and versions. Required sets retain an understood choice; omit a source whose
-  required configuration cannot be understood. Unsupported inventory must never
-  erase bindings or the agents module.
-- Authenticate the complete raw proof-format-2 descriptor JSON with canonical
-  JSON **before** one domain parse. Defaults, trimming and filtering cannot alter
-  the authenticated value. Commands, requests and proof envelopes remain strict.
-- New features/command fields require capability advertisements; older Hosts
-  reject unknown strict inputs. Make removed fields optional in readers first,
-  then stop sending them with a later necessary bump.
-- Passkeys add no epoch bump. The runtime advertises `modules.browser.passkeys: 1`;
-  the enabled Host sends `passkeys: 1` in its auxiliary welcome and signed attach
-  ticket, and viewers opt in only when the Host advertises `browser-passkeys-v1`.
-  Older Hosts, runtimes and viewers keep the absent policy. See
-  [Passkeys](browser-sessions.md#passkeys).
-
-Browser execution uses one current runtime wire contract. The descriptor retains
-an older runtime's identity so the Host can show a clear update refusal while its
-other modules remain available. There is no snapshot-version admission or legacy
-first-navigation path. Native storage facts and initial page readiness are
-mandatory semantics of the current browser contract, not independent opt-ins.
-
-The owning browser stream must reconcile a complete authenticated inventory before
-native execution, including deletion tombstones. Partial, interrupted or unreadable
-inventory never authorizes execution. Claims cannot replace a binding, downgrade
-native authority or recreate grants. An initialized profile whose native store is
-missing refuses opening. Existing local bindings survive the forward migration
-without file conversion. See [browser storage](browser-sessions.md#native-storage).
-
-[Saved-login compatibility](passwords.md#runtime-and-compatibility) separately
-negotiates integrations `passwordSignIn: 1` for the Personal vault authority and
-`loginText: 1` with a live receiver key for app typing. Auxiliary welcome opt-in
-keeps the new status fields away from older Hosts. Browser fills retain browser
-`modules.browser.signIn: {version: 3}` and agent Runner `modules.agents.loginFill: 1`
-admission. Unsupported versions disable the optional feature; missing saved-text
-support refuses the whole batch before input. Historical results remain readable
-and never authorize a fill.
-
-Runner proof format 2 is an independent security boundary, carried explicitly in
-both the primary challenge and the enrollment/authentication answer. Its v2
-signature domains bind the whole descriptor: the previous projected transcript
-left the shell host key and several harness constraints unsigned. Mixed or missing
-proof formats receive an actionable update refusal; there is no v1 verifier or
-admission fallback. This cutover does **not** change `hostApiVersion`, since web,
-desktop and Expo client semantics are unchanged. Main/managed Runners, standalone
-browser/messaging services, self-hosted Hosts and Runners, and Personal's bundled
-Host/Runner must install the matching v2 baseline together. A desktop lent to a
-remote Host has its own Host/Runner update boundary. On that baseline, optional
-new advertisements authenticate to older v2 Hosts and their unknown facts are
-ignored; feature requests still require the understood capability.
-
-Pre-v2 Agent Phones require **one update over USB**, using the existing same-signer
-setup path and preserving pairing and keys. Their old proof cannot authenticate
-to the new Host's network update channel. From the v2 baseline onward, an enrolled
-phone can still prove its identity for an update refusal and authenticated network
-self-update when its integrations module is too old. Unverifiable claims and fresh
-enrollment proofs cannot mark an existing machine as needing update. Android
-integrations versions are separate from the Runner proof format.
+Runner proof format 2 is its own security boundary, separate from the epoch. The Host authenticates
+the complete raw descriptor JSON before one domain parse, so defaults, trimming and filtering cannot
+change what was signed. Mixed or missing proof formats get an update refusal; there is no v1
+verifier. Agent Phones older than format 2 need one update over USB, because their old proof cannot
+authenticate to the network update channel.
 
 ### Active compatibility gates
 
-Upgrade Hosts before Runners needing new execution/storage semantics; Personal
-ships both together. Enrollment is not execution admission. Native continuation,
-execution leases and requester-time-zone support are mandatory execution gates;
-unsupported Runners stay visible but cannot execute. Refused durable events end
-only their still-bound Run, not unrelated Runs or the connection.
+Upgrade Hosts before Runners that need new execution or storage semantics; Personal ships both
+together. Enrollment is not execution admission: a Runner missing a mandatory execution gate stays
+visible but cannot execute, and an outdated module gets an update refusal while the computer's other
+modules stay available. A refused durable event ends only its still-bound Run.
 
-Deploy the Account's notification preview migration and reader on every replica
-of the issuer before distributing phone builds that register preview keys. A Host
-sends `previews` only for registered installations, so preview Hosts (including
-auto-published Beta builds) are safe earlier; one registered phone makes its
-recipient's publications fail against an old strict reader. Keep that reader
-during Account rollback while registered phones exist. `notification-preview-v1` gates phone key
-registration and is advertised only with a preview service and Account channel;
-it changes no epoch. Old phones keep generic alerts, and new phones never
-register against an older Host. The Account receives per-installation ciphertext,
-never the Host's title or excerpt in plaintext. Preview keys die with the Host
-login session through cascading deletion; the phone erases its local key on
-sign-out, and Account sign-out withdraws the push device.
-
-Thread titles use the existing state-change event with optional title; a new kind
-would break previous closed unions. Even tolerant readers acknowledging skipped
-sequences do not permit writers to abandon the previous release. Title/icon
-requests require their independent Host/Runner capabilities. Unknown colors read
-as absent; agent Workspace views omit marks to preserve baseline strict readers.
-Icon requests stay inside the title gate and are never sent to title-only Runners.
-Reports retain the Run binding fence; empty reports do nothing.
-
-The browser catalog creates empty profiles before sign-in. The Guest-save tool
-and its permission are removed; historical Requests remain readable and inert.
-Agent and program sessions use the current tool inventory: `environment_list` discovers
-computers and engines, while `project_list` discovers Projects. Trigger program
-versions do not select historical tool names, schemas or message delivery semantics.
-
-Saved Trigger/Watch program versions are separate from tool inventory: v3 independently
-requires `trigger-program-v3`. Check the anchor Runner's stored advertisement
-(including offline state) at admission and again at dispatch/reconciliation.
-No advertisement means unsupported. Fail occurrences or back off Watch with an
-update/use-v2 error; never relabel source.
-
-`shared-task-done-v1` gates shared Done controls/commands. Reject old
-`thread.done.set` before mutation **or idempotency lookup** with the update reason:
-Done stops the task for everyone. Preserve read-state placement projections for
-older readers; actual read positions never change because a task became Done.
-Use the existing `thread-archived` cancellation reason. `thread_write` requires
-Runner `task-done-v1`; older strict summaries omit `doneAt`, even after parsing.
-
-Passwords consent includes websites and apps and the risk that a tricked agent
-reveals saved fields. Request lists/snapshots skip unreadable kinds.
-
-Mac window operations need matching helper, integrations and owner-view contracts;
-ship packaged Host, client, Runner and browser producer together. Android
-integrations versions are separate from Runner proof versions. Phone pairing
-trusts the USB-provided target and TLS, then compares Deployment/Host-instance
-IDs; it does not verify discovery authority signatures.
-
-Browser targeted streaming and native inputs require producer/Runner negotiation,
-including native-bearing history at dispatch, delivery and steering. Older callers
-receive address-free text. A two-way epoch cutover requires coordinated Expo/Host
-updates; publishing an Expo update early does not make early installations
-compatible with older Hosts. See
-[browser compatibility](browser-sessions.md#shared-viewing-and-previews).
-
-`browser-target-control-v1` and Runtime `modules.browser.targetControl` negotiate
-picture-free following. Unsupported producers must refuse it, never request
-pictures instead.
-
-Display input requires end-to-end `sharedInput: 1` negotiation. Viewer sockets opt in with
-`sharedInput=1`; the Host projects it only while the producer supports it and the viewer is
-authorized. Mac owner input negotiates version 2, reads legacy 1 tolerantly and emits 2 only
-to peers that offered it. Missing negotiation keeps viewing available without input.
-Previous-release viewers’ `display.control` acquire requests receive the legacy refusal;
-release and controlId-bearing input are ignored without closing the socket. Current writers
-never emit `owner-in-control`; its error vocabulary remains readable for compatibility.
-
-Native owner authority travels as a bounded `leaseDurationMs`, measured from receipt using
-each producer's monotonic clock. The Host alone publishes its absolute `expiresAt` to
-clients. Capture does not renew authority. A negotiated helper capability survives an
-idle socket disconnect; an owner open reconnects and validates the next handshake.
-
-Epoch and optional capabilities belong on the descriptor, outside the signed
-Host identity. Unknown capabilities are ignored and cannot gate mandatory
-behavior. RPC requests send `x-opensteer-api-version`; realtime negotiates on
-`client.subscribe`. The Host refuses a missing or mismatched epoch before
-dispatch or subscription. Clients check the raw discovery epoch before parsing
-and verifying identity so old Hosts receive an upgrade message, not a parse
-error. Keep both directions of negotiation intact.
-
-The optional capability `browser-target-control-v1` is additive and changes no epoch:
-the Host accepts `stream.subscribe` with `frames: false`, which follows a browser target
-without pictures. The desktop app shows a local page natively only when its Host
-advertises it. A Runtime that can observe a target that way advertises
-`modules.browser.targetControl`; for one that does not, the Host refuses `frames: false`
-with `browser-target-control-unsupported` and never requests pictures instead
-([Browser sessions](browser-sessions.md#shared-viewing-and-previews)).
-
-Runner descriptors are signed and read through the owning schemas described above.
-Enrollment does not promise every execution contract is supported. The Host never relies
-on an optional feature that was not advertised, such as `device` or `modules.browser.stateImport`.
-Changing required execution or storage semantics needs an explicit compatibility
-contract; it cannot silently remove the bound agents environment. Upgrade the Host
-before Runners that require semantics it cannot read; a Personal Deployment ships
-both together.
+Ship the Account's notification preview reader on every replica before phone builds that register
+preview keys. An older Account rejects previews and the Host resends a generic alert, so the wrong
+order costs previews, not alerts. Privacy rules are in [Mobile](mobile.md).
 
 ## Owner-view authority
 
-Owner generations are ephemeral and independent of Run sessions. Only effective
-machine owners can open/list/renew/view connected, unblocked approved apps/phones.
-Check approval at admission and delivery; opening a display socket never extends
-a lease. Window inventory is owner-only and requires negotiated picker support.
-Close, expiry, disconnect, revocation and shutdown end the exact generation without
-ending task grants/holds/observations. Terminal generations never renew or silently
-reopen. Native owner authority ends on Host restart and is never restored.
-Browser bindings and opener provenance persist independently.
-
-Owner and task subscriptions authorize independently even when exact window/phone
-bindings share a producer. Native capture requires matching signed/live helper and
-owner-view versions and carries its auxiliary fence, exact view/generation and
-relative lease without a fabricated Run. Each stream binds one exact root/process;
-owner views bind a window while task views follow their current window. Respect OS
-sharing controls and the [window-group contract](computer-use.md#2-the-helper).
-
-Warm retention requires existing exact-source authority, sends/encodes no media and
-ends immediately on privacy/authority loss. It is non-sliding and consumes native
-capacity until cleanup settles. Starts/stops serialize globally; configuration
-updates serialize per running slot. A single pending target may await cleanup,
-with authority/binding rechecked under the original startup deadline; two visible
-roots still refuse a third. Evicting a warm stream does not end a valid owner lease.
-Target/connection changes clear decoder pixels; static frame age alone does not.
-
-### Workspace tab restoration
-
-Tab restoration and groups are additive capabilities, not new authority. Authorize
-lineage reads using session ownership and fresh active Workspace membership; keep
-URLs Host-private. Lineage revisions fence stale responses. Only positively
-negotiated Runtimes receive restoration fields. The Host-wide capability must not
-hide live-only sessions from other producers. Icons may outlive a session but
-require authorization against its latest session and must never start a browser.
-Group invalidation is owner-addressed. See
-[tab lifetime](browser-sessions.md#open-workspace-tabs).
-
-Computer app approvals use authenticated owner sessions on every device. Mac integrations
-protocol 6 and iPhone integrations protocol 2 remove the desktop/iPhone signing and
-approval relay contracts. Older integrations modules stay visible with an update refusal;
-other enrolled modules remain available. Android integrations and Runner proof format
-are unchanged. The Host alone admits local MCP launches against current owner consent.
-
-### iPhone apps capability and release order
-
-`iphone-apps-v1` gates the optional iPhone enrollment profile; older Hosts must
-never receive it. Android profile-less issuance stays unchanged. The tolerant
-response-reader precursor must **release before** the feature merges/deploys.
-It must understand iOS presentation, tolerate future platforms and preserve legacy
-definition defaults (including omitted `apiKey`) before authoritative iOS responses
-ship. Qualify the precursor against preceding frozen parsers, then the feature
-against precursor parsers using raw bootstrap, machines, integrations, platform,
-setup and machine-change output, including Mac, iPhone, installed Calendar and
-pending setup manifests. Otherwise late-parsed consent definitions can still break.
+Owner views are ephemeral and independent of Run sessions. Only effective machine owners can open,
+list, renew or watch connected, unblocked, approved apps and phones; approval is checked at
+admission and at delivery, and opening a display socket never extends a lease. An ended view never
+renews or silently reopens, and ending it leaves task grants, holds and observations alone. Native
+owner authority ends on Host restart and is never restored. Lease and retention rules are in
+[Computer use](computer-use.md). Computer app approvals use authenticated owner sessions on every
+device, and only the Host admits local MCP launches against current owner consent.

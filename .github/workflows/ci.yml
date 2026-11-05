@@ -45,7 +45,7 @@ jobs:
           fetch-depth: 2
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: 24.13.0
+          node-version: 24.22.2
       - id: changes
         uses: ./.github/actions/ci-changes
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

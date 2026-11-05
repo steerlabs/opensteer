@@ -1,3 +1,8 @@
+import {
+  createIntegrationId,
+  buildIntegrationAuthorizationAppReturn,
+} from "@opensteer/integration-core";
+import { DesktopIntegrationAuthorizations } from "../app/integration-authorizations.js";
 import type { IpcMainInvokeEvent } from "electron";
 import { createId } from "@opensteer/core";
 import {
@@ -38,7 +43,19 @@ describe("desktop bridge", () => {
         return () => accessListeners.delete(listener);
       }),
     };
+    const event = ipcEvent("app://opensteer/workspaces");
+    const integrationAuthorizations = new DesktopIntegrationAuthorizations(
+      {
+        application: "desktop",
+        clientId: "opensteer-desktop",
+        accountCallback: "com.opensteer.opensteer:/oauth/account-callback",
+        hostCallback: "com.opensteer.opensteer:/oauth/host-callback",
+      },
+      () => {},
+    );
     const unregister = registerDesktopBridge({
+      integrationAuthorizations,
+      isWorkspaceContents: (sender) => sender === event.sender,
       updates: {
         state: () => ({
           status: "idle",
@@ -61,6 +78,9 @@ describe("desktop bridge", () => {
         }),
         download: async () => undefined,
         restart: () => undefined,
+      },
+      deploymentUpdates: () => {
+        throw new Error("not part of this test");
       },
       downloads: {
         snapshot: () => ({ downloads: [] }),
@@ -100,8 +120,42 @@ describe("desktop bridge", () => {
       portal: { openExternal: vi.fn(async () => undefined), pickFolder: vi.fn(async () => null) },
       runner,
     });
-    const event = ipcEvent("app://opensteer/workspaces");
     const envelope = { bridgeToken: "b".repeat(43) };
+
+    const started = {
+      deploymentId: createId("deployment"),
+      userId: createId("user"),
+      attemptId: createIntegrationId("oauthAttempt"),
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    };
+    await integrationAuthorizations.register(started);
+    const callback = {
+      deploymentId: started.deploymentId,
+      attemptId: started.attemptId,
+      returnProof: "r".repeat(43),
+    };
+    const url = buildIntegrationAuthorizationAppReturn("desktop", callback);
+    integrationAuthorizations.accept(url);
+    const subscribe = handlers.get(desktopBridgeChannels.integrationAuthorizationSubscription)!;
+    subscribe(event, {
+      ...envelope,
+      input: {
+        deploymentId: started.deploymentId,
+        userId: started.userId,
+        generation: crypto.randomUUID(),
+        ready: true,
+      },
+    });
+    await integrationAuthorizations.settled();
+    expect(event.sender.send).toHaveBeenCalledWith(
+      desktopBridgeChannels.integrationAuthorizationReturn,
+      callback,
+    );
+    await handlers.get(desktopBridgeChannels.finishIntegrationAuthorization)!(event, {
+      ...envelope,
+      input: { deploymentId: started.deploymentId, attemptId: started.attemptId },
+    });
+    expect(integrationAuthorizations.accept(url)).toBe(false);
 
     const setChannel = handlers.get(desktopBridgeChannels.setUpdateChannel)!;
     await expect(setChannel(event, { ...envelope, input: "beta" })).resolves.toMatchObject({
@@ -164,6 +218,8 @@ describe("desktop bridge", () => {
       Object.values(desktopBridgeChannels).filter((channel) => channel.includes(".access.")),
     ).toHaveLength(16);
     const notificationChannels = new Set<string>([
+      desktopBridgeChannels.integrationAuthorizationReturn,
+      desktopBridgeChannels.mcpAuthorization,
       desktopBridgeChannels.dictationEvent,
       desktopBridgeChannels.downloadsChanged,
       desktopBridgeChannels.updateChanged,
@@ -323,6 +379,59 @@ describe("desktop bridge", () => {
     handlers.unregister();
   });
 
+  it("keeps a renderer's unreadable realtime frames in the desktop log, as bounded metadata", async () => {
+    vi.useFakeTimers();
+    const log = vi.fn();
+    const handlers = registerWith(passwordsPort(), {}, log);
+    const event = ipcEvent("app://opensteer/workspaces");
+    const report = (input: unknown) =>
+      handlers.invoke(desktopBridgeChannels.reportRealtimeDiagnostic, event, {
+        bridgeToken: "b".repeat(43),
+        input,
+      });
+    const record = {
+      apiEpoch: 4,
+      bytes: 128,
+      category: "schema",
+      envelopeType: "host.snapshot",
+      event: "host.realtime.frame-rejected",
+      issuePaths: ["snapshot.threads.[].status", "snapshot.threads.[].modelSelection.options.*"],
+    };
+    try {
+      report(record);
+      expect(log).toHaveBeenCalledExactlyOnceWith("host.realtime.frame-rejected", {
+        apiEpoch: 4,
+        bytes: 128,
+        category: "schema",
+        envelopeType: "host.snapshot",
+        issuePaths: "snapshot.threads.[].status;snapshot.threads.[].modelSelection.options.*",
+        suppressed: 0,
+      });
+      const secret = "https://private.test/page?token=os_secret_PRIVATE";
+      for (const smuggled of [
+        { ...record, frame: "os_secret_PRIVATE-FRAME" },
+        { ...record, envelopeType: secret },
+        { ...record, issuePaths: [secret] },
+        { ...record, issuePaths: [`snapshot.threads.[].${secret}`] },
+      ])
+        expect(() => report(smuggled)).toThrow();
+      expect(log).toHaveBeenCalledOnce();
+
+      log.mockClear();
+      for (let reported = 0; reported < 130; reported += 1) report(record);
+      expect(log).toHaveBeenCalledTimes(119);
+      vi.advanceTimersByTime(10_000);
+      log.mockClear();
+      report(record);
+      expect(log).toHaveBeenCalledExactlyOnceWith(
+        "host.realtime.frame-rejected",
+        expect.objectContaining({ suppressed: 11 }),
+      );
+    } finally {
+      handlers.unregister();
+    }
+  });
+
   it("refuses a malformed Passwords status rather than forwarding it", async () => {
     const malformed = passwordsPort({
       availability: "available",
@@ -383,9 +492,11 @@ function passwordsPort(status: DesktopPasswordsStatus = readyStatus) {
 function registerWith(
   passwords: ReturnType<typeof passwordsPort>,
   computerUse: Partial<Parameters<typeof registerDesktopBridge>[0]["computerUse"]> = {},
+  log?: Parameters<typeof registerDesktopBridge>[0]["log"],
 ) {
   const handlers = new Map<string, (event: IpcMainInvokeEvent, input: unknown) => unknown>();
   const unregister = registerDesktopBridge({
+    ...(log ? { log } : {}),
     downloads: {
       snapshot: () => ({ downloads: [] }),
       subscribe: () => () => undefined,
@@ -569,6 +680,7 @@ function ipcEvent(url: string): IpcMainInvokeEvent {
       isDestroyed: () => false,
       mainFrame,
       once: vi.fn(),
+      removeListener: vi.fn(),
       send: vi.fn(),
     },
     senderFrame: mainFrame,

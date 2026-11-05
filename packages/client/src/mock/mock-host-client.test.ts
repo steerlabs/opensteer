@@ -1415,24 +1415,23 @@ it("offers transient Passwords choices and settles the pinned shared command in 
   }
 });
 
-it("models managed role discovery, hidden authorized detail, no-light pauses and store refusals", async () => {
-  const client = new MockHostClient({ latencyMs: 0, memoryPasses: "no-light-model" });
+it("models managed role discovery, hidden authorized detail, waiting passes and store refusals", async () => {
+  const client = new MockHostClient({ latencyMs: 0, memoryPasses: "waiting-for-model" });
   try {
     const { triggers } = unwrap(await client.rpc["triggers.list"]({ systemRole: "memory-light" }));
     expect(triggers).toHaveLength(1);
     const light = triggers[0]!;
     expect(light).toMatchObject({
       systemRole: "memory-light",
-      status: "paused",
-      nextFireAt: null,
-      pauseReason:
-        "This engine has no light model. Choose a model for the light pass, then resume.",
+      status: "active",
+      pauseReason: null,
+      waitingReason: expect.stringContaining("Waiting for an AI account it can use"),
     });
     const detail = unwrap(await client.rpc["triggers.get"]({ triggerId: light.id }));
     expect(detail.anchorThread).toMatchObject({
       id: light.anchorThreadId,
       listed: false,
-      capabilityProfileId: "delegated",
+      inheritsMain: true,
       title: "Memory light pass",
       parentThreadId: client.getSnapshot().homeThreadId,
     });

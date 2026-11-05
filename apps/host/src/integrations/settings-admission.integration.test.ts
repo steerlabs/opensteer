@@ -2,33 +2,9 @@ import { describeStore } from "@opensteer/database/test-support/store";
 import { IntegrationPlatformStore } from "@opensteer/database";
 import { createIntegrationId } from "@opensteer/integration-core";
 import { expect, vi } from "vitest";
-import {
-  IntegrationToolsMcpService,
-  type IntegrationToolsRunScope,
-  type IntegrationToolsTokenService,
-  type TriggerIntegrationToolsTokenService,
-} from "./integration-tools-mcp-service.js";
+import { IntegrationToolHandlers } from "../mcp/handlers/integrations.js";
+import type { AgentCaller } from "../mcp/agent-caller.js";
 import type { IntegrationPlatformService } from "./integration-platform-service.js";
-
-const gateway = vi.hoisted(() => ({
-  call: undefined as
-    | undefined
-    | ((
-        request: { params: { name: string; arguments: unknown } },
-        extra: { authInfo: { extra: { scope: IntegrationToolsRunScope } }; signal: AbortSignal },
-      ) => Promise<unknown>),
-}));
-vi.mock("@modelcontextprotocol/sdk/server/index.js", () => ({
-  Server: class {
-    setRequestHandler(
-      schema: { shape?: { method?: { value?: string } } },
-      handler: typeof gateway.call,
-    ) {
-      if (schema.shape?.method?.value === "tools/call") gateway.call = handler;
-    }
-    async close() {}
-  },
-}));
 
 describeStore("Settings invocation admission", (test) => {
   test("an issued tool reference cannot invoke after Off or Main exclusion", async ({
@@ -91,12 +67,20 @@ describeStore("Settings invocation admission", (test) => {
       providerAuthorizations: {},
       workspaceId: run.workspace.id,
     });
-    const scope = {
-      requestedBy: run.userId,
-      workspaceId: run.workspace.id,
-      threadId: run.thread.id,
-      runId: run.run.id,
-    } as unknown as IntegrationToolsRunScope;
+    const caller = {
+      kind: "run",
+      key: `run:${run.run.id}`,
+      userId: run.userId,
+      accessMode: run.thread.accessMode,
+      reach: { kind: "user" },
+      thread: run.thread,
+      claims: {
+        requestedBy: run.userId,
+        workspaceId: run.workspace.id,
+        threadId: run.thread.id,
+        runId: run.run.id,
+      },
+    } as unknown as AgentCaller;
     const listCallableTools = () =>
       store.listCallableTools({
         ownerUserId: run.userId,
@@ -119,68 +103,59 @@ describeStore("Settings invocation admission", (test) => {
           providerAuthorizations: {},
         }),
     } as unknown as IntegrationPlatformService;
-    const mcp = new IntegrationToolsMcpService({
+    const handlers = new IntegrationToolHandlers({
       definitions: [],
       getWorkspaceForOwner: async () => ({ id: run.workspace.id }),
-      runTokens: {} as IntegrationToolsTokenService,
-      triggerTokens: {} as TriggerIntegrationToolsTokenService,
       onWorkspaceEvent: () => undefined,
       platform,
-      publicUrl: new URL("http://localhost/mcp"),
     });
-    const server = mcp.createServer(scope);
-    try {
-      if (!gateway.call || !issued) throw new Error("MCP call handler or issued tool missing");
-      const request = {
-        params: {
-          name: "integration_call",
-          arguments: {
-            toolRef: `${issued.grant.id}.${issued.tool.id}.${issued.tool.schemaDigest}`,
-            arguments: {},
-          },
+    if (!issued) throw new Error("Issued tool missing");
+    const call = () =>
+      handlers.integration_call({
+        caller,
+        input: {
+          toolRef: `${issued.grant.id}.${issued.tool.id}.${issued.tool.schemaDigest}`,
+          arguments: {},
         },
-      };
-      const extra = { authInfo: { extra: { scope } }, signal: AbortSignal.timeout(5000) };
-      expect(await gateway.call(request, extra)).toMatchObject({ content: [{ text: "called" }] });
-      expect(callTool).toHaveBeenCalledTimes(1);
-      const target = { kind: "service" as const, definitionId: "records" };
-      const revision = async () =>
-        (await store.settings.detail(run.userId, target)).row.placement.revision;
-      await store.settings.setEnabled(run.userId, {
-        type: "settings.plugin.enabled.set",
+        operationKey: "call",
+        signal: AbortSignal.timeout(5000),
+      });
+    expect(await call()).toMatchObject({ content: [{ text: "called" }] });
+    expect(callTool).toHaveBeenCalledTimes(1);
+    const target = { kind: "service" as const, definitionId: "records" };
+    const revision = async () =>
+      (await store.settings.detail(run.userId, target)).row.placement.revision;
+    await store.settings.setEnabled(run.userId, {
+      type: "settings.plugin.enabled.set",
+      target,
+      expectedRevision: await revision(),
+      enabled: false,
+      idempotencyKey: "off",
+    });
+    await expect(call()).rejects.toThrow("Integration operation is no longer available");
+    expect(callTool).toHaveBeenCalledTimes(1);
+    await store.settings.setEnabled(run.userId, {
+      type: "settings.plugin.enabled.set",
+      target,
+      expectedRevision: await revision(),
+      enabled: true,
+      idempotencyKey: "on",
+    });
+    expect(await call()).toMatchObject({ content: [{ text: "called" }] });
+    await store.settings.setPlacement(
+      run.userId,
+      {
+        type: "settings.plugin.placement.set",
         target,
         expectedRevision: await revision(),
-        enabled: false,
-        idempotencyKey: "off",
-      });
-      expect(await gateway.call(request, extra)).toMatchObject({ isError: true });
-      expect(callTool).toHaveBeenCalledTimes(1);
-      await store.settings.setEnabled(run.userId, {
-        type: "settings.plugin.enabled.set",
-        target,
-        expectedRevision: await revision(),
-        enabled: true,
-        idempotencyKey: "on",
-      });
-      expect(await gateway.call(request, extra)).toMatchObject({ content: [{ text: "called" }] });
-      await store.settings.setPlacement(
-        run.userId,
-        {
-          type: "settings.plugin.placement.set",
-          target,
-          expectedRevision: await revision(),
-          mainIncluded: false,
-          projects: [],
-          personalEverywhere: null,
-          idempotencyKey: "exclude-main",
-        },
-        {},
-      );
-      expect(await gateway.call(request, extra)).toMatchObject({ isError: true });
-      expect(callTool).toHaveBeenCalledTimes(2);
-    } finally {
-      await server.close();
-      await mcp.close();
-    }
+        mainIncluded: false,
+        projects: [],
+        personalEverywhere: null,
+        idempotencyKey: "exclude-main",
+      },
+      {},
+    );
+    await expect(call()).rejects.toThrow("Integration operation is no longer available");
+    expect(callTool).toHaveBeenCalledTimes(2);
   });
 });

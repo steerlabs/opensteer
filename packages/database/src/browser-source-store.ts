@@ -1,3 +1,7 @@
+import {
+  administrationCommand,
+  type AdministrationCommandIdentity,
+} from "./administration-command.js";
 import { withDatabaseTransaction } from "./connection.js";
 import { requestSettlementActor } from "./request-settlement.js";
 import { discoverRequestWorkspaces, withRequestWorkspaceLocks } from "./request-workspace-locks.js";
@@ -413,19 +417,24 @@ export class BrowserSourceStore {
   }
 
   async removeGrant(input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
     readonly ownerId: UserId;
     readonly workspaceId: WorkspaceId;
     readonly site: string;
   }): Promise<boolean> {
-    const result = await this.#database
-      .updateTable("browserSiteGrants")
-      .set({ revokedAt: new Date() })
-      .where("ownerId", "=", input.ownerId)
-      .where("workspaceId", "=", input.workspaceId)
-      .where("site", "=", input.site)
-      .where("revokedAt", "is", null)
-      .executeTakeFirst();
-    return result.numUpdatedRows === 1n;
+    return withDatabaseTransaction(this.#database, (transaction) =>
+      administrationCommand(transaction, input.administration, async () => {
+        const result = await transaction
+          .updateTable("browserSiteGrants")
+          .set({ revokedAt: new Date() })
+          .where("ownerId", "=", input.ownerId)
+          .where("workspaceId", "=", input.workspaceId)
+          .where("site", "=", input.site)
+          .where("revokedAt", "is", null)
+          .executeTakeFirst();
+        return result.numUpdatedRows === 1n;
+      }),
+    );
   }
 
   /**

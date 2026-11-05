@@ -28,6 +28,7 @@ import {
 import { sql } from "kysely";
 import { describe, expect, it as baseIt } from "vitest";
 import { createDatabase, OpensteerStore } from "./index.js";
+import { AgentConnectionStore } from "./agent-connection-store.js";
 import { AttachmentStore } from "./attachment-store.js";
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
@@ -374,6 +375,429 @@ integration.sequential("thread input queue promotion", () => {
       recordTestDatabaseSetup(task, started);
       await use(fixture);
     },
+  });
+
+  it("replaces or stops a call whose Run ended after it was read", async ({ storeFixture }) => {
+    const { fixture, store, database } = storeFixture;
+    const f = await fixture("voice-ended-race");
+    await store.createThread({
+      createdBy: f.ownerId,
+      environmentId: f.environmentId,
+      harnessInstanceId: f.harness.id,
+      idempotencyKey: "voice-race-home",
+      modelSelection,
+      title: "Chat",
+      workspaceId: f.workspace.id,
+      home: true,
+    });
+    const input = {
+      ownerId: f.ownerId,
+      environmentId: f.environmentId,
+      harnessInstanceId: f.harness.id,
+      sessionId: randomUUID(),
+    };
+    // The window a concurrent terminalization leaves: the Run is over, its Thread not yet closed.
+    const endRunOnly = (runId: string) =>
+      database
+        .updateTable("runs")
+        .set({ status: "interrupted" })
+        .where("id", "=", runId as never)
+        .execute();
+    const threadStatus = async (threadId: string) =>
+      (
+        await database
+          .selectFrom("threads")
+          .select("status")
+          .where("id", "=", threadId as never)
+          .executeTakeFirstOrThrow()
+      ).status;
+    const first = await store.startVoiceCall(input);
+    await endRunOnly(first.runId);
+    const second = await store.startVoiceCall({ ...input, sessionId: randomUUID() });
+    expect(second.runId).not.toBe(first.runId);
+    expect(await threadStatus(first.threadId)).toBe("archived");
+    await endRunOnly(second.runId);
+    await store.stopVoiceCall(f.ownerId, second.sessionId!);
+    expect(await threadStatus(second.threadId)).toBe("archived");
+  });
+
+  it("starts voice on its own account's catalog default at low effort, never another model", async ({
+    storeFixture,
+  }) => {
+    const { fixture, store, database } = storeFixture;
+    const f = await fixture("voice-model");
+    await store.createThread({
+      createdBy: f.ownerId,
+      environmentId: f.environmentId,
+      harnessInstanceId: f.harness.id,
+      idempotencyKey: "voice-model-home",
+      modelSelection,
+      title: "Chat",
+      workspaceId: f.workspace.id,
+      home: true,
+    });
+    const effort = {
+      defaultValue: "medium",
+      id: "effort",
+      label: "Effort",
+      type: "select" as const,
+      values: ["low", "medium", "high"].map((value) => ({ label: value, value })),
+    };
+    const record = (defaultModelId: string | null) =>
+      store.recordHarnessCatalogs({
+        catalogs: [
+          HarnessInstanceCatalogSchema.parse({
+            continuationIdentity,
+            driverKind: "native",
+            harnessInstanceId: f.harness.id,
+            models: ["gpt-6-luna", "gpt-5.6-sol"].map((modelId) => ({
+              displayName: modelId,
+              isDefault: modelId === defaultModelId,
+              modelId,
+              nativeModelId: `gateway/${modelId}`,
+              options: [effort],
+              providerId: "openai",
+            })),
+            status: "ready",
+          }),
+        ],
+        environmentId: f.environmentId,
+        expectedRevisions: new Map([[f.harness.id, f.harness.runtimeRevision]]),
+      });
+    const input = {
+      ownerId: f.ownerId,
+      environmentId: f.environmentId,
+      harnessInstanceId: f.harness.id,
+      sessionId: randomUUID(),
+    };
+    await record("gpt-5.6-sol");
+    const call = await store.startVoiceCall(input);
+    expect(
+      await database
+        .selectFrom("threads")
+        .select("modelSelection")
+        .where("id", "=", call.threadId)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({
+      modelSelection: {
+        modelId: "gpt-5.6-sol",
+        nativeModelId: "gateway/gpt-5.6-sol",
+        options: { effort: "low" },
+        providerId: "openai",
+      },
+    });
+    // No default is no voice model on this account; its first model is not a stand-in.
+    await record(null);
+    await expect(store.startVoiceCall({ ...input, sessionId: randomUUID() })).rejects.toMatchObject(
+      { reason: "voice-account-unavailable" },
+    );
+  });
+
+  it("admits one fenced voice Run, replays, replaces, and never recovers it", async ({
+    storeFixture,
+  }) => {
+    const { fixture, store, database } = storeFixture;
+    const f = await fixture("voice-call");
+    const input = {
+      ownerId: f.ownerId,
+      environmentId: f.environmentId,
+      harnessInstanceId: f.harness.id,
+      sessionId: randomUUID(),
+    };
+    await expect(store.startVoiceCall(input)).rejects.toMatchObject({
+      reason: "voice-chat-required",
+    });
+    await store.createThread({
+      createdBy: f.ownerId,
+      environmentId: f.environmentId,
+      harnessInstanceId: f.harness.id,
+      idempotencyKey: "voice-home",
+      modelSelection,
+      title: "Chat",
+      workspaceId: f.workspace.id,
+      home: true,
+    });
+    const call = await store.startVoiceCall(input);
+    expect(await store.startVoiceCall(input)).toMatchObject({
+      threadId: call.threadId,
+      runId: call.runId,
+      workspaceId: call.workspaceId,
+      admittedAt: call.admittedAt,
+    });
+    expect(
+      await database
+        .selectFrom("threads")
+        .select(["listed", "parentThreadId"])
+        .where("id", "=", call.threadId)
+        .executeTakeFirstOrThrow(),
+    ).toMatchObject({ listed: false });
+    for (const policy of ["queue", "steer", "report"] as const)
+      await expect(
+        store.enqueueThreadInput({
+          threadId: call.threadId,
+          requestedBy: f.ownerId,
+          source: { kind: "human" },
+          content: [{ type: "text", text: "extra" }],
+          policy,
+          idempotencyKey: `voice-${policy}`,
+        }),
+      ).rejects.toThrow("Voice Threads do not accept input");
+    const replacement = await store.startVoiceCall({ ...input, sessionId: randomUUID() });
+    expect(replacement.runId).not.toBe(call.runId);
+    expect(
+      (
+        await database
+          .selectFrom("threads")
+          .select("status")
+          .where("id", "=", call.threadId)
+          .executeTakeFirstOrThrow()
+      ).status,
+    ).toBe("archived");
+    const command = await database
+      .selectFrom("commands")
+      .select("id")
+      .where("runId", "=", replacement.runId)
+      .where("type", "=", "run.execute")
+      .executeTakeFirstOrThrow();
+    await store.claimCommand(command.id, "voice-dispatcher");
+    await store.acquireExecutionBinding({
+      bindingLeaseExpiresAt: new Date(Date.now() - 1000),
+      continuationIdentity,
+      harnessInstanceId: f.harness.id,
+      leaseTokenHash: "voice-lease",
+      membershipGeneration: 1,
+      runnerBootId: f.runnerBootId,
+      runnerId: f.runnerId,
+      runId: replacement.runId,
+      threadId: replacement.threadId,
+    });
+    const home = await database
+      .selectFrom("workspaces")
+      .select("homeThreadId")
+      .where("id", "=", f.workspace.id)
+      .executeTakeFirstOrThrow();
+    const handoff = await store.enqueueThreadInput({
+      threadId: home.homeThreadId!,
+      requestedBy: f.ownerId,
+      source: { kind: "agent", runId: replacement.runId },
+      content: [{ type: "text", text: "Handle this work" }],
+      policy: "queue",
+      idempotencyKey: "voice-handoff",
+    });
+    if (!handoff.run || !handoff.command) throw new Error("Expected Chat admission");
+    await store.claimCommand(handoff.command.id, "voice-chat-dispatcher");
+    const chatBinding = await store.acquireExecutionBinding({
+      bindingLeaseExpiresAt: new Date(Date.now() + 60000),
+      continuationIdentity,
+      harnessInstanceId: f.harness.id,
+      leaseTokenHash: "voice-chat-lease",
+      membershipGeneration: 1,
+      runnerBootId: f.runnerBootId,
+      runnerId: f.runnerId,
+      runId: handoff.run.id,
+      threadId: home.homeThreadId!,
+    });
+    await store.commitRunnerEvent({
+      environmentId: f.environmentId,
+      runnerId: f.runnerId,
+      runnerBootId: f.runnerBootId,
+      event: pendingEvent({
+        bindingGeneration: chatBinding.bindingGeneration,
+        environmentId: f.environmentId,
+        ordinal: 0,
+        runId: handoff.run.id,
+        threadId: home.homeThreadId!,
+        workspaceId: f.workspace.id,
+        type: "run.started",
+        data: { status: "running" },
+      }),
+    });
+    const delegated = await store.delegateThread({
+      accessMode: f.thread.accessMode,
+      createdBy: f.ownerId,
+      environmentId: f.environmentId,
+      harnessInstanceId: f.harness.id,
+      idempotencyKey: "voice-chat-task",
+      modelSelection,
+      origin: { kind: "run", parentRunId: handoff.run.id, parentThreadId: home.homeThreadId! },
+      task: [{ type: "text", text: "Do the work" }],
+      title: "Voice handoff task",
+      workspaceId: f.workspace.id,
+    });
+    expect(
+      (
+        await database
+          .selectFrom("threads")
+          .select("listed")
+          .where("id", "=", delegated.thread.id)
+          .executeTakeFirstOrThrow()
+      ).listed,
+    ).toBe(true);
+    await store.recoverRunsWithExpiredExecutionBindings();
+    expect(
+      (
+        await database
+          .selectFrom("threads")
+          .select("status")
+          .where("id", "=", replacement.threadId)
+          .executeTakeFirstOrThrow()
+      ).status,
+    ).toBe("archived");
+    const runs = await database
+      .selectFrom("runs")
+      .select("status")
+      .where("threadId", "=", replacement.threadId)
+      .execute();
+    expect(runs).toEqual([{ status: "failed" }]);
+    const lost = await store.startVoiceCall({ ...input, sessionId: randomUUID() });
+    const lostCommand = await database
+      .selectFrom("commands")
+      .select("id")
+      .where("runId", "=", lost.runId)
+      .where("type", "=", "run.execute")
+      .executeTakeFirstOrThrow();
+    await store.claimCommand(lostCommand.id, "voice-dispatcher");
+    const binding = await store.acquireExecutionBinding({
+      bindingLeaseExpiresAt: new Date(Date.now() + 60000),
+      continuationIdentity,
+      harnessInstanceId: f.harness.id,
+      leaseTokenHash: "voice-lost-lease",
+      membershipGeneration: 1,
+      runnerBootId: f.runnerBootId,
+      runnerId: f.runnerId,
+      runId: lost.runId,
+      threadId: lost.threadId,
+    });
+    await store.commitRunnerEvent({
+      environmentId: f.environmentId,
+      runnerId: f.runnerId,
+      runnerBootId: f.runnerBootId,
+      event: pendingEvent({
+        bindingGeneration: binding.bindingGeneration,
+        environmentId: f.environmentId,
+        ordinal: 0,
+        runId: lost.runId,
+        threadId: lost.threadId,
+        workspaceId: f.workspace.id,
+        type: "run.interrupted",
+        data: { status: "interrupted", cause: "lease-lost" },
+      }),
+    });
+    expect(
+      await database
+        .selectFrom("runs")
+        .select("status")
+        .where("threadId", "=", lost.threadId)
+        .execute(),
+    ).toEqual([{ status: "failed" }]);
+    expect(
+      (
+        await database
+          .selectFrom("threads")
+          .select("status")
+          .where("id", "=", lost.threadId)
+          .executeTakeFirstOrThrow()
+      ).status,
+    ).toBe("archived");
+  });
+
+  it("ends an unconfirmed voice dispatch at Host restart and preserves a still-held call", async ({
+    storeFixture,
+  }) => {
+    const { fixture, store, database } = storeFixture;
+    const f = await fixture("voice-restart");
+    await store.createThread({
+      createdBy: f.ownerId,
+      environmentId: f.environmentId,
+      harnessInstanceId: f.harness.id,
+      idempotencyKey: "restart-home",
+      modelSelection,
+      title: "Chat",
+      workspaceId: f.workspace.id,
+      home: true,
+    });
+    const input = {
+      ownerId: f.ownerId,
+      environmentId: f.environmentId,
+      harnessInstanceId: f.harness.id,
+      sessionId: randomUUID(),
+    };
+    const call = await store.startVoiceCall(input);
+    const command = await database
+      .selectFrom("commands")
+      .select("id")
+      .where("runId", "=", call.runId)
+      .where("type", "=", "run.execute")
+      .executeTakeFirstOrThrow();
+    await store.claimCommand(command.id, "voice-restart-dispatcher");
+    await store.recoverCommandsAfterHostRestart();
+    expect(
+      (
+        await database
+          .selectFrom("threads")
+          .select("status")
+          .where("id", "=", call.threadId)
+          .executeTakeFirstOrThrow()
+      ).status,
+    ).toBe("archived");
+    expect(
+      await database
+        .selectFrom("runs")
+        .select("status")
+        .where("threadId", "=", call.threadId)
+        .execute(),
+    ).toEqual([{ status: "interrupted" }]);
+    const held = await store.startVoiceCall({ ...input, sessionId: randomUUID() });
+    const heldCommand = await database
+      .selectFrom("commands")
+      .select("id")
+      .where("runId", "=", held.runId)
+      .where("type", "=", "run.execute")
+      .executeTakeFirstOrThrow();
+    await store.claimCommand(heldCommand.id, "voice-restart-dispatcher");
+    await store.acquireExecutionBinding({
+      bindingLeaseExpiresAt: new Date(Date.now() + 60000),
+      continuationIdentity,
+      harnessInstanceId: f.harness.id,
+      leaseTokenHash: "voice-restart-lease",
+      membershipGeneration: 1,
+      runnerBootId: f.runnerBootId,
+      runnerId: f.runnerId,
+      runId: held.runId,
+      threadId: held.threadId,
+    });
+    await store.restartExecutionLeases(new Date(Date.now() + 120000));
+    await store.recoverCommandsAfterHostRestart();
+    expect(
+      await database
+        .selectFrom("runs")
+        .select("status")
+        .where("threadId", "=", held.threadId)
+        .execute(),
+    ).toEqual([{ status: "starting" }]);
+    await store.attachRunnerExecutions({
+      dispatchingRunIds: [],
+      executions: [],
+      leaseExpiresAt: new Date(Date.now() + 120000),
+      runnerBootId: f.runnerBootId,
+      runnerId: f.runnerId,
+    });
+    expect(
+      await database
+        .selectFrom("runs")
+        .select("status")
+        .where("threadId", "=", held.threadId)
+        .execute(),
+    ).toEqual([{ status: "failed" }]);
+    expect(
+      (
+        await database
+          .selectFrom("threads")
+          .select("status")
+          .where("id", "=", held.threadId)
+          .executeTakeFirstOrThrow()
+      ).status,
+    ).toBe("archived");
   });
 
   it("claims a ready upload once and replays the exact accepted send after binding", async ({
@@ -1449,6 +1873,127 @@ integration.sequential("thread input queue promotion", () => {
     // The steer was never dispatched, so the ended Run handed it back to the queue.
     await expect(order(f)).resolves.toEqual([b.message.id, d.message.id]);
   });
+
+  for (const revoked of [false, true]) {
+    it(`lets the person manage their connection's queue, revoked=${revoked}`, async ({
+      storeFixture,
+    }) => {
+      const { fixture, queued, database, store } = storeFixture;
+      const f = await fixture(`connection-person-${revoked}`, true);
+      const connections = new AgentConnectionStore(database);
+      const createConnection = async () => {
+        const connection = await connections.create({
+          userId: f.userId,
+          label: "Agent",
+          clientName: "Agent",
+          accessMode: "full-access",
+          reach: { kind: "user" },
+          resource: "https://test-host.invalid/internal/v1/mcp",
+          expiresAt: new Date(Date.now() + 60_000),
+        });
+        await connections.activate(
+          connection.id,
+          createHash("sha256").update(connection.id).digest("hex"),
+        );
+        return {
+          kind: "connection",
+          connectionId: connection.id,
+          userId: f.userId,
+          accessMode: "full-access",
+          reach: { kind: "user" },
+        } as const;
+      };
+      const author = await createConnection();
+      const other = await createConnection();
+      const anchor = await queued(f, "connection-anchor");
+      const send = (key: string) =>
+        store.enqueueThreadInput({
+          authority: author,
+          content: [{ type: "text", text: key }],
+          idempotencyKey: key,
+          policy: "queue",
+          requestedBy: f.userId,
+          source: { kind: "connection", connectionId: author.connectionId },
+          threadId: f.thread.id,
+        });
+      const cancel = await send("connection-cancel");
+      const move = await send("connection-move");
+      const steer = await send("connection-steer");
+      if (revoked) await connections.revoke(f.userId, author.connectionId);
+      const person = { requestedBy: f.userId, threadId: f.thread.id };
+      const view = await store.getThreadInputQueue(person);
+      expect(view.items.filter(({ message }) => message.id !== anchor.message.id)).toEqual(
+        expect.arrayContaining(
+          [cancel, move, steer].map(({ message }) =>
+            expect.objectContaining({
+              message: expect.objectContaining({ id: message.id }),
+              canCancel: true,
+              canMove: true,
+              canSteer: true,
+            }),
+          ),
+        ),
+      );
+      for (const caller of [
+        { ...person, authority: other },
+        { ...person, requestedBy: f.ownerId },
+      ]) {
+        const restricted = await store.getThreadInputQueue(caller);
+        expect(
+          restricted.items.find(({ message }) => message.id === cancel.message.id),
+        ).toMatchObject({
+          canCancel: false,
+          canMove: false,
+          canSteer: false,
+        });
+        await expect(
+          store.cancelThreadInput({
+            ...caller,
+            messageId: cancel.message.id,
+            idempotencyKey: `cancel-denied-${caller.requestedBy}-${"authority" in caller}`,
+          }),
+        ).rejects.toMatchObject({ code: "forbidden" });
+        await expect(
+          store.moveThreadInput({
+            ...caller,
+            messageId: move.message.id,
+            beforeMessageId: anchor.message.id,
+            idempotencyKey: `move-denied-${caller.requestedBy}-${"authority" in caller}`,
+          }),
+        ).rejects.toMatchObject({ code: "forbidden" });
+        await expect(
+          store.steerThreadInput({
+            ...caller,
+            messageId: steer.message.id,
+            expectedRunId: f.initial.run!.id,
+            idempotencyKey: `steer-denied-${caller.requestedBy}-${"authority" in caller}`,
+          }),
+        ).rejects.toMatchObject({ code: "forbidden" });
+      }
+      await store.moveThreadInput({
+        ...person,
+        messageId: move.message.id,
+        beforeMessageId: anchor.message.id,
+        idempotencyKey: "person-move",
+      });
+      expect((await store.getThreadInputQueue(person)).items[0]?.message.id).toBe(move.message.id);
+      await store.cancelThreadInput({
+        ...person,
+        messageId: cancel.message.id,
+        idempotencyKey: "person-cancel",
+      });
+      await store.steerThreadInput({
+        ...person,
+        messageId: steer.message.id,
+        expectedRunId: f.initial.run!.id,
+        idempotencyKey: "person-steer",
+      });
+      const remaining = (await store.getThreadInputQueue(person)).items.map(
+        ({ message }) => message.id,
+      );
+      expect(remaining).toEqual([move.message.id, anchor.message.id]);
+    });
+  }
 
   it("moves only the reader's own messages, around anyone's", async ({ storeFixture }) => {
     const { fixture, queued, store, move, order } = storeFixture;

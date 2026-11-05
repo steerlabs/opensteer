@@ -1,17 +1,19 @@
 ---
 name: browser
-description: Use Opensteer Browser Sessions to interact with websites, manage saved tabs and profiles, or sign in to a website.
+description: Choose browser identity, operate websites/saved tabs, and request sign-in or a browser profile.
 ---
 
 # Opensteer Browser
 
-Use Browser Sessions for website interaction and saved pages. For account/API work, use opensteer:integrations unless the person chose the website or no applicable integration exists. The Host owns sessions, profile grants and isolation; Browser Harness operates pages.
+Use Browser Sessions for website interaction and saved pages. For account/API work, use opensteer:integrations unless the person chose the website or no applicable integration exists. The Host owns sessions, profiles and grants; Browser Harness operates pages.
 
-Select or reuse the session with the intended identity and observe the exact page. Profile names do not prove a website account. Named profiles keep data on their owning computer; Guest loses it on close. Never substitute Guest when profile access or opening fails, or sign in there for work the person expects to keep. A profile's placement is fixed after first open.
+Choose the identity yourself, then observe the exact page: Guest for signed-out work, a listed profile that fits for anything done as the person, and `browser_profile_request` only when none fits. Only the person creates or grants profiles. Profile names do not prove a website account. Never substitute Guest when a profile fails to open, or sign in there for work the person expects to keep.
+
+With full access, `browser_profile_write` lists profiles and grants, renames or deletes profiles, clears history or remembered sites, and revokes grants directly. Request sign-in with `sign_in`; never read credentials, collect MFA codes or manage sign-in sessions yourself.
 
 Use the supplied Browser Harness for page operations. Preserve the person's pages and arrangement, and inspect the outcome before repeating input that may have happened.
 
-- Read [identity](references/identity.md) when choosing, opening or requesting profiles and sessions.
+- Read [identity](references/identity.md) before choosing, opening or requesting a profile or session.
 - Read [sign-in](references/sign-in.md) when a website needs authentication.
 - Read [tabs and Show](references/tabs-and-show.md) when finding, organizing, using an included page or showing one to the person.
 - Read [page API](references/page-api.md) before writing Harness code or handling page input, uploads, sizing or dialogs.

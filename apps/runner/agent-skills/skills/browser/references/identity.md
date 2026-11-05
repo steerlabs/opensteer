@@ -1,28 +1,29 @@
 # Profiles and sessions
 
-Every Browser Session has an ID, and every browser command names the session it drives. `browser_session_open` takes exactly one of `sessionId`, `profileId`, or `fresh: true` and returns the session; `profileId` and `fresh` always start a new one. Identity is fixed when the session opens: to work as another profile, open another session. A profile's computer is permanent after first open. The optional `environmentId` chooses placement only for an unplaced profile or Guest, defaulting to this Run's machine, else the only connected browser; it cannot move an existing profile or choose identity.
+Choose the identity for each piece of work yourself. Ask the person which profile only when their intent is still ambiguous after looking.
 
-Choose the identity for each piece of work from what the person asked and what you can observe. One conversation may use several profiles.
+1. **Signed-out or throwaway work** (reading, searching, public pages): open Guest with `browser_session_open {fresh: true}`. Nothing in Guest is kept when it closes, so never have the person sign in there for work they expect to keep.
+2. **Work as the person, or work they want kept:** call `browser_profile_list` and open the profile that fits with `browser_session_open {profileId}`. Fit means a profile named for the site or account, the one this Thread already used for the site (`browser_tab_read` shows each tab's profile), or the person's general profile such as Personal or Work. A name never proves a login: check the website, and use `sign_in` if it shows you signed out.
+3. **Nothing listed fits:** call `browser_profile_request`. Only the person creates profiles and grants them; you cannot. Ask when the person wants a new profile or names one you cannot see, when the work needs an identity separate from every listed profile (a second account on the same site, or keeping work and personal apart), or when a Project needs a profile it has not been granted. Suggest `{kind: "new", suggestedName}` with one or two plain words such as “Brex”, “Work” or “Finance”, or `{kind: "existing", profileId}`.
 
-- **Work as the person, or work they want kept:** use a profile. `browser_profile_list` lists every profile available here without a Request; the list provides identities and grants. A name never proves an account or current login; verify on the website. Ask the person only when their intent stays ambiguous after looking.
-- **A new profile:** when the person asks for one, or names a profile they do not have, call `browser_profile_create` in Main, then open the returned `profile.id` with `browser_session_open` before anyone signs in. In a Project, ask with `browser_access_request` and `suggestion: {kind: "new", suggestedName}`; its continuation names the profile to open.
-- **Public or throwaway work:** open a Guest session with `fresh: true`. The person sees it as Guest. It can be signed in to websites, but nothing in it is kept when it closes, so never have the person sign in there for work they expect to keep.
-- **Continue work:** reuse the session ID from earlier in the Thread, or find it with `browser_session_list` (`attached` marks sessions this Run has open). `browser_tab_read` gives every saved tab's `profileId`, asleep tabs included (null is Guest). An ended session is not listed and does not mean its profile went away: open the profile again.
+A profile the Workspace that needs it can already use never needs a Request; asking for it is refused. Omit `workspaceId` to ask for this Workspace. From Main, `browser_profile_list` shows every profile the person has, but a Project can use only those granted to it: to give a Project one, pass the Project's `workspaceId`.
 
-If creating, getting access to, or opening the profile you need fails, report it; never substitute Guest. “Update this computer to open this profile” requires an update on its owning computer. Never work around that refusal by creating another profile, choosing another computer or substituting Guest.
+The Request returns `pending`. Pending stops the Run. The continuation names the profile the person chose, which may differ from your suggestion: open that one, before anyone signs in. If they decline, carry on without it and do not ask again unless the person brings it up.
 
-A Run can hold several sessions and use them side by side. Main can see the owner's sessions across Workspaces. Several Runs may use one session; `activeAttachmentCount` is not a lock. Sessions outlive Runs. Close an exact session only when requested or deliberately disposable; delegated Threads cannot close sessions.
+## Sessions
 
-Named profiles keep browser data on their owning computer; Guest keeps nothing. Creating an empty profile may leave placement unset until first open. Main inherits every owner profile and creates new empty ones with `browser_profile_create`; it never needs a Request for itself.
+`browser_session_open` takes exactly one of `sessionId` (attach to an existing session), `profileId` (a new session as that profile) or `fresh: true` (a new Guest session). Identity is fixed when a session opens; to work as another profile, open another session. A Run can use several sessions side by side.
 
-`browser_access_request` asks the owner for a profile a Project cannot use yet, existing or new; it does not log in. A profile `browser_profile_list` already returns needs no Request. In Main, pass that Workspace's exact `workspaceId`. In a Workspace Thread, omit it. Suggest an existing profile, a new empty profile, or `user_choice`; the owner chooses in the Request surface, and the fulfilled Request names the exact profile. A declined Request leaves the profiles this Workspace already had untouched.
+To continue work, reuse the session ID from earlier in the Thread or find it with `browser_session_list` (`attached` marks sessions this Run has open). `browser_tab_read` gives every saved tab's `profileId`, asleep tabs included; null is Guest. An ended session is not listed, but its profile still exists: open the profile again.
 
-A browser error is about that session, not about profile access: read its message, which says what to do next. Never request profile access because a browser command failed.
+Several Runs may share a session; `activeAttachmentCount` is not a lock. Sessions outlive Runs. Close a session only when asked or when it is deliberately disposable. Main sees the owner's sessions across Workspaces. Delegated Runs use the same tools within their inherited reach; a specialist's bindings may narrow what is listed.
 
-Guest sign-ins cannot be saved as a profile. To keep a sign-in, create or choose a named profile before signing in. Never offer conversion, copying, or a Guest-save action.
+A profile's data stays on its computer, fixed at first open. `environmentId` picks the computer only for a profile that has never been opened, or for Guest; it defaults to this Run's machine, else the only connected browser. It never moves a profile or changes identity.
 
-Name a new profile in one or two words, such as “Work” or “Shopping”, whether you create it with `browser_profile_create` or suggest it with `browser_access_request`.
+## Failures
 
-Use `request_list` for existing Requests and `request_withdraw` when this Thread no longer needs one it originated. Replaying the same tool call returns the same Request; a new call can create another even with identical arguments.
+A browser error is about that session: read its message, which says what to do next. Never answer a failure by requesting a profile, substituting Guest, or switching profile or computer. “Update this computer to open this profile” needs an update on the profile's computer: report it.
 
-Use profile creation and access-request tools only if listed for this Run. Delegated tasks return missing profile access to their assigner.
+Guest sign-ins cannot be saved into a profile. To keep a sign-in, open the right named profile before signing in. Never offer to convert or copy Guest.
+
+Use `request_list` to see open Requests and `request_withdraw` for one this Thread no longer needs. Replaying the same tool call returns the same Request; a new call can create another.

@@ -4,6 +4,7 @@ import {
   type BrowserPreferencesStorage,
   type WebSocketClient,
 } from "@opensteer/client/host";
+import { desktopBridge } from "../desktop/desktop-bridge.js";
 import { browserClientLifecycle } from "./browser-lifecycle.js";
 
 export interface BrowserHostClientOptions {
@@ -38,6 +39,10 @@ export function createBrowserHostClient(options: BrowserHostClientOptions): Http
       : { bufferedResponses: options.bufferedResponses }),
     lifecycle: options.lifecycle ?? browserClientLifecycle(),
     browserPreferencesStorage,
+    reportRealtimeFrame: (record) =>
+      void desktopBridge()
+        ?.reportRealtimeDiagnostic?.(record)
+        .catch(() => undefined),
     viewerPlatform: /Mac|iPhone|iPad|iPod/u.test(navigator.platform) ? "mac" : "pc",
     ...(options.webSocketFactory ? { webSocketFactory: options.webSocketFactory } : {}),
   });

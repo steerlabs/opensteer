@@ -1,4 +1,8 @@
 import {
+  administrationCommand,
+  type AdministrationCommandIdentity,
+} from "./administration-command.js";
+import {
   checkIntegrationAccountBinding,
   requireIntegrationAccountBinding,
 } from "./integration-account-binding.js";
@@ -561,70 +565,73 @@ export class IntegrationStore {
   }
 
   async revokeConnection(input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
     readonly connectionId: IntegrationConnectionId;
     readonly credential: StoredIntegrationSecret;
     readonly ownerUserId: UserId;
     readonly requestId: string;
   }): Promise<void> {
-    await withDatabaseTransaction(this.#database, async (transaction) => {
-      const now = new Date();
-      const connection = await transaction
-        .selectFrom("integrationConnections")
-        .select(["credentialId", "id", "provider", "status"])
-        .where("id", "=", input.connectionId)
-        .where("ownerUserId", "=", input.ownerUserId)
-        .where("connectionKind", "=", "provider-account")
-        .forNoKeyUpdate()
-        .executeTakeFirst();
-      if (!connection || connection.status === "revoked") {
-        throw new OpensteerError({
-          code: "not_found",
-          message: "Integration connection not found",
-        });
-      }
-      if (!connection.credentialId) {
-        throw new OpensteerError({
-          code: "internal",
-          message: "Integration credential is missing",
-        });
-      }
-      await transaction
-        .updateTable("credentials")
-        .set({
-          encryptedPayload: input.credential.envelope,
-          encryptionKeyVersion: input.credential.keyVersion,
-          metadata: jsonValue({ managedBy: "integration-service", status: "revoked" }),
-          updatedAt: now,
-        })
-        .where("id", "=", connection.credentialId)
-        .where("ownerId", "=", input.ownerUserId)
-        .executeTakeFirstOrThrow();
-      await transaction
-        .updateTable("integrationConnections")
-        .set({ status: "revoked", statusDetail: null, statusReason: null, updatedAt: now })
-        .where("id", "=", connection.id)
-        .executeTakeFirstOrThrow();
-      await transaction
-        .updateTable("integrationGrants")
-        .set({ isDefault: false, revokedAt: now, status: "revoked", updatedAt: now })
-        .where("connectionId", "=", connection.id)
-        .where("revokedAt", "is", null)
-        .execute();
-      await transaction
-        .insertInto("securityAudit")
-        .values({
-          action: "integration.connection.revoked",
-          actorSessionId: null,
-          actorUserId: input.ownerUserId,
-          id: createId("securityAudit"),
-          metadata: jsonValue({ provider: connection.provider }),
-          requestId: input.requestId,
-          targetId: connection.id,
-          targetType: "integration-connection",
-          workspaceId: null,
-        })
-        .executeTakeFirstOrThrow();
-    });
+    await withDatabaseTransaction(this.#database, async (transaction) =>
+      administrationCommand(transaction, input.administration, async () => {
+        const now = new Date();
+        const connection = await transaction
+          .selectFrom("integrationConnections")
+          .select(["credentialId", "id", "provider", "status"])
+          .where("id", "=", input.connectionId)
+          .where("ownerUserId", "=", input.ownerUserId)
+          .where("connectionKind", "=", "provider-account")
+          .forNoKeyUpdate()
+          .executeTakeFirst();
+        if (!connection || connection.status === "revoked") {
+          throw new OpensteerError({
+            code: "not_found",
+            message: "Integration connection not found",
+          });
+        }
+        if (!connection.credentialId) {
+          throw new OpensteerError({
+            code: "internal",
+            message: "Integration credential is missing",
+          });
+        }
+        await transaction
+          .updateTable("credentials")
+          .set({
+            encryptedPayload: input.credential.envelope,
+            encryptionKeyVersion: input.credential.keyVersion,
+            metadata: jsonValue({ managedBy: "integration-service", status: "revoked" }),
+            updatedAt: now,
+          })
+          .where("id", "=", connection.credentialId)
+          .where("ownerId", "=", input.ownerUserId)
+          .executeTakeFirstOrThrow();
+        await transaction
+          .updateTable("integrationConnections")
+          .set({ status: "revoked", statusDetail: null, statusReason: null, updatedAt: now })
+          .where("id", "=", connection.id)
+          .executeTakeFirstOrThrow();
+        await transaction
+          .updateTable("integrationGrants")
+          .set({ isDefault: false, revokedAt: now, status: "revoked", updatedAt: now })
+          .where("connectionId", "=", connection.id)
+          .where("revokedAt", "is", null)
+          .execute();
+        await transaction
+          .insertInto("securityAudit")
+          .values({
+            action: "integration.connection.revoked",
+            actorSessionId: null,
+            actorUserId: input.ownerUserId,
+            id: createId("securityAudit"),
+            metadata: jsonValue({ provider: connection.provider }),
+            requestId: input.requestId,
+            targetId: connection.id,
+            targetType: "integration-connection",
+            workspaceId: null,
+          })
+          .executeTakeFirstOrThrow();
+      }),
+    );
   }
 
   async completeOAuthAttempt(input: {

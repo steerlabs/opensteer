@@ -43,6 +43,14 @@ export function browserSiteLabel(site: string): string {
   }
 }
 
+/** A page that failed to load belongs to no site, whatever address it shows. */
+export function browserSiteForTab(tab: {
+  readonly navigationFailed?: boolean | undefined;
+  readonly url: string;
+}): string | null {
+  return tab.navigationFailed ? null : browserSiteForUrl(tab.url);
+}
+
 /** The site a page belongs to, or null for pages no sign-in can apply to. */
 export function browserSiteForUrl(url: string): string | null {
   if (!/^https?:\/\//iu.test(url.trim())) return null;

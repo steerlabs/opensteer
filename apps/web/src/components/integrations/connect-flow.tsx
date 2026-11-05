@@ -16,7 +16,12 @@ import type { IntegrationDefinitionSummaryView } from "@opensteer/integration-co
 import { Dialog } from "../dialog.js";
 import { ExternalLink } from "../external-link.js";
 import { Icon } from "../icon.js";
-import { integrationAuthorizationError } from "../../integrations/integration-authorization.js";
+import { desktopBridge } from "../../desktop/desktop-bridge.js";
+import {
+  integrationAuthorizationError,
+  integrationAuthorizationSurface,
+  type IntegrationAuthorizationReturnRoute,
+} from "../../integrations/integration-authorization.js";
 import { IntegrationIcon } from "./integration-icon.js";
 import { message, secretFieldLabel } from "./helpers.js";
 import {
@@ -37,6 +42,7 @@ import {
   repositoryAccountStep,
   type ConnectAvailability,
   type ConnectSignInOption,
+  integrationAuthorizationWaitingDetail,
 } from "@opensteer/client/integrations";
 import type { ConnectOperations } from "./connect-operations.js";
 
@@ -54,7 +60,7 @@ type Step =
   | { readonly connection: IntegrationConnectionSummary; readonly kind: "connected" };
 
 /**
- * The one Connect flow, used by Settings and by an agent's access Request.
+ * Account setup in Settings. Access Requests connect directly from their card.
  *
  * Two things it will not do: report a connection that the durable attempt and a
  * reloaded connection row do not both show, and change the sign-in app a person
@@ -97,6 +103,7 @@ export function ConnectFlow({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  const [appButtonOffered, setAppButtonOffered] = useState(false);
   /**
    * The one operation that may change this sheet: a sign-in, a cancelled
    * sign-in's recovery, a recheck or a save. It owns the sheet and `pending`
@@ -204,6 +211,7 @@ export function ConnectFlow({
    * the two answered.
    */
   const finishAttempt = async (
+    started: IntegrationAuthorizationStart,
     status: IntegrationAuthorizationStatus,
     controller: AbortController,
     unrecorded: string,
@@ -212,6 +220,7 @@ export function ConnectFlow({
       const outcome = integrationAuthorizationError(status.status, status.failureCode);
       if (outcome) {
         setError(outcome);
+        setAppButtonOffered(operations.appButtonOffered(started.attemptId, status.status));
         setStep({ kind: "choose" });
         return;
       }
@@ -235,6 +244,7 @@ export function ConnectFlow({
   /** Follows one sign-in from its start to a connection or the reason it has none. */
   const follow = async (starting: Promise<IntegrationAuthorizationStart>) => {
     setNotice(null);
+    setAppButtonOffered(false);
     const controller = start();
     try {
       const started = await starting;
@@ -243,6 +253,7 @@ export function ConnectFlow({
       const status = await operations.awaitAuthorization(started, controller.signal);
       if (!owns(controller)) return;
       await finishAttempt(
+        started,
         status,
         controller,
         `${definition.name} reported success, but no connected account is recorded here. Start the connection again.`,
@@ -257,12 +268,13 @@ export function ConnectFlow({
   };
 
   // Called from the click, so the browser tab opens while it still may.
-  const connect = () =>
+  const connect = (returnRoute?: IntegrationAuthorizationReturnRoute) =>
     follow(
       operations.beginAuthorization({
         applicationSource: chosen,
         definitionId: definition.id,
         returnPath,
+        ...(returnRoute ? { returnRoute } : {}),
       }),
     );
 
@@ -292,6 +304,7 @@ export function ConnectFlow({
     const controller = start();
     try {
       await finishAttempt(
+        started,
         status,
         controller,
         `${definition.name} completed while cancellation was requested, but no connected account is recorded here. Reload and try again.`,
@@ -460,6 +473,16 @@ export function ConnectFlow({
         ) : null}
         {/* Nothing to continue to until an eligible app is chosen, so the
             action that does work is the only one offered. */}
+        {connectable && appButtonOffered ? (
+          <button
+            className="btn"
+            disabled={pending || chosenOption === null || choiceLost}
+            onClick={() => void connect("app-button")}
+            type="button"
+          >
+            Use the Open Opensteer button
+          </button>
+        ) : null}
         {connectable ? (
           <button
             className="btn btn--primary"
@@ -589,7 +612,11 @@ export function ConnectFlow({
           <Icon name="external-link" />
           <div>
             <strong>Finish signing in to {definition.name}</strong>
-            <p>Use the sign-in page that opened. This updates by itself when you’re done.</p>
+            <p>
+              {integrationAuthorizationWaitingDetail(
+                integrationAuthorizationSurface(desktopBridge()),
+              )}
+            </p>
           </div>
         </div>
       ) : null}

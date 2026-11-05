@@ -1,6 +1,6 @@
 /**
  * Written against CONTRACTS.md before implementation. Failure journeys:
- * Guest copies lose later login; create replays duplicate identities; restricted
+ * Guest copies lose later login; request replays duplicate approvals; restricted
  * threads gain authority; continuations guess labels; sleeping tabs lose identity;
  * clients rely on polling; saved-site lookup guesses login from profile names.
  * Every journey records its inputs, observed IDs, assertions and failure outside
@@ -47,9 +47,7 @@ const reportSchema = z
     inputText: z.string(),
     tools: z.array(z.string()).optional(),
     error: z.string().optional(),
-    created: z.object({ profile: profileSchema }).optional(),
-    replayed: z.object({ profile: profileSchema }).optional(),
-    independent: z.object({ profile: profileSchema }).optional(),
+    replayed: z.object({ requestId: RequestIdSchema, replayed: z.boolean() }).optional(),
     opened: z
       .object({
         session: z.object({ id: z.string(), profileId: z.string().nullable() }).passthrough(),
@@ -293,32 +291,83 @@ async function fulfillNewProfile(
 }
 
 run("Browser profiles through a whole deployment", () => {
-  journey("J2 creation replay and independent same-name calls", async (evidence) => {
+  journey("J2 Main request replay creates an owner profile without a grant", async (evidence) => {
     const { stack } = await profileDeployment();
+    const people = await connectedPeople(stack);
     const { report } = await profileTurn(stack, evidence, {
-      create: { name: "work", replay: true, independent: true },
+      request: { replay: true, workspaceId: stack.mainWorkspaceId },
     });
     equal(
       evidence,
-      "same JSON-RPC call replays the same identity",
-      report.replayed!.profile.id,
-      report.created!.profile.id,
+      "same call replays the same Request",
+      report.replayed!.requestId,
+      report.request!.requestId,
     );
-    equal(
-      evidence,
-      "independent call creates a distinct identity",
-      report.independent!.profile.id === report.created!.profile.id,
-      false,
-    );
+    equal(evidence, "replay is identified", report.replayed!.replayed, true);
+    const resolved = await stack.api["commands.dispatch"]({
+      type: "request.respond",
+      requestId: report.request!.requestId,
+      idempotencyKey: randomUUID(),
+      response: {
+        kind: "external",
+        value: { decision: "fulfilled", createProfile: { name: "Brex" } },
+      },
+    });
+    if (!resolved.ok) throw new Error(resolved.error.message);
     const bootstrap = await stack.api["bootstrap.get"]({});
     if (!bootstrap.ok) throw new Error(bootstrap.error.message);
-    equal(evidence, "creation opened no session", bootstrap.data.browser.sessions.length, 0);
     equal(
       evidence,
-      "exactly two profiles were created",
-      bootstrap.data.browser.profiles.map((profile) => profile.id).sort(),
-      [report.created!.profile.id, report.independent!.profile.id].sort(),
+      "approval created exactly the person's chosen profile",
+      bootstrap.data.browser.profiles.map(({ name }) => name),
+      ["Brex"],
     );
+    equal(evidence, "approval opened no session", bootstrap.data.browser.sessions.length, 0);
+    const profile = bootstrap.data.browser.profiles[0]!;
+    const grants = await stack.host.store.database
+      .selectFrom("browserProfileGrants")
+      .selectAll()
+      .where("workspaceId", "=", stack.mainWorkspaceId)
+      .execute();
+    equal(evidence, "Main has no grant rows", grants, []);
+    await waitFor(
+      async () =>
+        people.every((client) =>
+          client.getSnapshot().browserProfiles.some((row) => row.id === profile.id),
+        ),
+      10_000,
+    );
+    for (const client of people)
+      equal(
+        evidence,
+        "person sees approved profile",
+        client.getSnapshot().browserProfiles.find((row) => row.id === profile.id)?.name,
+        "Brex",
+      );
+    const opened = await profileTurn(stack, evidence, { open: { profileId: profile.id } });
+    const sessionId = opened.report.opened!.session.id;
+    await waitFor(
+      async () =>
+        people[0]!
+          .getSnapshot()
+          .browserSessions.some(
+            (session) => session.id === sessionId && session.tabCatalog?.tabs.length,
+          ),
+      10_000,
+    );
+    const client = people[0]!;
+    const pageId = client.getSnapshot().browserSessions.find((session) => session.id === sessionId)!
+      .tabCatalog!.tabs[0]!.id;
+    const release = client.retainBrowserWatch(sessionId, pageId);
+    try {
+      await waitFor(async () => client.browserWatchFrames.get(sessionId, pageId) !== null, 10_000);
+      expect(
+        client.browserWatchFrames.get(sessionId, pageId),
+        "owner receives a viewer frame without any grant",
+      ).not.toBeNull();
+    } finally {
+      release();
+    }
   });
 
   journey(
@@ -362,9 +411,15 @@ run("Browser profiles through a whole deployment", () => {
       ] as const) {
         equal(
           evidence,
-          `${kind} has create only when Main`,
+          `${kind} cannot create profiles`,
           report.tools!.includes("browser_profile_create"),
-          kind === "main",
+          false,
+        );
+        equal(
+          evidence,
+          `${kind} can request a profile`,
+          report.tools!.includes("browser_profile_request"),
+          true,
         );
         equal(
           evidence,
@@ -408,7 +463,7 @@ run("Browser profiles through a whole deployment", () => {
         return continuation !== undefined;
       }, 30_000);
       evidence.observations.push({ continuation, profile: result.profile });
-      const expected = `Request ${result.requestId} was fulfilled. Browser profile "Brex Ops" (${result.profile.id}) is now available to this Workspace. Open it with browser_session_open and profileId ${result.profile.id}, then continue the task.`;
+      const expected = `Request ${result.requestId} was fulfilled. The person chose browser profile "Brex Ops" (${result.profile.id}); use it for this task even if you suggested another. Open it with browser_session_open and profileId ${result.profile.id}, then continue the task.`;
       equal(
         evidence,
         "continuation identifies Host-created renamed profile",
@@ -421,6 +476,15 @@ run("Browser profiles through a whole deployment", () => {
         continuation!.profiles!.profiles.map((profile) => ({ id: profile.id, name: profile.name })),
         [{ id: result.profile.id, name: "Brex Ops" }],
       );
+      const grants = await stack.host.store.database
+        .selectFrom("browserProfileGrants")
+        .select(["profileId", "workspaceId", "access"])
+        .where("workspaceId", "=", result.workspaceId)
+        .where("revokedAt", "is", null)
+        .execute();
+      equal(evidence, "Project approval retains its grant across restart", grants, [
+        { profileId: result.profile.id, workspaceId: result.workspaceId, access: "read-write" },
+      ]);
       const request = await stack.host.store.database
         .selectFrom("requests")
         .select("response")
@@ -483,11 +547,16 @@ run("Browser profiles through a whole deployment", () => {
     }
   });
 
-  journey("J5-agent two live clients see creation without session opening", async (evidence) => {
+  journey("J5-person two live clients see creation without session opening", async (evidence) => {
     const { stack } = await profileDeployment();
     const people = await connectedPeople(stack);
-    const created = await profileTurn(stack, evidence, { create: { name: "work" } });
-    const id = created.report.created!.profile.id;
+    const created = await people[0]!.dispatch({
+      type: "browser.profile.create",
+      input: { name: "work" },
+      idempotencyKey: randomUUID(),
+    });
+    if (created.type !== "browser.profile.create") throw new Error(JSON.stringify(created));
+    const id = created.profile.id;
     try {
       await waitFor(
         async () =>
@@ -504,7 +573,7 @@ run("Browser profiles through a whole deployment", () => {
     for (const client of people)
       equal(
         evidence,
-        "agent profile arrived without reload",
+        "person profile arrived without reload",
         client.getSnapshot().browserProfiles.some((profile) => profile.id === id),
         true,
       );

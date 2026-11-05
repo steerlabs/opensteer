@@ -259,7 +259,54 @@ integration.sequential("Shared task Done", () => {
     expect((await store.getThreadForOwner(other.id, f.userId))?.doneAt).toBeNull();
   });
 
-  it("stops a child, pauses its Trigger and forbids a delegated agent from writing its assigner", async () => {
+  it("keeps Workspace writes separate from borrowing Main execution authority", async () => {
+    const f = await fixture("withheld-main-writer");
+    const original = await database
+      .selectFrom("threads")
+      .selectAll()
+      .where("id", "=", f.thread.id)
+      .executeTakeFirstOrThrow();
+    const id = createId("thread");
+    await database
+      .insertInto("threads")
+      .values({
+        ...original,
+        id,
+        lineageRootThreadId: id,
+        inheritsMain: false,
+      })
+      .execute();
+    const writer = await store.getThreadForOwner(id, f.userId);
+    if (!writer) throw new Error("Withheld-consent Thread was not created");
+    const run = await running({ ...f, thread: writer }, "withheld-main-writer");
+    await store.renameThread({
+      actorRunId: run.id,
+      requestedBy: f.userId,
+      threadId: f.thread.id,
+      idempotencyKey: "workspace-writer-renames",
+      title: "Renamed within the Workspace",
+    });
+    await expect(
+      store.enqueueThreadInput({
+        content: [{ type: "text", text: "Cannot borrow Main" }],
+        idempotencyKey: "workspace-writer-cannot-borrow-main",
+        policy: "queue",
+        requestedBy: f.userId,
+        source: { kind: "agent", runId: run.id },
+        threadId: f.thread.id,
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    const done = await store.setThreadDone({
+      done: true,
+      actorRunId: run.id,
+      requestedBy: f.userId,
+      threadId: f.thread.id,
+      idempotencyKey: "workspace-writer-stops",
+    });
+    expect(done.thread.doneAt).not.toBeNull();
+  });
+
+  it("lets a Main worker write its assigner, stop its subtree and pause its Trigger", async () => {
     const f = await fixture("cascade");
     const parentRun = await running(f, "cascade");
     const child = await delegate(f, parentRun.id, "cascade-child");
@@ -268,24 +315,16 @@ integration.sequential("Shared task Done", () => {
       .set({ status: "running" })
       .where("id", "=", child.run.id)
       .execute();
-    await expect(
-      store.setThreadDone({
-        done: true,
-        actorRunId: child.run.id,
-        threadId: f.thread.id,
-        requestedBy: f.userId,
-        idempotencyKey: "child-cannot-stop-parent",
-      }),
-    ).rejects.toMatchObject({ code: "forbidden" });
-    await expect(
-      store.renameThread({
-        actorRunId: child.run.id,
-        threadId: f.thread.id,
-        requestedBy: f.userId,
-        idempotencyKey: "child-cannot-rename-parent",
-        title: "Forbidden",
-      }),
-    ).rejects.toMatchObject({ code: "forbidden" });
+    await store.renameThread({
+      actorRunId: child.run.id,
+      threadId: f.thread.id,
+      requestedBy: f.userId,
+      idempotencyKey: "child-renames-parent",
+      title: "Renamed by a Main worker",
+    });
+    expect((await store.getThreadForOwner(f.thread.id, f.userId))?.title).toBe(
+      "Renamed by a Main worker",
+    );
     const triggers = new TriggerStore(database);
     const trigger = await triggers.create({
       actorThreadId: null,
@@ -303,7 +342,13 @@ integration.sequential("Shared task Done", () => {
         schedule: { kind: "at", at: new Date(Date.now() + 60_000).toISOString(), payload: null },
       },
     });
-    const done = await setDone(f, true, "cascade-done");
+    const done = await store.setThreadDone({
+      done: true,
+      actorRunId: child.run.id,
+      threadId: f.thread.id,
+      requestedBy: f.userId,
+      idempotencyKey: "child-stops-parent-subtree",
+    });
     expect((await store.getThreadForOwner(child.thread.id, f.userId))?.doneAt).not.toBeNull();
     expect(
       await database

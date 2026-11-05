@@ -2,6 +2,7 @@ export { VoiceStartError } from "./contract.js";
 export type {
   VoiceCall,
   VoiceCallEvent,
+  VoiceCallIdentity,
   VoiceEndReason,
   VoiceLevels,
   VoiceMediaPort,
@@ -19,5 +20,4 @@ export type { VoiceControllerInput, VoiceAccount } from "./controller.js";
 export { createCodexVoiceProvider } from "./codex-provider.js";
 export type { CodexVoiceProviderInput } from "./codex-provider.js";
 export type { VoiceTimers } from "./timers.js";
-
-export type { VoiceView } from "./context.js";
+export type { VoiceView } from "@opensteer/protocol/voice";

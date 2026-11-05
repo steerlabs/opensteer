@@ -2035,6 +2035,16 @@ async function requireAnchorThread(
   readonly id: ThreadId;
   readonly workspaceId: WorkspaceId;
 }> {
+  const voice = await transaction
+    .selectFrom("threads")
+    .select("voiceSessionId")
+    .where("id", "=", threadId)
+    .executeTakeFirst();
+  if (voice?.voiceSessionId)
+    throw new OpensteerError({
+      code: "conflict",
+      message: "Voice Threads cannot anchor Triggers.",
+    });
   const admission = await admitThreadExecution(transaction, threadId, userId);
   if (!admission)
     throw new OpensteerError({ code: "forbidden", message: "Anchor Thread is unavailable" });
@@ -2058,7 +2068,14 @@ async function lockTriggerAuthorityThreads(
   if (actorThreadId === null) return null;
   const rows = await transaction
     .selectFrom("threads")
-    .select(["accessMode", "capabilityProfileId", "id", "lineageRootThreadId", "workspaceId"])
+    .select([
+      "accessMode",
+      "inheritsMain",
+      "specialistId",
+      "id",
+      "lineageRootThreadId",
+      "workspaceId",
+    ])
     .where("id", "in", [actorThreadId, anchorThreadId])
     .orderBy("id", "asc")
     .forShare()
@@ -2316,6 +2333,7 @@ function triggerFromRow(row: TriggerRow): Trigger {
     name: row.name,
     nextFireAt: row.nextFireAt?.toISOString() ?? null,
     pauseReason: row.pauseReason,
+    waitingReason: row.waitingReason,
     status: row.status,
     updatedAt: row.updatedAt.toISOString(),
     webhookRouteKey: row.webhookRouteKey,

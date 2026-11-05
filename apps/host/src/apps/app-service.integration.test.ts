@@ -12,7 +12,7 @@ import {
 import { AppStore } from "@opensteer/database";
 import { expect, vi } from "vitest";
 import { describeStore } from "@opensteer/database/test-support/store";
-import type { AgentControlRunScope } from "../agents/agent-control-service.js";
+import type { RunToolScope } from "../agents/run-tool-tokens.js";
 import { AppService } from "./app-service.js";
 
 const html = "<title>First</title><body><h1>First</h1>";
@@ -28,7 +28,7 @@ describeStore("published app HTML", (it) => {
       workspaceId: f.workspace.id,
       environmentId: f.environmentId,
       requestedBy: f.userId,
-    } as AgentControlRunScope;
+    } as RunToolScope;
     const directory = await mkdtemp(join(tmpdir(), "opensteer-apps-test-"));
     const events: AgentEvent[] = [];
     let bytes = Buffer.from(html);
@@ -67,7 +67,7 @@ describeStore("published app HTML", (it) => {
         .set({ status: "waiting" })
         .where("id", "=", f.run.id)
         .execute();
-      const first = await service.publish("run-token", "publish-1", {
+      const first = await service.publish(scope, "publish-1", {
         path: "index.html",
         title: "Budget",
       });
@@ -97,12 +97,12 @@ describeStore("published app HTML", (it) => {
       expect(content.startsWith("<!doctype html>")).toBe(true);
       bytes = Buffer.from(html.replace("First", "Latest"));
       const updates = await Promise.all([
-        service.publish("run-token", "publish-2", {
+        service.publish(scope, "publish-2", {
           path: "index.html",
           title: "Budget",
           appId: first.appId,
         }),
-        service.publish("run-token", "publish-3", {
+        service.publish(scope, "publish-3", {
           path: "index.html",
           title: "Budget",
           appId: first.appId,
@@ -114,7 +114,7 @@ describeStore("published app HTML", (it) => {
       const listedBeforeReplay = files.list.mock.calls.length;
       const readBeforeReplay = files.download.mock.calls.length;
       expect(
-        await service.publish("run-token", "publish-3", {
+        await service.publish(scope, "publish-3", {
           path: "index.html",
           title: "Budget",
           appId: first.appId,
@@ -179,11 +179,9 @@ describeStore("published app HTML", (it) => {
     }
   });
 
-  it("lets only a publisher that reaches the origin Thread update its app", async ({
-    storeFixture,
-  }) => {
+  it("lets a publisher that reaches the origin Thread update its app", async ({ storeFixture }) => {
     const { store, database, startRunFixture } = storeFixture;
-    const f = await startRunFixture("app-reach");
+    const f = await startRunFixture("app-reach", "project");
     const apps = new AppStore(database);
     const publication = (threadId: ThreadId, runId: RunId, publishKey: string, appId?: string) =>
       apps.publish({
@@ -224,23 +222,21 @@ describeStore("published app HTML", (it) => {
         .execute();
       return turn.run.id;
     };
-    // A task delegated from another conversation sits in a different lineage.
+    // Reach follows consent, not lineage: a task delegated from another
+    // conversation in this Workspace reaches the origin as much as its own child.
     const { thread: unrelatedRoot } = await thread("unrelated-root");
     const { thread: delegated } = await thread("unrelated-task", unrelatedRoot.id);
     const { thread: child } = await thread("origin-task", f.thread.id);
-    expect([delegated.capabilityProfileId, child.capabilityProfileId]).toEqual([
-      "delegated",
-      "delegated",
-    ]);
+    expect([delegated.inheritsMain, child.inheritsMain]).toEqual([false, false]);
     const delegatedRun = await running(delegated.id, "unrelated-task-run");
     const childRun = await running(child.id, "origin-task-run");
 
     await expect(
       publication(delegated.id, delegatedRun, "outside-lineage", original.appId),
-    ).rejects.toMatchObject({ code: "not_found" });
+    ).resolves.toMatchObject({ appId: original.appId, version: 2 });
     await expect(
       publication(child.id, childRun, "origin-lineage", original.appId),
-    ).resolves.toMatchObject({ appId: original.appId, version: 2 });
+    ).resolves.toMatchObject({ appId: original.appId, version: 3 });
   });
 
   it("refuses foreign and missing IDs, missing/non-HTML/oversized files, and offline Runner reads without a publication", async ({
@@ -297,7 +293,7 @@ describeStore("published app HTML", (it) => {
       workspaceId: f.workspace.id,
       environmentId: f.environmentId,
       requestedBy: f.userId,
-    } as AgentControlRunScope;
+    } as RunToolScope;
     const directory = await mkdtemp(join(tmpdir(), "opensteer-app-refusals-"));
     let bytes = Buffer.from(html);
     const entries = [
@@ -326,7 +322,7 @@ describeStore("published app HTML", (it) => {
       publishEvent: published,
     });
     const publish = (input = {}) =>
-      service.publish("token", crypto.randomUUID(), {
+      service.publish(scope, crypto.randomUUID(), {
         path: "index.html",
         title: "Test",
         ...input,
@@ -389,7 +385,7 @@ describeStore("published app HTML", (it) => {
       workspaceId: f.workspace.id,
       environmentId: f.environmentId,
       requestedBy: f.userId,
-    } as AgentControlRunScope;
+    } as RunToolScope;
     const start = vi.fn(async () => undefined);
     const stop = vi.fn(async () => undefined);
     const connect =
@@ -426,7 +422,7 @@ describeStore("published app HTML", (it) => {
     };
     const service = new AppService(options);
     const publish = (extra = {}) =>
-      service.publish("run-token", crypto.randomUUID(), {
+      service.publish(scope, crypto.randomUUID(), {
         path: "app",
         title: "Server",
         start: "node server.js",
@@ -493,7 +489,7 @@ describeStore("published app HTML", (it) => {
       expect((await service.view(first.appId, f.userId, "light")).path.split("/").at(-2)).toBe(
         token,
       );
-      expect(await service.list("token")).toMatchObject({
+      expect(await service.list(scope)).toMatchObject({
         apps: [
           expect.objectContaining({
             id: first.appId,
@@ -522,9 +518,9 @@ describeStore("published app HTML", (it) => {
           port: address.port,
         }));
         expect(
-          await service.fetch("token", { appId: first.appId, method: "GET", path: "/error" }),
+          await service.fetch(scope, { appId: first.appId, method: "GET", path: "/error" }),
         ).toMatchObject({ status: 409, body: "app response" });
-        const large = await service.fetch("token", {
+        const large = await service.fetch(scope, {
           appId: first.appId,
           method: "GET",
           path: "/large",
@@ -536,6 +532,8 @@ describeStore("published app HTML", (it) => {
         await (await import("@opensteer/shared/httpServer")).closeHttpServerNow(upstream);
       }
       const startsBefore = start.mock.calls.length;
+      // A Project task reaches only its Project, so the Main app is out of reach.
+      const otherProject = await storeFixture.createProjectWorkspace(f.userId, "app-outside");
       const { thread: unrelated } = await store.createThread({
         createdBy: f.userId,
         environmentId: f.environmentId,
@@ -543,7 +541,7 @@ describeStore("published app HTML", (it) => {
         idempotencyKey: "unrelated-app-root",
         modelSelection: f.thread.modelSelection,
         title: "Other",
-        workspaceId: f.workspace.id,
+        workspaceId: otherProject.id,
       });
       const { thread: child } = await store.createThread({
         createdBy: f.userId,
@@ -552,9 +550,10 @@ describeStore("published app HTML", (it) => {
         idempotencyKey: "unrelated-app-child",
         modelSelection: f.thread.modelSelection,
         title: "Other task",
-        workspaceId: f.workspace.id,
+        workspaceId: otherProject.id,
         parentThreadId: unrelated.id,
       });
+      expect(child.inheritsMain).toBe(false);
       const turn = await storeFixture.enqueueHumanTrigger({
         content: [{ type: "text", text: "Other task" }],
         idempotencyKey: "unrelated-app-turn",
@@ -572,13 +571,18 @@ describeStore("published app HTML", (it) => {
         .where("id", "=", child.id)
         .execute();
       const originScope = scope;
-      scope = { ...scope, threadId: child.id, runId: turn.run.id };
+      scope = {
+        ...scope,
+        threadId: child.id,
+        runId: turn.run.id,
+        workspaceId: otherProject.id,
+      };
       await expect(publish({ appId: first.appId })).rejects.toMatchObject({ code: "not_found" });
       expect(start).toHaveBeenCalledTimes(startsBefore);
       await expect(
-        service.fetch("token", { appId: first.appId, method: "GET", path: "/" }),
+        service.fetch(scope, { appId: first.appId, method: "GET", path: "/" }),
       ).rejects.toMatchObject({ code: "not_found" });
-      expect(await service.list("token")).toEqual({ apps: [] });
+      expect(await service.list(scope)).toEqual({ apps: [] });
       scope = originScope;
       const retainedOwner = await store.createUser("Retained app Workspace owner");
       await database
@@ -608,7 +612,7 @@ describeStore("published app HTML", (it) => {
         code: "not_found",
       });
       await expect(
-        service.fetch("token", { appId: first.appId, method: "GET", path: "/" }),
+        service.fetch(scope, { appId: first.appId, method: "GET", path: "/" }),
       ).rejects.toMatchObject({ code: "not_found" });
       await database
         .updateTable("workspaceMemberships")
@@ -622,9 +626,9 @@ describeStore("published app HTML", (it) => {
         .where("id", "=", f.thread.id)
         .execute();
       await expect(
-        service.fetch("token", { appId: first.appId, method: "GET", path: "/" }),
+        service.fetch(scope, { appId: first.appId, method: "GET", path: "/" }),
       ).rejects.toMatchObject({ code: "forbidden" });
-      await expect(service.list("token")).rejects.toMatchObject({ code: "forbidden" });
+      await expect(service.list(scope)).rejects.toMatchObject({ code: "forbidden" });
       await database
         .updateTable("threads")
         .set({ accessMode: "full-access" })
@@ -632,14 +636,14 @@ describeStore("published app HTML", (it) => {
         .execute();
 
       const stopsBefore = stop.mock.calls.length;
-      await service.publish("token", "html-republish", {
+      await service.publish(scope, "html-republish", {
         appId: first.appId,
         path: "index.html",
         title: "HTML",
       });
       expect(stop).toHaveBeenCalledTimes(stopsBefore + 1);
       await expect(
-        service.fetch("token", { appId: first.appId, method: "GET", path: "/" }),
+        service.fetch(scope, { appId: first.appId, method: "GET", path: "/" }),
       ).rejects.toMatchObject({ code: "bad_request" });
       const next = await publish({ appId: first.appId });
       expect(next.version).toBe(3);

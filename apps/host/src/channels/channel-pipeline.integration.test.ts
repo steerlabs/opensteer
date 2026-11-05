@@ -27,7 +27,7 @@ import {
   type WorkspaceId,
 } from "@opensteer/core";
 import { ChannelStore, OpensteerStore, createDatabase, migrateToLatest } from "@opensteer/database";
-import type { RunnerAuxiliaryStream } from "@opensteer/orchestration";
+import type { RunnerAuxiliaryStream, RunnerIdentity } from "@opensteer/orchestration";
 import {
   HarnessInstanceCatalogSchema,
   RunnerAuxiliaryFrameFenceSchema,
@@ -49,6 +49,10 @@ const integration = databaseUrl ? describe : describe.skip;
 
 const messagingRunnerId = RunnerIdSchema.parse("rnr_00000000-0000-4000-8000-0000000000a1");
 const canonicalOrigin = "https://pipeline-host.invalid";
+/** The agents Runner advertises the one engine the fixture's account uses. */
+const nativeRunnerIdentity = {
+  modules: { agents: { harnessDrivers: [{ driverKind: "native" }] } },
+} as unknown as RunnerIdentity;
 const threadUrl = (threadId: ThreadId) => `${canonicalOrigin}/threads/${threadId}`;
 
 integration("messaging pipeline", () => {
@@ -863,7 +867,7 @@ integration("messaging pipeline", () => {
         .executeTakeFirstOrThrow();
       expect(thread).toMatchObject({
         createdBy: ownerUserId,
-        capabilityProfileId: "workspace",
+        inheritsMain: false,
         parentThreadId: null,
       });
       const direct = {
@@ -1096,7 +1100,7 @@ integration("messaging pipeline", () => {
             "channelConversationContexts.conversationId",
           )
           .innerJoin("threads", "threads.id", "channelConversationContexts.activeThreadId")
-          .select(["threads.id", "threads.capabilityProfileId"])
+          .select(["threads.id", "threads.inheritsMain"])
           .where(
             "channelConversations.externalConversationId",
             "=",
@@ -1110,7 +1114,7 @@ integration("messaging pipeline", () => {
     // 1. Anyone may write under this route, and runs as its creator without
     //    being them: below Main even though it lands in their Main.
     const stranger = await deliver(direct("Ev-HOME-1", "1786320000.000201"));
-    expect(stranger.capabilityProfileId).toBe("workspace");
+    expect(stranger.inheritsMain).toBe(false);
 
     // 2. The same direct message from the owner's own linked identity is the
     //    owner speaking for themself, so it is their Home agent — in a fresh
@@ -1122,7 +1126,7 @@ integration("messaging pipeline", () => {
       .where("externalUserId", "=", "U-EXTERNAL")
       .execute();
     const owner = await deliver(direct("Ev-HOME-2", "1786320000.000202"));
-    expect(owner.capabilityProfileId).toBe("main");
+    expect(owner.inheritsMain).toBe(true);
     expect(owner.id).not.toBe(stranger.id);
 
     // 3. A channel is shared with whoever else is in it, so even the owner's
@@ -1132,7 +1136,7 @@ integration("messaging pipeline", () => {
       eventId: "Ev-HOME-3",
       providerMessageId: "1786320000.000203",
     });
-    expect(shared.capabilityProfileId).toBe("workspace");
+    expect(shared.inheritsMain).toBe(false);
 
     await service.close();
     hub.close();
@@ -1292,9 +1296,11 @@ integration("messaging pipeline", () => {
       onWorkspaceEvent: () => undefined,
       relay: hub,
       runners: {
-        canRunHarness: (candidate: string) => candidate === onlineEnvironmentId,
-        isAvailable: (candidate: string) => computer.online && candidate === onlineEnvironmentId,
-      } as never,
+        canRunHarness: (candidate) => candidate === onlineEnvironmentId,
+        isAvailable: (candidate) => computer.online && candidate === onlineEnvironmentId,
+        identityForEnvironment: (candidate) =>
+          candidate === onlineEnvironmentId ? nativeRunnerIdentity : undefined,
+      },
       store,
     });
     const created = await service.createConnection({

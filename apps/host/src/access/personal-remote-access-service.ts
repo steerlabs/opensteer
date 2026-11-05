@@ -1,3 +1,5 @@
+import { PersonalDesktopUpdate } from "./personal-desktop-update.js";
+import { PersonalDesktopUpdateStore } from "@opensteer/database";
 import {
   generateOAuthBrokerEphemeralKeyPair,
   openOAuthBrokerPayload,
@@ -105,6 +107,7 @@ export interface PersonalRemoteSessionAuthenticator {
  * loopback-only; this service signs and fences optional HTTPS access routes.
  */
 export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthenticator {
+  readonly desktopUpdates: PersonalDesktopUpdate;
   readonly administration: PersonalRemoteAdministration;
   readonly #authority: PersonalHostAccessAuthority;
   readonly #database: Kysely<DatabaseSchema>;
@@ -132,6 +135,9 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     readonly fetch?: typeof globalThis.fetch;
     readonly now?: () => Date;
   }) {
+    this.desktopUpdates = new PersonalDesktopUpdate(
+      new PersonalDesktopUpdateStore(options.database),
+    );
     this.administration = new PersonalRemoteAdministration({
       authorityEnvelope: signHostDiscovery(options.keys, options.authority),
       database: options.database,

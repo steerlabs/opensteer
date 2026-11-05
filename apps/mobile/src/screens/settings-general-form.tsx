@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { View } from "react-native";
 import { DeploymentMarkView } from "../threads/deployment-mark.js";
+import { deploymentUpdateRows } from "./deployment-update.js";
 import { AppText, RowGroup, SwitchRow } from "../ui/primitives.js";
 import { actionRow, ErrorText, LinkRow, Section, styles } from "./settings-form-primitives.js";
 import type { SettingsFormProps } from "./settings-form.types.js";
@@ -10,6 +11,7 @@ export function GeneralSettingsForm(
     SettingsFormProps,
     | "page"
     | "deployment"
+    | "desktopUpdate"
     | "notifications"
     | "notificationError"
     | "agents"
@@ -23,6 +25,7 @@ export function GeneralSettingsForm(
 ): ReactNode {
   const notifications = props.notifications;
   const preferences = notifications?.preferences ?? null;
+  const update = props.desktopUpdate;
   return (
     <>
       {
@@ -46,6 +49,11 @@ export function GeneralSettingsForm(
           </RowGroup>
         </Section>
       }
+      {update === null ? null : (
+        <Section label={update.view.title}>
+          <RowGroup>{deploymentUpdateRows(update)}</RowGroup>
+        </Section>
+      )}
       {notifications === null ? null : (
         <Section footer={notifications.footer} label="Notifications">
           <RowGroup>

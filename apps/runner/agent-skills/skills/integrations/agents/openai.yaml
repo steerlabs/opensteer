@@ -5,5 +5,5 @@ interface:
 dependencies:
   tools:
     - type: "mcp"
-      value: "opensteer_integrations"
+      value: "opensteer"
       description: "Opensteer integration discovery, requests, and granted tools"

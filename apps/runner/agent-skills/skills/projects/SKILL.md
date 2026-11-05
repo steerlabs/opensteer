@@ -23,6 +23,10 @@ delegate in the current Workspace instead. Reuse a suitable existing Project.
    establish and verify its Trigger with `opensteer:triggers`. Report the useful result and
    remaining blockers; a created Project or queued task alone is not completion.
 
+Use `project_write` for full-access administration within reach: change icon/color/notifications,
+delete/recover or retry storage. Main cannot be deleted. Member invitations and new resource
+grants need the person; do not attempt them through another tool.
+
 Project names may change; their slugs and folders do not. Files grant no resource access:
 use the ordinary access Requests for missing connections or browser profiles.
 

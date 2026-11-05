@@ -285,7 +285,6 @@ const callable: AppCallable = {
 const context: ComputerUseContext = {
   aud: "opensteer-integration-tools",
   bindingGeneration: 1,
-  capabilityProfileId: "main",
   environmentId: createId("environment"),
   exp: 2_000_000_000,
   iat: 1_900_000_000,

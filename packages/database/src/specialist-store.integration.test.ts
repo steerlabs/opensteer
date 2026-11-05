@@ -1,13 +1,109 @@
+import { ExactModelWantSchema } from "@opensteer/core";
 import { createIntegrationId } from "@opensteer/integration-core";
 import { sql } from "kysely";
 import { randomUUID } from "node:crypto";
 import { expect, vi } from "vitest";
-import { createId, SpecialistManifestSchema } from "@opensteer/core";
+import { createId, SpecialistManifestSchema, type HarnessInstanceId } from "@opensteer/core";
+import { AgentConnectionStore } from "./agent-connection-store.js";
 import { IntegrationPlatformStore } from "./integration-platform-store.js";
 import { assertLineageCompatibleReuse, resolveResourceAccess } from "./resource-access.js";
-import { describeStore } from "./store.integration.test-support.js";
+import { describeStore, testReadyHarnessCatalog } from "./store.integration.test-support.js";
 
 describeStore("specialist registration", (test) => {
+  test("repins every owner's bindings and refuses a version that drops the specialist", async ({
+    storeFixture: fixture,
+  }) => {
+    const owner = await fixture.createRunFixture("repin-owners");
+    const other = await fixture.store.createUser("Other specialist owner");
+    const workspace = await fixture.createProjectWorkspace(owner.userId, "repin");
+    await fixture.database
+      .insertInto("workspaceMemberships")
+      .values({
+        workspaceId: workspace.id,
+        userId: other,
+        id: createId("workspaceMembership"),
+        role: "collaborator",
+        generation: 1,
+        invitedBy: owner.userId,
+        revokedAt: null,
+        revokedBy: null,
+        state: "active",
+        joinedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .execute();
+    const platform = new IntegrationPlatformStore(fixture.database),
+      pluginId = randomUUID();
+    const manifest = SpecialistManifestSchema.parse({
+      version: 1,
+      models: [{ engine: "codex", model: "fast" }],
+      access: [],
+    });
+    await platform.plugins.install({
+      id: pluginId,
+      name: "repin",
+      actorUserId: owner.userId,
+      source: {},
+      digest: "old",
+      manifest: { name: "repin" },
+      specialistManifest: manifest,
+    });
+    for (const actorUserId of [owner.userId, other])
+      await platform.specialists.add({ workspaceId: workspace.id, pluginId, actorUserId });
+    await platform.plugins.setActivation({
+      pluginId,
+      workspaceId: workspace.id,
+      actorUserId: owner.userId,
+      active: false,
+    });
+    await platform.specialists.add({
+      pluginId,
+      workspaceId: workspace.id,
+      actorUserId: owner.userId,
+      activate: false,
+    });
+    expect((await platform.plugins.list()).find((p) => p.id === pluginId)?.activations).toEqual([]);
+    const bindings = [{ requirement: 0, resourceId: "chosen", level: "read" as const }];
+    await fixture.database
+      .updateTable("specialists")
+      .set({ bindings: sql`${JSON.stringify(bindings)}::jsonb` })
+      .where("pluginId", "=", pluginId)
+      .execute();
+    // As an install does: the new version, then its registrations moved to it.
+    const update = (digest: string, specialistManifest: typeof manifest | null) =>
+      fixture.database.transaction().execute(async (tx) => {
+        await platform.plugins.update(
+          { pluginId, digest, manifest: { name: "repin" }, specialistManifest },
+          tx,
+        );
+        await platform.plugins.repinSpecialists(tx, pluginId);
+      });
+    await update("same-access", {
+      ...manifest,
+      models: [ExactModelWantSchema.parse({ engine: "claude", model: "haiku" })],
+    });
+    const rows = () =>
+      fixture.database
+        .selectFrom("specialists")
+        .selectAll()
+        .where("pluginId", "=", pluginId)
+        .execute();
+    for (const row of await rows()) expect(row.bindings).toEqual(bindings);
+    expect(new Set((await rows()).map((r) => r.pluginVersionId)).size).toBe(1);
+    await update("changed-access", {
+      ...manifest,
+      access: [{ type: "browser-profile", level: "read", reason: "Research" }],
+    });
+    expect(
+      (await rows()).every((r) => r.status === "pending" && r.bindings.length === 0 && !r.autoBind),
+    ).toBe(true);
+    const pinned = (await rows()).map((r) => r.pluginVersionId);
+    await expect(update("not-specialist", null)).rejects.toThrow(
+      "Remove this plugin's specialist registrations before installing it without one",
+    );
+    expect((await rows()).map((r) => r.pluginVersionId)).toEqual(pinned);
+  });
+
   test("pins versions, binds consent, narrows access and removes registration", async ({
     storeFixture: fixture,
   }) => {
@@ -17,7 +113,7 @@ describeStore("specialist registration", (test) => {
     const pluginId = randomUUID();
     const manifest = SpecialistManifestSchema.parse({
       version: 1,
-      models: [{ engine: "claude", model: "haiku" }],
+      models: [ExactModelWantSchema.parse({ engine: "claude", model: "haiku" })],
       access: [{ type: "browser-profile", level: "read", reason: "Research invoices" }],
     });
     await platform.plugins.install({
@@ -83,6 +179,87 @@ describeStore("specialist registration", (test) => {
     });
     const ready = (await platform.specialists.list(workspace.id, run.userId))[0]!;
     expect(ready.status).toBe("ready");
+    const connections = new AgentConnectionStore(fixture.database);
+    const connection = await connections.create({
+      userId: run.userId,
+      label: "Specialist agent",
+      clientName: "test",
+      accessMode: "full-access",
+      reach: { kind: "workspace", workspaceId: workspace.id },
+      resource: "http://localhost/internal/v1/mcp",
+      expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+    });
+    await connections.activate(connection.id, "a".repeat(64));
+    const scopedMain = await connections.create({
+      userId: run.userId,
+      label: "Main scoped",
+      clientName: "test",
+      accessMode: "full-access",
+      reach: { kind: "workspace", workspaceId: run.workspace.id },
+      resource: "http://localhost/internal/v1/mcp",
+      expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+    });
+    await connections.activate(scopedMain.id, "b".repeat(64));
+    expect(
+      await resolveResourceAccess(fixture.database, {
+        ownerUserId: run.userId,
+        workspaceId: run.workspace.id,
+        connectionId: scopedMain.id,
+      }),
+    ).toMatchObject({ inheritsMain: false, mainAccess: "withheld", access: null });
+    await connections.revoke(run.userId, scopedMain.id);
+    await expect(
+      resolveResourceAccess(fixture.database, {
+        ownerUserId: run.userId,
+        workspaceId: run.workspace.id,
+        connectionId: scopedMain.id,
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    const independent = await fixture.store.createThread({
+      authority: {
+        kind: "connection",
+        connectionId: connection.id,
+        userId: run.userId,
+        accessMode: "full-access",
+        reach: { kind: "workspace", workspaceId: workspace.id },
+      },
+      createdBy: run.userId,
+      environmentId: run.environmentId,
+      harnessInstanceId: run.harnessInstance.id,
+      modelSelection: run.thread.modelSelection,
+      workspaceId: workspace.id,
+      idempotencyKey: "independent-specialist",
+      title: "Independent specialist",
+      specialistId: ready.id,
+    });
+    expect(independent.thread).toMatchObject({
+      parentThreadId: null,
+      lineageRootThreadId: independent.thread.id,
+      inheritsMain: false,
+      specialistId: ready.id,
+    });
+    const rootChild = await fixture.store.createThread({
+      createdBy: run.userId,
+      environmentId: run.environmentId,
+      harnessInstanceId: run.harnessInstance.id,
+      modelSelection: run.thread.modelSelection,
+      workspaceId: workspace.id,
+      parentThreadId: independent.thread.id,
+      idempotencyKey: "independent-specialist-child",
+      title: "Child",
+    });
+    expect(rootChild.thread).toMatchObject({
+      specialistId: ready.id,
+      inheritsMain: false,
+      lineageRootThreadId: independent.thread.id,
+    });
+    await expect(
+      fixture.database
+        .updateTable("threads")
+        .set({ specialistId: null })
+        .where("id", "=", rootChild.thread.id)
+        .execute(),
+    ).rejects.toThrow(/specialist.*immutable/u);
     const beforeOff = await fixture.database
       .selectFrom("specialists")
       .selectAll()
@@ -120,7 +297,13 @@ describeStore("specialist registration", (test) => {
       ready.id,
     );
 
-    const delegate = (threadId?: import("@opensteer/core").ThreadId) =>
+    const delegate = (
+      threadId?: import("@opensteer/core").ThreadId,
+      placed: {
+        harnessInstanceId: HarnessInstanceId;
+        expectedHarnessRevision: number;
+      } | null = null,
+    ) =>
       fixture.store.delegateThread({
         accessMode: run.thread.accessMode,
         createdBy: run.userId,
@@ -134,16 +317,151 @@ describeStore("specialist registration", (test) => {
         title: "Invoices",
         workspaceId: workspace.id,
         ...(threadId ? { threadId } : {}),
+        ...placed,
       });
+    const account = await fixture.store.createHarnessInstance({
+      config: {},
+      driverKind: run.harnessInstance.driverKind,
+      environmentId: run.environmentId,
+      name: "Endpoint",
+      stateKind: "isolated",
+    });
+    const placedAt = account.runtimeRevision;
+    const moved = await fixture.store.updateHarnessInstance({
+      id: account.id,
+      config: { baseUrl: "https://b.example/v1" },
+    });
+    await expect(
+      delegate(undefined, { harnessInstanceId: moved.id, expectedHarnessRevision: placedAt }),
+    ).rejects.toMatchObject({ code: "conflict", reason: "harness-revision-changed" });
+    // A connected agent's task is created, then sent to, in separate transactions.
+    await expect(
+      fixture.store.createThread({
+        createdBy: run.userId,
+        environmentId: run.environmentId,
+        expectedHarnessRevision: placedAt,
+        harnessInstanceId: moved.id,
+        idempotencyKey: "stale-specialist-create",
+        modelSelection: run.thread.modelSelection,
+        title: "Invoices",
+        workspaceId: workspace.id,
+      }),
+    ).rejects.toMatchObject({ reason: "harness-revision-changed" });
+    const created = await fixture.store.createThread({
+      createdBy: run.userId,
+      environmentId: run.environmentId,
+      expectedHarnessRevision: moved.runtimeRevision,
+      harnessInstanceId: moved.id,
+      idempotencyKey: "connection-specialist-create",
+      modelSelection: run.thread.modelSelection,
+      title: "Invoices",
+      workspaceId: workspace.id,
+    });
+    await expect(
+      fixture.store.enqueueThreadInput({
+        content: [{ type: "text", text: "Read invoices" }],
+        expectedHarnessRevision: placedAt,
+        idempotencyKey: "stale-specialist-input",
+        policy: "queue",
+        requestedBy: run.userId,
+        source: { kind: "human" },
+        threadId: created.thread.id,
+      }),
+    ).rejects.toMatchObject({ reason: "harness-revision-changed" });
+    const setPaused = (inputQueuePaused: boolean) =>
+      fixture.database
+        .updateTable("threads")
+        .set({ inputQueuePaused, inputQueuePausedBy: inputQueuePaused ? run.userId : null })
+        .where("id", "=", created.thread.id)
+        .execute();
+    await setPaused(true);
+    await expect(
+      fixture.store.enqueueThreadInput({
+        content: [{ type: "text", text: "Read invoices" }],
+        expectedHarnessRevision: moved.runtimeRevision,
+        idempotencyKey: "paused-specialist-input",
+        policy: "queue",
+        requestedBy: run.userId,
+        source: { kind: "human" },
+        threadId: created.thread.id,
+      }),
+    ).rejects.toMatchObject({ reason: "thread-not-accepting-work" });
+    await setPaused(false);
+    expect(
+      await fixture.database
+        .selectFrom("threadInputs")
+        .select("messageId")
+        .where("threadId", "=", created.thread.id)
+        .execute(),
+    ).toEqual([]);
+    await fixture.store.recordHarnessCatalogs({
+      environmentId: run.environmentId,
+      expectedRevisions: new Map([[moved.id, moved.runtimeRevision]]),
+      catalogs: [testReadyHarnessCatalog(moved.id)],
+    });
+    const fenced = await delegate(undefined, {
+      harnessInstanceId: moved.id,
+      expectedHarnessRevision: moved.runtimeRevision,
+    });
+    const moveAgain = () =>
+      fixture.store.updateHarnessInstance({
+        id: moved.id,
+        config: { baseUrl: "https://c.example/v1" },
+      });
+    await expect(moveAgain()).rejects.toMatchObject({ code: "conflict", retryable: true });
+    await fixture.database
+      .updateTable("runs")
+      .set({ status: "failed", completedAt: new Date() })
+      .where("id", "=", fenced.run.id)
+      .execute();
+    expect((await moveAgain()).runtimeRevision).toBe(moved.runtimeRevision + 1);
     const child = await delegate();
     expect(child.thread).toMatchObject({
       specialistId: ready.id,
-      capabilityProfileId: "specialist",
+      inheritsMain: true,
       lineageRootThreadId: run.thread.lineageRootThreadId,
     });
     await expect(
       assertLineageCompatibleReuse(fixture.database, child.thread.id, run.thread.id),
     ).rejects.toMatchObject({ code: "forbidden" });
+    const descendant = await fixture.store.createThread({
+      createdBy: run.userId,
+      environmentId: run.environmentId,
+      harnessInstanceId: run.harnessInstance.id,
+      modelSelection: run.thread.modelSelection,
+      workspaceId: workspace.id,
+      parentThreadId: child.thread.id,
+      idempotencyKey: "specialist-descendant",
+      title: "Invoice subtask",
+    });
+    expect(descendant.thread).toMatchObject({ specialistId: ready.id, inheritsMain: true });
+    expect(
+      (
+        await resolveResourceAccess(fixture.database, {
+          workspaceId: workspace.id,
+          ownerUserId: run.userId,
+          threadId: descendant.thread.id,
+          explicitAccess: "read-write",
+          resource,
+        })
+      ).access,
+    ).toBe("read");
+    const boundChild = await fixture.database
+      .selectFrom("threads")
+      .selectAll()
+      .where("id", "=", child.thread.id)
+      .executeTakeFirstOrThrow();
+    await expect(
+      fixture.database
+        .insertInto("threads")
+        .values({
+          ...boundChild,
+          id: createId("thread"),
+          parentThreadId: child.thread.id,
+          specialistId: null,
+        })
+        .execute(),
+    ).rejects.toThrow(/cannot escape its specialist binding/u);
     const sourceRunId = child.run.id;
     await fixture.database
       .updateTable("runs")
@@ -194,7 +512,7 @@ describeStore("specialist registration", (test) => {
         ...root,
         id: channelId,
         lineageRootThreadId: channelId,
-        capabilityProfileId: "workspace",
+        inheritsMain: false,
       })
       .execute();
     const specialistThreadId = createId("thread");
@@ -211,6 +529,7 @@ describeStore("specialist registration", (test) => {
         workspaceId: run.workspace.id,
         lineageRootThreadId: channelId,
         parentThreadId: channelId,
+        inheritsMain: false,
         specialistId: mainRegistration.id,
       })
       .execute();
@@ -243,7 +562,10 @@ describeStore("specialist registration", (test) => {
       pluginId,
       digest: "b".repeat(64),
       manifest: { name: "researcher" },
-      specialistManifest: { ...manifest, models: [{ engine: "codex", model: "fast" }] },
+      specialistManifest: {
+        ...manifest,
+        models: [ExactModelWantSchema.parse({ engine: "codex", model: "fast" })],
+      },
     });
     expect((await platform.specialists.list(workspace.id, run.userId))[0]?.pluginVersionId).toBe(
       version.id,
@@ -251,7 +573,9 @@ describeStore("specialist registration", (test) => {
     const updated = await add();
     expect(updated.id).toBe(pending.id);
     expect(updated.pluginVersionId).not.toBe(version.id);
-    expect(updated.models[0]?.engine).toBe("codex");
+    expect(
+      updated.models[0] && "engine" in updated.models[0] ? updated.models[0].engine : undefined,
+    ).toBe("codex");
     await fixture.database
       .updateTable("browserProfileGrants")
       .set({ revokedAt: new Date() })
@@ -306,7 +630,7 @@ describeStore("specialist registration", (test) => {
       manifest: { name: "retire" },
       specialistManifest: SpecialistManifestSchema.parse({
         version: 1,
-        models: [{ engine: "claude", model: "haiku" }],
+        models: [ExactModelWantSchema.parse({ engine: "claude", model: "haiku" })],
       }),
     });
     const registration = await platform.specialists.add({
@@ -372,7 +696,7 @@ describeStore("specialist registration", (test) => {
       manifest: { name: "purge" },
       specialistManifest: SpecialistManifestSchema.parse({
         version: 1,
-        models: [{ engine: "claude", model: "haiku" }],
+        models: [ExactModelWantSchema.parse({ engine: "claude", model: "haiku" })],
       }),
     });
     for (const workspace of [a, b]) {
@@ -421,6 +745,65 @@ describeStore("specialist registration", (test) => {
     expect(await platform.specialists.list(b.id, owner.userId)).toEqual([]);
   });
 
+  test("an agent-registered specialist waits for its owner to choose even a sole candidate", async ({
+    storeFixture: fixture,
+  }) => {
+    const owner = await fixture.createRunFixture("specialist-agent-registered");
+    const workspace = await fixture.createProjectWorkspace(owner.userId, "agent-registered");
+    const platform = new IntegrationPlatformStore(fixture.database);
+    const pluginId = randomUUID();
+    await platform.plugins.install({
+      id: pluginId,
+      name: "agent-installed",
+      actorUserId: owner.userId,
+      source: {},
+      digest: "e".repeat(64),
+      manifest: { name: "agent-installed" },
+      specialistManifest: SpecialistManifestSchema.parse({
+        version: 1,
+        models: [ExactModelWantSchema.parse({ engine: "claude", model: "haiku" })],
+        access: [{ type: "browser-profile", level: "read", reason: "Browse" }],
+      }),
+    });
+    const profile = await fixture.store.createBrowserProfile({
+      ownerId: owner.userId,
+      name: "Only",
+      idempotencyKey: "only",
+    });
+    await fixture.store.createBrowserProfileGrant({
+      workspaceId: workspace.id,
+      createdBy: owner.userId,
+      profileId: profile.id,
+      access: "read",
+    });
+    const registered = await platform.specialists.add({
+      workspaceId: workspace.id,
+      pluginId,
+      actorUserId: owner.userId,
+      autoBind: false,
+    });
+    expect(registered).toMatchObject({
+      status: "pending",
+      access: [{ state: "choose", binding: null }],
+    });
+    // Later reads, including the check before running it, never bind for the owner.
+    expect((await platform.specialists.list(workspace.id, owner.userId))[0]).toMatchObject({
+      status: "pending",
+      access: [{ state: "choose", binding: null }],
+    });
+    await expect(
+      platform.specialists.assertRunnable(registered.id, workspace.id, owner.userId),
+    ).rejects.toThrow();
+    const ready = await platform.specialists.bind({
+      workspaceId: workspace.id,
+      specialistId: registered.id,
+      actorUserId: owner.userId,
+      requirement: 0,
+      resourceId: profile.id,
+    });
+    expect(ready).toMatchObject({ status: "ready", access: [{ state: "bound" }] });
+  });
+
   test("ambiguous consent requires an owner choice and list revalidates revocations", async ({
     storeFixture: fixture,
   }) => {
@@ -437,7 +820,7 @@ describeStore("specialist registration", (test) => {
       manifest: { name: "chooser" },
       specialistManifest: SpecialistManifestSchema.parse({
         version: 1,
-        models: [{ engine: "claude", model: "haiku" }],
+        models: [ExactModelWantSchema.parse({ engine: "claude", model: "haiku" })],
         access: [{ type: "browser-profile", level: "read-write", reason: "Browse" }],
       }),
     });
@@ -627,7 +1010,7 @@ describeStore("specialist registration", (test) => {
       manifest: { name: "owner-only" },
       specialistManifest: SpecialistManifestSchema.parse({
         version: 1,
-        models: [{ engine: "claude", model: "haiku" }],
+        models: [ExactModelWantSchema.parse({ engine: "claude", model: "haiku" })],
         access: [
           { type: "browser-profile", level: "read", reason: "Read" },
           { type: "integration", service: "gmail", level: "read", reason: "Read mail" },

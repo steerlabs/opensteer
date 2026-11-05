@@ -1,3 +1,4 @@
+import type { AdministrationCommandIdentity } from "@opensteer/database";
 import { safeMessage } from "@opensteer/shared/safeMessage";
 import { sha256Base64Url } from "@opensteer/core/crypto";
 import {
@@ -28,7 +29,7 @@ import {
   WorkspaceIdSchema,
   type AgentEvent,
   type EnvironmentId,
-  type HarnessInstanceId,
+  type HarnessId,
   type RunnerId,
   type UserId,
 } from "@opensteer/core";
@@ -44,6 +45,7 @@ import type { MessagingRelayHub } from "./messaging-relay-hub.js";
 import type { CredentialService } from "../identity/credential-service.js";
 
 interface ChannelServiceOptions {
+  readonly onChanged?: () => void;
   /** Where a person signs in to redeem a link code. */
   readonly canonicalOrigin: string;
   readonly credentials: CredentialService;
@@ -51,19 +53,24 @@ interface ChannelServiceOptions {
   readonly onExecutionQueued: (environmentId: EnvironmentId) => void;
   readonly onWorkspaceEvent: (event: AgentEvent) => void;
   readonly relay: MessagingRelayHub;
-  readonly runners: RunnerRegistry;
+  readonly runners: ChannelRunners;
   readonly store: OpensteerStore;
   readonly channels: ChannelStore;
 }
+type ChannelRunners = Pick<
+  RunnerRegistry,
+  "canRunHarness" | "identityForEnvironment" | "isAvailable"
+>;
 
 export class ChannelService {
+  readonly #onChanged: () => void;
   readonly #canonicalOrigin: string;
   readonly #channels: ChannelStore;
   readonly #credentials: CredentialService;
   readonly #onExecutionQueued: (environmentId: EnvironmentId) => void;
   readonly #onWorkspaceEvent: (event: AgentEvent) => void;
   readonly #relay: MessagingRelayHub;
-  readonly #runners: RunnerRegistry;
+  readonly #runners: ChannelRunners;
   readonly #store: OpensteerStore;
   #closed = false;
   #draining: Promise<void> | null = null;
@@ -72,6 +79,7 @@ export class ChannelService {
   #timer: ReturnType<typeof setInterval> | null = null;
 
   constructor(options: ChannelServiceOptions) {
+    this.#onChanged = options.onChanged ?? (() => {});
     this.#canonicalOrigin = options.canonicalOrigin;
     this.#channels = options.channels;
     this.#credentials = options.credentials;
@@ -442,11 +450,17 @@ export class ChannelService {
     return inspection;
   }
 
-  revokeBinding(bindingId: string, ownerUserId: UserId): Promise<void> {
-    return this.#channels.revokeBinding({
+  async revokeBinding(
+    bindingId: string,
+    ownerUserId: UserId,
+    administration?: AdministrationCommandIdentity | undefined,
+  ): Promise<void> {
+    const changed = await this.#channels.revokeBinding({
+      administration,
       bindingId: ChannelBindingIdSchema.parse(bindingId),
       ownerUserId,
     });
+    if (changed) this.#onChanged();
   }
 
   updateBinding(input: {
@@ -496,13 +510,16 @@ export class ChannelService {
     connectionId: string,
     ownerUserId: UserId,
     status: "connected" | "paused" | "revoked",
+    administration?: AdministrationCommandIdentity | undefined,
   ): Promise<void> {
     await this.#channels.setConnectionStatus(
       IntegrationConnectionIdSchema.parse(connectionId),
       ownerUserId,
       status,
+      administration,
     );
     await this.syncRuntimes();
+    this.#onChanged();
   }
 
   /**
@@ -702,10 +719,9 @@ export class ChannelService {
   }
 
   async #drainIngress(): Promise<void> {
-    // The work locations on offer are a property of the Deployment, not of one
-    // message, so they are read once for the whole drain rather than once per
-    // claimed event.
-    const placementCandidates = await this.#placementCandidates();
+    // What is connected is a property of the Deployment, not of one message,
+    // so it is read once for the whole drain rather than once per claimed event.
+    const availableEngines = await this.#availableEngines();
     for (let processed = 0; processed < 100 && !this.#closed; processed += 1) {
       const claim = await this.#channels.claimIngress(`host:${process.pid}`);
       if (!claim) return;
@@ -734,7 +750,7 @@ export class ChannelService {
           claimToken: claim.claimToken,
           ingressId: claim.id,
           notices: this.#notices(claim.event.provider),
-          placementCandidates,
+          availableEngines,
         });
         if (result.kind === "adopted") {
           this.#store.announceRevokedGrants(result.revokedGrants);
@@ -793,51 +809,26 @@ export class ChannelService {
   }
 
   /**
-   * A channel message arrives with nobody to choose where it runs, so it lands
-   * on a connected work location that can run it.
-   *
-   * Every location that could take the message is returned, in preference
-   * order, because who the message belongs to is not known yet: the channel
-   * identity is resolved to a user inside adoptIngress, and only there can a
-   * Runner belonging to somebody else be ruled out. The Deployment's own
-   * locations come first; a person's desktop-added Mac (`local`) takes the
-   * message when it is the one location available to them.
+   * The connected work locations and the engines each can run now, with the
+   * Deployment's own locations first. These are runtime facts only: whose
+   * account a message runs on is decided inside adoptIngress, once the
+   * channel identity has resolved to a person.
    */
-  async #placementCandidates(): Promise<
-    readonly {
-      readonly environmentId: EnvironmentId;
-      readonly harnessInstanceId: HarnessInstanceId;
-    }[]
+  async #availableEngines(): Promise<
+    readonly { readonly environmentId: EnvironmentId; readonly driverKinds: readonly HarnessId[] }[]
   > {
-    const [environments, harnesses] = await Promise.all([
-      this.#store.listEnvironments(),
-      this.#store.listHarnessInstances(),
-    ]);
-    const candidates: {
-      readonly environmentId: EnvironmentId;
-      readonly harnessInstanceId: HarnessInstanceId;
-    }[] = [];
-    const byPreference = [...environments].sort(
-      (left, right) => Number(left.kind === "local") - Number(right.kind === "local"),
-    );
-    for (const environment of byPreference) {
-      if (!this.#runners.isAvailable(environment.id)) continue;
-      // Nobody chose an AI engine for a channel message, so it gets the one
-      // this exact work location means when nobody names one. No default means
-      // no implicit account choice; another location's profile is never a
-      // credential this Runner may borrow.
-      const harness = harnesses.find(
-        (candidate) =>
-          candidate.environmentId === environment.id &&
-          candidate.enabled &&
-          candidate.isDefault &&
-          this.#runners.canRunHarness(environment.id, candidate.driverKind),
-      );
-      if (harness) {
-        candidates.push({ environmentId: environment.id, harnessInstanceId: harness.id });
-      }
-    }
-    return candidates;
+    const environments = await this.#store.listEnvironments();
+    return [...environments]
+      .sort((left, right) => Number(left.kind === "local") - Number(right.kind === "local"))
+      .filter((environment) => this.#runners.isAvailable(environment.id))
+      .map((environment) => ({
+        environmentId: environment.id,
+        driverKinds: (
+          this.#runners.identityForEnvironment(environment.id)?.modules.agents?.harnessDrivers ?? []
+        )
+          .map((driver) => driver.driverKind)
+          .filter((driverKind) => this.#runners.canRunHarness(environment.id, driverKind)),
+      }));
   }
 }
 

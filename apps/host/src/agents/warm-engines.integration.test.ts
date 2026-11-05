@@ -12,7 +12,7 @@ import {
 } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
 import { OpencodeHarnessDriver } from "@opensteer/harness-opencode";
-import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { PluginSettingsStore } from "@opensteer/database";
 import { testRpcData } from "../server/test-host-api-request.js";
 import {
@@ -343,14 +343,35 @@ integration("Warm engines", () => {
         "--restate-usage",
         ...arguments_,
       ]);
+      const stored = () =>
+        active.host.store.database
+          .selectFrom("threads")
+          .select(["title", "icon", "iconSource"])
+          .where("id", "=", threadId)
+          .executeTakeFirstOrThrow();
+      // Naming runs beside each Run, not in it: it settles when its symbol is
+      // stored or, failing, when the Host reports the job found no name.
+      const warn = vi.spyOn(console, "warn");
+      onTestFinished(() => warn.mockRestore());
+      const unnamed = () =>
+        warn.mock.calls.filter(
+          ([message, details]) =>
+            message === "Thread naming found no name" &&
+            (details as { threadId?: string } | undefined)?.threadId === threadId,
+        ).length;
+      const namingSettled = (turns: number) =>
+        waitFor(async () => {
+          const named = (await captured(captureFile)).filter((line) => line.fakeTitleTurn);
+          return (
+            named.length >= turns &&
+            ((await stored()).iconSource === "generated" || unnamed() >= turns)
+          );
+        }, `naming turn ${turns} to settle`);
       const first = await run(active, threadId, "First question");
+      await namingSettled(1);
       const second = await run(active, threadId, "Second question");
-      const stored = await active.host.store.database
-        .selectFrom("threads")
-        .select(["title", "icon", "iconSource"])
-        .where("id", "=", threadId)
-        .executeTakeFirstOrThrow();
-      expect(stored).toEqual({ title: "Warm journey", icon, iconSource });
+      await namingSettled(calls);
+      expect(await stored()).toEqual({ title: "Warm journey", icon, iconSource });
       const capture = await captured(captureFile);
       const naming = capture.flatMap((line) => (line.fakeTitleTurn ? [line.fakeTitleTurn] : []));
       expect(naming).toHaveLength(calls);
@@ -389,7 +410,7 @@ integration("Warm engines", () => {
       journeys.push({
         engines: 1,
         name: `naming: ${name}`,
-        notes: { naming, stored, engineStarts: starts, usage },
+        notes: { naming, stored: await stored(), engineStarts: starts, usage },
         runMs: [first.ms, second.ms],
       });
     },

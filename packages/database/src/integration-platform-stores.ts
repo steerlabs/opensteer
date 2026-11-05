@@ -1,3 +1,11 @@
+import { integrationAccountLabel } from "@opensteer/integration-core";
+import {
+  administrationCommand,
+  lockAdministrationCommand,
+  type AdministrationCommandIdentity,
+} from "./administration-command.js";
+import { replaceSecrets, type LocalMcpSecretsUpdate } from "./local-mcp-server-store.js";
+import { PluginStore } from "./plugin-store.js";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { resolveResourceAccess } from "./resource-access.js";
 import { readRequestSettlementActor, requestSettlementActor } from "./request-settlement.js";
@@ -17,6 +25,7 @@ import { revokeChannelConnectionsInTransaction } from "./channel-deliveries.js";
 import { jsonValue } from "./store-primitives.js";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import {
+  localMcpLaunchDigest,
   authorizationDigest,
   integrationDefinitionDigest,
 } from "@opensteer/integration-core/digest";
@@ -37,6 +46,7 @@ import {
   IntegrationDefinitionSummarySchema,
   IntegrationInstallationSchema,
   IntegrationServerSchema,
+  IntegrationServerTransportSchema,
   IntegrationToolSchema,
   IntegrationToolMaterialSchema,
   type IntegrationToolMaterial,
@@ -174,23 +184,24 @@ export interface IntegrationToolSchemas {
 }
 
 /**
- * Who is asking for integration authority: an agent Thread acting for its
- * owner in one Workspace. The Thread matters because Main inheritance belongs
- * to a lineage, not to the Workspace it runs in (see `mainAccess`).
+ * Integration authority always names a Thread or approved connection. Main
+ * inheritance belongs to that identity; a Workspace alone grants none.
  */
-export interface IntegrationRequester {
+export type IntegrationRequester = {
   readonly ownerUserId: UserId;
-  readonly threadId: ThreadId;
   readonly workspaceId: WorkspaceId;
-}
+} & (
+  | { readonly threadId: ThreadId; readonly connectionId?: never }
+  | { readonly connectionId: string; readonly threadId?: undefined }
+);
 
 /** Scope readiness to the account and access a resolved Request actually granted. */
-export interface IntegrationDiscoveryRequester extends IntegrationRequester {
+export type IntegrationDiscoveryRequester = IntegrationRequester & {
   readonly target?: {
     readonly access: IntegrationAccess;
     readonly connectionId: IntegrationConnectionId | null;
   };
-}
+};
 
 /**
  * How an asking Thread stands to its owner's Main: `inherited` reaches every
@@ -282,6 +293,7 @@ interface McpOAuthConnectionRecord extends McpOAuthServerContext {
 }
 
 interface StoredIntegrationConnectionAuthority extends IntegrationConnectionAuthority {
+  readonly accountIdentifier: string | null;
   readonly computerAccess: IntegrationAccess | null;
   readonly displayName: string;
   readonly id: IntegrationConnectionId;
@@ -342,6 +354,7 @@ abstract class IntegrationPlatformStoreBase {
       this.database
         .selectFrom("integrationConnections")
         .select([
+          "accountIdentifier",
           "applicationSource",
           "connectionKind",
           "computerAccess",
@@ -383,6 +396,7 @@ abstract class IntegrationPlatformStoreBase {
           connectionKind: connection.connectionKind,
           computerAccess: connection.computerAccess,
           definitionId: connection.integrationDefinitionId,
+          accountIdentifier: connection.accountIdentifier,
           displayName: connection.displayName,
           id: connection.id,
           integrationServerId: connection.integrationServerId,
@@ -411,6 +425,33 @@ abstract class IntegrationPlatformStoreBase {
     return rows.map(integrationGrantFromRow);
   }
 
+  async connectionDiscoveryScope(userId: UserId, connectionId: string) {
+    const connection = await this.database
+      .selectFrom("agentConnections")
+      .select(["workspaceId"])
+      .where("id", "=", connectionId)
+      .where("userId", "=", userId)
+      .where("revokedAt", "is", null)
+      .where("tokenHash", "is not", null)
+      .where("expiresAt", ">", new Date())
+      .executeTakeFirst();
+    if (!connection)
+      throw new OpensteerError({ code: "forbidden", message: "Connection is unavailable" });
+    const workspaceId =
+      connection.workspaceId ??
+      (
+        await this.database
+          .selectFrom("workspaces")
+          .select("id")
+          .where("kind", "=", "main")
+          .where("createdBy", "=", userId)
+          .executeTakeFirst()
+      )?.id;
+    if (!workspaceId)
+      throw new OpensteerError({ code: "not_found", message: "Workspace is unavailable" });
+    return { workspaceId, connectionId, requestedBy: userId };
+  }
+
   async mainAccess(input: IntegrationRequester): Promise<MainAccess | null> {
     return (await resolveResourceAccess(this.database, input)).mainAccess;
   }
@@ -427,6 +468,20 @@ abstract class IntegrationPlatformStoreBase {
 }
 
 export interface InstallIntegrationInput {
+  readonly administration?: AdministrationCommandIdentity | undefined;
+  /**
+   * For each server an install keeps on a computer: whether it keeps its
+   * approval for the new launch, and its secrets for it.
+   */
+  readonly retainedServer?: (
+    existing: {
+      id: IntegrationServerId;
+      status: string;
+      approvedLaunchDigest: string | null;
+      transport: IntegrationServer["transport"];
+    },
+    discovered: DiscoveredIntegrationServer,
+  ) => { carryApproval: boolean; secrets: LocalMcpSecretsUpdate } | null;
   readonly beforeInstall?: (transaction: Transaction<DatabaseSchema>) => Promise<void>;
   readonly settlementSessionId?: string | undefined;
   readonly adapterSnapshot: IntegrationAdapterSnapshot | null;
@@ -447,6 +502,7 @@ export interface InstallIntegrationMutation {
 }
 
 export interface UninstallIntegrationInput {
+  readonly administration?: AdministrationCommandIdentity | undefined;
   readonly actorUserId: UserId;
   readonly installationId: IntegrationInstallationId;
   readonly requestId: string;
@@ -1121,6 +1177,31 @@ export async function installIntegrationInTransaction(
         .returningAll()
         .executeTakeFirstOrThrow();
 
+  const retainedUpdates = new Map<
+    IntegrationServerId,
+    { carryApproval: boolean; secrets: LocalMcpSecretsUpdate }
+  >();
+  for (const existing of existingServers) {
+    const discovered = input.servers.find((s) => s.name === existing.name);
+    if (!discovered) continue;
+    const retained = input.retainedServer?.(
+      { ...existing, transport: IntegrationServerTransportSchema.parse(existing.transport) },
+      discovered,
+    );
+    if (retained && discovered.transport.type === "runner" && discovered.transport.runnerId) {
+      retainedUpdates.set(existing.id, retained);
+      await replaceSecrets(
+        transaction,
+        existing.id,
+        discovered.transport.runnerId,
+        retained.secrets,
+        now,
+      );
+    }
+  }
+  // After servers and their secrets, as the lock order takes them.
+  if (input.installation.pluginId)
+    await new PluginStore(transaction).repinSpecialists(transaction, input.installation.pluginId);
   if (existingServers.length > 0) {
     const serverIds = existingServers.map(({ id }) => id);
     await transaction
@@ -1136,10 +1217,14 @@ export async function installIntegrationInTransaction(
   const retainedServerIds: IntegrationServerId[] = [];
   for (const discovered of input.servers) {
     const existing = serverByName.get(discovered.name);
+    const retained = existing ? retainedUpdates.get(existing.id) : undefined;
     const server = existing
       ? await transaction
           .updateTable("integrationServers")
           .set({
+            ...(retained?.carryApproval && discovered.transport.type === "runner"
+              ? { approvedLaunchDigest: localMcpLaunchDigest(discovered.transport.launch) }
+              : {}),
             connectionRequirement: jsonValue(discovered.connectionRequirement),
             status: discovered.status,
             statusDetail: discovered.statusDetail,
@@ -1147,7 +1232,10 @@ export async function installIntegrationInTransaction(
             transport: jsonValue(discovered.transport),
             updatedAt: now,
             // Consent belongs to the computer that gave it; another one is asked.
-            ...(runnerOf(existing.transport) === runnerOf(discovered.transport)
+            // A declined or retired server that returns is asked again too, even
+            // as a launch it once approved.
+            ...(runnerOf(existing.transport) === runnerOf(discovered.transport) &&
+            existing.status !== "disabled"
               ? {}
               : { approvedLaunchDigest: null }),
           })
@@ -1254,13 +1342,15 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
     return withRequestWorkspaceLocks(
       this.database,
       (transaction) => discoverInstallationRequestWorkspaces(transaction, input.installation),
-      async (transaction) => {
-        await input.beforeInstall?.(transaction);
-        const mutation = await installIntegrationInTransaction(transaction, input);
-        if (input.actorUserId !== null)
-          await requestSettlementActor(transaction, input.actorUserId, input.settlementSessionId);
-        return mutation;
-      },
+      async (transaction) =>
+        administrationCommand(transaction, input.administration, async () => {
+          await input.beforeInstall?.(transaction);
+          const mutation = await installIntegrationInTransaction(transaction, input);
+          if (input.actorUserId !== null)
+            await requestSettlementActor(transaction, input.actorUserId, input.settlementSessionId);
+          return mutation;
+        }),
+      (transaction) => lockAdministrationCommand(transaction, input.administration),
     );
   }
 
@@ -1269,7 +1359,11 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
       this.database,
       (transaction) =>
         discoverInstallationRequestWorkspaces(transaction, { id: input.installationId }),
-      (transaction) => uninstallIntegrationInTransaction(transaction, input),
+      (transaction) =>
+        administrationCommand(transaction, input.administration, () =>
+          uninstallIntegrationInTransaction(transaction, input),
+        ),
+      (transaction) => lockAdministrationCommand(transaction, input.administration),
     );
   }
 
@@ -1705,11 +1799,13 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
     connections = connections.filter(
       (c) => !c.definitionId || !deniedDefinitions.has(c.definitionId),
     );
-    const specialistThread = await this.database
-      .selectFrom("threads")
-      .select("specialistId")
-      .where("id", "=", input.threadId)
-      .executeTakeFirst();
+    const specialistThread = input.threadId
+      ? await this.database
+          .selectFrom("threads")
+          .select("specialistId")
+          .where("id", "=", input.threadId)
+          .executeTakeFirst()
+      : undefined;
     const ceilings = new Map<string, IntegrationAccess | null>();
     if (specialistThread?.specialistId) {
       for (const connection of connections) {
@@ -1837,7 +1933,7 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
                     : grant
                       ? effectiveIntegrationAccess(grant.access, connection)
                       : null,
-                account: connection.displayName,
+                account: integrationAccountLabel(connection),
                 connectionId: connection.id,
                 isDefault: grant?.isDefault ?? false,
               };
@@ -1945,6 +2041,20 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
 }
 
 export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase {
+  async getConnectionAccount(input: {
+    readonly connectionId: IntegrationConnectionId;
+    readonly ownerUserId: UserId;
+  }) {
+    return (
+      (await this.database
+        .selectFrom("integrationConnections")
+        .select(["displayName", "accountIdentifier"])
+        .where("id", "=", input.connectionId)
+        .where("ownerUserId", "=", input.ownerUserId)
+        .executeTakeFirst()) ?? null
+    );
+  }
+
   async getConnectionKind(input: {
     readonly connectionId: IntegrationConnectionId;
     readonly ownerUserId: UserId;
@@ -2468,6 +2578,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
   }
 
   async blockComputerApp(input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
     readonly connectionId: IntegrationConnectionId;
     readonly ownerUserId: UserId;
     readonly requestId: string;
@@ -2475,55 +2586,58 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
     return withRequestWorkspaceLocks(
       this.database,
       async (transaction) => [...(await discoverComputerRemovalWorkspaces(transaction, input))],
-      async (transaction) => {
-        const connection = await transaction
-          .selectFrom("integrationConnections")
-          .select(["runnerId", "computerApp"])
-          .where("id", "=", input.connectionId)
-          .where("ownerUserId", "=", input.ownerUserId)
-          .where("connectionKind", "=", "computer")
-          .where("status", "!=", "revoked")
-          .executeTakeFirst();
-        if (!connection?.runnerId || !connection.computerApp) {
-          throw new OpensteerError({ code: "not_found", message: "Computer app not found" });
-        }
-        await lockComputerApprovalScopeInTransaction(transaction, {
-          runnerId: connection.runnerId,
-        });
-        const ownership = await machineOwnershipIn(transaction, connection.runnerId);
-        if (ownership?.effectiveOwner !== input.ownerUserId) {
-          throw new OpensteerError({
-            code: "forbidden",
-            message: "Only this computer’s owner can block its apps.",
+      async (transaction) =>
+        administrationCommand(transaction, input.administration, async () => {
+          const connection = await transaction
+            .selectFrom("integrationConnections")
+            .select(["runnerId", "computerApp"])
+            .where("id", "=", input.connectionId)
+            .where("ownerUserId", "=", input.ownerUserId)
+            .where("connectionKind", "=", "computer")
+            .where("status", "!=", "revoked")
+            .executeTakeFirst();
+          if (!connection?.runnerId || !connection.computerApp) {
+            throw new OpensteerError({ code: "not_found", message: "Computer app not found" });
+          }
+          await lockComputerApprovalScopeInTransaction(transaction, {
+            runnerId: connection.runnerId,
           });
-        }
-        const mutation = await revokeComputerConnectionsInTransaction(transaction, input);
-        const now = new Date();
-        await transaction
-          .updateTable("integrationConnections")
-          .set({ computerBlockedAt: now, status: "paused", updatedAt: now })
-          .where("id", "=", input.connectionId)
-          .execute();
-        await transaction
-          .insertInto("securityAudit")
-          .values({
-            action: "integration.computer-app.blocked",
-            actorSessionId: null,
-            actorUserId: input.ownerUserId,
-            id: createId("securityAudit"),
-            metadata: jsonValue({}),
-            requestId: input.requestId,
-            targetId: input.connectionId,
-            targetType: "integration-connection",
-            workspaceId: null,
-          })
-          .execute();
-        return mutation;
-      },
+          const ownership = await machineOwnershipIn(transaction, connection.runnerId);
+          if (ownership?.effectiveOwner !== input.ownerUserId) {
+            throw new OpensteerError({
+              code: "forbidden",
+              message: "Only this computer’s owner can block its apps.",
+            });
+          }
+          const mutation = await revokeComputerConnectionsInTransaction(transaction, input);
+          const now = new Date();
+          await transaction
+            .updateTable("integrationConnections")
+            .set({ computerBlockedAt: now, status: "paused", updatedAt: now })
+            .where("id", "=", input.connectionId)
+            .execute();
+          await transaction
+            .insertInto("securityAudit")
+            .values({
+              action: "integration.computer-app.blocked",
+              actorSessionId: null,
+              actorUserId: input.ownerUserId,
+              id: createId("securityAudit"),
+              metadata: jsonValue({}),
+              requestId: input.requestId,
+              targetId: input.connectionId,
+              targetType: "integration-connection",
+              workspaceId: null,
+            })
+            .execute();
+          return mutation;
+        }),
+      (transaction) => lockAdministrationCommand(transaction, input.administration),
     );
   }
 
   async revokeComputerConnection(input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
     readonly connectionId: IntegrationConnectionId;
     readonly ownerUserId: UserId;
     readonly requestId: string;
@@ -2531,40 +2645,42 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
     return withRequestWorkspaceLocks(
       this.database,
       async (transaction) => [...(await discoverComputerRemovalWorkspaces(transaction, input))],
-      async (transaction) => {
-        const named = await transaction
-          .selectFrom("integrationConnections")
-          .select("runnerId")
-          .where("id", "=", input.connectionId)
-          .where("ownerUserId", "=", input.ownerUserId)
-          .where("connectionKind", "=", "computer")
-          .executeTakeFirst();
-        if (named?.runnerId) {
-          await lockComputerApprovalScopeInTransaction(transaction, { runnerId: named.runnerId });
-        }
-        const mutation = await revokeComputerConnectionsInTransaction(transaction, {
-          connectionId: input.connectionId,
-          ownerUserId: input.ownerUserId,
-        });
-        if (mutation.connectionIds.length === 0) {
-          throw new OpensteerError({ code: "not_found", message: "Computer app not found" });
-        }
-        await transaction
-          .insertInto("securityAudit")
-          .values({
-            action: "integration.computer-connection.revoked",
-            actorSessionId: null,
-            actorUserId: input.ownerUserId,
-            id: createId("securityAudit"),
-            metadata: jsonValue({ cancelledRequests: mutation.cancelledRequestIds.length }),
-            requestId: input.requestId,
-            targetId: input.connectionId,
-            targetType: "integration-connection",
-            workspaceId: null,
-          })
-          .executeTakeFirstOrThrow();
-        return mutation;
-      },
+      async (transaction) =>
+        administrationCommand(transaction, input.administration, async () => {
+          const named = await transaction
+            .selectFrom("integrationConnections")
+            .select("runnerId")
+            .where("id", "=", input.connectionId)
+            .where("ownerUserId", "=", input.ownerUserId)
+            .where("connectionKind", "=", "computer")
+            .executeTakeFirst();
+          if (named?.runnerId) {
+            await lockComputerApprovalScopeInTransaction(transaction, { runnerId: named.runnerId });
+          }
+          const mutation = await revokeComputerConnectionsInTransaction(transaction, {
+            connectionId: input.connectionId,
+            ownerUserId: input.ownerUserId,
+          });
+          if (mutation.connectionIds.length === 0) {
+            throw new OpensteerError({ code: "not_found", message: "Computer app not found" });
+          }
+          await transaction
+            .insertInto("securityAudit")
+            .values({
+              action: "integration.computer-connection.revoked",
+              actorSessionId: null,
+              actorUserId: input.ownerUserId,
+              id: createId("securityAudit"),
+              metadata: jsonValue({ cancelledRequests: mutation.cancelledRequestIds.length }),
+              requestId: input.requestId,
+              targetId: input.connectionId,
+              targetType: "integration-connection",
+              workspaceId: null,
+            })
+            .executeTakeFirstOrThrow();
+          return mutation;
+        }),
+      (transaction) => lockAdministrationCommand(transaction, input.administration),
     );
   }
 
@@ -2964,50 +3080,53 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
   }
 
   async revokeMcpOAuthConnection(input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
     readonly connectionId: IntegrationConnectionId;
     readonly ownerUserId: UserId;
     readonly requestId: string;
   }): Promise<void> {
-    await withDatabaseTransaction(this.database, async (transaction) => {
-      const now = new Date();
-      const connection = await transaction
-        .updateTable("integrationConnections")
-        .set({ status: "revoked", statusDetail: null, updatedAt: now })
-        .where("id", "=", input.connectionId)
-        .where("ownerUserId", "=", input.ownerUserId)
-        .where("connectionKind", "=", "mcp-oauth")
-        .where("status", "!=", "revoked")
-        .returning(["id", "integrationServerId"])
-        .executeTakeFirst();
-      if (!connection) {
-        throw new OpensteerError({ code: "not_found", message: "MCP account not found" });
-      }
-      await transaction
-        .updateTable("integrationTools")
-        .set({ status: "disabled", updatedAt: now })
-        .where("connectionId", "=", connection.id)
-        .execute();
-      await transaction
-        .updateTable("integrationGrants")
-        .set({ isDefault: false, revokedAt: now, status: "revoked", updatedAt: now })
-        .where("connectionId", "=", connection.id)
-        .where("revokedAt", "is", null)
-        .execute();
-      await transaction
-        .insertInto("securityAudit")
-        .values({
-          action: "integration.mcp-connection.revoked",
-          actorSessionId: null,
-          actorUserId: input.ownerUserId,
-          id: createId("securityAudit"),
-          metadata: jsonValue({ serverId: connection.integrationServerId }),
-          requestId: input.requestId,
-          targetId: connection.id,
-          targetType: "integration-connection",
-          workspaceId: null,
-        })
-        .executeTakeFirstOrThrow();
-    });
+    await withDatabaseTransaction(this.database, async (transaction) =>
+      administrationCommand(transaction, input.administration, async () => {
+        const now = new Date();
+        const connection = await transaction
+          .updateTable("integrationConnections")
+          .set({ status: "revoked", statusDetail: null, updatedAt: now })
+          .where("id", "=", input.connectionId)
+          .where("ownerUserId", "=", input.ownerUserId)
+          .where("connectionKind", "=", "mcp-oauth")
+          .where("status", "!=", "revoked")
+          .returning(["id", "integrationServerId"])
+          .executeTakeFirst();
+        if (!connection) {
+          throw new OpensteerError({ code: "not_found", message: "MCP account not found" });
+        }
+        await transaction
+          .updateTable("integrationTools")
+          .set({ status: "disabled", updatedAt: now })
+          .where("connectionId", "=", connection.id)
+          .execute();
+        await transaction
+          .updateTable("integrationGrants")
+          .set({ isDefault: false, revokedAt: now, status: "revoked", updatedAt: now })
+          .where("connectionId", "=", connection.id)
+          .where("revokedAt", "is", null)
+          .execute();
+        await transaction
+          .insertInto("securityAudit")
+          .values({
+            action: "integration.mcp-connection.revoked",
+            actorSessionId: null,
+            actorUserId: input.ownerUserId,
+            id: createId("securityAudit"),
+            metadata: jsonValue({ serverId: connection.integrationServerId }),
+            requestId: input.requestId,
+            targetId: connection.id,
+            targetType: "integration-connection",
+            workspaceId: null,
+          })
+          .executeTakeFirstOrThrow();
+      }),
+    );
   }
 
   async markMcpOAuthConnectionNeedsAttention(input: {
@@ -3163,43 +3282,46 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
   }
 
   async revokeGrant(input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
     readonly grantId: IntegrationGrant["id"];
     readonly ownerUserId: UserId;
     readonly requestId: string;
     readonly workspaceId: WorkspaceId;
   }): Promise<void> {
-    await withDatabaseTransaction(this.database, async (transaction) => {
-      const row = await transaction
-        .updateTable("integrationGrants")
-        .set({
-          isDefault: false,
-          revokedAt: new Date(),
-          status: "revoked",
-          updatedAt: new Date(),
-        })
-        .where("id", "=", input.grantId)
-        .where("ownerUserId", "=", input.ownerUserId)
-        .where("workspaceId", "=", input.workspaceId)
-        .where("revokedAt", "is", null)
-        .returning(["id", "installationId"])
-        .executeTakeFirst();
-      if (!row)
-        throw new OpensteerError({ code: "not_found", message: "Integration grant not found" });
-      await transaction
-        .insertInto("securityAudit")
-        .values({
-          action: "integration.grant.revoked",
-          actorSessionId: null,
-          actorUserId: input.ownerUserId,
-          id: createId("securityAudit"),
-          metadata: jsonValue({ installationId: row.installationId }),
-          requestId: input.requestId,
-          targetId: row.id,
-          targetType: "integration-grant",
-          workspaceId: input.workspaceId,
-        })
-        .executeTakeFirstOrThrow();
-    });
+    await withDatabaseTransaction(this.database, async (transaction) =>
+      administrationCommand(transaction, input.administration, async () => {
+        const row = await transaction
+          .updateTable("integrationGrants")
+          .set({
+            isDefault: false,
+            revokedAt: new Date(),
+            status: "revoked",
+            updatedAt: new Date(),
+          })
+          .where("id", "=", input.grantId)
+          .where("ownerUserId", "=", input.ownerUserId)
+          .where("workspaceId", "=", input.workspaceId)
+          .where("revokedAt", "is", null)
+          .returning(["id", "installationId"])
+          .executeTakeFirst();
+        if (!row)
+          throw new OpensteerError({ code: "not_found", message: "Integration grant not found" });
+        await transaction
+          .insertInto("securityAudit")
+          .values({
+            action: "integration.grant.revoked",
+            actorSessionId: null,
+            actorUserId: input.ownerUserId,
+            id: createId("securityAudit"),
+            metadata: jsonValue({ installationId: row.installationId }),
+            requestId: input.requestId,
+            targetId: row.id,
+            targetType: "integration-grant",
+            workspaceId: input.workspaceId,
+          })
+          .executeTakeFirstOrThrow();
+      }),
+    );
   }
 
   async listCallableTools(
@@ -3235,6 +3357,7 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
     input: IntegrationRequester,
     tools: readonly CallableIntegrationTool[],
   ): Promise<readonly CallableIntegrationTool[]> {
+    if (!input.threadId) return tools;
     const thread = await this.database
       .selectFrom("threads")
       .select("specialistId")

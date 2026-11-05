@@ -1,3 +1,4 @@
+import type { RunToolScope } from "../agents/run-tool-tokens.js";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import { connect } from "node:net";
@@ -70,7 +71,13 @@ function fixture(
     },
     publishEvent: () => undefined,
   };
-  return { service: new AppService(options), app, userId, options };
+  return {
+    service: new AppService(options),
+    app,
+    userId,
+    options,
+    scope: scope as RunToolScope,
+  };
 }
 
 it.each(["timeout", "bytes"] as const)(
@@ -90,13 +97,13 @@ it.each(["timeout", "bytes"] as const)(
       await listening;
       const address = server.address();
       if (!address || typeof address === "string") throw new Error("Missing app server listener");
-      const { service, app } = fixture(async (_spec, signal) => ({
+      const { service, app, scope } = fixture(async (_spec, signal) => ({
         stream: connect({ host: "127.0.0.1", port: address.port, signal }),
         port: address.port,
       }));
       const timeout = new AbortController();
       const deadline = vi.spyOn(AbortSignal, "timeout").mockReturnValue(timeout.signal);
-      const result = service.fetch("token", { appId: app.id, method: "GET", path: "/events" });
+      const result = service.fetch(scope, { appId: app.id, method: "GET", path: "/events" });
       await withTimeout(received.promise, 2_000, {
         timeoutError: () => new Error("app_fetch never reached its server"),
       });
@@ -123,7 +130,7 @@ it.each(["timeout", "bytes"] as const)(
 );
 
 it("keeps failure log tails in agent results and excludes them from prepared viewer error pages", async () => {
-  const { service, app, userId } = fixture(async () => {
+  const { service, app, userId, scope } = fixture(async () => {
     throw new AppTunnelError("App startup failed", "private server log tail");
   });
   const view = await service.view(app.id, userId, "dark");
@@ -147,9 +154,9 @@ it("keeps failure log tails in agent results and excludes them from prepared vie
   expect(html).toContain("opensteer-app:ready");
   expect(html).not.toContain("private server log tail");
   expect(Number(response.headers["content-length"])).toBe(Buffer.byteLength(html));
-  expect(
-    await service.fetch("token", { appId: app.id, method: "GET", path: "/api/" }),
-  ).toMatchObject({ status: 503, body: expect.stringContaining("private server log tail") });
+  expect(await service.fetch(scope, { appId: app.id, method: "GET", path: "/api/" })).toMatchObject(
+    { status: 503, body: expect.stringContaining("private server log tail") },
+  );
 });
 
 it("returns server HTML unchanged to app_fetch while preparing viewer frames", async () => {
@@ -165,13 +172,15 @@ it("returns server HTML unchanged to app_fetch while preparing viewer frames", a
     await listening;
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("Missing app listener");
-    const { service, app, userId } = fixture(async (_spec, signal) => ({
+    const { service, app, userId, scope } = fixture(async (_spec, signal) => ({
       stream: connect({ host: "127.0.0.1", port: address.port, signal }),
       port: address.port,
     }));
-    expect(await service.fetch("token", { appId: app.id, method: "GET", path: "/" })).toMatchObject(
-      { status: 200, body: html, truncated: false },
-    );
+    expect(await service.fetch(scope, { appId: app.id, method: "GET", path: "/" })).toMatchObject({
+      status: 200,
+      body: html,
+      truncated: false,
+    });
     const { path } = await service.view(app.id, userId, "dark");
     const response = await service.response({
       appId: app.id,
@@ -194,7 +203,7 @@ it("returns server HTML unchanged to app_fetch while preparing viewer frames", a
 
 it("rechecks Workspace deletion after waiting for an app's publication lock", async () => {
   vi.useFakeTimers();
-  const { service, app, options } = fixture(vi.fn());
+  const { service, app, options, scope } = fixture(vi.fn());
   const started = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   let deleting = false;
@@ -224,12 +233,12 @@ it("rechecks Workspace deletion after waiting for an app's publication lock", as
     });
   });
   const input = { appId: app.id, title: "Server", path: ".", start: "node server.js" };
-  const first = service.publish("token", "first", input).catch((error: unknown) => error);
+  const first = service.publish(scope, "first", input).catch((error: unknown) => error);
   try {
     await withTimeout(started.promise, 1_000, {
       timeoutError: () => new Error("Publication never started"),
     });
-    const queued = service.publish("token", "queued", input).catch((error: unknown) => error);
+    const queued = service.publish(scope, "queued", input).catch((error: unknown) => error);
     await vi.advanceTimersByTimeAsync(0);
     deleting = true;
     release.resolve();

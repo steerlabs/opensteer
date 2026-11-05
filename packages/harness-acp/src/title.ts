@@ -1,5 +1,9 @@
 import { OpensteerError } from "@opensteer/core";
-import { spawnSupervised, type HarnessProcessLaunch } from "@opensteer/harness";
+import {
+  backgroundTextFailure,
+  spawnSupervised,
+  type HarnessProcessLaunch,
+} from "@opensteer/harness";
 import { normalizeAcpUpdate } from "./adapter.js";
 import {
   acpProtocolOutputBytes,
@@ -21,6 +25,7 @@ export async function generateContainedAcpTitle(input: {
   readonly initializeDeadlineMs: number;
   readonly launch: HarnessProcessLaunch;
   readonly modeId: string;
+  readonly modelId: string;
   readonly onSessionId?: (sessionId: string) => void;
   readonly prompt: string;
   readonly protocolVersion: AcpProtocolVersion;
@@ -67,9 +72,21 @@ export async function generateContainedAcpTitle(input: {
     ...(input.transformStdout ? { stdout: input.transformStdout(process.stdout) } : {}),
     version: input.protocolVersion,
   });
+  let providerFailure: string | undefined;
   const stderr = (async () => {
-    for await (const _chunk of process.stderr) {
-      // Provider stderr can contain authentication URLs; it is intentionally discarded.
+    let tail = "";
+    for await (const chunk of process.stderr) {
+      tail = (tail + chunk.toString("utf8")).slice(-16_384);
+      const classified = backgroundTextFailure(tail);
+      if (
+        /authentication required|not authenticated|unauthorized|not logged|sign.?in required|rate.?limit|quota|RESOURCE_EXHAUSTED|credits.*depleted|model.*(?:unavailable|not found)|refus|access denied|HTTP 40[1239]/iu.test(
+          tail,
+        ) &&
+        classified.failure !== "failed"
+      ) {
+        providerFailure = classified.failure;
+        lifetime.abort(new Error(classified.failure));
+      }
     }
   })();
   let sessionId: string | undefined;
@@ -103,6 +120,7 @@ export async function generateContainedAcpTitle(input: {
     if (session.modes?.availableModes.some((mode) => mode.id === input.modeId)) {
       await client.setMode(session.sessionId, input.modeId, lifetime.signal);
     }
+    await client.setModel(session.sessionId, input.modelId, undefined, lifetime.signal);
     await client.prompt(session.sessionId, [{ type: "text", text: input.prompt }], lifetime.signal);
     if (attemptedTool) {
       throw new OpensteerError({
@@ -115,8 +133,11 @@ export async function generateContainedAcpTitle(input: {
       throw new OpensteerError({ code: "harness_error", message: "ACP returned no Thread title" });
     }
     return { sessionId: session.sessionId, text };
+  } catch (error) {
+    if (providerFailure) throw new Error(providerFailure);
+    throw error;
   } finally {
-    if (sessionId) await closeAcpSessionBestEffort(client, sessionId);
+    if (sessionId && !input.signal.aborted) await closeAcpSessionBestEffort(client, sessionId);
     client.close();
     lifetime.abort(new Error("Title generation finished"));
     await process.terminate().catch(() => undefined);

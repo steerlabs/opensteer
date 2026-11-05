@@ -43,7 +43,7 @@ describe("Request protocol", () => {
     const request = pendingRequest();
     const thread = {
       accessMode: "full-access",
-      capabilityProfileId: "main",
+      inheritsMain: true,
       continuationIdentity: null,
       createdAt: now,
       createdBy: request.requestedBy,

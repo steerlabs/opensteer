@@ -552,7 +552,10 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     );
   }
 
-  async function connectChrome(paired: { sourceId: string; token: string }): Promise<FakeChrome> {
+  async function connectChrome(
+    paired: { sourceId: string; token: string },
+    status: BrowserSourceStatus = "available",
+  ): Promise<FakeChrome> {
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("Expected socket server port");
     const socket = new WebSocket(`ws://127.0.0.1:${address.port}`);
@@ -577,6 +580,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       });
     });
     const chrome = new FakeChrome(socket);
+    chrome.status = status;
     socket.send(
       JSON.stringify({
         ...sourceDestination,
@@ -723,7 +727,18 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       workspaceId,
     };
     await store.commitRunnerEvent({ environmentId, event: started, runnerBootId, runnerId });
-    return { runId: admitted.run.id, runnerId, threadId: thread.id };
+    return {
+      runId: admitted.run.id,
+      runnerId,
+      threadId: thread.id,
+      complete: () =>
+        store.commitRunnerEvent({
+          environmentId,
+          runnerBootId,
+          runnerId,
+          event: { ...started, ordinal: 1, type: "run.completed", data: { status: "completed" } },
+        }),
+    };
   }
 
   async function pendingSignIns(ownerId: UserId) {
@@ -789,6 +804,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
         workspaceId: workspace.id,
       },
       connection,
+      complete: run.complete,
       ownerId,
       sessionId: opened.session.id,
       workspaceId: workspace.id,
@@ -1321,6 +1337,49 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       }
     },
   );
+
+  it("tells the agent Passwords isn't set up, through a Request Chrome couldn't serve", async () => {
+    const ready = await passwordScene();
+    ready.connection.passwords = "not-set-up";
+    const site = "https://first-use.test";
+    const callId = randomUUID();
+    const asked = await service.agentSignIn({ ...ready.agent, callId, site });
+    expect(asked).toMatchObject({ passwords: "not-set-up", status: "pending" });
+    if (asked.status !== "pending") throw new Error("Expected a pending Request");
+
+    const paired = await pairChrome(ready.ownerId, "Chrome");
+    const chrome = await connectChrome(paired, "no-state");
+    try {
+      await waitFor(
+        async () => (await store.requests.get(asked.requestId))?.status === "fulfilled",
+      );
+      expect(await store.requests.get(asked.requestId)).toMatchObject({
+        response: { value: { outcome: "not-signed-in", passwords: "not-set-up" } },
+      });
+      expect(await service.agentSignIn({ ...ready.agent, callId, site })).toEqual({
+        passwords: "not-set-up",
+        site,
+        status: "not-signed-in",
+      });
+      expect(await service.agentSignIn({ ...ready.agent, callId: randomUUID(), site })).toEqual({
+        passwords: "not-set-up",
+        site,
+        status: "not-signed-in",
+      });
+
+      // Passwords can't help on this Mac, so nothing may offer it.
+      ready.connection.passwords = "unavailable";
+      expect(
+        await service.agentSignIn({
+          ...ready.agent,
+          callId: randomUUID(),
+          site: "https://no-passwords.test",
+        }),
+      ).toEqual({ site: "https://no-passwords.test", status: "not-signed-in" });
+    } finally {
+      await chrome.close();
+    }
+  });
 
   it("keeps an existing Chrome grant ahead of Passwords", async () => {
     const ready = await passwordScene();
@@ -2179,7 +2238,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
   });
 
   it("completes an allowed Request by itself when Chrome reconnects as a new connection", async () => {
-    const { agent, connection, ownerId, workspaceId } = await scene();
+    const { agent, connection, ownerId, workspaceId, complete } = await scene();
     const first = await pairChrome(ownerId, "Chrome A");
     const chromeA = await connectChrome(first);
     const site = "https://example.test";
@@ -2228,9 +2287,6 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     expect(connection.imports()).toHaveLength(1);
     expect(chromeB.exports).toBe(1);
     expect(resolvedRequests).toBeGreaterThan(0);
-    expect(
-      (await store.requests.listPendingContinuations()).map(({ request }) => request.id),
-    ).toContain(asked.requestId);
     expect((await sourceStore.list(ownerId)).map(({ id }) => id)).toEqual([second.sourceId]);
     expect(
       await service.respond({
@@ -2273,6 +2329,65 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       await sourceStore.authenticate(createHash("sha256").update(second.token).digest("hex")),
     ).toBeNull();
     expect(await sourceStore.getGrant({ ownerId, site, workspaceId })).not.toBeNull();
+    await complete();
+    expect(
+      (await store.requests.listPendingContinuations()).map(({ request }) => request.id),
+    ).toContain(asked.requestId);
+    expect(serviceErrors).toEqual([]);
+  });
+
+  it("ends an unallowed Request when Chrome connects without the site's sign-in", async () => {
+    const { agent, connection, ownerId, complete } = await scene();
+    const site = "https://example.test";
+    const callId = randomUUID();
+    const asked = await service.agentSignIn({ ...agent, callId, site });
+    if (asked.status !== "pending") throw new Error("Expected a pending Request");
+
+    const paired = await pairChrome(ownerId, "Chrome");
+    const chrome = await connectChrome(paired, "no-state");
+    await waitFor(async () => (await store.requests.get(asked.requestId))?.status === "fulfilled");
+    expect(await store.requests.get(asked.requestId)).toMatchObject({
+      response: { kind: "external", value: { outcome: "not-signed-in" } },
+    });
+    expect(await service.agentSignIn({ ...agent, callId, site })).toEqual({
+      site,
+      status: "not-signed-in",
+    });
+    expect(chrome.exports).toBe(0);
+    expect(connection.imports()).toHaveLength(0);
+
+    // Chrome reconnects and finishes its check while the next Request is still being stored.
+    await chrome.close();
+    const opening = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const create = store.requests.create.bind(store.requests);
+    const creating = vi.spyOn(store.requests, "create").mockImplementationOnce(async (input) => {
+      opening.resolve();
+      await release.promise;
+      return create(input);
+    });
+    const checked = vi.spyOn(store.requests, "listUngrantedBrowserSignIns");
+    try {
+      const late = service.agentSignIn({ ...agent, callId: randomUUID(), site });
+      await opening.promise;
+      const again = await connectChrome(paired, "no-state");
+      await vi.waitFor(() => expect(checked).toHaveBeenCalled(), { timeout: 5_000 });
+      await checked.mock.results[0]!.value;
+      release.resolve();
+      const lateAsk = await late;
+      if (lateAsk.status !== "pending") throw new Error("Expected a pending Request");
+      await waitFor(
+        async () => (await store.requests.get(lateAsk.requestId))?.status === "fulfilled",
+      );
+      await again.close();
+    } finally {
+      creating.mockRestore();
+      checked.mockRestore();
+    }
+    await complete();
+    expect(
+      (await store.requests.listPendingContinuations()).map(({ request }) => request.id),
+    ).toContain(asked.requestId);
     expect(serviceErrors).toEqual([]);
   });
 

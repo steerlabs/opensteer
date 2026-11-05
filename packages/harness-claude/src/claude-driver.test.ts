@@ -1,3 +1,4 @@
+import { agentTools } from "@opensteer/agent-tools";
 import { collisionSkills } from "@opensteer/shared/test-support/agentSkills";
 import { ChildProcess } from "node:child_process";
 import { once } from "node:events";
@@ -627,7 +628,7 @@ describe("Claude Agent SDK harness", () => {
       context: sessionContext,
       session,
     } = await openSession(sdk, {
-      wrapProcessLaunch: (launch) => {
+      wrapProcessLaunch: (launch: import("@opensteer/harness").HarnessProcessLaunch) => {
         launches.push(launch);
         return {
           ...launch,
@@ -725,7 +726,7 @@ describe("Claude Agent SDK harness", () => {
     expect(sdk.calls[1]?.options.sessionId).toBeUndefined();
     expect(sdk.calls[0]?.options.env?.ENABLE_TOOL_SEARCH).toBe("true");
     expect(sdk.calls[1]?.options.env?.ENABLE_TOOL_SEARCH).toBe("true");
-    expect(sdk.calls[0]?.options.mcpServers?.opensteer_integrations).toMatchObject({
+    expect(sdk.calls[0]?.options.mcpServers?.opensteer).toMatchObject({
       alwaysLoad: false,
     });
     expect(sdk.calls[0]?.options.settingSources).toEqual(["project"]);
@@ -770,42 +771,12 @@ describe("Claude Agent SDK harness", () => {
     });
     expect(sdk.calls[0]?.options.allowedTools).toEqual([
       "ToolSearch",
-      "mcp__opensteer__app_publish",
-      "mcp__opensteer__app_list",
-      "mcp__opensteer__app_fetch",
-      "mcp__opensteer__request_list",
-      "mcp__opensteer__request_withdraw",
-      "mcp__opensteer__environment_list",
-      "mcp__opensteer__project_list",
-      "mcp__opensteer__project_create",
-      "mcp__opensteer__plugin_install",
-      "mcp__opensteer__thread_read",
-      "mcp__opensteer__thread_list",
-      "mcp__opensteer__thread_delegate",
-      "mcp__opensteer__assignment_cancel",
-      "mcp__opensteer__person_message",
-      "mcp__opensteer__person_show",
-      "mcp__opensteer__thread_message",
-      "mcp__opensteer__thread_write",
-      "mcp__opensteer__browser_profile_list",
-      "mcp__opensteer__sign_in",
-      "mcp__opensteer__browser_access_request",
-      "mcp__opensteer__machine_full_disk_access_request",
-      "mcp__opensteer__browser_tab_read",
-      "mcp__opensteer__browser_tab_write",
-      "mcp__opensteer__browser_session_list",
-      "mcp__opensteer__browser_session_open",
-      "mcp__opensteer__browser_profile_create",
-      "mcp__opensteer__browser_session_close",
-      "mcp__opensteer__trigger_read",
-      "mcp__opensteer__trigger_write",
-      "mcp__opensteer_integrations__integration_search",
-      "mcp__opensteer_integrations__integration_describe",
-      "mcp__opensteer_integrations__integration_call",
-      "mcp__opensteer_integrations__computer",
-      "mcp__opensteer_integrations__integration_request",
-      "mcp__opensteer_integrations__integration_propose",
+      ...sessionContext.agentTools.tools.map((name) => `mcp__opensteer__${name}`),
     ]);
+    for (const call of sdk.calls) {
+      expect(Object.keys(call.options.mcpServers ?? {})).toEqual(["opensteer"]);
+      expect(call.options.allowedTools).toEqual(sdk.calls[0]?.options.allowedTools);
+    }
     const pluginPath = await realpath(
       join(sessionContext.threadStateDirectory, "claude-plugin", "opensteer"),
     );
@@ -2437,6 +2408,10 @@ describe("Claude Agent SDK harness", () => {
       overrides: { tools: ["Read", "WebSearch"] },
     },
     {
+      expected: "tools outside",
+      overrides: { tools: ["Read", "mcp__opensteer_integrations__integration_call"] },
+    },
+    {
       // Addressing an agent resumes it in the background, which no turn owns.
       expected: "tools outside",
       overrides: { tools: ["Read", "SendMessage"] },
@@ -3205,14 +3180,17 @@ async function context(
     machineAccessPlatform: undefined,
     machineAccessRelaySocket: undefined,
     agentTools: {
-      capabilityProfileId: "main",
+      tools: [
+        "host_only_tool",
+        ...agentTools.filter((tool) => tool.callers.includes("run")).map(({ name }) => name),
+      ],
+      toolsRevision: "test-tools-v1",
+      instructions: "Host Opensteer instructions",
+      skills: ["opensteer:threads"],
       token: "test-agent-tools-token",
       url: "https://host.example/internal/v1/mcp",
     },
-    integrationTools: {
-      token: "test-agent-tools-token",
-      url: "https://host.example/internal/v1/integration-mcp",
-    },
+
     environment: {
       ANTHROPIC_API_KEY: "os_secret_api",
       CLAUDE_CONFIG_DIR: join(workspacePath, ".claude-user"),
@@ -3695,45 +3673,19 @@ async function waitForSdkCall(sdk: FakeSdk): Promise<void> {
 }
 
 describe("Claude Thread naming", () => {
-  it("retries a refused light model with the Run model", async () => {
-    const sdk = new FakeSdk(
-      (parameters) => {
-        if (parameters.options.model === "claude-haiku-5-5") throw new Error("Model access denied");
-        return scriptedQuery([successMessage("naming", "Title")]);
-      },
-      [
-        {
-          value: "haiku",
-          resolvedModel: "claude-haiku-5-5",
-          description: "Fast",
-          displayName: "Haiku",
-        },
-      ],
-    );
-    const fixture = await openSession(sdk);
-    try {
-      await expect(
-        fixture.session.generateTitle!({ prompt: "Name it", signal: AbortSignal.timeout(2_000) }),
-      ).resolves.toBe("Title");
-      expect(sdk.calls.map((call) => call.options.model)).toEqual([
-        "claude-haiku-5-5",
-        fixture.context.modelSelection.nativeModelId ?? fixture.context.modelSelection.modelId,
-      ]);
-    } finally {
-      await fixture.session.stop();
-      await fixture.adapter.close();
-    }
-  });
-  it("uses the Run model when the live catalog has no light model", async () => {
+  it("uses the explicit model and effort without catalog discovery", async () => {
     const sdk = new FakeSdk(() => scriptedQuery([successMessage("naming", "Title")]));
     const fixture = await openSession(sdk);
     try {
       expect(
-        await fixture.session.generateTitle!({
+        await fixture.adapter.generateText!({
+          context: { ...fixture.context, scratchDirectory: fixture.context.threadStateDirectory },
+          modelSelection: { ...fixture.context.modelSelection, options: { effort: "high" } },
           prompt: "Name it",
           signal: AbortSignal.timeout(2_000),
         }),
-      ).toBe("Title");
+      ).toEqual({ ok: true, text: "Title" });
+      expect(sdk.calls[0]?.options.effort).toBe("high");
       expect(sdk.calls[0]?.options.model).toBe(
         fixture.context.modelSelection.nativeModelId ?? fixture.context.modelSelection.modelId,
       );
@@ -3766,8 +3718,15 @@ describe("Claude Thread naming", () => {
     try {
       const prompt = threadTitlePrompt("Migrate support", { icon: true });
       expect(
-        await fixture.session.generateTitle!({ prompt, signal: new AbortController().signal }),
-      ).toBe("Support migration\nheadphones");
+        await fixture.adapter.generateText!({
+          context: { ...fixture.context, scratchDirectory: fixture.context.threadStateDirectory },
+          modelSelection: fixture.context.modelSelection,
+          prompt,
+          signal: new AbortController().signal,
+        }),
+      ).toEqual({ ok: true, text: "Support migration\nheadphones" });
+      expect(sdk.inspections).toEqual([]);
+      expect(sdk.calls).toHaveLength(1);
       const call = sdk.calls.find((entry) => typeof entry.prompt === "string")!;
       expect(call).toMatchObject({
         prompt,
@@ -3780,15 +3739,15 @@ describe("Claude Thread naming", () => {
           settingSources: [],
           persistSession: false,
           maxTurns: 1,
-          model: "claude-haiku-5-5",
-          effort: "low",
+          model:
+            fixture.context.modelSelection.nativeModelId ?? fixture.context.modelSelection.modelId,
         },
       });
       expect(call.options).not.toHaveProperty("maxTokens");
       expect(call.options).not.toHaveProperty("outputFormat");
       expect(
         (await readdir(fixture.context.threadStateDirectory)).filter((name) =>
-          name.startsWith("title-"),
+          name.startsWith("text-"),
         ),
       ).toEqual([]);
     } finally {

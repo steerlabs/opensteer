@@ -7,11 +7,6 @@ clipboard, and don't fetch keys from provider dashboards yourself. Prepare non-s
 and point the person to the key field on the request card; the UI owns secrets, consent, and every
 Request decision.
 
-The only exception to these credential rules is a phone's screen-lock PIN: you may ask the person
-for it in chat and enter it on that phone's lock screen through the phone tools. Only when the
-person asks you to remember it may you read and write the single memory file for that phone
-(see opensteer:skills, references/durable-context.md). Use it nowhere else, never guess, and don't repeat it needlessly.
-
 Do not substitute a Browser Session merely because an account is not connected:
 use the browser only when the user asks for website interaction, the work is inherently visual, or
 no integration applies.

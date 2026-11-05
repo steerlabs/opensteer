@@ -27,6 +27,9 @@ const deploymentChangedCloseCode = 4_001;
 
 /** One Host request, in the terms every platform's network adapter accepts. */
 export interface HostTransportRequest {
+  /** The initiating client identity must survive a newer main-process selection. */
+  readonly expectedDeploymentId?: DeploymentId | undefined;
+  readonly expectedAttachmentKey?: string;
   readonly body?: string | Blob | ReadableStream<Uint8Array> | undefined;
   readonly credentials?: "omit";
   readonly redirect?: "manual";
@@ -125,8 +128,10 @@ export class HostTransport {
    * canonical origin is another computer's loopback, and the Host begins only
    * sign-ins there that return to the Account service.
    */
-  async integrationAuthorizationOrigin(): Promise<string> {
-    const { resolved } = await this.current();
+  async integrationAuthorizationOrigin(deploymentId?: string): Promise<string> {
+    const { connection, resolved } = await this.current();
+    if (deploymentId !== undefined && connection.authority.document.deploymentId !== deploymentId)
+      throw new Error("The integration attempt belongs to a different Deployment.");
     return resolved.access === "connect" || resolved.access === "private"
       ? resolved.origin
       : resolved.canonicalOrigin;
@@ -166,6 +171,16 @@ export class HostTransport {
     try {
       const selected = await this.current();
       const { resolved } = selected;
+      if (
+        request.expectedDeploymentId !== undefined &&
+        request.expectedDeploymentId !== resolved.deploymentId
+      )
+        throw new HostTransportError("deployment-changed");
+      if (
+        request.expectedAttachmentKey !== undefined &&
+        request.expectedAttachmentKey !== resolved.key
+      )
+        throw new HostTransportError("deployment-changed");
       const selectionGeneration = this.#fence.generation;
       const deadline = new HostResponseDeadline(request.signal);
       const controller = deadline.controller;
@@ -372,7 +387,10 @@ export class HostTransport {
       if (abortRecovery) signal.removeEventListener("abort", abortRecovery);
     }
     deadline.reset(request.timeoutMs ?? hostResponseHeadersTimeoutMs);
-    const response = await deadline.wait(this.#send(selected.resolved, request, signal));
+    const recovered = await deadline.wait(this.current());
+    if (recovered.resolved.key !== selected.resolved.key)
+      throw new HostTransportError("deployment-changed");
+    const response = await deadline.wait(this.#send(recovered.resolved, request, signal));
     deadline.reset(hostResponseStallTimeoutMs);
     return response;
   }

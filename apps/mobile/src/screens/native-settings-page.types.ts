@@ -12,6 +12,8 @@ export type NativeSettingsRow =
       readonly key: string;
       readonly kind: "button";
       readonly label: string;
+      /** The integration whose mark leads the row. */
+      readonly mark?: { readonly definitionId: string; readonly name: string };
       readonly disabled?: boolean;
       readonly destructive?: boolean;
       readonly onPress: () => void;

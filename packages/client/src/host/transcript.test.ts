@@ -17,11 +17,13 @@ import {
   workSummary,
 } from "./agent-activity-model.js";
 import type { TranscriptEntry } from "./client.js";
+import { mockBrowserSignInRequest } from "../mock/mock-chrome-sign-ins.js";
 import { LiveStreamLedger } from "./live-progress.js";
 import {
   finishRunEntries,
   foldLiveRun,
   foldTranscriptEvent,
+  requestReceipt,
   isTerminalRunEntryStatus,
   mergeTranscriptSegments,
   visibleTranscript,
@@ -1793,5 +1795,27 @@ describe("durable place markers", () => {
     expect(fold([a, b, c], entries)).toEqual(entries);
     expect(mergeTranscriptSegments(fold([a, b]), fold([b, c]))).toEqual(entries);
     expect(entries[0]).toMatchObject({ ...data, kind: "place", runId, createdAt: now });
+  });
+});
+
+describe("a Chrome sign-in's receipt", () => {
+  const site = "https://brex.com";
+  const ended = (value: Record<string, unknown>) =>
+    requestReceipt({
+      ...mockBrowserSignInRequest(site, 1),
+      resolvedAt: "2026-08-07T19:30:00.000Z",
+      resolvedBy: "usr_0192f4a1-0000-4000-8000-000000000001",
+      response: { kind: "external", value },
+      status: "fulfilled",
+    } as Extract<Request, { status: "fulfilled" }>);
+
+  it("names its site only when it ended with Passwords not set up", () => {
+    expect(ended({ outcome: "not-signed-in", passwords: "not-set-up" }).passwordsSetUpSite).toBe(
+      site,
+    );
+    expect(ended({ outcome: "not-signed-in" }).passwordsSetUpSite).toBeUndefined();
+    expect(
+      ended({ outcome: "applied", profileName: null, sourceName: "Work" }).passwordsSetUpSite,
+    ).toBeUndefined();
   });
 });

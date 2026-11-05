@@ -25,8 +25,8 @@ public struct ProcessStamp: Sendable, Equatable {
   public var isCurrent: Bool { Self.of(processIdentifier) == self }
 }
 
-/// Selecting the approved app's process (§2 "Methods": "A process is selected
-/// only when its bundle path and live code identity match the approved app").
+/// Selecting the approved app's process: one is selected only when its bundle
+/// path and live code identity match the approved app.
 ///
 /// The full check reads the bundle from disk and the running code's signature,
 /// which is far too slow to repeat for every chunk of `type` or tick of

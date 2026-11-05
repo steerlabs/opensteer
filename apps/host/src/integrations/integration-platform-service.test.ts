@@ -1,15 +1,13 @@
+import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { randomBytes } from "node:crypto";
+import { createIntegrationMcpFixture } from "../mcp/integration-fixture.test-support.js";
 import { createServer } from "node:http";
 import { AesGcmSecretVault, StaticEncryptionKeyProvider } from "@opensteer/access/host";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import {
-  IntegrationToolsMcpService,
-  type IntegrationToolsTokenService,
-  type TriggerIntegrationToolsTokenService,
-} from "./integration-tools-mcp-service.js";
-
 import {
   IntegrationDefinitionSchema,
   createIntegrationId,
@@ -56,9 +54,11 @@ import {
 
 import { describe, expect, it, vi } from "vitest";
 import {
+  carriesApproval,
   IntegrationAuthorizationRequiredError,
   IntegrationPlatformService,
 } from "./integration-platform-service.js";
+import { localMcpLaunchDigest } from "@opensteer/integration-core/digest";
 import type {
   ComputerAppHub,
   ComputerAppInvokeOutcome,
@@ -83,7 +83,6 @@ const runCaller = (run: RunToolContext): ToolCaller => ({
     ...run,
     aud: "opensteer-integration-tools",
     bindingGeneration: 1,
-    capabilityProfileId: "main",
     environmentId: createId("environment"),
     exp: 2_000_000_000,
     iat: 1_900_000_000,
@@ -127,6 +126,341 @@ function computerStatus(
     operations: operations.map((operation) => ({ operation, ...observation })),
   };
 }
+
+describe("agent plugin replacement", () => {
+  it("replaces its own inactive package, records its Workspace folder and skips identical snapshots", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "plugin-replace-"));
+    try {
+      await writeFile(
+        join(directory, "plugin.json"),
+        JSON.stringify({
+          $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+          name: "mine",
+        }),
+      );
+      const workspaceId = createId("workspace"),
+        actorUserId = createId("user");
+      const owned = {
+        id: "owned",
+        name: "mine",
+        scope: "workspace",
+        workspaceId,
+        currentVersionId: "old",
+        versions: [{ id: "old", digest: "old" }],
+        activations: [],
+      };
+      const update = vi.fn(async (input: { digest: string }) => {
+        owned.versions.push({ id: "new", digest: input.digest });
+        owned.currentVersionId = "new";
+      });
+      const installNew = vi.fn();
+      let previous: IntegrationInstallation | undefined;
+      const install = vi.fn(async (input: Parameters<IntegrationPlatformStore["install"]>[0]) => {
+        await input.beforeInstall?.({} as never);
+        previous = { ...input.installation, createdAt: now, revision: 1, updatedAt: now };
+        return { installation: previous, requestEvents: [] };
+      });
+      const service = platform({
+        adapters: [],
+        store: {
+          plugins: {
+            list: async () => [
+              owned,
+              { ...owned, id: "other", workspaceId: createId("workspace") },
+            ],
+            update,
+            install: installNew,
+          } as never,
+          localMcp: { list: async () => [] } as never,
+          listInstallations: async () => (previous ? [previous] : []),
+          install,
+        },
+      });
+      const input = {
+        directory,
+        workspaceDirectory: "plugins/mine",
+        workspaceId,
+        actorUserId,
+        requestId: "install",
+      };
+      const first = await service.installAgentPlugin(input);
+      expect(update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          pluginId: "owned",
+          workspaceId,
+          source: { workspaceDirectory: "plugins/mine" },
+        }),
+        expect.anything(),
+      );
+      expect(installNew).not.toHaveBeenCalled();
+      expect((await service.installAgentPlugin(input)).installation).toEqual(first.installation);
+      expect(install).toHaveBeenCalledTimes(1);
+      // An administration command records its result in the install, so it never skips it.
+      await service.installAgentPlugin({
+        ...input,
+        administration: {
+          authoritySource: {},
+          idempotencyKey: "same",
+          request: {},
+          requestedBy: actorUserId,
+          type: "plugin.update",
+        },
+      });
+      expect(install).toHaveBeenCalledTimes(2);
+      await mkdir(join(directory, "extra"));
+      await writeFile(join(directory, "extra/code.js"), "new code");
+      await service.installAgentPlugin(input);
+      expect(install).toHaveBeenCalledTimes(3);
+      const elsewhere = createId("workspace");
+      await service.installAgentPlugin({ ...input, workspaceId: elsewhere });
+      expect(installNew).toHaveBeenCalledWith(
+        expect.objectContaining({ workspaceId: elsewhere, name: "mine" }),
+        expect.anything(),
+      );
+      expect(update).toHaveBeenCalledTimes(3);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses an active person-installed name before modifying the installation", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "plugin-clash-"));
+    try {
+      await writeFile(
+        join(directory, "plugin.json"),
+        JSON.stringify({
+          $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+          name: "mine",
+        }),
+      );
+      const workspaceId = createId("workspace");
+      const install = vi.fn();
+      const service = platform({
+        adapters: [],
+        store: {
+          install,
+          plugins: {
+            list: async () => [
+              { name: "mine", scope: "deployment", activations: [{ workspaceId }] },
+            ],
+          } as never,
+        },
+      });
+      await expect(
+        service.installAgentPlugin({
+          directory,
+          workspaceId,
+          actorUserId: createId("user"),
+          requestId: "clash",
+        }),
+      ).rejects.toThrow("Choose a more specific name");
+      expect(install).not.toHaveBeenCalled();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+  it("updates the copy turned on here when older installs left several", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "plugin-copies-"));
+    try {
+      await writeFile(
+        join(directory, "plugin.json"),
+        JSON.stringify({
+          $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+          name: "mine",
+        }),
+      );
+      const workspaceId = createId("workspace");
+      const copy = (id: string, updatedAt: string, on: boolean) => ({
+        id,
+        name: "mine",
+        scope: "workspace",
+        workspaceId,
+        updatedAt: new Date(updatedAt),
+        currentVersionId: "v",
+        versions: [{ id: "v", digest: "old" }],
+        activations: on ? [{ workspaceId }] : [],
+      });
+      const update = vi.fn();
+      const service = platform({
+        adapters: [],
+        store: {
+          plugins: {
+            list: async () => [
+              copy("newer-off", "2026-11-02", false),
+              copy("older-on", "2026-11-01", true),
+            ],
+            update,
+          } as never,
+          localMcp: { list: async () => [] } as never,
+          listInstallations: async () => [],
+          install: async (input: Parameters<IntegrationPlatformStore["install"]>[0]) => {
+            await input.beforeInstall?.({} as never);
+            return {
+              installation: { ...input.installation, createdAt: now, revision: 1, updatedAt: now },
+              requestEvents: [],
+            };
+          },
+        },
+      });
+      await service.installAgentPlugin({
+        directory,
+        workspaceId,
+        actorUserId: createId("user"),
+        requestId: "copies",
+      });
+      expect(update).toHaveBeenCalledWith(
+        expect.objectContaining({ pluginId: "older-on" }),
+        expect.anything(),
+      );
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ["moves an agent's update off a computer that left the Deployment", false],
+    ["keeps an agent's update on its current computer past a removed server's", true],
+  ])("%s", async (_, current) => {
+    const directory = await mkdtemp(join(tmpdir(), "plugin-computer-"));
+    try {
+      await writeFile(
+        join(directory, "plugin.json"),
+        JSON.stringify({
+          $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+          name: "mine",
+        }),
+      );
+      await writeFile(
+        join(directory, "mcp.json"),
+        JSON.stringify({
+          $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+          mcpServers: { camera: { type: "stdio", command: "node", args: ["server.js"] } },
+        }),
+      );
+      const workspaceId = createId("workspace");
+      const gone = createId("runner"),
+        agents = createId("runner"),
+        kept = createId("runner");
+      const previous = {
+        id: createIntegrationId("installation"),
+        pluginId: "owned",
+      } as IntegrationInstallation;
+      let ranOn: unknown;
+      const service = platform({
+        adapters: [],
+        store: {
+          plugins: {
+            list: async () => [
+              {
+                id: "owned",
+                name: "mine",
+                scope: "workspace",
+                workspaceId,
+                updatedAt: new Date(now),
+                currentVersionId: "v",
+                versions: [{ id: "v", digest: "old" }],
+                activations: [{ workspaceId }],
+              },
+            ],
+            update: vi.fn(),
+          } as never,
+          localMcp: {
+            list: async () => [
+              {
+                installationId: previous.id,
+                name: "retired",
+                runnerId: gone,
+                status: current ? "disabled" : "active",
+              },
+              ...(current
+                ? [
+                    {
+                      installationId: previous.id,
+                      name: "camera",
+                      runnerId: kept,
+                      status: "active",
+                    },
+                  ]
+                : []),
+            ],
+            computerName: async (runnerId: unknown) => (runnerId === gone ? null : "Mac"),
+            requestApprovals: async () => [],
+          } as never,
+          computerAppRunner: async () => null,
+          listInstallations: async () => [previous],
+          install: async (input: Parameters<IntegrationPlatformStore["install"]>[0]) => {
+            ranOn = input.servers[0]?.transport;
+            return {
+              installation: { ...input.installation, createdAt: now, revision: 1, updatedAt: now },
+              requestEvents: [],
+            };
+          },
+        },
+      });
+      await service.installAgentPlugin({
+        directory,
+        workspaceId,
+        runnerId: agents,
+        actorUserId: createId("user"),
+        requestId: "computer",
+      });
+      expect(ranOn).toMatchObject({ runnerId: current ? kept : agents, type: "runner" });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a folder update of an agent-made plugin before reading the folder", async () => {
+    const install = vi.fn();
+    const service = platform({
+      adapters: [],
+      store: {
+        install,
+        plugins: {
+          list: async () => [
+            { id: "made", name: "mine", scope: "workspace", workspaceId: createId("workspace") },
+          ],
+        } as never,
+      },
+    });
+    await expect(
+      service.installAgentPlugin({
+        directory: "/deleted/staging",
+        pluginId: "made",
+        actorUserId: createId("user"),
+        requestId: "update",
+      }),
+    ).rejects.toThrow("Agent-made plugins update when an agent installs their folder again.");
+    expect(install).not.toHaveBeenCalled();
+  });
+});
+
+describe("carriesApproval", () => {
+  const mac = createId("runner");
+  const launch = (env: Record<string, string>, secrets: string[] = []) => ({
+    args: [],
+    command: "node",
+    cwd: "/plugin",
+    env,
+    type: "stdio" as const,
+    ...(secrets.length ? { secrets: secrets.map((name) => ({ name, title: name })) } : {}),
+  });
+  const old = launch({ EDITION: "1" }, ["CAMERA_PASSWORD", "OLD_TOKEN"]);
+  const approved = { approvedLaunchDigest: localMcpLaunchDigest(old), status: "active" };
+  it.each([
+    ["new code, same secrets", approved, mac, launch({ EDITION: "2" }, ["CAMERA_PASSWORD"]), true],
+    ["no secrets left", approved, mac, launch({ EDITION: "2" }), true],
+    ["a new secret", approved, mac, launch({ EDITION: "2" }, ["CAMERA_PASSWORD", "NEW"]), false],
+    ["another computer", approved, createId("runner"), launch({ EDITION: "2" }), false],
+    ["declined", { ...approved, status: "disabled" }, mac, launch({ EDITION: "2" }), false],
+    ["never approved", { ...approved, approvedLaunchDigest: null }, mac, launch({}), false],
+    ["waiting on an older answer", { ...approved, approvedLaunchDigest: "other" }, mac, old, false],
+  ])("%s", (_, existing, runnerId, next, carries) => {
+    expect(
+      carriesApproval(existing, { launch: old, runnerId: mac }, { launch: next, runnerId }),
+    ).toBe(carries);
+  });
+});
 
 describe("IntegrationPlatformService definition reconciliation", () => {
   it.each(["startup", "install"] as const)(
@@ -4142,7 +4476,7 @@ describe("IntegrationPlatformService computer use gateway", () => {
       };
       expect(validateJsonSchema(f.inputSchema, args)).toEqual([]);
       const who = runCaller(context);
-      let mcp: IntegrationToolsMcpService | undefined;
+      let mcp: ReturnType<typeof createIntegrationMcpFixture> | undefined;
       const server = createServer((request, response) => {
         void (async () => {
           const chunks: Buffer[] = [];
@@ -4165,17 +4499,17 @@ describe("IntegrationPlatformService computer use gateway", () => {
         if (!address || typeof address === "string")
           throw new Error("MCP test server did not bind");
         const url = new URL(`http://127.0.0.1:${address.port}/mcp`);
-        mcp = new IntegrationToolsMcpService({
+        mcp = createIntegrationMcpFixture({
           definitions: [phone ? phoneDefinition : guiDefinition],
           getWorkspaceForOwner: async () => ({ id: who.run!.workspaceId }),
           runTokens: {
             authenticate: async () => who.run!,
-          } as unknown as IntegrationToolsTokenService,
+          },
           triggerTokens: {
             authenticate: async () => {
               throw new Error("Not a trigger token");
             },
-          } as unknown as TriggerIntegrationToolsTokenService,
+          },
           onWorkspaceEvent: () => undefined,
           platform: f.service,
           publicUrl: url,

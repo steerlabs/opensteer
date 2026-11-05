@@ -19,7 +19,7 @@ runs:
   steps:
     - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
       with:
-        node-version: "24.13.0"
+        node-version: "24.22.2"
     - if: inputs.go == 'true'
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
       with:

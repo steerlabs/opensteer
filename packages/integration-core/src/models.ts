@@ -476,6 +476,52 @@ export const SetIntegrationApplicationSourceDefaultSchema = z.strictObject({
   applicationSource: z.enum(["hosted-oauth", "deployment-oauth"]),
 });
 
+/**
+ * `app`: the consent finishes in the app that started it, which returns the
+ * browser's one-use proof to its own Host. Only apps can receive that return;
+ * a browser-only client stays proven by its Account sign-in.
+ */
+export const IntegrationAuthorizationFinishSchema = z.literal("app");
+
+/**
+ * The ports a desktop app may receive its browser return on. A hostile Host
+ * chooses this value for its own attempts, so it may only name these reserved
+ * ports, never a service a person happens to run on their computer.
+ */
+export const integrationAuthorizationReturnPorts = { first: 48_200, last: 48_215 } as const;
+export const IntegrationAuthorizationReturnPortSchema = z
+  .number()
+  .int()
+  .min(integrationAuthorizationReturnPorts.first)
+  .max(integrationAuthorizationReturnPorts.last);
+
+function refineIntegrationAuthorizationFinish(
+  value: {
+    readonly appReturnPort?: number | undefined;
+    readonly finish?: "app" | undefined;
+    readonly surface: "desktop" | "native" | "web";
+  },
+  context: z.RefinementCtx,
+): void {
+  if (value.finish === "app" && value.surface === "web") {
+    context.addIssue({
+      code: "custom",
+      message: "Only desktop and native apps can finish an authorization",
+      path: ["finish"],
+    });
+  }
+  if (
+    value.appReturnPort !== undefined &&
+    (value.finish !== "app" || value.surface !== "desktop")
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "Only a desktop app finish can return to a port",
+      path: ["appReturnPort"],
+    });
+  }
+}
+
 export const BeginIntegrationAuthorizationSchema = z
   .strictObject({
     applicationSource: z.enum(["hosted-oauth", "deployment-oauth"]).optional(),
@@ -487,6 +533,8 @@ export const BeginIntegrationAuthorizationSchema = z
       .max(2_048)
       .default("/"),
     surface: z.enum(["desktop", "native", "web"]),
+    finish: IntegrationAuthorizationFinishSchema.optional(),
+    appReturnPort: IntegrationAuthorizationReturnPortSchema.optional(),
   })
   .superRefine((value, context) => {
     if (value.applicationSource && value.exactApplicationSource) {
@@ -495,6 +543,7 @@ export const BeginIntegrationAuthorizationSchema = z
         message: "Choose either a legacy source kind or one exact application source",
       });
     }
+    refineIntegrationAuthorizationFinish(value, context);
   });
 
 export const IntegrationAuthorizationAttemptIdSchema = z.union([
@@ -1354,17 +1403,21 @@ export type IntegrationPlatformDashboardView = z.infer<
   typeof IntegrationPlatformDashboardViewSchema
 >;
 
-export const BeginMcpAuthorizationSchema = z.strictObject({
-  requestId: RequestIdSchema,
-  displayName: z.string().trim().min(1).max(160),
-  returnPath: z
-    .string()
-    .regex(/^\/(?!\/)(?!.*\\)[^\p{Cc}]*$/u)
-    .max(2_048)
-    .default("/"),
-  serverId: IntegrationServerIdSchema,
-  surface: z.enum(["desktop", "native", "web"]),
-});
+export const BeginMcpAuthorizationSchema = z
+  .strictObject({
+    requestId: RequestIdSchema,
+    displayName: z.string().trim().min(1).max(160),
+    returnPath: z
+      .string()
+      .regex(/^\/(?!\/)(?!.*\\)[^\p{Cc}]*$/u)
+      .max(2_048)
+      .default("/"),
+    serverId: IntegrationServerIdSchema,
+    surface: z.enum(["desktop", "native", "web"]),
+    finish: IntegrationAuthorizationFinishSchema.optional(),
+    appReturnPort: IntegrationAuthorizationReturnPortSchema.optional(),
+  })
+  .superRefine(refineIntegrationAuthorizationFinish);
 
 export const InstallAgentPluginSchema = z.strictObject({
   directory: z.string().trim().min(1).max(4_096),

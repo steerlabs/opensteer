@@ -14,8 +14,9 @@ import {
   settleWithin,
   writeTransportCloseReport,
 } from "@opensteer/shared/test-support/httpServer";
-import { afterAll, afterEach, describe, expect, it } from "vitest";
-import { CredentialProxy } from "./credential-proxy.js";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { agentTools } from "@opensteer/agent-tools";
+import { CredentialProxy, requestOpeningTools } from "./credential-proxy.js";
 
 /*
  * Ways an engine-facing credential proxy can leak or overreach:
@@ -66,13 +67,7 @@ describe("credential proxy", () => {
   ) {
     const seen: Seen[] = [];
     const server = createServer((request, response) => {
-      if (
-        ignoreForeignTestRequest(
-          request,
-          response,
-          (path) => path === "/internal/v1/mcp" || path === "/internal/v1/integration-mcp",
-        )
-      )
+      if (ignoreForeignTestRequest(request, response, (path) => path === "/internal/v1/mcp"))
         return;
       const chunks: Buffer[] = [];
       request.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -101,16 +96,18 @@ describe("credential proxy", () => {
       maxBodyBytes: 1_024,
       routes: {
         "agent-tools": { token: () => token.current, upstream: `${origin}/internal/v1/mcp` },
-        "integration-tools": {
-          token: () => token.current,
-          upstream: `${origin}/internal/v1/integration-mcp`,
-        },
       },
       transport: { mode: "development" },
     });
     proxies.push(proxy);
     return { proxy, ...(await proxy.start()) };
   }
+
+  it("keeps every Request-opening tool name in the agent catalog", () => {
+    expect(
+      [...requestOpeningTools].filter((name) => !agentTools.some((tool) => tool.name === name)),
+    ).toEqual([]);
+  });
 
   it("forwards with the Host token and never passes the engine's secret on", async () => {
     const host = await upstream((_request, response) => {
@@ -169,6 +166,144 @@ describe("credential proxy", () => {
     expect(rest).toContain("data: last");
   });
 
+  it("parks tool calls with their RPC id, permits setup and protocol traffic, and resets on reuse", async () => {
+    const host = await upstream((_request, response) => {
+      response.writeHead(200, {
+        "content-type": "application/json",
+        "x-opensteer-request-pending": "1",
+      });
+      response.end('{"jsonrpc":"2.0","id":1,"result":{"content":[]}}');
+    });
+    const { proxy, secret, urls } = await proxyFor(host.origin, { current: "host-token" });
+    const onPark = vi.fn();
+    proxy.resume(onPark);
+    const call = (method: string, name?: string, id: number | string = 1) =>
+      fetch(urls["agent-tools"], {
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id,
+          method,
+          ...(name ? { params: { name, arguments: {} } } : {}),
+        }),
+        headers: { authorization: `Bearer ${secret}`, "content-type": "application/json" },
+        method: "POST",
+      });
+    const pending = await call("tools/call", "integration_request");
+    expect(pending.headers.get("x-opensteer-request-pending")).toBeNull();
+    await pending.arrayBuffer();
+    const refused = await call("tools/call", "browser_session_open", "next-tool");
+    expect(refused.status).toBe(200);
+    expect(await refused.json()).toMatchObject({
+      jsonrpc: "2.0",
+      id: "next-tool",
+      result: {
+        isError: true,
+        content: [{ type: "text", text: expect.stringContaining("do not call more tools") }],
+      },
+    });
+    expect(host.seen).toHaveLength(1);
+    for (const name of [
+      "sign_in",
+      "integration_request",
+      "integration_propose",
+      "browser_profile_request",
+      "machine_full_disk_access_request",
+    ])
+      await (await call("tools/call", name)).arrayBuffer();
+    for (const method of ["initialize", "tools/list", "notifications/initialized"])
+      await (await call(method)).arrayBuffer();
+    expect(host.seen).toHaveLength(9);
+    for (const method of ["GET", "DELETE"]) {
+      await (
+        await fetch(urls["agent-tools"], { method, headers: { authorization: `Bearer ${secret}` } })
+      ).arrayBuffer();
+    }
+    expect(host.seen).toHaveLength(11);
+    expect(onPark).toHaveBeenCalledTimes(1);
+    proxy.clearParking();
+    await (await call("tools/call", "browser_session_open")).arrayBuffer();
+    expect(host.seen).toHaveLength(12);
+    expect(onPark).toHaveBeenCalledTimes(2);
+    expect(proxy.parking).toBe(true);
+    proxy.suspend();
+    proxy.resume();
+    await (await call("tools/call", "browser_session_open")).arrayBuffer();
+    expect(host.seen).toHaveLength(13);
+  });
+
+  it("refuses each work call in a batch while forwarding setup and protocol messages", async () => {
+    const host = await upstream((_request, response) => {
+      const message = JSON.parse(host.seen.at(-1)!.body);
+      response.writeHead(message.id === undefined ? 202 : 200, {
+        "content-type": "application/json",
+        "x-opensteer-request-pending": "1",
+      });
+      response.end(
+        message.id === undefined
+          ? undefined
+          : JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { content: [] } }),
+      );
+    });
+    const { secret, urls } = await proxyFor(host.origin, { current: "host-token" });
+    const call = async (body: unknown) =>
+      fetch(urls["agent-tools"], {
+        body: JSON.stringify(body),
+        headers: { authorization: `Bearer ${secret}`, "content-type": "application/json" },
+        method: "POST",
+      });
+    await (
+      await call({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "integration_request" },
+      })
+    ).arrayBuffer();
+    const response = await call([
+      { jsonrpc: "2.0", id: 42, method: "tools/call", params: { name: "thread_list" } },
+      {
+        jsonrpc: "2.0",
+        id: "second",
+        method: "tools/call",
+        params: { name: "browser_session_open" },
+      },
+      {
+        jsonrpc: "2.0",
+        id: "setup",
+        method: "tools/call",
+        params: { name: "browser_profile_request" },
+      },
+      { jsonrpc: "2.0", id: "list", method: "tools/list" },
+      { jsonrpc: "2.0", method: "notifications/initialized" },
+    ]);
+    expect(await response.json()).toEqual([
+      {
+        jsonrpc: "2.0",
+        id: 42,
+        result: {
+          isError: true,
+          content: [{ type: "text", text: expect.stringContaining("This Run is stopping") }],
+        },
+      },
+      {
+        jsonrpc: "2.0",
+        id: "second",
+        result: {
+          isError: true,
+          content: [{ type: "text", text: expect.stringContaining("This Run is stopping") }],
+        },
+      },
+      { jsonrpc: "2.0", id: "setup", result: { content: [] } },
+      { jsonrpc: "2.0", id: "list", result: { content: [] } },
+    ]);
+    expect(host.seen.map(({ body }) => JSON.parse(body).method)).toEqual([
+      "tools/call",
+      "tools/call",
+      "tools/list",
+      "notifications/initialized",
+    ]);
+  });
+
   it("breaks the engine's connection when the Host fails partway through a body", async () => {
     const host = await upstream((_request, response) => {
       response.writeHead(200, { "content-type": "application/json" });
@@ -206,6 +341,13 @@ describe("credential proxy", () => {
     const unknown = await fetch(new URL("/elsewhere", base), {
       headers: { authorization },
     });
+    const retiredRoute = await fetch(
+      urls["agent-tools"].replace(/agent-tools$/u, "integration-tools"),
+      {
+        headers: { authorization },
+      },
+    );
+    expect(retiredRoute.status).toBe(404);
     const put = await fetch(urls["agent-tools"], {
       body: "{}",
       headers: { authorization },
@@ -267,7 +409,7 @@ describe("credential proxy", () => {
     const token = { current: "first" };
     const { secret, urls } = await proxyFor(host.origin, token);
     const call = () =>
-      fetch(urls["integration-tools"], {
+      fetch(urls["agent-tools"], {
         body: "{}",
         headers: { authorization: `Bearer ${secret}` },
         method: "POST",
@@ -279,10 +421,7 @@ describe("credential proxy", () => {
       "Bearer first",
       "Bearer refreshed",
     ]);
-    expect(host.seen.map(({ url }) => url)).toEqual([
-      "/internal/v1/integration-mcp",
-      "/internal/v1/integration-mcp",
-    ]);
+    expect(host.seen.map(({ url }) => url)).toEqual(["/internal/v1/mcp", "/internal/v1/mcp"]);
   });
 
   it("refuses new calls and cuts open streams once revoked", async () => {
@@ -388,7 +527,6 @@ describe("credential proxy", () => {
     const proxy = new CredentialProxy({
       routes: {
         "agent-tools": { token: () => "host-token", upstream: "http://127.0.0.1:9/mcp" },
-        "integration-tools": { token: () => "host-token", upstream: "http://127.0.0.1:9/mcp" },
       },
       transport: { mode: "development" },
     });

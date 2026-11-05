@@ -201,7 +201,7 @@ export interface RunnerLogger {
  *
  * These parts travel as one value because they exist together or not at all: a
  * reach-only computer has no Runtime to hand a command to, no Workspace storage
- * to advertise, and no browser of its own to relay (`docs/computers.md` §2).
+ * to advertise, and no browser of its own to relay (`docs/computers.md#runner-and-desktop`).
  */
 export interface RunnerAgentsConnection {
   readonly earlierBootsContained?: boolean;
@@ -663,7 +663,7 @@ export class ReconnectingHostConnection {
       capabilities: [
         ...runnerCapabilities(),
         ...(harnessDrivers.some((driver) => driver.driverKind === "codex")
-          ? ["voice-v1" as const, "voice-agent-v1" as const, "voice-find-v1" as const]
+          ? ["voice-run-v1" as const]
           : []),
         ...(agents?.earlierBootsContained ? ["earlier-boots-contained-v1" as const] : []),
       ],
@@ -1281,6 +1281,18 @@ class AgentsWorkSession implements RunnerWorkSession {
 
   async handle(message: RunnerWorkMessage): Promise<void> {
     switch (message.type) {
+      case "host.background-text":
+        void this.#options.agents.runtime
+          .generateBackgroundText(message)
+          .then((result) =>
+            this.#options.sink.send({
+              type: "runner.background-text-result",
+              attemptId: message.attemptId,
+              result,
+            }),
+          )
+          .catch(() => undefined);
+        return;
       case "host.reconcile-harnesses":
       case "host.inspect-harnesses":
         this.#answerCatalogRequest(message);
@@ -2096,7 +2108,6 @@ function operationalMessageEffectScope(message: RunnerOperationalReport): string
     case "runner.live":
       return `run:${message.progress.runId}`;
     case "runner.session-bound":
-    case "runner.thread-title":
       return `run:${message.runId}`;
     case "runner.trigger-result":
       return `trigger:${message.output.occurrenceId}`;
@@ -2149,10 +2160,10 @@ function runnerCapabilities(): RunnerCapability[] {
     "network-egress",
     "native-session-continuation-v1",
     "requester-time-zone-v1",
+    "agent-tools-plan-v1",
     "steer-answer-v1",
     "thread-state-v1",
-    "thread-title-v1",
-    "thread-icon-v1",
+    "background-text-v1",
     "task-done-v1",
     "person-show-v1",
   ];

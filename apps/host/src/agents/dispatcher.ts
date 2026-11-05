@@ -1,14 +1,18 @@
+import { agentToolsPlanForRun } from "./agent-tools-plan.js";
 import { SpecialistStore } from "@opensteer/database";
 import {
   ModelSelectionSchema,
   OpensteerError,
   placeInputFailure,
+  runnerAgentToolsFailure,
   RequestIdSchema,
   RequestResponseSchema,
   RunIdSchema,
   SequenceSchema,
   ThreadIdSchema,
+  threadReachScope,
   type AgentEvent,
+  type ThreadId,
   type WorkspaceId,
   type UserId,
 } from "@opensteer/core";
@@ -32,6 +36,7 @@ import {
 } from "@opensteer/orchestration";
 import {
   CorrelationIdSchema,
+  ProtocolErrorSchema,
   HarnessInputSchema,
   RunInitialContextSchema,
   type HarnessInstanceCatalog,
@@ -46,17 +51,13 @@ import {
   type RequestResponseVault,
 } from "../identity/request-response-vault.js";
 import type { PluginPackagesTokenService } from "../integrations/plugin-package-service.js";
-import type {
-  IntegrationToolsTokenService,
-  TriggerIntegrationToolsTokenService,
-} from "../integrations/integration-tools-mcp-service.js";
 import type { EgressService } from "../server/egress-service.js";
 import { computeMachineAccess } from "../shell/machine-access-run-context.js";
 import type { TriggerControlTokenService } from "../triggers/trigger-control-service.js";
 import { triggerProgramCompatibilityReason } from "../triggers/trigger-program-compatibility.js";
 import type { WorkspaceExecutionAccessService } from "../workspace/workspace-execution-access-service.js";
 import type { WorkspaceService } from "../workspace/workspace-service.js";
-import type { AgentControlTokenService } from "./agent-control-service.js";
+import type { RunToolTokenService } from "./run-tool-tokens.js";
 import {
   harnessInspectionDefinition,
   inspectAndRecordHarnessCatalogs,
@@ -110,12 +111,10 @@ const supportedCommandTypes = new Set([
 export class HostCommandDispatcher implements DurableCommandDispatcher {
   readonly #attachmentRunTokens: RunCapabilityTokenService<"opensteer-run-attachments">;
   readonly #attachments: Pick<AttachmentStore, "listForRun">;
-  readonly #agentControlTokens: AgentControlTokenService;
+  readonly #runToolTokens: RunToolTokenService;
   readonly #requestResponseVault: RequestResponseVault;
-  readonly #agentControlUrl: string;
   readonly #agentToolsUrl: string;
   readonly #agentBrowserCdpUrl: string;
-  readonly #integrationToolsUrl: string;
   readonly #pluginVersions: (
     workspaceId: WorkspaceId,
     ownerUserId: UserId,
@@ -126,19 +125,17 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     workspaceId: WorkspaceId,
     ownerUserId: UserId,
   ) => Promise<import("@opensteer/protocol").RunPluginsPlan["workspaceSkillPolicy"]>;
-
-  readonly #integrationToolsTokens: IntegrationToolsTokenService;
   readonly #browser: Pick<BrowserService, "hasBrowserProfileAccess">;
   readonly #browserCdpUrl: string;
   readonly #egress: EgressService;
   readonly #onWorkspaceEvent: (event: AgentEvent) => void;
   readonly #onTriggerChanged: (workspaceId: WorkspaceId) => void;
   readonly #runners: RunnerRegistry;
+  readonly #onRunAdmitted: (threadId: ThreadId) => void;
   readonly #executionLeaseMs: number;
   readonly #executionNow: () => number;
   readonly #store: OpensteerStore;
   readonly #triggerControlTokens: TriggerControlTokenService;
-  readonly #triggerIntegrationToolsTokens: TriggerIntegrationToolsTokenService;
   readonly #triggers: TriggerStore;
   readonly #workspaces: Pick<WorkspaceService, "ensureExecutionReady">;
   readonly #workspaceAccess: WorkspaceExecutionAccessService;
@@ -147,7 +144,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     readonly attachmentRunTokens: RunCapabilityTokenService<"opensteer-run-attachments">;
     readonly attachments: Pick<AttachmentStore, "listForRun">;
     readonly requestResponseVault: RequestResponseVault;
-    readonly agentControlTokens: AgentControlTokenService;
+    readonly runToolTokens: RunToolTokenService;
     readonly browser: Pick<BrowserService, "hasBrowserProfileAccess">;
     readonly onWorkspaceEvent: (event: AgentEvent) => void;
     readonly onTriggerChanged?: (workspaceId: WorkspaceId) => void;
@@ -162,15 +159,14 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       ownerUserId: UserId,
     ) => Promise<import("@opensteer/protocol").RunPluginsPlan["workspaceSkillPolicy"]>;
     readonly pluginsTokens: PluginPackagesTokenService;
-    readonly integrationToolsTokens: IntegrationToolsTokenService;
     readonly egress: EgressService;
     readonly executionLeaseMs: number;
     readonly executionClock?: Pick<import("@opensteer/shared/clock").Clock, "now">;
     readonly publicUrl: URL;
     readonly runners: RunnerRegistry;
+    readonly onRunAdmitted?: (threadId: ThreadId) => void;
     readonly store: OpensteerStore;
     readonly triggerControlTokens: TriggerControlTokenService;
-    readonly triggerIntegrationToolsTokens: TriggerIntegrationToolsTokenService;
     readonly triggers: TriggerStore;
     readonly workspaces: Pick<WorkspaceService, "ensureExecutionReady">;
     readonly workspaceAccess: WorkspaceExecutionAccessService;
@@ -178,30 +174,24 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     this.#attachmentRunTokens = options.attachmentRunTokens;
     this.#attachments = options.attachments;
     this.#requestResponseVault = options.requestResponseVault;
-    this.#agentControlTokens = options.agentControlTokens;
-    this.#agentControlUrl = new URL("/internal/v1/agent-control", options.publicUrl).toString();
+    this.#runToolTokens = options.runToolTokens;
     this.#agentToolsUrl = new URL("/internal/v1/mcp", options.publicUrl).toString();
     this.#agentBrowserCdpUrl = new URL("/internal/v1/browser-cdp", options.publicUrl).toString();
-    this.#integrationToolsUrl = new URL(
-      "/internal/v1/integration-mcp",
-      options.publicUrl,
-    ).toString();
     this.#pluginVersions = options.pluginVersions;
     this.#workspaceSkillPolicy = options.workspaceSkillPolicy ?? (async () => undefined);
     this.#pluginsTokens = options.pluginsTokens;
     this.#pluginsUrl = new URL("/internal/v1/plugin-cache", options.publicUrl).toString();
-    this.#integrationToolsTokens = options.integrationToolsTokens;
     this.#browser = options.browser;
     this.#browserCdpUrl = new URL("/internal/v1/trigger-cdp", options.publicUrl).toString();
     this.#egress = options.egress;
     this.#onWorkspaceEvent = options.onWorkspaceEvent;
     this.#onTriggerChanged = options.onTriggerChanged ?? (() => undefined);
     this.#runners = options.runners;
+    this.#onRunAdmitted = options.onRunAdmitted ?? (() => undefined);
     this.#executionLeaseMs = options.executionLeaseMs;
     this.#executionNow = options.executionClock?.now ?? (() => Date.now());
     this.#store = options.store;
     this.#triggerControlTokens = options.triggerControlTokens;
-    this.#triggerIntegrationToolsTokens = options.triggerIntegrationToolsTokens;
     this.#triggers = options.triggers;
     this.#workspaces = options.workspaces;
     this.#workspaceAccess = options.workspaceAccess;
@@ -241,6 +231,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     }
     if (!command.runId) throw new CommandDispatchError("Run command is missing its run", "failed");
     const context = await this.#store.loadRunDispatchContext(command.id);
+    this.#onRunAdmitted(context.thread.id);
     if (context.thread.specialistId) {
       try {
         await new SpecialistStore(this.#store.database).assertRunnable(
@@ -273,6 +264,12 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     // for rather than taken for one that cannot run this engine.
     const identity = this.#runners.identityForEnvironment(command.environmentId);
     if (!identity) throw new CommandDispatchError("Runner is offline", "retry");
+    if (context.voiceCall && !identity.capabilities.includes("voice-run-v1"))
+      throw new OpensteerError({
+        code: "conflict",
+        reason: "voice-runner-unsupported",
+        message: "Update this computer to run voice calls.",
+      });
     if (!identity.capabilities.includes("native-session-continuation-v1")) {
       throw new CommandDispatchError(
         "Update this Runner to support durable conversation sessions.",
@@ -297,6 +294,8 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         "failed",
       );
     }
+    const toolsFailure = runnerAgentToolsFailure(identity.capabilities);
+    if (toolsFailure) throw new CommandDispatchError(toolsFailure, "failed");
     if (!identity.capabilities.includes("execution-plane-v2")) {
       throw new CommandDispatchError(
         "Update this Runner to the current execution protocol.",
@@ -478,25 +477,10 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       workspace: context.workspace,
     });
 
-    const agentControlToken = this.#agentControlTokens.issue({
+    const toolsToken = this.#runToolTokens.issue({
       bindingGeneration: binding.bindingGeneration,
       grantId: binding.grantId,
       ...(context.thread.specialistId ? { specialistId: context.thread.specialistId } : {}),
-      capabilityProfileId: context.thread.capabilityProfileId,
-      environmentId: context.run.environmentId,
-      membershipGeneration: context.membershipGeneration,
-      requestedBy: command.requestedBy,
-      runId: context.run.id,
-      runnerBootId: identity.bootId,
-      runnerId: identity.runnerId,
-      threadId: context.thread.id,
-      workspaceId: context.workspace.id,
-    });
-    const integrationToolsToken = this.#integrationToolsTokens.issue({
-      bindingGeneration: binding.bindingGeneration,
-      grantId: binding.grantId,
-      ...(context.thread.specialistId ? { specialistId: context.thread.specialistId } : {}),
-      capabilityProfileId: context.thread.capabilityProfileId,
       environmentId: context.run.environmentId,
       membershipGeneration: context.membershipGeneration,
       requestedBy: command.requestedBy,
@@ -537,7 +521,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       bindingGeneration: binding.bindingGeneration,
       grantId: binding.grantId,
       ...(context.thread.specialistId ? { specialistId: context.thread.specialistId } : {}),
-      capabilityProfileId: context.thread.capabilityProfileId,
       environmentId: context.run.environmentId,
       membershipGeneration: context.membershipGeneration,
       requestedBy: command.requestedBy,
@@ -553,7 +536,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
             bindingGeneration: binding.bindingGeneration,
             grantId: binding.grantId,
             ...(context.thread.specialistId ? { specialistId: context.thread.specialistId } : {}),
-            capabilityProfileId: context.thread.capabilityProfileId,
             environmentId: context.run.environmentId,
             membershipGeneration: context.membershipGeneration,
             requestedBy: command.requestedBy,
@@ -575,22 +557,10 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     const runnerCommandFor = (machineAccess: MachineAccessRunContext): RunnerCommand => ({
       commandId: command.id,
       context: {
+        ...(context.voiceCall ? { voiceCall: context.voiceCall } : {}),
         accessMode: context.run.accessMode,
         threadRole: context.thread.role,
         threadState,
-        ...(identity.capabilities.includes("thread-title-v1") &&
-        context.titleRequest &&
-        (context.titleProvisional ||
-          (context.titleRequest.icon && identity.capabilities.includes("thread-icon-v1")))
-          ? {
-              titleRequest: {
-                request: context.titleRequest.request,
-                ...(context.titleRequest.icon && identity.capabilities.includes("thread-icon-v1")
-                  ? { icon: true as const }
-                  : {}),
-              },
-            }
-          : {}),
         assignment: assignment
           ? {
               id: assignment.id,
@@ -600,23 +570,15 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
             }
           : null,
         ...(attachmentPlan ? { attachments: attachmentPlan } : {}),
-        agentControl: {
-          token: agentControlToken,
-          url: this.#agentControlUrl,
-        },
-        agentTools: {
-          capabilityProfileId: context.thread.capabilityProfileId,
-          token: agentControlToken,
+        agentTools: agentToolsPlanForRun({
+          voiceCall: Boolean(context.voiceCall),
+          token: toolsToken,
           url: this.#agentToolsUrl,
-        },
-        browserCdp: {
-          token: agentControlToken,
-          url: this.#agentBrowserCdpUrl,
-        },
-        integrationTools: {
-          token: integrationToolsToken,
-          url: this.#integrationToolsUrl,
-        },
+          role: context.thread.role,
+          accessMode: context.thread.accessMode,
+          reach: threadReachScope(context.thread).kind,
+        }),
+        browserCdp: { url: this.#agentBrowserCdpUrl },
         ...(context.thread.specialistId ? { specialistId: context.thread.specialistId } : {}),
         plugins: {
           ...(workspaceSkillPolicy ? { workspaceSkillPolicy } : {}),
@@ -626,7 +588,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         },
         bindingGeneration: binding.bindingGeneration,
         // Half a token's life leaves the Runner room to retry before any expires.
-        credentialRefreshAfterMs: (this.#agentControlTokens.lifetimeSeconds * 1_000) / 2,
+        credentialRefreshAfterMs: (this.#runToolTokens.lifetimeSeconds * 1_000) / 2,
         executionLeaseMs: this.#executionLeaseMs,
         firstOrdinal: context.firstOrdinal,
         membershipGeneration: context.membershipGeneration,
@@ -784,6 +746,8 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       initial.revision.program.toolContractVersion,
     );
     if (incompatibility) throw new CommandDispatchError(incompatibility, "failed");
+    const toolsFailure = runnerAgentToolsFailure(identity.capabilities);
+    if (toolsFailure) throw new CommandDispatchError(toolsFailure, "failed");
     if (!identity.capabilities.includes("execution-plane-v2")) {
       throw new CommandDispatchError(
         "Update this Runner to the current execution protocol.",
@@ -818,17 +782,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       toolContractVersion: context.revision.program.toolContractVersion,
       workspaceId: context.workspace.id,
     });
-    const integrationToken = this.#triggerIntegrationToolsTokens.issue({
-      environmentId: context.anchorThread.environmentId,
-      executionGeneration,
-      occurrenceId: context.occurrence.id,
-      requestedBy: context.trigger.createdBy,
-      runnerBootId: identity.bootId,
-      runnerId: identity.runnerId,
-      threadId: context.anchorThread.id,
-      toolContractVersion: context.revision.program.toolContractVersion,
-      workspaceId: context.workspace.id,
-    });
     const hasBrowser = await this.#browser.hasBrowserProfileAccess(
       context.trigger.createdBy,
       context.workspace.id,
@@ -841,7 +794,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         browserCdp: hasBrowser ? { token: capabilityToken, url: this.#browserCdpUrl } : null,
         event: context.occurrence.event,
         executionGeneration,
-        integrationMcp: { token: integrationToken, url: this.#integrationToolsUrl },
         mcp: { token: capabilityToken, url: this.#agentToolsUrl },
         occurrenceId: context.occurrence.id,
         program: context.revision.program,
@@ -1004,7 +956,11 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       await this.#runners.dispatch(runnerCommand, signal);
     } catch (error) {
       if (!(error instanceof CommandDispatchError) || error.disposition !== "failed") throw error;
-      for (const event of await this.#store.refuseSteer(command.id, error.message)) {
+      for (const event of await this.#store.refuseSteer(
+        command.id,
+        error.message,
+        ProtocolErrorSchema.safeParse(error.cause).data?.reason,
+      )) {
         this.#onWorkspaceEvent(event);
       }
       return;

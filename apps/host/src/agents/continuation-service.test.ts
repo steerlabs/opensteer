@@ -1,3 +1,6 @@
+import type { BrowserSignInRequestResponse } from "@opensteer/protocol/browser-sources";
+import { createBrowserSessionId } from "@opensteer/protocol";
+import { createHash } from "node:crypto";
 import { OpensteerError, PendingRequestSchema, RequestSchema, createId } from "@opensteer/core";
 import type { Request } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
@@ -26,6 +29,95 @@ type InventoryEntry = Awaited<
 >[number];
 
 describe("ContinuationService", () => {
+  it("uses a human-settled reference and a different key when later outcomes from the same Run arrive", async () => {
+    const answered = RequestSchema.parse({
+      ...fulfilledRequest("browser.access"),
+      settlementProvenance: { sessionId: createId("authSession"), deviceLabel: "Test phone" },
+    });
+    const cancelled = RequestSchema.parse({
+      ...fulfilledRequest("browser.access"),
+      originatingRunId: answered.originatingRunId,
+      createdAt: "2026-08-21T12:00:00.000Z",
+      status: "cancelled",
+      cancellationReason: "resource-deleted",
+      response: null,
+      resolvedBy: null,
+    });
+    const automatic = {
+      ...fulfilledRequest("browser.access"),
+      originatingRunId: answered.originatingRunId,
+      createdAt: "2026-08-21T13:00:00.000Z",
+    };
+    const fixture = makeService([cancelled, automatic, answered]);
+    fixture.service.notify();
+    await fixture.service.close();
+    expect(fixture.enqueueThreadInput).toHaveBeenCalledOnce();
+    expect(fixture.enqueueThreadInput.mock.calls[0]![0].source.referenceId).toBe(answered.id);
+    expect(fixture.enqueueThreadInput.mock.calls[0]![0].content[0].text).toContain(
+      "cancelled (resource-deleted)",
+    );
+    const later = makeService([answered]);
+    later.service.notify();
+    await later.service.close();
+    expect(later.enqueueThreadInput.mock.calls[0]![0].idempotencyKey).not.toBe(
+      fixture.enqueueThreadInput.mock.calls[0]![0].idempotencyKey,
+    );
+  });
+
+  it("holds all a Run's outcomes while a sign-in is still publishing", async () => {
+    const answered = fulfilledRequest("browser.access");
+    const signIn = RequestSchema.parse({
+      ...answered,
+      id: createId("request"),
+      kind: "browser.password-sign-in",
+      payload: {
+        kind: "browser.password-sign-in",
+        computerName: "Test Mac",
+        runnerId: createId("runner"),
+        expiresAt: now,
+        operationId: crypto.randomUUID(),
+        reason: "Read email",
+        sessionId: createBrowserSessionId(),
+        site: "https://example.com",
+      },
+    });
+    const fixture = makeService([answered, signIn], {
+      passwordSignIn: () => ({ publishing: true, loginRef: undefined }),
+    });
+    fixture.service.notify();
+    await fixture.service.close();
+    expect(fixture.enqueueThreadInput).not.toHaveBeenCalled();
+    expect(fixture.recordContinuationAttempt).not.toHaveBeenCalled();
+  });
+  it("batches a Run's outcomes, retaining siblings when one outcome cannot be rendered", async () => {
+    const first = fulfilledRequest("browser.access");
+    const second = {
+      ...fulfilledRequest("integration.access"),
+      originatingRunId: first.originatingRunId,
+    };
+    const broken = RequestSchema.parse({
+      ...fulfilledRequest("browser.access"),
+      originatingRunId: first.originatingRunId,
+      kind: "browser.sign-in",
+      payload: {
+        kind: "browser.sign-in",
+        reason: "Sign in",
+        site: "https://example.com",
+        sessionId: createBrowserSessionId(),
+      },
+    });
+    const fixture = makeService([second, first, broken]);
+    fixture.service.notify();
+    await fixture.service.close();
+    expect(fixture.enqueueThreadInput).toHaveBeenCalledOnce();
+    const input = fixture.enqueueThreadInput.mock.calls[0]![0];
+    expect(input.idempotencyKey).toMatch(/^request-continuation:[a-f0-9]{64}$/);
+    expect(input.content[0].text).toContain(first.id);
+    expect(input.content[0].text).toContain(second.id);
+    expect(input.content[0].text).toContain(broken.id);
+    expect(input.content[0].text).toContain("request_list");
+    expect(fixture.recordContinuationAttempt).toHaveBeenCalledTimes(3);
+  });
   it("settles historical Guest-save continuations without delivering agent instructions", async () => {
     const request = fulfilledRequest("browser.profile.save");
     const fixture = makeService([request]);
@@ -60,7 +152,9 @@ describe("ContinuationService", () => {
     for (const request of requests) {
       expect(fixture.enqueueThreadInput).toHaveBeenCalledWith(
         expect.objectContaining({
-          idempotencyKey: `request-continuation:${request.id}`,
+          idempotencyKey: `request-continuation:${createHash("sha256")
+            .update(JSON.stringify([request.id]))
+            .digest("hex")}`,
           requestedBy: request.requestedBy,
           source: {
             cause: "request-resolved",
@@ -197,6 +291,27 @@ describe("ContinuationService", () => {
 });
 
 describe("continuationMessage", () => {
+  it.each([
+    ["not-set-up", "set up Opensteer Passwords"],
+    ["no-login", "add this login in Opensteer Passwords"],
+    ["off", "turn agent sign-ins back on"],
+    [undefined, null],
+  ] as const)(
+    "offers Passwords a sign-in Chrome couldn't serve as %s allows",
+    async (state, offer) => {
+      const message = await continuationMessage(
+        browserSignInRequest({
+          outcome: "not-signed-in",
+          ...(state === undefined ? {} : { passwords: state }),
+        }),
+        inventory(),
+      );
+      expect(message).toContain("did not decline");
+      if (offer === null) expect(message).not.toContain("Passwords");
+      else expect(message).toContain(offer);
+    },
+  );
+
   it.each(["browser.access", "browser.profile.save"] as const)(
     "names the exact Host-recorded profile for %s",
     async (kind) => {
@@ -207,8 +322,8 @@ describe("continuationMessage", () => {
       });
       expect(await continuationMessage(request, inventory())).toBe(
         kind === "browser.access"
-          ? String.raw`Request ${request.id} was fulfilled. Browser profile "Owner \"renamed\" work" (${profile.id}) is now available to this Workspace. Open it with browser_session_open and profileId ${profile.id}, then continue the task.`
-          : `Request ${request.id} is historical. Create a browser profile before signing in; Guest sign-ins cannot be saved.`,
+          ? String.raw`Request ${request.id} was fulfilled. The person chose browser profile "Owner \"renamed\" work" (${profile.id}); use it for this task even if you suggested another. Open it with browser_session_open and profileId ${profile.id}, then continue the task.`
+          : `Request ${request.id} is historical. Open a named browser profile before signing in, or ask for one with browser_profile_request; Guest sign-ins cannot be saved.`,
       );
     },
   );
@@ -220,7 +335,7 @@ describe("continuationMessage", () => {
       expect(await continuationMessage(request, inventory())).toBe(
         kind === "browser.access"
           ? `Request ${request.id} was fulfilled. Browser profile access is now available; browser_profile_list shows the profiles this Workspace can use. Continue the task.`
-          : `Request ${request.id} is historical. Create a browser profile before signing in; Guest sign-ins cannot be saved.`,
+          : `Request ${request.id} is historical. Open a named browser profile before signing in, or ask for one with browser_profile_request; Guest sign-ins cannot be saved.`,
       );
     },
   );
@@ -236,7 +351,7 @@ describe("continuationMessage", () => {
       expect(await continuationMessage(request, inventory())).toBe(
         kind === "browser.access"
           ? `Request ${request.id} was declined by the user. Browser profiles this Workspace could already use are unchanged: browser_profile_list shows them. Do not request this access again unless the user asks.`
-          : `Request ${request.id} is historical. Create a browser profile before signing in; Guest sign-ins cannot be saved.`,
+          : `Request ${request.id} is historical. Open a named browser profile before signing in, or ask for one with browser_profile_request; Guest sign-ins cannot be saved.`,
       );
     },
   );
@@ -471,6 +586,20 @@ const macGrantId = createIntegrationId("grant");
 const macObserveId = createIntegrationId("tool");
 const macActId = createIntegrationId("tool");
 
+function browserSignInRequest(value: BrowserSignInRequestResponse) {
+  return RequestSchema.parse({
+    ...fulfilledRequest("browser.access"),
+    kind: "browser.sign-in",
+    payload: {
+      kind: "browser.sign-in",
+      reason: "Pull this month's spend",
+      sessionId: `bsn_${crypto.randomUUID()}`,
+      site: "https://brex.com",
+    },
+    response: { kind: "external", value },
+  });
+}
+
 function computerAppAccessRequest(status: "declined" | "fulfilled") {
   const pending = PendingRequestSchema.parse({
     callId: crypto.randomUUID(),
@@ -605,7 +734,10 @@ function entry(
 
 function makeService(
   requests: readonly Request[],
-  options: { enqueueThreadInput?: ReturnType<typeof vi.fn> } = {},
+  options: {
+    enqueueThreadInput?: ReturnType<typeof vi.fn>;
+    passwordSignIn?: ConstructorParameters<typeof ContinuationService>[0]["passwordSignIn"];
+  } = {},
 ) {
   const errors: unknown[] = [];
   const enqueueThreadInput = options.enqueueThreadInput ?? vi.fn(async () => delivery("pending"));
@@ -621,6 +753,7 @@ function makeService(
   const service = new ContinuationService({
     commands: { enqueueThreadInput } as unknown as Pick<CommandService, "enqueueThreadInput">,
     integrations: inventory(),
+    ...(options.passwordSignIn ? { passwordSignIn: options.passwordSignIn } : {}),
     onError: (error) => errors.push(error),
     requests: {
       listPendingContinuations,

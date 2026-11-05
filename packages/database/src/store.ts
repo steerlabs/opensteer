@@ -1,4 +1,10 @@
+import * as backgroundModelStore from "./background-model-store.js";
+import * as voiceStore from "./voice-store.js";
 import * as workspaceSkillInventoryStore from "./workspace-skill-inventory-store.js";
+import {
+  replayAdministrationCommand,
+  type AdministrationCommandIdentity,
+} from "./administration-command.js";
 import { resolveResourceAccess, type ResourceAccessInput } from "./resource-access.js";
 import { type BrowserProfileAccess } from "@opensteer/browser-profile/grant";
 import { type ChannelTransportKind, type IntegrationConnectionId } from "@opensteer/channel-core";
@@ -72,11 +78,11 @@ import {
 import type { Clock } from "@opensteer/shared/clock";
 import { type Kysely } from "kysely";
 import {
-  type AgentControlAdmissionInput,
-  type AgentControlAdmissionResult,
+  type RunToolAdmissionInput,
+  type RunToolAdmissionResult,
   type TriggerControlAdmissionInput,
   type TriggerControlAdmissionResult,
-} from "./agent-control-admission.js";
+} from "./run-tool-admission.js";
 import {
   assignmentTreeThreadIds,
   type CancelAssignmentInput,
@@ -242,6 +248,22 @@ export class OpensteerStore {
     );
   }
 
+  async startVoiceCall(input: Parameters<typeof voiceStore.startVoiceCall>[2]) {
+    return this.#announceRevokedGrants(
+      await voiceStore.startVoiceCall(this.#database, this.#links, input),
+    );
+  }
+  resolveVoiceCall(ownerId: UserId, sessionId: string) {
+    return voiceStore.resolveVoiceCall(this.#database, ownerId, sessionId);
+  }
+  voiceCallForRun(runId: RunId) {
+    return voiceStore.voiceCallForRun(this.#database, runId);
+  }
+  async stopVoiceCall(ownerId: UserId, sessionId: string) {
+    const result = await voiceStore.stopVoiceCall(this.#database, this.#links, ownerId, sessionId);
+    if (result) this.#announceRevokedGrants(result);
+    return result;
+  }
   get database(): Kysely<DatabaseSchema> {
     return this.#database;
   }
@@ -479,7 +501,11 @@ export class OpensteerStore {
   async revokeRunner(
     runnerId: RunnerId,
     ownerId: UserId,
-    options: { readonly allowDeployment?: boolean; readonly allowOtherOwners?: boolean } = {},
+    options: {
+      readonly administration?: AdministrationCommandIdentity | undefined;
+      readonly allowDeployment?: boolean;
+      readonly allowOtherOwners?: boolean;
+    } = {},
   ): Promise<{
     readonly cancelledRequestIds: readonly RequestId[];
     readonly closedBrowserSessions: readonly BrowserSessionId[];
@@ -494,7 +520,10 @@ export class OpensteerStore {
     runnerId: RunnerId,
     ownerId: UserId,
     name: string,
-    options: { readonly allowDeployment?: boolean } = {},
+    options: {
+      readonly administration?: AdministrationCommandIdentity | undefined;
+      readonly allowDeployment?: boolean;
+    } = {},
   ): Promise<void> {
     return runnerStore.renameRunner(this.#database, runnerId, ownerId, name, options);
   }
@@ -699,6 +728,7 @@ export class OpensteerStore {
   }
 
   async renameBrowserProfile(input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
     readonly name: string;
     readonly ownerId: UserId;
     readonly profileId: BrowserProfileId;
@@ -707,6 +737,7 @@ export class OpensteerStore {
   }
 
   async deleteBrowserProfile(input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
     readonly ownerId: UserId;
     readonly profileId: BrowserProfileId;
   }) {
@@ -1035,8 +1066,14 @@ export class OpensteerStore {
   async revokeBrowserProfileGrant(
     grantId: BrowserProfileGrantId,
     revokedBy: UserId,
+    administration?: AdministrationCommandIdentity | undefined,
   ): Promise<RevokedBrowserProfileGrantRecord> {
-    return browserSessionStore.revokeBrowserProfileGrant(this.#database, grantId, revokedBy);
+    return browserSessionStore.revokeBrowserProfileGrant(
+      this.#database,
+      grantId,
+      revokedBy,
+      administration,
+    );
   }
 
   async recordChannelCredentialAccess(input: {
@@ -1081,7 +1118,12 @@ export class OpensteerStore {
     return harnessStore.getHarnessInstance(this.#database, id);
   }
 
+  replayAdministrationCommand(identity: AdministrationCommandIdentity) {
+    return replayAdministrationCommand(this.#database, identity);
+  }
+
   async updateHarnessInstance(input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
     readonly config?: unknown;
     readonly expectedRuntimeRevision?: number;
     readonly enabled?: boolean;
@@ -1092,6 +1134,7 @@ export class OpensteerStore {
   }
 
   async setDefaultHarnessInstance(input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
     readonly environmentId: EnvironmentId;
     readonly harnessInstanceId: HarnessInstanceId;
   }): Promise<HarnessInstanceRecord> {
@@ -1134,6 +1177,16 @@ export class OpensteerStore {
     return harnessStore.getHarnessCatalog(this.#database, environmentId, harnessInstanceId);
   }
 
+  async getAutomaticModelConfig(userId: UserId) {
+    return backgroundModelStore.getAutomaticModelConfig(this.#database, userId);
+  }
+  /** Person-only: agents and filesystem JSON never change automatic-model eligibility. */
+  async setAutomaticModelConfig(
+    userId: UserId,
+    config: import("@opensteer/core").AutomaticModelConfig,
+  ) {
+    return backgroundModelStore.setAutomaticModelConfig(this.#database, userId, config);
+  }
   async getExecutionPreferences(userId: UserId): Promise<ExecutionPreferences> {
     return harnessStore.getExecutionPreferences(this.#database, userId);
   }
@@ -1141,8 +1194,9 @@ export class OpensteerStore {
   async rememberExecutionChoice(
     userId: UserId,
     choice: ExecutionChoice,
+    administration?: AdministrationCommandIdentity | undefined,
   ): Promise<ExecutionPreferences> {
-    return harnessStore.rememberExecutionChoice(this.#database, userId, choice);
+    return harnessStore.rememberExecutionChoice(this.#database, userId, choice, administration);
   }
 
   async hasActiveRunForHarness(
@@ -1191,6 +1245,8 @@ export class OpensteerStore {
   }
 
   async setWorkspaceIcon(input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
+    readonly authoritySource?: Readonly<Record<string, unknown>>;
     readonly icon: WorkspaceIconName | null;
     readonly idempotencyKey: string;
     readonly requestedBy: UserId;
@@ -1206,6 +1262,7 @@ export class OpensteerStore {
   }
 
   async requestWorkspaceDeletion(input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
     readonly purgeAfter: Date;
     readonly requestedBy: UserId;
     readonly workspaceId: WorkspaceId;
@@ -1217,6 +1274,7 @@ export class OpensteerStore {
   }
 
   async recoverWorkspaceDeletion(input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
     readonly requestedBy: UserId;
     readonly workspaceId: WorkspaceId;
   }): Promise<Workspace> {
@@ -1277,6 +1335,10 @@ export class OpensteerStore {
     userId: UserId,
   ): Promise<WorkspaceFilesAdmission | null> {
     return workspaceStore.admitWorkspaceFiles(this.#database, workspaceId, userId);
+  }
+
+  completeWorkspaceStorageRetry(identity: AdministrationCommandIdentity, workspaceId: WorkspaceId) {
+    return workspaceStore.completeWorkspaceStorageRetry(this.#database, identity, workspaceId);
   }
 
   async setWorkspaceStorageState(input: {
@@ -1412,10 +1474,8 @@ export class OpensteerStore {
     };
   }
 
-  admitAgentControlRequest(
-    input: AgentControlAdmissionInput,
-  ): Promise<AgentControlAdmissionResult> {
-    return threadStore.admitAgentControlRequest(this.#database, input, this.#executionNow);
+  admitRunToolCall(input: RunToolAdmissionInput): Promise<RunToolAdmissionResult> {
+    return threadStore.admitRunToolCall(this.#database, input, this.#executionNow);
   }
 
   admitTriggerControlRequest(
@@ -1461,7 +1521,7 @@ export class OpensteerStore {
   }
 
   async cancelAssignment(
-    input: CancelAssignmentInput & { readonly admission?: AgentControlAdmissionInput },
+    input: CancelAssignmentInput & { readonly admission?: RunToolAdmissionInput },
   ): Promise<CancelAssignmentResult> {
     return this.#announceRevokedGrants(
       await threadStore.cancelAssignment(this.#database, this.#links, input, this.#executionNow),
@@ -1494,6 +1554,7 @@ export class OpensteerStore {
   }
 
   async resumeThreadInputQueue(input: {
+    readonly authority?: import("./thread-caller.js").ThreadCallerAuthority;
     readonly idempotencyKey: string;
     readonly requestedBy: UserId;
     readonly threadId: ThreadId;
@@ -1523,6 +1584,14 @@ export class OpensteerStore {
     input: Parameters<typeof threadStore.setThreadIcon>[1],
   ): Promise<ThreadUpdateResult> {
     return threadStore.setThreadIcon(this.#database, input);
+  }
+
+  getThreadNamingInput(threadId: ThreadId) {
+    return executionStore.getThreadNamingInput(this.#database, threadId);
+  }
+
+  listThreadNamingCandidates(limit = 100, after?: ThreadId) {
+    return executionStore.listThreadNamingCandidates(this.#database, limit, after);
   }
 
   applyGeneratedThreadName(
@@ -1584,6 +1653,7 @@ export class OpensteerStore {
   }
 
   async getThreadInputQueue(input: {
+    readonly authority?: import("./thread-caller.js").ThreadCallerAuthority;
     readonly threadId: ThreadId;
     readonly requestedBy: UserId;
   }): Promise<ThreadInputQueue> {
@@ -1695,8 +1765,12 @@ export class OpensteerStore {
     );
   }
 
-  async refuseSteer(commandId: CommandRow["id"], reason: string): Promise<readonly AgentEvent[]> {
-    return commandStore.refuseSteer(this.#database, commandId, reason);
+  async refuseSteer(
+    commandId: CommandRow["id"],
+    reason: string,
+    reasonCode?: string,
+  ): Promise<readonly AgentEvent[]> {
+    return commandStore.refuseSteer(this.#database, commandId, reason, reasonCode);
   }
 
   async markSteerUnknown(

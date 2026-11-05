@@ -2,9 +2,9 @@ import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { AgentThreadSummarySchema } from "@opensteer/protocol";
 import { ThreadSchema } from "@opensteer/core";
 import { TriggerSchema, TriggerRevisionSchema } from "../../packages/triggers/src/models.js";
+import { ThreadWriteOutputSchema } from "../../packages/agent-tools/src/tools/outputs.js";
 import { CaseSchema, inputForCaseTurn, parseCases } from "./cases.js";
 import { grade, gradeWorkspaceFiles, gradeToolBoundary } from "./grader.js";
 import { startFakeHost } from "./host.js";
@@ -161,7 +161,7 @@ it("offers every expected call and uses production-shaped control fixtures", asy
       for (const result of results(c.mocks.thread_read))
         expect(() => ThreadSchema.parse(result.thread)).not.toThrow();
       for (const result of results(c.mocks.thread_write))
-        expect(() => AgentThreadSummarySchema.parse(result.thread)).not.toThrow();
+        expect(() => ThreadWriteOutputSchema.shape.thread.parse(result.thread)).not.toThrow();
     }
   }
 });
@@ -351,15 +351,4 @@ it("rejects erasure that drops standing instructions outside the Memory section"
   } finally {
     await rm(root, { recursive: true, force: true });
   }
-});
-
-it("requires a model decision but accepts an explicit which-model question", async () => {
-  const c = (await memoryCases()).find((c) => c.id === "memory-reenable-after-erasure")!;
-  const e = CaseSchema.shape.expect.parse({ textMust: c.expect.textMust });
-  for (const text of [
-    "Choose a model for the light pass.",
-    "Which model should the light pass use?",
-  ])
-    expect(grade(e, [], text).every((check) => check.pass)).toBe(true);
-  expect(grade(e, [], "The light model is configured.").every((check) => check.pass)).toBe(false);
 });

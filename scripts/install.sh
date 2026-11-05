@@ -102,6 +102,7 @@ current() {
   [ -e "$app" ] || return 1
   installed=$(plist "$app" CFBundleShortVersionString)
   printf '%s\n' "$installed" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || fail 'Invalid installed version.'
+  if [ "$installed" = "$version" ] && [ "$(plist "$app" CFBundleName)" = 'Opensteer (Beta)' ]; then return 1; fi
   awk -v a="$installed" -v b="$version" 'BEGIN {split(a,x,".");split(b,y,".");for(i=1;i<=3;i++){if(x[i]+0>y[i]+0)exit 0;if(x[i]+0<y[i]+0)exit 1}exit 0}'
 }
 if current; then launch; exit 0; fi

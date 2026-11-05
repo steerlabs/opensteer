@@ -1,3 +1,8 @@
+import {
+  assertThreadCaller,
+  lockThreadCaller,
+  type ThreadCallerAuthority,
+} from "./thread-caller.js";
 import { recordPersonWaited } from "./run-visibility.js";
 import { readRequestSettlementActor, requestSettlementActor } from "./request-settlement.js";
 import { lockRunProjectionRows } from "./run-projection-locks.js";
@@ -94,6 +99,7 @@ export type RunnerControlInput =
       readonly runId: RunId;
       readonly threadId: ThreadId;
       readonly type: "run.interrupt";
+      readonly authority?: ThreadCallerAuthority;
     }
   | {
       readonly idempotencyKey: string;
@@ -796,303 +802,319 @@ export async function enqueueRunnerControl(
       255,
     );
   }
+  return withDatabaseTransaction(database, (transaction) =>
+    enqueueRunnerControlInTransaction(transaction, links, input),
+  );
+}
+
+export async function enqueueRunnerControlInTransaction(
+  transaction: Transaction<DatabaseSchema>,
+  links: ChannelLinks,
+  input: RunnerControlInput,
+) {
   const controlPayload = canonicalRunnerControlInput(input);
-  return withDatabaseTransaction(database, async (transaction) => {
-    await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
-    const existing = await findCommandByIdempotency(
+
+  await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
+  if (input.type === "run.interrupt")
+    await lockThreadCaller(transaction, input.authority, [input.runId]);
+  const existing = await findCommandByIdempotency(
+    transaction,
+    input.requestedBy,
+    input.idempotencyKey,
+  );
+  if (existing) {
+    const comparableExistingPayload =
+      input.type === "request.respond" ? omitRequestResponse(existing.payload) : existing.payload;
+    if (
+      existing.type !== input.type ||
+      existing.threadId !== input.threadId ||
+      !isDeepStrictEqual(comparableExistingPayload, controlPayload)
+    ) {
+      throw idempotencyConflict(input.idempotencyKey);
+    }
+    const existingWorkspace = await transaction
+      .selectFrom("threads")
+      .select("workspaceId")
+      .where("id", "=", input.threadId)
+      .executeTakeFirstOrThrow();
+    await requireActiveWorkspaceMembership(
+      transaction,
+      existingWorkspace.workspaceId,
+      input.requestedBy,
+    );
+    if (input.type === "run.interrupt") {
+      await assertThreadCaller(transaction, input.authority, { threadId: input.threadId });
+    }
+    return { command: existing, events: [], revokedGrants: [], wasDuplicate: true };
+  }
+  const thread = await transaction
+    .selectFrom("threads")
+    .select(["environmentId", "id", "role", "status", "workspaceId"])
+    .where("id", "=", input.threadId)
+    .executeTakeFirst();
+  if (!thread) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
+  let targetRunStatus: RunRow["status"] | null = null;
+  let targetRunBound = false;
+  {
+    const run = await transaction
+      .selectFrom("runs")
+      .select(["bindingGeneration", "id", "requestedBy", "status", "threadId"])
+      .where("id", "=", input.runId)
+      .forNoKeyUpdate()
+      .executeTakeFirst();
+    if (!run || run.threadId !== input.threadId) {
+      throw new OpensteerError({ code: "not_found", message: "Run not found for thread" });
+    }
+    if (["completed", "failed", "interrupted"].includes(run.status)) {
+      throw new OpensteerError({ code: "conflict", message: "Run is already terminal" });
+    }
+    targetRunStatus = run.status;
+    targetRunBound = run.bindingGeneration !== null;
+    await transaction
+      .selectFrom("workspaces")
+      .select("id")
+      .where("id", "=", thread.workspaceId)
+      .forNoKeyUpdate()
+      .executeTakeFirstOrThrow();
+    const membership = await requireActiveWorkspaceMembership(
+      transaction,
+      thread.workspaceId,
+      input.requestedBy,
+      true,
+    );
+    if (
+      input.type === "run.interrupt" &&
+      run.requestedBy !== input.requestedBy &&
+      membership.role !== "owner"
+    ) {
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Only a Workspace owner may stop another member's Run",
+      });
+    }
+    if (input.type === "request.respond" && run.status !== "waiting") {
+      throw new OpensteerError({ code: "conflict", message: "Run is not awaiting a Request" });
+    }
+    if (input.type === "request.respond" && !(await runHasActiveGrant(transaction, run.id))) {
+      throw new OpensteerError({
+        code: "conflict",
+        message: "This Run was stopped, so it no longer takes answers",
+      });
+    }
+  }
+  if (input.type === "run.interrupt")
+    await assertThreadCaller(transaction, input.authority, { threadId: input.threadId });
+  const controlEvents: AgentEvent[] = [];
+  // A Run the dispatcher has not bound yet has never reached a Runner, and
+  // under this lock it never will: binding requires `starting`. It ends
+  // here, as a queued Run does, rather than waiting on an interrupt the
+  // Runner would answer for a Run it does not hold.
+  const endsHere =
+    input.type === "run.interrupt" &&
+    (targetRunStatus === "queued" || (targetRunStatus === "starting" && !targetRunBound));
+  if (input.type === "run.interrupt") {
+    await lockThreadRow(transaction, thread.id);
+    if (thread.role === "conversation") {
+      // Stopping a conversation's reply ends that exchange; the conversation
+      // stays open, so the person's next message is answered without a Resume.
+      await lockRunProjectionRows(transaction, {
+        runIds: [input.runId],
+        threadIds: [thread.id],
+      });
+      controlEvents.push(...(await settleStoppedConversationInputs(transaction, input.runId)));
+    } else {
+      await transaction
+        .updateTable("threads")
+        .set({
+          inputQueuePaused: true,
+          inputQueuePausedBy: sql<UserId>`case
+              when input_queue_paused then input_queue_paused_by
+              else ${input.requestedBy}
+            end`,
+          updatedAt: new Date(),
+        })
+        .where("id", "=", thread.id)
+        .execute();
+      controlEvents.push(
+        await appendHostWorkspaceEvent(transaction, {
+          data: { paused: true },
+          environmentId: thread.environmentId,
+          runId: null,
+          threadId: thread.id,
+          type: "thread.input-queue-updated",
+          workspaceId: thread.workspaceId,
+        }),
+      );
+    }
+    // Finalizing a Run that ends here settles its Requests and Thread state.
+    if (!endsHere) {
+      // Nothing a stopped Run asked for can be answered any more.
+      controlEvents.push(
+        ...(await cancelPending(transaction, {
+          reason: "run-ended",
+          resolvedAt: new Date(),
+          runId: input.runId,
+        })),
+      );
+      // With nothing left to answer, the Run is running again until it stops.
+      await transaction
+        .updateTable("runs")
+        .set({ status: "running" })
+        .where("id", "=", input.runId)
+        .where("status", "=", "waiting")
+        .execute();
+      controlEvents.push(...(await projectThreadState(transaction, thread.id)));
+    }
+  }
+  const actorPrincipalId = await principalIdForUser(transaction, input.requestedBy);
+  let reservedRequest: {
+    readonly requestId: RequestId;
+    readonly response: RequestResponse;
+  } | null = null;
+  if (input.type === "request.respond") {
+    const pending = await transaction
+      .selectFrom("requests")
+      .selectAll()
+      .where("id", "=", input.requestId)
+      .forNoKeyUpdate()
+      .executeTakeFirst();
+    if (
+      !pending ||
+      pending.status !== "pending" ||
+      pending.responseCommandId !== null ||
+      pending.mode !== "live" ||
+      pending.originatingRunId !== input.runId ||
+      pending.originatingThreadId !== input.threadId
+    ) {
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Response does not match the Run's pending Request",
+      });
+    }
+    const request = requestFromRow(pending);
+    const membership = await requireActiveWorkspaceMembership(
+      transaction,
+      thread.workspaceId,
+      input.requestedBy,
+    );
+    if (request.requiredActor === "requester" && request.requestedBy !== input.requestedBy) {
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Only the member this Request targets may answer it",
+      });
+    }
+    if (request.requiredActor === "workspace-owner" && membership.role !== "owner") {
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Only a Workspace owner may answer this Request",
+      });
+    }
+    if (request.requiredActor === "administrator") {
+      const actor = await transaction
+        .selectFrom("users")
+        .select("instanceRole")
+        .where("id", "=", input.requestedBy)
+        .executeTakeFirstOrThrow();
+      if (actor.instanceRole !== "administrator") {
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Only an administrator may answer this Request",
+        });
+      }
+    }
+    const containsSecrets = hasSecretRequestFields(request);
+    assertRequestResponse(request, input.response, containsSecrets);
+    reservedRequest = {
+      requestId: input.requestId,
+      response: redactSecretRequestAnswers(request, input.response),
+    };
+  }
+  const command = await persistRunnerControlCommand(transaction, {
+    actorPrincipalId,
+    authoritySource: jsonValue({
+      kind: "workspace-membership",
+      userId: input.requestedBy,
+    }),
+    dispatcherId: null,
+    environmentId: thread.environmentId,
+    id: createId("command"),
+    idempotencyKey: input.idempotencyKey,
+    lastError: null,
+    payload: jsonValue(
+      reservedRequest
+        ? {
+            ...controlPayload,
+            response: reservedRequest.response,
+            settlementProvenance: await readRequestSettlementActor(
+              transaction,
+              input.requestedBy,
+              input.type === "request.respond" ? input.settlementSessionId : undefined,
+            ),
+          }
+        : controlPayload,
+    ),
+    ...(input.type === "request.respond"
+      ? {
+          encryptedRequestResponse: input.sealedResponse.envelope,
+          requestResponseKeyVersion: input.sealedResponse.keyVersion,
+        }
+      : {}),
+    requestedBy: input.requestedBy,
+    runId: input.runId,
+    status: "pending",
+    threadId: input.threadId,
+    type: input.type,
+  });
+  if (reservedRequest) {
+    const reserved = await transaction
+      .updateTable("requests")
+      .set({ responseCommandId: command.id })
+      .where("id", "=", reservedRequest.requestId)
+      .where("status", "=", "pending")
+      .where("responseCommandId", "is", null)
+      .executeTakeFirst();
+    if (reserved.numUpdatedRows !== 1n) {
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Request response is already in flight",
+      });
+    }
+  }
+  if (endsHere) {
+    const events = await finalizeRunTransaction(transaction, {
+      completedAt: new Date(),
+      links,
+      source: "host",
+      queuedInputCancellation: "activation-input",
+      runId: input.runId,
+      status: "interrupted",
+    });
+    const interruptedCommand = await transaction
+      .updateTable("commands")
+      .set({ lastError: null, status: "succeeded", updatedAt: new Date() })
+      .where("id", "=", command.id)
+      .returningAll()
+      .executeTakeFirstOrThrow();
+    return {
+      command: interruptedCommand,
+      events: [...controlEvents, ...events],
+      revokedGrants: [],
+      wasDuplicate: false,
+    };
+  }
+  // Stopping ends what the Run may do now, not only once the Runner has
+  // wound it down: its tools stop working while the interrupt is delivered.
+  const revokedGrants =
+    input.type === "run.interrupt"
+      ? await revokeRunGrants(transaction, [input.runId], "stopped")
+      : [];
+  if (reservedRequest)
+    await requestSettlementActor(
       transaction,
       input.requestedBy,
-      input.idempotencyKey,
+      input.type === "request.respond" ? input.settlementSessionId : undefined,
     );
-    if (existing) {
-      const comparableExistingPayload =
-        input.type === "request.respond" ? omitRequestResponse(existing.payload) : existing.payload;
-      if (
-        existing.type !== input.type ||
-        existing.threadId !== input.threadId ||
-        !isDeepStrictEqual(comparableExistingPayload, controlPayload)
-      ) {
-        throw idempotencyConflict(input.idempotencyKey);
-      }
-      const existingWorkspace = await transaction
-        .selectFrom("threads")
-        .select("workspaceId")
-        .where("id", "=", input.threadId)
-        .executeTakeFirstOrThrow();
-      await requireActiveWorkspaceMembership(
-        transaction,
-        existingWorkspace.workspaceId,
-        input.requestedBy,
-      );
-      return { command: existing, events: [], revokedGrants: [], wasDuplicate: true };
-    }
-    const thread = await transaction
-      .selectFrom("threads")
-      .select(["environmentId", "id", "role", "status", "workspaceId"])
-      .where("id", "=", input.threadId)
-      .executeTakeFirst();
-    if (!thread) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
-    let targetRunStatus: RunRow["status"] | null = null;
-    let targetRunBound = false;
-    {
-      const run = await transaction
-        .selectFrom("runs")
-        .select(["bindingGeneration", "id", "requestedBy", "status", "threadId"])
-        .where("id", "=", input.runId)
-        .forNoKeyUpdate()
-        .executeTakeFirst();
-      if (!run || run.threadId !== input.threadId) {
-        throw new OpensteerError({ code: "not_found", message: "Run not found for thread" });
-      }
-      if (["completed", "failed", "interrupted"].includes(run.status)) {
-        throw new OpensteerError({ code: "conflict", message: "Run is already terminal" });
-      }
-      targetRunStatus = run.status;
-      targetRunBound = run.bindingGeneration !== null;
-      await transaction
-        .selectFrom("workspaces")
-        .select("id")
-        .where("id", "=", thread.workspaceId)
-        .forNoKeyUpdate()
-        .executeTakeFirstOrThrow();
-      const membership = await requireActiveWorkspaceMembership(
-        transaction,
-        thread.workspaceId,
-        input.requestedBy,
-        true,
-      );
-      if (
-        input.type === "run.interrupt" &&
-        run.requestedBy !== input.requestedBy &&
-        membership.role !== "owner"
-      ) {
-        throw new OpensteerError({
-          code: "forbidden",
-          message: "Only a Workspace owner may stop another member's Run",
-        });
-      }
-      if (input.type === "request.respond" && run.status !== "waiting") {
-        throw new OpensteerError({ code: "conflict", message: "Run is not awaiting a Request" });
-      }
-      if (input.type === "request.respond" && !(await runHasActiveGrant(transaction, run.id))) {
-        throw new OpensteerError({
-          code: "conflict",
-          message: "This Run was stopped, so it no longer takes answers",
-        });
-      }
-    }
-    const controlEvents: AgentEvent[] = [];
-    // A Run the dispatcher has not bound yet has never reached a Runner, and
-    // under this lock it never will: binding requires `starting`. It ends
-    // here, as a queued Run does, rather than waiting on an interrupt the
-    // Runner would answer for a Run it does not hold.
-    const endsHere =
-      input.type === "run.interrupt" &&
-      (targetRunStatus === "queued" || (targetRunStatus === "starting" && !targetRunBound));
-    if (input.type === "run.interrupt") {
-      await lockThreadRow(transaction, thread.id);
-      if (thread.role === "conversation") {
-        // Stopping a conversation's reply ends that exchange; the conversation
-        // stays open, so the person's next message is answered without a Resume.
-        await lockRunProjectionRows(transaction, {
-          runIds: [input.runId],
-          threadIds: [thread.id],
-        });
-        controlEvents.push(...(await settleStoppedConversationInputs(transaction, input.runId)));
-      } else {
-        await transaction
-          .updateTable("threads")
-          .set({
-            inputQueuePaused: true,
-            inputQueuePausedBy: sql<UserId>`case
-                when input_queue_paused then input_queue_paused_by
-                else ${input.requestedBy}
-              end`,
-            updatedAt: new Date(),
-          })
-          .where("id", "=", thread.id)
-          .execute();
-        controlEvents.push(
-          await appendHostWorkspaceEvent(transaction, {
-            data: { paused: true },
-            environmentId: thread.environmentId,
-            runId: null,
-            threadId: thread.id,
-            type: "thread.input-queue-updated",
-            workspaceId: thread.workspaceId,
-          }),
-        );
-      }
-      // Finalizing a Run that ends here settles its Requests and Thread state.
-      if (!endsHere) {
-        // Nothing a stopped Run asked for can be answered any more.
-        controlEvents.push(
-          ...(await cancelPending(transaction, {
-            reason: "run-ended",
-            resolvedAt: new Date(),
-            runId: input.runId,
-          })),
-        );
-        // With nothing left to answer, the Run is running again until it stops.
-        await transaction
-          .updateTable("runs")
-          .set({ status: "running" })
-          .where("id", "=", input.runId)
-          .where("status", "=", "waiting")
-          .execute();
-        controlEvents.push(...(await projectThreadState(transaction, thread.id)));
-      }
-    }
-    const actorPrincipalId = await principalIdForUser(transaction, input.requestedBy);
-    let reservedRequest: {
-      readonly requestId: RequestId;
-      readonly response: RequestResponse;
-    } | null = null;
-    if (input.type === "request.respond") {
-      const pending = await transaction
-        .selectFrom("requests")
-        .selectAll()
-        .where("id", "=", input.requestId)
-        .forNoKeyUpdate()
-        .executeTakeFirst();
-      if (
-        !pending ||
-        pending.status !== "pending" ||
-        pending.responseCommandId !== null ||
-        pending.mode !== "live" ||
-        pending.originatingRunId !== input.runId ||
-        pending.originatingThreadId !== input.threadId
-      ) {
-        throw new OpensteerError({
-          code: "conflict",
-          message: "Response does not match the Run's pending Request",
-        });
-      }
-      const request = requestFromRow(pending);
-      const membership = await requireActiveWorkspaceMembership(
-        transaction,
-        thread.workspaceId,
-        input.requestedBy,
-      );
-      if (request.requiredActor === "requester" && request.requestedBy !== input.requestedBy) {
-        throw new OpensteerError({
-          code: "forbidden",
-          message: "Only the member this Request targets may answer it",
-        });
-      }
-      if (request.requiredActor === "workspace-owner" && membership.role !== "owner") {
-        throw new OpensteerError({
-          code: "forbidden",
-          message: "Only a Workspace owner may answer this Request",
-        });
-      }
-      if (request.requiredActor === "administrator") {
-        const actor = await transaction
-          .selectFrom("users")
-          .select("instanceRole")
-          .where("id", "=", input.requestedBy)
-          .executeTakeFirstOrThrow();
-        if (actor.instanceRole !== "administrator") {
-          throw new OpensteerError({
-            code: "forbidden",
-            message: "Only an administrator may answer this Request",
-          });
-        }
-      }
-      const containsSecrets = hasSecretRequestFields(request);
-      assertRequestResponse(request, input.response, containsSecrets);
-      reservedRequest = {
-        requestId: input.requestId,
-        response: redactSecretRequestAnswers(request, input.response),
-      };
-    }
-    const command = await persistRunnerControlCommand(transaction, {
-      actorPrincipalId,
-      authoritySource: jsonValue({
-        kind: "workspace-membership",
-        userId: input.requestedBy,
-      }),
-      dispatcherId: null,
-      environmentId: thread.environmentId,
-      id: createId("command"),
-      idempotencyKey: input.idempotencyKey,
-      lastError: null,
-      payload: jsonValue(
-        reservedRequest
-          ? {
-              ...controlPayload,
-              response: reservedRequest.response,
-              settlementProvenance: await readRequestSettlementActor(
-                transaction,
-                input.requestedBy,
-                input.type === "request.respond" ? input.settlementSessionId : undefined,
-              ),
-            }
-          : controlPayload,
-      ),
-      ...(input.type === "request.respond"
-        ? {
-            encryptedRequestResponse: input.sealedResponse.envelope,
-            requestResponseKeyVersion: input.sealedResponse.keyVersion,
-          }
-        : {}),
-      requestedBy: input.requestedBy,
-      runId: input.runId,
-      status: "pending",
-      threadId: input.threadId,
-      type: input.type,
-    });
-    if (reservedRequest) {
-      const reserved = await transaction
-        .updateTable("requests")
-        .set({ responseCommandId: command.id })
-        .where("id", "=", reservedRequest.requestId)
-        .where("status", "=", "pending")
-        .where("responseCommandId", "is", null)
-        .executeTakeFirst();
-      if (reserved.numUpdatedRows !== 1n) {
-        throw new OpensteerError({
-          code: "conflict",
-          message: "Request response is already in flight",
-        });
-      }
-    }
-    if (endsHere) {
-      const events = await finalizeRunTransaction(transaction, {
-        completedAt: new Date(),
-        links,
-        source: "host",
-        queuedInputCancellation: "activation-input",
-        runId: input.runId,
-        status: "interrupted",
-      });
-      const interruptedCommand = await transaction
-        .updateTable("commands")
-        .set({ lastError: null, status: "succeeded", updatedAt: new Date() })
-        .where("id", "=", command.id)
-        .returningAll()
-        .executeTakeFirstOrThrow();
-      return {
-        command: interruptedCommand,
-        events: [...controlEvents, ...events],
-        revokedGrants: [],
-        wasDuplicate: false,
-      };
-    }
-    // Stopping ends what the Run may do now, not only once the Runner has
-    // wound it down: its tools stop working while the interrupt is delivered.
-    const revokedGrants =
-      input.type === "run.interrupt"
-        ? await revokeRunGrants(transaction, [input.runId], "stopped")
-        : [];
-    if (reservedRequest)
-      await requestSettlementActor(
-        transaction,
-        input.requestedBy,
-        input.type === "request.respond" ? input.settlementSessionId : undefined,
-      );
-    return { command, events: controlEvents, revokedGrants, wasDuplicate: false };
-  });
+  return { command, events: controlEvents, revokedGrants, wasDuplicate: false };
 }
 
 export async function claimNextCommand(
@@ -1549,9 +1571,18 @@ export async function retryCommand(
       }
       const thread = await transaction
         .selectFrom("threads")
-        .select("workspaceId")
+        .select(["workspaceId", "voiceSessionId"])
         .where("id", "=", run.threadId)
         .executeTakeFirstOrThrow();
+      if (thread.voiceSessionId)
+        return finalizeRunTransaction(transaction, {
+          runId: run.id,
+          completedAt: new Date(),
+          links,
+          source: "host",
+          status: "interrupted",
+          queuedInputCancellation: "seed-input",
+        });
       workspaceId = thread.workspaceId;
       await lockWorkspaceRow(transaction, workspaceId);
       await lockThreadRow(transaction, run.threadId);
@@ -1677,9 +1708,10 @@ export async function refuseSteer(
   database: Kysely<DatabaseSchema>,
   commandId: CommandRow["id"],
   reason: string,
+  reasonCode?: string,
 ): Promise<readonly AgentEvent[]> {
   return withDatabaseTransaction(database, (transaction) =>
-    settleSteer(transaction, commandId, "failed", reason),
+    settleSteer(transaction, commandId, "failed", reason, reasonCode),
   );
 }
 

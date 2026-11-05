@@ -1,12 +1,11 @@
 # Self-host with Docker
 
-Agent Phone isn’t included in self-built images yet.
+This runs a server Deployment with a cohosted Linux Runner whose workspaces live in local
+directories; it needs no external Runner. Self-built images don't include Agent Phone yet.
 
-Use Git and Docker Engine 29.2.1 or newer with Compose 5.1.3 and Buildx 0.36.1. Docker Desktop may supply these plugins.
-No host Node, pnpm, Java or Android SDK is needed. The daemon needs Internet
-access to public image registries and package repositories. This walkthrough
-uses a local-directory workspace on a cohosted Linux Runner; it needs no
-external Runner.
+You need Git and Docker Engine 29.2.1 or newer with Compose 5.1.3 and Buildx 0.36.1 (Docker
+Desktop may supply the plugins), and Internet access for the daemon to public image registries
+and package repositories. No host Node, pnpm, Java or Android SDK is needed.
 
 ```sh
 git clone https://github.com/steerlabs/opensteer.git opensteer
@@ -14,17 +13,17 @@ cd opensteer
 cp deploy/self-host/config.env.example deploy/self-host/config.env
 ```
 
-Initialize build identity and secrets using Docker's Node image. Run from the
-repository root. Existing secrets are preserved. Keep `config.env`, `secrets/`
-and Docker data volumes across upgrades; back them up together. The secret
-files must be readable by container uid 10001, inside an operator-only directory.
+From the repository root, initialize build identity and secrets with Docker's Node image.
+Existing secrets are kept. The secret files must be readable by container uid 10001 inside an
+operator-only directory. Keep `config.env`, `secrets/` and the Docker volumes across upgrades,
+and back them up together.
 
 ```sh
 (
   set -eu
   initializer=$(docker create -w /source \
     -e OPENSTEER_SOURCE_REVISION="$(git rev-parse HEAD)" \
-    node:24.13.0-bookworm-slim node deploy/self-host/initialize.mjs)
+    node:24.22.2-bookworm-slim node deploy/self-host/initialize.mjs)
   trap 'docker rm -f "$initializer" >/dev/null' EXIT
   docker cp package.json "$initializer:/source/package.json"
   docker cp deploy "$initializer:/source/deploy"
@@ -34,17 +33,17 @@ files must be readable by container uid 10001, inside an operator-only directory
 )
 ```
 
-Edit `deploy/self-host/config.env`: the initializer fills the required release
-version, source revision and stable local workspace environment ID. Set the
-required `OPENSTEER_CANONICAL_ORIGIN` to the exact URL you will open, including
-scheme and port. Keep `OPENSTEER_MODE=production`: images carry a verified web distribution.
-For local use, use `https://localhost`; Caddy issues a local certificate,
-so accept its certificate warning in your browser before signing in. For an
-Internet deployment use your DNS hostname with `https://`; ports 80 and 443
-must reach this machine so Caddy can obtain a publicly trusted certificate. Keep the other uncommented defaults,
-including `OPENSTEER_RUNTIME_ORIGIN=https://gateway:8443`,
-`OPENSTEER_ACCEPTS_EXTERNAL_RUNNERS=false` and `local-directory` storage.
-The remaining secret values are generated above, never entered in config.env.
+The initializer fills the release version, source revision and workspace environment ID in
+`deploy/self-host/config.env`. Set `OPENSTEER_CANONICAL_ORIGIN` to the exact URL you will open,
+including scheme and port:
+
+- Local use: `https://localhost`. Caddy issues a local certificate; accept its warning in your
+  browser before signing in.
+- Internet: `https://` with your DNS hostname. Ports 80 and 443 must reach this machine so Caddy
+  can get a publicly trusted certificate.
+
+Keep `OPENSTEER_MODE=production` (images carry a verified web distribution) and the other
+uncommented defaults. Secrets are generated above, never entered in `config.env`.
 
 ## Runner sandbox
 
@@ -81,13 +80,14 @@ docker run --rm --entrypoint cat "opensteer-runner:$image_tag" \
   /usr/local/share/opensteer/runner-oci.json > deploy/self-host/runner-seccomp.json
 ```
 
-Repeat this extraction when upgrading the images. Compose runs uid 10001 with
-a read-only root, the compiled seccomp policy and the two capabilities required
-by the Runner's own sandbox preflight.
+Repeat this extraction whenever you upgrade the images. Compose runs the Runner as uid 10001
+with a read-only root, that seccomp policy and the two capabilities its own sandbox needs.
 
-The base file provides PostgreSQL, Host, web gateway, browser and messaging.
-The Linux Runner overlay provides workspace storage and agent execution. The
-initial-owner overlay mounts a one-time enrollment code; add it only for setup.
+## Start and claim ownership
+
+`compose.yaml` provides PostgreSQL, Host, the web gateway, browsers and messaging;
+`compose.runner-linux.yaml` adds workspace storage and agent execution. The initial-owner
+overlay mounts a one-time enrollment code; use it only for setup.
 
 ```sh
 docker compose --env-file deploy/self-host/config.env \
@@ -98,17 +98,15 @@ docker compose --env-file deploy/self-host/config.env \
 cat deploy/self-host/secrets/initial_owner_enrollment_token
 ```
 
-Open the configured canonical origin. Enter that enrollment code in initial
-setup, then create the owner's email and password. Setup codes
-expire; complete setup within one hour of the first Host start.
+Open the canonical origin, enter that code in initial setup, and create the owner's email and
+password. The code expires 24 hours after the first Host start.
 
-Enroll the cohosted Runner as the owner. The block prompts for the account you
-just created; the password is not echoed or saved in shell history. It signs in
-through the public API, uses administrator-only
-`runner.enrollment.createManaged`, writes the one-use token to the existing
-enrollment secret (mode 0644, like the other secrets, so the Runner's uid 10001
-can read it), and starts the Runner with that secret. The token expires after
-ten minutes; run this block together.
+## Enroll the Runner
+
+This block prompts for the owner account (the password is neither echoed nor kept in shell
+history), signs in through the public API, mints a one-use managed Runner enrollment, writes it
+to the enrollment secret (mode 0644 so uid 10001 can read it) and starts the Runner. The token
+expires after ten minutes, so run the block in one go.
 
 ```sh
 printf 'Owner email: '; read -r OPENSTEER_OWNER_EMAIL
@@ -127,13 +125,12 @@ docker compose --env-file deploy/self-host/config.env \
   -f deploy/self-host/compose.runner-enrollment.yaml up -d --wait
 ```
 
-Keep the stable `OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID` and `runner-data`
-volume: later restarts use the persisted Runner identity, without enrollment.
-The one-time token overlay can now be dropped. In Computers, the Runner should
-show as online.
+The Runner should show as online in Computers. Later restarts reuse its persisted identity, so
+drop the enrollment overlay, and keep `OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID` and the
+`runner-data` volume. Create a workspace in the web UI and connect a model account to run an
+agent; workspace files live in the Runner's Docker volumes.
 
-After enrollment, create a workspace in the web UI and connect a model account
-to run an agent. Workspace files live in the Runner's Docker volumes.
+## Stop and upgrade
 
 To stop without deleting data:
 
@@ -143,8 +140,7 @@ docker compose --env-file deploy/self-host/config.env \
   -f deploy/self-host/compose.runner-linux.yaml down
 ```
 
-To upgrade, back up the configuration, secrets and data volumes,
-stop the stack, fetch and check out the intended release, rerun the initializer
-to refresh build identity, then run `up -d --build --wait` with the base and Linux
-Runner files (without the initial-owner overlay). Never use `down -v` for an
-upgrade: it deletes workspace and database volumes.
+To upgrade, back up the configuration, secrets and volumes, stop the stack, check out the
+release you want, rerun the initializer to refresh build identity, repeat the seccomp extraction,
+then run `up -d --build --wait` with the base and Linux Runner files only. Never use `down -v`:
+it deletes the workspace and database volumes.

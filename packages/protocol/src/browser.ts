@@ -1082,17 +1082,37 @@ export const browserSessionMaxThreads = 16;
 /**
  * Where a page is, as a person may see it at a glance: the origin of a web
  * page, `about:` pages whole, and only the scheme of anything else, so a local
- * file's path or a page's query never leaves the browser this way.
+ * file's path or a page's query never leaves the browser this way. Chromium's
+ * error document names no site, and clients before the pure site check refuse
+ * its scheme, including from a saved tab that still holds that address.
  */
 export function browserPageSite(address: string): string {
   try {
     const url = new URL(address);
     if (url.protocol === "http:" || url.protocol === "https:") return url.origin;
     if (url.protocol === "about:") return url.href.slice(0, 2048);
+    if (url.protocol === "chrome-error:") return "";
     return url.protocol;
   } catch {
     return "";
   }
+}
+
+const browserPageOriginPattern = /^https?:\/\/[^\s/?#@\\]+$/u;
+const browserPageSchemePattern = /^[a-z][a-z\d+.-]*:$/u;
+
+/**
+ * Whether a string is something `browserPageSite` could return. It reads the
+ * text alone because `URL` does not agree across runtimes: Chromium refuses
+ * `new URL("chrome-error:")`, which Node and Hermes accept.
+ */
+export function isBrowserPageSite(site: string): boolean {
+  return (
+    site === "" ||
+    site.startsWith("about:") ||
+    browserPageOriginPattern.test(site) ||
+    browserPageSchemePattern.test(site)
+  );
 }
 
 /**
@@ -1158,10 +1178,7 @@ export const BrowserTabSummarySchema = z.strictObject({
   canGoForward: z.boolean().optional(),
   id: BrowserSurfaceIdSchema,
   title: z.string().max(256),
-  site: z
-    .string()
-    .max(2048)
-    .refine((site) => site === browserPageSite(site), "Only a page origin may enter the catalog."),
+  site: z.string().max(2048).refine(isBrowserPageSite, "Only a page origin may enter the catalog."),
   iconRef: BrowserTabIconRefSchema.nullable(),
   order: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   openerId: BrowserSurfaceIdSchema.nullable(),
@@ -1182,6 +1199,29 @@ export type BrowserTabSummary = z.infer<typeof BrowserTabSummarySchema>;
 // Includes the worst-case escaped strings and all 64 × 16 occupants.
 export const browserTabCatalogMaxBytes = 2 * 1024 * 1024;
 export const browserCaptureMaxTargets = 8;
+function refineBrowserTabCatalog(
+  catalog: { readonly tabs: readonly Pick<BrowserTabSummary, "id" | "openerId" | "order">[] },
+  context: Pick<z.RefinementCtx, "addIssue">,
+): void {
+  const ids = new Set(catalog.tabs.map(({ id }) => id));
+  if (
+    ids.size !== catalog.tabs.length ||
+    new Set(catalog.tabs.map(({ order }) => order)).size !== catalog.tabs.length
+  )
+    context.addIssue({
+      code: "custom",
+      message: "Tab identities and insertion orders must be unique.",
+    });
+  for (const tab of catalog.tabs) {
+    if (tab.openerId !== null && (!ids.has(tab.openerId) || tab.openerId === tab.id))
+      context.addIssue({
+        code: "custom",
+        message: "An opener must be another tab in the session.",
+      });
+  }
+  if (new TextEncoder().encode(JSON.stringify(catalog)).byteLength > browserTabCatalogMaxBytes)
+    context.addIssue({ code: "custom", message: "Tab catalog exceeds its 2 MiB byte budget." });
+}
 export const BrowserTabCatalogSchema = z
   .strictObject({
     generation: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
@@ -1189,37 +1229,20 @@ export const BrowserTabCatalogSchema = z
     inventoryRevision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
     tabs: z.array(BrowserTabSummarySchema).max(64),
   })
-  .superRefine((catalog, context) => {
-    const ids = new Set(catalog.tabs.map(({ id }) => id));
-    if (
-      ids.size !== catalog.tabs.length ||
-      new Set(catalog.tabs.map(({ order }) => order)).size !== catalog.tabs.length
-    )
-      context.addIssue({
-        code: "custom",
-        message: "Tab identities and insertion orders must be unique.",
-      });
-    for (const tab of catalog.tabs) {
-      if (tab.openerId !== null && (!ids.has(tab.openerId) || tab.openerId === tab.id))
-        context.addIssue({
-          code: "custom",
-          message: "An opener must be another tab in the session.",
-        });
-    }
-    if (new TextEncoder().encode(JSON.stringify(catalog)).byteLength > browserTabCatalogMaxBytes)
-      context.addIssue({ code: "custom", message: "Tab catalog exceeds its 2 MiB byte budget." });
-  });
+  .superRefine(refineBrowserTabCatalog);
 export type BrowserTabCatalog = z.infer<typeof BrowserTabCatalogSchema>;
-export const BrowserTabSummaryViewSchema = z.object(BrowserTabSummarySchema.shape);
+// The Host keeps paths and queries out of a site before it sends one, so a
+// client has nothing to enforce and reads whatever the Host decided a site is.
+export const BrowserTabSummaryViewSchema = z.object({
+  ...BrowserTabSummarySchema.shape,
+  site: z.string().max(2048),
+});
 export const BrowserTabCatalogViewSchema = z
   .object({
     ...BrowserTabCatalogSchema.shape,
     tabs: z.array(BrowserTabSummaryViewSchema).max(64),
   })
-  .superRefine((catalog, context) => {
-    const parsed = BrowserTabCatalogSchema.safeParse(catalog);
-    if (!parsed.success) for (const issue of parsed.error.issues) context.addIssue({ ...issue });
-  });
+  .superRefine(refineBrowserTabCatalog);
 export const BrowserTabsChangedSchema = z.object({
   type: z.literal("host.browser-tabs-changed"),
   sessionId: BrowserSessionIdSchema,
@@ -1412,7 +1435,7 @@ export const WorkspaceTabLineageSchema = z.object({
         id: BrowserSurfaceIdSchema,
         sessionId: BrowserSessionIdSchema,
         title: z.string().max(256),
-        site: BrowserTabSummarySchema.shape.site,
+        site: BrowserTabSummaryViewSchema.shape.site,
         iconRef: BrowserTabIconRefSchema.nullable().optional(),
         order: BrowserTabSummarySchema.shape.order,
         openerId: BrowserSurfaceIdSchema.nullable(),

@@ -13,14 +13,15 @@ import { isRetryableHarnessCatalogStatus } from "@opensteer/harness";
 import {
   agentHarnessModelsShown,
   agentInspectionModelsShown,
-  EnvironmentListInputSchema,
   type AgentHarnessSummary,
   type EnvironmentHarnessSummary,
-  type EnvironmentListInput,
   type AgentModelSummary,
-  type HarnessInstanceCatalog,
-  type HarnessModelDescriptor,
-} from "@opensteer/protocol";
+} from "@opensteer/agent-tools/outputs";
+import {
+  EnvironmentListInputSchema,
+  type EnvironmentListInput,
+} from "@opensteer/agent-tools/tools";
+import type { HarnessInstanceCatalog, HarnessModelDescriptor } from "@opensteer/protocol";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
@@ -31,6 +32,8 @@ import {
 
 export interface DelegationPlacement {
   readonly harnessInstanceId: HarnessInstanceId;
+  /** Present on an automatic choice, whose account must not change before it binds. */
+  readonly harnessRevision?: number;
   readonly modelSelection: ModelSelection;
 }
 
@@ -41,7 +44,7 @@ export interface DelegationPlacementRequest {
   readonly harnessInstanceId?: HarnessInstanceId | undefined;
   readonly model?: DelegationModelChoice | undefined;
   /** The Thread, or a Trigger's anchor Thread, the work is delegated from. */
-  readonly parent: Thread;
+  readonly parent?: Thread;
 }
 
 type PlacementStore = Pick<
@@ -71,7 +74,7 @@ const offeredModelsShown = 40;
  * order never becomes hidden product policy.
  *
  * Agents, Triggers and watches share this rule: the answer does not depend on
- * which capability profile asked.
+ * which caller asked.
  */
 export async function delegationPlacement(
   store: PlacementStore,
@@ -83,6 +86,22 @@ export async function delegationPlacement(
       harnessInstanceId: existingThread.harnessInstanceId,
       modelSelection: existingThread.modelSelection,
     };
+  }
+  if (!parent) {
+    if (!request.harnessInstanceId || !request.model)
+      throw badRequest("Choose an engine and model for independent work");
+    const harness = await store.getHarnessInstance(request.harnessInstanceId);
+    if (!harness?.enabled || harness.environmentId !== environment.id)
+      throw badRequest("Selected harness is disabled or unavailable");
+    const wanted: Wanted = { selection: request.model, unlisted: "refuse" };
+    const catalog = await store.getHarnessCatalog(environment.id, harness.id);
+    const match =
+      catalog?.status === "ready"
+        ? matchModelSelection(catalog.models, wanted.selection, "refuse")
+        : undefined;
+    if (match?.kind !== "offered")
+      throw placementFailure(environment, wanted, harness.name, catalog);
+    return placement(wanted, { harness, model: match.model });
   }
   if (
     request.harnessInstanceId === undefined &&

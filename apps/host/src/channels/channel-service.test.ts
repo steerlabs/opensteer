@@ -10,27 +10,18 @@ interface AdoptCall {
     readonly noRoute: string;
     readonly notAMember: string;
   };
-  readonly placementCandidates: readonly {
+  readonly availableEngines: readonly {
     readonly environmentId: string;
-    readonly harnessInstanceId: string;
+    readonly driverKinds: readonly string[];
   }[];
 }
 
 const environmentId = createId("environment");
 const otherEnvironmentId = createId("environment");
-const harnessInstanceId = createId("harnessInstance");
-const defaultHarnessInstanceId = createId("harnessInstance");
+const offlineEnvironmentId = createId("environment");
 
 function channelServiceFixture(
   options: {
-    readonly harnesses?: readonly {
-      readonly driverKind: string;
-      readonly enabled: boolean;
-      readonly environmentId?: string;
-      readonly id: string;
-      readonly isDefault?: boolean;
-      readonly name: string;
-    }[];
     readonly pending?: number;
     readonly canonicalOrigin?: string;
   } = {},
@@ -62,22 +53,9 @@ function channelServiceFixture(
         : null,
     ),
   };
-  const listHarnessInstances = vi.fn(async () =>
-    (
-      options.harnesses ?? [
-        {
-          driverKind: "native",
-          enabled: true,
-          id: harnessInstanceId,
-          isDefault: true,
-          name: "Opensteer",
-        },
-      ]
-    ).map((harness) => ({
-      ...harness,
-      environmentId: harness.environmentId ?? environmentId,
-    })),
-  );
+  const drivers = (...driverKinds: string[]) => ({
+    modules: { agents: { harnessDrivers: driverKinds.map((driverKind) => ({ driverKind })) } },
+  });
   const service = new ChannelService({
     canonicalOrigin: options.canonicalOrigin ?? "https://opensteer.test",
     channels: channels as never,
@@ -85,26 +63,22 @@ function channelServiceFixture(
     onExecutionQueued,
     onWorkspaceEvent: () => undefined,
     runners: {
-      canRunHarness: () => true,
-      isAvailable: () => true,
+      canRunHarness: (_environmentId: string, driverKind: string) => driverKind !== "broken",
+      identityForEnvironment: (id: string) =>
+        id === environmentId ? drivers("codex", "broken") : drivers("claude"),
+      isAvailable: (id: string) => id !== offlineEnvironmentId,
     } as never,
     relay: {} as never,
     store: {
       announceRevokedGrants: () => undefined,
       listEnvironments: async () => [
+        { id: otherEnvironmentId, kind: "local", name: "Person's Mac" },
+        { id: offlineEnvironmentId, kind: "managed", name: "Asleep" },
         { id: environmentId, kind: "managed", name: "Managed Runner" },
       ],
-      listHarnessCatalogs: async () => [
-        {
-          catalog: { harnessInstanceId, status: "ready" },
-          environmentId,
-          harnessInstanceId,
-        },
-      ],
-      listHarnessInstances,
     } as never,
   });
-  return { channels, listHarnessInstances, onExecutionQueued, service };
+  return { channels, onExecutionQueued, service };
 }
 
 describe("ChannelService", () => {
@@ -122,74 +96,17 @@ describe("ChannelService", () => {
     },
   );
 
-  it("places a channel message on the work location's default AI engine", async () => {
-    const fixture = channelServiceFixture({
-      harnesses: [
-        { driverKind: "native", enabled: true, id: harnessInstanceId, name: "First" },
-        {
-          driverKind: "native",
-          enabled: true,
-          id: defaultHarnessInstanceId,
-          isDefault: true,
-          name: "Default",
-        },
-      ],
-    });
-    const expectedAdoptions = 1;
-
+  // Whose account runs a message is decided once the channel identity resolves
+  // to a person, inside adoptIngress; the service offers no account at all.
+  it("offers adoption only what is connected and runnable, Deployment locations first", async () => {
+    const fixture = channelServiceFixture();
     fixture.service.wake();
-    await vi.waitFor(() => {
-      expect(fixture.channels.adoptIngress).toHaveBeenCalledTimes(expectedAdoptions);
-    });
+    await vi.waitFor(() => expect(fixture.channels.adoptIngress).toHaveBeenCalledOnce());
     await fixture.service.close();
 
-    expect(fixture.channels.adoptIngress.mock.calls[0]?.[0]).toMatchObject({
-      placementCandidates: [{ environmentId, harnessInstanceId: defaultHarnessInstanceId }],
-    });
-  });
-
-  it("does not choose the first runnable account when none is the default", async () => {
-    const fixture = channelServiceFixture({
-      harnesses: [
-        { driverKind: "native", enabled: true, id: harnessInstanceId, name: "First" },
-        { driverKind: "native", enabled: true, id: defaultHarnessInstanceId, name: "Second" },
-      ],
-    });
-    const expectedAdoptions = 1;
-
-    fixture.service.wake();
-    await vi.waitFor(() => {
-      expect(fixture.channels.adoptIngress).toHaveBeenCalledTimes(expectedAdoptions);
-    });
-    await fixture.service.close();
-
-    expect(fixture.channels.adoptIngress.mock.calls[0]?.[0]).toMatchObject({
-      placementCandidates: [],
-    });
-  });
-
-  it("never borrows another work location's default account", async () => {
-    const fixture = channelServiceFixture({
-      harnesses: [
-        {
-          driverKind: "native",
-          enabled: true,
-          environmentId: otherEnvironmentId,
-          id: defaultHarnessInstanceId,
-          isDefault: true,
-          name: "Other computer",
-        },
-      ],
-    });
-
-    fixture.service.wake();
-    await vi.waitFor(() => {
-      expect(fixture.channels.adoptIngress).toHaveBeenCalledTimes(1);
-    });
-    await fixture.service.close();
-
-    expect(fixture.channels.adoptIngress.mock.calls[0]?.[0]).toMatchObject({
-      placementCandidates: [],
-    });
+    expect(fixture.channels.adoptIngress.mock.calls[0]?.[0].availableEngines).toEqual([
+      { environmentId, driverKinds: ["codex"] },
+      { environmentId: otherEnvironmentId, driverKinds: ["claude"] },
+    ]);
   });
 });

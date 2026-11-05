@@ -1,3 +1,7 @@
+import type { editAutomaticRole } from "@opensteer/client/host";
+import type { AutomaticModelConfig, AutomaticModelRole, HarnessInstanceId } from "@opensteer/core";
+import type { AutomaticModelsView } from "@opensteer/protocol";
+import type { DeploymentUpdateModel } from "./use-deployment-update.js";
 import type {
   AccountSettingsModel,
   ComputerSettingsDestination,
@@ -19,6 +23,22 @@ export interface AgentNotificationRow {
   readonly muted: boolean;
   readonly name: string;
   readonly workspaceId: string;
+}
+
+/** Which models do Opensteer's own small jobs; null settings while loading. */
+export interface AutomaticModelsForm {
+  readonly supported: boolean;
+  readonly view: AutomaticModelsView | null;
+  readonly error: string | null;
+  readonly pending: boolean;
+  readonly explanation: boolean;
+  readonly dismiss: () => void;
+  readonly save: (make: () => AutomaticModelConfig) => void;
+  readonly edit: (
+    role: AutomaticModelRole,
+    action: Parameters<typeof editAutomaticRole>[2],
+  ) => void;
+  readonly toggle: (id: HarnessInstanceId) => void;
 }
 
 export interface EngineUpdateRow {
@@ -78,7 +98,11 @@ export interface SettingsFormProps extends SettingsFormActionHandlers {
   /** Where the open Opensteer runs and its computers; empty while none is open. */
   readonly computers: readonly ComputerSettingsRow[];
   readonly deployment: DeploymentSettingsModel;
+  /** Null when there is no open Deployment, or its Host refuses this person. */
+  readonly desktopUpdate: DeploymentUpdateModel | null;
   readonly engineUpdates?: readonly EngineUpdateRow[] | undefined;
+  /** Null while no Deployment is open. */
+  readonly automatic?: AutomaticModelsForm | null | undefined;
   readonly notificationError: string | null;
   /** Null in a build without an Account service, which nothing can notify. */
   readonly notifications: NotificationSettingsModel | null;

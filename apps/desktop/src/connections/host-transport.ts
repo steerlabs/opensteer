@@ -7,8 +7,6 @@ import { createHmac, randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HostSessionRecovery } from "@opensteer/client/auth";
-import { describeRealtimeFrameFailure } from "@opensteer/client/host";
-import { HostToClientMessageSchema } from "@opensteer/protocol";
 import {
   HostTransport,
   HostTransportError,

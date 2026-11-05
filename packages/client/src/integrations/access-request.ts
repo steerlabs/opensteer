@@ -21,7 +21,7 @@ import type { HostClient, WorkspaceSummary } from "../host/index.js";
 
 /**
  * What one integration access Request comes to, shared by the browser card and
- * the phone's sheet: which installation and server it names, which of this
+ * the phone's card: which installation and server it names, which of this
  * person's accounts can answer it, and how many operations each access class
  * actually reaches. Both surfaces must read the same Request the same way — an
  * approval that means one thing on a laptop and another on a phone is a bug
@@ -99,7 +99,7 @@ export function matchingInstallationForManifest(
 
 /**
  * What a person decides an installation on, read the same way by the browser
- * card and the phone's sheet: what it will be called and what it does, where it
+ * card and the phone's card: what it will be called and what it does, where it
  * came from when that is not Opensteer's own catalog, and where its key would
  * go. How much it can do is left to the access step, which counts what is
  * actually granted.
@@ -166,12 +166,12 @@ export function integrationInstallNextStep(input: {
 }
 
 /**
- * Said beside the connect action of a Request for Main, before anything is
- * connected: a person's own tasks in Main use every account they connect, so
- * the Host answers the Request as soon as a usable account is connected.
+ * What answering a Request for Main reaches: a person's own tasks in Main use
+ * every account they connect, so the Host answers the Request as soon as a
+ * usable account is connected.
  */
-export function mainConnectAllowsNote(workspaceName: string): string {
-  return `Your tasks in ${workspaceName} can read and make changes with every account you connect, so connecting also allows this request.`;
+export function mainAccessDetail(workspaceName: string, integrationName: string): string {
+  return `Your tasks in ${workspaceName} can read and make changes with every ${integrationName} account you connect.`;
 }
 
 export async function resolveIntegrationAccess(

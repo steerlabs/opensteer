@@ -4,6 +4,7 @@ import {
   type DisplayStreamId,
 } from "@opensteer/protocol";
 import type { BrowserVideoHub, BrowserVideoBinding } from "./browser-video-hub.js";
+import type { AdministrationCommandIdentity } from "@opensteer/database";
 import type { ResourceAccessInput } from "@opensteer/database";
 import { RunPlaceRecorder } from "../agents/run-place-recorder.js";
 import { type BrowserCookie } from "@opensteer/browser-profile/cookies";
@@ -1122,23 +1123,19 @@ export class BrowserService {
     await this.#flushCatalogNotice(sessionId, workspaceId, broker);
   }
 
+  /** Only people create profiles; every device of theirs learns of it, not just the one that asked. */
   async createProfile(input: {
     readonly name: string;
     readonly ownerId: UserId;
     readonly idempotencyKey: string;
-    /**
-     * The Workspace the change was made from, which addresses the owner's
-     * notice. The person's own command names none: their client applies the
-     * command's result itself.
-     */
-    readonly workspaceId: WorkspaceId | null;
   }): Promise<BrowserProfile> {
     const profile = await this.#repository.createBrowserProfile(input);
-    if (input.workspaceId) this.#onProfilesChanged(input.ownerId, input.workspaceId);
+    await this.#ownerProfilesChanged(input.ownerId);
     return publicProfile(profile);
   }
 
   async renameProfile(input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
     readonly name: string;
     readonly ownerId: UserId;
     readonly profileId: BrowserProfileId;
@@ -1155,6 +1152,7 @@ export class BrowserService {
    * that fails is reported rather than failing a deletion that has happened.
    */
   async deleteProfile(input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
     readonly ownerId: UserId;
     readonly profileId: BrowserProfileId;
   }): Promise<PendingBrowserProfileDeletion | undefined> {
@@ -1169,6 +1167,8 @@ export class BrowserService {
     for (const stop of stops) if (stop.status === "rejected") this.#onError(stop.reason);
     if (deletion) await this.#eraseLocalProfiles?.(deletion.computerId).catch(() => undefined);
     await this.#ownerProfilesChanged(input.ownerId);
+    // Retried agent operations replay admission; subsequent reads show erasure progress.
+    if (input.administration) return deletion;
     return (await this.#localProfiles?.pendingDeletions(input.ownerId))?.find(
       (item) => item.profileId === input.profileId,
     );
@@ -1477,7 +1477,13 @@ export class BrowserService {
 
   async forgetHistory(
     ownerId: UserId,
-    input: { profileId: BrowserProfileId; idempotencyKey: string; url?: string },
+    input: {
+      profileId: BrowserProfileId;
+      administration?: AdministrationCommandIdentity | undefined;
+      idempotencyKey: string;
+      url?: string;
+      authoritySource?: Readonly<Record<string, unknown>>;
+    },
   ) {
     if (!(await this.#repository.getBrowserProfile(input.profileId, ownerId)))
       throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
@@ -3089,16 +3095,9 @@ export class BrowserService {
     if (!workspace) {
       throw new OpensteerError({ code: "not_found", message: "Workspace not found." });
     }
-    if (workspace.kind === "main") {
-      throw new OpensteerError({
-        code: "bad_request",
-        message:
-          "browser_access_request grants a browser profile only to a project Workspace. From Main, pass that Workspace's workspaceId. To browse in Main, open a session with an inherited profile from browser_profile_list, or with fresh: true for signed-out browsing.",
-      });
-    }
-    // Asking the owner for access the Workspace already holds would only put a
-    // question in front of them whose answer is already yes. A replayed call
-    // still returns the Request it made.
+    // Asking for a profile the Workspace can already use would only put a question
+    // in front of the owner whose answer is already yes. Main reaches every owner
+    // profile. A replayed call still returns the Request it made.
     if (
       input.suggestion.kind === "existing" &&
       !(await this.#repository.requests.findByCallIdentity({
@@ -3107,11 +3106,16 @@ export class BrowserService {
       }))
     ) {
       const profileId = input.suggestion.profileId;
-      const grants = await this.#repository.listActiveBrowserProfileGrantsForWorkspace(
-        input.workspaceId,
-        input.ownerId,
-      );
-      if (grants.some((grant) => grant.profileId === profileId)) {
+      const usable =
+        workspace.kind === "main"
+          ? (await this.#repository.getBrowserProfile(profileId, input.ownerId)) !== null
+          : (
+              await this.#repository.listActiveBrowserProfileGrantsForWorkspace(
+                input.workspaceId,
+                input.ownerId,
+              )
+            ).some((grant) => grant.profileId === profileId);
+      if (usable) {
         throw new OpensteerError({
           code: "conflict",
           message: `This Workspace can already use browser profile ${profileId}; no Request is needed. Open it with browser_session_open {"profileId":"${profileId}"}. If the website shows you signed out, use sign_in.`,
@@ -3130,7 +3134,7 @@ export class BrowserService {
         detail: input.reason,
         kind: "external",
         subject: { id: input.workspaceId, kind: "workspace" },
-        title: "Browser profile access",
+        title: "Browser profile",
       },
       requestedBy: input.ownerId,
       requiredActor: "requester",
@@ -4341,7 +4345,8 @@ class HostedBrowserBroker {
         this.#historyWrite((store) => store.retitle({ profileId, url, title }));
       }
       const icon = this.#surfaceIcon(surface);
-      if (!icon || !BrowserHistoryUrlSchema.safeParse(surface.url).success) continue;
+      if (!icon || surface.navigationFailed) continue;
+      if (!BrowserHistoryUrlSchema.safeParse(surface.url).success) continue;
       const origin = new URL(surface.url).origin;
       const fingerprint = `${origin}\0${icon.favicon}`;
       if (this.#historyIcons.get(surface.id) === fingerprint) continue;
@@ -4669,12 +4674,15 @@ class HostedBrowserBroker {
     return this.#snapshot?.surfaces.find((surface) => surface.id === surfaceId)?.geometryRevision;
   }
 
-  /** What one tab shows now, as a conversation's use of it records it. */
+  /**
+   * What one tab shows now, as a conversation's use of it records it. A page
+   * that failed to load shows an address it never reached, so it records none.
+   */
   pageOf(surfaceId: string): BrowserUsePage | null {
     const surface = this.#snapshot?.surfaces.find((surface) => surface.id === surfaceId);
     if (!surface) return null;
     return {
-      site: browserPageSite(surface.url).slice(0, 2048),
+      site: surface.navigationFailed ? "" : browserPageSite(surface.url).slice(0, 2048),
       title: surface.title.slice(0, 256),
     };
   }

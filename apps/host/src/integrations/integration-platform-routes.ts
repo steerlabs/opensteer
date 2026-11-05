@@ -1,4 +1,8 @@
 import {
+  executeIntegrationAdministration,
+  isIntegrationAdministrationCommand,
+} from "./integration-administration.js";
+import {
   ComputerAppSetupRequestViewSchema,
   McpOAuthAttemptIdSchema,
   localMcpLaunchSecrets,
@@ -192,6 +196,13 @@ async function executeIntegrationPlatformCommand(
   context: HostApiServerContext,
 ): Promise<HostApiCommandOutput> {
   const session = requireSession(context);
+  if (isIntegrationAdministrationCommand(command))
+    return executeIntegrationAdministration(
+      { platform: options.platform },
+      { userId: session.user.id, isAdministrator: session.user.instanceRole === "administrator" },
+      command,
+      context.requestId,
+    );
   switch (command.type) {
     case "integration.computer.policy.set":
       return {
@@ -282,13 +293,6 @@ async function executeIntegrationPlatformCommand(
         type: command.type,
       };
     }
-    case "integration.mcp.disconnect":
-      await options.platform.store.revokeMcpOAuthConnection({
-        connectionId: command.connectionId,
-        ownerUserId: session.user.id,
-        requestId: context.requestId,
-      });
-      return { type: command.type };
     case "specialist.bind":
       return {
         type: command.type,
@@ -305,9 +309,6 @@ async function executeIntegrationPlatformCommand(
           actorUserId: session.user.id,
         }),
       };
-    case "specialist.remove":
-      await options.platform.store.specialists.remove({ ...command, actorUserId: session.user.id });
-      return { type: command.type };
     case "specialist.list":
       return {
         type: command.type,
@@ -324,36 +325,6 @@ async function executeIntegrationPlatformCommand(
           command.workspaceId,
         ),
       };
-    case "plugin.activation.set":
-      await options.platform.store.plugins.setActivation({
-        ...command,
-        actorUserId: session.user.id,
-      });
-      return { type: command.type };
-    case "plugin.remove": {
-      requireAdministrator(context);
-      await options.platform.store.specialists.retirePlugin(command.pluginId);
-      for (const installation of await options.platform.store.listInstallations()) {
-        if (installation.pluginId === command.pluginId)
-          await options.platform.uninstallIntegration({
-            installationId: installation.id,
-            actorUserId: session.user.id,
-            requestId: context.requestId,
-          });
-      }
-      await options.platform.store.plugins.remove(command.pluginId);
-      return { type: command.type };
-    }
-    case "plugin.update":
-      requireAdministrator(context);
-      await options.platform.installAgentPlugin({
-        actorUserId: session.user.id,
-        directory: command.input.directory,
-        pluginId: command.pluginId,
-        requestId: context.requestId,
-        ...(command.input.runnerId ? { runnerId: command.input.runnerId } : {}),
-      });
-      return { type: command.type };
     case "plugin.install": {
       requireAdministrator(context);
       const result = await options.platform.installAgentPlugin({
@@ -389,15 +360,6 @@ async function executeIntegrationPlatformCommand(
       });
       return { installation, type: command.type };
     }
-    case "integration.uninstall": {
-      requireAdministrator(context);
-      const outcome = await options.platform.uninstallIntegration({
-        actorUserId: session.user.id,
-        installationId: command.installationId,
-        requestId: context.requestId,
-      });
-      return { ...outcome, type: command.type };
-    }
     case "integration.grant.create": {
       const input = command.input;
       const grant = await options.platform.createGrant({
@@ -412,14 +374,6 @@ async function executeIntegrationPlatformCommand(
       });
       return { grant, type: command.type };
     }
-    case "integration.grant.revoke":
-      await options.platform.revokeGrant({
-        grantId: command.grantId,
-        ownerUserId: session.user.id,
-        requestId: context.requestId,
-        workspaceId: command.workspaceId,
-      });
-      return { type: command.type };
   }
 }
 

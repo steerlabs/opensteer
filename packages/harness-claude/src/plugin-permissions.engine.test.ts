@@ -121,11 +121,13 @@ console.log(JSON.stringify({ hookSpecificOutput: {
     const context: HarnessSessionContext = {
       accessMode,
       agentTools: {
-        capabilityProfileId: "main",
+        tools: [],
+        toolsRevision: "fixture",
+        instructions: "",
+        skills: [],
         token: "fixture",
-        url: "http://127.0.0.1:1/tools",
+        url: "http://127.0.0.1:1/internal/v1/mcp",
       },
-      integrationTools: { token: "fixture", url: "http://127.0.0.1:1/integrations" },
       environment: process.env as Record<string, string>,
       environmentId: createId("environment"),
       harnessInstanceId: instanceId,

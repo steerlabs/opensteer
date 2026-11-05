@@ -4,32 +4,60 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { requestAgentProposedDetail } from "@opensteer/core";
+import { mainAccessDetail } from "@opensteer/client/integrations";
 import { mockTmdbProposal } from "@opensteer/client/mock";
 
+vi.mock("@react-navigation/native", () => ({ useNavigation: () => ({ navigate }) }));
+vi.mock("expo-haptics", () => ({
+  impactAsync: vi.fn(async () => {}),
+  ImpactFeedbackStyle: { Light: "light" },
+  selectionAsync: vi.fn(async () => {}),
+}));
+vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
+const navigate = vi.hoisted(() => vi.fn());
+const cardRenders = vi.hoisted(() => vi.fn());
 const openURL = vi.hoisted(() => vi.fn(async () => undefined));
 
 // The native renderer's state and hierarchy, with DOM hosts. Platform controls
 // are outside this regression; what it pins is the flow: which app is sent to
 // the Host, and what the sheet is willing to call a connection.
 vi.mock("react-native", () => ({
+  ActivityIndicator: () => <span aria-hidden />,
   StyleSheet: { create: (styles: object) => styles, hairlineWidth: 1 },
   View: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   Linking: { openURL },
   Pressable: ({
     accessibilityRole,
+    accessibilityState,
     children,
+    disabled,
     onPress,
   }: {
-    accessibilityRole: "link";
+    accessibilityRole: "link" | "button" | "radio";
+    accessibilityState?: { checked?: boolean; expanded?: boolean };
     children?: ReactNode;
+    disabled?: boolean;
     onPress: () => void;
   }) => (
-    <button role={accessibilityRole} onClick={onPress}>
+    <button
+      aria-checked={accessibilityState?.checked}
+      aria-expanded={accessibilityState?.expanded}
+      disabled={disabled}
+      role={accessibilityRole}
+      onClick={onPress}
+    >
       {children}
     </button>
   ),
 }));
-vi.mock("../theme.js", () => ({ color: {}, space: {} }));
+vi.mock("../theme.js", () => ({
+  color: {},
+  material: { plate: {}, quiet: {} },
+  radius: {},
+  space: {},
+  touchTarget: 44,
+  controlFontScaleLimit: 1.5,
+}));
 vi.mock("../ui/sheet.js", () => ({
   Sheet: ({
     children,
@@ -135,16 +163,23 @@ vi.mock("../ui/primitives.js", () => ({
   }) => <button onClick={() => onChange(!value)}>{label}</button>,
 }));
 vi.mock("../ui/integration-icon.js", () => ({
-  IntegrationIcon: ({ name }: { name: string }) => <span aria-hidden>{name} icon</span>,
+  IntegrationIcon: ({ name }: { name: string }) => {
+    cardRenders();
+    return <span aria-hidden>{name} icon</span>;
+  },
 }));
 
+const {
+  IntegrationAuthorizationCancelUnconfirmedError,
+  integrationAuthorizationCancelUnknownDetail,
+} = await import("@opensteer/client/integrations");
 const beginIntegrationAuthorization = vi.fn();
 const beginMcpIntegrationAuthorization = vi.fn();
 vi.mock("../ui/mobile-client-context.js", () => ({
   useMobileClient: () => ({ beginIntegrationAuthorization, beginMcpIntegrationAuthorization }),
 }));
 
-const { IntegrationConnectSheet } = await import("./integration-connect-sheet.js");
+const { IntegrationConnectCard } = await import("./integration-connect-sheet.js");
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const roots: Root[] = [];
@@ -163,33 +198,297 @@ const hosted = {
   providerApplicationRevision: 1,
 };
 const personalAppId = "ipa_00000000-0000-4000-8000-000000000001";
-const twinAppId = "ipa_00000000-0000-4000-8000-000000000002";
 const personalSource = {
   callbackUrl: "https://deployment.test/v1/integrations/oauth/callback/slack",
   kind: "deployment-oauth" as const,
   providerApplicationId: personalAppId,
   providerApplicationRevision: 3,
 };
-const twinSource = {
-  ...personalSource,
-  providerApplicationId: twinAppId,
-  providerApplicationRevision: 1,
-};
 
-const mainConnectAllows =
-  "Your tasks in Main can read and make changes with every account you connect, so connecting also allows this request.";
+const mainConnectAllows = mainAccessDetail("Main", "Slack");
 
-describe("IntegrationConnectSheet", () => {
+describe("IntegrationConnectCard", () => {
+  it("does not render for streaming updates in an unrelated thread", async () => {
+    const client = fakeClient({ sources: [hosted] });
+    await render(client);
+    const before = cardRenders.mock.calls.length;
+    await act(async () => client.streamUnrelatedThread());
+    expect(cardRenders.mock.calls.length).toBe(before);
+  });
+  it("loads an older target Workspace before showing its Connect card", async () => {
+    const client = fakeClient({ sources: [hosted] });
+    const workspaces = client.getSnapshot().workspaces;
+    client.setWorkspaces([], true);
+    const load = vi.spyOn(client, "loadEarlierWorkspaces").mockImplementation(async () => {
+      client.setWorkspaces(workspaces, false);
+    });
+    await render(client);
+    expect(load).toHaveBeenCalledOnce();
+    expect(buttons()).toContain("Connect");
+  });
+  it("offers Decline when the target Workspace is unavailable", async () => {
+    const client = fakeClient({ sources: [hosted] });
+    client.setWorkspaces([], false);
+    await render(client, request(), {}, false);
+    expect(text()).toContain("The target Workspace is no longer available.");
+    await click("Not now");
+    expect(client.dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        response: { kind: "external", value: { decision: "declined" } },
+      }),
+    );
+  });
+
+  describe("Cancel while a sign-in waits", () => {
+    const waits =
+      (settle: (reject: (reason: Error) => void, resolve: (value: unknown) => void) => void) =>
+      ({ signal }: { readonly signal: AbortSignal }) =>
+        new Promise((resolve, reject) => {
+          signal.addEventListener("abort", () => settle(reject, resolve));
+        });
+    const cancelled = (reject: (reason: Error) => void) =>
+      reject(new Error("Integration authorization was cancelled."));
+
+    it("ends a provider sign-in and offers it again", async () => {
+      beginIntegrationAuthorization.mockImplementation(waits(cancelled));
+      await render(fakeClient({ sources: [hosted], selected: hosted }));
+      await press("Connect");
+      expect(text()).toContain("Finish signing in");
+      await press("Cancel");
+      expect(beginIntegrationAuthorization.mock.calls[0]?.[0].signal.aborted).toBe(true);
+      expect(text()).not.toContain("Finish signing in");
+      expect(buttons()).not.toContain("Cancel");
+    });
+
+    it("ends an MCP sign-in", async () => {
+      beginMcpIntegrationAuthorization.mockImplementation(waits(cancelled));
+      await render(fakeClient({ requirementKind: "mcp-oauth", sources: [] }));
+      await press("Connect");
+      await press("Cancel");
+      expect(beginMcpIntegrationAuthorization.mock.calls[0]?.[0].signal.aborted).toBe(true);
+      expect(text()).not.toContain("Finish signing in");
+    });
+
+    describe("when the Host has not answered the Cancel", () => {
+      const unconfirmed = (reconciled: Promise<unknown>) =>
+        waits((reject) =>
+          reject(
+            new IntegrationAuthorizationCancelUnconfirmedError(
+              "ioa_00000000-0000-4000-8000-000000000001",
+              reconciled as never,
+            ),
+          ),
+        );
+
+      it("says so instead of Cancelled, then shows the completion that won", async () => {
+        const client = fakeClient({ sources: [hosted], selected: hosted, workspaceKind: "main" });
+        const id = "con_00000000-0000-4000-8000-0000000000ce";
+        let settle = (_status: unknown) => {};
+        beginIntegrationAuthorization.mockImplementation(
+          unconfirmed(new Promise((resolve) => (settle = resolve))),
+        );
+        await render(client);
+        await press("Connect");
+        await press("Cancel");
+        expect(text()).toContain("Checking whether this was cancelled");
+        expect(text()).not.toMatch(/was cancelled\./u);
+        expect(buttons()).not.toContain("Cancel");
+        client.setConnections([connection(id)]);
+        client.settleRequest();
+        await act(async () => settle(completed(id)));
+        expect(text()).toContain("Slack connected · oversteer.slack.com");
+      });
+
+      it("reports the cancel once the Host confirms it", async () => {
+        let settle = (_status: unknown) => {};
+        beginIntegrationAuthorization.mockImplementation(
+          unconfirmed(new Promise((resolve) => (settle = resolve))),
+        );
+        await render(fakeClient({ sources: [hosted], selected: hosted }));
+        await press("Connect");
+        await press("Cancel");
+        await act(async () =>
+          settle({
+            connectionId: null,
+            expiresAt: "2099-01-01T00:00:00Z",
+            failureCode: null,
+            status: "cancelled",
+          }),
+        );
+        expect(text()).toContain("Authorization was cancelled.");
+        expect(text()).not.toContain("Checking whether");
+      });
+
+      it("says it could not tell when the Host can no longer answer", async () => {
+        beginIntegrationAuthorization.mockImplementation(unconfirmed(Promise.resolve(null)));
+        await render(fakeClient({ sources: [hosted], selected: hosted }));
+        await press("Connect");
+        await press("Cancel");
+        expect(text()).toContain(integrationAuthorizationCancelUnknownDetail);
+      });
+    });
+
+    it("shows the connection when it finished before Cancel reached the Host", async () => {
+      const client = fakeClient({ sources: [hosted], selected: hosted, workspaceKind: "main" });
+      const id = "con_00000000-0000-4000-8000-0000000000cd";
+      beginIntegrationAuthorization.mockImplementation(
+        waits((_reject, resolve) => {
+          client.setConnections([connection(id)]);
+          client.settleRequest();
+          resolve(completed(id));
+        }),
+      );
+      await render(client);
+      await press("Connect");
+      await press("Cancel");
+      expect(text()).toContain("Slack connected · oversteer.slack.com");
+    });
+  });
+
+  it.each(["main", "project"] as const)(
+    "connects %s from one tap and shows the committed result in place",
+    async (workspaceKind) => {
+      const client = fakeClient({ sources: [hosted], selected: hosted, workspaceKind });
+      const id = "con_00000000-0000-4000-8000-0000000000cc";
+      beginIntegrationAuthorization.mockImplementation(async () => {
+        client.setConnections([connection(id)]);
+        if (workspaceKind === "main") client.settleRequest();
+        return completed(id);
+      });
+      await render(client);
+      expect(document.querySelector("h1")).toBeNull();
+      await press("Connect");
+      expect(beginIntegrationAuthorization).toHaveBeenCalledExactlyOnceWith({
+        applicationSource: hosted,
+        definitionId: "slack",
+        signal: expect.any(AbortSignal),
+      });
+      expect(text()).toContain("Slack connected · oversteer.slack.com");
+      expect(text()).not.toMatch(/Back to the request|Account connected|Review connection/u);
+      const grants = client.dispatch.mock.calls.filter(
+        ([command]) => command.type === "request.respond",
+      );
+      expect(grants).toHaveLength(workspaceKind === "main" ? 0 : 1);
+      if (workspaceKind === "project")
+        expect(grants[0]?.[0]).toMatchObject({
+          response: { value: { access: "read", connectionId: id, decision: "fulfilled" } },
+        });
+    },
+  );
+
+  it.each(["denied", "cancelled"] as const)(
+    "keeps the old mobile selection pending after consent is %s",
+    async (status) => {
+      const client = fakeClient({
+        workspaceKind: "project",
+        sources: [hosted],
+        connections: [connection("old")],
+      });
+      beginIntegrationAuthorization.mockResolvedValue({
+        ...completed("old"),
+        connectionId: null,
+        status,
+      });
+      const onResponded = vi.fn();
+      await render(client, request(), { onResponded });
+      await click("oversteer.slack.com");
+      await click("Add another account");
+      expect(text()).toContain(
+        status === "denied" ? "Access was not approved." : "Authorization was cancelled.",
+      );
+      expect(client.dispatch).not.toHaveBeenCalled();
+      expect(onResponded).not.toHaveBeenCalled();
+      // Try again repeats the sign-in for another account, never approval of the old one.
+      await click("Try again");
+      expect(beginIntegrationAuthorization).toHaveBeenCalledTimes(2);
+      expect(client.dispatch).not.toHaveBeenCalled();
+      expect(onResponded).not.toHaveBeenCalled();
+    },
+  );
+
+  // Dismissing a sheet abandons the operation it belongs to, so the account list
+  // must not open over a sign-in the card is still waiting on.
+  it("keeps the full account list closed while a sign-in is out", async () => {
+    const client = fakeClient({
+      connections: ["a", "b", "c", "d"].map((id) => connection(id)),
+      selected: hosted,
+      sources: [hosted],
+    });
+    beginIntegrationAuthorization.mockImplementation(() => new Promise(() => {}));
+    await render(client);
+    await click("Add another account");
+    expect(text()).toContain("Finish signing in");
+
+    await click("See all 4 accounts");
+
+    expect(document.querySelector("h1")).toBeNull();
+  });
+
+  it("does not grant a different mobile request when consent finishes", async () => {
+    const client = fakeClient({ workspaceKind: "project", sources: [hosted] });
+    let complete!: (value: ReturnType<typeof completed>) => void;
+    beginIntegrationAuthorization.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          complete = resolve;
+        }),
+    );
+    const onResponded = vi.fn();
+    await render(client, request(), { onResponded });
+    await press("Connect");
+    await act(async () =>
+      roots.at(-1)!.render(
+        <IntegrationConnectCard
+          hostClient={client as never}
+          onResponded={onResponded}
+          request={
+            {
+              ...(request("read-write") as object),
+              id: "req_00000000-0000-4000-8000-000000000002",
+            } as never
+          }
+        />,
+      ),
+    );
+    await act(async () => {
+      client.setConnections([connection("new")]);
+      complete(completed("new"));
+    });
+    expect(client.dispatch).not.toHaveBeenCalled();
+    expect(onResponded).not.toHaveBeenCalled();
+    expect(text()).not.toContain("connected ·");
+  });
+
+  it.each(["main", "project"] as const)(
+    "discloses %s access before catalog Connect without expanding details",
+    async (workspaceKind) => {
+      const client = fakeClient({ isAdministrator: true, workspaceKind, sources: [] });
+      const catalogRequest = preinstallRequest();
+      await render(
+        client,
+        {
+          ...(catalogRequest as object),
+          payload: {
+            ...(catalogRequest as unknown as { payload: object }).payload,
+            access: "read-write",
+          },
+        } as never,
+        {},
+        false,
+      );
+      expect(text()).toContain(workspaceKind === "main" ? "All tasks in Main" : "Read and write");
+      expect(buttons()).toContain("Connect");
+    },
+  );
+
   it("installs from the access sheet without resolving the request", async () => {
     const client = fakeClient({ isAdministrator: true, sources: [] });
     await render(client, preinstallRequest());
 
     expect(text()).toContain("Test Calendar");
     expect(text()).toContain("Scheduling for the test suite.");
-    expect(text()).toContain(
-      "After it’s installed, you’ll finish setting it up and review its access here.",
-    );
-    await click("Install and continue");
+    expect(buttons()).toContain("Connect");
+    await press("Connect");
 
     expect(client.dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -197,7 +496,9 @@ describe("IntegrationConnectSheet", () => {
         type: "request.respond",
       }),
     );
-    expect(text()).toContain("Loading the account and access review");
+    expect(client.dispatch).not.toHaveBeenCalledWith(
+      expect.objectContaining({ response: expect.objectContaining({ kind: "external" }) }),
+    );
   });
 
   // The ways it could fail: the phone naming a proposal by its document's
@@ -238,9 +539,10 @@ describe("IntegrationConnectSheet", () => {
     const client = fakeClient({ requirementKind: "mcp-oauth", sources: [] });
     await render(client);
 
-    await click("Connect account");
+    await press("Connect");
 
     expect(beginMcpIntegrationAuthorization).toHaveBeenCalledWith({
+      signal: expect.any(AbortSignal),
       displayName: "Slack account",
       requestId: "req_00000000-0000-4000-8000-000000000001",
       serverId: "isv_00000000-0000-4000-8000-000000000001",
@@ -249,7 +551,7 @@ describe("IntegrationConnectSheet", () => {
 
   it("starts MCP sign-in from a remote device", async () => {
     await render(fakeClient({ remote: true, requirementKind: "mcp-oauth", sources: [] }));
-    await click("Connect account");
+    await press("Connect");
     expect(beginMcpIntegrationAuthorization).toHaveBeenCalledWith(
       expect.objectContaining({
         requestId: "req_00000000-0000-4000-8000-000000000001",
@@ -270,11 +572,11 @@ describe("IntegrationConnectSheet", () => {
 
     expect(text()).toContain("Read and write · 2 operations");
     expect(text()).toContain(mainConnectAllows);
-    await click("Connect account");
+    await press("Connect");
     expect(text()).toContain(mainConnectAllows);
     expect(text()).toContain("Get your API token in your Slack account, then paste it here.");
     typeInto("API token", "secret-token");
-    await click("Connect account");
+    await click("Connect Slack");
 
     expect(client.dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -286,6 +588,82 @@ describe("IntegrationConnectSheet", () => {
         type: "integration.apiKey.connect",
       }),
     );
+  });
+
+  it.each([
+    {
+      returnsConnectionId: true,
+      behavior: "fulfills a project request with API-key account A when account B sorts first",
+    },
+    {
+      returnsConnectionId: false,
+      behavior: "waits for explicit Use on an older Host before granting project access",
+    },
+  ])("$behavior", async ({ returnsConnectionId }) => {
+    const client = fakeClient({
+      requirementKind: "api-key",
+      sources: [],
+      workspaceKind: "project",
+    });
+    const accountA = keyConnection(
+      "con_00000000-0000-4000-8000-0000000000a1",
+      "2026-09-17T09:12:00.000Z",
+    );
+    accountA.displayName = "Account A";
+    const accountB = {
+      ...accountA,
+      id: "con_00000000-0000-4000-8000-0000000000b1",
+      displayName: "Account B",
+    };
+    const dispatch = client.dispatch.getMockImplementation()!;
+    client.dispatch.mockImplementation(async (command) => {
+      if (command.type === "integration.apiKey.connect") {
+        client.setConnections([accountB, accountA]);
+        return {
+          type: command.type,
+          ...(returnsConnectionId ? { connectionId: accountA.id } : {}),
+        };
+      }
+      return dispatch(command);
+    });
+    const getDashboard = client.rpc["integrations.get"];
+    const dashboard = vi.spyOn(client.rpc, "integrations.get").mockImplementation(async () => {
+      const result = await getDashboard();
+      return { ...result, data: { ...result.data, connections: [...result.data.connections] } };
+    });
+    const onResponded = vi.fn();
+    await render(client, request(), { onResponded });
+    await press("Connect");
+    typeInto("API token", "test-api-key");
+    await click("Connect Slack");
+    if (!returnsConnectionId) {
+      expect(dashboard).toHaveBeenCalledTimes(2);
+      expect(client.dispatch.mock.calls.filter(([c]) => c.type === "request.respond")).toEqual([]);
+      expect(onResponded).not.toHaveBeenCalled();
+      expect(text()).not.toContain("Slack connected");
+      // The key sheet closes so the saved account's Use is in front.
+      expect(text()).not.toContain("API token");
+      await press("Allow");
+    }
+    expect(client.dispatch.mock.calls.filter(([c]) => c.type === "request.respond")).toEqual([
+      [
+        expect.objectContaining({
+          requestId,
+          response: {
+            kind: "external",
+            value: {
+              access: "read",
+              alias: `Account ${returnsConnectionId ? "A" : "B"}`,
+              isDefault: false,
+              connectionId: returnsConnectionId ? accountA.id : accountB.id,
+              decision: "fulfilled",
+            },
+          },
+        }),
+      ],
+    ]);
+    expect(onResponded).toHaveBeenCalledOnce();
+    expect(text()).toContain(`Slack connected · Account ${returnsConnectionId ? "A" : "B"}`);
   });
 
   // Instruction failures: a proposed label loses its case, the method title
@@ -332,7 +710,7 @@ describe("IntegrationConnectSheet", () => {
         data: installed,
       });
       await render(client);
-      await click("Connect account");
+      await press("Connect");
 
       const noun = extra ? "key" : label;
       const safe = setupUrl?.startsWith("https://www.") === true;
@@ -345,7 +723,7 @@ describe("IntegrationConnectSheet", () => {
       }
       typeInto(label, "credential-value");
       if (extra) typeInto("Auth token", "second-value");
-      await click("Connect account");
+      await click("Connect TMDB");
       expect(client.dispatch).toHaveBeenCalledWith(
         expect.objectContaining({
           input: expect.objectContaining({
@@ -363,10 +741,10 @@ describe("IntegrationConnectSheet", () => {
   it("promises nothing about connecting for a project Workspace", async () => {
     await render(fakeClient({ requirementKind: "api-key", sources: [], workspaceKind: "project" }));
 
-    expect(text()).toContain("Connect account");
+    expect(text()).toContain("Connect Slack");
     expect(text()).toContain("Read only · 1 of 2 operations");
     expect(text()).not.toContain("connecting also allows this request");
-    await click("Connect account");
+    await press("Connect");
     expect(text()).toContain("API token");
     expect(text()).not.toContain("connecting also allows this request");
   });
@@ -398,7 +776,7 @@ describe("IntegrationConnectSheet", () => {
         onClose,
         onResponded,
       });
-      if (!reconnecting) await click("Connect account");
+      await (reconnecting ? click("Reconnect Slack") : press("Connect"));
       typeInto("API token", "discard-this-key");
       await click("Dismiss sheet");
       expect(onClose).toHaveBeenCalledOnce();
@@ -427,6 +805,7 @@ describe("IntegrationConnectSheet", () => {
       presentation: { agentProposed: true, kind: "external", title: "Slack access" },
     } as never);
 
+    await click("Reconnect Slack");
     expect(document.querySelector("h1")?.textContent).toBe("Reconnect Slack");
     expect(text()).toContain("Proposed by an agent");
     expect(text()).toContain("Slack rejected the saved sign-in");
@@ -437,10 +816,10 @@ describe("IntegrationConnectSheet", () => {
       document.querySelector<HTMLInputElement>('input[aria-label="Account label (optional)"]')
         ?.value,
     ).toBe("Slack");
-    expect(text()).not.toContain("Connect another account");
+    expect(text()).not.toContain("Add another account");
 
     typeInto("API token", "replacement-token");
-    await click("Reconnect account");
+    await click("Reconnect Slack");
 
     expect(client.dispatch).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({
@@ -470,16 +849,16 @@ describe("IntegrationConnectSheet", () => {
       onResponded,
     });
 
-    expect(text()).toContain("Account no longer available");
+    expect(text()).toContain("This account is no longer available");
     expect(text()).toContain(
       "This account is no longer available. Decline this request, then ask the agent again when you want to reconnect.",
     );
     expect(text()).not.toContain("Dismiss request");
-    expect(text()).not.toContain("Reconnect account");
-    expect(text()).not.toContain("Connect another account");
-    expect(text()).not.toContain("Use this account");
+    expect(text()).not.toContain("Reconnect oversteer.slack.com");
+    expect(text()).not.toContain("Add another account");
+    expect(buttons()).not.toContain("Allow");
 
-    await click("Decline request");
+    await click("Not now");
 
     expect(client.dispatch).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({
@@ -494,8 +873,9 @@ describe("IntegrationConnectSheet", () => {
     const client = fakeClient({ sources: [] });
     await render(client, unpinnedRequest());
 
-    expect(text()).toContain("Choose the Slack server");
-    expect(text()).not.toContain("Connect account");
+    expect(text()).toContain("Choose server");
+    await click("Choose server");
+    expect(buttons()).not.toContain("Connect");
     await click("Continue with live");
 
     expect(client.dispatch).toHaveBeenCalledWith(
@@ -516,15 +896,12 @@ describe("IntegrationConnectSheet", () => {
       failureCode: null,
       status: "denied",
     });
-    const client = fakeClient({ sources: [hosted, personalSource] });
+    const client = fakeClient({ selected: personalSource, sources: [hosted, personalSource] });
     await render(client);
 
-    await click("Connect account");
+    await press("Connect");
     expect(text()).toContain(mainConnectAllows);
-    await click("Mattress Deal Finder Bot");
-    expect(text()).toContain("Existing connections keep working.");
-    expect(text()).toContain(personalSource.callbackUrl);
-    await click("Continue in browser");
+    expect(text()).not.toContain(personalSource.callbackUrl);
 
     expect(beginIntegrationAuthorization).toHaveBeenCalledWith(
       expect.objectContaining({ applicationSource: personalSource }),
@@ -544,14 +921,13 @@ describe("IntegrationConnectSheet", () => {
     const client = fakeClient({ selected: hosted, sources: [hosted] });
     await render(client);
 
-    await click("Connect account");
-    await click("Continue in browser");
+    await press("Connect");
 
     expect(text()).toContain("no connected account is recorded here");
     expect(text()).not.toContain("is connected as");
   });
 
-  it("shows the account the Host recorded, and still asks about the Workspace", async () => {
+  it("shows the Host-recorded account in place and fulfills the request", async () => {
     const connectionId = "con_00000000-0000-4000-8000-0000000000aa";
     beginIntegrationAuthorization.mockResolvedValue({
       connectionId,
@@ -566,13 +942,10 @@ describe("IntegrationConnectSheet", () => {
     });
     await render(client);
 
-    await click("Connect another account");
-    await click("Continue in browser");
+    await click("Add another account");
 
-    expect(text()).toContain("Slack is connected as Oversteer");
-    expect(text()).toContain("T01ABCDEF");
-    // The grant is a separate answer, and nothing here has given it.
-    expect(client.dispatch).not.toHaveBeenCalledWith(
+    expect(text()).toContain("Slack connected · oversteer.slack.com");
+    expect(client.dispatch).toHaveBeenCalledWith(
       expect.objectContaining({ type: "request.respond" }),
     );
   });
@@ -593,15 +966,13 @@ describe("IntegrationConnectSheet", () => {
     beginIntegrationAuthorization.mockResolvedValue(completed(githubConnectionId));
     await render(client);
 
-    await click("Connect account");
-    await click("Continue in browser");
+    await press("Connect");
 
     expect(text()).toContain(`This connection did not finish${rejectedSignIn}`);
-    expect(buttons()).toContain("Continue in browser");
+    expect(buttons()).toContain("Try again");
     expect(buttons()).not.toContain("Recheck repository access");
 
-    await click("Continue in browser");
-
+    await click("Try again");
     expect(beginIntegrationAuthorization).toHaveBeenCalledTimes(2);
   });
 
@@ -615,8 +986,7 @@ describe("IntegrationConnectSheet", () => {
     });
     beginIntegrationAuthorization.mockResolvedValue(completed(githubConnectionId));
     await render(client);
-    await click("Connect account");
-    await click("Continue in browser");
+    await press("Connect");
     expect(text()).toContain("Repository access is still required");
 
     client.rpc["integration.repositoryAccess.check"].mockImplementationOnce(async () =>
@@ -625,7 +995,7 @@ describe("IntegrationConnectSheet", () => {
     await click("Recheck repository access");
 
     expect(text()).toContain(`This connection did not finish${rejectedSignIn}`);
-    expect(buttons()).toContain("Continue in browser");
+    expect(buttons()).toContain("Try again");
     expect(buttons()).not.toContain("Recheck repository access");
   });
 
@@ -640,8 +1010,7 @@ describe("IntegrationConnectSheet", () => {
     const reload = vi.spyOn(client.rpc, "integrations.get");
     beginIntegrationAuthorization.mockResolvedValue(completed(githubConnectionId));
     await render(client);
-    await click("Connect account");
-    await click("Continue in browser");
+    await press("Connect");
     const reloads = reload.mock.calls.length;
 
     // A 5xx changes nothing at the Host: the account still waits for repositories.
@@ -658,44 +1027,13 @@ describe("IntegrationConnectSheet", () => {
     expect(buttons()).not.toContain("Continue in browser");
   });
 
-  it("saves an own app without connecting, and keeps the row the Host wrote", async () => {
-    const client = fakeClient({
-      applications: [
-        application({ id: personalAppId, revision: 3 }),
-        application({ id: twinAppId, revision: 1 }),
-      ],
-      saved: application({ id: twinAppId, revision: 1 }),
-      sources: [personalSource, twinSource],
-    });
-    await render(client);
-
-    await click("Connect account");
-    await click("Use my own Slack app");
-    typeInto("App name", "Mattress Deal Finder Bot");
-    typeInto("Client ID", "1234567890.987");
-    typeInto("Client Secret", "shhh");
-    await click("Save app");
-
-    expect(text()).toContain("No account is connected yet");
-    expect(beginIntegrationAuthorization).not.toHaveBeenCalled();
-
-    await click("Continue in browser");
-
-    // Two registrations share a name and client id; the Host's answer decides.
-    expect(beginIntegrationAuthorization).toHaveBeenCalledWith(
-      expect.objectContaining({ applicationSource: twinSource }),
-    );
-  });
-
-  it("leads to own-app setup when this deployment offers no sign-in app", async () => {
+  it("sends missing sign-in setup to Settings without connecting", async () => {
     const client = fakeClient({ sources: [] });
     await render(client);
-
-    await click("Connect account");
-
-    expect(text()).toContain("No sign-in app is ready yet");
-    expect(text()).toContain("Set up my own Slack app");
-    expect(text()).not.toContain("Continue in browser");
+    await click("Open integration settings");
+    expect(navigate).toHaveBeenCalledWith("SettingsPlugins", expect.any(Object));
+    expect(beginIntegrationAuthorization).not.toHaveBeenCalled();
+    expect(text()).not.toContain("Client Secret");
   });
 
   it("keeps requested read-write access required when write operations are discovered", async () => {
@@ -708,9 +1046,9 @@ describe("IntegrationConnectSheet", () => {
     });
     await render(client, request("read-write"));
 
-    expect(text()).toContain("This task requires read-write access");
+    expect(text()).toContain("Read and write");
     expect(text()).not.toContain("Allow changes");
-    await click("Allow in Support");
+    await press("Allow");
 
     expect(client.dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -737,7 +1075,7 @@ describe("IntegrationConnectSheet", () => {
     expect(text()).not.toContain("1 operations");
     await click("Allow changes");
     expect(text()).toContain("Read and write · 2 operations");
-    await click("Allow in Support");
+    await press("Allow");
 
     expect(client.dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -928,7 +1266,7 @@ describe("IntegrationConnectSheet", () => {
     await click("Allow changes (Read and send)");
 
     expect(text()).toContain("Request sending access on Mac mini");
-    expect(text()).not.toContain("Allow in Support");
+    expect(buttons()).not.toContain("Allow");
     await click("Request sending access on Mac mini");
     expect(client.dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1008,7 +1346,6 @@ describe("IntegrationConnectSheet", () => {
     await click("Request setup on MacBook");
 
     expect(text()).toContain("Setup requested. On MacBook");
-    expect(text()).not.toContain("Use this account");
   });
 
   it("requires reselection when the explicitly chosen computer disappears", async () => {
@@ -1071,7 +1408,7 @@ describe("IntegrationConnectSheet", () => {
     await render(client, request("read-write"));
 
     expect(text()).toContain("Allow changes on this computer");
-    expect(text()).not.toContain("Use this account");
+    expect(buttons()).not.toContain("Allow");
     await click("Request sending access on Mac mini");
 
     expect(client.dispatch).toHaveBeenCalledWith(
@@ -1090,7 +1427,7 @@ describe("IntegrationConnectSheet", () => {
     await render(client);
 
     expect(text()).not.toContain("No account is connected yet");
-    await click("Use this account");
+    await press("Allow");
 
     expect(client.dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1115,7 +1452,7 @@ describe("IntegrationConnectSheet", () => {
       request: preinstallRequest,
       start: async (client, held) => {
         client.dispatch.mockReturnValueOnce(held);
-        await click("Install and continue");
+        await press("Connect");
       },
     },
     {
@@ -1124,6 +1461,7 @@ describe("IntegrationConnectSheet", () => {
       request: unpinnedRequest,
       start: async (client, held) => {
         client.dispatch.mockReturnValueOnce(held);
+        await click("Choose server");
         await click("Continue with live");
       },
     },
@@ -1132,10 +1470,10 @@ describe("IntegrationConnectSheet", () => {
       operation: "a key",
       request,
       start: async (client, held) => {
-        await click("Connect account");
+        await press("Connect");
         typeInto("API token", "secret-token");
         client.dispatch.mockReturnValueOnce(held);
-        await click("Connect account");
+        await click("Connect Slack");
       },
     },
     {
@@ -1144,7 +1482,7 @@ describe("IntegrationConnectSheet", () => {
       request,
       start: async (_client, held) => {
         beginMcpIntegrationAuthorization.mockReturnValueOnce(held);
-        await click("Connect account");
+        await press("Connect");
       },
     },
   ])("leaves a reopened sheet alone when $operation fails late", async (input) => {
@@ -1156,7 +1494,7 @@ describe("IntegrationConnectSheet", () => {
     });
     await render(client, currentRequest);
     await input.start(client, held);
-    await click("Dismiss sheet");
+    await act(async () => roots.at(-1)!.render(null));
     await reopen(client, currentRequest);
 
     await act(async () => fail(new Error("The closed sheet's operation failed")));
@@ -1169,6 +1507,7 @@ async function render(
   client: ReturnType<typeof fakeClient>,
   currentRequest = request(),
   callbacks: { readonly onClose?: () => void; readonly onResponded?: () => void } = {},
+  disclose = true,
 ): Promise<void> {
   const container = document.createElement("div");
   document.body.append(container);
@@ -1176,15 +1515,21 @@ async function render(
   roots.push(root);
   await act(async () => {
     root.render(
-      <IntegrationConnectSheet
+      <IntegrationConnectCard
         hostClient={client as never}
         onClose={callbacks.onClose ?? vi.fn()}
         onResponded={callbacks.onResponded ?? vi.fn()}
-        open
         request={currentRequest}
       />,
     );
   });
+  if (disclose) await openDetails();
+}
+
+/** Opens what the card's foot line stands for, where the card has anything behind it. */
+async function openDetails(): Promise<void> {
+  const toggle = document.querySelector<HTMLButtonElement>('button[aria-expanded="false"]');
+  if (toggle) await act(async () => toggle.click());
 }
 
 /** Closes the sheet and opens it again on the same request, as its card does. */
@@ -1196,13 +1541,14 @@ async function reopen(
   for (const open of [false, true]) {
     await act(async () => {
       root.render(
-        <IntegrationConnectSheet
-          hostClient={client as never}
-          onClose={vi.fn()}
-          onResponded={vi.fn()}
-          open={open}
-          request={currentRequest}
-        />,
+        open ? (
+          <IntegrationConnectCard
+            hostClient={client as never}
+            onClose={vi.fn()}
+            onResponded={vi.fn()}
+            request={currentRequest}
+          />
+        ) : null,
       );
     });
   }
@@ -1216,10 +1562,21 @@ function buttons(): readonly string[] {
   return [...document.querySelectorAll("button")].map((button) => button.textContent ?? "");
 }
 
+/** Presses the control whose whole label is this, where a longer one would also match. */
+async function press(label: string): Promise<void> {
+  const target = [...document.querySelectorAll("button")]
+    .reverse()
+    .find((element) => element.textContent === label);
+  if (!target) throw new Error(`No control labelled exactly ${label} in: ${text()}`);
+  await act(async () => {
+    target.click();
+  });
+}
+
 async function click(label: string): Promise<void> {
-  const target = [...document.querySelectorAll("button")].find((element) =>
-    element.textContent?.includes(label),
-  );
+  const target = [...document.querySelectorAll("button")]
+    .reverse()
+    .find((element) => element.textContent?.includes(label));
   if (!target) throw new Error(`No control labelled ${label} in: ${text()}`);
   await act(async () => {
     target.click();
@@ -1332,9 +1689,11 @@ function fakeClient(input: {
   const provider = input.provider ?? "slack";
   let sources = input.sources;
   const connections = [...(input.connections ?? [])];
-  const requestPending = true;
+  let requestPending = true;
   const listeners = new Set<() => void>();
   let snapshot = {
+    workspaceWindow: { hasMore: false, itemCount: 1 },
+    threadActivities: { unrelated: 0 },
     machines: [...(input.machines ?? [])],
     workspaces: [
       {
@@ -1348,7 +1707,10 @@ function fakeClient(input: {
     async (command: {
       readonly input?: { readonly access?: "read" | "read-write"; readonly runnerId?: string };
       readonly type: string;
+      readonly response?: { kind: string };
     }) => {
+      if (command.type === "request.respond" && command.response?.kind === "external")
+        requestPending = false;
       if (command.type === "integration.providerApplication.save") {
         sources = input.sources;
         return { application: input.saved, type: command.type };
@@ -1362,6 +1724,28 @@ function fakeClient(input: {
   );
   return {
     dispatch,
+    loadEarlierWorkspaces: async () => {},
+    setWorkspaces(workspaces: typeof snapshot.workspaces, hasMore: boolean) {
+      snapshot = {
+        ...snapshot,
+        workspaces,
+        workspaceWindow: { hasMore, itemCount: workspaces.length },
+      };
+      for (const listener of listeners) listener();
+    },
+    streamUnrelatedThread() {
+      snapshot = {
+        ...snapshot,
+        threadActivities: { unrelated: snapshot.threadActivities.unrelated + 1 },
+      };
+      for (const listener of listeners) listener();
+    },
+    setConnections(next: typeof connections) {
+      connections.splice(0, connections.length, ...next);
+    },
+    settleRequest() {
+      requestPending = false;
+    },
     getSnapshot: () => snapshot,
     rpc: {
       "integration.platform.get": async () => {
@@ -1393,12 +1777,12 @@ function fakeClient(input: {
           providerAuthorizations: {
             [provider]: {
               availableSources: sources,
-              code: input.selected ? "READY" : "PROVIDER_APPLICATION_REQUIRED",
+              code: (input.selected ?? sources[0]) ? "READY" : "PROVIDER_APPLICATION_REQUIRED",
               detail: input.selected
                 ? "Ready to connect"
                 : "Configure and enable this deployment's OAuth application",
               hostedOAuthStatus: "available",
-              selectedSource: input.selected ?? null,
+              selectedSource: input.selected ?? sources[0] ?? null,
               selectedSourceKind: input.selected?.kind ?? null,
             },
           },

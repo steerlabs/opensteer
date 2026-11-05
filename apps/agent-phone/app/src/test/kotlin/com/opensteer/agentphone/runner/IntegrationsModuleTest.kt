@@ -347,7 +347,10 @@ class IntegrationsModuleTest {
         module.handle(frame("cu:bad", "act", params = """{"includeScreenshot":true,"observationId":"obs_1","actions":[]}"""))
         val unknown = (1..2_000).joinToString(",") { """"field$it":1""" }
         module.handle(frame("cu:noisy", "observe", params = """{"includeScreenshot":true,$unknown}"""))
+        module.handle(frame("cu:future", "act", params = """{"includeScreenshot":true,"observationId":"obs_1","actions":[{"type":"wake"},{"type":"future-action"}]}"""))
+        assertTrue("the whole batch must be refused before wake is dispatched", phone.running.isEmpty())
         val answers = results().toMap()
+        assertEquals("failed", answers.getValue("cu:future").string("code"))
         assertEquals("failed", answers.getValue("cu:bad").string("code"))
         assertEquals("failed", answers.getValue("cu:noisy").string("code"))
         assertTrue(answers.getValue("cu:noisy").string("message").length <= 1_000)
