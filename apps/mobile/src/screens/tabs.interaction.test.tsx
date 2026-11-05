@@ -316,6 +316,7 @@ vi.mock("react-native-reanimated", () => {
     default: { View },
     FadeIn: transition,
     FadeInDown: transition,
+    FadeInUp: transition,
     FadeOut: transition,
     FadeOutDown: transition,
     FadeOutUp: transition,

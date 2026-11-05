@@ -24,6 +24,7 @@ vi.mock("react-native", () => ({
 vi.mock("react-native-reanimated", () => ({
   FadeIn: { duration: () => undefined },
   FadeInDown: { duration: () => undefined },
+  FadeInUp: { duration: () => undefined },
   FadeOut: { duration: () => undefined },
   LinearTransition: { duration: () => undefined },
   useSharedValue: (value: number) => ({ value }),

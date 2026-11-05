@@ -362,6 +362,7 @@ interface WorkspaceChannel {
   refused: boolean;
   cursor: Sequence;
   /** The nonce of the liveness probe this channel is waiting on, if any. */
+  probeFollowsNetwork: boolean;
   probeNonce: string | null;
   probeTimer: Timer | null;
   /** When the current socket last showed its subscription delivering. */
@@ -4485,7 +4486,7 @@ export class HttpHostClient {
     if (path === "same" && state === this.#network) {
       if (this.#workspaceReconnectSuspended()) return;
       for (const channel of this.#channels.values())
-        this.#probeChannel(channel, socketProbeDeadlineMs, () => this.#followNetwork());
+        this.#probeChannel(channel, socketProbeDeadlineMs, true);
       return;
     }
     this.#network = state;
@@ -4529,19 +4530,21 @@ export class HttpHostClient {
   #probeChannel(
     channel: WorkspaceChannel,
     deadlineMs = socketProbeDeadlineMs,
-    onUnanswered = (): void => {
-      this.#replaceChannel(channel, "Liveness probe unanswered");
-      this.#recomputeConnection();
-    },
+    followNetwork = false,
   ): void {
     const socket = channel.socket;
-    if (!socket || socket.readyState !== 1 || channel.probeTimer) return;
+    if (!socket || socket.readyState !== 1) return;
+    // A probe already in the air answers this question too, so it inherits it.
+    channel.probeFollowsNetwork ||= followNetwork;
+    if (channel.probeTimer) return;
     const nonce = globalThis.crypto.randomUUID();
     const progressAt = channel.progressAt;
     channel.probeNonce = nonce;
     channel.probeTimer = globalThis.setTimeout(() => {
+      const follow = channel.probeFollowsNetwork;
       channel.probeTimer = null;
       channel.probeNonce = null;
+      channel.probeFollowsNetwork = false;
       // A client that stopped reading meanwhile judges the socket on its way back,
       // and one whose subscription delivered since asking has its answer already:
       // on a slow route the reply can queue behind the very frames that prove it.
@@ -4551,7 +4554,12 @@ export class HttpHostClient {
         this.#workspaceReconnectSuspended()
       )
         return;
-      onUnanswered();
+      if (follow) {
+        this.#followNetwork();
+        return;
+      }
+      this.#replaceChannel(channel, "Liveness probe unanswered");
+      this.#recomputeConnection();
     }, deadlineMs);
     try {
       socket.send(JSON.stringify({ nonce, type: "client.ping" }));
@@ -4567,6 +4575,7 @@ export class HttpHostClient {
     if (channel.probeTimer) globalThis.clearTimeout(channel.probeTimer);
     channel.probeTimer = null;
     channel.probeNonce = null;
+    channel.probeFollowsNetwork = false;
   }
 
   /**
@@ -4654,6 +4663,7 @@ export class HttpHostClient {
       ({
         cursor: zeroSequence,
         refused: false,
+        probeFollowsNetwork: false,
         probeNonce: null,
         probeTimer: null,
         progressAt: 0,

@@ -52,7 +52,12 @@ import {
   type WebSocketClient,
 } from "./host-session-client.js";
 import { describeHostConnection } from "./host-connection.js";
-import { connectionInterruptionHoldMs, socketProbeDeadlineMs } from "./lifecycle.js";
+import {
+  connectionInterruptionHoldMs,
+  realtimeIdleProbeDeadlineMs,
+  realtimeIdleProbeMs,
+  socketProbeDeadlineMs,
+} from "./lifecycle.js";
 import { healthySocketMs } from "./realtime-frames.js";
 import type {
   ClientLifecycle,
@@ -10028,6 +10033,23 @@ describe("HttpHostClient lifecycle", () => {
       await vi.advanceTimersByTimeAsync(socketProbeDeadlineMs);
 
       // Every other socket on the path goes too: only this one could be asked.
+      expect(events).toEqual(["network"]);
+      expect(host.sockets).toHaveLength(2);
+      host.client.dispose();
+    });
+
+    it("follows that move through a probe already in the air", async () => {
+      const host = connected();
+      await host.client.load();
+      host.synchronize(host.sockets[0]!);
+      const events: string[] = [];
+      host.client.subscribeLifecycle?.((event) => events.push(event));
+
+      await vi.advanceTimersByTimeAsync(realtimeIdleProbeMs + realtimeIdleProbeDeadlineMs / 2);
+      expect(sentPingNonce(host.sockets[0]!)).toBeTruthy();
+      host.platform.changeNetwork("online", "same");
+      await vi.advanceTimersByTimeAsync(realtimeIdleProbeDeadlineMs);
+
       expect(events).toEqual(["network"]);
       expect(host.sockets).toHaveLength(2);
       host.client.dispose();
