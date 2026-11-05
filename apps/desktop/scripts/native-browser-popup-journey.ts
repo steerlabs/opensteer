@@ -183,7 +183,7 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
         const page = await viewer.newPage();
         page.setDefaultTimeout(4000);
         await page.addInitScript(() => {
-          Object.assign(window, { popupPresented: 0, popupCorner: -1 });
+          Object.assign(window, { popupPresented: 0, popupCorner: -1, popupPresentedAt: 0 });
           document.addEventListener("browser-picture-presented", (event) => {
             const canvas = event.target;
             const pixel =
@@ -194,6 +194,7 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
               Object.assign(window, {
                 popupPresented: Number(Reflect.get(window, "popupPresented")) + 1,
                 popupCorner: pixel[0],
+                popupPresentedAt: performance.now(),
               });
           });
         });
@@ -360,9 +361,9 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
         canvas.y + (point.y / point.h) * canvas.height,
       );
     };
-    // A tap on a picture older than a hit-test change must refuse, and a frame already in flight
-    // can arrive after a change without containing it. A repaint ordered after the change, seen
-    // in the viewer's own pixels, proves the presented picture is newer.
+    // A tap on a picture older than a hit-test change must refuse, and a person can't tap what they
+    // haven't seen. A repaint ordered after the change, seen in the viewer's own pixels, proves the
+    // picture is newer than it; the trailing frames of that page activity then need to finish.
     const pictureAfter = async (page: Page, change: () => Promise<unknown>) => {
       await change();
       const red = (await read(
@@ -371,6 +372,11 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
       await page.waitForFunction(
         (expected) => Math.abs(Number(Reflect.get(window, "popupCorner")) - expected) < 24,
         red,
+        { timeout: 4000 },
+      );
+      await page.waitForFunction(
+        () => performance.now() - Number(Reflect.get(window, "popupPresentedAt")) > 300,
+        undefined,
         { timeout: 4000 },
       );
     };
