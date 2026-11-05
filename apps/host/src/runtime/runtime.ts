@@ -2084,6 +2084,7 @@ export async function createHostRuntime(
       tokens,
     });
     const channels = new ChannelService({
+      onError: (error) => app.log.error({ err: error }, "Channel ingress failed"),
       onChanged: () => notifyMachinesChanged(realtime, "integration.connections"),
       canonicalOrigin: config.canonicalOrigin.origin,
       channels: new ChannelStore(database),
@@ -2317,6 +2318,7 @@ export async function createHostRuntime(
     const agentTools = new OpensteerMcpService({
       publicUrl: config.runtimeOrigin,
       realtime,
+      onToolError: (error, tool) => app.log.error({ err: error, tool }, "Agent tool failed"),
       callers: new AgentCallerResolver({
         store,
         runs: runToolTokens,

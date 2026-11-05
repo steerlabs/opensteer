@@ -27,6 +27,7 @@ const sources = new Map(
  */
 const helperHomes: Readonly<Record<string, string | readonly string[]>> = {
   freePort: "packages/shared/src/loopbackPort.test-support.ts",
+  CoalescedWake: "packages/shared/src/coalescedWake.ts",
   assertRegularFile: "packages/shared/src/privateFiles.ts",
   /** The mock validates admission, then delegates native-ID storage to core. */
   storedModelSelection: [

@@ -127,6 +127,7 @@ function fixture() {
       getAssignmentForOwner: async () => null,
     },
     publicUrl: new URL("http://127.0.0.1"),
+    onToolError: vi.fn(),
   };
   return {
     change: () => {
@@ -619,6 +620,74 @@ describe("Opensteer MCP spine", () => {
       await f.service.close();
     }
   });
+  it("gives a model the whole refusal in both halves of the result", async () => {
+    const f = await httpFixture();
+    vi.mocked(f.handlers.thread_message).mockRejectedValueOnce(
+      new OpensteerError({
+        code: "conflict",
+        message: "That Thread is busy.",
+        next: "Queue it with thread_message.",
+        reason: "thread-busy",
+      }),
+    );
+    const client = await connect(f.url, "run");
+    try {
+      const text = "That Thread is busy. Queue it with thread_message.";
+      await expect(
+        client.callTool({
+          name: "thread_message",
+          arguments: { delivery: "queue", message: "Hello", threadId: f.thread.id },
+        }),
+      ).resolves.toMatchObject({
+        isError: true,
+        content: [{ type: "text", text }],
+        structuredContent: {
+          error: { code: "conflict", message: text, reason: "thread-busy", retryable: false },
+        },
+      });
+      expect(f.options.onToolError).not.toHaveBeenCalled();
+    } finally {
+      await client.close();
+      await f.service.close();
+    }
+  });
+  it.each([
+    ["request_list", {}, "Try once more"],
+    [
+      "thread_message",
+      { delivery: "queue", message: "Hello" },
+      "It may have taken effect, so check before retrying.",
+    ],
+  ] as const)(
+    "keeps an unexpected failure out of %s's result and logs it",
+    async (name, args, advice) => {
+      const f = await httpFixture();
+      const failure = new Error('relation "credentials" does not exist');
+      Object.assign(f.handlers, {
+        [name]: async () => {
+          throw failure;
+        },
+      });
+      const client = await connect(f.url, "run");
+      try {
+        const result = await client.callTool({
+          name,
+          arguments: name === "request_list" ? args : { ...args, threadId: f.thread.id },
+        });
+        expect(result).toMatchObject({
+          isError: true,
+          structuredContent: { error: { code: "internal", retryable: false } },
+        });
+        const text = (result.content as [{ text: string }])[0].text;
+        expect(text).toContain(advice);
+        expect(JSON.stringify(result)).not.toContain("credentials");
+        expect(f.options.onToolError).toHaveBeenCalledWith(failure, name);
+      } finally {
+        await client.close();
+        await f.service.close();
+      }
+    },
+  );
   it("orients only connections on initialize and omits Run-only tools", async () => {
     const f = await httpFixture();
     const client = await connect(f.url, "connection");
@@ -723,11 +792,12 @@ describe("Opensteer MCP spine", () => {
       );
       expect(result).toMatchObject({ isError: true });
       const text = (result.content as [{ text: string }])[0].text;
-      expect(text).toMatch(/^Opensteer produced an invalid result for this tool at /u);
-      // It names where the result broke the contract, never what the result held.
-      expect(text).toContain("total");
-      expect(text).not.toContain("many");
+      expect(text).toMatch(/^Opensteer hit an internal error\. /u);
       expect(text).not.toContain("invalid_arguments");
+      // Where the result broke the contract goes to the log, never what it held.
+      const [logged] = vi.mocked(f.options.onToolError).mock.calls[0]!;
+      expect(String(logged)).toContain("total");
+      expect(String(logged)).not.toContain("many");
     } finally {
       await client.close();
       await f.service.close();

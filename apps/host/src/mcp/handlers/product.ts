@@ -14,6 +14,7 @@ import {
   isPlaceContentPart,
   zeroSequence,
   OpensteerError,
+  refused,
   placeContentLabel,
   provisionalThreadTitle,
   requestTitleText,
@@ -84,6 +85,11 @@ interface ConnectionTask {
   readonly thread: Thread;
   readonly expectedHarnessRevision?: number;
 }
+
+const assignedRunRefusal = "A task reaches the person through the Thread that assigned it";
+const assignedRunNext = "Send it to the assigner with thread_message.";
+const unknownEnvironment = "Selected execution environment does not exist";
+const chooseEnvironmentNext = "See the current choices with environment_list.";
 
 export class ProductToolHandlers {
   readonly #threads: ThreadService;
@@ -216,14 +222,18 @@ export class ProductToolHandlers {
   async preparePersonShow({ caller, input }: ToolCall<"person_show">) {
     const claims = requireRun(caller).claims;
     if (await this.#store.runAssignment(claims.runId))
-      throw forbidden("A task reaches the person through the Thread that assigned it");
+      throw forbidden(assignedRunRefusal, assignedRunNext);
 
     if (!this.#personShow) throw badRequest("Showing places is unavailable on this Host.");
     let target: PersonShowMessage["target"];
     if ("current" in input.target) {
       await this.#browser.drainRunPlaces(claims.runId);
       const current = await this.#store.latestRunPlace(claims.runId);
-      if (!current) throw badRequest("This Run has no current place to show.");
+      if (!current)
+        throw badRequest(
+          "This Run has not worked in a place yet.",
+          "Pass target.tabId, from browser_tab_read or Browser Harness surfaceId.",
+        );
       target = { place: current.data.place };
       const place = current.data.place;
       if (place.kind !== "browser") {
@@ -237,7 +247,7 @@ export class ProductToolHandlers {
                 : session.apps.some((app) => computerAppIdentityKey(app) === place.appKey)),
           );
         if (!session || !this.#computerUse)
-          throw forbidden("This Run's current place is unavailable.");
+          throw forbidden("This Run's current place is unavailable.", "Pass target.tabId instead.");
         await this.#computerUse.authorizeDisplay(
           session.sessionId,
           claims.requestedBy,
@@ -303,7 +313,7 @@ export class ProductToolHandlers {
     const claims = requireRun(caller).claims;
     const requestId = operationId(caller, operationKey, "person_message");
     if (await this.#store.runAssignment(claims.runId))
-      throw forbidden("A task reaches the person through the Thread that assigned it");
+      throw forbidden(assignedRunRefusal, assignedRunNext);
 
     const result = await this.#commands.publishPersonMessage({
       admission: runAdmission(caller, "person_message", input, requestId),
@@ -685,7 +695,11 @@ export class ProductToolHandlers {
       existingThread?.workspaceId ??
       input.workspaceId ??
       (input.specialist ? currentThread.workspaceId : undefined);
-    if (!targetWorkspaceId) throw badRequest("Choose a target Workspace or work Thread");
+    if (!targetWorkspaceId)
+      throw badRequest(
+        "Choose a target Workspace or work Thread",
+        "Pass workspaceId or threadId, from project_list or thread_list.",
+      );
     const workspace = await this.#store.getWorkspaceForOwner(targetWorkspaceId, claims.requestedBy);
     if (!workspace) throw forbidden("Target Workspace is unavailable to this user");
     if (caller.reach.kind !== "user" && workspace.id !== currentThread.workspaceId) {
@@ -708,7 +722,7 @@ export class ProductToolHandlers {
         ? workspace.backing.ownerEnvironmentId
         : currentThread.environmentId);
     const environment = await this.#store.getEnvironment(environmentId);
-    if (!environment) throw badRequest("Selected execution environment does not exist");
+    if (!environment) throw badRequest(unknownEnvironment, chooseEnvironmentNext);
     if (
       chosenEnvironmentId &&
       !(await this.#store.environmentIsAvailableToUser(environment.id, claims.requestedBy))
@@ -800,6 +814,7 @@ export class ProductToolHandlers {
       throw new OpensteerError({
         code: "conflict",
         message: "The idempotency key was already used for a different command",
+        next: "Call again with a new operationKey.",
       });
     const { expectedHarnessRevision } = requested;
     return {
@@ -950,7 +965,8 @@ export class ProductToolHandlers {
           throw conflict("Selected execution environment is not connected", true);
         }
         const harness = await this.#store.getHarnessInstance(delegateInput.harnessInstanceId);
-        if (!harness?.enabled) throw badRequest("Selected harness is disabled or unavailable");
+        if (!harness?.enabled)
+          throw badRequest("Selected harness is disabled or unavailable", chooseEnvironmentNext);
         if (
           this.#isEnvironmentConnected(environment.id) &&
           !this.#canRunHarness(environment.id, harness.driverKind)
@@ -1128,7 +1144,7 @@ export class ProductToolHandlers {
     const chosenEnvironmentId = input.environmentId;
     if (chosenEnvironmentId) {
       const environment = await this.#store.getEnvironment(chosenEnvironmentId);
-      if (!environment) throw badRequest("Selected execution environment does not exist");
+      if (!environment) throw badRequest(unknownEnvironment, chooseEnvironmentNext);
       if (
         !(await this.#store.environmentIsAvailableToUser(chosenEnvironmentId, claims.requestedBy))
       ) {
@@ -1257,10 +1273,10 @@ export class ProductToolHandlers {
       (workspace.backing.kind === "local-directory"
         ? workspace.backing.ownerEnvironmentId
         : preferences.history[0]?.environmentId);
-    if (!environmentId) throw badRequest("Choose an execution environment");
+    if (!environmentId) throw badRequest("Choose an execution environment", chooseEnvironmentNext);
     if (specialist && !existing) {
       const environment = await this.#store.getEnvironment(environmentId);
-      if (!environment) throw badRequest("Selected execution environment does not exist");
+      if (!environment) throw badRequest(unknownEnvironment, chooseEnvironmentNext);
       const placement = await this.#specialistPlacement({
         userId: caller.userId,
         environmentId: environment.id,
@@ -1274,7 +1290,8 @@ export class ProductToolHandlers {
       existing?.harnessInstanceId ?? input.harnessInstanceId ?? preferred?.harnessInstanceId;
     const automatic = named ? null : await this.#automaticDefault(caller.userId, environmentId);
     const harnessInstanceId = named ?? automatic?.harnessInstanceId;
-    if (!harnessInstanceId) throw badRequest("Choose harnessInstanceId for the new task");
+    if (!harnessInstanceId)
+      throw badRequest("Choose harnessInstanceId for the new task", chooseEnvironmentNext);
     const modelSelection =
       existing?.modelSelection ??
       input.model ??
@@ -1283,7 +1300,7 @@ export class ProductToolHandlers {
       catalogDefaultModelSelection(
         await this.#store.getHarnessCatalog(environmentId, harnessInstanceId),
       );
-    if (!modelSelection) throw badRequest("Choose a model for the new task");
+    if (!modelSelection) throw badRequest("Choose a model for the new task", chooseEnvironmentNext);
     return {
       existing,
       workspace,
@@ -1513,12 +1530,12 @@ export class ProductToolHandlers {
     };
   }
 }
-function forbidden(message: string): OpensteerError {
-  return new OpensteerError({ code: "forbidden", message });
+function forbidden(message: string, next?: string): OpensteerError {
+  return refused("forbidden", message, next);
 }
 
-function badRequest(message: string): OpensteerError {
-  return new OpensteerError({ code: "bad_request", message });
+function badRequest(message: string, next?: string): OpensteerError {
+  return refused("bad_request", message, next);
 }
 
 function conflict(message: string, retryable = false): OpensteerError {

@@ -11,8 +11,8 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { createId, ThreadSchema } from "@opensteer/core";
-import { agentTools } from "@opensteer/agent-tools";
+import { createId, refused, ThreadSchema } from "@opensteer/core";
+import { agentToolFailureResult, agentToolRecordResult, agentTools } from "@opensteer/agent-tools";
 import { OpensteerMcpService } from "../../apps/host/src/mcp/opensteer-mcp-service.js";
 import type { AgentToolHandlers } from "../../apps/host/src/mcp/handlers/index.js";
 import { TriggerToolHandlers } from "../../apps/host/src/mcp/handlers/triggers.js";
@@ -27,7 +27,7 @@ import { partialMatch, gradeToolBoundary, type Check, type RecordedCall } from "
 // before this sentinel allows a fixture to replace the backend.
 const validated = "EVAL_VALIDATED_NO_SIDE_EFFECT";
 function unavailable(): never {
-  throw new Error(validated);
+  throw refused("conflict", validated);
 }
 const bodySchema = z.looseObject({
   method: z.string().optional(),
@@ -317,10 +317,11 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
                 : { status: "unavailable", message: "No case mock matches these arguments" };
             }
             if (isRecord(result) && typeof result.$error === "string") {
-              return {
-                isError: true,
-                content: [{ type: "text", text: result.$error }],
-              };
+              return agentToolFailureResult({
+                code: "bad_request",
+                message: result.$error,
+                retryable: false,
+              });
             }
             // Keep successful Trigger mutations readable; fixed fixture timestamps otherwise
             // contradict the real Run clock and provoke spurious repair attempts.
@@ -369,20 +370,17 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
                 };
             }
             calls[index] = { tool: name, args, valid, result };
-            return {
-              content: [
-                { type: "text", text: JSON.stringify(result) },
-                ...(name !== "integration_call" &&
-                isRecord(result) &&
+            if (name === "integration_describe" || !isRecord(result)) {
+              return { content: [{ type: "text", text: JSON.stringify(result) }] };
+            }
+            return agentToolRecordResult(
+              result,
+              name !== "integration_call" &&
                 result.status === "pending" &&
                 typeof result.requestId === "string"
-                  ? [{ type: "text", text: requestPendingGuidance }]
-                  : []),
-              ],
-              ...(name !== "integration_describe" && isRecord(result)
-                ? { structuredContent: result }
-                : {}),
-            };
+                ? requestPendingGuidance
+                : undefined,
+            );
           });
           await server.connect(transport as unknown as Transport);
           session = { server, transport };

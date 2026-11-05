@@ -167,6 +167,76 @@ describe("ExecutionCoordinator", () => {
     },
   );
 
+  it("reads again at once for a command queued while a read was running", async () => {
+    const command = pendingCommand();
+    let finishFirstRead: (commands: PendingCommandRow[]) => void = () => undefined;
+    const listPendingCommands = vi
+      .fn<ExecutionCoordinatorStore["listPendingCommands"]>()
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishFirstRead = resolve;
+          }),
+      )
+      .mockResolvedValueOnce([command])
+      .mockResolvedValue([]);
+    const dispatch = vi.fn(async () => undefined);
+    const coordinator = new ExecutionCoordinator({
+      dispatcher: { dispatch, isAvailable: () => true },
+      dispatcherId: "test",
+      maxConcurrentRuns: 1,
+      maxConcurrentTriggerPrograms: 1,
+      maxQueuedBytes: 10_000,
+      maxQueuedCommands: 10,
+      // The fallback poll must not be what finds it.
+      pollIntervalMs: 3_600_000,
+      store: {
+        ...fakeStore(command, null).value,
+        claimCommand: vi.fn(async () => ({
+          command: { ...command, status: "dispatched" as const },
+          events: [],
+        })),
+        listPendingCommands,
+      },
+    });
+
+    coordinator.start();
+    await waitFor(() => listPendingCommands.mock.calls.length === 1);
+    coordinator.wake();
+    finishFirstRead([]);
+    await waitFor(() => dispatch.mock.calls.length === 1);
+    await coordinator.stop();
+  });
+
+  it("starts again after stopping, and stops again", async () => {
+    const listPendingCommands = vi
+      .fn<ExecutionCoordinatorStore["listPendingCommands"]>()
+      .mockResolvedValue([]);
+    const coordinator = new ExecutionCoordinator({
+      dispatcher: { dispatch: vi.fn(async () => undefined), isAvailable: () => true },
+      dispatcherId: "test",
+      maxConcurrentRuns: 1,
+      maxConcurrentTriggerPrograms: 1,
+      maxQueuedBytes: 10_000,
+      maxQueuedCommands: 10,
+      pollIntervalMs: 1,
+      store: { ...fakeStore(pendingCommand(), null).value, listPendingCommands },
+    });
+
+    coordinator.start();
+    await waitFor(() => listPendingCommands.mock.calls.length >= 2);
+    await coordinator.stop();
+
+    const stoppedAt = listPendingCommands.mock.calls.length;
+    coordinator.start();
+    await waitFor(() => listPendingCommands.mock.calls.length >= stoppedAt + 2);
+    await coordinator.stop();
+
+    // Only a stop that really ran lets it start a third time.
+    coordinator.start();
+    await coordinator.stop();
+  });
+
   it("contains a transient claim failure and retries it on the bounded poll", async () => {
     const command = pendingCommand();
     const dispatched = { command: { ...command, status: "dispatched" as const }, events: [] };

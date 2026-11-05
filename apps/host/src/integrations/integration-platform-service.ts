@@ -119,6 +119,7 @@ import {
 } from "@opensteer/database";
 import {
   OpensteerError,
+  refused,
   RequestResponseSchema,
   UserIdSchema,
   WorkspaceIdSchema,
@@ -440,7 +441,7 @@ export class IntegrationPlatformService {
     this.computerRepl = new ComputerReplService({
       ...options.computerReplTime,
       invoke: async () => {
-        throw new Error("Computer code requires an authenticated execution.");
+        throw refused("conflict", "Computer code requires an authenticated execution.");
       },
     });
     this.computerAppApprovals = new ComputerAppApprovalService({
@@ -1659,7 +1660,7 @@ export class IntegrationPlatformService {
       placements: method.placements,
     });
     if (resolved.tools.length > maximumToolsPerServer) {
-      throw new Error(`Adapter exposes more than ${maximumToolsPerServer} tools`);
+      throw refused("conflict", `Adapter exposes more than ${maximumToolsPerServer} tools`);
     }
     await this.#store.reconcileProviderConnectionTools({
       catalog: adapterCatalog(resolved, input.connectionId),
@@ -1992,7 +1993,7 @@ export class IntegrationPlatformService {
     });
     const catalog = await adapter.resolveTools({ config: snapshot.config });
     if (catalog.tools.length > maximumToolsPerServer) {
-      throw new Error(`Adapter exposes more than ${maximumToolsPerServer} tools`);
+      throw refused("conflict", `Adapter exposes more than ${maximumToolsPerServer} tools`);
     }
     return { catalog, snapshot };
   }
@@ -2018,7 +2019,13 @@ export class IntegrationPlatformService {
         ? {}
         : { description: IntegrationProposalDescriptionSchema.parse(input.description) }),
     };
-    if (input.kind) return this.#inspectProposalKind(source, input.kind, options);
+    if (input.kind) {
+      return this.#inspectProposalKind(source, input.kind, options).catch((cause: unknown) => {
+        throw cause instanceof OpensteerError
+          ? cause
+          : refused("bad_request", safeMessage(cause, proposalFailureOptions));
+      });
+    }
     const kinds = ["mcp", "openapi", "graphql"] as const;
     const attempts = await Promise.allSettled(
       kinds.map((kind) => this.#inspectProposalKind(source, kind, options)),
@@ -2048,7 +2055,7 @@ export class IntegrationPlatformService {
     options: ProposalBindings,
   ): Promise<ProposalInspection> {
     if (kind !== "openapi" && (options.credential || options.check)) {
-      throw new Error("credential and check require an API-key OpenAPI proposal");
+      throw refused("bad_request", "credential and check require an API-key OpenAPI proposal");
     }
     if (kind === "openapi") {
       const text = await this.#proposalArtifactText(source);
@@ -2058,7 +2065,7 @@ export class IntegrationPlatformService {
       const authMethods = detectedOpenApiAuthMethods(schemes);
       const credential = schemes.find(({ classification }) => classification === "api-key");
       if ((options.credential || options.check) && !credential) {
-        throw new Error("credential and check require an API-key OpenAPI proposal");
+        throw refused("bad_request", "credential and check require an API-key OpenAPI proposal");
       }
       if (options.check && credential) {
         validateProposedOpenApiCheck(
@@ -2146,14 +2153,16 @@ export class IntegrationPlatformService {
     }
     if (kind === "graphql") {
       if (source.type !== "url") {
-        throw new Error(
+        throw refused(
+          "bad_request",
           "GraphQL proposals require an HTTPS endpoint URL; an inline document cannot be introspected",
         );
       }
       const introspection = await introspectGraphql(source.url, {
         fetch: (target, init) => this.#publicFetch(target, { ...init, redirect: "manual" }),
       }).catch((cause: unknown) => {
-        throw new Error(
+        throw refused(
+          "conflict",
           `GraphQL introspection of ${source.url} failed: ${safeMessage(cause, proposalFailureOptions)}`,
         );
       });
@@ -2180,19 +2189,21 @@ export class IntegrationPlatformService {
       };
     }
     if (source.type !== "url") {
-      throw new Error(
+      throw refused(
+        "bad_request",
         "MCP proposals require an HTTPS endpoint URL; an inline document cannot be probed",
       );
     }
     const probed = await probeMcpEndpointShape(source.url, {
       fetch: (target, init) => this.#publicFetch(target, { ...init, redirect: "manual" }),
     }).catch((cause: unknown) => {
-      throw new Error(
+      throw refused(
+        "conflict",
         `MCP probe of ${source.url} failed: ${safeMessage(cause, proposalFailureOptions)}`,
       );
     });
     if (probed.kind !== "mcp") {
-      throw new Error(`MCP probe of ${source.url} failed: ${probed.reason}`);
+      throw refused("conflict", `MCP probe of ${source.url} failed: ${probed.reason}`);
     }
     const config = McpAdapterConfigSchema.parse({
       endpoint: source.url,
@@ -2268,10 +2279,10 @@ export class IntegrationPlatformService {
       redirect: "manual",
       signal: AbortSignal.timeout(60_000),
     });
-    if (!response.ok) throw new Error(`Proposal source returned HTTP ${response.status}`);
+    if (!response.ok) throw refused("conflict", `Proposal source returned HTTP ${response.status}`);
     const text = await response.text();
     if (Buffer.byteLength(text, "utf8") > 8 * 1_024 * 1_024) {
-      throw new Error("Proposal source exceeded 8 MiB");
+      throw refused("conflict", "Proposal source exceeded 8 MiB");
     }
     return text;
   }
@@ -2654,7 +2665,8 @@ export class IntegrationPlatformService {
     deadline?: number,
   ): Promise<ReplReply> {
     const run = caller.run;
-    if (!run || !this.#computerUse) throw new Error("Computer use requires a running task.");
+    if (!run || !this.#computerUse)
+      throw refused("forbidden", "Computer use requires a running task.");
     const row =
       operation === "release"
         ? "release"
@@ -2691,7 +2703,8 @@ export class IntegrationPlatformService {
           "failed",
           `${connection.runnerName} allows seeing only. Ask for read-write access to act: call integration_request {kind: "computer-app", runnerId, access, reason} with access "read-write"; do not retry this call until it is fulfilled.`,
         );
-      throw new Error(
+      throw refused(
+        "forbidden",
         row === "act"
           ? "This task does not have read-write access to this app or phone. Request read-write access before acting."
           : "This app or phone is no longer approved for this task. Search integrations for current access.",
@@ -2728,7 +2741,10 @@ export class IntegrationPlatformService {
     if (row !== "act") {
       const [issue] = validateJsonSchema(catalogOperation.inputSchema, internalArgs);
       if (issue)
-        throw new Error(`Invalid ${operation} arguments at ${issue.path}: ${issue.message}`);
+        throw refused(
+          "bad_request",
+          `Invalid ${operation} arguments at ${issue.path}: ${issue.message}`,
+        );
     }
     let lease: ComputerUseLease | undefined;
     let started: Extract<AgentEvent, { type: "tool.started" }> | undefined;
@@ -2948,7 +2964,7 @@ export class IntegrationPlatformService {
     caller: ToolCaller,
     request: ComputerReplInvocation,
   ): Promise<ReplReply> {
-    if (!caller?.run) throw new Error("This computer context has ended.");
+    if (!caller?.run) throw refused("conflict", "This computer context has ended.");
     if (request.operation === "apps" || request.operation === "phones") {
       const rows = await this.listCallableTools({
         ownerUserId: caller.run.requestedBy,
@@ -3010,7 +3026,7 @@ export class IntegrationPlatformService {
   async runComputerCode(caller: ToolCaller, code: string, signal: AbortSignal) {
     const run = caller.run;
     if (!run || !(await this.computerToolEnabled(run)))
-      throw new Error("Update this task's Runner to use the computer tool.");
+      throw refused("conflict", "Update this task's Runner to use the computer tool.");
     const key = `${run.runId}:${run.bindingGeneration}`;
     for (const [old, entry] of this.#replCallers)
       if (entry.run?.runId === run.runId && old !== key) this.#replCallers.delete(old);
@@ -3394,7 +3410,7 @@ export class IntegrationPlatformService {
       current.launchDigest !== localMcpLaunchDigest(transport.launch) ||
       current.approvedLaunchDigest !== current.launchDigest
     ) {
-      throw new Error("It was removed or changed as this started; find its tools again.");
+      throw refused("conflict", "It was removed or changed as this started; find its tools again.");
     }
   }
 
@@ -3404,7 +3420,7 @@ export class IntegrationPlatformService {
     installationId: IntegrationInstallationId,
     connect: (signal: AbortSignal) => Promise<Omit<UpstreamClient, "letGo">>,
   ): OpenClient {
-    if (this.#closed) throw new Error("The integration platform has closed.");
+    if (this.#closed) throw refused("conflict", "The integration platform has closed.");
     const cancel = new AbortController();
     const open: OpenClient = {
       cancel,
@@ -3455,7 +3471,8 @@ export class IntegrationPlatformService {
       throw new Error("Computer-backed servers do not create upstream MCP clients");
     } else if (transport.type === "runner") {
       if (!transport.runnerId) {
-        throw new Error(
+        throw refused(
+          "conflict",
           "No computer runs this MCP server; install its plugin again, choosing one.",
         );
       }
@@ -3488,7 +3505,7 @@ export class IntegrationPlatformService {
     } else {
       const url = new URL(transport.url);
       if (url.protocol !== "https:" || isLoopbackHostname(url.hostname)) {
-        throw new Error("The Host reaches MCP servers on the internet, over HTTPS");
+        throw refused("bad_request", "The Host reaches MCP servers on the internet, over HTTPS");
       }
       sdkTransport = new StreamableHTTPClientTransport(url, {
         ...(authProvider ? { authProvider } : {}),
@@ -3679,7 +3696,7 @@ async function listTools(client: Client): Promise<readonly IntegrationToolMateri
   do {
     const remaining = deadline - Date.now();
     if (remaining <= 0 || cursors.size >= maximumToolPages) {
-      throw new Error("The MCP server did not finish listing its tools");
+      throw refused("conflict", "The MCP server did not finish listing its tools");
     }
     const page = await client.listTools(cursor === undefined ? undefined : { cursor }, {
       maxTotalTimeout: remaining,
@@ -3687,11 +3704,12 @@ async function listTools(client: Client): Promise<readonly IntegrationToolMateri
     });
     listed.push(...page.tools);
     if (listed.length > maximumToolsPerServer) {
-      throw new Error(`MCP server exposes more than ${maximumToolsPerServer} tools`);
+      throw refused("conflict", `MCP server exposes more than ${maximumToolsPerServer} tools`);
     }
     cursor = page.nextCursor;
     if (cursor !== undefined) {
-      if (cursors.has(cursor)) throw new Error("The MCP server listed the same page twice");
+      if (cursors.has(cursor))
+        throw refused("conflict", "The MCP server listed the same page twice");
       cursors.add(cursor);
     }
   } while (cursor !== undefined);
@@ -3712,16 +3730,16 @@ const emptyToolCatalog: IntegrationToolCatalog = { definitions: {}, tools: [] };
 
 function objectValue(value: unknown): Readonly<Record<string, unknown>> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new Error("MCP tool schema must be an object");
+    throw refused("conflict", "MCP tool schema must be an object");
   }
   return value as Readonly<Record<string, unknown>>;
 }
 
 function sanitizeToolResult<T>(result: T, responseRedactor: CredentialResponseRedactor | null): T {
   const serialized = JSON.stringify(result);
-  if (serialized === undefined) throw new Error("Integration result is not serializable");
+  if (serialized === undefined) throw refused("conflict", "Integration result is not serializable");
   if (Buffer.byteLength(serialized, "utf8") > maximumToolResultBytes) {
-    throw new Error(`Integration result exceeds ${maximumToolResultBytes} bytes`);
+    throw refused("conflict", `Integration result exceeds ${maximumToolResultBytes} bytes`);
   }
   return responseRedactor ? (JSON.parse(responseRedactor.redactText(serialized)) as T) : result;
 }

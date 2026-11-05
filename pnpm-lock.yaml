@@ -2160,6 +2160,9 @@ importers:
       '@opensteer/runner-client':
         specifier: workspace:*
         version: link:../runner-client
+      '@opensteer/shared':
+        specifier: workspace:*
+        version: link:../shared
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
