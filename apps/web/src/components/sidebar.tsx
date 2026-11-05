@@ -17,7 +17,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import { Link, useLocation, useNavigate } from "react-router";
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router";
 import type { BrowserTabGroupColor } from "@opensteer/protocol";
 import type { BrowserTabStrip } from "@opensteer/client/host";
 import type {
@@ -46,6 +46,14 @@ import { Popover } from "./popover.js";
 import { createPortal } from "react-dom";
 import { actionErrorMessage, fromLivePage } from "../ui-utils.js";
 import { useToast } from "./toast.js";
+import { discardStagedFiles } from "./attachments/use-staged-attachments.js";
+import {
+  composerDraftKey,
+  composerDrafts,
+  useComposerDraftIndex,
+  type ComposerDraftTarget,
+  type TaskDraftRow,
+} from "./composer-drafts.js";
 import { TaskMark, TaskState, ChatOrb, taskStateWords } from "./workspace/task-mark.js";
 import {
   ProfileAvatar,
@@ -141,7 +149,11 @@ export function Sidebar({
   const workspace = useWorkspace();
   const { nav } = workspace;
   const { pathname } = useLocation();
+  const [searchParams] = useSearchParams();
   const snapshot = useTaskSnapshot(hostClient);
+  const deploymentId = useHostSelector(hostClient, (current) => current.deploymentId);
+  const userId = useHostSelector(hostClient, (current) => current.user?.id ?? null);
+  const drafts = useComposerDraftIndex(deploymentId, userId);
   const places = usePlaceList(hostClient);
   const layout = useHostSelector(hostClient, (snapshot) => snapshot.browserTabGroups);
   const [filter, setFilter] = useState<TabFilterValue>(allTabs);
@@ -385,6 +397,23 @@ export function Sidebar({
     onCloseMobile();
     nav.openConversation("/new");
   };
+  const discardDraft = (target: ComposerDraftTarget) => {
+    if (!deploymentId || !userId) return;
+    const key = composerDraftKey({ deploymentId, userId }, target);
+    const draft = composerDrafts.read(key);
+    if (!draft) return;
+    discardStagedFiles(key);
+    composerDrafts.clear(key);
+    toast.success("Draft discarded", {
+      label: "Undo",
+      run: () => composerDrafts.restore(key, draft),
+    });
+  };
+  const discardTaskDraft = (row: TaskDraftRow, open: boolean) => {
+    // An open draft's composer goes first, so it cannot write the draft back.
+    if (open) nav.openConversation("/new");
+    discardDraft({ kind: "task", draftId: row.draftId });
+  };
   const loadMore = () => void onLoadEarlierTasks().catch(() => undefined);
   const loadEarlier = () => {
     if (loadingEarlier) return;
@@ -410,15 +439,22 @@ export function Sidebar({
   if (mobileOpen) classes.push("sidebar--open");
   const rows = [...mainTasks.working, ...mainTasks.ready];
   const shownDone = doneOpen ? mainTasks.done : [];
+  // A draft whose project is gone stays reachable, among Main's.
+  const projectIds = new Set(grouping.folders.map((folder) => folder.workspace.id));
+  const inProject = (draft: TaskDraftRow) =>
+    draft.workspaceId !== null && projectIds.has(draft.workspaceId);
+  const mainDrafts = drafts.tasks.filter((draft) => !inProject(draft));
   const folders = grouping.folders.map((folder) => {
     const open = !closedProjects.has(folder.workspace.id);
     const shown = open ? folder.rows.slice(0, folderRowLimit) : [];
+    const folderDrafts = drafts.tasks.filter((draft) => draft.workspaceId === folder.workspace.id);
     return {
       folder,
+      folderDrafts,
       open,
       shown,
       more: open ? folder.rows.length - shown.length : 0,
-      hidden: (folder.chat ? 1 : 0) + folder.rows.length,
+      hidden: (folder.chat ? 1 : 0) + folder.rows.length + folderDrafts.length,
       holdsOpenRow:
         openRowThreadId !== null &&
         (folder.chat?.threadId === openRowThreadId ||
@@ -426,14 +462,16 @@ export function Sidebar({
     };
   });
   const rowKeys = [
+    ...mainDrafts.map((draft) => `draft:${draft.draftId}`),
     ...rows.map((row) => row.threadId),
     ...(mainTasks.done.length ? ["done-shelf"] : []),
     ...shownDone.map((row) => row.threadId),
     ...(list.hasMore ? ["show-more"] : []),
     ...(folders.length > 0 ? ["projects-head"] : []),
-    ...folders.flatMap(({ folder, open, shown, more }) => [
+    ...folders.flatMap(({ folder, folderDrafts, open, shown, more }) => [
       `folder:${folder.workspace.id}`,
       ...(open && folder.chat ? [folder.chat.threadId] : []),
+      ...(open ? folderDrafts.map((draft) => `draft:${draft.draftId}`) : []),
       ...shown.map((row) => row.threadId),
       ...(more > 0 ? [`more:${folder.workspace.id}`] : []),
     ]),
@@ -445,13 +483,34 @@ export function Sidebar({
       ask={directory.attentionByThread.get(row.threadId)?.title ?? null}
       key={row.threadId}
       nested={nested}
+      onDiscardDraft={discardDraft}
       onNavigate={onCloseMobile}
       onSetDone={onSetTaskDone}
       open={row.threadId === openRowThreadId}
       row={row}
+      unsent={drafts.replies.has(row.threadId)}
       workspace={workspace}
     />
   );
+  const draftRow = (draft: TaskDraftRow, nested = false) => {
+    const path = inProject(draft)
+      ? `/workspaces/${encodeURIComponent(draft.workspaceId ?? "")}`
+      : "/new";
+    const open = pathname === path && searchParams.get("draft") === draft.draftId;
+    return (
+      <DraftRowItem
+        draft={draft}
+        key={`draft:${draft.draftId}`}
+        nav={nav}
+        nested={nested}
+        onDiscard={() => discardTaskDraft(draft, open)}
+        onNavigate={onCloseMobile}
+        open={open}
+        path={path}
+        work={workspace.work}
+      />
+    );
+  };
   const startPageOpen = workspace.selection.kind === "launcher";
   // The order the tab list shows; a change slides its rows to their new places.
   const motionSignature = [
@@ -568,6 +627,7 @@ export function Sidebar({
           onNavigate={onCloseMobile}
           open={openRowThreadId !== null && openRowThreadId === homeThreadId}
           row={list.chat}
+          unsent={drafts.chat}
           workspace={workspace}
         />
         <VoiceRow
@@ -621,6 +681,7 @@ export function Sidebar({
                 {/* One keyed run, so a row moving between Ready and Done keeps its
                     element and focus, and slides to its new place. */}
                 {[
+                  ...mainDrafts.map((draft) => draftRow(draft)),
                   ...rows.map((row) => taskRow(row)),
                   ...(mainTasks.done.length > 0
                     ? [
@@ -695,43 +756,46 @@ export function Sidebar({
                         </li>,
                       ]
                     : []),
-                  ...folders.flatMap(({ folder, open, shown, more, hidden, holdsOpenRow }) => [
-                    <ProjectFolderHeader
-                      current={openProjectId === folder.workspace.id}
-                      folder={folder}
-                      hiddenCount={hidden}
-                      holdsOpenRow={holdsOpenRow}
-                      key={`folder:${folder.workspace.id}`}
-                      nav={nav}
-                      onNavigate={onCloseMobile}
-                      onToggle={toggleProject}
-                      open={open}
-                    />,
-                    ...(open && folder.chat
-                      ? [
-                          <ProjectChatRow
-                            key={folder.chat.threadId}
-                            nav={nav}
-                            onNavigate={onCloseMobile}
-                            open={folder.chat.threadId === openRowThreadId}
-                            row={folder.chat}
-                            work={workspace.work}
-                          />,
-                        ]
-                      : []),
-                    ...shown.map((row) => taskRow(row, true)),
-                    ...(more > 0
-                      ? [
-                          <FolderMoreRow
-                            count={more}
-                            key={`more:${folder.workspace.id}`}
-                            nav={nav}
-                            onNavigate={onCloseMobile}
-                            workspaceId={folder.workspace.id}
-                          />,
-                        ]
-                      : []),
-                  ]),
+                  ...folders.flatMap(
+                    ({ folder, folderDrafts, open, shown, more, hidden, holdsOpenRow }) => [
+                      <ProjectFolderHeader
+                        current={openProjectId === folder.workspace.id}
+                        folder={folder}
+                        hiddenCount={hidden}
+                        holdsOpenRow={holdsOpenRow}
+                        key={`folder:${folder.workspace.id}`}
+                        nav={nav}
+                        onNavigate={onCloseMobile}
+                        onToggle={toggleProject}
+                        open={open}
+                      />,
+                      ...(open && folder.chat
+                        ? [
+                            <ProjectChatRow
+                              key={folder.chat.threadId}
+                              nav={nav}
+                              onNavigate={onCloseMobile}
+                              open={folder.chat.threadId === openRowThreadId}
+                              row={folder.chat}
+                              work={workspace.work}
+                            />,
+                          ]
+                        : []),
+                      ...(open ? folderDrafts.map((draft) => draftRow(draft, true)) : []),
+                      ...shown.map((row) => taskRow(row, true)),
+                      ...(more > 0
+                        ? [
+                            <FolderMoreRow
+                              count={more}
+                              key={`more:${folder.workspace.id}`}
+                              nav={nav}
+                              onNavigate={onCloseMobile}
+                              workspaceId={folder.workspace.id}
+                            />,
+                          ]
+                        : []),
+                    ],
+                  ),
                 ]}
               </RowMotion>
             </SideList>
@@ -901,16 +965,20 @@ function ChatRow({
   onNavigate,
   open,
   row,
+  unsent,
   workspace,
 }: {
   readonly ask: { readonly title: string } | null;
   readonly onNavigate: () => void;
   readonly open: boolean;
   readonly row: TaskRow | null;
+  /** Words are waiting here, unsent. */
+  readonly unsent: boolean;
   readonly workspace: WorkspaceState;
 }) {
   // Its state in words, for the row's name; the orb and its mark say it to the eye.
-  const label = row === null ? CHAT_THREAD_TITLE : taskRowLabel(row, { chat: true });
+  const named = row === null ? CHAT_THREAD_TITLE : taskRowLabel(row, { chat: true });
+  const label = unsent ? `${named}, unsent draft` : named;
   const classes = ["side-home", open ? (workspace.work ? "is-open" : "is-filled") : ""];
   return (
     <div className={classes.filter(Boolean).join(" ")}>
@@ -927,6 +995,7 @@ function ChatRow({
       >
         <ChatOrb size={20} />
         <span className="side-home__title">{CHAT_THREAD_TITLE}</span>
+        {unsent ? <UnsentMark /> : null}
         {row === null ? null : row.tone === "needs-you" ? (
           <span aria-hidden className="side-bang">
             !
@@ -1005,6 +1074,15 @@ function VoiceTimer({ since }: { readonly since: number }) {
   );
 }
 
+/** Words waiting on a conversation, unsent. It sits beside a row's state, never in its place. */
+function UnsentMark() {
+  return (
+    <span aria-hidden className="side-unsent" title="Unsent draft">
+      <Icon name="pencil" />
+    </span>
+  );
+}
+
 /**
  * A conversation row's plain click opens it beside the place the address
  * shows now, not the one the row last rendered with: a tab chosen a moment
@@ -1014,6 +1092,7 @@ function openConversationRow(
   event: MouseEvent<HTMLAnchorElement>,
   nav: WorkspaceNavigation,
   path: string,
+  draftId?: string,
 ): void {
   if (
     event.defaultPrevented ||
@@ -1025,29 +1104,100 @@ function openConversationRow(
   )
     return;
   event.preventDefault();
-  nav.openConversation(path);
+  nav.openConversation(path, draftId ? { draftId } : undefined);
 }
 
 /* ---- Tasks ---- */
+
+/** A task not started yet: its first words, and the way to throw it away. */
+function DraftRowItem({
+  draft,
+  nav,
+  nested,
+  onDiscard,
+  onNavigate,
+  open,
+  path,
+  work,
+}: {
+  readonly draft: TaskDraftRow;
+  readonly nav: WorkspaceNavigation;
+  readonly nested: boolean;
+  readonly onDiscard: () => void;
+  readonly onNavigate: () => void;
+  readonly open: boolean;
+  readonly path: string;
+  readonly work: boolean;
+}) {
+  const classes = [
+    "side-task",
+    "side-task--draft",
+    nested ? "side-task--nested" : "",
+    open ? (work ? "is-open" : "is-filled") : "",
+    draft.refused ? "is-refused" : "",
+  ];
+  const state = draft.refused ? "Not started" : "Draft";
+  return (
+    <li
+      className={classes.filter(Boolean).join(" ")}
+      data-draft-id={draft.draftId}
+      data-motion-key={`draft:${draft.draftId}`}
+    >
+      <Link
+        aria-current={open ? "page" : undefined}
+        aria-label={`${state}: ${draft.title}`}
+        className="side-task__main"
+        onClick={(event) => {
+          onNavigate();
+          openConversationRow(event, nav, path, draft.draftId);
+        }}
+        title={draft.title}
+        to={nav.conversationHref(`${path}?draft=${encodeURIComponent(draft.draftId)}`)}
+      >
+        <span aria-hidden className="side-draft-mark">
+          <Icon name={draft.refused ? "alert-circle" : "pencil"} />
+        </span>
+        <span className="side-task__text">
+          <span className="side-task__title">{draft.title}</span>
+        </span>
+        <span className="side-draft-state">{state}</span>
+      </Link>
+      <button
+        aria-label={`Discard draft: ${draft.title}`}
+        className="side-row-action"
+        onClick={onDiscard}
+        title="Discard draft"
+        type="button"
+      >
+        <Icon name="close" />
+      </button>
+    </li>
+  );
+}
 
 const TaskRowItem = memo(function TaskRowItem({
   hostClient,
   ask,
   nested,
+  onDiscardDraft,
   onNavigate,
   onSetDone,
   open,
   row,
+  unsent,
   workspace,
 }: {
   readonly hostClient: HostClient;
   readonly ask: string | null;
   /** Inside a Project's folder. */
   readonly nested: boolean;
+  readonly onDiscardDraft: (target: ComposerDraftTarget) => void;
   readonly onNavigate: () => void;
   readonly onSetDone: (threadId: string, done: boolean) => void;
   readonly open: boolean;
   readonly row: TaskRow;
+  /** A reply is waiting here, unsent. */
+  readonly unsent: boolean;
   readonly workspace: WorkspaceState;
 }) {
   const { highlight, nav, work } = workspace;
@@ -1084,16 +1234,18 @@ const TaskRowItem = memo(function TaskRowItem({
   const label = [
     row.unread && row.tone !== "needs-you" ? `${row.title}, unread` : row.title,
     words ? `${words}${needsYou && ask ? `: ${ask}` : ""}` : null,
+    unsent ? "unsent draft" : null,
   ]
     .filter(Boolean)
     .join(" — ");
+  const hasMenu = canRename || canChangeIcon || row.canBeDone || unsent;
   return (
     <li
       data-motion-key={row.threadId}
       className={classes.filter(Boolean).join(" ")}
       data-thread-id={threadId}
       onContextMenu={(event) => {
-        if (!canRename && !canChangeIcon && !row.canBeDone) return;
+        if (!hasMenu) return;
         event.preventDefault();
         setMenuAt({ x: event.clientX, y: event.clientY });
       }}
@@ -1122,7 +1274,7 @@ const TaskRowItem = memo(function TaskRowItem({
           }}
           onKeyDown={(event) => {
             if (
-              (canRename || canChangeIcon || row.canBeDone) &&
+              hasMenu &&
               (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey))
             ) {
               event.preventDefault();
@@ -1140,6 +1292,7 @@ const TaskRowItem = memo(function TaskRowItem({
             <span className="side-task__title">{row.title}</span>
             {needsYou ? <span className="side-task__ask">{ask}</span> : null}
           </span>
+          {unsent ? <UnsentMark /> : null}
           <TaskState state={row.tone} unread={row.unread} />
         </Link>
       )}
@@ -1151,7 +1304,7 @@ const TaskRowItem = memo(function TaskRowItem({
           onClose={() => setChangingIcon(false)}
         />
       ) : null}
-      {menuAt && mainRef.current && (canRename || canChangeIcon || row.canBeDone) ? (
+      {menuAt && mainRef.current && hasMenu ? (
         <Popover
           anchor={mainRef.current}
           at={menuAt}
@@ -1197,6 +1350,19 @@ const TaskRowItem = memo(function TaskRowItem({
               }}
             >
               {row.done ? "Reopen" : "Mark Done"}
+            </button>
+          ) : null}
+          {unsent ? (
+            <button
+              className="picker__row"
+              role="menuitem"
+              type="button"
+              onClick={() => {
+                setMenuAt(null);
+                onDiscardDraft({ kind: "thread", threadId });
+              }}
+            >
+              Discard draft
             </button>
           ) : null}
         </Popover>

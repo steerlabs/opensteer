@@ -337,7 +337,6 @@ function page(
           })
         : null,
     executionPreferences: emptyExecutionPreferences,
-    homeDraft: "",
     homeHandoff: null,
     homeThreadId: null,
     hostClient,
@@ -355,7 +354,6 @@ function page(
     rememberExecution: noOp,
     reportActionError: noOp,
     setTaskDone: noOp,
-    setHomeDraft: noOp,
     snapshot: { ...snapshot, connection: "connected" },
     writeInChat: noOp,
   };

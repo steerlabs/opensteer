@@ -419,7 +419,12 @@ export interface WorkspaceNavigation {
   /** Task row, task line, the menu under a name: the conversation only. */
   readonly openConversation: (
     path: string,
-    options?: { readonly focusRequest?: string; readonly messageId?: string },
+    options?: {
+      /** The unsent task to open there. */
+      readonly draftId?: string;
+      readonly focusRequest?: string;
+      readonly messageId?: string;
+    },
   ) => void;
   readonly showPendingBrowserTab: (
     idempotencyKey: string,
@@ -557,6 +562,7 @@ export function useWorkspaceNavigation(
     (path, options) => {
       const params = placeOnly(latest.current.search);
       if (options?.messageId) params.set("messageId", options.messageId);
+      if (options?.draftId) params.set("draft", options.draftId);
       go(
         { pathname: path, search: searchString(params) },
         options?.focusRequest ? { focusRequest: options.focusRequest } : undefined,

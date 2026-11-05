@@ -14,6 +14,7 @@ import {
   type PlaceContentPart,
 } from "@opensteer/core";
 import { actionErrorMessage } from "../../ui-utils.js";
+import { composerDrafts } from "../composer-drafts.js";
 import { destinationPlaceKey } from "./navigation.js";
 import { placeEnded, samePlaceEndSource } from "./place-succession.js";
 import { useOptionalWorkspace } from "./workspace-context.js";
@@ -94,16 +95,22 @@ export interface ComposerContext {
 
 export function useComposerContext({
   auto,
+  draftKey,
   hostClient,
 }: {
   /** Chat and new-task drafts follow the place in front; replies do not. */
   readonly auto: boolean;
+  /** The saved draft this context picks up from, read once. */
+  readonly draftKey: string | null;
   readonly hostClient: HostClient;
 }): ComposerContext {
   const workspace = useOptionalWorkspace();
   const { ordered } = useBrowserTabStrip(hostClient);
   const places = useMemo(() => attachablePlaces(ordered), [ordered]);
-  const [frozen, setFrozen] = useState<readonly ContextChip[] | null>(auto ? null : []);
+  const [frozen, setFrozen] = useState<readonly ContextChip[] | null>(() => {
+    const saved = draftKey ? composerDrafts.read(draftKey)?.places : undefined;
+    return saved ? saved.map(restoredChip) : auto ? null : [];
+  });
   const [followed, setFollowed] = useState<FollowedCandidate | null>(null);
   const [error, setError] = useState<string | null>(null);
   const frozenRef = useRef(frozen);

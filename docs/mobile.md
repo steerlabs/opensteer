@@ -45,6 +45,12 @@ destination draft, never in a route, because routes carry no reader identity and
 Drafts work offline, but approvals need a live authenticated Host, because replaying a stale
 decision is unsafe; only Host state resolves a Request, and sending does not answer one.
 
+Unsent drafts never leave the device: no Host API carries them, so a task begun on a Mac does not
+appear on a phone, and each client keeps its own store. A new task's draft has its own id, and its
+Workspace is a field that can change. Changing it must stage the draft's files again, because the
+Host refuses attachments held in another Workspace. A route may name that id and nothing else: an
+id with no draft behind it is a blank page, so nothing about a draft is readable from an address.
+
 Execution preferences belong to the Host: never silently replace an unavailable model, account or
 computer, and a pending execution change blocks Send. A hidden mounted pane neither claims the
 active Thread nor marks content read; mark read only published content actually shown. Layout uses

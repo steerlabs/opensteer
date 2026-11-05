@@ -6,6 +6,7 @@ import { type Request, type RequestResponse } from "@opensteer/core";
 import { androidPhoneDefinitionId } from "@opensteer/protocol";
 import { ActionNote, ChoiceRows } from "./action-rows.js";
 import { useShell } from "./app-shell.js";
+import { composerDraftKeyFor } from "./composer-drafts.js";
 import {
   Composer,
   type ComposerRecipient,
@@ -17,6 +18,7 @@ import { IntegrationInstallReview } from "./integration-install-review.js";
 import { AgentProposedChip } from "./integrations/agent-proposed-chip.js";
 import { AreaLink } from "./workspace/area-link.js";
 import { useComposerContext } from "./workspace/composer-context.js";
+import { homeThreadKind } from "./workspace/task-directory.js";
 import { TaskMark, TaskBadge } from "./workspace/task-mark.js";
 import { sendMessageCommand, usePendingSends } from "./pending-sends.js";
 import { VoiceButton, VoiceDock } from "./voice.js";
@@ -93,20 +95,23 @@ export function InputSurface({
   voice?: boolean;
 }) {
   const { hostClient, snapshot, reportActionError } = useShell();
-  const context = useComposerContext({ auto: autoContext, hostClient });
+  const { deploymentId } = snapshot;
+  const userId = snapshot.user?.id ?? null;
+  const draftKey = composerDraftKeyFor(
+    deploymentId,
+    userId,
+    homeThreadKind(threadId, snapshot) === "main" ? { kind: "chat" } : { kind: "thread", threadId },
+  );
+  const context = useComposerContext({ auto: autoContext, draftKey, hostClient });
   const placeContext = useMemo(() => ({ context, hostClient }), [context, hostClient]);
   const workspaceId = snapshot.threads.find((thread) => thread.id === threadId)?.workspaceId;
   // The signed-in deployment and user the Host confirmed are what every kept
   // message and staged file belongs to; until both are known nothing is sent.
-  const { deploymentId } = snapshot;
-  const userId = snapshot.user?.id ?? null;
   const durable = usePendingSends(
     deploymentId && userId ? { deploymentId, threadId, userId } : null,
   );
   const attachmentTarget =
-    workspaceId && deploymentId && userId
-      ? { client: hostClient, scope: `${deploymentId}/${userId}/${threadId}`, workspaceId }
-      : null;
+    workspaceId && draftKey ? { client: hostClient, scope: draftKey, workspaceId } : null;
 
   const sendMessage = async (
     body: string,
@@ -163,6 +168,7 @@ export function InputSurface({
       <div hidden={composerHidden || (docked && dock.composerHidden)}>
         <Composer
           dictationScope={`${deploymentId}/${userId}/${threadId}`}
+          draftKey={draftKey}
           hidden={composerHidden || (docked && dock.composerHidden)}
           variant={variant}
           placeContext={placeContext}

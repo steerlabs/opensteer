@@ -25,13 +25,20 @@ export type ToastTone = "error" | "success";
 
 interface Toast {
   readonly id: number;
+  readonly action?: ToastAction;
   readonly message: string;
   readonly tone: ToastTone;
 }
 
+/** One thing to do about what just happened, such as taking it back. */
+export interface ToastAction {
+  readonly label: string;
+  readonly run: () => void;
+}
+
 export interface ToastApi {
   /** Confirm that something succeeded. Announced politely. */
-  readonly success: (message: string) => void;
+  readonly success: (message: string, action?: ToastAction) => void;
   /** Report a transient failure. Announced assertively. */
   readonly error: (message: string) => void;
 }
@@ -82,11 +89,14 @@ function ToastLayer({ children }: { readonly children: ReactNode }) {
   }, []);
 
   const push = useCallback(
-    (message: string, tone: ToastTone) => {
+    (message: string, tone: ToastTone, action?: ToastAction) => {
       const trimmed = message.trim();
       if (trimmed === "") return;
       const id = (nextId.current += 1);
-      setToasts((current) => [...current.slice(-2), { id, message: trimmed, tone }]);
+      setToasts((current) => [
+        ...current.slice(-2),
+        { id, message: trimmed, tone, ...(action ? { action } : {}) },
+      ]);
       timers.current.set(
         id,
         window.setTimeout(() => dismiss(id), dwellMs[tone]),
@@ -148,7 +158,7 @@ function ToastLayer({ children }: { readonly children: ReactNode }) {
   const api = useMemo<ToastApi>(
     () => ({
       error: (message: string) => push(message, "error"),
-      success: (message: string) => push(message, "success"),
+      success: (message: string, action?: ToastAction) => push(message, "success", action),
     }),
     [push],
   );
@@ -169,6 +179,18 @@ function ToastLayer({ children }: { readonly children: ReactNode }) {
             >
               <Icon name={toast.tone === "error" ? "alert-circle" : "check"} />
               <span className="toast__message">{toast.message}</span>
+              {toast.action ? (
+                <button
+                  className="toast__action"
+                  onClick={() => {
+                    dismiss(toast.id);
+                    toast.action?.run();
+                  }}
+                  type="button"
+                >
+                  {toast.action.label}
+                </button>
+              ) : null}
               <button
                 aria-label="Dismiss"
                 className="icon-btn toast__dismiss"
