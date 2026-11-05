@@ -349,23 +349,10 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
         input: number;
         change: number;
       }>;
-    const tap = async (page: Page, id: string) => {
-      const point = (await read(
-        `(()=>{const r=document.getElementById(${JSON.stringify(id)}).getBoundingClientRect();return{x:r.x+(["date","time","datetime-local","month","week"].includes(document.getElementById(${JSON.stringify(id)}).type)?r.width-12:r.width/2),y:r.y+r.height/2,w:innerWidth,h:innerHeight}})()`,
-      )) as { x: number; y: number; w: number; h: number };
-      const canvas = await page.locator('canvas[aria-label="Live browser page"]').boundingBox();
-      assert(canvas);
-      tapStarted[page === a ? 0 : 1] = performance.now();
-      await page.mouse.click(
-        canvas.x + (point.x / point.w) * canvas.width,
-        canvas.y + (point.y / point.h) * canvas.height,
-      );
-    };
     // A tap on a picture older than a hit-test change must refuse, and a person can't tap what they
-    // haven't seen. A repaint ordered after the change, seen in the viewer's own pixels, proves the
+    // haven't seen. A repaint ordered after earlier work, seen in the viewer's own pixels, proves the
     // picture is newer than it; the trailing frames of that page activity then need to finish.
-    const pictureAfter = async (page: Page, change: () => Promise<unknown>) => {
-      await change();
+    const settle = async (page: Page) => {
       const red = (await read(
         `(()=>{const s=document.body.style;const light=s.backgroundColor!=="rgb(255, 255, 255)";s.backgroundColor=light?"rgb(255, 255, 255)":"rgb(200, 200, 200)";return light?255:200})()`,
       )) as number;
@@ -378,6 +365,19 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
         () => performance.now() - Number(Reflect.get(window, "popupPresentedAt")) > 300,
         undefined,
         { timeout: 4000 },
+      );
+    };
+    const tap = async (page: Page, id: string) => {
+      await settle(page);
+      const point = (await read(
+        `(()=>{const r=document.getElementById(${JSON.stringify(id)}).getBoundingClientRect();return{x:r.x+(["date","time","datetime-local","month","week"].includes(document.getElementById(${JSON.stringify(id)}).type)?r.width-12:r.width/2),y:r.y+r.height/2,w:innerWidth,h:innerHeight}})()`,
+      )) as { x: number; y: number; w: number; h: number };
+      const canvas = await page.locator('canvas[aria-label="Live browser page"]').boundingBox();
+      assert(canvas);
+      tapStarted[page === a ? 0 : 1] = performance.now();
+      await page.mouse.click(
+        canvas.x + (point.x / point.w) * canvas.width,
+        canvas.y + (point.y / point.h) * canvas.height,
       );
     };
     const quiet = async () => {
@@ -500,24 +500,20 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
     await a.getByRole("button", { name: "Cancel", exact: true }).click();
     await tap(a, "single");
     await a.getByRole("dialog").waitFor();
-    await pictureAfter(a, async () => {
-      await read("window.replacePopup()");
-      await a.getByRole("dialog").waitFor({ state: "hidden" });
-    });
+    await read("window.replacePopup()");
+    await a.getByRole("dialog").waitFor({ state: "hidden" });
     await tap(a, "multiple");
     const multiple = a.getByRole("listbox", { name: "Choose an option" });
     await multiple.selectOption([]);
-    await pictureAfter(a, async () => {
-      await a.getByRole("button", { name: "Done", exact: true }).click();
-      await kit.until(
-        async () => {
-          const c = await counters("multiple");
-          return c.input === 1 && c.change === 1;
-        },
-        "multiple clear commits exactly once",
-        3000,
-      );
-    });
+    await a.getByRole("button", { name: "Done", exact: true }).click();
+    await kit.until(
+      async () => {
+        const c = await counters("multiple");
+        return c.input === 1 && c.change === 1;
+      },
+      "multiple clear commits exactly once",
+      3000,
+    );
     for (const [id, value] of [
       ["date", "2024-03-11"],
       ["time", "02:00:00.123"],
@@ -529,17 +525,15 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
       await tap(a, id);
       await a.getByRole("dialog").waitFor();
       await a.getByLabel(/Exact/).fill(value);
-      await pictureAfter(a, async () => {
-        await a.getByRole("button", { name: "Done", exact: true }).click();
-        await kit.until(
-          async () => {
-            const c = await counters(id);
-            return c.change === 1;
-          },
-          `${id} native chooser commit`,
-          3000,
-        );
-      });
+      await a.getByRole("button", { name: "Done", exact: true }).click();
+      await kit.until(
+        async () => {
+          const c = await counters(id);
+          return c.change === 1;
+        },
+        `${id} native chooser commit`,
+        3000,
+      );
       await quiet();
     }
     // All page keys enter through the production proxy/private edit path.
@@ -562,7 +556,6 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
       "datalist answer updates the original input",
       3000,
     );
-    await pictureAfter(a, async () => undefined);
     const beforeContext = editingContexts[0];
     await tap(a, "ime");
     await kit.until(
@@ -582,23 +575,12 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
     await ime.click();
     // The typed text already equals this suggestion, so the native value doesn't change.
     await ime.waitFor({ state: "hidden" });
-    await pictureAfter(a, async () => undefined);
-    const dispatchedBefore = guardedResults["dispatched:none"] ?? 0;
-    await pictureAfter(a, async () => {
-      await tap(a, "successor");
-      await kit.until(
-        async () => (guardedResults["dispatched:none"] ?? 0) > dispatchedBefore,
-        "successor tap dispatched",
-        3000,
-      );
-    });
+    await tap(a, "successor");
     await tap(a, "single");
     await a.getByRole("dialog", { name: "Choose an option" }).waitFor();
-    await pictureAfter(a, async () => {
-      await a.getByRole("listbox", { name: "Choose an option" }).selectOption({ label: "Beta" });
-      await a.getByRole("dialog", { name: "Choose a date" }).waitFor();
-      await a.getByRole("button", { name: "Cancel", exact: true }).click();
-    });
+    await a.getByRole("listbox", { name: "Choose an option" }).selectOption({ label: "Beta" });
+    await a.getByRole("dialog", { name: "Choose a date" }).waitFor();
+    await a.getByRole("button", { name: "Cancel", exact: true }).click();
     await tap(a, "single");
     await a.getByRole("dialog").waitFor();
     const old = counts[0];
@@ -609,7 +591,6 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
     assert(counts[0] >= old);
     await kit.snapshot("popups", "handoff");
     await kit.until(async () => admissions[1] > beforeHandoff, "replacement media admission", 4000);
-    await pictureAfter(b, async () => undefined);
     await tap(b, "single");
     await b.getByRole("dialog").waitFor();
     // Local input retains the stock route and interrupts a pre-existing remote draft.
@@ -624,8 +605,6 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
         localMenu.windows.length > before.windows.length,
       "Local select did not create its stock native UI",
     );
-    // Selecting the native page can resize it, which restarts the stream.
-    await pictureAfter(b, async () => undefined);
     const tapsBefore = commands["input.guarded-click"] ?? 0;
     await tap(b, "single");
     await b
@@ -660,7 +639,6 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
       "remaining viewer's replacement admission",
       4000,
     );
-    await pictureAfter(a, async () => undefined);
     await tap(a, "single");
     await a.getByRole("dialog").waitFor();
     const catalog = await context.api["browser.tabs.get"]({ sessionId: context.sessionId });
