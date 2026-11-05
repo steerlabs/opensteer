@@ -367,8 +367,7 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
         { timeout: 4000 },
       );
     };
-    const tap = async (page: Page, id: string) => {
-      await settle(page);
+    const press = async (page: Page, id: string) => {
       const point = (await read(
         `(()=>{const r=document.getElementById(${JSON.stringify(id)}).getBoundingClientRect();return{x:r.x+(["date","time","datetime-local","month","week"].includes(document.getElementById(${JSON.stringify(id)}).type)?r.width-12:r.width/2),y:r.y+r.height/2,w:innerWidth,h:innerHeight}})()`,
       )) as { x: number; y: number; w: number; h: number };
@@ -379,6 +378,10 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
         canvas.x + (point.x / point.w) * canvas.width,
         canvas.y + (point.y / point.h) * canvas.height,
       );
+    };
+    const tap = async (page: Page, id: string) => {
+      await settle(page);
+      await press(page, id);
     };
     const quiet = async () => {
       assert.equal(counts[1], 0, "Other control viewer received popup content");
@@ -597,6 +600,9 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
     await b.getByRole("dialog").waitFor();
     // Local input retains the stock route and interrupts a pre-existing remote draft.
     await kit.selectNativePage(context.sessionId, surfaceId);
+    // Selecting the native page can resize it, which restarts the stream. A local picker then holds
+    // the picture, so the refused tap below can't wait for a new one.
+    await settle(b);
     await kit.focusPage();
     await kit.pageMouse("#single", true);
     await b.getByRole("dialog").waitFor({ state: "hidden" });
@@ -608,7 +614,7 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
       "Local select did not create its stock native UI",
     );
     const tapsBefore = commands["input.guarded-click"] ?? 0;
-    await tap(b, "single");
+    await press(b, "single");
     await b
       .getByText("Close the open picker or dialog, then tap again.", { exact: true })
       .waitFor();
