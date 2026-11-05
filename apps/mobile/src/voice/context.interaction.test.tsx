@@ -64,6 +64,7 @@ afterEach(async () => {
   state.host?.dispose();
   state.host = null;
   state.route = undefined;
+  state.routes = [];
   state.appState = "active";
   vi.clearAllMocks();
   document.body.replaceChildren();

@@ -22,22 +22,30 @@ export function createVoiceFollow(dependencies: {
     const place = await dependencies.store.latestRunPlace(runId);
     return place ? { place: place.data.place } : null;
   };
+  // One lane per Run: a slow read must not let an older place cover a newer Request.
+  const tails = new Map<RunId, Promise<void>>();
   return (event) => {
     if (!["place.entered", "request.opened", "request.resolved"].includes(event.type)) return;
     const { runId, threadId, workspaceId } = event;
     if (!runId) return;
-    void (async () => {
-      const call = await dependencies.store.voiceCallForRun(runId);
-      if (!call) return;
-      const shown = await target(event, runId);
-      if (shown)
-        await dependencies.show(call.ownerId, {
-          type: "host.show",
-          workspaceId,
-          threadId,
-          runId,
-          target: shown,
-        });
-    })().catch(dependencies.onError);
+    const tail = (tails.get(runId) ?? Promise.resolve())
+      .then(async () => {
+        const call = await dependencies.store.voiceCallForRun(runId);
+        if (!call) return;
+        const shown = await target(event, runId);
+        if (shown)
+          await dependencies.show(call.ownerId, {
+            type: "host.show",
+            workspaceId,
+            threadId,
+            runId,
+            target: shown,
+          });
+      })
+      .catch(dependencies.onError);
+    tails.set(runId, tail);
+    void tail.finally(() => {
+      if (tails.get(runId) === tail) tails.delete(runId);
+    });
   };
 }

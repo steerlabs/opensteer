@@ -16,16 +16,22 @@ const place = {
 const event = (type: string, data: unknown = {}, run: string | null = runId) =>
   ({ type, data, runId: run, threadId, workspaceId }) as unknown as AgentEvent;
 
-function follower(options: { call?: boolean; lastPlace?: boolean } = {}) {
+function follower(
+  options: { call?: boolean; lastPlace?: boolean; firstRead?: Promise<void> } = {},
+) {
+  let firstRead = options.firstRead;
   const shown: PersonShowMessage[] = [];
   const onError = vi.fn();
   const follow = createVoiceFollow({
     store: {
-      voiceCallForRun: vi.fn(async () =>
-        options.call === false
+      voiceCallForRun: vi.fn(async () => {
+        const read = firstRead;
+        firstRead = undefined;
+        await read;
+        return options.call === false
           ? undefined
-          : { ownerId, sessionId: "voice-session", admittedAt: new Date() },
-      ),
+          : { ownerId, sessionId: "voice-session", admittedAt: new Date() };
+      }),
       latestRunPlace: vi.fn(async () => (options.lastPlace === false ? null : { data: { place } })),
     } as never,
     show: async (userId, message) => {
@@ -49,6 +55,20 @@ it.each([
     expect(shown).toEqual([{ type: "host.show", workspaceId, threadId, runId, target }]),
   );
   expect(onError).not.toHaveBeenCalled();
+});
+
+it("keeps a Run's screen changes in order when an earlier read is slow", async () => {
+  let release = () => {};
+  const firstRead = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const { follow, shown } = follower({ firstRead });
+  follow(event("place.entered", { place }));
+  follow(event("request.opened"));
+  await new Promise((resolve) => setImmediate(resolve));
+  release();
+  await vi.waitFor(() => expect(shown).toHaveLength(2));
+  expect(shown.map(({ target }) => target)).toEqual([{ place }, { threadId }]);
 });
 
 it("leaves the screen alone for any Run that is not a call", async () => {

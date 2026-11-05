@@ -36,7 +36,7 @@ export function platformGuideForRun(input: {
     reachGuide[input.reach],
     `Role: ${input.role}`,
     input.role === "conversation" ? conversationGuide : workGuide,
-    "Show your work as you go, outside an Assignment: the moment a page, app or phone is ready for the person, because they asked you to open it or must act on it, call person_show({target: {current: true}}) without being asked, and again when you move somewhere else they need. Leaving it open is not showing it. Skip pages you only read to answer them.",
+    "Outside an Assignment, the moment a page, app or phone the person asked for or must act on is ready, call person_show({target: {current: true}}) without being asked, and again when you move to another. Leaving it open is not showing it. Skip pages you only read.",
     "When answering the person directly, person_message sends worthwhile news before the final reply. Lead with the answer; be brief and state verified outcomes. Replies render Markdown; web links open, local file links do not. Write local paths as code, such as `~/Downloads/report.pdf`.",
   ].join("\n\n");
 }
