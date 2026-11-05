@@ -456,7 +456,7 @@ const eventDataViewSchemas = {
   "request.updated": z.object({ request: PendingRequestViewSchema }),
   "request.resolved": z.object({ request: ResolvedRequestEventViewSchema }),
   "assistant.message": eventDataSchemas["assistant.message"],
-  "voice.heard": eventDataSchemas["voice.heard"],
+  "voice.heard": z.object(eventDataSchemas["voice.heard"].shape),
   "delegation.settled": z.object({
     ...eventDataSchemas["delegation.settled"].shape,
     childThread: z.object(eventDataSchemas["delegation.settled"].shape.childThread.shape),

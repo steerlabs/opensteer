@@ -119,6 +119,7 @@ interface SidebarModel {
   /** Main, while it can hold a new task; a task started here runs there. */
   readonly taskWorkspaceId: string | null;
   readonly voice: VoiceRowMark;
+  readonly voiceThreadId: string | null;
 }
 
 function sidebarModel(
@@ -137,6 +138,7 @@ function sidebarModel(
     loaded: snapshot.tasks !== null,
     taskWorkspaceId: main?.status === "ready" ? main.id : null,
     voice: voiceRowMark(snapshot),
+    voiceThreadId: snapshot.voiceThreadId,
   };
 }
 
@@ -436,6 +438,7 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
             current={selectedRow.voice}
             mark={model?.voice ?? null}
             onOpen={openTask}
+            threadId={model?.voiceThreadId ?? null}
             visible={visible}
           />
           {deploymentId === null ? null : (
@@ -787,13 +790,15 @@ function ChatAccessory(props: { readonly row: TaskRow | null }): ReactNode {
 }
 
 /**
- * The person's Voice Thread, under Chat wherever voice can run. It exists only
- * once someone needs it, so opening it asks for it first.
+ * The person's Voice Thread, under Chat. It exists only once someone needs it,
+ * so opening it asks for it first; after that it holds history and Requests
+ * whether or not a call can start.
  */
 function VoiceRow(props: {
   readonly current: boolean;
   readonly mark: VoiceRowMark;
   readonly onOpen: (threadId: string) => void;
+  readonly threadId: string | null;
   /** A closed drawer keeps its rows, and nobody reads a clock there. */
   readonly visible: boolean;
 }): ReactNode {
@@ -802,10 +807,14 @@ function VoiceRow(props: {
   const onCall = useVoiceOn();
   const [opening, setOpening] = useState(false);
   const claimed = useRef(false);
-  if (controller === null || !offered) return null;
-  const { mark, onOpen } = props;
+  const { mark, onOpen, threadId } = props;
+  if (threadId === null && (controller === null || !offered)) return null;
   const open = (): void => {
-    if (claimed.current) return;
+    if (threadId !== null) {
+      onOpen(threadId);
+      return;
+    }
+    if (claimed.current || controller === null) return;
     claimed.current = true;
     setOpening(true);
     void controller

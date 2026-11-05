@@ -661,6 +661,44 @@ integration.sequential("thread input queue promotion", () => {
     expect(requests.find((item) => item.request.id === request.id)?.presentation).toBeNull();
   });
 
+  it("delivers an answer on a call while another Request still waits", async ({ storeFixture }) => {
+    const { store } = storeFixture;
+    const { call, f } = await startedCall(storeFixture, "voice-answers");
+    const ask = (callId: string) =>
+      store.requests.create({
+        callId,
+        kind: "browser.access",
+        mode: "durable",
+        originatingRunId: call.runId,
+        originatingThreadId: call.threadId,
+        originatingWorkspaceId: f.workspace.id,
+        payload: {
+          kind: "browser.access",
+          reason: "Sign in",
+          suggestion: { kind: "new", suggestedName: "Personal" },
+        },
+        presentation: {
+          detail: "Sign in",
+          kind: "external",
+          subject: { id: f.workspace.id, kind: "workspace" },
+          title: "Browser profile",
+        },
+        requestedBy: f.ownerId,
+        requiredActor: "requester",
+        targetWorkspaceId: f.workspace.id,
+      });
+    const answered = await ask("voice-answered");
+    await ask("voice-unanswered");
+    await store.requests.resolveBrowserRequest({
+      requestId: answered.request.id,
+      resolvedBy: f.ownerId,
+      response: { kind: "external", value: { decision: "declined" } },
+    });
+    expect(
+      (await store.requests.listPendingContinuations()).map(({ request }) => request.id),
+    ).toEqual([answered.request.id]);
+  });
+
   it("delivers what the person said into the Thread as their own words", async ({
     storeFixture,
   }) => {

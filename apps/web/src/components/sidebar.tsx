@@ -577,6 +577,7 @@ export function Sidebar({
           }
           onNavigate={onCloseMobile}
           open={openThreadId !== null && openThreadId === snapshot.voiceThreadId}
+          threadId={snapshot.voiceThreadId}
           workspace={workspace}
         />
         {/* No tasks yet, no heading: ⌘N and Chat are the ways to start
@@ -945,17 +946,21 @@ function VoiceRow({
   asked,
   onNavigate,
   open,
+  threadId,
   workspace,
 }: {
   readonly asked: boolean;
   readonly onNavigate: () => void;
   readonly open: boolean;
+  readonly threadId: string | null;
   readonly workspace: WorkspaceState;
 }) {
   const { controller, snapshot } = useVoice();
-  if (!controller || (!snapshot.available && snapshot.phase === "idle")) return null;
+  // A Thread that exists holds history and Requests, whether or not a call can start.
+  if (threadId === null && (!controller || (!snapshot.available && snapshot.phase === "idle")))
+    return null;
   const go = async () => {
-    const id = await controller.openThread();
+    const id = threadId ?? (await controller?.openThread());
     if (!id) return;
     onNavigate();
     workspace.nav.openConversation(`/threads/${encodeURIComponent(id)}`);

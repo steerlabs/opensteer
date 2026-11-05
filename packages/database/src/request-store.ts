@@ -2931,6 +2931,8 @@ export class RequestStore {
               )
               .where((gate) =>
                 gate.or([
+                  // A call's Run spans unrelated turns, so its Requests never settle as one batch.
+                  gate("originRun.voiceSessionId", "is not", null),
                   gate.not(
                     gate.exists(
                       gate
