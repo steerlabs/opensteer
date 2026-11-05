@@ -576,9 +576,7 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
     await pictureAfter(a, () => tap(a, "successor"));
     await tap(a, "single");
     await a.getByRole("dialog", { name: "Choose an option" }).waitFor();
-    await a
-      .getByRole("listbox", { name: "Choose an option" })
-      .selectOption({ label: "Beta" });
+    await a.getByRole("listbox", { name: "Choose an option" }).selectOption({ label: "Beta" });
     await a.getByRole("dialog", { name: "Choose a date" }).waitFor();
     await a.getByRole("button", { name: "Cancel", exact: true }).click();
     await tap(a, "single");
