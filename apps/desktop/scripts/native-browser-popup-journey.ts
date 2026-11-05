@@ -542,17 +542,17 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
     await a.keyboard.type("Al");
     await a.getByRole("option", { name: /Alpha/ }).waitFor();
     await quiet();
-    await pictureAfter(a, async () => {
-      await a.getByRole("option", { name: /Alpha/ }).click();
-      await kit.until(
-        async () => {
-          const c = await counters("datalist");
-          return c.change >= 1;
-        },
-        "datalist answer updates the original input",
-        3000,
-      );
-    });
+    await a.getByRole("option", { name: /Alpha/ }).click();
+    await kit.until(
+      async () => {
+        const c = await counters("datalist");
+        return c.change >= 1;
+      },
+      "datalist answer updates the original input",
+      3000,
+    );
+    // A focused field's caret keeps painting, so only a later picture proves the answer arrived.
+    await pictureAfter(a, async () => undefined);
     const beforeContext = editingContexts[0];
     await tap(a, "ime");
     await kit.until(
@@ -568,7 +568,11 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
       1,
       "IME commit was inserted more than once",
     );
-    await pictureAfter(a, () => a.getByRole("option", { name: /漢字/ }).click());
+    const ime = a.getByRole("option", { name: /漢字/ });
+    await ime.click();
+    // The typed text already equals this suggestion, so the native value doesn't change.
+    await ime.waitFor({ state: "hidden" });
+    await pictureAfter(a, async () => undefined);
     await pictureAfter(a, () => tap(a, "successor"));
     await tap(a, "single");
     await a.getByRole("dialog", { name: "Choose an option" }).waitFor();
