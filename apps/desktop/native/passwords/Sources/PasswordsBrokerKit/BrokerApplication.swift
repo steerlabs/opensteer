@@ -23,9 +23,10 @@ public struct BrokerBuild: Sendable {
 }
 
 /// `Opensteer Passwords.app`: an accessory app (no Dock tile, no menu bar)
-/// that serves one socket and draws its own window. The person approves
-/// sign-ins in the Opensteer window; the broker shows only the system
-/// authentication prompt it asks for and the Passwords window.
+/// that serves one socket and draws its own window, and a regular app while
+/// that window is open. The person approves sign-ins in the Opensteer window;
+/// the broker shows only the system authentication prompt it asks for and the
+/// Passwords window.
 @MainActor
 public final class BrokerApplication: NSObject, NSApplicationDelegate {
   /// How long a new instance waits for one that is quitting to let go.
@@ -159,8 +160,9 @@ public final class BrokerApplication: NSObject, NSApplicationDelegate {
     return cleaned.isEmpty ? "Mac" : cleaned
   }
 
-  /// Edit commands, so text fields take paste, and Close Window. No Quit:
-  /// Opensteer starts the broker when it needs it.
+  /// Edit commands, so text fields take paste, and Close Window. No Quit, as
+  /// Opensteer starts the broker when it needs it; the Dock tile an open window
+  /// shows can still quit it, which costs only the sign-ins under way.
   static func menu() -> NSMenu {
     let main = NSMenu()
     let appItem = NSMenuItem()

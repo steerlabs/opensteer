@@ -272,11 +272,8 @@ export function AgentTranscript({
    * after its live status, inside the transcript so it reads like messages.
    */
   queued?: ReactNode;
-  /** Draws the offer of Opensteer Passwords for a site; a screen that has none shows no offer. */
-  renderPasswordsSuggestion?: (
-    site: string,
-    credential?: PasswordsSetupOffer["credential"],
-  ) => ReactNode;
+  /** Draws an offer of Opensteer Passwords; a screen that has none shows no offer. */
+  renderPasswordsSuggestion?: (offer: PasswordsSetupOffer) => ReactNode;
   viewerUserId?: string | null;
   workspaces?: readonly WorkspaceSummary[];
 }) {
@@ -326,7 +323,7 @@ export function AgentTranscript({
       ? threadActivityIndicator(activity, { conversation, groups, startHold })
       : null;
   const speakers = useMemo(() => ({ threadId, workspaces }), [threadId, workspaces]);
-  const passwordsSite = useMemo(
+  const passwordsOffer = useMemo(
     () => (renderPasswordsSuggestion ? passwordsSetupOffer(groups) : null),
     [groups, renderPasswordsSuggestion],
   );
@@ -387,12 +384,9 @@ export function AgentTranscript({
                                 ) : (
                                   <WorkingIndicator label={indicator.label} />
                                 )}
-                                {passwordsSite === null
+                                {passwordsOffer === null
                                   ? null
-                                  : renderPasswordsSuggestion?.(
-                                      passwordsSite.site,
-                                      passwordsSite.credential,
-                                    )}
+                                  : renderPasswordsSuggestion?.(passwordsOffer)}
                                 {queued}
                               </Speakers>
                             </TranscriptBrowsers>

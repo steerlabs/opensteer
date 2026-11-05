@@ -9,16 +9,13 @@ public enum Copy {
   // Shared with packages/client/src/host/passwords.ts.
   public static let appName = "Opensteer Passwords"
   public static let agentSignIns = "Agents can use saved passwords and cards"
-  public static let setUpLead =
-    "Let agents use passwords saved on this Mac in websites and apps, and saved cards on websites only. Opensteer never sends your password to the agent; it types it into the website or app, which can read it. You allow an account from any device signed in to this Opensteer."
+  public static let setUpLead = "Let agents sign in for you with passwords saved on this Mac."
   public static let setUpFacts = [
-    "Import passwords from Chrome, Safari, Firefox, 1Password or Bitwarden. Cards are added in Passwords.",
-    "Opensteer fills the fields the agent focuses on, in the browser, on your phone or in Mac apps.",
+    "Opensteer never sends your password to the agent; it types it into the website or app, which can read it.",
+    "You allow an account from any device signed in to this Opensteer.",
+    "Passwords are kept only on this Mac and aren’t backed up. If this Mac is lost or erased, ones saved only here are gone.",
     "In the browser, each password goes only to its own website. In apps, the agent checks it’s the real app.",
   ]
-  /// Under the facts, as a consequence rather than a benefit.
-  public static let setUpNote =
-    "Passwords are kept only on this Mac and aren’t backed up. If this Mac is lost or erased, ones saved only here are gone."
   public static let setUpAction = "Set Up Passwords"
   public static let updateRequired =
     "Update Opensteer to use the passwords saved by a newer version."
@@ -58,11 +55,14 @@ public enum Copy {
   public static let agentSignInsDetail =
     "Agents use only the accounts you allowed for their Workspace. Sign-ins can stay saved in the browser profile."
   public static let confirming = "Confirm with Touch ID or your Mac password."
-  public static let setUpDone = "You’re all set"
-  public static let setUpDoneLead = "Add the passwords agents may use."
-  public static let importPasswords = "Import Passwords…"
-  public static let addPassword = "Add a Password"
-  public static let done = "Done"
+  public static let addPasswords = "Add your passwords"
+  public static let addPassword = "Add One by Hand…"
+  public static let addCard = "Add a Card…"
+  public static let notNow = "Not Now"
+  public static let backToOpensteer = "Back to Opensteer"
+  public static func saved(_ count: Int) -> String {
+    "\(count) password\(count == 1 ? "" : "s") saved"
+  }
   public static let savedPasswords = "Saved passwords"
   public static let locked = "Your saved passwords are hidden"
   public static let showPasswords = "Show Passwords"
@@ -134,6 +134,8 @@ public enum Copy {
   public static let importTitle = "Import Passwords"
   public static let importWhere = "Where are your passwords now?"
   public static let chooseFile = "Choose File…"
+  public static let chooseExport = "Choose the exported file."
+  public static func open(_ app: String) -> String { "Open \(app)" }
   public static let reading = "Reading the file…"
   public static let couldNotRead = "Opensteer couldn’t read that file."
   /// Only the counts that are not zero: "5 new · 1 already saved · 6 skipped".

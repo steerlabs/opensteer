@@ -1809,13 +1809,14 @@ describe("a Chrome sign-in's receipt", () => {
       status: "fulfilled",
     } as Extract<Request, { status: "fulfilled" }>);
 
-  it("names its site only when it ended with Passwords not set up", () => {
-    expect(ended({ outcome: "not-signed-in", passwords: "not-set-up" }).passwordsSetUpSite).toBe(
+  it("says what Passwords lacks only when it ended with Passwords able to help", () => {
+    expect(ended({ outcome: "not-signed-in", passwords: "no-login" }).passwordsOffer).toEqual({
+      need: "no-login",
       site,
-    );
-    expect(ended({ outcome: "not-signed-in" }).passwordsSetUpSite).toBeUndefined();
+    });
+    expect(ended({ outcome: "not-signed-in" }).passwordsOffer).toBeUndefined();
     expect(
-      ended({ outcome: "applied", profileName: null, sourceName: "Work" }).passwordsSetUpSite,
+      ended({ outcome: "applied", profileName: null, sourceName: "Work" }).passwordsOffer,
     ).toBeUndefined();
   });
 });

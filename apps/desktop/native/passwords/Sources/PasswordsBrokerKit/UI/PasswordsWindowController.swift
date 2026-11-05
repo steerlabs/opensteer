@@ -15,20 +15,38 @@ public protocol PasswordsWindowPresenter: AnyObject {
 public final class PasswordsWindowController: NSObject, PasswordsWindowPresenter, NSWindowDelegate {
   private let model: PasswordsWindowModel
   private var window: NSWindow?
+  /// The app the person came from, which leaving the window returns them to.
+  private var cameFrom: NSRunningApplication?
 
   public init(model: PasswordsWindowModel) {
     self.model = model
+    super.init()
+    model.leave = { [weak self] in self?.leave() }
   }
 
   public func openPasswordsWindow() {
     let window = self.window ?? makeWindow()
     self.window = window
-    if !window.isVisible { window.center() }
+    // A real app while its window is open: the Dock and Command-Tab are how the
+    // person gets back from exporting, and macOS returns here after Touch ID.
+    NSApplication.shared.setActivationPolicy(.regular)
+    if !window.isVisible {
+      window.center()
+      cameFrom = NSWorkspace.shared.frontmostApplication.flatMap { $0 == .current ? nil : $0 }
+    }
     window.makeKeyAndOrderFront(nil)
     // The person asked for it from Opensteer; macOS may still keep the
     // other app active, so the window is put in front either way.
     window.orderFrontRegardless()
     NSApplication.shared.activate()
+  }
+
+  private func leave() {
+    if let cameFrom {
+      NSApplication.shared.yieldActivation(to: cameFrom)
+      cameFrom.activate(from: .current)
+    }
+    window?.close()
   }
 
   private func makeWindow() -> NSWindow {
@@ -48,5 +66,6 @@ public final class PasswordsWindowController: NSObject, PasswordsWindowPresenter
 
   public func windowWillClose(_ notification: Notification) {
     model.windowClosed()
+    NSApplication.shared.setActivationPolicy(.accessory)
   }
 }

@@ -328,6 +328,15 @@ public final class VaultService: @unchecked Sendable {
   // MARK: Sign-ins
 
   /// Whether a saved login has an origin within `site`. Never asks anyone.
+  /// Whether nothing is saved yet. Never asks anyone.
+  public func isEmpty() async throws -> Bool {
+    try await run {
+      let unlocked = try self.unlockNow()
+      defer { unlocked.close() }
+      return unlocked.isEmpty
+    }
+  }
+
   public func hasLogin(withinSite site: String) async throws -> Bool {
     try await run {
       let unlocked = try self.unlockNow()

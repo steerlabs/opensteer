@@ -1070,14 +1070,14 @@ function ThreadPaneForUser(
       ) : null,
     [thread?.role, inputQueue, queueCanRespond, hostClient, restoreQueuedDraft, viewerUserId],
   );
-  const offersPasswords = useMemo(() => passwordsSetupOffer(groups) !== null, [groups]);
+  const passwordsOffer = useMemo(() => passwordsSetupOffer(groups), [groups]);
   const listFooter =
-    offersPasswords && viewerUserId !== null ? (
+    passwordsOffer !== null && viewerUserId !== null ? (
       <>
         <PasswordsSuggestion
-          card={passwordsSetupOffer(groups)?.credential === "card"}
           deploymentId={props.deploymentId}
           hostClient={hostClient}
+          offer={passwordsOffer}
           userId={viewerUserId}
         />
         {queueFooter}

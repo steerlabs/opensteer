@@ -139,6 +139,7 @@ import { BrowserSourceService } from "../browser/browser-source-service.js";
 import { BrowserTabGroupService } from "../browser/browser-tab-group-service.js";
 import { BrowserAttachTicketSigner } from "../browser/browser-ticket.js";
 import { PasswordSignInService } from "../browser/password-sign-in-service.js";
+import { passwordsLoginSavedMessage } from "../browser/passwords-offers.js";
 import { RunnerBrowserHub } from "../browser/runner-browser-hub.js";
 import { RunnerBrowserRuntimeRouter } from "../browser/runner-browser-runtime.js";
 import { ChannelService } from "../channels/channel-service.js";
@@ -911,9 +912,20 @@ export async function createHostRuntime(
       store: new BrowserSourceStore(database),
       requests: store.requests,
       onError: (error) => reportBrowserSignInError(error),
+      onLoginSaved: async (offer) => {
+        await commands.enqueueThreadInput({
+          content: [{ text: passwordsLoginSavedMessage(offer), type: "text" }],
+          idempotencyKey: `passwords-login-saved:${offer.id}`,
+          policy: "queue",
+          requestedBy: offer.ownerId,
+          source: { cause: "passwords-login-saved", kind: "platform", sourceRunId: offer.runId },
+          threadId: offer.threadId,
+        });
+      },
       onRequestResolved: () => notifyIntegrationContinuations(),
       onWorkspaceEvent: (event) => publishWorkspaceEvent(event),
       passwords: passwordSignIns,
+      stoppedByPerson: (threadId) => store.latestRunStoppedByPerson(threadId),
     });
     disconnectBrowserSources = () => browserSources.disconnectRouteAdmittedSources();
     const credentialKey = await loadOrCreateCredentialKey({

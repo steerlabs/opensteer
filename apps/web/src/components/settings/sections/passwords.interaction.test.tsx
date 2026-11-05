@@ -61,15 +61,14 @@ describe("Settings → Passwords on the Mac that keeps them", () => {
   it("explains Passwords before setup and opens setup in the Passwords window", async () => {
     const fake = fakeBridge(available("not-set-up"));
     const page = await mount({ bridge: fake.bridge });
+    expect(text(page)).toContain("Let agents sign in for you with passwords saved on this Mac.");
     expect(text(page)).toContain(
-      "Let agents use passwords saved on this Mac in websites and apps, and saved cards on websites only. Opensteer never sends your password to the agent; it types it into the website or app, which can read it. You allow an account from any device signed in to this Opensteer.",
+      "Opensteer never sends your password to the agent; it types it into the website or app, which can read it.",
     );
     expect(text(page)).toContain(
-      "Import passwords from Chrome, Safari, Firefox, 1Password or Bitwarden. Cards are added in Passwords.",
+      "You allow an account from any device signed in to this Opensteer.",
     );
-    expect(text(page)).toContain(
-      "Opensteer fills the fields the agent focuses on, in the browser, on your phone or in Mac apps.",
-    );
+    expect(text(page)).toContain("Passwords are kept only on this Mac and aren’t backed up.");
     expect(text(page)).toContain(
       "In the browser, each password goes only to its own website. In apps, the agent checks it’s the real app.",
     );

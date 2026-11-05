@@ -31,7 +31,6 @@ import {
   activityStepHead,
   displayCommand,
   groupTranscriptEntries,
-  passwordsSetUpSuggestion,
   passwordsSetupOffer,
   toolBody,
   toolArgumentsText,
@@ -902,7 +901,7 @@ describe("workRows", () => {
   });
 });
 
-describe("passwordsSetUpSuggestion", () => {
+describe("passwordsSetupOffer", () => {
   const site = "https://brex.com";
   const signIn = (result: unknown, runId = "run-a") =>
     tool({
@@ -913,7 +912,7 @@ describe("passwordsSetUpSuggestion", () => {
     });
   const notSetUp = { passwords: "not-set-up", site, status: "not-signed-in" };
   const offer = (entries: Parameters<typeof groupTranscriptEntries>[0]) =>
-    passwordsSetUpSuggestion(groupTranscriptEntries(entries));
+    passwordsSetupOffer(groupTranscriptEntries(entries))?.site ?? null;
 
   it.each(["no-saved-card", "passwords-off", "passwords-not-set-up"])(
     "offers card setup for %s until a later outcome or human message",
@@ -932,7 +931,7 @@ describe("passwordsSetUpSuggestion", () => {
         brand: "Visa",
         lastFour: "4242",
       });
-      expect(passwordsSetupOffer(groupTranscriptEntries([unavailable, run()]))).toEqual({
+      expect(passwordsSetupOffer(groupTranscriptEntries([unavailable, run()]))).toMatchObject({
         site,
         credential: "card",
       });
@@ -982,16 +981,29 @@ describe("passwordsSetUpSuggestion", () => {
     const ended = (extra: object) => request({ requestKind: "browser.sign-in", ...extra });
     expect(offer([pending({ passwords: "not-set-up" }), replay, run()])).toBe(site);
     expect(offer([pending({ passwords: "not-set-up" }), ended({}), run()])).toBeNull();
-    expect(offer([pending({}), ended({ passwordsSetUpSite: site }), run()])).toBe(site);
+    expect(
+      offer([pending({}), ended({ passwordsOffer: { need: "not-set-up", site } }), run()]),
+    ).toBe(site);
   });
 
   it("leaves it to the latest sign-in, and never offers what Passwords can't do", () => {
     const signedIn = { profileName: null, site, sourceName: "Work", status: "applied" };
     expect(offer([signIn(notSetUp), signIn(signedIn), run()])).toBeNull();
     expect(offer([signIn({ site, status: "not-signed-in" }), run()])).toBeNull();
-    expect(
-      offer([signIn({ passwords: "no-login", site, status: "not-signed-in" }), run()]),
-    ).toBeNull();
+    expect(offer([signIn({ reason: "busy", site, status: "unavailable" }), run()])).toBeNull();
+  });
+
+  it.each([
+    [{ passwords: "no-login", site, status: "not-signed-in" }, "no-login"],
+    [{ passwords: "off", site, status: "not-signed-in" }, "off"],
+    [{ reason: "no-saved-login", site, status: "unavailable" }, "no-login"],
+    [{ reason: "passwords-off", site, status: "unavailable" }, "off"],
+  ])("offers what Passwords still needs, once set up: %j", (result, need) => {
+    expect(passwordsSetupOffer(groupTranscriptEntries([signIn(result), run()]))).toEqual({
+      credential: "login",
+      need,
+      site,
+    });
   });
 });
 
