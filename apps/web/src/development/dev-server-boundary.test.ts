@@ -34,7 +34,9 @@ describe("development Web boundary", () => {
     expect(routes.at(-1)).toBe("^/");
     const request = (host: string) => ({ headers: { host }, url: "/assets/app.js" });
     const { bypass } = localHostProxyRoutes["^/"];
-    expect(bypass(request(`${"a".repeat(25)}a.localhost:43100`) as IncomingMessage)).toBeUndefined();
+    expect(
+      bypass(request(`${"a".repeat(25)}a.localhost:43100`) as IncomingMessage),
+    ).toBeUndefined();
     expect(bypass(request("localhost:43100") as IncomingMessage)).toBe("/assets/app.js");
   });
 

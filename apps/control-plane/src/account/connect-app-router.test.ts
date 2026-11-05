@@ -24,9 +24,7 @@ it("sends an app origin to its Deployment's Connect hostname and states the real
   expect(await response.text()).toBe("from Host");
   const [request, init] = fetch.mock.calls[0]!;
   const forwarded = request as Request;
-  expect(forwarded.url).toBe(
-    `https://connect-${deployment}.opensteerapp.com/api/items?done=1`,
-  );
+  expect(forwarded.url).toBe(`https://connect-${deployment}.opensteerapp.com/api/items?done=1`);
   expect(forwarded.method).toBe("POST");
   expect(await forwarded.text()).toBe("item");
   const headers = new Headers(init?.headers);

@@ -4,11 +4,7 @@ import { connect } from "node:net";
 import { Readable } from "node:stream";
 import { expect, it } from "vitest";
 import { closeHttpServerNow } from "@opensteer/shared/httpServer";
-import {
-  appOriginResponseHeaders,
-  appRequestBodyMaxBytes,
-  requestAppHttp,
-} from "./app-proxy.js";
+import { appOriginResponseHeaders, appRequestBodyMaxBytes, requestAppHttp } from "./app-proxy.js";
 
 it.each([
   [undefined, "private, no-cache"],
