@@ -17,7 +17,7 @@ const MAX_MESSAGE_BYTES = 1_048_576;
 const MAX_EVENTS = 500;
 const STAGE_CHUNK_BYTES = 256 * 1_024;
 const USAGE =
-  "usage: browser-harness --session <Browser Session ID> [--tab <target ID>] < JavaScript on stdin\n" +
+  "usage: browser-harness --session <Browser Session ID> [--tab <target or tab ID>] < JavaScript on stdin\n" +
   "browser_session_open returns the session ID; browser_session_list shows open sessions.";
 const INTERNAL_URLS = ["chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://"];
 /** More tabs than a person keeps open for one task. */
@@ -450,10 +450,16 @@ function createBrowserHarness(client, initialTargetId) {
         );
       }
       nextTargetId = inventory.rootTargetId;
-    } else if (!availablePages.some((page) => page.targetId === nextTargetId)) {
-      throw new Error(
-        `Browser tab ${nextTargetId} is closed or unavailable. Use await listTabs() and choose the intended tab explicitly.`,
+    } else {
+      const named = availablePages.find(
+        (page) => page.targetId === nextTargetId || page.surfaceId === nextTargetId,
       );
+      if (!named) {
+        throw new Error(
+          `Browser tab ${nextTargetId} is closed or unavailable. Use await listTabs() and choose the intended tab explicitly.`,
+        );
+      }
+      nextTargetId = named.targetId;
     }
     if (typeof nextTargetId !== "string" || nextTargetId.length === 0) {
       throw new Error("CDP did not provide a target ID");
@@ -701,6 +707,10 @@ function createBrowserHarness(client, initialTargetId) {
     page.mouse.click(x, y, { button, clickCount: clicks });
 
   const fillLogin = async (loginRef, field) => {
+    if (typeof loginRef === "string" && loginRef.startsWith("crd_"))
+      throw new TypeError(
+        "Saved card references can only be used with fillCard in a Browser Session.",
+      );
     if (typeof loginRef !== "string" || !/^lgn_[0-9a-f]{32}$/u.test(loginRef)) {
       throw new TypeError("fillLogin requires a loginRef from sign_in.");
     }
@@ -719,6 +729,37 @@ function createBrowserHarness(client, initialTargetId) {
     };
     const known = Object.hasOwn(explanations, status) ? status : "unavailable";
     throw new Error(`fillLogin ${known}: ${explanations[known]}`);
+  };
+
+  const fillCard = async (cardRef, field) => {
+    if (typeof cardRef !== "string" || !/^crd_[0-9a-f]{32}$/u.test(cardRef)) {
+      throw new TypeError("fillCard requires a cardRef from use_card.");
+    }
+    if (
+      ![
+        "number",
+        "expiry",
+        "expiry-month",
+        "expiry-year",
+        "cvc",
+        "name",
+        "billing-postal-code",
+      ].includes(field)
+    ) {
+      throw new TypeError("fillCard field must be a supported card field.");
+    }
+    const { status } = await cdp("Opensteer.fillCard", { cardRef, field });
+    if (status === "filled") return "filled";
+    const explanations = {
+      "no-field": "Focus an editable field of the requested kind.",
+      "wrong-site": "The focused field is outside the approved website.",
+      stale: "The focused field or page changed; inspect the page before trying again.",
+      expired: "Call use_card again to authorize this session.",
+      denied: "Permission to use this card ended.",
+      unavailable: "The saved field or Opensteer Passwords is unavailable.",
+    };
+    const known = Object.hasOwn(explanations, status) ? status : "unavailable";
+    throw new Error(`fillCard ${known}: ${explanations[known]}`);
   };
 
   const typeText = (text) => page.keyboard.insertText(text);
@@ -946,6 +987,7 @@ function createBrowserHarness(client, initialTargetId) {
     ensureRealTab,
     fillInput,
     fillLogin,
+    fillCard,
     gotoUrl,
     js,
     listTabs,

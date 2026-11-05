@@ -3,6 +3,7 @@ import { z } from "zod";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import type { EvalCase } from "./cases.js";
 import { majority } from "./grader.js";
+import { timingLines, TurnTimingSchema } from "./timing.js";
 
 export function fingerprint(value: unknown): string {
   return createHash("sha256").update(canonicalJson(value)).digest("hex");
@@ -15,6 +16,7 @@ export const ResultSchema = z.object({
   complete: z.boolean(),
   fingerprint: z.string(),
   treatment: z.strictObject({ prompt: z.string(), schema: z.string() }),
+  timing: z.array(TurnTimingSchema).optional(),
 });
 export type ComparableRow = z.infer<typeof ResultSchema>;
 export function caseOutcome(rows: readonly ComparableRow[]): "pass" | "fail" | "incomplete" {
@@ -116,5 +118,5 @@ export function summary(
       `| ${name} | ${outcome} | ${group.filter((r) => r.complete && r.pass).length}/${group.length} | ${incomplete ? "—" : `${(rate * 100).toFixed(1)}%`} | ${old.length && !incomplete ? `${((rate - oldRate) * 100).toFixed(1)} pp` : "—"} |`,
     );
   }
-  return `${lines.join("\n")}\n`;
+  return `${[...lines, ...timingLines(rows)].join("\n")}\n`;
 }

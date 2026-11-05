@@ -165,20 +165,6 @@ export async function finalizeRunTransaction(
         threadId: run.threadId,
       });
     }
-    if (
-      await transaction
-        .selectFrom("requests")
-        .select("id")
-        .where("originatingRunId", "=", run.id)
-        .where("mode", "=", "durable")
-        .where("status", "=", "pending")
-        .executeTakeFirst()
-    ) {
-      await enqueueChannelConversationStatus(transaction, {
-        conversationId: replyTarget.conversationId,
-        text: `The agent needs your input before it can continue. Open the Thread in Opensteer: ${input.links.threadUrl(run.threadId)}`,
-      });
-    }
   } else if (replyTarget) {
     const threadUrl = input.links.threadUrl(run.threadId);
     await enqueueChannelConversationStatus(transaction, {
@@ -362,14 +348,6 @@ export async function finalizeRunTransaction(
     }
   }
 
-  if (thread.voiceSessionId) {
-    await transaction
-      .updateTable("threads")
-      .set({ status: "archived", updatedAt: input.completedAt })
-      .where("id", "=", thread.id)
-      .execute();
-    thread.status = "archived";
-  }
   // A corrupt selection must not roll back an already accepted terminal event.
   // Pending work remains queued until an explicit engine selection repairs it.
   const followOn = await ensureQueuedRun(transaction, thread, { onInvalidSelection: "defer" });

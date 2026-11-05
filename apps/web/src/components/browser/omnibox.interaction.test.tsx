@@ -207,12 +207,13 @@ it.each(["keyboard", "pointer", "completion"])(
     host.browserPreferences.showSearchSuggestions = false;
     const snapshot = host.getSnapshot();
     const profileId = snapshot.browserProfiles[0]!.id;
+    const lastVisitAt = new Date().toISOString();
     const entries = ["alpha", "beta", "gamma"].map((path) => ({
       url: `https://favicons.example/${path}`,
       title: path,
       typedCount: 1,
       visitCount: 1,
-      lastVisitAt: new Date().toISOString(),
+      lastVisitAt,
     }));
     const get = vi
       .spyOn(host.browserHistory.ports, "get")

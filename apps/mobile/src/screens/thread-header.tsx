@@ -227,6 +227,7 @@ function ThreadTitle(
             icon={props.icon}
             color={props.color}
             isHome={props.isHome}
+            isVoice={props.isVoice}
           />
           <ThreadSubtitle
             workspaceName={props.workspaceName}

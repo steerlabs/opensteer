@@ -532,6 +532,7 @@ describe("Home conversation", () => {
       })),
       executionPreferences: { ...base.executionPreferences, history: [] },
       homeThreadId: null,
+      voiceThreadId: null,
       threads: base.threads.filter(({ id }) => id !== home.id),
       workspaces: base.workspaces.map((workspace) =>
         workspace.id === base.homeWorkspaceId ? { ...workspace, homeThreadId: null } : workspace,
@@ -1026,6 +1027,7 @@ it("Chat draws automatic work only for a reply or a failure, names its source an
               {
                 id: reportWorkspaceId,
                 homeThreadId: null,
+                voiceThreadId: null,
                 description: "",
                 fileCount: 0,
                 harnessLabel: "Codex",

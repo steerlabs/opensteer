@@ -21,6 +21,7 @@ import {
 } from "@opensteer/database";
 import { takeTransactionConflicts } from "@opensteer/database/test-support/lock-order";
 import type { PersonalHostAccessRouteEnvelope } from "@opensteer/deployment-authority";
+import type { PasswordsOffer } from "./passwords-offers.js";
 import {
   browserSourceChallengeBytes,
   browserSourcePairChallengeBytes,
@@ -99,8 +100,9 @@ class FakeRuntimeConnection extends EventEmitter implements BrowserRuntimeConnec
   /** What the Mac answers a sign-in probe; the Passwords switch, as the runtime sees it. */
   holdStartAck = false;
   passwords: "has-login" | "no-login" | "off" | "not-set-up" | "unavailable" = "has-login";
-  onStart = (message: Extract<PasswordSignInAuthorityCommand, { type: "login.authorize" }>) =>
-    this.needSignIn(message.operationId, "approval");
+  onStart = (
+    message: Extract<PasswordSignInAuthorityCommand, { type: "login.authorize"; loginRef: string }>,
+  ) => this.needSignIn(message.operationId, "approval");
   /** How the runtime answers a cancel: by default as cancelled, before authorization. */
   onCancel: (message: Extract<PasswordSignInAuthorityCommand, { type: "login.cancel" }>) => void = (
     message,
@@ -159,6 +161,7 @@ class FakeRuntimeConnection extends EventEmitter implements BrowserRuntimeConnec
       case "signin.probe":
         return { type: "signin.probe.result", passwords: this.passwords };
       case "login.authorize":
+        if (!("loginRef" in command)) return { type: "unavailable" };
         reservedLoginRef = command.loginRef;
         reservedLoginExpiresAt = command.expiresAt;
         queueMicrotask(() => this.onStart(command));
@@ -186,10 +189,17 @@ class FakeRuntimeConnection extends EventEmitter implements BrowserRuntimeConnec
     this.passwordEvents.emit("event", { type: "authority-lost" });
   }
 
-  signInStarts(): Extract<PasswordSignInAuthorityCommand, { type: "login.authorize" }>[] {
+  signInStarts(): Extract<
+    PasswordSignInAuthorityCommand,
+    { type: "login.authorize"; loginRef: string }
+  >[] {
     return this.received.filter(
-      (message): message is Extract<PasswordSignInAuthorityCommand, { type: "login.authorize" }> =>
-        message.type === "login.authorize",
+      (
+        message,
+      ): message is Extract<
+        PasswordSignInAuthorityCommand,
+        { type: "login.authorize"; loginRef: string }
+      > => message.type === "login.authorize",
     );
   }
 
@@ -434,6 +444,9 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
   });
   let resolvedRequests = 0;
   const serviceErrors: unknown[] = [];
+  const savedLogins: PasswordsOffer[] = [];
+  const stoppedThreads = new Set<string>();
+  let wakeFault: Error | null = null;
   const passwordSignInErrors: unknown[] = [];
   const reconciliationSchedule = vi.spyOn(globalThis, "setInterval");
   const passwords = new PasswordSignInService({
@@ -489,8 +502,13 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       resolvedRequests += 1;
     },
     onWorkspaceEvent: () => {},
+    onLoginSaved: async (offer) => {
+      if (wakeFault) throw wakeFault;
+      savedLogins.push(offer);
+    },
     passwords,
     sign: (bytes) => sign(null, bytes, hostKey.privateKey).toString("base64url"),
+    stoppedByPerson: async (threadId) => stoppedThreads.has(threadId),
   });
   const server = new WebSocketServer({ port: 0 });
   server.on("connection", (socket) => service.acceptSocket(socket, ingressOrigin, "127.0.0.1"));
@@ -512,6 +530,9 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     settleFaults = 0;
     passwordSignInErrors.length = 0;
     serviceErrors.length = 0;
+    savedLogins.length = 0;
+    stoppedThreads.clear();
+    wakeFault = null;
     // A previous test's closed Chrome may still be finishing its drain or
     // last-seen write; truncation can deadlock with it, so retry.
     for (let attempt = 0; ; attempt += 1) {
@@ -793,7 +814,6 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     if (!connection) throw new Error("Expected a runtime connection");
     return {
       agent: {
-        canRequest: true,
         loginFill: true,
         ownerId,
         reason: "Open the dashboard",
@@ -960,7 +980,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     });
   });
 
-  it.each([true, false])("allows unattended sign-in when canRequest is %s", async (canRequest) => {
+  it("allows unattended sign-in", async () => {
     const ready = await passwordScene();
     ready.connection.onStart = (message) =>
       ready.connection.replySignIn(message.operationId, {
@@ -969,7 +989,6 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     expect(
       await service.agentSignIn({
         ...ready.agent,
-        canRequest,
         callId: randomUUID(),
         site: "https://delegated-grant.test",
       }),
@@ -1029,31 +1048,27 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     expect(ready.connection.signInStarts()).toHaveLength(2);
   });
 
-  it.each([true, false])(
-    "preserves another Run's open Request when canRequest is %s",
-    async (canRequest) => {
-      const ready = await startedPasswordSignIn("https://cross-run.test");
-      const other = await runningRun(ready.ownerId, ready.workspaceId, runtime.runnerId!);
-      expect(
-        await service.agentSignIn({
-          ...ready.agent,
-          ...other,
-          callId: randomUUID(),
-          site: ready.site,
-          canRequest,
-        }),
-      ).toEqual({
-        status: "unavailable",
+  it("preserves another Run's open Request", async () => {
+    const ready = await startedPasswordSignIn("https://cross-run.test");
+    const other = await runningRun(ready.ownerId, ready.workspaceId, runtime.runnerId!);
+    expect(
+      await service.agentSignIn({
+        ...ready.agent,
+        ...other,
+        callId: randomUUID(),
         site: ready.site,
-        reason: "busy",
-      });
-      expect(ready.connection.signInCancels()).toHaveLength(0);
-      expect((await passwordRequest(ready.requestId)).request.status).toBe("pending");
-      await approvePasswordRequest(ready.requestId, ready.connection, authorized());
-      await waitFor(async () => (await continuationCount(ready.requestId)) === 1);
-      expect(await passwordRequestCount(other.runId)).toBe(0);
-    },
-  );
+      }),
+    ).toEqual({
+      status: "unavailable",
+      site: ready.site,
+      reason: "busy",
+    });
+    expect(ready.connection.signInCancels()).toHaveLength(0);
+    expect((await passwordRequest(ready.requestId)).request.status).toBe("pending");
+    await approvePasswordRequest(ready.requestId, ready.connection, authorized());
+    await waitFor(async () => (await continuationCount(ready.requestId)) === 1);
+    expect(await passwordRequestCount(other.runId)).toBe(0);
+  });
 
   it.each(["authorized", "approval"] as const)(
     "lets another Run join unattended work until $0",
@@ -1397,10 +1412,195 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
         await service.agentSignIn({ ...ready.agent, callId: randomUUID(), site }),
       ).toMatchObject({ status: "applied" });
       expect(ready.connection.signInStarts()).toHaveLength(0);
-      expect(ready.connection.received.filter((m) => m.type === "signin.probe")).toHaveLength(0);
+      // The sweep still checks what earlier tests offered, on this same connection.
+      expect(
+        ready.connection.received.filter((m) => m.type === "signin.probe" && m.site === site),
+      ).toHaveLength(0);
     } finally {
       await chrome.close();
     }
+  });
+
+  it("signs in with a saved login when a Chrome grant finds Chrome signed out", async () => {
+    const ready = await passwordScene();
+    const paired = await pairChrome(ready.ownerId, "Chrome");
+    const chrome = await connectChrome(paired, "no-state");
+    const site = "https://chrome-grant-signed-out.test";
+    try {
+      await sourceStore.upsertGrant({
+        ownerId: ready.ownerId,
+        workspaceId: ready.workspaceId,
+        preferredSourceId: paired.sourceId,
+        site,
+      });
+      const result = await service.agentSignIn({ ...ready.agent, callId: randomUUID(), site });
+      expect(result.status).toBe("pending");
+      if (result.status !== "pending") throw new Error("Expected pending");
+      expect((await store.requests.get(result.requestId))?.kind).toBe("browser.password-sign-in");
+      expect(ready.connection.signInStarts()).toHaveLength(1);
+    } finally {
+      await chrome.close();
+    }
+  });
+
+  describe("when Passwords gains the login a sign-in lacked", () => {
+    const site = "https://offer.test";
+    // Earlier tests' offers outlive them in the shared service, so each case reads its own Thread.
+    const wakes = (ready: { readonly agent: { readonly threadId: string } }) =>
+      savedLogins.filter((offer) => offer.threadId === ready.agent.threadId);
+
+    async function offered(status: BrowserSourceStatus | null) {
+      const ready = await passwordScene();
+      ready.connection.passwords = "not-set-up";
+      const chrome = status
+        ? await connectChrome(await pairChrome(ready.ownerId, "Chrome"), status)
+        : null;
+      const result = await service.agentSignIn({ ...ready.agent, callId: randomUUID(), site });
+      return { chrome, ready, result };
+    }
+
+    it("wakes the agent once, and not before the login exists", async () => {
+      const { chrome, ready, result } = await offered("no-state");
+      try {
+        expect(result).toEqual({ passwords: "not-set-up", site, status: "not-signed-in" });
+        await service.sweepPasswordsOffers();
+        ready.connection.passwords = "no-login";
+        await service.sweepPasswordsOffers();
+        expect(wakes(ready)).toEqual([]);
+
+        ready.connection.passwords = "has-login";
+        await service.sweepPasswordsOffers();
+        await service.sweepPasswordsOffers();
+        expect(wakes(ready)).toEqual([
+          expect.objectContaining({
+            requestId: null,
+            runId: ready.agent.runId,
+            sessionId: ready.agent.sessionId,
+            site,
+            threadId: ready.agent.threadId,
+          }),
+        ]);
+      } finally {
+        await chrome?.close();
+      }
+    });
+
+    it("leaves a person's No standing", async () => {
+      const { ready, result } = await offered(null);
+      if (result.status !== "pending") throw new Error("Expected pending");
+      await service.respond({
+        decision: { decision: "decline" },
+        ownerId: ready.ownerId,
+        requestId: result.requestId,
+      });
+      ready.connection.passwords = "has-login";
+      await service.sweepPasswordsOffers();
+      expect(wakes(ready)).toEqual([]);
+    });
+
+    it("leaves work the person stopped stopped", async () => {
+      const { chrome, ready } = await offered("no-state");
+      try {
+        stoppedThreads.add(ready.agent.threadId);
+        ready.connection.passwords = "has-login";
+        await service.sweepPasswordsOffers();
+        expect(wakes(ready)).toEqual([]);
+      } finally {
+        await chrome?.close();
+      }
+    });
+
+    it("replaces the Chrome card it makes pointless, with one wake", async () => {
+      const { ready, result } = await offered(null);
+      if (result.status !== "pending") throw new Error("Expected pending");
+      ready.connection.passwords = "has-login";
+      await service.sweepPasswordsOffers();
+      expect(wakes(ready)).toHaveLength(1);
+      expect((await store.requests.get(result.requestId))?.status).toBe("withdrawn");
+      expect(await continuationCount(result.requestId)).toBe(0);
+    });
+
+    it("keeps the Chrome card when the wake can't reach the Thread yet", async () => {
+      const { ready, result } = await offered(null);
+      if (result.status !== "pending") throw new Error("Expected pending");
+      ready.connection.passwords = "has-login";
+      wakeFault = new Error("The database connection was reset.");
+      await service.sweepPasswordsOffers();
+      expect((await store.requests.get(result.requestId))?.status).toBe("pending");
+
+      wakeFault = null;
+      await service.sweepPasswordsOffers();
+      expect(wakes(ready)).toHaveLength(1);
+      expect((await store.requests.get(result.requestId))?.status).toBe("withdrawn");
+    });
+
+    it("drops a wake the Thread can never take", async () => {
+      const { chrome, ready } = await offered("no-state");
+      try {
+        ready.connection.passwords = "has-login";
+        wakeFault = new OpensteerError({ code: "conflict", message: "This task is Done." });
+        await service.sweepPasswordsOffers();
+        wakeFault = null;
+        await service.sweepPasswordsOffers();
+        expect(wakes(ready)).toEqual([]);
+        expect(serviceErrors).toEqual([]);
+      } finally {
+        await chrome?.close();
+      }
+    });
+
+    it("holds the wake until the Run's other Requests settle", async () => {
+      const { ready, result } = await offered(null);
+      if (result.status !== "pending") throw new Error("Expected pending");
+      // Passwords can't help this one, so it waits on the person and on nothing else.
+      ready.connection.passwords = "unavailable";
+      const other = await service.agentSignIn({
+        ...ready.agent,
+        callId: randomUUID(),
+        site: "https://other.test",
+      });
+      if (other.status !== "pending") throw new Error("Expected pending");
+      ready.connection.passwords = "has-login";
+      await service.sweepPasswordsOffers();
+      expect(wakes(ready)).toEqual([]);
+      expect((await store.requests.get(result.requestId))?.status).toBe("pending");
+
+      await service.respond({
+        decision: { decision: "decline" },
+        ownerId: ready.ownerId,
+        requestId: other.requestId,
+      });
+      await service.sweepPasswordsOffers();
+      expect(wakes(ready)).toHaveLength(1);
+    });
+
+    it("wakes every sign-in one import answers, instead of each waiting on the other", async () => {
+      const { ready, result } = await offered(null);
+      if (result.status !== "pending") throw new Error("Expected pending");
+      const other = await service.agentSignIn({
+        ...ready.agent,
+        callId: randomUUID(),
+        site: "https://other.test",
+      });
+      if (other.status !== "pending") throw new Error("Expected pending");
+      ready.connection.passwords = "has-login";
+      await service.sweepPasswordsOffers();
+      expect(wakes(ready).map((offer) => offer.site)).toEqual([site, "https://other.test"]);
+      expect((await store.requests.get(result.requestId))?.status).toBe("withdrawn");
+      expect((await store.requests.get(other.requestId))?.status).toBe("withdrawn");
+    });
+
+    it("ends the offer when the sign-in gets further on its own", async () => {
+      const { chrome, ready } = await offered("no-state");
+      try {
+        ready.connection.passwords = "has-login";
+        await service.agentSignIn({ ...ready.agent, callId: randomUUID(), site });
+        await service.sweepPasswordsOffers();
+        expect(wakes(ready)).toEqual([]);
+      } finally {
+        await chrome?.close();
+      }
+    });
   });
 
   it("refuses consent without a requester decision while the Request opens", async () => {
@@ -1565,7 +1765,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     expect(await continuationCount(requestId)).toBe(1);
   });
 
-  it("keeps Chrome for a Mac with Passwords off, and refuses delegated approvals", async () => {
+  it("keeps Chrome for a Mac with Passwords off", async () => {
     const ready = await passwordScene();
     ready.connection.passwords = "off";
     const site = "https://off.test";
@@ -1573,22 +1773,6 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     expect(chromeResult.status).toBe("pending");
     expect(ready.connection.signInStarts()).toEqual([]);
     expect((await pendingSignIns(ready.ownerId)).length).toBe(1);
-
-    ready.connection.passwords = "has-login";
-    const delegated = {
-      ...ready.agent,
-      callId: randomUUID(),
-      canRequest: false,
-      site: "https://delegated.test",
-    };
-    const refused = { reason: "needs-approval", site: delegated.site, status: "unavailable" };
-    expect(await service.agentSignIn(delegated)).toEqual(refused);
-    // A replay after the actual maintenance tick must retain the same refusal.
-    reconcilePasswords();
-    await Promise.resolve();
-    expect(await service.agentSignIn(delegated)).toEqual(refused);
-    expect(ready.connection.signInStarts()).toHaveLength(1);
-    expect(ready.connection.signInCancels()).toHaveLength(1);
   });
 
   it("replays a repeated call as its own Request, then as resolved once it ended", async () => {
@@ -2398,9 +2582,10 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     const site = "https://example.test";
     chrome.status = "no-state";
 
-    expect(
-      await service.agentSignIn({ ...agent, callId: randomUUID(), canRequest: false, site }),
-    ).toEqual({ reason: "needs-approval", site, status: "unavailable" });
+    expect(await service.agentSignIn({ ...agent, callId: randomUUID(), site })).toEqual({
+      site,
+      status: "not-signed-in",
+    });
     expect(await service.agentSignIn({ ...agent, callId: randomUUID(), site })).toEqual({
       site,
       status: "not-signed-in",

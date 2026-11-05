@@ -56,24 +56,12 @@ describe("LocalRunnerService", () => {
     await Promise.all([firstStart, secondStart]);
 
     expect(firstRun.fork).toHaveBeenCalledTimes(2);
-    const enabled = await firstRun.service.enrolledRunners();
-    expect(enabled).toHaveLength(2);
-    expect(enabled).toEqual(
-      expect.arrayContaining([
-        {
-          deploymentId: first.deploymentId,
-          runAgents: true,
-          runnerName: "Office Mac",
-          state: "running",
-        },
-        {
-          deploymentId: second.deploymentId,
-          runAgents: true,
-          runnerName: "Office Mac",
-          state: "running",
-        },
-      ]),
-    );
+    await expect(firstRun.service.status(first.deploymentId)).resolves.toMatchObject({
+      runner: { state: "running" },
+    });
+    await expect(firstRun.service.status(second.deploymentId)).resolves.toMatchObject({
+      runner: { state: "running" },
+    });
     const preference = JSON.parse(
       await readFile(path.join(directory, "runner", "desktop-runner.json"), "utf8"),
     ) as unknown;
@@ -122,7 +110,14 @@ describe("LocalRunnerService", () => {
     await Promise.all(starts);
 
     targets.notify();
-    await eventually(async () => (await running.service.enrolledRunners()).length === 2);
+    await expect(
+      readFile(path.join(directory, "runner", "desktop-runner.json"), "utf8").then(JSON.parse),
+    ).resolves.toMatchObject({
+      runners: {
+        [first.deploymentId]: { enrolled: true },
+        [second.deploymentId]: { enrolled: true },
+      },
+    });
 
     expect(running.children.every((child) => !hasStopMessage(child))).toBe(true);
     await expect(running.service.status(first.deploymentId)).resolves.toMatchObject({
@@ -192,14 +187,14 @@ describe("LocalRunnerService", () => {
     firstChild.emit("exit", 0);
     await expect(removing).resolves.toMatchObject({ runner: { state: "disabled" } });
 
-    await expect(running.service.enrolledRunners()).resolves.toEqual([
-      {
-        deploymentId: second.deploymentId,
-        runAgents: true,
-        runnerName: "Studio Mac",
-        state: "running",
+    await expect(
+      readFile(path.join(directory, "runner", "desktop-runner.json"), "utf8").then(JSON.parse),
+    ).resolves.toEqual({
+      runners: {
+        [second.deploymentId]: { enrolled: true, runAgents: true, runnerName: "Studio Mac" },
       },
-    ]);
+      version: 4,
+    });
     await expect(running.service.status(second.deploymentId)).resolves.toMatchObject({
       runner: { state: "running" },
     });
@@ -226,7 +221,6 @@ describe("LocalRunnerService", () => {
     });
 
     await expect(running.service.hasEnrolledRunners()).resolves.toBe(false);
-    await expect(running.service.enrolledRunners()).resolves.toEqual([]);
     await expect(running.service.status(target.deploymentId)).resolves.toMatchObject({
       runner: { detail: "The Deployment was removed from this computer.", state: "disabled" },
     });
@@ -288,14 +282,11 @@ describe("LocalRunnerService", () => {
         shipsHarnessRuntimeBytes(entry) ? path.join(directory, entry.kind) : undefined,
       );
     }
-    await expect(running.service.enrolledRunners()).resolves.toEqual([
-      {
-        deploymentId: target.deploymentId,
-        runAgents: true,
-        runnerName: "Office Mac",
-        state: "running",
-      },
-    ]);
+    expect(child.environment.OPENSTEER_RUNNER_NAME).toBe("Office Mac");
+    await expect(running.service.status(target.deploymentId)).resolves.toMatchObject({
+      runAgents: true,
+      runner: { state: "running" },
+    });
   });
 
   it("carries this computer's browser as a module of the same machine", async () => {
@@ -853,7 +844,6 @@ describe("LocalRunnerService", () => {
       message: "This Mac left the Deployment before its Runner connected.",
     });
     await expect(running.service.hasEnrolledRunners()).resolves.toBe(false);
-    await expect(running.service.enrolledRunners()).resolves.toEqual([]);
   });
 
   it("follows a running computer through a disconnect and back to running", async () => {
@@ -892,15 +882,6 @@ describe("LocalRunnerService", () => {
     );
 
     expect(notifications).toBeGreaterThan(whileReconnecting);
-    // The tray reads the same slot, so it must agree with the page.
-    await expect(running.service.enrolledRunners()).resolves.toEqual([
-      {
-        deploymentId: target.deploymentId,
-        runAgents: true,
-        runnerName: "Office Mac",
-        state: "running",
-      },
-    ]);
     expect(running.fork).toHaveBeenCalledTimes(1);
   });
 

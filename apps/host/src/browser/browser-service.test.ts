@@ -3388,6 +3388,52 @@ describe("BrowserService", () => {
     expect(f.forwarded.at(-1)?.actorToken).toBe(f.forwarded[0]?.actorToken);
   });
 
+  it("ends only a revoked Run's actor, without rereading any other", async () => {
+    const f = await runPlaceFixture();
+    await f.activity("page-1");
+    await f.drain();
+    const { runId, generation } = f.audience[0]!;
+    const token = f.forwarded.at(-1)?.actorToken;
+    const reads = vi.mocked(f.backing.resolvePlaceActors).mock.calls.length;
+
+    f.service.endRevokedRunActors([{ runId, bindingGeneration: generation + 1 }]);
+    await f.cdp.request({ method: "Browser.getVersion" });
+    expect(f.forwarded.at(-1)?.actorToken).toBe(token);
+    expect(vi.mocked(f.backing.resolvePlaceActors).mock.calls).toHaveLength(reads);
+
+    vi.mocked(f.backing.resolvePlaceActors).mockResolvedValue([]);
+    f.service.endRevokedRunActors([{ runId, bindingGeneration: generation }]);
+    await f.cdp.request({ method: "Browser.getVersion" });
+    expect(f.forwarded.at(-1)?.actorToken).toBeUndefined();
+  });
+
+  it("replaces the actor token when a Run advances to a new binding generation", async () => {
+    const f = await runPlaceFixture();
+    const previous = f.forwarded.at(-1)?.actorToken;
+    await f.activity("page-1");
+    await f.drain();
+    vi.mocked(f.backing.resolvePlaceActors).mockResolvedValue(
+      f.audience.map((actor) => ({ ...actor, generation: actor.generation + 1 })),
+    );
+    f.service.invalidatePlaceAuthority();
+    await f.service.catalogsForViewers(f.sessionId);
+    await f.cdp.request({ method: "Browser.getVersion" });
+    const token = f.forwarded.at(-1)?.actorToken;
+    expect(token).toEqual(expect.any(String));
+    expect(token).not.toBe(previous);
+    f.runtime.sendServer({
+      type: "browser.activity",
+      actorToken: token,
+      surfaceId: "page-2",
+      seq: 1,
+      geometryRevision: 1,
+      pointer: null,
+    });
+    await f.cdp.request({ method: "Browser.getVersion" });
+    await f.drain();
+    expect(f.record.mock.calls.at(-1)?.[0]).toMatchObject({ bindingGeneration: 2 });
+  });
+
   it("drains rejected pending Run place writes without throwing", async () => {
     const f = await runPlaceFixture();
     const pending = Promise.withResolvers<AgentEvent | undefined>();

@@ -268,7 +268,12 @@ describe("Product tool handlers", () => {
       } as const;
       const agentSignIn = vi.fn(async () => result);
       const { service, admitRunToolCall } = makeService({
-        browserSources: { agentSignIn },
+        browserSources: {
+          agentSignIn,
+          agentUseCard: async () => {
+            throw new Error("Unexpected card use");
+          },
+        },
         commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
         messages: [],
         threads: [current],
@@ -283,7 +288,12 @@ describe("Product tool handlers", () => {
           site: result.site,
           reason: "Read the account",
         }),
-      ).resolves.toEqual({ requestId, type: `${type}.result`, result });
+      ).resolves.toEqual({
+        requestId,
+        type: `${type}.result`,
+        // On the result, because a long-lived session keeps the skill it read first.
+        result: { ...result, guidance: expect.stringContaining("call sign_in again") },
+      });
       expect(agentSignIn).toHaveBeenCalledWith(
         expect.objectContaining({ sessionId, site: result.site }),
       );
@@ -1874,8 +1884,6 @@ function makeService(options: {
     },
     findMainWorkspaceForOwner: async () =>
       workspaces.find((candidate) => candidate.homeThreadId != null) ?? null,
-    // These Runs are never voice calls, so no tool is withheld from them.
-    voiceCallForRun: async () => undefined,
     threadMessagePageForOwner: async (input: {
       maxItems: number;
       ownerId: typeof ownerId;
@@ -1962,7 +1970,10 @@ function makeService(options: {
     listEnvironmentsForUser,
     service: new ProductToolsTestClient({
       ...(options.personShow ? { personShow: options.personShow } : {}),
-      browserSources: options.browserSources ?? { agentSignIn: unexpectedBrowserRequest },
+      browserSources: options.browserSources ?? {
+        agentSignIn: unexpectedBrowserRequest,
+        agentUseCard: unexpectedBrowserRequest,
+      },
       machineFullDiskAccess: options.machineFullDiskAccess ?? { request: vi.fn() },
       browser: {
         createProfile: options.browser?.createProfile ?? unexpectedBrowserRequest,
@@ -2149,6 +2160,7 @@ function workspace(
     createdAt: now,
     createdBy,
     homeThreadId: null,
+    voiceThreadId: null,
     icon: null,
     id,
     kind: id === workspaceId ? "main" : "project",

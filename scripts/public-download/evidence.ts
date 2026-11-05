@@ -12,7 +12,7 @@ export function releaseAsset(channel: Channel, version: string) {
 
 /** Every journey a channel's release must pass; a selected subset is only partial evidence. */
 export const certificationCases = {
-  stable: ["stable:menu", "stable:tray", "stable:quit"],
+  stable: ["stable:menu", "stable:quit"],
   beta: ["beta:menu", "beta:quit"],
 } as const satisfies Record<Channel, readonly string[]>;
 

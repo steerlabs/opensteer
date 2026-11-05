@@ -77,6 +77,7 @@ import {
   type BrowserRasterDensity,
   type BrowserRuntimeActivity,
   type BrowserServerMessage,
+  BrowserSessionIdSchema,
   type BrowserSessionId,
   type BrowserSessionOpenerRecord,
   type BrowserSurface,
@@ -473,6 +474,7 @@ export interface BrowserRuntimeTarget {
   /** The Runtime stages page-bound files; one that predates it cannot receive any. */
   readonly fileStaging?: boolean;
   /** The Runtime authorizes and fills saved logins (`login.*`, version 3). */
+  readonly cardFill?: boolean;
   readonly signIn?: boolean;
   /** The Runtime enforces the agent CDP boundary; agents get no CDP on one without it. */
   readonly cdpBoundary?: boolean;
@@ -558,6 +560,7 @@ export interface BrowserSignInTarget {
   readonly live: boolean;
   readonly stateImport: boolean;
   /** The session's browser runs saved-password sign-ins on its computer. */
+  readonly cardFill?: boolean;
   readonly signIn: boolean;
   /** The computer that runs the session's browser, when a Runner relays it. */
   readonly computer: { readonly name: string; readonly runnerId: RunnerId } | null;
@@ -589,6 +592,7 @@ interface BrowserServiceOptions {
   readonly workspaceTabs?: WorkspaceTabStore;
   readonly tabGroups?: BrowserTabGroupStore;
   readonly onCatalogChanged?: (sessionId: BrowserSessionId, workspaceId: WorkspaceId) => void;
+  readonly onMissingActor?: (sessionId: BrowserSessionId, agentBindingId: string) => void;
   readonly onPlaceNotice?: (
     ownerId: UserId,
     notice:
@@ -674,6 +678,7 @@ export class BrowserService {
     { fingerprint: string; outcome: BrowserTabCloseResult["outcome"] }
   >();
   readonly #onProfilesChanged: NonNullable<BrowserServiceOptions["onProfilesChanged"]>;
+  readonly #onMissingActor: NonNullable<BrowserServiceOptions["onMissingActor"]>;
   readonly #onCatalogChanged: NonNullable<BrowserServiceOptions["onCatalogChanged"]>;
   readonly #onPlaceNotice: NonNullable<BrowserServiceOptions["onPlaceNotice"]>;
   #placeOrder = 0;
@@ -739,6 +744,7 @@ export class BrowserService {
     this.#onHistoryChanged = options.onHistoryChanged ?? (() => undefined);
     this.#workspaceTabs = options.workspaceTabs;
     this.#tabGroups = options.tabGroups;
+    this.#onMissingActor = options.onMissingActor ?? (() => undefined);
     this.#onCatalogChanged = options.onCatalogChanged ?? (() => undefined);
     this.#onPlaceNotice = options.onPlaceNotice ?? (() => undefined);
     this.#connectTimeoutMs = options.connectTimeoutMs ?? 30_000;
@@ -918,7 +924,31 @@ export class BrowserService {
     tabId: BrowserSurfaceId,
   ) {
     const restored = await this.#activateWorkspaceTab(input.ownerId, tabId, input);
+    const sessionId = BrowserSessionIdSchema.parse(restored.session.id);
+    const [actor] = await this.#repository.resolvePlaceActors({
+      agentBindingIds: [input.agentBindingId],
+      ownerIds: [input.ownerId],
+    });
+    const data = this.#placeData(sessionId, tabId);
+    if (actor && data) this.#runPlaces.enter(actor.runId, actor.generation, data);
     return { tabId, sessionId: restored.session.id };
+  }
+
+  #placeData(sessionId: BrowserSessionId, surfaceId: BrowserSurfaceId) {
+    const page = this.#brokers.get(sessionId)?.pageOf(surfaceId);
+    if (!page) return null;
+    let site: string | null = null;
+    try {
+      const { origin } = new URL(page.site);
+      site = origin === "null" ? null : origin;
+    } catch {
+      /* A page with no site still has a place. */
+    }
+    return {
+      place: { kind: "browser" as const, sessionId, surfaceId },
+      title: page.title.slice(0, 256),
+      site,
+    };
   }
 
   async #activateWorkspaceTab(
@@ -2087,6 +2117,21 @@ export class BrowserService {
     );
   }
 
+  /** A revoked Run can't act, so its presence ends now, before its Runner acknowledges. */
+  endRevokedRunActors(
+    grants: readonly { readonly runId: RunId; readonly bindingGeneration: number }[],
+  ): void {
+    // A lineage read already under way predates the revocation and could reinstall the actor.
+    this.#authorityGeneration++;
+    for (const actor of this.#actors.values())
+      if (
+        grants.some(
+          (grant) => grant.runId === actor.runId && grant.bindingGeneration === actor.generation,
+        )
+      )
+        this.#clearActor(actor);
+  }
+
   invalidatePlaceAuthority(workspaceId?: WorkspaceId, threadIds?: readonly ThreadId[]): void {
     // Pending lineage reads have no known scope yet; fence them without clearing live actors.
     this.#authorityGeneration++;
@@ -2223,6 +2268,7 @@ export class BrowserService {
     const key = `${sessionId}:${input.agentBindingId}`;
     const source = audience[0];
     if (!source) {
+      this.#onMissingActor(sessionId, input.agentBindingId);
       const old = [...this.#actors.values()].find(
         (actor) => actor.sessionId === sessionId && actor.binding === input.agentBindingId,
       );
@@ -2230,9 +2276,13 @@ export class BrowserService {
       this.#actorKeys.set(key, null);
       return;
     }
-    const old = [...this.#actors.values()].find(
+    let old = [...this.#actors.values()].find(
       (actor) => actor.sessionId === sessionId && actor.binding === input.agentBindingId,
     );
+    if (old && old.generation !== source.generation) {
+      this.#clearActor(old);
+      old = undefined;
+    }
     const actor: BrowserActor = old ?? {
       token: randomUUID(),
       sessionId,
@@ -2435,22 +2485,8 @@ export class BrowserService {
     if (broker.geometryOf(activity.surfaceId) !== activity.geometryRevision)
       activity = { ...activity, pointer: null };
     actor.seq = activity.seq;
-    const page = broker.pageOf(activity.surfaceId);
-    if (page) {
-      const data: EventData<"place.entered"> = {
-        place: { kind: "browser", sessionId, surfaceId: activity.surfaceId },
-        title: page.title.slice(0, 256),
-        site: (() => {
-          try {
-            const origin = new URL(page.site).origin;
-            return origin === "null" ? null : origin;
-          } catch {
-            return null;
-          }
-        })(),
-      };
-      this.#runPlaces.enter(actor.runId, actor.generation, data);
-    }
+    const data = this.#placeData(sessionId, activity.surfaceId);
+    if (data) this.#runPlaces.enter(actor.runId, actor.generation, data);
 
     if (actor.lastSurfaceId !== activity.surfaceId) {
       actor.lastSurfaceId = activity.surfaceId;
@@ -2968,13 +3004,20 @@ export class BrowserService {
     ): Promise<{ readonly result: Promise<unknown> }> => {
       const bindingWasEnded = this.#endedBindings.has(input.agentBindingId);
       const lease =
-        command.method === "Opensteer.fillLogin"
-          ? z.object({ loginRef: z.string() }).safeParse(command.parameters)
+        command.method === "Opensteer.fillLogin" || command.method === "Opensteer.fillCard"
+          ? z.object({ loginRef: z.string() }).safeParse(
+              command.method === "Opensteer.fillCard"
+                ? {
+                    loginRef: z.object({ cardRef: z.string() }).safeParse(command.parameters).data
+                      ?.cardRef,
+                  }
+                : command.parameters,
+            )
           : null;
       const fillAllowed = () =>
         lease === null ||
         (lease.success &&
-          broker.signIn &&
+          (command.method === "Opensteer.fillCard" ? broker.cardFill : broker.signIn) &&
           broker.live &&
           this.#brokers.has(record.id) &&
           this.#validateLoginLease?.({
@@ -3206,6 +3249,7 @@ export class BrowserService {
       profileId: record.profileId,
       profileName: profile?.name ?? null,
       sessionId: record.id,
+      cardFill: broker?.cardFill ?? false,
       signIn: broker?.signIn ?? false,
       computer: broker?.computer ?? null,
       stateImport: broker?.stateImport ?? false,
@@ -3736,6 +3780,7 @@ export class BrowserService {
           computer: target.computer ?? null,
           connectTimeoutMs: this.#connectTimeoutMs,
           fileStaging: target.fileStaging === true,
+          cardFill: target.cardFill === true,
           signIn: target.signIn === true,
           stateImport: target.stateImport === true,
           onState: (state) => {
@@ -4240,6 +4285,7 @@ interface HostedBrowserBrokerOptions {
   readonly computer: { readonly name: string; readonly runnerId: RunnerId } | null;
   readonly connectTimeoutMs: number;
   readonly fileStaging: boolean;
+  readonly cardFill?: boolean;
   readonly signIn: boolean;
   readonly stateImport: boolean;
   readonly onState: (state: HostedBrowserSessionState) => Promise<BrowserSessionRecord>;
@@ -4498,6 +4544,7 @@ class HostedBrowserBroker {
   readonly clipboard: boolean;
   readonly computer: { readonly name: string; readonly runnerId: RunnerId } | null;
   readonly fileStaging: boolean;
+  readonly cardFill?: boolean;
   readonly signIn: boolean;
   readonly stateImport: boolean;
   readonly workspaceId: WorkspaceId;
@@ -4552,6 +4599,7 @@ class HostedBrowserBroker {
     this.clipboard = options.clipboard;
     this.computer = options.computer;
     this.fileStaging = options.fileStaging;
+    this.cardFill = options.cardFill === true;
     this.signIn = options.signIn;
     this.stateImport = options.stateImport;
     this.#connectTimeoutMs = options.connectTimeoutMs;

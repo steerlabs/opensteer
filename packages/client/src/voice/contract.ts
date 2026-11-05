@@ -1,11 +1,11 @@
 import type { VoiceView } from "@opensteer/protocol/voice";
-import type { ActivityIcon } from "../host/agent-activity-model.js";
+import type { ActivityIcon, PasswordsSetupOffer } from "../host/agent-activity-model.js";
 import type { WorkspaceSurfaceDestination } from "../host/surfaces.js";
 
 /**
- * A voice call is the person's microphone and speaker for an agent that runs
- * on their computer. The client carries audio, says which screen is showing,
- * and forwards what Chat says; the agent acts through its own tools. The
+ * A voice call is the person's microphone and speaker for their Voice Thread,
+ * an agent on their computer that manages their work. The client carries audio
+ * and says which screen is showing; the agent acts through its own tools. The
  * vendor sits behind `VoiceProvider`; the platform behind `VoiceMediaPort`.
  */
 
@@ -45,7 +45,7 @@ export type VoiceCallEvent =
 export type VoiceEndReason =
   "stopped" | "connection-lost" | "replaced" | "expired" | "refused" | "failed";
 
-/** The call's hidden Thread and Run, as the Host admitted them. */
+/** The Voice Thread and this call's Run, as the Host admitted them. */
 export interface VoiceCallIdentity {
   readonly threadId: string;
   readonly runId: string;
@@ -80,7 +80,6 @@ export type VoiceStartFailure =
   | "microphone-unavailable"
   | "insecure-context"
   | "no-account"
-  | "chat-required"
   | "update-computer"
   | "update-codex"
   | "refused"
@@ -113,8 +112,7 @@ export type VoicePhase =
   /** The voice is talking. */
   | "speaking";
 
-export type VoiceNoticeKind =
-  VoiceStartFailure | "choose-ai" | "ended" | "idle" | "connection-lost";
+export type VoiceNoticeKind = VoiceStartFailure | "ended" | "idle" | "connection-lost";
 
 export interface VoiceNotice {
   readonly kind: VoiceNoticeKind;
@@ -135,7 +133,45 @@ export interface VoiceSnapshot {
   readonly since: number | null;
   /** What the agent's running tool is, drawn as a glyph; null while none runs. */
   readonly activity: ActivityIcon | null;
+  /** Tasks the Voice Thread started that are still working. */
+  readonly tasks: number;
+  /** The first thing that needs the person during this call; null when nothing does. */
+  readonly ask: VoiceAsk | null;
   readonly notice: VoiceNotice | null;
+}
+
+/** What rides on the call bar, wherever the person is. Each kind is its client's existing card. */
+export type VoiceAsk =
+  | { readonly kind: "request"; readonly requestId: string; readonly others: number }
+  | { readonly kind: "passwords"; readonly offer: PasswordsSetupOffer };
+
+export const idleVoiceSnapshot: VoiceSnapshot = {
+  available: false,
+  phase: "idle",
+  muted: false,
+  heard: null,
+  spoken: null,
+  since: null,
+  activity: null,
+  tasks: 0,
+  ask: null,
+  notice: null,
+};
+
+/** What a client's voice UI drives: the runtime's one `VoiceController`. */
+export interface VoiceControls {
+  subscribe(listener: () => void): () => void;
+  getSnapshot(): VoiceSnapshot;
+  subscribeLevel(listener: (levels: VoiceLevels) => void): () => void;
+  /** Fires when the call's agent changed the screen. */
+  subscribeShown?(listener: () => void): () => void;
+  /** The person's Voice Thread, created the first time anyone needs it. */
+  openThread(): Promise<string | null>;
+  start(): Promise<void>;
+  stop(): unknown;
+  setMuted(muted: boolean): void;
+  dismissNotice(): void;
+  openMicrophoneSettings?(): void;
 }
 
 export interface VoiceLevels {

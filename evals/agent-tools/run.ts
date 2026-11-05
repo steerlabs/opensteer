@@ -16,6 +16,7 @@ import {
   summary,
   type ComparableRow,
 } from "./report.js";
+import { TurnClock, type TurnTiming } from "./timing.js";
 import { engineVersion, prepareEngine, runEngine, type Engine } from "./engine.js";
 import { startFakeHost } from "./host.js";
 
@@ -215,6 +216,8 @@ async function main() {
             let earlierText = "";
             const usage: unknown[] = [];
             const nativeCalls: unknown[] = [];
+            const timing: TurnTiming[] = [];
+            let clock: TurnClock | undefined;
             let treatment = { prompt: "unavailable", schema: "unavailable" };
             let sampleError: string | undefined;
             let complete = false;
@@ -228,6 +231,8 @@ async function main() {
                 const p = await prepareEngine(stageRoot, engine, stop.signal, inspected.models);
                 engineClose = p.close;
                 if (previousWorkspace) await copyWorkspace(previousWorkspace, p.workspace);
+                if (stage.gitRepository)
+                  await promisify(execFile)("git", ["init", p.workspace], { timeout: 5000 });
                 for (const [path, content] of Object.entries(stage.fixtures)) {
                   const target = join(p.workspace, path);
                   await mkdir(dirname(target), { recursive: true });
@@ -242,12 +247,15 @@ async function main() {
                   checkout,
                   signal: AbortSignal.any([stop.signal, AbortSignal.timeout(180_000)]),
                   onTurnStart: () => {
+                    if (clock) timing.push(clock.finish(performance.now()));
+                    clock = new TurnClock(performance.now());
                     earlierText += assistantText;
                     finalText = "";
                     assistantText = "";
                     nativeCalls.splice(0);
                   },
                   onEvent: async (event) => {
+                    clock?.note(event, performance.now());
                     await transcript.write(`${JSON.stringify(event)}\n`);
                     if (event.type === "run.usage") usage.push(event.data);
                     if (event.type === "tool.started") nativeCalls.push(event.data);
@@ -259,6 +267,8 @@ async function main() {
                     }
                   },
                 });
+                if (clock) timing.push(clock.finish(performance.now()));
+                clock = undefined;
                 finalText = result.finalText;
                 treatment = result.treatment;
                 const stageChecks = [
@@ -329,6 +339,7 @@ async function main() {
               invalidCalls: calls.filter((call) => !call.valid),
               finalText,
               usage,
+              timing,
               durationMs: Date.now() - started,
               checks,
               transcriptPath,

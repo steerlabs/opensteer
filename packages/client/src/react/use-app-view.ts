@@ -13,13 +13,17 @@ export function useAppView(
 ) {
   const readRevision = useCallback(() => {
     const snapshot = client?.getSnapshot();
-    return `${snapshot?.appVersions?.[appId] ?? 0}:${snapshot?.connection ?? "offline"}:${snapshot?.session ?? "checking"}`;
+    return `${snapshot?.appVersions?.[appId] ?? 0}:${snapshot?.connection ?? "offline"}:${snapshot?.session ?? "checking"}:${snapshot?.user?.id ?? ""}:${snapshot?.deploymentId ?? ""}`;
   }, [client, appId]);
   const revision = useSyncExternalStore(client?.subscribe ?? noSubscription, readRevision);
   const themeForRead = useRef(theme);
   themeForRead.current = theme;
   const [attempt, setAttempt] = useState(0);
-  const key = useMemo(() => ({}), [client, appId, enabled, revision, attempt]);
+  const [version, , session, viewer, deployment] = revision.split(":");
+  const key = useMemo(
+    () => ({}),
+    [client, appId, enabled, version, session, viewer, deployment, attempt],
+  );
   const [result, setResult] = useState<{
     key: object;
     view?: { app: OpensteerApp; url: string };
@@ -33,11 +37,14 @@ export function useAppView(
         if (!controller.signal.aborted) setResult({ key, view });
       },
       () => {
-        if (!controller.signal.aborted) setResult({ key, failed: true });
+        if (!controller.signal.aborted)
+          setResult((previous) =>
+            previous?.key === key && previous.view ? previous : { key, failed: true },
+          );
       },
     );
     return () => controller.abort();
-  }, [client, appId, enabled, key]);
+  }, [client, appId, enabled, key, revision]);
   return {
     view: result?.key === key ? (result.view ?? null) : null,
     failed: result?.key === key && result.failed === true,

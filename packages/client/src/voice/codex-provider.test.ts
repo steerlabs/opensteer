@@ -227,7 +227,6 @@ describe("Codex voice provider", () => {
     ["voice-runner-unsupported", "update-computer"],
     ["voice-engine-unsupported", "update-codex"],
     ["voice-account-unavailable", "no-account"],
-    ["voice-chat-required", "chat-required"],
     ["voice-refused", "refused"],
     ["other", "connection-failed"],
   ])("maps %s to %s and releases the microphone", async (reason, failure) => {

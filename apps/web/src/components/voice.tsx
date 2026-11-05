@@ -1,41 +1,28 @@
 import {
-  createContext,
   useCallback,
-  useContext,
   useEffect,
   useLayoutEffect,
   useRef,
   useState,
   useSyncExternalStore,
+  type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
+import { useVoice } from "@opensteer/client/react";
 import type { DictationController } from "@opensteer/client/dictation";
 import type { HostClient } from "@opensteer/client/host";
 import {
   VoiceController,
+  voiceBar,
   type VoiceControllerInput,
-  type VoiceLevels,
+  type VoiceControls,
   type VoicePhase,
   type VoiceSnapshot,
 } from "@opensteer/client/voice";
+import { observeResize } from "@opensteer/shared/resizeObserver";
 import { createBrowserVoiceMediaPort } from "../voice/media-port.js";
 import { Icon } from "./icon.js";
-
-/** What the voice UI drives: the runtime's one `VoiceController`. */
-export interface VoiceControls {
-  subscribe(listener: () => void): () => void;
-  getSnapshot(): VoiceSnapshot;
-  subscribeLevel(listener: (levels: VoiceLevels) => void): () => void;
-  /** Fires when the call's agent changed the screen. */
-  subscribeShown?(listener: () => void): () => void;
-  start(): Promise<void>;
-  stop(): unknown;
-  setMuted(muted: boolean): void;
-  dismissNotice(): void;
-  openMicrophoneSettings?(): void;
-}
-
-export const VoiceContext = createContext<VoiceControls | null>(null);
+import { useOptionalWorkspace } from "./workspace/workspace-context.js";
 
 /**
  * The runtime's one voice controller for this Host. What is on screen is read
@@ -71,37 +58,7 @@ export function useVoiceRuntime(
   return controller;
 }
 
-const idle: VoiceSnapshot = {
-  available: false,
-  phase: "idle",
-  muted: false,
-  heard: null,
-  spoken: null,
-  since: null,
-  activity: null,
-  notice: null,
-};
-const noSubscribe = () => () => {};
-const idleSnapshot = () => idle;
-
-export function useVoice() {
-  const controller = useContext(VoiceContext);
-  const snapshot = useSyncExternalStore(
-    controller?.subscribe ?? noSubscribe,
-    controller?.getSnapshot ?? idleSnapshot,
-  );
-  return { controller, snapshot };
-}
-
-/** What a screen reader hears; the orb says the same thing to the eye. */
-const status: Record<VoicePhase, string> = {
-  idle: "",
-  connecting: "Connecting",
-  listening: "Listening",
-  hearing: "Listening",
-  thinking: "Working",
-  speaking: "Speaking",
-};
+export type { VoiceControls };
 
 /** The composer's way in: starts voice, or ends the call it started. */
 export function VoiceButton() {
@@ -145,6 +102,7 @@ function changeDocks(change: () => void) {
 }
 
 export function VoiceDock() {
+  const workspace = useOptionalWorkspace();
   const element = useRef<HTMLElement | null>(null);
   const attach = useCallback((node: HTMLDivElement | null) => {
     if (element.current) {
@@ -154,16 +112,77 @@ export function VoiceDock() {
     element.current = node;
     if (node) changeDocks(() => docks.push(node));
   }, []);
+  // A conversation put away beside a place stays mounted, so its dock would hide the call.
+  if (workspace?.work && !workspace.phone && !workspace.dock.open) return null;
   return <div className="voice-dock" ref={attach} />;
 }
 
-/** The live voice bar: on whenever a call is, wherever the person goes. */
-export function VoiceIsland() {
+/**
+ * The live voice bar: on whenever a call is, wherever the person goes. What
+ * needs them during the call rides on it, so it follows them too.
+ */
+export function VoiceIsland({ ask }: { readonly ask?: ReactNode }) {
   const { controller, snapshot } = useVoice();
   const dock = useSyncExternalStore(dockStore.subscribe, dockStore.current, () => null);
   if (!controller || (snapshot.phase === "idle" && !snapshot.notice)) return null;
-  const island = <Island controller={controller} snapshot={snapshot} docked={dock !== null} />;
-  return dock ? createPortal(island, dock) : <div className="voice-float">{island}</div>;
+  const island = (
+    <>
+      {ask}
+      <Island controller={controller} snapshot={snapshot} docked={dock !== null} />
+    </>
+  );
+  return dock ? createPortal(island, dock) : <VoiceFloat>{island}</VoiceFloat>;
+}
+
+/**
+ * The bar with no composer to dock above. A desktop tab is a native view drawn
+ * over this page, so the bar claims real space and the tab shrinks to leave it.
+ */
+function VoiceFloat({ children }: { readonly children: ReactNode }) {
+  const element = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    const float = element.current;
+    if (!float) return;
+    const root = document.documentElement;
+    const claim = () =>
+      root.style.setProperty("--voice-reserve", `${Math.ceil(float.offsetHeight) + 28}px`);
+    const stop = observeResize([float], claim);
+    claim();
+    return () => {
+      stop();
+      root.style.removeProperty("--voice-reserve");
+    };
+  }, []);
+  return (
+    <div className="voice-float" ref={element}>
+      {children}
+    </div>
+  );
+}
+
+/** Where a composer would be on the Voice Thread: the way in, then the call itself. */
+export function VoiceStart({ controls }: { readonly controls: ReactNode }) {
+  const { controller, snapshot } = useVoice();
+  const idle = snapshot.phase === "idle";
+  return (
+    <div className="input-surface voice-slot">
+      <VoiceDock />
+      {idle ? (
+        <div className="voice-start">
+          <button
+            className="voice-start__talk"
+            disabled={!controller || !snapshot.available}
+            onClick={() => void controller?.start()}
+            type="button"
+          >
+            <Icon name="waveform" />
+            Talk to Opensteer
+          </button>
+          {controls}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function Island({
@@ -175,7 +194,8 @@ function Island({
   snapshot: VoiceSnapshot;
   docked: boolean;
 }) {
-  const { phase, notice, muted, activity } = snapshot;
+  const { phase, notice, muted, activity, tasks } = snapshot;
+  const bar = voiceBar(snapshot);
   const className = `voice-island${docked ? " voice-island--docked" : ""}`;
   if (phase === "idle" && notice)
     return (
@@ -201,26 +221,22 @@ function Island({
         </button>
       </section>
     );
-  // Live words only; with none, the one word a first-time caller needs to start talking.
-  const caption =
-    phase === "hearing" || phase === "thinking"
-      ? snapshot.heard
-      : phase === "speaking"
-        ? snapshot.spoken
-        : null;
-  const quiet =
-    caption ??
-    (muted ? "Muted" : phase === "listening" || phase === "connecting" ? status[phase] : null);
   return (
     <section aria-label="Voice" className={className} data-phase={phase} data-muted={muted}>
       <Glow controller={controller} />
       <span className="visually-hidden" role="status" aria-live="polite">
-        {muted ? "Microphone muted" : status[phase]}
+        {bar.status}
       </span>
       <Orb controller={controller} phase={phase} muted={muted} activity={activity} />
       <div className="voice-island__text" aria-hidden="true">
-        <Caption text={quiet} live={caption !== null} />
+        <Caption text={bar.words} live={bar.live} />
       </div>
+      {tasks > 0 ? (
+        <span className="voice-island__tasks">
+          <span aria-hidden="true" className="spinner" />
+          {tasks === 1 ? "1 task" : `${tasks} tasks`}
+        </span>
+      ) : null}
       <button
         aria-label={muted ? "Unmute microphone" : "Mute microphone"}
         aria-pressed={muted}

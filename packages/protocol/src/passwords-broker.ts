@@ -1,4 +1,11 @@
 import {
+  CardApprovalSchema,
+  CardAvailabilitySchema,
+  CardChoicesSchema,
+  CardFieldSchema,
+  CardPublicSchema,
+} from "./card-use.js";
+import {
   PasswordsBrokerAccountSchema,
   PasswordsBrokerAccountsSchema,
 } from "./password-sign-in-accounts.js";
@@ -19,18 +26,23 @@ import {
  * field release revalidates the live transaction, login, grant and origin.
  */
 export const passwordsBrokerProtocolVersion = 4;
-/** Current authorities explicitly negotiate 6; legacy read/release callers retain their scope. */
-export const passwordsBrokerLatestProtocolVersion = 6;
-export const passwordsBrokerSupportedProtocolVersions = [6, 5, 4] as const;
+/** Current authorities explicitly negotiate 7; legacy read/release callers retain their scope. */
+export const passwordsBrokerLatestProtocolVersion = 7;
+export const passwordsBrokerSupportedProtocolVersions = [7, 6, 5, 4] as const;
 export const PasswordsBrokerProtocolVersionSchema = z.union([
   z.literal(4),
   z.literal(5),
   z.literal(6),
+  z.literal(7),
 ]);
 export const PasswordsPermissionVersionSchema = z.union([z.literal(4), z.literal(5)]);
 export const passwordsBrokerMaxFrameBytes = 256 * 1_024;
 
 export const PasswordsBrokerMethodSchema = z.enum([
+  "card.probe",
+  "card.request",
+  "card.approve",
+  "card.release",
   "hello",
   "status",
   "window.open",
@@ -272,8 +284,61 @@ export type PasswordsBrokerSignInReleaseResult = z.infer<
   typeof PasswordsBrokerSignInReleaseResultSchema
 >;
 
+export const PasswordsBrokerCardRequestParamsSchema = z.strictObject({
+  ...PasswordsBrokerSignInRequestV6ParamsSchema.shape,
+  protocolVersion: z.literal(7),
+  permissionVersion: z.literal(7),
+});
+export const PasswordsBrokerCardApproveParamsSchema = z.strictObject({
+  transactionId: z.uuid(),
+  ...CardApprovalSchema.shape,
+});
+export const PasswordsBrokerCardReleaseParamsSchema = z.strictObject({
+  transactionId: z.uuid(),
+  topOrigin: PasswordsOriginSchema,
+  frameOrigin: PasswordsOriginSchema,
+  field: CardFieldSchema,
+});
+export const PasswordsBrokerCardRequestResultSchema = z.discriminatedUnion("decision", [
+  z.strictObject({ decision: z.literal("approve"), cards: CardChoicesSchema }),
+  z.strictObject({
+    decision: z.literal("unavailable"),
+    reason: PasswordsBrokerUnavailableReasonSchema,
+  }),
+]);
+export const PasswordsBrokerCardApproveResultSchema = z.discriminatedUnion("decision", [
+  z.strictObject({
+    decision: z.literal("authorized"),
+    card: z.strictObject({
+      id: z.uuid(),
+      revision: CardApprovalSchema.shape.revision,
+      ...CardPublicSchema.shape,
+    }),
+  }),
+  z.strictObject({
+    decision: z.literal("approve"),
+    cards: CardChoicesSchema,
+    message: z.string().min(1).max(200),
+  }),
+  z.strictObject({
+    decision: z.literal("unavailable"),
+    reason: PasswordsBrokerUnavailableReasonSchema.exclude(["busy"]),
+  }),
+]);
+export const PasswordsBrokerCardReleaseResultSchema = z.discriminatedUnion("released", [
+  z.strictObject({ released: z.literal(true), value: z.string().max(4096) }),
+  z.strictObject({
+    released: z.literal(false),
+    reason: z.enum(["ended", "revoked", "wrong-site", "passwords-off", "no-field"]),
+  }),
+]);
+
 /** Each method's parameters, as Electron main sends them. */
 export const passwordsBrokerRequests = {
+  "card.probe": PasswordsBrokerEmptySchema,
+  "card.request": PasswordsBrokerCardRequestParamsSchema,
+  "card.approve": PasswordsBrokerCardApproveParamsSchema,
+  "card.release": PasswordsBrokerCardReleaseParamsSchema,
   hello: PasswordsBrokerHelloParamsSchema,
   "signin.approve": PasswordsBrokerSignInApproveParamsSchema,
   "signin.commit": PasswordsBrokerTransactionParamsSchema,
@@ -293,6 +358,10 @@ export const passwordsBrokerRequests = {
 
 /** Each method's result, as the broker answers it. */
 export const passwordsBrokerResults = {
+  "card.probe": z.strictObject({ cards: CardAvailabilitySchema }),
+  "card.request": PasswordsBrokerCardRequestResultSchema,
+  "card.approve": PasswordsBrokerCardApproveResultSchema,
+  "card.release": PasswordsBrokerCardReleaseResultSchema,
   hello: PasswordsBrokerHelloResultSchema,
   "signin.approve": PasswordsBrokerSignInApproveResultSchema,
   "signin.commit": z.strictObject({ committed: z.boolean() }),

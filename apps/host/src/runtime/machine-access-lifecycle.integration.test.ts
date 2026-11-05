@@ -125,7 +125,9 @@ integration("Machine access session lifecycle", () => {
         { operationKey: crypto.randomUUID(), computer: "test-mac", reason: "Read Mail" },
       );
       expect(response.isError, JSON.stringify(response)).not.toBe(true);
-      const requestId = RequestCreationResultSchema.parse(response.structuredContent).requestId;
+      const requestId = RequestCreationResultSchema.parse(
+        JSON.parse((response.content as [{ text: string }])[0].text),
+      ).requestId;
       expect(await host.store.requests.get(requestId)).toMatchObject({
         kind: "machine.full-disk-access",
         mode: "durable",
@@ -210,7 +212,9 @@ integration("Machine access session lifecycle", () => {
         { operationKey: crypto.randomUUID(), computer: "test-mac", reason: "Read Mail" },
       );
       expect(response.isError, JSON.stringify(response)).not.toBe(true);
-      const requestId = RequestCreationResultSchema.parse(response.structuredContent).requestId;
+      const requestId = RequestCreationResultSchema.parse(
+        JSON.parse((response.content as [{ text: string }])[0].text),
+      ).requestId;
       expect((await host.store.requests.get(requestId))?.status).toBe("pending");
 
       await target.disconnect();

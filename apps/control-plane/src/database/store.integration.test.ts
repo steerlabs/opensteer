@@ -28,6 +28,7 @@ import {
 } from "@opensteer/deployment-authority";
 import { createLocalJWKSet, decodeJwt, jwtVerify } from "jose";
 import { sql } from "kysely";
+import { setTokenUtil } from "better-auth/oauth2";
 import { describe, expect, it as baseIt, vi } from "vitest";
 import {
   createControlPlaneAuth,
@@ -42,7 +43,9 @@ import {
   createOAuthClientSecret,
   hashCredential,
 } from "../auth/credentials.js";
+import { AccountDeletionService } from "../account/account-deletion.js";
 import { ConnectLifecycleService } from "../account/connect-lifecycle.js";
+import { ControlPlaneError } from "../server/errors.js";
 import { createControlPlaneDatabase } from "./database.js";
 
 import { createControlPlaneServer } from "../server/server.js";
@@ -952,24 +955,137 @@ integration("control-plane PostgreSQL boundary", () => {
     ).resolves.toMatchObject({ deploymentId: fixture.deploymentId });
   });
 
-  it("deletes only central account records and refuses ambiguous owned deployment deletion", async ({
+  const liveConnectResource = async (
+    database: StoreFixture["database"],
+    deploymentId: DeploymentId,
+    hostname: string,
+  ) => {
+    const now = new Date();
+    await database
+      .insertInto("deploymentConnectResources")
+      .values({
+        createdAt: now,
+        credentialGeneration: 1,
+        deploymentId,
+        dnsRecordId: "c".repeat(32),
+        hostname,
+        lastCompletedOperationId: null,
+        lastCompletedOperationKind: null,
+        localOrigin: "http://127.0.0.1:4310",
+        operationExpiresAt: null,
+        operationId: null,
+        operationKind: null,
+        provider: "cloudflare",
+        state: "ready",
+        tunnelId: "11111111-1111-4111-8111-111111111111",
+        tunnelName: `opensteer-${deploymentId.slice("dep_".length)}`,
+        updatedAt: now,
+      })
+      .executeTakeFirstOrThrow();
+  };
+  const accountExists = async (
+    database: StoreFixture["database"],
+    id: ControlPlaneAccountId,
+  ): Promise<boolean> =>
+    (await database.selectFrom("users").select("id").where("id", "=", id).executeTakeFirst()) !==
+    undefined;
+
+  it("deletes an Account with the Deployments it owns, but never past a live tunnel", async ({
     storeFixture,
   }) => {
     const { database, ownerId, store, memberId } = storeFixture;
     const fixture = await registerFixture(database, ownerId);
+    await liveConnectResource(
+      database,
+      fixture.deploymentId,
+      new URL(fixture.registration.deployment.canonicalOrigin).hostname,
+    );
     await expect(store.deleteAccount(ownerId)).rejects.toMatchObject({
-      code: "owned_deployments_exist",
+      code: "conflict",
+      reason: "connect-resource-active",
     });
-    // Deployment removal has no product surface, so the precondition is
-    // reproduced directly rather than through a coordinator that does not exist.
-    await database.deleteFrom("deployments").where("id", "=", fixture.deploymentId).execute();
+    expect(await accountExists(database, ownerId)).toBe(true);
+    await database
+      .updateTable("deploymentConnectResources")
+      .set({ dnsRecordId: null, state: "revoked", tunnelId: null })
+      .where("deploymentId", "=", fixture.deploymentId)
+      .execute();
+
     await store.deleteAccount(ownerId);
-    expect(
-      await database.selectFrom("users").select("id").where("id", "=", ownerId).executeTakeFirst(),
-    ).toBeUndefined();
-    expect(
-      await database.selectFrom("users").select("id").where("id", "=", memberId).executeTakeFirst(),
-    ).toBeDefined();
+    expect(await accountExists(database, ownerId)).toBe(false);
+    expect(await accountExists(database, memberId)).toBe(true);
+    expect(await database.selectFrom("deployments").selectAll().execute()).toEqual([]);
+  });
+
+  it("revokes Connect first, tells Apple only after the commit, and retries cleanly", async ({
+    storeFixture,
+  }) => {
+    const { database, connectLifecycle, ownerId, store } = storeFixture;
+    const fixture = await registerFixture(database, ownerId);
+    const hostname = new URL(fixture.registration.deployment.canonicalOrigin).hostname;
+    await liveConnectResource(database, fixture.deploymentId, hostname);
+    const auth = createControlPlaneAuth(database, config);
+    const context = await auth.$context;
+    await context.internalAdapter.createAccount({
+      accountId: "apple-subject",
+      providerId: "apple",
+      refreshToken: await setTokenUtil(
+        "apple-refresh-token",
+        context as unknown as Parameters<typeof setTokenUtil>[1],
+      ),
+      userId: ownerId,
+    });
+    const revocations: { account: boolean; body: URLSearchParams; url: string }[] = [];
+    const deletion = new AccountDeletionService({
+      appleSignIn: {
+        clientId: "com.opensteer.account",
+        keyId: "ABCDE12345",
+        privateKeyPem: generateKeyPairSync("ec", { namedCurve: "P-256" })
+          .privateKey.export({ format: "pem", type: "pkcs8" })
+          .toString(),
+        teamId: "TEAM123456",
+      },
+      auth,
+      connectLifecycle,
+      fetch: async (url, init) => {
+        revocations.push({
+          account: await accountExists(database, ownerId),
+          body: init?.body as URLSearchParams,
+          url: url.toString(),
+        });
+        return new Response(null, { status: 200 });
+      },
+      store,
+    });
+
+    // Another device turns Connect back on after this attempt's revoke.
+    vi.spyOn(store, "deleteAccount").mockImplementationOnce(async () => {
+      await database
+        .updateTable("deploymentConnectResources")
+        .set({
+          dnsRecordId: "c".repeat(32),
+          state: "ready",
+          tunnelId: "11111111-1111-4111-8111-111111111111",
+        })
+        .where("deploymentId", "=", fixture.deploymentId)
+        .execute();
+      throw new ControlPlaneError("conflict", "Revoke Connect before deleting the Account");
+    });
+    await expect(deletion.delete(ownerId)).rejects.toMatchObject({ code: "conflict" });
+    expect(await accountExists(database, ownerId)).toBe(true);
+    expect(revocations).toEqual([]);
+
+    await deletion.delete(ownerId);
+    expect(await accountExists(database, ownerId)).toBe(false);
+    expect(revocations).toHaveLength(1);
+    expect(revocations[0]).toMatchObject({
+      account: false,
+      url: "https://appleid.apple.com/auth/revoke",
+    });
+    expect(revocations[0]?.body.get("token")).toBe("apple-refresh-token");
+    expect(revocations[0]?.body.get("token_type_hint")).toBe("refresh_token");
+
+    await expect(deletion.delete(ownerId)).resolves.toBeUndefined();
   });
 
   it("requires a recent Account sign-in for the unrecoverable Account deletion", async ({

@@ -2,12 +2,12 @@ import { describe, expect, it } from "vitest";
 import { agentTools, computer, thread_wait, thread_configure } from "./index.js";
 import { sign_in } from "./browser.js";
 import { person_message } from "./person.js";
-import { trigger_write } from "./triggers.js";
+import { trigger_read, trigger_write } from "./triggers.js";
 
 describe("Opensteer tool registry", () => {
   it("has one specification per product and integration tool", () => {
-    expect(agentTools).toHaveLength(46);
-    expect(new Set(agentTools.map(({ name }) => name)).size).toBe(46);
+    expect(agentTools).toHaveLength(47);
+    expect(new Set(agentTools.map(({ name }) => name)).size).toBe(47);
     const runs = agentTools.filter((t) => t.callers.some((c) => c === "run")).map((t) => t.name);
     expect(runs).toContain("integration_call");
     expect(runs).toContain("thread_delegate");
@@ -108,11 +108,11 @@ describe("Opensteer tool registry", () => {
     };
     expect(sign_in.output.parse({ ...ready, password: "hidden" })).toEqual(ready);
   });
-  it("does not expose webhook credentials", () => {
-    expect(
-      trigger_write.output.parse({
-        webhook: { secret: "oswh_private", url: "https://example.test/private" },
-      }),
-    ).toEqual({});
+  it("returns webhook setup credentials on writes and excludes them from reads", () => {
+    const result = {
+      webhook: { secret: "oswh_private", url: "https://example.test/private" },
+    };
+    expect(trigger_write.output.parse(result)).toEqual(result);
+    expect(trigger_read.output.parse(result)).toEqual({});
   });
 });

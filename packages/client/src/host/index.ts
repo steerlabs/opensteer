@@ -22,6 +22,7 @@ export * from "./model-catalog.js";
 export * from "./model-options.js";
 export * from "./optimistic-command-patches.js";
 export * from "./passwords.js";
+export * from "./cards.js";
 export * from "./pending-send.js";
 export * from "./thread-activity.js";
 export * from "./thread-list-model.js";
@@ -79,3 +80,5 @@ export * from "./browser-popup-values.js";
 export * from "./connected-agents.js";
 
 export * from "./automatic-models.js";
+
+export type { AppTab } from "@opensteer/protocol";

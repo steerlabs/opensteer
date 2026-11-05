@@ -248,6 +248,59 @@ async function applyEventProjection(
     });
   }
 
+  if (event.type === "voice.heard") {
+    if (!event.runId)
+      throw new OpensteerError({ code: "conflict", message: "A voice call's words have no Run" });
+    const call = await transaction
+      .selectFrom("runs")
+      .innerJoin("threads", "threads.id", "runs.threadId")
+      .innerJoin("principals", "principals.id", "runs.actorPrincipalId")
+      .select([
+        "runs.actorPrincipalId",
+        "runs.requestedBy",
+        "threads.nextMessageSequence",
+        "principals.displayName",
+      ])
+      .where("runs.id", "=", event.runId)
+      .where("runs.voiceSessionId", "is not", null)
+      .forNoKeyUpdate("threads")
+      .executeTakeFirstOrThrow();
+    const messageRow = await transaction
+      .insertInto("messages")
+      .values({
+        actorPrincipalId: call.actorPrincipalId,
+        author: jsonValue(
+          MessageAuthorSchema.parse({
+            displayName: call.displayName,
+            kind: "human",
+            principalId: call.actorPrincipalId,
+            userId: call.requestedBy,
+          }),
+        ),
+        content: jsonValue([{ text: event.data.text, type: "text" }]),
+        id: event.data.messageId,
+        kind: "input",
+        runId: event.runId,
+        sequence: call.nextMessageSequence,
+        threadId: event.threadId,
+      })
+      .returningAll()
+      .executeTakeFirstOrThrow();
+    await transaction
+      .updateTable("threads")
+      .set({ nextMessageSequence: sql`next_message_sequence + 1`, updatedAt: new Date() })
+      .where("id", "=", event.threadId)
+      .executeTakeFirstOrThrow();
+    canonicalMessageEvent = await appendHostWorkspaceEvent(transaction, {
+      data: { input: null, message: messageFromRow(messageRow) },
+      environmentId: event.environmentId,
+      runId: event.runId,
+      threadId: event.threadId,
+      type: "message.created",
+      workspaceId: event.workspaceId,
+    });
+  }
+
   const now = new Date(event.emittedAt);
   const compensatingEvents: AgentEvent[] = canonicalMessageEvent ? [canonicalMessageEvent] : [];
   switch (event.type) {
@@ -546,7 +599,7 @@ async function applyEventProjection(
         if (replyTarget) {
           await enqueueChannelConversationStatus(transaction, {
             conversationId: replyTarget.conversationId,
-            text: `The agent needs your input before it can continue. Open the Thread in Opensteer: ${links.threadUrl(event.threadId)}`,
+            text: `The agent has asked for your input. Open the Thread in Opensteer: ${links.threadUrl(event.threadId)}`,
           });
         }
       }

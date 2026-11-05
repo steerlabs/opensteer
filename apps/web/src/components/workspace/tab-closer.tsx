@@ -109,6 +109,12 @@ export function TabCloserProvider({
           .catch((error: unknown) => toast.error(actionErrorMessage(error)));
         return;
       }
+      if (place.destination.kind === "opensteer-app") {
+        void hostClient
+          .closeAppTab(place.destination.appId)
+          .catch((error: unknown) => toast.error(actionErrorMessage(error)));
+        return;
+      }
       if (!place.closable || place.destination.kind !== "browser") return;
       const sessionId = place.destination.sessionId;
       const group = hostClient

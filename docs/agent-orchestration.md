@@ -42,17 +42,15 @@ Assignment, engine and model; Stop cancels their untaken inputs without pausing 
 ordinary message never answers a Request. Live harness Requests hold their native turn; a new
 person message can start work normally after a Run ends with durable Requests still pending.
 
-Durable Requests return immediately and ask the model to end its turn. The Runner refuses further
-work tools while allowing the remaining setup asks, and interrupts after one bounded grace period if
-the model does not end. A turn that leaves native background work running releases this restriction
-and keeps that work alive. Awaiting the person is not a failure or a person's Stop; durable Requests
-and Assignments outlive the turn. Native harness Requests keep blocking natively. Answered durable
-Requests continue once the origin turn has ended and its durable siblings settle, joining any
-background work still running. A newer Run on the Thread releases older settled outcomes too, so an
-abandoned ask cannot hold up later work. Eligible outcomes from one Run arrive together; different
-Runs stay independent.
-Trigger Occurrences have no native turn to resume. Requests returned without a requestId, including
-plugin installation, cannot signal the Runner to stop.
+Durable Requests return immediately and grant no authority. Agents can continue independent work,
+briefly explain the ask, and end their turn when none remains. They must not poll, repeat or route
+around the ask. A Request's status is visible through request_list; its answer arrives only with
+the continuation, which waits until the turn ends (or enters background) and its durable siblings
+settle. A newer Run releases
+older settled outcomes too, so an abandoned ask cannot hold up later work. Eligible outcomes from
+one Run arrive together; different Runs stay independent. Requests and Assignments outlive the
+turn. Native harness Requests keep blocking natively. Trigger Occurrences have no native turn to
+resume.
 
 Thread state is a stored projection; pending Requests drive Needs you independently of whether a
 Run still executes. The [lock order](../packages/database/src/lock-order.ts) is authoritative: lock the
@@ -104,12 +102,16 @@ conversation exists nor that none does: startup repeats only when earlier attemp
 happened, and resume returns the exact native reference, never a fresh conversation or replayed Host
 messages ([Runner runtime](../apps/runner/src/runtime/runtime.ts)).
 
-A voice call is one non-recoverable Run on a hidden child Thread of Chat. Its Thread accepts only
-the call seed and is archived atomically when the Run ends. Durable work goes through Chat, so tasks
-and their results survive the call. The person's screen [follows the call](../apps/host/src/voice/voice-follow.ts)
-from Host events, because a model step per place costs seconds on a call and forgets. Context for
-the agent waits between turns: Codex samples again for anything injected into a running turn, and
-that second answer would replace the reply.
+Voice is a permanent Thread beside Chat, the person's spoken manager, and a call is one
+non-recoverable Run on it. Codex hands each utterance to a turn on that same Thread, so a call has
+Chat's whole tool set: it opens Requests, starts tasks and hears what they return. Because a call's
+Run stays open between turns, everything sent to its Thread is handed in at once, as a steer, and a
+Request's answer is released without waiting for the Run to end. What arrives after hang-up wakes an
+ordinary text Run on the Thread, which notifies the person. A call takes the Thread only once
+nothing else runs there, so the Host stops what is running and tries again. The Thread's model is
+its own and must be a Codex model; tasks it starts can use any engine.
+Context for the agent waits between turns: Codex samples again for anything injected into a running
+turn, and that second answer would replace the reply.
 
 ## Run tool authority
 
@@ -128,6 +130,20 @@ sessions ([`execution-authority.ts`](../packages/database/src/execution-authorit
 runs again only once its prior processes are proven gone, with start time checked against PID reuse
 ([containment](../apps/runner/src/runtime/execution-containment.ts)). Interrupts, restarts and
 Request answers replay by command ID after reconnect; unconfirmed steers do not.
+
+## Tool failures
+
+An agent can only recover from what it reads, so every failure says what happened and what to do
+next, naming the real tool and parameter. `message` can reach a person; `next` is for the agent and
+stays off the Host's HTTP errors. Access refusals stay vague on purpose and never suggest a way
+around. Only text written for its reader passes the [boundary](../apps/host/src/mcp/agent-tool-failure.ts):
+any other error is logged and replaced, because it may hold a query or a provider's response. So an
+error an agent should read must be an `OpensteerError`, not a plain `Error`. Replacement text follows
+the tool's access: a write may have taken effect, so it never says to retry blindly.
+
+Engines read different halves of a [result](../packages/agent-tools/src/results.ts): Codex shows its
+model only `structuredContent` when there is any, and Pi only `content`. Whatever a model must read
+goes in both.
 
 ## Conversation roles and Assignments
 

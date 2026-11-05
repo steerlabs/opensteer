@@ -54,6 +54,7 @@ const realtimeFrameLosses = {
   "host.plugins-changed": "snapshot",
 
   "host.browser-presence": "bootstrap",
+  "host.app-tabs-changed": "bootstrap",
   "host.browser-sessions-changed": "bootstrap",
   "host.browser-tabs-changed": "bootstrap",
   "host.computer-presence": "bootstrap",

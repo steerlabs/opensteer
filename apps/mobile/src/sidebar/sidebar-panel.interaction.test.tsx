@@ -5,6 +5,9 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { HostClient } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
+import { VoiceContext } from "@opensteer/client/react";
+import { idleVoiceSnapshot, type VoiceControls, type VoiceSnapshot } from "@opensteer/client/voice";
+import { Alert } from "react-native";
 
 // What could break: a Project's task listed again under Main, a folded
 // folder hiding that something needs the reader, "new task here" starting it
@@ -20,7 +23,10 @@ vi.mock("react-native-reanimated", () => ({
 }));
 vi.mock("../ui/motion.js", () => ({ move: undefined }));
 vi.mock("./saved-tasks.js", () => ({ SavedTasks: () => null }));
-vi.mock("@opensteer/client/react", () => ({ usePlaceList: () => [] }));
+vi.mock("@opensteer/client/react", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@opensteer/client/react")>()),
+  usePlaceList: () => [],
+}));
 vi.mock("../browser/acting-dot.js", () => ({ ActingDot: () => null, agentWorkingLabel: "" }));
 vi.mock("../browser/site-label.js", () => ({ tabSiteLabel: () => null }));
 vi.mock("../client/mobile-client.js", () => ({
@@ -77,7 +83,21 @@ afterEach(() => {
   harness.client = null;
 });
 
-async function mount() {
+function voice(patch: Partial<VoiceSnapshot>, openThread: VoiceControls["openThread"]) {
+  const snapshot = { ...idleVoiceSnapshot, ...patch };
+  return {
+    dismissNotice: vi.fn(),
+    getSnapshot: () => snapshot,
+    openThread: vi.fn(openThread),
+    setMuted: vi.fn(),
+    start: vi.fn(async () => undefined),
+    stop: vi.fn(),
+    subscribe: () => () => undefined,
+    subscribeLevel: () => () => undefined,
+  };
+}
+
+async function mount(controller: VoiceControls | null = null) {
   const host = new MockHostClient({ automations: "absent", latencyMs: 0 });
   clients.push(host);
   await host.load();
@@ -102,18 +122,20 @@ async function mount() {
   roots.push(root);
   await act(async () =>
     root.render(
-      <SidebarPanel
-        actions={actions}
-        deploymentId="deployment-a"
-        destination="Home"
-        docked
-        openProjectId={null}
-        openThreadId={null}
-        scroll={{ offset: 0 }}
-        selectedThreadId={null}
-        shelves={{ closedProjects: new Set(), list: null }}
-        visible
-      />,
+      <VoiceContext value={controller}>
+        <SidebarPanel
+          actions={actions}
+          deploymentId="deployment-a"
+          destination="Home"
+          docked
+          openProjectId={null}
+          openThreadId={null}
+          scroll={{ offset: 0 }}
+          selectedThreadId={null}
+          shelves={{ closedProjects: new Set(), list: null }}
+          visible
+        />
+      </VoiceContext>,
     ),
   );
   const launch = host.getSnapshot().workspaces.find(({ name }) => name === "Customer launch")!;
@@ -155,5 +177,54 @@ describe("the sidebar's Project folders", () => {
     expect(actions.onOpenProject).toHaveBeenCalledWith("deployment-a", launch.id);
     await act(async () => button(container, "New project").click());
     expect(actions.onNewProject).toHaveBeenCalledWith("deployment-a");
+  });
+});
+
+describe("the sidebar's Voice row", () => {
+  const rowLabels = (container: HTMLElement) =>
+    [...container.querySelectorAll("button")].map(
+      (node) => node.getAttribute("aria-label") ?? node.textContent,
+    );
+
+  it("stands under Chat only while voice can run", async () => {
+    const off = await mount(voice({}, async () => null));
+    expect(rowLabels(off.container)).not.toContain("Voice");
+    const on = await mount(voice({ available: true }, async () => null));
+    const labels = rowLabels(on.container);
+    expect(labels[labels.indexOf("Voice") - 1]).toMatch(/^Chat/u);
+    const live = await mount(voice({ phase: "listening" }, async () => null));
+    expect(rowLabels(live.container)).toContain("Voice, on a call");
+  });
+
+  it("opens the Thread once it exists, however many taps it took", async () => {
+    let created: (threadId: string) => void = () => undefined;
+    const controller = voice(
+      { available: true },
+      () => new Promise((resolve) => (created = resolve)),
+    );
+    const { actions, container } = await mount(controller);
+    await act(async () => button(container, "Voice").click());
+    await act(async () => button(container, "Voice").click());
+    expect(controller.openThread).toHaveBeenCalledOnce();
+    expect(actions.onOpenTask).not.toHaveBeenCalled();
+    await act(async () => created("thr_voice"));
+    expect(actions.onOpenTask).toHaveBeenCalledExactlyOnceWith("deployment-a", "thr_voice");
+  });
+
+  it("says so when the Thread cannot be opened, and can be tried again", async () => {
+    const alert = vi.spyOn(Alert, "alert");
+    const controller = voice({ available: true }, async () => null);
+    const { actions, container } = await mount(controller);
+    await act(async () => button(container, "Voice").click());
+    expect(actions.onOpenTask).not.toHaveBeenCalled();
+    expect(alert).toHaveBeenCalledOnce();
+    await act(async () => button(container, "Voice").click());
+    expect(controller.openThread).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the call's time on the row", async () => {
+    const since = Date.now() - 65_000;
+    const { container } = await mount(voice({ phase: "listening", since }, async () => null));
+    expect(button(container, "Voice, on a call").textContent).toContain("1:05");
   });
 });

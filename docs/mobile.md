@@ -7,8 +7,16 @@ and credentials; [Host boundaries](host-boundaries.md) owns compatibility and se
 Procedures are in the [mobile skill](../.agents/skills/mobile/SKILL.md).
 
 Saved-password consent and computer app approvals use the person's Host session from any signed-in
-device; the native app confirms each password Allow or Only this time with OS device-owner
+device; the native app confirms each password Allow or Only this time, and every saved-card approval, with OS device-owner
 authentication, and OS grants still happen on the computer.
+
+## Identity
+
+The iOS bundle ID is `com.opensteer.opensteer` because the App Store binds a listing to its bundle
+ID for good, and removing a listing loses the name and the ID. `com.opensteer.mobile` stays the
+Android package and the OAuth and deep-link scheme: released Hosts register that scheme, and it cannot
+match the desktop's, which is the same string as this bundle ID. The APNs topic is this bundle ID, so
+iOS builds under the old ID get no push.
 
 ## Attachment and identity
 
@@ -106,6 +114,14 @@ native H.264 viewing, Opensteer Apps (`react-native-webview`) and notification p
 rebuilt binary; a JavaScript update cannot add them. Expo's generated UIKit scene lifecycle is the
 sole startup and link owner, and multiple scenes stay disabled so there is one navigation history
 and draft owner.
+
+## The call bar
+
+The bar floats at the app's root, so an iOS sheet covers it while open. `FullWindowOverlay` would
+keep it on top, but a window-level view has no view controller, so the Request card's sheet can't
+present from it and the person couldn't approve. Android moves the bar with `Keyboard` events
+rather than `useAnimatedKeyboard`, which clears the decor insets listener on exit and leaves form
+sheets without keyboard handling.
 
 ## This iPhone's apps
 

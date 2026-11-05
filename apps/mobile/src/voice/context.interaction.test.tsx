@@ -52,10 +52,6 @@ vi.mock("../ui/mobile-client-context.js", () => ({
 vi.mock("../dictation/context.js", () => ({ useDictation: () => dictation }));
 vi.mock("../platform/voice.js", () => ({ voiceMediaPort: null }));
 vi.mock("expo-crypto", () => ({ randomUUID: () => crypto.randomUUID() }));
-vi.mock("./controls.js", async () => {
-  const { createContext } = await vi.importActual<typeof import("react")>("react");
-  return { VoiceContext: createContext(null) };
-});
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root | null = null;
 afterEach(async () => {
@@ -276,6 +272,13 @@ it("opens what the voice call's agent shows from any screen, and ignores a call 
     },
   });
   expect(showed).toHaveBeenCalledOnce();
+  for (const name of ["Chat", "WorkspaceBrowser", "Thread", "Settings"]) {
+    state.dispatch.mockClear();
+    state.route = { key: name, name };
+    await act(async () => f.host.receivePersonShow(message));
+    expect(state.dispatch).toHaveBeenCalledOnce();
+  }
+  expect(showed).toHaveBeenCalledTimes(5);
   state.dispatch.mockClear();
   state.appState = "background";
   await act(async () => f.host.receivePersonShow(message));
@@ -283,5 +286,5 @@ it("opens what the voice call's agent shows from any screen, and ignores a call 
   current = { ...call, runId: createId("run") };
   await act(async () => f.host.receivePersonShow(message));
   expect(state.dispatch).not.toHaveBeenCalled();
-  expect(showed).toHaveBeenCalledOnce();
+  expect(showed).toHaveBeenCalledTimes(5);
 });

@@ -14,8 +14,11 @@ import {
   isPlaceContentPart,
   zeroSequence,
   OpensteerError,
+  refused,
   placeContentLabel,
   provisionalThreadTitle,
+  requestTitleText,
+  type Request,
   ThreadIdSchema,
   WorkspaceIdSchema,
   type AgentEvent,
@@ -34,6 +37,7 @@ import { computerAppIdentityKey } from "@opensteer/protocol";
 
 import type { BrowserService } from "../../browser/browser-service.js";
 import type { BrowserSourceService } from "../../browser/browser-source-service.js";
+import { passwordsOfferGuidance } from "../../browser/passwords-offers.js";
 import type { BrowserTabGroupService } from "../../browser/browser-tab-group-service.js";
 import type { PlaceContextService } from "../../computer-use/place-context-service.js";
 import type { ComputerUseService } from "../../computer-use/computer-use-service.js";
@@ -82,6 +86,11 @@ interface ConnectionTask {
   readonly expectedHarnessRevision?: number;
 }
 
+const assignedRunRefusal = "A task reaches the person through the Thread that assigned it";
+const assignedRunNext = "Send it to the assigner with thread_message.";
+const unknownEnvironment = "Selected execution environment does not exist";
+const chooseEnvironmentNext = "See the current choices with environment_list.";
+
 export class ProductToolHandlers {
   readonly #threads: ThreadService;
   readonly #realtime: Pick<RealtimeHub, "observe" | "sendToUsers">;
@@ -91,7 +100,7 @@ export class ProductToolHandlers {
     | ((userId: RunToolScope["requestedBy"], message: PersonShowMessage) => Promise<number>)
     | undefined;
   readonly #supportsLoginFill: (scope: RunToolScope) => boolean;
-  readonly #browserSources: Pick<BrowserSourceService, "agentSignIn">;
+  readonly #browserSources: Pick<BrowserSourceService, "agentSignIn" | "agentUseCard">;
   readonly #machineFullDiskAccess: Pick<MachineFullDiskAccessService, "request">;
   readonly #browser: Pick<
     BrowserService,
@@ -131,7 +140,7 @@ export class ProductToolHandlers {
       message: PersonShowMessage,
     ) => Promise<number>;
     readonly supportsLoginFill?: (scope: RunToolScope) => boolean;
-    readonly browserSources: Pick<BrowserSourceService, "agentSignIn">;
+    readonly browserSources: Pick<BrowserSourceService, "agentSignIn" | "agentUseCard">;
     readonly machineFullDiskAccess: Pick<MachineFullDiskAccessService, "request">;
     readonly browser: Pick<
       BrowserService,
@@ -213,14 +222,18 @@ export class ProductToolHandlers {
   async preparePersonShow({ caller, input }: ToolCall<"person_show">) {
     const claims = requireRun(caller).claims;
     if (await this.#store.runAssignment(claims.runId))
-      throw forbidden("A task reaches the person through the Thread that assigned it");
+      throw forbidden(assignedRunRefusal, assignedRunNext);
 
     if (!this.#personShow) throw badRequest("Showing places is unavailable on this Host.");
     let target: PersonShowMessage["target"];
     if ("current" in input.target) {
       await this.#browser.drainRunPlaces(claims.runId);
       const current = await this.#store.latestRunPlace(claims.runId);
-      if (!current) throw badRequest("This Run has no current place to show.");
+      if (!current)
+        throw badRequest(
+          "This Run has not worked in a place yet.",
+          "Pass target.tabId, from browser_tab_read or Browser Harness surfaceId.",
+        );
       target = { place: current.data.place };
       const place = current.data.place;
       if (place.kind !== "browser") {
@@ -234,7 +247,7 @@ export class ProductToolHandlers {
                 : session.apps.some((app) => computerAppIdentityKey(app) === place.appKey)),
           );
         if (!session || !this.#computerUse)
-          throw forbidden("This Run's current place is unavailable.");
+          throw forbidden("This Run's current place is unavailable.", "Pass target.tabId instead.");
         await this.#computerUse.authorizeDisplay(
           session.sessionId,
           claims.requestedBy,
@@ -300,7 +313,7 @@ export class ProductToolHandlers {
     const claims = requireRun(caller).claims;
     const requestId = operationId(caller, operationKey, "person_message");
     if (await this.#store.runAssignment(claims.runId))
-      throw forbidden("A task reaches the person through the Thread that assigned it");
+      throw forbidden(assignedRunRefusal, assignedRunNext);
 
     const result = await this.#commands.publishPersonMessage({
       admission: runAdmission(caller, "person_message", input, requestId),
@@ -633,13 +646,15 @@ export class ProductToolHandlers {
   }
 
   async request_list({ caller, input }: ToolCall<"request_list">) {
-    if (caller.kind === "connection")
-      return this.#store.requests.connectionPage({
+    if (caller.kind === "connection") {
+      const page = await this.#store.requests.connectionPage({
         userId: caller.userId,
         limit: input.limit,
         ...(input.before ? { before: input.before } : {}),
         ...(caller.reach.kind === "workspace" ? { workspaceId: caller.reach.workspaceId } : {}),
       });
+      return { ...page, requests: page.requests.map(agentRequest) };
+    }
     const claims = callerContext(caller);
 
     const page = await this.#store.requests.visiblePage({
@@ -648,7 +663,7 @@ export class ProductToolHandlers {
       originatingThreadId: claims.threadId,
       targetWorkspaceId: claims.workspaceId,
     });
-    return { requests: page.requests, window: page.window };
+    return { requests: page.requests.map(agentRequest), window: page.window };
   }
 
   async request_withdraw({ caller, input }: ToolCall<"request_withdraw">) {
@@ -660,7 +675,7 @@ export class ProductToolHandlers {
       withdrawnBy: claims.requestedBy,
     });
     for (const event of withdrawn.events) this.#onWorkspaceEvent(event);
-    return { request: withdrawn.request };
+    return { request: agentRequest(withdrawn.request) };
   }
 
   async prepareDelegation({ caller, input }: ToolCall<"thread_delegate">) {
@@ -680,7 +695,11 @@ export class ProductToolHandlers {
       existingThread?.workspaceId ??
       input.workspaceId ??
       (input.specialist ? currentThread.workspaceId : undefined);
-    if (!targetWorkspaceId) throw badRequest("Choose a target Workspace or work Thread");
+    if (!targetWorkspaceId)
+      throw badRequest(
+        "Choose a target Workspace or work Thread",
+        "Pass workspaceId or threadId, from project_list or thread_list.",
+      );
     const workspace = await this.#store.getWorkspaceForOwner(targetWorkspaceId, claims.requestedBy);
     if (!workspace) throw forbidden("Target Workspace is unavailable to this user");
     if (caller.reach.kind !== "user" && workspace.id !== currentThread.workspaceId) {
@@ -703,7 +722,7 @@ export class ProductToolHandlers {
         ? workspace.backing.ownerEnvironmentId
         : currentThread.environmentId);
     const environment = await this.#store.getEnvironment(environmentId);
-    if (!environment) throw badRequest("Selected execution environment does not exist");
+    if (!environment) throw badRequest(unknownEnvironment, chooseEnvironmentNext);
     if (
       chosenEnvironmentId &&
       !(await this.#store.environmentIsAvailableToUser(environment.id, claims.requestedBy))
@@ -795,6 +814,7 @@ export class ProductToolHandlers {
       throw new OpensteerError({
         code: "conflict",
         message: "The idempotency key was already used for a different command",
+        next: "Call again with a new operationKey.",
       });
     const { expectedHarnessRevision } = requested;
     return {
@@ -945,7 +965,8 @@ export class ProductToolHandlers {
           throw conflict("Selected execution environment is not connected", true);
         }
         const harness = await this.#store.getHarnessInstance(delegateInput.harnessInstanceId);
-        if (!harness?.enabled) throw badRequest("Selected harness is disabled or unavailable");
+        if (!harness?.enabled)
+          throw badRequest("Selected harness is disabled or unavailable", chooseEnvironmentNext);
         if (
           this.#isEnvironmentConnected(environment.id) &&
           !this.#canRunHarness(environment.id, harness.driverKind)
@@ -987,14 +1008,27 @@ export class ProductToolHandlers {
     return { profiles };
   }
 
+  async use_card({ caller, input, operationKey }: ToolCall<"use_card">) {
+    const claims = requireRun(caller).claims;
+    return await this.#browserSources.agentUseCard({
+      callId: operationId(caller, operationKey, "use_card"),
+      ownerId: claims.requestedBy,
+      reason: input.reason,
+      runId: claims.runId,
+      sessionId: input.sessionId,
+      site: input.site,
+      threadId: claims.threadId,
+      workspaceId: claims.workspaceId,
+    });
+  }
+
   async sign_in({ caller, input, operationKey }: ToolCall<"sign_in">) {
     const claims = requireRun(caller).claims;
     const requestId = operationId(caller, operationKey, "sign_in");
 
-    return await this.#browserSources.agentSignIn({
+    const result = await this.#browserSources.agentSignIn({
       loginFill: this.#supportsLoginFill(claims),
       callId: requestId,
-      canRequest: true,
       ownerId: claims.requestedBy,
       reason: input.reason,
       runId: claims.runId,
@@ -1005,6 +1039,8 @@ export class ProductToolHandlers {
       threadId: claims.threadId,
       workspaceId: claims.workspaceId,
     });
+    const guidance = passwordsOfferGuidance(result);
+    return guidance === null ? result : { ...result, guidance };
   }
 
   async machine_full_disk_access_request({
@@ -1108,7 +1144,7 @@ export class ProductToolHandlers {
     const chosenEnvironmentId = input.environmentId;
     if (chosenEnvironmentId) {
       const environment = await this.#store.getEnvironment(chosenEnvironmentId);
-      if (!environment) throw badRequest("Selected execution environment does not exist");
+      if (!environment) throw badRequest(unknownEnvironment, chooseEnvironmentNext);
       if (
         !(await this.#store.environmentIsAvailableToUser(chosenEnvironmentId, claims.requestedBy))
       ) {
@@ -1237,10 +1273,10 @@ export class ProductToolHandlers {
       (workspace.backing.kind === "local-directory"
         ? workspace.backing.ownerEnvironmentId
         : preferences.history[0]?.environmentId);
-    if (!environmentId) throw badRequest("Choose an execution environment");
+    if (!environmentId) throw badRequest("Choose an execution environment", chooseEnvironmentNext);
     if (specialist && !existing) {
       const environment = await this.#store.getEnvironment(environmentId);
-      if (!environment) throw badRequest("Selected execution environment does not exist");
+      if (!environment) throw badRequest(unknownEnvironment, chooseEnvironmentNext);
       const placement = await this.#specialistPlacement({
         userId: caller.userId,
         environmentId: environment.id,
@@ -1254,7 +1290,8 @@ export class ProductToolHandlers {
       existing?.harnessInstanceId ?? input.harnessInstanceId ?? preferred?.harnessInstanceId;
     const automatic = named ? null : await this.#automaticDefault(caller.userId, environmentId);
     const harnessInstanceId = named ?? automatic?.harnessInstanceId;
-    if (!harnessInstanceId) throw badRequest("Choose harnessInstanceId for the new task");
+    if (!harnessInstanceId)
+      throw badRequest("Choose harnessInstanceId for the new task", chooseEnvironmentNext);
     const modelSelection =
       existing?.modelSelection ??
       input.model ??
@@ -1263,7 +1300,7 @@ export class ProductToolHandlers {
       catalogDefaultModelSelection(
         await this.#store.getHarnessCatalog(environmentId, harnessInstanceId),
       );
-    if (!modelSelection) throw badRequest("Choose a model for the new task");
+    if (!modelSelection) throw badRequest("Choose a model for the new task", chooseEnvironmentNext);
     return {
       existing,
       workspace,
@@ -1493,14 +1530,30 @@ export class ProductToolHandlers {
     };
   }
 }
-function forbidden(message: string): OpensteerError {
-  return new OpensteerError({ code: "forbidden", message });
+function forbidden(message: string, next?: string): OpensteerError {
+  return refused("forbidden", message, next);
 }
 
-function badRequest(message: string): OpensteerError {
-  return new OpensteerError({ code: "bad_request", message });
+function badRequest(message: string, next?: string): OpensteerError {
+  return refused("bad_request", message, next);
 }
 
 function conflict(message: string, retryable = false): OpensteerError {
   return new OpensteerError({ code: "conflict", message, retryable });
+}
+
+function agentRequest(request: Request) {
+  return {
+    id: request.id,
+    kind: request.kind,
+    status: request.status,
+    title: requestTitleText(request.presentation),
+    reason: "reason" in request.payload ? request.payload.reason : null,
+    originatingThreadId: request.originatingThreadId,
+    targetWorkspaceId: request.targetWorkspaceId,
+    createdAt: request.createdAt,
+    settlementProvenance: request.settlementProvenance
+      ? { deviceLabel: request.settlementProvenance.deviceLabel }
+      : request.settlementProvenance,
+  };
 }

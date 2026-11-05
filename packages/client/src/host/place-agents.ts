@@ -94,6 +94,7 @@ function actingWithoutIdentity(
       !session.tabCatalog?.tabs.some((tab) => tab.occupants.some(({ acting }) => acting))
     );
   }
+  if (destination.kind === "opensteer-app") return false;
   if (destination.source?.kind === "owner-view") return false;
   const session = snapshot.machines
     .find(({ id }) => id === destination.machineId)

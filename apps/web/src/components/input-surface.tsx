@@ -1,3 +1,4 @@
+import { cardUseTitle } from "@opensteer/client/host";
 import { threadMark, type TaskMark as ResolvedTaskMark } from "@opensteer/client/host";
 import { assignmentTitle } from "@opensteer/client/host";
 import { useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
@@ -215,10 +216,12 @@ export interface DockedRequest {
 export function useDockedRequests(
   threadId: string,
   requests: readonly Request[],
+  held: boolean,
 ): readonly DockedRequest[] {
   const { snapshot } = useShell();
   const { user, waitingRequests } = snapshot;
   return useMemo(() => {
+    if (held) return [];
     const own = requests
       .filter((request) => request.status === "pending")
       .toSorted(
@@ -252,14 +255,14 @@ export function useDockedRequests(
       });
     }
     return docked;
-  }, [requests, threadId, user, waitingRequests, snapshot.threads]);
+  }, [held, requests, threadId, user, waitingRequests, snapshot.threads]);
 }
 
 const noRequests: readonly Request[] = [];
 
 /** Which docked request is open: the reader's choice while it stands, else the first. */
-export function useRequestDock(threadId: string, requests: readonly Request[]) {
-  const items = useDockedRequests(threadId, requests);
+export function useRequestDock(threadId: string, requests: readonly Request[], held = false) {
+  const items = useDockedRequests(threadId, requests, held);
   const [chosen, setOpenId] = useState<string | null>(null);
   const open = items.find((item) => item.surface.request.id === chosen) ?? items[0] ?? null;
   return {
@@ -391,6 +394,8 @@ function inputSurfaceClass(surface: SurfaceModel | null): string {
 
 /** A request's name as the reader answers it; a sign-in names its site, whatever the wording. */
 function requestTitle(request: Request): string {
+  if (request.payload.kind === "browser.password-sign-in" && request.payload.credential === "card")
+    return cardUseTitle(request.payload.site);
   return request.payload.kind === "browser.sign-in" ||
     request.payload.kind === "browser.password-sign-in"
     ? `Sign in to ${browserSiteLabel(request.payload.site)}`

@@ -1,6 +1,8 @@
 import type { PersonShowMessage } from "@opensteer/protocol";
 import { DesktopWebLinkDeliverySchema } from "@opensteer/protocol/desktop";
-import { VoiceContext, VoiceIsland, useVoiceRuntime } from "./voice.js";
+import { VoiceContext } from "@opensteer/client/react";
+import { VoiceAsk } from "./voice-ask.js";
+import { VoiceIsland, useVoiceRuntime } from "./voice.js";
 import { handlePersonShow } from "@opensteer/client/host";
 import type { VoiceController } from "@opensteer/client/voice";
 import { useDictation } from "./dictation.js";
@@ -1118,7 +1120,7 @@ export function AppShell({
               it, because it outlives navigation and every mutating control on
               those pages is disabled while it runs. */}
                 <DeploymentOperationBanner bridge={localBridge} snapshot={deploymentAccess} />
-                <VoiceIsland />
+                <VoiceIsland ask={<VoiceAsk />} />
                 <SidebarChromeProvider
                   onRestore={toggleSidebar}
                   restoreVisible={!fullWindow && !mobileNavigation && sidebarCollapsed}

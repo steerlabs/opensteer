@@ -31,12 +31,21 @@ const fixturePath = path.resolve(
 const fixture = JSON.parse(readFileSync(fixturePath, "utf8")) as {
   readonly error: unknown;
   readonly event: unknown;
+  readonly rejected: readonly { readonly method: string; readonly params: unknown }[];
   readonly requests: Readonly<Record<string, readonly unknown[]>>;
   readonly results: Readonly<Record<string, readonly unknown[]>>;
 };
 const methods = PasswordsBrokerMethodSchema.options;
 
 describe("Passwords broker wire fixture", () => {
+  it("refuses login and card shapes on each other's methods", () => {
+    expect(fixture.rejected.length).toBeGreaterThan(0);
+    for (const { method, params } of fixture.rejected) {
+      const schema = passwordsBrokerRequests[PasswordsBrokerMethodSchema.parse(method)];
+      expect(schema.safeParse(params).success).toBe(false);
+    }
+  });
+
   it("accepts 100 page-ranked accounts and refuses 101", () => {
     const account = {
       id: "00000000-0000-4000-8000-000000000001",
@@ -107,8 +116,8 @@ describe("Passwords broker wire fixture", () => {
     const answered = (fixture.results.hello ?? []).map(
       (hello) => passwordsBrokerResults.hello.parse(hello).protocolVersion,
     );
-    expect(new Set(asked)).toEqual(new Set([4, 5, 6]));
-    expect(new Set(answered)).toEqual(new Set([4, 5, 6]));
+    expect(new Set(asked)).toEqual(new Set([4, 5, 6, 7]));
+    expect(new Set(answered)).toEqual(new Set([4, 5, 6, 7]));
   });
 
   it("asks protocol-5 consent for a Workspace, never for a page or at version 4", () => {

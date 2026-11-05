@@ -23,6 +23,7 @@ import {
   harnessUsageLimitFailureCode,
   toolOutputTextMaxBytes,
   utf8ByteLength,
+  voiceCallSeed,
   type HarnessInstanceId,
   type Message,
 } from "@opensteer/core";
@@ -157,7 +158,7 @@ describe("Codex app-server harness", () => {
       const consume = (async () => {
         for await (const event of session.events) events.push(event);
       })();
-      const execution = session.execute(fixture.turn("Voice call seed must never be sent"));
+      const execution = session.execute(fixture.turn(voiceCallSeed));
       try {
         offer.resolve("private-offer");
         await vi.waitFor(() => expect(answer.promise).resolves.toBe("fake-answer"), {
@@ -253,7 +254,7 @@ describe("Codex app-server harness", () => {
     const consume = (async () => {
       for await (const event of session.events) events.push(event);
     })();
-    const execution = session.execute(fixture.turn("Voice call seed must never be sent"));
+    const execution = session.execute(fixture.turn(voiceCallSeed));
     const injected = async () =>
       (await fixture.capture()).flatMap((r) =>
         r.method === "thread/inject_items" ? [JSON.stringify(r.params)] : [],
@@ -273,6 +274,47 @@ describe("Codex app-server harness", () => {
       expect((await injected())[0]).toContain("view during the turn");
       await writer!.note("view between turns");
       await vi.waitFor(async () => expect(await injected()).toHaveLength(2), { timeout: 2000 });
+    } finally {
+      lifetime.abort();
+      await execution;
+      await session.stop();
+      await consume;
+      await fixture.adapter.close();
+    }
+  });
+
+  it("hands over what was waiting when a call begins, without the seed", async () => {
+    const fixture = await setup("voice-note", { accessMode: "auto-accept-edits" });
+    const offer = new Deferred<string>();
+    const lifetime = new AbortController();
+    const session = await fixture.adapter.startSession({
+      ...fixture.context,
+      voiceCall: {
+        offer: offer.promise,
+        signal: lifetime.signal,
+        answer: () => undefined,
+        connect: () => undefined,
+        speak: async () => undefined,
+        end: () => lifetime.abort(),
+      },
+    });
+    const consume = (async () => {
+      for await (const _event of session.events);
+    })();
+    const seed = fixture.turn(voiceCallSeed);
+    const execution = session.execute({
+      ...seed,
+      inputs: [...seed.inputs, ...fixture.turn("The meeting moved").inputs],
+    });
+    const delivered = async () =>
+      (await fixture.capture()).flatMap((r) =>
+        r.method === "turn/start" || r.method === "turn/steer" ? [JSON.stringify(r.params)] : [],
+      );
+    try {
+      offer.resolve("private-offer");
+      await vi.waitFor(async () => expect(await delivered()).toHaveLength(1), { timeout: 2000 });
+      expect((await delivered())[0]).toContain("The meeting moved");
+      expect((await delivered())[0]).not.toContain(voiceCallSeed);
     } finally {
       lifetime.abort();
       await execution;

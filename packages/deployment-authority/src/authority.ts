@@ -237,7 +237,9 @@ export type HostBootstrapMethod = z.infer<typeof HostBootstrapMethodSchema>;
 // Epoch 50 makes device location no authority: saved-login, computer-app and
 // local-server consent use owner Host commands from any signed-in device. An
 // epoch-49 client would offer only decline or wait for an approval on that Mac.
-export const hostApiVersion = 50;
+// Epoch 51 gives each person a permanent Voice Thread. An epoch-50 client refuses
+// `voice.heard` on its Workspace channel, and an epoch-50 Host has no `voice.open`.
+export const hostApiVersion = 51;
 
 /**
  * Optional features a Host may or may not serve. A capability is never a

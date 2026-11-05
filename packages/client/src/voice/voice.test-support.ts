@@ -1,7 +1,7 @@
 import { vi } from "vitest";
 import { createId } from "@opensteer/core";
 import { MockHostClient } from "../mock/index.js";
-import type { HostSnapshot, MessageEntry } from "../host/client.js";
+import type { HostSnapshot } from "../host/client.js";
 import type { VoiceView } from "@opensteer/protocol/voice";
 import type {
   VoiceCallEvent,
@@ -22,11 +22,12 @@ export function voiceHost(initialHome: "seeded" | "absent" = "seeded") {
     now: () => new Date(voiceTestNow),
   });
   const original = host.getSnapshot;
-  let snapshot: HostSnapshot = { ...original(), voiceAvailable: true };
+  const voiceThreadId = createId("thread");
+  let snapshot: HostSnapshot = { ...original(), voiceAvailable: true, voiceThreadId };
   const listeners = new Set<() => void>();
   vi.spyOn(host, "getSnapshot").mockImplementation(() => snapshot);
   host.subscribe(() => {
-    snapshot = { ...original(), voiceAvailable: true };
+    snapshot = { ...original(), voiceAvailable: true, voiceThreadId };
     for (const listener of listeners) listener();
   });
   vi.spyOn(host, "subscribe").mockImplementation((listener) => {
@@ -46,20 +47,8 @@ export function voiceHost(initialHome: "seeded" | "absent" = "seeded") {
       for (const listener of listeners) listener();
     },
     sync() {
-      this.publish({ ...original(), voiceAvailable: true });
+      this.publish({ ...original(), voiceAvailable: true, voiceThreadId });
     },
-  };
-}
-
-export function voiceReply(id: string, body = id, createdAt = voiceTestNow + 1): MessageEntry {
-  return {
-    id,
-    body,
-    createdAt: new Date(createdAt).toISOString(),
-    kind: "message",
-    messageKind: "assistant",
-    runId: "run:reply",
-    author: { kind: "platform", cause: "assistant-message" },
   };
 }
 

@@ -22,6 +22,13 @@ const paths = {
       <path d="M12 8v4.5M12 15.8v.2" />
     </>
   ),
+  // A published app: a tile an agent made, not a window (browser) or a real app's own icon.
+  app: (
+    <>
+      <rect x="3.5" y="3.5" width="17" height="17" rx="4.5" />
+      <path d="M12 7.6c.4 2.6 1.8 4 4.4 4.4-2.6.4-4 1.8-4.4 4.4-.4-2.6-1.8-4-4.4-4.4 2.6-.4 4-1.8 4.4-4.4Z" />
+    </>
+  ),
   "arrow-left": <path d="M19 12H5m6-7-7 7 7 7" />,
   "arrow-right": <path d="M5 12h14m-6-7 7 7-7 7" />,
   "arrow-up": <path d="M12 19V5m-7 7 7-7 7 7" />,

@@ -587,6 +587,7 @@ function hostBootstrap(
       createdAt: "2026-08-12T12:00:00.000Z",
       id: createId("workspace"),
       homeThreadId: createId("thread"),
+      voiceThreadId: null,
       icon: null,
       kind: "main",
       location: { environmentId: createId("environment"), kind: "machine", name: null },

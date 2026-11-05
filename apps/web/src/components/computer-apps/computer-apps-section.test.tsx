@@ -905,6 +905,7 @@ function workspace(id: string, kind: "main" | "project", name: string): Workspac
     description: "",
     fileCount: 0,
     homeThreadId: null,
+    voiceThreadId: null,
     harnessLabel: "Codex",
     icon: null,
     id,

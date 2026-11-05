@@ -1,12 +1,13 @@
-import { useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useState, useSyncExternalStore, type ReactNode } from "react";
 import {
+  passwordsOfferLine,
+  passwordsOfferNeedHere,
+  passwordsOpenAction,
   passwordsSettingsState,
   passwordsSuggestionAction,
-  passwordsSuggestionDone,
-  passwordsSuggestionElsewhere,
   passwordsSuggestionKey,
-  passwordsSuggestionLead,
-  passwordsSuggestionName,
+  type PasswordsOfferLine,
+  type PasswordsSetupOffer,
 } from "@opensteer/client/host";
 import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
 import { actionErrorMessage } from "../ui-utils.js";
@@ -17,11 +18,12 @@ import { useDesktopPasswordsStatus } from "./use-desktop-passwords-status.js";
 import { browserNoticeDismissals } from "./usage-notice.js";
 
 /**
- * The quiet offer of Opensteer Passwords after a sign-in found it not set up.
- * Setup needs the Mac itself, so only the desktop app on that Mac has a button;
- * everywhere else names the Mac. Nothing here reaches the agent.
+ * The quiet offer of Opensteer Passwords after a sign-in found it lacking.
+ * Passwords lives on the Mac, so only the desktop app there has a button;
+ * everywhere else names the Mac. The Host wakes the agent once the login
+ * exists, so nothing here asks the person to go back and tell it.
  */
-export function PasswordsSuggestion({ site }: { readonly site: string }) {
+export function PasswordsSuggestion({ offer }: { readonly offer: PasswordsSetupOffer }) {
   const { desktopBridge, desktopDeployment, snapshot } = useShell();
   const home = useHomeComputer();
   const store = browserNoticeDismissals("opensteer.usage-notices.dismissed");
@@ -35,91 +37,95 @@ export function PasswordsSuggestion({ site }: { readonly site: string }) {
   return desktopBridge !== null &&
     desktopDeployment?.kind === "personal" &&
     desktopDeployment.onThisComputer ? (
-    <OnThisMac bridge={desktopBridge} onDismiss={onDismiss} site={site} />
+    <OnThisMac bridge={desktopBridge} offer={offer} onDismiss={onDismiss} />
   ) : (
     <SuggestionLine onDismiss={onDismiss}>
-      <strong>{passwordsSuggestionName}</strong> {passwordsSuggestionLead}{" "}
-      {passwordsSuggestionElsewhere(home.name)}
+      <Words
+        line={passwordsOfferLine({
+          card: offer.credential === "card",
+          computer: home.name ?? "your Mac",
+          need: offer.need,
+          site: offer.site,
+        })}
+      />
     </SuggestionLine>
   );
 }
 
 function OnThisMac({
   bridge,
+  offer,
   onDismiss,
-  site,
 }: {
   readonly bridge: Pick<
     OpensteerDesktopBridge,
     "onPasswordsStatusChanged" | "passwordsOpen" | "passwordsStatus"
   >;
+  readonly offer: PasswordsSetupOffer;
   readonly onDismiss: () => void;
-  readonly site: string;
 }) {
   const { status } = useDesktopPasswordsStatus(bridge);
   const [opening, setOpening] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // The agent's word can be old by the time this draws: the line says "set up"
-  // only after this Mac said it wasn't, here, on this screen.
-  const offered = useRef(false);
-  const state = status === null ? null : passwordsSettingsState(status).kind;
-  if (state === "not-set-up") {
-    offered.current = true;
-    return (
-      <SuggestionLine
-        action={
-          <button
-            className="btn btn--small btn--primary"
-            disabled={opening}
-            onClick={() => {
-              setOpening(true);
-              setError(null);
-              bridge
-                .passwordsOpen()
-                .catch((reason: unknown) => setError(actionErrorMessage(reason)))
-                .finally(() => setOpening(false));
-            }}
-            type="button"
-          >
-            {passwordsSuggestionAction}
-          </button>
-        }
-        onDismiss={onDismiss}
-      >
-        {error ?? (
-          <>
-            <strong>{passwordsSuggestionName}</strong> {passwordsSuggestionLead}
-          </>
-        )}
-      </SuggestionLine>
-    );
-  }
-  if (state !== "ready" || !offered.current) return null;
+  const settings = status === null ? null : passwordsSettingsState(status);
+  // The agent's word can be old by the time this draws; this Mac's is current.
+  const need = passwordsOfferNeedHere(
+    settings?.kind ?? null,
+    settings?.kind === "ready" ? settings.agentSignIns : null,
+  );
+  if (need === null) return null;
+  const card = offer.credential === "card";
   return (
-    <SuggestionLine done onDismiss={onDismiss}>
-      {passwordsSuggestionDone(site)}
+    <SuggestionLine
+      action={
+        <button
+          className="btn btn--small btn--primary"
+          disabled={opening}
+          onClick={() => {
+            setOpening(true);
+            setError(null);
+            bridge
+              .passwordsOpen()
+              .catch((reason: unknown) => setError(actionErrorMessage(reason)))
+              .finally(() => setOpening(false));
+          }}
+          type="button"
+        >
+          {need === "not-set-up" && !card ? passwordsSuggestionAction : passwordsOpenAction}
+        </button>
+      }
+      onDismiss={onDismiss}
+    >
+      {error ?? (
+        <Words line={passwordsOfferLine({ card, computer: null, need, site: offer.site })} />
+      )}
     </SuggestionLine>
+  );
+}
+
+function Words({ line }: { readonly line: PasswordsOfferLine }) {
+  return (
+    <>
+      {line.before}
+      <strong>{line.name}</strong>
+      {line.after}
+    </>
   );
 }
 
 function SuggestionLine({
   action,
   children,
-  done = false,
   onDismiss,
 }: {
   readonly action?: ReactNode;
   readonly children: ReactNode;
-  readonly done?: boolean;
   readonly onDismiss: () => void;
 }) {
   return (
     <div className="transcript__row">
-      <div
-        className={`passwords-suggestion${done ? " passwords-suggestion--done" : ""}`}
-        role="status"
-      >
-        <Icon name={done ? "check" : "key"} />
+      <div className="passwords-suggestion" role="status">
+        <Icon name="key" />
         <span className="passwords-suggestion__text">
           <span>{children}</span>
         </span>

@@ -526,6 +526,7 @@ describe("the conversation's title", () => {
     icon: null,
     color: null,
     isHome: true,
+    isVoice: false,
   };
 
   it("is only the conversation's name: Run details open from the transcript", () => {

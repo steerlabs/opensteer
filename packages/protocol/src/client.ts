@@ -74,6 +74,7 @@ export type ThreadMessageWindow = z.infer<typeof ThreadMessageWindowSchema>;
 
 export const WorkspaceViewSchema = z.object({
   homeThreadId: ThreadIdSchema.nullable(),
+  voiceThreadId: ThreadIdSchema.nullable(),
   capacity: z.object({ kind: z.literal("host-filesystem") }),
   createdAt: z.iso.datetime({ offset: true }),
   icon: WorkspaceIconNameSchema.nullable(),
@@ -122,6 +123,7 @@ export type WorkspaceView = z.infer<typeof WorkspaceViewSchema>;
 export function workspaceViewFromWorkspace(workspace: Workspace): WorkspaceView {
   return WorkspaceViewSchema.parse({
     homeThreadId: workspace.homeThreadId,
+    voiceThreadId: workspace.voiceThreadId,
     capacity: {
       kind: "host-filesystem",
     },
@@ -341,6 +343,7 @@ export const HostToClientMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("host.triggers-changed"),
     workspaceId: WorkspaceIdSchema,
   }),
+  z.object({ ...clientMessageBase, type: z.literal("host.app-tabs-changed") }),
   ThreadPlaceChangedSchema,
   BrowserTabsChangedSchema,
   ...PlaceActivityNoticeViewSchema.options,

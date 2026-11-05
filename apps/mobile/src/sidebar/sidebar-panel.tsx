@@ -21,10 +21,11 @@ import {
   type TaskRow,
   type WorkspaceSurfaceDestination,
 } from "@opensteer/client/host";
-import { usePlaceList } from "@opensteer/client/react";
+import { usePlaceList, VoiceContext } from "@opensteer/client/react";
 import {
   memo,
   useCallback,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -35,6 +36,7 @@ import {
 import {
   AccessibilityInfo,
   ActivityIndicator,
+  Alert,
   Platform,
   Pressable,
   ScrollView,
@@ -44,6 +46,7 @@ import {
   View,
 } from "react-native";
 import { ActingDot, agentWorkingLabel } from "../browser/acting-dot.js";
+import { opensteerAppGlyph } from "../browser/agent-surface.js";
 import { tabSiteLabel } from "../browser/site-label.js";
 import { operationDetail } from "../client/mobile-client.js";
 import { statusTone } from "../screens/deployment-row.js";
@@ -77,7 +80,10 @@ import { useRetainedScroll, type ScrollMemory } from "../ui/retained-scroll.js";
 import { AppText, StatusDot } from "../ui/primitives.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
 import { WorkspaceMark } from "../ui/workspace-mark.js";
+import { CallTimer } from "../voice/call-timer.js";
+import { useVoiceAvailable, useVoiceOn } from "../voice/use-voice-value.js";
 import { sidebarFolders, type SidebarFolder } from "./project-folders.js";
+import { voiceRowMark, type VoiceRowMark } from "./voice-row.js";
 
 /** The root destinations the sidebar switches between. */
 export type SidebarDestination = "Home" | "Schedules" | "Projects" | "Tabs";
@@ -112,6 +118,8 @@ interface SidebarModel {
   readonly loaded: boolean;
   /** Main, while it can hold a new task; a task started here runs there. */
   readonly taskWorkspaceId: string | null;
+  readonly voice: VoiceRowMark;
+  readonly voiceThreadId: string | null;
 }
 
 function sidebarModel(
@@ -129,6 +137,8 @@ function sidebarModel(
     list,
     loaded: snapshot.tasks !== null,
     taskWorkspaceId: main?.status === "ready" ? main.id : null,
+    voice: voiceRowMark(snapshot),
+    voiceThreadId: snapshot.voiceThreadId,
   };
 }
 
@@ -334,10 +344,14 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
   // A helper has no row, so the task it works for, or Chat, is the one marked open.
   const selectedRow = useMemo(() => {
     if (hostClient === null || model === null || selectedThreadId === null)
-      return { chat: false, threadId: selectedThreadId };
+      return { chat: false, threadId: selectedThreadId, voice: false };
     const snapshot = hostClient.getSnapshot();
     const threadId = listedRowThreadId(snapshot, selectedThreadId);
-    return { chat: threadId === snapshot.homeThreadId, threadId };
+    return {
+      chat: threadId === snapshot.homeThreadId,
+      threadId,
+      voice: threadId === snapshot.voiceThreadId,
+    };
   }, [hostClient, model, selectedThreadId]);
   const main = model?.grouping.main ?? null;
   const folders = useMemo(
@@ -419,6 +433,13 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
             mark={<ChatOrb size={20} />}
             label={CHAT_THREAD_TITLE}
             onPress={actions.onChat}
+          />
+          <VoiceRow
+            current={selectedRow.voice}
+            mark={model?.voice ?? null}
+            onOpen={openTask}
+            threadId={model?.voiceThreadId ?? null}
+            visible={visible}
           />
           {deploymentId === null ? null : (
             <DestinationRow
@@ -710,12 +731,14 @@ const SidebarTabs = memo(function SidebarTabs(props: {
 });
 
 const placeGlyph: Record<PlaceItem["kind"], SFSymbolName> = {
+  "opensteer-app": opensteerAppGlyph,
   app: "desktopcomputer",
   browser: "globe",
   phone: "smartphone",
 };
 
 const placeKind: Record<PlaceItem["kind"], string> = {
+  "opensteer-app": "Opensteer app",
   app: "App",
   browser: "Tab",
   phone: "Phone",
@@ -764,6 +787,80 @@ function ChatAccessory(props: { readonly row: TaskRow | null }): ReactNode {
   if (row.tone === "needs-you") return <NeedsYouTag />;
   if (row.tone === "working") return <ActivityIndicator color={color.ember} size="small" />;
   return row.unread ? <UnreadDot /> : null;
+}
+
+/**
+ * The person's Voice Thread, under Chat. It exists only once someone needs it,
+ * so opening it asks for it first; after that it holds history and Requests
+ * whether or not a call can start.
+ */
+function VoiceRow(props: {
+  readonly current: boolean;
+  readonly mark: VoiceRowMark;
+  readonly onOpen: (threadId: string) => void;
+  readonly threadId: string | null;
+  /** A closed drawer keeps its rows, and nobody reads a clock there. */
+  readonly visible: boolean;
+}): ReactNode {
+  const controller = useContext(VoiceContext);
+  const offered = useVoiceAvailable();
+  const onCall = useVoiceOn();
+  const [opening, setOpening] = useState(false);
+  const claimed = useRef(false);
+  const { mark, onOpen, threadId } = props;
+  if (threadId === null && (controller === null || !offered)) return null;
+  const open = (): void => {
+    if (threadId !== null) {
+      onOpen(threadId);
+      return;
+    }
+    if (claimed.current || controller === null) return;
+    claimed.current = true;
+    setOpening(true);
+    void controller
+      .openThread()
+      .then((threadId) => {
+        if (threadId === null) throw new Error("No Voice Thread");
+        onOpen(threadId);
+      })
+      .catch(() => Alert.alert("Voice didn’t open", "Check your connection and try again."))
+      .finally(() => {
+        claimed.current = false;
+        setOpening(false);
+      });
+  };
+  const state =
+    mark === "needs-you"
+      ? "needs you"
+      : onCall
+        ? "on a call"
+        : mark === "working"
+          ? "replying"
+          : mark === "unread"
+            ? "unread"
+            : null;
+  return (
+    <DestinationRow
+      accessibilityLabel={state === null ? "Voice" : `Voice, ${state}`}
+      accessory={
+        opening || (mark === "working" && !onCall) ? (
+          <ActivityIndicator color={color.ember} size="small" />
+        ) : mark === "needs-you" ? (
+          <NeedsYouTag />
+        ) : onCall ? (
+          props.visible ? (
+            <CallTimer />
+          ) : null
+        ) : mark === "unread" ? (
+          <UnreadDot />
+        ) : null
+      }
+      current={props.current}
+      icon="waveform"
+      label="Voice"
+      onPress={open}
+    />
+  );
 }
 
 /**

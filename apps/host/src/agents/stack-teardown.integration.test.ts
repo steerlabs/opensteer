@@ -11,8 +11,13 @@ integration("Vertical stack teardown", () => {
   it("joins engines and a held final save before closing Host and its database", async () => {
     const entered = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
+    const cancelling = Promise.withResolvers<void>();
     const harnesses = new HarnessRegistry();
-    const engineClosed = vi.spyOn(harnesses, "close");
+    const closeEngines = harnesses.close.bind(harnesses);
+    const engineClosed = vi.spyOn(harnesses, "close").mockImplementation(() => {
+      cancelling.resolve();
+      return closeEngines();
+    });
     let stack: VerticalStack | undefined;
     // No engine account is needed: cancellation during catalog startup also owns the save.
     const starting = startVerticalStack({
@@ -47,6 +52,10 @@ integration("Vertical stack teardown", () => {
     void finished.then(completedStep, completedStep);
     let saveEntered = false;
     try {
+      // Startup speed depends on the shard's load, so the save's own deadline starts after it.
+      await withTimeout(Promise.race([cancelling.promise, finished]), 20_000, {
+        timeoutError: () => new Error("Startup was not cancelled"),
+      });
       await withTimeout(Promise.race([entered.promise, finished]), 5_000, {
         timeoutError: () => new Error("Final save was not entered during startup cancellation"),
       });

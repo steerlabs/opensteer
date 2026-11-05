@@ -1,4 +1,4 @@
-import { threadMark } from "@opensteer/client/host";
+import { threadMark, type PasswordsSetupOffer } from "@opensteer/client/host";
 import { observeResize } from "@opensteer/shared/resizeObserver";
 import { useCallback, useId, useLayoutEffect, useEffect, useMemo, useRef, useState } from "react";
 import { Navigate, useLocation, useParams, useSearchParams } from "react-router";
@@ -57,6 +57,8 @@ import { PasswordsSuggestion } from "./passwords-suggestion.js";
 import { Icon } from "./icon.js";
 import type { ComposerQuote, ComposerRestore } from "./composer.js";
 import { InputSurface, RequestStack, focusOpenRequest, useRequestDock } from "./input-surface.js";
+import { useVoice } from "@opensteer/client/react";
+import { VoiceStart } from "./voice.js";
 import { QueuedMessages } from "./queued-messages.js";
 import { setThreadReading } from "./thread-reading.js";
 import { ThreadFind } from "./thread-find.js";
@@ -131,7 +133,10 @@ export function ThreadSurface({ threadId }: { readonly threadId: string | null }
         "disconnected"
       }
       executionPlacements={placements.filter(
-        (placement) => placement.environmentId === thread.environmentId,
+        (placement) =>
+          placement.environmentId === thread.environmentId &&
+          // Only Codex carries a call, so this Thread can change account but not engine.
+          (thread.id !== snapshot.voiceThreadId || placement.driverKind === "codex"),
       )}
       thread={thread}
       workspace={workspace}
@@ -157,7 +162,9 @@ const readingPositions = new Map<
   { readonly scrollTop: number; readonly seenSequence: string | null }
 >();
 
-const renderPasswordsSuggestion = (site: string) => <PasswordsSuggestion site={site} />;
+const renderPasswordsSuggestion = (offer: PasswordsSetupOffer) => (
+  <PasswordsSuggestion offer={offer} />
+);
 
 function ThreadView({
   canLoadEarlier,
@@ -169,7 +176,7 @@ function ThreadView({
   thread,
   workspace,
 }: ThreadViewProps) {
-  const { phone, work } = useWorkspace();
+  const { phone, selection, work } = useWorkspace();
   const phoneStage = phone && work;
   const keyboardInset = useVisualViewportKeyboardInset();
   const {
@@ -260,7 +267,10 @@ function ThreadView({
     typeof location.state.focusRequest === "string"
       ? location.state.focusRequest
       : null;
-  const dock = useRequestDock(thread.id, requests);
+  const voiceThread = snapshot.voiceThreadId === thread.id;
+  const { snapshot: call } = useVoice();
+  // On a call, this Thread's Requests ride on the call bar, on every screen.
+  const dock = useRequestDock(thread.id, requests, voiceThread && call.phase !== "idle");
   const { items: dockedRequests, openId: openRequestId, setOpenId: openRequest } = dock;
   // The exact request is opened and focused once it can be: its body may load
   // after the conversation does, and it may wait behind another request. Once
@@ -925,9 +935,8 @@ function ThreadView({
   // On a phone with a page open, the conversation is a sheet under it: the
   // composer and the latest reply, opened to the whole conversation on request.
   const [sheetOpen, setSheetOpen] = useState(false);
-  useEffect(() => {
-    if (!phoneStage) setSheetOpen(false);
-  }, [phoneStage]);
+  // Choosing a place is choosing to look at it.
+  useEffect(() => setSheetOpen(false), [phoneStage, selection]);
   useLayoutEffect(() => {
     const scroller = currentScroller();
     if (sheetOpen && scroller && followsTailRef.current) scroller.scrollTop = scroller.scrollHeight;
@@ -1017,7 +1026,7 @@ function ThreadView({
                 </button>
               ) : null}
               {conversation.length === 0 && historyState === undefined ? (
-                <EmptyThread home={home} />
+                <EmptyThread home={home} voice={voiceThread} />
               ) : null}
               <AgentTranscript
                 revealMessage={revealMessage}
@@ -1154,73 +1163,94 @@ function ThreadView({
             threadId={thread.id}
           />
         ) : null}
-        <InputSurface
-          autoContext={home}
-          voice={home}
-          variant={conversational ? "conversation" : "work"}
-          key={composerKey}
-          composerHidden={dock.composerHidden}
-          disabled={!canRespond}
-          inputRef={composerInputRef}
-          onEscape={dockedRequests.length > 0 ? () => focusOpenRequest(bodyRef.current) : undefined}
-          readOnly={thread.status === "archived"}
-          onStop={
-            stopTarget
-              ? async () => {
-                  try {
-                    await hostClient.stopRun(thread.id);
-                  } catch (error) {
-                    reportActionError(error);
-                  }
-                }
-              : undefined
-          }
-          placeholder={composerPlaceholder}
-          recipient={recipient}
-          // A conversation's Stop ends the reply under way, and Chat's cards each
-          // stop their own task. A task's strip stops the task; this stops only
-          // the turn under way, which leaves a task paused.
-          stopLabel={
-            conversational
-              ? "Stop the reply"
-              : workerAssignment(snapshot.assignments, thread.id)?.status === "open"
-                ? "Pause this task"
-                : "Stop the run"
-          }
-          restoredDraft={restoredDraft?.composer === composerKey ? restoredDraft.restore : null}
-          running={stopTarget !== null}
-          stopping={activity === "stopping"}
-          threadId={thread.id}
-          footerExtras={
-            <>
-              {/* The picker opens while a response runs. What it cannot do is
-                  apply — and it says why, instead of being a dead control. */}
+        {voiceThread ? (
+          <VoiceStart
+            controls={
               <ExecutionControls
-                access={{
-                  engine: threadPlacement,
-                  mode: thread.accessMode,
-                  onApply: async (accessMode) => {
-                    try {
-                      await hostClient.updateThreadAccess(thread.id, accessMode);
-                    } catch (error) {
-                      reportActionError(error);
-                    }
-                  },
-                }}
-                disabled={!canRespond || thread.status === "archived"}
+                disabled={!canRespond}
                 onAuthenticate={openHarnessAuthentication ?? undefined}
                 onRefresh={refreshHarnessCatalog}
                 onApply={applyExecution}
                 placements={executionPlacements}
                 preferences={executionPreferences}
-                returnFocusRef={composerInputRef}
                 review={reviewSelection}
                 reviewFresh={reviewFresh}
                 selection={threadSelection}
               />
-            </>
-          }
-        />
+            }
+          />
+        ) : null}
+        {voiceThread ? null : (
+          <InputSurface
+            autoContext={home}
+            voice={home}
+            variant={conversational ? "conversation" : "work"}
+            key={composerKey}
+            composerHidden={dock.composerHidden}
+            disabled={!canRespond}
+            inputRef={composerInputRef}
+            onEscape={
+              dockedRequests.length > 0 ? () => focusOpenRequest(bodyRef.current) : undefined
+            }
+            readOnly={thread.status === "archived"}
+            onStop={
+              stopTarget
+                ? async () => {
+                    try {
+                      await hostClient.stopRun(thread.id);
+                    } catch (error) {
+                      reportActionError(error);
+                    }
+                  }
+                : undefined
+            }
+            placeholder={composerPlaceholder}
+            recipient={recipient}
+            // A conversation's Stop ends the reply under way, and Chat's cards each
+            // stop their own task. A task's strip stops the task; this stops only
+            // the turn under way, which leaves a task paused.
+            stopLabel={
+              conversational
+                ? "Stop the reply"
+                : workerAssignment(snapshot.assignments, thread.id)?.status === "open"
+                  ? "Pause this task"
+                  : "Stop the run"
+            }
+            restoredDraft={restoredDraft?.composer === composerKey ? restoredDraft.restore : null}
+            running={stopTarget !== null}
+            stopping={activity === "stopping"}
+            threadId={thread.id}
+            footerExtras={
+              <>
+                {/* The picker opens while a response runs. What it cannot do is
+                  apply — and it says why, instead of being a dead control. */}
+                <ExecutionControls
+                  access={{
+                    engine: threadPlacement,
+                    mode: thread.accessMode,
+                    onApply: async (accessMode) => {
+                      try {
+                        await hostClient.updateThreadAccess(thread.id, accessMode);
+                      } catch (error) {
+                        reportActionError(error);
+                      }
+                    },
+                  }}
+                  disabled={!canRespond || thread.status === "archived"}
+                  onAuthenticate={openHarnessAuthentication ?? undefined}
+                  onRefresh={refreshHarnessCatalog}
+                  onApply={applyExecution}
+                  placements={executionPlacements}
+                  preferences={executionPreferences}
+                  returnFocusRef={composerInputRef}
+                  review={reviewSelection}
+                  reviewFresh={reviewFresh}
+                  selection={threadSelection}
+                />
+              </>
+            }
+          />
+        )}
         {dock.composerHidden ? null : (
           <UsageNotice
             action={
@@ -1432,15 +1462,23 @@ function ConversationSheetHandle({
 
 /* ---- Empty state ---- */
 
-function EmptyThread({ home = false }: { readonly home?: boolean }) {
+function EmptyThread({
+  home = false,
+  voice = false,
+}: {
+  readonly home?: boolean;
+  readonly voice?: boolean;
+}) {
   return (
     <div className="hero__inner">
       <BrandMark large />
-      <h2 className="hero__title">What can I help you with?</h2>
+      <h2 className="hero__title">{voice ? "Talk to Opensteer" : "What can I help you with?"}</h2>
       <p className="hero__subtitle">
-        {home
-          ? "Ask here. Updates from your tasks will arrive here too."
-          : "Describe the outcome you want. Opensteer works in your Workspace and checks in when it needs you."}
+        {voice
+          ? "Say what you need. It gets on with it, starts tasks for bigger work, and tells you when it needs you."
+          : home
+            ? "Ask here. Updates from your tasks will arrive here too."
+            : "Describe the outcome you want. Opensteer works in your Workspace and checks in when it needs you."}
       </p>
     </div>
   );

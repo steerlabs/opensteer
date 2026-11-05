@@ -17,6 +17,7 @@ it("waits for an offer and selects V3 without overriding the vendor prompt", asy
       transport: { type: "webrtc", sdp: "offer" },
       version: "v3",
       clientManagedHandoffs: true,
+      delegationAckFiller: false,
       includeStartupContext: false,
       outputModality: "audio",
     },

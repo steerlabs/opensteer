@@ -61,13 +61,14 @@ describe("Settings → Passwords on the Mac that keeps them", () => {
   it("explains Passwords before setup and opens setup in the Passwords window", async () => {
     const fake = fakeBridge(available("not-set-up"));
     const page = await mount({ bridge: fake.bridge });
+    expect(text(page)).toContain("Let agents sign in for you with passwords saved on this Mac.");
     expect(text(page)).toContain(
-      "Let agents sign in to websites and apps with passwords saved on this Mac. Opensteer never sends your password to the agent; it types it into the website or app, which can read it. You allow an account from any device signed in to this Opensteer.",
+      "Opensteer never sends your password to the agent; it types it into the website or app, which can read it.",
     );
-    expect(text(page)).toContain("Import from Chrome, Safari, Firefox, 1Password or Bitwarden.");
     expect(text(page)).toContain(
-      "Opensteer fills the fields the agent focuses on, in the browser, on your phone or in Mac apps.",
+      "You allow an account from any device signed in to this Opensteer.",
     );
+    expect(text(page)).toContain("Passwords are kept only on this Mac and aren’t backed up.");
     expect(text(page)).toContain(
       "In the browser, each password goes only to its own website. In apps, the agent checks it’s the real app.",
     );
@@ -79,7 +80,7 @@ describe("Settings → Passwords on the Mac that keeps them", () => {
   it("shows what agents may do and follows changes made in the window", async () => {
     const fake = fakeBridge(available("ready"));
     const page = await mount({ bridge: fake.bridge });
-    expect(text(page)).toContain("Agents can sign in with your passwords");
+    expect(text(page)).toContain("Agents can use saved passwords and cards");
     expect(page.querySelector(".chip")?.textContent).toBe("On");
     expect(text(page)).not.toContain("Waiting for you");
     expect(text(page)).toContain(
@@ -114,7 +115,7 @@ describe("Settings → Passwords on the Mac that keeps them", () => {
     const fake = fakeBridge(available("ready"));
     const page = await mount({ bridge: fake.bridge, client });
     expect(text(page)).toContain("Waiting for you");
-    expect(text(page)).toContain("2 sign-ins to answer in their conversations");
+    expect(text(page)).toContain("2 password or card requests to answer in their conversations");
     expect(buttons(page)).toEqual(["Don’t allow all", "Open Passwords"]);
 
     await click(button(page, "Don’t allow all"));
@@ -168,7 +169,7 @@ describe("Settings → Passwords on the Mac that keeps them", () => {
     fake.set(available("ready"));
     await click(button(page, "Try again"));
     expect(fake.bridge.passwordsStatus).toHaveBeenCalledTimes(2);
-    expect(text(page)).toContain("Agents can sign in with your passwords");
+    expect(text(page)).toContain("Agents can use saved passwords and cards");
   });
 
   it("shows a failed read with Try again rather than loading forever", async () => {

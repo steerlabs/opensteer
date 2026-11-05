@@ -49,7 +49,6 @@ export function createIntegrationMcpFixture(
       handlers,
       publicUrl: options.publicUrl,
       store: {
-        voiceCallForRun: async () => undefined,
         requests: { get: async () => null },
         getThreadForOwner: Reflect.get(unavailable, "getThreadForOwner"),
         findMainWorkspaceForOwner: Reflect.get(unavailable, "findMainWorkspaceForOwner"),

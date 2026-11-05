@@ -79,6 +79,8 @@ public final class Broker: IPCServerDelegate {
   public private(set) var condition: VaultCondition = .notSetUp
   /// The stored setting; agents can sign in only when the vault is also ready.
   public private(set) var agentSignInsSetting = false
+  /// Whether a ready vault holds nothing yet, which the window answers with its first step.
+  public private(set) var vaultIsEmpty = false
   private var connections: [Int: Connection] = [:]
   private var transactions: [String: Transaction] = [:]
   private var lastStatus: Wire.Status?
@@ -107,6 +109,7 @@ public final class Broker: IPCServerDelegate {
   public func load() async {
     condition = await vault.examine()
     agentSignInsSetting = await vault.agentSignIns()
+    await readContents()
     publish()
   }
 
@@ -203,7 +206,20 @@ public final class Broker: IPCServerDelegate {
 
   private func handle(_ method: Wire.Method, _ params: JSONValue, call: HeldCall) throws {
     guard let version = connections[call.connectionID]?.protocolVersion else { return }
+    if method.rawValue.hasPrefix("card."), version < 7 {
+      throw Wire.Failure.invalid("Card use needs version 7.")
+    }
     switch method {
+    case .cardProbe:
+      try Wire.empty(params)
+      whenExamined(call) { self.cardProbe(call) }
+    case .cardRequest:
+      let request = try Wire.CardRequestParams(json: params)
+      whenExamined(call) { try self.requestCard(request.request, call: call) }
+    case .cardApprove:
+      try approveCard(try Wire.CardApproveParams(json: params), call: call)
+    case .cardRelease:
+      try releaseCard(try Wire.CardReleaseParams(json: params), call: call)
     case .hello:
       throw Wire.Failure.invalid("This connection already said hello.")
     case .status:
@@ -225,7 +241,7 @@ public final class Broker: IPCServerDelegate {
     case .signInCommit:
       try commit(try Wire.TransactionParams(json: params), call: call)
     case .signInApprove:
-      guard version == 6 else {
+      guard version >= 6 else {
         throw Wire.Failure.invalid("Update Opensteer to approve this sign-in.")
       }
       try approve(try Wire.ApproveParams(json: params), call: call)
@@ -294,7 +310,7 @@ public final class Broker: IPCServerDelegate {
       throw Wire.Failure.invalid("That sign-in already expired.")
     }
     let key = params.transactionKey
-    guard !transactions.values.contains(where: { $0.key == key }),
+    guard !transactions.values.contains(where: { $0.key == ["login"] + key }),
       transactions.values.filter({ !$0.waitsForThePerson && $0.pending != nil }).count
         < Self.maxUnderWay
     else { return reply(call, Wire.Decision.unavailable(.busy).json) }
@@ -462,6 +478,7 @@ public final class Broker: IPCServerDelegate {
   /// Until then no grant exists and release refuses the prepared transaction.
   private func commit(_ params: Wire.TransactionParams, call: HeldCall) throws {
     let transaction = try owned(params.transactionId, by: call.connectionID)
+    if transaction.isCard { return try commitCard(transaction, call: call) }
     if case .authorized = transaction.stage {
       return reply(call, .object(["committed": .bool(true)]))
     }
@@ -584,6 +601,142 @@ public final class Broker: IPCServerDelegate {
         self.record(transaction, outcome: .used)
       }
       self.reply(call, result.json)
+    }
+  }
+
+  private func cardProbe(_ call: HeldCall) {
+    func answer(_ value: String) { reply(call, .object(["cards": .string(value)])) }
+    guard condition == .ready else {
+      return answer(condition == .unavailable || condition == .updateRequired ? "unavailable" : "not-set-up")
+    }
+    guard agentSignInsSetting else { return answer("off") }
+    Task {
+      do {
+        let cards = try await vault.cardChoices()
+        guard connections[call.connectionID] != nil else { return }
+        guard condition == .ready else { return answer("unavailable") }
+        guard agentSignInsSetting else { return answer("off") }
+        answer(cards.isEmpty ? "no-card" : "has-card")
+      } catch { answer("unavailable") }
+    }
+  }
+
+  private func requestCard(_ request: Wire.SignInRequestParams, call: HeldCall) throws {
+    guard connections[call.connectionID]?.protocolVersion == 7 else { return }
+    guard transactions[request.transactionId] == nil else { throw Wire.Failure.invalid(Copy.signInMovedOn) }
+    if let refusal = releaseRefusal { return answer(call, refusal) }
+    let now = Date()
+    guard request.expiresAt > now else { throw Wire.Failure.invalid(Copy.signInEnded) }
+    guard !transactions.values.contains(where: { $0.isCard && $0.request.transactionKey == request.transactionKey }),
+      transactions.values.filter({ !$0.waitsForThePerson && $0.pending != nil }).count < Self.maxUnderWay,
+      transactions.values.filter(\.waitsForThePerson).count < Self.maxWaitingForThePerson
+    else { return reply(call, Wire.Decision.unavailable(.busy).json) }
+    let transaction = Transaction(request: request, connectionID: call.connectionID,
+      expiresAt: min(request.expiresAt, now.addingTimeInterval(30 * 60)), kind: .card)
+    transactions[transaction.id] = transaction
+    scheduleExpiry(transaction)
+    hold(transaction, .lookup, call) { serial in
+      do {
+        let cards = try await self.vault.cardChoices()
+        guard self.isCurrent(transaction, serial) else { return }
+        transaction.pending = nil
+        if let refusal = self.releaseRefusal { return self.refuse(transaction, refusal, call) }
+        guard transaction.expiresAt > Date() else {
+          self.reply(call, failure: Wire.Failure(.unavailable, "This sign-in expired."))
+          return self.expire(transaction)
+        }
+        guard self.transactions.values.filter(\.waitsForThePerson).count < Self.maxWaitingForThePerson else {
+          self.reply(call, Wire.Decision.unavailable(.busy).json)
+          return self.end(transaction, outcome: nil, failure: nil)
+        }
+        transaction.stage = .choosingCards(cards)
+        self.reply(call, Wire.cardChoices(cards))
+      } catch {
+        guard self.isCurrent(transaction, serial) else { return }
+        self.vaultFailed(transaction, error)
+      }
+    }
+  }
+
+  private func approveCard(_ params: Wire.CardApproveParams, call: HeldCall) throws {
+    let transaction = try owned(params.transactionId, by: call.connectionID)
+    guard transaction.isCard, case .choosingCards(let cards) = transaction.stage,
+      transaction.pending == nil, cards.contains(where: { $0.id == params.cardId }) else {
+      throw Wire.Failure.invalid(Copy.notOffered)
+    }
+    prepareCard(transaction, id: params.cardId, revision: params.revision, commit: false, call: call)
+  }
+
+  private func commitCard(_ transaction: Transaction, call: HeldCall) throws {
+    guard transaction.expiresAt > Date() else {
+      reply(call, .object(["committed": .bool(false)]))
+      return expire(transaction)
+    }
+    if case .authorizedCard = transaction.stage {
+      return reply(call, .object(["committed": .bool(true)]))
+    }
+    guard case .preparedCard(let card) = transaction.stage, transaction.pending == nil else {
+      throw Wire.Failure.invalid(Copy.signInMovedOn)
+    }
+    prepareCard(transaction, id: card.id, revision: card.revision, commit: true, call: call)
+  }
+
+  private func prepareCard(_ transaction: Transaction, id: String, revision: Int64, commit: Bool, call: HeldCall) {
+    if let refusal = releaseRefusal { return refuse(transaction, refusal, call) }
+    hold(transaction, .approve, call) { serial in
+      do {
+        let cards = try await self.vault.cardChoices()
+        guard self.isCurrent(transaction, serial) else { return }
+        transaction.pending = nil
+        if let refusal = self.releaseRefusal { return self.refuse(transaction, refusal, call) }
+        guard transaction.expiresAt > Date() else {
+          self.reply(call, failure: Wire.Failure(.unavailable, "This sign-in expired."))
+          return self.expire(transaction)
+        }
+        guard let card = cards.first(where: { $0.id == id && $0.revision == revision }) else {
+          transaction.stage = .choosingCards(cards)
+          return self.reply(call, commit ? .object(["committed": .bool(false)]) : Wire.cardChoices(cards, message: Copy.accountChanged))
+        }
+        transaction.stage = commit ? .authorizedCard(card) : .preparedCard(card)
+        self.reply(call, commit ? .object(["committed": .bool(true)]) :
+          .object(["decision": .string("authorized"), "card": card.descriptor]))
+      } catch {
+        guard self.isCurrent(transaction, serial) else { return }
+        self.vaultFailed(transaction, error)
+      }
+    }
+  }
+
+  private func releaseCard(_ params: Wire.CardReleaseParams, call: HeldCall) throws {
+    guard let transaction = transactions[params.transactionId], transaction.connectionID == call.connectionID,
+      transaction.isCard, transaction.expiresAt > Date(), case .authorizedCard(let card) = transaction.stage else {
+      return reply(call, Wire.cardRefused("ended"))
+    }
+    guard transaction.pending == nil else { throw Wire.Failure.invalid(Copy.signInMovedOn) }
+    guard condition == .ready else { return reply(call, Wire.cardRefused("revoked")) }
+    guard agentSignInsSetting else { return reply(call, Wire.cardRefused("passwords-off")) }
+    hold(transaction, .release, call) { serial in
+      do {
+        let result = try await self.vault.releaseCard(params, card: card, site: transaction.request.site,
+          authority: transaction.authority, expiresAt: transaction.expiresAt)
+        guard self.isCurrent(transaction, serial) else { return }
+        transaction.pending = nil
+        guard transaction.expiresAt > Date() else {
+          self.reply(call, Wire.cardRefused("ended"))
+          return self.expire(transaction)
+        }
+        guard self.condition == .ready else { return self.reply(call, Wire.cardRefused("revoked")) }
+        guard self.agentSignInsSetting else { return self.reply(call, Wire.cardRefused("passwords-off")) }
+        if case .object(let fields) = result, fields["released"] == .bool(true), !transaction.used {
+          transaction.used = true
+          self.record(transaction, outcome: .used)
+        }
+        self.reply(call, result)
+      } catch {
+        guard self.isCurrent(transaction, serial) else { return }
+        transaction.pending = nil
+        self.reply(call, Wire.cardRefused("revoked"))
+      }
     }
   }
 
@@ -736,14 +889,17 @@ public final class Broker: IPCServerDelegate {
   }
 
   private func record(_ transaction: Transaction, outcome: ActivityOutcome) {
+    if transaction.isCard && outcome != .used { return }
     let request = transaction.request
+    let card: Wire.CardChoice?
+    if case .authorizedCard(let chosen) = transaction.stage { card = chosen } else { card = nil }
     activity.append(
       ActivityEntry(
         at: Date(), site: request.siteHost, account: transaction.account,
         deployment: Display.clean(request.deploymentName, limit: 120),
         workspace: Display.clean(request.workspaceName, limit: 120),
         thread: Display.clean(request.threadTitle, limit: 200), automatic: transaction.automatic,
-        outcome: outcome))
+        outcome: outcome, brand: card?.brand, lastFour: card?.lastFour))
     notify(.changed)
   }
 
@@ -788,7 +944,20 @@ public final class Broker: IPCServerDelegate {
     endImport()
     apply(await vault.examine())
     agentSignInsSetting = await vault.agentSignIns()
+    await readContents()
     publish()
+  }
+
+  /// Unknown reads as not empty: the window then shows the list it can always open.
+  private func readContents() async {
+    vaultIsEmpty = condition == .ready ? ((try? await vault.isEmpty()) ?? false) : false
+  }
+
+  /// After a change to what is saved: the window may move on to the next step.
+  private func contentsChanged() async {
+    let wasEmpty = vaultIsEmpty
+    await readContents()
+    if vaultIsEmpty != wasEmpty { notify(.changed) }
   }
 
   private func apply(_ next: VaultCondition) {
@@ -805,6 +974,7 @@ public final class Broker: IPCServerDelegate {
     apply(next)
     agentSignInsSetting = await vault.agentSignIns()
     if next == .ready { beginVisit(authentication) }
+    await readContents()
     publish()
   }
 
@@ -821,6 +991,7 @@ public final class Broker: IPCServerDelegate {
     endImport()
     apply(try await vault.startFresh(authentication))
     agentSignInsSetting = await vault.agentSignIns()
+    await readContents()
     publish()
   }
 
@@ -883,6 +1054,60 @@ public final class Broker: IPCServerDelegate {
   public func deleteLogin(id: String) async throws -> [LoginSummary]? {
     let visit = try useVisit()
     return try await windowChange(visit) { _ in VaultChanges(delete: [id]) }
+  }
+
+  public func listCards() async throws -> [Wire.CardChoice] {
+    let live = try useVisit()
+    let cards = try await vaultWork { try await self.vault.cardChoices() }
+    guard visit?.serial == live.serial else { throw VaultServiceError.windowLocked }
+    return cards
+  }
+
+  public func cardForEditing(id: String) async throws -> CardItem {
+    let live = try useVisit()
+    let card = try await vaultWork { try await self.vault.readCard(id: id) }
+    guard visit?.serial == live.serial else { throw VaultServiceError.windowLocked }
+    return card
+  }
+
+  public func saveCard(_ draft: CardDraft, id: String? = nil) async throws {
+    try draft.validate()
+    var live = try useVisit()
+    let current: CardItem?
+    if let id { current = try await cardForEditing(id: id) } else { current = nil }
+    guard visit?.serial == live.serial else { throw VaultServiceError.windowLocked }
+    if let current, !current.draft.number.utf8.elementsEqual(draft.number.utf8) {
+      _ = try await authenticateForWindow("Change this saved card’s number")
+      guard visit?.serial == live.serial else { throw VaultServiceError.windowLocked }
+      live = try useVisit()
+    }
+    let authentication = live.authentication
+    _ = try await vaultWork {
+      try await self.vault.change(authentication) { unlocked in
+        if let current {
+          var saved = try unlocked.card(id: current.id)
+          guard saved.revision == current.revision else { throw VaultError.headMoved }
+          saved.draft = draft
+          return VaultChanges(updateCards: [saved])
+        }
+        return VaultChanges(addCards: [draft])
+      }
+    }
+    await contentsChanged()
+    guard visit?.serial == live.serial else { throw VaultServiceError.windowLocked }
+  }
+
+  public func deleteCard(id: String) async throws {
+    let live = try useVisit()
+    let authentication = live.authentication
+    _ = try await vaultWork {
+      try await self.vault.change(authentication) { unlocked in
+        _ = try unlocked.card(id: id)
+        return VaultChanges(delete: [id])
+      }
+    }
+    await contentsChanged()
+    guard visit?.serial == live.serial else { throw VaultServiceError.windowLocked }
   }
 
   /// Remove on "Allowed for agents in": it only reduces what agents may do,
@@ -967,6 +1192,7 @@ public final class Broker: IPCServerDelegate {
     let list = try await vaultWork {
       try await self.vault.change(authentication ?? asking.authentication, listing: true, build)
     }
+    await contentsChanged()
     return visit?.serial == asking.serial ? list : nil
   }
 
@@ -1030,7 +1256,9 @@ public final class Broker: IPCServerDelegate {
       live.serial == open.visit
     else { throw VaultServiceError.noImport }
     defer { endImport(id) }
-    return try await vault.commitImport(id)
+    let count = try await vault.commitImport(id)
+    await contentsChanged()
+    return count
   }
 
   /// Ends import `id`, or whichever is open when nil, whatever the sheet

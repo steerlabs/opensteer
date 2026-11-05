@@ -1,7 +1,5 @@
-import { voiceExcludedTools } from "../agents/voice-tools.js";
 import { IntegrationCallOutputSchema } from "@opensteer/agent-tools/outputs";
 import { z } from "zod";
-import { formatIssues } from "@opensteer/shared/validationIssues";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -17,17 +15,20 @@ import {
   toolsFor,
   agentToolAnnotations,
   connectionInstructions,
+  agentToolFailureResult,
+  agentToolRecordResult,
   type AgentTool,
 } from "@opensteer/agent-tools";
 import { OpensteerError, RequestIdSchema, ThreadIdSchema, type Thread } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
 import { advertisedJsonSchema } from "@opensteer/shared/advertisedJsonSchema";
 import { safeMessage } from "@opensteer/shared/safeMessage";
-import { requestPendingHeader, requestPendingStopText } from "@opensteer/shared/requestParking";
+import { requestPendingGuidance } from "@opensteer/shared/requestGuidance";
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { mcpToolCallId } from "../integrations/mcp-call-id.js";
+import { agentToolFailure, internalToolFailureCode } from "./agent-tool-failure.js";
 import { mcpResourceMetadataPath } from "./connections/connection-oauth.js";
 import { AgentCallerResolver, type AgentCaller } from "./agent-caller.js";
 import { toolAccess } from "./tool-access.js";
@@ -57,21 +58,22 @@ export class OpensteerMcpService {
     readonly callers: Pick<AgentCallerResolver, "authenticate">;
     readonly handlers: AgentToolHandlers;
     readonly realtime?: Pick<RealtimeHub, "observe">;
-    readonly store: Pick<
-      OpensteerStore,
-      "getThreadForOwner" | "findMainWorkspaceForOwner" | "voiceCallForRun"
-    > & { readonly requests: Pick<OpensteerStore["requests"], "get"> };
+    readonly store: Pick<OpensteerStore, "getThreadForOwner" | "findMainWorkspaceForOwner"> & {
+      readonly requests: Pick<OpensteerStore["requests"], "get">;
+    };
     readonly publicUrl: URL;
+    /** A failure the caller was told only that something went wrong. */
+    readonly onToolError?: (error: unknown, tool: string) => void;
   };
   constructor(options: {
     readonly callers: Pick<AgentCallerResolver, "authenticate">;
     readonly handlers: AgentToolHandlers;
     readonly realtime?: Pick<RealtimeHub, "observe">;
-    readonly store: Pick<
-      OpensteerStore,
-      "getThreadForOwner" | "findMainWorkspaceForOwner" | "voiceCallForRun"
-    > & { readonly requests: Pick<OpensteerStore["requests"], "get"> };
+    readonly store: Pick<OpensteerStore, "getThreadForOwner" | "findMainWorkspaceForOwner"> & {
+      readonly requests: Pick<OpensteerStore["requests"], "get">;
+    };
     readonly publicUrl: URL;
+    readonly onToolError?: (error: unknown, tool: string) => void;
   }) {
     this.options = options;
     this.#runtimeOrigin = options.publicUrl;
@@ -129,7 +131,6 @@ export class OpensteerMcpService {
       extra: {
         disconnected: disconnected.signal,
         caller: authorization,
-        parkForRequest: () => response.setHeader(requestPendingHeader, "1"),
       },
     };
     const sessionId = singleHeader(request.headers["mcp-session-id"]);
@@ -374,43 +375,25 @@ export class OpensteerMcpService {
           if (tool.output === IntegrationCallOutputSchema)
             return IntegrationCallOutputSchema.parse(result);
           const currentCaller = resolvedCaller ?? caller;
-          let parking = false;
+          let pendingRequest = false;
           if (
             currentCaller.kind === "run" &&
             result.status === "pending" &&
-            typeof result.requestId === "string" &&
-            !(await this.options.store.voiceCallForRun(currentCaller.claims.runId))
+            typeof result.requestId === "string"
           ) {
             const id = RequestIdSchema.safeParse(result.requestId);
             const request = id.success ? await this.options.store.requests.get(id.data) : null;
-            parking =
+            pendingRequest =
               request?.mode === "durable" &&
               request.status === "pending" &&
               request.originatingRunId === currentCaller.claims.runId;
-            const park = extra.authInfo?.extra?.parkForRequest;
-            if (parking && typeof park === "function") park();
           }
-          return {
-            content: [
-              { type: "text" as const, text: JSON.stringify(result) },
-              ...(parking ? [{ type: "text" as const, text: requestPendingStopText }] : []),
-            ],
-            structuredContent: result,
-            ...(result.isError === true ? { isError: true } : {}),
-          };
+          return agentToolRecordResult(result, pendingRequest ? requestPendingGuidance : undefined);
         } catch (error) {
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text:
-                  error instanceof z.ZodError
-                    ? `invalid_arguments: ${formatIssues(error.issues)}`
-                    : safeMessage(error, safeMessageOptions),
-              },
-            ],
-            isError: true,
-          };
+          const failure = agentToolFailure(error, tool.access);
+          if (failure.code === internalToolFailureCode && !extra.signal.aborted)
+            this.options.onToolError?.(error, tool.name);
+          return agentToolFailureResult(failure);
         }
       });
     }
@@ -436,12 +419,6 @@ export class OpensteerMcpService {
     let caller = identity.caller ?? (await this.options.callers.authenticate(bearer));
     const key = toolOperationKey(caller, input, identity.operationKey);
     const check = async () => {
-      if (
-        caller.kind === "run" &&
-        voiceExcludedTools.has(tool.name) &&
-        (await this.options.store.voiceCallForRun(caller.claims.runId))
-      )
-        throw new OpensteerError({ code: "forbidden", message: "Hand durable work to Chat." });
       toolAccess[tool.access](caller, await this.#targets(caller, tool, input));
       if (!toolsFor(caller).some((spec) => spec.name === tool.name))
         throw new OpensteerError({

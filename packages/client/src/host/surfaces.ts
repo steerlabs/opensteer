@@ -82,9 +82,11 @@ export type SurfaceDestination<
       readonly display?: string;
       readonly machineId: string;
     } & NativeDestinationSource<Source>);
-export type WorkspaceSurfaceDestination = SurfaceDestination<NativeViewerSource>;
+export type WorkspaceSurfaceDestination =
+  | SurfaceDestination<NativeViewerSource>
+  | { readonly kind: "opensteer-app"; readonly appId: string };
 export function nativeViewerSource(
-  destination: Exclude<WorkspaceSurfaceDestination, { kind: "browser" }>,
+  destination: Extract<WorkspaceSurfaceDestination, { kind: "app" | "phone" }>,
 ): NativeViewerSource {
   if (destination.source) return destination.source;
   return { kind: "task-session", sessionId: destination.computerSessionId! };

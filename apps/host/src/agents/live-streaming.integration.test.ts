@@ -7,8 +7,7 @@ import { fileURLToPath } from "node:url";
 import { ModelSelectionSchema, type RunId, type ThreadId } from "@opensteer/core";
 import { HarnessRegistry, isolatedServiceHarnessRuntimeBoundary } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
-import { sql } from "kysely";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { startVerticalStack, type VerticalStack } from "./vertical-stack.test-support.js";
 
@@ -366,18 +365,24 @@ integration("live streaming across the deployment", () => {
       .select("connectionGeneration")
       .executeTakeFirstOrThrow();
 
-    // The refused Run's binding is no longer current, so the Host refuses the
-    // next event its engine reports.
-    await sql`
-      update provider_sessions
-      set lease_expires_at = now() - interval '1 second'
-      where id = (select provider_session_id from runs where id = ${refused})
-    `.execute(active.host.store.database);
+    // An invalid ordinal triggers the real store's refusal without racing lease
+    // recovery, which may requeue an expired Run before its next event arrives.
+    const commit = active.host.store.commitRunnerEvent.bind(active.host.store);
+    vi.spyOn(active.host.store, "commitRunnerEvent").mockImplementation((input) =>
+      commit(
+        input.event.runId === refused
+          ? { ...input, event: { ...input.event, ordinal: input.event.ordinal + 1 } }
+          : input,
+      ),
+    );
     await writeFile(releaseFile, "");
 
     await waitFor(async () => (await runStatus(refused)).status === "failed", 30_000, "refused");
     await waitFor(async () => (await runStatus(healthy)).status === "completed", 60_000, "healthy");
-    expect((await runStatus(refused)).failure).toMatchObject({ code: "runner_event_refused" });
+    expect((await runStatus(refused)).failure).toMatchObject({
+      code: "runner_event_refused",
+      message: expect.stringContaining("out of sequence"),
+    });
     const connectionAfter = await active.host.store.database
       .selectFrom("runners")
       .select("connectionGeneration")

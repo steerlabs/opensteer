@@ -3,13 +3,20 @@ import { thread_delegate } from "@opensteer/agent-tools/tools";
 
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { randomUUID } from "node:crypto";
-import { BrowserSurfaceIdSchema } from "@opensteer/protocol";
+import { BrowserSurfaceIdSchema, HostToRunnerMessageSchema } from "@opensteer/protocol";
 import { resolvedInputParts } from "@opensteer/harness";
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { liveWork, type HostSnapshot } from "@opensteer/client/host";
-import { createId, zeroSequence, WorkspaceIdSchema, type WorkspaceId } from "@opensteer/core";
+import {
+  createId,
+  zeroSequence,
+  WorkspaceIdSchema,
+  HarnessInstanceIdSchema,
+  ModelSelectionSchema,
+  type WorkspaceId,
+} from "@opensteer/core";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import { decodeBrowserFrameEnvelope } from "@opensteer/protocol/browser";
 import { rawDataBuffer } from "@opensteer/shared/webSocketFrame";
@@ -17,6 +24,8 @@ import { sql } from "kysely";
 import WebSocket from "ws";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  acceptCallerRun,
+  waitForExecute,
   closed,
   connectCallerMachine,
   createMachineAccessDatabase,
@@ -94,6 +103,7 @@ async function listen(
         afterSequence: zeroSequence,
         apiVersion: hostApiVersion,
         threadId: null,
+        personShow: "accept",
         ...(placeEvents ? { placeEvents: "include" } : {}),
         type: "client.subscribe",
         workspaceId,
@@ -234,6 +244,293 @@ integration("Browser presence and conversation usage", () => {
     for (const cleanup of cleanups.splice(0).reverse()) await cleanup().catch(() => undefined);
   });
 
+  it("shows a voice Run's browser as its own Thread and clears its cursor on Stop", async () => {
+    const database = await createMachineAccessDatabase(databaseUrl!);
+    cleanups.push(() => database.drop());
+    const host = await startMachineAccessHost(database.url, { signupPolicy: "open" });
+    cleanups.push(() => host.close());
+    const caller = await connectCallerMachine(host, {
+      name: "Voice caller",
+      voice: true,
+      token: await enrollmentToken(host, {
+        allowedModules: ["agents"],
+        idempotencyKey: "voice-caller",
+        name: "Voice caller",
+      }),
+    });
+    cleanups.push(() => caller.close());
+    const main = (await host.store.findMainWorkspaceForOwner(host.ownerId))!;
+    const chat = await host.store.createThread({
+      accessMode: "approval-required",
+      createdBy: host.ownerId,
+      environmentId: caller.environmentId,
+      harnessInstanceId: HarnessInstanceIdSchema.parse(caller.harnessInstanceId),
+      idempotencyKey: "voice-chat",
+      modelSelection: ModelSelectionSchema.parse({
+        providerId: "openai",
+        modelId: "gpt-5.6-sol",
+        options: { effort: "low" },
+      }),
+      title: "Chat",
+      workspaceId: main.id,
+      home: true,
+    });
+    expect(chat.thread.id).toBeDefined();
+    const call = await host.store.startVoiceCall({
+      ownerId: host.ownerId,
+      sessionId: randomUUID(),
+      environmentId: caller.environmentId,
+      harnessInstanceId: HarnessInstanceIdSchema.parse(caller.harnessInstanceId),
+    });
+    if (call.busy) throw new Error("Expected an idle Voice Thread");
+    const executing = waitForExecute(caller.primary.socket, call.runId);
+    // Direct store admission has no server wake callback. A normal queued Chat
+    // input wakes the real coordinator, which dispatches both Threads.
+    await testRpcData(
+      host.origin,
+      "commands.dispatch",
+      {
+        type: "thread.sendMessage",
+        threadId: chat.thread.id,
+        idempotencyKey: "wake-voice",
+        content: [{ type: "text", text: "Keep this follow-up in Chat" }],
+      },
+      { headers: host.ownerHeaders },
+    );
+    const run = await acceptCallerRun(host, caller, await executing);
+    expect(run.runId).toBe(call.runId);
+    const runtime = await startBrowserRuntime(
+      host.hostPort,
+      await enrollmentToken(host, {
+        allowedModules: ["browser"],
+        idempotencyKey: "voice-browser",
+        name: "Voice browser",
+      }),
+      { agentReady: true, targetedStreaming: true, workspaceTabs: true },
+    );
+    cleanups.push(() => runtime.close());
+    await vi.waitFor(() => expect(host.runtime.browser.available).toBe(true));
+    const owner = await listen(host, host.ownerHeaders, main.id, true);
+    cleanups.push(() => owner.close());
+    const opened = await host.runtime.browser.start({
+      ownerId: host.ownerId,
+      workspaceId: main.id,
+      fresh: true,
+      origin: "workspace",
+      reuseExisting: false,
+      placement: { kind: "runner", runnerId: runtime.runnerId },
+    });
+    const sessionId = opened.session.id;
+    const cdp = await host.runtime.browser.attachCdpForAgent(
+      {
+        agentBindingId: `run:${run.runId}`,
+        ownerId: host.ownerId,
+        sessionId,
+        workspaceId: main.id,
+      },
+      () => undefined,
+    );
+    cleanups.push(async () => cdp.close());
+    runtime.sendServer({
+      type: "browser.surfaces.changed",
+      surfaces: [
+        {
+          id: "voice-page",
+          active: true,
+          title: "Private title",
+          url: "https://example.com/secret",
+          geometryRevision: 1,
+        },
+      ],
+    });
+    runtime.sendServer({
+      type: "browser.workspace-tabs",
+      tabs: [
+        {
+          id: "voice-page",
+          title: "Private title",
+          url: "https://example.com/secret",
+          order: 0,
+          openerId: null,
+        },
+      ],
+      closed: ["page-integration"],
+    });
+    const reading = cdp.request({
+      method: "Runtime.evaluate",
+      parameters: { expression: "void 0" },
+    });
+    const command = await withTimeout(
+      (async () => {
+        for (;;) {
+          const next = await runtime.nextCommand();
+          if (
+            next.type === "cdp.command" &&
+            (next.command as { method?: string }).method === "Runtime.evaluate"
+          )
+            return next;
+        }
+      })(),
+      5000,
+      { timeoutError: () => new Error("Voice browser command never reached Runtime") },
+    );
+    expect(command).toMatchObject({ type: "cdp.command", actorToken: expect.any(String) });
+    runtime.sendServer({
+      type: "browser.activity",
+      actorToken: command.actorToken,
+      surfaceId: "voice-page",
+      seq: 1,
+      geometryRevision: 1,
+      pointer: { x: 0.1, y: 0.2 },
+    });
+    runtime.sendServer({ type: "cdp.result", requestId: command.requestId, result: {} });
+    await reading;
+    await host.runtime.browser.drainRunPlaces(run.runId);
+    expect(await host.store.latestRunPlace(run.runId)).toMatchObject({
+      threadId: run.threadId,
+      data: { place: { kind: "browser", sessionId, surfaceId: "voice-page" } },
+    });
+    await host.runtime.browser.flushPendingTabDescriptors();
+    for (const target of [{ current: true }, { tabId: "voice-page" }, { current: true }]) {
+      const result = await callMcpTool(host.origin, run.toolsToken, "person_show", { target });
+      expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    }
+    await vi.waitFor(() => expect(ofType(owner, "host.show")).toHaveLength(3));
+    await vi.waitFor(() => expect(ofType(owner, "host.place-activity").length).toBeGreaterThan(0));
+    const catalog = await host.runtime.browser.readTabCatalog(host.ownerId, sessionId);
+    expect(catalog.tabs.find((tab) => tab.id === "voice-page")?.occupants).toEqual([
+      expect.objectContaining({ threadId: run.threadId, home: false }),
+    ]);
+    await host.runtime.browser.flushPendingTabDescriptors();
+    const trafficFrom = owner.messages.length;
+    for (let seq = 2; seq <= 21; seq++)
+      runtime.sendServer({
+        type: "browser.activity",
+        actorToken: command.actorToken,
+        surfaceId: "voice-page",
+        seq,
+        geometryRevision: 1,
+        pointer: { x: 0.2, y: 0.3 },
+      });
+    await vi.waitFor(() =>
+      expect(ofType(owner, "host.place-activity", trafficFrom).length).toBeGreaterThan(0),
+    );
+    await host.runtime.browser.flushPendingTabDescriptors();
+    expect(ofType(owner, "host.browser-sessions-changed", trafficFrom)).toEqual([]);
+    expect(ofType(owner, "host.tasks-changed", trafficFrom)).toEqual([]);
+    const activityFrames = ofType(owner, "host.place-activity", trafficFrom);
+    console.info("voice activity traffic", {
+      inputActivities: 20,
+      outputFrames: activityFrames.length,
+      outputBytes: Buffer.byteLength(JSON.stringify(activityFrames)),
+      bootstrapNotices: 0,
+      taskNotices: 0,
+    });
+    const brief = `Continue in sessionId ${sessionId}, tabId voice-page; ask me in Chat.`;
+    const handoff = await callMcpTool(host.origin, run.toolsToken, "thread_message", {
+      threadId: "home",
+      delivery: "queue",
+      message: brief,
+    });
+    expect(handoff.isError, JSON.stringify(handoff)).not.toBe(true);
+    const handedOff = () =>
+      host.store.database
+        .selectFrom("messages")
+        .select("id")
+        .where("threadId", "=", chat.thread.id)
+        .where(sql<boolean>`content->0->>'text' = ${brief}`)
+        .execute();
+    const queuedMessages = await handedOff();
+    expect(queuedMessages).toHaveLength(1);
+    expect(
+      (await host.store.getBrowserSessionForOwner(sessionId, host.ownerId))?.profileId,
+    ).toBeNull();
+    const requestId = await run.openLiveRequest("harness.approval");
+    const waiting = await host.store.requests.waitingOnUserPage({
+      userId: host.ownerId,
+      limit: 10,
+    });
+    expect(
+      waiting.requests.find(({ request }) => request.id === requestId)?.presentation,
+    ).toBeNull();
+    const answering = waitForMessage(caller.primary.socket, (message) => {
+      const parsed = HostToRunnerMessageSchema.safeParse(message);
+      return (
+        parsed.success &&
+        parsed.data.type === "host.command" &&
+        parsed.data.command.type === "request.resolve" &&
+        parsed.data.command.requestId === requestId
+      );
+    });
+    await testRpcData(
+      host.origin,
+      "commands.dispatch",
+      {
+        type: "request.respond",
+        requestId,
+        idempotencyKey: "answer-voice",
+        response: { kind: "choice", optionId: "allow" },
+      },
+      { headers: host.ownerHeaders },
+    );
+    const response = HostToRunnerMessageSchema.parse(await answering);
+    if (response.type !== "host.command" || response.command.type !== "request.resolve")
+      throw new Error("Approval answer did not reach the Runner");
+    expect(response.command).toMatchObject({
+      runId: run.runId,
+      requestId,
+      response: { kind: "choice", optionId: "allow" },
+    });
+    caller.primary.socket.send(
+      JSON.stringify({
+        ...caller.primary.fence,
+        type: "runner.command-accepted",
+        commandId: response.command.commandId,
+        correlationId: response.command.correlationId,
+      }),
+    );
+    await vi.waitFor(async () =>
+      expect((await host.store.requests.get(requestId))?.status).toBe("fulfilled"),
+    );
+    const abandonedRequest = await run.openLiveRequest("harness.approval");
+    const from = owner.messages.length;
+    await testRpcData(
+      host.origin,
+      "commands.dispatch",
+      {
+        type: "run.interrupt",
+        runId: run.runId,
+        threadId: run.threadId,
+        idempotencyKey: "stop-voice",
+      },
+      { headers: host.ownerHeaders },
+    );
+    // The Runner deliberately has not acknowledged interruption yet.
+    await vi.waitFor(
+      () => expect(ofType(owner, "host.place-activity-cleared", from).length).toBeGreaterThan(0),
+      {
+        timeout: 2000,
+      },
+    );
+    expect(
+      (await host.runtime.browser.readTabCatalog(host.ownerId, sessionId)).tabs.find(
+        (tab) => tab.id === "voice-page",
+      )?.occupants,
+    ).toEqual([]);
+    expect(
+      (
+        await host.store.requests.waitingOnUserPage({ userId: host.ownerId, limit: 10 })
+      ).requests.some(({ request }) => request.id === abandonedRequest),
+    ).toBe(false);
+    await run.reportInterrupted();
+    expect(await handedOff()).toEqual(queuedMessages);
+    expect(
+      (
+        await host.store.requests.waitingOnUserPage({ userId: host.ownerId, limit: 10 })
+      ).requests.some(({ request }) => request.id === requestId),
+    ).toBe(false);
+  }, 60_000);
+
   it("cold-loads all 100 × 64 tab identities and 64 × 16 occupants after missing deferred notices", async () => {
     const database = await createMachineAccessDatabase(databaseUrl!);
     cleanups.push(() => database.drop());
@@ -263,7 +560,29 @@ integration("Browser presence and conversation usage", () => {
       { agentReady: true, targetedStreaming: true },
     );
     cleanups.push(() => runtime.close());
-    await until(() => (host.runtime.browser.available ? true : undefined));
+    const producers = [runtime];
+    for (let index = 32; index < 100; index += 32) {
+      const producer = await startBrowserRuntime(
+        host.hostPort,
+        await enrollmentToken(host, {
+          allowedModules: ["browser"],
+          idempotencyKey: `maximum-browser-${index}`,
+          name: `Maximum browser ${index}`,
+        }),
+        { agentReady: true, targetedStreaming: true },
+      );
+      cleanups.push(() => producer.close());
+      producers.push(producer);
+    }
+    // A connected computer takes no Sessions until it has reconciled its profiles.
+    await until(async () => {
+      const { placements } = await host.runtime.browser.bootstrap(host.ownerId);
+      return producers.every(({ runnerId }) =>
+        placements.some((placement) => placement.available && placement.runnerId === runnerId),
+      )
+        ? true
+        : undefined;
+    });
     const sessionIds = [];
     const surfaces = Array.from({ length: 64 }, (_, order) => ({
       id: `maximum-${order}`,
@@ -275,21 +594,8 @@ integration("Browser presence and conversation usage", () => {
       geometryRevision: 1,
       openerId: null,
     }));
-    let producer = runtime;
     for (let index = 0; index < 100; index++) {
-      if (index > 0 && index % 32 === 0) {
-        producer = await startBrowserRuntime(
-          host.hostPort,
-          await enrollmentToken(host, {
-            allowedModules: ["browser"],
-            idempotencyKey: `maximum-browser-${index}`,
-            name: `Maximum browser ${index}`,
-          }),
-          { agentReady: true, targetedStreaming: true },
-        );
-        const held = producer;
-        cleanups.push(() => held.close());
-      }
+      const producer = producers[Math.floor(index / 32)]!;
       const opened = await host.runtime.browser.start({
         ownerId: host.ownerId,
         workspaceId: firstRun.workspaceId,

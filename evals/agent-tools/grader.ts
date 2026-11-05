@@ -1,6 +1,10 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { lstat, readdir, readFile, realpath } from "node:fs/promises";
 import { join, relative } from "node:path";
 import type { EvalCase } from "./cases.js";
+const exec = promisify(execFile);
+
 export interface RecordedCall {
   readonly tool: string;
   readonly args: unknown;
@@ -28,6 +32,17 @@ export function partialMatch(actual: unknown, expected: unknown): boolean {
 function toolMatches(actual: string, expected: string): boolean {
   return expected === "*" || expected.split("|").includes(actual);
 }
+function argumentMatches(
+  call: RecordedCall,
+  match: { path: readonly string[]; pattern: string },
+): boolean {
+  const value = match.path.reduce<unknown>(
+    (value, key) =>
+      value !== null && typeof value === "object" ? Reflect.get(value, key) : undefined,
+    call.args,
+  );
+  return typeof value === "string" && new RegExp(match.pattern, "u").test(value);
+}
 export function grade(
   expect: EvalCase["expect"],
   calls: readonly RecordedCall[],
@@ -40,16 +55,6 @@ export function grade(
   const add = (name: string, pass: boolean) => {
     checks.push({ name, pass });
   };
-  if (expect.endAfterPendingRequest) {
-    const pending = calls.findIndex(
-      (call) =>
-        partialMatch(call.result, { status: "pending" }) &&
-        call.result !== null &&
-        typeof call.result === "object" &&
-        typeof Reflect.get(call.result, "requestId") === "string",
-    );
-    add("endAfterPendingRequest", pending >= 0 && pending === calls.length - 1);
-  }
   for (const [i, required] of expect.calls.entries())
     add(
       `calls[${i}]:${required.tool}`,
@@ -82,14 +87,30 @@ export function grade(
     );
     add(
       `callsArgMatch[${i}]:${match.tool}`,
-      (match.first ? candidates.slice(0, 1) : candidates).some((c) => {
-        const value = match.path.reduce<unknown>(
-          (value, key) =>
-            value !== null && typeof value === "object" ? Reflect.get(value, key) : undefined,
-          c.args,
-        );
-        return c.valid && typeof value === "string" && new RegExp(match.pattern, "u").test(value);
-      }),
+      (match.first ? candidates.slice(0, 1) : candidates).some(
+        (c) => c.valid && argumentMatches(c, match),
+      ),
+    );
+  }
+  for (const [i, match] of expect.notCallsArgMatch.entries()) {
+    const boundary = calls.findIndex(
+      (c) =>
+        c.valid &&
+        toolMatches(c.tool, match.after.tool) &&
+        partialMatch(c.args, match.after.args) &&
+        partialMatch(c.result, match.after.result),
+    );
+    add(
+      `notCallsArgMatch[${i}]:${match.tool}`,
+      boundary >= 0 &&
+        !calls
+          .slice(boundary + 1)
+          .some(
+            (c) =>
+              toolMatches(c.tool, match.tool) &&
+              partialMatch(c.args, match.args) &&
+              argumentMatches(c, match),
+          ),
     );
   }
   if (expect.finalText)
@@ -130,6 +151,7 @@ export async function gradeWorkspaceFiles(
   const physicalWorkspace = await realpath(workspace);
   for (const [i, rule] of expect.files.entries()) {
     const contents: string[] = [];
+    const files: { path: string; mode: number }[] = [];
     let exists = false;
     async function visit(path: string): Promise<void> {
       if (rule.exclude.some((excluded) => join(workspace, excluded) === path)) return;
@@ -146,8 +168,12 @@ export async function gradeWorkspaceFiles(
         relative(physicalWorkspace, await realpath(path)) !== relative(workspace, path)
       )
         throw new Error(`Cannot grade symlink: ${path}`);
-      if (stat.isFile()) contents.push(await readFile(path, "utf8"));
-      else if (stat.isDirectory() && rule.recursive)
+      if (stat.isFile()) {
+        const text = await readFile(path, "utf8");
+        if (rule.matchingText && !new RegExp(rule.matchingText, "u").test(text)) return;
+        contents.push(text);
+        files.push({ path, mode: stat.mode & 0o7777 });
+      } else if (stat.isDirectory() && rule.recursive)
         for (const name of (await readdir(path)).sort())
           if (!name.startsWith(".eval-")) await visit(join(path, name));
     }
@@ -155,6 +181,42 @@ export async function gradeWorkspaceFiles(
       await visit(join(workspace, path));
     if (rule.exists !== undefined)
       checks.push({ name: `files[${i}]:exists`, pass: exists === rule.exists });
+    if (rule.count !== undefined)
+      checks.push({ name: `files[${i}]:count`, pass: files.length === rule.count });
+    if (rule.mode !== undefined)
+      checks.push({
+        name: `files[${i}]:mode`,
+        pass: files.every((file) => file.mode === rule.mode),
+      });
+    if (rule.gitIgnored !== undefined) {
+      const ignored = await Promise.all(
+        files.map(async (file) => {
+          try {
+            await exec(
+              "git",
+              [
+                "-c",
+                "core.excludesFile=/dev/null",
+                "-C",
+                workspace,
+                "check-ignore",
+                "--quiet",
+                "--",
+                file.path,
+              ],
+              { timeout: 5000 },
+            );
+            return true;
+          } catch {
+            return false;
+          }
+        }),
+      );
+      checks.push({
+        name: `files[${i}]:gitIgnored`,
+        pass: ignored.every((value) => value === rule.gitIgnored),
+      });
+    }
     for (const pattern of rule.textMust)
       checks.push({
         name: `files[${i}]:must:${pattern}`,

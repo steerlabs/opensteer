@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import { createId, HarnessIdSchema, OpensteerError } from "@opensteer/core";
+import {
+  createId,
+  HarnessIdSchema,
+  OpensteerError,
+  type HarnessInstanceId,
+  type Thread,
+  type UserId,
+} from "@opensteer/core";
 import type { HarnessInstanceRecord } from "@opensteer/database";
 import { HarnessInstanceCatalogSchema } from "@opensteer/protocol";
 import { createVoiceHandlers } from "./voice-handlers.js";
@@ -31,17 +38,32 @@ function fixture() {
     admittedAt: new Date(),
     status: "running" as const,
     threadStatus: "running" as const,
+    busy: false as const,
     revokedGrants: [],
     events: [],
   };
+  const thread = {
+    id: call.threadId,
+    providerSessionId: createId("providerSession"),
+  } as unknown as Thread;
   const store = {
     startVoiceCall: vi.fn(async () => call),
     resolveVoiceCall: vi.fn(async (): Promise<typeof call | undefined> => call),
     stopVoiceCall: vi.fn(async () => undefined),
     environmentIsAvailableToUser: vi.fn(async () => true),
-    listAgentHarnessInstancesForUser: vi.fn(async (): Promise<readonly HarnessInstanceRecord[]> => [
-      profile,
-    ]),
+    listAgentHarnessInstancesForUser: vi.fn(
+      async (
+        _ownerId: UserId,
+        _filter?: { id?: HarnessInstanceId; limit?: number },
+      ): Promise<readonly HarnessInstanceRecord[]> => [profile],
+    ),
+    openVoiceThread: vi.fn(async () => ({
+      threadId: call.threadId,
+      environmentId,
+      harnessInstanceId,
+      events: [],
+    })),
+    getThreadForOwner: vi.fn(async () => thread),
     getHarnessCatalog: vi.fn(async () =>
       HarnessInstanceCatalogSchema.parse({
         driverKind: "codex",
@@ -77,11 +99,14 @@ function fixture() {
       answer: "answer",
     })),
   };
+  const threads = { configure: vi.fn(async () => ({}) as never) };
   return {
     call,
     store,
     runners,
-    handlers: createVoiceHandlers({ store, runners }),
+    thread,
+    threads,
+    handlers: createVoiceHandlers({ store, runners, threads }),
     context: testHostApiContext(userId),
     input: { environmentId, harnessInstanceId, sessionId, offer: "private-offer" },
   };
@@ -112,6 +137,70 @@ describe("Host voice Run relay", () => {
       f.context.signal,
     );
   });
+  it("waits for what is finishing on the Voice Thread, then takes it", async () => {
+    const f = fixture();
+    f.store.startVoiceCall.mockResolvedValueOnce({
+      busy: true,
+      revokedGrants: [],
+      events: [],
+    } as never);
+    expect((await f.handlers["voice.start"](f.input, f.context)).ok).toBe(true);
+    expect(f.store.startVoiceCall).toHaveBeenCalledTimes(2);
+  });
+
+  it("creates the Voice Thread for a usable account, and refuses any other", async () => {
+    const f = fixture();
+    const { environmentId, harnessInstanceId } = f.input;
+    expect(await f.handlers["voice.open"]({ environmentId, harnessInstanceId }, f.context)).toEqual(
+      { ok: true, data: { threadId: f.call.threadId, environmentId, harnessInstanceId } },
+    );
+    f.store.environmentIsAvailableToUser.mockResolvedValueOnce(false);
+    await expect(
+      f.handlers["voice.open"]({ environmentId, harnessInstanceId }, f.context),
+    ).rejects.toMatchObject({ reason: "voice-account-unavailable" });
+  });
+
+  it("moves the Voice Thread off an account it can no longer use", async () => {
+    const f = fixture();
+    const gone = createId("harnessInstance");
+    const opened = {
+      threadId: f.call.threadId,
+      environmentId,
+      harnessInstanceId: gone,
+      events: [],
+    };
+    f.store.openVoiceThread.mockResolvedValue(opened);
+    f.store.listAgentHarnessInstancesForUser.mockImplementation(async (_owner, filter) =>
+      filter?.id === gone ? [] : [profile],
+    );
+    const account = { environmentId, harnessInstanceId };
+
+    expect(await f.handlers["voice.open"](account, f.context)).toEqual({
+      ok: true,
+      data: { threadId: f.call.threadId, ...account },
+    });
+    expect(f.threads.configure).toHaveBeenCalledExactlyOnceWith(
+      { kind: "person", userId },
+      expect.objectContaining({
+        continuation: { expectedProviderSessionId: f.thread.providerSessionId },
+        harnessInstanceId,
+        threadId: f.call.threadId,
+        type: "thread.execution.update",
+      }),
+    );
+
+    // Still usable, it stays, whichever account this device would have picked.
+    f.threads.configure.mockClear();
+    f.store.listAgentHarnessInstancesForUser.mockImplementation(async (_owner, filter) => [
+      { ...profile, id: filter?.id ?? harnessInstanceId },
+    ]);
+    expect(await f.handlers["voice.open"](account, f.context)).toEqual({
+      ok: true,
+      data: { threadId: f.call.threadId, environmentId, harnessInstanceId: gone },
+    });
+    expect(f.threads.configure).not.toHaveBeenCalled();
+  });
+
   it("stops admission on relay failure and never exposes SDP in errors", async () => {
     const f = fixture();
     f.runners.voice.mockRejectedValue(new Error("private-offer"));

@@ -14,7 +14,7 @@ Visibility follows Thread reach. Control actions require an anchor access mode n
 Programs use the same MCP as Runs with the program tool list. They may observe tasks with
 `thread_wait`; Runs instead end their turn for continuation. `computer`, `sign_in` and person
 message/show tools are Run-only. Delegate when agent judgment or a Run-only tool is needed.
-Programs cannot approve, grant access, handle credentials or raise their ceiling.
+Programs cannot approve, grant access, handle sign-in credentials or raise their ceiling.
 
 Manual runs have real side effects and work only for non-archived schedules and webhooks. Avoid duplicate effects while outcomes are unknown. Respect site limits and never bypass a block by changing identity or session.
 

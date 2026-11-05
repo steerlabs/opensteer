@@ -1,6 +1,7 @@
 import { requestSettlementLabel } from "./request-settlement.js";
 import { BrowserSignInRequestResponseSchema } from "@opensteer/protocol/browser-sources";
 import { browserSiteLabel } from "./browser-sign-in.js";
+import { cardUseTitle } from "./cards.js";
 import { passwordSignInOutcome, passwordSignInReceipt } from "./passwords.js";
 import {
   contentSaysSomething,
@@ -59,6 +60,9 @@ export function foldTranscriptEvent(
   event: AgentEvent,
 ): TranscriptEntry[] {
   switch (event.type) {
+    // The person's words arrive as the `message.created` the Host made of this.
+    case "voice.heard":
+      return [...entries];
     case "app.published":
       if (
         entries.some(
@@ -1099,21 +1103,24 @@ function toolEntryId(runId: string | null, callId: string): string {
 export function requestReceipt(
   request: Extract<Request, { status: "declined" | "fulfilled" | "withdrawn" }>,
 ): RequestReceiptEntry {
-  const passwordsSetUpSite = browserSignInPasswordsSetUpSite(request);
+  const passwordsOffer = browserSignInPasswordsOffer(request);
   return {
     createdAt: request.resolvedAt,
     ...(request.status === "declined" ? { declined: true } : {}),
     id: `request:${request.id}`,
     kind: "request",
     outcome: requestOutcome(request),
-    ...(passwordsSetUpSite === null ? {} : { passwordsSetUpSite }),
+    ...(passwordsOffer === null ? {} : { passwordsOffer }),
     requestId: request.id,
     requestKind: request.kind,
     runId: request.originatingRunId,
     ...(request.kind === "browser.password-sign-in"
       ? { succeeded: passwordSignInOutcome(request)?.signedIn ?? false }
       : {}),
-    title: requestTitleText(request.presentation),
+    title:
+      request.payload.kind === "browser.password-sign-in" && request.payload.credential === "card"
+        ? cardUseTitle(request.payload.site)
+        : requestTitleText(request.presentation),
     ...(request.mode === "live" ? { waitedSince: request.createdAt } : {}),
   };
 }
@@ -1149,15 +1156,15 @@ function requestOutcome(request: Request): string {
   return prefix;
 }
 
-function browserSignInPasswordsSetUpSite(request: Request): string | null {
+function browserSignInPasswordsOffer(
+  request: Request,
+): NonNullable<RequestReceiptEntry["passwordsOffer"]> | null {
   if (request.payload.kind !== "browser.sign-in" || request.status !== "fulfilled") return null;
   const response = BrowserSignInRequestResponseSchema.safeParse(
     request.response.kind === "external" ? request.response.value : null,
   );
-  return response.success &&
-    response.data.outcome === "not-signed-in" &&
-    response.data.passwords === "not-set-up"
-    ? request.payload.site
+  return response.success && response.data.outcome === "not-signed-in" && response.data.passwords
+    ? { need: response.data.passwords, site: request.payload.site }
     : null;
 }
 

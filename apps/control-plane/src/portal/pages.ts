@@ -4,6 +4,7 @@ import {
   brandMark,
   bridge,
   escapeHtml,
+  appleMark,
   googleMark,
   icon,
   renderBrowserPage,
@@ -76,10 +77,14 @@ export function signInBody(input: {
   readonly hiddenFields: string;
   readonly reauthorization: boolean;
   readonly hostedOAuth?: boolean;
+  readonly appleSignIn?: boolean;
 }): string {
+  const apple = input.appleSignIn
+    ? `<form method="post" action="/sign-in/apple">${input.hiddenFields}<button class="btn btn--block btn--apple" type="submit">${appleMark()}Continue with Apple</button></form>`
+    : "";
   return card({
     head: `${brandMark()}<h1 class="title">${input.reauthorization ? "Confirm it’s you" : "Sign in to Opensteer"}</h1>`,
-    content: `${input.hostedOAuth ? '<p class="lead">Use the Opensteer Account linked to that Opensteer to continue connecting.</p>' : ""}<form method="post" action="/sign-in/google">${input.hiddenFields}<button class="btn btn--block" type="submit">${googleMark()}Continue with Google</button></form>`,
+    content: `${input.hostedOAuth ? '<p class="lead">Use the Opensteer Account linked to that Opensteer to continue connecting.</p>' : ""}<div class="sign-in-options">${apple}<form method="post" action="/sign-in/google">${input.hiddenFields}<button class="btn btn--block" type="submit">${googleMark()}Continue with Google</button></form></div>`,
   });
 }
 
@@ -184,9 +189,60 @@ export function portalRestartBody(signInHref: string): string {
   });
 }
 
+export function deleteAccountBody(input: {
+  readonly action: string;
+  readonly computers: readonly string[];
+  readonly email: string;
+  readonly failed: boolean;
+  readonly servers: readonly { readonly name: string; readonly otherMembers: number }[];
+}): string {
+  const list = (items: readonly string[]) =>
+    `<ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
+  const computers = input.computers.length
+    ? `<p class="lead">These computers lose remote access and leave your Account. Opensteer keeps running on them, with their files and conversations. Apps connected through Opensteer’s sign-in will need reconnecting.</p>${list(input.computers)}`
+    : "";
+  const servers = input.servers.length
+    ? `<p class="lead">These servers stop accepting Opensteer Account sign-in, for you and anyone else who uses them.</p>${list(
+        input.servers.map(({ name, otherMembers }) =>
+          otherMembers === 0
+            ? name
+            : `${name} (${otherMembers} other ${otherMembers === 1 ? "person" : "people"})`,
+        ),
+      )}`
+    : "";
+  const failed = input.failed
+    ? `<p class="lead" role="alert">Your Account wasn’t deleted. Remote access may already be off on these computers. Try again, or turn it back on from each computer.</p>`
+    : "";
+  return card({
+    head: `${brandMark()}<h1 class="title">Delete your Opensteer Account?</h1>`,
+    content: `<p class="lead">This permanently deletes ${escapeHtml(input.email)}. It can’t be undone.</p>${failed}${computers}${servers}
+      <form method="post" action="${escapeHtml(input.action)}"><div class="actions"><a class="btn" href="/">Keep Account</a><button class="btn btn--danger" type="submit">Delete Account</button></div></form>`,
+  });
+}
+
+export function accountDeletedBody(): string {
+  return statusPageBody({
+    detail: "You can close this window.",
+    mark: "check",
+    title: "Your Opensteer Account is deleted",
+    tone: "ok",
+  });
+}
+
+export function differentAccountBody(retryHref: string): string {
+  return statusPageBody({
+    action: { href: retryHref, label: "Try again" },
+    detail: "Nothing was deleted. Sign in with the Account you want to delete.",
+    mark: "person",
+    title: "That’s a different Account",
+    tone: "warn",
+  });
+}
+
 export function portalHomeBody(input: {
   readonly account: AccountIdentity;
   readonly desktopDownloadUrl: string | null;
+  readonly deleteAccountHref: string;
   readonly rows: readonly string[];
   readonly signOutAction: string;
 }): string {
@@ -197,6 +253,7 @@ export function portalHomeBody(input: {
     <div class="menu" id="account-menu" popover>
       <div class="menu__who">${avatar(label)}<span>${account.displayName ? `<strong>${escapeHtml(account.displayName)}</strong>` : ""}<small>${escapeHtml(account.email)}</small></span></div>
       <form method="post" action="${escapeHtml(input.signOutAction)}"><button class="menu__item" type="submit">${icon("signOut")}Sign out</button></form>
+      <a class="menu__item" href="${escapeHtml(input.deleteAccountHref)}">${icon("trash")}Delete Account</a>
     </div>
   </header>`;
   // Without the popover API the menu cannot open, so sign-out stays reachable

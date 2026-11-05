@@ -14,7 +14,8 @@ export function hostServerTestDependencies(
   overrides: HostServerTestOverrides = {},
 ): HostServerDependencies {
   return {
-    apps: inert(),
+    // Not inert: bootstrap lists open app tabs for every viewer.
+    apps: { listTabs: async () => [] } as unknown as HostServerDependencies["apps"],
     attachments: inert(),
     runToolTokens: inert(),
     agentTools: inert(),

@@ -1,15 +1,19 @@
 import type { PersonShowMessage } from "@opensteer/protocol";
 import { BrowserSurfaceIdSchema, ThreadIdSchema } from "@opensteer/core";
 import { VoiceSessionIdSchema, type VoiceView } from "@opensteer/protocol/voice";
-import { classifyClientFailure } from "../connections/operation-error.js";
-import { toolPresentation, type ActivityIcon } from "../host/agent-activity-model.js";
+import {
+  callPasswordsOffer,
+  toolPresentation,
+  type ActivityIcon,
+} from "../host/agent-activity-model.js";
 import type { HostClient, HostSnapshot } from "../host/client.js";
-import { chatExecutionSelection } from "../host/model-catalog.js";
 import { heldThread } from "../host/task-list.js";
-import { threadPlacementOptions } from "../host/thread-placement.js";
+import { requestsWaitingOn } from "../host/waiting-requests.js";
 import { createCodexVoiceProvider, type CodexVoiceProviderInput } from "./codex-provider.js";
 import {
   VoiceStartError,
+  idleVoiceSnapshot,
+  type VoiceAsk,
   type VoiceCall,
   type VoiceCallEvent,
   type VoiceCallIdentity,
@@ -28,8 +32,8 @@ export interface VoiceAccount {
   readonly harnessInstanceId: string;
 }
 
-export function voiceAccount(snapshot: HostSnapshot): VoiceAccount | null {
-  const eligible = snapshot.environments.flatMap((environment) =>
+function voiceAccounts(snapshot: HostSnapshot): readonly VoiceAccount[] {
+  return snapshot.environments.flatMap((environment) =>
     environment.harnessCatalogs
       .filter(
         (catalog) =>
@@ -52,6 +56,10 @@ export function voiceAccount(snapshot: HostSnapshot): VoiceAccount | null {
         harnessInstanceId: catalog.harnessInstanceId,
       })),
   );
+}
+
+export function voiceAccount(snapshot: HostSnapshot): VoiceAccount | null {
+  const eligible = voiceAccounts(snapshot);
   const home = snapshot.homeThreadId ? heldThread(snapshot, snapshot.homeThreadId) : null;
   return (
     eligible.find(
@@ -64,9 +72,11 @@ export function voiceAccount(snapshot: HostSnapshot): VoiceAccount | null {
   );
 }
 
-function chatSelection(snapshot: HostSnapshot) {
-  const placements = threadPlacementOptions(snapshot.environments, snapshot.harnesses);
-  return chatExecutionSelection({ chosen: null, existing: null, placements });
+function holdsAccount(snapshot: HostSnapshot, account: VoiceAccount): boolean {
+  return voiceAccounts(snapshot).some(
+    ({ environmentId, harnessInstanceId }) =>
+      environmentId === account.environmentId && harnessInstanceId === account.harnessInstanceId,
+  );
 }
 
 const noticeCopy: Record<VoiceNoticeKind, string> = {
@@ -74,8 +84,6 @@ const noticeCopy: Record<VoiceNoticeKind, string> = {
   "microphone-unavailable": "No microphone is available.",
   "insecure-context":
     "Voice needs a secure connection. Open Opensteer over https or on this computer.",
-  "choose-ai": "Choose an AI for Chat, then talk to Opensteer.",
-  "chat-required": "Set up Chat first, then talk to Opensteer.",
   "no-account": "Voice needs a ChatGPT account signed in to Codex on one of your computers.",
   "update-computer": "Update Opensteer on that computer to use voice.",
   "update-codex": "Update Codex to use voice.",
@@ -118,8 +126,8 @@ interface VoiceSession {
   readonly id: string;
   readonly abort: AbortController;
   readonly baseline: HostSnapshot;
-  /** Main's Workspace position as the baseline was taken, so late Chat history can't hide news. */
-  readonly position: import("@opensteer/core").Sequence | null;
+  /** The account the Host opened this call on, which outlives any later choice of Chat's. */
+  account: VoiceAccount | null;
   call: VoiceCall | null;
   speaker: VoiceSpeaker | null;
   releaseThread: (() => void) | null;
@@ -153,16 +161,7 @@ export class VoiceController {
   constructor(input: VoiceControllerInput) {
     this.#input = input;
     this.#timers = voiceTimers(input);
-    this.#snapshot = {
-      available: this.#available(),
-      phase: "idle",
-      muted: false,
-      heard: null,
-      spoken: null,
-      since: null,
-      activity: null,
-      notice: null,
-    };
+    this.#snapshot = { ...idleVoiceSnapshot, available: this.#available() };
     this.#unsubscribe = input.hostClient.subscribe(() => this.#hostChanged());
   }
 
@@ -208,19 +207,13 @@ export class VoiceController {
       this.#publish({ notice: notice("no-account") });
       return;
     }
-    if (!baseline.homeThreadId && !chatSelection(baseline)) {
-      this.#publish({ notice: notice("choose-ai") });
-      return;
-    }
     const media = this.#input.media;
     if (!media || !baseline.voiceAvailable) return;
     const session: VoiceSession = {
       id: VoiceSessionIdSchema.parse(this.#input.createId()),
       abort: new AbortController(),
       baseline,
-      position: baseline.homeWorkspaceId
-        ? this.#input.hostClient.workspacePosition(baseline.homeWorkspaceId)
-        : null,
+      account: null,
       call: null,
       speaker: null,
       releaseThread: null,
@@ -244,15 +237,23 @@ export class VoiceController {
       spoken: null,
       since: null,
       activity: null,
+      tasks: 0,
+      ask: null,
     });
     try {
       await this.#input.onStart?.();
       if (this.#session !== session) return;
-      // A call's agent is a child of Chat, so the first call sets Chat up.
-      if (!baseline.homeThreadId && !(await this.#createChat(session))) return;
+      const opened = await this.#open();
+      if (this.#session !== session) return;
+      if (!opened) {
+        await this.#end(session, "connection-failed");
+        return;
+      }
+      session.account = opened;
       const provider = (this.#input.createProvider ?? createCodexVoiceProvider)({
         ...this.#input,
-        ...account,
+        environmentId: opened.environmentId,
+        harnessInstanceId: opened.harnessInstanceId,
         rpc: this.#input.hostClient.rpc,
         media,
         createId: () => session.id,
@@ -273,7 +274,6 @@ export class VoiceController {
       session.speaker = new VoiceSpeaker({
         ...this.#input,
         baseline,
-        position: session.position,
         callThreadId: call.identity.threadId,
         say: (id, text) => call.say(id, text),
         onError: () => {
@@ -283,6 +283,7 @@ export class VoiceController {
       this.#publish({ since: this.#timers.now() });
       this.#touch(session);
       this.#readActivity(session);
+      this.#readWork(session, this.#input.hostClient.getSnapshot());
       this.#settlePhase(session);
       this.refreshContext(true);
     } catch (error) {
@@ -296,6 +297,25 @@ export class VoiceController {
 
   stop(): Promise<void> {
     return this.#session ? this.#end(this.#session) : Promise.resolve();
+  }
+
+  /** The person's Voice Thread, created the first time anyone needs it. */
+  async openThread(): Promise<string | null> {
+    const known = this.#input.hostClient.getSnapshot().voiceThreadId;
+    return known ?? (await this.#open())?.threadId ?? null;
+  }
+
+  /** The Host names the Thread's own account, which may not be the one this client would pick. */
+  async #open() {
+    const host = this.#input.hostClient;
+    const snapshot = host.getSnapshot();
+    const account = voiceAccount(snapshot);
+    if (!account) return null;
+    const result = await host.rpc["voice.open"]({
+      ...account,
+      accessMode: snapshot.executionPreferences.accessMode,
+    });
+    return result.ok ? result.data : null;
   }
   setMuted(muted: boolean): void {
     if (!this.#session) return;
@@ -369,41 +389,6 @@ export class VoiceController {
     );
   }
 
-  async #createChat(session: VoiceSession): Promise<boolean> {
-    const host = this.#input.hostClient;
-    const snapshot = host.getSnapshot();
-    const placement = chatSelection(snapshot);
-    const workspaceId = snapshot.homeWorkspaceId;
-    if (!placement || !workspaceId) {
-      await this.#end(session, placement ? "chat-required" : "choose-ai");
-      return false;
-    }
-    const create = () =>
-      host.createHome({
-        environmentId: placement.environmentId,
-        harnessInstanceId: placement.harnessInstanceId,
-        workspaceId,
-        accessMode: snapshot.executionPreferences.accessMode,
-        modelSelection: placement.modelSelection,
-        idempotencyKey: `voice:${session.id}:home`,
-      });
-    try {
-      await create().catch((error: unknown) => {
-        // An unknown outcome repeats the exact command and key once.
-        if (
-          this.#session !== session ||
-          classifyClientFailure(error).classification !== "transient"
-        )
-          throw error;
-        return create();
-      });
-    } catch {
-      await this.#end(session, "connection-failed");
-      return false;
-    }
-    return this.#session === session;
-  }
-
   #available(): boolean {
     const snapshot = this.#input.hostClient.getSnapshot();
     return (
@@ -432,16 +417,46 @@ export class VoiceController {
       snapshot.user?.id !== session.baseline.user?.id ||
       snapshot.session !== "authenticated" ||
       !snapshot.voiceAvailable ||
-      JSON.stringify(voiceAccount(snapshot)) !== JSON.stringify(voiceAccount(session.baseline))
+      (session.account !== null && !holdsAccount(snapshot, session.account))
     ) {
       void this.#end(session);
       return;
     }
     this.#readActivity(session);
+    this.#readWork(session, snapshot);
+  }
+
+  /** What rides on the call bar: the work under way, and what it needs from the person. */
+  #readWork(session: VoiceSession, snapshot: HostSnapshot): void {
+    const threadId = session.call?.identity.threadId;
+    if (!threadId) return;
+    const tasks = snapshot.activeTasks.filter(
+      ({ thread }) => thread.parentThreadId === threadId,
+    ).length;
+    const ask = this.#ask(snapshot, threadId);
+    const held = this.#snapshot.ask;
+    // The Host changes many times a second; only a different ask redraws the bar.
+    this.#publish({ tasks, ask: JSON.stringify(ask) === JSON.stringify(held) ? held : ask });
+  }
+
+  #ask(snapshot: HostSnapshot, threadId: string): VoiceAsk | null {
+    const waiting = requestsWaitingOn(snapshot.waitingRequests, threadId);
+    const first = waiting[0];
+    if (first) {
+      const held = this.#snapshot.ask;
+      // The person is answering the one on screen: another arriving doesn't replace it.
+      const shown =
+        held?.kind === "request" && waiting.some(({ request }) => request.id === held.requestId)
+          ? held.requestId
+          : first.request.id;
+      return { kind: "request", requestId: shown, others: waiting.length - 1 };
+    }
+    const offer = callPasswordsOffer(snapshot.transcripts[threadId] ?? []);
+    return offer ? { kind: "passwords", offer } : null;
   }
 
   /**
-   * Reads the agent's live step from its hidden Thread: the running tool's
+   * Reads the agent's live step from its Thread: the running tool's
    * glyph, held across the short gaps between steps so the orb does not
    * flicker. Scans from the newest entry, so a long call stays cheap.
    */
@@ -569,6 +584,8 @@ export class VoiceController {
       since: null,
       muted: false,
       activity: null,
+      tasks: 0,
+      ask: null,
       notice: kind ? notice(kind) : null,
     });
     for (const listener of this.#levels) listener({ input: 0, output: 0 });

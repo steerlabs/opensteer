@@ -111,6 +111,7 @@ describe("Workspace storage invariants", () => {
     createdBy: "usr_00000000-0000-4000-8000-000000000001",
     id: "wsp_00000000-0000-4000-8000-000000000002",
     homeThreadId: createId("thread"),
+    voiceThreadId: null,
     icon: null,
     kind: "main",
     name: "Main",

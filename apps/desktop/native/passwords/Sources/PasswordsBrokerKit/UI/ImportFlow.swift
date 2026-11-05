@@ -23,34 +23,22 @@ public enum ImportSource: String, CaseIterable, Identifiable, Sendable {
     }
   }
 
-  /// Short and in the apps' own words, so the person can follow them in
-  /// the other window.
-  public var steps: [String] {
+  /// One step in the app's own words, so the person can follow it in the
+  /// other window.
+  public var exportStep: String {
     switch self {
     case .chrome:
-      return [
-        "In Chrome, open Google Password Manager and click Settings.",
-        "Click Export passwords, then Download file.",
-      ]
+      return "In Google Password Manager’s Settings, click Export passwords, then Download file."
     case .safari:
-      return ["Open the Passwords app and choose File › Export All Passwords to File…."]
+      return "In the Passwords app, choose File › Export All Passwords to File…."
     case .firefox:
-      return [
-        "In Firefox, open the menu (☰) and choose Passwords.",
-        "Click the ••• menu and choose Export Passwords….",
-      ]
+      return "In Firefox, open ☰ › Passwords, then ••• › Export Passwords…."
     case .onePassword:
-      return [
-        "In 1Password, choose File › Export and pick your account.",
-        "Choose CSV as the file format.",
-      ]
+      return "In 1Password, choose File › Export, pick your account, then CSV."
     case .bitwarden:
-      return [
-        "In Bitwarden, choose File › Export vault (on the web: Tools › Export vault).",
-        "Choose .json or .csv. Don’t choose the password-protected format.",
-      ]
+      return "In Bitwarden, choose File › Export vault, as .json or .csv without a password."
     case .other:
-      return ["Export a CSV file with columns for the website, the username and the password."]
+      return "Export a CSV file with columns for the website, the username and the password."
     }
   }
 
@@ -86,18 +74,27 @@ public final class ImportFlow: ObservableObject {
     case failed(ImportSource, String)
   }
 
-  @Published public private(set) var stage: Stage = .chooseSource
+  @Published public private(set) var stage: Stage
   @Published public private(set) var file: URL?
   private let broker: Broker
   private let runner: ImportRunner
+  /// Chosen before the sheet opened, so there is no list to go back to.
+  private let chosenFirst: Bool
+  private let committed: @MainActor () async -> Void
   private let finished: @MainActor () -> Void
   /// The import this sheet shows, from picking a file until it ends.
   private(set) var importID: ImportID?
 
-  init(broker: Broker, runner: ImportRunner, finished: @escaping @MainActor () -> Void) {
+  init(
+    broker: Broker, runner: ImportRunner, from source: ImportSource?,
+    committed: @escaping @MainActor () async -> Void, finished: @escaping @MainActor () -> Void
+  ) {
     self.broker = broker
     self.runner = runner
+    self.committed = committed
     self.finished = finished
+    chosenFirst = source != nil
+    stage = source.map(Stage.steps) ?? .chooseSource
   }
 
   public func choose(_ source: ImportSource) {
@@ -105,7 +102,8 @@ public final class ImportFlow: ObservableObject {
   }
 
   public func back() {
-    if case .steps = stage { stage = .chooseSource }
+    guard case .steps = stage else { return }
+    if chosenFirst { close() } else { stage = .chooseSource }
   }
 
   /// The person picked `url` in the open panel. The worker reads it; the
@@ -153,7 +151,9 @@ public final class ImportFlow: ObservableObject {
     guard case .preview(let source, let preview) = stage, preview.importCount > 0, let id = importID else { return }
     stage = .importing
     do {
-      stage = .done(count: try await broker.commitImport(id))
+      let count = try await broker.commitImport(id)
+      await committed()
+      stage = .done(count: count)
     } catch VaultServiceError.noImport {
       stage = .steps(source)
     } catch VaultError.headMoved {

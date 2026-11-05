@@ -341,6 +341,7 @@ function workspace(fields: { id: string; name: string }): WorkspaceSummary {
     description: "",
     fileCount: 0,
     homeThreadId: null,
+    voiceThreadId: null,
     harnessLabel: "Claude",
     icon: null,
     kind: "project",

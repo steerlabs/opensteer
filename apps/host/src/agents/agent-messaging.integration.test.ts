@@ -99,6 +99,9 @@ integration("agent-to-agent messaging round trip", () => {
     browserTabs,
     personShow: (userId, message) => realtime.showToPerson(userId, message),
     browserSources: {
+      agentUseCard: async () => {
+        throw new Error("Unexpected card use");
+      },
       agentSignIn: async () => {
         throw new Error("Unexpected browser sign-in");
       },
@@ -335,7 +338,7 @@ integration("agent-to-agent messaging round trip", () => {
       expect(frames.filter((message) => message.type === "host.show")).toHaveLength(1);
       await expect(show(f.tokenA, { current: true })).rejects.toMatchObject({
         code: "bad_request",
-        message: "This Run has no current place to show.",
+        message: "This Run has not worked in a place yet.",
       });
       const place = { kind: "browser" as const, sessionId, surfaceId: tabId };
       drainRunPlaces.mockImplementationOnce(async () => {
@@ -367,10 +370,15 @@ integration("agent-to-agent messaging round trip", () => {
     await expect(show(f.tokenA, { current: true })).rejects.toMatchObject({ code: "forbidden" });
   });
 
-  it.each(["app", "phone"] as const)(
-    "shows the Run's newest %s place through its authorized session",
-    async (kind) => {
-      const f = await createMessagingFixture();
+  it.each([
+    ["app", false],
+    ["phone", false],
+    ["app", true],
+    ["phone", true],
+  ] as const)(
+    "shows the Run's newest %s place through its authorized session (voice: %s)",
+    async (kind, voice) => {
+      const f = await createMessagingFixture(voice);
       const app = { bundleId: "com.apple.Notes", displayName: "Notes", teamId: null };
       const session = ComputerUseSessionSummarySchema.parse({
         sessionId: mintComputerUseSessionId(),
@@ -1290,7 +1298,7 @@ integration("agent-to-agent messaging round trip", () => {
     }
   });
 
-  async function createMessagingFixture() {
+  async function createMessagingFixture(voice = false) {
     const userId = await store.createUser("Alex");
     const runnerId = createId("runner");
     const environmentId = createId("environment");
@@ -1317,7 +1325,20 @@ integration("agent-to-agent messaging round trip", () => {
       sourceId: "native",
       stateKind: "isolated",
     });
+    const chat = voice
+      ? await store.createThread({
+          createdBy: userId,
+          environmentId,
+          harnessInstanceId: harnessInstance.id,
+          idempotencyKey: `voice-home-${randomUUID()}`,
+          modelSelection: testModelSelection,
+          title: "Chat",
+          workspaceId: mainWorkspace.id,
+          home: true,
+        })
+      : null;
     const { thread: threadA } = await store.createThread({
+      ...(chat ? { parentThreadId: chat.thread.id } : {}),
       createdBy: userId,
       environmentId,
       harnessInstanceId: harnessInstance.id,
@@ -1359,6 +1380,18 @@ integration("agent-to-agent messaging round trip", () => {
       humanTurn.run,
       threadA,
     );
+    if (voice) {
+      await database
+        .updateTable("threads")
+        .set({ listed: false, title: "Voice" })
+        .where("id", "=", threadA.id)
+        .execute();
+      await database
+        .updateTable("runs")
+        .set({ voiceSessionId: randomUUID() })
+        .where("id", "=", humanTurn.run.id)
+        .execute();
+    }
     const tokenA = `token-a-${randomUUID()}`;
     claimsByToken.set(
       tokenA,

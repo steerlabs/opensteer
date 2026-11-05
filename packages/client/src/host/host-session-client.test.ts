@@ -40,6 +40,7 @@ import {
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MockHostClient } from "../mock/mock-host-client.js";
+import { isAppTabOpen, placeDestinationEnded } from "./places.js";
 import { assignmentMark } from "./assignment-presentation.js";
 import { bootstrapReadDiagnostics } from "./bootstrap-diagnostics.js";
 import { browserTabStrip } from "./browser-tab-strip.js";
@@ -2084,7 +2085,11 @@ describe("HttpHostClient durable realtime", () => {
     }
   });
 
-  it.each(["host.browser-sessions-changed", "host.machines.changed"] as const)(
+  it.each([
+    "host.browser-sessions-changed",
+    "host.app-tabs-changed",
+    "host.machines.changed",
+  ] as const)(
     "refreshes thread-visible bootstrap state on %s without a mounted Computers page",
     async (noticeType) => {
       const workspace = makeWorkspace();
@@ -14913,6 +14918,7 @@ function browserFrame(frameId: number, targeted = false): ArrayBuffer {
 function makeWorkspace(name = "Opensteer"): WorkspaceView {
   return {
     homeThreadId: null,
+    voiceThreadId: null,
     capacity: { kind: "host-filesystem" },
     createdAt: now,
     icon: null,
@@ -16664,4 +16670,274 @@ it("orders bootstrap session state by read freshness and Host update time, inclu
     release?.();
     client.dispose();
   }
+});
+
+describe("app tab bootstrap races", () => {
+  const appId = "app_00000000-0000-4000-8000-000000000001";
+  function fixture(initialOpen = false) {
+    const workspace = makeWorkspace();
+    const tab = {
+      appId,
+      title: "Budget",
+      threadId: createId("thread"),
+      workspaceId: workspace.id,
+      latestVersion: 4,
+      openedAt: now,
+    };
+    let tabs = initialOpen ? [tab] : [];
+    let nextAppRead: ReturnType<typeof deferred<Response>> | null = null;
+    let nextRead: ReturnType<typeof deferred<Response>> | null = null;
+    let nextCommand: ReturnType<typeof deferred<Response>> | null = null;
+    const commands: string[] = [];
+    const readStarted = vi.fn();
+    const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const path = new URL(input instanceof Request ? input.url : input.toString()).pathname;
+      if (path.endsWith("bootstrap.get")) {
+        readStarted();
+        if (nextRead) {
+          const gate = nextRead;
+          nextRead = null;
+          return gate.promise;
+        }
+        return json({ ...bootstrap([workspace]), appTabs: tabs });
+      }
+      if (path.endsWith("apps.get")) {
+        if (nextAppRead) {
+          const gate = nextAppRead;
+          nextAppRead = null;
+          return gate.promise;
+        }
+        return json({
+          id: new URL(input instanceof Request ? input.url : input.toString()).searchParams.has(
+            "input",
+          )
+            ? JSON.parse(
+                new URL(input instanceof Request ? input.url : input.toString()).searchParams.get(
+                  "input",
+                )!,
+              ).appId
+            : appId,
+          title: tab.title,
+          threadId: tab.threadId,
+          workspaceId: tab.workspaceId,
+          runId: createId("run"),
+          latestVersion: 4,
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+      if (path.endsWith("auth.logout")) return json({});
+      if (path.endsWith("commands.dispatch")) {
+        const command = JSON.parse(String(init?.body));
+        commands.push(command.type);
+        if (nextCommand) {
+          const gate = nextCommand;
+          nextCommand = null;
+          return gate.promise;
+        }
+        tabs = command.type === "app.tab.open" ? [tab] : [];
+        return json({ appTabs: tabs });
+      }
+      throw new Error(path);
+    }) as unknown as typeof globalThis.fetch;
+    const client = createHttpHostClient({
+      fetch,
+      refreshIntervalMs: 0,
+      webSocketFactory: () => new FakeSocket(),
+    });
+    return {
+      client,
+      commands,
+      tab,
+      workspace,
+      readStarted,
+      holdAppRead: () => {
+        const gate = deferred<Response>();
+        nextAppRead = gate;
+        return gate;
+      },
+      holdRead: () => {
+        const gate = deferred<Response>();
+        nextRead = gate;
+        return gate;
+      },
+      holdCommand: () => {
+        const gate = deferred<Response>();
+        nextCommand = gate;
+        return gate;
+      },
+    };
+  }
+  it("reserves the app while metadata loads so immediate navigation does not end it", async () => {
+    const f = fixture();
+    try {
+      await f.client.load();
+      const gate = f.holdAppRead();
+      const opening = f.client.openAppTab(appId);
+      const snapshot = f.client.getSnapshot();
+      gate.resolve(
+        json({
+          id: appId,
+          title: f.tab.title,
+          threadId: f.tab.threadId,
+          workspaceId: f.tab.workspaceId,
+          runId: createId("run"),
+          latestVersion: 4,
+          createdAt: now,
+          updatedAt: now,
+        }),
+      );
+      await opening;
+      expect(isAppTabOpen(snapshot, appId)).toBe(true);
+      expect(placeDestinationEnded(snapshot, { kind: "opensteer-app", appId })).toBe(false);
+    } finally {
+      f.client.dispose();
+    }
+  });
+  it("sends one app's writes in order, so a slow open cannot outlive a later close", async () => {
+    const f = fixture();
+    try {
+      await f.client.load();
+      const gate = f.holdCommand();
+      const opening = f.client.openAppTab(appId);
+      await vi.waitFor(() => expect(f.commands).toEqual(["app.tab.open"]));
+      const closing = f.client.closeAppTab(appId);
+      for (let turn = 0; turn < 50; turn += 1) await Promise.resolve();
+      expect(f.commands).toEqual(["app.tab.open"]);
+      gate.resolve(json({ appTabs: [f.tab] }));
+      await Promise.all([opening, closing]);
+      expect(f.commands).toEqual(["app.tab.open", "app.tab.close"]);
+      expect(f.client.getSnapshot().appTabs ?? []).toEqual([]);
+    } finally {
+      f.client.dispose();
+    }
+  });
+  it("drops a queued app write when the viewer changes before it is sent", async () => {
+    const f = fixture();
+    try {
+      await f.client.load();
+      const gate = f.holdCommand();
+      const opening = f.client.openAppTab(appId);
+      await vi.waitFor(() => expect(f.commands).toEqual(["app.tab.open"]));
+      const closing = f.client.closeAppTab(appId);
+      const read = f.holdRead();
+      const refreshing = f.client.refresh();
+      const payload = bootstrap([f.workspace]);
+      read.resolve(json({ ...payload, user: { ...payload.user, id: createId("user") } }));
+      await refreshing;
+      gate.resolve(json({ appTabs: [f.tab] }));
+      await Promise.all([opening, closing]);
+      expect(f.commands).toEqual(["app.tab.open"]);
+    } finally {
+      f.client.dispose();
+    }
+  });
+  it("drops a queued app write when the client is disposed before it is sent", async () => {
+    const f = fixture();
+    await f.client.load();
+    const gate = f.holdCommand();
+    const opening = f.client.openAppTab(appId);
+    await vi.waitFor(() => expect(f.commands).toEqual(["app.tab.open"]));
+    const closing = f.client.closeAppTab(appId);
+    f.client.dispose();
+    gate.resolve(json({ appTabs: [f.tab] }));
+    await Promise.allSettled([opening, closing]);
+    expect(f.commands).toEqual(["app.tab.open"]);
+  });
+  it("does not reopen a tab when a later close overtakes its metadata read", async () => {
+    const f = fixture();
+    try {
+      await f.client.load();
+      const gate = f.holdAppRead();
+      const opening = f.client.openAppTab(appId);
+      await f.client.closeAppTab(appId);
+      gate.resolve(
+        json({
+          id: appId,
+          title: f.tab.title,
+          threadId: f.tab.threadId,
+          workspaceId: f.tab.workspaceId,
+          runId: createId("run"),
+          latestVersion: 4,
+          createdAt: now,
+          updatedAt: now,
+        }),
+      );
+      await opening;
+      expect(f.client.getSnapshot().appTabs ?? []).toEqual([]);
+    } finally {
+      f.client.dispose();
+    }
+  });
+  it("merges bootstrap app versions without lowering an observed version", async () => {
+    const f = fixture(true);
+    try {
+      await f.client.load();
+      expect(f.client.getSnapshot().appVersions?.[appId]).toBe(4);
+      const gate = f.holdRead();
+      const reading = f.client.refresh();
+      gate.resolve(
+        json({ ...bootstrap([f.workspace]), appTabs: [{ ...f.tab, latestVersion: 2 }] }),
+      );
+      await reading;
+      expect(f.client.getSnapshot().appVersions?.[appId]).toBe(4);
+    } finally {
+      f.client.dispose();
+    }
+  });
+  it.each([true, false])("keeps a settled %s mutation over an earlier bootstrap", async (open) => {
+    const f = fixture(!open);
+    try {
+      await f.client.load();
+      const gate = f.holdRead();
+      const reads = f.readStarted.mock.calls.length;
+      const reading = f.client.refresh();
+      await vi.waitFor(() => expect(f.readStarted.mock.calls.length).toBeGreaterThan(reads));
+      await (open ? f.client.openAppTab(appId) : f.client.closeAppTab(appId));
+      gate.resolve(json({ ...bootstrap([f.workspace]), appTabs: open ? [] : [f.tab] }));
+      await reading;
+      expect(f.client.getSnapshot().appTabs?.some((tab) => tab.appId === appId) ?? false).toBe(
+        open,
+      );
+      if (open) expect(f.client.getSnapshot().appVersions?.[appId]).toBe(4);
+    } finally {
+      f.client.dispose();
+    }
+  });
+  it("rolls back a failed open while retaining another app tab", async () => {
+    const f = fixture(true);
+    const otherId = "app_00000000-0000-4000-8000-000000000002";
+    try {
+      await f.client.load();
+      const gate = f.holdCommand();
+      const opening = f.client.openAppTab(otherId);
+      const rejected = expect(opening).rejects.toThrow();
+      await vi.waitFor(() => expect(f.client.getSnapshot().appTabs).toHaveLength(2));
+      gate.resolve(json({ error: { code: "conflict", message: "Limit", retryable: false } }, 409));
+      await rejected;
+      expect(f.client.getSnapshot().appTabs?.map((tab) => tab.appId)).toEqual([appId]);
+    } finally {
+      f.client.dispose();
+    }
+  });
+  it("discards a mutation answer after the viewer changes", async () => {
+    const f = fixture(true);
+    try {
+      await f.client.load();
+      const gate = f.holdCommand();
+      const closing = f.client.closeAppTab(appId);
+      const read = f.holdRead();
+      const refreshing = f.client.refresh();
+      const payload = bootstrap([f.workspace]);
+      read.resolve(
+        json({ ...payload, user: { ...payload.user, id: createId("user") }, appTabs: [] }),
+      );
+      await refreshing;
+      gate.resolve(json({ appTabs: [f.tab] }));
+      await closing;
+      expect(f.client.getSnapshot().appTabs ?? []).toEqual([]);
+    } finally {
+      f.client.dispose();
+    }
+  });
 });

@@ -159,7 +159,7 @@ import {
 import { threadPathLinks, type ChannelLinks } from "./store-primitives.js";
 import * as taskDone from "./task-done.js";
 import { type ThreadHistoryQuery } from "./thread-history.js";
-import { type AssignmentReturnDrain } from "./thread-inbox.js";
+import { latestRunStoppedByPerson, type AssignmentReturnDrain } from "./thread-inbox.js";
 import { executionNodeFromRow, runAttemptFromRow } from "./thread-row-mappers.js";
 import { drainPendingThreadStates } from "./thread-status.js";
 import * as threadStore from "./thread-store.js";
@@ -224,7 +224,7 @@ export class OpensteerStore {
     this.#database = database;
     this.#links = options.links ?? threadPathLinks;
     this.#executionNow = options.executionClock?.now ?? (() => Date.now());
-    this.requests = new RequestStore(database);
+    this.requests = new RequestStore(database, this.#links);
     this.notificationState = new NotificationStateStore(database);
     this.browserHistory = new BrowserHistoryStore(database);
   }
@@ -256,8 +256,11 @@ export class OpensteerStore {
   resolveVoiceCall(ownerId: UserId, sessionId: string) {
     return voiceStore.resolveVoiceCall(this.#database, ownerId, sessionId);
   }
-  voiceCallForRun(runId: RunId) {
-    return voiceStore.voiceCallForRun(this.#database, runId);
+  openVoiceThread(input: Parameters<typeof voiceStore.openVoiceThread>[1]) {
+    return voiceStore.openVoiceThread(this.#database, input);
+  }
+  latestRunStoppedByPerson(threadId: ThreadId) {
+    return latestRunStoppedByPerson(this.#database, threadId);
   }
   async stopVoiceCall(ownerId: UserId, sessionId: string) {
     const result = await voiceStore.stopVoiceCall(this.#database, this.#links, ownerId, sessionId);

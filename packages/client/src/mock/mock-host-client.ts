@@ -1,4 +1,5 @@
 import { mockBrowserPopups } from "./mock-browser-frames.js";
+import { AppTabSchema } from "@opensteer/protocol";
 import {
   matchModelSelection,
   storedModelSelection as coreStoredModelSelection,
@@ -2154,6 +2155,8 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
     "harness.modelServers.discover": async (input) =>
       rpcSuccess({ servers: mockModelServers(input.address) }),
     // The preview has no Runner to create a call, so voice never starts here.
+    "voice.open": async (input) =>
+      rpcSuccess({ ...input, threadId: ThreadIdSchema.parse(await client.openVoiceThread(input)) }),
     "voice.start": async () => mockVoiceEnded("The preview has no voice.", "voice-refused"),
     "voice.renew": async () => mockVoiceEnded("This voice call is over.", "voice-ended"),
     "voice.context": async () => mockVoiceEnded("This voice call is over.", "voice-ended"),
@@ -2489,6 +2492,15 @@ function placeMockMessage(
 
 async function executeMockCommand(client: MockHostState, command: HostApiCommand) {
   switch (command.type) {
+    case "app.tab.open":
+    case "app.tab.close":
+      client.setAppTab(command.appId, command.type === "app.tab.open");
+      return rpcSuccess(
+        hostApi["commands.dispatch"].success.parse({
+          type: command.type,
+          appTabs: [...(client.getSnapshot().appTabs ?? [])],
+        }),
+      );
     case "settings.plugin.enabled.set":
     case "settings.plugin.placement.set":
       return rpcSuccess(
@@ -3146,7 +3158,7 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
     case "browser.sign-in.respond":
       return rpcSuccess({ outcome: client.respondBrowserSignIn(command), type: command.type });
     case "browser.password-sign-in.respond":
-      return rpcSuccess({ status: client.respondPasswordSignIn(command), type: command.type });
+      return rpcSuccess({ ...client.respondPasswordSignIn(command), type: command.type });
     case "browser.profile.grant":
       return rpcSuccess(
         hostApi["commands.dispatch"].success.parse({
@@ -3442,6 +3454,7 @@ function mockAuthenticatedSession(snapshot: HostSnapshot) {
 function mockWorkspaceView(workspace: WorkspaceSummary) {
   return {
     homeThreadId: workspace.homeThreadId,
+    voiceThreadId: workspace.voiceThreadId,
     capacity: { kind: "host-filesystem" as const },
     createdAt: workspace.updatedAt,
     icon: workspace.icon,
@@ -3694,6 +3707,9 @@ export class MockHostClient implements HostClient {
   readonly browserFrames: BrowserFrameStore;
   readonly browserWatchFrames: BrowserFrameStore;
   readonly rpc: HostApiClient;
+  get cardUseMockStates() {
+    return this.#state.cardUseMockStates;
+  }
   get searchSuggestionRequests() {
     return this.#state.searchSuggestionRequests;
   }
@@ -4346,6 +4362,12 @@ export class MockHostClient implements HostClient {
       binaryChunks(input.source, input.signal),
     );
   }
+  async openAppTab(appId: string): Promise<void> {
+    this.#state.setAppTab(appId, true);
+  }
+  async closeAppTab(appId: string): Promise<void> {
+    this.#state.setAppTab(appId, false);
+  }
   async viewApp(
     _appId: string,
     _theme: "light" | "dark",
@@ -4993,6 +5015,33 @@ interface MockPlugin {
   updatedAt: string;
 }
 class MockHostState {
+  setAppTab(appId: string, open: boolean) {
+    const appTabs = (this.snapshot.appTabs ?? []).filter((tab) => tab.appId !== appId);
+    if (open) {
+      const existing = this.snapshot.appTabs?.find((tab) => tab.appId === appId);
+      const origin = Object.entries(this.snapshot.transcripts).flatMap(([threadId, entries]) =>
+        entries
+          .filter((entry) => entry.kind === "app" && entry.appId === appId)
+          .map((entry) => ({ threadId, entry })),
+      )[0];
+      const thread = this.snapshot.threads.find((thread) => thread.id === origin?.threadId);
+      if (existing) appTabs.unshift(existing);
+      else if (origin?.entry.kind === "app" && thread)
+        appTabs.unshift(
+          AppTabSchema.parse({
+            appId,
+            title: origin.entry.title,
+            threadId: thread.id,
+            workspaceId: thread.workspaceId,
+            latestVersion: origin.entry.version,
+            openedAt: this.now().toISOString(),
+          }),
+        );
+      else throw new Error("App not found");
+    }
+    this.update({ ...this.snapshot, appTabs });
+  }
+
   automaticModelConfig: AutomaticModelConfig = structuredClone(emptyAutomaticModelConfig);
   readonly automaticModels: "seeded" | "edited" | "excluded" | "none";
   private connections: import("@opensteer/protocol").AgentConnection[];
@@ -8349,6 +8398,11 @@ class MockHostState {
    * Declines a saved-password sign-in from any device. The preview has no Mac
    * to race, so the decline always settles the Request.
    */
+  readonly cardUseMockStates = new Map<
+    string,
+    "pending" | "changed" | "expired" | "declined" | "gone" | "no-card" | "off" | "not-set-up"
+  >();
+
   passwordSignInCard(requestId: string): PasswordSignInCard {
     const request = Object.values(this.snapshot.requests)
       .flat()
@@ -8360,6 +8414,32 @@ class MockHostState {
       request.payload.permissionVersion !== 5
     )
       return { stage: "gone" };
+    if (request.payload.credential === "card") {
+      const state = this.cardUseMockStates.get(requestId) ?? "pending";
+      if (
+        ["expired", "declined", "gone", "off", "not-set-up"].includes(state) ||
+        Date.parse(request.payload.expiresAt) <= this.now().getTime()
+      )
+        return { stage: "gone" };
+      return {
+        stage: "card-approval",
+        permissionVersion: 7,
+        cards:
+          state === "no-card"
+            ? []
+            : [
+                {
+                  id: "00000000-0000-4000-8000-000000000042",
+                  revision: state === "changed" ? 2 : 1,
+                  brand: "Visa",
+                  lastFour: "4242",
+                  label: "Preview card",
+                  expiryMonth: 12,
+                  expiryYear: 2030,
+                },
+              ],
+      };
+    }
     return {
       stage: "approval",
       permissionVersion: 5,
@@ -8379,7 +8459,7 @@ class MockHostState {
 
   respondPasswordSignIn(
     command: Extract<HostApiCommand, { readonly type: "browser.password-sign-in.respond" }>,
-  ): "declined" | "fulfilled" {
+  ): { status: "declined" | "fulfilled" | "pending"; card?: PasswordSignInCard; message?: string } {
     const request = Object.values(this.snapshot.requests)
       .flat()
       .find((candidate) => candidate.id === command.requestId);
@@ -8389,6 +8469,27 @@ class MockHostState {
       request.payload.kind !== "browser.password-sign-in"
     ) {
       throw mockConflict("This sign-in Request is no longer waiting.");
+    }
+    if (
+      command.decision.kind !== "decline" &&
+      (command.decision.kind === "approve-card") !== (request.payload.credential === "card")
+    )
+      throw mockConflict("Choose the matching credential.");
+    if (command.decision.kind === "approve-card") {
+      const choice = command.decision;
+      const chooser = this.passwordSignInCard(request.id);
+      if (
+        chooser.stage !== "card-approval" ||
+        !chooser.cards.some(
+          (card) => card.id === choice.cardId && card.revision === choice.revision,
+        )
+      )
+        return { status: "pending", card: chooser, message: "Choose a current saved card." };
+      this.settleBrowserSignIn(request, "fulfilled", {
+        outcome: "authorized",
+        account: "Visa ending 4242",
+      });
+      return { status: "fulfilled" };
     }
     if (command.decision.kind === "approve") {
       const choice = command.decision;
@@ -8404,10 +8505,10 @@ class MockHostState {
         outcome: "authorized",
         account: "p•••@example.test",
       });
-      return "fulfilled";
+      return { status: "fulfilled" };
     }
     this.settleBrowserSignIn(request, "declined", { decision: "declined" });
-    return "declined";
+    return { status: "declined" };
   }
 
   #browserProfileName(profileId: string | null): string | null {
@@ -9645,6 +9746,7 @@ class MockHostState {
       fileCount: 0,
       harnessLabel: this.snapshot.harnesses[0]?.name ?? "Opensteer",
       homeThreadId: null,
+      voiceThreadId: null,
       icon: input.icon ?? null,
       id: this.nextId("workspace"),
       kind: "project" as const,
@@ -9800,6 +9902,34 @@ class MockHostState {
       Math.max(100, this.latencyMs),
     );
     this.#titleTimers.set(thread.id, timer);
+  }
+
+  /** The preview's Voice Thread, so its screens can be seen; a call itself never starts here. */
+  async openVoiceThread(input: {
+    readonly environmentId: string;
+    readonly harnessInstanceId: string;
+  }): Promise<string> {
+    if (this.snapshot.voiceThreadId) return this.snapshot.voiceThreadId;
+    const placement = resolveThreadPlacement(
+      this.snapshot.environments,
+      this.snapshot.harnesses,
+      input,
+    );
+    const thread = await this.createThread({
+      ...input,
+      accessMode: this.snapshot.executionPreferences.accessMode,
+      modelSelection: placement.modelSelection,
+      title: "Voice",
+      workspaceId: this.snapshot.homeWorkspaceId!,
+    });
+    this.update({
+      ...this.snapshot,
+      voiceThreadId: thread.id,
+      threads: this.snapshot.threads.map((item) =>
+        item.id === thread.id ? { ...item, listed: false, role: "conversation" } : item,
+      ),
+    });
+    return thread.id;
   }
 
   async createThread(input: CreateThreadInput): Promise<ThreadSummary> {
@@ -12256,6 +12386,7 @@ function withoutInitialHome(snapshot: HostSnapshot): HostSnapshot {
   return {
     ...snapshot,
     homeThreadId: null,
+    voiceThreadId: null,
     machines: snapshot.machines.map((machine) =>
       machine.computerUse
         ? {
@@ -13070,6 +13201,7 @@ function createInitialSnapshot(): HostSnapshot {
     ],
     homeWorkspaceId: "wsp_00000000-0000-4000-8000-000000000001",
     homeThreadId: "thr_00000000-0000-4000-8000-000000000001",
+    voiceThreadId: null,
     notificationMutes: [],
     threadReadStates: {},
     tasks: null,
@@ -13336,6 +13468,7 @@ function createInitialSnapshot(): HostSnapshot {
       {
         description: "The new product, Host, Runners, protocols, and UI.",
         homeThreadId: "thr_00000000-0000-4000-8000-000000000001",
+        voiceThreadId: null,
         fileCount: 18,
         harnessLabel: "Codex",
         id: "wsp_00000000-0000-4000-8000-000000000001",
@@ -13352,6 +13485,7 @@ function createInitialSnapshot(): HostSnapshot {
       {
         description: "Positioning, launch briefs, website, and customer proof.",
         homeThreadId: null,
+        voiceThreadId: null,
         fileCount: 27,
         harnessLabel: "Codex",
         id: "wsp_00000000-0000-4000-8000-000000000002",
@@ -13368,6 +13502,7 @@ function createInitialSnapshot(): HostSnapshot {
       {
         description: "Monthly close, invoices, budgets, and operating reports.",
         homeThreadId: null,
+        voiceThreadId: null,
         fileCount: 42,
         harnessLabel: "Codex",
         id: "wsp_00000000-0000-4000-8000-000000000003",
@@ -13481,3 +13616,53 @@ const mockCatalogProducts: Readonly<
   "macos-app": { title: "Computer use", category: "devices", popular: false },
   "android-phone": { title: "Android phone", category: "devices", popular: false },
 };
+
+export function mockCardUseRequest(
+  input: Parameters<typeof mockPasswordSignInRequest>[0] = {},
+): Request {
+  const request = mockPasswordSignInRequest(input);
+  if (request.payload.kind !== "browser.password-sign-in")
+    throw new Error("Missing Passwords payload");
+  return RequestSchema.parse({
+    ...request,
+    payload: { ...request.payload, credential: "card", reason: "Fill the saved card at checkout." },
+    presentation: {
+      ...request.presentation,
+      title: `Use a saved card on ${new URL(request.payload.site).hostname}?`,
+    },
+  });
+}
+
+export function mockCardUseScenario(
+  state: "pending" | "changed" | "expired" | "declined" | "gone" | "no-card" | "off" | "not-set-up",
+) {
+  const site = "https://shop.example.com";
+  const reason =
+    state === "no-card"
+      ? "no-saved-card"
+      : state === "off"
+        ? "passwords-off"
+        : state === "not-set-up"
+          ? "passwords-not-set-up"
+          : null;
+  if (reason) return { request: null, result: { status: "unavailable", site, reason } };
+  const request = mockCardUseRequest({
+    site,
+    ...(state === "declined"
+      ? { status: "declined" }
+      : state === "expired"
+        ? { status: "fulfilled", response: { outcome: "expired" } }
+        : state === "gone"
+          ? { status: "fulfilled", response: { outcome: "interrupted" } }
+          : {}),
+  });
+  return {
+    request,
+    result:
+      state === "declined"
+        ? { status: "declined", site }
+        : state === "expired" || state === "gone"
+          ? { status: "unavailable", site, reason: state === "expired" ? "expired" : "interrupted" }
+          : { status: "pending", site, requestId: request.id },
+  };
+}

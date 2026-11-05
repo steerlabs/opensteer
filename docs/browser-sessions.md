@@ -57,8 +57,9 @@ events reach agents. Main-world access needs positive context provenance; the
 
 Agent keys are page actions, never browser or OS shortcuts. Agent paste is always refused, and on an
 engine sharing the machine clipboard so are copy and cut: they could overwrite a person's copied
-password. `Opensteer.fillLogin` is platform-handled and never reaches Chromium; after a fill, page
-scripts and agent JavaScript can read the value ([Passwords](passwords.md#filling-a-field)).
+password. `Opensteer.fillLogin` and `Opensteer.fillCard` are platform-handled and never reach Chromium.
+Card approval binds the top-level merchant, and filling may reach its cross-origin payment frame.
+After a fill, page scripts and agent JavaScript can read the value ([Passwords](passwords.md#filling-a-field)).
 
 ## Remote editing and clipboard
 
@@ -99,9 +100,12 @@ interrupts every viewer's video; it needs a fresh tap and transfers no draft or 
 
 This mode commits text with viewer-local preedit. Live composition, verified replacements and
 unrepresented editing commands refuse visibly until a qualified native contract supplies them.
-Private keyboard input, including Space and Enter, never falls through to ordinary CDP. The guard
-refuses input into out-of-process child frames and native views using device emulation, and a native
-pane smaller than the retained page streams but can't take private input.
+Private keyboard input, including Space and Enter, never falls through to ordinary CDP. Taps reach
+out-of-process child frames only when each frame on the route proves its own step against the
+picture; popups opened from inside one stay refused, and never show a Mac picker. The guard refuses
+native views using device emulation, and a native pane smaller than the retained page streams but
+can't take private input. A tap made just after a page change can refuse because the picture is
+still older than the change. The viewer shows a notice and never replays it.
 
 JPEG remains an explicit qualification selection. Browser v1 uses Baseline H.264 on both encoder
 backends; Constrained High needs producer and native-decoder qualification.

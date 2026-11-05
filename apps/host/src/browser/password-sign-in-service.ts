@@ -12,6 +12,10 @@ import {
 } from "@opensteer/core";
 import type { RequestStore } from "@opensteer/database";
 import {
+  cardUseLifetimeMs,
+  type CardAvailability,
+  type UseCardResult,
+  UseCardResultSchema,
   passwordSignInAgentWaitMs,
   passwordLoginLifetimeMs,
   loginEnvelopeMaxLifetimeMs,
@@ -53,8 +57,8 @@ type Settlement = Parameters<RequestStore["settlePasswordSignInRequest"]>[0]["se
 type Finish = "settled" | "ended-elsewhere" | "retrying";
 
 interface Call {
+  readonly credential?: "card" | undefined;
   readonly callId: string;
-  readonly canRequest: boolean;
   readonly arrivedAt?: number;
   readonly ownerId: UserId;
   readonly reason: string;
@@ -62,7 +66,12 @@ interface Call {
   readonly threadId: ThreadId;
   readonly workspaceId: WorkspaceId;
 }
-interface Operation {
+type Operation = OperationShared &
+  (
+    | { credential: "login" }
+    | { credential: "card"; publicCard: { brand: string; lastFour: string } | null }
+  );
+interface OperationShared {
   readonly id: string;
   readonly starter: Call;
   readonly target: PasswordSignInComputer;
@@ -96,6 +105,7 @@ export interface PasswordLoginLease {
   readonly workspaceId: WorkspaceId;
   readonly site: string;
   readonly account: string;
+  readonly publicCard?: { brand: string; lastFour: string };
   readonly expiresAt: number;
   readonly operationId: string;
 }
@@ -196,6 +206,53 @@ export class PasswordSignInService {
     }
   }
 
+  async probeCard(ownerId: UserId): Promise<CardAvailability | "unsupported" | "runtime-outdated"> {
+    const target = await this.#resolveAuthority(ownerId);
+    if (!target) return "unsupported";
+    if (!this.#authority.cardUseSupported?.(target.runnerId)) return "runtime-outdated";
+    const result = await this.#authority.sendPasswordSignIn(target.runnerId, {
+      type: "card.probe",
+    });
+    return result.type === "card.probe.result" ? result.cards : "unavailable";
+  }
+
+  async requestCard(
+    input: Call & { site: string; cardRunnerId: RunnerId; admitStart: () => boolean },
+  ): Promise<UseCardResult> {
+    if (!(await this.#requests.hasActiveRunPasswordSignInAuthority(authority(input))))
+      return { status: "unavailable", site: input.site, reason: "stopped" };
+    const target = await this.#resolveAuthority(input.ownerId);
+    if (
+      !target ||
+      target.runnerId !== input.cardRunnerId ||
+      !this.#authority.cardUseSupported?.(target.runnerId)
+    )
+      return { status: "unavailable", site: input.site, reason: "runtime-outdated" };
+    const result = await this.request({ ...input, credential: "card" });
+    if (result.status === "ready") {
+      if (!(await this.#requests.hasActiveRunPasswordSignInAuthority(authority(input))))
+        return { status: "unavailable", site: input.site, reason: "stopped" };
+      const lease = this.#liveLease(result.loginRef);
+      if (!lease?.publicCard) return { status: "unavailable", site: input.site, reason: "expired" };
+      return { status: "ready", site: input.site, cardRef: result.loginRef, ...lease.publicCard };
+    }
+    if (result.status === "pending")
+      return { status: "pending", site: input.site, requestId: result.requestId };
+    if (result.status === "declined" || result.status === "resolved")
+      return { status: result.status, site: input.site };
+    if (result.status === "unavailable" && result.reason === "needs-approval")
+      return { status: "needs-approval", site: input.site };
+    if (result.status === "unavailable") {
+      const mapped = UseCardResultSchema.safeParse({
+        ...result,
+        site: input.site,
+        reason: result.reason === "no-saved-login" ? "no-saved-card" : result.reason,
+      });
+      if (mapped.success) return mapped.data;
+    }
+    return { status: "unavailable", site: input.site, reason: "interrupted" };
+  }
+
   async probe(ownerId: UserId, site: string): Promise<PasswordSignInAvailability> {
     const target = await this.#resolveAuthority(ownerId);
     if (!target || !this.#authority.passwordSignInSupported(target.runnerId)) return "unavailable";
@@ -290,7 +347,9 @@ export class PasswordSignInService {
       !operation ||
       operation.authorityEnded ||
       operation.cancelSent !== null ||
-      !this.#authority.passwordSignInSupported(operation.target.runnerId)
+      !(operation.credential === "card"
+        ? this.#authority.cardUseSupported?.(operation.target.runnerId)
+        : this.#authority.passwordSignInSupported(operation.target.runnerId))
     ) {
       this.#leases.delete(loginRef);
       if (operation)
@@ -303,11 +362,16 @@ export class PasswordSignInService {
     return lease;
   }
 
-  #ready(workspaceId: WorkspaceId, site: string): AgentBrowserSignInResult | null {
+  #ready(
+    workspaceId: WorkspaceId,
+    site: string,
+    credential?: "card",
+  ): AgentBrowserSignInResult | null {
     for (const lease of this.#leases.values()) {
       if (
         lease.workspaceId === workspaceId &&
         lease.site === site &&
+        Boolean(lease.publicCard) === (credential === "card") &&
         this.#liveLease(lease.loginRef)
       )
         return { status: "ready", site, loginRef: lease.loginRef, account: lease.account };
@@ -337,14 +401,15 @@ export class PasswordSignInService {
   join(input: Call & { readonly site: string }): Promise<AgentBrowserSignInResult> | null {
     const own = this.#calls.get(callKey(input));
     if (own) this.#assertScope(own, input);
-    const ready = this.#ready(input.workspaceId, input.site);
+    const ready = this.#ready(input.workspaceId, input.site, input.credential);
     if (ready) {
       this.#bindToLease(ready, input);
       return Promise.resolve(ready);
     }
     if (own?.settlement?.status === "fulfilled" && own.settlement.response.outcome === "authorized")
       return null;
-    const operation = own ?? this.#bySite.get(siteKey(input.workspaceId, input.site));
+    const operation =
+      own ?? this.#bySite.get(siteKey(input.workspaceId, input.site, input.credential));
     if (!operation) return null;
     this.#assertScope(operation, input);
     if (operation.starter.workspaceId !== input.workspaceId)
@@ -360,14 +425,15 @@ export class PasswordSignInService {
     input: Call & {
       readonly site: string;
       readonly admitStart: () => boolean;
+      readonly cardRunnerId?: RunnerId;
     },
   ): Promise<AgentBrowserSignInResult> {
-    const key = siteKey(input.workspaceId, input.site);
+    const key = siteKey(input.workspaceId, input.site, input.credential);
     const prior = this.#admissions.get(key) ?? Promise.resolve();
     const admitted = prior.then(async (): Promise<Operation | AgentBrowserSignInResult> => {
       const own = this.#calls.get(callKey(input));
       if (own) this.#assertScope(own, input);
-      const ready = this.#ready(input.workspaceId, input.site);
+      const ready = this.#ready(input.workspaceId, input.site, input.credential);
       if (ready) {
         this.#bindToLease(ready, input);
         return ready;
@@ -386,6 +452,12 @@ export class PasswordSignInService {
       const target = await this.#resolveAuthority(input.ownerId);
       if (this.#closed || !target || !this.#authority.passwordSignInSupported(target.runnerId))
         return unavailable(input.site, "unsupported");
+      if (
+        input.credential === "card" &&
+        (input.cardRunnerId !== target.runnerId ||
+          !this.#authority.cardUseSupported?.(target.runnerId))
+      )
+        return unavailable(input.site, "runtime-outdated");
       if (!input.admitStart()) return unavailable(input.site, "rate-limited");
       if (!(await this.#requests.hasActiveRunPasswordSignInAuthority(authority(input))))
         return unavailable(input.site, "stopped");
@@ -399,12 +471,16 @@ export class PasswordSignInService {
         reason: input.reason,
       });
       const operation: Operation = {
+        ...(input.credential === "card"
+          ? { credential: "card" as const, publicCard: null }
+          : { credential: "login" as const }),
         id: randomUUID(),
         starter: input,
         target,
-        loginRef: `lgn_${randomUUID().replaceAll("-", "")}`,
+        loginRef: `${input.credential === "card" ? "crd" : "lgn"}_${randomUUID().replaceAll("-", "")}`,
         site: input.site,
-        expiresAt: this.#now() + passwordLoginLifetimeMs,
+        expiresAt:
+          this.#now() + (input.credential === "card" ? cardUseLifetimeMs : passwordLoginLifetimeMs),
         calls: new Map(),
         answers: new Map(),
         waiters: new Set(),
@@ -427,7 +503,9 @@ export class PasswordSignInService {
       void this.#authority
         .sendPasswordSignIn(target.runnerId, {
           type: "login.authorize",
-          loginRef: operation.loginRef,
+          ...(operation.credential === "card"
+            ? { credential: "card" as const, cardRef: operation.loginRef }
+            : { loginRef: operation.loginRef }),
           expiresAt: new Date(operation.expiresAt).toISOString(),
           operationId: operation.id,
           site: input.site,
@@ -501,12 +579,23 @@ export class PasswordSignInService {
     revalidate: () => Promise<void>;
     decision:
       | { kind: "decline" }
+      | { kind: "approve-card"; cardId: string; revision: number; permissionVersion: 7 }
       | (Omit<
-          Extract<PasswordSignInAuthorityCommand, { type: "login.approve" }>,
+          Extract<PasswordSignInAuthorityCommand, { type: "login.approve"; loginId: string }>,
           "type" | "operationId"
         > & { kind: "approve" });
   }): Promise<{ status: Request["status"]; card?: PasswordSignInCard; message?: string }> {
     const request = await this.#requester(input);
+    if (
+      request.payload.kind === "browser.password-sign-in" &&
+      input.decision.kind !== "decline" &&
+      (request.payload.credential === "card") !== (input.decision.kind === "approve-card")
+    ) {
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "This Request requires card approval.",
+      });
+    }
     if (request.status !== "pending") return { status: request.status };
     const operation = this.#operations.get(
       request.payload.kind === "browser.password-sign-in" ? request.payload.operationId : "",
@@ -543,7 +632,20 @@ export class PasswordSignInService {
         });
       await input.revalidate();
       operation.settlementSessionId = input.sessionId;
-      const { kind: _kind, ...choice } = input.decision;
+      const choice =
+        input.decision.kind === "approve-card"
+          ? {
+              credential: "card" as const,
+              cardId: input.decision.cardId,
+              revision: input.decision.revision,
+              permissionVersion: 7 as const,
+            }
+          : {
+              loginId: input.decision.loginId,
+              revision: input.decision.revision,
+              remember: input.decision.remember,
+              permissionVersion: 5 as const,
+            };
       const result = await this.#authority.sendPasswordSignIn(operation.target.runnerId, {
         type: "login.approve",
         operationId: operation.id,
@@ -635,8 +737,6 @@ export class PasswordSignInService {
     };
     const refused = cannotJoin();
     if (refused) return refused;
-    if (!call.canRequest && (operation.requestId || operation.opening))
-      return refuse("needs-approval");
     if (!operation.requestId)
       await this.#wait(
         operation,
@@ -654,17 +754,6 @@ export class PasswordSignInService {
       await this.#cancel(operation, "authority-lost");
     }
     if (!operation.settlement && operation.need) {
-      if (!call.canRequest) {
-        if (operation.requestId || operation.opening) return refuse("needs-approval");
-        await this.#cancel(operation, "withdrawn");
-        await this.#wait(operation, this.#declineAnswerMs, true);
-        if (!operation.settlement)
-          await this.#finish(operation, {
-            status: "fulfilled",
-            response: { outcome: "interrupted" },
-          });
-        return refuse("needs-approval");
-      }
       if (!operation.requestId)
         await (operation.opening ??= this.#openRequest(operation).finally(() => {
           operation.opening = null;
@@ -694,7 +783,8 @@ export class PasswordSignInService {
       operation.settlement.response.outcome === "authorized"
     )
       return (
-        this.#ready(call.workspaceId, operation.site) ?? unavailable(operation.site, "expired")
+        this.#ready(call.workspaceId, operation.site, call.credential) ??
+        unavailable(operation.site, "expired")
       );
     return operation.result ?? directResult(operation.site, operation.settlement ?? interrupted());
   }
@@ -744,17 +834,39 @@ export class PasswordSignInService {
     }
     const operation = this.#operations.get(event.operationId);
     if (!operation || operation.target.runnerId !== runnerId) return;
+    if (event.type === "login.result" && event.outcome.kind === "authorized") {
+      if (
+        operation.credential === "card" &&
+        (!operation.requestId || !operation.settlementSessionId)
+      ) {
+        await this.#cancel(operation, "authority-lost");
+        await this.#finish(operation, interrupted());
+        return;
+      }
+      if ((operation.credential === "card") !== "cardRef" in event.outcome) {
+        await this.#cancel(operation, "authority-lost");
+        await this.#finish(operation, interrupted());
+        return;
+      }
+      if ("cardRef" in event.outcome && operation.credential === "card")
+        operation.publicCard = { brand: event.outcome.brand, lastFour: event.outcome.lastFour };
+    }
     if (event.type === "login.ended") {
       operation.authorityEnded = true;
       this.#dropLeases(operation);
-      await this.#finish(operation, interrupted());
+      await this.#finish(
+        operation,
+        operation.credential === "card" && this.#now() >= operation.expiresAt
+          ? { status: "fulfilled", response: { outcome: "expired" } }
+          : interrupted(),
+      );
       return;
     }
     if (event.type === "login.needs") {
       if (operation.settlement || operation.cancelSent) return;
       operation.need = event.need;
       // Start the Request at the person-needed event, even if the tool caller detached.
-      if (event.need === "approval" && operation.starter.canRequest && !operation.requestId)
+      if (event.need === "approval" && !operation.requestId)
         await (operation.opening ??= this.#openRequest(operation).finally(() => {
           operation.opening = null;
         }));
@@ -786,7 +898,8 @@ export class PasswordSignInService {
     if (event.outcome.kind === "authorized") {
       const expiresAt = Date.parse(event.outcome.expiresAt);
       if (
-        event.outcome.loginRef !== operation.loginRef ||
+        ("cardRef" in event.outcome ? event.outcome.cardRef : event.outcome.loginRef) !==
+          operation.loginRef ||
         expiresAt > operation.expiresAt ||
         expiresAt <= this.#now()
       ) {
@@ -796,7 +909,13 @@ export class PasswordSignInService {
       }
       operation.pendingLease = {
         loginRef: operation.loginRef,
-        account: event.outcome.account,
+        account:
+          "cardRef" in event.outcome
+            ? `${event.outcome.brand} ending ${event.outcome.lastFour}`
+            : event.outcome.account,
+        ...(operation.credential === "card" && operation.publicCard
+          ? { publicCard: operation.publicCard }
+          : {}),
         expiresAt,
         workspaceId: operation.starter.workspaceId,
         site: operation.site,
@@ -804,7 +923,27 @@ export class PasswordSignInService {
       };
     }
     if (event.outcome.kind === "busy") operation.result = unavailable(operation.site, "busy");
-    await this.#finish(operation, settlementFor(event.outcome));
+    await this.#finish(
+      operation,
+      settlementFor(
+        event.outcome.kind === "authorized" && "cardRef" in event.outcome
+          ? {
+              kind: "authorized",
+              loginRef: event.outcome.cardRef,
+              account: `${event.outcome.brand} ending ${event.outcome.lastFour}`,
+              expiresAt: event.outcome.expiresAt,
+            }
+          : event.outcome.kind === "unavailable"
+            ? {
+                kind: "unavailable",
+                reason:
+                  event.outcome.reason === "no-saved-card"
+                    ? "no-saved-login"
+                    : event.outcome.reason,
+              }
+            : event.outcome,
+      ),
+    );
   }
 
   async #reconcileOperations(): Promise<void> {
@@ -887,12 +1026,21 @@ export class PasswordSignInService {
   async #finish(operation: Operation, settlement: Settlement): Promise<Finish> {
     const mine = operation.settlement === null || operation.settlement === settlement;
     operation.settlement ??= settlement;
-    const key = siteKey(operation.starter.workspaceId, operation.site);
+    const key = siteKey(
+      operation.starter.workspaceId,
+      operation.site,
+      operation.starter.credential,
+    );
     if (this.#bySite.get(key) === operation) this.#bySite.delete(key);
     operation.need = null;
     this.#notify(operation);
     if (!operation.requestId) {
-      if (operation.pendingLease && !operation.cancelSent && !operation.authorityEnded)
+      if (
+        operation.credential === "login" &&
+        operation.pendingLease &&
+        !operation.cancelSent &&
+        !operation.authorityEnded
+      )
         this.#leases.set(operation.loginRef, operation.pendingLease);
       this.#notify(operation);
       return mine ? "settled" : "ended-elsewhere";
@@ -922,7 +1070,7 @@ export class PasswordSignInService {
           return "ended-elsewhere";
         }
         if (operation.pendingLease && !operation.cancelSent && !operation.authorityEnded) {
-          let committed = !operation.settlementSessionId;
+          let committed = operation.credential === "login" && !operation.settlementSessionId;
           if (operation.settlementSessionId) {
             try {
               const answer = await this.#authority.sendPasswordSignIn(operation.target.runnerId, {
@@ -1012,8 +1160,8 @@ export class PasswordSignInService {
   }
   #recordCall(operation: Operation, call: Call): void {
     const identity: Call = {
+      credential: call.credential,
       callId: call.callId,
-      canRequest: call.canRequest,
       ownerId: call.ownerId,
       reason: call.reason,
       runId: call.runId,
@@ -1027,6 +1175,7 @@ export class PasswordSignInService {
     if (
       operation.starter.workspaceId !== input.workspaceId ||
       operation.site !== input.site ||
+      operation.starter.credential !== input.credential ||
       operation.starter.ownerId !== input.ownerId
     ) {
       throw new OpensteerError({
@@ -1045,7 +1194,8 @@ export interface PasswordSignInServiceOptions {
   readonly authority: Pick<
     ComputerAppHub,
     "onPasswordSignIn" | "passwordSignInSupported" | "sendPasswordSignIn"
-  >;
+  > &
+    Partial<Pick<ComputerAppHub, "cardUseSupported">>;
   readonly resolveAuthority: (ownerId: UserId) => Promise<PasswordSignInComputer | null>;
   readonly agentWaitMs?: number;
   readonly declineAnswerMs?: number;
@@ -1067,8 +1217,8 @@ export interface PasswordSignInServiceOptions {
   readonly requests: PasswordSignInRequests;
 }
 
-function siteKey(workspaceId: WorkspaceId, site: string): string {
-  return `${workspaceId}\0${site}`;
+function siteKey(workspaceId: WorkspaceId, site: string, credential?: "card"): string {
+  return `${credential ?? "login"}\0${workspaceId}\0${site}`;
 }
 function callKey(call: Pick<Call, "runId" | "callId">): string {
   return `${call.runId}\0${call.callId}`;
@@ -1096,6 +1246,7 @@ function requestInput(
     requiredActor: "requester",
     payload: {
       kind: "browser.password-sign-in",
+      ...(operation.credential === "card" ? { credential: "card" as const } : {}),
       computerName: computer.name,
       expiresAt: new Date(operation.expiresAt).toISOString(),
       operationId: operation.id,

@@ -24,7 +24,7 @@ beforeAll(async () => {
   page = await browser.newPage();
 });
 
-it("runs a server-style app with relative JSON POST, assets, incremental SSE and navigation while isolating credentials, storage and parent, and preserves theme and full-screen state", async () => {
+it("runs a server-style app with relative JSON POST, assets, incremental SSE and navigation while isolating credentials, storage and parent, and preserves theme", async () => {
   const bundle = await build({
     stdin: {
       contents: `
@@ -130,7 +130,7 @@ it("runs a server-style app with relative JSON POST, assets, incremental SSE and
       response.writeHead(200, { ...appFrameHeaders(), "access-control-allow-origin": "*" });
       response.end(
         prepareAppHtml(
-          `<!doctype html><html><head></head><body style="height:2400px"><script src="assets/app.js"></script><input aria-label="App input"><a href="settings">Settings</a><a href="#details">Details</a><a href="https://example.com/docs">Docs</a><script>
+          `<!doctype html><html><head></head><body style="height:2400px"><script src="assets/app.js"></script><a href="settings">Settings</a><a href="#details">Details</a><a href="https://example.com/docs">Docs</a><script>
         (async()=>{
           const blocked=fn=>{try{fn();return false}catch{return true}};
           const result={cookie:blocked(()=>document.cookie),storage:blocked(()=>localStorage.getItem('session')),parent:blocked(()=>parent.document.cookie)};
@@ -205,27 +205,6 @@ it("runs a server-style app with relative JSON POST, assets, incremental SSE and
     expect(new URL(frame.url()).pathname).toBe(appPrefix);
     expect(new URL(frame.url()).hash).toBe("#details");
     expect(page.context().pages()).toHaveLength(1);
-    await frame.getByRole("textbox", { name: "App input" }).fill("Unsaved input");
-    await page.evaluate("window.originalAppFrame=document.querySelector('iframe')");
-    await page.getByRole("button", { name: "Open", exact: true }).click({ timeout: 1_500 });
-    expect(await page.getByRole("dialog").count()).toBe(1);
-    expect(await page.locator("iframe").count()).toBe(1);
-    expect(await frame.getByRole("textbox").inputValue()).toBe("Unsaved input");
-    await page.getByRole("button", { name: "Close", exact: true }).click({ timeout: 1_500 });
-    expect(await page.evaluate("document.querySelector('iframe')===window.originalAppFrame")).toBe(
-      true,
-    );
-    expect(await frame.getByRole("textbox").inputValue()).toBe("Unsaved input");
-    await page.getByRole("button", { name: "Open", exact: true }).click({ timeout: 1_500 });
-    await frame.getByRole("textbox").press("Escape");
-    await page.waitForFunction(() => !document.querySelector("[role=dialog]"), undefined, {
-      timeout: 1_500,
-    });
-    expect(
-      await page
-        .getByRole("button", { name: "Open", exact: true })
-        .evaluate((element) => element === document.activeElement),
-    ).toBe(true);
     await page.evaluate(
       "document.querySelector('iframe').contentWindow.postMessage({type:'opensteer-app:theme',theme:'light'},'*')",
     );

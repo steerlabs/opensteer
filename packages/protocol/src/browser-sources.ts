@@ -223,6 +223,24 @@ export const AgentBrowserSignInResultSchema = z.discriminatedUnion("status", [
 ]);
 export type AgentBrowserSignInResult = z.infer<typeof AgentBrowserSignInResultSchema>;
 
+/** What a sign-in result says Opensteer Passwords lacks, or null when it can't help. */
+export function browserSignInPasswordsNeed(
+  result: AgentBrowserSignInResult,
+): BrowserSignInPasswords | null {
+  if ("passwords" in result && result.passwords !== undefined) return result.passwords;
+  if (result.status !== "unavailable") return null;
+  switch (result.reason) {
+    case "no-saved-login":
+      return "no-login";
+    case "passwords-off":
+      return "off";
+    case "passwords-not-set-up":
+      return "not-set-up";
+    default:
+      return null;
+  }
+}
+
 /** A Request's fulfilled response value. */
 export const BrowserSignInRequestResponseSchema = z.discriminatedUnion("outcome", [
   z.strictObject({

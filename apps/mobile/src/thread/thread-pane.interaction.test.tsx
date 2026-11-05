@@ -1,9 +1,10 @@
 // @vitest-environment happy-dom
 
-import type { VoiceSnapshot } from "@opensteer/client/voice";
+import { idleVoiceSnapshot, type VoiceSnapshot } from "@opensteer/client/voice";
 import { DictationController } from "@opensteer/client/dictation";
 import type { DictationEvent, DictationPort } from "@opensteer/protocol/dictation";
 import {
+  formatClockTime,
   HostClientRequestError,
   RunPlaceStore,
   type BrowserFrameView,
@@ -26,6 +27,7 @@ import {
   RunIdSchema,
   ThreadIdSchema,
   ThreadReadStateSchema,
+  voiceCallSeed,
   WorkspaceIdSchema,
   type Request,
   type ThreadInputQueue,
@@ -45,7 +47,9 @@ import {
 } from "../client/thread-drafts.js";
 import type { ThreadHeaderState } from "./thread-pane.js";
 import { Pane } from "../ui/pane.js";
-import { VoiceContext, VoiceOverlay, type VoiceControls } from "../voice/controls.js";
+import { VoiceContext } from "@opensteer/client/react";
+import type { VoiceControls } from "@opensteer/client/voice";
+import { VoiceOverlay } from "../voice/controls.js";
 
 /*
  * One conversation on the phone, drawn by the real pane, transcript, composer
@@ -100,6 +104,8 @@ const harness = vi.hoisted(() => ({
   handles: new Map<number, HTMLElement>(),
   /** The pane's own insets: its safe area and anything reserved over it. */
   insets: { bottom: 0, left: 0, right: 0, top: 0 },
+  /** The notices this reader put away, one store value as a snapshot must be. */
+  dismissed: new Set<string>(),
   /** Where the screen's bar options go, as the native stack would take them. */
   setOptions: null as ((options: Record<string, unknown>) => void) | null,
   /** The transcript list's props as last rendered, to drive its native events. */
@@ -174,7 +180,11 @@ vi.mock("react-native", async () => {
     }) => (
       <img alt={props.accessibilityLabel ?? ""} onLoad={props.onLoad} src={props.source?.uri} />
     ),
-    Keyboard: { addListener: () => ({ remove: () => undefined }), isVisible: () => false },
+    Keyboard: {
+      addListener: () => ({ remove: () => undefined }),
+      isVisible: () => false,
+      metrics: () => undefined,
+    },
     findNodeHandle: (node: HTMLElement | null) => {
       if (!node?.isConnected) return null;
       const handle = harness.handles.size + 1;
@@ -320,6 +330,7 @@ vi.mock("react-native-reanimated", () => {
     useReducedMotion: () => true,
     useSharedValue: (value: number) => ({ value }),
     withTiming: (value: number) => value,
+    ZoomIn: { springify: () => undefined },
   };
 });
 vi.mock("react-native-safe-area-context", () => ({
@@ -348,6 +359,7 @@ vi.mock("@react-navigation/native", async () => {
   };
   return {
     StackActions: {
+      pop: (count: number) => ({ count, type: "POP" }),
       popTo: (name: string, params: object) => ({ name, params, type: "POP_TO" }),
       push: (name: string, params: object) => ({ name, params, type: "PUSH" }),
     },
@@ -437,7 +449,13 @@ vi.mock("../ui/mobile-client-context.js", () => ({
   useMobileClient: () => ({
     drafts: harness.drafts,
     getSnapshot: () => ({ selection: { deploymentId, hostClient: harness.activeHost } }),
+    usageNotices: {
+      dismiss: () => undefined,
+      getSnapshot: () => harness.dismissed,
+      subscribe: () => () => undefined,
+    },
   }),
+  useSelectedHostClient: () => harness.activeHost,
 }));
 vi.mock("../ui/notifications-context.js", () => ({
   useMobileNotifications: () => ({
@@ -559,7 +577,6 @@ vi.mock("./task-line.js", async () => {
     TaskScopeContext: React.createContext(null),
   };
 });
-vi.mock("./waiting-questions.js", () => ({ WaitingQuestions: () => null }));
 vi.mock("./composer-bar.js", () => ({
   ComposerBar: (props: {
     readonly accessory?: ReactNode;
@@ -1240,6 +1257,46 @@ describe("a conversation with a page", () => {
       title: "Research page",
       url: "https://example.com",
     });
+
+  // Failure: the person is left on a page for a tab the Host never made.
+  it("pushes an app's own route at once, and takes that page back if the Host refuses the tab", async () => {
+    const appId = "app_11111111-1111-4111-8111-111111111111";
+    const host = fakeHost(
+      snapshotFor({
+        entries: [
+          {
+            appId,
+            createdAt: at,
+            id: "app:event",
+            kind: "app",
+            runId: createId("run"),
+            title: "Budget",
+            version: 1,
+          },
+        ],
+        run: null,
+        threadId: workId,
+      }),
+    );
+    const answer = Promise.withResolvers<void>();
+    Object.assign(host.client, {
+      openAppTab: () => answer.promise,
+      viewApp: () => new Promise(() => undefined),
+    });
+    const { container } = await mount(host, workId);
+    await press(container, "Open Budget");
+    expect(harness.dispatch).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        name: "WorkspaceBrowser",
+        params: expect.objectContaining({ appId, threadId: workId }),
+        type: "PUSH",
+      }),
+    );
+    harness.currentRoute = { name: "WorkspaceBrowser", params: { appId } };
+    await act(async () => answer.reject(new Error("This Host cannot open app tabs.")));
+    expect(harness.dispatch).toHaveBeenLastCalledWith({ count: 1, type: "POP" });
+    expect(text(container)).toContain("This Host cannot open app tabs.");
+  });
 
   it("shows all of itself beside the page, with its approval, and includes the page", async () => {
     const runId = createId("run");
@@ -3561,16 +3618,7 @@ it("does not send an empty message when Send finishes a microphone with no speec
 });
 
 function voiceController(phase: VoiceSnapshot["phase"]) {
-  let snapshot: VoiceSnapshot = {
-    available: true,
-    phase,
-    muted: false,
-    heard: null,
-    spoken: null,
-    since: null,
-    activity: null,
-    notice: null,
-  };
+  let snapshot: VoiceSnapshot = { ...idleVoiceSnapshot, available: true, phase };
   const listeners = new Set<() => void>();
   const controller: VoiceControls = {
     subscribe: (listener) => {
@@ -3583,15 +3631,18 @@ function voiceController(phase: VoiceSnapshot["phase"]) {
     subscribeLevel: () => () => undefined,
     start: vi.fn(async () => undefined),
     stop: vi.fn(),
+    openThread: vi.fn(async () => null),
     setMuted: vi.fn(),
     dismissNotice: vi.fn(),
   };
+  const publish = (patch: Partial<VoiceSnapshot>) => {
+    snapshot = { ...snapshot, ...patch };
+    for (const listener of listeners) listener();
+  };
   return {
     controller,
-    move: (phase: VoiceSnapshot["phase"]) => {
-      snapshot = { ...snapshot, phase };
-      for (const listener of listeners) listener();
-    },
+    move: (phase: VoiceSnapshot["phase"]) => publish({ phase }),
+    publish,
   };
 }
 
@@ -3682,12 +3733,254 @@ it("floats active voice while its dock's pane is hidden and docks again when vis
   }
 });
 
+/** The Voice Thread as the Host hands it over: a conversation with no composer. */
+function voiceThreadSnapshot(input: {
+  readonly entries?: readonly TranscriptEntry[];
+  readonly requests?: readonly Request[];
+}): HostSnapshot {
+  const snapshot = snapshotFor({
+    entries: input.entries ?? [],
+    run: null,
+    requests: input.requests ?? [],
+    threadId: workId,
+  });
+  return {
+    ...snapshot,
+    voiceThreadId: workId,
+    threads: snapshot.threads.map((thread) =>
+      thread.id === workId ? { ...thread, role: "conversation", title: "Voice" } : thread,
+    ),
+    waitingRequests: (input.requests ?? []).map(waitingOn),
+  };
+}
+
+function waitingOn(request: Request): HostSnapshot["waitingRequests"][number] {
+  return {
+    assignments: [],
+    presentation: null,
+    request,
+    subagent: null,
+  } as unknown as HostSnapshot["waitingRequests"][number];
+}
+
+function askedHere(title: string): Request {
+  return { ...approval(createId("run"), title), originatingThreadId: workId } as Request;
+}
+
+function drawVoice(voice: ReturnType<typeof voiceController>, pane: ReactNode): ReactNode {
+  return (
+    <VoiceContext value={voice.controller}>
+      <section aria-label="Overlay">
+        <VoiceOverlay />
+      </section>
+      <section aria-label="Pane">{pane}</section>
+    </VoiceContext>
+  );
+}
+
+const inDock = (container: HTMLElement, selector: string) =>
+  container.querySelector('[data-testid="composer-dock"]')?.querySelector(selector) ?? null;
+
+describe("the Voice Thread", () => {
+  it("offers a call where the composer would be, and the call's bar takes that place", async () => {
+    const voice = voiceController("idle");
+    const host = fakeHost(voiceThreadSnapshot({}));
+    harness.activeHost = host.client;
+    const { container, root, pane } = await mount(host, workId);
+    await act(async () =>
+      root.render(
+        drawVoice(
+          voice,
+          pane(() => undefined),
+        ),
+      ),
+    );
+
+    expect(container.querySelector('[aria-label="Composer"]')).toBeNull();
+    expect(inDock(container, '[aria-label="Talk to Opensteer"]')).not.toBeNull();
+    await press(container, "Talk to Opensteer");
+    expect(voice.controller.start).toHaveBeenCalledOnce();
+    await press(container, `Model: ${base.threads.find(({ id }) => id === workId)!.modelLabel}`);
+    expect(harness.navigate).toHaveBeenCalledExactlyOnceWith("ThreadSettings", {
+      deploymentId,
+      threadId: workId,
+    });
+
+    await act(async () => voice.move("listening"));
+    expect(inDock(container, '[aria-label="Voice: Listening"]')).not.toBeNull();
+    expect(hasButton(container, "Talk to Opensteer")).toBe(false);
+    // The model is the start bar's, so a call leaves no way to change it.
+    expect(container.querySelector('[aria-label^="Model:"]')).toBeNull();
+    expect(
+      container.querySelector('[aria-label="Overlay"]')?.querySelector('[aria-label^="Voice:"]'),
+    ).toBeNull();
+
+    await act(async () => voice.move("idle"));
+    expect(inDock(container, '[aria-label="Talk to Opensteer"]')).not.toBeNull();
+  });
+
+  it("keeps the way to retry under a notice, and says why when voice cannot start", async () => {
+    const voice = voiceController("idle");
+    const host = fakeHost(voiceThreadSnapshot({}));
+    harness.activeHost = host.client;
+    const { container, root, pane } = await mount(host, workId);
+    await act(async () =>
+      root.render(
+        drawVoice(
+          voice,
+          pane(() => undefined),
+        ),
+      ),
+    );
+    await act(async () =>
+      voice.publish({
+        notice: { action: null, kind: "connection-failed", message: "Couldn't connect." },
+      }),
+    );
+    expect(text(container)).toContain("Couldn't connect.");
+    expect(button(container, "Talk to Opensteer").disabled).toBe(false);
+    await act(async () => voice.publish({ available: false, notice: null }));
+    expect(button(container, "Talk to Opensteer").disabled).toBe(true);
+    expect(text(container)).toContain("Voice isn’t available right now");
+  });
+
+  it("docks what it asks while no call is on, and only the call's bar carries it on a call", async () => {
+    const request = askedHere("Send the note to Maya?");
+    const voice = voiceController("idle");
+    const host = fakeHost(voiceThreadSnapshot({ requests: [request] }));
+    harness.activeHost = host.client;
+    const { container, root, pane } = await mount(host, workId);
+    await act(async () =>
+      root.render(
+        drawVoice(
+          voice,
+          pane(() => undefined),
+        ),
+      ),
+    );
+    const cards = () => container.querySelectorAll('[aria-label="Docked request"]');
+    expect(cards()).toHaveLength(1);
+
+    await act(async () => voice.move("listening"));
+    expect(cards()).toHaveLength(0);
+    await act(async () =>
+      voice.publish({ ask: { kind: "request", others: 2, requestId: request.id } }),
+    );
+    expect(cards()).toHaveLength(1);
+    const bar = container.querySelector('[aria-label="Voice: Listening"]')!;
+    expect(
+      cards()[0]!.compareDocumentPosition(bar) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(text(container)).toContain("2 more waiting");
+  });
+
+  it("carries the question on the bar over a screen with no dock", async () => {
+    const request = askedHere("Send the note to Maya?");
+    const voice = voiceController("listening");
+    const host = fakeHost(voiceThreadSnapshot({ requests: [request] }));
+    harness.activeHost = host.client;
+    const { container, root } = await mount(host, workId);
+    await act(async () => root.render(drawVoice(voice, null)));
+    await act(async () =>
+      voice.publish({ ask: { kind: "request", others: 0, requestId: request.id } }),
+    );
+    const overlay = container.querySelector('[aria-label="Overlay"]')!;
+    expect(overlay.querySelectorAll('[aria-label="Docked request"]')).toHaveLength(1);
+    expect(text(container)).not.toContain("more waiting");
+  });
+
+  it("does not dock on a task's own composer what the call's bar already carries", async () => {
+    const worked = askedHere("Book the flight?");
+    const voice = voiceController("listening");
+    const host = fakeHost({
+      ...snapshotFor({ entries: [], requests: [worked], run: null, threadId: workId }),
+      waitingRequests: [waitingOn(worked)],
+    });
+    harness.activeHost = host.client;
+    const { container, root, pane } = await mount(host, workId);
+    await act(async () =>
+      root.render(
+        drawVoice(
+          voice,
+          pane(() => undefined),
+        ),
+      ),
+    );
+    const cards = () => container.querySelectorAll('[aria-label="Docked request"]');
+    expect(cards()).toHaveLength(1);
+    await act(async () =>
+      voice.publish({ ask: { kind: "request", others: 0, requestId: worked.id } }),
+    );
+    expect(cards()).toHaveLength(1);
+  });
+
+  it("shows the Passwords offer on the bar in the Request's place", async () => {
+    const voice = voiceController("listening");
+    const host = fakeHost(voiceThreadSnapshot({}));
+    harness.activeHost = host.client;
+    const { container, root, pane } = await mount(host, workId);
+    await act(async () =>
+      root.render(
+        drawVoice(
+          voice,
+          pane(() => undefined),
+        ),
+      ),
+    );
+    await act(async () =>
+      voice.publish({
+        ask: {
+          kind: "passwords",
+          offer: { credential: "login", need: "not-set-up", site: "example.com" },
+        },
+      }),
+    );
+    expect(occurrences(container, "Opensteer Passwords")).toBe(1);
+  });
+
+  it("reads a call's opening as a divider here, and the same words as a message anywhere else", async () => {
+    const opening = said(voiceCallSeed, null);
+    const divider = `[aria-label="${voiceCallSeed} at ${formatClockTime(opening.createdAt)}"]`;
+    const voice = fakeHost(voiceThreadSnapshot({ entries: [opening] }));
+    const onVoice = await mount(voice, workId);
+    expect(onVoice.container.querySelector(divider)).not.toBeNull();
+
+    const task = fakeHost(snapshotFor({ entries: [opening], run: null, threadId: workId }));
+    const onTask = await mount(task, workId);
+    expect(onTask.container.querySelector(divider)).toBeNull();
+    expect(text(onTask.container)).toContain(voiceCallSeed);
+  });
+
+  it("redraws neither the pane nor the composer for a caption's tokens or the task count", async () => {
+    const voice = voiceController("hearing");
+    const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+    harness.activeHost = host.client;
+    const { container, root, pane } = await mount(host, workId);
+    await act(async () =>
+      root.render(
+        drawVoice(
+          voice,
+          pane(() => undefined),
+        ),
+      ),
+    );
+    const renders = harness.paneRenders;
+    for (const heard of ["Book", "Book the", "Book the flight"])
+      await act(async () => voice.publish({ heard }));
+    await act(async () => voice.publish({ tasks: 2 }));
+    expect(text(container)).toContain("Book the flight");
+    expect(text(container)).toContain("2 tasks");
+    expect(harness.paneRenders).toBe(renders);
+  });
+});
+
 it("offers voice on Chat's first message but not on a new task composer", async () => {
   const { HomeIntro } = await import("../screens/home-intro.js");
   const { FirstMessageComposer, firstMessageExecution } = await import("./first-message.js");
   const host = fakeHost({
     ...snapshotFor({ entries: [], run: null, threadId: workId }),
     homeThreadId: null,
+    voiceThreadId: null,
   });
   const { container, root } = await mount(host, workId);
   const voice = voiceController("idle");

@@ -1,26 +1,28 @@
 import { hostsDeployment } from "@opensteer/client/computers";
 import {
-  passwordsSuggestionElsewhere,
+  passwordsOfferLine,
   passwordsSuggestionKey,
-  passwordsSuggestionLead,
-  passwordsSuggestionName,
   type HostSnapshot,
+  type PasswordsSetupOffer,
 } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
 import { useSyncExternalStore, type ReactNode } from "react";
-import { Pressable, StyleSheet, View } from "react-native";
+import { Pressable, StyleSheet, View, type StyleProp, type ViewStyle } from "react-native";
 import { color, material, radius, space, touchTarget } from "../theme.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
 import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 
 /**
- * The quiet offer of Opensteer Passwords after a sign-in found it not set up.
- * Setup needs the Mac, so the phone only says where; nothing reaches the agent.
+ * The quiet offer of Opensteer Passwords after a sign-in found it lacking.
+ * Passwords lives on the Mac, so the phone only says where; the Host wakes the
+ * agent once the login exists.
  */
 export function PasswordsSuggestion(props: {
   readonly deploymentId: string;
   readonly hostClient: Parameters<typeof useHostSelector>[0];
+  readonly offer: PasswordsSetupOffer;
+  readonly style?: StyleProp<ViewStyle>;
   readonly userId: string;
 }): ReactNode {
   const homeName = useHostSelector(props.hostClient, selectHomeName);
@@ -32,12 +34,19 @@ export function PasswordsSuggestion(props: {
   );
   const key = passwordsSuggestionKey(props.deploymentId, props.userId);
   if (dismissed === null || dismissed.has(key)) return null;
+  const line = passwordsOfferLine({
+    card: props.offer.credential === "card",
+    computer: homeName ?? "your Mac",
+    need: props.offer.need,
+    site: props.offer.site,
+  });
   return (
-    <View accessibilityLiveRegion="polite" style={styles.line}>
+    <View accessibilityLiveRegion="polite" style={[styles.line, props.style]}>
       <Symbol name="key" size={15} tint={color.ember} />
       <AppText role="caption" style={styles.words} tone="soft">
-        <AppText role="caption">{passwordsSuggestionName}</AppText> {passwordsSuggestionLead}{" "}
-        {passwordsSuggestionElsewhere(homeName)}
+        {line.before}
+        <AppText role="caption">{line.name}</AppText>
+        {line.after}
       </AppText>
       <Pressable
         accessibilityLabel="Dismiss"
@@ -70,7 +79,6 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     flexDirection: "row",
     gap: space[10],
-    marginTop: space[10],
     paddingLeft: space[12],
     paddingVertical: space[8],
   },

@@ -21,10 +21,14 @@ public struct PasswordsWindowView: View {
           .background(Color.yellow.opacity(0.35))
       }
       content
+        .transition(.opacity)
+        .animation(.easeInOut(duration: 0.18), value: model.screen)
     }
     .frame(minWidth: 520, idealWidth: 560, minHeight: 440, idealHeight: 600)
     .sheet(item: $model.sheet) { sheet in
       switch sheet {
+      case .addCard: CardForm(model: model, editing: nil)
+      case .editCard(let card): CardForm(model: model, editing: card)
       case .add: LoginForm(model: model, editing: nil)
       case .edit(let login): LoginForm(model: model, editing: login)
       case .importing:
@@ -43,8 +47,8 @@ public struct PasswordsWindowView: View {
       CenteredScreen(symbol: "lock", title: Copy.appName, lead: Copy.notUnlockedSinceRestart) { EmptyView() }
     case .setUp, .settingUp:
       SetUpView(model: model)
-    case .setUpDone:
-      SetUpDoneView(model: model)
+    case .addPasswords:
+      AddPasswordsView(model: model)
     case .needsReset(let reason):
       NeedsResetView(model: model, reason: reason)
     case .ready:
@@ -90,30 +94,24 @@ private struct CenteredScreen<Content: View>: View {
 
 private struct SetUpView: View {
   @ObservedObject var model: PasswordsWindowModel
+  /// One for each of `Copy.setUpFacts`, in order.
+  private static let factSymbols = ["keyboard", "hand.raised", "laptopcomputer", "checkmark.shield"]
 
   var body: some View {
-    CenteredScreen(symbol: "key", title: Copy.appName, lead: Copy.setUpLead) {
-      VStack(alignment: .leading, spacing: 10) {
-        ForEach(Copy.setUpFacts, id: \.self) { fact in
+    CenteredScreen(symbol: "key.fill", tint: .accentColor, title: Copy.appName, lead: Copy.setUpLead) {
+      VStack(alignment: .leading, spacing: 12) {
+        ForEach(Array(zip(Copy.setUpFacts, Self.factSymbols)), id: \.0) { fact, symbol in
           Label {
             Text(fact).fixedSize(horizontal: false, vertical: true)
           } icon: {
-            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+            Image(systemName: symbol).foregroundStyle(.secondary).frame(width: 22)
           }
         }
       }
+      .font(.callout)
       .frame(maxWidth: .infinity, alignment: .leading)
       .padding(14)
       .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.quaternary.opacity(0.5)))
-      Label {
-        Text(Copy.setUpNote).fixedSize(horizontal: false, vertical: true)
-      } icon: {
-        Image(systemName: "info.circle")
-      }
-      .font(.callout)
-      .foregroundStyle(.secondary)
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .padding(.horizontal, 14)
       if let message = model.message {
         Text(message).foregroundStyle(.orange)
       }
@@ -133,22 +131,59 @@ private struct SetUpView: View {
   }
 }
 
-private struct SetUpDoneView: View {
+/// The vault is ready and empty, so nothing is finished yet: this is the step
+/// that makes it useful, and "Not Now" is the honest way out of it.
+private struct AddPasswordsView: View {
   @ObservedObject var model: PasswordsWindowModel
 
   var body: some View {
-    CenteredScreen(symbol: "checkmark.circle.fill", tint: .green, title: Copy.setUpDone, lead: Copy.setUpDoneLead) {
-      VStack(spacing: 12) {
-        Button(Copy.importPasswords) { model.startImport() }
-          .buttonStyle(.borderedProminent)
-          .controlSize(.large)
-          .keyboardShortcut(.defaultAction)
-        HStack(spacing: 8) {
-          Button(Copy.addPassword) { model.sheet = .add }
-          Button(Copy.done) { model.finishSetup() }
-        }
+    CenteredScreen(symbol: "key.fill", tint: .accentColor, title: Copy.addPasswords, lead: Copy.importWhere) {
+      // Off is the one setting that can outlive the last saved login, and it needs a way back.
+      if !model.agentSignIns { AgentSignInsToggle(model: model) }
+      SourceList { source in Task { await model.importPasswords(from: source) } }
+      if let message = model.message {
+        Text(message).foregroundStyle(.orange)
+      }
+      HStack {
+        Button(Copy.addPassword) { Task { await model.addPassword() } }
+        Button(Copy.addCard) { Task { await model.addCard() } }
+        Spacer()
+        Button(Copy.notNow) { model.leave() }
       }
     }
+  }
+}
+
+private struct AgentSignInsToggle: View {
+  @ObservedObject var model: PasswordsWindowModel
+
+  var body: some View {
+    Toggle(isOn: Binding(get: { model.agentSignIns }, set: { on in Task { await model.setAgentSignIns(on) } })) {
+      VStack(alignment: .leading, spacing: 2) {
+        Text(Copy.agentSignIns)
+        Text(Copy.agentSignInsDetail).font(.callout).foregroundStyle(.secondary)
+      }
+    }
+    .toggleStyle(AccentSwitchStyle())
+  }
+}
+
+/// The first passwords are saved, and whatever sent the person here is waiting.
+private struct FilledBar: View {
+  @ObservedObject var model: PasswordsWindowModel
+
+  var body: some View {
+    HStack(spacing: 8) {
+      Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+      if case .shown(let all) = model.logins, !all.isEmpty { Text(Copy.saved(all.count)) }
+      Spacer()
+      Button(Copy.backToOpensteer) { model.leave() }
+        .buttonStyle(.borderedProminent)
+        .keyboardShortcut(.defaultAction)
+    }
+    .padding(.horizontal, 20)
+    .padding(.vertical, 12)
+    .background(.bar)
   }
 }
 
@@ -196,13 +231,7 @@ private struct ReadyView: View {
   var body: some View {
     Form {
       Section {
-        Toggle(isOn: Binding(get: { model.agentSignIns }, set: { on in Task { await model.setAgentSignIns(on) } })) {
-          VStack(alignment: .leading, spacing: 2) {
-            Text(Copy.agentSignIns)
-            Text(Copy.agentSignInsDetail).font(.callout).foregroundStyle(.secondary)
-          }
-        }
-        .toggleStyle(AccentSwitchStyle())
+        AgentSignInsToggle(model: model)
       }
 
       Section {
@@ -231,6 +260,9 @@ private struct ReadyView: View {
       }
     }
     .formStyle(.grouped)
+    .safeAreaInset(edge: .bottom, spacing: 0) {
+      if model.filled { FilledBar(model: model) }
+    }
     .confirmationDialog(
       deleting.map { Copy.deleteConfirm($0.site, Display.account($0.username)) } ?? "",
       isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })
@@ -260,6 +292,26 @@ private struct ReadyView: View {
         Text(Copy.confirming).foregroundStyle(.secondary)
       }
     case .shown(let all):
+      VStack(alignment: .leading) {
+        HStack {
+          Text("Cards").font(.headline)
+          Spacer()
+          Button("Add card") { model.sheet = .addCard }
+        }
+        ForEach(model.cards, id: \.id) { card in
+          HStack {
+            VStack(alignment: .leading) {
+              Text("\(card.brand) ending \(card.lastFour)")
+              if let label = card.label { Text(label).foregroundStyle(.secondary) }
+              Text(String(format: "%02lld/%04lld", card.expiryMonth, card.expiryYear)).font(.caption)
+            }
+            Spacer()
+            Button("Edit") { model.sheet = .editCard(card) }
+            Button("Delete", role: .destructive) { Task { await model.deleteCard(id: card.id) } }
+          }
+        }
+      }.padding(.vertical, 12)
+
       TextField(Copy.search, text: $model.search, prompt: Text(Copy.search))
         .textFieldStyle(.roundedBorder)
         .labelsHidden()
@@ -418,11 +470,14 @@ private struct ActivityRow: View {
       VStack(alignment: .leading, spacing: 2) {
         HStack(spacing: 6) {
           Text(entry.site).font(.body.weight(.medium))
-          OutcomeLabel(outcome: entry.outcome)
+          if entry.credential == "card", entry.outcome == .used {
+            Text("Card details released").font(.caption)
+          } else { OutcomeLabel(outcome: entry.outcome) }
           if entry.automatic {
             Text(Copy.automatic).font(.caption).foregroundStyle(.secondary)
           }
         }
+        if let brand = entry.brand, let last = entry.lastFour { Text("\(brand) ending \(last)").font(.callout) }
         Text(([entry.account].compactMap { $0 } + [entry.workspace, "“\(entry.thread)”"]).joined(separator: " · "))
           .font(.callout)
           .foregroundStyle(.secondary)
@@ -537,5 +592,75 @@ private struct LoginForm: View {
       outcome = await model.add(website: websites, username: username, password: password, twoFactor: twoFactor, label: label)
     }
     if case .stays(let sentence) = outcome { problem = sentence }
+  }
+}
+
+private struct CardForm: View {
+  @ObservedObject var model: PasswordsWindowModel
+  let editing: Wire.CardChoice?
+  @Environment(\.dismiss) private var dismiss
+  @State private var number = ""
+  @State private var cvc = ""
+  @State private var month = ""
+  @State private var year = ""
+  @State private var name = ""
+  @State private var label = ""
+  @State private var postal = ""
+  @State private var loaded = false
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      Text(editing == nil ? "Add card" : "Edit card").font(.title2)
+      SecureField("Card number", text: $number)
+      TextField("Expiry month", text: $month)
+      TextField("Expiry year", text: $year)
+      SecureField("Security code", text: $cvc)
+      TextField("Name on card (optional)", text: $name)
+      TextField("Label (optional)", text: $label)
+      TextField("Billing postal code (optional)", text: $postal)
+      if let message = model.message { Text(message).foregroundStyle(.secondary) }
+      HStack {
+        Button("Cancel") { clear(); dismiss() }
+        Spacer()
+        Button("Save") {
+          Task {
+            guard let month = Int64(month), let year = Int64(year) else {
+              model.message = "Enter a valid expiry month and year."
+              return
+            }
+            let draft = CardDraft(number: number, expiryMonth: month, expiryYear: year, cvc: cvc,
+              name: name.isEmpty ? nil : name, label: label.isEmpty ? nil : label,
+              postalCode: postal.isEmpty ? nil : postal)
+            if await model.saveCard(draft, id: editing?.id) { clear(); dismiss() }
+          }
+        }.disabled(!loaded || model.working)
+      }
+    }.padding(24).frame(width: 420)
+    .task {
+      if let editing {
+        do {
+          let card = try await model.cardForEditing(id: editing.id)
+          guard !Task.isCancelled, model.sheet == .editCard(editing) else { return }
+          number = card.draft.number
+          cvc = card.draft.cvc
+          month = String(card.draft.expiryMonth)
+          year = String(card.draft.expiryYear)
+          name = card.draft.name ?? ""
+          label = card.draft.label ?? ""
+          postal = card.draft.postalCode ?? ""
+        } catch { dismiss(); return }
+      }
+      loaded = true
+    }
+    .onDisappear { clear() }
+  }
+  private func clear() {
+    number = ""
+    cvc = ""
+    month = ""
+    year = ""
+    name = ""
+    label = ""
+    postal = ""
   }
 }

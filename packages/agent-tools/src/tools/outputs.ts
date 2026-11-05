@@ -4,6 +4,7 @@ import {
   AssignmentIdSchema,
   AssignmentSummarySchema,
   BrowserProfileIdSchema,
+  BrowserSiteSchema,
   DelegationModelChoiceSchema,
   EnvironmentIdSchema,
   ExecutionEnvironmentKindSchema,
@@ -273,6 +274,7 @@ export const SignInOutputSchema = z.object({
   requestId: RequestIdSchema.optional(),
   replayed: z.boolean().optional(),
   waitingFor: z.string().optional(),
+  guidance: z.string().optional(),
 });
 export const BrowserSessionSchema = z.object({
   id: z.string(),
@@ -366,6 +368,10 @@ export const TriggerOutputSchema = z.object({
   replayed: z.boolean().optional(),
 });
 
+export const TriggerWriteOutputSchema = TriggerOutputSchema.extend({
+  webhook: z.object({ url: z.url(), secret: z.string().min(1) }).optional(),
+});
+
 export { AgentMediaContentSchema, IntegrationCallOutputSchema } from "./integration-outputs.js";
 
 export const ThreadWaitOutputSchema = z.object({
@@ -419,3 +425,43 @@ export const ThreadReadOutputSchema = z
     (result) => new TextEncoder().encode(JSON.stringify(result)).byteLength <= 432 * 1024,
     "Thread history exceeds the agent output byte limit",
   );
+
+export const UseCardOutputSchema = z.discriminatedUnion("status", [
+  z.strictObject({
+    status: z.literal("ready"),
+    site: BrowserSiteSchema,
+    cardRef: z.string().regex(/^crd_[0-9a-f]{32}$/u),
+    brand: z.string().min(1).max(64),
+    lastFour: z.string().regex(/^\d{4}$/u),
+  }),
+  z.strictObject({
+    status: z.literal("pending"),
+    site: BrowserSiteSchema,
+    requestId: RequestIdSchema,
+  }),
+  z.strictObject({
+    status: z.enum(["resolved", "declined", "needs-approval"]),
+    site: BrowserSiteSchema,
+    guidance: z.string().optional(),
+  }),
+  z.strictObject({
+    status: z.literal("unavailable"),
+    site: BrowserSiteSchema,
+    reason: z.enum([
+      "unsupported",
+      "runtime-outdated",
+      "session-closed",
+      "not-allowed",
+      "rate-limited",
+      "busy",
+      "stopped",
+      "expired",
+      "interrupted",
+      "no-saved-card",
+      "passwords-off",
+      "passwords-not-set-up",
+      "passwords-not-responding",
+    ]),
+  }),
+]);
+export type UseCardOutput = z.infer<typeof UseCardOutputSchema>;

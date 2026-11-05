@@ -140,10 +140,10 @@ import { BrowserSourceService } from "../browser/browser-source-service.js";
 import { BrowserTabGroupService } from "../browser/browser-tab-group-service.js";
 import { BrowserAttachTicketSigner } from "../browser/browser-ticket.js";
 import { PasswordSignInService } from "../browser/password-sign-in-service.js";
+import { passwordsLoginSavedMessage } from "../browser/passwords-offers.js";
 import { RunnerBrowserHub } from "../browser/runner-browser-hub.js";
 import { RunnerBrowserRuntimeRouter } from "../browser/runner-browser-runtime.js";
 import { ChannelService } from "../channels/channel-service.js";
-import { createVoiceFollow } from "../voice/voice-follow.js";
 import { MessagingRelayHub } from "../channels/messaging-relay-hub.js";
 import { ComputerAppHub } from "../computer-apps/computer-app-hub.js";
 import { ComputerUseService } from "../computer-use/computer-use-service.js";
@@ -350,7 +350,7 @@ export async function confirmRunnerRegistration(
 }
 
 export function runnerRegistrationHook<T>(
-  wake: () => void,
+  wake: (identity: T) => void,
   afterRegistration: (identity: T) => Promise<void>,
 ): (identity: T) => Promise<void> {
   return async (identity) => {
@@ -360,7 +360,7 @@ export function runnerRegistrationHook<T>(
       // A Runner that failed its catalog capture is still reachable, so
       // scheduling must resume either way; the capture itself stays best
       // effort and the convergence pass retries it.
-      wake();
+      wake(identity);
     }
   };
 }
@@ -785,7 +785,9 @@ export async function createHostRuntime(
       console.warn("Browser usage recording failed", error);
     };
     const browserTabGroups = new BrowserTabGroupStore(database);
+    let logMissingBrowserActor: (sessionId: string, bindingId: string) => void = () => undefined;
     const browser = new BrowserService({
+      onMissingActor: (sessionId, bindingId) => logMissingBrowserActor(sessionId, bindingId),
       hostOrigin: config.canonicalOrigin,
       personal: deployment.deploymentShape.kind === "personal",
       localProfiles,
@@ -913,9 +915,20 @@ export async function createHostRuntime(
       store: new BrowserSourceStore(database),
       requests: store.requests,
       onError: (error) => reportBrowserSignInError(error),
+      onLoginSaved: async (offer) => {
+        await commands.enqueueThreadInput({
+          content: [{ text: passwordsLoginSavedMessage(offer), type: "text" }],
+          idempotencyKey: `passwords-login-saved:${offer.id}`,
+          policy: "queue",
+          requestedBy: offer.ownerId,
+          source: { cause: "passwords-login-saved", kind: "platform", sourceRunId: offer.runId },
+          threadId: offer.threadId,
+        });
+      },
       onRequestResolved: () => notifyIntegrationContinuations(),
       onWorkspaceEvent: (event) => publishWorkspaceEvent(event),
       passwords: passwordSignIns,
+      stoppedByPerson: (threadId) => store.latestRunStoppedByPerson(threadId),
     });
     disconnectBrowserSources = () => browserSources.disconnectRouteAdmittedSources();
     const credentialKey = await loadOrCreateCredentialKey({
@@ -1266,6 +1279,7 @@ export async function createHostRuntime(
     // Shell audit keeps its existing `run-ended` reason; computer-use cleanup
     // closes the exact session without adding a wire reason.
     store.onRunGrantsRevoked((grants) => {
+      browser.endRevokedRunActors(grants);
       computerUse?.endGrantSessions(grants);
       for (const grant of grants)
         integrationPlatform.endComputerGeneration(grant.runId, grant.bindingGeneration);
@@ -1296,11 +1310,6 @@ export async function createHostRuntime(
       }
       return threadStateDrain;
     };
-    const followVoiceCall = createVoiceFollow({
-      store,
-      show: (userId, message) => realtime.showToPerson(userId, message),
-      onError: (error) => app.log.warn({ err: error }, "A voice call's screen could not follow"),
-    });
     const publishWorkspaceEvent = (event: AgentEvent): void => {
       if (event.type === "thread.listed" || event.type === "assignment.updated")
         browser.invalidatePlaceAuthority(
@@ -1311,9 +1320,13 @@ export async function createHostRuntime(
               ? [event.data.assignment.parentThreadId, event.data.assignment.workerThread.id]
               : undefined,
         );
+      if (event.type === "place.entered")
+        app.log.info(
+          { runId: event.runId, threadId: event.threadId, workspaceId: event.workspaceId },
+          "place.entered",
+        );
       liveRuns.observeCommitted([event]);
       realtime.publish(event);
-      followVoiceCall(event);
       onTerminalRun(event);
       onAssignmentReturn(event);
       notificationDispatcher?.dispatch(event);
@@ -1437,6 +1450,7 @@ export async function createHostRuntime(
     let wakeExecutionCoordinator = (): void => undefined;
     let dispatchingRunIds = (): readonly RunId[] => [];
     let watchService: WatchService | undefined;
+    const registeringRunners = new Set<string>();
     const runnerAuthenticator = new RunnerAuthenticator({
       issuancePrivateKey: keys.privateKey,
       store,
@@ -1725,8 +1739,12 @@ export async function createHostRuntime(
           }
         },
         onRegistered: runnerRegistrationHook(
-          () => wakeExecutionCoordinator(),
+          (identity: RunnerIdentity) => {
+            registeringRunners.delete(identity.connectionId);
+            wakeExecutionCoordinator();
+          },
           async (identity) => {
+            registeringRunners.add(identity.connectionId);
             // Before anything else, and outside the try: the far side of the
             // remote-access fence. A computer sent away here was never online,
             // so there is nothing to announce and nothing to reconcile.
@@ -1932,6 +1950,10 @@ export async function createHostRuntime(
       onError: reportThreadNamingError,
     });
     const dispatcher = new HostCommandDispatcher({
+      runnerRegistrationPending: (environmentId) => {
+        const identity = runners.identityForEnvironment(environmentId);
+        return identity !== undefined && registeringRunners.has(identity.connectionId);
+      },
       onRunAdmitted: (threadId) => {
         void naming?.request(threadId);
       },
@@ -2066,6 +2088,7 @@ export async function createHostRuntime(
       tokens,
     });
     const channels = new ChannelService({
+      onError: (error) => app.log.error({ err: error }, "Channel ingress failed"),
       onChanged: () => notifyMachinesChanged(realtime, "integration.connections"),
       canonicalOrigin: config.canonicalOrigin.origin,
       channels: new ChannelStore(database),
@@ -2119,7 +2142,19 @@ export async function createHostRuntime(
       memoryPasses,
       realtime,
       computerUse,
-      personShow: (userId, message) => realtime.showToPerson(userId, message),
+      personShow: async (userId, message) => {
+        const connectedDevices = await realtime.showToPerson(userId, message);
+        app.log.info(
+          {
+            userId,
+            runId: message.runId,
+            threadId: message.threadId,
+            workspaceId: message.workspaceId,
+          },
+          "host.show",
+        );
+        return connectedDevices;
+      },
       browserTabs,
       supportsLoginFill: (scope) => {
         const runner = runners.identityForEnvironment(scope.environmentId);
@@ -2152,6 +2187,18 @@ export async function createHostRuntime(
       tunnels: new AppTunnelHub(runners),
       dataDirectory,
       apps: new AppStore(database),
+      tabsChanged: async (workspaceId) => {
+        const members = await database
+          .selectFrom("workspaceMemberships")
+          .select("userId")
+          .where("workspaceId", "=", workspaceId)
+          .where("state", "=", "active")
+          .execute();
+        realtime.sendToUsers(
+          members.map(({ userId }) => userId),
+          { type: "host.app-tabs-changed" },
+        );
+      },
       store,
       files,
       tokens: runToolTokens,
@@ -2275,6 +2322,7 @@ export async function createHostRuntime(
     const agentTools = new OpensteerMcpService({
       publicUrl: config.runtimeOrigin,
       realtime,
+      onToolError: (error, tool) => app.log.error({ err: error, tool }, "Agent tool failed"),
       callers: new AgentCallerResolver({
         store,
         runs: runToolTokens,
@@ -2443,6 +2491,10 @@ export async function createHostRuntime(
       );
     reportWorkspaceDeletionError = (error, workspaceId) =>
       app.log.error({ err: error, workspaceId }, "Workspace deletion teardown failed");
+    logMissingBrowserActor = (sessionId, bindingId) => {
+      if (bindingId.startsWith("run:"))
+        app.log.info({ sessionId, runId: bindingId.slice(4) }, "Browser Run has no actor");
+    };
     logComputerLifecycle = (event, details) => app.log.info(details, event);
     reportHarnessAuthenticationNudgeError = (environmentId, error) =>
       app.log.warn(

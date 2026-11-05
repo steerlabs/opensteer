@@ -101,7 +101,8 @@ export function useComposerContext({
   readonly hostClient: HostClient;
 }): ComposerContext {
   const workspace = useOptionalWorkspace();
-  const places = useBrowserTabStrip(hostClient).ordered;
+  const { ordered } = useBrowserTabStrip(hostClient);
+  const places = useMemo(() => attachablePlaces(ordered), [ordered]);
   const [frozen, setFrozen] = useState<readonly ContextChip[] | null>(auto ? null : []);
   const [followed, setFollowed] = useState<FollowedCandidate | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -404,12 +405,17 @@ export function useComposerContext({
   );
 }
 
+/** What a draft can name: a published app has no place reference an agent could read. */
+export function attachablePlaces(places: readonly PlaceItem[]): readonly PlaceItem[] {
+  return places.filter((place) => place.kind !== "opensteer-app");
+}
+
 /** The shown place's automatic composer reference, read at the time it is asked for. */
 export async function autoPlacePart(
   hostClient: HostClient,
   place: PlaceItem | null,
 ): Promise<PlacePart | null> {
-  if (place?.availability !== "ready") return null;
+  if (place?.availability !== "ready" || place.kind === "opensteer-app") return null;
   if (place.destination.kind !== "browser") return nativePart(place);
   const { sessionId, tabId } = place.destination;
   if (!tabId) return null;
@@ -451,6 +457,7 @@ async function placePart(hostClient: HostClient, place: PlaceItem): Promise<Plac
 /** A Mac app's or phone's exact reference: the place names it, with its computer. */
 function nativePart(place: PlaceItem): PlacePart {
   const { destination } = place;
+  if (destination.kind === "opensteer-app") throw new Error("App tabs cannot be attached.");
   if (destination.kind === "browser") throw new Error("A page is read, not named.");
   const machineId = RunnerIdSchema.parse(destination.machineId);
   if (destination.kind === "phone") {

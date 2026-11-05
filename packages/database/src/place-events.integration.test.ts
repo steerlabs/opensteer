@@ -110,6 +110,29 @@ describeStore("durable Run place entries", (it) => {
       runId: delegated.run.id,
       threadId: delegated.thread.id,
     });
+    await expect(
+      store.resolvePlaceActors({
+        agentBindingIds: [`run:${f.run.id}`],
+        ownerIds: [f.userId],
+      }),
+    ).resolves.toMatchObject([{ threadId: f.thread.id, home: false }]);
+    // Unlisted non-call workers without an Assignment stay unrepresented.
+    await database
+      .updateTable("threads")
+      .set({ listed: false })
+      .where("id", "=", f.thread.id)
+      .execute();
+    await expect(
+      store.resolvePlaceActors({
+        agentBindingIds: [`run:${f.run.id}`],
+        ownerIds: [f.userId],
+      }),
+    ).resolves.toEqual([]);
+    await database
+      .updateTable("threads")
+      .set({ listed: true })
+      .where("id", "=", f.thread.id)
+      .execute();
     const actors = await store.resolvePlaceActors({
       agentBindingIds: [`run:${delegated.run.id}`],
       ownerIds: [f.userId],

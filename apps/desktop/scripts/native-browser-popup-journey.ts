@@ -351,7 +351,7 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
       }>;
     // A tap on a picture older than a hit-test change must refuse, and a person can't tap what they
     // haven't seen. A repaint ordered after earlier work, seen in the viewer's own pixels, proves the
-    // picture is newer than it; the trailing frames of that page activity then need to finish.
+    // picture is newer than it; the quiet gap then matches a person's reaction time.
     const settle = async (page: Page) => {
       const red = (await read(
         `(()=>{const s=document.body.style;const light=s.backgroundColor==="rgb(200, 200, 200)";s.backgroundColor=light?"rgb(255, 255, 255)":"rgb(200, 200, 200)";return light?255:200})()`,

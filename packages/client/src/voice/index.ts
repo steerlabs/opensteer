@@ -1,8 +1,12 @@
-export { VoiceStartError } from "./contract.js";
+export { idleVoiceSnapshot, VoiceStartError } from "./contract.js";
+export { voiceBar } from "./bar.js";
+export type { VoiceBarView } from "./bar.js";
 export type {
+  VoiceAsk,
   VoiceCall,
   VoiceCallEvent,
   VoiceCallIdentity,
+  VoiceControls,
   VoiceEndReason,
   VoiceLevels,
   VoiceMediaPort,

@@ -1,6 +1,7 @@
 import { useHostSelector } from "@opensteer/client/react";
 import { useFocusEffect } from "@react-navigation/native";
-import { VoiceDock, VoiceMic, useVoice, useVoiceAvailable } from "../voice/controls.js";
+import { VoiceDock, VoiceMic } from "../voice/controls.js";
+import { useVoiceAvailable, useVoiceOn } from "../voice/use-voice-value.js";
 import { useId } from "react";
 import { useDictation } from "../dictation/context.js";
 import { DictationBar, DictationMic, DictationStatus } from "../dictation/controls.js";
@@ -369,7 +370,7 @@ export function Composer(props: {
     if (notice && visible.current) AccessibilityInfo.announceForAccessibility(notice);
   }, [notice]);
   // While voice holds the microphone, dictation steps aside on every composer.
-  const voiceOn = useVoice().snapshot.phase !== "idle";
+  const voiceOn = useVoiceOn();
   const startDictation = (): void => {
     if (voiceOn) return;
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);

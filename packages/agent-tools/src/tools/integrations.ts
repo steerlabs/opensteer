@@ -141,7 +141,7 @@ export const integration_call = defineAgentTool({
   name: "integration_call",
   title: "Call an integration",
   description:
-    "Execute a discovered toolRef with schema-matching arguments. Describe new refs first; call already-described operations directly. Describing grants no access. Returns operation content/error. Live account/grant/schema checks apply. Never approve, grant access or retrieve credentials. Use computer for Mac/phone interfaces.",
+    "Execute a discovered toolRef with schema-matching arguments. Describe new refs first; call already-described operations directly. Describing grants no access. Returns operation content/error. Live account/grant/schema checks apply. Never approve or grant access. SMS/email sign-in code retrieval needs explicit authorization for that sign-in; other credentials stay in the Request UI. Use computer for Mac/phone interfaces.",
   input: CallInputSchema.safeExtend({ operationKey: OperationKeySchema.optional() }),
   output: IntegrationCallOutputSchema,
   access: "write",
@@ -153,7 +153,7 @@ export const computer = defineAgentTool({
   name: "computer",
   title: "Operate apps and phones",
   description:
-    "Run JavaScript for Mac apps/Agent Phones; persistent within this Run only. Discover with apps()/phones(), open app(name, {computer}) or phone(name), then observe. Read opensteer:computer-use for methods and sealed sign-in fields. Await calls; return/print() JSON. Returns ordered text/images/receipts; deadline 100 seconds. No credential reads, permission changes or sign-in bypasses.",
+    "Run JavaScript for Mac apps/Agent Phones; persistent within this Run only. Discover with apps()/phones(), open app(name, {computer}) or phone(name), then observe. Read opensteer:computer-use for methods and sealed sign-in fields. Await calls; return/print() JSON. Returns ordered text/images/receipts; deadline 100 seconds. No permission changes or sign-in bypasses. Credential reads are limited to the authorized phone screen-lock PIN exception in opensteer:computer-use.",
   input: z
     .strictObject({ code: z.string().min(1).max(65536) })
     .safeExtend({ operationKey: OperationKeySchema.optional() }),
@@ -167,7 +167,7 @@ export const integration_request = defineAgentTool({
   name: "integration_request",
   title: "Request integration access",
   description:
-    'Ask the person for setup/reconnection/access. Installed: integration + access + reason; catalog item: catalog instead. Omit access only for installation alone. Runs may target reachable workspaceId; programs use their Workspace. Mac app: kind: "computer-app", runnerId, app, access, reason; phone: omit app. Returns requestId/status/replayed. Pending grants no access and stops the Run. Programs receive no continuation. Never repeat pending/declined asks. Credentials belong in the Request UI.',
+    'Ask the person for setup/reconnection/access. Installed: integration + access + reason; catalog item: catalog instead. Omit access only for installation alone. Runs may target reachable workspaceId; programs use their Workspace. Mac app: kind: "computer-app", runnerId, app, access, reason; phone: omit app. Returns requestId/status/replayed. Pending grants no access; continue only independent work. Programs receive no continuation. Never repeat pending/declined asks. Credentials belong in the Request UI.',
   input: RequestInputSchema.safeExtend({ operationKey: OperationKeySchema.optional() }),
   output: IntegrationRequestOutputSchema,
   access: "write",

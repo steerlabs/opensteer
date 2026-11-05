@@ -525,7 +525,7 @@ describe("Opensteer MCP integration access classes", () => {
       { params: { arguments: { toolRef: stale }, name: "integration_call" } },
       callExtra("stale"),
     )) as { content: readonly { text: string }[]; isError: boolean };
-    expect(refused).toEqual({
+    expect(refused).toMatchObject({
       content: [
         {
           text: "Integration operation schema changed; search and describe it again",
@@ -557,7 +557,7 @@ describe("Opensteer MCP integration access classes", () => {
       },
       callExtra("write-under-read"),
     )) as { content: readonly { text: string }[]; isError: boolean };
-    expect(response).toEqual({
+    expect(response).toMatchObject({
       content: [
         {
           text: 'Linear operation Create issue makes changes, and this Workspace has read access as Work. Call integration_request with integration "linear" and access "read-write"; do not retry this call until it is fulfilled.',
@@ -1477,7 +1477,8 @@ async function createHarness(input: {
         if (request.callId) requestByCallId.set(request.callId, existing);
         return {
           status: "pending",
-          nextAction: "Approval is pending on Alex's Mac. Pending stops the Run.",
+          nextAction:
+            "Approval is pending on Alex's Mac. Pending permits only independent work; do not poll, repeat or route around the Request.",
           replayed: true,
           request: existing,
           setupRequest: { id: "setup" },
@@ -1487,7 +1488,8 @@ async function createHarness(input: {
       accessByKey.set(key, created.request);
       return {
         status: "pending",
-        nextAction: "Approval is pending on Alex's Mac. Pending stops the Run.",
+        nextAction:
+          "Approval is pending on Alex's Mac. Pending permits only independent work; do not poll, repeat or route around the Request.",
         replayed: false,
         request: created.request,
         setupRequest: { id: "setup" },

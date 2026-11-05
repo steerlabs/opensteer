@@ -793,9 +793,14 @@ export async function resolvePlaceActors(
     lineageWorkspaceIds: WorkspaceId[];
   }>`
     with recursive lineage as (
-      select r.id as run_id, r.thread_id, r.assignment_id, r.binding_generation as generation, 0 as depth,
-        array[]::text[] as path
-      from runs r where r.id in (${sql.join(runIds)}) and r.status in (${sql.join(nonTerminalRunStatuses)}) and r.binding_generation is not null
+      select r.id as run_id, r.thread_id,
+        r.assignment_id, r.binding_generation as generation, 0 as depth, array[]::text[] as path
+      from runs r join threads c on c.id = r.thread_id
+      where r.id in (${sql.join(runIds)}) and r.status in (${sql.join(nonTerminalRunStatuses)}) and r.binding_generation is not null
+        and not exists (
+          select 1 from grants g where g.run_id = r.id
+            and g.binding_generation = r.binding_generation and g.status = 'revoked'
+        )
       union all
       select l.run_id, d.parent_thread_id, d.parent_assignment_id, l.generation, l.depth + 1, l.path || d.id::text
       from lineage l join delegations d on d.id = l.assignment_id
@@ -805,7 +810,7 @@ export async function resolvePlaceActors(
       (w.home_thread_id = t.id) as home, array(select l2.thread_id from lineage l2 where l2.run_id = l.run_id order by l2.depth) as lineage_thread_ids,
       array(select distinct t2.workspace_id from lineage l2 join threads t2 on t2.id = l2.thread_id where l2.run_id = l.run_id) as lineage_workspace_ids
     from lineage l join threads t on t.id = l.thread_id join workspaces w on w.id = t.workspace_id
-    where t.listed or w.home_thread_id = t.id order by l.run_id, l.depth
+    where t.listed or w.home_thread_id = t.id or w.voice_thread_id = t.id order by l.run_id, l.depth
   `.execute(database, databaseOperationOptions());
   if (!lineage.rows.length) return [];
   const members = await database

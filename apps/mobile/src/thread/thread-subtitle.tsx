@@ -1,7 +1,8 @@
 import { Pressable, StyleSheet, View } from "react-native";
 import { taskMark, type ThreadSummary, type WorkspaceSummary } from "@opensteer/client/host";
-import { headerFontScaleLimit, space, touchTarget } from "../theme.js";
+import { color, headerFontScaleLimit, space, touchTarget } from "../theme.js";
 import { AppText } from "../ui/primitives.js";
+import { Symbol } from "../ui/symbol.js";
 import { WorkspaceMark } from "../ui/workspace-mark.js";
 import { ChatOrb } from "../ui/chat-orb.js";
 import { TaskMark } from "../ui/task-mark.js";
@@ -15,10 +16,17 @@ export function ThreadName(props: {
   readonly icon: ThreadSummary["icon"];
   readonly color: ThreadSummary["color"];
   readonly isHome: boolean;
+  readonly isVoice?: boolean;
 }) {
   return (
     <View style={styles.row}>
-      {props.isHome ? <ChatOrb size={22} /> : <TaskMark mark={taskMark(props)} size={22} />}
+      {props.isHome ? (
+        <ChatOrb size={22} />
+      ) : props.isVoice === true ? (
+        <Symbol name="waveform" size={18} tint={color.ember} weight="semibold" />
+      ) : (
+        <TaskMark mark={taskMark(props)} size={22} />
+      )}
       <AppText
         {...(props.maxFontSizeMultiplier === undefined
           ? {}

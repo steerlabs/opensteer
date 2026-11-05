@@ -8,6 +8,7 @@ import {
   shapes,
 } from "@expo/ui/swift-ui/modifiers";
 import type { ReactNode } from "react";
+import { Linking } from "react-native";
 import {
   ActionButton,
   Chevron,
@@ -15,9 +16,10 @@ import {
   Footer,
   IdentityMark,
   Lines,
+  LinkRow,
 } from "./settings-form-primitives.ios.js";
 import type { SettingsFormProps } from "./settings-form.types.js";
-import { projectNotificationsFooter } from "./settings-model.js";
+import { privacyPolicyUrl, projectNotificationsFooter } from "./settings-model.js";
 const secondary = foregroundStyle({ type: "hierarchical", style: "secondary" });
 const footnote = font({ textStyle: "footnote" });
 export function GeneralSettingsForm(
@@ -133,6 +135,12 @@ export function GeneralSettingsForm(
           <LabeledContent label="Version">
             <Text modifiers={[secondary]}>{props.version}</Text>
           </LabeledContent>
+          <LinkRow
+            detail="How Opensteer handles your data"
+            onPress={() => void Linking.openURL(privacyPolicyUrl)}
+            symbol="hand.raised"
+            title="Privacy Policy"
+          />
           <ErrorText
             detail={
               props.storageError === null

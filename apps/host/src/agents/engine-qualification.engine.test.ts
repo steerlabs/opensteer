@@ -191,10 +191,9 @@ describe("engine qualification", () => {
       restorePath = undefined;
     }, 60_000);
 
-    it.each(["normal", "forced", ...(engine.driverKind === "claude" ? ["background"] : [])])(
-      "parks a pending Request and recalls native context after its continuation (mode=%s)",
+    it.each(["normal", ...(engine.driverKind === "claude" ? ["background"] : [])])(
+      "continues independent work with a pending Request and recalls native context after its continuation (mode=%s)",
       async (mode) => {
-        const forced = mode === "forced";
         const background = mode === "background";
         if (!databaseUrl) throw new Error("Run the engine suite through pnpm test:engines");
         stack = await startVerticalStack({
@@ -211,25 +210,24 @@ describe("engine qualification", () => {
           harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
           runTimeoutMs: 180_000,
           runnerWire: {},
-          ...(forced ? { requestParkDeadlineMs: 1 } : {}),
         }).catch((error: unknown) => {
           throw qualificationFailure(engine, error);
         });
         const active = stack;
         const model = active.catalog.models.find((candidate) => candidate.isDefault);
         if (!model) throw new Error("The engine has no default model");
-        const workspace = await active.createWorkspace(`${engine.label} Request parking`);
+        const workspace = await active.createWorkspace(`${engine.label} Request judgment`);
         const threadId = await active.createThread({
           modelSelection: ModelSelectionSchema.parse({
             modelId: model.modelId,
             options: {},
             providerId: model.providerId,
           }),
-          title: `${engine.label} Request parking`,
+          title: `${engine.label} Request judgment`,
           workspaceId: workspace.id,
         });
         const nonce = randomUUID();
-        const prompt = `${background ? "First use Bash with run_in_background: true to start node -e 'setInterval(() => {}, 1000)' as a long-running task; keep it alive and remember its task ID. " : ""}Remember ${nonce} for the later continuation. Request a new browser profile named Receipts with browser_profile_request for this expense task. After requesting it, try thread_list to find running tasks, subject to Opensteer's pending-Request rule. Do not open a browser or sign in. When the person chooses the profile in a later continuation, reply with the chosen profile name and the remembered code${background ? "; before replying, stop only the background task you started using TaskStop with its captured task ID" : ", without tools"}.`;
+        const prompt = `${background ? "First use Bash with run_in_background: true to start node -e 'setInterval(() => {}, 1000)' as a long-running task; keep it alive and remember its task ID. " : ""}Remember ${nonce} for the later continuation. Request a new browser profile named Receipts with browser_profile_request for this expense task. After requesting it, try thread_list to find running tasks, as independent work, then end your turn. Do not open a browser or sign in. When the person chooses the profile in a later continuation, reply with the chosen profile name and the remembered code${background ? "; before replying, stop only the background task you started using TaskStop with its captured task ID" : ", without tools"}.`;
         const first = background
           ? await active.queueMessage({ text: prompt, threadId })
           : await active.sendMessage({ text: prompt, threadId, workspaceId: workspace.id });
@@ -261,6 +259,23 @@ describe("engine qualification", () => {
             .where("id", "=", first.runId)
             .executeTakeFirstOrThrow(),
         ).toEqual({ status: background ? "running" : "completed" });
+        const toolSteps = await database
+          .selectFrom("workspaceEvents")
+          .select("data")
+          .where("runId", "=", first.runId)
+          .where("type", "=", "tool.started")
+          .orderBy("sequence", "asc")
+          .execute();
+        const askedAt = toolSteps.findIndex(({ data }) =>
+          JSON.stringify(data).includes("browser_profile_request"),
+        );
+        expect(askedAt, "The engine did not request the profile").toBeGreaterThanOrEqual(0);
+        expect(
+          toolSteps
+            .slice(askedAt + 1)
+            .some(({ data }) => JSON.stringify(data).includes("thread_list")),
+          "The engine did not complete independent work after requesting the profile",
+        ).toBe(true);
         const before = await database
           .selectFrom("providerSessions")
           .select("providerSessionReference")
@@ -302,24 +317,6 @@ describe("engine qualification", () => {
             .execute();
           expect(input).toEqual([{ runId: first.runId, state: "delivered" }]);
         }
-        if (forced) {
-          expect(
-            active
-              .wire!.frames.filter(
-                ({ direction, frame }) =>
-                  direction === "runner" &&
-                  frame.type === "runner.session-bound" &&
-                  frame.runId === continued.id,
-              )
-              .map(({ frame }) => frame),
-          ).toContainEqual(
-            expect.objectContaining({
-              type: "runner.session-bound",
-              runId: continued.id,
-              engineStart: "cold",
-            }),
-          );
-        }
         const usage = await database
           .selectFrom("workspaceEvents")
           .select("data")
@@ -327,7 +324,7 @@ describe("engine qualification", () => {
           .where("type", "=", "run.usage")
           .execute();
         console.info(
-          `${engine.label}: pending Request forced=${forced}, first Run usage=${JSON.stringify(usage.map(({ data }) => data))}`,
+          `${engine.label}: pending Request first Run usage=${JSON.stringify(usage.map(({ data }) => data))}`,
         );
         const replies = await database
           .selectFrom("messages")
@@ -358,7 +355,6 @@ describe("engine qualification", () => {
             JSON.stringify(
               {
                 engine: engine.label,
-                forced,
                 firstRunUsage: usage.map(({ data }) => data),
                 continuationUsage: continuedUsage.map(({ data }) => data),
                 sessionRetained: after.providerSessionReference === before.providerSessionReference,

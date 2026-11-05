@@ -1097,7 +1097,7 @@ export async function createHostServer(
   ) => projectMachines({ ...(await machineRegistryRows(session)), deploymentKind });
 
   const coreRpcHandlers = {
-    ...createVoiceHandlers({ ...dependencies, publishWorkspaceEvent }),
+    ...createVoiceHandlers({ ...dependencies, publishWorkspaceEvent, threads: threadService }),
     "agentPhone.target.get": async (_input, context) => {
       requireRpcSession(context);
       return rpcSuccess(
@@ -1203,6 +1203,7 @@ export async function createHostServer(
       return rpcSuccess(
         HostBootstrapSchema.parse({
           browser,
+          appTabs: await dependencies.apps.listTabs(ownerId),
           latestPlaces: await dependencies.browser.latestPlaces(ownerId),
           notificationPreferences,
           deploymentId: dependencies.discovery.document.deploymentId,
@@ -1594,6 +1595,7 @@ export async function createHostServer(
     | "automaticModels.get"
     | "harness.catalog.refresh"
     | "harness.modelServers.discover"
+    | "voice.open"
     | "voice.start"
     | "voice.renew"
     | "voice.context"
@@ -2500,6 +2502,16 @@ export async function createHostServer(
         return dependencies.browser.reopenWorkspaceTab(userId, command.idempotencyKey);
       case "workspace.tab.close":
         return dependencies.browser.closeWorkspaceTab(userId, command.tabId);
+      case "app.tab.open":
+      case "app.tab.close":
+        return {
+          type: command.type,
+          ...(await dependencies.apps.setTabOpen(
+            command.appId,
+            userId,
+            command.type === "app.tab.open",
+          )),
+        };
       case "browser.tab.open":
         return dependencies.browser.openTab(userId, command);
       case "browser.tab.close":

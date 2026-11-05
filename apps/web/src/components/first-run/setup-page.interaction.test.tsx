@@ -85,6 +85,7 @@ const shell = vi.hoisted(() => ({
     deploymentId: "dep_6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b",
     environments: [{ harnessDrivers: [{ driverKind: "claude" }], kind: "main" }] as unknown[],
     homeThreadId: null as string | null,
+    voiceThreadId: null,
     identityConfig: {
       deployment: { name: "Studio Mac" },
       portalOrigin: "https://app.opensteer.test",

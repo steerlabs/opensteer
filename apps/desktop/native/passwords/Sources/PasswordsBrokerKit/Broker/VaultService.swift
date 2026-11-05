@@ -283,7 +283,7 @@ public final class VaultService: @unchecked Sendable {
 
   // MARK: Settings
 
-  /// "Agents can sign in with your passwords". Missing means on (setting up
+  /// "Agents can use saved passwords and cards". Missing means on (setting up
   /// was the opt-in); unreadable means off, so a damaged value never lets
   /// agents in.
   public func agentSignIns() async -> Bool {
@@ -328,6 +328,15 @@ public final class VaultService: @unchecked Sendable {
   // MARK: Sign-ins
 
   /// Whether a saved login has an origin within `site`. Never asks anyone.
+  /// Whether nothing is saved yet. Never asks anyone.
+  public func isEmpty() async throws -> Bool {
+    try await run {
+      let unlocked = try self.unlockNow()
+      defer { unlocked.close() }
+      return unlocked.isEmpty
+    }
+  }
+
   public func hasLogin(withinSite site: String) async throws -> Bool {
     try await run {
       let unlocked = try self.unlockNow()
@@ -454,6 +463,55 @@ public final class VaultService: @unchecked Sendable {
           return .released(try totp.code(at: Date()))
         }
       } ?? .refused(.ended)
+    }
+  }
+
+  func cardChoices() async throws -> [Wire.CardChoice] {
+    try await run {
+      let unlocked = try self.unlockNow()
+      defer { unlocked.close() }
+      return try unlocked.cards().map(Wire.CardChoice.init).sorted {
+        ($0.label ?? "", $0.brand, $0.lastFour, $0.id) < ($1.label ?? "", $1.brand, $1.lastFour, $1.id)
+      }
+    }
+  }
+
+  func releaseCard(_ params: Wire.CardReleaseParams, card: Wire.CardChoice, site: String,
+                   authority: TransactionAuthority, expiresAt: Date) async throws -> JSONValue {
+    try await run {
+      let unlocked = try self.unlockNow()
+      defer { unlocked.close() }
+      guard self.agentSignInsNow() else { return Wire.cardRefused("passwords-off") }
+      guard let current = try? unlocked.card(id: card.id), current.revision == card.revision else {
+        return Wire.cardRefused("revoked")
+      }
+      guard Origins.isWithinSite(params.topOrigin, site: site), WireRules.origin(params.frameOrigin) else {
+        return Wire.cardRefused("wrong-site")
+      }
+      return authority.whileLive {
+        guard expiresAt > Date() else { return Wire.cardRefused("ended") }
+        let draft = current.draft
+        let value: String?
+        switch params.field {
+        case .number: value = draft.number
+        case .expiry: value = String(format: "%02lld/%02lld", draft.expiryMonth, draft.expiryYear % 100)
+        case .expiryMonth: value = String(format: "%02lld", draft.expiryMonth)
+        case .expiryYear: value = String(format: "%04lld", draft.expiryYear)
+        case .cvc: value = draft.cvc
+        case .name: value = draft.name
+        case .postalCode: value = draft.postalCode
+        }
+        guard let value else { return Wire.cardRefused("no-field") }
+        return Wire.ReleaseResult.released(value).json
+      } ?? Wire.cardRefused("ended")
+    }
+  }
+
+  func readCard(id: String) async throws -> CardItem {
+    try await run {
+      let unlocked = try self.unlockNow()
+      defer { unlocked.close() }
+      return try unlocked.card(id: id)
     }
   }
 

@@ -6,6 +6,7 @@ import {
   type OpensteerStore,
   type PendingCommandRow,
 } from "@opensteer/database";
+import { CoalescedWake } from "@opensteer/shared/coalescedWake";
 
 export type DispatchDisposition = "retry" | "uncertain" | "failed";
 
@@ -96,7 +97,10 @@ export class ExecutionCoordinator {
   #activeTriggerPrograms = 0;
   #controller: AbortController | undefined;
   #pollTimer: NodeJS.Timeout | undefined;
-  #polling: Promise<void> | undefined;
+  readonly #reads = new CoalescedWake({
+    run: () => this.#poll(),
+    onSettled: () => this.#schedulePoll(),
+  });
   #stopping: Promise<void> | undefined;
 
   constructor(options: ExecutionCoordinatorOptions) {
@@ -128,13 +132,8 @@ export class ExecutionCoordinator {
   }
 
   wake(): void {
-    if (!this.#controller || this.#controller.signal.aborted || this.#polling) return;
-    this.#polling = this.#poll()
-      .catch(() => undefined)
-      .finally(() => {
-        this.#polling = undefined;
-        this.#schedulePoll();
-      });
+    if (!this.#controller || this.#controller.signal.aborted) return;
+    this.#reads.wake();
   }
 
   async stop(): Promise<void> {
@@ -146,7 +145,8 @@ export class ExecutionCoordinator {
   async #stop(): Promise<void> {
     this.#controller?.abort(new Error("Coordinator stopped"));
     if (this.#pollTimer) clearTimeout(this.#pollTimer);
-    await this.#polling;
+    this.#pollTimer = undefined;
+    await this.#reads.stop();
     while (this.#activeRuns > 0 || this.#activeControls > 0 || this.#activeTriggerPrograms > 0) {
       await new Promise<void>((resolve) => setTimeout(resolve, 10));
     }
@@ -155,6 +155,7 @@ export class ExecutionCoordinator {
     this.#dispatchBackoff.clear();
     this.#queuedBytes = 0;
     this.#controller = undefined;
+    this.#stopping = undefined;
   }
 
   async #poll(): Promise<void> {

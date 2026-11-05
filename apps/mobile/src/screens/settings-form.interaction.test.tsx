@@ -148,7 +148,7 @@ describe("Settings on a phone", () => {
     const onPasswordsAction = vi.fn();
     await render({ onPasswordsAction, signIns });
     expect(document.body.textContent).toContain("For agents");
-    expect(labels().slice(1)).toEqual([
+    expect(labels().slice(2)).toEqual([
       "Connections, Gmail, GitHub and the other accounts agents use",
       "Plugins, Skills, tools and specialists for your agents",
       "Chrome, Your Chrome and the sites agents can sign in to",

@@ -1053,6 +1053,7 @@ export async function connectCallerMachine(
     readonly browser?: RunnerDescriptor["modules"]["browser"];
     readonly name: string;
     readonly maxConcurrentRuns?: number;
+    readonly voice?: boolean;
     /** Holds its own directories, the way a local-directory Deployment needs. */
     readonly localDirectory?: boolean;
     readonly loginFill?: boolean;
@@ -1098,6 +1099,7 @@ export async function connectCallerMachine(
       "requester-time-zone-v1",
       "agent-tools-plan-v1",
       "execution-plane-v2",
+      ...(input.voice ? ["voice-run-v1"] : []),
       ...(input.restartsRuns ? ["attempts-v1"] : []),
     ],
     modules: {
@@ -1264,7 +1266,7 @@ export interface CallerRun {
    * Opens a live Request the way an engine asking for approval does, which
    * leaves the Run waiting on its requester. Settles once the Host has it.
    */
-  openLiveRequest(): Promise<RequestId>;
+  openLiveRequest(kind?: "harness.input" | "harness.approval"): Promise<RequestId>;
   /** Takes the next attempt the Host dispatches for this Run, as the Runner does. */
   startNextAttempt(): Promise<CallerAttempt>;
 }
@@ -1436,7 +1438,7 @@ export async function acceptCallerRun(
       if (attempt === current) release();
       return report(attempt, "run.interrupted", { status: "interrupted" });
     },
-    openLiveRequest: async () => {
+    openLiveRequest: async (kind = "harness.input") => {
       const requestId = createId("request");
       const attempt = current;
       current = { ...attempt, nextOrdinal: attempt.nextOrdinal + 1 };
@@ -1446,13 +1448,13 @@ export async function acceptCallerRun(
           cancellationReason: null,
           createdAt: new Date().toISOString(),
           id: requestId,
-          kind: "harness.input",
+          kind,
           mode: "live",
           originatingOccurrenceId: null,
           originatingRunId: context.runId,
           originatingThreadId: context.threadId,
           originatingWorkspaceId: context.workspaceId,
-          payload: { kind: "harness.input" },
+          payload: { kind },
           presentation: {
             detail: "Approve this operation",
             kind: "choice",
@@ -1626,7 +1628,10 @@ function executesFor(
   };
 }
 
-export function waitForExecute(socket: WebSocket): Promise<
+export function waitForExecute(
+  socket: WebSocket,
+  runId?: RunId,
+): Promise<
   Extract<HostToRunnerMessage, { type: "host.command" }> & {
     readonly command: Extract<
       Extract<HostToRunnerMessage, { type: "host.command" }>["command"],
@@ -1642,6 +1647,7 @@ export function waitForExecute(socket: WebSocket): Promise<
     const receive = (frame: WebSocket.RawData) => {
       const message = JSON.parse(frame.toString()) as HostToRunnerMessage;
       if (message.type !== "host.command" || message.command.type !== "run.execute") return;
+      if (runId && message.command.context.runId !== runId) return;
       clearTimeout(timeout);
       socket.off("message", receive);
       resolve(message as Parameters<typeof resolve>[0]);

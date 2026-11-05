@@ -9,7 +9,7 @@ Use a fitting integration for service account and API work, including built-in c
 
 Select accounts by `connectionId`, never display name. A `toolRef` binds an operation to a grant and schema; copy it unchanged. Describe a new ref before calling it; call an already-described operation directly. The Host checks current account, grant and schema at execution, without enforcing describe/call order.
 
-Credentials and consent belong in the Request UI. Never collect or retrieve service secrets yourself, and never bypass denied access with another account or transport. Mac apps and Android phones use `app()` and `phone()` in the `computer` tool (opensteer:computer-use), never with `integration_call`.
+Credentials and consent belong in the Request UI. Except for explicitly authorized SMS/email sign-in codes (see boundaries), never collect or retrieve service secrets yourself, and never bypass denied access with another account or transport. Mac apps and Android phones use `app()` and `phone()` in the `computer` tool (opensteer:computer-use), never with `integration_call`.
 
 Use `integration_manage` to list, disconnect, uninstall or revoke grants directly within
 full-access and reach. `channel_manage` lists/revokes bindings or pauses/resumes existing

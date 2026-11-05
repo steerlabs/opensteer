@@ -950,7 +950,7 @@ integration("durable Thread changes native continuation", () => {
       throw new Error("Unexpected Run tool dependency");
     };
     const service = new ProductToolsTestClient({
-      browserSources: { agentSignIn: unexpected },
+      browserSources: { agentSignIn: unexpected, agentUseCard: unexpected },
       machineFullDiskAccess: { request: unexpected },
       browser: {
         createProfile: unexpected,
@@ -1138,7 +1138,7 @@ integration("durable Thread changes native continuation", () => {
     // The Host's own dispatcher, Runner and event reactions run the task; this
     // service only stands in for the MCP endpoint Home's engine would call.
     const service = new ProductToolsTestClient({
-      browserSources: { agentSignIn: unexpected },
+      browserSources: { agentSignIn: unexpected, agentUseCard: unexpected },
       machineFullDiskAccess: { request: unexpected },
       browser: {
         createProfile: unexpected,

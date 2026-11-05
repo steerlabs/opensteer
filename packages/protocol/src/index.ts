@@ -49,3 +49,9 @@ export { validateBrowserH264 } from "./h264.js";
 export * from "./browser-popup.js";
 
 export * from "./automatic-models.js";
+
+export * from "./card-use.js";
+export {
+  UseCardOutputSchema as UseCardResultSchema,
+  type UseCardOutput as UseCardResult,
+} from "@opensteer/agent-tools/outputs";

@@ -1,3 +1,10 @@
+import {
+  cardUseTitle,
+  cardUseConsent,
+  cardUseEmpty,
+  cardChoiceLabel,
+} from "@opensteer/client/host";
+import type { CardChoice } from "@opensteer/protocol";
 import { requestSettlementLabel } from "@opensteer/client/host";
 import { authenticatePasswordApproval } from "./password-approval-auth.js";
 import type { PasswordSignInCard } from "@opensteer/protocol";
@@ -441,7 +448,7 @@ export function RequestCard(props: {
   };
   // Consent is authenticated on this device; credentials stay on the vault Mac.
   const declinePasswordSignIn = async (approval?: {
-    account: PasswordSignInAccount;
+    account: PasswordSignInAccount | CardChoice;
     remember: boolean;
   }): Promise<void> => {
     if (passwordSignIn === null || responding.current || !answerable || !props.canRespond) return;
@@ -458,7 +465,13 @@ export function RequestCard(props: {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     let authenticated = approval === undefined;
     try {
-      if (approval && !(await authenticatePasswordApproval())) return;
+      if (
+        approval &&
+        !(await authenticatePasswordApproval(
+          passwordSignIn.credential === "card" ? "card" : "login",
+        ))
+      )
+        return;
       authenticated = true;
       const current = passwordContext.current;
       if (
@@ -473,13 +486,20 @@ export function RequestCard(props: {
         requestId: request.id,
         type: "browser.password-sign-in.respond",
         decision: approval
-          ? {
-              kind: "approve",
-              loginId: approval.account.id,
-              revision: approval.account.revision,
-              remember: approval.remember,
-              permissionVersion: 5,
-            }
+          ? "brand" in approval.account
+            ? {
+                kind: "approve-card",
+                cardId: approval.account.id,
+                revision: approval.account.revision,
+                permissionVersion: 7,
+              }
+            : {
+                kind: "approve",
+                loginId: approval.account.id,
+                revision: approval.account.revision,
+                remember: approval.remember,
+                permissionVersion: 5,
+              }
           : { kind: "decline" },
       });
       if (mounted.current && result.type === "browser.password-sign-in.respond") {
@@ -788,7 +808,10 @@ function RequestBody(props: {
   readonly onDeclineFullDiskAccess: () => void;
   readonly onDeclinePasswordSignIn: () => void;
   readonly passwordCard: PasswordSignInCard | null;
-  readonly onApprovePasswordSignIn: (account: PasswordSignInAccount, remember: boolean) => void;
+  readonly onApprovePasswordSignIn: (
+    account: PasswordSignInAccount | CardChoice,
+    remember: boolean,
+  ) => void;
   readonly machines: readonly MachineSummary[];
   readonly pendingId: string | null;
   readonly reason: string | null;
@@ -1369,12 +1392,14 @@ function BrowserSignInResolved(props: {
 /** Often enough that the expiry never lags its deadline by more than a moment. */
 const expiryTickMs = 5_000;
 
+type PasswordSignInBodyProps = Parameters<typeof PasswordSignInBody>[0];
+
 function PasswordSignInBody(props: {
   readonly canRespond: boolean;
   readonly failure: string | null;
   readonly card: PasswordSignInCard | null;
   readonly workspaceName: string;
-  readonly onApprove: (account: PasswordSignInAccount, remember: boolean) => void;
+  readonly onApprove: (account: PasswordSignInAccount | CardChoice, remember: boolean) => void;
   readonly onDecline: () => void;
   readonly payload: Extract<RequestPayload, { kind: "browser.password-sign-in" }>;
   readonly pendingId: string | null;
@@ -1388,6 +1413,8 @@ function PasswordSignInBody(props: {
     const timer = setInterval(() => setNow(new Date()), expiryTickMs);
     return () => clearInterval(timer);
   }, []);
+  if (props.payload.credential === "card")
+    return <CardUseBody {...props} now={now} chosenId={chosenId} onChoose={setChosenId} />;
   const accounts = props.card?.stage === "approval" ? props.card.accounts : [];
   const chosen = accounts.length === 1 ? accounts[0] : accounts.find(({ id }) => id === chosenId);
   const groups = passwordSignInAccountList(accounts, query);
@@ -1919,3 +1946,51 @@ const styles = StyleSheet.create({
   },
   signInStatusHead: { alignItems: "center", flexDirection: "row", gap: space[8] },
 });
+
+function CardUseBody(
+  props: PasswordSignInBodyProps & {
+    now: Date;
+    chosenId: string | null;
+    onChoose: (id: string) => void;
+  },
+): ReactNode {
+  const cards = props.card?.stage === "card-approval" ? props.card.cards : [];
+  const chosen = cards.length === 1 ? cards[0] : cards.find(({ id }) => id === props.chosenId);
+  const locked = !props.canRespond || props.pendingId !== null;
+  const expired = Date.parse(props.payload.expiresAt) <= props.now.getTime();
+  return (
+    <View style={styles.choices}>
+      <Notice
+        title={cardUseTitle(props.payload.site)}
+        detail={cardUseConsent(props.workspaceName, props.payload.site, props.payload.expiresAt)}
+        tone="neutral"
+      />
+      <AppText role="caption">Agent’s reason</AppText>
+      <AppText role="secondary">{props.payload.reason}</AppText>
+      {cards.map((card) => (
+        <SecondaryButton
+          key={card.id}
+          label={`${chosen?.id === card.id ? "✓ " : ""}${cardChoiceLabel(card)}`}
+          disabled={locked || expired}
+          onPress={() => props.onChoose(card.id)}
+        />
+      ))}
+      {props.card?.stage === "card-approval" && cards.length === 0 ? (
+        <AppText role="secondary">{cardUseEmpty(props.payload.computerName ?? "your Mac")}</AppText>
+      ) : null}
+      {props.card?.stage === "gone" ? (
+        <AppText role="secondary">This card use is no longer running.</AppText>
+      ) : null}
+      <AppText role="caption">{passwordSignInExpiry(props.payload.expiresAt, props.now)}</AppText>
+      <ResponseStatus failure={props.failure} reason={props.reason} />
+      <SecondaryButton label="Don’t allow" disabled={locked} onPress={props.onDecline} />
+      {chosen ? (
+        <PrimaryButton
+          label="Allow card use"
+          disabled={locked || expired}
+          onPress={() => props.onApprove(chosen, false)}
+        />
+      ) : null}
+    </View>
+  );
+}

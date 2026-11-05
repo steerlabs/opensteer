@@ -1,4 +1,5 @@
 import type { PersonShowMessage } from "@opensteer/protocol";
+import type { BrowserSignInPasswords } from "@opensteer/protocol/browser-sources";
 import type { DesktopUpdates } from "../connections/desktop-updates-contract.js";
 import type {
   ChannelAccessPolicy,
@@ -152,6 +153,7 @@ type TranscriptWindow = Omit<ThreadMessageWindow, "threadId"> & {
 
 export interface WorkspaceSummary {
   homeThreadId: string | null;
+  voiceThreadId: string | null;
   description: string;
   fileCount: number;
   harnessLabel: string;
@@ -466,8 +468,8 @@ export interface RequestReceiptEntry {
   id: string;
   kind: "request";
   outcome: string;
-  /** The site of a Chrome sign-in that ended with Opensteer Passwords not set up. */
-  passwordsSetUpSite?: string;
+  /** What a Chrome sign-in that ended found Opensteer Passwords lacking. */
+  passwordsOffer?: { readonly need: BrowserSignInPasswords; readonly site: string };
   requestId: string;
   requestKind: Request["kind"] | null;
   runId: string | null;
@@ -786,6 +788,8 @@ type HostSessionState = "authenticated" | "authentication-required" | "checking"
 export type ThreadLookupState = "failed" | "loading" | "missing";
 
 export interface HostSnapshot {
+  readonly openingAppTabs?: readonly string[];
+  readonly appTabs?: readonly import("@opensteer/protocol").AppTab[];
   readonly appVersions?: Readonly<Record<string, number>>;
   readonly pendingBrowserTabs?: readonly PendingBrowserTab[];
   readonly savedViewReadiness?: SavedViewReadiness;
@@ -849,6 +853,8 @@ export interface HostSnapshot {
   harnesses: HarnessSummary[];
   homeWorkspaceId: string | null;
   homeThreadId: string | null;
+  /** The person's Voice Thread, once it exists: their spoken manager. */
+  voiceThreadId: string | null;
   notificationMutes: string[];
   threadReadStates: Record<string, ThreadReadState>;
   /**
@@ -1118,6 +1124,8 @@ export interface HostClient {
     readonly source: Blob;
     readonly signal?: AbortSignal;
   }): Promise<Attachment>;
+  openAppTab(appId: string): Promise<void>;
+  closeAppTab(appId: string): Promise<void>;
   viewApp(
     appId: string,
     theme: "light" | "dark",

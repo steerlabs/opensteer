@@ -1,3 +1,4 @@
+import { testRpcData } from "../server/test-host-api-request.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
@@ -75,13 +76,14 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         loginFill: true,
         runnerKind: "main",
         token: host.mainRunnerEnrollmentToken,
-        integrations: { platform: "darwin", protocolVersion: 5, passwordSignIn: 2 },
+        integrations: { platform: "darwin", protocolVersion: 5, passwordSignIn: 2, cardUse: 1 },
         browser: {
           runtimeId: "browser-runtime-integration",
           wireVersion: 1,
           cdpBoundary: 1,
           sharedControl: 1,
           signIn: { version: 3 },
+          cardFill: 1,
         },
       });
       cleanups.push(() => caller.close());
@@ -120,7 +122,9 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
             account: z.literal(passwordFixture.account),
           })
           .parse(result.structuredContent).loginRef;
-        expect(authority.commands.filter((c) => c.type === "login.authorize")).toHaveLength(1);
+        expect(
+          authority.commands.filter((c) => c.type === "login.authorize" && "loginRef" in c),
+        ).toHaveLength(1);
         expect(await host.store.listBrowserSessions(host.ownerId)).toEqual([]);
       });
       const runtime = await startBrowserRuntime(host.hostPort, "unused-existing-main", {
@@ -153,8 +157,12 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
           loginRef,
           account: passwordFixture.account,
         });
-        expect(authority.commands.filter((c) => c.type === "login.authorize")).toHaveLength(1);
-        expect(runtime.receivedCommands().filter((c) => c.type === "login.authorize")).toEqual([]);
+        expect(
+          authority.commands.filter((c) => c.type === "login.authorize" && "loginRef" in c),
+        ).toHaveLength(1);
+        expect(
+          runtime.receivedCommands().filter((c) => c.type === "login.authorize" && "loginRef" in c),
+        ).toEqual([]);
       });
       const attach = async (binding: typeof run, browserSessionId = sessionId) => {
         const connection = await host.runtime.browser.attachCdpForAgent(
@@ -201,6 +209,81 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       await evidence.run("workspace-reuse", async () => {
         await fulfillFill(connection);
       });
+      const cardResult = await client.callTool({
+        name: "use_card",
+        arguments: { site: passwordFixture.site, sessionId, reason: "Fill the approved purchase" },
+      });
+      const cardPending = z
+        .object({ status: z.literal("pending"), requestId: z.string() })
+        .parse(cardResult.structuredContent);
+      const chooser = await testRpcData(
+        host.origin,
+        "browser.password-sign-in.get",
+        { requestId: cardPending.requestId },
+        { headers: host.ownerHeaders },
+      );
+      expect(chooser.stage).toBe("card-approval");
+      if (chooser.stage !== "card-approval") throw new Error("Missing card chooser");
+      const choice = chooser.cards[0]!;
+      await testRpcData(
+        host.origin,
+        "commands.dispatch",
+        {
+          type: "browser.password-sign-in.respond",
+          idempotencyKey: "card-approve",
+          requestId: cardPending.requestId,
+          decision: {
+            kind: "approve-card",
+            cardId: choice.id,
+            revision: choice.revision,
+            permissionVersion: 7,
+          },
+        },
+        { headers: host.ownerHeaders },
+      );
+      const reused = await client.callTool({
+        name: "use_card",
+        arguments: { site: passwordFixture.site, sessionId, reason: "Continue approved purchase" },
+      });
+      const cardReady = z
+        .object({
+          status: z.literal("ready"),
+          cardRef: z.string(),
+          brand: z.literal("Visa"),
+          lastFour: z.literal("4242"),
+        })
+        .parse(reused.structuredContent);
+      const cardFill = {
+        method: "Opensteer.fillCard",
+        sessionId: "page-cdp",
+        parameters: { cardRef: cardReady.cardRef, field: "number" },
+      };
+      const beforeCardFill = runtime.receivedCommands().length;
+      const pendingCardFill = connection.request(cardFill);
+      const forwardedCardFill = await waitForValue(async () =>
+        runtime
+          .receivedCommands()
+          .slice(beforeCardFill)
+          .find(
+            (m) =>
+              m.type === "cdp.command" &&
+              (m.command as { method: string }).method === "Opensteer.fillCard",
+          ),
+      );
+      runtime.sendServer(
+        {
+          type: "cdp.result",
+          requestId: forwardedCardFill.requestId,
+          result: { status: "filled" },
+        },
+        sessionId,
+      );
+      expect(await pendingCardFill).toEqual({ status: "filled" });
+      const durableCard = await host.store.requests.get(
+        cardPending.requestId as import("@opensteer/core").RequestId,
+      );
+      expect(durableCard?.status).toBe("fulfilled");
+      expect(JSON.stringify(durableCard)).not.toContain(cardReady.cardRef);
       await evidence.run("foreign-workspace-denied", async () => {
         const other = await dispatchCallerRun(host, caller, {
           key: "foreign",
@@ -235,7 +318,9 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
           arguments: { site: passwordFixture.site, reason: "Return to the phone app" },
         });
         expect(result.structuredContent).toMatchObject({ status: "ready", loginRef });
-        expect(authority.commands.filter((c) => c.type === "login.authorize")).toHaveLength(1);
+        expect(
+          authority.commands.filter((c) => c.type === "login.authorize" && "loginRef" in c),
+        ).toHaveLength(1);
       });
       await evidence.run("revocation", async () => {
         const operation = authority.commands.find((c) => c.type === "login.authorize");

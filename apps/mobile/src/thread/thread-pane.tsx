@@ -7,7 +7,7 @@ import {
   conversationRows,
   conversationTurnRevealing,
   groupTranscriptEntries,
-  passwordsSetUpSuggestion,
+  passwordsSetupOffer,
   incomingTranscriptMessages,
   observedSequence,
   threadActivity,
@@ -62,7 +62,12 @@ import Animated from "react-native-reanimated";
 import { canRespondToRequests, describeHostConnection } from "@opensteer/client/host";
 import type { ThreadDraftQuote } from "../client/thread-drafts.js";
 import type { ArtifactContentPart } from "@opensteer/core";
-import { paramsDestination, sameDestination, surfaceRoute } from "../browser/surface-route.js";
+import {
+  paramsDestination,
+  sameDestination,
+  surfaceRoute,
+  type OpensteerAppDestination,
+} from "../browser/surface-route.js";
 import { operationDetail } from "../client/mobile-client.js";
 import { color, material, radius, space, touchTarget } from "../theme.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
@@ -85,7 +90,12 @@ import {
 } from "./task-status.js";
 import { WaitingQuestions } from "./waiting-questions.js";
 import { waitingQuestion } from "./docked-requests.js";
-import { TranscriptSurfacesContext, type TranscriptSurfaces } from "./surface-chips.js";
+import {
+  TranscriptAppTabsContext,
+  TranscriptSurfacesContext,
+  type TranscriptAppTabs,
+  type TranscriptSurfaces,
+} from "./surface-chips.js";
 import { TranscriptHostClientContext } from "./attachment-views.js";
 import { Composer } from "./composer.js";
 import { LivePlace } from "./live-place.js";
@@ -98,6 +108,9 @@ import {
   type TranscriptComputers,
 } from "./computer-use-line.js";
 import { homeIntroDraftKey } from "../screens/home-intro.js";
+import { VoiceDock } from "../voice/controls.js";
+import { VoiceStartBar } from "../voice/start-bar.js";
+import { useVoiceAskedRequest, useVoiceOn } from "../voice/use-voice-value.js";
 import { useSidebarVisible } from "../sidebar/sidebar-context.js";
 import { settingsDisabledReason } from "./settings/settings-controller.js";
 import {
@@ -110,6 +123,7 @@ import {
 } from "./transcript.js";
 import type { ThreadMutationOwner } from "./thread-mutation-gate.js";
 import { useThreadMutation } from "./thread-mutation-registry.js";
+import { UsageNotice } from "./usage-notice.js";
 
 /**
  * One Thread: its transcript, and the surface that answers it.
@@ -150,6 +164,7 @@ export interface ThreadHeaderState {
   readonly icon: ThreadSummary["icon"];
   readonly color: ThreadSummary["color"];
   readonly isHome: boolean;
+  readonly isVoice: boolean;
   /** The work this Thread is doing for another conversation, or null. */
   readonly task: TaskHeading | null;
 }
@@ -169,6 +184,7 @@ export function sameThreadHeader(
     left.icon === right.icon &&
     left.color === right.color &&
     left.isHome === right.isHome &&
+    left.isVoice === right.isVoice &&
     sameTaskHeading(left.task, right.task)
   );
 }
@@ -237,6 +253,7 @@ function selectThreadPane(snapshot: HostSnapshot, threadId: string) {
     session: snapshot.session,
     user: snapshot.user,
     homeThreadId: snapshot.homeThreadId,
+    voiceThreadId: snapshot.voiceThreadId,
     environments: snapshot.environments,
     harnesses: snapshot.harnesses,
     machines: snapshot.machines,
@@ -464,6 +481,11 @@ function ThreadPaneForUser(
   // A conversation (Chat, a direct message) reads as messages, each reply's
   // steps in its Activity; work keeps its whole trace in view.
   const conversational = thread?.role === "conversation";
+  // A manager the person talks to: no composer, and its calls open with a divider.
+  const voiceThread = snapshot.voiceThreadId === threadId;
+  const onCall = useVoiceOn();
+  // On a call the bar carries what needs the person, so the pane docks it nowhere else.
+  const askedRequestId = useVoiceAskedRequest();
   // In work, a message waiting behind the current turn stands in the tray
   // above the composer until a Run takes it. A conversation has no tray: what
   // the reader just sent is drawn as sent.
@@ -710,6 +732,7 @@ function ThreadPaneForUser(
       icon,
       color: markColor,
       isHome,
+      isVoice: voiceThread,
     });
   }, [
     connectionLabel,
@@ -723,6 +746,7 @@ function ThreadPaneForUser(
     icon,
     markColor,
     isHome,
+    voiceThread,
   ]);
 
   // The reader's choices survive rows leaving the list's mounted window.
@@ -802,19 +826,34 @@ function ThreadPaneForUser(
       ),
     [groups],
   );
-  const openSurface = useCallback(
-    (destination: SurfaceDestination) => {
-      const route = surfaceRoute(deploymentId, threadId, destination);
+  const inFront = useCallback(
+    (destination: SurfaceDestination | OpensteerAppDestination) => {
       const state = navigation.getState();
       const current = state?.routes[state.index];
-      if (
+      return (
         current?.name === "WorkspaceBrowser" &&
         sameDestination(paramsDestination(current.params), destination)
-      )
-        return;
-      navigation.dispatch(StackActions.push("WorkspaceBrowser", route));
+      );
     },
-    [deploymentId, navigation, threadId],
+    [navigation],
+  );
+  const openSurface = useCallback(
+    (destination: SurfaceDestination | OpensteerAppDestination) => {
+      if (inFront(destination)) return;
+      navigation.dispatch(
+        StackActions.push("WorkspaceBrowser", surfaceRoute(deploymentId, threadId, destination)),
+      );
+    },
+    [deploymentId, inFront, navigation, threadId],
+  );
+  const appTabs = useMemo<TranscriptAppTabs>(
+    () => ({
+      leave: (appId) => {
+        if (inFront({ appId, kind: "opensteer-app" })) navigation.dispatch(StackActions.pop(1));
+      },
+      open: (appId) => openSurface({ appId, kind: "opensteer-app" }),
+    }),
+    [inFront, navigation, openSurface],
   );
   const surfaces = useMemo<TranscriptSurfaces>(
     () => ({ hostClient, threadId, turns: surfaceTurns, open: openSurface }),
@@ -892,6 +931,17 @@ function ThreadPaneForUser(
           null),
     [snapshot.user, snapshot.waitingRequests, threadId],
   );
+  const dockableWaiting = useMemo(
+    () =>
+      askedRequestId === null
+        ? snapshot.waitingRequests
+        : snapshot.waitingRequests.filter(({ request }) => request.id !== askedRequestId),
+    [askedRequestId, snapshot.waitingRequests],
+  );
+  const dockableRequests = useMemo(
+    () => (snapshot.ownRequests ?? []).filter(({ id }) => id !== askedRequestId),
+    [askedRequestId, snapshot.ownRequests],
+  );
   const taskScope = useMemo<TaskScope>(
     () => ({
       dockedRequestId,
@@ -939,7 +989,7 @@ function ThreadPaneForUser(
               conversation={conversational}
               onOpenActivity={conversational ? openActivity : undefined}
               onOpenReplyUnderWay={conversational ? openLatestActivity : undefined}
-              onReply={conversational ? replyWith : undefined}
+              onReply={conversational && !voiceThread ? replyWith : undefined}
               live={live}
               group={item.group}
               open={openRows.get(item.group.key) ?? null}
@@ -953,6 +1003,7 @@ function ThreadPaneForUser(
               unreadBoundary={item.unreadBoundary}
               homeThreadId={snapshot.homeThreadId}
               viewerUserId={viewerUserId}
+              voiceThread={voiceThread}
               workspaces={workspaces}
             />
           </TranscriptHostClientContext>
@@ -977,6 +1028,7 @@ function ThreadPaneForUser(
       receiptId,
       snapshot.homeThreadId,
       viewerUserId,
+      voiceThread,
       workspaces,
     ],
   );
@@ -1045,13 +1097,15 @@ function ThreadPaneForUser(
       ) : null,
     [thread?.role, inputQueue, queueCanRespond, hostClient, restoreQueuedDraft, viewerUserId],
   );
-  const offersPasswords = useMemo(() => passwordsSetUpSuggestion(groups) !== null, [groups]);
+  const passwordsOffer = useMemo(() => passwordsSetupOffer(groups), [groups]);
   const listFooter =
-    offersPasswords && viewerUserId !== null ? (
+    passwordsOffer !== null && viewerUserId !== null && !(voiceThread && onCall) ? (
       <>
         <PasswordsSuggestion
           deploymentId={props.deploymentId}
           hostClient={hostClient}
+          offer={passwordsOffer}
+          style={styles.passwords}
           userId={viewerUserId}
         />
         {queueFooter}
@@ -1174,6 +1228,13 @@ function ThreadPaneForUser(
           ? "Sending your response…"
           : null;
 
+  const openSettings = (conversation?: boolean): void =>
+    navigation.navigate("ThreadSettings", {
+      ...(conversation ? { conversation: true } : {}),
+      deploymentId: props.deploymentId,
+      threadId: thread.id,
+    });
+
   // This pane's list scrolls under the Thread screen's transparent bar. iOS
   // takes the bar's height from the screen's own safe area; Android has no such
   // inset to read, so the number is stated there. Beside a page there is no bar
@@ -1196,7 +1257,9 @@ function ThreadPaneForUser(
         ListFooterComponent={listFooter}
         // Beside a page, before anything has been said, the page is the subject.
         ListEmptyComponent={
-          companion === null ? <EmptyThread loading={snapshot.lookup === "loading"} /> : undefined
+          companion === null ? (
+            <EmptyThread loading={snapshot.lookup === "loading"} voice={voiceThread} />
+          ) : undefined
         }
         ListHeaderComponent={
           <ThreadHeader
@@ -1349,107 +1412,126 @@ function ThreadPaneForUser(
                 runId={stopTarget.id}
               />
             )}
-            <WaitingQuestions
-              canRespond={canRespond}
-              deploymentId={props.deploymentId}
-              drafts={client.drafts}
-              hostClient={props.hostClient}
-              machines={snapshot.machines}
-              onOpenTask={taskScope.onViewWork}
-              threadId={thread.id}
-              user={snapshot.user}
-              waitingRequests={snapshot.waitingRequests}
-            />
-            <View>
-              <Composer
-                variant={conversational ? "conversation" : "work"}
-                voice={isHome}
-                accessMode={thread.accessMode}
-                accessModes={placement?.accessModes ?? null}
+            {voiceThread && onCall ? null : (
+              <WaitingQuestions
                 canRespond={canRespond}
                 deploymentId={props.deploymentId}
-                // Identity, not decoration: the composer's draft and its pending
-                // command belong to one Thread on one Deployment, so a navigation to
-                // another Thread builds a new one rather than inheriting this one's.
-                key={`${props.deploymentId}:${snapshot.user.id}:${thread.id}`}
-                disabledReason={disabledReason}
-                readOnly={thread.status === "archived"}
                 drafts={client.drafts}
-                driverKind={placement?.driverKind}
-                executionBlockedReason={
-                  placement === null
-                    ? "This AI account is no longer here."
-                    : !placement.available
-                      ? placement.detail
-                      : null
-                }
-                engineName={placement?.engineName ?? thread.harnessLabel}
-                usageNotice={usageNotice}
-                highlightRequestId={props.requestId}
                 hostClient={props.hostClient}
                 machines={snapshot.machines}
-                // A thread with no model chosen yet says so on the pill, rather
-                // than naming a blank.
-                modelLabel={thread.modelLabel.trim() === "" ? "Choose model" : thread.modelLabel}
-                model={
-                  placement?.models.find(
-                    (m) =>
-                      m.providerId === thread.modelSelection.providerId &&
-                      m.modelId === thread.modelSelection.modelId,
-                  ) ?? null
-                }
-                modelOptions={thread.modelSelection.options}
-                mutationGate={mutationGate}
-                page={companion?.page ?? null}
-                onChangeModel={(conversation) =>
-                  navigation.navigate("ThreadSettings", {
-                    ...(conversation ? { conversation: true } : {}),
-                    deploymentId: props.deploymentId,
-                    threadId: thread.id,
-                  })
-                }
-                onFind={() =>
-                  navigation.navigate("ThreadFind", {
-                    deploymentId: props.deploymentId,
-                    threadId: thread.id,
-                  })
-                }
-                placeholder={
-                  isHome
-                    ? "Ask anything…"
-                    : threadComposerPlaceholder(items.length === 0 && !canLoadEarlier)
-                }
-                requests={snapshot.ownRequests ?? []}
-                restore={restoredDraft}
-                running={stopTarget !== null}
-                // A task card in a conversation stops its own task, and a task's
-                // title menu stops the task. In a conversation this ends only the
-                // reply under way; in a task it leaves the task paused.
-                stopLabel={
-                  conversational
-                    ? "Stop the reply"
-                    : task?.open === true
-                      ? "Pause this task"
-                      : "Stop this run"
-                }
-                runStopping={activity === "stopping"}
-                // The sheet's own guard, in the sheet's own words: the model pill
-                // and the access menu change the same settings from here, so a
-                // change already in flight — including one whose sheet has since
-                // been dismissed — has to close both doors, not just that one.
-                settingsDisabledReason={settingsDisabledReason({
-                  canRespond,
-                  hasRun: threadRuns.length > 0,
-                  mutationOwner,
-                  kind: "thread",
-                  thread,
-                })}
-                subagentTitles={subagentTitles}
+                onOpenTask={taskScope.onViewWork}
+                ownQuestions={voiceThread}
                 threadId={thread.id}
                 user={snapshot.user}
-                workspaceId={thread.workspaceId}
+                waitingRequests={dockableWaiting}
               />
-            </View>
+            )}
+            {voiceThread ? (
+              <>
+                <VoiceDock slot />
+                {onCall ? null : (
+                  <VoiceStartBar
+                    modelHold={settingsDisabledReason({
+                      canRespond,
+                      hasRun: threadRuns.length > 0,
+                      mutationOwner,
+                      kind: "thread",
+                      thread,
+                    })}
+                    modelLabel={
+                      thread.modelLabel.trim() === "" ? "Choose model" : thread.modelLabel
+                    }
+                    onChooseModel={openSettings}
+                  />
+                )}
+                <UsageNotice notice={usageNotice} onOpen={openSettings} />
+              </>
+            ) : (
+              <View>
+                <Composer
+                  variant={conversational ? "conversation" : "work"}
+                  voice={isHome}
+                  accessMode={thread.accessMode}
+                  accessModes={placement?.accessModes ?? null}
+                  canRespond={canRespond}
+                  deploymentId={props.deploymentId}
+                  // Identity, not decoration: the composer's draft and its pending
+                  // command belong to one Thread on one Deployment, so a navigation to
+                  // another Thread builds a new one rather than inheriting this one's.
+                  key={`${props.deploymentId}:${snapshot.user.id}:${thread.id}`}
+                  disabledReason={disabledReason}
+                  readOnly={thread.status === "archived"}
+                  drafts={client.drafts}
+                  driverKind={placement?.driverKind}
+                  executionBlockedReason={
+                    placement === null
+                      ? "This AI account is no longer here."
+                      : !placement.available
+                        ? placement.detail
+                        : null
+                  }
+                  engineName={placement?.engineName ?? thread.harnessLabel}
+                  usageNotice={usageNotice}
+                  highlightRequestId={props.requestId}
+                  hostClient={props.hostClient}
+                  machines={snapshot.machines}
+                  // A thread with no model chosen yet says so on the pill, rather
+                  // than naming a blank.
+                  modelLabel={thread.modelLabel.trim() === "" ? "Choose model" : thread.modelLabel}
+                  model={
+                    placement?.models.find(
+                      (m) =>
+                        m.providerId === thread.modelSelection.providerId &&
+                        m.modelId === thread.modelSelection.modelId,
+                    ) ?? null
+                  }
+                  modelOptions={thread.modelSelection.options}
+                  mutationGate={mutationGate}
+                  page={companion?.page ?? null}
+                  onChangeModel={openSettings}
+                  onFind={() =>
+                    navigation.navigate("ThreadFind", {
+                      deploymentId: props.deploymentId,
+                      threadId: thread.id,
+                    })
+                  }
+                  placeholder={
+                    isHome
+                      ? "Ask anything…"
+                      : threadComposerPlaceholder(items.length === 0 && !canLoadEarlier)
+                  }
+                  requests={dockableRequests}
+                  restore={restoredDraft}
+                  running={stopTarget !== null}
+                  // A task card in a conversation stops its own task, and a task's
+                  // title menu stops the task. In a conversation this ends only the
+                  // reply under way; in a task it leaves the task paused.
+                  stopLabel={
+                    conversational
+                      ? "Stop the reply"
+                      : task?.open === true
+                        ? "Pause this task"
+                        : "Stop this run"
+                  }
+                  runStopping={activity === "stopping"}
+                  // The sheet's own guard, in the sheet's own words: the model pill
+                  // and the access menu change the same settings from here, so a
+                  // change already in flight — including one whose sheet has since
+                  // been dismissed — has to close both doors, not just that one.
+                  settingsDisabledReason={settingsDisabledReason({
+                    canRespond,
+                    hasRun: threadRuns.length > 0,
+                    mutationOwner,
+                    kind: "thread",
+                    thread,
+                  })}
+                  subagentTitles={subagentTitles}
+                  threadId={thread.id}
+                  user={snapshot.user}
+                  workspaceId={thread.workspaceId}
+                />
+              </View>
+            )}
           </>
         )}
       </Animated.View>
@@ -1473,7 +1555,9 @@ function ThreadPaneForUser(
     <TaskScopeContext.Provider value={taskScope}>
       <TranscriptComputersContext.Provider value={computers}>
         <TranscriptSurfacesContext.Provider value={surfaces}>
-          {pane}
+          <TranscriptAppTabsContext.Provider value={appTabs}>
+            {pane}
+          </TranscriptAppTabsContext.Provider>
         </TranscriptSurfacesContext.Provider>
       </TranscriptComputersContext.Provider>
     </TaskScopeContext.Provider>
@@ -1670,8 +1754,8 @@ function sameWorkspaceMarks(
 }
 
 /** Opening reads back past turns it does not draw, so "nothing yet" waits for that. */
-function EmptyThread({ loading }: { readonly loading: boolean }): ReactNode {
-  if (loading)
+function EmptyThread(props: { readonly loading: boolean; readonly voice: boolean }): ReactNode {
+  if (props.loading)
     return (
       <View style={styles.empty}>
         <AppText role="secondary" tone="muted">
@@ -1681,9 +1765,13 @@ function EmptyThread({ loading }: { readonly loading: boolean }): ReactNode {
     );
   return (
     <View style={styles.empty}>
-      <AppText role="displaySmall">What would you like to do?</AppText>
+      <AppText role="displaySmall">
+        {props.voice ? "Say what you need done" : "What would you like to do?"}
+      </AppText>
       <AppText role="secondary" tone="muted">
-        Ask a question or describe a task.
+        {props.voice
+          ? "Talk to Opensteer and it starts the work, keeps you posted and asks when it needs you."
+          : "Ask a question or describe a task."}
       </AppText>
     </View>
   );
@@ -1732,4 +1820,5 @@ const styles = StyleSheet.create({
   jumpHome: { alignItems: "center", bottom: space[12], left: 0, position: "absolute", right: 0 },
   jumpPressed: { ...material.floatPressed },
   pane: { flex: 1 },
+  passwords: { marginTop: space[10] },
 });

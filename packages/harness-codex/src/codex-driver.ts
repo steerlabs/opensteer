@@ -1,4 +1,4 @@
-import { backgroundLightModels } from "@opensteer/core";
+import { backgroundLightModels, voiceCallSeed } from "@opensteer/core";
 import { resolveLightModel } from "@opensteer/harness";
 import { startRealtime } from "./voice.js";
 import { replacePrivateFileAtomically } from "@opensteer/shared/atomicPrivateFile";
@@ -1017,11 +1017,6 @@ class CodexHarnessAdapter implements HarnessAdapter {
     context: HarnessSessionContext,
   ): Promise<HarnessSession> {
     this.#sessions.assertOpen();
-    if (context.voiceCall)
-      throw new OpensteerError({
-        code: "conflict",
-        message: "A voice call cannot resume a session.",
-      });
     const reference = validateProviderReference(providerSessionReference);
     return this.#sessions.open(reference, () => this.#open(context, { reference, type: "resume" }));
   }
@@ -1201,7 +1196,7 @@ class CodexHarnessSession implements HarnessSession {
         return;
       }
       if (this.#context.voiceCall) {
-        await this.#executeVoice(active, run.signal);
+        await this.#executeVoice(active, run);
         return;
       }
       const result = requireObject(
@@ -1292,7 +1287,8 @@ class CodexHarnessSession implements HarnessSession {
     });
   }
 
-  async #executeVoice(active: ActiveTurn, signal: AbortSignal): Promise<void> {
+  async #executeVoice(active: ActiveTurn, run: HarnessRunInput): Promise<void> {
+    const { signal } = run;
     const call = this.#context.voiceCall!;
     const client = this.#requireClient();
     const threadId = this.#requireCodexThreadId();
@@ -1309,11 +1305,16 @@ class CodexHarnessSession implements HarnessSession {
         },
       });
       this.#ensureRunStarted(active);
+      active.root = "idle";
       await startRealtime(client, threadId, call, this.#config.startupTimeoutMs);
       await withTimeout(this.#voiceSdp.promise, this.#config.startupTimeoutMs, {
         signal: call.signal,
         timeoutError: () => new Error("Voice answer did not arrive"),
       });
+      // What was already waiting for the Thread when the call began.
+      for (const input of run.inputs)
+        if (!isVoiceCallSeed(input))
+          await this.steer({ input, ...(run.attachments ? { attachments: run.attachments } : {}) });
       await new Promise<void>((resolve) => {
         if (call.signal.aborted) resolve();
         else call.signal.addEventListener("abort", () => resolve(), { once: true });
@@ -1341,15 +1342,18 @@ class CodexHarnessSession implements HarnessSession {
     this.#assertUsable();
     const active = this.#activeTurn;
     if (!active) throw steerConflict();
-    await Promise.race([active.idReady.promise, active.completion.promise]);
+    // A call's Run sits between turns until someone speaks, so no turn is owed here.
+    if (!this.#context.voiceCall)
+      await Promise.race([active.idReady.promise, active.completion.promise]);
     // A message arriving while the root starts a turn joins that turn once it has.
     if (active.root === "starting") await active.rootStart?.promise;
-    const expectedTurnId = active.providerTurnId;
-    if (active.terminal || active.interruptRequested || !expectedTurnId) throw steerConflict();
+    if (active.terminal || active.interruptRequested) throw steerConflict();
     if (active.root === "idle") {
       await this.#startFollowUpTurn(active, input);
       return;
     }
+    const expectedTurnId = active.providerTurnId;
+    if (!expectedTurnId) throw steerConflict();
     const threadId = this.#requireCodexThreadId();
     const turnSteer = (steered: readonly JsonObject[]): JsonObject => ({
       expectedTurnId,
@@ -1609,7 +1613,8 @@ class CodexHarnessSession implements HarnessSession {
         ? {
             ...runtimeConfig,
             // Realtime starts turns itself, so turn/start overrides never run.
-            model_reasoning_effort: "low",
+            model_reasoning_effort:
+              this.#context.modelSelection.options[codexEffortOptionId] ?? null,
             service_tier: this.#context.modelSelection.options[codexSpeedOptionId] ?? null,
             ...(this.#context.runtimeBoundary.kind === "native-user"
               ? {
@@ -1797,6 +1802,7 @@ class CodexHarnessSession implements HarnessSession {
           this.#beginFollowUpTurn(active, turnId);
           break;
         }
+        if (this.#context.voiceCall) active.root = "executing";
         this.#setActiveTurnId(active, turnId);
         this.#ensureRunStarted(active);
         break;
@@ -2221,6 +2227,12 @@ class CodexHarnessSession implements HarnessSession {
   #publishItemCompleted(value: unknown): void {
     const item = requireObject(value, "item/completed params.item");
     const type = optionalString(item.type);
+    if (type === "userMessage" && this.#context.voiceCall) {
+      const text = realtimeDelegationText(codexUserMessageText(item));
+      if (text)
+        this.#publish({ data: { messageId: createId("message"), text }, type: "voice.heard" });
+      return;
+    }
     if (type === "agentMessage") {
       this.#publish({
         data: {
@@ -2229,6 +2241,9 @@ class CodexHarnessSession implements HarnessSession {
         },
         type: "assistant.message",
       });
+      const call = this.#context.voiceCall;
+      if (call && optionalString(item.phase) === "commentary" && typeof item.text === "string")
+        void call.speak(createId("message"), item.text).catch(() => call.end());
       const active = this.#activeTurn;
       if (active && optionalString(item.phase) === "final_answer") {
         active.answered = true;
@@ -4284,6 +4299,18 @@ function readCommandAction(action: unknown): unknown {
 /** A child agent's name from its path, `/root/researcher` → `researcher`. */
 function codexAgentTitle(path: unknown): string | null {
   return optionalString(path)?.split("/").filter(Boolean).at(-1) ?? null;
+}
+
+/** What the person said, from the wrapper Codex puts around a realtime hand-off. */
+function realtimeDelegationText(text: string | null): string | undefined {
+  return /<input>([\s\S]*?)<\/input>/u.exec(text ?? "")?.[1]?.trim() || undefined;
+}
+
+function isVoiceCallSeed(input: HarnessInput): boolean {
+  return (
+    input.author.kind === "human" &&
+    input.content.every((part) => part.type === "text" && part.text === voiceCallSeed)
+  );
 }
 
 /** The text a child agent was asked, from its `userMessage` item. */

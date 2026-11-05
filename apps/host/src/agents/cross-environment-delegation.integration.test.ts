@@ -95,6 +95,9 @@ integration("cross-environment delegation reaches the Runner", () => {
   const service = new ProductToolsTestClient({
     placeContext: { assertDelegated: assertDelegatedPlaces },
     browserSources: {
+      agentUseCard: async () => {
+        throw new Error("Unexpected card use");
+      },
       agentSignIn: async () => {
         throw new Error("Unexpected browser sign-in");
       },
@@ -2418,6 +2421,7 @@ integration("cross-environment delegation reaches the Runner", () => {
       helperActor,
       helperThreadId: helper.thread.id,
       homeThreadId: fixture.parentThreadId,
+      voiceThreadId: null,
       listedThreadIds: expected,
       reusedAssignmentId: followUp.assignmentId,
       taskThreadId: task.thread.id,

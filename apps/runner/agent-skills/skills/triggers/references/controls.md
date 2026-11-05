@@ -9,3 +9,6 @@
 Updates require a fresh `expectedRevisionId` from `get`. Pending Occurrences remain pinned to their Revision: decide whether old work should still run, and cancel any no longer wanted. Pause if nothing should run during repair; preserve a person's pause. A non-null `pauseReason` on a paused Trigger indicates an automatic pause. Inspect `activation.lastError` and `activation.stderrTail` for a watch, or the latest Occurrence's `error` and `stderr`, then repair before reactivating.
 
 Activating an `at` schedule after its instant never fires it; `nextFireAt` stays null. Update it to a new future `at`. A failed one-shot remains listed until fixed, rescheduled or archived. A one-shot succeeds after its instant and then archives automatically; archived Triggers cannot be changed or resumed. `list` omits them, while `get` still reads by id. A new reminder needs a new Trigger.
+
+Webhook creation returns its address and secret to the creating task for authorized setup. Keep the
+secret out of version control and memory, and use it only with the intended webhook sender.

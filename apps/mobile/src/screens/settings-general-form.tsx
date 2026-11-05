@@ -1,11 +1,11 @@
 import type { ReactNode } from "react";
-import { View } from "react-native";
+import { Linking, View } from "react-native";
 import { DeploymentMarkView } from "../threads/deployment-mark.js";
 import { deploymentUpdateRows } from "./deployment-update.js";
 import { AppText, RowGroup, SwitchRow } from "../ui/primitives.js";
 import { actionRow, ErrorText, LinkRow, Section, styles } from "./settings-form-primitives.js";
 import type { SettingsFormProps } from "./settings-form.types.js";
-import { projectNotificationsFooter } from "./settings-model.js";
+import { privacyPolicyUrl, projectNotificationsFooter } from "./settings-model.js";
 export function GeneralSettingsForm(
   props: Pick<
     SettingsFormProps,
@@ -113,6 +113,13 @@ export function GeneralSettingsForm(
                   {props.version}
                 </AppText>
               </View>,
+              <LinkRow
+                detail="How Opensteer handles your data"
+                key="privacy"
+                lead={null}
+                onPress={() => void Linking.openURL(privacyPolicyUrl)}
+                title="Privacy Policy"
+              />,
             ]}
           </RowGroup>
           <ErrorText

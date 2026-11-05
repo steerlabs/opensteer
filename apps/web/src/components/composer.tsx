@@ -5,7 +5,7 @@ import {
   type DictationSelection,
 } from "@opensteer/client/dictation";
 import { DictationStatus, DictationLive, useDictation } from "./dictation.js";
-import { useVoice } from "./voice.js";
+import { useVoice } from "@opensteer/client/react";
 import { observeResize } from "@opensteer/shared/resizeObserver";
 import {
   useCallback,

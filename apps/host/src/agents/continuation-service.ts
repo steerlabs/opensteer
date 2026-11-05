@@ -13,6 +13,7 @@ import {
   type PasswordSignInRequestResponse,
 } from "@opensteer/protocol";
 import { BrowserSignInRequestResponseSchema } from "@opensteer/protocol/browser-sources";
+import { CoalescedWake } from "@opensteer/shared/coalescedWake";
 import { z } from "zod";
 import type { PasswordSignInContinuationState } from "../browser/password-sign-in-service.js";
 import type { ComputerAppApprovalService } from "../integrations/computer-app-approval-service.js";
@@ -53,9 +54,8 @@ export class ContinuationService {
   readonly #onError: (error: unknown) => void;
   readonly #requests: RequestContinuationStore;
   readonly #passwordSignIn: (operationId: string) => PasswordSignInContinuationState;
-  #drainAgain = false;
   #closed = false;
-  #drain: Promise<void> | undefined;
+  readonly #drains: CoalescedWake;
   #timer: NodeJS.Timeout | undefined;
 
   constructor(options: {
@@ -73,6 +73,7 @@ export class ContinuationService {
     this.#requests = options.requests;
     this.#passwordSignIn =
       options.passwordSignIn ?? (() => ({ publishing: false, loginRef: undefined }));
+    this.#drains = new CoalescedWake({ run: () => this.#drainOnce(), onError: this.#onError });
   }
 
   start(): void {
@@ -84,26 +85,14 @@ export class ContinuationService {
 
   notify(): void {
     if (this.#closed) return;
-    if (this.#drain) {
-      this.#drainAgain = true;
-      return;
-    }
-    this.#drain = this.#drainOnce()
-      .catch(this.#onError)
-      .finally(() => {
-        this.#drain = undefined;
-        if (this.#drainAgain) {
-          this.#drainAgain = false;
-          this.notify();
-        }
-      });
+    this.#drains.wake();
   }
 
   async close(): Promise<void> {
     this.#closed = true;
     if (this.#timer) clearInterval(this.#timer);
     this.#timer = undefined;
-    await this.#drain;
+    await this.#drains.stop();
   }
 
   async #drainOnce(): Promise<void> {
@@ -342,6 +331,13 @@ export async function continuationMessage(
       );
       if (request.payload.scope === "workspace") {
         const { site, computerName } = request.payload;
+        if (request.payload.credential === "card") {
+          const action =
+            response.outcome === "authorized" && loginRef
+              ? `Focus each required checkout field and call fillCard("${loginRef}", field). Never read back, print, log, copy or save card values. This approval covers filling only; the person's request must cover any purchase.`
+              : "The card use ended. Call use_card again only if the task still requires it.";
+          return `Request ${request.id} for card use on ${site} ended. ${action}`;
+        }
         if (response.outcome === "authorized") {
           const action = loginRef
             ? `Use saved login ${loginRef} for ${site} as ${response.account}: in the genuine phone/Mac app, type {loginRef: "${loginRef}", field: "username" | "password" | "code"}; in a browser, focus each field and use Browser Harness fillLogin("${loginRef}", field). Submit and verify the signed-in account. Never reveal or read back saved fields.`

@@ -1,3 +1,4 @@
+import { cardUseOutcome } from "./cards.js";
 import { requestSettlementLabel } from "./request-settlement.js";
 import type { Request } from "@opensteer/core";
 import {
@@ -8,6 +9,7 @@ import {
 import {
   AgentBrowserSignInResultSchema,
   type AgentBrowserSignInResult,
+  type BrowserSignInPasswords,
   type BrowserSignInUnavailableReason,
 } from "@opensteer/protocol/browser-sources";
 import type { DesktopPasswordsStatus } from "@opensteer/protocol/desktop";
@@ -255,6 +257,8 @@ export interface PasswordSignInOutcome {
  * response this client cannot read is never reported as a sign-in.
  */
 export function passwordSignInOutcome(request: Request): PasswordSignInOutcome | null {
+  if (request.payload.kind === "browser.password-sign-in" && request.payload.credential === "card")
+    return cardUseOutcome(request);
   if (request.status === "pending") return null;
   if (request.status === "declined")
     return {
@@ -422,7 +426,7 @@ function browserSignInUnavailableMessage(
  * ------------------------------------------------------------------------- */
 
 export const passwordsSettingsLabel = "Passwords";
-export const passwordsSettingsDescription = "Saved passwords agents can sign in with";
+export const passwordsSettingsDescription = "Saved passwords and cards agents can use";
 
 const unsupportedMessages = {
   hardware:
@@ -431,54 +435,100 @@ const unsupportedMessages = {
   platform: "Passwords is available in the Opensteer app on a Mac.",
 } as const;
 
-export const passwordsSetUpLead =
-  "Let agents sign in to websites and apps with passwords saved on this Mac. Opensteer never sends your password to the agent; it types it into the website or app, which can read it. You allow an account from any device signed in to this Opensteer.";
+export const passwordsSetUpLead = "Let agents sign in for you with passwords saved on this Mac.";
 export const passwordsSetUpFacts = [
-  "Import from Chrome, Safari, Firefox, 1Password or Bitwarden.",
-  "Opensteer fills the fields the agent focuses on, in the browser, on your phone or in Mac apps.",
+  "Opensteer never sends your password to the agent; it types it into the website or app, which can read it.",
+  "You allow an account from any device signed in to this Opensteer.",
+  "Passwords are kept only on this Mac and aren’t backed up. If this Mac is lost or erased, ones saved only here are gone.",
   "In the browser, each password goes only to its own website. In apps, the agent checks it’s the real app.",
 ] as const;
-/** What the setup says plainly, apart from what Passwords does for you. */
-export const passwordsSetUpNote =
-  "Passwords are kept only on this Mac and aren’t backed up. If this Mac is lost or erased, ones saved only here are gone.";
 export const passwordsSetUpAction = "Set up Passwords";
 export const passwordsOpenAction = "Open Passwords";
-export const passwordsAgentSignInsLabel = "Agents can sign in with your passwords";
+export const passwordsAgentSignInsLabel = "Agents can use saved passwords and cards";
 export const passwordsAgentSignInsDetail = "Turn this off or on in the Passwords window.";
 export const passwordsWaitingLabel = "Waiting for you";
 export const passwordsDeclineAllAction = "Don’t allow all";
 export const passwordsDecliningAllAction = "Not allowing…";
-export const passwordsSavedLabel = "Your saved passwords";
+export const passwordsSavedLabel = "Your saved passwords and cards";
 export const passwordsSavedDetail =
-  "Add, import or remove them, and see which Workspaces may use each, in the Passwords window.";
+  "Manage passwords and cards in the Passwords window. Import is for passwords only.";
 export const passwordsHowItWorksLabel = "How it works";
 
 /** "2 sign-ins to answer in their conversations": the sign-in cards waiting in the chat. */
 export function passwordsWaitingDetail(count: number): string {
   return count === 1
-    ? "1 sign-in to answer in its conversation"
-    : `${count} sign-ins to answer in their conversations`;
+    ? "1 password or card request to answer in its conversation"
+    : `${count} password or card requests to answer in their conversations`;
 }
+export const passwordsCardsFact =
+  "Cards work on websites only. Every use needs a fresh approval, lasting up to 30 minutes; it does not approve a charge.";
 export const passwordsHowItWorks = [
   "You allow an account once per Workspace from any device signed in to this Opensteer. After that, agents there can use it to sign in on their own.",
   "Take that access away any time in the Passwords window.",
   "Sign-ins can stay saved in the browser profile.",
   "Sites you allowed from Chrome keep using Chrome.",
+  passwordsCardsFact,
 ] as const;
 export const passwordsNeedsReset =
   "Set up Opensteer Passwords again. The passwords saved here before can’t be opened on this Mac.";
 export const passwordsDevelopmentBanner = "Development build: use test passwords only.";
 
-/** The line that offers Passwords after a sign-in found it not set up. */
-export const passwordsSuggestionName = "Opensteer Passwords";
-export const passwordsSuggestionLead = "lets agents sign in for you.";
+/** The offer's words, with the one name the reader's eye should land on set apart. */
+export interface PasswordsOfferLine {
+  readonly after: string;
+  readonly before: string;
+  readonly name: string;
+}
+
+/**
+ * The line that offers Passwords after a sign-in found it lacking. `computer`
+ * is null on the Mac itself, where the line's button is the way there. Nothing
+ * asks the person to tell the agent: the Host does that when the login exists.
+ */
+export function passwordsOfferLine(input: {
+  readonly card: boolean;
+  readonly computer: string | null;
+  readonly need: BrowserSignInPasswords;
+  readonly site: string;
+}): PasswordsOfferLine {
+  const { computer } = input;
+  // A card has no wake: nothing watches for one, so the person still asks again.
+  if (input.card) {
+    return {
+      after:
+        computer === null
+          ? " Add a card and enable agent use, then ask the agent again."
+          : ` lets agents fill saved cards at checkout. Open Passwords on ${computer} and add a card.`,
+      before: "",
+      name: passwordsAppName,
+    };
+  }
+  const there = computer === null ? "" : ` on ${computer}`;
+  switch (input.need) {
+    case "not-set-up":
+      return {
+        after: ` lets agents sign in for you.${computer === null ? "" : ` Set it up${there}.`}`,
+        before: "",
+        name: passwordsAppName,
+      };
+    case "no-login":
+      return { after: ` login${there}.`, before: "Add your ", name: browserSiteLabel(input.site) };
+    case "off":
+      return { after: ` are off${there}.`, before: "", name: "Agent sign-ins" };
+  }
+}
+
+/** The offer as this Mac sees it now, newer than the agent's word, or null when it can't help. */
+export function passwordsOfferNeedHere(
+  state: PasswordsSettingsState["kind"] | null,
+  agentSignIns: "on" | "off" | null,
+): BrowserSignInPasswords | null {
+  if (state === "not-set-up") return "not-set-up";
+  if (state !== "ready") return null;
+  return agentSignIns === "off" ? "off" : "no-login";
+}
+
 export const passwordsSuggestionAction = "Set up";
-export function passwordsSuggestionElsewhere(homeName: string | null): string {
-  return `Set it up on ${homeName ?? "your Mac"}.`;
-}
-export function passwordsSuggestionDone(site: string): string {
-  return `Passwords is set up. Add your ${browserSiteLabel(site)} login, then tell your agent.`;
-}
 /** Dismissed with the usage notices: one small per-device list, one line of it per Deployment. */
 export function passwordsSuggestionKey(deploymentId: string, userId: string): string {
   return `passwords-suggestion:${deploymentId}:${userId}`;

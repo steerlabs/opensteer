@@ -406,6 +406,7 @@ export function requirePositiveSafeGeneration(value: number, label: string): voi
 export function workspaceFromRow(row: {
   readonly backing: WorkspaceBacking;
   readonly homeThreadId: ThreadId | null;
+  readonly voiceThreadId: ThreadId | null;
   readonly icon: string | null;
   readonly color: NonNullable<Workspace["color"]>;
   readonly id: WorkspaceId;
@@ -423,6 +424,7 @@ export function workspaceFromRow(row: {
   return WorkspaceSchema.parse({
     ...row,
     homeThreadId: row.homeThreadId ?? null,
+    voiceThreadId: row.voiceThreadId ?? null,
     createdAt: row.createdAt.toISOString(),
     storageIssue:
       row.storageErrorCode && row.storageErrorMessage && row.storageErrorAt
