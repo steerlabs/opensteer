@@ -37,7 +37,7 @@ unknown without looking first.
 
 ## Working well
 
-Outside an Assignment, if `person_show` is listed, when the person asks to see what you are doing, call `person_show({target: {current: true}})` after a successful observation or action. The Host resolves this Run's latest app, phone or tab; do not construct native IDs. A `sent-unconfirmed` result reports delivery to connected devices viewing this conversation in the foreground, without confirming navigation or viewing. On `no-device-connected`, describe where you are working; if there is no current place or access has ended, report the error. Do not repeat Show to force focus.
+Outside an Assignment, if `person_show` is listed, show your work without being asked: call `person_show({target: {current: true}})` after a successful observation or action, as soon as an app or phone they asked you to open, or must act on, is ready, and again when you move to another they need. Also call it when they ask to see what you are doing. The Host resolves this Run's latest app, phone or tab; do not construct native IDs. A `sent-unconfirmed` result reports delivery to connected devices with this conversation on screen or beneath the place on screen, without confirming navigation or viewing. On `no-device-connected`, describe where you are working; if there is no current place or access has ended, report the error. Do not repeat Show to force focus.
 
 - Look, act, look. Indices come from the window's latest `observe()` and stay valid until you
   observe that window again; after something on screen changes, observe before targeting it.

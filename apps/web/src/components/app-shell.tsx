@@ -1396,7 +1396,7 @@ function PersonShowNavigation({
   readonly settingsMode: boolean;
 }): null {
   const location = useLocation();
-  const { nav, work, phone, dock } = useWorkspace();
+  const { nav } = useWorkspace();
   const personShowPort = useRef<(message: PersonShowMessage) => void>(() => undefined);
   personShowPort.current = (message) => {
     const match = /^\/threads\/([^/]+)/.exec(location.pathname);
@@ -1405,8 +1405,9 @@ function PersonShowNavigation({
       'input, textarea, [contenteditable]:not([contenteditable="false"]), iframe',
     );
     const editing = field && !field.hasAttribute("data-composer-input");
-    // A Run's own conversation shows only to a focused window; a voice call's
-    // agent shows to the person talking to it, even while a page holds focus.
+    // A Run's own conversation shows only to a focused window, on screen or under
+    // a place; a voice call's agent shows to the person talking to it, even while
+    // a page holds focus.
     const focused = document.hasFocus();
     const shown = handlePersonShow(
       hostClient.getSnapshot(),
@@ -1415,10 +1416,7 @@ function PersonShowNavigation({
         foreground: document.visibilityState === "visible",
         call: voice?.call() ?? null,
         threadId:
-          focused &&
-          !editing &&
-          (!work || (!phone && dock.open)) &&
-          (match || location.pathname === "/")
+          focused && !editing && (match || location.pathname === "/")
             ? match
               ? decodeURIComponent(match[1]!)
               : hostClient.getSnapshot().homeThreadId

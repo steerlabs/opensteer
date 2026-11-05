@@ -5,7 +5,7 @@ import { heldThread } from "./task-list.js";
 import { runPlaceDestination } from "./run-place.js";
 import type { VoiceCallIdentity, VoiceTarget } from "../voice/contract.js";
 
-/** The platform reports the conversation actually visible now; covered routes name none. */
+/** The platform reports the conversation on screen or beneath a place; other routes name none. */
 export interface PersonShowView {
   readonly foreground: boolean;
   readonly threadId: string | null;
@@ -32,7 +32,7 @@ export function personShowFromCall(
 
 /**
  * Acts on a Run's `host.show` when this device is where the person sees that
- * Run: the conversation on screen, or the voice call they are talking to.
+ * Run: its conversation, or the voice call they are talking to.
  */
 export function handlePersonShow(
   snapshot: HostSnapshot,

@@ -142,6 +142,7 @@ import { PasswordSignInService } from "../browser/password-sign-in-service.js";
 import { RunnerBrowserHub } from "../browser/runner-browser-hub.js";
 import { RunnerBrowserRuntimeRouter } from "../browser/runner-browser-runtime.js";
 import { ChannelService } from "../channels/channel-service.js";
+import { createVoiceFollow } from "../voice/voice-follow.js";
 import { MessagingRelayHub } from "../channels/messaging-relay-hub.js";
 import { ComputerAppHub } from "../computer-apps/computer-app-hub.js";
 import { ComputerUseService } from "../computer-use/computer-use-service.js";
@@ -1292,6 +1293,11 @@ export async function createHostRuntime(
       }
       return threadStateDrain;
     };
+    const followVoiceCall = createVoiceFollow({
+      store,
+      show: (userId, message) => realtime.showToPerson(userId, message),
+      onError: (error) => app.log.warn({ err: error }, "A voice call's screen could not follow"),
+    });
     const publishWorkspaceEvent = (event: AgentEvent): void => {
       if (event.type === "thread.listed" || event.type === "assignment.updated")
         browser.invalidatePlaceAuthority(
@@ -1304,6 +1310,7 @@ export async function createHostRuntime(
         );
       liveRuns.observeCommitted([event]);
       realtime.publish(event);
+      followVoiceCall(event);
       onTerminalRun(event);
       onAssignmentReturn(event);
       notificationDispatcher?.dispatch(event);

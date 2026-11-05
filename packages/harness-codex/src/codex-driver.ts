@@ -1225,6 +1225,8 @@ class CodexHarnessSession implements HarnessSession {
   }
 
   #voiceFinal = "";
+  /** Context for the agent's next turn, waiting out the one running now. */
+  readonly #voiceNotes: string[] = [];
   readonly #voiceSdp = new Deferred<void>();
   /**
    * What a voice turn has streamed and not yet completed. A call's turns end
@@ -1276,6 +1278,20 @@ class CodexHarnessSession implements HarnessSession {
     tools.clear();
   }
 
+  /** Codex samples again for anything injected into a running turn, so notes go in between turns. */
+  async #deliverVoiceNotes(): Promise<void> {
+    const notes = this.#voiceNotes.splice(0);
+    if (notes.length === 0) return;
+    await this.#requireClient().request("thread/inject_items", {
+      threadId: this.#requireCodexThreadId(),
+      items: notes.map((text) => ({
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text }],
+      })),
+    });
+  }
+
   async #executeVoice(active: ActiveTurn, signal: AbortSignal): Promise<void> {
     const call = this.#context.voiceCall!;
     const client = this.#requireClient();
@@ -1288,10 +1304,8 @@ class CodexHarnessSession implements HarnessSession {
           await client.request("thread/realtime/appendSpeech", { threadId, text });
         },
         note: async (text) => {
-          await client.request("thread/inject_items", {
-            threadId,
-            items: [{ type: "message", role: "user", content: [{ type: "input_text", text }] }],
-          });
+          this.#voiceNotes.push(text);
+          if (!active.providerTurnId) await this.#deliverVoiceNotes();
         },
       });
       this.#ensureRunStarted(active);
@@ -2146,6 +2160,7 @@ class CodexHarnessSession implements HarnessSession {
       delete active.providerTurnId;
       this.#voiceFinal = "";
       active.root = "idle";
+      void this.#deliverVoiceNotes().catch(() => this.#context.voiceCall?.end());
       return;
     }
     // The root answered while children it started still run: the Run waits
@@ -2217,7 +2232,8 @@ class CodexHarnessSession implements HarnessSession {
       const active = this.#activeTurn;
       if (active && optionalString(item.phase) === "final_answer") {
         active.answered = true;
-        if (this.#context.voiceCall && typeof item.text === "string") this.#voiceFinal = item.text;
+        if (this.#context.voiceCall && typeof item.text === "string" && item.text.trim())
+          this.#voiceFinal = item.text;
       }
       return;
     }

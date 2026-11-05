@@ -1,4 +1,4 @@
-import { show } from "./navigation.js";
+import { conversationRoute, show } from "./navigation.js";
 import { VoiceController } from "@opensteer/client/voice";
 import { handlePersonShow } from "@opensteer/client/host";
 import { AppState } from "react-native";
@@ -18,7 +18,7 @@ type RouteParams = { deploymentId?: string; threadId?: string; tabId?: string } 
  * the call. Starting voice ends dictation, keeping its words, so only one
  * thing holds the microphone; leaving the foreground ends the call. A Run's
  * `host.show` changes the screen here when it comes from the conversation on
- * screen, or from the voice call this phone holds.
+ * screen or beneath a place on it, or from the voice call this phone holds.
  */
 export function VoiceProvider({ children }: { readonly children: ReactNode }): ReactNode {
   const client = useMobileClient();
@@ -50,7 +50,7 @@ export function VoiceProvider({ children }: { readonly children: ReactNode }): R
       },
     });
     const unsubscribeShow = hostClient.subscribePersonShow((message) => {
-      const route = navigationRef.getCurrentRoute();
+      const route = conversationRoute();
       const params = route?.params as RouteParams;
       const snapshot = hostClient.getSnapshot();
       // A screen without this Deployment's id, such as Settings, shows none of its conversations.

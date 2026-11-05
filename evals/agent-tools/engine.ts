@@ -7,7 +7,7 @@ import {
   ModelSelectionSchema,
   type ModelSelection,
 } from "@opensteer/core";
-import { agentTools, opensteerAgentSkillsFor, platformGuideForRun } from "@opensteer/agent-tools";
+import { opensteerAgentSkillsFor, platformGuideForRun, toolsFor } from "@opensteer/agent-tools";
 import {
   ClaudeHarnessDriver,
   claudeAgentSdk,
@@ -140,7 +140,11 @@ export async function runEngine(input: {
   const context: HarnessSessionContext = {
     accessMode: "full-access",
     agentTools: {
-      tools: agentTools.filter((tool) => tool.callers.includes(c.caller)).map(({ name }) => name),
+      tools: toolsFor({
+        kind: c.caller,
+        accessMode: "full-access",
+        reach: { kind: caseReach(c) },
+      }).map(({ name }) => name),
       toolsRevision: "eval-tools-v1",
       instructions: guide,
       skills: selected.map(({ fullName }) => fullName),

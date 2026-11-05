@@ -13,6 +13,7 @@ const state = vi.hoisted(() => ({
   host: null as MockHostClient | null,
   appState: "active",
   route: undefined as { key: string; name: string; params?: object } | undefined,
+  routes: [] as { key: string; name: string; params?: object }[],
   dispatch: vi.fn(),
   unsubscribeNavigation: vi.fn(),
   removeAppState: vi.fn(),
@@ -35,6 +36,7 @@ vi.mock("../navigation-ref.js", () => ({
   navigationRef: {
     isReady: () => true,
     getCurrentRoute: () => state.route,
+    getRootState: () => ({ routes: state.routes }),
     dispatch: state.dispatch,
     addListener: () => state.unsubscribeNavigation,
   },
@@ -229,6 +231,26 @@ it("ignores inactive apps, covered routes and different Threads or Deployments, 
   state.dispatch.mockClear();
   await act(async () => f.host.receivePersonShow(f.message));
   expect(state.dispatch).not.toHaveBeenCalled();
+});
+
+it("keeps following its Run from places opened over its conversation, and no other", async () => {
+  const f = await mount();
+  const home = state.route!;
+  const place = { ...home, name: "WorkspaceBrowser" };
+  state.route = place;
+  state.routes = [
+    {
+      ...home,
+      name: "Thread",
+      params: { deploymentId: f.snapshot.deploymentId, threadId: f.target.id },
+    },
+    place,
+  ];
+  await act(async () => f.host.receivePersonShow(f.message));
+  expect(state.dispatch).not.toHaveBeenCalled();
+  state.routes = [home, place, { ...place, key: "next" }];
+  await act(async () => f.host.receivePersonShow(f.message));
+  expect(state.dispatch).toHaveBeenCalledOnce();
 });
 
 it("opens what the voice call's agent shows from any screen, and ignores a call it replaced", async () => {
