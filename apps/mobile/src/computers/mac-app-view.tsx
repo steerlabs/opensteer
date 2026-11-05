@@ -13,13 +13,12 @@ import { ComputerDisplay, ComputerOwnerView, ComputerTaskView } from "./phone-di
  */
 export function MacAppView(props: {
   readonly active: boolean;
-  readonly destination: Exclude<WorkspaceSurfaceDestination, { kind: "browser" }>;
+  readonly destination: Extract<WorkspaceSurfaceDestination, { kind: "app" | "phone" }>;
   readonly hostClient: HostClient;
   /** The keyboard is up for the app or phone, and its pane should make room. */
   readonly onTyping: (typing: boolean) => void;
 }): ReactNode {
   const { destination } = props;
-  if (destination.kind === "opensteer-app") return null;
   const appKey = destination.kind === "app" ? destination.appKey : null;
   if (destination.source?.kind === "owner-view")
     return (

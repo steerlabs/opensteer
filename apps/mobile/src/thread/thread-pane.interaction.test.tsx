@@ -348,6 +348,7 @@ vi.mock("@react-navigation/native", async () => {
   };
   return {
     StackActions: {
+      pop: (count: number) => ({ count, type: "POP" }),
       popTo: (name: string, params: object) => ({ name, params, type: "POP_TO" }),
       push: (name: string, params: object) => ({ name, params, type: "PUSH" }),
     },
@@ -1240,6 +1241,46 @@ describe("a conversation with a page", () => {
       title: "Research page",
       url: "https://example.com",
     });
+
+  // Failure: the person is left on a page for a tab the Host never made.
+  it("pushes an app's own route at once, and takes that page back if the Host refuses the tab", async () => {
+    const appId = "app_11111111-1111-4111-8111-111111111111";
+    const host = fakeHost(
+      snapshotFor({
+        entries: [
+          {
+            appId,
+            createdAt: at,
+            id: "app:event",
+            kind: "app",
+            runId: createId("run"),
+            title: "Budget",
+            version: 1,
+          },
+        ],
+        run: null,
+        threadId: workId,
+      }),
+    );
+    const answer = Promise.withResolvers<void>();
+    Object.assign(host.client, {
+      openAppTab: () => answer.promise,
+      viewApp: () => new Promise(() => undefined),
+    });
+    const { container } = await mount(host, workId);
+    await press(container, "Open Budget");
+    expect(harness.dispatch).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        name: "WorkspaceBrowser",
+        params: expect.objectContaining({ appId, threadId: workId }),
+        type: "PUSH",
+      }),
+    );
+    harness.currentRoute = { name: "WorkspaceBrowser", params: { appId } };
+    await act(async () => answer.reject(new Error("This Host cannot open app tabs.")));
+    expect(harness.dispatch).toHaveBeenLastCalledWith({ count: 1, type: "POP" });
+    expect(text(container)).toContain("This Host cannot open app tabs.");
+  });
 
   it("shows all of itself beside the page, with its approval, and includes the page", async () => {
     const runId = createId("run");

@@ -86,6 +86,7 @@ export type SFSymbolName =
   | "smartphone"
   | "sparkles"
   | "square"
+  | "square.grid.2x2"
   | "square.on.square"
   | "square.and.pencil"
   | "stop.circle"
@@ -247,6 +248,7 @@ const glyph: Record<SFSymbolName, string> = {
   smartphone: "▯",
   sparkles: "✦",
   square: "□",
+  "square.grid.2x2": "⊞",
   "square.on.square": "❐",
   "square.and.pencil": "✎",
   "stop.circle": "◼",

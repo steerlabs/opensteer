@@ -8,7 +8,7 @@ import {
   type TaskSurfaceDestination,
   type WorkspaceSurfaceDestination,
 } from "@opensteer/client/host";
-import type { BrowserPageContentPart } from "@opensteer/core";
+import { AppIdSchema, type BrowserPageContentPart } from "@opensteer/core";
 import { isRecord } from "@opensteer/shared/isRecord";
 
 /**
@@ -29,6 +29,7 @@ type SurfacesTarget =
       readonly sessionId: string;
       readonly tabId: string;
       readonly editAddress?: boolean;
+      readonly appId?: never;
       readonly machineId?: never;
       readonly computerSessionId?: never;
       readonly appKey?: never;
@@ -41,6 +42,7 @@ type SurfacesTarget =
       readonly sessionId?: never;
       readonly tabId?: never;
       readonly editAddress?: never;
+      readonly appId?: never;
       readonly machineId?: string;
       /** A task's own session on the app or phone. */
       readonly computerSessionId?: string;
@@ -51,6 +53,20 @@ type SurfacesTarget =
       readonly generation?: number;
       /** The Mac window an owner view binds, so the route names what is shown. */
       readonly windowId?: number;
+    }
+  | {
+      /** An Opensteer App's tab. Its view address is a capability and never rides in a route. */
+      readonly appId: string;
+      readonly sessionId?: never;
+      readonly tabId?: never;
+      readonly editAddress?: never;
+      readonly machineId?: never;
+      readonly computerSessionId?: never;
+      readonly appKey?: never;
+      readonly phone?: never;
+      readonly viewId?: never;
+      readonly generation?: never;
+      readonly windowId?: never;
     };
 
 /**
@@ -65,11 +81,16 @@ export type SurfacesRoute = {
 } & SurfacesScope &
   SurfacesTarget;
 
+export type OpensteerAppDestination = Extract<
+  WorkspaceSurfaceDestination,
+  { kind: "opensteer-app" }
+>;
+
 /** One of a conversation's own tabs or apps, opened from that conversation. */
 export function surfaceRoute(
   deploymentId: string,
   threadId: string,
-  destination: TaskSurfaceDestination,
+  destination: TaskSurfaceDestination | OpensteerAppDestination,
 ): SurfacesRoute {
   return { deploymentId, threadId, ...targetParams(destination) };
 }
@@ -83,7 +104,7 @@ export function workspaceRoute(
 }
 
 function targetParams(destination: WorkspaceSurfaceDestination): SurfacesTarget {
-  if (destination.kind === "opensteer-app") throw new Error("App tab routes are not available yet");
+  if (destination.kind === "opensteer-app") return { appId: destination.appId };
   if (destination.kind === "browser")
     return { sessionId: destination.sessionId, tabId: destination.tabId };
   const kind = destination.kind === "phone" ? { phone: true } : { appKey: destination.appKey };
@@ -103,6 +124,7 @@ function targetParams(destination: WorkspaceSurfaceDestination): SurfacesTarget 
 
 /** The parts of a route that name what it opens. */
 interface TargetFields {
+  readonly appId?: string | undefined;
   readonly appKey?: string | undefined;
   readonly computerSessionId?: string | undefined;
   readonly generation?: number | undefined;
@@ -116,6 +138,10 @@ interface TargetFields {
 
 /** What a route names, or null for one that names nothing (a previous release's grid). */
 export function routeDestination(route: TargetFields): WorkspaceSurfaceDestination | null {
+  if (route.appId !== undefined)
+    return AppIdSchema.safeParse(route.appId).success
+      ? { appId: route.appId, kind: "opensteer-app" }
+      : null;
   if (route.sessionId !== undefined && route.tabId !== undefined) {
     return { kind: "browser", sessionId: route.sessionId, tabId: route.tabId };
   }
@@ -147,6 +173,7 @@ export function paramsDestination(params: unknown): WorkspaceSurfaceDestination 
   const generation = params["generation"];
   const windowId = params["windowId"];
   return routeDestination({
+    appId: text("appId"),
     appKey: text("appKey"),
     computerSessionId: text("computerSessionId"),
     generation: typeof generation === "number" ? generation : undefined,

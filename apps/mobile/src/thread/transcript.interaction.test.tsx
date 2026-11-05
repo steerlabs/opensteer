@@ -21,7 +21,13 @@ import {
 import { mockComputerUseToolRefs, mockComputerUseTurn } from "@opensteer/client/mock";
 import { MockHostClient } from "@opensteer/client/mock";
 import { BrowserSessionIdSchema, ThreadIdSchema } from "@opensteer/core";
-import { TranscriptSurfacesContext, TracePlace, type TranscriptSurfaces } from "./surface-chips.js";
+import {
+  TranscriptAppTabsContext,
+  TranscriptSurfacesContext,
+  TracePlace,
+  type TranscriptAppTabs,
+  type TranscriptSurfaces,
+} from "./surface-chips.js";
 import { TranscriptGroupRow, replyActivityKeys } from "./transcript.js";
 import { AppCard } from "./app-card.js";
 import { TranscriptHostClientContext } from "./attachment-views.js";
@@ -68,14 +74,10 @@ vi.mock("react-native-webview", () => ({
     );
   },
 }));
-vi.mock("react-native-safe-area-context", () => ({
-  SafeAreaView: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-}));
 vi.mock("react-native", () => ({
   Platform: { OS: "ios", Version: "26" },
   Linking: { openURL: vi.fn(async () => undefined) },
   ActivityIndicator: () => <span>Loading app</span>,
-  Modal: ({ children }: { children: ReactNode }) => <section role="dialog">{children}</section>,
   View: ({
     children,
     accessibilityLabel,
@@ -135,6 +137,16 @@ vi.mock("../ui/motion.js", () => ({ appear: undefined, exit: undefined }));
 vi.mock("../ui/sheet.js", () => ({ Sheet: () => null }));
 vi.mock("../ui/primitives.js", () => ({
   AppText: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
+  Notice: (props: {
+    action: { label: string; onPress: () => void };
+    detail: string;
+    title: string;
+  }) => (
+    <div role="alert">
+      {props.title}: {props.detail}
+      <button onClick={props.action.onPress}>{props.action.label}</button>
+    </div>
+  ),
   StatusDot: () => null,
   TypingDots: () => null,
   monoFontFamily: "monospace",
@@ -1023,10 +1035,129 @@ it("renders published apps in isolated native WebViews, caps inline height and r
     );
     expect(container.textContent).not.toContain("Could not load this app");
     expect(frame()).not.toBeNull();
-    await act(async () => press(container, "Open"));
-    expect(container.querySelector('[role="dialog"] [data-app-webview]')).not.toBeNull();
-    expect(read).toHaveBeenCalledTimes(3);
+    expect(read).toHaveBeenCalledTimes(2);
   } finally {
     client.dispose();
   }
+});
+
+/*
+ * An app is one live copy on a client. What can go wrong: Open waits on the
+ * Host before the page appears; the card keeps its WebView while the tab has
+ * one too; closing the tab leaves the card without its app; a Host that refuses
+ * the tab leaves the card dead, or the person on a page for a tab that never was.
+ */
+describe("an app's card and its tab", () => {
+  const appId = "app_11111111-1111-4111-8111-111111111111";
+  async function mount(openAppTab: (appId: string) => Promise<void>) {
+    const client = new MockHostClient();
+    const tabRow = {
+      appId,
+      latestVersion: 1,
+      openedAt: new Date().toISOString(),
+      threadId: createId("thread"),
+      title: "Budget",
+      workspaceId: createId("workspace"),
+    };
+    let snapshot = client.getSnapshot();
+    const listeners = new Set<() => void>();
+    const publish = (appTabs: readonly (typeof tabRow)[]) => {
+      snapshot = { ...snapshot, appTabs };
+      for (const listener of listeners) listener();
+    };
+    vi.spyOn(client, "subscribe").mockImplementation((listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    });
+    vi.spyOn(client, "getSnapshot").mockImplementation(() => snapshot);
+    const view = vi.spyOn(client, "viewApp").mockImplementation(async () => ({
+      app: {
+        id: appId,
+        workspaceId: tabRow.workspaceId,
+        threadId: tabRow.threadId,
+        runId: createId("run"),
+        title: "Budget",
+        latestVersion: 1,
+        createdAt: tabRow.openedAt,
+        updatedAt: tabRow.openedAt,
+      },
+      url: `https://host.test/v1/apps/${appId}/dark/${"a".repeat(43)}/`,
+    }));
+    const open = vi.spyOn(client, "openAppTab").mockImplementation(openAppTab);
+    const tabs: TranscriptAppTabs = { leave: vi.fn(), open: vi.fn() };
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    roots.push(root);
+    await act(async () =>
+      root.render(
+        <TranscriptHostClientContext value={client}>
+          <TranscriptAppTabsContext value={tabs}>
+            <AppCard
+              entry={{
+                appId,
+                id: "app:event",
+                createdAt: tabRow.openedAt,
+                kind: "app",
+                title: "Budget",
+                version: 1,
+                runId: createId("run"),
+              }}
+            />
+          </TranscriptAppTabsContext>
+        </TranscriptHostClientContext>,
+      ),
+    );
+    return { client, container, open, publish, tabRow, tabs, view };
+  }
+  const frame = (container: HTMLElement) => container.querySelector("[data-app-webview]");
+
+  it("goes to the tab without waiting for the Host, runs no copy of its own, and comes back when it closes", async () => {
+    const answer = Promise.withResolvers<void>();
+    const f = await mount(() => answer.promise);
+    try {
+      expect(frame(f.container)).not.toBeNull();
+      await act(async () => press(f.container, "Open"));
+      expect(f.open).toHaveBeenCalledWith(appId);
+      expect(f.tabs.open).toHaveBeenCalledWith(appId);
+
+      await act(async () => f.publish([f.tabRow]));
+      expect(frame(f.container)).toBeNull();
+      expect(f.view).toHaveBeenCalledTimes(1);
+      expect(f.container.textContent).toContain("Open in Tabs");
+      await act(async () => press(f.container, "Open in Tabs"));
+      expect(f.tabs.open).toHaveBeenCalledTimes(2);
+      expect(f.open).toHaveBeenCalledTimes(1);
+
+      await act(async () => f.publish([]));
+      expect(frame(f.container)).not.toBeNull();
+      expect(f.container.textContent).not.toContain("Open in Tabs");
+      await act(async () => answer.resolve());
+      expect(f.tabs.leave).not.toHaveBeenCalled();
+    } finally {
+      f.client.dispose();
+    }
+  });
+
+  it("says so when the Host refuses the tab, takes the page back and can try again", async () => {
+    const f = await mount(async () => {
+      throw new Error("This Host cannot open app tabs.");
+    });
+    try {
+      await act(async () => press(f.container, "Open"));
+      expect(f.tabs.leave).toHaveBeenCalledWith(appId);
+      expect(f.container.querySelector('[role="alert"]')?.textContent).toContain(
+        "This Host cannot open app tabs.",
+      );
+      expect(frame(f.container)).not.toBeNull();
+
+      f.open.mockImplementation(async () => undefined);
+      await act(async () => press(f.container, "Try again"));
+      expect(f.open).toHaveBeenCalledTimes(2);
+      expect(f.tabs.open).toHaveBeenCalledTimes(2);
+      expect(f.container.querySelector('[role="alert"]')).toBeNull();
+    } finally {
+      f.client.dispose();
+    }
+  });
 });
