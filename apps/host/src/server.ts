@@ -353,6 +353,7 @@ export interface HostServerDependencies {
   readonly attachments: AttachmentService;
   readonly apps: AppService;
   readonly appOriginSigningKey: Uint8Array;
+  readonly appRealOrigins: boolean;
   readonly requestResponseVault: RequestResponseVault;
   /** Present when account attachment uses adoption. */
   readonly accountAdoption?:
@@ -446,6 +447,7 @@ export async function createHostServer(
     identity: dependencies.authenticator.identity,
     signingKey: dependencies.appOriginSigningKey,
     canonicalOrigin: dependencies.discovery.document.canonicalOrigin,
+    realOrigins: dependencies.appRealOrigins,
   });
   appGateway.installHttp(app);
   app.addHook("onRequest", rejectDuplicateCredentialHeaders);

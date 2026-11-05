@@ -26,7 +26,7 @@ export function useAppView(
   );
   const [result, setResult] = useState<{
     key: object;
-    view?: { app: OpensteerApp; url: string };
+    view?: { app: OpensteerApp; url: string; sessionId?: string };
     failed?: boolean;
   } | null>(null);
   useEffect(() => {
@@ -40,6 +40,7 @@ export function useAppView(
             view:
               previous?.key === key &&
               previous.view &&
+              previous.view.sessionId === view.sessionId &&
               isAppOriginUrl(view.url) &&
               isAppOriginUrl(previous.view.url) &&
               new URL(view.url).origin === new URL(previous.view.url).origin

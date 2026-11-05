@@ -95,7 +95,7 @@ import {
 } from "./supervisor/local-runner-service.js";
 import { DesktopLocalRunnerTargetResolver } from "./supervisor/local-runner-authority.js";
 import { OpenAtLoginService, shouldOpenDesktopWindowAtLaunch } from "./supervisor/open-at-login.js";
-import { DesktopAppOriginPolicy } from "./app/navigation-policy.js";
+import { attachedHostOrigin, DesktopAppOriginPolicy } from "./app/navigation-policy.js";
 import { DesktopHostTransport } from "./connections/host-transport.js";
 import { HostSessionExchange } from "@opensteer/client/auth";
 import { AccountBrokeredHostSessions, HostSession } from "@opensteer/client/auth";
@@ -312,14 +312,9 @@ async function runDesktop(
     appOriginPolicy,
     usbDevices,
     downloads,
-    async () => {
-      try {
-        return (await hostTransport.current()).resolved.origin;
-      } catch {
-        return null;
-      }
-    },
+    () => attachedHostOrigin(hostTransport),
   );
+  hostTransport.subscribe(() => appOriginPolicy.setAttachedHost(null));
   const detachUsbDevices = usbDevices.attach(session.defaultSession);
 
   let fatal = false;

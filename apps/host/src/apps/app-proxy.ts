@@ -18,6 +18,14 @@ export function appOriginHeaders(mode: AppOriginMode): Record<string, string> {
   headers["referrer-policy"] = "same-origin";
   return headers;
 }
+/** Cloudflare obeys these over `Cache-Control`, and it keys its cache on the Connect URL. */
+const appEdgeCacheHeaders = [
+  "cache-tag",
+  "cdn-cache-control",
+  "cloudflare-cdn-cache-control",
+  "surrogate-control",
+  "surrogate-key",
+];
 /** The Connect edge would otherwise cache static files and serve them with no authorization. */
 function appOriginCacheControl(value: string | undefined): string {
   const directives = (value ?? "no-cache")
@@ -73,8 +81,8 @@ export function appOriginResponseHeaders(
     ...appProxyHeaders(headers),
     ...appOriginHeaders(mode),
   };
-  delete outgoing["clear-site-data"];
-  delete outgoing["x-frame-options"];
+  for (const name of ["clear-site-data", "x-frame-options", ...appEdgeCacheHeaders])
+    delete outgoing[name];
   const cookies = (headers["set-cookie"] ?? []).flatMap((value) => {
     const rewritten = appOriginSetCookie(value);
     return rewritten ? [rewritten] : [];

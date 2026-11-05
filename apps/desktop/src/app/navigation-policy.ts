@@ -1,6 +1,19 @@
 import { isAppNavigation, isAppOriginUrl } from "@opensteer/shared/appFrame";
 import { isPublishedAppUrl } from "./published-app-protocol.js";
 
+/** A lookup that finishes after a re-attachment speaks for nothing. */
+export async function attachedHostOrigin(transport: {
+  current(): Promise<{ readonly resolved: { readonly key: string; readonly origin: string } }>;
+  currentKey(): string | null;
+}): Promise<string | null> {
+  try {
+    const { resolved } = await transport.current();
+    return resolved.key === transport.currentKey() ? resolved.origin : null;
+  } catch {
+    return null;
+  }
+}
+
 export class DesktopAppOriginPolicy {
   #host: URL | null = null;
 

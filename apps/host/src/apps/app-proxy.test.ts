@@ -6,6 +6,21 @@ import { expect, it } from "vitest";
 import { closeHttpServerNow } from "@opensteer/shared/httpServer";
 import { appOriginResponseHeaders, appRequestBodyMaxBytes, requestAppHttp } from "./app-proxy.js";
 
+it("drops the headers that would make the Connect edge cache an app response", () => {
+  const headers = appOriginResponseHeaders(
+    {
+      "content-type": "text/javascript",
+      "cloudflare-cdn-cache-control": "public, max-age=3600",
+      "cdn-cache-control": "public, max-age=3600",
+      "surrogate-control": "max-age=3600",
+      "surrogate-key": "app",
+      "cache-tag": "app",
+    },
+    { origin: "https://app.test", parents: [] },
+  );
+  expect(Object.keys(headers).filter((name) => /cdn|surrogate|cache-tag/u.test(name))).toEqual([]);
+});
+
 it.each([
   [undefined, "private, no-cache"],
   ["public, max-age=60, s-maxage=600", "private, max-age=60"],

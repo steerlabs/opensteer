@@ -45,7 +45,9 @@ Web and desktop keep their iframe, mobile keeps its WebView, and an app's frame 
 
 The [gateway](../apps/host/src/apps/app-gateway.ts) answers every request on an app origin ahead of
 all Host routes and never falls through, because a Host route on an app origin would hand app code
-the Host's API. The `x-opensteer-app-origin` header needs no secret, since a request also needs a
+the Host's API. The router bypasses Cloudflare's cache and the gateway marks responses `private`
+and removes CDN cache headers: the edge keys on the Connect URL, so a cached app file could otherwise
+be served without authorization, or as the Host's own bundle. The `x-opensteer-app-origin` header needs no secret, since a request also needs a
 ticket or signed cookie. Desktop admits only the attached Deployment's app origins, and its main
 renderer keeps no network access.
 
@@ -78,9 +80,10 @@ cached, but gets no new data.
 
 ## Capability path
 
-Routes with no per-app hostname (private networks, self-hosted servers), Safari on the same computer
+Routes with no per-app hostname (private networks), shared Deployments, Safari on the same computer
 (WebKit refuses `Secure` cookies on `*.localhost`) and previous releases use
-`/v1/apps/<id>/<theme>/<token>/`. Its document is on the Host's own origin, so the frame and every
+`/v1/apps/<id>/<theme>/<token>/`. A real origin holds one person's app logins and storage on a
+device, so a Deployment people share needs an origin per person before it can have real origins. Its document is on the Host's own origin, so the frame and every
 response enforce an opaque-origin sandbox, and it must never get `allow-same-origin`. That keeps
 Opensteer cookies, storage and the parent document out of reach, and leaves the app without browser
 storage. The [proxy](../apps/host/src/apps/app-proxy.ts) strips credentials and cookies both ways.

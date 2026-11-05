@@ -152,6 +152,7 @@ async function fixture() {
       identity: { isSessionCurrent: async (sessionId) => !ended.has(sessionId) },
       signingKey,
       canonicalOrigin: "http://127.0.0.1:1234",
+      realOrigins: true,
     });
   const gateway = makeGateway();
   gateway.installHttp(app);
@@ -448,6 +449,17 @@ it("enforces Fetch Metadata and Origin isolation and emits Connect and Safari-aw
   } finally {
     await f.close();
   }
+});
+
+it("gives a shared Deployment no real origin, which would hold one person's logins", () => {
+  const gateway = new AppGateway({
+    apps: { get: vi.fn(), response: vi.fn(), connect: vi.fn() },
+    identity: { isSessionCurrent: async () => true },
+    signingKey,
+    canonicalOrigin: "http://127.0.0.1:1234",
+    realOrigins: false,
+  });
+  expect(gateway.entryUrl(appId, session, "light", { host: "127.0.0.1:1234" })).toBeUndefined();
 });
 
 it("streams at the upload cap and preserves loopback redirects", async () => {

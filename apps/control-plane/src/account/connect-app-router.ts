@@ -16,6 +16,7 @@ export default {
     const headers = new Headers(request.headers);
     headers.set(appOriginHeader, url.origin);
     url.hostname = `connect-${first}-${second}-${third}-${fourth}-${fifth}.${domain}`;
-    return fetch(new Request(url, request), { headers, redirect: "manual" });
+    // This URL is also the Host's own, so nothing an app returns may enter the cache under it.
+    return fetch(new Request(url, request), { cache: "no-store", headers, redirect: "manual" });
   },
 };

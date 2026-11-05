@@ -31,6 +31,7 @@ it("sends an app origin to its Deployment's Connect hostname and states the real
   expect(headers.get(appOriginHeader)).toBe(`https://${hostname}`);
   expect(headers.get("cookie")).toBe("__Host-session=one");
   expect(init?.redirect).toBe("manual");
+  expect(init?.cache).toBe("no-store");
   expect(appIdFromHostname(new URL(headers.get(appOriginHeader)!).hostname)).toBe(appId);
 });
 

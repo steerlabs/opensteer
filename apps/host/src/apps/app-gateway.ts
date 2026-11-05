@@ -53,6 +53,8 @@ interface AppGatewayOptions {
   identity: Pick<IdentityService, "isSessionCurrent">;
   signingKey: Uint8Array;
   canonicalOrigin: string;
+  /** A real origin holds one person's logins and storage, so shared Deployments have none. */
+  realOrigins: boolean;
 }
 
 export class AppGateway {
@@ -69,6 +71,7 @@ export class AppGateway {
     theme: AppTheme,
     headers: Readonly<Record<string, string | readonly string[] | undefined>>,
   ): string | undefined {
+    if (!this.#options.realOrigins) return undefined;
     const canonical = new URL(this.#options.canonicalOrigin);
     const host = typeof headers.host === "string" ? headers.host : "";
     const connect =
@@ -141,8 +144,6 @@ export class AppGateway {
           return;
         }
         const headers = { ...result.headers, ...appOriginHeaders(mode) };
-        delete headers["clear-site-data"];
-        delete headers["x-frame-options"];
         if (cookie) {
           headers["set-cookie"] = [cookie, ...[result.headers["set-cookie"] ?? []].flat()];
         }

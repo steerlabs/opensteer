@@ -393,9 +393,11 @@ it("retains a running origin across reconnect tickets and refreshes it on every 
     };
   });
   let ticket = 0;
+  let sessionId = "first-session";
   const read = vi.spyOn(client, "viewApp").mockImplementation(async () => ({
     app: metadata,
     url: `${origin}/?opensteer-ticket=${++ticket}`,
+    sessionId,
   }));
   let state: ReturnType<typeof useAppView>;
   let id = appId;
@@ -415,6 +417,17 @@ it("retains a running origin across reconnect tickets and refreshes it on every 
     expect(container.textContent).toBe(initial);
   }
   expect(read).toHaveBeenCalledTimes(3);
+  // Recovery can replace the session silently, and the running app's cookie dies with the old one.
+  sessionId = "recovered-session";
+  await act(async () => {
+    snapshot = { ...snapshot, connection: "connecting" };
+    for (const listener of listeners) listener();
+  });
+  expect(container.textContent).not.toBe(initial);
+  await act(async () => {
+    snapshot = { ...snapshot, connection: "connected" };
+    for (const listener of listeners) listener();
+  });
   for (const change of [
     () => {
       snapshot = { ...snapshot, appVersions: { [appId]: 2 } };

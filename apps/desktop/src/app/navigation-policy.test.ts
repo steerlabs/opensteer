@@ -1,9 +1,27 @@
 import { describe, expect, it } from "vitest";
 import {
+  attachedHostOrigin,
   DesktopAppOriginPolicy,
   HostOriginPolicy,
   ServiceOriginPolicy,
 } from "./navigation-policy.js";
+
+it("lets only the current attachment answer an attachment lookup", async () => {
+  type Selected = { readonly resolved: { readonly key: string; readonly origin: string } };
+  let key = "first";
+  let finish!: (selected: Selected) => void;
+  const transport = {
+    current: () => new Promise<Selected>((resolve) => (finish = resolve)),
+    currentKey: () => key,
+  };
+  const late = attachedHostOrigin(transport);
+  key = "second";
+  finish({ resolved: { key: "first", origin: "https://first.test" } });
+  await expect(late).resolves.toBeNull();
+  const current = attachedHostOrigin(transport);
+  finish({ resolved: { key: "second", origin: "https://second.test" } });
+  await expect(current).resolves.toBe("https://second.test");
+});
 
 describe("DesktopAppOriginPolicy", () => {
   it("allows only bundled app documents and inert local resources", () => {

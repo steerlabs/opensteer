@@ -1127,7 +1127,11 @@ export interface HostClient {
     appId: string,
     theme: "light" | "dark",
     signal?: AbortSignal,
-  ): Promise<{ readonly app: import("@opensteer/core").OpensteerApp; readonly url: string }>;
+  ): Promise<{
+    readonly app: import("@opensteer/core").OpensteerApp;
+    readonly url: string;
+    readonly sessionId?: string;
+  }>;
   getAttachment(attachmentId: string): Promise<Attachment>;
   readAttachment(attachmentId: string, signal?: AbortSignal): Promise<Blob>;
   discardAttachment(attachmentId: string): Promise<void>;

@@ -1743,7 +1743,11 @@ export class HttpHostClient {
     const view = unwrapRpcResult(
       await this.rpc["apps.view"]({ appId, theme }, signal ? { signal } : undefined),
     );
-    return { app: view.app, url: view.entryUrl ?? this.#url(view.path) };
+    return {
+      app: view.app,
+      url: view.entryUrl ?? this.#url(view.path),
+      ...(view.sessionId ? { sessionId: view.sessionId } : {}),
+    };
   }
 
   async getAttachment(attachmentId: string): Promise<Attachment> {

@@ -30,6 +30,7 @@ import {
   type RunnerId,
   type UserId,
   type Workspace,
+  deploymentSupportsSharing,
 } from "@opensteer/core";
 import {
   AccountDirectoryStore,
@@ -2397,6 +2398,8 @@ export async function createHostRuntime(
         appOriginSigningKey: createHmac("sha256", config.authSecret)
           .update("opensteer-app-cookie-v1")
           .digest(),
+        appRealOrigins:
+          !deploymentSupportsSharing(config.workspace.shape) || config.mode === "development",
         liveRuns,
         machineFullDiskAccess,
         requestResponseVault: integrationVault,
