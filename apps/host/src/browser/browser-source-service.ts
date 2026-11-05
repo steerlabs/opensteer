@@ -226,7 +226,7 @@ export class BrowserSourceService {
       now: this.#now,
       onError: this.#onError,
       probe: (ownerId, site) => this.#passwords.probe(ownerId, site),
-      wake: (offer) => this.#wakeForSavedLogin(offer),
+      wake: (offer, found) => this.#wakeForSavedLogin(offer, found),
     });
     this.#heartbeat = setInterval(() => {
       void this.#pulse().catch(() => {});
@@ -842,21 +842,30 @@ export class BrowserSourceService {
    * Wakes the agent an offer belongs to, unless the person already said no.
    * Runs in the Chrome Request's turn, so a decline or an Allow lands first.
    */
-  #wakeForSavedLogin(offer: PasswordsOffer): Promise<PasswordsOfferOutcome> {
+  #wakeForSavedLogin(
+    offer: PasswordsOffer,
+    found: readonly PasswordsOffer[],
+  ): Promise<PasswordsOfferOutcome> {
     const { requestId } = offer;
     return requestId === null
-      ? this.#wakeIfWanted(offer)
-      : this.#inTurn(`request\0${requestId}`, () => this.#wakeIfWanted(offer));
+      ? this.#wakeIfWanted(offer, found)
+      : this.#inTurn(`request\0${requestId}`, () => this.#wakeIfWanted(offer, found));
   }
 
-  async #wakeIfWanted(offer: PasswordsOffer): Promise<PasswordsOfferOutcome> {
+  async #wakeIfWanted(
+    offer: PasswordsOffer,
+    found: readonly PasswordsOffer[],
+  ): Promise<PasswordsOfferOutcome> {
     const request = offer.requestId === null ? null : await this.#requests.get(offer.requestId);
     if (offer.requestId !== null && (!request || !leavesOfferOpen(request))) return "ended";
     if (await this.#stoppedByPerson(offer.threadId)) return "ended";
     // The Run's outcomes arrive together: a newer Run now would release them early.
+    // Chrome Requests a saved login just replaced aren't waiting on anyone anymore.
     if (
       await this.#requests.hasPendingDurableRequest({
-        except: offer.requestId,
+        except: found.flatMap(({ requestId, runId }) =>
+          runId === offer.runId && requestId !== null ? [requestId] : [],
+        ),
         originatingRunId: offer.runId,
       })
     ) {

@@ -2536,9 +2536,9 @@ export class RequestStore {
     return row ? requestFromRow(row) : null;
   }
 
-  /** Whether a durable Request from this Run, other than `except`, still waits for someone. */
+  /** Whether a durable Request from this Run, outside `except`, still waits for someone. */
   async hasPendingDurableRequest(input: {
-    readonly except: RequestId | null;
+    readonly except: readonly RequestId[];
     readonly originatingRunId: RunId;
   }): Promise<boolean> {
     let pending = this.#database
@@ -2547,7 +2547,7 @@ export class RequestStore {
       .where("originatingRunId", "=", input.originatingRunId)
       .where("mode", "=", "durable")
       .where("status", "=", "pending");
-    if (input.except !== null) pending = pending.where("id", "!=", input.except);
+    if (input.except.length > 0) pending = pending.where("id", "not in", input.except);
     return (await pending.limit(1).executeTakeFirst()) !== undefined;
   }
 

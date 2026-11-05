@@ -57,6 +57,7 @@ public enum Copy {
   public static let confirming = "Confirm with Touch ID or your Mac password."
   public static let addPasswords = "Add your passwords"
   public static let addPassword = "Add One by Hand…"
+  public static let addCard = "Add a Card…"
   public static let notNow = "Not Now"
   public static let backToOpensteer = "Back to Opensteer"
   public static func saved(_ count: Int) -> String {

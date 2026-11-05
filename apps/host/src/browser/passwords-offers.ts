@@ -29,6 +29,8 @@ export interface PasswordsOffer {
   readonly threadId: ThreadId;
 }
 
+type Offer = PasswordsOffer & { readonly expiresAt: number };
+
 /** Whether an offer that found its login is finished with, or waits for the next sweep. */
 export type PasswordsOfferOutcome = "ended" | "held";
 
@@ -67,11 +69,14 @@ export function passwordsLoginSavedMessage(offer: PasswordsOffer): string {
  * them, and the result's guidance still gets the agent there on the next word.
  */
 export class PasswordsOffers {
-  readonly #offers = new Map<string, PasswordsOffer & { readonly expiresAt: number }>();
+  readonly #offers = new Map<string, Offer>();
   readonly #now: () => number;
   readonly #onError: (error: unknown) => void;
   readonly #probe: (ownerId: UserId, site: string) => Promise<PasswordSignInAvailability>;
-  readonly #wake: (offer: PasswordsOffer) => Promise<PasswordsOfferOutcome>;
+  readonly #wake: (
+    offer: PasswordsOffer,
+    found: readonly PasswordsOffer[],
+  ) => Promise<PasswordsOfferOutcome>;
   #sweeping = false;
   #timer: NodeJS.Timeout | undefined;
 
@@ -79,7 +84,11 @@ export class PasswordsOffers {
     readonly now: () => number;
     readonly onError: (error: unknown) => void;
     readonly probe: (ownerId: UserId, site: string) => Promise<PasswordSignInAvailability>;
-    readonly wake: (offer: PasswordsOffer) => Promise<PasswordsOfferOutcome>;
+    /** `found` is every offer this pass found a login for, `offer` included. */
+    readonly wake: (
+      offer: PasswordsOffer,
+      found: readonly PasswordsOffer[],
+    ) => Promise<PasswordsOfferOutcome>;
   }) {
     this.#now = options.now;
     this.#onError = options.onError;
@@ -111,17 +120,32 @@ export class PasswordsOffers {
     this.#schedule();
   }
 
-  /** One pass. A pass still running covers this one. */
+  /**
+   * One pass. A pass still running covers this one. Every probe comes before
+   * any wake, because one import can answer several sign-ins at once, and each
+   * has to know the others no longer wait on the person.
+   */
   async sweep(): Promise<void> {
     if (this.#sweeping) return;
     this.#sweeping = true;
     try {
-      for (const [key, offer] of this.#offers) {
-        await this.#check(key, offer).catch((error: unknown) => {
-          // A Thread that can't take input now never will: a finished task, say.
-          if (error instanceof OpensteerError && !error.retryable) this.#offers.delete(key);
-          else this.#onError(error);
-        });
+      const found = await this.#withLogins();
+      for (const [key, offer] of found) {
+        // A newer sign-in replaced or ended this offer since its probe.
+        if (this.#offers.get(key) !== offer) continue;
+        await this.#wake(
+          offer,
+          found.map(([, each]) => each),
+        ).then(
+          (outcome) => {
+            if (outcome === "ended" && this.#offers.get(key) === offer) this.#offers.delete(key);
+          },
+          (error: unknown) => {
+            // A Thread that can't take input now never will: a finished task, say.
+            if (error instanceof OpensteerError && !error.retryable) this.#offers.delete(key);
+            else this.#onError(error);
+          },
+        );
       }
     } finally {
       this.#sweeping = false;
@@ -134,16 +158,20 @@ export class PasswordsOffers {
     this.#schedule();
   }
 
-  async #check(key: string, offer: PasswordsOffer & { readonly expiresAt: number }): Promise<void> {
-    if (this.#now() >= offer.expiresAt) {
-      this.#offers.delete(key);
-      return;
+  async #withLogins(): Promise<readonly (readonly [string, Offer])[]> {
+    const found: (readonly [string, Offer])[] = [];
+    for (const [key, offer] of this.#offers) {
+      if (this.#now() >= offer.expiresAt) {
+        this.#offers.delete(key);
+        continue;
+      }
+      const availability = await this.#probe(offer.ownerId, offer.site).catch((error: unknown) => {
+        this.#onError(error);
+        return "unavailable" as const;
+      });
+      if (availability === "has-login") found.push([key, offer]);
     }
-    if ((await this.#probe(offer.ownerId, offer.site)) !== "has-login") return;
-    // A newer sign-in replaced or ended this offer during the probe.
-    if (this.#offers.get(key) !== offer) return;
-    if ((await this.#wake(offer)) === "ended" && this.#offers.get(key) === offer)
-      this.#offers.delete(key);
+    return found;
   }
 
   #schedule(): void {

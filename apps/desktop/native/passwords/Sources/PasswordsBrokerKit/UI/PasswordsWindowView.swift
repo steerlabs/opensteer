@@ -138,16 +138,33 @@ private struct AddPasswordsView: View {
 
   var body: some View {
     CenteredScreen(symbol: "key.fill", tint: .accentColor, title: Copy.addPasswords, lead: Copy.importWhere) {
+      // Off is the one setting that can outlive the last saved login, and it needs a way back.
+      if !model.agentSignIns { AgentSignInsToggle(model: model) }
       SourceList { source in Task { await model.importPasswords(from: source) } }
       if let message = model.message {
         Text(message).foregroundStyle(.orange)
       }
       HStack {
         Button(Copy.addPassword) { Task { await model.addPassword() } }
+        Button(Copy.addCard) { Task { await model.addCard() } }
         Spacer()
         Button(Copy.notNow) { model.leave() }
       }
     }
+  }
+}
+
+private struct AgentSignInsToggle: View {
+  @ObservedObject var model: PasswordsWindowModel
+
+  var body: some View {
+    Toggle(isOn: Binding(get: { model.agentSignIns }, set: { on in Task { await model.setAgentSignIns(on) } })) {
+      VStack(alignment: .leading, spacing: 2) {
+        Text(Copy.agentSignIns)
+        Text(Copy.agentSignInsDetail).font(.callout).foregroundStyle(.secondary)
+      }
+    }
+    .toggleStyle(AccentSwitchStyle())
   }
 }
 
@@ -158,7 +175,7 @@ private struct FilledBar: View {
   var body: some View {
     HStack(spacing: 8) {
       Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-      if case .shown(let all) = model.logins { Text(Copy.saved(all.count)) }
+      if case .shown(let all) = model.logins, !all.isEmpty { Text(Copy.saved(all.count)) }
       Spacer()
       Button(Copy.backToOpensteer) { model.leave() }
         .buttonStyle(.borderedProminent)
@@ -214,13 +231,7 @@ private struct ReadyView: View {
   var body: some View {
     Form {
       Section {
-        Toggle(isOn: Binding(get: { model.agentSignIns }, set: { on in Task { await model.setAgentSignIns(on) } })) {
-          VStack(alignment: .leading, spacing: 2) {
-            Text(Copy.agentSignIns)
-            Text(Copy.agentSignInsDetail).font(.callout).foregroundStyle(.secondary)
-          }
-        }
-        .toggleStyle(AccentSwitchStyle())
+        AgentSignInsToggle(model: model)
       }
 
       Section {

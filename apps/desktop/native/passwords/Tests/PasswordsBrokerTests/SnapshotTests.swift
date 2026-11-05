@@ -85,6 +85,9 @@ final class SnapshotTests: BrokerTestCase {
     try render(PasswordsWindowView(model: model), "window-1-set-up", size: size)
     await model.setUp()
     try render(PasswordsWindowView(model: model), "window-2-add-passwords", size: size)
+    await model.setAgentSignIns(false)
+    try render(PasswordsWindowView(model: model), "window-2a-add-passwords-off", size: size)
+    await model.setAgentSignIns(true)
     _ = await model.add(
       website: "github.com", username: "sam@example.com", password: "synthetic-1", twoFactor: "",
       label: "Work")

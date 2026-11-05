@@ -23,6 +23,7 @@ function watch(options: { wake?: () => Promise<PasswordsOfferOutcome> } = {}) {
     beforeAnswer: () => {},
     clock: 0,
     errors: [] as unknown[],
+    found: [] as number[],
     woken: [] as PasswordsOffer[],
   };
   const offers = new PasswordsOffers({
@@ -32,8 +33,9 @@ function watch(options: { wake?: () => Promise<PasswordsOfferOutcome> } = {}) {
       state.beforeAnswer();
       return state.answer;
     },
-    wake: async (offer) => {
+    wake: async (offer, found) => {
       state.woken.push(offer);
+      state.found.push(found.length);
       return options.wake ? await options.wake() : "ended";
     },
   });
@@ -86,6 +88,15 @@ describe("PasswordsOffers", () => {
     await offers.sweep();
     await offers.sweep();
     expect(state.woken.map(({ id }) => id)).toEqual([state.woken[0]?.id, state.woken[0]?.id]);
+    offers.close();
+  });
+
+  it("probes everything before waking, so each wake knows what else was answered", async () => {
+    const { input, offers, state } = watch();
+    offers.note(input, offered);
+    offers.note({ ...input, site: "https://ramp.com" }, { ...offered, site: "https://ramp.com" });
+    await offers.sweep();
+    expect(state.found).toEqual([2, 2]);
     offers.close();
   });
 

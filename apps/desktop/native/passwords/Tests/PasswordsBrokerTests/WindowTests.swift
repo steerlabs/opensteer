@@ -100,12 +100,17 @@ final class WindowTests: BrokerTestCase {
     XCTAssertEqual(window.logins, .hidden)
   }
 
-  func testAVaultWithOnlyACardIsNotEmpty() async throws {
+  /// Cards are never imported, so the first step is how a person with only a card gets here.
+  func testTheFirstCardNeedsNoPasswordFirst() async throws {
     let window = model()
     await window.setUp()
-    try await broker.saveCard(
-      CardDraft(number: "4242424242424242", expiryMonth: 3, expiryYear: 2030, cvc: "123"))
-    XCTAssertEqual(window.screen, .ready)
+    window.windowClosed()
+    await window.addCard()
+    XCTAssertEqual(window.sheet, .addCard)
+    let saved = await window.saveCard(
+      CardDraft(number: "4242424242424242", expiryMonth: 3, expiryYear: 2030, cvc: "123"), id: nil)
+    XCTAssertTrue(saved)
+    XCTAssertEqual(window.screen, .ready, "a card is enough to not be empty")
   }
 
   func testCancelledSetupStaysOnSetUp() async throws {

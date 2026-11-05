@@ -1555,6 +1555,8 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     it("holds the wake until the Run's other Requests settle", async () => {
       const { ready, result } = await offered(null);
       if (result.status !== "pending") throw new Error("Expected pending");
+      // Passwords can't help this one, so it waits on the person and on nothing else.
+      ready.connection.passwords = "unavailable";
       const other = await service.agentSignIn({
         ...ready.agent,
         callId: randomUUID(),
@@ -1565,6 +1567,30 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       await service.sweepPasswordsOffers();
       expect(wakes(ready)).toEqual([]);
       expect((await store.requests.get(result.requestId))?.status).toBe("pending");
+
+      await service.respond({
+        decision: { decision: "decline" },
+        ownerId: ready.ownerId,
+        requestId: other.requestId,
+      });
+      await service.sweepPasswordsOffers();
+      expect(wakes(ready)).toHaveLength(1);
+    });
+
+    it("wakes every sign-in one import answers, instead of each waiting on the other", async () => {
+      const { ready, result } = await offered(null);
+      if (result.status !== "pending") throw new Error("Expected pending");
+      const other = await service.agentSignIn({
+        ...ready.agent,
+        callId: randomUUID(),
+        site: "https://other.test",
+      });
+      if (other.status !== "pending") throw new Error("Expected pending");
+      ready.connection.passwords = "has-login";
+      await service.sweepPasswordsOffers();
+      expect(wakes(ready).map((offer) => offer.site)).toEqual([site, "https://other.test"]);
+      expect((await store.requests.get(result.requestId))?.status).toBe("withdrawn");
+      expect((await store.requests.get(other.requestId))?.status).toBe("withdrawn");
     });
 
     it("ends the offer when the sign-in gets further on its own", async () => {

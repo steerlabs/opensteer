@@ -358,6 +358,10 @@ public final class PasswordsWindowModel: ObservableObject {
     if await visitIsLive() { sheet = .add }
   }
 
+  public func addCard() async {
+    if await visitIsLive() { sheet = .addCard }
+  }
+
   private func visitIsLive() async -> Bool {
     if case .hidden = logins { await showPasswords() }
     if case .shown = logins { return true }
