@@ -34,6 +34,7 @@ import {
   RunUsageSchema,
   createId,
   harnessUsageLimitFailureCode,
+  heldToolCallTimeoutMs,
   normalizeToolOutput,
   type HarnessInstanceId,
   type PendingRequest,
@@ -472,6 +473,7 @@ const claudeHarnessCapabilities: HarnessCapabilities = Object.freeze({
     },
   },
   interruption: true,
+  longRequestHold: true,
   // The Claude Agent SDK renders an MCP image content block to the model.
   mcpImageContent: true,
   resume: true,
@@ -1967,7 +1969,7 @@ class ClaudeHarnessSession implements HarnessSession {
       mcpServers: {
         opensteer: {
           alwaysLoad: false,
-          timeout: 120_000,
+          timeout: heldToolCallTimeoutMs,
           headers: { Authorization: `Bearer ${this.#context.agentTools.token}` },
           type: "http",
           url: this.#context.agentTools.url,

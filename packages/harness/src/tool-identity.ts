@@ -17,7 +17,7 @@ export function opensteerToolIdentity(server: unknown, toolName: unknown): ToolI
   return {
     name: String(toolName ?? "unknown"),
     namespace:
-      serverName === "opensteer"
+      serverName === "opensteer" || serverName === "opensteer-direct"
         ? "opensteer"
         : serverName === "opensteer_integrations"
           ? "opensteer.integrations"

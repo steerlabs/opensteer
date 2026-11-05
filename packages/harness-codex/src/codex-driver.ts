@@ -1,3 +1,4 @@
+import { requestToolNames } from "@opensteer/agent-tools";
 import { backgroundLightModels, voiceCallSeed } from "@opensteer/core";
 import { resolveLightModel } from "@opensteer/harness";
 import { startRealtime } from "./voice.js";
@@ -33,6 +34,7 @@ import {
   canonicalModelReference,
   createId,
   harnessUsageLimitFailureCode,
+  heldToolCallTimeoutMs,
   normalizeToolOutput,
   type HarnessInstanceId,
   type ModelSelection,
@@ -264,6 +266,7 @@ const codexHarnessCapabilities: HarnessCapabilities = Object.freeze({
     },
   },
   interruption: true,
+  longRequestHold: true,
   // Codex renders an MCP image content block to the model.
   mcpImageContent: true,
   resume: true,
@@ -3468,15 +3471,19 @@ async function codexThreadRuntimeConfig(
   for (const name of ambientMcpNames) {
     runtimeConfig[codexMcpConfigPath(name, "enabled")] = false;
   }
-  const agentToolNames = context.agentTools.tools;
-  runtimeConfig[codexMcpConfigPath("opensteer", "url")] = context.agentTools.url;
-  runtimeConfig[codexMcpConfigPath("opensteer", "bearer_token_env_var")] =
-    agentToolsTokenEnvironmentVariable;
-  runtimeConfig[codexMcpConfigPath("opensteer", "enabled_tools")] = agentToolNames;
-  runtimeConfig[codexMcpConfigPath("opensteer", "default_tools_approval_mode")] = "approve";
-  runtimeConfig[codexMcpConfigPath("opensteer", "required")] = true;
-  runtimeConfig[codexMcpConfigPath("opensteer", "tool_timeout_sec")] = 120;
-  runtimeConfig[codexMcpConfigPath("opensteer", "enabled")] = true;
+  for (const [name, tools] of codexMcpTools(context.agentTools.tools)) {
+    runtimeConfig[codexMcpConfigPath(name, "url")] = context.agentTools.url;
+    runtimeConfig[codexMcpConfigPath(name, "bearer_token_env_var")] =
+      agentToolsTokenEnvironmentVariable;
+    runtimeConfig[codexMcpConfigPath(name, "enabled_tools")] = tools;
+    runtimeConfig[codexMcpConfigPath(name, "default_tools_approval_mode")] = "approve";
+    runtimeConfig[codexMcpConfigPath(name, "required")] = true;
+    runtimeConfig[codexMcpConfigPath(name, "tool_timeout_sec")] = heldToolCallTimeoutMs / 1_000;
+    runtimeConfig[codexMcpConfigPath(name, "enabled")] = true;
+    if (name === "opensteer-direct") {
+      runtimeConfig[codexMcpConfigPath(name, "omit_tools_from")] = ["code_mode", "deferred"];
+    }
+  }
   for (const tool of ["integration_call", "integration_describe", "computer"]) {
     runtimeConfig[codexMcpConfigPath("opensteer", `tools.${tool}.output_token_limit`)] =
       codexIntegrationOutputTokenLimit;
@@ -3595,6 +3602,15 @@ async function codexSkillRules(
   return [...discovered].map((path) => ({ enabled: expectedPaths.has(path), path }));
 }
 
+function codexMcpTools(tools: readonly string[]): ReadonlyMap<string, readonly string[]> {
+  const requestTools = new Set<string>(requestToolNames);
+  const directTools = tools.filter((tool) => requestTools.has(tool));
+  return new Map([
+    ["opensteer", tools.filter((tool) => !requestTools.has(tool))],
+    ...(directTools.length > 0 ? [["opensteer-direct", directTools] as const] : []),
+  ]);
+}
+
 async function assertCodexMcpBoundary(
   client: CodexStdioClient,
   threadId: string,
@@ -3612,9 +3628,9 @@ async function assertCodexMcpBoundary(
   if (!Array.isArray(response.data) || response.nextCursor !== null) {
     throw protocolError("Codex returned an invalid or truncated MCP server inventory");
   }
-  const expected = new Map<string, ReadonlySet<string>>([
-    ["opensteer", new Set(context.agentTools.tools)],
-  ]);
+  const expected = new Map(
+    [...codexMcpTools(context.agentTools.tools)].map(([name, tools]) => [name, new Set(tools)]),
+  );
   const connected = new Set<string>();
   const unexpected: string[] = [];
   response.data.forEach((value, index) => {

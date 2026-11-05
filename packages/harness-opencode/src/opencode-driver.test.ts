@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  heldToolCallTimeoutMs,
   ModelSelectionSchema,
   createId,
   harnessUsageLimitFailureCode,
@@ -773,11 +774,12 @@ describe("OpenCode sessions", () => {
       paths: [join(fixture.context.threadStateDirectory, "opencode", "skills")],
     });
     const mcp = config.mcp as Record<string, Record<string, unknown>>;
+    expect(fixture.adapter.capabilities.longRequestHold).toBe(true);
     expect(mcp.opensteer).toMatchObject({
       enabled: true,
       headers: { Authorization: "Bearer test-agent-tools-token" },
       oauth: false,
-      timeout: 120_000,
+      timeout: heldToolCallTimeoutMs,
       type: "remote",
       url: "https://host.example/internal/v1/mcp",
     });

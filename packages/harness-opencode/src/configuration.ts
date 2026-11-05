@@ -1,4 +1,4 @@
-import type { ThreadAccessMode, ToolIdentity } from "@opensteer/core";
+import { heldToolCallTimeoutMs, type ThreadAccessMode, type ToolIdentity } from "@opensteer/core";
 import { compatibleEndpointHost, opensteerToolIdentity } from "@opensteer/harness";
 import { opencodeCompatibleProviderId, opencodeCompatibleSourceId } from "./sources.js";
 
@@ -266,7 +266,7 @@ function opencodeMcpServer(plan: OpencodeMcpServerPlan): Record<string, unknown>
     // Without this OpenCode may try to negotiate OAuth against the Opensteer
     // tool endpoint instead of presenting the bearer token it was given.
     oauth: false,
-    timeout: 120_000,
+    timeout: heldToolCallTimeoutMs,
     type: "remote",
     url: plan.url,
   };

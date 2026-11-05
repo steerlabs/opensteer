@@ -207,6 +207,7 @@ const piHarnessCapabilities: HarnessCapabilities = Object.freeze({
     },
   },
   interruption: true,
+  longRequestHold: true,
   // The driver is Pi's MCP client, and it maps an image content block onto the
   // image block a Pi tool result carries, so the model sees the picture.
   mcpImageContent: true,
