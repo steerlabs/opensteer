@@ -31,6 +31,7 @@ function fixture() {
     admittedAt: new Date(),
     status: "running" as const,
     threadStatus: "running" as const,
+    busy: false as const,
     revokedGrants: [],
     events: [],
   };
@@ -42,6 +43,7 @@ function fixture() {
     listAgentHarnessInstancesForUser: vi.fn(async (): Promise<readonly HarnessInstanceRecord[]> => [
       profile,
     ]),
+    openVoiceThread: vi.fn(async () => ({ threadId: call.threadId, events: [] })),
     getHarnessCatalog: vi.fn(async () =>
       HarnessInstanceCatalogSchema.parse({
         driverKind: "codex",
@@ -112,6 +114,29 @@ describe("Host voice Run relay", () => {
       f.context.signal,
     );
   });
+  it("waits for what is finishing on the Voice Thread, then takes it", async () => {
+    const f = fixture();
+    f.store.startVoiceCall.mockResolvedValueOnce({
+      busy: true,
+      revokedGrants: [],
+      events: [],
+    } as never);
+    expect((await f.handlers["voice.start"](f.input, f.context)).ok).toBe(true);
+    expect(f.store.startVoiceCall).toHaveBeenCalledTimes(2);
+  });
+
+  it("creates the Voice Thread for a usable account, and refuses any other", async () => {
+    const f = fixture();
+    const { environmentId, harnessInstanceId } = f.input;
+    expect(
+      await f.handlers["voice.open"]({ environmentId, harnessInstanceId }, f.context),
+    ).toEqual({ ok: true, data: { threadId: f.call.threadId } });
+    f.store.environmentIsAvailableToUser.mockResolvedValueOnce(false);
+    await expect(
+      f.handlers["voice.open"]({ environmentId, harnessInstanceId }, f.context),
+    ).rejects.toMatchObject({ reason: "voice-account-unavailable" });
+  });
+
   it("stops admission on relay failure and never exposes SDP in errors", async () => {
     const f = fixture();
     f.runners.voice.mockRejectedValue(new Error("private-offer"));

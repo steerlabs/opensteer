@@ -2206,7 +2206,6 @@ integration("cross-environment delegation reaches the Runner", () => {
         connection: "connected",
         environments: [],
         homeThreadId: null,
-        voiceThreadId: null,
         network: "online",
         requests: {},
         threads: [],

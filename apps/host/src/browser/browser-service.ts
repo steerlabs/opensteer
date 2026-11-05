@@ -71,6 +71,7 @@ import {
   type BrowserRasterDensity,
   type BrowserRuntimeActivity,
   type BrowserServerMessage,
+  BrowserSessionIdSchema,
   type BrowserSessionId,
   type BrowserSessionOpenerRecord,
   type BrowserSurface,
@@ -909,7 +910,31 @@ export class BrowserService {
     tabId: BrowserSurfaceId,
   ) {
     const restored = await this.#activateWorkspaceTab(input.ownerId, tabId, input);
+    const sessionId = BrowserSessionIdSchema.parse(restored.session.id);
+    const [actor] = await this.#repository.resolvePlaceActors({
+      agentBindingIds: [input.agentBindingId],
+      ownerIds: [input.ownerId],
+    });
+    const data = this.#placeData(sessionId, tabId);
+    if (actor && data) this.#runPlaces.enter(actor.runId, actor.generation, data);
     return { tabId, sessionId: restored.session.id };
+  }
+
+  #placeData(sessionId: BrowserSessionId, surfaceId: BrowserSurfaceId) {
+    const page = this.#brokers.get(sessionId)?.pageOf(surfaceId);
+    if (!page) return null;
+    let site: string | null = null;
+    try {
+      const { origin } = new URL(page.site);
+      site = origin === "null" ? null : origin;
+    } catch {
+      /* A page with no site still has a place. */
+    }
+    return {
+      place: { kind: "browser" as const, sessionId, surfaceId },
+      title: page.title.slice(0, 256),
+      site,
+    };
   }
 
   async #activateWorkspaceTab(
@@ -2447,22 +2472,8 @@ export class BrowserService {
     if (broker.geometryOf(activity.surfaceId) !== activity.geometryRevision)
       activity = { ...activity, pointer: null };
     actor.seq = activity.seq;
-    const page = broker.pageOf(activity.surfaceId);
-    if (page) {
-      const data: EventData<"place.entered"> = {
-        place: { kind: "browser", sessionId, surfaceId: activity.surfaceId },
-        title: page.title.slice(0, 256),
-        site: (() => {
-          try {
-            const origin = new URL(page.site).origin;
-            return origin === "null" ? null : origin;
-          } catch {
-            return null;
-          }
-        })(),
-      };
-      this.#runPlaces.enter(actor.runId, actor.generation, data);
-    }
+    const data = this.#placeData(sessionId, activity.surfaceId);
+    if (data) this.#runPlaces.enter(actor.runId, actor.generation, data);
 
     if (actor.lastSurfaceId !== activity.surfaceId) {
       actor.lastSurfaceId = activity.surfaceId;

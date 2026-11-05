@@ -4,7 +4,8 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
 import { InputSurface } from "./input-surface.js";
-import { VoiceContext, VoiceIsland, type VoiceControls } from "./voice.js";
+import { VoiceContext } from "@opensteer/client/react";
+import { VoiceIsland, type VoiceControls } from "./voice.js";
 
 vi.mock("./app-shell.js", () => ({
   useShell: () => ({
@@ -27,12 +28,15 @@ it("docks an active call above the latest task composer and floats only without 
     spoken: null,
     since: null,
     activity: null,
+    tasks: 0,
+    ask: null,
     notice: null,
   };
   const controller: VoiceControls = {
     subscribe: () => () => undefined,
     getSnapshot: () => snapshot,
     subscribeLevel: () => () => undefined,
+    openThread: vi.fn(async () => null),
     start: vi.fn(async () => undefined),
     stop: vi.fn(),
     setMuted: vi.fn(),

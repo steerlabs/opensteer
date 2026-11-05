@@ -15,7 +15,6 @@ import {
   ModelSelectionSchema,
   ThreadAccessModeSchema,
   createId,
-  voiceRequestHandOff,
   type EnvironmentId,
   type MessageId,
   type RunnerId,
@@ -378,183 +377,118 @@ integration.sequential("thread input queue promotion", () => {
     },
   });
 
-  it("replaces or stops a call whose Run ended after it was read", async ({ storeFixture }) => {
-    const { fixture, store, database } = storeFixture;
-    const f = await fixture("voice-ended-race");
-    await store.createThread({
-      createdBy: f.ownerId,
-      environmentId: f.environmentId,
-      harnessInstanceId: f.harness.id,
-      idempotencyKey: "voice-race-home",
-      modelSelection,
-      title: "Chat",
-      workspaceId: f.workspace.id,
-      home: true,
-    });
+  /** A call that has reached its Runner, so it can take input. */
+  async function startedCall(
+    { fixture, store, database }: StoreFixture,
+    name: string,
+    capabilities: readonly string[] = ["steer-answer-v1"],
+  ) {
+    const f = await fixture(name);
+    await database
+      .updateTable("runners")
+      .set({ capabilities: JSON.stringify(capabilities) as never })
+      .where("id", "=", f.runnerId)
+      .execute();
     const input = {
       ownerId: f.ownerId,
       environmentId: f.environmentId,
       harnessInstanceId: f.harness.id,
       sessionId: randomUUID(),
     };
-    // The window a concurrent terminalization leaves: the Run is over, its Thread not yet closed.
-    const endRunOnly = (runId: string) =>
-      database
-        .updateTable("runs")
-        .set({ status: "interrupted" })
-        .where("id", "=", runId as never)
-        .execute();
-    const threadStatus = async (threadId: string) =>
-      (
-        await database
-          .selectFrom("threads")
-          .select("status")
-          .where("id", "=", threadId as never)
-          .executeTakeFirstOrThrow()
-      ).status;
-    const first = await store.startVoiceCall(input);
-    await endRunOnly(first.runId);
-    const second = await store.startVoiceCall({ ...input, sessionId: randomUUID() });
-    expect(second.runId).not.toBe(first.runId);
-    expect(await threadStatus(first.threadId)).toBe("archived");
-    await endRunOnly(second.runId);
-    await store.stopVoiceCall(f.ownerId, second.sessionId!);
-    expect(await threadStatus(second.threadId)).toBe("archived");
-  });
+    const call = await store.startVoiceCall(input);
+    if (call.busy) throw new Error("Expected an idle Voice Thread");
+    const command = await database
+      .selectFrom("commands")
+      .select("id")
+      .where("runId", "=", call.runId)
+      .where("type", "=", "run.execute")
+      .executeTakeFirstOrThrow();
+    await store.claimCommand(command.id, `${name}-dispatcher`);
+    const { bindingGeneration } = await store.acquireExecutionBinding({
+      bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
+      continuationIdentity,
+      harnessInstanceId: f.harness.id,
+      leaseTokenHash: `${name}-lease`,
+      membershipGeneration: 1,
+      runnerBootId: f.runnerBootId,
+      runnerId: f.runnerId,
+      runId: call.runId,
+      threadId: call.threadId,
+    });
+    const emit = (ordinal: number, event: { type: string; data: unknown }) =>
+      store.commitRunnerEvent({
+        environmentId: f.environmentId,
+        runnerId: f.runnerId,
+        runnerBootId: f.runnerBootId,
+        event: pendingEvent({
+          bindingGeneration,
+          environmentId: f.environmentId,
+          ordinal,
+          runId: call.runId,
+          threadId: call.threadId,
+          workspaceId: f.workspace.id,
+          ...event,
+        } as never),
+      });
+    await emit(0, { type: "run.started", data: { status: "running" } });
+    return { call, emit, f, input };
+  }
 
-  it("tracks a call's hidden agent as Chat and docks its Requests there", async ({
+  it("keeps one permanent Voice Thread: a new call waits for the last to end, then reuses it", async ({
     storeFixture,
   }) => {
-    const { fixture, store, database } = storeFixture;
-    const f = await fixture("voice-place");
-    const chat = await store.createThread({
-      createdBy: f.ownerId,
-      environmentId: f.environmentId,
-      harnessInstanceId: f.harness.id,
-      idempotencyKey: "voice-place-home",
-      modelSelection,
-      title: "Chat",
-      workspaceId: f.workspace.id,
-      home: true,
+    const { store, database } = storeFixture;
+    const { call, f, input } = await startedCall(storeFixture, "voice-permanent");
+    expect(await store.startVoiceCall(input)).toMatchObject({
+      busy: false,
+      runId: call.runId,
+      threadId: call.threadId,
     });
-    const call = await store.startVoiceCall({
-      ownerId: f.ownerId,
-      environmentId: f.environmentId,
-      harnessInstanceId: f.harness.id,
-      sessionId: randomUUID(),
-    });
+    const next = { ...input, sessionId: randomUUID() };
+    expect(await store.startVoiceCall(next)).toMatchObject({ busy: true });
+    expect(
+      await database
+        .selectFrom("commands")
+        .select("type")
+        .where("runId", "=", call.runId)
+        .where("type", "=", "run.interrupt")
+        .execute(),
+    ).toHaveLength(1);
     await database
       .updateTable("runs")
-      .set({ bindingGeneration: 1 })
-      .where("id", "=", call.runId as never)
+      .set({ status: "interrupted" })
+      .where("id", "=", call.runId)
       .execute();
-
-    await expect(
-      store.resolvePlaceActors({
-        agentBindingIds: [`run:${call.runId}`],
-        ownerIds: [f.ownerId],
-      }),
-    ).resolves.toMatchObject([{ runId: call.runId, threadId: chat.thread.id, home: true }]);
-
-    await expect(
-      store.requests.create({
-        callId: "voice-durable",
-        kind: "browser.access",
-        mode: "durable",
-        originatingRunId: call.runId,
-        originatingThreadId: call.threadId,
-        originatingWorkspaceId: f.workspace.id,
-        payload: {
-          kind: "browser.access",
-          reason: "Sign in",
-          suggestion: { kind: "new", suggestedName: "Personal" },
-        },
-        presentation: {
-          detail: "Sign in",
-          kind: "external",
-          subject: { id: f.workspace.id, kind: "workspace" },
-          title: "Browser profile",
-        },
-        requestedBy: f.ownerId,
-        requiredActor: "requester",
-        targetWorkspaceId: f.workspace.id,
-      }),
-    ).rejects.toThrow(voiceRequestHandOff);
-
-    // An engine approval pauses the agent mid-step, so it can't hand this one to Chat.
-    const requestId = createId("request");
-    await database
-      .insertInto("requests")
-      .values({
-        callId: "voice-approval",
-        cancellationReason: null,
-        createdAt: new Date(),
-        id: requestId,
-        kind: "harness.approval",
-        mode: "live",
-        originatingOccurrenceId: null,
-        originatingRunId: call.runId as never,
-        originatingThreadId: call.threadId as never,
-        originatingWorkspaceId: f.workspace.id,
-        payload: sql`${JSON.stringify({ kind: "harness.approval" })}::jsonb`,
-        presentation: sql`${JSON.stringify({
-          detail: "Confirm",
-          kind: "choice",
-          options: [{ hint: "confirm", id: "yes", label: "Yes" }],
-          title: "Continue?",
-        })}::jsonb`,
-        requestedBy: f.ownerId,
-        requiredActor: "requester",
-        resolvedAt: null,
-        resolvedBy: null,
-        response: null,
-        status: "pending",
-        targetWorkspaceId: f.workspace.id,
-      })
-      .execute();
-    const { requests } = await store.requests.waitingOnUserPage({ userId: f.ownerId, limit: 10 });
-    expect(requests.find(({ request }) => request.id === requestId)?.presentation).toEqual({
-      threadId: chat.thread.id,
-      workerThread: { id: call.threadId, title: "Voice call" },
-    });
-    await database
-      .updateTable("threads")
-      .set({ voiceSessionId: null })
-      .where("id", "=", call.threadId)
-      .execute();
+    const second = await store.startVoiceCall(next);
+    if (second.busy) throw new Error("Expected the Thread to be free");
+    expect(second.threadId).toBe(call.threadId);
+    expect(second.runId).not.toBe(call.runId);
     expect(
-      (await store.requests.waitingOnUserPage({ userId: f.ownerId, limit: 10 })).requests.find(
-        ({ request }) => request.id === requestId,
-      )?.presentation,
-    ).toBeNull();
-    expect(
-      await store.resolvePlaceActors({
-        agentBindingIds: [`run:${call.runId}`],
-        ownerIds: [f.ownerId],
-      }),
-    ).toEqual([]);
-    await database
-      .updateTable("threads")
-      .set({ voiceSessionId: call.sessionId })
-      .where("id", "=", call.threadId)
-      .execute();
+      await database
+        .selectFrom("threads")
+        .innerJoin("workspaces", "workspaces.id", "threads.workspaceId")
+        .select(["threads.status", "threads.role", "threads.listed", "workspaces.voiceThreadId"])
+        .where("threads.id", "=", call.threadId)
+        .executeTakeFirstOrThrow(),
+    ).toMatchObject({ listed: false, role: "conversation", voiceThreadId: call.threadId });
+    expect(f.workspace.kind).toBe("main");
   });
 
-  it("starts voice on its own account's catalog default at low effort, never another model", async ({
-    storeFixture,
-  }) => {
+  it.for([
+    { name: "voice-terra", models: ["gpt-6.1-sol", "gpt-6.1-terra"], expected: "gpt-6.1-terra" },
+    { name: "voice-default", models: ["gpt-6.1-sol"], expected: "gpt-6.1-sol" },
+  ])("starts the Voice Thread at low effort and Fast on $expected", async (
+    { expected, models, name },
+    { storeFixture },
+  ) => {
     const { fixture, store, database } = storeFixture;
-    const f = await fixture("voice-model");
-    await store.createThread({
-      createdBy: f.ownerId,
-      environmentId: f.environmentId,
-      harnessInstanceId: f.harness.id,
-      idempotencyKey: "voice-model-home",
-      modelSelection,
-      title: "Chat",
-      workspaceId: f.workspace.id,
-      home: true,
-    });
+    const speed = {
+      defaultValue: "default",
+      id: "speed",
+      label: "Speed",
+      type: "select" as const,
+      values: ["default", "priority"].map((value) => ({ label: value, value })),
+    };
     const effort = {
       defaultValue: "medium",
       id: "effort",
@@ -562,361 +496,154 @@ integration.sequential("thread input queue promotion", () => {
       type: "select" as const,
       values: ["low", "medium", "high"].map((value) => ({ label: value, value })),
     };
-    const record = (defaultModelId: string | null) =>
-      store.recordHarnessCatalogs({
-        catalogs: [
-          HarnessInstanceCatalogSchema.parse({
-            continuationIdentity,
-            driverKind: "native",
-            harnessInstanceId: f.harness.id,
-            models: ["gpt-6-luna", "gpt-5.6-sol"].map((modelId) => ({
-              displayName: modelId,
-              isDefault: modelId === defaultModelId,
-              modelId,
-              nativeModelId: `gateway/${modelId}`,
-              options: [effort],
-              providerId: "openai",
-            })),
-            status: "ready",
-          }),
-        ],
-        environmentId: f.environmentId,
-        expectedRevisions: new Map([[f.harness.id, f.harness.runtimeRevision]]),
-      });
-    const input = {
+    const f = await fixture(name);
+    await store.recordHarnessCatalogs({
+      catalogs: [
+        HarnessInstanceCatalogSchema.parse({
+          continuationIdentity,
+          driverKind: "native",
+          harnessInstanceId: f.harness.id,
+          models: models.map((modelId, index) => ({
+            displayName: modelId,
+            isDefault: index === 0,
+            modelId,
+            options: [effort, speed],
+            providerId: "openai",
+          })),
+          status: "ready",
+        }),
+      ],
+      environmentId: f.environmentId,
+      expectedRevisions: new Map([[f.harness.id, f.harness.runtimeRevision]]),
+    });
+    const { threadId } = await store.openVoiceThread({
       ownerId: f.ownerId,
       environmentId: f.environmentId,
       harnessInstanceId: f.harness.id,
-      sessionId: randomUUID(),
-    };
-    await record("gpt-5.6-sol");
-    const call = await store.startVoiceCall(input);
+    });
     expect(
       await database
         .selectFrom("threads")
         .select("modelSelection")
-        .where("id", "=", call.threadId)
+        .where("id", "=", threadId)
         .executeTakeFirstOrThrow(),
-    ).toEqual({
-      modelSelection: {
-        modelId: "gpt-5.6-sol",
-        nativeModelId: "gateway/gpt-5.6-sol",
-        options: { effort: "low" },
-        providerId: "openai",
-      },
+    ).toMatchObject({
+      modelSelection: { modelId: expected, options: { effort: "low", speed: "priority" } },
     });
-    // No default is no voice model on this account; its first model is not a stand-in.
-    await record(null);
-    await expect(store.startVoiceCall({ ...input, sessionId: randomUUID() })).rejects.toMatchObject(
-      { reason: "voice-account-unavailable" },
-    );
   });
 
-  it("admits one fenced voice Run, replays, replaces, and never recovers it", async ({
-    storeFixture,
-  }) => {
-    const { fixture, store, database } = storeFixture;
-    const f = await fixture("voice-call");
-    const input = {
-      ownerId: f.ownerId,
-      environmentId: f.environmentId,
-      harnessInstanceId: f.harness.id,
-      sessionId: randomUUID(),
-    };
-    await expect(store.startVoiceCall(input)).rejects.toMatchObject({
-      reason: "voice-chat-required",
-    });
-    await store.createThread({
-      createdBy: f.ownerId,
-      environmentId: f.environmentId,
-      harnessInstanceId: f.harness.id,
-      idempotencyKey: "voice-home",
-      modelSelection,
-      title: "Chat",
-      workspaceId: f.workspace.id,
-      home: true,
-    });
-    const call = await store.startVoiceCall(input);
-    expect(await store.startVoiceCall(input)).toMatchObject({
+  it("hands everything sent to the Voice Thread into a live call", async ({ storeFixture }) => {
+    const { store, database } = storeFixture;
+    const { call, f } = await startedCall(storeFixture, "voice-inbox");
+    const sent = await store.enqueueThreadInput({
       threadId: call.threadId,
-      runId: call.runId,
-      workspaceId: call.workspaceId,
-      admittedAt: call.admittedAt,
+      requestedBy: f.ownerId,
+      source: { cause: "assignment-result", kind: "platform", sourceRunId: call.runId },
+      content: [{ type: "text", text: "A task finished." }],
+      policy: "queue",
+      idempotencyKey: "voice-news",
     });
+    expect(sent.disposition).toBe("steering");
     expect(
       await database
-        .selectFrom("threads")
-        .select(["listed", "parentThreadId"])
-        .where("id", "=", call.threadId)
-        .executeTakeFirstOrThrow(),
-    ).toMatchObject({ listed: false });
-    for (const policy of ["queue", "steer", "report"] as const)
-      await expect(
-        store.enqueueThreadInput({
-          threadId: call.threadId,
-          requestedBy: f.ownerId,
-          source: { kind: "human" },
-          content: [{ type: "text", text: "extra" }],
-          policy,
-          idempotencyKey: `voice-${policy}`,
-        }),
-      ).rejects.toThrow("Voice Threads do not accept input");
-    const replacement = await store.startVoiceCall({ ...input, sessionId: randomUUID() });
-    expect(replacement.runId).not.toBe(call.runId);
-    expect(
-      (
-        await database
-          .selectFrom("threads")
-          .select("status")
-          .where("id", "=", call.threadId)
-          .executeTakeFirstOrThrow()
-      ).status,
-    ).toBe("archived");
-    const command = await database
-      .selectFrom("commands")
-      .select("id")
-      .where("runId", "=", replacement.runId)
-      .where("type", "=", "run.execute")
-      .executeTakeFirstOrThrow();
-    await store.claimCommand(command.id, "voice-dispatcher");
-    await store.acquireExecutionBinding({
-      bindingLeaseExpiresAt: new Date(Date.now() - 1000),
-      continuationIdentity,
-      harnessInstanceId: f.harness.id,
-      leaseTokenHash: "voice-lease",
-      membershipGeneration: 1,
-      runnerBootId: f.runnerBootId,
-      runnerId: f.runnerId,
-      runId: replacement.runId,
-      threadId: replacement.threadId,
-    });
-    const home = await database
-      .selectFrom("workspaces")
-      .select("homeThreadId")
-      .where("id", "=", f.workspace.id)
-      .executeTakeFirstOrThrow();
-    const handoff = await store.enqueueThreadInput({
-      threadId: home.homeThreadId!,
+        .selectFrom("commands")
+        .select("type")
+        .where("runId", "=", call.runId)
+        .where("type", "=", "run.steer")
+        .execute(),
+    ).toHaveLength(1);
+  });
+
+  it("opens Requests from a call, and releases their answers while it runs", async ({
+    storeFixture,
+  }) => {
+    const { store } = storeFixture;
+    const { call, f } = await startedCall(storeFixture, "voice-request");
+    const { request } = await store.requests.create({
+      callId: "voice-durable",
+      kind: "browser.access",
+      mode: "durable",
+      originatingRunId: call.runId,
+      originatingThreadId: call.threadId,
+      originatingWorkspaceId: f.workspace.id,
+      payload: {
+        kind: "browser.access",
+        reason: "Sign in",
+        suggestion: { kind: "new", suggestedName: "Personal" },
+      },
+      presentation: {
+        detail: "Sign in",
+        kind: "external",
+        subject: { id: f.workspace.id, kind: "workspace" },
+        title: "Browser profile",
+      },
       requestedBy: f.ownerId,
-      source: { kind: "agent", runId: replacement.runId },
-      content: [{ type: "text", text: "Handle this work" }],
-      policy: "queue",
-      idempotencyKey: "voice-handoff",
+      requiredActor: "requester",
+      targetWorkspaceId: f.workspace.id,
     });
-    if (!handoff.run || !handoff.command) throw new Error("Expected Chat admission");
-    await store.claimCommand(handoff.command.id, "voice-chat-dispatcher");
-    const chatBinding = await store.acquireExecutionBinding({
-      bindingLeaseExpiresAt: new Date(Date.now() + 60000),
-      continuationIdentity,
-      harnessInstanceId: f.harness.id,
-      leaseTokenHash: "voice-chat-lease",
-      membershipGeneration: 1,
-      runnerBootId: f.runnerBootId,
-      runnerId: f.runnerId,
-      runId: handoff.run.id,
-      threadId: home.homeThreadId!,
+    const { requests } = await store.requests.waitingOnUserPage({ userId: f.ownerId, limit: 10 });
+    expect(requests.find((item) => item.request.id === request.id)?.presentation).toBeNull();
+  });
+
+  it("delivers what the person said into the Thread as their own words", async ({
+    storeFixture,
+  }) => {
+    const { store, database } = storeFixture;
+    const { call, emit, f } = await startedCall(storeFixture, "voice-heard");
+    const messageId = createId("message");
+    await emit(1, { type: "voice.heard", data: { messageId, text: "Open Brex" } });
+    const message = await database
+      .selectFrom("messages")
+      .select(["author", "content", "kind", "threadId"])
+      .where("id", "=", messageId)
+      .executeTakeFirstOrThrow();
+    expect(message).toMatchObject({
+      author: { kind: "human", userId: f.ownerId },
+      content: [{ text: "Open Brex", type: "text" }],
+      kind: "input",
+      threadId: call.threadId,
     });
-    await store.commitRunnerEvent({
-      environmentId: f.environmentId,
-      runnerId: f.runnerId,
-      runnerBootId: f.runnerBootId,
-      event: pendingEvent({
-        bindingGeneration: chatBinding.bindingGeneration,
-        environmentId: f.environmentId,
-        ordinal: 0,
-        runId: handoff.run.id,
-        threadId: home.homeThreadId!,
-        workspaceId: f.workspace.id,
-        type: "run.started",
-        data: { status: "running" },
-      }),
-    });
+    expect(store).toBeDefined();
+  });
+
+  it("lists a task the call started, and fails a lost call without restarting it", async ({
+    storeFixture,
+  }) => {
+    const { store, database } = storeFixture;
+    const { call, f, input } = await startedCall(storeFixture, "voice-lost");
     const delegated = await store.delegateThread({
       accessMode: f.thread.accessMode,
       createdBy: f.ownerId,
       environmentId: f.environmentId,
       harnessInstanceId: f.harness.id,
-      idempotencyKey: "voice-chat-task",
+      idempotencyKey: "voice-task",
       modelSelection,
-      origin: { kind: "run", parentRunId: handoff.run.id, parentThreadId: home.homeThreadId! },
-      task: [{ type: "text", text: "Do the work" }],
-      title: "Voice handoff task",
+      origin: { kind: "run", parentRunId: call.runId, parentThreadId: call.threadId },
+      task: [{ type: "text", text: "Compare flights" }],
+      title: "Compare flights",
       workspaceId: f.workspace.id,
     });
     expect(
-      (
-        await database
-          .selectFrom("threads")
-          .select("listed")
-          .where("id", "=", delegated.thread.id)
-          .executeTakeFirstOrThrow()
-      ).listed,
-    ).toBe(true);
+      await database
+        .selectFrom("threads")
+        .select("listed")
+        .where("id", "=", delegated.thread.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ listed: true });
+    await database
+      .updateTable("providerSessions")
+      .set({ leaseExpiresAt: new Date(Date.now() - 1_000) })
+      .where("threadId", "=", call.threadId)
+      .execute();
     await store.recoverRunsWithExpiredExecutionBindings();
-    expect(
-      (
-        await database
-          .selectFrom("threads")
-          .select("status")
-          .where("id", "=", replacement.threadId)
-          .executeTakeFirstOrThrow()
-      ).status,
-    ).toBe("archived");
     const runs = await database
       .selectFrom("runs")
-      .select("status")
-      .where("threadId", "=", replacement.threadId)
+      .select(["id", "status"])
+      .where("threadId", "=", call.threadId)
       .execute();
-    expect(runs).toEqual([{ status: "failed" }]);
-    const lost = await store.startVoiceCall({ ...input, sessionId: randomUUID() });
-    const lostCommand = await database
-      .selectFrom("commands")
-      .select("id")
-      .where("runId", "=", lost.runId)
-      .where("type", "=", "run.execute")
-      .executeTakeFirstOrThrow();
-    await store.claimCommand(lostCommand.id, "voice-dispatcher");
-    const binding = await store.acquireExecutionBinding({
-      bindingLeaseExpiresAt: new Date(Date.now() + 60000),
-      continuationIdentity,
-      harnessInstanceId: f.harness.id,
-      leaseTokenHash: "voice-lost-lease",
-      membershipGeneration: 1,
-      runnerBootId: f.runnerBootId,
-      runnerId: f.runnerId,
-      runId: lost.runId,
-      threadId: lost.threadId,
-    });
-    await store.commitRunnerEvent({
-      environmentId: f.environmentId,
-      runnerId: f.runnerId,
-      runnerBootId: f.runnerBootId,
-      event: pendingEvent({
-        bindingGeneration: binding.bindingGeneration,
-        environmentId: f.environmentId,
-        ordinal: 0,
-        runId: lost.runId,
-        threadId: lost.threadId,
-        workspaceId: f.workspace.id,
-        type: "run.interrupted",
-        data: { status: "interrupted", cause: "lease-lost" },
-      }),
-    });
-    expect(
-      await database
-        .selectFrom("runs")
-        .select("status")
-        .where("threadId", "=", lost.threadId)
-        .execute(),
-    ).toEqual([{ status: "failed" }]);
-    expect(
-      (
-        await database
-          .selectFrom("threads")
-          .select("status")
-          .where("id", "=", lost.threadId)
-          .executeTakeFirstOrThrow()
-      ).status,
-    ).toBe("archived");
-  });
-
-  it("ends an unconfirmed voice dispatch at Host restart and preserves a still-held call", async ({
-    storeFixture,
-  }) => {
-    const { fixture, store, database } = storeFixture;
-    const f = await fixture("voice-restart");
-    await store.createThread({
-      createdBy: f.ownerId,
-      environmentId: f.environmentId,
-      harnessInstanceId: f.harness.id,
-      idempotencyKey: "restart-home",
-      modelSelection,
-      title: "Chat",
-      workspaceId: f.workspace.id,
-      home: true,
-    });
-    const input = {
-      ownerId: f.ownerId,
-      environmentId: f.environmentId,
-      harnessInstanceId: f.harness.id,
-      sessionId: randomUUID(),
-    };
-    const call = await store.startVoiceCall(input);
-    const command = await database
-      .selectFrom("commands")
-      .select("id")
-      .where("runId", "=", call.runId)
-      .where("type", "=", "run.execute")
-      .executeTakeFirstOrThrow();
-    await store.claimCommand(command.id, "voice-restart-dispatcher");
-    await store.recoverCommandsAfterHostRestart();
-    expect(
-      (
-        await database
-          .selectFrom("threads")
-          .select("status")
-          .where("id", "=", call.threadId)
-          .executeTakeFirstOrThrow()
-      ).status,
-    ).toBe("archived");
-    expect(
-      await database
-        .selectFrom("runs")
-        .select("status")
-        .where("threadId", "=", call.threadId)
-        .execute(),
-    ).toEqual([{ status: "interrupted" }]);
-    const held = await store.startVoiceCall({ ...input, sessionId: randomUUID() });
-    const heldCommand = await database
-      .selectFrom("commands")
-      .select("id")
-      .where("runId", "=", held.runId)
-      .where("type", "=", "run.execute")
-      .executeTakeFirstOrThrow();
-    await store.claimCommand(heldCommand.id, "voice-restart-dispatcher");
-    await store.acquireExecutionBinding({
-      bindingLeaseExpiresAt: new Date(Date.now() + 60000),
-      continuationIdentity,
-      harnessInstanceId: f.harness.id,
-      leaseTokenHash: "voice-restart-lease",
-      membershipGeneration: 1,
-      runnerBootId: f.runnerBootId,
-      runnerId: f.runnerId,
-      runId: held.runId,
-      threadId: held.threadId,
-    });
-    await store.restartExecutionLeases(new Date(Date.now() + 120000));
-    await store.recoverCommandsAfterHostRestart();
-    expect(
-      await database
-        .selectFrom("runs")
-        .select("status")
-        .where("threadId", "=", held.threadId)
-        .execute(),
-    ).toEqual([{ status: "starting" }]);
-    await store.attachRunnerExecutions({
-      dispatchingRunIds: [],
-      executions: [],
-      leaseExpiresAt: new Date(Date.now() + 120000),
-      runnerBootId: f.runnerBootId,
-      runnerId: f.runnerId,
-    });
-    expect(
-      await database
-        .selectFrom("runs")
-        .select("status")
-        .where("threadId", "=", held.threadId)
-        .execute(),
-    ).toEqual([{ status: "failed" }]);
-    expect(
-      (
-        await database
-          .selectFrom("threads")
-          .select("status")
-          .where("id", "=", held.threadId)
-          .executeTakeFirstOrThrow()
-      ).status,
-    ).toBe("archived");
+    expect(runs).toEqual([{ id: call.runId, status: "failed" }]);
+    const next = await store.startVoiceCall({ ...input, sessionId: randomUUID() });
+    expect(next).toMatchObject({ busy: false, threadId: call.threadId });
   });
 
   it("claims a ready upload once and replays the exact accepted send after binding", async ({

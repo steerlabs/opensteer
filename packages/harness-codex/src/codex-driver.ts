@@ -2239,6 +2239,9 @@ class CodexHarnessSession implements HarnessSession {
         },
         type: "assistant.message",
       });
+      const call = this.#context.voiceCall;
+      if (call && optionalString(item.phase) === "commentary" && typeof item.text === "string")
+        void call.speak(createId("message"), item.text).catch(() => call.end());
       const active = this.#activeTurn;
       if (active && optionalString(item.phase) === "final_answer") {
         active.answered = true;

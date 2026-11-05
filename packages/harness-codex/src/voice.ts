@@ -31,6 +31,8 @@ export async function startRealtime(
       transport: { type: "webrtc", sdp: offer },
       version: "v3",
       clientManagedHandoffs: true,
+      // The agent says what it's doing itself, so the voice has nothing to make up.
+      delegationAckFiller: false,
       includeStartupContext: false,
       outputModality: "audio",
     },

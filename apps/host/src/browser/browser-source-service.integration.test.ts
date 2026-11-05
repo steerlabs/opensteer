@@ -802,7 +802,6 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     if (!connection) throw new Error("Expected a runtime connection");
     return {
       agent: {
-        canRequest: true,
         loginFill: true,
         ownerId,
         reason: "Open the dashboard",
@@ -969,7 +968,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     });
   });
 
-  it.each([true, false])("allows unattended sign-in when canRequest is %s", async (canRequest) => {
+  it("allows unattended sign-in", async () => {
     const ready = await passwordScene();
     ready.connection.onStart = (message) =>
       ready.connection.replySignIn(message.operationId, {
@@ -978,7 +977,6 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     expect(
       await service.agentSignIn({
         ...ready.agent,
-        canRequest,
         callId: randomUUID(),
         site: "https://delegated-grant.test",
       }),
@@ -1038,9 +1036,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     expect(ready.connection.signInStarts()).toHaveLength(2);
   });
 
-  it.each([true, false])(
-    "preserves another Run's open Request when canRequest is %s",
-    async (canRequest) => {
+  it("preserves another Run's open Request", async () => {
       const ready = await startedPasswordSignIn("https://cross-run.test");
       const other = await runningRun(ready.ownerId, ready.workspaceId, runtime.runnerId!);
       expect(
@@ -1049,7 +1045,6 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
           ...other,
           callId: randomUUID(),
           site: ready.site,
-          canRequest,
         }),
       ).toEqual({
         status: "unavailable",
@@ -1061,8 +1056,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       await approvePasswordRequest(ready.requestId, ready.connection, authorized());
       await waitFor(async () => (await continuationCount(ready.requestId)) === 1);
       expect(await passwordRequestCount(other.runId)).toBe(0);
-    },
-  );
+  });
 
   it.each(["authorized", "approval"] as const)(
     "lets another Run join unattended work until $0",
@@ -1574,7 +1568,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     expect(await continuationCount(requestId)).toBe(1);
   });
 
-  it("keeps Chrome for a Mac with Passwords off, and refuses delegated approvals", async () => {
+  it("keeps Chrome for a Mac with Passwords off", async () => {
     const ready = await passwordScene();
     ready.connection.passwords = "off";
     const site = "https://off.test";
@@ -1582,22 +1576,6 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     expect(chromeResult.status).toBe("pending");
     expect(ready.connection.signInStarts()).toEqual([]);
     expect((await pendingSignIns(ready.ownerId)).length).toBe(1);
-
-    ready.connection.passwords = "has-login";
-    const delegated = {
-      ...ready.agent,
-      callId: randomUUID(),
-      canRequest: false,
-      site: "https://delegated.test",
-    };
-    const refused = { reason: "needs-approval", site: delegated.site, status: "unavailable" };
-    expect(await service.agentSignIn(delegated)).toEqual(refused);
-    // A replay after the actual maintenance tick must retain the same refusal.
-    reconcilePasswords();
-    await Promise.resolve();
-    expect(await service.agentSignIn(delegated)).toEqual(refused);
-    expect(ready.connection.signInStarts()).toHaveLength(1);
-    expect(ready.connection.signInCancels()).toHaveLength(1);
   });
 
   it("replays a repeated call as its own Request, then as resolved once it ended", async () => {
@@ -2407,9 +2385,6 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     const site = "https://example.test";
     chrome.status = "no-state";
 
-    expect(
-      await service.agentSignIn({ ...agent, callId: randomUUID(), canRequest: false, site }),
-    ).toEqual({ reason: "needs-approval", site, status: "unavailable" });
     expect(await service.agentSignIn({ ...agent, callId: randomUUID(), site })).toEqual({
       site,
       status: "not-signed-in",

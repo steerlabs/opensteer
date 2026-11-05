@@ -28,13 +28,13 @@ afterEach(() => {
 });
 
 describe("Passwords wait authority", () => {
-  for (const canRequest of [true, false]) {
-    it(`refuses another Run's late approval (canRequest=${canRequest})`, async () => {
+  {
+    it("refuses another Run's late approval", async () => {
       vi.useFakeTimers();
       const h = harness();
       const starter = h.start();
       await vi.advanceTimersByTimeAsync(1);
-      const other = { ...h.call, ...otherRun(), canRequest, callId: "other" };
+      const other = { ...h.call, ...otherRun(), callId: "other" };
       const joined = h.service.join({ ...other, site: h.site });
       h.event({ kind: "needs", need: "approval" });
       expect(await joined).toEqual({ status: "unavailable", reason: "busy", site: h.site });
@@ -67,137 +67,6 @@ describe("Passwords wait authority", () => {
     });
   }
 
-  it("replays a delegated refusal after reconciliation without starting the Mac again", async () => {
-    vi.useFakeTimers();
-    const h = harness();
-    const refused = { status: "unavailable", reason: "needs-approval", site: h.site };
-    const first = h.start(false);
-    await vi.advanceTimersByTimeAsync(1);
-    h.event({ kind: "needs", need: "approval" });
-    expect(await first).toEqual(refused);
-
-    // A delayed replay can arrive after the production reconciliation timer.
-    await vi.advanceTimersByTimeAsync(10_000);
-    const replay = h.start(false);
-    await vi.advanceTimersByTimeAsync(1);
-    h.event({ kind: "needs", need: "approval" });
-    expect(await replay).toEqual(refused);
-    const commands = h.hub.sendPasswordSignIn.mock.calls.map(([, command]) => command);
-    expect(
-      commands.filter((command) => command.type === "login.authorize" && "loginRef" in command),
-    ).toHaveLength(1);
-    expect(commands.filter((command) => command.type === "login.cancel")).toHaveLength(1);
-    expect(h.requests.openPasswordSignIn).not.toHaveBeenCalled();
-  });
-
-  it("allows a fresh call for the same site after a delegated cancellation", async () => {
-    vi.useFakeTimers();
-    const h = harness();
-    const first = h.start(false);
-    await vi.advanceTimersByTimeAsync(1);
-    h.event({ kind: "needs", need: "approval" });
-    expect(await first).toMatchObject({ reason: "needs-approval" });
-
-    const fresh = h.service.request({
-      ...h.call,
-      callId: "fresh",
-      site: h.site,
-      admitStart: () => true,
-    });
-    await vi.advanceTimersByTimeAsync(1);
-    h.event({ kind: "needs", need: "approval" });
-    expect(await fresh).toMatchObject({ status: "pending" });
-    expect(
-      h.hub.sendPasswordSignIn.mock.calls.filter(
-        ([, command]) => command.type === "login.authorize" && "loginRef" in command,
-      ),
-    ).toHaveLength(2);
-    expect(h.requests.openPasswordSignIn).toHaveBeenCalledWith(
-      expect.objectContaining({ callId: "fresh" }),
-    );
-    expect(
-      h.requests.openPasswordSignIn.mock.calls.every(([input]) => input.callId === "fresh"),
-    ).toBe(true);
-    expect(h.service.leaseForOperation(h.operationId())).toBeNull();
-  });
-
-  it("requires new approval when a refused call is replayed after its original deadline", async () => {
-    vi.useFakeTimers();
-    const h = harness();
-    const first = h.start(false);
-    await vi.advanceTimersByTimeAsync(1);
-    const start = h.hub.sendPasswordSignIn.mock.calls
-      .map(([, command]) => command)
-      .find((command) => command.type === "login.authorize" && "loginRef" in command);
-    if (start?.type !== "login.authorize") throw new Error("Missing authorization start");
-    h.event({ kind: "needs", need: "approval" });
-    expect(await first).toMatchObject({ reason: "needs-approval" });
-
-    vi.setSystemTime(Date.parse(start.expiresAt));
-    await vi.advanceTimersByTimeAsync(10_000);
-    expect(h.service.join({ ...h.call, canRequest: false, site: h.site })).toBeNull();
-    const replay = h.start(false);
-    let answered = false;
-    void replay.then(() => {
-      answered = true;
-    });
-    await vi.advanceTimersByTimeAsync(1);
-    expect(answered).toBe(false);
-    expect(h.service.leaseForOperation(h.operationId())).toBeNull();
-    h.event({ kind: "needs", need: "approval" });
-    expect(await replay).toMatchObject({ status: "unavailable", reason: "needs-approval" });
-    expect(
-      h.hub.sendPasswordSignIn.mock.calls.filter(
-        ([, command]) => command.type === "login.authorize" && "loginRef" in command,
-      ),
-    ).toHaveLength(2);
-    expect(h.requests.openPasswordSignIn).not.toHaveBeenCalled();
-  });
-
-  it("does not let old-operation cleanup erase a call rebound to a newer lease", async () => {
-    vi.useFakeTimers();
-    const h = harness();
-    const first = h.start(false);
-    await vi.advanceTimersByTimeAsync(1);
-    const oldStart = h.hub.sendPasswordSignIn.mock.calls
-      .map(([, command]) => command)
-      .find((command) => command.type === "login.authorize" && "loginRef" in command);
-    if (oldStart?.type !== "login.authorize") throw new Error("Missing authorization start");
-    h.event({ kind: "needs", need: "approval" });
-    await first;
-
-    // Move domain time without running reconciliation: the new lease outlives the old record.
-    vi.setSystemTime(Date.now() + 60_000);
-    const fresh = h.service.request({
-      ...h.call,
-      callId: "fresh",
-      site: h.site,
-      admitStart: () => true,
-    });
-    await vi.advanceTimersByTimeAsync(1);
-    const freshStart = h.hub.sendPasswordSignIn.mock.calls
-      .map(([, command]) => command)
-      .findLast((command) => command.type === "login.authorize" && "loginRef" in command);
-    if (freshStart?.type !== "login.authorize") throw new Error("Missing fresh authorization");
-    h.event({
-      kind: "result",
-      outcome: {
-        kind: "authorized",
-        account: "masked",
-        loginRef: h.loginRef(),
-        expiresAt: freshStart.expiresAt,
-      },
-    });
-    expect(await fresh).toMatchObject({ status: "ready" });
-    expect(await h.service.join({ ...h.call, site: h.site })).toMatchObject({ status: "ready" });
-
-    vi.setSystemTime(Date.parse(oldStart.expiresAt));
-    await vi.advanceTimersByTimeAsync(10_000);
-    expect(() => h.service.join({ ...h.call, site: "https://different.test" })).toThrow(
-      /another Workspace or site/,
-    );
-  });
-
   it("expires a terminal no-Request identity even when no cancellation was sent", async () => {
     vi.useFakeTimers();
     const h = harness();
@@ -215,20 +84,6 @@ describe("Passwords wait authority", () => {
     expect(h.service.join({ ...h.call, site: h.site })).toBeNull();
   });
 
-  it("withdraws a delegated starter when approval is needed", async () => {
-    vi.useFakeTimers();
-    const h = harness();
-    const first = h.start(false);
-    await vi.advanceTimersByTimeAsync(1);
-    h.event({ kind: "needs", need: "approval" });
-    expect(await first).toEqual({ status: "unavailable", reason: "needs-approval", site: h.site });
-    expect(h.hub.sendPasswordSignIn).toHaveBeenCalledWith(h.target.computer.runnerId, {
-      type: "login.cancel",
-      operationId: h.operationId(),
-      reason: "withdrawn",
-    });
-    expect(h.requests.openPasswordSignIn).not.toHaveBeenCalled();
-  });
 });
 
 function otherRun() {
@@ -241,7 +96,6 @@ function otherRun() {
 function harness() {
   const call = {
     callId: "first",
-    canRequest: true,
     ownerId: UserIdSchema.parse("usr_00000000-0000-4000-8000-000000000001"),
     reason: "Read the page",
     runId: RunIdSchema.parse("run_00000000-0000-4000-8000-000000000001"),
@@ -423,8 +277,7 @@ function harness() {
     end: () => emit(target.computer.runnerId, { type: "login.ended", operationId }),
     operationId: () => operationId,
     loginRef: () => loginRef,
-    start: (canRequest = true) =>
-      service.request({ ...call, canRequest, site, admitStart: () => true }),
+    start: () => service.request({ ...call, site, admitStart: () => true }),
     event: (
       event:
         | { kind: "needs"; need: "approval" | null }
@@ -740,7 +593,6 @@ describe("human Passwords settlement", () => {
       const next = h.service.request({
         ...h.call,
         callId: "try-again",
-        canRequest: true,
         site: h.site,
         admitStart: () => true,
       });

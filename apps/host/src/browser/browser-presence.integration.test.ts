@@ -244,7 +244,7 @@ integration("Browser presence and conversation usage", () => {
     for (const cleanup of cleanups.splice(0).reverse()) await cleanup().catch(() => undefined);
   });
 
-  it("shows a voice Run's browser as Chat and clears its cursor immediately on Stop", async () => {
+  it("shows a voice Run's browser as its own Thread and clears its cursor on Stop", async () => {
     const database = await createMachineAccessDatabase(databaseUrl!);
     cleanups.push(() => database.drop());
     const host = await startMachineAccessHost(database.url, { signupPolicy: "open" });
@@ -282,6 +282,7 @@ integration("Browser presence and conversation usage", () => {
       environmentId: caller.environmentId,
       harnessInstanceId: HarnessInstanceIdSchema.parse(caller.harnessInstanceId),
     });
+    if (call.busy) throw new Error("Expected an idle Voice Thread");
     const executing = waitForExecute(caller.primary.socket, call.runId);
     // Direct store admission has no server wake callback. A normal queued Chat
     // input wakes the real coordinator, which dispatches both Threads.
@@ -398,7 +399,7 @@ integration("Browser presence and conversation usage", () => {
     await vi.waitFor(() => expect(ofType(owner, "host.place-activity").length).toBeGreaterThan(0));
     const catalog = await host.runtime.browser.readTabCatalog(host.ownerId, sessionId);
     expect(catalog.tabs.find((tab) => tab.id === "voice-page")?.occupants).toEqual([
-      expect.objectContaining({ threadId: chat.thread.id, home: true }),
+      expect.objectContaining({ threadId: run.threadId, home: false }),
     ]);
     await host.runtime.browser.flushPendingTabDescriptors();
     const trafficFrom = owner.messages.length;
@@ -449,10 +450,7 @@ integration("Browser presence and conversation usage", () => {
       userId: host.ownerId,
       limit: 10,
     });
-    expect(waiting.requests.find(({ request }) => request.id === requestId)?.presentation).toEqual({
-      threadId: chat.thread.id,
-      workerThread: { id: run.threadId, title: "Voice call" },
-    });
+    expect(waiting.requests.find(({ request }) => request.id === requestId)?.presentation).toBeNull();
     const answering = waitForMessage(caller.primary.socket, (message) => {
       const parsed = HostToRunnerMessageSchema.safeParse(message);
       return (
