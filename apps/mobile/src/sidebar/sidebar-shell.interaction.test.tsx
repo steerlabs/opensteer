@@ -35,12 +35,19 @@ const harness = vi.hoisted(() => ({
   dismiss: vi.fn(),
   sendAccessibilityEvent: vi.fn(),
   dispatch: vi.fn(),
+  drafts: {
+    readDraft: vi.fn((): { text: string } | null => null),
+    readPending: vi.fn(() => null),
+  },
   panels: [] as {
     docked: boolean;
+    openDraftId: string | null;
     selectedThreadId: string | null;
     openThreadId: string | null;
     visible: boolean;
     actions: {
+      onNewTask: (deploymentId: string, workspaceId: string) => void;
+      onOpenDraft: (deploymentId: string, workspaceId: string, draftId: string) => void;
       onOpenPlace: (destination: object) => void;
       onOpenTask: (deploymentId: string, threadId: string) => void;
       onTabs: () => void;
@@ -152,7 +159,7 @@ vi.mock("react-native-gesture-handler/ReanimatedDrawerLayout", async () => {
 });
 vi.mock("../ui/mobile-client-context.js", () => ({
   useHostUserId: () => "user-a",
-  useMobileClient: () => ({}),
+  useMobileClient: () => ({ drafts: harness.drafts }),
   useSelectedHostClient: () => null,
 }));
 vi.mock("./sidebar-panel.js", () => ({
@@ -507,6 +514,39 @@ describe("the sidebar as the window changes shape", () => {
       name: "Tabs",
       params: { deploymentId: "deployment-a" },
     });
+  });
+});
+
+describe("New task and the drafts beside it", () => {
+  const workspaceId = "workspace-main";
+  const params = { deploymentId: "deployment-a", draftId: "draft-open", workspaceId };
+  const newTask = { key: "new-task-key", name: "NewTask", params };
+  const opened = () =>
+    (harness.dispatch.mock.calls.at(-1)![0] as { payload: { routes: { params: object }[] } })
+      .payload.routes[1]!.params as typeof params;
+
+  it("stays on a blank draft, and never reopens one with words", async () => {
+    harness.bounds = { height: 1133, width: 744 };
+    await mount([home, newTask]);
+    expect(lastPanel().openDraftId).toBe("draft-open");
+    act(() => lastPanel().actions.onNewTask("deployment-a", workspaceId));
+    expect(harness.dispatch).not.toHaveBeenCalled();
+
+    harness.drafts.readDraft.mockReturnValueOnce({ text: "Words" });
+    act(() => lastPanel().actions.onNewTask("deployment-a", workspaceId));
+    expect(opened()).toMatchObject({ deploymentId: "deployment-a", workspaceId });
+    expect(opened().draftId).not.toBe("draft-open");
+  });
+
+  it("opens a blank draft in the Workspace asked for, and exactly the draft chosen", async () => {
+    harness.bounds = { height: 1133, width: 744 };
+    await mount([home, newTask]);
+    act(() => lastPanel().actions.onNewTask("deployment-a", "workspace-project"));
+    expect(opened().workspaceId).toBe("workspace-project");
+    expect(opened().draftId).not.toBe("draft-open");
+
+    act(() => lastPanel().actions.onOpenDraft("deployment-a", workspaceId, "draft-waiting"));
+    expect(opened()).toEqual({ ...params, draftId: "draft-waiting" });
   });
 });
 

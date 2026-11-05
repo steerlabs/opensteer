@@ -1,3 +1,5 @@
+import { discardAllStagedFiles } from "../attachments/use-staged-attachments.js";
+import { composerDrafts } from "../composer-drafts.js";
 import { useId, useState } from "react";
 import type { DeploymentAccessSnapshot } from "@opensteer/protocol/desktop";
 import { Dialog } from "../dialog.js";
@@ -106,7 +108,11 @@ export function SignOutDialog({
               setPending(true);
               setError(null);
               void onConfirm()
-                .then(onClose)
+                .then(() => {
+                  discardAllStagedFiles();
+                  composerDrafts.clearAll();
+                  onClose();
+                })
                 .catch((reason: unknown) => {
                   setPending(false);
                   setError(

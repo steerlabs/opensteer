@@ -116,12 +116,6 @@ export interface ShellContext {
   /** Taken once, by Home's composer, so a later visit starts from its own draft. */
   clearHomeHandoff: () => void;
   /**
-   * What was written into Home before Home existed. Creation replaces one
-   * composer with another; the words must not be what that costs.
-   */
-  homeDraft: string;
-  setHomeDraft: (draft: string) => void;
-  /**
    * The Home conversation, once the Host has one. Null before the first valid
    * execution choice creates it — the Home route then shows a real empty
    * composer, not a Thread that does not exist.
@@ -416,7 +410,6 @@ export function AppShell({
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [homeHandoff, setHomeHandoff] = useState<ShellContext["homeHandoff"]>(null);
-  const [homeDraft, setHomeDraft] = useState("");
   const [sharingWorkspaceId, setSharingWorkspaceId] = useState<string | null>(null);
   const [newWorkspaceOpen, setNewWorkspaceOpen] = useState(false);
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
@@ -906,11 +899,9 @@ export function AppShell({
       desktopBridge: localBridge,
       desktopDeployment,
       executionPreferences,
-      homeDraft,
       homeHandoff,
       homeThreadId: snapshot.homeThreadId,
       hostClient,
-      setHomeDraft,
       localExecutionStatus: viewedLocalExecutionStatus,
       localExecutionAction,
       localExecutionError,
@@ -938,7 +929,6 @@ export function AppShell({
       desktopDeployment,
       executionPreferences,
       harnessAuthenticationEnvironmentIds,
-      homeDraft,
       homeHandoff,
       snapshot.homeThreadId,
       hostClient,

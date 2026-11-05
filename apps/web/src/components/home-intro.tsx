@@ -16,6 +16,7 @@ import {
 import { useShell } from "./app-shell.js";
 import { VoiceButton, VoiceDock } from "./voice.js";
 import { BrandMark } from "./brand.js";
+import { composerDraftKeyFor } from "./composer-drafts.js";
 import { Composer, type ComposerQuote, type ComposerSubmission } from "./composer.js";
 import { ExecutionControls } from "./execution-controls.js";
 import { UsageNotice } from "./usage-notice.js";
@@ -59,13 +60,11 @@ export function HomeIntro({
     desktopBridge,
     desktopDeployment,
     executionPreferences,
-    homeDraft,
     homeHandoff,
     hostClient,
     openHarnessAuthentication,
     placements,
     rememberExecution,
-    setHomeDraft,
     snapshot,
   } = useShell();
   // On the computer it runs on, the AI is set up where the rest of setup is.
@@ -75,13 +74,12 @@ export function HomeIntro({
     desktopDeployment.onThisComputer;
   const [accessMode, setAccessMode] = useState<ThreadAccessMode>(executionPreferences.accessMode);
   // One channel into the composer, so a quote handed over from a task and an
-  // example prompt cannot cancel each other out. The draft kept by the shell
-  // is restored first: it is what this reader had already written.
+  // example prompt cannot cancel each other out.
   const [restore, setRestore] = useState<{
     readonly key: number;
     readonly quote?: ComposerQuote | null;
     readonly text: string;
-  } | null>(() => (homeDraft ? { key: 0, text: homeDraft } : null));
+  } | null>(null);
   const pushRestore = (next: { readonly quote?: ComposerQuote | null; readonly text: string }) =>
     setRestore((current) => ({ ...next, key: (current?.key ?? 0) + 1 }));
   useEffect(() => {
@@ -142,10 +140,12 @@ export function HomeIntro({
 
   // Nothing chosen and something to choose: "Choose AI" is the composer's primary action.
   const choosable = selection === null && blocked === null && runnable.length > 0;
-  const context = useComposerContext({ auto: true, hostClient });
-  const placeContext = useMemo(() => ({ context, hostClient }), [context, hostClient]);
   const { deploymentId } = snapshot;
   const userId = snapshot.user?.id ?? null;
+  // Chat's draft: the same one Home's conversation picks up once it exists.
+  const draftKey = composerDraftKeyFor(deploymentId, userId, { kind: "chat" });
+  const context = useComposerContext({ auto: true, draftKey, hostClient });
+  const placeContext = useMemo(() => ({ context, hostClient }), [context, hostClient]);
   const storageReady = useMemo(() => pendingStorageAvailable(), []);
   // An access mode the chosen engine cannot enforce is the person's to change;
   // the Host would refuse the Thread rather than run it in another mode.
@@ -172,14 +172,9 @@ export function HomeIntro({
                 : workspace.status !== "ready"
                   ? "Your Workspace storage is still being prepared."
                   : null;
-  const attachmentTarget =
-    deploymentId && userId
-      ? {
-          client: hostClient,
-          scope: `${deploymentId}/${userId}/home/${workspace.id}`,
-          workspaceId: workspace.id,
-        }
-      : null;
+  const attachmentTarget = draftKey
+    ? { client: hostClient, scope: draftKey, workspaceId: workspace.id }
+    : null;
 
   // A send that ended without handing the message to Home leaves it saved:
   // the Host answered with a Home another device had already started on a
@@ -227,7 +222,6 @@ export function HomeIntro({
     });
     if (!runsChosenExecution(home, { accessMode, selection }, placements)) {
       keepStaged.current = true;
-      setHomeDraft("");
       onCreated(home.id);
       return;
     }
@@ -245,7 +239,6 @@ export function HomeIntro({
     // Home owes it now, under the same key. The staging record has done its
     // job and must not be left for Home to be handed a second time.
     discardStagedHomeMessage({ deploymentId, userId });
-    setHomeDraft("");
     onCreated(home.id);
   };
 
@@ -276,7 +269,7 @@ export function HomeIntro({
             onSend={startHome}
             pendingSends={stagedSends}
             placeholder="Ask Opensteer…"
-            onDraftChange={setHomeDraft}
+            draftKey={draftKey}
             onHoldingChange={onHolding}
             restore={restore}
             sendBlocked={sendBlocked}

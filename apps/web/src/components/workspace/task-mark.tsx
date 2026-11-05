@@ -6,6 +6,7 @@ import {
   type TaskMark as ResolvedTaskMark,
   type TaskTone,
 } from "@opensteer/client/host";
+import { Icon } from "../icon.js";
 import { WorkspaceIconGlyph } from "../workspace-orb.js";
 
 export type TaskMarkSize = 16 | 20 | 22;
@@ -142,4 +143,13 @@ export function taskCursorPaint(mark: ResolvedTaskMark, home: boolean): string {
     : mark.color === null
       ? "var(--surface-hover)"
       : markColorPaint[mark.color].cursor;
+}
+
+/** Words waiting on a conversation, unsent. It sits beside a row's state, never in its place. */
+export function UnsentMark() {
+  return (
+    <span aria-hidden className="side-unsent" title="Unsent draft">
+      <Icon name="pencil" />
+    </span>
+  );
 }

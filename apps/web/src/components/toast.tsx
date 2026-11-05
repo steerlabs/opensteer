@@ -25,13 +25,22 @@ export type ToastTone = "error" | "success";
 
 interface Toast {
   readonly id: number;
+  readonly action?: ToastAction;
   readonly message: string;
   readonly tone: ToastTone;
 }
 
+/** One thing to do about what just happened, such as taking it back. */
+export interface ToastAction {
+  readonly label: string;
+  /** The toast left without its action being taken. */
+  readonly lapse?: () => void;
+  readonly run: () => void;
+}
+
 export interface ToastApi {
   /** Confirm that something succeeded. Announced politely. */
-  readonly success: (message: string) => void;
+  readonly success: (message: string, action?: ToastAction) => void;
   /** Report a transient failure. Announced assertively. */
   readonly error: (message: string) => void;
 }
@@ -71,6 +80,7 @@ function ToastLayer({ children }: { readonly children: ReactNode }) {
   const nextId = useRef(0);
   const layerRef = useRef<HTMLDivElement | null>(null);
   const timers = useRef(new Map<number, number>());
+  const lapses = useRef(new Map<number, () => void>());
 
   const dismiss = useCallback((id: number) => {
     const timer = timers.current.get(id);
@@ -78,15 +88,21 @@ function ToastLayer({ children }: { readonly children: ReactNode }) {
       window.clearTimeout(timer);
       timers.current.delete(id);
     }
+    lapses.current.get(id)?.();
+    lapses.current.delete(id);
     setToasts((current) => current.filter((toast) => toast.id !== id));
   }, []);
 
   const push = useCallback(
-    (message: string, tone: ToastTone) => {
+    (message: string, tone: ToastTone, action?: ToastAction) => {
       const trimmed = message.trim();
       if (trimmed === "") return;
       const id = (nextId.current += 1);
-      setToasts((current) => [...current.slice(-2), { id, message: trimmed, tone }]);
+      if (action?.lapse) lapses.current.set(id, action.lapse);
+      setToasts((current) => [
+        ...current.slice(-2),
+        { id, message: trimmed, tone, ...(action ? { action } : {}) },
+      ]);
       timers.current.set(
         id,
         window.setTimeout(() => dismiss(id), dwellMs[tone]),
@@ -148,7 +164,7 @@ function ToastLayer({ children }: { readonly children: ReactNode }) {
   const api = useMemo<ToastApi>(
     () => ({
       error: (message: string) => push(message, "error"),
-      success: (message: string) => push(message, "success"),
+      success: (message: string, action?: ToastAction) => push(message, "success", action),
     }),
     [push],
   );
@@ -169,6 +185,19 @@ function ToastLayer({ children }: { readonly children: ReactNode }) {
             >
               <Icon name={toast.tone === "error" ? "alert-circle" : "check"} />
               <span className="toast__message">{toast.message}</span>
+              {toast.action ? (
+                <button
+                  className="toast__action"
+                  onClick={() => {
+                    lapses.current.delete(toast.id);
+                    dismiss(toast.id);
+                    toast.action?.run();
+                  }}
+                  type="button"
+                >
+                  {toast.action.label}
+                </button>
+              ) : null}
               <button
                 aria-label="Dismiss"
                 className="icon-btn toast__dismiss"

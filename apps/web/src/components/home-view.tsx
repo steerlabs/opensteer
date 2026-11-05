@@ -1,6 +1,6 @@
 import { RowMotion } from "./workspace/row-motion.js";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, Navigate, useParams } from "react-router";
+import { Link, Navigate, useLocation, useNavigate, useParams, useSearchParams } from "react-router";
 import { CHAT_THREAD_TITLE, type ThreadAccessMode } from "@opensteer/core";
 import {
   accessModeConflict,
@@ -26,6 +26,7 @@ import {
 import { actionErrorMessage, useMinuteClock } from "../ui-utils.js";
 import { useShell } from "./app-shell.js";
 import { AssigneePicker } from "./assignee-picker.js";
+import { composerDraftKeyFor } from "./composer-drafts.js";
 import { Composer, type ComposerSubmission } from "./composer.js";
 import { HomeIntro } from "./home-intro.js";
 import { ThreadSurface } from "./thread-view.js";
@@ -271,8 +272,39 @@ function HomeConversation({ threadId }: { readonly threadId: string }) {
 export function NewTaskRoute() {
   const { snapshot } = useShell();
   const homeWorkspace = mainWorkspace(snapshot);
+  const draftId = useTaskDraftId();
   if (!homeWorkspace) return <MainWorkspacePending snapshot={snapshot} />;
-  return <WorkspaceHome home workspace={homeWorkspace} />;
+  return (
+    <WorkspaceHome
+      draftId={draftId}
+      home
+      key={`${snapshot.user?.id ?? ""}:${homeWorkspace.id}:${draftId}`}
+      workspace={homeWorkspace}
+    />
+  );
+}
+
+/**
+ * Which draft this page writes. An address without one is a blank task, so it
+ * is given a new id on arrival: naming a draft nobody wrote is just a blank
+ * page, which is why nothing is kept until something is written.
+ */
+function useTaskDraftId(): string {
+  const [params] = useSearchParams();
+  const named = params.get("draft");
+  const draftId = useMemo(() => named ?? globalThis.crypto.randomUUID(), [named]);
+  const navigate = useNavigate();
+  const location = useLocation();
+  useEffect(() => {
+    if (named !== null) return;
+    const search = new URLSearchParams(location.search);
+    search.set("draft", draftId);
+    void navigate(
+      { hash: location.hash, pathname: location.pathname, search: `?${search.toString()}` },
+      { replace: true, state: location.state },
+    );
+  }, [draftId, location.hash, location.pathname, location.search, location.state, named, navigate]);
+  return draftId;
 }
 
 /** Main is the Host's to create, so its absence is a wait or a fault, not a choice. */
@@ -314,6 +346,7 @@ export function WorkspaceHomeRoute() {
   const { workspaceId } = useParams();
   const { hostClient, snapshot } = useShell();
   const workspace = snapshot.workspaces.find((candidate) => candidate.id === workspaceId) ?? null;
+  const draftId = useTaskDraftId();
   // Opening a project, from wherever it was opened, follows its stream.
   const activeWorkspaceId = workspace?.id ?? null;
   useEffect(() => {
@@ -321,7 +354,14 @@ export function WorkspaceHomeRoute() {
   }, [activeWorkspaceId, hostClient]);
   if (!workspace) return <Navigate replace to="/" />;
   if (workspace.kind === "main") return <Navigate replace to="/" />;
-  return <WorkspaceHome key={workspace.id} home={false} workspace={workspace} />;
+  return (
+    <WorkspaceHome
+      draftId={draftId}
+      home={false}
+      key={`${snapshot.user?.id ?? ""}:${workspace.id}:${draftId}`}
+      workspace={workspace}
+    />
+  );
 }
 
 const suggestions = [
@@ -331,7 +371,15 @@ const suggestions = [
   "Organize the files here",
 ];
 
-function WorkspaceHome({ home, workspace }: { home: boolean; workspace: WorkspaceSummary }) {
+function WorkspaceHome({
+  draftId,
+  home,
+  workspace,
+}: {
+  draftId: string;
+  home: boolean;
+  workspace: WorkspaceSummary;
+}) {
   const { nav } = useWorkspace();
   const {
     createThreadAndSend,
@@ -345,8 +393,11 @@ function WorkspaceHome({ home, workspace }: { home: boolean; workspace: Workspac
     snapshot,
   } = useShell();
   const [suggestionPending, setSuggestionPending] = useState(false);
+  const { deploymentId } = snapshot;
+  const userId = snapshot.user?.id ?? null;
+  const draftKey = composerDraftKeyFor(deploymentId, userId, { kind: "task", draftId });
   // A new task's draft follows the place in front until it is touched.
-  const context = useComposerContext({ auto: true, hostClient });
+  const context = useComposerContext({ auto: true, draftKey, hostClient });
   const placeContext = useMemo(() => ({ context, hostClient }), [context, hostClient]);
   const [accessMode, setAccessMode] = useState<ThreadAccessMode>(executionPreferences.accessMode);
   const remembered = useMemo(
@@ -384,8 +435,6 @@ function WorkspaceHome({ home, workspace }: { home: boolean; workspace: Workspac
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   // Files are staged in the Workspace the Thread will start in, before the
   // Thread exists; the first message is kept before anything sends it.
-  const { deploymentId } = snapshot;
-  const userId = snapshot.user?.id ?? null;
   const storageReady = useMemo(() => pendingStorageAvailable(), []);
   // An access mode the chosen engine cannot enforce is the person's to change;
   // the Host would refuse the Thread rather than run it in another mode.
@@ -398,14 +447,9 @@ function WorkspaceHome({ home, workspace }: { home: boolean; workspace: Workspac
       : !storageReady
         ? pendingStorageUnavailable
         : accessConflict;
-  const attachmentTarget =
-    deploymentId && userId
-      ? {
-          client: hostClient,
-          scope: `${deploymentId}/${userId}/new-thread/${workspace.id}`,
-          workspaceId: workspace.id,
-        }
-      : null;
+  const attachmentTarget = draftKey
+    ? { client: hostClient, scope: draftKey, workspaceId: workspace.id }
+    : null;
 
   const startThread = async (
     body: string,
@@ -479,6 +523,8 @@ function WorkspaceHome({ home, workspace }: { home: boolean; workspace: Workspac
             <>
               <Composer
                 dictationScope={`${deploymentId}/${userId}/new-thread/${workspace.id}`}
+                draftKey={draftKey}
+                draftWorkspaceId={workspace.id}
                 inputRef={inputRef}
                 placeContext={placeContext}
                 attachments={attachmentTarget}
@@ -493,7 +539,9 @@ function WorkspaceHome({ home, workspace }: { home: boolean; workspace: Workspac
                 )}
                 sendBlocked={sendBlocked}
                 sendLabel="Start task"
-                leadingFooter={<AssigneePicker projects={projects} workspace={workspace} />}
+                leadingFooter={
+                  <AssigneePicker draftId={draftId} projects={projects} workspace={workspace} />
+                }
                 footerExtras={
                   <>
                     <ExecutionControls
