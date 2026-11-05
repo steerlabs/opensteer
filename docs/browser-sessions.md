@@ -90,6 +90,15 @@ Watch is passive: it may manage picture subscriptions and raster demand, but nev
 resize, input, touch the clipboard or CDP, or move state. Profile owners can always view their
 sessions, whatever the grants; Guest follows Workspace membership.
 
+A popup is another tab of its session, and each viewer owns what it shows, so nothing about following
+one is stored on the tab: the runtime tells the one viewer whose own input opened it, once, and that
+viewer moves as if it had chosen the row. Everyone else stays put. The ledger decides this when the
+popup registers, from the opener's latest person input. `Page.windowOpen` cannot decide it: a
+cross-site frame's event reaches only that frame's session, and a blocked attempt fires it too. The
+rule shares Chromium's user activation and its limit: an agent timer firing just after a person's
+input reads as theirs, as it does to Chromium. Any agent command after the input cancels the follow,
+which leaves the popup as a new row.
+
 ## Profile state
 
 Profile listing, opening, CDP and tab reach follow the [Run resource authority

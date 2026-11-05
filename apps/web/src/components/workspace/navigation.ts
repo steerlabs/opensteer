@@ -14,7 +14,8 @@ import { AppIdSchema } from "@opensteer/core";
  * the query names the place in the middle. Every explicit choice pushes exactly
  * one history entry; canonicalising an old address replaces once. A Host event
  * navigates only when it takes the place in the middle away, and then once, by
- * replace ([place succession](./place-succession.ts)).
+ * replace, or when the person's own input opened a popup, which is their
+ * choice and pushes ([place succession](./place-succession.ts)).
  */
 
 /**

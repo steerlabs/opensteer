@@ -64,6 +64,10 @@ const state = vi.hoisted(() => ({
   /** Every claim of the active Thread a pane beside the page made. */
   conversationClaims: [] as string[],
   drafts: null as ThreadDraftStore | null,
+  popupFollow: null as {
+    readonly tab: { readonly sessionId: string; readonly tabId: string } | null;
+    readonly follow: (tabId: string) => void;
+  } | null,
 }));
 
 vi.mock("@react-navigation/native", () => ({
@@ -109,6 +113,13 @@ vi.mock("@opensteer/client/react", async () => ({
     retry: () => undefined,
     view: { app: { title: "Budget" }, url: `https://host.test/v1/apps/${appId}/dark/token/` },
   }),
+  useBrowserPopupFollow: (
+    _client: unknown,
+    tab: { sessionId: string; tabId: string } | null,
+    follow: (tabId: string) => void,
+  ) => {
+    state.popupFollow = { tab, follow };
+  },
   useHostSelector: (_client: unknown, selector: (snapshot: HostSnapshot) => unknown) =>
     selector(state.snapshot!),
   useHostSnapshot: () => ({ snapshot: state.snapshot, loadError: null, reload: state.refresh }),
@@ -783,6 +794,33 @@ describe("mobile pages", () => {
     expect(state.dispatch).not.toHaveBeenCalled();
     expect(state.hostClient.sendBrowserCommand).not.toHaveBeenCalled();
     expect(container.textContent).not.toContain("Back to tabs");
+  });
+
+  it("opens a popup the person's input opened over its page, ready to go back", () => {
+    const chosen = mailSession("chosen");
+    const tabId = chosen.tabs[0]!.id;
+    const { render } = setup({ sessionId: chosen.id, tabId });
+    state.snapshot = snapshot([chosen]);
+    render();
+    expect(state.popupFollow?.tab).toEqual({ sessionId: chosen.id, tabId });
+    state.popupFollow?.follow("popup-tab");
+    expect(state.dispatch).toHaveBeenLastCalledWith({
+      type: "PUSH",
+      name: "WorkspaceBrowser",
+      params: expect.objectContaining({
+        editAddress: false,
+        popup: true,
+        sessionId: chosen.id,
+        tabId: "popup-tab",
+      }),
+    });
+  });
+
+  it("leaves a followed popup when it ends, to the page under it", () => {
+    const { render } = setup({ popup: true, sessionId: "chosen", tabId: "missing-page" });
+    state.snapshot = snapshot([mailSession("chosen")]);
+    render();
+    expect(state.dispatch).toHaveBeenCalledExactlyOnceWith({ type: "POP", count: 1 });
   });
 
   it("views a linked inactive page without activating it and targets its navigation", () => {
@@ -2477,6 +2515,7 @@ describe("native page layout and controls", () => {
     press(container, "Other, other.example");
     expect(state.setParams).toHaveBeenCalledExactlyOnceWith({
       editAddress: false,
+      popup: false,
       tabId: other.id,
     });
     expect(send).not.toHaveBeenCalled();

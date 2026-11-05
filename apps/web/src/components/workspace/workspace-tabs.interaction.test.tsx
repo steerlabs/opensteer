@@ -912,7 +912,7 @@ describe("the place in the middle goes: the tab beside it takes its entry", () =
       await client.closeBrowserTab(confirm.sessionId, confirm.tabId, confirm.catalog);
     });
     await settle(60);
-    expectSucceeded(before, path, tab("Le Petit Jardin").key);
+    expectSucceeded(before, path, tab("Your reading list").key);
     // Its whole browser ends: every tab of it goes at once, and the row after all of them takes it.
     const following = tab("Friday dinner").key;
     before = history.length;
@@ -932,6 +932,82 @@ describe("the place in the middle goes: the tab beside it takes its entry", () =
     await settle(60);
     expect(shown()).toBe(following);
     expect(history.length).toBe(before);
+  });
+
+  it("follows a popup the person's input opened once it is listed, drops it if they left, and closing it returns to the tab that opened it", async () => {
+    let announce: (popupId: string) => void = () => undefined;
+    let unlisted: string | null = null;
+    const seen = new WeakMap<HostSnapshot, Map<string | null, HostSnapshot>>();
+    await mount((source) => {
+      Object.assign(source, {
+        subscribeBrowserPopups: (_sessionId: string, _tabId: string, listener: typeof announce) => {
+          announce = listener;
+          return () => undefined;
+        },
+      });
+      const read = source.getSnapshot;
+      vi.spyOn(source, "getSnapshot").mockImplementation(() => {
+        const snapshot = read();
+        const views = seen.get(snapshot) ?? new Map<string | null, HostSnapshot>();
+        seen.set(snapshot, views);
+        const view = views.get(unlisted) ?? {
+          ...snapshot,
+          browserSessions: snapshot.browserSessions.map((value) =>
+            value.tabCatalog
+              ? {
+                  ...value,
+                  tabCatalog: {
+                    ...value.tabCatalog,
+                    tabs: value.tabCatalog.tabs.filter((row) => row.id !== unlisted),
+                  },
+                }
+              : value,
+          ),
+        };
+        views.set(unlisted, view);
+        return view;
+      });
+      return "/";
+    });
+    const opener = tab("Your reading list");
+    const popup = tab("Confirm your reservation");
+    const elsewhere = tab("Le Petit Jardin");
+    const list = async (close: Place) => {
+      unlisted = null;
+      const { sessionId, tabId, catalog } = session(close);
+      await act(async () => {
+        await client.closeBrowserTab(sessionId, tabId, catalog);
+      });
+      await settle(60);
+    };
+
+    await click(main(opener.key));
+    unlisted = session(popup).tabId;
+    await act(async () => announce(session(popup).tabId));
+    await click(main(elsewhere.key));
+    await list(tab("Launch brief"));
+    expect(shown()).toBe(elsewhere.key);
+    await click(main(opener.key));
+    expect(shown()).toBe(opener.key);
+
+    const path = history.at(-1)!.path;
+    let before = history.length;
+    unlisted = session(popup).tabId;
+    await act(async () => announce(session(popup).tabId));
+    await settle(60);
+    expect(shown()).toBe(opener.key);
+    await list(tab("Coffee shortlist"));
+    expect(shown()).toBe(popup.key);
+    expect(history.length).toBe(before + 1);
+    expect(history.at(-1)).toMatchObject({ path, type: "PUSH" });
+
+    before = history.length;
+    const { sessionId, tabId, catalog } = session(popup);
+    await act(async () => {
+      await client.closeBrowserTab(sessionId, tabId, catalog);
+    });
+    await settle(60);
+    expectSucceeded(before, path, opener.key);
   });
 
   it("passes over a tab that cannot be shown, and with no tab left opens the start page fresh in the entry", async () => {

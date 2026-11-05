@@ -18,6 +18,7 @@ export function browserViewerMessage(
   editing: 1 | 2 | undefined = undefined,
   passkeys?: "native" | "notice",
   consumerToken?: string,
+  popups = false,
 ): BrowserServerMessage {
   if (message.type === "browser.snapshot") {
     const {
@@ -39,6 +40,7 @@ export function browserViewerMessage(
           ? { ...baseline, editingVersion: 1 }
           : baseline;
     if (passkeys) message = { ...message, passkeys, passkeyConsumerToken: consumerToken };
+    if (popups) message = { ...message, consumerToken };
   }
   if (message.type !== "browser.snapshot" && message.type !== "browser.surfaces.changed")
     return message;
