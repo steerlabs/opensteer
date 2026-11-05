@@ -123,6 +123,8 @@ final class SnapshotTests: BrokerTestCase {
     let flow = try XCTUnwrap(model.importFlow)
     try render(ImportSheet(flow: flow), "import-1-where")
     try render(AnyView(SourceList { _ in }.frame(width: 400)), "import-1b-sources")
+    flow.choose(.safari)
+    try render(ImportSheet(flow: flow), "import-2a-steps-with-its-app")
     flow.choose(.chrome)
     try render(ImportSheet(flow: flow), "import-2-steps")
     let export = harness.directory.appendingPathComponent("export.csv")

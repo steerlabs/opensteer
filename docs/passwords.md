@@ -145,8 +145,9 @@ Versions live in the [broker wire](../packages/protocol/src/passwords-broker.ts)
 
 The [broker](../apps/desktop/native/passwords/README.md) is the only vault and key owner for a macOS
 user. It is an accessory app except while its window is open, when it is a regular one: the person
-leaves it to export, needs the Dock or Command-Tab to get back, and macOS only returns focus after
-the system prompt to a regular app. It accepts only the signed Opensteer desktop under the Developer ID team taken from its own
+leaves it to export, needs the Dock or Command-Tab to get back, and when the system prompt closes
+macOS gives focus only to a regular app, refusing an accessory app that asks for it back. It accepts
+only the signed Opensteer desktop under the Developer ID team taken from its own
 signature, checked by audit token before reading any byte; desktop verifies the broker's signature
 and live peer too. Development uses a separate bundle, socket and vault, and its file protection
 cannot resist same-user rollback, so it must never ship.

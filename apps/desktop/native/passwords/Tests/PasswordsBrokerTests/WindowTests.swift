@@ -108,13 +108,6 @@ final class WindowTests: BrokerTestCase {
     XCTAssertEqual(window.screen, .ready)
   }
 
-  /// macOS picks the next app when the system prompt closes; the window takes it back.
-  func testTheWindowComesBackAfterAuthentication() async throws {
-    let before = harness.windows.opened
-    await model().setUp()
-    XCTAssertEqual(harness.windows.opened, before + 1)
-  }
-
   func testCancelledSetupStaysOnSetUp() async throws {
     let window = model()
     presence.next(.cancel)

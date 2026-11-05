@@ -1180,8 +1180,6 @@ public final class Broker: IPCServerDelegate {
     defer { windowPrompts[key] = nil }
     let authentication = try await prompt.value
     guard generation == windowGeneration else { throw PresenceError.cancelled }
-    // The system prompt leaves macOS to pick the next app, which needn't be this one.
-    windows?.openPasswordsWindow()
     return authentication
   }
 

@@ -104,7 +104,7 @@ private struct SetUpView: View {
           Label {
             Text(fact).fixedSize(horizontal: false, vertical: true)
           } icon: {
-            Image(systemName: symbol).foregroundStyle(.secondary)
+            Image(systemName: symbol).foregroundStyle(.secondary).frame(width: 22)
           }
         }
       }

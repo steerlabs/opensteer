@@ -291,14 +291,11 @@ final class IPCTests: BrokerTestCase {
   func testWindowOpen() async throws {
     try await harness.ready(items: [Fixtures.login()])
     let desktop = try await harness.client()
-    let before = harness.windows.opened
     same(try await desktop.call("window.open").result, .object([:]))
-    try await harness.eventually("the window") { harness.windows.opened == before + 1 }
+    try await harness.eventually("the window") { harness.windows.opened == 1 }
     _ = try await request(desktop, UUID().uuidString.lowercased())
     same(try await desktop.call("window.open").result, .object([:]))
-    try await harness.eventually("the window again, whatever waits") {
-      harness.windows.opened == before + 2
-    }
+    try await harness.eventually("the window again, whatever waits") { harness.windows.opened == 2 }
   }
 }
 
