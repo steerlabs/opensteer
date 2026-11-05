@@ -214,8 +214,10 @@ public final class UnlockedVault {
       deleted.append(id)
       repointed.insert(id)
     }
-    let cardCount = try cards().filter { !changes.delete.contains($0.id) }.count
-    guard cardCount + changes.addCards.count <= 100 else { throw VaultError.tooManyItems }
+    if !changes.addCards.isEmpty {
+      let cardCount = try cards().filter { !changes.delete.contains($0.id) }.count
+      guard cardCount + changes.addCards.count <= 100 else { throw VaultError.tooManyItems }
+    }
     for draft in changes.addCards {
       try draft.validate()
       let card = CardItem(id: VaultIDs.newUUID(), draft: draft, createdAt: now, updatedAt: now, revision: 1)

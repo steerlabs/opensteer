@@ -1016,7 +1016,10 @@ function cardFieldScript(input: {
           }
           return /^\\d{2}$|^\\d{4}$/.test(t) && (t.length === 2 ? t === value.slice(-2) : t === value);
         };
-        const options = [...el.options].filter(o => !o.disabled && !(o.parentElement instanceof HTMLOptGroupElement && o.parentElement.disabled) && (matches(o.value) || matches(o.label)));
+        const enabled = [...el.options].filter(o => !o.disabled && !(o.parentElement instanceof HTMLOptGroupElement && o.parentElement.disabled));
+        // Named months identify themselves; their values may be zero-based.
+        const named = month && enabled.some(o => names.some(n => o.label.toLowerCase().includes(n.slice(0,3))));
+        const options = enabled.filter(o => named ? matches(o.label) : matches(o.value) || matches(o.label));
         if (options.length !== 1) return "no-field";
         value = options[0].value;
       }

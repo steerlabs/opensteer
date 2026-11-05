@@ -462,12 +462,14 @@ export function passwordsWaitingDetail(count: number): string {
     ? "1 password or card request to answer in its conversation"
     : `${count} password or card requests to answer in their conversations`;
 }
+export const passwordsCardsFact =
+  "Cards work on websites only. Every use needs a fresh approval, lasting up to 30 minutes; it does not approve a charge.";
 export const passwordsHowItWorks = [
-  "Cards work on websites only. Every use needs a fresh approval, lasting up to 30 minutes; it does not approve a charge.",
   "You allow an account once per Workspace from any device signed in to this Opensteer. After that, agents there can use it to sign in on their own.",
   "Take that access away any time in the Passwords window.",
   "Sign-ins can stay saved in the browser profile.",
   "Sites you allowed from Chrome keep using Chrome.",
+  passwordsCardsFact,
 ] as const;
 export const passwordsNeedsReset =
   "Set up Opensteer Passwords again. The passwords saved here before can’t be opened on this Mac.";

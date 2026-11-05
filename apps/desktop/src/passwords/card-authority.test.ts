@@ -247,6 +247,19 @@ it.each(["01", "January", "Jan", "01 - Jan"])("matches month select label %s", a
   expect(await f.fill("expiry-month")).toBe("filled");
   expect(f.writes).toEqual(["provider-option"]);
 });
+it("matches named months by label when their values are zero-based", async () => {
+  const f = await fixture(true);
+  await f.commit();
+  f.release.value = "01";
+  const months = ["January", "February", "March", "April", "May", "June"];
+  if ("options" in f.element)
+    f.element.options = [
+      { value: "", label: "Month", disabled: false },
+      ...months.map((label, index) => ({ value: String(index), label, disabled: false })),
+    ];
+  expect(await f.fill("expiry-month")).toBe("filled");
+  expect(f.writes).toEqual(["0"]);
+});
 it("refuses ambiguous and unsupported selects", async () => {
   const f = await fixture(true);
   await f.commit();

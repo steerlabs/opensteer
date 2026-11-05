@@ -283,7 +283,7 @@ public final class VaultService: @unchecked Sendable {
 
   // MARK: Settings
 
-  /// "Agents can sign in with your passwords". Missing means on (setting up
+  /// "Agents can use saved passwords and cards". Missing means on (setting up
   /// was the opt-in); unreadable means off, so a damaged value never lets
   /// agents in.
   public func agentSignIns() async -> Bool {
