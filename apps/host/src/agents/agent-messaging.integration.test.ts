@@ -99,6 +99,9 @@ integration("agent-to-agent messaging round trip", () => {
     browserTabs,
     personShow: (userId, message) => realtime.showToPerson(userId, message),
     browserSources: {
+      agentUseCard: async () => {
+        throw new Error("Unexpected card use");
+      },
       agentSignIn: async () => {
         throw new Error("Unexpected browser sign-in");
       },

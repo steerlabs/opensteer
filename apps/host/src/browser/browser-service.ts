@@ -461,6 +461,7 @@ export interface BrowserRuntimeTarget {
   /** The Runtime stages page-bound files; one that predates it cannot receive any. */
   readonly fileStaging?: boolean;
   /** The Runtime authorizes and fills saved logins (`login.*`, version 3). */
+  readonly cardFill?: boolean;
   readonly signIn?: boolean;
   /** The Runtime enforces the agent CDP boundary; agents get no CDP on one without it. */
   readonly cdpBoundary?: boolean;
@@ -545,6 +546,7 @@ export interface BrowserSignInTarget {
   readonly live: boolean;
   readonly stateImport: boolean;
   /** The session's browser runs saved-password sign-ins on its computer. */
+  readonly cardFill?: boolean;
   readonly signIn: boolean;
   /** The computer that runs the session's browser, when a Runner relays it. */
   readonly computer: { readonly name: string; readonly runnerId: RunnerId } | null;
@@ -2955,13 +2957,20 @@ export class BrowserService {
     ): Promise<{ readonly result: Promise<unknown> }> => {
       const bindingWasEnded = this.#endedBindings.has(input.agentBindingId);
       const lease =
-        command.method === "Opensteer.fillLogin"
-          ? z.object({ loginRef: z.string() }).safeParse(command.parameters)
+        command.method === "Opensteer.fillLogin" || command.method === "Opensteer.fillCard"
+          ? z.object({ loginRef: z.string() }).safeParse(
+              command.method === "Opensteer.fillCard"
+                ? {
+                    loginRef: z.object({ cardRef: z.string() }).safeParse(command.parameters).data
+                      ?.cardRef,
+                  }
+                : command.parameters,
+            )
           : null;
       const fillAllowed = () =>
         lease === null ||
         (lease.success &&
-          broker.signIn &&
+          (command.method === "Opensteer.fillCard" ? broker.cardFill : broker.signIn) &&
           broker.live &&
           this.#brokers.has(record.id) &&
           this.#validateLoginLease?.({
@@ -3193,6 +3202,7 @@ export class BrowserService {
       profileId: record.profileId,
       profileName: profile?.name ?? null,
       sessionId: record.id,
+      cardFill: broker?.cardFill ?? false,
       signIn: broker?.signIn ?? false,
       computer: broker?.computer ?? null,
       stateImport: broker?.stateImport ?? false,
@@ -3720,6 +3730,7 @@ export class BrowserService {
           computer: target.computer ?? null,
           connectTimeoutMs: this.#connectTimeoutMs,
           fileStaging: target.fileStaging === true,
+          cardFill: target.cardFill === true,
           signIn: target.signIn === true,
           stateImport: target.stateImport === true,
           onState: (state) => {
@@ -4224,6 +4235,7 @@ interface HostedBrowserBrokerOptions {
   readonly computer: { readonly name: string; readonly runnerId: RunnerId } | null;
   readonly connectTimeoutMs: number;
   readonly fileStaging: boolean;
+  readonly cardFill?: boolean;
   readonly signIn: boolean;
   readonly stateImport: boolean;
   readonly onState: (state: HostedBrowserSessionState) => Promise<BrowserSessionRecord>;
@@ -4472,6 +4484,7 @@ class HostedBrowserBroker {
   readonly clipboard: boolean;
   readonly computer: { readonly name: string; readonly runnerId: RunnerId } | null;
   readonly fileStaging: boolean;
+  readonly cardFill?: boolean;
   readonly signIn: boolean;
   readonly stateImport: boolean;
   readonly workspaceId: WorkspaceId;
@@ -4526,6 +4539,7 @@ class HostedBrowserBroker {
     this.clipboard = options.clipboard;
     this.computer = options.computer;
     this.fileStaging = options.fileStaging;
+    this.cardFill = options.cardFill === true;
     this.signIn = options.signIn;
     this.stateImport = options.stateImport;
     this.#connectTimeoutMs = options.connectTimeoutMs;

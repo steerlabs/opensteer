@@ -81,6 +81,7 @@ export function agentToolHandlers(options: {
     request_list: async (c) => await p.request_list(c),
     request_withdraw: async (c) => await p.request_withdraw(c),
     browser_profile_list: async (c) => await p.browser_profile_list(c),
+    use_card: async (c) => await p.use_card(c),
     sign_in: async (c) => await p.sign_in(c),
     browser_profile_request: async (c) => await p.browser_profile_request(c),
     machine_full_disk_access_request: async (c) => await p.machine_full_disk_access_request(c),

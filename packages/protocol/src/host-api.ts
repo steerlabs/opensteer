@@ -17,6 +17,7 @@ import {
   SettingsPluginEnableResultSchema,
   SettingsPluginPlacementResultSchema,
 } from "./settings.js";
+import { CardApprovalSchema } from "./card-use.js";
 import { PasswordSignInCardViewSchema, PasswordSignInApprovalSchema } from "./password-sign-in.js";
 import { ComputerUseResolvedAppSchema } from "./computer-use.js";
 import {
@@ -1121,6 +1122,7 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     decision: z.union([
       z.strictObject({ kind: z.literal("decline") }),
       z.strictObject({ kind: z.literal("approve"), ...PasswordSignInApprovalSchema.shape }),
+      z.strictObject({ kind: z.literal("approve-card"), ...CardApprovalSchema.shape }),
     ]),
   }),
   z.strictObject({

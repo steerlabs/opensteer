@@ -18,6 +18,7 @@ import { person_message, person_show } from "./person.js";
 import {
   browser_profile_list,
   sign_in,
+  use_card,
   browser_profile_request,
   browser_tab_read,
   browser_tab_write,
@@ -52,6 +53,7 @@ export const agentTools = [
   thread_queue,
   browser_profile_list,
   sign_in,
+  use_card,
   browser_profile_request,
   machine_full_disk_access_request,
   browser_tab_read,

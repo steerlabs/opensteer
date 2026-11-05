@@ -404,7 +404,7 @@ export class FakePasswordsBroker {
     switch (method) {
       case "hello": {
         const requested = params.protocolVersion;
-        if (requested !== 4 && requested !== 5 && requested !== 6)
+        if (requested !== 4 && requested !== 5 && requested !== 6 && requested !== 7)
           throw new Error("Unsupported protocol");
         const negotiated =
           this.#options.protocolVersion ??

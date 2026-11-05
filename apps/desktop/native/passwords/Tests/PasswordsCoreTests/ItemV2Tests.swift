@@ -165,17 +165,35 @@ extension ItemV2Tests {
     }
   }
 
+  func testMalformedKnownCardFailsBothListings() throws {
+    let fixture = try VaultFixture()
+    _ = try install(.object(["v": .integer(3), "kind": .string("card")]),
+      in: fixture.open(), owner: fixture.owner, store: fixture.protected)
+    try fixture.withUnlocked { unlocked in
+      XCTAssertThrowsError(try unlocked.items())
+      XCTAssertThrowsError(try unlocked.items(withinSite: "https://example.com"))
+      XCTAssertThrowsError(try unlocked.cards())
+    }
+  }
+
   func testNewerItemSkippedAndPreserved() throws {
     let fixture = try VaultFixture()
-    let entry = try install(.object(["v": .integer(3), "future": .string("opaque")]), in: fixture.open(), owner: fixture.owner, store: fixture.protected)
+    let entry = try install(.object(["v": .integer(4), "future": .string("opaque")]), in: fixture.open(), owner: fixture.owner, store: fixture.protected)
     let bytes = try Data(contentsOf: fixture.objectsURL.appendingPathComponent(entry.hash))
     try fixture.withUnlocked { unlocked in
       XCTAssertTrue(try unlocked.items().isEmpty)
       XCTAssertTrue(try unlocked.items(withinSite: "https://example.com").isEmpty)
       XCTAssertThrowsError(try unlocked.commit(VaultChanges(replace: [CredentialReplacement(itemID: entry.id, password: "new", totp: nil)])))
-      _ = try unlocked.add([draft()])
+      _ = try unlocked.commit(VaultChanges(add: [draft()], addCards: [CardDraft(number: "4242424242424242", expiryMonth: 1, expiryYear: 2030, cvc: "123")]))
+    }
+    let card = try fixture.withUnlocked { try XCTUnwrap($0.cards().first) }
+    try fixture.withUnlocked { unlocked in
+      var login = try XCTUnwrap(unlocked.items().first)
+      login.label = "Edited login"
+      try unlocked.update(login)
     }
     try fixture.withUnlocked { unlocked in
+      XCTAssertEqual(try unlocked.card(id: card.id).revision, card.revision)
       XCTAssertTrue(unlocked.entries.contains(entry))
       XCTAssertEqual(try unlocked.items().count, 1)
     }

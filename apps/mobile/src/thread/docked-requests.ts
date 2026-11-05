@@ -1,3 +1,4 @@
+import { cardUseTitle } from "@opensteer/client/host";
 import {
   browserSiteLabel,
   deriveSurface,
@@ -13,6 +14,8 @@ import {
 
 /** What a Request is called on its card: a sign-in by its site, anything else by its own title. */
 export function requestTitle(request: Request): string {
+  if (request.payload.kind === "browser.password-sign-in" && request.payload.credential === "card")
+    return cardUseTitle(request.payload.site);
   const site =
     request.payload.kind === "browser.sign-in" ||
     request.payload.kind === "browser.password-sign-in"

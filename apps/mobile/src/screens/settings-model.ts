@@ -12,6 +12,7 @@ import {
 } from "@opensteer/client/computers";
 import {
   passwordsElsewhere,
+  passwordsCardsFact,
   passwordsHowItWorks,
   passwordsSettingsLabel,
   passwordsSettingsSubtitle,
@@ -364,6 +365,7 @@ export function passwordsSettingsModel(input: {
     facts: personal
       ? [
           passwordsHowItWorks[0],
+          passwordsCardsFact,
           "You can allow or decline a sign-in from this phone. Allowing first confirms it’s you on this device.",
         ]
       : [],

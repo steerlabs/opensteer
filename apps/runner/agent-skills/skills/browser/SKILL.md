@@ -14,6 +14,7 @@ With full access, `browser_profile_write` lists profiles and grants, renames or 
 Use the supplied Browser Harness for page operations. Preserve the person's pages and arrangement, and inspect the outcome before repeating input that may have happened.
 
 - Read [identity](references/identity.md) before choosing, opening or requesting a profile or session.
+- Read [cards](references/cards.md) before using a saved payment card at checkout.
 - Read [sign-in](references/sign-in.md) when a website needs authentication.
 - Read [tabs and Show](references/tabs-and-show.md) when finding, organizing, using an included page or showing one to the person.
 - Read [page API](references/page-api.md) before writing Harness code or handling page input, uploads, sizing or dialogs.

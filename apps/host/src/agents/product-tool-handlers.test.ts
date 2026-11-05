@@ -268,7 +268,12 @@ describe("Product tool handlers", () => {
       } as const;
       const agentSignIn = vi.fn(async () => result);
       const { service, admitRunToolCall } = makeService({
-        browserSources: { agentSignIn },
+        browserSources: {
+          agentSignIn,
+          agentUseCard: async () => {
+            throw new Error("Unexpected card use");
+          },
+        },
         commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
         messages: [],
         threads: [current],
@@ -1962,7 +1967,10 @@ function makeService(options: {
     listEnvironmentsForUser,
     service: new ProductToolsTestClient({
       ...(options.personShow ? { personShow: options.personShow } : {}),
-      browserSources: options.browserSources ?? { agentSignIn: unexpectedBrowserRequest },
+      browserSources: options.browserSources ?? {
+        agentSignIn: unexpectedBrowserRequest,
+        agentUseCard: unexpectedBrowserRequest,
+      },
       machineFullDiskAccess: options.machineFullDiskAccess ?? { request: vi.fn() },
       browser: {
         createProfile: options.browser?.createProfile ?? unexpectedBrowserRequest,

@@ -21,6 +21,7 @@ import {
   ComputerUseBridgeServer,
   ComputerUseSessionOwnership,
   type ComputerUseBridgeHelperPort,
+  type PasswordsAuthorityPort,
 } from "./computer-use-bridge-server.js";
 import {
   ComputerUseHelperDeadlineFailure,
@@ -308,6 +309,53 @@ describe("ComputerUseBridgeServer", () => {
       }),
     ).toMatchObject({ result: { type: "unavailable" } });
     expect(harness.calls).toEqual([]);
+  });
+
+  it("keeps a live sign-in with the connection that started it", async () => {
+    const operationId = "00000000-0000-4000-8000-000000000001";
+    const control = vi.fn<PasswordsAuthorityPort["control"]>(async (command) =>
+      command.type === "login.authorize"
+        ? { type: "login.authorize.started" }
+        : { type: "login.get.result", card: { stage: "gone" } },
+    );
+    const end = vi.fn(async () => undefined);
+    const h = await bridgeHarness({ passwords: { control, end } });
+    const owner = await h.connect(h.token);
+    const second = await h.startBridge();
+    const other = await second.connect(second.token);
+    const authorize = {
+      type: "login.authorize",
+      operationId,
+      loginRef: `lgn_${"0".repeat(32)}`,
+      site: "https://example.com",
+      workspaceId: "wsp_00000000-0000-4000-8000-000000000002",
+      requester: {
+        deploymentId: "test",
+        deploymentName: "Test",
+        workspaceName: "Main",
+        threadTitle: "Checkout",
+        reason: "Sign in",
+      },
+      expiresAt: "2030-01-01T00:00:00.000Z",
+    };
+
+    expect(await owner.call(1, "passwords.control", authorize)).toMatchObject({
+      result: { type: "login.authorize.started" },
+    });
+    expect(await other.call(2, "passwords.control", authorize)).toMatchObject({
+      result: { type: "unavailable" },
+    });
+    expect(
+      await other.call(3, "passwords.control", { type: "login.get", operationId }),
+    ).toMatchObject({ result: { type: "unavailable" } });
+    expect(control).toHaveBeenCalledTimes(1);
+
+    other.close();
+    await vi.waitFor(() => expect(h.closedSockets()).toBe(1));
+    expect(end).not.toHaveBeenCalled();
+    expect(
+      await owner.call(4, "passwords.control", { type: "login.get", operationId }),
+    ).toMatchObject({ result: { type: "login.get.result" } });
   });
 
   it("refuses an upgrade with no token or the wrong one", async () => {
@@ -990,6 +1038,7 @@ async function bridgeHarness(
   options: {
     readonly graceMs?: number;
     readonly ownerInputVersion?: 2 | undefined;
+    readonly passwords?: PasswordsAuthorityPort;
     readonly videoProfile?: 1 | undefined;
   } = {},
 ) {
@@ -1050,6 +1099,7 @@ async function bridgeHarness(
   const createBridge = () => {
     const server = new ComputerUseBridgeServer({
       ...(options.graceMs === undefined ? {} : { graceMs: options.graceMs }),
+      ...(options.passwords ? { passwords: options.passwords } : {}),
       helper,
       now: () => clock.at,
       onDataPermissionRequired: permissionRequired,

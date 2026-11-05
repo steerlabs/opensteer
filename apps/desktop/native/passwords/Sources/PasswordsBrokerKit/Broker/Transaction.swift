@@ -11,6 +11,9 @@ struct HeldCall {
 @MainActor
 final class Transaction {
   enum Stage {
+    case choosingCards([Wire.CardChoice])
+    case preparedCard(Wire.CardChoice)
+    case authorizedCard(Wire.CardChoice)
     case lookingUp
     case choosing([Wire.Account])
     case prepared(login: Wire.Login, remember: Bool)
@@ -25,6 +28,9 @@ final class Transaction {
     var task: Task<Void, Never>?
   }
 
+  enum Kind { case login, card }
+  let kind: Kind
+  var isCard: Bool { kind == .card }
   let request: Wire.SignInRequestParams
   let connectionID: Int
   let permissionVersion: Int64
@@ -37,17 +43,19 @@ final class Transaction {
   var used = false
   var expiry: DispatchWorkItem?
 
-  init(request: Wire.SignInRequestParams, connectionID: Int, expiresAt: Date) {
+  init(request: Wire.SignInRequestParams, connectionID: Int, expiresAt: Date, kind: Kind = .login) {
+    self.kind = kind
     self.request = request
     self.connectionID = connectionID
-    self.permissionVersion = request.permissionVersion
+    self.permissionVersion = kind == .card ? 7 : request.permissionVersion
     self.expiresAt = expiresAt
   }
 
   var id: String { request.transactionId }
-  var key: [String] { request.transactionKey }
+  var key: [String] { [isCard ? "card" : "login"] + request.transactionKey }
   var waitsForThePerson: Bool {
     if case .choosing = stage { return true }
+    if case .choosingCards = stage { return true }
     return false
   }
 }

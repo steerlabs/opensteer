@@ -7,7 +7,7 @@ and credentials; [Host boundaries](host-boundaries.md) owns compatibility and se
 Procedures are in the [mobile skill](../.agents/skills/mobile/SKILL.md).
 
 Saved-password consent and computer app approvals use the person's Host session from any signed-in
-device; the native app confirms each password Allow or Only this time with OS device-owner
+device; the native app confirms each password Allow or Only this time, and every saved-card approval, with OS device-owner
 authentication, and OS grants still happen on the computer.
 
 ## Attachment and identity

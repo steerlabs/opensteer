@@ -377,6 +377,7 @@ const requestPayloadVariants = [
       computerName: z.string().trim().min(1).max(160),
       expiresAt: IsoDateTimeSchema,
       kind: z.literal("browser.password-sign-in"),
+      credential: z.literal("card").optional(),
       /** Historical page binding; Workspace-scoped Requests have no page or session. */
       tabId: BrowserSurfaceIdSchema.optional(),
       operationId: z.uuid(),
@@ -740,11 +741,13 @@ export const ResolvedRequestEventViewSchema = z
   .superRefine(validateResolvedRequestEvent);
 
 function passwordSignInScopeValid(payload: {
+  readonly credential?: "card" | undefined;
   readonly sessionId?: string | undefined;
   readonly tabId?: string | undefined;
   readonly scope?: "workspace" | undefined;
   readonly permissionVersion?: 5 | undefined;
 }): boolean {
+  if (payload.credential === "card" && payload.scope !== "workspace") return false;
   return payload.scope === "workspace"
     ? payload.permissionVersion === 5 &&
         payload.sessionId === undefined &&
