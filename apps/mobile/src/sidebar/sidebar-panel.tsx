@@ -219,7 +219,7 @@ function useSidebarModel(
 /**
  * This reader's drafts, held until the list would change: the store publishes
  * every write, and a keystroke leaves this list as it was. The draft in front
- * keeps the row it had, as it was; one written here joins the list on leaving.
+ * keeps the title it had; one written here joins the list on leaving.
  */
 function useDraftSummary(
   deploymentId: string | null,
@@ -237,7 +237,7 @@ function useDraftSummary(
     const next = {
       ...saved,
       newTasks: saved.newTasks.flatMap((draft) =>
-        draft.draftId !== openDraftId ? [draft] : listed ? [listed] : [],
+        draft.draftId !== openDraftId ? [draft] : listed ? [{ ...draft, title: listed.title }] : [],
       ),
     };
     if (!sameDraftSummary(cached.current, next)) cached.current = next;

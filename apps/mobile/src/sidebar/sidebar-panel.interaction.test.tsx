@@ -334,6 +334,25 @@ describe("the sidebar's drafts", () => {
     expect(container.textContent).not.toContain("Discard");
   });
 
+  it("takes discard off the open draft's row the moment its message is sent", async () => {
+    const key = newTaskDraftKey("draft-a");
+    const { container, draw, drafts } = await mount(null, {
+      seed: async (store) => {
+        await store.writeDraft(...scope, key, "Send me");
+      },
+    });
+    await draw("draft-a");
+    await act(() =>
+      drafts.claimPending(...scope, key, {
+        idempotencyKey: "message:open",
+        text: "Send me",
+        threadId: key,
+      }),
+    );
+    expect(button(container, "Draft, Send me, not confirmed")).toBeDefined();
+    expect(container.textContent).not.toContain("Discard");
+  });
+
   it("pens a Thread with an unsent reply and Chat, but not the Thread open", async () => {
     const seed = async (drafts: ThreadDraftStore, host: MockHostClient) => {
       const { homeThreadId, threads } = host.getSnapshot();
