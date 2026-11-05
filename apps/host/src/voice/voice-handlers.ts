@@ -1,4 +1,11 @@
-import { OpensteerError, type AgentEvent } from "@opensteer/core";
+import { setTimeout as delay } from "node:timers/promises";
+import {
+  OpensteerError,
+  type AgentEvent,
+  type EnvironmentId,
+  type HarnessInstanceId,
+  type UserId,
+} from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
 import type { RunnerRegistry } from "@opensteer/orchestration";
 import {
@@ -9,6 +16,9 @@ import {
   type RunnerVoiceCommand,
 } from "@opensteer/protocol";
 
+/** How long a new call waits for what is running on the Voice Thread to end, and how often it looks. */
+const voiceThreadWaitMs = 10_000;
+const voiceThreadRetryMs = 150;
 const ended = () =>
   new OpensteerError({
     code: "conflict",
@@ -27,6 +37,7 @@ export function createVoiceHandlers(dependencies: {
     | "environmentIsAvailableToUser"
     | "listAgentHarnessInstancesForUser"
     | "getHarnessCatalog"
+    | "openVoiceThread"
     | "startVoiceCall"
     | "resolveVoiceCall"
     | "stopVoiceCall"
@@ -35,7 +46,7 @@ export function createVoiceHandlers(dependencies: {
   readonly publishWorkspaceEvent?: (event: AgentEvent) => void;
 }): Pick<
   HostApiHandlers,
-  "voice.start" | "voice.renew" | "voice.say" | "voice.context" | "voice.stop"
+  "voice.open" | "voice.start" | "voice.renew" | "voice.say" | "voice.context" | "voice.stop"
 > {
   const owner = (context: HostApiServerContext) => {
     const id = context.session?.user.id;
@@ -79,32 +90,46 @@ export function createVoiceHandlers(dependencies: {
       });
     return rpcSuccess({});
   };
-  return {
-    "voice.start": async (input, context) => {
-      const ownerId = owner(context);
-      if (!(await dependencies.store.environmentIsAvailableToUser(input.environmentId, ownerId)))
-        throw unavailable();
-      const [profile] = await dependencies.store.listAgentHarnessInstancesForUser(ownerId, {
-        id: input.harnessInstanceId,
-        limit: 1,
-      });
-      if (
-        !profile ||
-        profile.id !== input.harnessInstanceId ||
-        profile.environmentId !== input.environmentId ||
-        !profile.enabled ||
-        profile.removedAt ||
-        profile.driverKind !== "codex"
-      )
-        throw unavailable();
-      const catalog = await dependencies.store.getHarnessCatalog(
-        input.environmentId,
-        input.harnessInstanceId,
-      );
-      if (
-        !catalog?.connections.some((c) => c.authKind === "subscription" && c.status === "connected")
-      )
-        throw unavailable();
+  const requireAccount = async (
+    ownerId: UserId,
+    input: { environmentId: EnvironmentId; harnessInstanceId: HarnessInstanceId },
+  ) => {
+    if (!(await dependencies.store.environmentIsAvailableToUser(input.environmentId, ownerId)))
+      throw unavailable();
+    const [profile] = await dependencies.store.listAgentHarnessInstancesForUser(ownerId, {
+      id: input.harnessInstanceId,
+      limit: 1,
+    });
+    if (
+      !profile ||
+      profile.id !== input.harnessInstanceId ||
+      profile.environmentId !== input.environmentId ||
+      !profile.enabled ||
+      profile.removedAt ||
+      profile.driverKind !== "codex"
+    )
+      throw unavailable();
+    const catalog = await dependencies.store.getHarnessCatalog(
+      input.environmentId,
+      input.harnessInstanceId,
+    );
+    if (
+      !catalog?.connections.some((c) => c.authKind === "subscription" && c.status === "connected")
+    )
+      throw unavailable();
+  };
+  /** Waits out whatever is finishing on the Voice Thread; the store has asked it to stop. */
+  const admit = async (
+    ownerId: UserId,
+    input: {
+      sessionId: string;
+      environmentId: EnvironmentId;
+      harnessInstanceId: HarnessInstanceId;
+    },
+    context: HostApiServerContext,
+  ) => {
+    const deadline = Date.now() + voiceThreadWaitMs;
+    for (;;) {
       const call = await dependencies.store.startVoiceCall({
         ownerId,
         sessionId: input.sessionId,
@@ -112,6 +137,33 @@ export function createVoiceHandlers(dependencies: {
         harnessInstanceId: input.harnessInstanceId,
       });
       for (const event of call.events) dependencies.publishWorkspaceEvent?.(event);
+      if (!call.busy) return call;
+      if (Date.now() >= deadline)
+        throw new OpensteerError({
+          code: "conflict",
+          reason: "voice-refused",
+          message: "The Voice Thread is still finishing something else.",
+        });
+      await delay(voiceThreadRetryMs, undefined, { signal: context.signal });
+    }
+  };
+  return {
+    "voice.open": async (input, context) => {
+      const ownerId = owner(context);
+      await requireAccount(ownerId, input);
+      const { threadId, events } = await dependencies.store.openVoiceThread({
+        ownerId,
+        environmentId: input.environmentId,
+        harnessInstanceId: input.harnessInstanceId,
+        ...(input.accessMode ? { accessMode: input.accessMode } : {}),
+      });
+      for (const event of events) dependencies.publishWorkspaceEvent?.(event);
+      return rpcSuccess({ threadId });
+    },
+    "voice.start": async (input, context) => {
+      const ownerId = owner(context);
+      await requireAccount(ownerId, input);
+      const call = await admit(ownerId, input, context);
       try {
         if (
           call.threadStatus === "archived" ||

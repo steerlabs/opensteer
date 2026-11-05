@@ -16,6 +16,7 @@ function workspace(status: Workspace["status"] = "deleting"): Workspace {
     createdAt: now,
     createdBy: createId("user"),
     homeThreadId: null,
+    voiceThreadId: null,
     icon: null,
     id: createId("workspace"),
     kind: "project",

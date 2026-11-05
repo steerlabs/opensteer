@@ -1,4 +1,4 @@
-import { voiceExcludedTools, voiceGuide } from "./voice-tools.js";
+import { voiceGuide } from "./voice-tools.js";
 import { z } from "zod";
 import { createHash } from "node:crypto";
 import {
@@ -23,7 +23,7 @@ export function agentToolsPlanForRun(input: {
     kind: "run",
     accessMode: input.accessMode,
     reach: { kind: input.reach },
-  }).filter((tool) => !input.voiceCall || !voiceExcludedTools.has(tool.name));
+  });
   const runToolsCatalog = runTools.map((tool) => ({
     name: tool.name,
     description: tool.description,

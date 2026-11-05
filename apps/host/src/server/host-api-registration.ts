@@ -63,6 +63,7 @@ const hostApiScopes = {
   "harness.authentication.get": "session",
   "harness.catalog.refresh": "mutation",
   "harness.modelServers.discover": "mutation",
+  "voice.open": "mutation",
   "voice.start": "mutation",
   "voice.renew": "mutation",
   "voice.say": "mutation",

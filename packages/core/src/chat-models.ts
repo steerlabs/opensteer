@@ -1,4 +1,8 @@
-import type { SelectionModelDescriptor } from "./model-candidates.js";
+import {
+  catalogDefaultModel,
+  type SelectionCatalog,
+  type SelectionModelDescriptor,
+} from "./model-candidates.js";
 import type { ModelSelection } from "./models.js";
 import { storedModelSelection } from "./model-selection.js";
 import { canonicalModelReference } from "./model-registry.js";
@@ -29,6 +33,26 @@ export const chatModelPreferences: readonly ChatModelPreference[] = [
   { providerId: "meta", modelId: "muse-spark-1.3", effort: "default" },
   { providerId: "google", modelId: "gemini-3.1-pro", effort: "default" },
 ];
+
+/** What opens a call in its Thread; it stands for the call and carries nothing to answer. */
+export const voiceCallSeed = "Voice call";
+
+/** Speech waits on the work, so the Voice Thread starts on a quick model, at speed. */
+export function voiceModelSelection(catalog: SelectionCatalog | null): ModelSelection | null {
+  if (catalog?.status !== "ready") return null;
+  const model =
+    catalog.models.find(
+      ({ modelId, providerId }) => providerId === "openai" && modelId === "gpt-6.1-terra",
+    ) ?? catalogDefaultModel(catalog);
+  if (!model) return null;
+  const selection = selectionForModelEffort(model, "low");
+  const speed = model.options.find(({ id, type }) => id === "speed" && type === "select");
+  const fast =
+    speed?.type === "select"
+      ? speed.values.find(({ value }) => value !== speed.defaultValue)?.value
+      : undefined;
+  return fast ? { ...selection, options: { ...selection.options, speed: fast } } : selection;
+}
 
 export function selectionForModelEffort(
   model: SelectionModelDescriptor,

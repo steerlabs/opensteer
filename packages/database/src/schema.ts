@@ -676,6 +676,7 @@ export interface WorkspaceTable {
   slug: Generated<string | null>;
   color: MarkColor;
   homeThreadId: Generated<ThreadId | null>;
+  voiceThreadId: Generated<ThreadId | null>;
   relocationSource: Generated<NonNullable<Workspace["relocationSource"]> | null>;
   backing: JsonColumn<WorkspaceBacking>;
   deletedAt: NullableTimestamp;
@@ -776,7 +777,6 @@ interface SecurityEffectTable {
 }
 
 export interface ThreadTable {
-  voiceSessionId: Generated<string | null>;
   askedAt: Timestamp;
   doneAt: Generated<Date | null>;
   pendingRequestCount: Generated<number>;
@@ -925,6 +925,8 @@ export interface RunTable {
   authoritySource: JsonColumn<Readonly<Record<string, unknown>>>;
   runOrdinal: number;
   seedInputId: MessageId;
+  /** The live voice call this Run carries; null for every other Run. */
+  voiceSessionId: Generated<string | null>;
   nextRunnerOrdinal: Generated<number>;
   /** The binding generation this Run acquired; null until it has one. */
   bindingGeneration: Generated<number | null>;

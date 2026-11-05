@@ -291,6 +291,7 @@ describe("VoiceSpeaker", () => {
     };
     f.publish({
       homeThreadId: "chat",
+      voiceThreadId: null,
       transcriptWindows: { chat: { ...window, totalItems: 1 } },
       transcripts: { chat: [voiceReply("first", "Four.", voiceTestNow - 86_400_000)] },
     });

@@ -278,6 +278,8 @@ import {
   VoiceEmptyResultSchema,
   VoiceRenewInputSchema,
   VoiceSayInputSchema,
+  VoiceOpenInputSchema,
+  VoiceOpenResultSchema,
   VoiceStartInputSchema,
   VoiceStartResultSchema,
   VoiceStopInputSchema,
@@ -1765,16 +1767,18 @@ export const hostApi = defineRpc({
   ),
   /**
    * A voice call on one of the person's ChatGPT accounts on that computer,
-   * with its own agent: one Run on a hidden child of Chat. The client's offer
+   * as one Run on the person's Voice Thread. The client's offer
    * goes to the Runner, which creates the call; audio then flows between the
    * client and the vendor only. Starting again with the same session id
    * returns the same call; a new session ends the person's other call.
    * Requires `voice-run-v1`; errors carry a `VoiceRefusalReason`.
    */
   "voice.start": declaration("POST", VoiceStartInputSchema, VoiceStartResultSchema),
+  /** Creates the person's Voice Thread if needed, so it can be opened and set up before a call. */
+  "voice.open": declaration("POST", VoiceOpenInputSchema, VoiceOpenResultSchema),
   /** Keeps a call alive for another lease, rechecking the person may still use it. */
   "voice.renew": declaration("POST", VoiceRenewInputSchema, VoiceEmptyResultSchema),
-  /** Has the voice tell the person something once, such as Chat's reply. */
+  /** Has the voice tell the person something once, such as a task needing them. */
   "voice.say": declaration("POST", VoiceSayInputSchema, VoiceEmptyResultSchema),
   /** Ends a call by stopping its Run. Ending one that is already over succeeds. */
   "voice.stop": declaration("POST", VoiceStopInputSchema, VoiceEmptyResultSchema),

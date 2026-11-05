@@ -121,6 +121,7 @@ function useShellContext(): ShellContext {
     homeDraft: "",
     homeHandoff: null,
     homeThreadId: null,
+    voiceThreadId: null,
     hostClient: client,
     localExecutionAction: null,
     localExecutionError: null,

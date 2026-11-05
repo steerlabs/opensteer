@@ -1,4 +1,3 @@
-import { voiceExcludedTools } from "../agents/voice-tools.js";
 import { IntegrationCallOutputSchema } from "@opensteer/agent-tools/outputs";
 import { z } from "zod";
 import { formatIssues } from "@opensteer/shared/validationIssues";
@@ -59,7 +58,7 @@ export class OpensteerMcpService {
     readonly realtime?: Pick<RealtimeHub, "observe">;
     readonly store: Pick<
       OpensteerStore,
-      "getThreadForOwner" | "findMainWorkspaceForOwner" | "voiceCallForRun"
+      "getThreadForOwner" | "findMainWorkspaceForOwner"
     > & { readonly requests: Pick<OpensteerStore["requests"], "get"> };
     readonly publicUrl: URL;
   };
@@ -69,7 +68,7 @@ export class OpensteerMcpService {
     readonly realtime?: Pick<RealtimeHub, "observe">;
     readonly store: Pick<
       OpensteerStore,
-      "getThreadForOwner" | "findMainWorkspaceForOwner" | "voiceCallForRun"
+      "getThreadForOwner" | "findMainWorkspaceForOwner"
     > & { readonly requests: Pick<OpensteerStore["requests"], "get"> };
     readonly publicUrl: URL;
   }) {
@@ -432,12 +431,6 @@ export class OpensteerMcpService {
     let caller = identity.caller ?? (await this.options.callers.authenticate(bearer));
     const key = toolOperationKey(caller, input, identity.operationKey);
     const check = async () => {
-      if (
-        caller.kind === "run" &&
-        voiceExcludedTools.has(tool.name) &&
-        (await this.options.store.voiceCallForRun(caller.claims.runId))
-      )
-        throw new OpensteerError({ code: "forbidden", message: "Hand durable work to Chat." });
       toolAccess[tool.access](caller, await this.#targets(caller, tool, input));
       if (!toolsFor(caller).some((spec) => spec.name === tool.name))
         throw new OpensteerError({

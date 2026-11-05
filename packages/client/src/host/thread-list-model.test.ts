@@ -20,6 +20,7 @@ const workspaces: WorkspaceSummary[] = [
   {
     description: "Product files",
     homeThreadId: null,
+    voiceThreadId: null,
     fileCount: 12,
     harnessLabel: "Codex",
     icon: null,
@@ -36,6 +37,7 @@ const workspaces: WorkspaceSummary[] = [
   {
     description: "Finance files",
     homeThreadId: null,
+    voiceThreadId: null,
     fileCount: 4,
     harnessLabel: "Claude Code",
     icon: null,

@@ -3729,6 +3729,7 @@ it("offers voice on Chat's first message but not on a new task composer", async 
   const host = fakeHost({
     ...snapshotFor({ entries: [], run: null, threadId: workId }),
     homeThreadId: null,
+    voiceThreadId: null,
   });
   const { container, root } = await mount(host, workId);
   const voice = voiceController("idle");

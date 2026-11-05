@@ -527,6 +527,7 @@ function workspace(id: Workspace["id"], name: string): Workspace {
     createdAt: now,
     createdBy: ownerId,
     homeThreadId: null,
+    voiceThreadId: null,
     icon: null,
     id,
     kind: "project",

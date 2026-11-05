@@ -322,6 +322,7 @@ function localWorkspace(
     createdAt: now,
     createdBy: fixedCreatedBy,
     homeThreadId: null,
+    voiceThreadId: null,
     icon: null,
     id: fixedWorkspaceId,
     kind: "project",

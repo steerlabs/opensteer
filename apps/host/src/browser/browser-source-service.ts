@@ -606,7 +606,6 @@ export class BrowserSourceService {
     readonly threadId: ThreadId;
     readonly workspaceId: WorkspaceId;
     readonly callId: string;
-    readonly canRequest: boolean;
     readonly loginFill?: boolean;
     readonly sessionId?: string;
     readonly site: string;
@@ -734,7 +733,6 @@ export class BrowserSourceService {
     });
     if (pending) return this.#completePending(pending, grant, sources, sessionId, site);
     const ask = async (): Promise<AgentBrowserSignInResult> => {
-      if (!input.canRequest) return { reason: "needs-approval", site, status: "unavailable" };
       const opened = await this.#openRequest({ ...input, site, target });
       return opened.status === "pending" ? { ...opened, ...passwordsOffer(passwords) } : opened;
     };
@@ -760,7 +758,6 @@ export class BrowserSourceService {
       }
       return ask();
     }
-    if (!input.canRequest) return { reason: "needs-approval", site, status: "unavailable" };
     if (candidates.length > 0 && candidates.every((candidate) => candidate.status === "no-state")) {
       return { site, status: "not-signed-in", ...passwordsOffer(passwords) };
     }

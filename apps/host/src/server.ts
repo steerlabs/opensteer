@@ -1591,6 +1591,7 @@ export async function createHostServer(
     | "automaticModels.get"
     | "harness.catalog.refresh"
     | "harness.modelServers.discover"
+    | "voice.open"
     | "voice.start"
     | "voice.renew"
     | "voice.context"

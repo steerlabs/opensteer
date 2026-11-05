@@ -134,6 +134,7 @@ describe("pluginSummaries", () => {
 function workspace(id: string, kind: "main" | "project"): WorkspaceSummary {
   return {
     homeThreadId: null,
+    voiceThreadId: null,
     description: "",
     fileCount: 0,
     harnessLabel: "",

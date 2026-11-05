@@ -465,32 +465,50 @@ export function passwordsSetupOffer(
     const state = turnState(group.turn);
     if (state === "live" || state === "stopping") return null;
     for (let step = group.turn.work.length - 1; step >= 0; step -= 1) {
-      const entry = group.turn.work[step]!;
-      if (entry.kind === "request" && entry.requestKind === "browser.sign-in") {
-        return entry.passwordsSetUpSite
-          ? { site: entry.passwordsSetUpSite, credential: "login" }
-          : null;
-      }
-      if (entry.kind === "tool" && entry.tool?.name === "use_card" && entry.output) {
-        const result = readCardUseResult(entry.output.text);
-        if (!result || result.status === "resolved") continue;
-        return result.status === "unavailable" &&
-          ["no-saved-card", "passwords-off", "passwords-not-set-up"].includes(result.reason)
-          ? { site: result.site, credential: "card" }
-          : null;
-      }
-      if (entry.kind !== "tool" || !isSignInTool(entry) || !entry.output) continue;
-      const result = readBrowserSignInResult(entry.output.text);
-      if (result === null || result.status === "resolved") continue;
-      if (result.status === "pending" && result.replayed) continue;
-      const notSetUp =
-        ("passwords" in result && result.passwords === "not-set-up") ||
-        (result.status === "unavailable" && result.reason === "passwords-not-set-up");
-      const site = "site" in result ? result.site : stringField(effectiveArguments(entry), "site");
-      return notSetUp && site ? { site, credential: "login" } : null;
+      const offer = stepPasswordsOffer(group.turn.work[step]!);
+      if (offer !== undefined) return offer;
     }
   }
   return null;
+}
+
+/** The same word from a call: its Run stays open between turns, so no turn ever settles. */
+export function callPasswordsOffer(
+  entries: readonly TranscriptEntry[],
+): PasswordsSetupOffer | null {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index]!;
+    if (entry.kind === "message" && entry.author.kind === "human") return null;
+    const offer = stepPasswordsOffer(entry);
+    if (offer !== undefined) return offer;
+  }
+  return null;
+}
+
+/** What one step says about Passwords: an offer, a definite no, or nothing yet (`undefined`). */
+function stepPasswordsOffer(entry: TranscriptEntry): PasswordsSetupOffer | null | undefined {
+  if (entry.kind === "request" && entry.requestKind === "browser.sign-in") {
+    return entry.passwordsSetUpSite
+      ? { site: entry.passwordsSetUpSite, credential: "login" }
+      : null;
+  }
+  if (entry.kind === "tool" && entry.tool?.name === "use_card" && entry.output) {
+    const result = readCardUseResult(entry.output.text);
+    if (!result || result.status === "resolved") return undefined;
+    return result.status === "unavailable" &&
+      ["no-saved-card", "passwords-off", "passwords-not-set-up"].includes(result.reason)
+      ? { site: result.site, credential: "card" }
+      : null;
+  }
+  if (entry.kind !== "tool" || !isSignInTool(entry) || !entry.output) return undefined;
+  const result = readBrowserSignInResult(entry.output.text);
+  if (result === null || result.status === "resolved") return undefined;
+  if (result.status === "pending" && result.replayed) return undefined;
+  const notSetUp =
+    ("passwords" in result && result.passwords === "not-set-up") ||
+    (result.status === "unavailable" && result.reason === "passwords-not-set-up");
+  const site = "site" in result ? result.site : stringField(effectiveArguments(entry), "site");
+  return notSetUp && site ? { site, credential: "login" } : null;
 }
 
 /**

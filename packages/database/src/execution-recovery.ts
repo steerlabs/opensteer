@@ -181,7 +181,7 @@ async function recoverAbandonedRuns(
           "runs.status",
           "runs.threadId",
           "threads.workspaceId",
-          "threads.voiceSessionId",
+          "runs.voiceSessionId",
         ])
         .where("runs.id", "=", candidate.id)
         .forNoKeyUpdate("runs")
@@ -542,7 +542,7 @@ export async function recoverCommandsAfterHostRestart(
           "runs.status",
           "runs.threadId",
           "threads.workspaceId",
-          "threads.voiceSessionId",
+          "runs.voiceSessionId",
         ])
         .where("runs.id", "=", command.runId)
         .forNoKeyUpdate("runs")
@@ -651,7 +651,7 @@ export async function attachRunnerExecutions(
           "runs.status",
           "runs.threadId",
           "threads.workspaceId",
-          "threads.voiceSessionId",
+          "runs.voiceSessionId",
         ])
         .where("runs.id", "=", execution.runId)
         .forNoKeyUpdate("runs")
@@ -829,7 +829,7 @@ async function recoverLostExecutions(
           "runs.status",
           "runs.threadId",
           "threads.workspaceId",
-          "threads.voiceSessionId",
+          "runs.voiceSessionId",
         ])
         .where("runs.id", "=", candidate.id)
         .forNoKeyUpdate("runs")
@@ -1008,7 +1008,7 @@ export async function stopRunsPastBackgroundDeadline(
           "runs.status",
           "runs.threadId",
           "threads.workspaceId",
-          "threads.voiceSessionId",
+          "runs.voiceSessionId",
         ])
         .where("runs.id", "=", candidate.id)
         .forNoKeyUpdate("runs")
@@ -1120,7 +1120,7 @@ export async function recoverRunsWithExpiredExecutionBindings(
           "runs.status",
           "runs.threadId",
           "threads.workspaceId",
-          "threads.voiceSessionId",
+          "runs.voiceSessionId",
         ])
         .where("runs.id", "=", candidate.id)
         .forNoKeyUpdate("runs")

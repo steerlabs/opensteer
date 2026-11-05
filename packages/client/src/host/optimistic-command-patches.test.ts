@@ -276,6 +276,7 @@ function baseSnapshot(): HostSnapshot {
     harnesses: [],
     homeWorkspaceId: null,
     homeThreadId: null,
+    voiceThreadId: null,
     notificationMutes: [],
     threadReadStates: {},
     tasks: null,

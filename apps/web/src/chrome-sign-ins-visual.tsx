@@ -98,6 +98,7 @@ function useShellContext(): ShellContext {
     homeDraft: "",
     homeHandoff: null,
     homeThreadId: null,
+    voiceThreadId: null,
     setHomeDraft: noOp,
     createThreadAndSend: async () => null,
     defaultPlacement: undefined,

@@ -190,6 +190,11 @@ const eventDataSchemas = {
     content: MessageContentSchema,
     messageId: MessageIdSchema,
   }),
+  /** What the person said on a call, as the agent received it. */
+  "voice.heard": z.strictObject({
+    messageId: MessageIdSchema,
+    text: z.string().trim().min(1).max(16_000),
+  }),
   "delegation.settled": z.strictObject({
     childRunId: RunIdSchema,
     childThread: z.strictObject({
@@ -229,6 +234,7 @@ const eventDataSchemas = {
   "thread.created": z.object({
     thread: ThreadSchema,
     home: z.literal(true).optional(),
+    voice: z.literal(true).optional(),
   }),
   "thread.execution-updated": z.object({ thread: ThreadSchema }),
   /**
@@ -450,6 +456,7 @@ const eventDataViewSchemas = {
   "request.updated": z.object({ request: PendingRequestViewSchema }),
   "request.resolved": z.object({ request: ResolvedRequestEventViewSchema }),
   "assistant.message": eventDataSchemas["assistant.message"],
+  "voice.heard": eventDataSchemas["voice.heard"],
   "delegation.settled": z.object({
     ...eventDataSchemas["delegation.settled"].shape,
     childThread: z.object(eventDataSchemas["delegation.settled"].shape.childThread.shape),
@@ -465,7 +472,7 @@ const eventDataViewSchemas = {
   "message.placed": z.object({ message: MessageViewSchema }),
   "reasoning.completed": eventDataSchemas["reasoning.completed"],
   "run.queued": z.object({ run: ThreadRunQueueEntryViewSchema }),
-  "thread.created": z.object({ thread: ThreadViewSchema, home: z.literal(true).optional() }),
+  "thread.created": z.object({ thread: ThreadViewSchema, home: z.literal(true).optional(), voice: z.literal(true).optional() }),
   "thread.execution-updated": z.object({ thread: ThreadViewSchema }),
   "thread.listed": z.object({ thread: ThreadViewSchema }),
   "thread-input.updated": z.object({ input: ThreadInputViewSchema }),
@@ -572,6 +579,7 @@ export const AgentEventSchema = z
     makeEventVariant("request.updated"),
     makeEventVariant("request.resolved"),
     makeEventVariant("assistant.message"),
+    makeEventVariant("voice.heard"),
     makeEventVariant("delegation.settled"),
     makeEventVariant("message.created"),
     makeEventVariant("message.injected"),
@@ -623,6 +631,7 @@ export const AgentEventViewSchema = z
     makeEventViewVariant("request.updated"),
     makeEventViewVariant("request.resolved"),
     makeEventViewVariant("assistant.message"),
+    makeEventViewVariant("voice.heard"),
     makeEventViewVariant("delegation.settled"),
     makeEventViewVariant("message.created"),
     makeEventViewVariant("message.injected"),

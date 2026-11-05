@@ -27,7 +27,7 @@ import {
 } from "../../apps/runner/src/skills/agent-skills.js";
 import { resolveSkillPlan } from "../../apps/runner/src/skills/skill-plan.js";
 import { discoverWorkspaceSkills } from "../../apps/runner/src/skills/workspace-skills.js";
-import { voiceExcludedTools, voiceGuide } from "../../apps/host/src/agents/voice-tools.js";
+import { voiceGuide } from "../../apps/host/src/agents/voice-tools.js";
 import { inputForCaseTurn, caseReach, type EvalCase } from "./cases.js";
 import type { startFakeHost } from "./host.js";
 import { isolate } from "./isolation.js";
@@ -149,7 +149,6 @@ export async function runEngine(input: {
         accessMode: "full-access",
         reach: { kind: caseReach(c) },
       })
-        .filter(({ name }) => !c.voice || !voiceExcludedTools.has(name))
         .map(({ name }) => name),
       toolsRevision: "eval-tools-v1",
       instructions: guide,

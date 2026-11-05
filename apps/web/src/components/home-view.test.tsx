@@ -16,6 +16,7 @@ function workspace(overrides: Partial<WorkspaceSummary> = {}): WorkspaceSummary 
     description: "",
     fileCount: 0,
     homeThreadId: null,
+    voiceThreadId: null,
     harnessLabel: "Codex",
     icon: null,
     id: "workspace-main",

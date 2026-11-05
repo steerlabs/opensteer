@@ -129,46 +129,61 @@ describe.skipIf(!qualify).each([
   },
   { label: "installed", launch: { executable: executable!, arguments: [] } },
 ])("$label Codex voice agent", ({ launch }) => {
-  it("hands a spoken request to a tool-using turn, speaks its answer and ends its one Run", async () => {
+  it("acts on speech, takes news mid-call, and remembers it on the next call", async () => {
     const directory = await mkdtemp(join(tmpdir(), "opensteer-voice-engine-"));
     const adapter = await new CodexHarnessDriver({ launch }).create({
       instanceId: createId("harnessInstance"),
       config: {},
       sourceId: "openai",
     });
-    let session: HarnessSession | undefined;
-    const lifetime = new AbortController();
-    let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
     const token = createId("run");
     const tools = await startToolServer(token);
-    try {
-      expect(adapter.capabilities.voiceCalls).toBe(true);
-      browser = await chromium.launch({
-        headless: true,
-        args: ["--autoplay-policy=no-user-gesture-required"],
-      });
+    const browser = await chromium.launch({
+      headless: true,
+      args: ["--autoplay-policy=no-user-gesture-required"],
+    });
+    const threadId = createId("thread");
+    const environmentId = createId("environment");
+    const workspaceId = createId("workspace");
+    const environment = Object.fromEntries(
+      Object.entries(process.env).filter(
+        (entry): entry is [string, string] => entry[1] !== undefined,
+      ),
+    );
+    const guide =
+      "Voice call: replies are spoken. Use 1–3 short sentences. Use your tools. For the person's notes, call thread_read.";
+    const stops: (() => Promise<void>)[] = [];
+
+    /** One call: a browser peer, its audio, and a Run on the same Thread. */
+    async function dial(reference?: string) {
+      const lifetime = new AbortController();
       const page = await browser.newPage();
-      const events: { at: number; text: string }[] = [];
-      const userTurns: { at: number; text: string }[] = [];
-      // The voice acknowledges first ("On it…"); only speech carrying the tool's fact is the answer.
-      const spoken = new Deferred<void>();
-      const answerPattern = /4:30|four[- ]thirty/iu;
-      const eventTypes: string[] = [];
+      const heard: string[] = [];
+      const said: string[] = [];
+      const runEvents: string[] = [];
+      const waiting: { pattern: RegExp; done: Deferred<void> }[] = [];
+      const seen = () => JSON.stringify({ heard, said, toolCalls: tools.calls, runEvents });
       await page.exposeFunction("voiceEvent", (raw: string) => {
         const event = JSON.parse(raw) as {
           type?: string;
-          turn?: { id?: string; role?: string; transcript?: string };
+          turn?: { role?: string; transcript?: string };
         };
-        if (event.type && !event.type.includes("delta") && eventTypes.at(-1) !== event.type)
-          eventTypes.push(event.type);
-        if (event.type === "turn.done" && event.turn?.role === "user")
-          userTurns.push({ at: Date.now(), text: event.turn.transcript ?? "" });
-        if (event.type === "turn.done" && event.turn?.role === "assistant") {
-          const text = event.turn.transcript ?? "";
-          events.push({ at: Date.now(), text });
-          if (answerPattern.test(text)) spoken.resolve();
-        }
+        if (event.type !== "turn.done") return;
+        const text = event.turn?.transcript ?? "";
+        if (event.turn?.role === "user") heard.push(text);
+        if (event.turn?.role !== "assistant") return;
+        said.push(text);
+        for (const { pattern, done } of waiting) if (pattern.test(text)) done.resolve();
       });
+      /** Resolves once the voice has said something matching, whenever that was. */
+      const says = async (pattern: RegExp, what: string) => {
+        if (said.some((text) => pattern.test(text))) return;
+        const done = new Deferred<void>();
+        waiting.push({ pattern, done });
+        await withTimeout(done.promise, 90_000, {
+          timeoutError: () => new Error(`${what}: ${seen()}`),
+        });
+      };
       const offer = (await page.evaluate(`(async () => {
         const pc = new RTCPeerConnection(); window.pc = pc;
         const ctx = new AudioContext(); const osc = ctx.createOscillator(); const gain = ctx.createGain(); gain.gain.value = 0;
@@ -197,40 +212,31 @@ describe.skipIf(!qualify).each([
         },
         end: () => lifetime.abort(),
       };
-      const environment = Object.fromEntries(
-        Object.entries(process.env).filter(
-          (entry): entry is [string, string] => entry[1] !== undefined,
-        ),
-      );
-      const threadId = createId("thread"),
-        runId = createId("run");
-      session = await adapter.startSession({
+      const context = {
         accessMode: "approval-required",
         voiceCall: call,
         agentTools: {
           url: tools.url,
           token,
-          instructions:
-            "Voice call: replies are spoken. Mostly do things yourself with your tools. For the person's notes, call thread_read.",
+          instructions: guide,
           tools: ["thread_read"],
           toolsRevision: "voice-qualification",
           skills: [],
         },
-        environmentId: createId("environment"),
+        environmentId,
         harnessInstanceId: adapter.instanceId,
         history: [],
         historyWindow: { byteCount: 0, itemCount: 0, hasEarlier: false },
         instructions: "Answer in one or two short sentences.",
         // The Runner delivers the Host's Run plan instructions as the platform guide.
-        platformGuide:
-          "Voice call: replies are spoken. Use 1–3 short sentences. Mostly do things yourself with your tools. For the person's notes, call thread_read.",
+        platformGuide: guide,
         machineAccessNotice: "No other computers are reachable.",
         machineAccessPlatform: undefined,
         machineAccessRelaySocket: undefined,
         modelSelection: ModelSelectionSchema.parse({
           providerId: "openai",
-          modelId: "gpt-5.6-sol",
-          options: { effort: "low" },
+          modelId: "gpt-6.1-terra",
+          options: { effort: "low", speed: "priority" },
         }),
         environment,
         runtimeBoundary: nativeUserHarnessRuntimeBoundary,
@@ -245,41 +251,32 @@ describe.skipIf(!qualify).each([
         skills: undefined,
         threadId,
         threadStateDirectory: join(directory, "call-private"),
-        wrapProcessLaunch: (launch) => launch,
-        workspaceId: createId("workspace"),
+        wrapProcessLaunch: (value) => value,
+        workspaceId,
         workspacePath: directory,
         writableRoots: [directory],
-      });
-      const final = new Deferred<void>();
-      let terminal = 0;
-      const runEvents: string[] = [];
-      // What each stage saw, so a failed qualification says which step stalled.
-      const seen = () =>
-        JSON.stringify({
-          heard: userTurns.map((turn) => turn.text),
-          voice: events.map((event) => event.text),
-          toolCalls: tools.calls,
-          runEvents,
-          eventTypes,
-        });
+      } satisfies Parameters<typeof adapter.startSession>[0];
+      const session: HarnessSession = reference
+        ? await adapter.resumeSession(reference, context)
+        : await adapter.startSession(context);
+      const terminal = { count: 0 };
       const consume = (async () => {
-        for await (const event of session!.events) {
+        for await (const event of session.events) {
           runEvents.push(event.type);
           // Nobody taps in qualification: decline as a person would, so the
           // agent answers with its Opensteer tool rather than waiting on a shell.
           if (event.type === "request.opened")
-            void session!
+            void session
               .resolveRequest(event.data.request.id, { kind: "choice", optionId: "reject" })
               .catch(() => undefined);
-          if (event.type === "assistant.message") final.resolve();
-          if (event.type === "run.interrupted" || event.type === "run.failed") terminal++;
+          if (event.type === "run.interrupted" || event.type === "run.failed") terminal.count++;
         }
       })();
       const execution = session.execute({
         environment,
         inputs: [],
         requestedBy: createId("user"),
-        runId,
+        runId: createId("run"),
         signal: lifetime.signal,
         context: {
           assignment: null,
@@ -288,40 +285,74 @@ describe.skipIf(!qualify).each([
         },
         reports: { messages: [], omittedCount: 0, throughSequence: null },
       });
+      const hangUp = async () => {
+        lifetime.abort();
+        await withTimeout(Promise.all([execution, consume]), 10_000, {
+          timeoutError: () => new Error("Voice Run did not end"),
+        });
+        await session.stop();
+        await page.close();
+      };
+      stops.push(async () => {
+        lifetime.abort();
+        await session.stop();
+      });
       await page.evaluate(
-        `window.pc.setRemoteDescription({type:"answer",sdp:${JSON.stringify(await withTimeout(answer.promise, 30000, { timeoutError: () => new Error("No SDP answer") }))}})`,
+        `window.pc.setRemoteDescription({type:"answer",sdp:${JSON.stringify(await withTimeout(answer.promise, 30000, { timeoutError: () => new Error("Voice answer did not arrive") }))}})`,
       );
       await page.waitForFunction("window.pc.connectionState === 'connected'", null, {
         timeout: 15_000,
       });
-      const wav = join(directory, "speech.wav");
-      await promisify(execFile)(
-        "say",
-        ["-o", wav, "--data-format=LEI16@24000", "What does my latest note say?"],
-        { timeout: 15000 },
-      );
-      await page.evaluate(
-        `window.speak(${JSON.stringify((await readFile(wav)).toString("base64"))})`,
-      );
-      await withTimeout(final.promise, 90_000, {
-        timeoutError: () => new Error(`No engine-initiated final answer: ${seen()}`),
-      });
-      await withTimeout(spoken.promise, 30000, {
-        timeoutError: () => new Error(`No spoken final answer: ${seen()}`),
-      });
+      const speak = async (words: string, file: string) => {
+        const wav = join(directory, file);
+        await promisify(execFile)("say", ["-o", wav, "--data-format=LEI16@24000", words], {
+          timeout: 15000,
+        });
+        await page.evaluate(
+          `window.speak(${JSON.stringify((await readFile(wav)).toString("base64"))})`,
+        );
+      };
+      return { hangUp, says, session, speak, terminal };
+    }
+
+    try {
+      expect(adapter.capabilities.voiceCalls).toBe(true);
+      const first = await dial();
+      await first.speak("What does my latest note say?", "first.wav");
+      // The voice acknowledges first ("On it…"); only speech carrying the tool's fact is the answer.
+      await first.says(/4:30|four[- ]thirty/iu, "No spoken answer from the tool");
       expect(tools.calls).toContain("thread_read");
-      expect(terminal).toBe(0);
-      lifetime.abort();
-      await withTimeout(Promise.all([execution, consume]), 10000, {
-        timeoutError: () => new Error("Voice Run did not end"),
+      // News from outside the call: nobody speaks, yet the agent takes it and says it.
+      await first.session.steer!({
+        input: {
+          author: {
+            kind: "platform",
+            cause: "assignment-result",
+            referenceId: "task",
+          },
+          content: [{ type: "text", text: "A task finished: your flight leaves at 6:40 PM." }],
+          createdAt: new Date().toISOString(),
+          kind: "continuation",
+          messageId: createId("message"),
+        },
       });
-      expect(terminal).toBe(1);
+      await first.says(/6:40|six[- ]forty/iu, "News never reached the person");
+      expect(first.terminal.count).toBe(0);
+      const reference = first.session.providerSessionReference;
+      await first.hangUp();
+      expect(first.terminal.count).toBe(1);
+
+      // The next call is the same conversation: only the first call heard this fact.
+      const second = await dial(reference);
+      await second.speak("What time does my flight leave?", "second.wav");
+      await second.says(/6:40|six[- ]forty/iu, "The next call forgot the first");
+      await second.hangUp();
+      expect(second.terminal.count).toBe(1);
     } finally {
-      lifetime.abort();
       const cleanup = await Promise.allSettled([
-        session?.stop(),
+        ...stops.map((stop) => stop()),
         adapter.close(),
-        browser?.close(),
+        browser.close(),
         tools.close(),
       ]);
       await rm(directory, { recursive: true, force: true });

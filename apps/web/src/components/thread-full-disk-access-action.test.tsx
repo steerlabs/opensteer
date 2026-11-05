@@ -187,6 +187,7 @@ function shellContext(input: {
     homeDraft: "",
     homeHandoff: null,
     homeThreadId: null,
+    voiceThreadId: null,
     setHomeDraft: noOp,
     createThreadAndSend: async () => null,
     defaultPlacement: undefined,

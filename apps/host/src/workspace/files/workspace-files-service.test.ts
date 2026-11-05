@@ -205,6 +205,7 @@ function workspace<Backing extends Workspace["backing"]>(
     createdAt: now,
     createdBy: createId("user"),
     homeThreadId: null,
+    voiceThreadId: null,
     icon: null,
     id: createId("workspace"),
     kind: "project",

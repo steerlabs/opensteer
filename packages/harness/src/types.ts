@@ -216,6 +216,7 @@ export function harnessRuntimeBoundaryForRunner(runner: {
 export type HarnessDurableEventType = Extract<
   AgentEventType,
   | "assistant.message"
+  | "voice.heard"
   | "message.injected"
   | "node.completed"
   | "node.started"

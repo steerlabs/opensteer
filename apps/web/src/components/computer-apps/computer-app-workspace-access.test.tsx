@@ -214,6 +214,7 @@ function workspace(id: string, kind: WorkspaceSummary["kind"], name: string): Wo
     description: "",
     fileCount: 0,
     homeThreadId: null,
+    voiceThreadId: null,
     harnessLabel: "Codex",
     icon: null,
     id,

@@ -197,6 +197,7 @@ function renderSettings(overrides: Partial<ShellContext>, path: string): string 
     homeDraft: "",
     homeHandoff: null,
     homeThreadId: null,
+    voiceThreadId: null,
     setHomeDraft: noOp,
     createThreadAndSend: async () => null,
     defaultPlacement: undefined,

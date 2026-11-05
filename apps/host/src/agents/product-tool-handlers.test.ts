@@ -2193,6 +2193,7 @@ function workspace(
     createdAt: now,
     createdBy,
     homeThreadId: null,
+    voiceThreadId: null,
     icon: null,
     id,
     kind: id === workspaceId ? "main" : "project",

@@ -2154,6 +2154,7 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
     "harness.modelServers.discover": async (input) =>
       rpcSuccess({ servers: mockModelServers(input.address) }),
     // The preview has no Runner to create a call, so voice never starts here.
+    "voice.open": async () => mockVoiceEnded("The preview has no voice.", "voice-refused"),
     "voice.start": async () => mockVoiceEnded("The preview has no voice.", "voice-refused"),
     "voice.renew": async () => mockVoiceEnded("This voice call is over.", "voice-ended"),
     "voice.context": async () => mockVoiceEnded("This voice call is over.", "voice-ended"),
@@ -3451,6 +3452,7 @@ function mockAuthenticatedSession(snapshot: HostSnapshot) {
 function mockWorkspaceView(workspace: WorkspaceSummary) {
   return {
     homeThreadId: workspace.homeThreadId,
+    voiceThreadId: workspace.voiceThreadId,
     capacity: { kind: "host-filesystem" as const },
     createdAt: workspace.updatedAt,
     icon: workspace.icon,
@@ -9736,6 +9738,7 @@ class MockHostState {
       fileCount: 0,
       harnessLabel: this.snapshot.harnesses[0]?.name ?? "Opensteer",
       homeThreadId: null,
+      voiceThreadId: null,
       icon: input.icon ?? null,
       id: this.nextId("workspace"),
       kind: "project" as const,
@@ -12347,6 +12350,7 @@ function withoutInitialHome(snapshot: HostSnapshot): HostSnapshot {
   return {
     ...snapshot,
     homeThreadId: null,
+    voiceThreadId: null,
     machines: snapshot.machines.map((machine) =>
       machine.computerUse
         ? {
@@ -13161,6 +13165,7 @@ function createInitialSnapshot(): HostSnapshot {
     ],
     homeWorkspaceId: "wsp_00000000-0000-4000-8000-000000000001",
     homeThreadId: "thr_00000000-0000-4000-8000-000000000001",
+    voiceThreadId: null,
     notificationMutes: [],
     threadReadStates: {},
     tasks: null,
@@ -13427,6 +13432,7 @@ function createInitialSnapshot(): HostSnapshot {
       {
         description: "The new product, Host, Runners, protocols, and UI.",
         homeThreadId: "thr_00000000-0000-4000-8000-000000000001",
+        voiceThreadId: null,
         fileCount: 18,
         harnessLabel: "Codex",
         id: "wsp_00000000-0000-4000-8000-000000000001",
@@ -13443,6 +13449,7 @@ function createInitialSnapshot(): HostSnapshot {
       {
         description: "Positioning, launch briefs, website, and customer proof.",
         homeThreadId: null,
+        voiceThreadId: null,
         fileCount: 27,
         harnessLabel: "Codex",
         id: "wsp_00000000-0000-4000-8000-000000000002",
@@ -13459,6 +13466,7 @@ function createInitialSnapshot(): HostSnapshot {
       {
         description: "Monthly close, invoices, budgets, and operating reports.",
         homeThreadId: null,
+        voiceThreadId: null,
         fileCount: 42,
         harnessLabel: "Codex",
         id: "wsp_00000000-0000-4000-8000-000000000003",

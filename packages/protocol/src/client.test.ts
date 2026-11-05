@@ -32,6 +32,7 @@ describe("workspaceViewFromWorkspace", () => {
       createdBy: createId("user"),
       icon: null,
       homeThreadId: null,
+      voiceThreadId: null,
       id: createId("workspace"),
       kind: "main",
       name: "Main",

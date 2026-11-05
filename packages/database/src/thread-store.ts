@@ -150,6 +150,8 @@ export interface CreateThreadInput {
   readonly environmentId: EnvironmentId;
   readonly harnessInstanceId: HarnessInstanceId;
   readonly home?: boolean;
+  /** The Main Workspace's one Voice Thread, the person's spoken manager. */
+  readonly voice?: boolean;
   readonly generateTitle?: true;
   readonly id?: ThreadId;
   readonly idempotencyKey: string;
@@ -450,6 +452,7 @@ function canonicalCreateThreadInput(input: CreateThreadInput): Readonly<Record<s
     environmentId: input.environmentId,
     harnessInstanceId: input.harnessInstanceId,
     ...(input.home ? { home: true } : {}),
+    ...(input.voice ? { voice: true } : {}),
     ...(input.generateTitle ? { generateTitle: true } : {}),
     modelSelection,
     ...(input.id ? { id: input.id } : {}),
@@ -1021,7 +1024,7 @@ export async function createThreadInTransaction(
   input: CreateThreadInput,
   prepared?: {
     readonly insertThread: Awaited<ReturnType<typeof prepareThreadInsertion>>;
-    readonly unlisted: true;
+    readonly unlisted?: true;
   },
 ): Promise<ThreadCreationResult> {
   await lockCommandIdempotency(transaction, input.createdBy, input.idempotencyKey);
@@ -1144,7 +1147,7 @@ export async function createThreadInTransaction(
     listed: prepared?.unlisted ? false : listed,
     modelSelection: jsonValue(ModelSelectionSchema.parse(input.modelSelection)),
     parentThreadId: input.parentThreadId ?? null,
-    role: input.role ?? (input.home ? "conversation" : "work"),
+    role: input.role ?? (input.home || input.voice ? "conversation" : "work"),
     status: deriveThreadStatus({
       earliestActiveRunStatus: null,
       inputQueuePaused: false,
@@ -1163,6 +1166,14 @@ export async function createThreadInTransaction(
       .set({ homeThreadId: thread.id })
       .where("id", "=", workspace.id)
       .where("homeThreadId", "is", null)
+      .executeTakeFirstOrThrow();
+  }
+  if (input.voice) {
+    await transaction
+      .updateTable("workspaces")
+      .set({ voiceThreadId: thread.id })
+      .where("id", "=", workspace.id)
+      .where("voiceThreadId", "is", null)
       .executeTakeFirstOrThrow();
   }
   await transaction
@@ -1196,7 +1207,11 @@ export async function createThreadInTransaction(
     pendingRequests: thread.pendingRequestCount,
   });
   const event = await appendHostWorkspaceEvent(transaction, {
-    data: { thread: parsedThread, ...(input.home ? { home: true as const } : {}) },
+    data: {
+      thread: parsedThread,
+      ...(input.home ? { home: true as const } : {}),
+      ...(input.voice ? { voice: true as const } : {}),
+    },
     environmentId: parsedThread.environmentId,
     runId: null,
     threadId: parsedThread.id,

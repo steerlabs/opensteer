@@ -778,6 +778,7 @@ function snapshot(workspaceId: WorkspaceId, value: string): WorkspaceSnapshot {
       capacity: { kind: "host-filesystem" },
       createdAt: now,
       homeThreadId: null,
+      voiceThreadId: null,
       icon: null,
       id: workspaceId,
       kind: "main",

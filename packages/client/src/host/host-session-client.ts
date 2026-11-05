@@ -4249,6 +4249,7 @@ export class HttpHostClient {
       harnesses,
       homeWorkspaceId: homeWorkspace?.id ?? null,
       homeThreadId: homeWorkspace?.homeThreadId ?? null,
+      voiceThreadId: homeWorkspace?.voiceThreadId ?? null,
       identityConfig: payload.identityConfig,
       inputQueues,
       machines: payload.machines.map((machine) =>
@@ -6579,6 +6580,9 @@ function projectAgentEvent(
         ...(event.data.home && event.workspaceId === snapshot.homeWorkspaceId
           ? { homeThreadId: thread.id }
           : {}),
+        ...(event.data.voice && event.workspaceId === snapshot.homeWorkspaceId
+          ? { voiceThreadId: thread.id }
+          : {}),
         requests: snapshot.requests[thread.id]
           ? snapshot.requests
           : { ...snapshot.requests, [thread.id]: [] },
@@ -6607,6 +6611,7 @@ function projectAgentEvent(
                 ...workspace,
                 updatedAt: event.createdAt,
                 ...(event.data.home ? { homeThreadId: thread.id } : {}),
+                ...(event.data.voice ? { voiceThreadId: thread.id } : {}),
               }
             : workspace,
         ),
@@ -6843,6 +6848,7 @@ function emptySnapshot(): HostSnapshot {
     savedViewReadiness: emptySavedViewReadiness(),
     homeWorkspaceId: null,
     homeThreadId: null,
+    voiceThreadId: null,
     notificationMutes: [],
     threadReadStates: {},
     tasks: null,
@@ -7075,6 +7081,7 @@ function toWorkspaceSummary(
   return {
     description: workspaceDescription(workspace),
     homeThreadId: workspace.homeThreadId,
+    voiceThreadId: workspace.voiceThreadId,
     fileCount: 0,
     harnessLabel: harness?.name ?? "No harness",
     id: workspace.id,

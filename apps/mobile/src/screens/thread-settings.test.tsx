@@ -94,6 +94,7 @@ describe("Expo engine/account/model journeys", () => {
       })),
       executionPreferences: { ...base.executionPreferences, history: [taskChoice] },
       homeThreadId: null,
+      voiceThreadId: null,
       threads: base.threads.filter(({ id }) => id !== home.id),
     };
 

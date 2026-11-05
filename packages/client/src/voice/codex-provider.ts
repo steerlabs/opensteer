@@ -54,8 +54,6 @@ function startFailure(reason: string | undefined): VoiceStartFailure {
       return "update-codex";
     case "voice-account-unavailable":
       return "no-account";
-    case "voice-chat-required":
-      return "chat-required";
     case "voice-refused":
       return "refused";
     default:

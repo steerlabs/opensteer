@@ -176,8 +176,6 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
       requests: { get: async () => null },
       getThreadForOwner: async (id) => ({ ...thread, id }),
       findMainWorkspaceForOwner: async () => ({ homeThreadId: chatThreadId }) as never,
-      voiceCallForRun: async () =>
-        testCase.voice ? { sessionId: "voice", admittedAt: new Date() } : undefined,
     },
   });
   const sessions: { server: Server; transport: StreamableHTTPServerTransport }[] = [];

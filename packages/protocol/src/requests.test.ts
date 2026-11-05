@@ -89,6 +89,7 @@ describe("Request protocol", () => {
         createdAt: now,
         id: request.originatingWorkspaceId,
         homeThreadId: request.originatingThreadId,
+        voiceThreadId: null,
         icon: null,
         kind: "main",
         location: { environmentId: createId("environment"), kind: "machine", name: null },

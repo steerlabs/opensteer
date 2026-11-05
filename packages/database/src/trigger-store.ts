@@ -2035,16 +2035,6 @@ async function requireAnchorThread(
   readonly id: ThreadId;
   readonly workspaceId: WorkspaceId;
 }> {
-  const voice = await transaction
-    .selectFrom("threads")
-    .select("voiceSessionId")
-    .where("id", "=", threadId)
-    .executeTakeFirst();
-  if (voice?.voiceSessionId)
-    throw new OpensteerError({
-      code: "conflict",
-      message: "Voice Threads cannot anchor Triggers.",
-    });
   const admission = await admitThreadExecution(transaction, threadId, userId);
   if (!admission)
     throw new OpensteerError({ code: "forbidden", message: "Anchor Thread is unavailable" });
