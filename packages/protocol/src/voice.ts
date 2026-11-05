@@ -76,7 +76,12 @@ export const VoiceOpenInputSchema = z.strictObject({
   harnessInstanceId: HarnessInstanceIdSchema,
   accessMode: ThreadAccessModeSchema.optional(),
 });
-export const VoiceOpenResultSchema = z.object({ threadId: ThreadIdSchema });
+export const VoiceOpenResultSchema = z.object({
+  threadId: ThreadIdSchema,
+  /** The computer and Codex account the Thread is on, which carry its calls. */
+  environmentId: EnvironmentIdSchema,
+  harnessInstanceId: HarnessInstanceIdSchema,
+});
 export const VoiceRenewInputSchema = z.strictObject(voiceSession);
 export const VoiceSayInputSchema = z.strictObject({
   ...voiceSession,

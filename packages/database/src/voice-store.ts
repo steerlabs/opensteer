@@ -55,7 +55,12 @@ async function ensureVoiceThread(
     readonly harnessInstanceId: HarnessInstanceId;
     readonly accessMode?: ThreadAccessMode;
   },
-): Promise<{ readonly threadId: ThreadId; readonly events: readonly AgentEvent[] }> {
+): Promise<{
+  readonly threadId: ThreadId;
+  readonly environmentId: EnvironmentId;
+  readonly harnessInstanceId: HarnessInstanceId;
+  readonly events: readonly AgentEvent[];
+}> {
   const workspace = await tx
     .selectFrom("workspaces")
     .select(["id", "voiceThreadId"])
@@ -68,7 +73,14 @@ async function ensureVoiceThread(
       reason: "voice-account-unavailable",
       message: "Voice needs your Main Workspace.",
     });
-  if (workspace.voiceThreadId) return { threadId: workspace.voiceThreadId, events: [] };
+  if (workspace.voiceThreadId) {
+    const thread = await tx
+      .selectFrom("threads")
+      .select(["environmentId", "harnessInstanceId"])
+      .where("id", "=", workspace.voiceThreadId)
+      .executeTakeFirstOrThrow();
+    return { threadId: workspace.voiceThreadId, ...thread, events: [] };
+  }
   const catalog = await tx
     .selectFrom("harnessCatalogs")
     .select("catalog")
@@ -102,7 +114,12 @@ async function ensureVoiceThread(
     },
     { insertThread, unlisted: true },
   );
-  return { threadId: created.thread.id, events: created.event ? [created.event] : [] };
+  return {
+    threadId: created.thread.id,
+    environmentId: input.environmentId,
+    harnessInstanceId: input.harnessInstanceId,
+    events: created.event ? [created.event] : [],
+  };
 }
 
 /** Opens the person's Voice Thread without starting a call. */

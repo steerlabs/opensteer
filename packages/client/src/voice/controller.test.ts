@@ -187,7 +187,10 @@ describe("VoiceController", () => {
     const snapshot = f.host.getSnapshot();
     const threadId = createId("thread");
     f.publish({ voiceThreadId: null });
-    const open = vi.fn(async () => ({ ok: true, data: { threadId } }));
+    const open = vi.fn(async () => ({
+      ok: true,
+      data: { threadId, ...voiceAccount(snapshot) },
+    }));
     Object.defineProperty(f.host, "rpc", { value: { "voice.open": open } });
     await f.controller.start();
     expect(open).toHaveBeenCalledExactlyOnceWith({

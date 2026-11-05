@@ -664,7 +664,7 @@ export async function settleStoppedConversationInputs(
     .selectAll()
     .where("id", "=", run.threadId)
     .executeTakeFirstOrThrow();
-  if (thread.role !== "conversation") return [];
+  if (thread.role !== "conversation" || run.voiceSessionId) return [];
   const now = new Date();
   const replacement = await pendingReplacementAttempt(transaction, run.id);
   const restartSent = replacement?.dispatchedAt != null;

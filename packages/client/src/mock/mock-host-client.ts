@@ -2155,7 +2155,7 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
       rpcSuccess({ servers: mockModelServers(input.address) }),
     // The preview has no Runner to create a call, so voice never starts here.
     "voice.open": async (input) =>
-      rpcSuccess({ threadId: ThreadIdSchema.parse(await client.openVoiceThread(input)) }),
+      rpcSuccess({ ...input, threadId: ThreadIdSchema.parse(await client.openVoiceThread(input)) }),
     "voice.start": async () => mockVoiceEnded("The preview has no voice.", "voice-refused"),
     "voice.renew": async () => mockVoiceEnded("This voice call is over.", "voice-ended"),
     "voice.context": async () => mockVoiceEnded("This voice call is over.", "voice-ended"),

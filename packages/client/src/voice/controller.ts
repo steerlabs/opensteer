@@ -56,14 +56,16 @@ export function voiceAccount(snapshot: HostSnapshot): VoiceAccount | null {
         harnessInstanceId: catalog.harnessInstanceId,
       })),
   );
-  const held = (threadId: string | null) => (threadId ? heldThread(snapshot, threadId) : null);
-  const on = (thread: ReturnType<typeof held>) =>
+  const home = snapshot.homeThreadId ? heldThread(snapshot, snapshot.homeThreadId) : null;
+  return (
     eligible.find(
       (account) =>
-        account.environmentId === thread?.environmentId &&
-        account.harnessInstanceId === thread.harnessInstanceId,
-    );
-  return on(held(snapshot.voiceThreadId)) ?? on(held(snapshot.homeThreadId)) ?? eligible[0] ?? null;
+        account.environmentId === home?.environmentId &&
+        account.harnessInstanceId === home.harnessInstanceId,
+    ) ??
+    eligible[0] ??
+    null
+  );
 }
 
 const noticeCopy: Record<VoiceNoticeKind, string> = {
@@ -227,14 +229,16 @@ export class VoiceController {
     try {
       await this.#input.onStart?.();
       if (this.#session !== session) return;
-      if ((await this.openThread()) === null) {
+      const opened = await this.#open();
+      if (this.#session !== session) return;
+      if (!opened) {
         await this.#end(session, "connection-failed");
         return;
       }
-      if (this.#session !== session) return;
       const provider = (this.#input.createProvider ?? createCodexVoiceProvider)({
         ...this.#input,
-        ...(voiceAccount(this.#input.hostClient.getSnapshot()) ?? account),
+        environmentId: opened.environmentId,
+        harnessInstanceId: opened.harnessInstanceId,
         rpc: this.#input.hostClient.rpc,
         media,
         createId: () => session.id,
@@ -282,16 +286,21 @@ export class VoiceController {
 
   /** The person's Voice Thread, created the first time anyone needs it. */
   async openThread(): Promise<string | null> {
+    const known = this.#input.hostClient.getSnapshot().voiceThreadId;
+    return known ?? (await this.#open())?.threadId ?? null;
+  }
+
+  /** The Host names the Thread's own account, which may not be the one this client would pick. */
+  async #open() {
     const host = this.#input.hostClient;
     const snapshot = host.getSnapshot();
-    if (snapshot.voiceThreadId) return snapshot.voiceThreadId;
     const account = voiceAccount(snapshot);
     if (!account) return null;
     const result = await host.rpc["voice.open"]({
       ...account,
       accessMode: snapshot.executionPreferences.accessMode,
     });
-    return result.ok ? result.data.threadId : null;
+    return result.ok ? result.data : null;
   }
   setMuted(muted: boolean): void {
     if (!this.#session) return;

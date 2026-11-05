@@ -151,14 +151,14 @@ export function createVoiceHandlers(dependencies: {
     "voice.open": async (input, context) => {
       const ownerId = owner(context);
       await requireAccount(ownerId, input);
-      const { threadId, events } = await dependencies.store.openVoiceThread({
+      const { events, ...opened } = await dependencies.store.openVoiceThread({
         ownerId,
         environmentId: input.environmentId,
         harnessInstanceId: input.harnessInstanceId,
         ...(input.accessMode ? { accessMode: input.accessMode } : {}),
       });
       for (const event of events) dependencies.publishWorkspaceEvent?.(event);
-      return rpcSuccess({ threadId });
+      return rpcSuccess(opened);
     },
     "voice.start": async (input, context) => {
       const ownerId = owner(context);

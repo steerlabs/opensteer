@@ -43,7 +43,12 @@ function fixture() {
     listAgentHarnessInstancesForUser: vi.fn(async (): Promise<readonly HarnessInstanceRecord[]> => [
       profile,
     ]),
-    openVoiceThread: vi.fn(async () => ({ threadId: call.threadId, events: [] })),
+    openVoiceThread: vi.fn(async () => ({
+      threadId: call.threadId,
+      environmentId,
+      harnessInstanceId,
+      events: [],
+    })),
     getHarnessCatalog: vi.fn(async () =>
       HarnessInstanceCatalogSchema.parse({
         driverKind: "codex",
@@ -129,7 +134,7 @@ describe("Host voice Run relay", () => {
     const f = fixture();
     const { environmentId, harnessInstanceId } = f.input;
     expect(await f.handlers["voice.open"]({ environmentId, harnessInstanceId }, f.context)).toEqual(
-      { ok: true, data: { threadId: f.call.threadId } },
+      { ok: true, data: { threadId: f.call.threadId, environmentId, harnessInstanceId } },
     );
     f.store.environmentIsAvailableToUser.mockResolvedValueOnce(false);
     await expect(

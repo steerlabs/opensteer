@@ -554,6 +554,37 @@ integration.sequential("thread input queue promotion", () => {
     ).toHaveLength(1);
   });
 
+  it("keeps what arrives as a call ends for the next Run, and wakes it", async ({
+    storeFixture,
+  }) => {
+    const { store, database } = storeFixture;
+    const { call, emit, f } = await startedCall(storeFixture, "voice-hang-up");
+    await store.stopVoiceCall(f.ownerId, call.sessionId!);
+    const late = await store.enqueueThreadInput({
+      threadId: call.threadId,
+      requestedBy: f.ownerId,
+      source: { cause: "assignment-result", kind: "platform", sourceRunId: call.runId },
+      content: [{ type: "text", text: "A task finished." }],
+      policy: "queue",
+      idempotencyKey: "voice-late",
+    });
+    await emit(1, { type: "run.interrupted", data: { status: "interrupted" } });
+    const input = await database
+      .selectFrom("threadInputs")
+      .select("state")
+      .where("messageId", "=", late.message.id)
+      .executeTakeFirstOrThrow();
+    expect(input.state).not.toBe("cancelled");
+    expect(
+      await database
+        .selectFrom("runs")
+        .select(["seedInputId", "voiceSessionId"])
+        .where("threadId", "=", call.threadId)
+        .where("status", "=", "queued")
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ seedInputId: late.message.id, voiceSessionId: null });
+  });
+
   it("opens Requests from a call, and releases their answers while it runs", async ({
     storeFixture,
   }) => {
