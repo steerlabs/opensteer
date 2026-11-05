@@ -146,6 +146,40 @@ describe("around a conversation", () => {
   });
 });
 
+describe("apps open as tabs", () => {
+  const tab = (appId: string, threadId: string, title: string) =>
+    ({
+      appId,
+      latestVersion: 1,
+      openedAt: "2026-11-04T10:00:00.000Z",
+      threadId,
+      title,
+      workspaceId: "workspace",
+    }) as unknown as NonNullable<HostSnapshot["appTabs"]>[number];
+  const mine = "app_11111111-1111-4111-8111-111111111111";
+  const theirs = "app_22222222-2222-4222-8222-222222222222";
+
+  // Failure: another conversation's app is listed here, or a row opens something else.
+  it("lists this thread's app tabs only, each opening exactly its own", () => {
+    const appTabs = [tab(mine, home, "Budget"), tab(theirs, "another-thread", "Other")];
+    const apps = aroundPlaces({ ...source, appTabs }, home).filter(
+      ({ destination }) => destination.kind === "opensteer-app",
+    );
+    expect(apps).toMatchObject([
+      { destination: { appId: mine, kind: "opensteer-app" }, title: "Budget", working: false },
+    ]);
+  });
+
+  // Failure: the header keeps its old count because no surface source changed.
+  it("refreshes the glance when only the app tabs change", () => {
+    const select = aroundGlanceSelector(home);
+    const before = select(source)?.places ?? 0;
+    const opened = { ...source, appTabs: [tab(mine, home, "Budget")] };
+    expect(select(opened)?.places).toBe(before + 1);
+    expect(select({ ...opened, appTabs: [] })?.places ?? 0).toBe(before);
+  });
+});
+
 describe("the sheet's sections", () => {
   const place = aroundPlaces(source, home)[0]!;
   const idle: AroundPlace = { ...place, working: false };

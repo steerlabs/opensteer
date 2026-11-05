@@ -2,7 +2,7 @@ import { placeAgentsWords, type PlaceAgents } from "@opensteer/client/host";
 import { useNavigation } from "@react-navigation/native";
 import type { NativeStackHeaderItemMenuAction } from "@react-navigation/native-stack";
 import { useLayoutEffect, useRef, type ReactNode } from "react";
-import { StyleSheet, View } from "react-native";
+import { Pressable, StyleSheet, View } from "react-native";
 import { color, headerFontScaleLimit, touchTarget } from "../theme.js";
 import { NativeMenu, type NativeMenuOption } from "../thread/composer-menu.js";
 import { AppText } from "../ui/primitives.js";
@@ -10,7 +10,7 @@ import { Symbol } from "../ui/symbol.js";
 import { AgentPill } from "./agent-marks.js";
 
 /** Where Ask starts work about the page. */
-export type AskTarget = "chat" | "task";
+export type AskTarget = "chat" | "task" | "thread";
 
 /**
  * The bar over a tab, Mac app or phone, the same however it was reached: the
@@ -19,7 +19,8 @@ export type AskTarget = "chat" | "task";
  * Who is here is the title because they are what the place is about once it
  * is open — the page names itself in its own bar below. With nobody here the
  * title is the place's own name. Ask is the bar's one action, a native menu:
- * Ask in Chat, once Chat exists, and New task.
+ * Ask in Chat, once Chat exists, and New task. A place a Thread made is asked
+ * about in that Thread, so there Ask is one button rather than a menu.
  *
  * The bar is set again only when what it shows changes; its handlers are
  * read when they are used, so a page that re-renders on every picture never
@@ -27,6 +28,8 @@ export type AskTarget = "chat" | "task";
  */
 export function usePageHeader(props: {
   readonly agents: PlaceAgents;
+  /** Ask goes to the Thread that made this place, with no choice to offer. */
+  readonly asksThread: boolean;
   /** The Thread drawn beside the page, when one is. */
   readonly beside: string | null;
   /** Chat exists to ask in; before its first message, only a task can be started. */
@@ -40,7 +43,7 @@ export function usePageHeader(props: {
   const navigation = useNavigation();
   const latest = useRef(props);
   latest.current = props;
-  const { agents, beside, chat, intent, title } = props;
+  const { agents, asksThread, beside, chat, intent, title } = props;
 
   useLayoutEffect(() => {
     const ask = (target: AskTarget) => latest.current.onAsk(target);
@@ -59,45 +62,70 @@ export function usePageHeader(props: {
     };
     const choices = chat ? [inChat, newTask] : [newTask];
     navigation.setOptions({
-      headerRight: () => (
-        <NativeMenu
-          accessibilityHint="Starts work about this page in Chat or a new task"
-          accessibilityLabel="Ask"
-          onPresent={noop}
-          onSettle={noop}
-          options={choices}
-          style={styles.ask}
-          title="Ask about this page"
-        >
-          <Symbol name="sparkles" size={20} tint={color.ember} />
-        </NativeMenu>
-      ),
+      headerRight: () =>
+        asksThread ? (
+          <Pressable
+            accessibilityHint={threadHint}
+            accessibilityLabel="Ask"
+            accessibilityRole="button"
+            onPress={() => ask("thread")}
+            style={styles.ask}
+          >
+            <Symbol name="sparkles" size={20} tint={color.ember} />
+          </Pressable>
+        ) : (
+          <NativeMenu
+            accessibilityHint="Starts work about this page in Chat or a new task"
+            accessibilityLabel="Ask"
+            onPresent={noop}
+            onSettle={noop}
+            options={choices}
+            style={styles.ask}
+            title="Ask about this page"
+          >
+            <Symbol name="sparkles" size={20} tint={color.ember} />
+          </NativeMenu>
+        ),
       headerTitle: () => (
         <PageTitle agents={agents} beside={beside} intent={intent} onOpen={open} title={title} />
       ),
       title,
       unstable_headerRightItems: () => [
-        {
-          accessibilityHint: "Starts work about this page in Chat or a new task",
-          accessibilityLabel: "Ask",
-          icon: { name: "sparkles", type: "sfSymbol" },
-          label: "Ask",
-          menu: {
-            items: choices.map(({ icon, label, onPress }): NativeStackHeaderItemMenuAction => ({
-              ...(icon === undefined ? {} : { icon: { name: icon, type: "sfSymbol" as const } }),
-              label,
-              onPress,
-              type: "action",
-            })),
-            title: "Ask about this page",
-          },
-          tintColor: color.ember,
-          type: "menu",
-        },
+        asksThread
+          ? {
+              accessibilityHint: threadHint,
+              accessibilityLabel: "Ask",
+              icon: { name: "sparkles", type: "sfSymbol" },
+              label: "Ask",
+              onPress: () => ask("thread"),
+              tintColor: color.ember,
+              type: "button",
+            }
+          : {
+              accessibilityHint: "Starts work about this page in Chat or a new task",
+              accessibilityLabel: "Ask",
+              icon: { name: "sparkles", type: "sfSymbol" },
+              label: "Ask",
+              menu: {
+                items: choices.map(({ icon, label, onPress }): NativeStackHeaderItemMenuAction => ({
+                  ...(icon === undefined
+                    ? {}
+                    : { icon: { name: icon, type: "sfSymbol" as const } }),
+                  label,
+                  onPress,
+                  type: "action",
+                })),
+                title: "Ask about this page",
+              },
+              tintColor: color.ember,
+              type: "menu",
+            },
       ],
     });
-  }, [agents, beside, chat, intent, navigation, title]);
+  }, [agents, asksThread, beside, chat, intent, navigation, title]);
 }
+
+const threadHint = "Opens the conversation that made this app";
 
 function noop(): void {}
 

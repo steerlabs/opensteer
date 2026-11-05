@@ -44,6 +44,7 @@ import {
   View,
 } from "react-native";
 import { ActingDot, agentWorkingLabel } from "../browser/acting-dot.js";
+import { opensteerAppGlyph } from "../browser/agent-surface.js";
 import { tabSiteLabel } from "../browser/site-label.js";
 import { operationDetail } from "../client/mobile-client.js";
 import { statusTone } from "../screens/deployment-row.js";
@@ -710,14 +711,14 @@ const SidebarTabs = memo(function SidebarTabs(props: {
 });
 
 const placeGlyph: Record<PlaceItem["kind"], SFSymbolName> = {
-  "opensteer-app": "desktopcomputer",
+  "opensteer-app": opensteerAppGlyph,
   app: "desktopcomputer",
   browser: "globe",
   phone: "smartphone",
 };
 
 const placeKind: Record<PlaceItem["kind"], string> = {
-  "opensteer-app": "App",
+  "opensteer-app": "Opensteer app",
   app: "App",
   browser: "Tab",
   phone: "Phone",

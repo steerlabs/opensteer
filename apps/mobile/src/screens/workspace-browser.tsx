@@ -24,6 +24,7 @@ import {
   type StaticScreenProps,
 } from "@react-navigation/native";
 import {
+  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -39,6 +40,7 @@ import {
   Platform,
   Pressable,
   StyleSheet,
+  TextInput,
   useWindowDimensions,
   View,
   type LayoutChangeEvent,
@@ -50,6 +52,7 @@ import {
   type ReservedRegion,
 } from "react-native-reserved-regions";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { opensteerAppGlyph } from "../browser/agent-surface.js";
 import { BrowserPage } from "../browser/browser-page.js";
 import { usePageHeader, type AskTarget } from "../browser/page-header.js";
 import { Toolbar, ToolbarCapsule, ToolbarMenu } from "../browser/toolbar.js";
@@ -74,6 +77,7 @@ import {
   type Rect,
   type Size,
 } from "../layout.js";
+import { AppFrame } from "../thread/app-frame.js";
 import { ThreadPane, type ThreadHeaderState } from "../thread/thread-pane.js";
 import { useKeyboardVisible } from "../ui/keyboard.js";
 import { InsetView, Pane } from "../ui/pane.js";
@@ -85,10 +89,10 @@ import { useAppForeground } from "../ui/foreground.js";
 import { NewTaskPane } from "./new-task.js";
 
 /**
- * Exactly one tab, Mac app or phone, as the route names it: the native bar
- * with who is here and Ask, and the place itself with the bar it is used
- * through. The route is the selection, so nothing here chooses or swaps what
- * is shown.
+ * Exactly one tab, Mac app, phone or Opensteer App, as the route names it: the
+ * native bar with who is here and Ask, and the place itself with the bar it is
+ * used through. The route is the selection, so nothing here chooses or swaps
+ * what is shown.
  *
  * How the page was reached — from a conversation, from Tabs, from the sidebar
  * — changes only where Back goes, which is the stack's own business. Who is in
@@ -252,6 +256,11 @@ function Focused(props: {
     () => places.find((candidate) => samePlace(candidate, destination)) ?? null,
     [destination, places],
   );
+  // A closed app keeps its name and its Thread: the bar still says what ended,
+  // and Ask still reaches whoever made it.
+  const lastApp = useRef<PlaceItem | null>(null);
+  if (place?.opensteerApp !== undefined) lastApp.current = place;
+  const appThreadId = lastApp.current?.opensteerApp?.threadId ?? null;
   const occupied = useMemo(
     () => ({ destination, occupants: place?.occupants ?? [] }),
     [destination, place?.occupants],
@@ -279,8 +288,8 @@ function Focused(props: {
   );
 
   const shownPage = destination.kind === "browser" ? page : null;
-  const latest = useRef({ homeThreadId, shownPage });
-  latest.current = { homeThreadId, shownPage };
+  const latest = useRef({ appThreadId, homeThreadId, shownPage });
+  latest.current = { appThreadId, homeThreadId, shownPage };
 
   /**
    * An agent's Thread, as its own screen. The screen directly under this one
@@ -317,12 +326,18 @@ function Focused(props: {
    */
   const putPageOnDraft = useCallback(
     (target: AskTarget): boolean => {
-      const { homeThreadId: home, shownPage: included } = latest.current;
+      const { appThreadId: origin, homeThreadId: home, shownPage: included } = latest.current;
       const current = hostClient.getSnapshot();
       const userId = current.user?.id;
       const workspaceId = mainWorkspace(current)?.id;
       const draftKey =
-        target === "chat" ? home : workspaceId === undefined ? null : newTaskDraftKey(workspaceId);
+        target === "thread"
+          ? origin
+          : target === "chat"
+            ? home
+            : workspaceId === undefined
+              ? null
+              : newTaskDraftKey(workspaceId);
       if (userId === undefined || draftKey === null) return false;
       void drafts.writeDraftPage(deploymentId, userId, draftKey, included).catch(() => undefined);
       return true;
@@ -333,20 +348,25 @@ function Focused(props: {
   const askAway = useCallback(
     (target: AskTarget) => {
       if (!putPageOnDraft(target)) return;
+      const { appThreadId: origin } = latest.current;
       const workspaceId = mainWorkspace(hostClient.getSnapshot())?.id;
-      if (target === "chat") navigation.dispatch(StackActions.popTo("Home", { deploymentId }));
+      if (target === "thread") {
+        if (origin !== null) openThread(origin);
+      } else if (target === "chat")
+        navigation.dispatch(StackActions.popTo("Home", { deploymentId }));
       else if (workspaceId !== undefined)
         navigation.dispatch(StackActions.push("NewTask", { deploymentId, workspaceId }));
     },
-    [deploymentId, hostClient, navigation, putPageOnDraft],
+    [deploymentId, hostClient, navigation, openThread, putPageOnDraft],
   );
   /** Ask, where a pair fits: the composer opens beside the page, with the page on its draft. */
   const askBeside = useCallback(
     (target: AskTarget) => {
       if (!putPageOnDraft(target)) return;
-      const home = latest.current.homeThreadId;
+      const { appThreadId: origin, homeThreadId: home } = latest.current;
+      const threadId = target === "thread" ? origin : home;
       if (target === "task") setChosen({ kind: "task" });
-      else if (home !== null) setChosen({ kind: "thread", threadId: home });
+      else if (threadId !== null) setChosen({ kind: "thread", threadId });
     },
     [putPageOnDraft],
   );
@@ -404,17 +424,33 @@ function Focused(props: {
       );
   }, [deploymentId, destination, navigation]);
   const [paired, setPaired] = useState(false);
+  const title =
+    place?.title ??
+    lastApp.current?.title ??
+    shownPage?.title ??
+    (destination.kind === "browser" ? "Tab" : "");
   usePageHeader({
     agents,
+    asksThread: appThreadId !== null,
     beside: paired ? besideId : null,
     chat: homeThreadId !== null,
     intent: paired ? "beside" : "open",
     onAsk: paired ? askBeside : askAway,
     onOpenAgent: paired ? showBeside : openThread,
-    title: place?.title ?? shownPage?.title ?? (destination.kind === "browser" ? "Tab" : ""),
+    title,
   });
   const body =
-    destination.kind !== "browser" ? (
+    destination.kind === "opensteer-app" ? (
+      <AppTab
+        appId={destination.appId}
+        connected={props.connected}
+        hostClient={hostClient}
+        key={destination.appId}
+        onClosed={onClosed}
+        onTyping={setTyping}
+        title={title}
+      />
+    ) : destination.kind !== "browser" ? (
       <MacAppView
         active={props.active}
         destination={destination}
@@ -794,32 +830,113 @@ function SavedTab(props: {
         <TabStatus title={waitingFor ?? "Opening…"} waiting />
       )}
       {/* The page's own bar, resting until the page is back: only Close works. */}
-      <Toolbar edge="bottom" testID="page-toolbar">
-        <ToolbarCapsule style={styles.restingAddress}>
-          <AppText numberOfLines={1} role="secondaryMedium" tone="muted">
-            {tabSiteLabel(place.site) ?? place.title}
-          </AppText>
-        </ToolbarCapsule>
-        <ToolbarMenu
-          label="More"
-          sections={[
-            [
-              {
-                destructive: true,
-                disabled: !props.connected || closing,
-                icon: "xmark.circle",
-                id: "close",
-                label: "Close tab",
-                onPress: close,
-              },
-            ],
-          ]}
-          symbol="ellipsis"
-        />
-      </Toolbar>
+      <CloseBar closeDisabled={!props.connected || closing} onClose={close}>
+        <AppText numberOfLines={1} role="secondaryMedium" tone="muted">
+          {tabSiteLabel(place.site) ?? place.title}
+        </AppText>
+      </CloseBar>
     </View>
   );
 }
+
+/** The bar of a place with nothing else to drive: its name, and Close. */
+function CloseBar(props: {
+  readonly children: ReactNode;
+  readonly closeDisabled: boolean;
+  readonly onClose: () => void;
+}): ReactNode {
+  return (
+    <Toolbar edge="bottom" testID="page-toolbar">
+      <ToolbarCapsule style={styles.restingAddress}>{props.children}</ToolbarCapsule>
+      <ToolbarMenu
+        label="More"
+        sections={[
+          [
+            {
+              destructive: true,
+              disabled: props.closeDisabled,
+              icon: "xmark.circle",
+              id: "close",
+              label: "Close tab",
+              onPress: props.onClose,
+            },
+          ],
+        ]}
+        symbol="ellipsis"
+      />
+    </Toolbar>
+  );
+}
+
+/**
+ * An Opensteer App open as a tab, with the bar every place has. It reads only
+ * whether it has ended, so a streamed token never reaches its WebView, which
+ * goes the moment Close is pressed: the card under this page comes back at
+ * once, and two copies never run.
+ */
+const AppTab = memo(function AppTab(props: {
+  readonly appId: string;
+  readonly connected: boolean;
+  readonly hostClient: HostClient;
+  readonly onClosed: () => void;
+  readonly onTyping: (typing: boolean) => void;
+  readonly title: string;
+}): ReactNode {
+  const { appId, hostClient, onClosed, onTyping } = props;
+  const navigation = useNavigation();
+  const ended = useHostSelector(
+    hostClient,
+    useCallback(
+      (snapshot: HostSnapshot) => placeDestinationEnded(snapshot, { appId, kind: "opensteer-app" }),
+      [appId],
+    ),
+  );
+  const [closing, setClosing] = useState(false);
+  const [closeFailure, setCloseFailure] = useState<string | null>(null);
+  const close = () => {
+    setClosing(true);
+    setCloseFailure(null);
+    void hostClient.closeAppTab(appId).then(
+      () => {
+        if (navigation.isFocused()) onClosed();
+        else setClosing(false);
+      },
+      (error: unknown) => {
+        setClosing(false);
+        setCloseFailure(error instanceof Error ? error.message : "Try again in a moment.");
+      },
+    );
+  };
+  // A composer beside the app can hold the keyboard too; only a field in the
+  // app leaves no native input focused.
+  const typing = useKeyboardVisible() && TextInput.State.currentlyFocusedInput() === null;
+  useEffect(() => {
+    onTyping(typing);
+    return () => onTyping(false);
+  }, [onTyping, typing]);
+  if (closing) return <TabStatus title="Closing…" waiting />;
+  if (ended) return <BrowserEnded detail={null} failed={false} />;
+  return (
+    <View style={styles.fill}>
+      {closeFailure === null ? null : (
+        <Notice
+          action={{ label: "Try again", onPress: close }}
+          detail={closeFailure}
+          title="This tab could not be closed"
+        />
+      )}
+      <AppFrame appId={appId} client={hostClient} fill />
+      {typing ? null : (
+        <CloseBar closeDisabled={!props.connected} onClose={close}>
+          <Symbol name={opensteerAppGlyph} size={15} tint={color.muted} />
+          <AppText numberOfLines={1} role="secondaryMedium" style={styles.appName}>
+            {props.title}
+          </AppText>
+        </CloseBar>
+      )}
+    </View>
+  );
+});
 
 /** What a tab with no picture says, centred where the page would be. */
 function TabStatus(props: {
@@ -1138,6 +1255,7 @@ function BrowserEnded(props: {
 }
 
 const styles = StyleSheet.create({
+  appName: { flex: 1, marginStart: space[10] },
   // Beside the page, the second pane is a column of its own, edged by one hairline.
   besidePage: {
     backgroundColor: color.background,

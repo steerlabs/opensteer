@@ -1,17 +1,73 @@
-import { useAppView } from "@opensteer/client/react";
-import type { AppEntry } from "@opensteer/client/host";
-import { appContentHeight, appFrameReady, isAppPrefixNavigation } from "@opensteer/shared/appFrame";
-import { useContext, useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Linking, Modal, Pressable, StyleSheet, View } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
-import { WebView } from "react-native-webview";
+import {
+  isAppTabOpen,
+  type AppEntry,
+  type HostClient,
+  type HostSnapshot,
+} from "@opensteer/client/host";
+import { useHostSelector } from "@opensteer/client/react";
+import { memo, useCallback, useContext, useState, type ReactNode } from "react";
+import { Pressable, StyleSheet, View } from "react-native";
+import { opensteerAppGlyph } from "../browser/agent-surface.js";
 import { color, radius, space } from "../theme.js";
-import { AppText } from "../ui/primitives.js";
+import { AppText, Notice } from "../ui/primitives.js";
+import { Symbol } from "../ui/symbol.js";
+import { AppFrame } from "./app-frame.js";
 import { TranscriptHostClientContext } from "./attachment-views.js";
+import { TranscriptAppTabsContext } from "./surface-chips.js";
 
-export function AppCard({ entry }: { readonly entry: AppEntry }) {
-  const [open, setOpen] = useState(false);
+/**
+ * A published app in its conversation. It runs here until it is opened as a
+ * tab; while the tab is open the tab is its one live copy, and this says where
+ * it went. Closing the tab brings it back.
+ */
+export const AppCard = memo(function AppCard({ entry }: { readonly entry: AppEntry }): ReactNode {
+  const client = useContext(TranscriptHostClientContext);
+  return client === null ? null : <Card client={client} entry={entry} />;
+});
+
+function Card(props: { readonly client: HostClient; readonly entry: AppEntry }): ReactNode {
+  const { client, entry } = props;
+  const { appId } = entry;
+  const tabs = useContext(TranscriptAppTabsContext);
   const [title, setTitle] = useState(entry.title);
+  const [failure, setFailure] = useState<string | null>(null);
+  const tabOpen = useHostSelector(
+    client,
+    useCallback((snapshot: HostSnapshot) => isAppTabOpen(snapshot, appId), [appId]),
+  );
+  const open = () => {
+    setFailure(null);
+    // Its first step is local, so the tab exists before the page below looks for it.
+    const opening = client.openAppTab(appId);
+    tabs?.open(appId);
+    void opening.catch((error: unknown) => {
+      tabs?.leave(appId);
+      setFailure(error instanceof Error ? error.message : "Try again in a moment.");
+    });
+  };
+  if (tabOpen)
+    return (
+      <Pressable
+        accessibilityHint="Goes to this app’s tab"
+        accessibilityLabel={`${title}, open in Tabs`}
+        accessibilityRole="button"
+        onPress={() => tabs?.open(appId)}
+        style={({ pressed }) => [styles.card, styles.tabRow, pressed && styles.pressed]}
+      >
+        <View style={styles.glyph}>
+          <Symbol name={opensteerAppGlyph} size={17} tint={color.muted} />
+        </View>
+        <View style={styles.words}>
+          <AppText numberOfLines={1} role="bodyMedium">
+            {title}
+          </AppText>
+          <AppText numberOfLines={1} role="caption" tone="muted">
+            Open in Tabs
+          </AppText>
+        </View>
+        <Symbol name="chevron.right" size={13} tint={color.mutedDim} />
+      </Pressable>
+    );
   return (
     <View style={styles.card}>
       <View style={styles.header}>
@@ -19,141 +75,38 @@ export function AppCard({ entry }: { readonly entry: AppEntry }) {
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={`Open ${title}`}
-          onPress={() => setOpen(true)}
+          onPress={open}
           hitSlop={8}
         >
           <AppText>Open</AppText>
         </Pressable>
       </View>
-      <AppFrame appId={entry.appId} onTitle={setTitle} />
-      {open ? (
-        <Modal visible onRequestClose={() => setOpen(false)} animationType="slide">
-          <SafeAreaView style={styles.fullScreen}>
-            <View style={styles.header}>
-              <AppText style={styles.title}>{title}</AppText>
-              <Pressable accessibilityRole="button" onPress={() => setOpen(false)} hitSlop={8}>
-                <AppText>Close</AppText>
-              </Pressable>
-            </View>
-            <AppFrame appId={entry.appId} onTitle={setTitle} fullScreen />
-          </SafeAreaView>
-        </Modal>
-      ) : null}
+      {failure === null ? null : (
+        <View style={styles.failure}>
+          <Notice
+            action={{ label: "Try again", onPress: open }}
+            detail={failure}
+            title="This app could not open as a tab"
+          />
+        </View>
+      )}
+      <AppFrame appId={appId} client={client} onTitle={setTitle} />
     </View>
   );
 }
 
-function AppFrame({
-  appId,
-  onTitle,
-  fullScreen = false,
-}: {
-  readonly appId: string;
-  readonly onTitle: (title: string) => void;
-  readonly fullScreen?: boolean;
-}) {
-  const client = useContext(TranscriptHostClientContext);
-  const { view, failed, retry } = useAppView(client, appId, "dark");
-  useEffect(() => {
-    if (view) onTitle(view.app.title);
-  }, [view, onTitle]);
-  if (failed) return <AppFailure retry={retry} />;
-  if (!view) return <ActivityIndicator accessibilityLabel="Loading app" style={styles.notice} />;
-  return <AppDocument key={view.url} url={view.url} fullScreen={fullScreen} retry={retry} />;
-}
-
-function AppFailure({ retry }: { readonly retry: () => void }) {
-  return (
-    <Pressable accessibilityRole="button" onPress={retry} style={styles.notice}>
-      <AppText>Could not load this app. Tap to retry.</AppText>
-    </Pressable>
-  );
-}
-
-function openExternal(url: string): void {
-  if (/^https?:\/\//iu.test(url)) void Linking.openURL(url).catch(() => undefined);
-}
-
-function AppDocument({
-  url,
-  fullScreen,
-  retry,
-}: {
-  readonly url: string;
-  readonly fullScreen: boolean;
-  readonly retry: () => void;
-}) {
-  const [height, setHeight] = useState(280);
-  const [loadFailed, setLoadFailed] = useState(false);
-  const ready = useRef(false);
-  if (loadFailed) return <AppFailure retry={retry} />;
-  const frameStyle = fullScreen
-    ? styles.webFullScreen
-    : { height: Math.max(160, Math.min(640, height)), flex: 0, backgroundColor: "transparent" };
-  return (
-    <WebView
-      source={{ uri: url }}
-      style={frameStyle}
-      containerStyle={frameStyle}
-      // Route every scheme through our policy; WebView otherwise opens non-whitelisted URLs itself.
-      originWhitelist={["*"]}
-      incognito
-      sharedCookiesEnabled={false}
-      thirdPartyCookiesEnabled={false}
-      allowFileAccess={false}
-      allowFileAccessFromFileURLs={false}
-      allowUniversalAccessFromFileURLs={false}
-      mixedContentMode="never"
-      geolocationEnabled={false}
-      mediaCapturePermissionGrantType="deny"
-      allowsInlineMediaPlayback={false}
-      javaScriptCanOpenWindowsAutomatically={false}
-      setSupportMultipleWindows
-      onShouldStartLoadWithRequest={(request): boolean => {
-        if (request.url === "about:blank" || isAppPrefixNavigation(request.url, url)) return true;
-        if (
-          request.isTopFrame !== false &&
-          (request.navigationType === "click" || request.navigationType === undefined)
-        )
-          openExternal(request.url);
-        return false;
-      }}
-      onOpenWindow={(event) => openExternal(event.nativeEvent.targetUrl)}
-      onMessage={(event) => {
-        try {
-          const message: unknown = JSON.parse(event.nativeEvent.data);
-          if (appFrameReady(message)) {
-            ready.current = true;
-            setLoadFailed(false);
-          }
-          const height = appContentHeight(message);
-          if (height !== null) setHeight(height);
-        } catch {
-          /* A page's messages carry no native authority. */
-        }
-      }}
-      onLoadStart={() => {
-        ready.current = false;
-      }}
-      onLoad={() => {
-        if (!ready.current) setLoadFailed(true);
-      }}
-      onError={() => {
-        if (!ready.current) setLoadFailed(true);
-      }}
-      onHttpError={() => {
-        /* A prepared error document can still send ready before onLoadEnd. */
-      }}
-      onLoadEnd={() => {
-        if (!ready.current) setLoadFailed(true);
-      }}
-      startInLoadingState
-      renderLoading={() => <ActivityIndicator accessibilityLabel="Loading app" />}
-    />
-  );
-}
 const styles = StyleSheet.create({
   card: { borderWidth: 1, borderColor: color.line, borderRadius: radius.md, overflow: "hidden" },
+  failure: { paddingBottom: space[12], paddingHorizontal: space[12] },
+  // The same mark a tab's row wears in Tabs.
+  glyph: {
+    alignItems: "center",
+    backgroundColor: color.surfaceRaised,
+    borderRadius: radius.sm,
+    height: 32,
+    justifyContent: "center",
+    width: 32,
+  },
   header: {
     flexDirection: "row",
     alignItems: "center",
@@ -161,8 +114,8 @@ const styles = StyleSheet.create({
     gap: space[12],
     padding: space[12],
   },
+  pressed: { backgroundColor: color.surfacePressed },
+  tabRow: { alignItems: "center", flexDirection: "row", gap: space[12], padding: space[12] },
   title: { flex: 1 },
-  notice: { padding: space[12] },
-  fullScreen: { flex: 1, backgroundColor: color.background },
-  webFullScreen: { flex: 1, backgroundColor: "transparent" },
+  words: { flex: 1, gap: space[2], minWidth: 0 },
 });
