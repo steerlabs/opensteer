@@ -1,6 +1,7 @@
 # Opensteer Passwords
 
-Saved logins let agents fill websites or type into permitted Mac and Android apps. The Personal Mac
+Saved logins let agents fill websites or type into permitted Mac and Android apps; saved cards
+work only in websites. The Personal Mac
 owns the vault; the requester can approve a sign-in from any signed-in device. Cookie reuse is
 [Chrome sign-ins](browser-sessions.md#chrome-sign-ins); passkeys use the [OS passkey
 manager](browser-sessions.md#passkeys). Checks live in the [browser-and-passwords
@@ -23,13 +24,14 @@ The broker owns keys, grants and release; desktop main owns browser checks and s
 owns Workspace admission and memory-only leases and stores neither vault data nor released values.
 Only Personal's local Host can name a Workspace to the vault.
 
-Agents use one tool, `sign_in`. The probe never prompts. Given a Browser Session, the Host checks
+Agents use `sign_in` for logins and `use_card` for checkout. Probes never prompt. For login
+requests given a Browser Session, the Host checks
 access to it first; a Chrome grant for the session's Workspace wins, otherwise a saved login selects
 Passwords, and Chrome can fill in when Passwords has none. Every path refuses loopback and the
 Deployment's own sites before creating a Request. A login reference never grants access to a
 browser, phone or Mac app: each use still needs the Run's current authority over that surface.
 
-`sign_in` reports what Passwords still needs instead of a separate tool suggesting it, so the
+`sign_in` and `use_card` report what Passwords still needs instead of a separate tool suggesting it, so the
 suggestion can't depend on a model remembering to call anything. Clients show it from that result
 at the end of the conversation until the person next speaks; absent, Passwords can't help here
 (a server Deployment or an unsupported Mac) and nothing offers it.
@@ -58,11 +60,25 @@ extension on reuse. Closing the browser does not end it; restart, cancellation, 
 a lost connection or a changed login or grant does. Joining pending work never makes a Run the
 approver.
 
+## Saved cards
+
+A card is not site-bound. Each use needs fresh person approval binding the top-level merchant site,
+with one 30-minute deadline for approval and filling. No remembered grant applies to cards. Payment
+fields may belong to a cross-origin provider frame embedded by that merchant; the approved
+merchant stays the top-level authority. Approval permits filling, not a particular charge.
+
+Cards work only in browser pages on a Personal Mac's Electron runtime. The native Passwords window
+owns adding, editing and deleting cards, and stores the CVC too. Import remains passwords only.
+After filling, the page, its provider and agent JavaScript can technically read the value. Agents
+are told never to read back, print, log, copy or save card values, including to files or memory.
+This is a behavioral boundary, not technical secrecy after filling.
+
 ## Filling a field
 
 Browser fills bind the real focused field before release and never retry an unknown outcome. Open
-shadow roots work; contenteditable editors and closed roots do not. An out-of-process focused frame
-must itself have a committed HTTPS origin on the approved site. Desktop main binds the exact
+shadow roots work; contenteditable editors and closed roots do not. For logins, an out-of-process focused frame
+must itself have a committed HTTPS origin on the approved site. Cards may fill an embedded payment
+provider frame with a committed HTTPS origin while the top-level site remains approved. Desktop main binds the exact
 document and input before release, rechecks authority, focus and origin before dispatch, and the
 main-world setter rechecks identity. The Host checks lease and session access on every fill.
 
@@ -104,7 +120,9 @@ Each hop negotiates the sign-in features; an unknown version or a missing hop or
 disables the feature. The broker negotiates its protocol per connection, echoes it and never
 silently upgrades. App release needs an explicit app kind, never inferred from a missing origin, and
 never falls back to the legacy session-bound protocol; browser release needs an exact HTTPS origin
-on the saved site. Historical Request and result shapes stay readable and never create a live lease.
+on the saved site. Historical Request and result shapes stay readable and never create a live lease. Cards reuse the
+existing sign-in Request kind with a credential discriminator; older clients can only decline a
+card Request, because their login decision cannot authorize it.
 Versions live in the [broker wire](../packages/protocol/src/passwords-broker.ts).
 
 ## The broker

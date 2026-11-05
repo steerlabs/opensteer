@@ -7,7 +7,7 @@ import {
   conversationRows,
   conversationTurnRevealing,
   groupTranscriptEntries,
-  passwordsSetUpSuggestion,
+  passwordsSetupOffer,
   incomingTranscriptMessages,
   observedSequence,
   threadActivity,
@@ -1045,11 +1045,12 @@ function ThreadPaneForUser(
       ) : null,
     [thread?.role, inputQueue, queueCanRespond, hostClient, restoreQueuedDraft, viewerUserId],
   );
-  const offersPasswords = useMemo(() => passwordsSetUpSuggestion(groups) !== null, [groups]);
+  const offersPasswords = useMemo(() => passwordsSetupOffer(groups) !== null, [groups]);
   const listFooter =
     offersPasswords && viewerUserId !== null ? (
       <>
         <PasswordsSuggestion
+          card={passwordsSetupOffer(groups)?.credential === "card"}
           deploymentId={props.deploymentId}
           hostClient={hostClient}
           userId={viewerUserId}

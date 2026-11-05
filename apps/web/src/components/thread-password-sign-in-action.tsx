@@ -35,6 +35,7 @@ import {
   type PasswordSignInAccountRow,
 } from "@opensteer/client/host";
 import type { PasswordSignInCard } from "@opensteer/protocol";
+import { CardUseRequestBody } from "./thread-card-use-action.js";
 import { actionErrorMessage } from "../ui-utils.js";
 import { ActionNote } from "./action-rows.js";
 import { useShell } from "./app-shell.js";
@@ -57,7 +58,7 @@ export function ThreadPasswordSignInAction({
 }) {
   const { hostClient, snapshot } = useShell();
   return (
-    <PasswordSignInRequestBody
+    <CredentialRequestBody
       client={hostClient}
       disabled={disabled}
       key={request.id}
@@ -67,6 +68,15 @@ export function ThreadPasswordSignInAction({
         "this Workspace"
       }
     />
+  );
+}
+
+function CredentialRequestBody(props: Parameters<typeof PasswordSignInRequestBody>[0]) {
+  return props.request.payload.kind === "browser.password-sign-in" &&
+    props.request.payload.credential === "card" ? (
+    <CardUseRequestBody {...props} />
+  ) : (
+    <PasswordSignInRequestBody {...props} />
   );
 }
 
@@ -548,7 +558,10 @@ function AccountName({ value }: { readonly value: string }) {
  * the Mac pushes is newer than any read still in flight, and newer than any
  * state the card assumes after an answer.
  */
-function useHostSignIn(client: PasswordSignInRequestClient, requestId: Request["id"] | null) {
+export function useHostSignIn(
+  client: PasswordSignInRequestClient,
+  requestId: Request["id"] | null,
+) {
   const [state, setState] = useState<PasswordSignInCard | null>(null);
   const [readError, setReadError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);

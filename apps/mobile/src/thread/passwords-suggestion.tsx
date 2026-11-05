@@ -19,6 +19,7 @@ import { Symbol } from "../ui/symbol.js";
  * Setup needs the Mac, so the phone only says where; nothing reaches the agent.
  */
 export function PasswordsSuggestion(props: {
+  readonly card?: boolean;
   readonly deploymentId: string;
   readonly hostClient: Parameters<typeof useHostSelector>[0];
   readonly userId: string;
@@ -36,8 +37,11 @@ export function PasswordsSuggestion(props: {
     <View accessibilityLiveRegion="polite" style={styles.line}>
       <Symbol name="key" size={15} tint={color.ember} />
       <AppText role="caption" style={styles.words} tone="soft">
-        <AppText role="caption">{passwordsSuggestionName}</AppText> {passwordsSuggestionLead}{" "}
-        {passwordsSuggestionElsewhere(homeName)}
+        <AppText role="caption">{passwordsSuggestionName}</AppText>{" "}
+        {props.card ? "lets agents fill saved cards at checkout." : passwordsSuggestionLead}{" "}
+        {props.card
+          ? `Open Passwords on ${homeName ?? "your Mac"} and add a card`
+          : passwordsSuggestionElsewhere(homeName)}
       </AppText>
       <Pressable
         accessibilityLabel="Dismiss"
