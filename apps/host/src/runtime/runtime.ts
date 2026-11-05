@@ -5,7 +5,7 @@ import { HarnessCatalogReconciliationOwner } from "../agents/harness-catalogs.js
 import { ThreadService } from "../threads/thread-service.js";
 import { ConnectionOAuth } from "../mcp/connections/index.js";
 import { AgentConnectionStore } from "@opensteer/database";
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import { withWorkspacePluginPackage } from "../integrations/workspace-plugin-package.js";
 import { AppTunnelHub } from "../apps/app-tunnel-hub.js";
 import {
@@ -29,6 +29,7 @@ import {
   type RunnerId,
   type UserId,
   type Workspace,
+  deploymentSupportsSharing,
 } from "@opensteer/core";
 import {
   AccountDirectoryStore,
@@ -2400,6 +2401,10 @@ export async function createHostRuntime(
           : {}),
         attachments,
         apps,
+        appOriginSigningKey: createHmac("sha256", config.authSecret)
+          .update("opensteer-app-cookie-v1")
+          .digest(),
+        appRealOrigins: !deploymentSupportsSharing(config.workspace.shape),
         liveRuns,
         machineFullDiskAccess,
         requestResponseVault: integrationVault,

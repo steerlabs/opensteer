@@ -915,6 +915,8 @@ export interface HostSnapshot {
   transcriptWindows: Record<string, TranscriptWindow>;
   transcripts: Record<string, TranscriptEntry[]>;
   user: AuthenticatedUser | null;
+  /** Recovery can replace the session with no other visible change, ending what was bound to it. */
+  sessionId?: string;
   /** Host-declared deployment capability; false for Personal deployments. */
   workspaceSharingAvailable: boolean;
   workspaceWindow: DurableWindow;

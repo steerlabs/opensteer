@@ -1604,6 +1604,8 @@ export const hostApi = defineRpc({
     z.object({
       app: AppSchema,
       path: z.string().regex(/^\/v1\/apps\/app_[0-9a-f-]{36}\/(light|dark)\/[A-Za-z0-9_-]{43}\/$/u),
+      /** One-use address on the app's own origin; absent on routes without one. */
+      entryUrl: z.url().max(512).optional(),
     }),
   ),
   "attachment.get": declaration("GET", AttachmentReferenceInputSchema, AttachmentSchema),

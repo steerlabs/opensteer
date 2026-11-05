@@ -1,9 +1,27 @@
 import { describe, expect, it } from "vitest";
 import {
+  attachedHostOrigin,
   DesktopAppOriginPolicy,
   HostOriginPolicy,
   ServiceOriginPolicy,
 } from "./navigation-policy.js";
+
+it("lets only the current attachment answer an attachment lookup", async () => {
+  type Selected = { readonly resolved: { readonly key: string; readonly origin: string } };
+  let key = "first";
+  let finish!: (selected: Selected) => void;
+  const transport = {
+    current: () => new Promise<Selected>((resolve) => (finish = resolve)),
+    currentKey: () => key,
+  };
+  const late = attachedHostOrigin(transport);
+  key = "second";
+  finish({ resolved: { key: "first", origin: "https://first.test" } });
+  await expect(late).resolves.toBeNull();
+  const current = attachedHostOrigin(transport);
+  finish({ resolved: { key: "second", origin: "https://second.test" } });
+  await expect(current).resolves.toBe("https://second.test");
+});
 
 describe("DesktopAppOriginPolicy", () => {
   it("allows only bundled app documents and inert local resources", () => {
@@ -52,4 +70,50 @@ describe("HostOriginPolicy", () => {
     expect(policy.allowsNetworkRequest("ws://127.0.0.1:4310/v1/realtime")).toBe(true);
     expect(policy.allowsNetworkRequest("wss://127.0.0.1:4310/v1/realtime")).toBe(false);
   });
+});
+
+it("limits real app frames and worker traffic to the current attachment", () => {
+  const policy = new DesktopAppOriginPolicy();
+  const key = "a".repeat(26);
+  const dep = "11111111111141118111111111111111";
+  const origin = `https://${key}-${dep}.example.test`;
+  policy.setAttachedHost("https://connect-11111111-1111-4111-8111-111111111111.example.test");
+  const frame = { url: "app://opensteer", resourceType: "subFrame" };
+  expect(policy.allowsNetworkRequest(origin + "/?opensteer-ticket=test", frame)).toBe(true);
+  expect(policy.allowsNetworkRequest(origin.replace(dep, "2".repeat(32)), frame)).toBe(false);
+  expect(policy.allowsNetworkRequest(origin + ".evil.test", frame)).toBe(false);
+  expect(
+    policy.allowsNetworkRequest(origin.replace(dep, "2".repeat(32)), {
+      url: origin,
+      resourceType: "xhr",
+      initiatorOrigin: origin,
+    }),
+  ).toBe(false);
+  expect(policy.allowsNetworkRequest(origin, { ...frame, resourceType: "xhr" })).toBe(false);
+  for (const url of [
+    "https://api.example.test/data",
+    "http://api.example.test/data",
+    "wss://api.example.test/ws",
+    "ws://api.example.test/ws",
+  ]) {
+    expect(
+      policy.allowsNetworkRequest(url, { url: "", resourceType: "xhr", initiatorOrigin: origin }),
+    ).toBe(true);
+    expect(
+      policy.allowsNetworkRequest(url, {
+        url: "",
+        resourceType: "xhr",
+        initiatorOrigin: "app://opensteer",
+      }),
+    ).toBe(false);
+  }
+  expect(policy.allowsNavigation(origin + "/next", origin)).toBe(true);
+  expect(policy.allowsNavigation("https://elsewhere.test", origin)).toBe(false);
+  policy.setAttachedHost("http://127.0.0.1:4310");
+  expect(policy.allowsNetworkRequest(origin, frame)).toBe(false);
+  expect(policy.allowsNetworkRequest(`http://${key}.localhost:4310/`, frame)).toBe(true);
+  expect(policy.allowsNetworkRequest(`http://${key}.localhost:4311/`, frame)).toBe(false);
+  expect(policy.allowsNetworkRequest(`http://${key}.localhost.evil.test:4310/`, frame)).toBe(false);
+  policy.setAttachedHost(null);
+  expect(policy.allowsNetworkRequest(`http://${key}.localhost:4310/`, frame)).toBe(false);
 });

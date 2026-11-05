@@ -1,3 +1,12 @@
+import Fastify from "fastify";
+import { once } from "node:events";
+import { request } from "node:http";
+import { Readable } from "node:stream";
+import { IdentityService } from "@opensteer/identity";
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import { appOriginKey } from "@opensteer/shared/appFrame";
+import { AppGateway } from "./app-gateway.js";
+import { testHostApiContext } from "../server/test-host-api-context.js";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,6 +32,218 @@ import { AppService } from "./app-service.js";
 
 const html = "<title>First</title><body><h1>First</h1>";
 describeStore("published app HTML", (it) => {
+  it("fences app cookies and live responses on session expiry, user state, Personal route rotation and Workspace membership", async ({
+    storeFixture,
+  }) => {
+    const { database, store } = storeFixture;
+    const f = await storeFixture.startRunFixture("app-origin-session");
+    const viewer = await store.createUser("App viewer");
+    const session = testHostApiContext(viewer).session!;
+    const now = new Date();
+    await database
+      .insertInto("workspaceMemberships")
+      .values({
+        id: createId("workspaceMembership"),
+        workspaceId: f.workspace.id,
+        userId: viewer,
+        role: "collaborator",
+        state: "active",
+        generation: 1,
+        invitedBy: f.userId,
+        joinedAt: now,
+        revokedAt: null,
+        revokedBy: null,
+        updatedAt: now,
+      })
+      .execute();
+    const insertSession = () =>
+      database
+        .insertInto("authSessions")
+        .values({
+          id: session.id,
+          userId: viewer,
+          token: crypto.randomUUID(),
+          expiresAt: new Date(Date.now() + 60_000),
+          absoluteExpiresAt: new Date(Date.now() + 120_000),
+          deviceLabel: "Test",
+          lastSeenAt: now,
+          createdAt: now,
+          updatedAt: now,
+          ipAddress: null,
+          userAgent: null,
+        })
+        .execute();
+    await insertSession();
+    const apps = new AppStore(database);
+    const published = await apps.publish({
+      workspaceId: f.workspace.id,
+      threadId: f.thread.id,
+      runId: f.run.id,
+      environmentId: f.environmentId,
+      userId: f.userId,
+      title: "Session app",
+      sha256: "a".repeat(64),
+      sizeBytes: 1,
+      publishKey: "session-app",
+    });
+    const identity = new IdentityService(database, {
+      deployment: { kind: "self-hosted", name: null },
+      localPasswordEnabled: true,
+      oidcProviders: [],
+      publicOrigin: new URL("http://127.0.0.1:1234"),
+      secret: "app-session-test-secret".padEnd(40, "x"),
+      exposure: "networked",
+      signupPolicy: "closed",
+    });
+    expect(await identity.isSessionCurrent(session.id, f.userId)).toBe(false);
+    expect(await identity.isSessionCurrent(session.id, viewer)).toBe(true);
+    for (const expired of [
+      { createdAt: new Date(Date.now() - 120_000), expiresAt: new Date(Date.now() - 1) },
+      {
+        createdAt: new Date(Date.now() - 120_000),
+        expiresAt: new Date(Date.now() - 2),
+        absoluteExpiresAt: new Date(Date.now() - 1),
+      },
+    ]) {
+      await database
+        .updateTable("authSessions")
+        .set(expired)
+        .where("id", "=", session.id)
+        .execute();
+      expect(await identity.isSessionCurrent(session.id, viewer)).toBe(false);
+      const renewed = new Date();
+      await database
+        .updateTable("authSessions")
+        .set({
+          createdAt: renewed,
+          expiresAt: new Date(renewed.getTime() + 60_000),
+          absoluteExpiresAt: new Date(renewed.getTime() + 120_000),
+        })
+        .where("id", "=", session.id)
+        .execute();
+    }
+    await database
+      .updateTable("users")
+      .set({ disabledAt: null })
+      .where("id", "=", viewer)
+      .execute();
+    await database
+      .updateTable("personalRemoteAccess")
+      .set({ mode: "connect", generation: 1, routeOrigin: "https://connect.example.test" })
+      .where("singletonKey", "=", "personal")
+      .execute();
+    await database
+      .insertInto("personalRemoteSessions")
+      .values({
+        authSessionId: session.id,
+        delivery: "header",
+        routeGeneration: 1,
+        routeKind: "connect",
+        routeOrigin: "https://connect.example.test",
+        createdAt: now,
+      })
+      .execute();
+    expect(await identity.isSessionCurrent(session.id, viewer)).toBe(true);
+    for (const change of [
+      { generation: 2 },
+      { mode: "off" as const, routeOrigin: null },
+      { mode: "private" as const },
+      { routeOrigin: "https://rotated.example.test" },
+    ]) {
+      await database
+        .updateTable("personalRemoteAccess")
+        .set(change)
+        .where("singletonKey", "=", "personal")
+        .execute();
+      expect(await identity.isSessionCurrent(session.id, viewer)).toBe(false);
+      await database
+        .updateTable("personalRemoteAccess")
+        .set({ mode: "connect", generation: 1, routeOrigin: "https://connect.example.test" })
+        .where("singletonKey", "=", "personal")
+        .execute();
+    }
+    const app = Fastify();
+    const gateway = new AppGateway({
+      realOrigins: true,
+      identity,
+      signingKey: Buffer.alloc(32, 5),
+      canonicalOrigin: "http://127.0.0.1:1234",
+      apps: {
+        get: (id, user) => apps.get(id, user),
+        connect: async () => {
+          throw new Error("Not a server app");
+        },
+        response: async (input) => ({
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+          body:
+            input.path === "/events"
+              ? new Readable({
+                  read() {
+                    this.push("data: ready\n\n");
+                    this._read = () => undefined;
+                  },
+                })
+              : Readable.from(["ok"]),
+        }),
+      },
+    });
+    gateway.installHttp(app);
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    if (!address || typeof address === "string") throw new Error("No gateway listener");
+    const authority = `${appOriginKey(published.appId)}.localhost:1234`;
+    const entry = new URL(
+      gateway.entryUrl(published.appId, session, "dark", { host: "127.0.0.1:1234" })!,
+    );
+    const first = await app.inject({
+      url: entry.pathname + entry.search,
+      headers: { host: authority },
+    });
+    expect(first.statusCode).toBe(200);
+    const cookie = String(first.headers["set-cookie"]).split(";")[0]!;
+    try {
+      for (const reason of ["session", "membership"] as const) {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const req = request({
+          host: "127.0.0.1",
+          port: address.port,
+          path: "/events",
+          headers: { host: authority, cookie },
+          signal: AbortSignal.timeout(3_000),
+        });
+        req.on("error", () => undefined);
+        const response = once(req, "response", { signal: AbortSignal.timeout(2_000) });
+        req.end();
+        const [stream] = await response;
+        stream.on("error", () => undefined);
+        await once(stream, "data", { signal: AbortSignal.timeout(2_000) });
+        const closed = new Promise<void>((resolve) => stream.once("close", resolve));
+        if (reason === "session")
+          await database.deleteFrom("authSessions").where("id", "=", session.id).execute();
+        else
+          await database
+            .updateTable("workspaceMemberships")
+            .set({ state: "revoked", revokedAt: new Date(), revokedBy: f.userId })
+            .where("workspaceId", "=", f.workspace.id)
+            .where("userId", "=", viewer)
+            .execute();
+        await vi.advanceTimersByTimeAsync(30_000);
+        vi.useRealTimers();
+        await withTimeout(closed, 2_000, {
+          timeoutError: () => new Error(`${reason} revocation did not close the app stream`),
+        });
+        expect(
+          (await app.inject({ url: "/", headers: { host: authority, cookie } })).statusCode,
+        ).toBe(403);
+        if (reason === "session") await insertSession();
+      }
+    } finally {
+      vi.useRealTimers();
+      await app.close();
+    }
+  });
+
   it("joins tab commands, bootstrap, and membership-scoped realtime through the real Host", async ({
     storeFixture,
   }) => {

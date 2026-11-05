@@ -141,6 +141,11 @@ export class HostTransport {
     return this.#fence.subscribe(listener);
   }
 
+  /** Only a real attachment change; `subscribe` also hears ordinary catalog notices. */
+  onAttachmentInvalidated(release: (reason: string) => void): () => void {
+    return this.#fence.onInvalidated(release);
+  }
+
   /**
    * One authenticated exchange against the resolved origin. It is abandoned
    * rather than sent when the attachment moved while the route was being
