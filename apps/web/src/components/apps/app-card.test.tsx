@@ -122,6 +122,8 @@ it("uses an opaque sandbox, caps tall inline content, ignores foreign messages, 
   expect(frame.hasAttribute("loading")).toBe(false);
   expect(frame.getAttribute("referrerpolicy")).toBe("no-referrer");
   expect(frame.style.height).toBe("280px");
+  await act(() => frame.dispatchEvent(new Event("load")));
+  expect(container.querySelector("iframe")).toBe(frame);
   await act(() =>
     window.dispatchEvent(
       new MessageEvent("message", {

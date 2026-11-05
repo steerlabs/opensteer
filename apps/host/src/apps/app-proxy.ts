@@ -231,6 +231,7 @@ export async function requestAppHttp(input: {
         ...appProxyHeaders(response.headers),
         ...(input.theme ? { ...appFrameHeaders(), ...appCorsHeaders } : {}),
       };
+  delete outgoing["x-frame-options"];
   outgoing["content-type"] = response.headers["content-type"] ?? "application/octet-stream";
   const location = response.headers.location;
   if (location) {
