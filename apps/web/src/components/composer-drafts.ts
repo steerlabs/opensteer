@@ -68,6 +68,15 @@ export interface ComposerDraftScope {
   readonly userId: string;
 }
 
+/** Something a closed composer still owed its draft, such as a send refused after it left. */
+export interface ReturnedToDraft {
+  readonly edit: (text: string) => string;
+  readonly places?: readonly PlaceContentPart[];
+  readonly quote?: z.infer<typeof QuoteSchema> | null;
+  /** Why it came back, shown when the draft is read. */
+  readonly reason?: string;
+}
+
 export interface TaskDraftRow {
   readonly draftId: string;
   readonly refused: boolean;
@@ -152,6 +161,7 @@ export function createComposerDraftStore(
   const unsaved = new Map<string, string>();
   /** Composers open right now; their rows hold still until they close. */
   const opened = new Map<string, number>();
+  const receivers = new Map<string, (returned: ReturnedToDraft) => void>();
   const listeners = new Set<() => void>();
   const indexes = new Map<string, ComposerDraftIndex>();
 
@@ -284,13 +294,15 @@ export function createComposerDraftStore(
      * A composer has this draft on screen. While it stays open its edits do not
      * reach the sidebar, so typing never redraws it; the row catches up on leaving.
      */
-    open(key: string): () => void {
+    open(key: string, receive?: (returned: ReturnedToDraft) => void): () => void {
       opened.set(key, (opened.get(key) ?? 0) + 1);
+      if (receive) receivers.set(key, receive);
       publish();
       return () => {
         const count = (opened.get(key) ?? 1) - 1;
         if (count > 0) opened.set(key, count);
         else opened.delete(key);
+        if (receive && receivers.get(key) === receive) receivers.delete(key);
         publish();
       };
     },
@@ -304,27 +316,25 @@ export function createComposerDraftStore(
     },
 
     /**
-     * A send refused after its composer closed. Its words go back ahead of
-     * anything written since, and the reason waits for the draft to be opened.
+     * What a closed composer still owed this draft reaches whichever composer
+     * has it open now, which would otherwise write over it, or else storage,
+     * where the reason waits for the draft to be opened.
      */
-    returnRefused(
-      key: string,
-      refused: {
-        readonly body: string;
-        readonly places: readonly PlaceContentPart[];
-        readonly quote: z.infer<typeof QuoteSchema> | null;
-        readonly reason: string;
-      },
-    ): void {
+    handBack(key: string, returned: ReturnedToDraft): void {
+      const receive = receivers.get(key);
+      if (receive) {
+        receive(returned);
+        return;
+      }
       const draft = read(key) ?? blank();
       write(key, {
         ...draft,
-        ...(refused.places.length > 0 || draft.places
-          ? { places: [...refused.places, ...(draft.places ?? [])] }
+        ...(returned.places?.length
+          ? { places: [...returned.places, ...(draft.places ?? [])] }
           : {}),
-        quote: refused.quote ?? draft.quote,
-        refusal: refused.reason,
-        text: draft.text.trim() ? `${refused.body}\n${draft.text}` : refused.body,
+        quote: returned.quote ?? draft.quote,
+        ...(returned.reason === undefined ? {} : { refusal: returned.reason }),
+        text: returned.edit(draft.text),
         updatedAt: now(),
       });
       publish();

@@ -266,6 +266,38 @@ describe("what a person has written and not sent", () => {
     expect(draftRows()[0]!.classList.contains("is-refused")).toBe(false);
   });
 
+  it("hands a refused task to the draft reopened before the answer came", async () => {
+    await mount("/new");
+    await settle();
+    const refused = deferred<void>();
+    vi.spyOn(client, "createThread").mockImplementation(async () => {
+      await refused.promise;
+      throw new HostClientRequestError({ code: "forbidden", message: "No.", status: 403 });
+    });
+    await write(field(), "Do the thing");
+    await click(element(".composer__send"));
+    await openTask(firstTaskId());
+    await settle();
+    await act(async () => {
+      await goTo?.(-1);
+    });
+    await settle();
+    await write(field(), "Written meanwhile");
+
+    await act(async () => {
+      refused.resolve();
+    });
+    await settle(50);
+    expect(field().value).toBe("Do the thing\nWritten meanwhile");
+
+    await write(field(), "Do the thing\nWritten meanwhile, and more");
+    await openTask(firstTaskId());
+    await settle();
+    await openDraft();
+    await settle();
+    expect(field().value).toBe("Do the thing\nWritten meanwhile, and more");
+  });
+
   it("finishes an upload after leaving, and the file is there on return", async () => {
     await mount("/new", { latencyMs: 20 });
     await settle();

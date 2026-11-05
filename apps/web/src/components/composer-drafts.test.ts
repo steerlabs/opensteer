@@ -170,10 +170,8 @@ describe("composer drafts", () => {
     const storage = memoryStorage();
     const drafts = createComposerDraftStore(() => storage);
     drafts.update(task("a"), { text: "written since" });
-    drafts.returnRefused(task("a"), {
-      body: "the refused words",
-      places: [],
-      quote: null,
+    drafts.handBack(task("a"), {
+      edit: (text) => `the refused words\n${text}`,
       reason: "The Host said no.",
     });
     expect(drafts.read(task("a"))).toMatchObject({
@@ -190,6 +188,23 @@ describe("composer drafts", () => {
     drafts.update(task("a"), { text: "the refused words\nwritten since" });
     expect(drafts.read(task("a"))?.refusal).toBeUndefined();
     expect(drafts.index(scope).tasks[0]?.refused).toBe(false);
+  });
+
+  it("hands what comes back to the composer open on that draft, not over it", () => {
+    const storage = memoryStorage();
+    const drafts = createComposerDraftStore(() => storage);
+    const receive = vi.fn();
+    const close = drafts.open(task("a"), receive);
+    const returned = { edit: () => "returned", reason: "Refused." };
+
+    drafts.handBack(task("a"), returned);
+    expect(receive).toHaveBeenCalledWith(returned);
+    expect(drafts.read(task("a"))).toBeNull();
+
+    close();
+    drafts.handBack(task("a"), returned);
+    expect(receive).toHaveBeenCalledOnce();
+    expect(drafts.read(task("a"))?.text).toBe("returned");
   });
 
   it("lays a discarded draft back exactly as it was", () => {

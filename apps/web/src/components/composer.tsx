@@ -49,7 +49,7 @@ import {
   useStagedAttachments,
   type AttachmentTarget,
 } from "./attachments/use-staged-attachments.js";
-import { composerDrafts } from "./composer-drafts.js";
+import { composerDrafts, type ReturnedToDraft } from "./composer-drafts.js";
 import { composerFold, FoldRow, FoldToFit } from "./fold-to-fit.js";
 import { Icon } from "./icon.js";
 import { textWidth } from "./text-width.js";
@@ -337,7 +337,18 @@ export function Composer({
         },
       }),
       commit: (text, selection) => {
+        const before = ownerDraft.text;
         ownerDraft.text = text;
+        // Recognition finished after leaving: the words still belong to this
+        // draft, and any written there since stay.
+        if (!mounted.current) {
+          if (draftKey)
+            composerDrafts.handBack(draftKey, {
+              edit: (current) =>
+                current === before || !current.trim() ? text : `${text}\n${current}`,
+            });
+          return;
+        }
         if (currentOwner.current !== owner) return;
         latestDraft.current = text;
         pendingSelection.current = selection;
@@ -455,7 +466,26 @@ export function Composer({
     reportHolding(holding);
   }, [holding]);
 
-  useEffect(() => (draftKey ? composerDrafts.open(draftKey) : undefined), [draftKey]);
+  const receiveReturned = useRef((_returned: ReturnedToDraft) => {});
+  receiveReturned.current = ({ edit, places, quote: returnedQuote, reason }) => {
+    setDraft(edit);
+    if (places?.length) context?.prepend(places);
+    if (returnedQuote) setQuote(returnedQuote);
+    if (reason) setError(reason);
+  };
+  useEffect(
+    () =>
+      draftKey
+        ? composerDrafts.open(draftKey, (returned) => receiveReturned.current(returned))
+        : undefined,
+    [draftKey],
+  );
+  // A message held for sending holds its files too, so a reload that found them
+  // in the draft does not offer them a second time.
+  const { releaseSent } = staged;
+  useEffect(() => {
+    if (pending) releaseSent(pending.attachments);
+  }, [pending, releaseSent]);
   // A place the draft only picked up by itself is not worth keeping a draft for.
   const keepDraft = hasContent || quote !== null;
   const followingPlace = context?.following ?? true;
@@ -526,9 +556,10 @@ export function Composer({
       // Nothing kept it, so it goes back to the draft it came from, with its
       // files still there, and says why when that draft is next opened.
       if (!mounted.current) {
+        const { body } = submission;
         if (draftKey)
-          composerDrafts.returnRefused(draftKey, {
-            body: submission.body,
+          composerDrafts.handBack(draftKey, {
+            edit: (current) => (body && current.trim() ? `${body}\n${current}` : body || current),
             places: submission.places ?? [],
             quote: carriedQuote,
             reason:

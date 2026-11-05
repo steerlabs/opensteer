@@ -49,6 +49,8 @@ export interface StagedAttachments {
   dismissNotice(): void;
   /** Forgets files a sent message now carries. They are the message's now, so nothing is discarded. */
   release(localIds: readonly string[]): void;
+  /** Forgets files a message held for sending already carries, wherever the tray found them. */
+  releaseSent(parts: readonly ArtifactContentPart[]): void;
   remove(localId: string): void;
   /** Hands a message's attachments back, checked against the Host before they can be sent again. */
   restore(parts: readonly ArtifactContentPart[]): void;
@@ -307,6 +309,7 @@ class StagedFiles {
     if (!record?.attachmentId) return;
     const controller = new AbortController();
     record.controller = controller;
+    this.#patch(localId, { error: null, retryable: false, status: "checking" });
     void recheck(this.client, record.attachmentId, record.mediaType, controller.signal).then(
       ({ attachment, previewUrl }) => {
         if (controller.signal.aborted) {
@@ -318,11 +321,15 @@ class StagedFiles {
         record.part = artifactPart(attachment);
         this.#patch(localId, { part: record.part, previewUrl, status: "ready" });
       },
-      () => {
+      (error: unknown) => {
         if (controller.signal.aborted) return;
         record.controller = null;
+        const unreachable = retryable(error) && !isNotFound(error);
         this.#patch(localId, {
-          error: "This file is no longer available. Remove it and attach it again.",
+          error: unreachable
+            ? "This file could not be checked. Check your connection and try again."
+            : "This file is no longer available. Remove it and attach it again.",
+          retryable: unreachable,
           status: "failed",
         });
       },
@@ -433,9 +440,21 @@ class StagedFiles {
     this.#dropIfIdle();
   };
 
+  readonly releaseSent = (parts: readonly ArtifactContentPart[]): void => {
+    const sent = new Set(parts.map((part) => part.artifactId));
+    const held = [...this.#records].flatMap(([localId, record]) =>
+      record.part && sent.has(record.part.artifactId) ? [localId] : [],
+    );
+    if (held.length > 0) this.release(held);
+  };
+
   readonly dismissNotice = (): void => this.#set({ ...this.#state, notice: null });
 
-  readonly retry = (localId: string): void => this.#upload(localId);
+  /** Another try: up again with its bytes, or back to the Host for a saved file with none here. */
+  readonly retry = (localId: string): void => {
+    if (this.#records.get(localId)?.source) this.#upload(localId);
+    else this.#check(localId);
+  };
 }
 
 /** Every draft's files, kept here so an upload outlives the composer that started it. */
@@ -467,6 +486,7 @@ const ignoredFiles: StagedAttachments = {
   items: noItems,
   notice: null,
   release: () => undefined,
+  releaseSent: () => undefined,
   remove: () => undefined,
   restore: () => undefined,
   retry: () => undefined,
@@ -495,6 +515,7 @@ export function useStagedAttachments(target: AttachmentTarget | null): StagedAtt
             items: state.items,
             notice: state.notice,
             release: session.release,
+            releaseSent: session.releaseSent,
             remove: session.remove,
             restore: session.restore,
             retry: session.retry,
@@ -511,7 +532,7 @@ async function recheck(
   signal: AbortSignal,
 ): Promise<{ readonly attachment: Attachment; readonly previewUrl: string | null }> {
   const attachment = await client.getAttachment(attachmentId);
-  if (attachment.state !== "ready") throw new Error("Attachment is not ready.");
+  if (attachment.state !== "ready") throw new UploadPreparationError("Attachment is not ready.");
   if (!isInlineImage(mediaType)) return { attachment, previewUrl: null };
   const bytes = await client.readAttachment(attachmentId, signal).catch(() => null);
   return {
@@ -538,6 +559,10 @@ function uploadFailure(error: unknown): string {
     return "The upload did not finish. Check your connection and try again.";
   }
   return error instanceof Error && error.message ? error.message : "The upload did not finish.";
+}
+
+function isNotFound(error: unknown): boolean {
+  return error instanceof HostClientRequestError && error.status === 404;
 }
 
 function retryable(error: unknown): boolean {
