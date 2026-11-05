@@ -228,6 +228,8 @@ async function main() {
                 const p = await prepareEngine(stageRoot, engine, stop.signal, inspected.models);
                 engineClose = p.close;
                 if (previousWorkspace) await copyWorkspace(previousWorkspace, p.workspace);
+                if (stage.gitRepository)
+                  await promisify(execFile)("git", ["init", p.workspace], { timeout: 5000 });
                 for (const [path, content] of Object.entries(stage.fixtures)) {
                   const target = join(p.workspace, path);
                   await mkdir(dirname(target), { recursive: true });
