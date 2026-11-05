@@ -44,10 +44,16 @@ xcodebuild -exportArchive -archivePath "$MOBILE_EVIDENCE_DIR/Opensteer.xcarchive
 ```
 
 Before exporting, check that the archive's app and extension Info.plists show the same version and
-build number, and that its bundle holds the Account origin. `OPENSTEER_APNS_TOPIC` must name the
-bundle ID that people install, so a push test needs a build under the listing's ID. Upload warnings
-about privacy manifests or export compliance are answers Tim gives in App Store Connect; never
-declare them on his behalf. Send a build to external TestFlight before submitting for review.
+build number, and that its bundle holds the Account origin. Upload warnings about privacy manifests
+or export compliance are answers Tim gives in App Store Connect; never declare them on his behalf.
+Send a build to external TestFlight before submitting for review.
+
+## Move the push topic
+
+Required. `deploy/account/account.env` keeps `OPENSTEER_APNS_TOPIC=com.opensteer.mobile` until the
+first `com.opensteer.opensteer` build ships. When it does, on TestFlight or the App Store, change the
+value to `com.opensteer.opensteer`; otherwise that build gets no push. Not before: every main push
+deploys that file, the topic is one value, and moving it stops push on `com.opensteer.mobile` builds.
 
 ## Review demo server
 

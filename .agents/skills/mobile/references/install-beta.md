@@ -48,7 +48,8 @@ Tim alone registers the App IDs `com.opensteer.opensteer` and
 `group.com.opensteer.mobile.notifications` and provisions both targets. Both carry
 application-groups only; never add keychain-access-groups. Preview Keychain items use the App Group
 explicitly; existing login credentials keep their default group. The extension needs no APNs key,
-topic or background mode; the APNs topic stays `com.opensteer.opensteer`.
+topic or background mode; the APNs topic stays `com.opensteer.mobile` until the [required
+flip](app-store.md#move-the-push-topic), so a build under the new ID gets no push before then.
 
 With Tim's provisioning and the device's owner, verify both targets' entitlements and signed
 delivery: authenticated text; generic text on tamper, expiry or missing key; before first unlock;

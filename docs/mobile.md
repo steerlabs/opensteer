@@ -15,7 +15,9 @@ authentication, and OS grants still happen on the computer.
 The iOS bundle ID is `com.opensteer.opensteer` because the App Store binds a listing to its bundle
 ID for good, and removing a listing loses the name and the ID. `com.opensteer.mobile` stays the
 Android package and the OAuth and deep-link scheme: released Hosts register that scheme, and it cannot
-match the desktop's, which is the same string as this bundle ID. The APNs topic follows the bundle ID.
+match the desktop's, which is the same string as this bundle ID. The APNs topic must name the bundle
+ID people have installed, so it stays `com.opensteer.mobile` until the first build under the new ID
+ships.
 
 ## Attachment and identity
 
