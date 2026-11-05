@@ -1,3 +1,4 @@
+import { ManualClock } from "@opensteer/shared/test-support/clock";
 import { gate } from "@opensteer/shared/test-support/observation";
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -160,6 +161,9 @@ integration(
         harnesses,
         harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
         runTimeoutMs: 15_000,
+        // A real tick provisions unlisted memory workers, which a connected client holds
+        // but a snapshot omits, so one landing mid-hydration changes the counts below.
+        workspaceReconcileClock: new ManualClock(),
       });
       const workspaceId = stack.mainWorkspaceId;
       const oldestThreadId = await stack.createThread({
@@ -174,8 +178,8 @@ integration(
         workspaceId,
       });
       expect(turn.assistantText).toBe("Completed by Codex.");
-      // Background memory provisioning reads this file too. Exercise the native
-      // response before hydration, so even a fast run catches a broken storage service.
+      // Memory provisioning reads this file, but its tick is held back here. Exercise the
+      // native response directly, so a broken storage service still fails this test.
       const missingInstructions = await within(
         testRpcRequest(
           stack.hostOrigin,

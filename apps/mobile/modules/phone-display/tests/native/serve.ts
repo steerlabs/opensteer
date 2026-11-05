@@ -13,6 +13,7 @@ const serial = process.env.OPENSTEER_PHONE_DISPLAY_SERIAL;
 if (!udid === !serial) throw new Error("Set exactly one owned simulator UDID or Android serial");
 const device = z.string().min(1).parse(process.env.OPENSTEER_PHONE_DISPLAY_DEVICE);
 const bundle = "com.opensteer.mobile";
+const iosBundle = "com.opensteer.opensteer";
 const adb = (...args: string[]) =>
   execFileSync("adb", ["-s", serial!, ...args], { maxBuffer: 64 * 1024 * 1024 });
 const simctl = (...args: string[]) =>
@@ -281,7 +282,7 @@ const server = createServer((request, response) => {
       }
       const outcome = await check({ ...parsed, gone: true, ms: 5_000 });
       record(`pixels:${parsed.step}`, outcome.passed, { gone: true, ...outcome });
-      if (udid) simctl("launch", udid, bundle);
+      if (udid) simctl("launch", udid, iosBundle);
       else adb("shell", "am", "start", "-W", "-n", `${bundle}/.MainActivity`);
     } else if (url.pathname === "/done") {
       const { failed, message } = z

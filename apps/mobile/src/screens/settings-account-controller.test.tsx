@@ -6,6 +6,8 @@ import { UserIdSchema } from "@opensteer/core";
 import { MockHostClient } from "@opensteer/client/mock";
 import type { NativeSettingsPageProps } from "./native-settings-page.types.js";
 const state = vi.hoisted(() => ({
+  account: { identity: null, available: false } as object,
+  openURL: vi.fn(async () => undefined),
   page: null as NativeSettingsPageProps | null,
   remote: null as import("@opensteer/protocol").PersonalRemoteAdministrationStatus | null,
   navigate: vi.fn(),
@@ -14,6 +16,7 @@ const state = vi.hoisted(() => ({
 }));
 vi.mock("react-native", () => ({
   Alert: { alert: vi.fn() },
+  Linking: { openURL: state.openURL },
   TextInput: () => null,
   View: () => null,
 }));
@@ -33,12 +36,13 @@ vi.mock("@opensteer/client/react", async (importOriginal) => ({
 vi.mock("../client/mobile-client.js", () => ({ operationDetail: () => "Failed" }));
 const mobile = {
   getSnapshot: () => ({ selection: { hostClient: state.host } }),
+  portalOrigin: "https://portal.test",
   removeHostSession: state.remove,
 };
 vi.mock("../ui/mobile-client-context.js", () => ({
   useMobileClient: () => mobile,
   useMobileState: () => ({
-    account: { account: { identity: null, available: false } },
+    account: { account: state.account },
     selection: { hostClient: state.host, deploymentId: "deployment" },
   }),
 }));
@@ -87,6 +91,39 @@ it("pushes session identity only, then reviews sign-out effects in its detail", 
     act(() => root.unmount());
     host.dispose();
     state.host = null;
+  }
+});
+
+it("sends only a signed-in person to the portal to delete their Account", async () => {
+  const host = new MockHostClient({ latencyMs: 0 });
+  await host.load();
+  state.host = host;
+  const root = createRoot(document.createElement("div"));
+  const deleteRow = () =>
+    state
+      .page!.sections.find((section) => section.key === "account")
+      ?.rows.find((row) => row.key === "account-delete");
+  try {
+    state.account = { available: true, detail: null, identity: null, status: "signed-out" };
+    await act(async () => root.render(<AccountSettingsController />));
+    expect(deleteRow()).toBeUndefined();
+
+    state.account = {
+      available: true,
+      detail: null,
+      identity: { email: "person@example.test", issuer: "https://accounts.test", subject: "acct" },
+      status: "signed-in",
+    };
+    await act(async () => root.render(<AccountSettingsController key="signed-in" />));
+    const row = deleteRow();
+    if (row?.kind !== "button") throw new Error("Missing Delete Account");
+    await act(async () => row.onPress());
+    expect(state.openURL).toHaveBeenCalledWith("https://portal.test/account/delete");
+  } finally {
+    act(() => root.unmount());
+    host.dispose();
+    state.host = null;
+    state.account = { identity: null, available: false };
   }
 });
 

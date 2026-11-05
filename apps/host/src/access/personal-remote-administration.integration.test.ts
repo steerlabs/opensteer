@@ -5,7 +5,7 @@ import {
   IssuePersonalHostAccountLinkChallengeResponseSchema,
   personalHostAccountLinkCompletionContext,
 } from "@opensteer/control-plane-protocol";
-import { signHostDiscovery } from "../identity/host-keys.js";
+import { signHostDiscovery, signPersonalHostAccessRoute } from "../identity/host-keys.js";
 import Fastify from "fastify";
 import websocket from "@fastify/websocket";
 import WebSocket from "ws";
@@ -713,6 +713,113 @@ describe("Personal remote administration intents", () => {
     expect(await database.selectFrom("personalRemoteAccountLink").selectAll().execute()).toEqual(
       [],
     );
+  });
+
+  describe("after the Account answers 401 to this Host", () => {
+    const request = () => ({
+      hostInstanceId: authority.hostInstanceId,
+      operationId: `cop_${crypto.randomUUID()}`,
+    });
+    const refused = () =>
+      Response.json(
+        { error: { code: "unauthorized", message: "Host credential is invalid" } },
+        { status: 401 },
+      );
+    const linkGone = (input: Parameters<typeof fetch>[0]) =>
+      /(activate|personal-account-link)$/u.test(input.toString())
+        ? Response.json(
+            {
+              error: {
+                code: "not_found",
+                message: "No link",
+                reason: "personal-account-link-not-found",
+              },
+            },
+            { status: 404 },
+          )
+        : refused();
+    const stuckReadyProjection = () =>
+      database
+        .updateTable("personalRemoteAccountLink")
+        .set({
+          accountOperation: {
+            id: crypto.randomUUID(),
+            kind: "projection",
+            projection: {
+              accessRoute: signPersonalHostAccessRoute(keys, {
+                authority,
+                documentVersion: 2,
+                purpose: "opensteer-personal-access-route",
+                route: { generation: 1, kind: "connect", origin: "https://connect.test" },
+              }),
+              generation: 1,
+              state: "ready",
+            },
+          },
+        })
+        .where("singletonKey", "=", "opensteer-account")
+        .execute();
+
+    it("finishes Connect off and unlink once the Account says the link is gone", async () => {
+      const fixture = await sealedLinkCompletion();
+      await fixture.access.consumeAccountLink({ session }, fixture.completion);
+      fixture.fetch.mockImplementation(async (input) => linkGone(input));
+      await stuckReadyProjection();
+
+      await expect(fixture.access.revokeConnectResource({ session }, request())).resolves.toEqual({
+        generation: 0,
+        revoked: true,
+      });
+      await expect(
+        fixture.access.publishConnectProjection(
+          { session },
+          { state: "disabled", expectedAccessRoute: null, schemaVersion: 2 },
+        ),
+      ).resolves.toBeUndefined();
+      await expect(fixture.access.removeAccountLink({ session })).resolves.toBeUndefined();
+      expect(await database.selectFrom("personalRemoteAccountLink").selectAll().execute()).toEqual(
+        [],
+      );
+    });
+
+    it("keeps a live link, and never unlinks to find out", async () => {
+      const fixture = await sealedLinkCompletion();
+      await fixture.access.consumeAccountLink({ session }, fixture.completion);
+      const originalFetch = fixture.fetch.getMockImplementation()!;
+      const paths: string[] = [];
+      fixture.fetch.mockImplementation(async (input, init) => {
+        paths.push(`${init?.method} ${new URL(input.toString()).pathname}`);
+        return input.toString().endsWith("/activate") ? originalFetch(input, init) : refused();
+      });
+
+      await expect(fixture.access.revokeConnectResource({ session }, request())).rejects.toThrow(
+        /HTTP 401/,
+      );
+      expect(paths).toEqual([
+        "DELETE /v1/host/connect",
+        "POST /v1/host/personal-account-link/activate",
+      ]);
+      expect(
+        await database
+          .selectFrom("personalRemoteAccountLink")
+          .selectAll()
+          .executeTakeFirstOrThrow(),
+      ).toMatchObject({ accountOperation: { kind: "revoke" }, state: "active" });
+    });
+
+    it("does not report a deleted tunnel as ready", async () => {
+      const fixture = await sealedLinkCompletion();
+      await fixture.access.consumeAccountLink({ session }, fixture.completion);
+      fixture.fetch.mockImplementation(async (input) => linkGone(input));
+      await stuckReadyProjection();
+      await expect(fixture.access.publishAccountAuthority()).rejects.toThrow(/HTTP 401/);
+      expect(
+        await database
+          .selectFrom("personalRemoteAccountLink")
+          .selectAll()
+          .executeTakeFirstOrThrow(),
+      ).toMatchObject({ accountOperation: { kind: "projection" } });
+    });
   });
 
   it.each([400, 401, 404, 409, 422, 408, 425, 429, 500, 503])(

@@ -79,7 +79,7 @@ while read -r runtime type name; do
   OPENSTEER_PHONE_DISPLAY_UDID="$simulator" OPENSTEER_PHONE_DISPLAY_DEVICE="$name" \
     "$root/node_modules/.bin/tsx" "$tests/serve.ts" > "$evidence/coordinator-$name.log" 2>&1 &
   coordinator="$!"
-  xcrun simctl launch "$simulator" com.opensteer.mobile > "$evidence/launch-$name.log" 2>&1
+  xcrun simctl launch "$simulator" com.opensteer.opensteer > "$evidence/launch-$name.log" 2>&1
   if ! wait "$coordinator"; then failed=1; fi
   coordinator=""
   xcrun simctl spawn "$simulator" log show --last 5m --predicate 'process == "Opensteer"' --style compact > "$evidence/$name/device.log" 2>&1 || true

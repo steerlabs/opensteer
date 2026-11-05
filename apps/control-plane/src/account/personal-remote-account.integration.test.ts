@@ -216,6 +216,7 @@ integration("Personal remote Account PostgreSQL boundary", () => {
         return reply.code(500).send();
       });
       registerControlPlaneRoutes(app, {
+        accountDeletion: {} as never,
         store: directory,
         authenticator: {} as never,
         connectLifecycle: {} as never,

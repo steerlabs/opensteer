@@ -21,6 +21,7 @@ import {
 describe("public portal routes", () => {
   it("guards routes, renders safe links, and validates fragments against DeploymentId", async () => {
     const router = createPortalRouter({
+      accountDeletion: {} as never,
       portalOrigin: new URL("https://portal.test"),
       publicOrigin: new URL("https://accounts.test"),
       auth: {} as never,
@@ -78,6 +79,7 @@ describe("public portal routes", () => {
 
     const bare = Fastify();
     createPortalRouter({
+      accountDeletion: {} as never,
       portalOrigin: new URL("https://portal.test"),
       publicOrigin: new URL("https://accounts.test"),
       auth: {} as never,
@@ -100,6 +102,7 @@ describe("portal vhost identity", () => {
   });
   it("accepts only the configured portal host and guards portal routes", async () => {
     const router = createPortalRouter({
+      accountDeletion: {} as never,
       portalOrigin: new URL("https://app.opensteer.com"),
       publicOrigin: new URL("https://accounts.opensteer.com"),
       portalSessions: { read: vi.fn() } as never,
@@ -170,6 +173,7 @@ describe("portal Deployment cards", () => {
     const accountId = deployment.reachability === "routed" ? deployment.accountLink.subject : null;
     if (!accountId) throw new Error("Personal fixture is not linked");
     const router = createPortalRouter({
+      accountDeletion: {} as never,
       auth: {} as never,
       portalOrigin: new URL("https://portal.test"),
       personalRemoteAccount: { issueSessionGrant } as never,
