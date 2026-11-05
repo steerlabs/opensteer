@@ -42,7 +42,7 @@ export const bundledIntegrationIconIds = [
 export type BundledIntegrationIconId = (typeof bundledIntegrationIconIds)[number];
 
 export function bundledIntegrationIcon(definitionId: string): BundledIntegrationIconId | null {
-  return artworkOf[definitionId] ?? null;
+  return Object.hasOwn(artworkOf, definitionId) ? (artworkOf[definitionId] ?? null) : null;
 }
 
 /** Full app tiles and inset logos share local assets; vector marks and generic capabilities stay small. */
@@ -55,9 +55,9 @@ export type IntegrationMark =
 export function integrationMark(definitionId: string): IntegrationMark | null {
   const art = bundledIntegrationIcon(definitionId);
   if (art) return { kind: art.startsWith("apple-") ? "art" : "logo", art };
-  const glyph = deviceGlyphs[definitionId];
+  const glyph = Object.hasOwn(deviceGlyphs, definitionId) ? deviceGlyphs[definitionId] : null;
   if (glyph) return { kind: "glyph", ...glyph };
-  const brand = brandOf[definitionId];
+  const brand = Object.hasOwn(brandOf, definitionId) ? brandOf[definitionId] : null;
   return brand ? { kind: "brand", ...brands[brand] } : null;
 }
 

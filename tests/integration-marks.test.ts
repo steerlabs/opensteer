@@ -3,6 +3,11 @@ import { catalogProducts } from "../packages/integration-catalog/src/index.js";
 import { describe, expect, it } from "vitest";
 
 describe("integration marks", () => {
+  it("leaves custom server names without artwork for the initials fallback", () => {
+    for (const id of ["custom-mcp", "constructor", "__proto__", "toString"])
+      expect(integrationMark(id), id).toBeNull();
+  });
+
   it("draws every catalog product with one mark across its ways in", () => {
     const unmarked: string[] = [];
     for (const { definitionIds } of catalogProducts) {
