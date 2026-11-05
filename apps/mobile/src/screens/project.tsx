@@ -18,6 +18,7 @@ import {
   StyleSheet,
   View,
 } from "react-native";
+import { newTaskDraftId } from "../client/thread-drafts.js";
 import { headerActions } from "../navigation-header.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
 import { color, material, radius, space, touchTarget } from "../theme.js";
@@ -257,7 +258,13 @@ function ProjectDetail(props: {
                 <PrimaryButton
                   disabled={workspace.status !== "ready"}
                   label="New task"
-                  onPress={() => navigation.navigate("NewTask", { deploymentId, workspaceId })}
+                  onPress={() =>
+                    navigation.navigate("NewTask", {
+                      deploymentId,
+                      draftId: newTaskDraftId(),
+                      workspaceId,
+                    })
+                  }
                 />
               </View>
             </View>

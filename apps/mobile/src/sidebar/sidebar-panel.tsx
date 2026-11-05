@@ -49,6 +49,12 @@ import { ActingDot, agentWorkingLabel } from "../browser/acting-dot.js";
 import { opensteerAppGlyph } from "../browser/agent-surface.js";
 import { tabSiteLabel } from "../browser/site-label.js";
 import { operationDetail } from "../client/mobile-client.js";
+import {
+  noDrafts,
+  sameDraftSummary,
+  type DraftSummary,
+  type NewTaskDraftSummary,
+} from "../client/thread-drafts.js";
 import { statusTone } from "../screens/deployment-row.js";
 import {
   color,
@@ -65,7 +71,10 @@ import {
   sameDeploymentIdentity,
   type DeploymentIdentity,
 } from "../threads/deployment-identity.js";
+import { discardNewTaskDraft } from "../thread/draft-attachments.js";
 import {
+  DraftPen,
+  draftPenLabel,
   NeedsYouTag,
   setTaskDone,
   taskTextInset,
@@ -73,7 +82,12 @@ import {
   UnreadDot,
   type TaskShelf,
 } from "../threads/task-row.js";
-import { useMobileClient, useMobileState, useSavedSurface } from "../ui/mobile-client-context.js";
+import {
+  useHostUserId,
+  useMobileClient,
+  useMobileState,
+  useSavedSurface,
+} from "../ui/mobile-client-context.js";
 import { ChatOrb } from "../ui/chat-orb.js";
 import { useContentInsets } from "../ui/pane.js";
 import { useRetainedScroll, type ScrollMemory } from "../ui/retained-scroll.js";
@@ -82,6 +96,7 @@ import { Symbol, type SFSymbolName } from "../ui/symbol.js";
 import { WorkspaceMark } from "../ui/workspace-mark.js";
 import { CallTimer } from "../voice/call-timer.js";
 import { useVoiceAvailable, useVoiceOn } from "../voice/use-voice-value.js";
+import { DraftRow } from "./draft-row.js";
 import { sidebarFolders, type SidebarFolder } from "./project-folders.js";
 import { voiceRowMark, type VoiceRowMark } from "./voice-row.js";
 
@@ -94,6 +109,8 @@ export interface SidebarActions {
   readonly onChat: () => void;
   readonly onNewProject: (deploymentId: string) => void;
   readonly onNewTask: (deploymentId: string, workspaceId: string) => void;
+  /** Exactly this unfinished new task, with everything it held. */
+  readonly onOpenDraft: (deploymentId: string, workspaceId: string, draftId: string) => void;
   /** A Project's own page: its chat, tasks and settings. */
   readonly onOpenProject: (deploymentId: string, workspaceId: string) => void;
   /** Shows exactly this tab, app or phone, alone. */
@@ -199,6 +216,28 @@ function useSidebarModel(
   return useSyncExternalStore(subscribe, read, read);
 }
 
+/**
+ * This reader's drafts, held until the list would change: the store publishes
+ * every write, and a keystroke leaves this list as it was.
+ */
+function useDraftSummary(
+  deploymentId: string | null,
+  userId: string | null,
+  openDraftId: string | null,
+): DraftSummary {
+  const { drafts } = useMobileClient();
+  const cached = useRef(noDrafts);
+  const read = useCallback((): DraftSummary => {
+    const next =
+      deploymentId === null || userId === null
+        ? noDrafts
+        : drafts.readDraftSummary(deploymentId, userId, openDraftId);
+    if (!sameDraftSummary(cached.current, next)) cached.current = next;
+    return cached.current;
+  }, [deploymentId, drafts, openDraftId, userId]);
+  return useSyncExternalStore(drafts.subscribe, read, read);
+}
+
 /** The open Deployment's identity, held across unrelated client updates. */
 function useDeploymentIdentity(deploymentId: string | null): DeploymentIdentity | null {
   const client = useMobileClient();
@@ -239,7 +278,8 @@ function useDoneShelf(): readonly [boolean, () => void] {
 
 /**
  * The sidebar is the one place to move between everything: Chat, New task,
- * Projects and Schedules; Main's tasks grouped by what each asks of the reader —
+ * Projects and Schedules; the new tasks not yet sent; Main's tasks grouped by
+ * what each asks of the reader —
  * Working, with anything waiting on them first; Ready; Done — then each
  * Project as a folder of its chat and work under way; then the Deployment's tabs,
  * apps and phones, and All tabs; and below them Settings and which
@@ -263,6 +303,8 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
   /** Where the reader left the list, kept by the shell across the drawer and the column. */
   readonly scroll: ScrollMemory;
   readonly shelves: ShelfMemory;
+  /** The new-task draft in front, which is not waiting in the list. */
+  readonly openDraftId: string | null;
   /** The task in front, marked as the one open. */
   readonly selectedThreadId: string | null;
   /** The task whose conversation is on screen; opening it never moves its row. */
@@ -289,6 +331,9 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
     props.shelves,
   );
   const identity = useDeploymentIdentity(deploymentId);
+  const client = useMobileClient();
+  const userId = useHostUserId(hostClient);
+  const drafts = useDraftSummary(visible ? deploymentId : null, userId, props.openDraftId);
   const [doneOpen, toggleDone] = useDoneShelf();
   const [closedProjects, setClosedProjects] = useState(props.shelves.closedProjects);
   const shelves = props.shelves;
@@ -320,6 +365,36 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
       if (deploymentId !== null) actions.onOpenTask(deploymentId, threadId);
     },
     [actions, deploymentId],
+  );
+  const openDraft = useCallback(
+    (draft: NewTaskDraftSummary) => {
+      if (deploymentId !== null) {
+        actions.onOpenDraft(deploymentId, draft.workspaceId, draft.draftId);
+      }
+    },
+    [actions, deploymentId],
+  );
+  const discardDraft = useCallback(
+    (draft: NewTaskDraftSummary) => {
+      if (deploymentId === null || userId === null) return;
+      const discard = (): void =>
+        void discardNewTaskDraft({
+          client: hostClient,
+          deploymentId,
+          draftId: draft.draftId,
+          drafts: client.drafts,
+          userId,
+        }).then(
+          () => AccessibilityInfo.announceForAccessibility("Draft discarded"),
+          (error: unknown) =>
+            Alert.alert("Draft not discarded", operationDetail(error, "Try again.")),
+        );
+      Alert.alert("Discard draft?", `“${draft.title}” will be removed.`, [
+        { style: "cancel", text: "Cancel" },
+        { onPress: discard, style: "destructive", text: "Discard" },
+      ]);
+    },
+    [client, deploymentId, hostClient, userId],
   );
   const moveTask = useCallback(
     (task: TaskRow, done: boolean) => {
@@ -361,12 +436,16 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
         : sidebarFolders(model.grouping.folders, closedProjects, selectedRow.threadId),
     [closedProjects, model, selectedRow.threadId],
   );
+  // The Thread in front has its draft in front of the reader already.
+  const unsentReply = (threadId: string | null | undefined): boolean =>
+    threadId != null && threadId !== selectedRow.threadId && drafts.threadIds.has(threadId);
   // Times are read as the list draws, so a row that has not changed still ages.
   const now = Date.now();
   const taskRows = (tasks: readonly TaskRow[], shelf: TaskShelf, nested = false) =>
     tasks.map((task) => (
       <Animated.View key={task.threadId} layout={move} style={nested && styles.nested}>
         <TaskRowView
+          drafted={unsentReply(task.threadId)}
           onOpen={openTask}
           onSetDone={moveTask}
           row={task}
@@ -429,6 +508,7 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
             }
             accessory={list === null ? null : <ChatAccessory row={list.chat} />}
             current={destination === "Home" || selectedRow.chat}
+            drafted={destination !== "Home" && unsentReply(list?.chat?.threadId)}
             icon="bubble.left"
             mark={<ChatOrb size={20} />}
             label={CHAT_THREAD_TITLE}
@@ -436,6 +516,7 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
           />
           <VoiceRow
             current={selectedRow.voice}
+            drafted={unsentReply(model?.voiceThreadId)}
             mark={model?.voice ?? null}
             onOpen={openTask}
             threadId={model?.voiceThreadId ?? null}
@@ -468,6 +549,20 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
             onPress={actions.onSchedules}
           />
         </View>
+
+        {drafts.newTasks.length === 0 ? null : (
+          <>
+            <GroupHead title="Drafts" />
+            {drafts.newTasks.map((draft) => (
+              <DraftRow
+                draft={draft}
+                key={draft.draftId}
+                onDiscard={discardDraft}
+                onOpen={openDraft}
+              />
+            ))}
+          </>
+        )}
 
         {savedTasks.source === "saved" ? (
           <SavedTasks
@@ -604,6 +699,7 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
                     entry.chat === null ? null : (
                       <Animated.View key={entry.chat.threadId} layout={move} style={styles.nested}>
                         <FolderChatRow
+                          drafted={unsentReply(entry.chat.threadId)}
                           onOpen={openTask}
                           row={entry.chat}
                           selected={entry.chat.threadId === selectedRow.threadId}
@@ -796,6 +892,7 @@ function ChatAccessory(props: { readonly row: TaskRow | null }): ReactNode {
  */
 function VoiceRow(props: {
   readonly current: boolean;
+  readonly drafted: boolean;
   readonly mark: VoiceRowMark;
   readonly onOpen: (threadId: string) => void;
   readonly threadId: string | null;
@@ -856,6 +953,7 @@ function VoiceRow(props: {
         ) : null
       }
       current={props.current}
+      drafted={props.drafted}
       icon="waveform"
       label="Voice"
       onPress={open}
@@ -995,6 +1093,7 @@ function FolderSignal(props: { readonly folder: ProjectFolder }): ReactNode {
 
 /** A Project's own chat, first in its folder. */
 function FolderChatRow(props: {
+  readonly drafted: boolean;
   readonly onOpen: (threadId: string) => void;
   readonly row: TaskRow;
   readonly selected: boolean;
@@ -1005,6 +1104,7 @@ function FolderChatRow(props: {
       accessibilityLabel={taskRowLabel(row, { chat: true })}
       accessory={<ChatAccessory row={row} />}
       current={props.selected}
+      drafted={props.drafted}
       icon="bubble.left"
       label={CHAT_THREAD_TITLE}
       mark={<ChatOrb size={16} />}
@@ -1086,6 +1186,8 @@ function DestinationRow(props: {
   /** A second, quieter word after the label: a tab's site. */
   readonly detail?: string;
   readonly disabled?: boolean;
+  /** The reader has an unsent reply here. */
+  readonly drafted?: boolean;
   readonly icon: SFSymbolName;
   readonly label: string;
   /** Still a place to go, but one that cannot show anything now. */
@@ -1094,9 +1196,11 @@ function DestinationRow(props: {
 }): ReactNode {
   const disabled = props.disabled === true;
   const quiet = disabled || props.muted === true;
+  const drafted = props.drafted === true;
+  const spoken = props.accessibilityLabel ?? props.label;
   return (
     <Pressable
-      accessibilityLabel={props.accessibilityLabel ?? props.label}
+      accessibilityLabel={drafted ? `${spoken}, ${draftPenLabel}` : spoken}
       accessibilityRole="button"
       accessibilityState={{ disabled, selected: props.current }}
       disabled={disabled}
@@ -1141,6 +1245,7 @@ function DestinationRow(props: {
         </Text>
       )}
       {props.accessory}
+      {drafted ? <DraftPen /> : null}
     </Pressable>
   );
 }

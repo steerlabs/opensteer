@@ -2,6 +2,7 @@ import type { PrivateFilesystem } from "@opensteer/client/connections";
 import {
   ContentPartSchema,
   ModelSelectionSchema,
+  provisionalThreadTitle,
   ThreadAccessModeSchema,
   type BrowserPageContentPart,
 } from "@opensteer/core";
@@ -25,11 +26,11 @@ import { z } from "zod";
  * showing; the file is loaded once at startup and written behind the reads.
  */
 
-const maxThreads = 48;
+const maxPendingCommands = 48;
 const maxDraftCharacters = 16_000;
-// A hard file cap covers escaped text, keys and metadata. Drafts and messages
-// share it, so pathological full-size duplicates fail closed rather than
-// growing private storage without bound.
+// A hard file cap covers escaped text, keys and metadata, and is the only bound
+// on how many drafts a phone keeps. Drafts and messages share it: a write past
+// it is refused and the composer says so, rather than dropping an older draft.
 const maxDraftFileBytes = 10 * 1_024 * 1_024;
 
 const DraftAttachmentsSchema = z
@@ -78,6 +79,8 @@ const DraftSchema = LegacyDraftSchema.extend({
   page: BrowserPageSchema.optional(),
   quote: DraftQuoteSchema.optional(),
   userId: z.string().min(1).max(200),
+  /** Where a new task's draft would start. Absent on one saved under its Workspace's id. */
+  workspaceId: z.string().min(1).max(200).optional(),
 });
 
 /**
@@ -177,9 +180,71 @@ export type DraftAttachment = NonNullable<ThreadDraft["attachments"]>[number];
 export type PendingCommand = z.infer<typeof PendingCommandSchema>;
 export type PendingThreadStart = z.infer<typeof PendingThreadStartSchema>;
 
-/** The draft key a new task's first message is written under, one per Workspace. */
-export function newTaskDraftKey(workspaceId: string): string {
-  return `new-task:${workspaceId}`;
+const newTaskKeyPrefix = "new-task:";
+
+/**
+ * The key of a new task's draft, under an id made on this phone. A release that
+ * kept one per Workspace used the Workspace's id as the draft id: its key, files
+ * and message in flight are never rewritten, and that id still says where it runs.
+ */
+export function newTaskDraftKey(draftId: string): string {
+  return `${newTaskKeyPrefix}${draftId}`;
+}
+
+export function newTaskDraftId(): string {
+  return globalThis.crypto.randomUUID();
+}
+
+/** One unfinished new task, as the sidebar lists it. */
+export interface NewTaskDraftSummary {
+  readonly draftId: string;
+  /** A message already handed over, unanswered: retried from the draft, never discarded. */
+  readonly held: boolean;
+  readonly title: string;
+  readonly workspaceId: string;
+}
+
+/** What the sidebar shows of one reader's drafts on one Deployment. */
+export interface DraftSummary {
+  /** Newest first. */
+  readonly newTasks: readonly NewTaskDraftSummary[];
+  /** Threads with an unsent reply. */
+  readonly threadIds: ReadonlySet<string>;
+}
+
+export const noDrafts: DraftSummary = { newTasks: [], threadIds: new Set() };
+
+/** A summary is rebuilt on every write; a list redraws only when one of these differs. */
+export function sameDraftSummary(left: DraftSummary, right: DraftSummary): boolean {
+  return (
+    left.newTasks.length === right.newTasks.length &&
+    left.newTasks.every((draft, index) => {
+      const other = right.newTasks[index];
+      return (
+        draft.draftId === other?.draftId &&
+        draft.held === other.held &&
+        draft.title === other.title &&
+        draft.workspaceId === other.workspaceId
+      );
+    }) &&
+    left.threadIds.size === right.threadIds.size &&
+    [...left.threadIds].every((threadId) => right.threadIds.has(threadId))
+  );
+}
+
+/** Whether New task can stay on this draft: nothing written, nothing in flight. */
+export function newTaskDraftBlank(
+  drafts: Pick<ThreadDraftStore, "readDraft" | "readPending">,
+  deploymentId: string,
+  userId: string,
+  draftId: string,
+): boolean {
+  const draftKey = newTaskDraftKey(draftId);
+  const draft = drafts.readDraft(deploymentId, userId, draftKey);
+  return (
+    drafts.readPending(deploymentId, userId, draftKey) === null &&
+    (draft === null || !draftHasContent(draft))
+  );
 }
 
 /** What a composer knows; the store stamps the time it was claimed. */
@@ -246,7 +311,21 @@ export interface ThreadDraftStore {
     threadId: string,
     expectedIdempotencyKey?: string,
   ): Promise<boolean>;
+  /** Forgets a draft's content. A message in flight under the same key is left alone. */
+  discardDraft(deploymentId: string, userId: string, threadId: string): Promise<void>;
+  /**
+   * Says where a new-task draft starts, before anything is written to it: an
+   * empty draft is not saved, so this is held here until its first write.
+   */
+  placeNewTaskDraft(
+    deploymentId: string,
+    userId: string,
+    draftId: string,
+    workspaceId: string,
+  ): void;
   readDraft(deploymentId: string, userId: string, threadId: string): ThreadDraft | null;
+  /** What is saved, leaving out the draft open now: it is not waiting for anyone. */
+  readDraftSummary(deploymentId: string, userId: string, openDraftId: string | null): DraftSummary;
   readPending(deploymentId: string, userId: string, threadId: string): PendingCommand | null;
   writeDraft(deploymentId: string, userId: string, threadId: string, text: string): Promise<void>;
   /** Attaches or removes the update this draft answers. Null clears it. */
@@ -292,6 +371,7 @@ export function createThreadDraftStore(options: {
   const textEdits = new Map<string, { readonly text: string }>();
   const quoteEdits = new Map<string, { readonly quote: ThreadDraftQuote | null }>();
   const pageEdits = new Map<string, { readonly page: BrowserPageContentPart | null }>();
+  const newTaskWorkspaces = new Map<string, string>();
   const writes = new MutationQueue();
 
   const key = (deploymentId: string, userId: string, threadId: string): string =>
@@ -314,6 +394,7 @@ export function createThreadDraftStore(options: {
       page: pageEdit === undefined ? entry?.page : (pageEdit.page ?? undefined),
       quote: quoteEdit === undefined ? entry?.quote : (quoteEdit.quote ?? undefined),
       text: textEdit?.text ?? entry?.text ?? "",
+      workspaceId: entry?.workspaceId ?? newTaskWorkspaces.get(entryKey),
     };
     if (draftEmpty(fields)) return null;
     return DraftSchema.parse({
@@ -332,10 +413,14 @@ export function createThreadDraftStore(options: {
   ): void => {
     if (draftEmpty(fields)) nextDrafts.delete(entryKey);
     else
-      touch(
-        nextDrafts,
+      nextDrafts.set(
         entryKey,
-        DraftSchema.parse({ ...fields, updatedAt: options.now().toISOString(), userId }),
+        DraftSchema.parse({
+          ...fields,
+          updatedAt: options.now().toISOString(),
+          userId,
+          workspaceId: fields.workspaceId ?? newTaskWorkspaces.get(entryKey),
+        }),
       );
   };
 
@@ -367,15 +452,6 @@ export function createThreadDraftStore(options: {
       pending = nextPending;
       publish();
     });
-
-  /** Re-inserting makes insertion order recency, so the bound drops the oldest. */
-  const touch = <T>(entries: Map<string, T>, entryKey: string, value: T): void => {
-    entries.delete(entryKey);
-    entries.set(entryKey, value);
-    for (const stale of [...entries.keys()].slice(0, Math.max(0, entries.size - maxThreads))) {
-      entries.delete(stale);
-    }
-  };
 
   return {
     getVersion: () => version,
@@ -456,7 +532,7 @@ export function createThreadDraftStore(options: {
           }
           return;
         }
-        if (nextPending.size >= maxThreads) {
+        if (nextPending.size >= maxPendingCommands) {
           throw new Error(
             "Too many messages are awaiting acknowledgement. Retry those messages first.",
           );
@@ -510,8 +586,72 @@ export function createThreadDraftStore(options: {
       return cleared;
     },
 
+    async discardDraft(deploymentId, userId, threadId): Promise<void> {
+      const entryKey = key(deploymentId, userId, threadId);
+      await mutate((nextDrafts) => {
+        nextDrafts.delete(entryKey);
+      });
+      // An edit whose write failed would otherwise bring the words back.
+      textEdits.delete(entryKey);
+      quoteEdits.delete(entryKey);
+      pageEdits.delete(entryKey);
+      publish();
+    },
+
+    placeNewTaskDraft(deploymentId, userId, draftId, workspaceId): void {
+      newTaskWorkspaces.set(key(deploymentId, userId, newTaskDraftKey(draftId)), workspaceId);
+    },
+
     readDraft(deploymentId, userId, threadId): ThreadDraft | null {
       return readVisibleDraft(deploymentId, userId, threadId);
+    },
+
+    readDraftSummary(deploymentId, userId, openDraftId): DraftSummary {
+      const scope = key(deploymentId, userId, "");
+      const tasks = new Map<string, NewTaskDraftSummary & { readonly at: string }>();
+      const threadIds = new Set<string>();
+      for (const [entryKey, draft] of drafts) {
+        if (!entryKey.startsWith(scope) || draft.userId !== userId) continue;
+        if (!draftHasContent(draft)) continue;
+        const draftKey = entryKey.slice(scope.length);
+        if (!draftKey.startsWith(newTaskKeyPrefix)) {
+          threadIds.add(draftKey);
+          continue;
+        }
+        const draftId = draftKey.slice(newTaskKeyPrefix.length);
+        tasks.set(draftId, {
+          at: draft.updatedAt,
+          draftId,
+          held: false,
+          title: firstLine(draft.text, draft.attachments?.length ?? 0, draft.page),
+          workspaceId: draft.workspaceId ?? draftId,
+        });
+      }
+      // Once claimed, a message has left its draft and New task opens a blank
+      // one, so this list is the way back to it.
+      for (const [entryKey, command] of pending) {
+        if (!entryKey.startsWith(scope) || command.userId !== userId) continue;
+        const draftKey = entryKey.slice(scope.length);
+        if (command.threadId !== draftKey || !draftKey.startsWith(newTaskKeyPrefix)) continue;
+        const draftId = draftKey.slice(newTaskKeyPrefix.length);
+        tasks.set(draftId, {
+          at: tasks.get(draftId)?.at ?? command.createdAt,
+          draftId,
+          held: true,
+          title: firstLine(command.text, command.attachments?.length ?? 0, command.browserPage),
+          workspaceId: command.start?.workspaceId ?? tasks.get(draftId)?.workspaceId ?? draftId,
+        });
+      }
+      tasks.delete(openDraftId ?? "");
+      return {
+        newTasks: [...tasks.values()]
+          .sort(
+            (left, right) =>
+              right.at.localeCompare(left.at) || left.draftId.localeCompare(right.draftId),
+          )
+          .map(({ at: _at, ...summary }) => summary),
+        threadIds,
+      };
     },
 
     readPending(deploymentId, userId, threadId): PendingCommand | null {
@@ -627,6 +767,7 @@ interface DraftFields {
   readonly page: ThreadDraft["page"] | undefined;
   readonly quote: ThreadDraft["quote"] | undefined;
   readonly text: string;
+  readonly workspaceId: ThreadDraft["workspaceId"] | undefined;
 }
 
 function draftFields(draft: ThreadDraft | undefined): DraftFields {
@@ -635,6 +776,7 @@ function draftFields(draft: ThreadDraft | undefined): DraftFields {
     page: draft?.page,
     quote: draft?.quote,
     text: draft?.text ?? "",
+    workspaceId: draft?.workspaceId,
   };
 }
 
@@ -645,4 +787,16 @@ function draftEmpty(fields: DraftFields): boolean {
     fields.quote === undefined &&
     fields.page === undefined
   );
+}
+
+/** Spaces alone are saved as typed, but they are nothing to come back to. */
+function draftHasContent(draft: ThreadDraft): boolean {
+  return draft.text.trim() !== "" || !draftEmpty({ ...draftFields(draft), text: "" });
+}
+
+/** A new task's words as a list says them: its first line, else what it holds. */
+function firstLine(text: string, files: number, page: BrowserPageContentPart | undefined): string {
+  if (text.trim() !== "") return provisionalThreadTitle(text);
+  if (files > 0) return files === 1 ? "1 file" : `${files} files`;
+  return provisionalThreadTitle(page?.title || page?.url || "");
 }

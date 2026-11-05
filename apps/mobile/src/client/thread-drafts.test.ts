@@ -1,9 +1,14 @@
 import type { HostClient } from "@opensteer/client/host";
 import { MemoryPrivateFilesystem } from "@opensteer/client/test-support";
-import { BrowserPageContentPartSchema } from "@opensteer/core";
+import { BrowserPageContentPartSchema, ModelSelectionSchema } from "@opensteer/core";
 import { describe, expect, it, vi } from "vitest";
 import { sendPendingMessage } from "../thread/send-pending-message.js";
-import { createThreadDraftStore } from "./thread-drafts.js";
+import {
+  createThreadDraftStore,
+  newTaskDraftBlank,
+  newTaskDraftKey,
+  sameDraftSummary,
+} from "./thread-drafts.js";
 
 const filePath = "/private/drafts.json";
 const deploymentId = "dep_0192f4a1-1111-4000-8000-000000000001";
@@ -372,15 +377,42 @@ describe("createThreadDraftStore", () => {
     expect(relaunched.readPending(deploymentId, userId, threadId)).toBeNull();
   });
 
-  it("drops the oldest drafts rather than growing without bound", async () => {
+  it("never loses a draft to a newer one", async () => {
     const { drafts } = open();
     await drafts.load();
     for (let index = 0; index < 60; index += 1) {
       await drafts.writeDraft(deploymentId, userId, `thread-${index}`, `draft ${index}`);
     }
-
-    expect(drafts.readDraft(deploymentId, userId, "thread-0")).toBeNull();
+    expect(drafts.readDraft(deploymentId, userId, "thread-0")?.text).toBe("draft 0");
     expect(drafts.readDraft(deploymentId, userId, "thread-59")?.text).toBe("draft 59");
+  });
+
+  it("refuses out loud once the file is full, keeping every draft already saved", async () => {
+    // Escaping doubles a quote on disk, so these leave less room than one more.
+    const full = '"'.repeat(16_000);
+    const saved = Object.fromEntries(
+      Array.from({ length: 325 }, (_, index) => [
+        `${deploymentId}:${userId}:thread-${index}`,
+        { text: full, updatedAt: "2026-09-14T12:00:00.000Z", userId },
+      ]),
+    );
+    const privateFiles = new MemoryPrivateFilesystem();
+    await privateFiles.writeFileAtomic(
+      filePath,
+      JSON.stringify({ drafts: saved, pending: {}, schemaVersion: 4 }),
+    );
+    const { drafts } = open(privateFiles);
+    await drafts.load();
+
+    await expect(drafts.writeDraft(deploymentId, userId, "one-more", full)).rejects.toThrow(
+      "storage limit",
+    );
+    // The words stay in the composer that could not save them.
+    expect(drafts.readDraft(deploymentId, userId, "one-more")?.text).toBe(full);
+    const relaunched = open(privateFiles).drafts;
+    await relaunched.load();
+    expect(relaunched.readDraft(deploymentId, userId, "thread-0")?.text).toBe(full);
+    expect(relaunched.readDraft(deploymentId, userId, "one-more")).toBeNull();
   });
 
   it("bounds one draft rather than refusing to store it", async () => {
@@ -410,6 +442,270 @@ describe("createThreadDraftStore", () => {
  * been answered and the message claimed, so a held record's message key is
  * one the Host has never seen. Typing no longer answers an approval.
  */
+describe("new-task drafts", () => {
+  const workspaceId = "wsp_0192f4a1-4444-4000-8000-000000000004";
+  const otherWorkspaceId = "wsp_0192f4a1-5555-4000-8000-000000000005";
+  const first = "0192f4a1-7777-4000-8000-000000000007";
+  const second = "0192f4a1-8888-4000-8000-000000000008";
+  const start = {
+    accessMode: "full-access",
+    environmentId: "env-1",
+    harnessInstanceId: "harness-1",
+    idempotencyKey: "thread:saved",
+    modelSelection: ModelSelectionSchema.parse({
+      modelId: "model-1",
+      options: {},
+      providerId: "provider-1",
+    }),
+    title: "Saved task",
+    workspaceId,
+  } as const;
+  const summary = (store: ReturnType<typeof open>["drafts"], openDraftId: string | null = null) =>
+    store.readDraftSummary(deploymentId, userId, openDraftId);
+
+  /** What the release with one new task per Workspace left on this phone. */
+  async function savedByOneDraftRelease() {
+    const privateFiles = new MemoryPrivateFilesystem();
+    const scope = `${deploymentId}:${userId}`;
+    await privateFiles.writeFileAtomic(
+      filePath,
+      JSON.stringify({
+        drafts: {
+          [`${scope}:new-task:${workspaceId}`]: {
+            attachments: [
+              {
+                attachmentId: null,
+                localUri: `file:///documents/new-task-${workspaceId}/photo.draft`,
+                mediaType: "image/png",
+                name: "photo.png",
+                sizeBytes: 3,
+                status: "staged",
+              },
+            ],
+            text: "Saved words",
+            updatedAt: "2026-09-13T12:00:00.000Z",
+            userId,
+          },
+        },
+        pending: {
+          [`${scope}:new-task:${otherWorkspaceId}`]: {
+            createdAt: "2026-09-12T12:00:00.000Z",
+            delivery: "queue",
+            idempotencyKey: "message:saved",
+            start: { ...start, workspaceId: otherWorkspaceId },
+            text: "Words in flight",
+            threadId: `new-task:${otherWorkspaceId}`,
+            userId,
+          },
+        },
+        schemaVersion: 4,
+      }),
+    );
+    return privateFiles;
+  }
+
+  it("keeps a saved draft and a message in flight under the keys they were saved with", async () => {
+    const privateFiles = await savedByOneDraftRelease();
+    const { drafts } = open(privateFiles);
+    await drafts.load();
+
+    expect(summary(drafts).newTasks).toEqual([
+      { draftId: workspaceId, held: false, title: "Saved words", workspaceId },
+      {
+        draftId: otherWorkspaceId,
+        held: true,
+        title: "Words in flight",
+        workspaceId: otherWorkspaceId,
+      },
+    ]);
+    const saved = newTaskDraftKey(workspaceId);
+    expect(drafts.readDraft(deploymentId, userId, saved)?.attachments).toHaveLength(1);
+    const inFlight = newTaskDraftKey(otherWorkspaceId);
+    expect(drafts.readPending(deploymentId, userId, inFlight)).toMatchObject({
+      idempotencyKey: "message:saved",
+      start: { idempotencyKey: "thread:saved" },
+    });
+
+    // Writing the file again, as any edit does, changes neither.
+    await drafts.writeDraft(deploymentId, userId, saved, "Saved words, edited");
+    const relaunched = open(privateFiles).drafts;
+    await relaunched.load();
+    expect(relaunched.readDraft(deploymentId, userId, saved)?.text).toBe("Saved words, edited");
+    expect(relaunched.readPending(deploymentId, userId, inFlight)?.idempotencyKey).toBe(
+      "message:saved",
+    );
+    expect(summary(relaunched).newTasks[0]?.workspaceId).toBe(workspaceId);
+  });
+
+  it("keeps two drafts apart, each with the Workspace it started in, through a restart", async () => {
+    const { drafts, privateFiles } = open();
+    await drafts.load();
+    drafts.placeNewTaskDraft(deploymentId, userId, first, workspaceId);
+    drafts.placeNewTaskDraft(deploymentId, userId, second, otherWorkspaceId);
+    await drafts.writeDraft(deploymentId, userId, newTaskDraftKey(first), "First");
+    await drafts.writeDraft(deploymentId, userId, newTaskDraftKey(second), "Second");
+    await drafts.writeDraftPage(deploymentId, userId, newTaskDraftKey(second), page);
+
+    const relaunched = open(privateFiles).drafts;
+    await relaunched.load();
+    expect(relaunched.readDraft(deploymentId, userId, newTaskDraftKey(first))).toMatchObject({
+      text: "First",
+      workspaceId,
+    });
+    expect(
+      relaunched.readDraft(deploymentId, userId, newTaskDraftKey(first))?.page,
+    ).toBeUndefined();
+    expect(relaunched.readDraft(deploymentId, userId, newTaskDraftKey(second))).toMatchObject({
+      page,
+      text: "Second",
+      workspaceId: otherWorkspaceId,
+    });
+  });
+
+  it("takes a refused message back into the same draft, in the same Workspace", async () => {
+    const { drafts } = open();
+    await drafts.load();
+    const key = newTaskDraftKey(first);
+    drafts.placeNewTaskDraft(deploymentId, userId, first, otherWorkspaceId);
+    await drafts.writeDraft(deploymentId, userId, key, "Refused words");
+    await drafts.claimPending(deploymentId, userId, key, {
+      idempotencyKey: "message:refused",
+      start: { ...start, workspaceId: otherWorkspaceId },
+      text: "Refused words",
+      threadId: key,
+    });
+    // Claimed, it has left its draft: the list is the only way back to it.
+    expect(summary(drafts).newTasks).toEqual([
+      { draftId: first, held: true, title: "Refused words", workspaceId: otherWorkspaceId },
+    ]);
+    await drafts.clearPending(deploymentId, userId, key, "message:refused");
+    await drafts.writeDraft(deploymentId, userId, key, "Refused words");
+    expect(summary(drafts).newTasks).toEqual([
+      { draftId: first, held: false, title: "Refused words", workspaceId: otherWorkspaceId },
+    ]);
+  });
+
+  it("forgets a discarded draft for good, and only that draft", async () => {
+    const files = new FlakyFilesystem();
+    const { drafts } = open(files);
+    await drafts.load();
+    const key = newTaskDraftKey(first);
+    await drafts.writeDraft(deploymentId, userId, key, "Saved");
+    await drafts.writeDraft(deploymentId, userId, newTaskDraftKey(second), "Kept");
+    files.failWrites = true;
+    await drafts.writeDraft(deploymentId, userId, key, "Never saved").catch(() => undefined);
+    await expect(drafts.discardDraft(deploymentId, userId, key)).rejects.toThrow();
+    expect(drafts.readDraft(deploymentId, userId, key)?.text).toBe("Never saved");
+    files.failWrites = false;
+
+    await drafts.discardDraft(deploymentId, userId, key);
+    expect(drafts.readDraft(deploymentId, userId, key)).toBeNull();
+    expect(summary(drafts).newTasks.map(({ draftId }) => draftId)).toEqual([second]);
+  });
+
+  it("leaves a message in flight alone when its draft is discarded", async () => {
+    const { drafts } = open();
+    await drafts.load();
+    const key = newTaskDraftKey(first);
+    await drafts.claimPending(deploymentId, userId, key, {
+      idempotencyKey: "message:held",
+      start,
+      text: "Held",
+      threadId: key,
+    });
+    await drafts.writeDraft(deploymentId, userId, key, "Typed after");
+    await drafts.discardDraft(deploymentId, userId, key);
+    expect(drafts.readPending(deploymentId, userId, key)?.idempotencyKey).toBe("message:held");
+  });
+
+  it("names each draft by its first line, else what it holds, newest first, and lists no empty one", async () => {
+    let now = "2026-09-14T12:00:00.000Z";
+    const drafts = createThreadDraftStore({
+      filePath,
+      now: () => new Date(now),
+      privateFiles: new MemoryPrivateFilesystem(),
+    });
+    await drafts.load();
+    const attachment = {
+      attachmentId: null,
+      localUri: "file:///photo.draft",
+      mediaType: "image/png",
+      name: "photo.png",
+      sizeBytes: 3,
+      status: "staged",
+    } as const;
+    await drafts.writeDraft(
+      deploymentId,
+      userId,
+      newTaskDraftKey("words"),
+      "\n Book a table\nfor two",
+    );
+    now = "2026-09-14T12:00:01.000Z";
+    await drafts.writeDraftAttachments(deploymentId, userId, newTaskDraftKey("one-file"), [
+      attachment,
+    ]);
+    now = "2026-09-14T12:00:02.000Z";
+    await drafts.writeDraftAttachments(deploymentId, userId, newTaskDraftKey("two-files"), [
+      attachment,
+      { ...attachment, localUri: "file:///other.draft" },
+    ]);
+    now = "2026-09-14T12:00:03.000Z";
+    await drafts.writeDraftPage(deploymentId, userId, newTaskDraftKey("page"), page);
+    await drafts.writeDraft(deploymentId, userId, newTaskDraftKey("spaces"), "  \n ");
+
+    expect(summary(drafts).newTasks.map(({ draftId, title }) => [draftId, title])).toEqual([
+      ["page", "Flights to Tokyo"],
+      ["two-files", "2 files"],
+      ["one-file", "1 file"],
+      ["words", "Book a table"],
+    ]);
+    expect(newTaskDraftBlank(drafts, deploymentId, userId, "spaces")).toBe(true);
+    expect(newTaskDraftBlank(drafts, deploymentId, userId, "page")).toBe(false);
+    expect(newTaskDraftBlank(drafts, deploymentId, userId, "never-written")).toBe(true);
+  });
+
+  it("is not blank while a message is in flight under it", async () => {
+    const { drafts } = open();
+    await drafts.load();
+    const key = newTaskDraftKey(first);
+    await drafts.claimPending(deploymentId, userId, key, {
+      idempotencyKey: "message:held",
+      start,
+      text: "Held",
+      threadId: key,
+    });
+    expect(newTaskDraftBlank(drafts, deploymentId, userId, first)).toBe(false);
+  });
+
+  it("shows the sidebar nothing new for a keystroke, the open draft, or another reader", async () => {
+    const { drafts } = open();
+    await drafts.load();
+    const key = newTaskDraftKey(first);
+    await drafts.writeDraft(deploymentId, userId, threadId, "An unsent reply");
+    await drafts.writeDraft(deploymentId, userId, key, "A new task");
+    await drafts.writeDraft(deploymentId, otherUserId, otherThreadId, "Theirs");
+    await drafts.writeDraft("dep_other", userId, newTaskDraftKey(second), "Elsewhere");
+    const before = summary(drafts);
+    expect([...before.threadIds]).toEqual([threadId]);
+    expect(before.newTasks.map(({ draftId }) => draftId)).toEqual([first]);
+
+    await drafts.writeDraft(deploymentId, userId, threadId, "An unsent reply, longer");
+    await drafts.writeDraft(deploymentId, userId, key, "A new task\nwith a second line");
+    expect(sameDraftSummary(before, summary(drafts))).toBe(true);
+
+    await drafts.writeDraft(deploymentId, userId, key, "A new task, retitled");
+    expect(sameDraftSummary(before, summary(drafts))).toBe(false);
+    // Typed in the draft that is open, the same words change nothing.
+    const whileOpen = summary(drafts, first);
+    expect(whileOpen.newTasks).toEqual([]);
+    await drafts.writeDraft(deploymentId, userId, key, "A new task, retitled again");
+    expect(sameDraftSummary(whileOpen, summary(drafts, first))).toBe(true);
+
+    await drafts.writeDraft(deploymentId, userId, threadId, "");
+    expect(summary(drafts).threadIds.size).toBe(0);
+  });
+});
+
 describe("a draft file from the release that steered approvals", () => {
   const entryKey = `${deploymentId}:${userId}:${threadId}`;
   const requestId = "req_0192f4a1-4444-4000-8000-000000000004";
