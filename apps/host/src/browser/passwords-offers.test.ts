@@ -11,7 +11,11 @@ import {
 } from "./passwords-offers.js";
 
 const site = "https://brex.com";
-const offered: AgentBrowserSignInResult = { passwords: "not-set-up", site, status: "not-signed-in" };
+const offered: AgentBrowserSignInResult = {
+  passwords: "not-set-up",
+  site,
+  status: "not-signed-in",
+};
 
 function watch(options: { wake?: () => Promise<PasswordsOfferOutcome> } = {}) {
   const state = {
