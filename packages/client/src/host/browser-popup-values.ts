@@ -89,7 +89,8 @@ export function browserPopupValueError(state: BrowserPopupState, value: string):
   const n = browserCalendarNumber(state.kind, value);
   if (n === null) return "Enter a complete calendar value.";
   const wrapping = state.kind === "time" && state.minimum > state.maximum;
-  // The native bridge represents non-finite/absent bounds as zero. Do not invent a range.
+  // Native sends the input type's own range for an absent bound; only non-finite values become
+  // zero, so both bounds being zero means there is no range to check.
   if (
     (state.minimum !== 0 || state.maximum !== 0) &&
     (wrapping ? n < state.minimum && n > state.maximum : n < state.minimum || n > state.maximum)

@@ -571,8 +571,12 @@ export class HttpHostClient {
     (attempt, unreadableFrames) => this.#retryDelay(attempt, unreadableFrames),
     () => this.#capabilities?.includes("browser-capture-region-v1") === true,
     (sessionId, surfaceId, reason) => {
-      if (reason === "media") this.#browserPopups.mediaEnded(sessionId, surfaceId);
-      else this.#browserPopups.disconnect(sessionId, surfaceId);
+      if (reason === "media") {
+        this.#browserPopups.mediaEnded(sessionId, surfaceId);
+        this.#browserEditing.mediaEnded(sessionId, surfaceId);
+        return;
+      }
+      this.#browserPopups.disconnect(sessionId, surfaceId);
       this.#browserEditing.disconnect(sessionId, surfaceId);
       this.browserPasskeys.disconnect(sessionId, surfaceId);
     },

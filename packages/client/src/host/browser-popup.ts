@@ -241,11 +241,11 @@ export class BrowserPopupStore {
       if (t.epoch !== epoch || t.pending?.id !== id) return;
       this.#clearPending(t);
       this.#cancel(t, ref);
+      const same = t.view.popup && samePopup(t.view.popup.ref, ref);
       this.#set(t, {
         ...t.view,
-        popup: null,
         pending: false,
-        highlighted: null,
+        ...(same ? { popup: null, highlighted: null } : {}),
         notice: "The choice may have applied. Check the page.",
       });
     }, 10_000);

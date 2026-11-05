@@ -277,9 +277,18 @@ export class BrowserWatchStore {
         return;
       throw new Error("The targeted browser control is not synchronized.");
     }
-    if (
+    // The Host drops these in private mode: only a guarded left tap has a native route.
+    const privatePointer =
+      this.video.selected() && target.video !== null && command.type === "input.pointer";
+    if (privatePointer && command.action === "down")
+      this.#set(target, {
+        ...target.state,
+        inputError: "Right-click, middle-click and drag selection aren't available in this view.",
+      });
+    else if (
       target.state.inputError &&
       command.type !== "input.wheel" &&
+      !privatePointer &&
       !(command.type === "input.pointer" && command.action === "move") &&
       command.type !== "viewport.follow"
     )

@@ -930,6 +930,62 @@ describe("H.264 browser lifecycle", () => {
     }
   });
 });
+it("tells a viewer when a press has no guarded path, and clears it on the next tap", () => {
+  const socket = new TargetSocket();
+  const store = new BrowserWatchStore(
+    () => socket,
+    "control",
+    undefined,
+    () => 100,
+    () => false,
+    undefined,
+    () => false,
+    () => false,
+    { selected: () => true, connect: () => new TargetSocket() },
+  );
+  try {
+    store.retain(sessionId, surfaceId);
+    socket.open();
+    socket.receive({
+      type: "browser.snapshot",
+      sessionId,
+      state: "ready",
+      access: "read-write",
+      targetedStreamingVersion: 1,
+      videoVersion: 1,
+      popupVersion: 1,
+      dialog: null,
+      surfaces: [{ id: surfaceId, active: true, title: "", url: "about:blank" }],
+    });
+    socket.receive({
+      type: "browser.video.attached",
+      surfaceId,
+      streamId: "dsp_00000000-0000-4000-8000-000000000001",
+      mediaToken: "a".repeat(43),
+    });
+    const pointer = {
+      type: "input.pointer",
+      surfaceId,
+      x: 1,
+      y: 1,
+      viewportWidth: 100,
+      viewportHeight: 100,
+      geometryRevision: 1,
+      modifiers: [],
+      buttons: 2,
+      button: "right",
+      clickCount: 1,
+    } as const;
+    store.send(sessionId, surfaceId, { ...pointer, action: "down" });
+    store.send(sessionId, surfaceId, { ...pointer, action: "up", buttons: 0 });
+    expect(store.get(sessionId, surfaceId).inputError).toContain("aren't available");
+    expect(socket.sent.map((s) => JSON.parse(s).action)).toContain("down");
+    store.send(sessionId, surfaceId, { type: "input.cancel", surfaceId });
+    expect(store.get(sessionId, surfaceId).inputError).toBeNull();
+  } finally {
+    store.dispose();
+  }
+});
 it("does not re-subscribe over a Host-issued controller replacement", () => {
   vi.useFakeTimers();
   const socket = new TargetSocket();

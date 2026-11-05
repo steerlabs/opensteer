@@ -70,6 +70,19 @@ describe("controller-local popup state", () => {
     expect(f.target.answer(next, { itemIds: ["i"] })).toBe(false);
     expect(f.send).not.toHaveBeenCalled();
   });
+  it("keeps a successor when the answer before it times out", () => {
+    vi.useFakeTimers();
+    try {
+      const f = fixture();
+      expect(f.target.answer(ref, { itemIds: ["i"] })).toBe(true);
+      const next = { ...ref, popupId: "next" };
+      f.store.receive("session", { type: "browser.popup.opened", ...next, state });
+      vi.advanceTimersByTime(10_000);
+      expect(f.target.get()).toMatchObject({ pending: false, popup: { ref: { popupId: "next" } } });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it("submits once, then resolves uncertain without replay", () => {
     vi.useFakeTimers();
     const f = fixture();

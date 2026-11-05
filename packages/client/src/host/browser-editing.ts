@@ -473,6 +473,14 @@ export class BrowserEditingStore {
     for (const [id, pending] of this.#pending)
       if (pending.target === target) this.#fail(id, new Error(message));
   }
+  /** Replacement media stays on this control socket, so no new snapshot renegotiates editing. */
+  mediaEnded(sessionId: string, surfaceId: string): void {
+    const target = this.#targets.get(JSON.stringify([sessionId, surfaceId]));
+    if (!target) return;
+    this.#cancel(target, "The browser viewer disconnected.");
+    const { negotiated, abilities } = target.state;
+    this.#set(target, { ...empty, negotiated, abilities });
+  }
   disconnect(sessionId: string, surfaceId?: string): void {
     if (!surfaceId) this.#versions.delete(sessionId);
     for (const target of this.#targets.values()) {

@@ -156,6 +156,14 @@ describe("browser editing transport", () => {
     await canceled;
     store.dispose();
   });
+  it("stays negotiated through a media restart and cancels what was in flight", async () => {
+    const { store, target } = setup();
+    const pending = expect(target.send({ kind: "cut" })).rejects.toThrow("disconnected");
+    store.mediaEnded(sessionId, surfaceId);
+    await pending;
+    expect(target.get().negotiated).toBe(true);
+    store.dispose();
+  });
   it("delivers page writes only to the active viewer and drops unawaited parts", async () => {
     const { store, target } = setup();
     const written: unknown[] = [];
