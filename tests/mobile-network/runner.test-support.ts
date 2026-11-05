@@ -8,6 +8,7 @@ import {
 import type {
   ClientLifecycle,
   ClientLifecycleSnapshot,
+  ClientNetworkPath,
   ClientNetworkState,
 } from "../../packages/client/src/host/lifecycle.js";
 import { taskList } from "../../packages/client/src/host/task-list.js";
@@ -38,7 +39,7 @@ export class FakeMobileLifecycle implements ClientLifecycle {
   #snapshot: ClientLifecycleSnapshot = { visibility: "foreground", network: "online" };
   #background = new Set<() => void>();
   #foreground = new Set<() => void>();
-  #network = new Set<(state: ClientNetworkState) => void>();
+  #network = new Set<(state: ClientNetworkState, path: ClientNetworkPath) => void>();
   getSnapshot = () => this.#snapshot;
   onBackground = (listener: () => void) => {
     this.#background.add(listener);
@@ -52,7 +53,7 @@ export class FakeMobileLifecycle implements ClientLifecycle {
       this.#foreground.delete(listener);
     };
   };
-  onNetworkChange = (listener: (state: ClientNetworkState) => void) => {
+  onNetworkChange = (listener: (state: ClientNetworkState, path: ClientNetworkPath) => void) => {
     this.#network.add(listener);
     return () => {
       this.#network.delete(listener);
@@ -67,7 +68,7 @@ export class FakeMobileLifecycle implements ClientLifecycle {
     for (const listener of this.#foreground) listener();
   }
   networkChange() {
-    for (const listener of this.#network) listener("online");
+    for (const listener of this.#network) listener("online", "changed");
   }
 }
 

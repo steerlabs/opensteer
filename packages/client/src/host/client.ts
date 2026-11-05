@@ -835,6 +835,8 @@ export interface HostSnapshot {
   browserProfileDeletions?: BrowserProfileDeletionSummary[] | undefined;
   browserSessions: BrowserSessionSummary[];
   connection: HostConnectionState;
+  /** The connection has been down long enough to say so, or stopped trying. */
+  connectionInterrupted: boolean;
   /** Reachability reported by the platform, distinct from Host availability. */
   network: ClientNetworkState;
   /**

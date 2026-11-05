@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { BrowserSurfaceIdSchema } from "@opensteer/protocol";
 import { BrowserWatchStore } from "./browser-watch.js";
 import type { WebSocketClient } from "./host-session-client.js";
 import { healthySocketMs } from "./realtime-frames.js";
@@ -963,9 +964,10 @@ it("tells a viewer when a press has no guarded path, and clears it on the next t
       streamId: "dsp_00000000-0000-4000-8000-000000000001",
       mediaToken: "a".repeat(43),
     });
+    const surface = BrowserSurfaceIdSchema.parse(surfaceId);
     const pointer = {
-      type: "input.pointer",
-      surfaceId,
+      type: "input.pointer" as const,
+      surfaceId: surface,
       x: 1,
       y: 1,
       viewportWidth: 100,
@@ -973,14 +975,14 @@ it("tells a viewer when a press has no guarded path, and clears it on the next t
       geometryRevision: 1,
       modifiers: [],
       buttons: 2,
-      button: "right",
+      button: "right" as const,
       clickCount: 1,
-    } as const;
+    };
     store.send(sessionId, surfaceId, { ...pointer, action: "down" });
     store.send(sessionId, surfaceId, { ...pointer, action: "up", buttons: 0 });
     expect(store.get(sessionId, surfaceId).inputError).toContain("aren't available");
     expect(socket.sent.map((s) => JSON.parse(s).action)).toContain("down");
-    store.send(sessionId, surfaceId, { type: "input.cancel", surfaceId });
+    store.send(sessionId, surfaceId, { type: "input.cancel", surfaceId: surface });
     expect(store.get(sessionId, surfaceId).inputError).toBeNull();
   } finally {
     store.dispose();

@@ -635,8 +635,13 @@ vi.mock("../ui/composer-action.js", () => ({
 // The docked approval keeps its own explicit buttons; it is drawn by its title here.
 vi.mock("./request-card.js", () => ({
   RequestCard: (props: {
+    readonly disabledReason: string | null;
     readonly surface: { readonly request: { readonly presentation: { readonly title: string } } };
-  }) => <section aria-label="Docked request">{props.surface.request.presentation.title}</section>,
+  }) => (
+    <section aria-label="Docked request" data-reason={props.disabledReason ?? undefined}>
+      {props.surface.request.presentation.title}
+    </section>
+  ),
 }));
 
 const { ThreadPane } = await import("./thread-pane.js");
@@ -2461,9 +2466,8 @@ describe("a reply at work on a Mac", () => {
 });
 
 describe("a conversation's own title in its bar", () => {
-  it("keeps the conversation's name plain, and Retry a control of its own", async () => {
+  it("keeps the conversation's name plain, whatever the connection", async () => {
     const chat = chatAtWork();
-    // The Host cannot be reached, so the line under the name offers Retry.
     const host = fakeHost({
       ...snapshotFor({
         entries: chat.entries,
@@ -2476,10 +2480,25 @@ describe("a conversation's own title in its bar", () => {
 
     expect(text(container)).toContain("Chat");
     expect(hasButton(container, "Chat")).toBe(false);
-    const retry = button(container, "Retry");
-    expect(retry.parentElement?.closest("button")).toBeNull();
-    await act(async () => retry.click());
-    expect(host.client.refresh).toHaveBeenCalledExactlyOnceWith({ retryConnection: true });
+    expect(hasButton(container, "Retry")).toBe(false);
+  });
+
+  it("gives a lost connection no line of its own on a docked Request", async () => {
+    const runId = createId("run");
+    const host = fakeHost({
+      ...snapshotFor({
+        entries: [],
+        requests: [approval(runId, "Continue?")],
+        run: { id: runId, status: "waiting" },
+        threadId: workId,
+      }),
+      connection: "offline",
+    });
+    const { container } = await mount(host, workId);
+
+    const docked = container.querySelector('[aria-label="Docked request"]');
+    expect(docked?.textContent).toBe("Continue?");
+    expect(docked?.getAttribute("data-reason")).toBeNull();
   });
 
   it("keeps a task's name plain", async () => {

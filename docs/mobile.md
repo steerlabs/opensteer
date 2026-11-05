@@ -82,6 +82,8 @@ and the key deletion fail and the app ends before a retry
 Backgrounding stops refresh and reconnect timers without closing usable sockets; foreground probes
 or replaces them, because mobile OSes kill sockets silently. Only AppState `active` is foreground,
 and network state is re-read on foreground because Expo gets no listener events while suspended.
+[The connection pill](../apps/mobile/src/ui/connection-pill.tsx) is the only place a Host connection
+is said, so no screen adds its own line ([what a person is told](connections.md#what-a-person-is-told)).
 
 Media is visibility-bound: release pictures when hidden, backgrounded or no longer authorized, and
 return picture credit even when decoding fails. Routes name exact tabs or owner-view generations; a

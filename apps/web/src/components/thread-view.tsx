@@ -11,6 +11,7 @@ import {
   conversationActivityTurn,
   conversationTurnRevealing,
   describeHostConnection,
+  showsHostLive,
   groupTranscriptEntries,
   incomingTranscriptMessages,
   observedSequence,
@@ -827,7 +828,7 @@ function ThreadView({
 
   const canRespond = canRespondToRequests(snapshot);
   const connection = describeHostConnection(snapshot);
-  const live = canRespond && environmentStatus === "connected";
+  const live = showsHostLive(snapshot) && environmentStatus === "connected";
   // What this client holds of the account is current only while it is live.
   const startHold = live
     ? threadStartHold({ environments: snapshot.environments, runQueue: snapshot.runQueue, thread })
@@ -840,13 +841,14 @@ function ThreadView({
     () => (home ? { lead: "Ask", name: "Opensteer" } : { lead: "Reply to", name: thread.title }),
     [home, thread.title],
   );
-  const connectionLabel = !canRespond
-    ? connection.label
-    : thread.status === "archived"
-      ? "Archived"
-      : environmentStatus === "disconnected"
-        ? `${thread.runnerLabel} offline`
-        : null;
+  const connectionLabel =
+    connection.tone !== "green"
+      ? connection.label
+      : thread.status === "archived"
+        ? "Archived"
+        : environmentStatus === "disconnected"
+          ? `${thread.runnerLabel} offline`
+          : null;
   const connectionStatus =
     connectionLabel !== null ? (
       <span className="thread__connection" role="status">

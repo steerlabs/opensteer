@@ -23,6 +23,22 @@ abort without replay, cancellation wins, and an authentication refusal acts when
 Availability follows bootstrap, authentication, network and realtime; cancellation and stale fences
 never claim the Host was unreachable. Deadlines and size limits live in the transport.
 
+## What a person is told
+
+Reconnecting resumes from the cursor and loses nothing, so a connection that returns within
+[the hold](../packages/client/src/host/lifecycle.ts) never happened as far as a person can tell, and
+`describeHostConnection` keeps saying Connected. `canRespondToRequests` does not hold: decisions
+still need a synchronized Host, so controls may dim through a drop nobody is told about. Stopping is
+said at once, and nothing counts while hidden, because a frozen timer fires mid-reconnect on return.
+
+Only the Workspaces being read decide the connection; the others retry quietly. An outage settles on
+Unavailable with Retry, and the sockets keep trying behind it. Saying it never moves content: a new
+surface reads this state in existing chrome or floats over the page.
+
+A phone also reports network paths that did not move, so `same` costs a ping and only `changed`
+replaces sockets. A socket that does not answer shows a move the phone could
+not see, such as between two Wi-Fi networks, and everything on that path is replaced with it.
+
 ## MCP routes
 
 MCP discovery and OAuth must reach the same Host as `/internal/v1/mcp`. Development and deployed

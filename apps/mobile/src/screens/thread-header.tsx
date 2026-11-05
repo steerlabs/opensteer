@@ -2,7 +2,7 @@ import { useHostSelector } from "@opensteer/client/react";
 import type { HostClient, HostSnapshot } from "@opensteer/client/host";
 import { StackActions, useNavigation } from "@react-navigation/native";
 import { useCallback, useLayoutEffect, useMemo, useState, type ReactNode } from "react";
-import { Platform, Pressable, StyleSheet, View } from "react-native";
+import { StyleSheet, View } from "react-native";
 import { headerFontScaleLimit, space } from "../theme.js";
 import { AroundButton, aroundHeaderOptions } from "../thread/around-button.js";
 import { aroundGlanceSelector, sameAroundGlance } from "../thread/around-model.js";
@@ -161,9 +161,6 @@ export function useThreadHeader(props: {
                         : StackActions.push("Thread", { deploymentId, threadId: id }),
                     )
                   }
-                  onRetry={() =>
-                    void hostClient.refresh({ retryConnection: true }).catch(() => undefined)
-                  }
                 />
               ),
               // The route keeps a plain name as well: it is what a back control
@@ -176,7 +173,7 @@ export function useThreadHeader(props: {
 
 /**
  * The task subject and title, with a small project tile and state below.
- * The two lines share the native menu's touch target; Retry remains its own control.
+ * The two lines share the native menu's touch target.
  */
 function ThreadTitle(
   props: ThreadHeaderState & {
@@ -184,7 +181,6 @@ function ThreadTitle(
     readonly hostClient: HostClient;
     readonly threadId: string | null;
     readonly onOpenThread: (threadId: string) => void;
-    readonly onRetry: () => void;
   },
 ): ReactNode {
   const navigation = useNavigation();
@@ -242,18 +238,6 @@ function ThreadTitle(
           />
         </View>
       </TaskMenu>
-      {props.canRetry ? (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Retry"
-          onPress={props.onRetry}
-          style={styles.retry}
-        >
-          <AppText role="caption" tone="soft">
-            Retry
-          </AppText>
-        </Pressable>
-      ) : null}
     </View>
   );
 }
@@ -267,10 +251,4 @@ const titleWidth = 260;
 const styles = StyleSheet.create({
   title: { alignItems: "center", flexDirection: "row", maxWidth: titleWidth, gap: space[4] },
   words: { alignItems: "center", flexShrink: 1 },
-  retry: {
-    minHeight: Platform.OS === "android" ? 48 : 44,
-    minWidth: 48,
-    alignItems: "center",
-    justifyContent: "center",
-  },
 });

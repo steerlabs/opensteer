@@ -1,8 +1,6 @@
 import Animated from "react-native-reanimated";
 import { move } from "../ui/motion.js";
 import {
-  canRespondToRequests,
-  describeHostConnection,
   filterThreads,
   sameTaskListSource,
   taskAttention,
@@ -73,14 +71,13 @@ export function TasksPane(props: {
 }): ReactNode {
   const { hostClient, query, workspaceId } = props;
   const insets = useListContentInsets(space[32]);
-  const { loadError, reload, snapshot } = useHostSnapshot(hostClient, samePaneSource);
+  const { loadError, snapshot } = useHostSnapshot(hostClient, samePaneSource);
   const [refreshing, setRefreshing] = useState(false);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const loadingEarlierRef = useRef(false);
 
-  const connection = describeHostConnection(snapshot);
-  const refused = connection.action === "sign-in";
+  const refused = snapshot.session === "authentication-required";
   const authenticated = snapshot.session === "authenticated";
 
   // A project's own list is read when its page opens, and kept current by
@@ -291,38 +288,24 @@ export function TasksPane(props: {
       ListHeaderComponent={
         <View style={styles.header}>
           {props.header}
-          {canRespondToRequests(snapshot) ? null : (
+          {refused ? (
             <View style={styles.connection}>
-              <StatusDot live={snapshot.connection === "connecting"} tone={connection.tone} />
+              <StatusDot tone="amber" />
               <AppText numberOfLines={1} role="secondary" style={styles.grow} tone="soft">
-                {connection.label}
+                Signed out
               </AppText>
-              {connection.action === "retry" ? (
-                <Pressable
-                  accessibilityRole="button"
-                  hitSlop={space[8]}
-                  onPress={() => void reload().catch(() => undefined)}
-                  style={styles.inlineAction}
-                >
-                  <AppText role="secondaryMedium" tone="ember">
-                    Try again
-                  </AppText>
-                </Pressable>
-              ) : null}
-              {connection.action === "sign-in" ? (
-                <Pressable
-                  accessibilityRole="button"
-                  hitSlop={space[8]}
-                  onPress={signIn}
-                  style={styles.inlineAction}
-                >
-                  <AppText role="secondaryMedium" tone="ember">
-                    Sign in
-                  </AppText>
-                </Pressable>
-              ) : null}
+              <Pressable
+                accessibilityRole="button"
+                hitSlop={space[8]}
+                onPress={signIn}
+                style={styles.inlineAction}
+              >
+                <AppText role="secondaryMedium" tone="ember">
+                  Sign in
+                </AppText>
+              </Pressable>
             </View>
-          )}
+          ) : null}
           {loadError === null && failure === null ? null : (
             <Notice
               detail={failure ?? loadError ?? ""}

@@ -100,7 +100,7 @@ import {
   type WorkspaceView,
 } from "@opensteer/protocol";
 import { z } from "zod";
-import { BrowserWatchStore } from "./browser-watch.js";
+import { BrowserWatchStore, browserCommandNeedsNoView } from "./browser-watch.js";
 import type {
   BrowserCommand,
   BrowserFrameStore,
@@ -133,9 +133,11 @@ import { RunPlaceStore } from "./run-place.js";
 import {
   realtimeIdleProbeDeadlineMs,
   realtimeIdleProbeMs,
+  connectionInterruptionHoldMs,
   socketProbeDeadlineMs,
   socketTrustWindowMs,
   type ClientLifecycle,
+  type ClientNetworkPath,
   type ClientNetworkState,
   type ClientVisibility,
 } from "./lifecycle.js";
@@ -361,6 +363,7 @@ interface WorkspaceChannel {
   refused: boolean;
   cursor: Sequence;
   /** The nonce of the liveness probe this channel is waiting on, if any. */
+  probeFollowsNetwork: boolean;
   probeNonce: string | null;
   probeTimer: Timer | null;
   /** When the current socket last showed its subscription delivering. */
@@ -1069,6 +1072,8 @@ export class HttpHostClient {
   readonly #latestTranscriptLoads = new Map<string, Promise<void>>();
   #activeThreadId: string | null = null;
   #activeWorkspaceId: string | null = null;
+  #hostUnreachable = false;
+  #interruptionTimer: ReturnType<typeof setTimeout> | null = null;
   readonly #random: () => number;
   readonly #livenessIdleMs: number;
   readonly #livenessDeadlineMs: number;
@@ -1954,6 +1959,7 @@ export class HttpHostClient {
     this.#ensureAssignments(threadId);
     this.#ensureAutomations(threadId, opened);
     this.#ensureBrowserUsage(threadId, "missing");
+    this.#recomputeConnection();
     let held = true;
     return () => {
       if (!held) return;
@@ -1961,6 +1967,7 @@ export class HttpHostClient {
       const count = this.#observedThreads.get(threadId) ?? 0;
       if (count <= 1) this.#observedThreads.delete(threadId);
       else this.#observedThreads.set(threadId, count - 1);
+      this.#recomputeConnection();
       const scan = this.#messagePageLoads.get(threadId);
       if (scan && !this.#showsThread(threadId)) scan.retired = true;
     };
@@ -3194,15 +3201,7 @@ export class HttpHostClient {
       !channel.synchronized ||
       session?.state !== "ready"
     ) {
-      // Layout and cleanup can race with the socket disconnecting; neither
-      // needs an error when the view will resynchronize on its return.
-      if (
-        command.type === "stream.unsubscribe" ||
-        command.type === "viewport.follow" ||
-        command.type === "input.cancel" ||
-        command.type.startsWith("cursor.")
-      )
-        return;
+      if (browserCommandNeedsNoView(command)) return;
       throw new Error("The browser view is not synchronized.");
     }
     channel.socket.send(JSON.stringify(command));
@@ -3646,6 +3645,7 @@ export class HttpHostClient {
   dispose(): void {
     this.#pendingBrowserTabs.dispose();
     if (this.#disposed) return;
+    this.#clearInterruptionHold();
     this.#clearAttachmentReads();
     this.#cancelLostFrameReread();
     this.browserHistory.dispose();
@@ -4053,7 +4053,12 @@ export class HttpHostClient {
     const presenceMark = this.#presenceCounter;
     const browserStateMark = this.#browserStateCounter;
     const ownerViewRevision = this.#ownerViews.revision;
-    if (this.#snapshot.session === "checking" || this.#snapshot.connection === "offline") {
+    // The interval's own read is no new attempt, so an outage reads one way.
+    if (
+      this.#snapshot.session === "checking" ||
+      (this.#snapshot.connection === "offline" && reason !== "interval")
+    ) {
+      this.#hostUnreachable = false;
       this.#update({ ...this.#snapshot, connection: "connecting" });
     }
     if (this.#readCapabilities)
@@ -4088,8 +4093,9 @@ export class HttpHostClient {
       return;
     }
     if (generation !== this.#viewerGeneration || this.#disposed) return;
-    if (!response.ok && ![...this.#channels.values()].some((channel) => channel.synchronized))
-      this.#update({ ...this.#snapshot, connection: "offline" });
+    this.#hostUnreachable =
+      !response.ok && ![...this.#channels.values()].some((channel) => channel.synchronized);
+    if (this.#hostUnreachable) this.#update({ ...this.#snapshot, connection: "offline" });
     const payload = unwrapRpcResult(response);
     if (generation !== this.#viewerGeneration || this.#disposed) return;
     // Reauthentication can replace the viewer without an intervening 401.
@@ -4418,7 +4424,7 @@ export class HttpHostClient {
     this.#lifecycleDisposers.push(
       lifecycle.onBackground(() => this.#enterBackground()),
       lifecycle.onForeground(() => this.#enterForeground()),
-      lifecycle.onNetworkChange((state) => this.#networkChanged(state)),
+      lifecycle.onNetworkChange((state, path) => this.#networkChanged(state, path)),
     );
   }
 
@@ -4436,6 +4442,8 @@ export class HttpHostClient {
     for (const listener of this.#lifecycleListeners) listener("background");
     this.#backgroundedAt = Date.now();
     this.#stopRefresh();
+    this.#clearInterruptionHold();
+    this.#update({ ...this.#snapshot, connectionInterrupted: false });
     if (!this.#notifiesWhileHidden()) {
       for (const channel of this.#channels.values()) {
         this.#clearProbe(channel);
@@ -4470,6 +4478,8 @@ export class HttpHostClient {
     this.#targetedWatch.suspend(this.#network === "offline");
     for (const listener of this.#lifecycleListeners) listener("foreground");
     this.#backgroundedAt = null;
+    this.#beginConnectionAttempt();
+    this.#update(this.#snapshot);
     const trusted = backgroundedForMs < this.#socketTrustWindowMs && this.#network !== "offline";
     for (const channel of this.#channels.values()) {
       if (trusted && channel.socket?.readyState === 1) {
@@ -4508,12 +4518,25 @@ export class HttpHostClient {
    * invalidates, never a change in its value — the one exception being a
    * device that is still off the network, where there is nothing to replace.
    * Going offline stops the backoff instead of spending it against an
-   * interface that cannot carry the packets.
+   * interface that cannot carry the packets. A phone also reports paths that
+   * did not move, so a `same` notification costs one ping, and only a socket
+   * that does not answer shows the path was lost.
    */
-  #networkChanged(state: ClientNetworkState): void {
+  #networkChanged(state: ClientNetworkState, path: ClientNetworkPath): void {
     if (this.#disposed) return;
     if (state === "offline" && this.#network === "offline") return;
+    if (path === "same" && state === this.#network) {
+      if (this.#workspaceReconnectSuspended()) return;
+      for (const channel of this.#channels.values())
+        this.#probeChannel(channel, socketProbeDeadlineMs, true);
+      return;
+    }
     this.#network = state;
+    this.#followNetwork();
+  }
+
+  #followNetwork(): void {
+    this.#beginConnectionAttempt();
     this.#targetedControl.suspend(this.#reconnectSuspended(), this.#network !== "offline");
     this.#targetedWatch.suspend(this.#reconnectSuspended());
     this.#targetedControl.reconnect();
@@ -4546,15 +4569,24 @@ export class HttpHostClient {
     return this.#notificationListeners.size > 0;
   }
 
-  #probeChannel(channel: WorkspaceChannel, deadlineMs = socketProbeDeadlineMs): void {
+  #probeChannel(
+    channel: WorkspaceChannel,
+    deadlineMs = socketProbeDeadlineMs,
+    followNetwork = false,
+  ): void {
     const socket = channel.socket;
-    if (!socket || socket.readyState !== 1 || channel.probeTimer) return;
+    if (!socket || socket.readyState !== 1) return;
+    // A probe already in the air answers this question too, so it inherits it.
+    channel.probeFollowsNetwork ||= followNetwork;
+    if (channel.probeTimer) return;
     const nonce = globalThis.crypto.randomUUID();
     const progressAt = channel.progressAt;
     channel.probeNonce = nonce;
     channel.probeTimer = globalThis.setTimeout(() => {
+      const follow = channel.probeFollowsNetwork;
       channel.probeTimer = null;
       channel.probeNonce = null;
+      channel.probeFollowsNetwork = false;
       // A client that stopped reading meanwhile judges the socket on its way back,
       // and one whose subscription delivered since asking has its answer already:
       // on a slow route the reply can queue behind the very frames that prove it.
@@ -4564,6 +4596,10 @@ export class HttpHostClient {
         this.#workspaceReconnectSuspended()
       )
         return;
+      if (follow) {
+        this.#followNetwork();
+        return;
+      }
       this.#replaceChannel(channel, "Liveness probe unanswered");
       this.#recomputeConnection();
     }, deadlineMs);
@@ -4581,6 +4617,7 @@ export class HttpHostClient {
     if (channel.probeTimer) globalThis.clearTimeout(channel.probeTimer);
     channel.probeTimer = null;
     channel.probeNonce = null;
+    channel.probeFollowsNetwork = false;
   }
 
   /**
@@ -4668,6 +4705,7 @@ export class HttpHostClient {
       ({
         cursor: zeroSequence,
         refused: false,
+        probeFollowsNetwork: false,
         probeNonce: null,
         probeTimer: null,
         progressAt: 0,
@@ -5636,15 +5674,19 @@ export class HttpHostClient {
       if (this.#network !== this.#snapshot.network) this.#update(this.#snapshot);
       return;
     }
-    // A refused background Workspace does not determine transport availability
-    // for the Workspace being read. Its own screen remains unavailable.
-    const pending = [...this.#channels.values()].filter(
-      (channel) =>
-        !channel.synchronized &&
-        (!channel.refused ||
-          !this.#forbiddenWorkspaces.has(channel.workspaceId) ||
-          channel.workspaceId === this.#activeWorkspaceId),
-    );
+    // A Workspace nobody is reading retries quietly, and does not decide the
+    // connection for the one being read. A refused one's own screen remains
+    // unavailable, and it never decides for a client reading nothing yet.
+    const channels = [...this.#channels.values()];
+    const read = channels.filter(({ workspaceId }) => this.#readsWorkspace(workspaceId));
+    const pending = (
+      read.length > 0
+        ? read
+        : channels.filter(
+            (channel) => !channel.refused || !this.#forbiddenWorkspaces.has(channel.workspaceId),
+          )
+    ).filter((channel) => !channel.synchronized);
+    if (pending.length === 0) this.#hostUnreachable = false;
     // Retrying a snapshot this client cannot read is no reconnection in
     // progress: it says so, and offers Retry, between and during the attempts.
     const connection: HostConnectionState =
@@ -5654,12 +5696,63 @@ export class HttpHostClient {
               (channel) =>
                 (!channel.socket && !channel.reconnectTimer) ||
                 channel.unreadableFrames > realtimeReplayAttempts,
-            )
+            ) || this.#hostUnreachable
           ? "offline"
           : "connecting";
     if (connection !== this.#snapshot.connection || this.#network !== this.#snapshot.network) {
       this.#update({ ...this.#snapshot, connection });
     }
+  }
+
+  #readsWorkspace(workspaceId: string): boolean {
+    if (workspaceId === (this.#activeWorkspaceId ?? this.#snapshot.homeWorkspaceId)) return true;
+    for (const threadId of new Set([this.#activeThreadId, ...this.#observedThreads.keys()])) {
+      if (threadId !== null && this.#threadWorkspace.get(threadId) === workspaceId) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Coming back, or a new network, is a new reason to expect the Host: what
+   * earlier attempts found says nothing about this one.
+   */
+  #beginConnectionAttempt(): void {
+    this.#hostUnreachable = false;
+    if (this.#snapshot.session === "authenticated" && this.#snapshot.connection === "offline")
+      this.#update({ ...this.#snapshot, connection: "connecting" });
+  }
+
+  #clearInterruptionHold(): void {
+    if (this.#interruptionTimer) globalThis.clearTimeout(this.#interruptionTimer);
+    this.#interruptionTimer = null;
+  }
+
+  /**
+   * Only an interruption that outlasts the hold is said. Stopping is said at
+   * once: nothing is on its way to fix it, unless the device itself is offline,
+   * which a phone reports for a moment in the middle of a handover. Nothing
+   * counts while hidden, where sockets die unwatched and a frozen timer would
+   * fire on the way back, mid-reconnect.
+   */
+  #withInterruption(snapshot: HostSnapshot): HostSnapshot {
+    let interrupted = snapshot.connectionInterrupted;
+    if (snapshot.connection === "connected" && this.#network !== "offline") {
+      this.#clearInterruptionHold();
+      interrupted = false;
+    } else if (this.#visibility !== "foreground") {
+      return snapshot;
+    } else if (snapshot.connection === "offline" && this.#network !== "offline") {
+      this.#clearInterruptionHold();
+      interrupted = true;
+    } else if (!interrupted && !this.#interruptionTimer) {
+      this.#interruptionTimer = globalThis.setTimeout(() => {
+        this.#interruptionTimer = null;
+        this.#update({ ...this.#snapshot, connectionInterrupted: true });
+      }, connectionInterruptionHoldMs);
+    }
+    return interrupted === snapshot.connectionInterrupted
+      ? snapshot
+      : { ...snapshot, connectionInterrupted: interrupted };
   }
 
   #ensureBrowserChannel(sessionId: string, mode: "control" | "watch" = "control"): void {
@@ -6284,6 +6377,7 @@ export class HttpHostClient {
 
   #update(snapshot: HostSnapshot): void {
     if (this.#disposed) return;
+    snapshot = this.#withInterruption(snapshot);
     if (snapshot.session !== "authenticated") this.#savedViewReadiness = emptySavedViewReadiness();
     if (
       !this.#capabilities?.includes("task-family-v1") &&
@@ -6889,6 +6983,7 @@ function emptySnapshot(): HostSnapshot {
     browserProfiles: [],
     browserSessions: [],
     connection: "connecting",
+    connectionInterrupted: false,
     network: "unknown",
     deploymentShape: null,
     deploymentId: null,

@@ -112,21 +112,29 @@ describe("createMobileLifecycle", () => {
     lifecycle.dispose();
   });
 
-  it("forwards every network notification, repeats included", () => {
-    // A Wi-Fi to cellular handover reports `online` on both sides of the move
-    // and still invalidates every open socket, so a repeat is a notification
-    // the client has to see rather than one this adapter may drop.
+  it("forwards every network notification, saying which ones the phone saw move", () => {
+    // A Wi-Fi to cellular handover reports `online` on both sides and invalidates
+    // every socket, while a repeat leaves them working unless the phone moved
+    // between two Wi-Fi networks, so the client has to see both and tell them apart.
     const network = new FakeNetwork();
     const lifecycle = createMobileLifecycle({ appState: new FakeAppState(), network });
     const seen: string[] = [];
-    lifecycle.onNetworkChange((state) => seen.push(state));
+    lifecycle.onNetworkChange((state, path) => seen.push(`${state} ${path}`));
 
-    network.emit({ isConnected: true, isInternetReachable: true });
-    network.emit({ isConnected: true, isInternetReachable: true });
-    network.emit({ isConnected: false });
-    network.emit({ isConnected: false });
+    const wifi = { isConnected: true, isInternetReachable: true, type: "WIFI" };
+    network.emit(wifi);
+    network.emit(wifi);
+    network.emit({ ...wifi, type: "CELLULAR" });
+    network.emit({ isConnected: false, type: "NONE" });
+    network.emit({ isConnected: false, type: "NONE" });
 
-    expect(seen).toEqual(["online", "online", "offline", "offline"]);
+    expect(seen).toEqual([
+      "online changed",
+      "online same",
+      "online changed",
+      "offline changed",
+      "offline same",
+    ]);
     expect(lifecycle.getSnapshot().network).toBe("offline");
     lifecycle.dispose();
   });
