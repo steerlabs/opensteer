@@ -328,7 +328,7 @@ integration("computer apps", () => {
     expect(toolReadiness(readSearch, "list_conversations").code).toBe("READY");
     expect(operations(readSearch).some(({ name }) => name === "send_message")).toBe(false);
     await expect(
-      gateway.call("integration_call", { arguments: {}, toolRef: readOperation.toolRef }),
+      gateway.call("integration_call", { arguments: {}, ...readOperation.address }),
     ).resolves.toMatchObject({ conversations: [{ conversationId: "chat-1" }] });
 
     const writeSetup = await requestComputerAppSetup(
@@ -373,7 +373,7 @@ integration("computer apps", () => {
     await expect(
       gateway.call("integration_call", {
         arguments: { text: "hello", to: { address: "friend@example.test" } },
-        toolRef: sendOperation.toolRef,
+        ...sendOperation.address,
       }),
     ).resolves.toEqual({ accepted: true });
     expect(provider.sent).toEqual(["hello"]);
@@ -396,7 +396,7 @@ integration("computer apps", () => {
     );
     const narrowed = await gateway.callRaw("integration_call", {
       arguments: { text: "again", to: { address: "friend@example.test" } },
-      toolRef: sendOperation.toolRef,
+      ...sendOperation.address,
     });
     expect(toolText(narrowed)).toContain("Studio Mac allows reading only");
     expect(toolText(narrowed)).toContain('access "read-write"');
@@ -415,7 +415,7 @@ integration("computer apps", () => {
     provider.holdNextWrite();
     const uncertain = gateway.callRaw("integration_call", {
       arguments: { text: "uncertain", to: { address: "friend@example.test" } },
-      toolRef: currentSend.toolRef,
+      ...currentSend.address,
     });
     await provider.writeStarted;
     await computer.disconnectModule();
@@ -732,7 +732,7 @@ integration("computer apps", () => {
     expect(list).toMatchObject({ account: "Studio Mac", connectionId: enabled.connection.id });
     expect(toolReadiness(searched, "list_conversations").code).toBe("READY");
     await expect(
-      gateway.call("integration_call", { arguments: {}, toolRef: list.toolRef }),
+      gateway.call("integration_call", { arguments: {}, ...list.address }),
     ).resolves.toMatchObject({ conversations: [{ conversationId: "chat-1" }] });
   }, 180_000);
   /**
@@ -864,7 +864,7 @@ integration("computer apps", () => {
       helper.answer = () => page;
       const listed = await gateway.call("integration_call", {
         arguments: { end: "2026-10-07", start: "2026-10-01" },
-        toolRef: operation(calendarSearch, "list_events").toolRef,
+        ...operation(calendarSearch, "list_events").address,
       });
       record("list_events", { answer: listed, reached: helper.invocations.at(-1) });
       expect(listed).toEqual(page);
@@ -881,7 +881,7 @@ integration("computer apps", () => {
       const before = helper.invocations.length;
       const malformed = await gateway.callRaw("integration_call", {
         arguments: { end: "next week", start: "2026-10-01" },
-        toolRef: operation(calendarSearch, "list_events").toolRef,
+        ...operation(calendarSearch, "list_events").address,
       });
       record("list_events with a malformed date", toolText(malformed));
       expect(malformed.isError).toBe(true);
@@ -913,7 +913,7 @@ integration("computer apps", () => {
       await expect(
         gateway.call("integration_call", {
           arguments: createArguments,
-          toolRef: operation(remindersSearch, "create_reminder").toolRef,
+          ...operation(remindersSearch, "create_reminder").address,
         }),
       ).resolves.toEqual(created);
       record("create_reminder", { answer: created, reached: helper.invocations.at(-1) });
@@ -936,7 +936,7 @@ integration("computer apps", () => {
       const sent = helper.invocations.length;
       const lost = await gateway.callRaw("integration_call", {
         arguments: { completed: true, id: "R1" },
-        toolRef: operation(remindersSearch, "update_reminder").toolRef,
+        ...operation(remindersSearch, "update_reminder").address,
       });
       record("update_reminder whose answer was lost", toolText(lost));
       expect(toolText(lost)).toBe(

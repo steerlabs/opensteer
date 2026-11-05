@@ -233,7 +233,7 @@ integration("API-key reconnect incident", () => {
       expect(assistant).not.toHaveProperty("readiness");
       const refused = await gateway.callRaw("integration_call", {
         arguments: {},
-        toolRef: assistant.toolRef,
+        ...assistant.address,
       });
       expect(refused.isError).toBe(true);
       expect(toolText(refused)).toBe(
@@ -421,11 +421,10 @@ integration("API-key reconnect incident", () => {
         expect(candidate).not.toHaveProperty("readiness");
       }
       const aggregate = after.results as readonly {
-        readonly tools: readonly Record<string, unknown>[];
+        readonly tools?: readonly Record<string, unknown>[];
       }[];
       for (const result of aggregate)
-        for (const tool of result.tools) {
-          expect(tool).not.toHaveProperty("toolRef");
+        for (const tool of result.tools ?? []) {
           expect(tool).not.toHaveProperty("account");
         }
       const repairedAssistant = operations(after).find(({ connectionId }) => connectionId === aId);
@@ -441,7 +440,7 @@ integration("API-key reconnect incident", () => {
       expect(continuationText).toContain("read access is active");
       expect(continuationText).not.toContain("Call integration_search");
       const described = await gateway.callRaw("integration_describe", {
-        toolRef: repairedAssistant.toolRef,
+        ...repairedAssistant.address,
       });
       expect(JSON.parse(toolText(described).split("\n")[0]!)).toMatchObject({
         account: { alias: "Vapi API", connectionId: aId },
@@ -453,7 +452,7 @@ integration("API-key reconnect incident", () => {
         .execute();
       const succeeded = await gateway.callRaw("integration_call", {
         arguments: {},
-        toolRef: repairedAssistant.toolRef,
+        ...repairedAssistant.address,
       });
       expect(succeeded.isError).toBeFalsy();
       expect(succeeded.structuredContent).toEqual({
@@ -501,7 +500,7 @@ integration("API-key reconnect incident", () => {
       const heldRejection = upstream.holdNextRejection();
       const oldCall = gateway.callRaw("integration_call", {
         arguments: {},
-        toolRef: repairedAssistant.toolRef,
+        ...repairedAssistant.address,
       });
       await heldRejection.arrived;
       let repairedGeneration: number;
@@ -560,7 +559,7 @@ integration("API-key reconnect incident", () => {
         (
           await gateway.callRaw("integration_call", {
             arguments: {},
-            toolRef: repairedAssistant.toolRef,
+            ...repairedAssistant.address,
           })
         ).isError,
       ).toBe(true);
@@ -667,7 +666,7 @@ integration("API-key reconnect incident", () => {
       const secondary = secondaryOperations.find(({ connectionId }) => connectionId === aId);
       if (!secondary) throw new Error("Secondary server is not callable");
       expect(
-        (await gateway.callRaw("integration_call", { arguments: {}, toolRef: secondary.toolRef }))
+        (await gateway.callRaw("integration_call", { arguments: {}, ...secondary.address }))
           .isError,
       ).toBeFalsy();
       const mixedServerRequestId = createId("request");
@@ -846,7 +845,7 @@ integration("API-key reconnect incident", () => {
       if (!me) throw new Error("Notion identity operation was not discoverable");
       const unchangedIdentity = await gateway.callRaw("integration_call", {
         arguments: {},
-        toolRef: me.toolRef,
+        ...me.address,
       });
       expect(unchangedIdentity.isError).toBeFalsy();
       expect(unchangedIdentity.structuredContent).toMatchObject({ id: "notion-account-1" });

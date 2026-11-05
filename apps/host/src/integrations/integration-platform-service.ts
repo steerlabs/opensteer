@@ -3092,7 +3092,7 @@ export class IntegrationPlatformService {
     ) {
       throw new OpensteerError({
         code: "conflict",
-        message: "Integration operation changed; search and describe it again",
+        message: "Integration operation changed; search again",
       });
     }
     const snapshot = invocation.adapterSnapshot;

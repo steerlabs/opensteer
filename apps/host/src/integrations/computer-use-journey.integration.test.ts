@@ -617,7 +617,8 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       if (!row) throw new Error("Missing callable phone");
       expect(
         await gateway.call("integration_call", {
-          toolRef: `${row.grant.id}.${row.tool.id}.${row.tool.schemaDigest}`,
+          account: row.grant.connectionId,
+          operation: row.tool.name,
         }),
       ).toEqual(refusal("Use the computer tool to see and operate apps and phones."));
     } finally {
@@ -2419,7 +2420,8 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     if (!legacy) throw new Error("Missing internal authority row");
     expect(
       await a.call("integration_call", {
-        toolRef: `${legacy.grant.id}.${legacy.tool.id}.${legacy.tool.schemaDigest}`,
+        account: legacy.grant.connectionId,
+        operation: legacy.tool.name,
       }),
     ).toEqual(refusal("Use the computer tool to see and operate apps and phones."));
 
@@ -3729,7 +3731,8 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     if (!row) throw new Error("Missing callable authority row");
     expect(
       await a.call("integration_call", {
-        toolRef: `${row.grant.id}.${row.tool.id}.${row.tool.schemaDigest}`,
+        account: row.grant.connectionId,
+        operation: row.tool.name,
       }),
     ).toEqual(refusal("Use the computer tool to see and operate apps and phones."));
 
@@ -4030,7 +4033,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
       })
     ).find((row) => row.tool.name === "act");
     if (!actRow) throw new Error("Missing internal act authority");
-    const retiredActRef = `${actRow.grant.id}.${actRow.tool.id}.${actRow.tool.schemaDigest}`;
+    const retiredAct = { account: actRow.grant.connectionId, operation: actRow.tool.name };
     await world.platform.computerAppApprovals.setComputerConnection({
       access: "read",
       actorUserId: world.owner.userId,
@@ -4053,7 +4056,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     );
     expect(
       await gateway.call("integration_call", {
-        toolRef: retiredActRef,
+        ...retiredAct,
         arguments: { observationId: "retired", actions: [{ type: "wake" }] },
       }),
     ).toEqual(refusal("Use the computer tool to see and operate apps and phones."));

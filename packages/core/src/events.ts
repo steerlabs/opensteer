@@ -59,8 +59,8 @@ const ToolIdentityViewSchema = z.object(ToolIdentitySchema.shape);
 
 /**
  * What an integration gateway call addressed, as the Host resolved the call's
- * toolRef when it recorded the call. An engine only ever holds the opaque
- * reference; this is how a transcript names the integration, the operation
+ * operation and account when it recorded the call. This is how a transcript
+ * names the integration, the operation
  * and, for Computer use, the app and the Mac it runs on, or the phone. The
  * Host writes it, so a Runner's event never carries it.
  */

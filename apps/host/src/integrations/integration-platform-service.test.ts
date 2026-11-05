@@ -2163,7 +2163,7 @@ describe("IntegrationPlatformService adapter invocation", () => {
     expect(markAdapterAuthorizationRequired).not.toHaveBeenCalled();
   });
 
-  it("refuses an operation rematerialized since its toolRef before credentials or execution", async () => {
+  it("refuses an operation rematerialized since it was listed before credentials or execution", async () => {
     for (const invocation of [
       null,
       { ...mailInvocation, schemaDigest: "b".repeat(43) },
@@ -2183,7 +2183,7 @@ describe("IntegrationPlatformService adapter invocation", () => {
         service.callTool(callable(), { unexpected: true }, caller),
       ).rejects.toMatchObject({
         code: "conflict",
-        message: "Integration operation changed; search and describe it again",
+        message: "Integration operation changed; search again",
       });
       expect(materializeForAdapter).not.toHaveBeenCalled();
       expect(invokeTool).not.toHaveBeenCalled();

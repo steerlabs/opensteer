@@ -1587,23 +1587,23 @@ describeStore("PostgreSQL store", (it) => {
       ).toEqual({ count: 1 });
     });
 
-    it("keeps a bulk integration call's toolRef and persists the Host-resolved subject", async ({
+    it("keeps a bulk integration call's operation and persists the Host-resolved subject", async ({
       storeFixture,
     }) => {
       const { base, commit } = await runningFixture(storeFixture, "bounded-integration-arguments");
-      const toolRef = `igr_5b0c4c3e-1f7a-4a8e-9a53-6c1e2d3f4a5b.itl_9d8c7b6a-5f4e-4d3c-8b2a-1f0e9d8c7b6a.${"a".repeat(43)}`;
+      const operation = `spreadsheets.values.batchUpdate.${"a".repeat(90)}`;
       const args = createToolArguments({
         arguments: {
           values: Array.from({ length: 5_000 }, (_, index) => [index, `row-${index}`, "ready"]),
         },
-        toolRef,
+        operation,
       });
       expect(Buffer.byteLength(JSON.stringify(args))).toBeLessThanOrEqual(
         toolArgumentsMaxSerializedBytes,
       );
-      const fitted = z.object({ arguments: z.string(), toolRef: z.string() }).parse(args);
+      const fitted = z.object({ arguments: z.string(), operation: z.string() }).parse(args);
       expect(fitted.arguments).toMatch(/\n… \d+ bytes omitted …\n/u);
-      expect(fitted.toolRef).toBe(toolRef);
+      expect(fitted.operation).toBe(operation);
       const subject = {
         account: "Work",
         computerApp: null,
