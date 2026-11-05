@@ -30,6 +30,8 @@ import {
 import {
   installedCommand,
   qualificationAccount,
+  qualificationAccounts,
+  qualifiedEngines,
   qualifiedVersion,
   shippedEnginesFirstOnPath,
   type QualifiedEngine,
@@ -63,79 +65,6 @@ beforeAll(async () => {
 afterAll(async () => {
   if (runtimeCacheDirectory) await rm(runtimeCacheDirectory, { force: true, recursive: true });
   runtimeCacheDirectory = undefined;
-});
-
-/**
- * Each engine is qualified on a first-party source. Given the source's key
- * in this process's environment, a private account is signed in with it
- * through the setup commands Settings sends — a Runner never hands its own
- * environment's keys to an engine. Without one, the account is the engine's
- * own sign-in on this machine (`CODEX_HOME`, Claude Code's login, Pi's home).
- * Antigravity uses a private Gemini API-key account because its profile is
- * isolated and the test Runner is disposable. OpenCode's Zen gateway serves
- * free models with no credential at all.
- */
-type QualificationAccount = Omit<QualifiedEngine, "executable" | "label">;
-
-const qualificationAccounts = {
-  antigravity: {
-    apiKey: { methodId: "gemini-api-key", variable: "GEMINI_API_KEY" },
-    driverKind: "antigravity",
-    signInGuidance: "Set GEMINI_API_KEY to a dedicated spending-limited Gemini API key.",
-    sourceId: "google-gemini-api-key",
-    stateKind: "isolated",
-  },
-  claude: {
-    apiKey: { methodId: "claude-api-key", variable: "ANTHROPIC_API_KEY" },
-    driverKind: "claude",
-    sourceId: "anthropic",
-    stateKind: "ambient",
-  },
-  codex: {
-    apiKey: { methodId: "codex-api-key", variable: "OPENAI_API_KEY" },
-    driverKind: "codex",
-    sourceId: "openai",
-    stateKind: "ambient",
-  },
-  cursor: {
-    driverKind: "cursor",
-    sourceId: "cursor",
-    stateKind: "ambient",
-  },
-  grok: {
-    driverKind: "grok",
-    signInGuidance: "Sign in with `grok login --device-auth`.",
-    sourceId: "xai",
-    stateKind: "ambient",
-  },
-  muse: {
-    driverKind: "muse",
-    signInGuidance: "Sign in with `muse login`.",
-    sourceId: "meta",
-    stateKind: "ambient",
-  },
-  opencode: { driverKind: "opencode", sourceId: "opencode", stateKind: "isolated" },
-  pi: {
-    apiKey: { methodId: "pi-api-key", variable: "OPENAI_API_KEY" },
-    driverKind: "pi",
-    sourceId: "openai",
-    stateKind: "ambient",
-  },
-} as const satisfies Record<HarnessKind, QualificationAccount>;
-
-const qualifiedEngines: readonly QualifiedEngine[] = harnessCatalog.flatMap((entry) => {
-  const account = qualificationAccounts[entry.kind];
-  const engines: QualifiedEngine[] = [];
-  if (shipsHarnessRuntimeBytes(entry)) {
-    engines.push({ ...account, executable: "shipped", label: `shipped ${entry.label}` });
-  }
-  if (entry.runtime.shape === "downloaded") {
-    engines.push({ ...account, executable: "downloaded", label: `downloaded ${entry.label}` });
-  }
-  if (installedCommand(entry.kind)) {
-    engines.push({ ...account, executable: "installed", label: `installed ${entry.label}` });
-  }
-  return engines;
 });
 
 const newEngineKinds = new Set<HarnessKind>(["antigravity", "grok", "muse"]);

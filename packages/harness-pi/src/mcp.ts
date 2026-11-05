@@ -1,7 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { OpensteerError } from "@opensteer/core";
+import { heldToolCallTimeoutMs, OpensteerError } from "@opensteer/core";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { z } from "zod";
 import type { PiExtensionToolDefinition, PiToolAnswer, PiToolContent } from "./extension.js";
@@ -9,16 +9,7 @@ import type { PiExtensionToolDefinition, PiToolAnswer, PiToolContent } from "./e
 /** The Opensteer MCP server, as the Runner names it to the model. */
 export const piAgentToolsServer = "opensteer";
 
-/**
- * How long one Opensteer tool call may take. This is stated rather than
- * inherited: the SDK's own `DEFAULT_REQUEST_TIMEOUT_MSEC` is 60 s
- * (`@modelcontextprotocol/sdk@1.30.0/dist/esm/shared/protocol.js`), and an
- * Opensteer tool that legitimately runs longer than that — a delegation, a
- * Workspace mount — would otherwise come back to the model as a tool error.
- * Five minutes is the Run-scoped bound; the turn's own signal is what ends a
- * call sooner, on an interrupt.
- */
-export const piToolCallTimeoutMs = 5 * 60_000;
+export const piToolCallTimeoutMs = heldToolCallTimeoutMs;
 
 /** A `close()` that hangs must not hold the session's shutdown open. */
 const piMcpCloseTimeoutMs = 5_000;

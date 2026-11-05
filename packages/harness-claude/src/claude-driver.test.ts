@@ -16,6 +16,7 @@ import type {
   SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import {
+  heldToolCallTimeoutMs,
   ModelSelectionSchema,
   createId,
   harnessUsageLimitFailureCode,
@@ -762,9 +763,10 @@ describe("Claude Agent SDK harness", () => {
       "TaskStop",
     ]);
     expect(sdk.calls[0]?.options.disallowedTools).toBeUndefined();
+    expect(adapter.capabilities.longRequestHold).toBe(true);
     expect(sdk.calls[0]?.options.mcpServers?.opensteer).toEqual({
       alwaysLoad: false,
-      timeout: 120_000,
+      timeout: heldToolCallTimeoutMs,
       headers: { Authorization: "Bearer test-agent-tools-token" },
       type: "http",
       url: "https://host.example/internal/v1/mcp",
