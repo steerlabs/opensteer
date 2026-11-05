@@ -40,6 +40,9 @@ export const RequestKindSchema = z.enum([
 type RequestKind = z.infer<typeof RequestKindSchema>;
 
 export const RequestModeSchema = z.enum(["live", "durable"]);
+
+/** A Request's answer wakes its Thread, and a call's Thread takes no input. */
+export const voiceRequestHandOff = `Chat handles this outside the call. Queue thread_message to threadId "home", delivery "queue", with what is needed, the site, and any known sessionId and tabId. After it accepts, tell the person in one short spoken sentence what Chat will handle.`;
 type RequestMode = z.infer<typeof RequestModeSchema>;
 
 export const RequestStatusSchema = z.enum([

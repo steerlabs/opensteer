@@ -106,10 +106,15 @@ messages ([Runner runtime](../apps/runner/src/runtime/runtime.ts)).
 
 A voice call is one non-recoverable Run on a hidden child Thread of Chat. Its Thread accepts only
 the call seed and is archived atomically when the Run ends. Durable work goes through Chat, so tasks
-and their results survive the call. The person's screen [follows the call](../apps/host/src/voice/voice-follow.ts)
-from Host events, because a model step per place costs seconds on a call and forgets. Context for
-the agent waits between turns: Codex samples again for anything injected into a running turn, and
-that second answer would replace the reply.
+and their results survive the call. That includes asking the person: a Request's answer wakes its
+Thread, which a call's Thread refuses, so opening a durable Request from a call is refused with
+directions to Chat. The tools stay listed, because whatever needs no one's answer, such as a saved
+login or an automatically approved app, still works on the call, and because a low-effort agent only
+hands off when a result tells it to at that moment; a sentence in its guide did not move it in evals.
+The agent shows its own work with `person_show`, because what is worth watching is its
+judgment. For presence it counts as Chat, and an engine approval it can't hand off docks on Chat.
+Context for the agent waits between turns: Codex samples again for anything injected into a running
+turn, and that second answer would replace the reply.
 
 ## Run tool authority
 

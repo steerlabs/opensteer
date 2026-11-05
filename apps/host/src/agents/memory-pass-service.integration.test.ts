@@ -842,6 +842,12 @@ describeStore("managed memory passes", (it) => {
         .set({ status: "running" })
         .where("id", "=", admitted.run.id)
         .execute();
+      await expect(
+        f.store.resolvePlaceActors({
+          agentBindingIds: [`run:${admitted.run.id}`],
+          ownerIds: [base.userId],
+        }),
+      ).resolves.toEqual([]);
       const opened = await f.store.requests.create({
         callId: `question-${mode}`,
         kind: mode === "live" ? "harness.input" : "machine.full-disk-access",

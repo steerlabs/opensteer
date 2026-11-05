@@ -143,7 +143,7 @@ export class VoiceSpeaker {
     // One answered before its turn came is no longer news.
     if (!waiting || waiting.request.status !== "pending") return null;
     if (waiting.request.originatingThreadId === this.#input.callThreadId)
-      return "Check your screen, I need your OK.";
+      return "Check Chat, I need your OK.";
     const title = requesterLink(snapshot, waiting.request.originatingThreadId)?.title ?? "A task";
     return `${title.slice(0, voiceSayMaxLength - 12)} needs you.`;
   }

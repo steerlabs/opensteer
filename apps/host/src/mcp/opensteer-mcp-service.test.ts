@@ -198,7 +198,6 @@ describe("Opensteer MCP spine", () => {
     "settled",
     "live",
     "other-run",
-    "voice",
     "integration",
     "program",
   ] as const)("signals parking only for this Run's pending durable Request (%s)", async (state) => {
@@ -212,7 +211,6 @@ describe("Opensteer MCP spine", () => {
         originatingRunId: state === "other-run" ? createId("run") : f.run.claims.runId,
       })),
     });
-    if (state === "voice") f.options.store.voiceCallForRun = async () => ({}) as never;
     const pending = { requestId, kind: "browser.access", status: "pending", replayed: false };
     Object.assign(f.handlers, {
       sign_in: async () => pending,
@@ -817,7 +815,6 @@ it("refuses voice durable-work tools at invocation before their handlers", async
       ...f.options.store,
       voiceCallForRun: async () => ({
         sessionId: "voice",
-        ownerId: createId("user"),
         admittedAt: new Date(),
       }),
     },

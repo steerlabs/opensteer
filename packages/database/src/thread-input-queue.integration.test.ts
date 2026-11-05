@@ -15,6 +15,7 @@ import {
   ModelSelectionSchema,
   ThreadAccessModeSchema,
   createId,
+  voiceRequestHandOff,
   type EnvironmentId,
   type MessageId,
   type RunnerId,
@@ -419,6 +420,124 @@ integration.sequential("thread input queue promotion", () => {
     await endRunOnly(second.runId);
     await store.stopVoiceCall(f.ownerId, second.sessionId!);
     expect(await threadStatus(second.threadId)).toBe("archived");
+  });
+
+  it("tracks a call's hidden agent as Chat and docks its Requests there", async ({
+    storeFixture,
+  }) => {
+    const { fixture, store, database } = storeFixture;
+    const f = await fixture("voice-place");
+    const chat = await store.createThread({
+      createdBy: f.ownerId,
+      environmentId: f.environmentId,
+      harnessInstanceId: f.harness.id,
+      idempotencyKey: "voice-place-home",
+      modelSelection,
+      title: "Chat",
+      workspaceId: f.workspace.id,
+      home: true,
+    });
+    const call = await store.startVoiceCall({
+      ownerId: f.ownerId,
+      environmentId: f.environmentId,
+      harnessInstanceId: f.harness.id,
+      sessionId: randomUUID(),
+    });
+    await database
+      .updateTable("runs")
+      .set({ bindingGeneration: 1 })
+      .where("id", "=", call.runId as never)
+      .execute();
+
+    await expect(
+      store.resolvePlaceActors({
+        agentBindingIds: [`run:${call.runId}`],
+        ownerIds: [f.ownerId],
+      }),
+    ).resolves.toMatchObject([{ runId: call.runId, threadId: chat.thread.id, home: true }]);
+
+    await expect(
+      store.requests.create({
+        callId: "voice-durable",
+        kind: "browser.access",
+        mode: "durable",
+        originatingRunId: call.runId,
+        originatingThreadId: call.threadId,
+        originatingWorkspaceId: f.workspace.id,
+        payload: {
+          kind: "browser.access",
+          reason: "Sign in",
+          suggestion: { kind: "new", suggestedName: "Personal" },
+        },
+        presentation: {
+          detail: "Sign in",
+          kind: "external",
+          subject: { id: f.workspace.id, kind: "workspace" },
+          title: "Browser profile",
+        },
+        requestedBy: f.ownerId,
+        requiredActor: "requester",
+        targetWorkspaceId: f.workspace.id,
+      }),
+    ).rejects.toThrow(voiceRequestHandOff);
+
+    // An engine approval pauses the agent mid-step, so it can't hand this one to Chat.
+    const requestId = createId("request");
+    await database
+      .insertInto("requests")
+      .values({
+        callId: "voice-approval",
+        cancellationReason: null,
+        createdAt: new Date(),
+        id: requestId,
+        kind: "harness.approval",
+        mode: "live",
+        originatingOccurrenceId: null,
+        originatingRunId: call.runId as never,
+        originatingThreadId: call.threadId as never,
+        originatingWorkspaceId: f.workspace.id,
+        payload: sql`${JSON.stringify({ kind: "harness.approval" })}::jsonb`,
+        presentation: sql`${JSON.stringify({
+          detail: "Confirm",
+          kind: "choice",
+          options: [{ hint: "confirm", id: "yes", label: "Yes" }],
+          title: "Continue?",
+        })}::jsonb`,
+        requestedBy: f.ownerId,
+        requiredActor: "requester",
+        resolvedAt: null,
+        resolvedBy: null,
+        response: null,
+        status: "pending",
+        targetWorkspaceId: f.workspace.id,
+      })
+      .execute();
+    const { requests } = await store.requests.waitingOnUserPage({ userId: f.ownerId, limit: 10 });
+    expect(requests.find(({ request }) => request.id === requestId)?.presentation).toEqual({
+      threadId: chat.thread.id,
+      workerThread: { id: call.threadId, title: "Voice call" },
+    });
+    await database
+      .updateTable("threads")
+      .set({ voiceSessionId: null })
+      .where("id", "=", call.threadId)
+      .execute();
+    expect(
+      (await store.requests.waitingOnUserPage({ userId: f.ownerId, limit: 10 })).requests.find(
+        ({ request }) => request.id === requestId,
+      )?.presentation,
+    ).toBeNull();
+    expect(
+      await store.resolvePlaceActors({
+        agentBindingIds: [`run:${call.runId}`],
+        ownerIds: [f.ownerId],
+      }),
+    ).toEqual([]);
+    await database
+      .updateTable("threads")
+      .set({ voiceSessionId: call.sessionId })
+      .where("id", "=", call.threadId)
+      .execute();
   });
 
   it("starts voice on its own account's catalog default at low effort, never another model", async ({

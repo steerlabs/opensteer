@@ -176,8 +176,8 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
       requests: { get: async () => null },
       getThreadForOwner: async (id) => ({ ...thread, id }),
       findMainWorkspaceForOwner: async () => ({ homeThreadId: chatThreadId }) as never,
-      // Eval Runs are never voice calls, so no tool is withheld from them.
-      voiceCallForRun: async () => undefined,
+      voiceCallForRun: async () =>
+        testCase.voice ? { sessionId: "voice", admittedAt: new Date() } : undefined,
     },
   });
   const sessions: { server: Server; transport: StreamableHTTPServerTransport }[] = [];
