@@ -16805,6 +16805,38 @@ describe("app tab bootstrap races", () => {
       f.client.dispose();
     }
   });
+  it("drops a queued app write when the viewer changes before it is sent", async () => {
+    const f = fixture();
+    try {
+      await f.client.load();
+      const gate = f.holdCommand();
+      const opening = f.client.openAppTab(appId);
+      await vi.waitFor(() => expect(f.commands).toEqual(["app.tab.open"]));
+      const closing = f.client.closeAppTab(appId);
+      const read = f.holdRead();
+      const refreshing = f.client.refresh();
+      const payload = bootstrap([f.workspace]);
+      read.resolve(json({ ...payload, user: { ...payload.user, id: createId("user") } }));
+      await refreshing;
+      gate.resolve(json({ appTabs: [f.tab] }));
+      await Promise.all([opening, closing]);
+      expect(f.commands).toEqual(["app.tab.open"]);
+    } finally {
+      f.client.dispose();
+    }
+  });
+  it("drops a queued app write when the client is disposed before it is sent", async () => {
+    const f = fixture();
+    await f.client.load();
+    const gate = f.holdCommand();
+    const opening = f.client.openAppTab(appId);
+    await vi.waitFor(() => expect(f.commands).toEqual(["app.tab.open"]));
+    const closing = f.client.closeAppTab(appId);
+    f.client.dispose();
+    gate.resolve(json({ appTabs: [f.tab] }));
+    await Promise.allSettled([opening, closing]);
+    expect(f.commands).toEqual(["app.tab.open"]);
+  });
   it("does not reopen a tab when a later close overtakes its metadata read", async () => {
     const f = fixture();
     try {

@@ -1696,14 +1696,16 @@ export class HttpHostClient {
         ...this.#snapshot,
         ...this.#applyAppTabs(this.#overlayAppTabs(this.#snapshot.appTabs ?? [])),
       });
-      const result = await this.#appTabWrites.run(appId, () =>
-        this.dispatch({
-          type: open ? "app.tab.open" : "app.tab.close",
-          appId,
-          idempotencyKey: crypto.randomUUID(),
-        }),
+      const result = await this.#appTabWrites.run(appId, async () =>
+        viewer === this.#viewerGeneration && !this.#disposed
+          ? this.dispatch({
+              type: open ? "app.tab.open" : "app.tab.close",
+              appId,
+              idempotencyKey: crypto.randomUUID(),
+            })
+          : null,
       );
-      if (viewer !== this.#viewerGeneration) return;
+      if (result === null || viewer !== this.#viewerGeneration) return;
       if (result.type !== "app.tab.open" && result.type !== "app.tab.close")
         throw new Error("Unexpected app tab result");
       if (this.#appTabPending.get(appId)?.token !== token) return;
