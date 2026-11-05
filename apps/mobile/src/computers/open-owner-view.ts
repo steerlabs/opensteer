@@ -1,7 +1,6 @@
 import {
   ownerViewDestination,
   type HostClient,
-  type NativeViewerSource,
   type WorkspaceSurfaceDestination,
 } from "@opensteer/client/host";
 import { sharedDisplayStreams } from "@opensteer/client/integrations";
@@ -30,22 +29,19 @@ export async function openOwnerView(
   return null;
 }
 
-/** A phone's own view: the phone's approval names its display. */
+/** A phone's own view: the phone's approval names its display. False for a person who left. */
 export async function openPhoneOwnerView(
   hostClient: HostClient,
   machineId: string,
   stillHere: () => boolean,
-): Promise<Extract<NativeViewerSource, { kind: "owner-view" }> | null> {
+): Promise<boolean> {
   const apps = await hostClient.listApprovedComputerApps();
   const target = apps.find(
     (app) => app.machineId === machineId && app.target.kind === "phone",
   )?.target;
-  if (!stillHere()) return null;
+  if (!stillHere()) return false;
   if (!target) throw new Error("This phone is no longer approved for viewing.");
-  const destination = await openOwnerView(hostClient, machineId, target, stillHere);
-  return destination?.kind === "phone" && destination.source?.kind === "owner-view"
-    ? destination.source
-    : null;
+  return (await openOwnerView(hostClient, machineId, target, stillHere)) !== null;
 }
 
 /**

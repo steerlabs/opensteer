@@ -100,6 +100,12 @@ export function TabCloserProvider({
   );
   const request = useCallback(
     (place: PlaceItem) => {
+      if (place.destination.kind === "phone" && place.phoneTab && place.closable) {
+        void hostClient
+          .closePhoneTab(place.destination.machineId)
+          .catch((error: unknown) => toast.error(actionErrorMessage(error)));
+        return;
+      }
       // The person's own view of an app or phone: × ends that view for them,
       // in every window; the app and any task in it carry on.
       if (place.ownerClose) {

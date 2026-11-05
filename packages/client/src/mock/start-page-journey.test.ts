@@ -152,12 +152,10 @@ describe("start page mock journey", () => {
       )!;
       expect(logical.closable).toBe(true);
       expect(logical.occupants).toEqual([]);
-      expect(logical.taskDestination).toBeNull();
+      expect(logical.task).toBeNull();
       const task = placeList(client.getSnapshot()).find(
         (place) =>
-          place.kind === logical.kind &&
-          place.device?.machineId === app.machineId &&
-          place.taskDestination,
+          place.kind === logical.kind && place.device?.machineId === app.machineId && place.task,
       );
       expect(task?.occupants.length).toBeGreaterThan(0);
       expect(task?.key).not.toBe(logical.key);

@@ -1,7 +1,13 @@
-import type { HostClient, HostSnapshot, NativeViewerSource } from "@opensteer/client/host";
+import {
+  phonePlaceKey,
+  type HostClient,
+  type HostSnapshot,
+  type NativeViewerSource,
+} from "@opensteer/client/host";
 import {
   computerUseStops,
   computerReasonWords,
+  ownerViewComputerReadiness,
   computerDisplayScope,
   computerDisplayAuthorityKey,
   computerDisplayStatus,
@@ -10,22 +16,31 @@ import {
   type DisplaySnapshot,
   type DisplayLease,
 } from "@opensteer/client/integrations";
-import { useHostSelector } from "@opensteer/client/react";
+import { useHostSelector, usePlaceList } from "@opensteer/client/react";
 import {
   displayViewerCloseCodes,
   displayViewerWindowFrames,
   type ComputerAppIdentity,
+  type ComputerUseSessionSummary,
 } from "@opensteer/protocol";
 import { encodeBase64Url } from "@opensteer/shared/base64url";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, AppState, PixelRatio, Pressable, StyleSheet, View } from "react-native";
+import {
+  ActivityIndicator,
+  Alert,
+  AppState,
+  PixelRatio,
+  Pressable,
+  StyleSheet,
+  View,
+} from "react-native";
 import { StackActions, useNavigation } from "@react-navigation/native";
 import { workspaceRoute } from "../browser/surface-route.js";
 import { MacAppIcon } from "./app-mark.js";
 import { openAppOwnerView, openPhoneOwnerView } from "./open-owner-view.js";
 import { Toolbar, ToolbarButton, ToolbarCapsule, ToolbarMenu } from "../browser/toolbar.js";
 import { color, controlFontScaleLimit, radius, space } from "../theme.js";
-import type { NativeMenuSection } from "../thread/composer-menu.js";
+import type { NativeMenuOption, NativeMenuSection } from "../thread/composer-menu.js";
 import { GlassSurface } from "../ui/glass.js";
 import { AppText, SecondaryButton } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
@@ -623,22 +638,7 @@ export function ComputerTaskView(props: {
       bar={{
         app,
         detail: phone ? null : machineName,
-        menu: session
-          ? [
-              {
-                destructive: true,
-                icon: "stop.circle",
-                id: "stop",
-                label: `Stop using ${phone ? "phone" : label}`,
-                onPress: () =>
-                  computerUseStops(props.hostClient).stop({
-                    machineName: label,
-                    sessionId: session.sessionId,
-                    runId: session.runId,
-                  }),
-              },
-            ]
-          : [],
+        menu: session ? [stopMenuItem(props.hostClient, label, phone, session)] : [],
         onTyping: props.onTyping,
         title: phone ? machineName : (app?.displayName ?? "This app"),
       }}
@@ -654,6 +654,162 @@ export function ComputerTaskView(props: {
       machineId={props.machineId}
       label={label}
     />
+  );
+}
+
+function stopMenuItem(
+  hostClient: HostClient,
+  label: string,
+  phone: boolean,
+  session: Pick<ComputerUseSessionSummary, "runId" | "sessionId">,
+): NativeMenuOption {
+  return {
+    destructive: true,
+    icon: "stop.circle",
+    id: "stop",
+    label: `Stop using ${phone ? "phone" : label}`,
+    onPress: () =>
+      computerUseStops(hostClient).stop({
+        machineName: label,
+        sessionId: session.sessionId,
+        runId: session.runId,
+      }),
+  };
+}
+
+/**
+ * A phone's tab: the person's own view while that can show anything, else the
+ * task holding the phone, else one Open. Nothing here opens by itself, so only
+ * that press arms the phone's wake.
+ */
+export function PhoneTabView(props: {
+  readonly active: boolean;
+  readonly hostClient: HostClient;
+  readonly machineId: string;
+  readonly onClosed: () => void;
+  readonly onTyping: (typing: boolean) => void;
+}) {
+  const { hostClient, machineId, onClosed } = props;
+  const key = phonePlaceKey(machineId);
+  const place = usePlaceList(hostClient).find((item) => item.key === key) ?? null;
+  const closeTab = () => {
+    hostClient.closePhoneTab(machineId).then(onClosed, (error: unknown) => {
+      Alert.alert(
+        "Couldn’t close this tab",
+        error instanceof Error ? error.message : "Please try again.",
+      );
+    });
+  };
+  const closable = place?.phoneTab === true && place.closable;
+  if (place?.ownerView)
+    return (
+      <ComputerOwnerView
+        active={props.active}
+        appKey={null}
+        generation={place.ownerView.generation}
+        hostClient={hostClient}
+        key={`${place.ownerView.viewId}:${place.ownerView.generation}`}
+        machineId={machineId}
+        menu={[
+          ...(place.task ? [stopMenuItem(hostClient, place.title, true, place.task)] : []),
+          ...(closable
+            ? [
+                {
+                  destructive: true,
+                  icon: "xmark.circle" as const,
+                  id: "close",
+                  label: "Close tab",
+                  onPress: closeTab,
+                },
+              ]
+            : []),
+        ]}
+        onTyping={props.onTyping}
+        viewId={place.ownerView.viewId}
+      />
+    );
+  if (place?.task)
+    return (
+      <ComputerTaskView
+        active={props.active}
+        appKey={null}
+        computerSessionId={place.task.sessionId}
+        hostClient={hostClient}
+        key={place.task.sessionId}
+        machineId={machineId}
+        onTyping={props.onTyping}
+      />
+    );
+  return (
+    <PhoneTabResting
+      hostClient={hostClient}
+      machineId={machineId}
+      onClose={closable ? closeTab : null}
+    />
+  );
+}
+
+function PhoneTabResting(props: {
+  readonly hostClient: HostClient;
+  readonly machineId: string;
+  readonly onClose: (() => void) | null;
+}) {
+  const { hostClient, machineId } = props;
+  const navigation = useNavigation();
+  const [opening, setOpening] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  const machine = useHostSelector(hostClient, (snapshot) =>
+    snapshot.machines.find((value) => value.id === machineId),
+  );
+  const name = machine?.name ?? "Your phone";
+  const computer = ownerViewComputerReadiness(machine, true);
+  const open = async () => {
+    setOpening(true);
+    setFailure(null);
+    try {
+      await openPhoneOwnerView(
+        hostClient,
+        machineId,
+        () => mounted.current && navigation.isFocused(),
+      );
+    } catch (error) {
+      if (mounted.current)
+        setFailure(error instanceof Error ? error.message : `${name} could not be opened.`);
+    } finally {
+      if (mounted.current) setOpening(false);
+    }
+  };
+  return (
+    <View style={styles.stage}>
+      <View style={styles.status}>
+        <AppText role="bodyMedium" style={styles.statusText}>
+          {computer === null
+            ? `Open ${name} to see it and use it.`
+            : computerReasonWords(computer, { machine: name, phone: true, target: name })}
+        </AppText>
+        {computer === null ? (
+          <SecondaryButton
+            accessibilityLabel={`Open ${name}`}
+            disabled={opening}
+            label={opening ? "Opening…" : "Open"}
+            onPress={() => void open()}
+          />
+        ) : null}
+        {props.onClose ? <SecondaryButton label="Close tab" onPress={props.onClose} /> : null}
+        {failure ? (
+          <AppText role="secondary" style={styles.statusText} tone="muted">
+            {failure}
+          </AppText>
+        ) : null}
+      </View>
+    </View>
   );
 }
 
@@ -704,6 +860,7 @@ export function ComputerOwnerView(props: {
   readonly generation: number;
   readonly hostClient: HostClient;
   readonly machineId: string;
+  readonly menu?: NativeMenuSection;
   readonly viewId: string;
   /** The Mac window the view bound, reopened as the same window. */
   readonly windowId?: number | undefined;
@@ -728,18 +885,17 @@ export function ComputerOwnerView(props: {
         mounted.current &&
         navigation.isFocused() &&
         hostClient.getSnapshot().deploymentId === deploymentId;
-      const destination =
-        props.appKey === null
-          ? await openPhoneOwnerView(hostClient, props.machineId, stillHere).then((source) =>
-              source ? { kind: "phone" as const, machineId: props.machineId, source } : null,
-            )
-          : await openAppOwnerView(
-              hostClient,
-              props.machineId,
-              props.appKey,
-              props.windowId,
-              stillHere,
-            );
+      if (props.appKey === null) {
+        await openPhoneOwnerView(hostClient, props.machineId, stillHere);
+        return;
+      }
+      const destination = await openAppOwnerView(
+        hostClient,
+        props.machineId,
+        props.appKey,
+        props.windowId,
+        stillHere,
+      );
       if (destination && deploymentId)
         navigation.dispatch(
           StackActions.replace("WorkspaceBrowser", workspaceRoute(deploymentId, destination)),
@@ -790,7 +946,7 @@ export function ComputerOwnerView(props: {
       bar={{
         app: current.target.kind === "app" ? current.target.app : undefined,
         detail: phone ? null : machineName,
-        menu: [],
+        menu: props.menu ?? [],
         onTyping: props.onTyping,
         title: label,
       }}

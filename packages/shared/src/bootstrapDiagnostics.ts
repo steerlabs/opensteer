@@ -147,6 +147,7 @@ export const bootstrapNoticeSources = [
   "browser.groups",
   "computer-apps.status",
   "computer-use.sessions",
+  "phone-tab",
   "integration.connections",
   "runner.shell-access",
   "runner.disconnect",

@@ -3,6 +3,7 @@ import { useLocation, useNavigate, useNavigationType, type To } from "react-rout
 import { z } from "zod";
 import {
   parseNavigationInput,
+  phonePlaceKey,
   type WorkspaceSurfaceDestination as SurfaceDestination,
 } from "@opensteer/client/host";
 import { AppIdSchema } from "@opensteer/core";
@@ -101,15 +102,14 @@ function placeDestination(params: URLSearchParams): SurfaceDestination | null {
   const sessionId = params.get("browser");
   const tabId = params.get("browserTab");
   if (sessionId && tabId) return { kind: "browser", sessionId, tabId };
+  const phone = params.get("phone");
+  if (phone) return { kind: "phone", machineId: phone };
   const computerSessionId = params.get("computerSession");
   const viewId = params.get("computerView");
   const generation = Number(params.get("computerViewGeneration"));
   if (viewId && Number.isSafeInteger(generation) && generation > 0) {
-    const phone = params.get("phone");
     const appKey = params.get("app");
     const source = { kind: "owner-view" as const, viewId, generation };
-    if (phone)
-      return { kind: "phone", machineId: phone, display: params.get("display") ?? "main", source };
     if (appKey) {
       const window = Number(params.get("computerWindow"));
       return {
@@ -122,16 +122,6 @@ function placeDestination(params: URLSearchParams): SurfaceDestination | null {
           : {}),
       };
     }
-  }
-  const phone = params.get("phone");
-  if (computerSessionId && phone) {
-    const display = params.get("display");
-    return {
-      kind: "phone",
-      computerSessionId,
-      machineId: phone,
-      ...(display ? { display } : {}),
-    };
   }
   const appKey = params.get("app");
   if (computerSessionId && appKey) {
@@ -152,7 +142,7 @@ export function destinationPlaceKey(destination: SurfaceDestination): string | n
         ? `app:${destination.machineId}:${destination.appKey}:${destination.windowId ?? destination.source.viewId}`
         : `app:${destination.machineId}:${destination.appKey}:task:${destination.computerSessionId}`;
     case "phone":
-      return `phone:${destination.machineId}:${destination.display ?? "main"}:${destination.source?.kind === "owner-view" ? `owner:${destination.source.viewId}` : `task:${destination.computerSessionId}`}`;
+      return phonePlaceKey(destination.machineId);
   }
 }
 
@@ -187,20 +177,19 @@ function writePlace(params: URLSearchParams, selection: PlaceSelection): void {
     if (destination.tabId) params.set("browserTab", destination.tabId);
     return;
   }
+  if (destination.kind === "phone") {
+    params.set("phone", destination.machineId);
+    return;
+  }
   if (destination.source?.kind === "owner-view") {
     params.set("computerView", destination.source.viewId);
     params.set("computerViewGeneration", String(destination.source.generation));
   } else if (destination.computerSessionId)
     params.set("computerSession", destination.computerSessionId);
-  if (destination.kind === "phone") {
-    params.set("phone", destination.machineId);
-    if (destination.display) params.set("display", destination.display);
-  } else {
-    if (destination.windowId !== undefined)
-      params.set("computerWindow", String(destination.windowId));
-    params.set("app", destination.appKey);
-    params.set("mac", destination.machineId);
-  }
+  if (destination.windowId !== undefined)
+    params.set("computerWindow", String(destination.windowId));
+  params.set("app", destination.appKey);
+  params.set("mac", destination.machineId);
 }
 
 /** Only the place survives a change of conversation; a message anchor or request focus does not. */
@@ -285,12 +274,7 @@ const RememberedPlaceSchema = z.discriminatedUnion("kind", [
     computerSessionId: z.string().min(1).max(200),
     machineId: z.string().max(200),
   }),
-  z.object({
-    kind: z.literal("phone"),
-    computerSessionId: z.string().min(1).max(200),
-    display: z.string().min(1).max(255).optional(),
-    machineId: z.string().min(1).max(200),
-  }),
+  z.object({ kind: z.literal("phone"), machineId: z.string().min(1).max(200) }),
   z.object({ kind: z.literal("opensteer-app"), appId: AppIdSchema }),
 ]);
 
@@ -319,14 +303,7 @@ export function rememberedPlace(scope: PlaceMemoryScope): SurfaceDestination | n
     const talk = RememberedTalkSchema.safeParse(value);
     const parsed = RememberedPlaceSchema.safeParse(talk.success ? talk.data.lastPlace : value);
     if (!parsed.success) return null;
-    const place = parsed.data;
-    if (place.kind !== "phone") return place;
-    return {
-      computerSessionId: place.computerSessionId,
-      kind: "phone",
-      machineId: place.machineId,
-      ...(place.display === undefined ? {} : { display: place.display }),
-    };
+    return parsed.data;
   } catch {
     // A convenience, not authority: unreadable or refused storage remembers nothing.
     return null;

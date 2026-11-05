@@ -15,13 +15,49 @@ import {
 } from "@opensteer/client/integrations";
 import { useComputerUseStop } from "@opensteer/client/react";
 import { computerAppIdentityKey } from "@opensteer/integration-core/computer-app";
-import type { ComputerAppIdentity, MachineSummary } from "@opensteer/protocol";
+import type {
+  ComputerAppIdentity,
+  ComputerUseSessionSummary,
+  MachineSummary,
+} from "@opensteer/protocol";
 import { AppMark } from "./computer-apps/computer-use-section.js";
 import { handleModalKeyDown } from "./dialog.js";
 import { Icon } from "./icon.js";
 import { PhoneControlBar, ComputerDisplayScreen, useComputerDisplay } from "./phone-display.js";
 import { SurfaceMenu, type SurfaceMenuItem } from "./surface-menu.js";
 import { useToastToolbar } from "./toast.js";
+
+/** Stops the task holding a computer, wherever a person is looking at it. */
+export function ComputerStopButton({
+  hostClient,
+  hostConnected,
+  label,
+  machineName,
+  runId,
+  sessionId,
+}: {
+  readonly hostClient: HostClient;
+  readonly hostConnected: boolean;
+  readonly label: string;
+  readonly machineName: string;
+  readonly runId: ComputerUseSessionSummary["runId"];
+  readonly sessionId: ComputerUseSessionSummary["sessionId"];
+}) {
+  const stop = useComputerUseStop(hostClient, sessionId);
+  if (!hostConnected || stop?.phase === "stopped") return null;
+  const stopping = stop?.phase === "stopping";
+  return (
+    <button
+      aria-label={label}
+      className="btn btn--small computer-watch__stop"
+      disabled={stopping}
+      onClick={() => computerUseStops(hostClient).stop({ machineName, runId, sessionId })}
+      type="button"
+    >
+      {stopping ? computerUseStop.busyLabel : "Stop"}
+    </button>
+  );
+}
 
 export function ComputerWatchView({
   app = null,
@@ -145,15 +181,6 @@ export function ComputerWatchView({
   useEffect(() => {
     if (!visible) setEnlarged(false);
   }, [visible]);
-  const canStop = live !== null && hostConnected && stop?.phase !== "stopped";
-  const sendStop = () => {
-    if (live)
-      computerUseStops(hostClient).stop({
-        machineName,
-        runId: live.session.runId,
-        sessionId: live.session.sessionId,
-      });
-  };
   const idle = phone ? { ...idleStatus, words: "Not using a phone right now" } : idleStatus;
   const inputAvailable = phone && !compact && display.snapshot.input === "available";
   const screen = (onEnlarge: (() => void) | null) =>
@@ -221,16 +248,15 @@ export function ComputerWatchView({
           <span className="computer-watch__state">{status.words}</span>
         ) : null}
         <span className="computer-watch__spacer" />
-        {canStop ? (
-          <button
-            aria-label={`Stop the agent using ${phone ? machineName : (shownApp?.displayName ?? "this app")}`}
-            className="btn btn--small computer-watch__stop"
-            disabled={stopping}
-            onClick={sendStop}
-            type="button"
-          >
-            {stopping ? computerUseStop.busyLabel : "Stop"}
-          </button>
+        {live ? (
+          <ComputerStopButton
+            hostClient={hostClient}
+            hostConnected={hostConnected}
+            label={`Stop the agent using ${phone ? machineName : (shownApp?.displayName ?? "this app")}`}
+            machineName={machineName}
+            runId={live.session.runId}
+            sessionId={live.session.sessionId}
+          />
         ) : null}
         {menu.length ? (
           <SurfaceMenu items={menu} label={phone ? "Phone options" : "App options"} />

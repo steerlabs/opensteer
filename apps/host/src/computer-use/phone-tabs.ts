@@ -1,0 +1,46 @@
+import { OpensteerError, type RunnerId, type UserId } from "@opensteer/core";
+import type { OpensteerStore } from "@opensteer/database";
+
+interface PhoneTabsOptions {
+  readonly store: Pick<OpensteerStore, "closePhoneTab" | "effectiveMachineOwners" | "openPhoneTab">;
+  readonly heldByTask: (machine: RunnerId) => boolean;
+  readonly closeViews: (owner: UserId, machine: RunnerId) => void;
+  readonly changed: () => void;
+  readonly onError: (error: unknown) => void;
+}
+
+/**
+ * An Agent Phone's tab outlives every session and view that shows it, so a
+ * person keeps their place between an agent's turns. It carries no authority:
+ * what the tab shows still needs its own live session or owner view.
+ */
+export class PhoneTabs {
+  readonly #options: PhoneTabsOptions;
+  constructor(options: PhoneTabsOptions) {
+    this.#options = options;
+  }
+
+  /** A live session or view lists its phone without this, so nothing waits on it. */
+  opened(machine: RunnerId): void {
+    void this.#options.store
+      .openPhoneTab(machine)
+      .then((opened) => {
+        if (opened) this.#options.changed();
+      })
+      .catch(this.#options.onError);
+  }
+
+  async close(owner: UserId, machine: RunnerId): Promise<void> {
+    const owners = await this.#options.store.effectiveMachineOwners([machine]);
+    if (owners.get(machine)?.effectiveOwner !== owner)
+      throw new OpensteerError({ code: "not_found", message: "This phone is unavailable." });
+    if (this.#options.heldByTask(machine))
+      throw new OpensteerError({
+        code: "conflict",
+        message: "An agent is using this phone. Stop it to close the tab.",
+      });
+    this.#options.closeViews(owner, machine);
+    await this.#options.store.closePhoneTab(machine);
+    this.#options.changed();
+  }
+}

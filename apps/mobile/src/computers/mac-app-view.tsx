@@ -4,22 +4,40 @@ import type {
   WorkspaceSurfaceDestination,
 } from "@opensteer/client/host";
 import type { ReactNode } from "react";
-import { ComputerDisplay, ComputerOwnerView, ComputerTaskView } from "./phone-display.js";
+import {
+  ComputerDisplay,
+  ComputerOwnerView,
+  ComputerTaskView,
+  PhoneTabView,
+} from "./phone-display.js";
 
 /**
- * An app or phone in front of the reader, read with exactly the authority its
- * route names: a task's own session, or the person's own view by its exact
- * generation. Neither ever stands in for the other.
+ * An app or phone in front of the reader. An app reads with exactly the
+ * authority its route names: a task's own session, or the person's own view
+ * by its exact generation, and neither ever stands in for the other. A phone's
+ * route names the phone, whose tab shows whichever of those is live.
  */
 export function MacAppView(props: {
   readonly active: boolean;
   readonly destination: Extract<WorkspaceSurfaceDestination, { kind: "app" | "phone" }>;
   readonly hostClient: HostClient;
+  /** The tab closed here: the page goes back. */
+  readonly onClosed: () => void;
   /** The keyboard is up for the app or phone, and its pane should make room. */
   readonly onTyping: (typing: boolean) => void;
 }): ReactNode {
   const { destination } = props;
-  const appKey = destination.kind === "app" ? destination.appKey : null;
+  if (destination.kind === "phone")
+    return (
+      <PhoneTabView
+        active={props.active}
+        hostClient={props.hostClient}
+        machineId={destination.machineId}
+        onClosed={props.onClosed}
+        onTyping={props.onTyping}
+      />
+    );
+  const { appKey } = destination;
   if (destination.source?.kind === "owner-view")
     return (
       <ComputerOwnerView
@@ -30,7 +48,7 @@ export function MacAppView(props: {
         machineId={destination.machineId}
         onTyping={props.onTyping}
         viewId={destination.source.viewId}
-        windowId={destination.kind === "app" ? destination.windowId : undefined}
+        windowId={destination.windowId}
       />
     );
   return destination.computerSessionId === undefined ? null : (

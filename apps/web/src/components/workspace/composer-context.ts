@@ -462,7 +462,7 @@ function nativePart(place: PlaceItem): PlacePart {
   const machineId = RunnerIdSchema.parse(destination.machineId);
   if (destination.kind === "phone") {
     return parsePlacePart({
-      display: destination.display ?? "main",
+      display: "main",
       machineId,
       name: place.title,
       type: "phone",

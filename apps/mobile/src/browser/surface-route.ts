@@ -16,8 +16,8 @@ import { isRecord } from "@opensteer/shared/isRecord";
  * that conversation (the task scope), one from Tabs or the sidebar is the
  * workspace scope. The screen is the same either way — who is in the page
  * comes from its occupants — so the origin decides only where Back goes, which
- * the stack already knows. A task-scope app or phone names that task's own
- * session of it.
+ * the stack already knows. A task-scope app names that task's own session of
+ * it; a phone is its own address.
  */
 type SurfacesScope =
   | { readonly scope?: undefined; readonly threadId: string }
@@ -107,19 +107,18 @@ function targetParams(destination: WorkspaceSurfaceDestination): SurfacesTarget 
   if (destination.kind === "opensteer-app") return { appId: destination.appId };
   if (destination.kind === "browser")
     return { sessionId: destination.sessionId, tabId: destination.tabId };
-  const kind = destination.kind === "phone" ? { phone: true } : { appKey: destination.appKey };
+  if (destination.kind === "phone") return { machineId: destination.machineId, phone: true };
+  const { appKey, machineId } = destination;
   const source = nativeViewerSource(destination);
   return source.kind === "owner-view"
     ? {
-        ...kind,
+        appKey,
         generation: source.generation,
-        machineId: destination.machineId,
+        machineId,
         viewId: source.viewId,
-        ...(destination.kind === "app" && destination.windowId !== undefined
-          ? { windowId: destination.windowId }
-          : {}),
+        ...(destination.windowId !== undefined ? { windowId: destination.windowId } : {}),
       }
-    : { ...kind, computerSessionId: source.sessionId, machineId: destination.machineId };
+    : { appKey, computerSessionId: source.sessionId, machineId };
 }
 
 /** The parts of a route that name what it opens. */
@@ -145,21 +144,18 @@ export function routeDestination(route: TargetFields): WorkspaceSurfaceDestinati
   if (route.sessionId !== undefined && route.tabId !== undefined) {
     return { kind: "browser", sessionId: route.sessionId, tabId: route.tabId };
   }
-  if (route.machineId === undefined || (route.phone !== true && route.appKey === undefined))
-    return null;
-  const kind =
-    route.phone === true
-      ? { kind: "phone" as const }
-      : { appKey: route.appKey!, kind: "app" as const };
+  if (route.machineId === undefined) return null;
+  if (route.phone === true) return { kind: "phone", machineId: route.machineId };
+  if (route.appKey === undefined) return null;
+  const app = { appKey: route.appKey, kind: "app" as const, machineId: route.machineId };
   if (route.viewId !== undefined && route.generation !== undefined)
     return {
-      ...kind,
-      machineId: route.machineId,
-      ...(kind.kind === "app" && route.windowId !== undefined ? { windowId: route.windowId } : {}),
+      ...app,
+      ...(route.windowId !== undefined ? { windowId: route.windowId } : {}),
       source: { generation: route.generation, kind: "owner-view", viewId: route.viewId },
     };
   if (route.computerSessionId !== undefined)
-    return { ...kind, computerSessionId: route.computerSessionId, machineId: route.machineId };
+    return { ...app, computerSessionId: route.computerSessionId };
   return null;
 }
 
@@ -206,10 +202,11 @@ function routeDestinationKey(
   destination: Exclude<WorkspaceSurfaceDestination, { kind: "browser" }>,
 ) {
   if (destination.kind === "opensteer-app") return [destination.kind, destination.appId];
+  if (destination.kind === "phone") return [destination.kind, destination.machineId];
   return [
     destination.kind,
     destination.machineId,
-    destination.kind === "app" ? destination.appKey : null,
+    destination.appKey,
     destination.source?.kind === "owner-view"
       ? [destination.source.viewId, destination.source.generation]
       : (destination.computerSessionId ?? null),

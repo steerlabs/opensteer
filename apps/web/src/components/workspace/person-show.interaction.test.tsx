@@ -47,11 +47,14 @@ it.each(["app", "phone"] as const)(
       ),
     );
     const params = new URLSearchParams(history.at(-1)!.search);
-    expect(params.get("computerSession")).toBe(session.sessionId);
     if (kind === "app") {
+      expect(params.get("computerSession")).toBe(session.sessionId);
       expect(params.get("mac")).toBe(machine.id);
       expect(params.get("app")).toBe("appKey" in place ? place.appKey : null);
-    } else expect(params.get("phone")).toBe(machine.id);
+    } else {
+      expect(params.get("computerSession")).toBeNull();
+      expect(params.get("phone")).toBe(machine.id);
+    }
   },
 );
 

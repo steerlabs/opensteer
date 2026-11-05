@@ -456,6 +456,7 @@ function Focused(props: {
         destination={destination}
         hostClient={hostClient}
         key={JSON.stringify(destination)}
+        onClosed={onClosed}
         onTyping={setTyping}
       />
     ) : (

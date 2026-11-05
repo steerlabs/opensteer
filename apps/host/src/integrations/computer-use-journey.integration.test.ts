@@ -3786,7 +3786,6 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
       "browserSessions" | "browserProfiles" | "browserPlacements" | "machines"
     >).find((place) => place.kind === "phone")!;
     if (livePlace.destination.kind !== "phone") throw new Error("Expected phone");
-    phonePart.display = livePlace.destination.display!;
     if (process.env.OPENSTEER_SHARED_SURFACES_ARTIFACT_DIR) {
       await mkdir(process.env.OPENSTEER_SHARED_SURFACES_ARTIFACT_DIR, { recursive: true });
       await writeFile(

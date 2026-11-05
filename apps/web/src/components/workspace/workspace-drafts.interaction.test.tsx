@@ -843,7 +843,7 @@ describe("the draft's places", () => {
         return {
           type: "phone",
           machineId: destination.machineId,
-          display: destination.display ?? "main",
+          display: "main",
           name: place.title,
         };
       if (destination.kind !== "app" || icon.kind !== "app") throw new Error("Not a native place");
