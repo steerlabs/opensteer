@@ -267,7 +267,11 @@ export function projectNativePopupState(raw: unknown): BrowserPopupState {
       : kind === "datalist"
         ? {}
         : kind === "color"
-          ? { value: fields.value, alpha: fields.alpha, colorSpace: fields.colorSpace }
+          ? {
+              value: fields.value,
+              alpha: fields.alpha,
+              colorSpace: fields.colorSpace === "limited-srgb" ? "srgb" : fields.colorSpace,
+            }
           : {
               value: fields.value,
               minimum: fields.minimum,

@@ -18,6 +18,20 @@ const item = {
   directionOverride: false,
 };
 describe("browser popup boundary", () => {
+  it("projects the native default color space to the wire's srgb", () => {
+    const color = {
+      kind: "color",
+      rtl: false,
+      items: [],
+      value: "#112233",
+      alpha: false,
+      colorSpace: "limited-srgb",
+    };
+    expect(projectNativePopupState(color)).toMatchObject({ colorSpace: "srgb" });
+    expect(projectNativePopupState({ ...color, colorSpace: "display-p3" })).toMatchObject({
+      colorSpace: "display-p3",
+    });
+  });
   it("projects only displayed fields and rejects over-budget UTF-8 instead of truncating", () => {
     const state = projectNativePopupState({
       kind: "select",
