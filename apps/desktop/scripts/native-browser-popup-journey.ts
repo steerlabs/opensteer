@@ -537,6 +537,7 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
       await quiet();
     }
     // All page keys enter through the production proxy/private edit path.
+    await settle(a);
     const beforeDatalist = editingContexts[0];
     await tap(a, "datalist");
     await kit.until(
@@ -556,6 +557,7 @@ export async function browserPopupJourney(kit: NativeBrowserE2EKit): Promise<voi
       "datalist answer updates the original input",
       3000,
     );
+    await settle(a);
     const beforeContext = editingContexts[0];
     await tap(a, "ime");
     await kit.until(
