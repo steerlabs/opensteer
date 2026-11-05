@@ -2,6 +2,9 @@ import type { RunToolScope } from "../agents/run-tool-tokens.js";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import { connect } from "node:net";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createId, OpensteerError } from "@opensteer/core";
 import { closeHttpServerNow } from "@opensteer/shared/httpServer";
@@ -129,35 +132,45 @@ it.each(["timeout", "bytes"] as const)(
   },
 );
 
-it("keeps failure log tails in agent results and excludes them from prepared viewer error pages", async () => {
-  const { service, app, userId, scope } = fixture(async () => {
-    throw new AppTunnelError("App startup failed", "private server log tail");
-  });
-  const view = await service.view(app.id, userId, "dark");
-  // Clients parse this answer with the wire schema; a mismatch blanks every viewer.
-  expect(hostApi["apps.view"].success.safeParse(view).success).toBe(true);
-  const { path } = view;
-  const token = path.split("/").at(-2)!;
-  const response = await service.response({
-    appId: app.id,
-    token,
-    theme: "dark",
-    method: "GET",
-    path: "/",
-    prefix: path.slice(0, -1),
-    headers: { accept: "text/html" },
-    signal: AbortSignal.timeout(2_000),
-  });
-  let html = "";
-  for await (const chunk of response.body) html += String(chunk);
-  expect(response.status).toBe(503);
-  expect(html).toContain("opensteer-app:ready");
-  expect(html).not.toContain("private server log tail");
-  expect(Number(response.headers["content-length"])).toBe(Buffer.byteLength(html));
-  expect(await service.fetch(scope, { appId: app.id, method: "GET", path: "/api/" })).toMatchObject(
-    { status: 503, body: expect.stringContaining("private server log tail") },
-  );
-});
+it.each([false, true])(
+  "keeps failure log tails out of viewer errors with real origin %s",
+  async (realOrigin) => {
+    const { service, app, userId, scope } = fixture(async () => {
+      throw new AppTunnelError("App startup failed", "private server log tail");
+    });
+    const view = await service.view(app.id, userId, "dark");
+    // Clients parse this answer with the wire schema; a mismatch blanks every viewer.
+    expect(hostApi["apps.view"].success.safeParse(view).success).toBe(true);
+    const { path } = view;
+    const token = path.split("/").at(-2)!;
+    const response = await service.response({
+      appId: app.id,
+      token,
+      ...(realOrigin
+        ? {
+            userId,
+            originMode: { origin: "https://app.example.test", parents: ["app://opensteer"] },
+          }
+        : {}),
+      theme: "dark",
+      method: "GET",
+      path: "/",
+      prefix: path.slice(0, -1),
+      headers: { accept: "text/html" },
+      signal: AbortSignal.timeout(2_000),
+    });
+    let html = "";
+    for await (const chunk of response.body) html += String(chunk);
+    expect(response.status).toBe(503);
+    expect(html).toContain("opensteer-app:ready");
+    expect(html.includes("history.replaceState")).toBe(realOrigin);
+    expect(html).not.toContain("private server log tail");
+    expect(Number(response.headers["content-length"])).toBe(Buffer.byteLength(html));
+    expect(
+      await service.fetch(scope, { appId: app.id, method: "GET", path: "/api/" }),
+    ).toMatchObject({ status: 503, body: expect.stringContaining("private server log tail") });
+  },
+);
 
 it("returns server HTML unchanged to app_fetch while preparing viewer frames", async () => {
   const html =
@@ -304,4 +317,50 @@ it("reports a committed tab change when notifying other devices fails", async ()
   await expect(service.setTabOpen(appTabs[0]!.appId, createId("user"), true)).resolves.toEqual({
     appTabs,
   });
+});
+
+it("serves stored HTML with origin bootstrap while keeping the legacy document opaque", async () => {
+  const { app, userId, options } = fixture(async () => {
+    throw new Error("Stored HTML opened a tunnel");
+  });
+  const directory = await mkdtemp(join(tmpdir(), "opensteer-stored-app-origin-"));
+  const bytes = Buffer.from("<html><head></head><body>Stored app</body></html>");
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  const service = new AppService({
+    ...options,
+    dataDirectory: directory,
+    apps: {
+      ...options.apps,
+      latest: async () => ({ app, version: { sha256, sizeBytes: bytes.length, server: null } }),
+    } as unknown as AppStore,
+  });
+  try {
+    await mkdir(join(directory, "apps"));
+    await writeFile(join(directory, "apps", sha256), bytes);
+    const originMode = { origin: "https://app.example.test", parents: ["app://opensteer"] };
+    const result = await service.response({
+      appId: app.id,
+      userId,
+      originMode,
+      theme: "dark",
+      prefix: "",
+      path: "/?state=1",
+      method: "GET",
+      headers: {},
+      signal: AbortSignal.timeout(2_000),
+    });
+    const chunks: Buffer[] = [];
+    for await (const chunk of result.body) chunks.push(Buffer.from(chunk));
+    const html = Buffer.concat(chunks).toString();
+    expect(html).toContain("Stored app");
+    expect(html).toContain("Object.defineProperty(document,'cookie'");
+    expect(html).toContain("opensteer-app:ready");
+    expect(result.headers["content-security-policy"]).toBe("frame-ancestors app://opensteer");
+    expect(result.headers["cache-control"]).toBe("private, no-store");
+    const legacy = await service.view(app.id, userId, "dark");
+    const old = await service.content(app.id, legacy.path.split("/").at(-2)!, "dark");
+    expect(old).not.toContain("Object.defineProperty(document,'cookie'");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
