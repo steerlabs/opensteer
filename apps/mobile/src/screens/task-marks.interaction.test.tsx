@@ -19,6 +19,7 @@ import type { ThreadHeaderState } from "../thread/thread-pane.js";
 // an unloaded project is called Opensteer; a member is offered owner edits,
 // or a refused edit/focus return keeps stale permission.
 const harness = vi.hoisted(() => ({
+  liquidGlass: false,
   client: null as HostClient | null,
   dismiss: null as (() => void) | null,
   focus: vi.fn<(handle: number) => void>(),
@@ -121,22 +122,31 @@ vi.mock("@react-navigation/native", () => ({
     }, [effect]),
   useNavigation: () => ({ setOptions: harness.setOptions, navigate: vi.fn() }),
 }));
+vi.mock("expo-clipboard", () => ({ setStringAsync: vi.fn(async () => true) }));
+vi.mock("expo-haptics", () => ({ selectionAsync: vi.fn(async () => undefined) }));
 vi.mock("@expo/ui/community/menu", () => ({
   MenuView: (props: {
     readonly children?: ReactNode;
-    readonly actions: readonly { id: string; title: string }[];
+    readonly actions: readonly {
+      id: string;
+      subactions?: readonly { id: string; title: string }[];
+      title: string;
+    }[];
     readonly onPressAction?: (event: { nativeEvent: { event: string } }) => void;
+    readonly title?: string;
   }) => (
-    <div>
+    <div data-menu-heading={props.title}>
       {props.children}
-      {props.actions.map((action) => (
-        <button
-          key={action.id}
-          onClick={() => props.onPressAction?.({ nativeEvent: { event: action.id } })}
-        >
-          {action.title}
-        </button>
-      ))}
+      {props.actions
+        .flatMap((action) => action.subactions ?? [action])
+        .map((action) => (
+          <button
+            key={action.id}
+            onClick={() => props.onPressAction?.({ nativeEvent: { event: action.id } })}
+          >
+            {action.title}
+          </button>
+        ))}
     </div>
   ),
 }));
@@ -156,7 +166,10 @@ vi.mock("../navigation-header.js", () => ({
   browserHeaderActions: () => ({}),
   headerActions: () => ({}),
 }));
-vi.mock("../ui/glass.js", () => ({ useLiquidGlass: () => false }));
+vi.mock("../ui/glass.js", () => ({
+  GlassSurface: ({ children }: { readonly children?: ReactNode }) => <>{children}</>,
+  useLiquidGlass: () => harness.liquidGlass,
+}));
 vi.mock("../ui/motion.js", () => ({ appear: undefined }));
 vi.mock("../ui/screen.js", () => ({
   Screen: ({ children }: { readonly children?: ReactNode }) => <div>{children}</div>,
@@ -210,7 +223,7 @@ vi.mock("../ui/task-mark.js", () => ({
 const { ProjectScreen } = await import("./project.js");
 const { useThreadHeader } = await import("./thread-header.js");
 const { AssignmentLines, TaskScopeContext } = await import("../thread/task-line.js");
-const { TaskMenu } = await import("../thread/task-status.js");
+const { ThreadMenu } = await import("../thread/thread-menu.js");
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const roots: Root[] = [];
 const clients: MockHostClient[] = [];
@@ -413,21 +426,23 @@ describe("mobile task mark review journeys", () => {
         const host = await client();
         const thread = host.getSnapshot().threads.find(({ role }) => role === "work")!;
         container = render(
-          <TaskMenu
+          <ThreadMenu
+            deploymentId="deployment-1"
             hostClient={host}
             maxWidth={260}
+            onFind={() => undefined}
             onOpenThread={() => undefined}
             task={null}
             threadId={thread.id}
             title={thread.title}
           >
             Task
-          </TaskMenu>,
+          </ThreadMenu>,
         );
       }
       const opener = container.querySelector(
         kind === "task"
-          ? '[aria-label$="Task actions"]'
+          ? '[aria-label$="Actions"]'
           : '[aria-label="Change project icon and colour"]',
       );
       await press(container, kind === "task" ? "Change icon…" : "Change project icon and colour");
@@ -494,10 +509,10 @@ describe("mobile task mark review journeys", () => {
           connectionLabel ?? (assigned ? "Working" : "Travel"),
         );
         const label = container
-          .querySelector('[aria-label$="Task actions"]')
+          .querySelector('[aria-label$="Actions"]')
           ?.getAttribute("aria-label");
         expect(label).toBe(
-          `Tokyo flights, Travel${connectionLabel !== null ? `, ${connectionLabel}` : assigned ? ", Working" : ""}. Task actions`,
+          `Tokyo flights, Travel${connectionLabel !== null ? `, ${connectionLabel}` : assigned ? ", Working" : ""}. Actions`,
         );
       }
     },
@@ -568,11 +583,74 @@ describe("mobile task mark review journeys", () => {
         (node) => node.childElementCount === 0 && node.textContent === word,
       );
       expect(says).toBe(tone !== "completed");
-      expect(
-        container.querySelector('[aria-label$="Task actions"]')?.getAttribute("aria-label"),
-      ).toBe(
-        `Tokyo flights${workspaceName === null ? "" : `, ${workspaceName}`}, ${offline ? "Studio Mac offline" : word}. Task actions`,
+      expect(container.querySelector('[aria-label$="Actions"]')?.getAttribute("aria-label")).toBe(
+        `Tokyo flights${workspaceName === null ? "" : `, ${workspaceName}`}, ${offline ? "Studio Mac offline" : word}. Actions`,
       );
+    },
+  );
+
+  // Ways the capsule can lose what the bar said: the word and project leave the
+  // bar and reach neither the menu nor VoiceOver, or an offline computer is
+  // dropped with them though nothing there will answer.
+  it.each([null, "Studio Mac offline"])(
+    "moves a task's word and project into the menu on Liquid Glass (offline: %s)",
+    async (connectionLabel) => {
+      harness.liquidGlass = true;
+      try {
+        const host = await client();
+        const thread = host.getSnapshot().threads.find(({ role }) => role === "work")!;
+        const header: ThreadHeaderState = {
+          connectionLabel,
+          task: {
+            announcement: "Needs you",
+            assignmentId: "assignment",
+            detail: "Waiting for approval",
+            moving: false,
+            open: true,
+            requester: "Chat",
+            requesterThreadId: null,
+            stopBlocked: null,
+            tone: "waiting",
+            word: "Needs you",
+          },
+          title: "Tokyo flights",
+          workspaceName: "Travel",
+          workspaceColor: "blue",
+          workspaceIcon: "luggage",
+          icon: "plane",
+          color: "teal",
+          isHome: false,
+          isVoice: false,
+        };
+        function Header() {
+          useThreadHeader({
+            deploymentId: "deployment",
+            fallbackTitle: "Task",
+            header,
+            hostClient: host,
+            threadId: thread.id,
+          });
+          return null;
+        }
+        render(<Header />);
+        const options = harness.setOptions.mock.calls.at(-1)?.[0] as {
+          headerTitle: () => ReactNode;
+        };
+        const container = render(options.headerTitle());
+        const drawn = container.querySelector('[aria-label$="Actions"]');
+        expect(drawn?.textContent).toContain("Tokyo flights");
+        expect(drawn?.textContent).not.toContain("Needs you");
+        expect(drawn?.textContent).not.toContain("Travel");
+        expect(drawn?.textContent?.includes("Studio Mac offline")).toBe(connectionLabel !== null);
+        expect(drawn?.getAttribute("aria-label")).toBe(
+          `Tokyo flights, Travel, ${connectionLabel ?? "Needs you"}. Actions`,
+        );
+        expect(
+          container.querySelector("[data-menu-heading]")?.getAttribute("data-menu-heading"),
+        ).toBe("From Chat · Needs you\nTravel\nWaiting for approval");
+      } finally {
+        harness.liquidGlass = false;
+      }
     },
   );
 

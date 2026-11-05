@@ -1,13 +1,16 @@
 import type { TaskMark as TaskMarkValue } from "@opensteer/client/host";
 import type { NativeStackNavigationOptions } from "@react-navigation/native-stack";
 import { memo, type ReactElement, type ReactNode } from "react";
-import { Pressable, StyleSheet, View } from "react-native";
+import { Platform, Pressable, StyleSheet, View } from "react-native";
 import { ActingDot } from "../browser/acting-dot.js";
 import { color, headerFontScaleLimit, radius, space, touchTarget } from "../theme.js";
 import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { TaskMark } from "../ui/task-mark.js";
 import { aroundLabel, type AroundGlance } from "./around-model.js";
+
+/** What Android's solid conversation bar is painted with, and so what cut-outs on it show. */
+export const conversationBarGround = Platform.OS === "android" ? color.surface : color.background;
 
 /**
  * A conversation's one trailing bar control: what is around it, in symbols,
@@ -59,7 +62,7 @@ export const AroundButton = memo(function AroundButton(props: {
           {earlierOnly ? (
             <Symbol name="checklist" size={15} tint={color.muted} />
           ) : (
-            <TaskMarks ground={color.background} marks={family.marks} />
+            <TaskMarks ground={conversationBarGround} marks={family.marks} />
           )}
           <Count muted={earlierOnly}>{earlierOnly ? family.earlier : family.running}</Count>
           {family.needsYou ? <View style={styles.attention} /> : null}

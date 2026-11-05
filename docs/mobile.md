@@ -108,6 +108,18 @@ rebuilt binary; a JavaScript update cannot add them. Expo's generated UIKit scen
 sole startup and link owner, and multiple scenes stay disabled so there is one navigation history
 and draft owner.
 
+## The conversation bar
+
+The bar stays: Menu carries the "Needs you" badge, and a transparent bar costs no height, so removing
+it would win back about 44 points at the price of the way out of a task. Liquid Glass draws the title
+as a capsule beside the bar's other capsules. Material's app bars are full width and its floating
+toolbars hold actions, so Android keeps a title and status line, as does earlier iOS, and paints the
+bar solid because it has no blur to separate it from text scrolling beneath.
+
+Every title opens a menu, so a capsule is never a button that does nothing. Android's menu has no
+header slot, which is why its status line can't move into the menu as Liquid Glass's does. Beside a
+page there is no title menu, so the composer's menu carries Find and Copy thread link there.
+
 ## The call bar
 
 The bar floats at the app's root, so an iOS sheet covers it while open. `FullWindowOverlay` would
