@@ -325,17 +325,23 @@ function isPersonsMessage(input: {
  */
 function exchangeInputs(
   transaction: Transaction<DatabaseSchema>,
-  run: Pick<RunRow, "assignmentId" | "membershipGeneration" | "replyTarget" | "requestedBy">,
+  run: Pick<
+    RunRow,
+    "assignmentId" | "membershipGeneration" | "replyTarget" | "requestedBy" | "voiceSessionId"
+  >,
   threadId: ThreadId,
   state: "claimed" | "pending",
 ) {
-  return transaction
+  const addressed = transaction
     .selectFrom("threadInputs")
     .where("threadInputs.threadId", "=", threadId)
     .where("threadInputs.policy", "=", "queue")
     .where("threadInputs.state", "=", state)
     .where("threadInputs.requestedBy", "=", run.requestedBy)
-    .where("threadInputs.membershipGeneration", "=", run.membershipGeneration)
+    .where("threadInputs.membershipGeneration", "=", run.membershipGeneration);
+  // A call stays open across turns, so anything sent to its Thread arrives now.
+  if (run.voiceSessionId) return addressed;
+  return addressed
     .where(
       sql<boolean>`thread_inputs.reply_target is not distinct from ${run.replyTarget === null ? null : JSON.stringify(run.replyTarget)}::jsonb`,
     )
@@ -348,7 +354,10 @@ function exchangeInputs(
 /** The exchange's waiting messages a Run can take: those not already the seed of a Run. */
 function conversationFollowUps(
   transaction: Transaction<DatabaseSchema>,
-  run: Pick<RunRow, "assignmentId" | "membershipGeneration" | "replyTarget" | "requestedBy">,
+  run: Pick<
+    RunRow,
+    "assignmentId" | "membershipGeneration" | "replyTarget" | "requestedBy" | "voiceSessionId"
+  >,
   threadId: ThreadId,
 ) {
   return exchangeInputs(transaction, run, threadId, "pending").where(
@@ -670,7 +679,7 @@ export async function settleStoppedConversationInputs(
     .selectAll()
     .where("id", "=", run.threadId)
     .executeTakeFirstOrThrow();
-  if (thread.role !== "conversation") return [];
+  if (thread.role !== "conversation" || run.voiceSessionId) return [];
   const now = new Date();
   const replacement = await pendingReplacementAttempt(transaction, run.id);
   const restartSent = replacement?.dispatchedAt != null;
@@ -790,16 +799,6 @@ export async function steerThreadInputInTransaction(
   transaction: Transaction<DatabaseSchema>,
   request: SteerThreadInputRequest,
 ): Promise<EnqueuedThreadInput> {
-  const voice = await transaction
-    .selectFrom("threads")
-    .select("voiceSessionId")
-    .where("id", "=", request.threadId)
-    .executeTakeFirst();
-  if (voice?.voiceSessionId)
-    throw new OpensteerError({
-      code: "conflict",
-      message: "Voice Threads do not accept steering.",
-    });
   requireBoundedIdentity(request.idempotencyKey, "Steer idempotency key", 255);
   await lockCommandIdempotency(transaction, request.requestedBy, request.idempotencyKey);
   const run = await transaction
@@ -2163,17 +2162,6 @@ export async function enqueueThreadInputInTransaction(
   transaction: Transaction<DatabaseSchema>,
   request: EnqueueThreadInputRequest,
 ): Promise<EnqueuedThreadInput> {
-  const voice = await transaction
-    .selectFrom("threads")
-    .select("voiceSessionId")
-    .where("id", "=", request.threadId)
-    .executeTakeFirst();
-  if (voice?.voiceSessionId)
-    throw new OpensteerError({
-      code: "conflict",
-      reason: "voice-ended",
-      message: "Voice Threads do not accept input.",
-    });
   const content = ContentPartSchema.array().min(1).parse(request.content);
   if (
     (request.source.kind === "agent" || request.source.kind === "connection") &&
@@ -2356,7 +2344,9 @@ export async function enqueueThreadInputInTransaction(
   const conversational =
     thread.role === "conversation" &&
     policy === "queue" &&
-    (request.source.kind === "human" || request.source.kind === "channel");
+    (request.source.kind === "human" ||
+      request.source.kind === "channel" ||
+      Boolean(activeRun?.voiceSessionId));
   // A Run whose turn ended while its background work runs on takes the next
   // message from its own requester, on the same engine and model, as a new
   // turn; anything else waits behind it.
@@ -3155,15 +3145,6 @@ export async function ensureQueuedRun(
   readonly run: RunRow | null;
 }> {
   const events: AgentEvent[] = [];
-  if (
-    thread.voiceSessionId &&
-    (await transaction
-      .selectFrom("runs")
-      .select("id")
-      .where("threadId", "=", thread.id)
-      .executeTakeFirst())
-  )
-    return { command: null, events, run: null };
   if (thread.status === "archived" || thread.inputQueuePaused || thread.doneAt)
     return { command: null, events, run: null };
   const existing = await transaction
@@ -4713,21 +4694,8 @@ async function delegationListsThread(
   const seed = await transaction
     .selectFrom("runs")
     .innerJoin("messages", "messages.id", "runs.seedInputId")
-    .select("messages.author")
+    .select(["messages.author", "runs.voiceSessionId"])
     .where("runs.id", "=", origin.parentRunId)
     .executeTakeFirstOrThrow();
-  const author = MessageAuthorSchema.parse(seed.author);
-  if (author.kind === "human") return true;
-  if (author.kind !== "agent") return false;
-  const parent = await transaction
-    .selectFrom("runs")
-    .select("requestedBy")
-    .where("id", "=", origin.parentRunId)
-    .executeTakeFirstOrThrow();
-  const voice = await transaction
-    .selectFrom("threads")
-    .select(["voiceSessionId", "createdBy"])
-    .where("id", "=", author.threadId)
-    .executeTakeFirst();
-  return Boolean(voice?.voiceSessionId && voice.createdBy === parent.requestedBy);
+  return seed.voiceSessionId !== null || MessageAuthorSchema.parse(seed.author).kind === "human";
 }

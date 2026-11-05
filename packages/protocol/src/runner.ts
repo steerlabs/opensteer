@@ -485,6 +485,7 @@ export const PendingAgentEventSchema = z
     pendingEventVariant("request.cancelled"),
     pendingEventVariant("request.opened"),
     pendingEventVariant("assistant.message"),
+    pendingEventVariant("voice.heard"),
     pendingEventVariant("message.injected"),
     pendingEventVariant("reasoning.completed"),
     pendingEventVariant("run.completed"),

@@ -17,7 +17,7 @@ const MAX_MESSAGE_BYTES = 1_048_576;
 const MAX_EVENTS = 500;
 const STAGE_CHUNK_BYTES = 256 * 1_024;
 const USAGE =
-  "usage: browser-harness --session <Browser Session ID> [--tab <target ID>] < JavaScript on stdin\n" +
+  "usage: browser-harness --session <Browser Session ID> [--tab <target or tab ID>] < JavaScript on stdin\n" +
   "browser_session_open returns the session ID; browser_session_list shows open sessions.";
 const INTERNAL_URLS = ["chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://"];
 /** More tabs than a person keeps open for one task. */
@@ -450,10 +450,16 @@ function createBrowserHarness(client, initialTargetId) {
         );
       }
       nextTargetId = inventory.rootTargetId;
-    } else if (!availablePages.some((page) => page.targetId === nextTargetId)) {
-      throw new Error(
-        `Browser tab ${nextTargetId} is closed or unavailable. Use await listTabs() and choose the intended tab explicitly.`,
+    } else {
+      const named = availablePages.find(
+        (page) => page.targetId === nextTargetId || page.surfaceId === nextTargetId,
       );
+      if (!named) {
+        throw new Error(
+          `Browser tab ${nextTargetId} is closed or unavailable. Use await listTabs() and choose the intended tab explicitly.`,
+        );
+      }
+      nextTargetId = named.targetId;
     }
     if (typeof nextTargetId !== "string" || nextTargetId.length === 0) {
       throw new Error("CDP did not provide a target ID");

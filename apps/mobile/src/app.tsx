@@ -30,7 +30,7 @@ import { StatusBar } from "expo-status-bar";
 import * as WebBrowser from "expo-web-browser";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { AppState, Platform, StyleSheet, View } from "react-native";
-import type { InitialState } from "@react-navigation/native";
+import { NavigationContainerRefContext, type InitialState } from "@react-navigation/native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
 import type { MockHostClient } from "@opensteer/client/mock";
@@ -664,7 +664,10 @@ export function App(): ReactNode {
                     theme={navigationTheme}
                   />
                   <OpenComputer />
-                  <VoiceOverlay />
+                  {/* Outside the navigator: a Request card on the bar still navigates. */}
+                  <NavigationContainerRefContext value={navigationRef}>
+                    <VoiceOverlay />
+                  </NavigationContainerRefContext>
                   <IphoneAppsPrompt controller={iphone} />
                 </SafeAreaProvider>
               </MobileNotificationsProvider>

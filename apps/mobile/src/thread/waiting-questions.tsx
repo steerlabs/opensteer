@@ -35,6 +35,8 @@ export function WaitingQuestions(props: {
   readonly hostClient: HostClient;
   readonly machines: readonly MachineSummary[];
   readonly onOpenTask: (threadId: string) => void;
+  /** No composer stands here to dock what this Thread itself asks, so this does. */
+  readonly ownQuestions?: boolean;
   readonly threadId: string;
   readonly user: AuthenticatedUser;
   readonly waitingRequests: readonly WaitingRequest[];
@@ -42,8 +44,11 @@ export function WaitingQuestions(props: {
   const snapshot = useHostSelector(props.hostClient, (snapshot) => snapshot);
   const { threads } = snapshot;
   const question = useMemo(
-    () => waitingQuestion(props.waitingRequests, props.threadId, props.user),
-    [props.threadId, props.user, props.waitingRequests],
+    () =>
+      waitingQuestion(props.waitingRequests, props.threadId, props.user, {
+        own: props.ownQuestions === true,
+      }),
+    [props.ownQuestions, props.threadId, props.user, props.waitingRequests],
   );
   if (question === null) return null;
   const { surface, waiting: focused } = question;
@@ -84,7 +89,8 @@ export function WaitingQuestions(props: {
   );
 }
 
-function QuestionCard(props: {
+/** A question answered as the Thread that asked it, through that Thread's mutation gate. */
+export function QuestionCard(props: {
   readonly canRespond: boolean;
   readonly deploymentId: string;
   readonly drafts: ThreadDraftStore;

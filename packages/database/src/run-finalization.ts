@@ -348,14 +348,6 @@ export async function finalizeRunTransaction(
     }
   }
 
-  if (thread.voiceSessionId) {
-    await transaction
-      .updateTable("threads")
-      .set({ status: "archived", updatedAt: input.completedAt })
-      .where("id", "=", thread.id)
-      .execute();
-    thread.status = "archived";
-  }
   // A corrupt selection must not roll back an already accepted terminal event.
   // Pending work remains queued until an explicit engine selection repairs it.
   const followOn = await ensureQueuedRun(transaction, thread, { onInvalidSelection: "defer" });

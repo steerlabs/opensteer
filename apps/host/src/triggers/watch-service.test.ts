@@ -385,6 +385,7 @@ function watchFixture(status: "provisioning" | "ready" = "ready"): {
       createdBy: userId,
       id: workspaceId,
       homeThreadId: createId("thread"),
+      voiceThreadId: null,
       icon: null,
       kind: "main",
       name: "Main",

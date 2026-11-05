@@ -518,10 +518,10 @@ export async function loadRunDispatchContext(
     membershipGeneration: safeGeneration(runRow.membershipGeneration),
     firstOrdinal: runRow.nextRunnerOrdinal,
     run: runFromRow(runRow),
-    ...(threadRow.voiceSessionId
+    ...(runRow.voiceSessionId
       ? {
           voiceCall: {
-            sessionId: threadRow.voiceSessionId,
+            sessionId: runRow.voiceSessionId,
             admittedAt: runRow.createdAt.toISOString(),
           },
         }

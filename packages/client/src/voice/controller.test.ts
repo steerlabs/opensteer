@@ -1,9 +1,7 @@
 import { BrowserSurfaceIdSchema, ThreadIdSchema, createId } from "@opensteer/core";
-import { EnvironmentIdSchema, HarnessInstanceIdSchema } from "@opensteer/core";
 import { PersonShowMessageSchema } from "@opensteer/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ToolEntry } from "../host/client.js";
-import { threadPlacementOptions } from "../host/thread-placement.js";
 import { VoiceStartError, type VoiceCall, type VoiceSnapshot as Snapshot } from "./contract.js";
 import { VoiceController, voiceAccount, type VoiceControllerInput } from "./controller.js";
 import {
@@ -11,7 +9,6 @@ import {
   semanticVoice,
   voiceHost,
   voiceIdentity,
-  voiceReply,
   voiceTestId,
   voiceTestNow,
 } from "./voice.test-support.js";
@@ -185,64 +182,117 @@ describe("VoiceController", () => {
     f.dispose();
   });
 
-  it("forwards Chat's new reply to the call by id", async () => {
+  it("opens the Voice Thread before the first call", async () => {
     const f = setup();
-    await f.controller.start();
-    const id = f.host.getSnapshot().homeThreadId!;
-    f.publish({ transcripts: { [id]: [voiceReply("answer", "# A **plan**")] } });
-    expect(f.call.say).toHaveBeenCalledExactlyOnceWith("message:answer", "A plan");
-    f.dispose();
-  });
-
-  it("sets Chat up before the first call when there is one AI to run it", async () => {
-    const f = setup({ home: "absent" });
     const snapshot = f.host.getSnapshot();
-    const account = voiceAccount(snapshot)!;
-    f.publish({
-      harnesses: snapshot.harnesses.filter((h) => h.id === account.harnessInstanceId),
-      executionPreferences: { ...snapshot.executionPreferences, history: [] },
-    });
-    const createHome = vi.spyOn(f.host, "createHome");
+    const threadId = createId("thread");
+    f.publish({ voiceThreadId: null });
+    const open = vi.fn(async () => ({
+      ok: true,
+      data: { threadId, ...voiceAccount(snapshot) },
+    }));
+    Object.defineProperty(f.host, "rpc", { value: { "voice.open": open } });
     await f.controller.start();
-    expect(createHome).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({
-        harnessInstanceId: account.harnessInstanceId,
-        idempotencyKey: `voice:${voiceTestId}:home`,
-      }),
-    );
+    expect(open).toHaveBeenCalledExactlyOnceWith({
+      ...voiceAccount(snapshot),
+      accessMode: snapshot.executionPreferences.accessMode,
+    });
     expect(f.provider.open).toHaveBeenCalledTimes(1);
     f.dispose();
   });
 
-  it("does not use the remembered task AI for a new Chat", async () => {
-    const f = setup({ home: "absent" });
+  it("follows the account the call is on, not the one it would pick now", async () => {
+    const f = setup();
     const snapshot = f.host.getSnapshot();
-    const placement = threadPlacementOptions(snapshot.environments, snapshot.harnesses).find(
-      (p) => p.available && p.harnessInstanceId !== voiceAccount(snapshot)!.harnessInstanceId,
+    const account = voiceAccount(snapshot)!;
+    const environment = snapshot.environments.find(({ id }) => id === account.environmentId)!;
+    const catalog = environment.harnessCatalogs.find(
+      ({ harnessInstanceId }) => harnessInstanceId === account.harnessInstanceId,
     )!;
-    expect(placement).toBeDefined();
-    f.publish({
-      executionPreferences: {
-        ...snapshot.executionPreferences,
-        accessMode: "approval-required",
-        history: [
-          {
-            environmentId: EnvironmentIdSchema.parse(placement.environmentId),
-            harnessInstanceId: HarnessInstanceIdSchema.parse(placement.harnessInstanceId),
-            modelSelection: placement.modelSelection,
-          },
-        ],
-      },
-    });
-    const createHome = vi.spyOn(f.host, "createHome");
+    const harness = snapshot.harnesses.find(({ id }) => id === account.harnessInstanceId)!;
+    const other = createId("harnessInstance");
+    const both = {
+      environments: snapshot.environments.map((item) =>
+        item.id === environment.id
+          ? {
+              ...item,
+              harnessCatalogs: [...item.harnessCatalogs, { ...catalog, harnessInstanceId: other }],
+            }
+          : item,
+      ),
+      harnesses: [...snapshot.harnesses, { ...harness, id: other }],
+    };
+    f.publish(both);
     await f.controller.start();
-    expect(f.controller.getSnapshot().notice).toEqual({
-      kind: "choose-ai",
-      message: "Choose an AI for Chat, then talk to Opensteer.",
-      action: null,
+    expect(f.controller.getSnapshot().phase).toBe("listening");
+
+    // Chat moving to the other account changes this device's pick, and nothing about the call.
+    f.publish({
+      environments: both.environments
+        .filter(({ id }) => id === environment.id)
+        .map((item) => ({ ...item, harnessCatalogs: [...item.harnessCatalogs].reverse() })),
+      harnesses: both.harnesses,
+      homeThreadId: null,
     });
+    expect(voiceAccount(f.host.getSnapshot())?.harnessInstanceId).toBe(other);
+    expect(f.controller.getSnapshot().phase).toBe("listening");
+
+    f.publish({
+      environments: both.environments.map((item) => ({
+        ...item,
+        harnessCatalogs: item.harnessCatalogs.filter(
+          ({ harnessInstanceId }) => harnessInstanceId !== account.harnessInstanceId,
+        ),
+      })),
+    });
+    await vi.waitFor(() => expect(f.controller.getSnapshot().phase).toBe("idle"));
+    f.dispose();
+  });
+
+  it("says the call failed when the Voice Thread can't open", async () => {
+    const f = setup();
+    f.publish({ voiceThreadId: null });
+    Object.defineProperty(f.host, "rpc", {
+      value: { "voice.open": async () => ({ ok: false }) },
+    });
+    await f.controller.start();
     expect(f.provider.open).not.toHaveBeenCalled();
-    expect(createHome).not.toHaveBeenCalled();
+    expect(f.controller.getSnapshot()).toMatchObject({
+      phase: "idle",
+      notice: { kind: "connection-failed" },
+    });
+    f.dispose();
+  });
+
+  it("keeps the call's work and what needs the person on the snapshot", async () => {
+    const f = setup();
+    await f.controller.start();
+    const { threadId } = f.call.identity;
+    const task = (parentThreadId: string) => ({
+      failure: null,
+      lastReply: null,
+      thread: { id: createId("thread"), parentThreadId },
+    });
+    const waiting = (id: string) => ({
+      assignments: [],
+      request: { id, originatingThreadId: threadId, status: "pending" },
+    });
+    f.publish({
+      activeTasks: [task(threadId), task(createId("thread"))] as never,
+      waitingRequests: [waiting("first"), waiting("second")] as never,
+    });
+    expect(f.controller.getSnapshot()).toMatchObject({
+      tasks: 1,
+      ask: { kind: "request", requestId: "first", others: 1 },
+    });
+    // The card the person is reading stays put when an earlier Request appears.
+    f.publish({ waitingRequests: [waiting("newer"), waiting("first")] as never });
+    expect(f.controller.getSnapshot().ask).toMatchObject({ requestId: "first" });
+    const held = f.controller.getSnapshot();
+    f.publish({ network: "online" } as never);
+    expect(f.controller.getSnapshot()).toBe(held);
+    f.publish({ activeTasks: [], waitingRequests: [] });
+    expect(f.controller.getSnapshot()).toMatchObject({ tasks: 0, ask: null });
     f.dispose();
   });
 
@@ -314,11 +364,6 @@ describe("VoiceController", () => {
     expect(f.media.openMicrophoneSettings).toHaveBeenCalledTimes(1);
     f.controller.dismissNotice();
     expect(f.controller.getSnapshot().notice).toBeNull();
-    vi.mocked(f.provider.open).mockRejectedValueOnce(new VoiceStartError("chat-required"));
-    await f.controller.start();
-    expect(f.controller.getSnapshot().notice?.message).toBe(
-      "Set up Chat first, then talk to Opensteer.",
-    );
     // A refused renewal, say or context closes the call as replaced.
     await f.controller.start();
     f.emit({ type: "closed", reason: "replaced" });

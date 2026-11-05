@@ -4713,6 +4713,7 @@ export function migrationProvider() {
         "0159_background_model_preferences": backgroundModelPreferencesMigration,
         "0160_memory_pass_waiting": memoryPassWaitingMigration,
         "0161_app_tabs": appTabsMigration,
+        "0162_voice_thread": voiceThreadMigration,
       };
     },
   };
@@ -7486,5 +7487,26 @@ const appTabsMigration: Migration = {
     await sql`drop index apps_open_tabs; alter table apps drop column tab_opened_at`.execute(
       database,
     );
+  },
+};
+
+/** A call is a Run on one permanent Voice Thread; the per-call hidden Threads go. */
+const voiceThreadMigration: Migration = {
+  async up(database) {
+    await sql`DROP TRIGGER voice_thread_input_fence ON thread_inputs;
+      DROP TRIGGER voice_trigger_anchor_fence ON triggers;
+      DROP FUNCTION refuse_voice_thread_input();
+      DROP FUNCTION refuse_voice_trigger_anchor();
+      DROP INDEX threads_one_live_voice_per_person;
+      ALTER TABLE runs ADD COLUMN voice_session_id text UNIQUE;
+      ALTER TABLE workspaces ADD COLUMN voice_thread_id text;
+      ALTER TABLE workspaces ADD CONSTRAINT workspaces_voice_thread_main_check
+        CHECK (voice_thread_id IS NULL OR kind = 'main');
+      ALTER TABLE workspaces ADD CONSTRAINT workspaces_voice_thread_fkey
+        FOREIGN KEY (voice_thread_id, id) REFERENCES threads(id, workspace_id)
+        ON DELETE SET NULL (voice_thread_id);
+      UPDATE threads SET status = 'archived', listed = false, updated_at = now()
+        WHERE voice_session_id IS NOT NULL;
+      ALTER TABLE threads DROP COLUMN voice_session_id;`.execute(database);
   },
 };

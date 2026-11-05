@@ -256,8 +256,8 @@ export class OpensteerStore {
   resolveVoiceCall(ownerId: UserId, sessionId: string) {
     return voiceStore.resolveVoiceCall(this.#database, ownerId, sessionId);
   }
-  voiceCallForRun(runId: RunId) {
-    return voiceStore.voiceCallForRun(this.#database, runId);
+  openVoiceThread(input: Parameters<typeof voiceStore.openVoiceThread>[1]) {
+    return voiceStore.openVoiceThread(this.#database, input);
   }
   latestRunStoppedByPerson(threadId: ThreadId) {
     return latestRunStoppedByPerson(this.#database, threadId);

@@ -724,6 +724,7 @@ it("quiet Chat keeps only automatic replies and lets silent human work open Acti
       {
         id: author.workspaceId,
         homeThreadId: null,
+        voiceThreadId: null,
         description: "",
         fileCount: 0,
         harnessLabel: "Codex",

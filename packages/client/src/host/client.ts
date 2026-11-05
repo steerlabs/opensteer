@@ -153,6 +153,7 @@ type TranscriptWindow = Omit<ThreadMessageWindow, "threadId"> & {
 
 export interface WorkspaceSummary {
   homeThreadId: string | null;
+  voiceThreadId: string | null;
   description: string;
   fileCount: number;
   harnessLabel: string;
@@ -847,6 +848,8 @@ export interface HostSnapshot {
   harnesses: HarnessSummary[];
   homeWorkspaceId: string | null;
   homeThreadId: string | null;
+  /** The person's Voice Thread, once it exists: their spoken manager. */
+  voiceThreadId: string | null;
   notificationMutes: string[];
   threadReadStates: Record<string, ThreadReadState>;
   /**

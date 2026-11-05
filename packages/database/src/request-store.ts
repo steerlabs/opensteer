@@ -5,7 +5,6 @@ import {
   AssignmentIdSchema,
   BrowserProfileIdSchema,
   OpensteerError,
-  voiceRequestHandOff,
   PendingRequestSchema,
   RequestIdSchema,
   RequestJsonObjectSchema,
@@ -1554,25 +1553,8 @@ export class RequestStore {
               )
               .execute()
           : [];
-        // A call's Thread is hidden too, and an engine approval pauses its agent mid-step.
-        const calls = requests.length
-          ? await transaction
-              .selectFrom("threads as call")
-              .innerJoin("workspaces as main", "main.id", "call.workspaceId")
-              .innerJoin("threads as chat", "chat.id", "main.homeThreadId")
-              .select(["call.id", "call.title", "chat.id as chatId"])
-              .where("call.voiceSessionId", "is not", null)
-              .where("call.createdBy", "=", input.userId)
-              .whereRef("call.parentThreadId", "=", "chat.id")
-              .where(
-                "call.id",
-                "in",
-                requests.map(({ originatingThreadId }) => originatingThreadId),
-              )
-              .execute()
-          : [];
         const presentations = new Map(
-          [...managed, ...calls].map(({ id, title, chatId }) => [
+          managed.map(({ id, title, chatId }) => [
             id,
             { threadId: chatId, workerThread: { id, title } },
           ]),
@@ -2944,10 +2926,13 @@ export class RequestStore {
                 origin.or([
                   origin("originRun.status", "in", ["completed", "failed", "interrupted"]),
                   origin("originRun.phase", "=", "background"),
+                  origin("originRun.voiceSessionId", "is not", null),
                 ]),
               )
               .where((gate) =>
                 gate.or([
+                  // A call's Run spans unrelated turns, so its Requests never settle as one batch.
+                  gate("originRun.voiceSessionId", "is not", null),
                   gate.not(
                     gate.exists(
                       gate
@@ -3188,15 +3173,6 @@ async function createRequestInTransaction(
     return { events: [], replayed: true, request: requestFromRow(replay) };
   }
 
-  if (input.mode === "durable" && origin.runId) {
-    const thread = await transaction
-      .selectFrom("threads")
-      .select("voiceSessionId")
-      .where("id", "=", origin.threadId)
-      .executeTakeFirst();
-    if (thread?.voiceSessionId)
-      throw new OpensteerError({ code: "conflict", message: voiceRequestHandOff });
-  }
   if (!origin.running) {
     throw new OpensteerError({ code: "forbidden", message: originMismatchMessage(input) });
   }

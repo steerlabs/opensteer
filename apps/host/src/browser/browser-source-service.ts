@@ -85,7 +85,6 @@ type AgentSignInInput = {
   readonly threadId: ThreadId;
   readonly workspaceId: WorkspaceId;
   readonly callId: string;
-  readonly canRequest: boolean;
   readonly loginFill?: boolean;
   readonly sessionId?: string;
   readonly site: string;
@@ -639,19 +638,16 @@ export class BrowserSourceService {
 
   async agentSignIn(input: AgentSignInInput): Promise<AgentBrowserSignInResult> {
     const result = await this.#signIn(input);
-    // A Run that can't ask has no one to bring back: its Chat makes its own call.
-    if (input.canRequest) {
-      this.#offers.note(
-        {
-          ownerId: input.ownerId,
-          runId: input.runId,
-          sessionId: input.sessionId ?? null,
-          site: parseSite(input.site),
-          threadId: input.threadId,
-        },
-        result,
-      );
-    }
+    this.#offers.note(
+      {
+        ownerId: input.ownerId,
+        runId: input.runId,
+        sessionId: input.sessionId ?? null,
+        site: parseSite(input.site),
+        threadId: input.threadId,
+      },
+      result,
+    );
     return result;
   }
 
@@ -781,7 +777,6 @@ export class BrowserSourceService {
     });
     if (pending) return this.#completePending(pending, grant, sources, sessionId, site);
     const ask = async (): Promise<AgentBrowserSignInResult> => {
-      if (!input.canRequest) return { reason: "needs-approval", site, status: "unavailable" };
       const opened = await this.#openRequest({ ...input, site, target });
       return opened.status === "pending" ? { ...opened, ...passwordsOffer(passwords) } : opened;
     };
@@ -817,7 +812,6 @@ export class BrowserSourceService {
       }
       return ask();
     }
-    if (!input.canRequest) return { reason: "needs-approval", site, status: "unavailable" };
     if (candidates.length > 0 && candidates.every((candidate) => candidate.status === "no-state")) {
       return { site, status: "not-signed-in", ...passwordsOffer(passwords) };
     }

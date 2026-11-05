@@ -1,13 +1,8 @@
 import { createRoot } from "react-dom/client";
 import type { VoiceLevels, VoiceNotice, VoiceSnapshot } from "@opensteer/client/voice";
 import { Composer } from "./components/composer.js";
-import {
-  VoiceButton,
-  VoiceContext,
-  VoiceDock,
-  VoiceIsland,
-  type VoiceControls,
-} from "./components/voice.js";
+import { VoiceContext } from "@opensteer/client/react";
+import { VoiceButton, VoiceDock, VoiceIsland, type VoiceControls } from "./components/voice.js";
 import "@fontsource-variable/inter/wght.css";
 import "@fontsource-variable/fraunces/wght.css";
 import "./styles/index.css";
@@ -33,6 +28,8 @@ const base: VoiceSnapshot = {
   spoken: null,
   since: Date.now() - 42_000,
   activity: null,
+  tasks: 0,
+  ask: null,
   notice: null,
 };
 const snapshots: Record<string, Partial<VoiceSnapshot>> = {
@@ -63,6 +60,7 @@ const snapshots: Record<string, Partial<VoiceSnapshot>> = {
     spoken: "Nopa has a table for four at seven thirty on Friday. Want me to book it?",
   },
   muted: { phase: "listening", muted: true },
+  tasks: { phase: "listening", tasks: 2 },
   "permission-denied": { since: null, notice: notices["permission-denied"]! },
   ended: { since: null, notice: notices.ended! },
 };
@@ -97,6 +95,7 @@ const controller: VoiceControls = {
     listener({ input: level, output: level });
     return () => {};
   },
+  openThread: async () => "thr_visual",
   start: async () => {
     set({ phase: "connecting", since: Date.now(), notice: null });
     setTimeout(() => set({ phase: "listening" }), 900);

@@ -66,6 +66,7 @@ export function ConversationHeader({
   const directory = useTaskDirectory(hostClient);
   const homeKind = homeThreadKind(threadId, directory.snapshot);
   const home = homeKind === "main";
+  const voice = directory.snapshot.voiceThreadId === threadId;
   const row = directory.rows.get(threadId);
   const [menuOpen, setMenuOpen] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -122,6 +123,8 @@ export function ConversationHeader({
         <span className="conv-header__mark">
           {home ? (
             <ChatOrb size={20} />
+          ) : voice ? (
+            <span aria-hidden className="voice-mark" />
           ) : projectOrb ? (
             <WorkspaceOrb
               icon={project.icon}

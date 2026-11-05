@@ -1383,10 +1383,14 @@ integration("agent-to-agent messaging round trip", () => {
     if (voice) {
       await database
         .updateTable("threads")
-        .set({ voiceSessionId: randomUUID(), listed: false, title: "Voice call" })
+        .set({ listed: false, title: "Voice" })
         .where("id", "=", threadA.id)
         .execute();
-      expect(await store.voiceCallForRun(humanTurn.run.id)).toBeDefined();
+      await database
+        .updateTable("runs")
+        .set({ voiceSessionId: randomUUID() })
+        .where("id", "=", humanTurn.run.id)
+        .execute();
     }
     const tokenA = `token-a-${randomUUID()}`;
     claimsByToken.set(

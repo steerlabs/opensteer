@@ -30,7 +30,6 @@ import {
   type ThreadAccessMode,
   type Workspace,
   type WorkspaceBackingKind,
-  voiceRequestHandOff,
 } from "@opensteer/core";
 import type { BrowserUsageCredit, OpensteerStore } from "@opensteer/database";
 import type { CommandService } from "@opensteer/orchestration";
@@ -1011,11 +1010,8 @@ export class ProductToolHandlers {
 
   async use_card({ caller, input, operationKey }: ToolCall<"use_card">) {
     const claims = requireRun(caller).claims;
-    // A card already approved still works on a call; a Request's answer can't reach its Thread.
-    const voiceCall = await this.#store.voiceCallForRun(claims.runId);
-    const result = await this.#browserSources.agentUseCard({
+    return await this.#browserSources.agentUseCard({
       callId: operationId(caller, operationKey, "use_card"),
-      canRequest: !voiceCall,
       ownerId: claims.requestedBy,
       reason: input.reason,
       runId: claims.runId,
@@ -1024,21 +1020,15 @@ export class ProductToolHandlers {
       threadId: claims.threadId,
       workspaceId: claims.workspaceId,
     });
-    return voiceCall && result.status === "needs-approval"
-      ? { ...result, guidance: voiceRequestHandOff }
-      : result;
   }
 
   async sign_in({ caller, input, operationKey }: ToolCall<"sign_in">) {
     const claims = requireRun(caller).claims;
     const requestId = operationId(caller, operationKey, "sign_in");
-    // Saved logins still work on a call; a Request's answer can't reach its Thread.
-    const voiceCall = await this.#store.voiceCallForRun(claims.runId);
 
     const result = await this.#browserSources.agentSignIn({
       loginFill: this.#supportsLoginFill(claims),
       callId: requestId,
-      canRequest: !voiceCall,
       ownerId: claims.requestedBy,
       reason: input.reason,
       runId: claims.runId,
@@ -1049,8 +1039,6 @@ export class ProductToolHandlers {
       threadId: claims.threadId,
       workspaceId: claims.workspaceId,
     });
-    if (voiceCall && result.status === "unavailable" && result.reason === "needs-approval")
-      return { ...result, guidance: voiceRequestHandOff };
     const guidance = passwordsOfferGuidance(result);
     return guidance === null ? result : { ...result, guidance };
   }

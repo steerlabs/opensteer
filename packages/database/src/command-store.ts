@@ -1556,7 +1556,7 @@ export async function retryCommand(
     const run = observed.runId
       ? await transaction
           .selectFrom("runs")
-          .select(["environmentId", "id", "status", "threadId"])
+          .select(["environmentId", "id", "status", "threadId", "voiceSessionId"])
           .where("id", "=", observed.runId)
           .forNoKeyUpdate()
           .executeTakeFirstOrThrow()
@@ -1571,10 +1571,10 @@ export async function retryCommand(
       }
       const thread = await transaction
         .selectFrom("threads")
-        .select(["workspaceId", "voiceSessionId"])
+        .select("workspaceId")
         .where("id", "=", run.threadId)
         .executeTakeFirstOrThrow();
-      if (thread.voiceSessionId)
+      if (run.voiceSessionId)
         return finalizeRunTransaction(transaction, {
           runId: run.id,
           completedAt: new Date(),

@@ -14,3 +14,4 @@ export * from "./use-computer-app-approval.js";
 export * from "./use-personal-remote-access.js";
 export * from "./use-app-view.js";
 export * from "./use-connected-agents.js";
+export { useVoice, VoiceContext } from "./use-voice.js";

@@ -295,46 +295,11 @@ describe("Product tool handlers", () => {
         result: { ...result, guidance: expect.stringContaining("call sign_in again") },
       });
       expect(agentSignIn).toHaveBeenCalledWith(
-        expect.objectContaining({ canRequest: true, sessionId, site: result.site }),
+        expect.objectContaining({ sessionId, site: result.site }),
       );
       expect(admitRunToolCall).not.toHaveBeenCalled();
     },
   );
-
-  it("keeps saved logins and cards on a voice call but opens no Request", async () => {
-    const site = "https://example.com";
-    const agentSignIn = vi.fn(
-      async () => ({ status: "unavailable", site, reason: "needs-approval" }) as const,
-    );
-    const agentUseCard = vi.fn(async () => ({ status: "needs-approval", site }) as const);
-    const { service } = makeService({
-      browserSources: { agentSignIn, agentUseCard },
-      commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
-      messages: [],
-      threads: [thread(currentThreadId, nativeHarnessId, "Worker")],
-      voiceCall: true,
-    });
-    const sessionId = createBrowserSessionId();
-    const reason = "Read the account";
-    const signIn = await service.handle("run-token", {
-      requestId: crypto.randomUUID(),
-      type: "sign-in",
-      sessionId,
-      site,
-      reason,
-    });
-    const card = await service.service.callTool(
-      "run-token",
-      "use_card",
-      { sessionId, site, reason },
-      { operationKey: crypto.randomUUID() },
-    );
-    expect(agentSignIn).toHaveBeenCalledWith(expect.objectContaining({ canRequest: false }));
-    expect(agentUseCard).toHaveBeenCalledWith(expect.objectContaining({ canRequest: false }));
-    const handOff = expect.stringContaining('threadId "home"');
-    expect(signIn).toMatchObject({ result: { guidance: handOff } });
-    expect(card).toMatchObject({ guidance: handOff });
-  });
 
   it("does not preserve Main authority after its member is no longer an owner", async () => {
     const current = thread(currentThreadId, nativeHarnessId, "Main");
@@ -1625,7 +1590,6 @@ function makeService(options: {
   >;
   runAssignment?: { readonly assignerThreadId: Thread["id"]; readonly open: boolean };
   runnerCapabilities?: readonly string[];
-  voiceCall?: boolean;
   commands: {
     publishPersonMessage?: ReturnType<typeof vi.fn>;
     delegateThread: ReturnType<typeof vi.fn>;
@@ -1920,8 +1884,6 @@ function makeService(options: {
     },
     findMainWorkspaceForOwner: async () =>
       workspaces.find((candidate) => candidate.homeThreadId != null) ?? null,
-    voiceCallForRun: async () =>
-      options.voiceCall ? { sessionId: "voice", admittedAt: new Date() } : undefined,
     threadMessagePageForOwner: async (input: {
       maxItems: number;
       ownerId: typeof ownerId;
@@ -2198,6 +2160,7 @@ function workspace(
     createdAt: now,
     createdBy,
     homeThreadId: null,
+    voiceThreadId: null,
     icon: null,
     id,
     kind: id === workspaceId ? "main" : "project",

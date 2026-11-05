@@ -467,26 +467,44 @@ export function passwordsSetupOffer(
     const state = turnState(group.turn);
     if (state === "live" || state === "stopping") return null;
     for (let step = group.turn.work.length - 1; step >= 0; step -= 1) {
-      const entry = group.turn.work[step]!;
-      if (entry.kind === "request" && entry.requestKind === "browser.sign-in") {
-        return entry.passwordsOffer ? { ...entry.passwordsOffer, credential: "login" } : null;
-      }
-      if (entry.kind === "tool" && entry.tool?.name === "use_card" && entry.output) {
-        const result = readCardUseResult(entry.output.text);
-        if (!result || result.status === "resolved") continue;
-        const need = result.status === "unavailable" ? cardOfferNeed(result.reason) : null;
-        return need ? { credential: "card", need, site: result.site } : null;
-      }
-      if (entry.kind !== "tool" || !isSignInTool(entry) || !entry.output) continue;
-      const result = readBrowserSignInResult(entry.output.text);
-      if (result === null || result.status === "resolved") continue;
-      if (result.status === "pending" && result.replayed) continue;
-      const need = browserSignInPasswordsNeed(result);
-      const site = "site" in result ? result.site : stringField(effectiveArguments(entry), "site");
-      return need && site ? { credential: "login", need, site } : null;
+      const offer = stepPasswordsOffer(group.turn.work[step]!);
+      if (offer !== undefined) return offer;
     }
   }
   return null;
+}
+
+/** The same word from a call: its Run stays open between turns, so no turn ever settles. */
+export function callPasswordsOffer(
+  entries: readonly TranscriptEntry[],
+): PasswordsSetupOffer | null {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index]!;
+    if (entry.kind === "message" && entry.author.kind === "human") return null;
+    const offer = stepPasswordsOffer(entry);
+    if (offer !== undefined) return offer;
+  }
+  return null;
+}
+
+/** What one step says about Passwords: an offer, a definite no, or nothing yet (`undefined`). */
+function stepPasswordsOffer(entry: TranscriptEntry): PasswordsSetupOffer | null | undefined {
+  if (entry.kind === "request" && entry.requestKind === "browser.sign-in") {
+    return entry.passwordsOffer ? { ...entry.passwordsOffer, credential: "login" } : null;
+  }
+  if (entry.kind === "tool" && entry.tool?.name === "use_card" && entry.output) {
+    const result = readCardUseResult(entry.output.text);
+    if (!result || result.status === "resolved") return undefined;
+    const need = result.status === "unavailable" ? cardOfferNeed(result.reason) : null;
+    return need ? { credential: "card", need, site: result.site } : null;
+  }
+  if (entry.kind !== "tool" || !isSignInTool(entry) || !entry.output) return undefined;
+  const result = readBrowserSignInResult(entry.output.text);
+  if (result === null || result.status === "resolved") return undefined;
+  if (result.status === "pending" && result.replayed) return undefined;
+  const need = browserSignInPasswordsNeed(result);
+  const site = "site" in result ? result.site : stringField(effectiveArguments(entry), "site");
+  return need && site ? { credential: "login", need, site } : null;
 }
 
 function cardOfferNeed(reason: string): BrowserSignInPasswords | null {

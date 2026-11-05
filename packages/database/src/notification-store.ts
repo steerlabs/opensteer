@@ -463,6 +463,7 @@ async function personAnswered(
     )
     .select([
       "workspaces.homeThreadId",
+      "workspaces.voiceThreadId",
       "runs.personWaited",
       "runs.assignmentId",
       "runs.replyTarget",
@@ -482,7 +483,10 @@ async function personAnswered(
     .executeTakeFirst();
   if (
     !run ||
-    (run.homeThreadId !== event.threadId && !run.personWaited && !run.personInput) ||
+    (run.homeThreadId !== event.threadId &&
+      run.voiceThreadId !== event.threadId &&
+      !run.personWaited &&
+      !run.personInput) ||
     (addressedToUserId
       ? run.requestedBy !== addressedToUserId
       : run.assignmentId !== null || run.replyTarget !== null)

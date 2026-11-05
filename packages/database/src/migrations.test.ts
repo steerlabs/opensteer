@@ -169,6 +169,7 @@ const releasedMigrationNames = [
   "0159_background_model_preferences",
   "0160_memory_pass_waiting",
   "0161_app_tabs",
+  "0162_voice_thread",
 ];
 
 describe("migration names", () => {

@@ -121,6 +121,7 @@ export function previewWorkspace(
     createdAt: previewDate,
     id: workspaceId,
     homeThreadId: createId("thread"),
+    voiceThreadId: null,
     icon: null,
     kind: "main" as const,
     location: local

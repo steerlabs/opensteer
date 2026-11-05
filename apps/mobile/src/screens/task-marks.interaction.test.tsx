@@ -475,6 +475,7 @@ describe("mobile task mark review journeys", () => {
           icon: "plane",
           color: "teal",
           isHome: false,
+          isVoice: false,
         };
         function Header() {
           useThreadHeader({
@@ -549,6 +550,7 @@ describe("mobile task mark review journeys", () => {
         icon: "plane",
         color: "teal",
         isHome: false,
+        isVoice: false,
       };
       function Header() {
         useThreadHeader({

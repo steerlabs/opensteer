@@ -1,4 +1,3 @@
-import { voiceExcludedTools } from "../agents/voice-tools.js";
 import { IntegrationCallOutputSchema } from "@opensteer/agent-tools/outputs";
 import { z } from "zod";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
@@ -59,10 +58,9 @@ export class OpensteerMcpService {
     readonly callers: Pick<AgentCallerResolver, "authenticate">;
     readonly handlers: AgentToolHandlers;
     readonly realtime?: Pick<RealtimeHub, "observe">;
-    readonly store: Pick<
-      OpensteerStore,
-      "getThreadForOwner" | "findMainWorkspaceForOwner" | "voiceCallForRun"
-    > & { readonly requests: Pick<OpensteerStore["requests"], "get"> };
+    readonly store: Pick<OpensteerStore, "getThreadForOwner" | "findMainWorkspaceForOwner"> & {
+      readonly requests: Pick<OpensteerStore["requests"], "get">;
+    };
     readonly publicUrl: URL;
     /** A failure the caller was told only that something went wrong. */
     readonly onToolError?: (error: unknown, tool: string) => void;
@@ -71,10 +69,9 @@ export class OpensteerMcpService {
     readonly callers: Pick<AgentCallerResolver, "authenticate">;
     readonly handlers: AgentToolHandlers;
     readonly realtime?: Pick<RealtimeHub, "observe">;
-    readonly store: Pick<
-      OpensteerStore,
-      "getThreadForOwner" | "findMainWorkspaceForOwner" | "voiceCallForRun"
-    > & { readonly requests: Pick<OpensteerStore["requests"], "get"> };
+    readonly store: Pick<OpensteerStore, "getThreadForOwner" | "findMainWorkspaceForOwner"> & {
+      readonly requests: Pick<OpensteerStore["requests"], "get">;
+    };
     readonly publicUrl: URL;
     readonly onToolError?: (error: unknown, tool: string) => void;
   }) {
@@ -422,12 +419,6 @@ export class OpensteerMcpService {
     let caller = identity.caller ?? (await this.options.callers.authenticate(bearer));
     const key = toolOperationKey(caller, input, identity.operationKey);
     const check = async () => {
-      if (
-        caller.kind === "run" &&
-        voiceExcludedTools.has(tool.name) &&
-        (await this.options.store.voiceCallForRun(caller.claims.runId))
-      )
-        throw new OpensteerError({ code: "forbidden", message: "Hand durable work to Chat." });
       toolAccess[tool.access](caller, await this.#targets(caller, tool, input));
       if (!toolsFor(caller).some((spec) => spec.name === tool.name))
         throw new OpensteerError({

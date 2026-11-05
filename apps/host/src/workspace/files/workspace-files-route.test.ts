@@ -185,6 +185,7 @@ function readyWorkspace(backingKind: "local-directory" | "local-directory"): Wor
     createdAt: now,
     createdBy: owner,
     homeThreadId: null,
+    voiceThreadId: null,
     icon: null,
     id: createId("workspace"),
     kind: "project",

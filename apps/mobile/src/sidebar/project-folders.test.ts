@@ -4,6 +4,7 @@ import { folderRowLimit, sidebarFolders } from "./project-folders.js";
 
 const research: WorkspaceSummary = {
   homeThreadId: "thr_chat",
+  voiceThreadId: null,
   description: "",
   fileCount: 0,
   harnessLabel: "",

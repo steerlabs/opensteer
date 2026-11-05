@@ -582,6 +582,7 @@ function snapshot(sessions: BrowserSessionSummary[]): HostSnapshot {
     connection: "connected",
     deploymentShape: {},
     homeThreadId: null,
+    voiceThreadId: null,
     machines: [],
     network: "online",
     session: "authenticated",
@@ -737,6 +738,7 @@ function withAgents(sessions: BrowserSessionSummary[]): HostSnapshot {
   return {
     ...snapshot(sessions),
     homeThreadId: "thread-home",
+    voiceThreadId: null,
     homeWorkspaceId: source.id,
     threads: [
       { color: null, icon: null, id: "thread-agent", title: "Compare hotels" },

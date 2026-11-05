@@ -62,26 +62,15 @@ describe("Host Run tools plan", () => {
   });
 });
 
-it("fences durable work from voice calls", () => {
-  const plan = agentToolsPlanForRun({
+it("gives a call every tool, and tells it replies are spoken", () => {
+  const input = {
     url: "https://host.test/mcp",
     token: "token",
-    role: "work",
+    role: "conversation",
     accessMode: "full-access",
     reach: "user",
-    voiceCall: true,
-  });
-  for (const tool of [
-    "thread_delegate",
-    "person_message",
-    "app_publish",
-    "trigger_write",
-    "plugin_install",
-  ])
-    expect(plan.tools).not.toContain(tool);
-  expect(plan.tools).toContain("thread_message");
-  expect(plan.tools).toContain("person_show");
-  // Only opening a Request is refused on a call; an approval needing no one still goes through.
-  expect(plan.tools).toContain("integration_request");
-  expect(plan.instructions).toContain("1–3 short sentences");
+  } as const;
+  const plan = agentToolsPlanForRun({ ...input, voiceCall: true });
+  expect(plan.tools).toEqual(agentToolsPlanForRun(input).tools);
+  expect(plan.instructions).toContain("Voice call:");
 });

@@ -209,6 +209,7 @@ export const WorkspaceSchema = z.object({
   /** The colour its mark is drawn in. Older durable Workspace events lack it. */
   color: MarkColorSchema.optional(),
   homeThreadId: ThreadIdSchema.nullable(),
+  voiceThreadId: ThreadIdSchema.nullable(),
   id: WorkspaceIdSchema,
   kind: WorkspaceKindSchema,
   name: z.string().trim().min(1).max(160),

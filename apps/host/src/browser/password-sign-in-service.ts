@@ -59,7 +59,6 @@ type Finish = "settled" | "ended-elsewhere" | "retrying";
 interface Call {
   readonly credential?: "card" | undefined;
   readonly callId: string;
-  readonly canRequest: boolean;
   readonly arrivedAt?: number;
   readonly ownerId: UserId;
   readonly reason: string;
@@ -738,8 +737,6 @@ export class PasswordSignInService {
     };
     const refused = cannotJoin();
     if (refused) return refused;
-    if (!call.canRequest && (operation.requestId || operation.opening))
-      return refuse("needs-approval");
     if (!operation.requestId)
       await this.#wait(
         operation,
@@ -757,17 +754,6 @@ export class PasswordSignInService {
       await this.#cancel(operation, "authority-lost");
     }
     if (!operation.settlement && operation.need) {
-      if (!call.canRequest) {
-        if (operation.requestId || operation.opening) return refuse("needs-approval");
-        await this.#cancel(operation, "withdrawn");
-        await this.#wait(operation, this.#declineAnswerMs, true);
-        if (!operation.settlement)
-          await this.#finish(operation, {
-            status: "fulfilled",
-            response: { outcome: "interrupted" },
-          });
-        return refuse("needs-approval");
-      }
       if (!operation.requestId)
         await (operation.opening ??= this.#openRequest(operation).finally(() => {
           operation.opening = null;
@@ -880,7 +866,7 @@ export class PasswordSignInService {
       if (operation.settlement || operation.cancelSent) return;
       operation.need = event.need;
       // Start the Request at the person-needed event, even if the tool caller detached.
-      if (event.need === "approval" && operation.starter.canRequest && !operation.requestId)
+      if (event.need === "approval" && !operation.requestId)
         await (operation.opening ??= this.#openRequest(operation).finally(() => {
           operation.opening = null;
         }));
@@ -1176,7 +1162,6 @@ export class PasswordSignInService {
     const identity: Call = {
       credential: call.credential,
       callId: call.callId,
-      canRequest: call.canRequest,
       ownerId: call.ownerId,
       reason: call.reason,
       runId: call.runId,

@@ -4,15 +4,16 @@ import {
   EnvironmentIdSchema,
   HarnessInstanceIdSchema,
   RunIdSchema,
+  ThreadAccessModeSchema,
   ThreadIdSchema,
   WorkspaceIdSchema,
 } from "@opensteer/core";
 
 /**
  * Voice: the person's client holds a realtime call whose audio goes straight
- * to the voice vendor. The call's agent is one Run on a hidden voice Thread, a
- * child of Chat, executed by the Runner that holds the voice account; that
- * Runner creates the call, so the vendor credential never leaves its computer.
+ * to the voice vendor. Each call is one Run on the person's permanent Voice
+ * Thread, executed by the Runner that holds the voice account; that Runner
+ * creates the call, so the vendor credential never leaves its computer.
  * Session descriptions travel only on these synchronous calls, never on a
  * durable path.
  */
@@ -64,10 +65,22 @@ export const VoiceStartInputSchema = z.strictObject({
 });
 export const VoiceStartResultSchema = z.object({
   answer: VoiceSdpSchema,
-  /** The call's hidden Thread and Run: `host.show` from this Run is meant for this device. */
+  /** The Voice Thread and this call's Run: `host.show` from this Run is meant for this device. */
   threadId: ThreadIdSchema,
   runId: RunIdSchema,
   workspaceId: WorkspaceIdSchema,
+});
+/** Creates the person's Voice Thread if it does not exist yet, without starting a call. */
+export const VoiceOpenInputSchema = z.strictObject({
+  environmentId: EnvironmentIdSchema,
+  harnessInstanceId: HarnessInstanceIdSchema,
+  accessMode: ThreadAccessModeSchema.optional(),
+});
+export const VoiceOpenResultSchema = z.object({
+  threadId: ThreadIdSchema,
+  /** The computer and Codex account the Thread is on, which carry its calls. */
+  environmentId: EnvironmentIdSchema,
+  harnessInstanceId: HarnessInstanceIdSchema,
 });
 export const VoiceRenewInputSchema = z.strictObject(voiceSession);
 export const VoiceSayInputSchema = z.strictObject({
@@ -85,6 +98,8 @@ export const VoiceEmptyResultSchema = z.object({});
 
 export type VoiceStartInput = z.infer<typeof VoiceStartInputSchema>;
 export type VoiceStartResult = z.infer<typeof VoiceStartResultSchema>;
+export type VoiceOpenInput = z.infer<typeof VoiceOpenInputSchema>;
+export type VoiceOpenResult = z.infer<typeof VoiceOpenResultSchema>;
 export type VoiceRenewInput = z.infer<typeof VoiceRenewInputSchema>;
 export type VoiceSayInput = z.infer<typeof VoiceSayInputSchema>;
 export type VoiceContextInput = z.infer<typeof VoiceContextInputSchema>;
@@ -101,8 +116,6 @@ export const VoiceRefusalReasonSchema = z.enum([
   "voice-engine-unsupported",
   /** Not this person's usable, signed-in ChatGPT account on that computer. */
   "voice-account-unavailable",
-  /** Voice starts from Chat, which this person has not set up yet. */
-  "voice-chat-required",
   /** The vendor refused the call, e.g. the plan has no voice. */
   "voice-refused",
   /** The call is over: stopped, expired, replaced by a newer call, or failed. */

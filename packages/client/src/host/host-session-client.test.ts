@@ -14912,6 +14912,7 @@ function browserFrame(frameId: number, targeted = false): ArrayBuffer {
 function makeWorkspace(name = "Opensteer"): WorkspaceView {
   return {
     homeThreadId: null,
+    voiceThreadId: null,
     capacity: { kind: "host-filesystem" },
     createdAt: now,
     icon: null,

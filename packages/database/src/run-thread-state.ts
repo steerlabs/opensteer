@@ -27,7 +27,7 @@ export async function readRunThreadState(
   const [previous, earlierTask] = await Promise.all([
     database
       .selectFrom("runs")
-      .select(["completedAt", "failure", "seedInputId", "status"])
+      .select(["completedAt", "failure", "seedInputId", "status", "voiceSessionId"])
       .where("threadId", "=", run.threadId)
       .where("runOrdinal", "<", run.runOrdinal)
       .orderBy("runOrdinal", "desc")
@@ -79,7 +79,9 @@ export async function readRunThreadState(
         }
       : null,
     previousRun:
-      previous && (previous.status === "failed" || previous.status === "interrupted")
+      previous &&
+      previous.voiceSessionId === null &&
+      (previous.status === "failed" || previous.status === "interrupted")
         ? {
             endedAt: required(previous.completedAt, "Run").toISOString(),
             failure: previous.failure

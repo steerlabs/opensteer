@@ -60,6 +60,9 @@ export function foldTranscriptEvent(
   event: AgentEvent,
 ): TranscriptEntry[] {
   switch (event.type) {
+    // The person's words arrive as the `message.created` the Host made of this.
+    case "voice.heard":
+      return [...entries];
     case "app.published":
       if (
         entries.some(

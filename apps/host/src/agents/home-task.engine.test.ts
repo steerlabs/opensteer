@@ -194,6 +194,7 @@ describe("live Home task", () => {
           engine: driverKind,
           model: model.modelId,
           homeThreadId: home,
+          voiceThreadId: null,
           workerThreadId: worker.id,
           assignmentId: assignment.id,
           handoff: { runId: handoff.runId, ms: handoffMs, reply: handoff.assistantText },

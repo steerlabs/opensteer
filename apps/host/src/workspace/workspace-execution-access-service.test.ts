@@ -111,6 +111,7 @@ function localWorkspace(ownerEnvironmentId: EnvironmentId): Workspace & {
     createdAt: now,
     createdBy: createId("user"),
     homeThreadId: null,
+    voiceThreadId: null,
     icon: null,
     id: createId("workspace"),
     kind: "main",

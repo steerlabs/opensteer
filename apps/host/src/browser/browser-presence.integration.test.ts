@@ -244,7 +244,7 @@ integration("Browser presence and conversation usage", () => {
     for (const cleanup of cleanups.splice(0).reverse()) await cleanup().catch(() => undefined);
   });
 
-  it("shows a voice Run's browser as Chat and clears its cursor immediately on Stop", async () => {
+  it("shows a voice Run's browser as its own Thread and clears its cursor on Stop", async () => {
     const database = await createMachineAccessDatabase(databaseUrl!);
     cleanups.push(() => database.drop());
     const host = await startMachineAccessHost(database.url, { signupPolicy: "open" });
@@ -282,6 +282,7 @@ integration("Browser presence and conversation usage", () => {
       environmentId: caller.environmentId,
       harnessInstanceId: HarnessInstanceIdSchema.parse(caller.harnessInstanceId),
     });
+    if (call.busy) throw new Error("Expected an idle Voice Thread");
     const executing = waitForExecute(caller.primary.socket, call.runId);
     // Direct store admission has no server wake callback. A normal queued Chat
     // input wakes the real coordinator, which dispatches both Threads.
@@ -398,7 +399,7 @@ integration("Browser presence and conversation usage", () => {
     await vi.waitFor(() => expect(ofType(owner, "host.place-activity").length).toBeGreaterThan(0));
     const catalog = await host.runtime.browser.readTabCatalog(host.ownerId, sessionId);
     expect(catalog.tabs.find((tab) => tab.id === "voice-page")?.occupants).toEqual([
-      expect.objectContaining({ threadId: chat.thread.id, home: true }),
+      expect.objectContaining({ threadId: run.threadId, home: false }),
     ]);
     await host.runtime.browser.flushPendingTabDescriptors();
     const trafficFrom = owner.messages.length;
@@ -449,10 +450,9 @@ integration("Browser presence and conversation usage", () => {
       userId: host.ownerId,
       limit: 10,
     });
-    expect(waiting.requests.find(({ request }) => request.id === requestId)?.presentation).toEqual({
-      threadId: chat.thread.id,
-      workerThread: { id: run.threadId, title: "Voice call" },
-    });
+    expect(
+      waiting.requests.find(({ request }) => request.id === requestId)?.presentation,
+    ).toBeNull();
     const answering = waitForMessage(caller.primary.socket, (message) => {
       const parsed = HostToRunnerMessageSchema.safeParse(message);
       return (
@@ -560,7 +560,29 @@ integration("Browser presence and conversation usage", () => {
       { agentReady: true, targetedStreaming: true },
     );
     cleanups.push(() => runtime.close());
-    await until(() => (host.runtime.browser.available ? true : undefined));
+    const producers = [runtime];
+    for (let index = 32; index < 100; index += 32) {
+      const producer = await startBrowserRuntime(
+        host.hostPort,
+        await enrollmentToken(host, {
+          allowedModules: ["browser"],
+          idempotencyKey: `maximum-browser-${index}`,
+          name: `Maximum browser ${index}`,
+        }),
+        { agentReady: true, targetedStreaming: true },
+      );
+      cleanups.push(() => producer.close());
+      producers.push(producer);
+    }
+    // A connected computer takes no Sessions until it has reconciled its profiles.
+    await until(async () => {
+      const { placements } = await host.runtime.browser.bootstrap(host.ownerId);
+      return producers.every(({ runnerId }) =>
+        placements.some((placement) => placement.available && placement.runnerId === runnerId),
+      )
+        ? true
+        : undefined;
+    });
     const sessionIds = [];
     const surfaces = Array.from({ length: 64 }, (_, order) => ({
       id: `maximum-${order}`,
@@ -572,21 +594,8 @@ integration("Browser presence and conversation usage", () => {
       geometryRevision: 1,
       openerId: null,
     }));
-    let producer = runtime;
     for (let index = 0; index < 100; index++) {
-      if (index > 0 && index % 32 === 0) {
-        producer = await startBrowserRuntime(
-          host.hostPort,
-          await enrollmentToken(host, {
-            allowedModules: ["browser"],
-            idempotencyKey: `maximum-browser-${index}`,
-            name: `Maximum browser ${index}`,
-          }),
-          { agentReady: true, targetedStreaming: true },
-        );
-        const held = producer;
-        cleanups.push(() => held.close());
-      }
+      const producer = producers[Math.floor(index / 32)]!;
       const opened = await host.runtime.browser.start({
         ownerId: host.ownerId,
         workspaceId: firstRun.workspaceId,

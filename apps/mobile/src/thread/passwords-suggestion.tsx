@@ -7,7 +7,7 @@ import {
 } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
 import { useSyncExternalStore, type ReactNode } from "react";
-import { Pressable, StyleSheet, View } from "react-native";
+import { Pressable, StyleSheet, View, type StyleProp, type ViewStyle } from "react-native";
 import { color, material, radius, space, touchTarget } from "../theme.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
 import { AppText } from "../ui/primitives.js";
@@ -22,6 +22,7 @@ export function PasswordsSuggestion(props: {
   readonly deploymentId: string;
   readonly hostClient: Parameters<typeof useHostSelector>[0];
   readonly offer: PasswordsSetupOffer;
+  readonly style?: StyleProp<ViewStyle>;
   readonly userId: string;
 }): ReactNode {
   const homeName = useHostSelector(props.hostClient, selectHomeName);
@@ -40,7 +41,7 @@ export function PasswordsSuggestion(props: {
     site: props.offer.site,
   });
   return (
-    <View accessibilityLiveRegion="polite" style={styles.line}>
+    <View accessibilityLiveRegion="polite" style={[styles.line, props.style]}>
       <Symbol name="key" size={15} tint={color.ember} />
       <AppText role="caption" style={styles.words} tone="soft">
         {line.before}
@@ -78,7 +79,6 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     flexDirection: "row",
     gap: space[10],
-    marginTop: space[10],
     paddingLeft: space[12],
     paddingVertical: space[8],
   },

@@ -30,6 +30,7 @@ import {
   type WorkSummary,
   type WorkspaceSummary,
 } from "@opensteer/client/host";
+import { voiceCallSeed } from "@opensteer/core";
 import { memo, useMemo, useState, type ReactNode } from "react";
 import { Pressable, StyleSheet, View, useWindowDimensions } from "react-native";
 import Animated, { LayoutAnimationConfig } from "react-native-reanimated";
@@ -98,6 +99,8 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
   /** The reader's own Home, which its messages name as Home rather than as whose it is. */
   readonly homeThreadId: string | null;
   readonly viewerUserId: string | null;
+  /** The Voice Thread, where the words that open a call stand for the call. */
+  readonly voiceThread?: boolean;
   readonly workspaces: readonly WorkspaceSummary[];
 }): ReactNode {
   const { group } = props;
@@ -136,6 +139,10 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
         <AssignmentLines entries={[group.entry]} />
       ) : group.kind === "delegation" ? (
         <DelegationLine delegation={group.entry} onOpenThread={props.onOpenThread} />
+      ) : props.voiceThread === true &&
+        group.entry.messageKind !== "assistant" &&
+        group.entry.body === voiceCallSeed ? (
+        <CallDivider createdAt={group.entry.createdAt} />
       ) : (
         <Message
           conversation={props.conversation === true}
@@ -907,6 +914,25 @@ function UnreadDivider(): ReactNode {
   );
 }
 
+/** Where a call began on the Voice Thread. It marks time; there is nothing here to read. */
+function CallDivider(props: { readonly createdAt: string }): ReactNode {
+  const time = formatClockTime(props.createdAt);
+  return (
+    <View
+      accessibilityLabel={`${voiceCallSeed} at ${time}`}
+      accessibilityRole="text"
+      accessible
+      style={styles.call}
+    >
+      <View style={styles.callRule} />
+      <AppText role="caption" tone="muted">
+        {voiceCallSeed} · {time}
+      </AppText>
+      <View style={styles.callRule} />
+    </View>
+  );
+}
+
 /** The first group holding a message published past the reader's saved position. */
 export function firstUnreadGroupKey(
   groups: readonly TranscriptGroup[],
@@ -1339,6 +1365,13 @@ export function WorkingIndicator({
 const styles = StyleSheet.create({
   askAbout: { justifyContent: "center", minHeight: touchTarget, paddingTop: space[4] },
   earlierSteps: { alignSelf: "flex-start", justifyContent: "center", minHeight: touchTarget },
+  call: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: space[8],
+    paddingVertical: space[8],
+  },
+  callRule: { backgroundColor: color.line, flex: 1, height: 1 },
   unread: {
     alignItems: "center",
     flexDirection: "row",

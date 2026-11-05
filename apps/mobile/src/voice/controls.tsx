@@ -1,13 +1,13 @@
-import type { VoiceLevels, VoicePhase, VoiceSnapshot } from "@opensteer/client/voice";
-import { useIsFocused } from "@react-navigation/native";
+import { VoiceContext, useVoice } from "@opensteer/client/react";
 import {
-  createContext,
-  useContext,
-  useEffect,
-  useRef,
-  useSyncExternalStore,
-  type ReactNode,
-} from "react";
+  voiceBar,
+  type VoiceControls,
+  type VoicePhase,
+  type VoiceSnapshot,
+} from "@opensteer/client/voice";
+import { useIsFocused } from "@react-navigation/native";
+import * as Haptics from "expo-haptics";
+import { useContext, useEffect, useRef, useSyncExternalStore, type ReactNode } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, View } from "react-native";
 import Animated, {
   Easing,
@@ -22,67 +22,25 @@ import Animated, {
   withTiming,
 } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { color, material, radius, space } from "../theme.js";
+import { color, controlFontScaleLimit, material, radius, space, touchTarget } from "../theme.js";
 import { ComposerGlyph } from "../thread/composer-bar.js";
 import { activitySymbol } from "../ui/activity-symbol.js";
 import { appear, enter, exit } from "../ui/motion.js";
 import { AppText } from "../ui/primitives.js";
 import { usePaneInView } from "../ui/pane.js";
 import { Symbol } from "../ui/symbol.js";
+import { VoiceAsk } from "./ask.js";
+import { floatLift, floatRest } from "./float-lift.js";
+import { useKeyboardHeight } from "./keyboard-height.js";
+import { useVoiceAvailable, useVoiceValue } from "./use-voice-value.js";
 
-/** What the voice UI drives: the runtime's one `VoiceController`. */
-export interface VoiceControls {
-  subscribe(listener: () => void): () => void;
-  getSnapshot(): VoiceSnapshot;
-  subscribeLevel(listener: (levels: VoiceLevels) => void): () => void;
-  /** Fires when the call's agent changed the screen. */
-  subscribeShown?(listener: () => void): () => void;
-  start(): Promise<void>;
-  stop(): unknown;
-  setMuted(muted: boolean): void;
-  dismissNotice(): void;
-  openMicrophoneSettings?(): void;
-}
-
-export const VoiceContext = createContext<VoiceControls | null>(null);
-
-const idle: VoiceSnapshot = {
-  available: false,
-  phase: "idle",
-  muted: false,
-  heard: null,
-  spoken: null,
-  since: null,
-  activity: null,
-  notice: null,
-};
-const noSubscribe = () => () => {};
-const idleSnapshot = () => idle;
-
-export function useVoice(): { controller: VoiceControls | null; snapshot: VoiceSnapshot } {
-  const controller = useContext(VoiceContext);
-  const snapshot = useSyncExternalStore(
-    controller?.subscribe ?? noSubscribe,
-    controller?.getSnapshot ?? idleSnapshot,
-  );
-  return { controller, snapshot };
-}
-
-/** What a screen reader hears; the orb says the same thing to the eye. */
-const status: Record<VoicePhase, string> = {
-  idle: "",
-  connecting: "Connecting",
-  listening: "Listening",
-  hearing: "Listening",
-  thinking: "Working",
-  speaking: "Speaking",
-};
-
-/** Whether a call can be started or is under way, for a bar choosing its controls. */
-export function useVoiceAvailable(): boolean {
-  const { controller, snapshot } = useVoice();
-  return controller !== null && (snapshot.available || snapshot.phase !== "idle");
-}
+const selectShowing = ({ notice, phase }: VoiceSnapshot) => phase !== "idle" || notice !== null;
+const selectPhase = ({ phase }: VoiceSnapshot) => phase;
+const selectMuted = ({ muted }: VoiceSnapshot) => muted;
+const selectActivity = ({ activity }: VoiceSnapshot) => activity;
+const selectTasks = ({ tasks }: VoiceSnapshot) => tasks;
+const selectNotice = ({ notice }: VoiceSnapshot) => notice;
+const selectStatus = (snapshot: VoiceSnapshot) => voiceBar(snapshot).status;
 
 /**
  * Chat composer's way in: starts voice, or ends the call. `disc` is the bar's
@@ -93,9 +51,11 @@ export function VoiceMic(props: {
   readonly disabled: boolean;
   readonly face?: "disc" | "glyph";
 }): ReactNode {
-  const { controller, snapshot } = useVoice();
-  if (!controller || (!snapshot.available && snapshot.phase === "idle")) return null;
-  const on = snapshot.phase !== "idle";
+  const controller = useContext(VoiceContext);
+  const offered = useVoiceAvailable();
+  const phase = useVoiceValue(selectPhase);
+  if (!controller || !offered) return null;
+  const on = phase !== "idle";
   return (
     <Pressable
       accessibilityLabel={on ? "End voice" : "Talk to Opensteer"}
@@ -106,7 +66,7 @@ export function VoiceMic(props: {
       style={props.disabled && !on ? styles.quiet : null}
     >
       {({ pressed }) =>
-        snapshot.phase === "connecting" ? (
+        phase === "connecting" ? (
           <View style={styles.micBox}>
             <ActivityIndicator color={color.ember} />
           </View>
@@ -154,49 +114,84 @@ function changeDocks(delta: number) {
   for (const listener of dockListeners) listener();
 }
 
-export function VoiceDock(): ReactNode {
+/**
+ * `slot` is the Voice Thread's: the bar takes the start bar's exact place, so
+ * it cross-fades in where it stands and brings no air of its own.
+ */
+export function VoiceDock(props: { readonly slot?: boolean }): ReactNode {
   const onScreen = useIsFocused();
   const inView = usePaneInView();
   const focused = onScreen && inView;
-  const { controller, snapshot } = useVoice();
+  const controller = useContext(VoiceContext);
+  const showing = useVoiceValue(selectShowing);
   useEffect(() => {
     if (!focused) return;
     changeDocks(1);
     return () => changeDocks(-1);
   }, [focused]);
-  if (!focused || !controller || (snapshot.phase === "idle" && !snapshot.notice)) return null;
+  if (!focused || !controller || !showing) return null;
   return (
-    <Animated.View entering={enter} exiting={exit} style={styles.dock}>
-      <VoiceBar controller={controller} snapshot={snapshot} />
+    <Animated.View
+      entering={props.slot === true ? appear : enter}
+      exiting={exit}
+      style={props.slot === true ? styles.stack : [styles.stack, styles.dock]}
+    >
+      <VoiceAsk />
+      <VoiceBar controller={controller} />
     </Animated.View>
   );
 }
 
-/** The bar for screens without any composer. Mount once, above the navigator. */
+/**
+ * The bar for screens without any composer. Mount once, above the navigator.
+ *
+ * It stays under iOS sheets by choice. In a `FullWindowOverlay` it would stay on
+ * top, but a Request card's `Modal` review needs a view controller to present
+ * from, and that window-level view has none: Review would silently do nothing.
+ */
 export function VoiceOverlay(): ReactNode {
-  const { controller, snapshot } = useVoice();
+  const controller = useContext(VoiceContext);
+  const showing = useVoiceValue(selectShowing);
   const docked = useSyncExternalStore(dockStore.subscribe, dockStore.docked);
+  if (docked || !controller || !showing) return null;
+  return <FloatingBar controller={controller} />;
+}
+
+/** Mounted only while it shows, so the keyboard is watched only during a call. */
+function FloatingBar(props: { readonly controller: VoiceControls }): ReactNode {
   const insets = useSafeAreaInsets();
-  if (docked || !controller || (snapshot.phase === "idle" && !snapshot.notice)) return null;
+  const rest = insets.bottom + floatRest;
+  const keyboard = useKeyboardHeight();
+  const lift = useAnimatedStyle(() => ({
+    transform: [{ translateY: -floatLift(keyboard.value, rest) }],
+  }));
   return (
     <Animated.View
       entering={enter}
       exiting={exit}
       pointerEvents="box-none"
-      style={[styles.overlay, { bottom: insets.bottom + 76 }]}
+      style={[styles.overlay, { bottom: rest }]}
     >
-      <VoiceBar controller={controller} snapshot={snapshot} floating />
+      <Animated.View pointerEvents="box-none" style={[styles.stack, lift]}>
+        <VoiceAsk />
+        <VoiceBar controller={props.controller} floating />
+      </Animated.View>
     </Animated.View>
   );
 }
 
+/** Draws `voiceBar()`; each fact is read alone, so a caption's tokens redraw only its words. */
 function VoiceBar(props: {
   readonly controller: VoiceControls;
-  readonly snapshot: VoiceSnapshot;
   readonly floating?: boolean;
 }): ReactNode {
-  const { controller, snapshot } = props;
-  const { phase, muted, notice } = snapshot;
+  const { controller } = props;
+  const phase = useVoiceValue(selectPhase);
+  const muted = useVoiceValue(selectMuted);
+  const activity = useVoiceValue(selectActivity);
+  const tasks = useVoiceValue(selectTasks);
+  const notice = useVoiceValue(selectNotice);
+  const status = useVoiceValue(selectStatus);
   const shell = [styles.bar, props.floating === true && styles.floating];
   if (phase === "idle" && notice)
     return (
@@ -219,7 +214,6 @@ function VoiceBar(props: {
         <Pressable
           accessibilityLabel="Dismiss"
           accessibilityRole="button"
-          hitSlop={space[8]}
           onPress={() => controller.dismissNotice()}
           style={styles.button}
         >
@@ -227,52 +221,36 @@ function VoiceBar(props: {
         </Pressable>
       </View>
     );
-  // Live words only; with none, the one word a first-time caller needs to start talking.
-  const caption =
-    phase === "hearing" || phase === "thinking"
-      ? snapshot.heard
-      : phase === "speaking"
-        ? snapshot.spoken
-        : null;
-  const quiet =
-    caption ??
-    (muted ? "Muted" : phase === "listening" || phase === "connecting" ? status[phase] : null);
   return (
     <View
-      accessibilityLabel={`Voice: ${muted ? "Microphone muted" : status[phase]}`}
+      accessibilityLabel={`Voice: ${status}`}
       accessibilityLiveRegion="polite"
       style={[shell, (phase === "hearing" || phase === "speaking") && styles.barLive]}
     >
       <Glow controller={controller} />
-      <Orb controller={controller} phase={phase} muted={muted} activity={snapshot.activity} />
-      <View style={styles.text}>
-        {quiet ? (
-          <Animated.View entering={appear} key={caption === null ? "quiet" : "live"}>
-            <AppText
-              ellipsizeMode="head"
-              numberOfLines={1}
-              role="secondary"
-              tone={
-                caption === null
-                  ? "muted"
-                  : phase === "hearing"
-                    ? "default"
-                    : phase === "speaking"
-                      ? "soft"
-                      : "muted"
-              }
-            >
-              {quiet}
-            </AppText>
-          </Animated.View>
-        ) : null}
-      </View>
+      <Orb controller={controller} phase={phase} muted={muted} activity={activity} />
+      <BarWords />
+      {tasks > 0 ? (
+        <Animated.View entering={appear} exiting={exit} style={styles.tasks}>
+          <AppText
+            maxFontSizeMultiplier={controlFontScaleLimit}
+            numberOfLines={1}
+            role="caption"
+            tone="soft"
+          >
+            {tasks === 1 ? "1 task" : `${tasks} tasks`}
+          </AppText>
+        </Animated.View>
+      ) : null}
       <Pressable
         accessibilityLabel={muted ? "Unmute microphone" : "Mute microphone"}
         accessibilityRole="button"
         accessibilityState={{ selected: muted, disabled: phase === "connecting" }}
         disabled={phase === "connecting"}
-        onPress={() => controller.setMuted(!muted)}
+        onPress={() => {
+          void Haptics.selectionAsync();
+          controller.setMuted(!muted);
+        }}
         style={[styles.button, muted && styles.buttonOn, phase === "connecting" && styles.dim]}
       >
         <Symbol
@@ -285,13 +263,36 @@ function VoiceBar(props: {
       <Pressable
         accessibilityLabel="End voice"
         accessibilityRole="button"
-        onPress={() => void controller.stop()}
+        onPress={() => {
+          void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          void controller.stop();
+        }}
         style={styles.end}
       >
-        <AppText role="secondaryMedium" style={styles.endText}>
+        <AppText
+          maxFontSizeMultiplier={controlFontScaleLimit}
+          role="secondaryMedium"
+          style={styles.endText}
+        >
           End
         </AppText>
       </Pressable>
+    </View>
+  );
+}
+
+/** The one line of the bar that changes with every token, alone in its own leaf. */
+function BarWords(): ReactNode {
+  const { live, tone, words } = voiceBar(useVoice().snapshot);
+  return (
+    <View style={styles.text}>
+      {words === null ? null : (
+        <Animated.View entering={appear} key={live ? "live" : "quiet"}>
+          <AppText ellipsizeMode="head" numberOfLines={1} role="secondary" tone={tone}>
+            {words}
+          </AppText>
+        </Animated.View>
+      )}
     </View>
   );
 }
@@ -423,25 +424,28 @@ function Orb(props: {
   );
 }
 
+/** The call bar and the Voice Thread's start bar, so one takes the other's place exactly. */
+export const voiceBarHeight = 56;
+
 const styles = StyleSheet.create({
   bar: {
     ...material.plate,
     alignItems: "center",
     borderRadius: radius.full,
     flexDirection: "row",
-    gap: space[10],
-    minHeight: 56,
+    gap: space[8],
+    minHeight: voiceBarHeight,
     paddingLeft: space[14],
-    paddingRight: space[8],
-    paddingVertical: space[8],
+    paddingRight: space[6],
+    paddingVertical: space[6],
   },
   barLive: { borderColor: color.emberLine },
   button: {
     alignItems: "center",
     borderRadius: radius.full,
-    height: 40,
+    height: touchTarget,
     justifyContent: "center",
-    width: 40,
+    width: touchTarget,
   },
   buttonOn: { backgroundColor: color.redWash },
   core: {
@@ -485,8 +489,8 @@ const styles = StyleSheet.create({
     borderColor: color.redLine,
     borderRadius: radius.full,
     borderWidth: 1,
-    height: 40,
     justifyContent: "center",
+    minHeight: touchTarget,
     paddingHorizontal: space[16],
   },
   endText: { color: color.red },
@@ -555,6 +559,13 @@ const styles = StyleSheet.create({
     borderRadius: radius.full,
     paddingHorizontal: space[12],
     paddingVertical: space[6],
+  },
+  stack: { gap: space[6] },
+  tasks: {
+    ...material.quiet,
+    borderRadius: radius.full,
+    paddingHorizontal: space[8],
+    paddingVertical: space[2],
   },
   shine: {
     backgroundColor: "rgba(255, 244, 239, 0.85)",

@@ -2430,7 +2430,7 @@ export class RunnerRuntime {
         workspacePath: workspace.path,
       });
       // Once taken, the idle engine remains this Run’s to reuse or retire.
-      warmEngine = context.voiceCall ? undefined : await this.#warm.take(context.threadId);
+      warmEngine = await this.#warm.take(context.threadId);
       if (
         warmEngine &&
         command.inputs.some(
@@ -2694,14 +2694,11 @@ export class RunnerRuntime {
         OPENSTEER_BROWSER_HARNESS: this.#browserHarnessExecutable,
       });
       const machineAccessContext = context.machineAccess;
-      if (
-        context.voiceCall &&
-        (!adapter.capabilities.voiceCalls || context.providerSessionReference)
-      )
+      if (context.voiceCall && !adapter.capabilities.voiceCalls)
         throw new OpensteerError({
           code: "conflict",
           reason: "voice-engine-unsupported",
-          message: "Voice calls require a fresh Codex session.",
+          message: "This engine does not support voice calls.",
         });
       const sessionContext = {
         ...(active.voiceCall ? { voiceCall: active.voiceCall } : {}),
