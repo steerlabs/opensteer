@@ -1,3 +1,4 @@
+import { messageItem } from "../mcp/thread-items.js";
 import { mcpToolCallId } from "../integrations/mcp-call-id.js";
 import { TriggerToolsTestClient } from "../mcp/product-tools.test-support.js";
 import {
@@ -16,6 +17,10 @@ import type { TriggerControlInput } from "@opensteer/triggers";
 import { describe, expect, it, vi } from "vitest";
 import { type TriggerControlTokenService } from "./trigger-control-service.js";
 
+vi.mock("@opensteer/database", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@opensteer/database")>()),
+  readAgentThreadRecent: async () => ({ runs: [], places: [] }),
+}));
 const now = "2026-08-12T12:00:00.000Z";
 const ownerId = createId("user");
 const runnerId = createId("runner");
@@ -371,6 +376,7 @@ function makeService(options: {
     admitTriggerControlRequest,
     occurrenceId: claims.occurrenceId,
     service: new TriggerToolsTestClient({
+      browser: { readablePlaces: async () => [] } as never,
       defaultWorkspaceBacking: "local-directory",
       canRunHarness: () => true,
       commands,
@@ -572,9 +578,12 @@ it("reads home history using the resolved Chat ID", async () => {
       type: "thread.read",
       requestId: crypto.randomUUID(),
       threadId: "home",
-      maxMessages: 1,
+      limit: 1,
     }),
-  ).resolves.toMatchObject({ thread: { id: chat.id, workspaceId }, messages: [entry] });
+  ).resolves.toMatchObject({
+    thread: { id: chat.id, workspaceId },
+    items: [messageItem(entry, 20_000)],
+  });
   expect(read).toHaveBeenCalledWith(expect.objectContaining({ threadId: chat.id }));
 });
 it("reports a missing Chat for trigger home reads", async () => {

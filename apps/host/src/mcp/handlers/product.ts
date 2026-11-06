@@ -1,3 +1,12 @@
+import { ThreadDetailSchema } from "@opensteer/agent-tools/outputs";
+import type { ThreadItem } from "@opensteer/agent-tools/outputs";
+import {
+  readAgentThreadRecent,
+  readAgentThreadActivity,
+  encodeThreadHistoryCursor,
+  assignmentSummaryInTransaction,
+} from "@opensteer/database";
+import { itemText, messageItem, taskItem, boundedThreadItems } from "../thread-items.js";
 import { isDeepStrictEqual } from "node:util";
 import { ThreadService } from "../../threads/thread-service.js";
 import { ThreadWaitService } from "../../threads/thread-wait.js";
@@ -19,7 +28,12 @@ import {
   provisionalThreadTitle,
   requestTitleText,
   type Request,
+  type AssignmentSummary,
+  ModelSelectionSchema,
+  compareSequence,
+  placeIdentityKey,
   ThreadIdSchema,
+  MessageIdSchema,
   WorkspaceIdSchema,
   type AgentEvent,
   type EnvironmentId,
@@ -105,6 +119,7 @@ export class ProductToolHandlers {
   readonly #browser: Pick<
     BrowserService,
     | "createProfile"
+    | "readablePlaces"
     | "drainRunPlaces"
     | "closeAgentSession"
     | "listAgentSessions"
@@ -145,6 +160,7 @@ export class ProductToolHandlers {
     readonly browser: Pick<
       BrowserService,
       | "createProfile"
+      | "readablePlaces"
       | "drainRunPlaces"
       | "closeAgentSession"
       | "listAgentSessions"
@@ -226,15 +242,27 @@ export class ProductToolHandlers {
 
     if (!this.#personShow) throw badRequest("Showing places is unavailable on this Host.");
     let target: PersonShowMessage["target"];
-    if ("current" in input.target) {
-      await this.#browser.drainRunPlaces(claims.runId);
-      const current = await this.#store.latestRunPlace(claims.runId);
+    if ("current" in input.target || "runId" in input.target) {
+      const targetRunId = "runId" in input.target ? input.target.runId : claims.runId;
+      if (targetRunId !== claims.runId) {
+        const run = await this.#store.database
+          .selectFrom("runs")
+          .select("threadId")
+          .where("id", "=", targetRunId)
+          .executeTakeFirst();
+        const thread = run
+          ? await this.#store.getThreadForOwner(run.threadId, claims.requestedBy)
+          : null;
+        if (!thread) throw forbidden("Run is unavailable to this user");
+        assertTarget(caller, thread);
+      }
+      await this.#browser.drainRunPlaces(targetRunId);
+      const current = await this.#store.latestRunPlace(targetRunId);
       if (!current)
         throw badRequest(
-          "This Run has not worked in a place yet.",
-          "Pass target.tabId, from browser_tab_read or Browser Harness surfaceId.",
+          "This Run has not worked in a place yet. Read thread_read for recent Runs and places.",
         );
-      target = { place: current.data.place };
+      target = { place: current.data.place, runId: targetRunId };
       const place = current.data.place;
       if (place.kind === "phone") {
         // A phone's tab outlives the Run's hold, and agents release before they reply.
@@ -246,11 +274,10 @@ export class ProductToolHandlers {
           ?.sessionsForRunner(place.machineId)
           .find(
             (session) =>
-              session.runId === claims.runId &&
+              session.runId === targetRunId &&
               session.apps.some((app) => computerAppIdentityKey(app) === place.appKey),
           );
-        if (!session || !this.#computerUse)
-          throw forbidden("This Run's current place is unavailable.", "Pass target.tabId instead.");
+        if (!session || !this.#computerUse) throw forbidden("This Run's app session ended.");
         await this.#computerUse.authorizeDisplay(
           session.sessionId,
           claims.requestedBy,
@@ -431,7 +458,17 @@ export class ProductToolHandlers {
       }
     }
 
+    if (input.parentThreadId === "self" && caller.kind === "connection")
+      throw badRequest("Connected agents must name parentThreadId; self needs an anchor Thread");
+    const parentThreadId =
+      input.parentThreadId === "self" ? callerThread(caller).id : input.parentThreadId;
+    if (parentThreadId) {
+      const parent = await this.#store.getThreadForOwner(parentThreadId, caller.userId);
+      if (!parent) throw forbidden("Parent Thread is unavailable");
+      assertTarget(caller, parent);
+    }
     const page = await this.#store.agentThreadPageForOwner({
+      ...(parentThreadId ? { parentThreadId } : {}),
       ...(input.before ? { before: input.before } : {}),
       maxBytes: 128 * 1_024,
       maxItems: input.limit,
@@ -443,6 +480,8 @@ export class ProductToolHandlers {
     });
     const response = {
       threads: page.threads.map((summary) => ({
+        assignmentId: summary.assignmentId,
+        taskStatus: summary.taskStatus,
         environmentConnected: this.#isEnvironmentConnected(summary.environmentId),
         environmentId: summary.environmentId,
         id: summary.id,
@@ -455,7 +494,8 @@ export class ProductToolHandlers {
         workspaceId: summary.workspaceId,
         workspaceName: summary.workspaceName,
       })),
-      window: page.window,
+      hasMore: page.window.hasMore,
+      nextBefore: page.window.nextBefore,
     };
 
     return response;
@@ -472,111 +512,255 @@ export class ProductToolHandlers {
     if (!thread) throw forbidden("Thread is unavailable to this user");
     assertTarget(caller, thread);
 
-    const page = await this.#store.threadMessagePageForOwner({
-      ...(input.query ? { query: input.query } : {}),
-      ...(input.aroundMessageId ? { aroundMessageId: input.aroundMessageId } : {}),
-      ...(input.before ? { before: input.before } : {}),
-      maxItems: input.maxMessages,
-      maxBytes: 256 * 1_024,
-      ownerId: claims.requestedBy,
+    const recent = await readAgentThreadRecent(this.#store.database, {
       threadId: thread.id,
+      ownerId: caller.userId,
+      runLimit: input.runLimit,
     });
-    if (!page) throw forbidden("Thread is unavailable to this user");
-    const assignments = await this.#store.listThreadAssignmentsForOwner({
-      threadId: thread.id,
-      ownerId: claims.requestedBy,
-      maxItems: 25,
-      maxBytes: 128 * 1_024,
-      ...(input.assignmentBefore ? { before: input.assignmentBefore } : {}),
+    if (!recent) throw forbidden("Thread is unavailable to this user");
+    const seen = new Set<string>();
+    const references = recent.places.flatMap((event) => {
+      if (!event.runId) return [];
+      const key = `${event.runId}:${placeIdentityKey(event.data.place)}`;
+      if (seen.has(key)) return [];
+      seen.add(key);
+      return [{ threadId: thread.id, runId: event.runId, ...event.data }];
     });
-    if (!assignments) throw forbidden("Thread is unavailable to this user");
-    return {
-      assignments: assignments.assignments,
-      assignmentWindow: assignments.window,
-      messages: await this.#readableMessages(
-        caller,
-        page.messages.map(
-          ({ addressedToUserId: _addressedToUserId, policy: _policy, ...message }) => message,
-        ),
-      ),
-      thread,
-      execution: {
+    const recentPlaces = (await this.#browser.readablePlaces(caller.userId, references))
+      .slice(0, 10)
+      .map(({ runId, place, title, site }) => ({ runId, place, title, site }));
+    const context = {
+      thread: ThreadDetailSchema.parse(thread),
+      recentRuns: recent.runs.map(({ modelSelection, ...run }) => ({
+        ...run,
+        modelId: ModelSelectionSchema.parse(modelSelection).modelId,
+      })),
+      recentPlaces,
+    };
+    if (input.view === "activity") {
+      const page = await readAgentThreadActivity(this.#store.database, {
         threadId: thread.id,
-        environmentId: thread.environmentId,
-        harnessInstanceId: thread.harnessInstanceId,
-        modelSelection: thread.modelSelection,
-      },
-      queue: await this.#queue(caller, thread.id),
-      window: page.window,
+        ownerId: caller.userId,
+        limit: input.itemId ? 1 : input.limit,
+        ...(input.before ? { before: input.before } : {}),
+        ...(input.itemId ? { itemId: input.itemId } : {}),
+      });
+      if (!page) throw forbidden("Thread is unavailable to this user");
+      const starts = new Map(page.starts.map((s) => [s.completionSequence, s.start]));
+      const readablePlaces = new Set(
+        (
+          await this.#browser.readablePlaces(
+            caller.userId,
+            page.items.flatMap((event) =>
+              event.type === "place.entered"
+                ? [{ threadId: thread.id, place: event.data.place, sequence: event.sequence }]
+                : [],
+            ),
+          )
+        ).map((p) => p.sequence),
+      );
+      const subjects = page.items.flatMap((e) =>
+        e.type === "tool.started"
+          ? [e]
+          : e.type === "tool.completed" && starts.get(e.sequence)
+            ? [starts.get(e.sequence)!]
+            : [],
+      );
+      const machineIds = subjects.flatMap((e) =>
+        e.data.integration?.computerApp
+          ? [e.data.integration.computerApp.runnerId]
+          : e.data.integration?.phone
+            ? [e.data.integration.phone.runnerId]
+            : [],
+      );
+      const owners = machineIds.length
+        ? await this.#store.effectiveMachineOwners(machineIds)
+        : new Map<import("@opensteer/core").RunnerId, { readonly effectiveOwner: UserId | null }>();
+      const mapped: { item: ThreadItem; sequence: import("@opensteer/core").Sequence }[] = [];
+      for (const event of page.items) {
+        if (event.type === "message") {
+          const message = await this.#readableMessage(caller, event.message);
+          mapped.push({
+            sequence: event.sequence,
+            item: messageItem(message, input.maxCharsPerItem, input.textOffset),
+          });
+          continue;
+        }
+        let title: string | null = null,
+          text: string | null = null,
+          status: string = event.type.split(".")[1]!;
+        if (event.type === "tool.started" || event.type === "tool.completed") {
+          const start = event.type === "tool.started" ? event : starts.get(event.sequence);
+          const integration = start?.data.integration;
+          const machineId = integration?.computerApp?.runnerId ?? integration?.phone?.runnerId;
+          if (machineId && owners.get(machineId)?.effectiveOwner !== caller.userId) continue;
+          title = start?.data.tool.name ?? null;
+          const withheld =
+            !start || ["sign_in", "use_card", "computer"].includes(start.data.tool.name);
+          if (event.type === "tool.completed") {
+            status = event.data.isError ? "failed" : "completed";
+            if (!withheld) text = event.data.output.text;
+          } else if (!withheld && input.itemId) text = JSON.stringify(event.data.arguments) ?? null;
+        } else if (event.type === "place.entered") {
+          if (!readablePlaces.has(event.sequence)) continue;
+          title = event.data.title;
+          text = event.data.site;
+        } else if (event.type === "app.published") title = event.data.title;
+        else if (event.type === "node.started") {
+          title = event.data.title;
+          status = "started";
+        } else if (event.type === "node.completed") {
+          const node = await this.#store.database
+            .selectFrom("executionNodes")
+            .select("title")
+            .where("runId", "=", event.runId!)
+            .where("id", "=", event.data.nodeId)
+            .executeTakeFirst();
+          title = node?.title ?? null;
+          status = event.data.status;
+        } else {
+          const request =
+            event.type === "request.opened"
+              ? event.data.request
+              : await this.#store.requests.get(
+                  event.type === "request.resolved" ? event.data.request.id : event.data.requestId,
+                );
+          if (request) {
+            title = requestTitleText(request.presentation);
+            text = request.kind;
+          }
+        }
+        const maxChars =
+          event.type === "tool.completed" && !input.itemId
+            ? Math.min(500, input.maxCharsPerItem)
+            : input.maxCharsPerItem;
+        mapped.push({
+          sequence: event.sequence,
+          item: {
+            itemId: event.sequence,
+            type: event.type,
+            status,
+            runId: event.runId,
+            title,
+            ...itemText(text, maxChars, input.textOffset),
+            createdAt: event.createdAt,
+          },
+        });
+      }
+      const kept = boundedThreadItems(mapped.map((m) => m.item));
+      if (input.itemId && !kept.length) throw forbidden("Item is unavailable in this Thread");
+      const trimmed = kept.length < mapped.length;
+      return {
+        ...context,
+        items: kept,
+        hasMore: trimmed || page.hasMore,
+        nextBefore: trimmed
+          ? (mapped[kept.length - 1]?.sequence ?? page.nextBefore)
+          : page.nextBefore,
+      };
+    }
+    let page;
+    try {
+      page = await this.#store.threadMessagePageForOwner({
+        threadId: thread.id,
+        ownerId: caller.userId,
+        maxItems: input.itemId ? 1 : input.limit,
+        ...(input.query ? { query: input.query } : {}),
+        ...(input.before ? { before: input.before } : {}),
+        ...(input.itemId
+          ? { aroundMessageId: MessageIdSchema.parse(input.itemId) }
+          : input.aroundMessageId
+            ? { aroundMessageId: input.aroundMessageId }
+            : {}),
+      });
+    } catch (error) {
+      if (input.itemId) throw forbidden("Item is unavailable in this Thread");
+      throw error;
+    }
+    if (!page) throw forbidden("Thread is unavailable to this user");
+    const messages = [...(await this.#readableMessages(caller, page.messages))].sort((a, b) =>
+      compareSequence(b.sequence, a.sequence),
+    );
+    const items = boundedThreadItems(
+      messages.map((m) => messageItem(m, input.maxCharsPerItem, input.textOffset)),
+    );
+    if (input.itemId && !items.length) throw forbidden("Item is unavailable in this Thread");
+    const hasMore = items.length < messages.length || page.window.hasMore;
+    return {
+      ...context,
+      items,
+      hasMore,
+      nextBefore:
+        hasMore && items.length
+          ? encodeThreadHistoryCursor(thread.id, messages[items.length - 1]!.sequence, input.query)
+          : null,
     };
   }
 
-  async thread_write({ caller, input, operationKey }: ToolCall<"thread_write">) {
+  async thread_interrupt({ caller, input, operationKey }: ToolCall<"thread_interrupt">) {
     if (caller.kind === "connection" && !input.threadId)
       throw badRequest("Connected agents must name threadId");
-    if (input.action === "interrupt") {
-      const threadId = input.threadId ?? callerThread(caller).id;
-      await this.#threads.assertTarget(caller, threadId);
-      const interruptKey = idempotencyKey(
-        caller,
-        operationId(caller, operationKey, "thread_write"),
-        "interrupt",
-      );
-      const previous = await this.#store.database
-        .selectFrom("commands")
-        .select("runId")
-        .where("requestedBy", "=", caller.userId)
-        .where("idempotencyKey", "=", interruptKey)
-        .where("type", "=", "run.interrupt")
-        .executeTakeFirst();
-      const active = previous?.runId
-        ? { id: previous.runId }
-        : await this.#store.database
-            .selectFrom("runs")
-            .select("id")
-            .where("threadId", "=", threadId)
-            .where("status", "in", ["queued", "starting", "running", "waiting"])
-            .orderBy("runOrdinal", "asc")
-            .limit(1)
-            .executeTakeFirst();
-      if (active)
-        await this.#threads.interrupt(caller, {
-          type: "run.interrupt",
-          threadId,
-          runId: active.id,
-          idempotencyKey: interruptKey,
-        });
-      const updated = await this.#threads.assertTarget(caller, threadId);
-      return {
-        thread: await this.#writtenThreadSummary(updated, caller.userId),
-        doneWhenRunEnds: false,
-        ...(active ? { interruptedRunId: active.id } : {}),
-      };
-    }
+
+    const threadId = input.threadId ?? callerThread(caller).id;
+    await this.#threads.assertTarget(caller, threadId);
+    const interruptKey = idempotencyKey(
+      caller,
+      operationId(caller, operationKey, "thread_interrupt"),
+      "interrupt",
+    );
+    const previous = await this.#store.database
+      .selectFrom("commands")
+      .select("runId")
+      .where("requestedBy", "=", caller.userId)
+      .where("idempotencyKey", "=", interruptKey)
+      .where("type", "=", "run.interrupt")
+      .executeTakeFirst();
+    const active = previous?.runId
+      ? { id: previous.runId }
+      : await this.#store.database
+          .selectFrom("runs")
+          .select("id")
+          .where("threadId", "=", threadId)
+          .where("status", "in", ["queued", "starting", "running", "waiting"])
+          .orderBy("runOrdinal", "asc")
+          .limit(1)
+          .executeTakeFirst();
+    if (active)
+      await this.#threads.interrupt(caller, {
+        type: "run.interrupt",
+        threadId,
+        runId: active.id,
+        idempotencyKey: interruptKey,
+      });
+    return { interruptedRunId: active?.id ?? null };
+  }
+
+  async thread_update({ caller, input, operationKey }: ToolCall<"thread_update">) {
+    if (caller.kind === "connection" && !input.threadId)
+      throw badRequest("Connected agents must name threadId");
     if (caller.kind !== "run") {
       const threadId = input.threadId ?? callerThread(caller).id;
       const shared = {
         threadId,
         idempotencyKey: idempotencyKey(
           caller,
-          operationId(caller, operationKey, "thread_write"),
+          operationId(caller, operationKey, "thread_update"),
           "thread.write",
         ),
       };
       const write =
         input.action === "rename"
           ? { ...shared, action: input.action, title: input.title! }
-          : input.action === "set_icon"
-            ? { ...shared, action: input.action, icon: input.icon! }
-            : { ...shared, action: input.action };
+          : { ...shared, action: input.action };
       const result = await this.#threads.write(caller, write);
       return {
-        thread: await this.#writtenThreadSummary(result.thread, caller.userId),
+        title: result.thread.title,
+        doneAt: result.thread.doneAt,
         doneWhenRunEnds: result.doneWhenRunEnds,
       };
     }
     const claims = requireRun(caller).claims;
-    const requestId = operationId(caller, operationKey, "thread_write");
+    const requestId = operationId(caller, operationKey, "thread_update");
 
     const { operationKey: _operationKey, ...write } = input;
     const threadId = write.threadId ?? claims.threadId;
@@ -593,32 +777,27 @@ export class ProductToolHandlers {
       const result = await this.#commands.setThreadDone({
         ...command,
         done: write.action === "done",
-        admission: runAdmission(caller, "thread_write", input, requestId, [threadId]),
+        admission: runAdmission(caller, "thread_update", input, requestId, [threadId]),
       });
       return {
-        thread: await this.#writtenThreadSummary(result.thread, claims.requestedBy),
+        title: result.thread.title,
+        doneAt: result.thread.doneAt,
         doneWhenRunEnds: result.doneWhenRunEnds,
       };
     }
-    const result =
-      write.action === "rename"
-        ? await this.#commands.renameThread({
-            ...command,
-            admission: runAdmission(caller, "thread_write", input, requestId, [threadId]),
-            title: write.title!,
-          })
-        : await this.#commands.setThreadIcon({
-            ...command,
-            admission: runAdmission(caller, "thread_write", input, requestId, [threadId]),
-            icon: write.icon!,
-          });
+    const result = await this.#commands.renameThread({
+      ...command,
+      admission: runAdmission(caller, "thread_update", input, requestId, [threadId]),
+      title: write.title!,
+    });
     return {
-      thread: await this.#writtenThreadSummary(result.thread, claims.requestedBy),
+      title: result.thread.title,
+      doneAt: result.thread.doneAt,
       doneWhenRunEnds: false,
     };
   }
 
-  async assignmentTargets({ caller, input }: ToolCall<"assignment_cancel">) {
+  async assignmentTargets({ caller, input }: ToolCall<"task_cancel">) {
     const assignment = await this.#store.getAssignmentForOwner({
       assignmentId: input.assignmentId,
       ownerId: caller.userId,
@@ -626,9 +805,9 @@ export class ProductToolHandlers {
     if (!assignment) throw forbidden("Assignment is unavailable");
     return [assignment.workerThreadId];
   }
-  async assignment_cancel({ caller, input, operationKey }: ToolCall<"assignment_cancel">) {
+  async task_cancel({ caller, input, operationKey }: ToolCall<"task_cancel">) {
     const claims = requireRun(caller).claims;
-    const requestId = operationId(caller, operationKey, "assignment_cancel");
+    const requestId = operationId(caller, operationKey, "task_cancel");
 
     const assignment = await this.#store.getAssignmentForOwner({
       assignmentId: input.assignmentId,
@@ -643,11 +822,37 @@ export class ProductToolHandlers {
       requestedBy: claims.requestedBy,
       actorRunId: claims.runId,
       idempotencyKey: idempotencyKey(caller, requestId, "assignment.cancel"),
-      admission: runAdmission(caller, "assignment_cancel", input, requestId, [
-        assignment.workerThreadId,
-      ]),
+      admission: runAdmission(caller, "task_cancel", input, requestId, [assignment.workerThreadId]),
     });
-    return { assignment: cancelled.assignment };
+    return this.#task(caller, cancelled.assignment);
+  }
+
+  async #task(caller: AgentCaller, summary: AssignmentSummary) {
+    const assignment = await this.#store.getAssignmentForOwner({
+      assignmentId: summary.id,
+      ownerId: caller.userId,
+    });
+    if (!assignment) throw forbidden("Assignment is unavailable");
+    return taskItem(summary, assignment.resultText);
+  }
+  async task_status({ caller, input }: ToolCall<"task_status">) {
+    const assignment = await this.#store.getAssignmentForOwner({
+      assignmentId: input.assignmentId,
+      ownerId: caller.userId,
+    });
+    if (!assignment) throw forbidden("Assignment is unavailable");
+    const worker = await this.#store.getThreadForOwner(assignment.workerThreadId, caller.userId);
+    if (!worker) throw forbidden("Thread is unavailable");
+    assertTarget(caller, worker);
+    const row = await this.#store.database
+      .selectFrom("delegations")
+      .selectAll()
+      .where("id", "=", input.assignmentId)
+      .executeTakeFirstOrThrow();
+    return taskItem(
+      await assignmentSummaryInTransaction(this.#store.database, row),
+      assignment.resultText,
+    );
   }
 
   async request_list({ caller, input }: ToolCall<"request_list">) {
@@ -799,7 +1004,6 @@ export class ProductToolHandlers {
         : { harnessInstanceId: input.harnessInstanceId }),
       ...(input.model === undefined ? {} : { modelSelection: input.model }),
       ...(input.title === undefined ? {} : { title: input.title }),
-      ...(input.icon === undefined ? {} : { icon: input.icon }),
     };
     const specialist = input.specialist
       ? await resolveDelegationSpecialist(
@@ -860,7 +1064,6 @@ export class ProductToolHandlers {
       {
         ...(specialist ? { specialistId: specialist.id } : {}),
         ...expected,
-        ...(input.icon ? { icon: input.icon } : {}),
       },
     );
     return { thread, ...expected };
@@ -881,12 +1084,22 @@ export class ProductToolHandlers {
         source: messageSource(caller, requestId),
         idempotencyKey: idempotencyKey(caller, requestId, "message"),
       });
+      const thread = (await this.#store.getThreadForOwner(created.id, caller.userId))!;
       return {
         assignmentId: null,
-        thread: await this.#store.getThreadForOwner(created.id, caller.userId),
-        input: delivered.input,
-        message: delivered.message,
-        run: delivered.run,
+        threadId: thread.id,
+        runId: delivered.run?.id ?? null,
+        runStatus: delivered.run?.status ?? null,
+        status: "open" as const,
+        title: thread.title,
+        objective: input.task,
+        result: null,
+        pendingRequests: thread.pendingRequests,
+        parentThreadId: null,
+        workspaceId: thread.workspaceId,
+        environmentId: thread.environmentId,
+        createdAt: thread.createdAt,
+        finishedAt: null,
       };
     }
     const currentThread = callerThread(caller);
@@ -937,18 +1150,11 @@ export class ProductToolHandlers {
           task: [{ text: input.task, type: "text" }, ...(input.places ?? [])],
           title: input.title ?? provisionalThreadTitle(input.task),
           titleSource: input.title === undefined ? "provisional" : "chosen",
-          ...(input.icon ? { icon: input.icon } : {}),
           workspaceId: workspace.id,
         } as const;
         const replayed = await this.#store.findDelegatedThreadByIdempotency(delegateInput);
         if (replayed) {
-          return {
-            assignmentId: replayed.assignment.id,
-            input: replayed.input,
-            message: await this.#readableMessage(caller, replayed.message),
-            run: replayed.run,
-            thread: replayed.thread,
-          };
+          return this.#task(caller, replayed.assignment);
         }
         if (input.places?.length) {
           if (!this.#placeContext) throw conflict("Place forwarding is unavailable on this Host");
@@ -991,13 +1197,7 @@ export class ProductToolHandlers {
           input: delegateInput,
         });
         if (delegated.browserUsage) this.#onBrowserUsage?.(delegated.browserUsage);
-        return {
-          assignmentId: delegated.assignment.id,
-          input: delegated.input,
-          message: await this.#readableMessage(caller, delegated.message),
-          run: delegated.run,
-          thread: delegated.thread,
-        };
+        return this.#task(caller, delegated.assignment);
       },
     );
   }
@@ -1228,10 +1428,8 @@ export class ProductToolHandlers {
     return {
       assignmentId: delivered.input.assignmentId,
       disposition: delivered.disposition,
-      input: delivered.input,
-      message: delivered.message,
-      run: delivered.run,
-      thread: await this.#store.getThreadForOwner(thread.id, caller.userId),
+      messageId: delivered.message.id,
+      runId: delivered.run?.id ?? null,
     };
   }
   async #prepareConnectionDelegation(
@@ -1358,22 +1556,29 @@ export class ProductToolHandlers {
     );
   }
   async thread_configure({ caller, input, operationKey }: ToolCall<"thread_configure">) {
-    const target = await this.#threads.assertTarget(caller, input.threadId);
-    const thread = (
-      await this.#threads.configure(caller, {
-        type: "thread.execution.update",
-        threadId: target.id,
-        harnessInstanceId: input.harnessInstanceId ?? target.harnessInstanceId,
-        modelSelection: input.modelSelection ?? target.modelSelection,
-        ...(input.continuation ? { continuation: input.continuation } : {}),
-        idempotencyKey: idempotencyKey(
-          caller,
-          operationId(caller, operationKey, "thread_configure"),
-          "configure",
-        ),
-      })
-    ).thread;
+    const target = await this.#threads.assertTarget(
+      caller,
+      this.#targetThreadId(caller, input.threadId),
+    );
+    const thread =
+      input.harnessInstanceId || input.modelSelection
+        ? (
+            await this.#threads.configure(caller, {
+              type: "thread.execution.update",
+              threadId: target.id,
+              harnessInstanceId: input.harnessInstanceId ?? target.harnessInstanceId,
+              modelSelection: input.modelSelection ?? target.modelSelection,
+              ...(input.continuation ? { continuation: input.continuation } : {}),
+              idempotencyKey: idempotencyKey(
+                caller,
+                operationId(caller, operationKey, "thread_configure"),
+                "configure",
+              ),
+            })
+          ).thread
+        : target;
     return {
+      providerSessionId: thread.providerSessionId,
       threadId: thread.id,
       environmentId: thread.environmentId,
       harnessInstanceId: thread.harnessInstanceId,
@@ -1381,19 +1586,21 @@ export class ProductToolHandlers {
     };
   }
   async thread_queue({ caller, input, operationKey }: ToolCall<"thread_queue">) {
-    await this.#threads.assertTarget(caller, input.threadId);
+    const target = await this.#threads.assertTarget(
+      caller,
+      this.#targetThreadId(caller, input.threadId),
+    );
     const command = {
-      threadId: input.threadId,
+      threadId: target.id,
       idempotencyKey: idempotencyKey(
         caller,
         operationId(caller, operationKey, "thread_queue"),
         "queue",
       ),
     };
-    let changed;
     switch (input.action) {
       case "cancel":
-        changed = await this.#threads.cancel(caller, {
+        await this.#threads.cancel(caller, {
           ...command,
           type: "thread.input.cancel",
           messageId: input.messageId!,
@@ -1408,7 +1615,7 @@ export class ProductToolHandlers {
         });
         break;
       case "steer":
-        changed = await this.#threads.steer(caller, {
+        await this.#threads.steer(caller, {
           ...command,
           type: "thread.input.steer",
           messageId: input.messageId!,
@@ -1419,10 +1626,7 @@ export class ProductToolHandlers {
         await this.#threads.resume(caller, { ...command, type: "thread.inputQueue.resume" });
         break;
     }
-    return {
-      ...(await this.#queue(caller, input.threadId)),
-      ...(changed ? { input: changed.input } : {}),
-    };
+    return this.#queue(caller, target.id);
   }
   async #queue(caller: AgentCaller, threadId: Thread["id"]) {
     const queue = await this.#store.getThreadInputQueue({
@@ -1442,13 +1646,13 @@ export class ProductToolHandlers {
           .map((part) => (part.type === "text" ? part.text : `[${part.type}]`))
           .join("\n");
         return {
-          ...item,
-          message: {
-            id: message.id,
-            author: message.author,
-            preview: text.slice(0, 500),
-            truncated: text.length > 500,
-          },
+          messageId: message.id,
+          author: message.author,
+          preview: text.slice(0, 500),
+          truncated: text.length > 500,
+          canCancel: item.canCancel,
+          canMove: item.canMove,
+          canSteer: item.canSteer,
         };
       }),
     };
@@ -1512,27 +1716,21 @@ export class ProductToolHandlers {
         };
       },
     });
-    return wait.wait({
+    const result = await wait.wait({
       timeoutMs: input.timeoutMs,
       ...(call.signal ? { signal: call.signal } : {}),
     });
-  }
-  async #writtenThreadSummary(thread: Thread, requestedBy: RunToolScope["requestedBy"]) {
-    const workspace = await this.#store.getWorkspaceForOwner(thread.workspaceId, requestedBy);
-    if (!workspace) throw forbidden("Workspace is unavailable to this user");
     return {
-      doneAt: thread.doneAt,
-      environmentConnected: this.#isEnvironmentConnected(thread.environmentId),
-      environmentId: thread.environmentId,
-      id: thread.id,
-      parentThreadId: thread.parentThreadId,
-      pendingRequests: thread.pendingRequests,
-      status: thread.status,
-      title: thread.title,
-      updatedAt: thread.updatedAt,
-      workspaceId: thread.workspaceId,
-      workspaceName: workspace.name,
+      status: result.status,
+      ...(result.run ? { run: result.run } : {}),
+      ...(result.pendingRequest ? { pendingRequest: result.pendingRequest } : {}),
+      items: boundedThreadItems(result.messages.map((m) => messageItem(m, 20_000))),
     };
+  }
+  #targetThreadId(caller: AgentCaller, threadId?: Thread["id"]) {
+    if (threadId) return threadId;
+    if (caller.kind === "connection") throw badRequest("Connected agents must name threadId");
+    return callerThread(caller).id;
   }
 }
 function forbidden(message: string, next?: string): OpensteerError {

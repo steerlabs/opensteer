@@ -21,6 +21,16 @@ const historyCursorSchema = z.strictObject({
   query: z.string().nullable(),
 });
 
+export function encodeThreadHistoryCursor(
+  threadId: ThreadId,
+  sequence: import("@opensteer/core").Sequence,
+  query?: string,
+) {
+  return Buffer.from(JSON.stringify({ threadId, sequence, query: query?.trim() || null })).toString(
+    "base64url",
+  );
+}
+
 export interface ThreadHistoryQuery {
   readonly threadId: ThreadId;
   readonly ownerId: UserId;
@@ -155,13 +165,7 @@ export async function readThreadHistory(
           hasMore: Boolean(earlier),
           nextBefore:
             oldest && earlier
-              ? Buffer.from(
-                  JSON.stringify({
-                    threadId: input.threadId,
-                    sequence: oldest.sequence,
-                    query: search,
-                  }),
-                ).toString("base64url")
+              ? encodeThreadHistoryCursor(input.threadId, oldest.sequence, search ?? undefined)
               : null,
         },
       };

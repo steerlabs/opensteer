@@ -47,8 +47,8 @@ const actions = {
   thread_message: "thread.message",
   person_message: "person.message",
   person_show: "person.show",
-  thread_write: "thread.write",
-  assignment_cancel: "assignment.cancel",
+  thread_update: "thread.write",
+  task_cancel: "assignment.cancel",
 } as const;
 type AdmittedTool = keyof typeof actions;
 export function runAdmission(

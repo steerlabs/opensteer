@@ -562,5 +562,23 @@
       "Diagnostic reproduction: pnpm test:integration -- apps/host/src/runtime/runtime.integration.test.ts -t 'persists the exact managed owner' passed in 934 ms; the subsequent complete file passed all 22 tests, with the named case taking 747 ms. Temporary phase markers confirmed initial startup, both closes, restart and both expected startup rejections settled; markers were removed. No assertion, timeout or execution exemption changed. Logs: ~/.local/state/opensteer/work/d2a-skill-identity/{check-first,managed-isolated,managed-full}.log.",
       "Reproduce under the normal four-worker selected integration workload and capture bounded startup/shutdown phase diagnostics, including HostRuntime.closingStep(), if it recurs. Acceptance: identify and gate the blocking operation deterministically, preserve managed-owner identity, enrollment replay, Account publication ordering and mismatch refusal assertions, and pass the complete file plus the selected integration workload before removing this record."
     ]
+  },
+  {
+    "file": "apps/host/src/agents/cross-environment-delegation.integration.test.ts",
+    "name": [
+      "cross-environment delegation reaches the Runner",
+      "never deadlocks when a cross-Workspace task is stopped while its Request is answered (race 7)"
+    ],
+    "area": "Threads",
+    "owner": "Host maintainers",
+    "status": "investigating",
+    "firstSeen": "2026-11-06T16:17:41Z",
+    "deadline": "2026-11-13T16:17:41Z",
+    "sha": null,
+    "evidence": [
+      "The unchanged domain cancellation/Request race timed out at 30,000 ms during a focused five-file PostgreSQL run on the feat/t3-tools-host worktree based on 9855648600bb5637c19604f567d0b34818cb3f45. Later cases stalled in the same file; the run was interrupted and its envelope confirmed cleanup.ok=true. Run record: 20261106T161500285Z-4247e951. The source was uncommitted, so this is not immutable same-SHA evidence.",
+      "One isolated rerun with pnpm test:integration -- apps/host/src/agents/cross-environment-delegation.integration.test.ts -t 'never deadlocks.*race 7' passed in 10,113 ms (one passed, 36 filtered out). Run record: 20261106T162038482Z-a0504cd2. No assertion or timeout was changed. The race calls domain operations directly and does not use the new agent output mapper or fixture record reader.",
+      "Cause remains unresolved. Capture the four concurrent operations and pool/lock state under file concurrency, add a deterministic reproduction, and prove cancellation, Request settlement, sibling progress and return draining within the existing deadline. This entry does not skip execution or authorize a passing gate."
+    ]
   }
 ]

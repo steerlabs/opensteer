@@ -371,6 +371,8 @@ export interface OwnerThreadPage {
 }
 
 interface AgentThreadListEntry {
+  readonly assignmentId: AssignmentId | null;
+  readonly taskStatus: AssignmentSummary["status"] | null;
   readonly doneAt: string | null;
   readonly environmentId: EnvironmentId;
   readonly id: ThreadId;
@@ -820,6 +822,7 @@ export async function agentThreadPageForOwner(
     readonly scope: AgentThreadListScope;
     readonly scopeId: string;
     readonly workspaceId?: WorkspaceId;
+    readonly parentThreadId?: ThreadId;
   },
 ): Promise<AgentThreadListPage> {
   const maxItems = boundedWindowLimit(input.maxItems, 50);
@@ -852,6 +855,20 @@ export async function agentThreadPageForOwner(
         .innerJoin("workspaces", "workspaces.id", "threads.workspaceId")
         .where("workspaceMemberships.userId", "=", input.ownerId)
         .where("workspaceMemberships.state", "=", "active");
+      if (input.parentThreadId) {
+        base = base.where((eb) =>
+          eb.or([
+            eb("threads.parentThreadId", "=", input.parentThreadId!),
+            eb.exists(
+              eb
+                .selectFrom("delegations")
+                .select("id")
+                .whereRef("delegations.childThreadId", "=", "threads.id")
+                .where("delegations.parentThreadId", "=", input.parentThreadId!),
+            ),
+          ]),
+        );
+      }
       if (scope.kind === "workspace") {
         base = base.where("threads.workspaceId", "=", scope.workspaceId);
       }
@@ -878,10 +895,31 @@ export async function agentThreadPageForOwner(
       }
       const [rows, countRow] = await Promise.all([
         page
+          .leftJoinLateral(
+            (eb) => {
+              let assignment = eb
+                .selectFrom("delegations as d")
+                .innerJoin("threads as parent", "parent.id", "d.parentThreadId")
+                .innerJoin("workspaceMemberships as pm", "pm.workspaceId", "parent.workspaceId")
+                .select(["d.id as assignmentId", "d.status as taskStatus"])
+                .whereRef("d.childThreadId", "=", "threads.id")
+                .where("pm.userId", "=", input.ownerId)
+                .where("pm.state", "=", "active");
+              if (input.parentThreadId)
+                assignment = assignment.where("d.parentThreadId", "=", input.parentThreadId);
+              return assignment
+                .orderBy(sql`(d.status = 'open')`, "desc")
+                .orderBy("d.createdAt", "desc")
+                .orderBy("d.id", "desc")
+                .limit(1)
+                .as("task");
+            },
+            (join) => join.onTrue(),
+          )
+          .select(["task.assignmentId", "task.taskStatus"])
           .select([
             "threads.environmentId",
             "threads.id",
-            "threads.parentThreadId",
             "threads.status",
             "threads.title",
             "threads.doneAt",
@@ -889,6 +927,20 @@ export async function agentThreadPageForOwner(
             "threads.workspaceId",
             "workspaces.name as workspaceName",
           ])
+          .select((eb) =>
+            eb
+              .selectFrom("threads as visibleParent")
+              .innerJoin(
+                "workspaceMemberships as parentReader",
+                "parentReader.workspaceId",
+                "visibleParent.workspaceId",
+              )
+              .select("visibleParent.id")
+              .whereRef("visibleParent.id", "=", "threads.parentThreadId")
+              .where("parentReader.userId", "=", input.ownerId)
+              .where("parentReader.state", "=", "active")
+              .as("parentThreadId"),
+          )
           .select([
             threadPendingRequestsSelection,
             threadProviderSessionSelection,

@@ -4487,7 +4487,7 @@ export async function delegateThreadInTransaction(
       throw new OpensteerError({
         code: "conflict",
         details: { assignmentId: open.id },
-        message: `Thread ${threadId} is still working on task ${open.id}. Send corrections with thread_message, or cancel that task with assignment_cancel before giving the Thread new work.`,
+        message: `Thread ${threadId} is still working on task ${open.id}. Send corrections with thread_message, or cancel that task with task_cancel before giving the Thread new work.`,
       });
     }
     if (busy || queuedInput) {

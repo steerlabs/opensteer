@@ -1,3 +1,4 @@
+import { readToolRecords } from "../mcp/product-tools.test-support.js";
 import { ProductToolsTestClient } from "../mcp/product-tools.test-support.js";
 import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import type {
@@ -1790,14 +1791,14 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         places: [appPart],
       });
       if (delegated.type !== "thread.delegate.result") throw new Error("Missing delegated child");
-      expect(delegated.result.message.content).toEqual([
+      expect((await readToolRecords(store, delegated.result)).message!.content).toEqual([
         { type: "text", text: "Read the included Notes app" },
         { type: "text", text: appPart.name },
       ]);
       const storedChild = await database
         .selectFrom("messages")
         .select("content")
-        .where("id", "=", delegated.result.message.id)
+        .where("id", "=", (await readToolRecords(store, delegated.result)).message!.id)
         .executeTakeFirstOrThrow();
       expect(storedChild.content).toEqual([
         { type: "text", text: "Read the included Notes app" },
@@ -1812,12 +1813,12 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         type: "thread.read",
         requestId: randomUUID(),
         threadId: run.threadId,
-        maxMessages: 100,
+        limit: 100,
       });
       if (olderRead.type !== "thread.read.result") throw new Error("Missing thread read");
       expect(
-        olderRead.messages
-          .flatMap((message) => message.content)
+        olderRead.items
+          .flatMap((item) => item.places ?? [])
           .some((part) => part.type === "computer-app" || part.type === "phone"),
       ).toBe(false);
       await database
@@ -1831,10 +1832,10 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         type: "thread.read",
         requestId: randomUUID(),
         threadId: run.threadId,
-        maxMessages: 100,
+        limit: 100,
       });
       if (capableRead.type !== "thread.read.result") throw new Error("Missing capable thread read");
-      expect(capableRead.messages.flatMap((message) => message.content)).toEqual(
+      expect(capableRead.items.flatMap((item) => item.places ?? [])).toEqual(
         expect.arrayContaining(content),
       );
       expect(await store.hasHumanIncludedPlace(run.threadId, appPart)).toBe(true);
@@ -1886,7 +1887,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
           type: "thread.message",
           requestId: randomUUID(),
           delivery: "queue",
-          threadId: delegated.result.thread.id,
+          threadId: (await readToolRecords(store, delegated.result)).thread.id,
           content: [appPart],
         }),
       ).rejects.toMatchObject({ code: "bad_request" });
@@ -1924,10 +1925,16 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
               },
               createdSessionsAtAdmission: 0,
               olderRunner: {
-                delegatedContent: delegated.result.message.content,
-                readContent: olderRead.messages.map((message) => message.content),
+                delegatedContent: (await readToolRecords(store, delegated.result)).message!.content,
+                readContent: olderRead.items.map((item) => ({
+                  text: item.text,
+                  places: item.places,
+                })),
               },
-              capableRunnerRead: capableRead.messages.map((message) => message.content),
+              capableRunnerRead: capableRead.items.map((item) => ({
+                text: item.text,
+                places: item.places,
+              })),
             },
             null,
             2,

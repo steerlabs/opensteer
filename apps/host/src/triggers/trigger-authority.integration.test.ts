@@ -1,3 +1,4 @@
+import { readToolRecords } from "../mcp/product-tools.test-support.js";
 import { TriggerOutputSchema } from "@opensteer/agent-tools/outputs";
 import { type ProductToolResult } from "../mcp/product-tools.test-support.js";
 import { ProductToolResultSchema } from "../mcp/product-tools.test-support.js";
@@ -183,6 +184,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
     browser: {
       createProfile: unexpected,
       closeAgentSession: unexpected,
+      readablePlaces: async (_owner, references) => [...references],
       drainRunPlaces: async () => undefined,
       listAgentSessions: unexpected,
       listGrantedProfiles: unexpected,
@@ -698,15 +700,15 @@ integration.sequential("Trigger authority through real Host services and Postgre
           });
           if (response.type !== "thread.delegate.result")
             throw new Error("Expected local delegation");
-          expect(response.result.thread).toMatchObject({
+          expect((await readToolRecords(store, response.result)).thread).toMatchObject({
             workspaceId: f.project.id,
             lineageRootThreadId: f.specialist.id,
             accessMode: "auto",
           });
-          expect(response.result.message.content).toEqual([
+          expect((await readToolRecords(store, response.result)).message!.content).toEqual([
             { text: "Local authorized work", type: "text" },
           ]);
-          expect(response.result.message.author).toMatchObject(
+          expect((await readToolRecords(store, response.result)).message!.author).toMatchObject(
             kind === "Trigger"
               ? {
                   kind: "trigger",
@@ -776,11 +778,16 @@ integration.sequential("Trigger authority through real Host services and Postgre
         });
         if (response.type !== "thread.delegate.result")
           throw new Error("Expected delegation after mode change");
-        expect(response.result.thread.accessMode).toBe("approval-required");
+        expect((await readToolRecords(store, response.result)).thread.accessMode).toBe(
+          "approval-required",
+        );
         const detail = await personDetail(f, own.trigger.id);
         expect(detail.trigger.currentRevisionId).toBe(own.revision.id);
         expect(detail.occurrences[0]?.status).toBe("running");
-        return { thread: response.result.thread, revisionId: detail.revision.id };
+        return {
+          thread: (await readToolRecords(store, response.result)).thread,
+          revisionId: detail.revision.id,
+        };
       },
     );
     await denied("F11 Trigger program get outside", f.isolatedChild.id, "get", "not_found", () =>
@@ -1039,16 +1046,21 @@ integration.sequential("Trigger authority through real Host services and Postgre
       task: "Reuse this unrelated Thread",
       requestId: randomUUID(),
     });
-    if (response.type !== "thread.delegate.result" || !response.result.run)
+    if (
+      response.type !== "thread.delegate.result" ||
+      !(await readToolRecords(store, response.result)).run!
+    )
       throw new Error("Expected delegated Run");
-    const runId = response.result.run.id;
+    const runId = (await readToolRecords(store, response.result)).run!.id;
     await check(
       "A7 person sees unrelated reused downstream Run",
       "person",
       "get",
       { runId },
       async () => {
-        expect(response.result.thread.accessMode).toBe(f.unrelated.accessMode);
+        expect((await readToolRecords(store, response.result)).thread.accessMode).toBe(
+          f.unrelated.accessMode,
+        );
         const detail = await personDetail(f, created.trigger.id);
         expect(detail.downstreamRuns.map(({ run }) => run.id)).toContain(runId);
         return detail.downstreamRuns;
@@ -1308,7 +1320,9 @@ integration.sequential("Trigger authority through real Host services and Postgre
           const [worker] = await Promise.all([delegated, mutation]);
           if (worker.type !== "thread.delegate.result")
             throw new Error("Expected delegated result");
-          expect(worker.result.thread.parentThreadId).toBe(f.child.id);
+          expect((await readToolRecords(store, worker.result)).thread.parentThreadId).toBe(
+            f.child.id,
+          );
           const assignment = await database
             .selectFrom("delegations")
             .select("origin")
@@ -1318,7 +1332,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
           expect((await personDetail(f, created.trigger.id)).trigger.nextFireAt).toBe(plusThirty);
           expect(barrier.conflicts).toEqual([]);
           return {
-            workerThreadId: worker.result.thread.id,
+            workerThreadId: (await readToolRecords(store, worker.result)).thread.id,
             nextFireAt: plusThirty,
             lockViolations: barrier.conflicts,
           };

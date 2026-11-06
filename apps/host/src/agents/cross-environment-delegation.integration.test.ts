@@ -1,3 +1,4 @@
+import { readToolRecords } from "../mcp/product-tools.test-support.js";
 import { EnvironmentDiscoverySchema } from "@opensteer/agent-tools/outputs";
 import { ProductToolResultSchema } from "../mcp/product-tools.test-support.js";
 import { ProductToolsTestClient } from "../mcp/product-tools.test-support.js";
@@ -110,6 +111,7 @@ integration("cross-environment delegation reaches the Runner", () => {
     browser: {
       createProfile: unexpected,
       closeAgentSession: unexpected,
+      readablePlaces: async (_owner, references) => [...references],
       drainRunPlaces: async () => undefined,
       listAgentSessions: unexpected,
       listGrantedProfiles: unexpected,
@@ -218,14 +220,24 @@ integration("cross-environment delegation reaches the Runner", () => {
 
     // The child is placed on the lent machine and on that machine's own engine.
     expect(response.result.assignmentId).toMatch(/^dlg_/u);
-    expect(response.result.thread.role).toBe("work");
-    expect(response.result.thread.modelSelection).toEqual(testModelSelection);
-    expect(response.result.thread.environmentId).toBe(fixture.lentEnvironmentId);
-    expect(response.result.thread.harnessInstanceId).toBe(fixture.lentHarnessInstanceId);
-    expect(response.result.thread.harnessInstanceId).not.toBe(fixture.mainHarnessInstanceId);
-    expect(response.result.run?.environmentId).toBe(fixture.lentEnvironmentId);
+    expect((await readToolRecords(store, response.result)).thread.role).toBe("work");
+    expect((await readToolRecords(store, response.result)).thread.modelSelection).toEqual(
+      testModelSelection,
+    );
+    expect((await readToolRecords(store, response.result)).thread.environmentId).toBe(
+      fixture.lentEnvironmentId,
+    );
+    expect((await readToolRecords(store, response.result)).thread.harnessInstanceId).toBe(
+      fixture.lentHarnessInstanceId,
+    );
+    expect((await readToolRecords(store, response.result)).thread.harnessInstanceId).not.toBe(
+      fixture.mainHarnessInstanceId,
+    );
+    expect((await readToolRecords(store, response.result)).run?.environmentId).toBe(
+      fixture.lentEnvironmentId,
+    );
 
-    const childRunId = response.result.run?.id;
+    const childRunId = (await readToolRecords(store, response.result)).run?.id;
     if (!childRunId) throw new Error("Expected the delegation to queue a Run");
     const pending = await database
       .selectFrom("commands")
@@ -301,14 +313,13 @@ integration("cross-environment delegation reaches the Runner", () => {
       accepted[1].type !== "thread.delegate.result"
     )
       throw new Error("Wrong delegation response");
-    expect(accepted[0].result.message.id).toBe(accepted[1].result.message.id);
+    expect((await readToolRecords(store, accepted[0].result)).message!.id).toBe(
+      (await readToolRecords(store, accepted[1].result)).message!.id,
+    );
     expect(accepted[0].result.assignmentId).toBe(accepted[1].result.assignmentId);
     expect(await service.handle(fixture.token, request)).toMatchObject({
       type: "thread.delegate.result",
-      result: {
-        message: { id: accepted[0].result.message.id },
-        assignmentId: accepted[0].result.assignmentId,
-      },
+      result: accepted[0].result,
     });
     acceptanceEvidence.push({
       caseId: "same-key-delegation-before-commit",
@@ -654,20 +665,30 @@ integration("cross-environment delegation reaches the Runner", () => {
           type: "thread.delegate.result",
           result: delegated.structuredContent,
         });
-        if (result.type !== "thread.delegate.result" || !result.result.run)
+        if (
+          result.type !== "thread.delegate.result" ||
+          !(await readToolRecords(store, result.result)).run!
+        )
           throw new Error("Expected delegated Run");
-        expect(result.result.thread.modelSelection).toMatchObject(choice);
+        expect((await readToolRecords(store, result.result)).thread.modelSelection).toMatchObject(
+          choice,
+        );
         expect(
-          (await store.getThreadForOwner(result.result.thread.id, fixture.userId))?.modelSelection,
+          (
+            await store.getThreadForOwner(
+              (await readToolRecords(store, result.result)).thread.id,
+              fixture.userId,
+            )
+          )?.modelSelection,
         ).toMatchObject(choice);
         acceptanceEvidence.push({
           caseId: `${profile}-named-model-options`,
           inventory: listed.tools,
           discovery: page,
           choice,
-          resultingThread: result.result.thread,
+          resultingThread: (await readToolRecords(store, result.result)).thread,
         });
-        caller = await activateRun(fixture, result.result.run.id);
+        caller = await activateRun(fixture, (await readToolRecords(store, result.result)).run!.id);
       } finally {
         await mcp.client.close();
         await mcp.service.close();
@@ -1121,16 +1142,20 @@ integration("cross-environment delegation reaches the Runner", () => {
       throw new Error("Expected a delegate result");
     }
     expect(replay.result.assignmentId).toBe(first.result.assignmentId);
-    expect(replay.result.thread.id).toBe(first.result.thread.id);
-    expect(replay.result.run?.id).toBe(first.result.run?.id);
+    expect((await readToolRecords(store, replay.result)).thread.id).toBe(
+      (await readToolRecords(store, first.result)).thread.id,
+    );
+    expect((await readToolRecords(store, replay.result)).run?.id).toBe(
+      (await readToolRecords(store, first.result)).run?.id,
+    );
     await expect(
       database.selectFrom("delegations").select("id").where("origin", "=", "run").execute(),
     ).resolves.toHaveLength(1);
     acceptanceEvidence.push({
       caseId: "H02",
       assignmentId: first.result.assignmentId,
-      workerThreadId: first.result.thread.id,
-      initialRunId: first.result.run?.id,
+      workerThreadId: (await readToolRecords(store, first.result)).thread.id,
+      initialRunId: (await readToolRecords(store, first.result)).run?.id,
       replayAssignmentId: replay.result.assignmentId,
     });
   });
@@ -1143,7 +1168,7 @@ integration("cross-environment delegation reaches the Runner", () => {
       title: "Mattress comparison",
       workspaceId: fixture.workspaceId,
     });
-    const worker = await activateRun(fixture, task.run!.id);
+    const worker = await activateRun(fixture, (await readToolRecords(store, task)).run!.id);
     await reply(worker, "Preliminary note that must not become the result");
     const finalReply =
       "Final result: Helix for side sleepers; Saatva for a traditional spring feel.";
@@ -1176,7 +1201,7 @@ integration("cross-environment delegation reaches the Runner", () => {
       kind: "continuation",
     });
     expect(messageText(returned[0]!.content)).toBe(
-      `Task completed: Mattress comparison\nTask Thread: ${task.thread.id} · Assignment: ${task.assignmentId}\n\n${finalReply}`,
+      `Task completed: Mattress comparison\nTask Thread: ${(await readToolRecords(store, task)).thread.id} · Assignment: ${task.assignmentId}\n\n${finalReply}`,
     );
     // The parent is still mid-turn, so the result waits as its next work item.
     const returnInput = await database
@@ -1193,7 +1218,7 @@ integration("cross-environment delegation reaches the Runner", () => {
       policy: "queue",
       requestedBy: fixture.userId,
       source: { kind: "human" },
-      threadId: task.thread.id,
+      threadId: (await readToolRecords(store, task)).thread.id,
     });
     expect(later.input.assignmentId).toBeNull();
     expect(later.run?.assignmentId).toBeNull();
@@ -1243,7 +1268,7 @@ integration("cross-environment delegation reaches the Runner", () => {
           .execute();
       }),
     );
-    const silentWorker = await activateRun(fixture, silent.run!.id);
+    const silentWorker = await activateRun(fixture, (await readToolRecords(store, silent)).run!.id);
     await end(silentWorker, "completed");
     await drainReturns();
     expect(await assignmentRow(silent.assignmentId)).toMatchObject({
@@ -1295,7 +1320,10 @@ integration("cross-environment delegation reaches the Runner", () => {
       task: "Write everything down",
       workspaceId: fixture.workspaceId,
     });
-    const verboseWorker = await activateRun(fixture, verbose.run!.id);
+    const verboseWorker = await activateRun(
+      fixture,
+      (await readToolRecords(store, verbose)).run!.id,
+    );
     const note = "\n\n[Reply truncated. The full reply is in the task Thread.]";
     const budget = assignmentResultMaxBytes - Buffer.byteLength(note, "utf8");
     // The cut falls inside a four-byte character, which must not be split.
@@ -1319,7 +1347,7 @@ integration("cross-environment delegation reaches the Runner", () => {
       task: "Return the report file",
       workspaceId: fixture.workspaceId,
     });
-    const worker = await activateRun(fixture, task.run!.id);
+    const worker = await activateRun(fixture, (await readToolRecords(store, task)).run!.id);
     await commit(worker, (scope) => ({
       ...scope,
       data: {
@@ -1357,7 +1385,7 @@ integration("cross-environment delegation reaches the Runner", () => {
       task: "Verify the retailer's return policy",
       workspaceId: fixture.workspaceId,
     });
-    const first = await activateRun(fixture, task.run!.id);
+    const first = await activateRun(fixture, (await readToolRecords(store, task)).run!.id);
     const firstRequest = await openDurableRequest(fixture, first);
     expect(await store.drainPendingThreadStates()).toContainEqual(
       expect.objectContaining({
@@ -1367,7 +1395,7 @@ integration("cross-environment delegation reaches the Runner", () => {
             workerThread: expect.objectContaining({ pendingRequests: 1 }),
           }),
         },
-        threadId: task.thread.id,
+        threadId: (await readToolRecords(store, task)).thread.id,
         type: "assignment.updated",
       }),
     );
@@ -1384,7 +1412,7 @@ integration("cross-environment delegation reaches the Runner", () => {
     });
     const waiting = await store.listThreadAssignmentsForOwner({
       ownerId: fixture.userId,
-      threadId: task.thread.id,
+      threadId: (await readToolRecords(store, task)).thread.id,
     });
     expect(waiting?.assignments[0]).toMatchObject({
       status: "open",
@@ -1393,7 +1421,10 @@ integration("cross-environment delegation reaches the Runner", () => {
 
     await declineRequest(fixture, firstRequest.request.id);
     await drainContinuations();
-    const second = await activateRun(fixture, (await queuedRun(task.thread.id)).id);
+    const second = await activateRun(
+      fixture,
+      (await queuedRun((await readToolRecords(store, task)).thread.id)).id,
+    );
     expect(await runAssignment(second.runId)).toBe(task.assignmentId);
     // Answered while this Run still works; its continuation is not queued yet
     // when the Run ends, so the task must not finish with this interim reply.
@@ -1411,7 +1442,10 @@ integration("cross-environment delegation reaches the Runner", () => {
     ).resolves.toEqual({ status: "waiting" });
 
     await drainContinuations();
-    const third = await activateRun(fixture, (await queuedRun(task.thread.id)).id);
+    const third = await activateRun(
+      fixture,
+      (await queuedRun((await readToolRecords(store, task)).thread.id)).id,
+    );
     const finalReply = "Final: returns are free within 100 days; no file access was needed.";
     await reply(third, finalReply);
     await end(third, "completed");
@@ -1437,7 +1471,7 @@ integration("cross-environment delegation reaches the Runner", () => {
       title: "Coordinated comparison",
       workspaceId: fixture.workspaceId,
     });
-    const parentFirst = await activateRun(fixture, parent.run!.id);
+    const parentFirst = await activateRun(fixture, (await readToolRecords(store, parent)).run!.id);
     const trial = await delegate(parentFirst.token, {
       task: "Check the manufacturer trial terms",
       workspaceId: fixture.workspaceId,
@@ -1446,7 +1480,7 @@ integration("cross-environment delegation reaches the Runner", () => {
     await end(parentFirst, "completed");
     expect((await assignmentRow(parent.assignmentId)).status).toBe("open");
 
-    const trialWorker = await activateRun(fixture, trial.run!.id);
+    const trialWorker = await activateRun(fixture, (await readToolRecords(store, trial)).run!.id);
 
     await end(trialWorker, "completed");
     expect(await assignmentRow(trial.assignmentId)).toMatchObject({
@@ -1454,15 +1488,24 @@ integration("cross-environment delegation reaches the Runner", () => {
       resultStatus: "pending",
     });
     expect(await drainReturns()).toContainEqual(
-      expect.objectContaining({ threadId: parent.thread.id, type: "message.created" }),
+      expect.objectContaining({
+        threadId: (await readToolRecords(store, parent)).thread.id,
+        type: "message.created",
+      }),
     );
-    const parentSecond = await activateRun(fixture, (await queuedRun(parent.thread.id)).id);
+    const parentSecond = await activateRun(
+      fixture,
+      (await queuedRun((await readToolRecords(store, parent)).thread.id)).id,
+    );
     expect(await runAssignment(parentSecond.runId)).toBe(parent.assignmentId);
     const warranty = await delegate(parentSecond.token, {
       task: "Check the warranty",
       workspaceId: fixture.workspaceId,
     });
-    const warrantyWorker = await activateRun(fixture, warranty.run!.id);
+    const warrantyWorker = await activateRun(
+      fixture,
+      (await readToolRecords(store, warranty)).run!.id,
+    );
     await reply(warrantyWorker, "Warranty: 10 years.");
     await end(warrantyWorker, "completed");
     // The warranty result has not reached the parent Thread yet.
@@ -1471,7 +1514,10 @@ integration("cross-environment delegation reaches the Runner", () => {
     expect((await assignmentRow(parent.assignmentId)).status).toBe("open");
 
     await drainReturns();
-    const parentThird = await activateRun(fixture, (await queuedRun(parent.thread.id)).id);
+    const parentThird = await activateRun(
+      fixture,
+      (await queuedRun((await readToolRecords(store, parent)).thread.id)).id,
+    );
     const finalReply = "Final: 100-night trial and a 10-year warranty.";
     await reply(parentThird, finalReply);
     await end(parentThird, "completed");
@@ -1483,7 +1529,7 @@ integration("cross-environment delegation reaches the Runner", () => {
     await drainReturns();
     const returned = await returnMessages(fixture.parentThreadId);
     expect(returned.map(({ content }) => messageText(content))).toEqual([
-      `Task completed: Coordinated comparison\nTask Thread: ${parent.thread.id} · Assignment: ${parent.assignmentId}\n\n${finalReply}`,
+      `Task completed: Coordinated comparison\nTask Thread: ${(await readToolRecords(store, parent)).thread.id} · Assignment: ${parent.assignmentId}\n\n${finalReply}`,
     ]);
     acceptanceEvidence.push({
       caseId: "L06+L07",
@@ -1501,12 +1547,12 @@ integration("cross-environment delegation reaches the Runner", () => {
       task: "First comparison",
       workspaceId: fixture.workspaceId,
     });
-    const firstWorker = await activateRun(fixture, first.run!.id);
+    const firstWorker = await activateRun(fixture, (await readToolRecords(store, first)).run!.id);
     const correction = await service.handle(fixture.token, {
       content: [{ text: "Also compare return shipping.", type: "text" }],
       delivery: "report",
       requestId: randomUUID(),
-      threadId: first.thread.id,
+      threadId: (await readToolRecords(store, first)).thread.id,
       type: "thread.message",
     });
     if (correction.type !== "thread.message.result") throw new Error("Expected a message result");
@@ -1527,7 +1573,7 @@ integration("cross-environment delegation reaches the Runner", () => {
       database
         .selectFrom("threadInputs")
         .select(["policy", "state"])
-        .where("messageId", "=", correction.result.message.id)
+        .where("messageId", "=", (await readToolRecords(store, correction.result)).message!.id)
         .executeTakeFirstOrThrow(),
     ).resolves.toEqual({ policy: "report", state: "pending" });
     expect((await assignmentRow(first.assignmentId)).status).toBe("completed");
@@ -1535,9 +1581,11 @@ integration("cross-environment delegation reaches the Runner", () => {
 
     const second = await delegate(fixture.token, {
       task: "Update the comparison with new sources",
-      threadId: first.thread.id,
+      threadId: (await readToolRecords(store, first)).thread.id,
     });
-    expect(second.thread.id).toBe(first.thread.id);
+    expect((await readToolRecords(store, second)).thread.id).toBe(
+      (await readToolRecords(store, first)).thread.id,
+    );
     expect(second.assignmentId).not.toBe(first.assignmentId);
     expect(await assignmentRow(second.assignmentId)).toMatchObject({
       resultText: null,
@@ -1551,16 +1599,16 @@ integration("cross-environment delegation reaches the Runner", () => {
         policy: "queue",
         requestedBy: fixture.userId,
         source: { cause: "request-resolved", kind: "platform", sourceRunId: firstWorker.runId },
-        threadId: first.thread.id,
+        threadId: (await readToolRecords(store, first)).thread.id,
       }),
     ).rejects.toThrow(/Assignment/u);
-    const secondWorker = await activateRun(fixture, second.run!.id);
+    const secondWorker = await activateRun(fixture, (await readToolRecords(store, second)).run!.id);
     await reply(secondWorker, "Second result");
     await end(secondWorker, "completed");
     const rows = await database
       .selectFrom("delegations")
       .select(["id", "resultRunId", "resultText", "status"])
-      .where("childThreadId", "=", first.thread.id)
+      .where("childThreadId", "=", (await readToolRecords(store, first)).thread.id)
       .orderBy("createdAt", "asc")
       .execute();
     expect(rows).toEqual([
@@ -1581,7 +1629,7 @@ integration("cross-environment delegation reaches the Runner", () => {
       caseId: "L08+L17+L18",
       firstAssignmentId: first.assignmentId,
       secondAssignmentId: second.assignmentId,
-      workerThreadId: first.thread.id,
+      workerThreadId: (await readToolRecords(store, first)).thread.id,
       correctionAssignmentId: correction.result.assignmentId,
       unboundMessageAssignmentId: toParent.result.assignmentId,
     });
@@ -1595,7 +1643,10 @@ integration("cross-environment delegation reaches the Runner", () => {
       title: "Trial terms",
       workspaceId: fixture.workspaceId,
     });
-    const runnerWorker = await activateRun(fixture, runnerFailure.run!.id);
+    const runnerWorker = await activateRun(
+      fixture,
+      (await readToolRecords(store, runnerFailure)).run!.id,
+    );
     await reply(runnerWorker, "Checked two of the three sources.");
     await end(runnerWorker, "failed", "The provider rejected the request");
     expect(await assignmentRow(runnerFailure.assignmentId)).toMatchObject({
@@ -1611,11 +1662,14 @@ integration("cross-environment delegation reaches the Runner", () => {
       title: "Delivery windows",
       workspaceId: fixture.workspaceId,
     });
-    const hostWorker = await activateRun(fixture, hostRecovery.run!.id);
+    const hostWorker = await activateRun(
+      fixture,
+      (await readToolRecords(store, hostRecovery)).run!.id,
+    );
     await database
       .updateTable("providerSessions")
       .set({ leaseExpiresAt: new Date(Date.now() - 60_000) })
-      .where("threadId", "=", hostRecovery.thread.id)
+      .where("threadId", "=", (await readToolRecords(store, hostRecovery)).thread.id)
       .where("active", "=", true)
       .execute();
     const recovery = await store.recoverRunsWithExpiredExecutionBindings();
@@ -1674,7 +1728,7 @@ integration("cross-environment delegation reaches the Runner", () => {
       task: "Summarize the reviews",
       workspaceId: fixture.workspaceId,
     });
-    const interrupted = await activateRun(fixture, task.run!.id);
+    const interrupted = await activateRun(fixture, (await readToolRecords(store, task)).run!.id);
     await reply(interrupted, "Halfway through the reviews.");
     await end(interrupted, "interrupted");
     expect(await assignmentRow(task.assignmentId)).toMatchObject({
@@ -1691,7 +1745,7 @@ integration("cross-environment delegation reaches the Runner", () => {
       policy: "queue",
       requestedBy: fixture.userId,
       source: { kind: "human" },
-      threadId: task.thread.id,
+      threadId: (await readToolRecords(store, task)).thread.id,
     });
     expect(nudge.input.assignmentId).toBe(task.assignmentId);
     const resumed = await activateRun(fixture, nudge.run!.id);
@@ -1737,15 +1791,17 @@ integration("cross-environment delegation reaches the Runner", () => {
       database
         .selectFrom("runs")
         .select("status")
-        .where("id", "=", task.run!.id)
+        .where("id", "=", (await readToolRecords(store, task)).run!.id)
         .executeTakeFirstOrThrow(),
     ).resolves.toEqual({ status: "interrupted" });
-    await expect(nonterminalRuns(task.thread.id)).resolves.toEqual([]);
+    await expect(nonterminalRuns((await readToolRecords(store, task)).thread.id)).resolves.toEqual(
+      [],
+    );
 
     await drainReturns();
     const returned = await returnMessages(fixture.parentThreadId);
     expect(returned.map(({ content }) => messageText(content))).toEqual([
-      `Task cancelled: Deferred research\nTask Thread: ${task.thread.id} · Assignment: ${task.assignmentId}`,
+      `Task cancelled: Deferred research\nTask Thread: ${(await readToolRecords(store, task)).thread.id} · Assignment: ${task.assignmentId}`,
     ]);
     await expect(
       database
@@ -1764,7 +1820,7 @@ integration("cross-environment delegation reaches the Runner", () => {
     acceptanceEvidence.push({
       caseId: "L13-queued",
       assignmentId: task.assignmentId,
-      interruptedRunId: task.run!.id,
+      interruptedRunId: (await readToolRecords(store, task)).run!.id,
       parentRunsStarted: 0,
     });
   });
@@ -1777,22 +1833,23 @@ integration("cross-environment delegation reaches the Runner", () => {
       title: "Shortlist",
       workspaceId: fixture.workspaceId,
     });
-    const parentWorker = await activateRun(fixture, parent.run!.id);
+    const parentWorker = await activateRun(fixture, (await readToolRecords(store, parent)).run!.id);
     const child = await delegate(parentWorker.token, {
       task: "Verify return terms",
       workspaceId: fixture.workspaceId,
     });
-    const childWorker = await activateRun(fixture, child.run!.id);
+    const childWorker = await activateRun(fixture, (await readToolRecords(store, child)).run!.id);
     const durable = await openDurableRequest(fixture, childWorker);
 
     const stopped = await service.handle(fixture.token, {
       assignmentId: parent.assignmentId,
       requestId: randomUUID(),
-      type: "assignment.cancel",
+      type: "task.cancel",
     });
     expect(stopped).toMatchObject({
-      assignment: { id: parent.assignmentId, status: "cancelled" },
-      type: "assignment.cancel.result",
+      assignmentId: parent.assignmentId,
+      status: "cancelled",
+      type: "task.cancel.result",
     });
     expect((await assignmentRow(child.assignmentId)).status).toBe("cancelled");
     await expect(store.requests.get(durable.request.id)).resolves.toMatchObject({
@@ -1829,8 +1886,12 @@ integration("cross-environment delegation reaches the Runner", () => {
       resultText: null,
       status: "cancelled",
     });
-    await expect(nonterminalRuns(parent.thread.id)).resolves.toEqual([]);
-    await expect(nonterminalRuns(child.thread.id)).resolves.toEqual([]);
+    await expect(
+      nonterminalRuns((await readToolRecords(store, parent)).thread.id),
+    ).resolves.toEqual([]);
+    await expect(nonterminalRuns((await readToolRecords(store, child)).thread.id)).resolves.toEqual(
+      [],
+    );
 
     await drainReturns();
     const returned = await returnMessages(fixture.parentThreadId);
@@ -1841,7 +1902,9 @@ integration("cross-environment delegation reaches the Runner", () => {
       resultReason: "parent-assignment-terminal",
       resultStatus: "undeliverable",
     });
-    await expect(returnMessages(parent.thread.id)).resolves.toEqual([]);
+    await expect(returnMessages((await readToolRecords(store, parent)).thread.id)).resolves.toEqual(
+      [],
+    );
     acceptanceEvidence.push({
       caseId: "L13-running+L14+L15",
       parentAssignmentId: parent.assignmentId,
@@ -1858,7 +1921,7 @@ integration("cross-environment delegation reaches the Runner", () => {
       task: "Check the account settings",
       workspaceId: fixture.workspaceId,
     });
-    const worker = await activateRun(fixture, task.run!.id);
+    const worker = await activateRun(fixture, (await readToolRecords(store, task)).run!.id);
     const durable = await openDurableRequest(fixture, worker);
     await reply(worker, "Waiting for file access.");
     await end(worker, "completed");
@@ -1874,7 +1937,9 @@ integration("cross-environment delegation reaches the Runner", () => {
     });
     await expect(declineRequest(fixture, durable.request.id)).rejects.toThrow(/no longer pending/u);
     await drainContinuations();
-    await expect(nonterminalRuns(task.thread.id)).resolves.toEqual([]);
+    await expect(nonterminalRuns((await readToolRecords(store, task)).thread.id)).resolves.toEqual(
+      [],
+    );
     acceptanceEvidence.push({
       caseId: "L13-waiting",
       assignmentId: task.assignmentId,
@@ -1890,15 +1955,16 @@ integration("cross-environment delegation reaches the Runner", () => {
       workspaceId: fixture.workspaceId,
     });
     await expect(
-      delegate(fixture.token, { task: "A different objective", threadId: task.thread.id }),
-    ).rejects.toThrow(
-      new RegExp(`task ${task.assignmentId}.*thread_message.*assignment_cancel`, "u"),
-    );
+      delegate(fixture.token, {
+        task: "A different objective",
+        threadId: (await readToolRecords(store, task)).thread.id,
+      }),
+    ).rejects.toThrow(new RegExp(`task ${task.assignmentId}.*thread_message.*task_cancel`, "u"));
     await expect(
       database
         .selectFrom("delegations")
         .select("id")
-        .where("childThreadId", "=", task.thread.id)
+        .where("childThreadId", "=", (await readToolRecords(store, task)).thread.id)
         .execute(),
     ).resolves.toEqual([{ id: task.assignmentId }]);
     acceptanceEvidence.push({ caseId: "L16", assignmentId: task.assignmentId });
@@ -2016,20 +2082,20 @@ integration("cross-environment delegation reaches the Runner", () => {
       task: "Unrelated research",
       workspaceId: fixture.workspaceId,
     });
-    const parentWorker = await activateRun(fixture, parent.run!.id);
+    const parentWorker = await activateRun(fixture, (await readToolRecords(store, parent)).run!.id);
     const child = await delegate(parentWorker.token, {
       task: "A helper step",
       workspaceId: fixture.workspaceId,
     });
     const cancel = (token: string, assignmentId: typeof parent.assignmentId) =>
-      service.handle(token, { assignmentId, requestId: randomUUID(), type: "assignment.cancel" });
+      service.handle(token, { assignmentId, requestId: randomUUID(), type: "task.cancel" });
     // A task's own Run cannot stop itself, but stops work within its reach,
     // including work it did not start.
     await expect(cancel(parentWorker.token, parent.assignmentId)).rejects.toMatchObject({
       code: "forbidden",
     });
     await expect(cancel(parentWorker.token, child.assignmentId)).resolves.toMatchObject({
-      assignment: { status: "cancelled" },
+      status: "cancelled",
     });
     const unrelated = await delegate(fixture.token, {
       environmentId: fixture.lentEnvironmentId,
@@ -2037,7 +2103,7 @@ integration("cross-environment delegation reaches the Runner", () => {
       workspaceId: fixture.workspaceId,
     });
     await expect(cancel(parentWorker.token, unrelated.assignmentId)).resolves.toMatchObject({
-      assignment: { status: "cancelled" },
+      status: "cancelled",
     });
     // A member who neither started the work nor owns the Workspace cannot stop it.
     const collaboratorId = await store.createUser("Collaborator");
@@ -2058,7 +2124,7 @@ integration("cross-environment delegation reaches the Runner", () => {
     ).resolves.toMatchObject({ assignment: { status: "cancelled" } });
     // A Run that inherits Main stops whatever its person could.
     await expect(cancel(fixture.token, parent.assignmentId)).resolves.toMatchObject({
-      assignment: { status: "cancelled" },
+      status: "cancelled",
     });
     acceptanceEvidence.push({
       caseId: "L20",
@@ -2076,7 +2142,7 @@ integration("cross-environment delegation reaches the Runner", () => {
       task: "Research mattress options in the worker workspace",
       workspaceId: workerWorkspace.id,
     });
-    const worker = await activateRun(fixture, task.run!.id);
+    const worker = await activateRun(fixture, (await readToolRecords(store, task)).run!.id);
     const remainingOwnerId = await store.createUser("Remaining parent Workspace owner");
     await addMembership(fixture.workspaceId, remainingOwnerId, "owner", fixture.userId);
     await database
@@ -2091,7 +2157,10 @@ integration("cross-environment delegation reaches the Runner", () => {
       ({ type }) => type === "assignment.updated",
     );
     expect(completion).toEqual([
-      expect.objectContaining({ threadId: task.thread.id, workspaceId: workerWorkspace.id }),
+      expect.objectContaining({
+        threadId: (await readToolRecords(store, task)).thread.id,
+        workspaceId: workerWorkspace.id,
+      }),
     ]);
     await drainReturns();
     expect(await assignmentRow(task.assignmentId)).toMatchObject({
@@ -2159,17 +2228,21 @@ integration("cross-environment delegation reaches the Runner", () => {
       alternateModel.modelId,
     );
     expect((await list(true)).map(({ id }) => id)).toEqual([task.assignmentId]);
-    const worker = await activateRun(fixture, task.run!.id);
+    const worker = await activateRun(fixture, (await readToolRecords(store, task)).run!.id);
     await reply(worker, "Research complete.");
     await end(worker, "completed");
     await drainReturns();
     // Finished work leaves the open set and stays in the history.
     expect(await list(true)).toEqual([]);
     expect((await list()).map(({ id }) => id)).toContain(task.assignmentId);
-    await selectModel(task.thread.id, fixture.lentHarnessInstanceId, testModelSelection);
+    await selectModel(
+      (await readToolRecords(store, task)).thread.id,
+      fixture.lentHarnessInstanceId,
+      testModelSelection,
+    );
     const followUp = await delegate(fixture.token, {
       task: "Check return shipping",
-      threadId: task.thread.id,
+      threadId: (await readToolRecords(store, task)).thread.id,
     });
     const parentRun = await database
       .selectFrom("runs")
@@ -2213,17 +2286,24 @@ integration("cross-environment delegation reaches the Runner", () => {
         waitingRequests: [],
       }).model,
     ).toBe(alternateModel.modelId);
-    const firstFollowUpRun = await activateRun(fixture, followUp.run!.id);
+    const firstFollowUpRun = await activateRun(
+      fixture,
+      (await readToolRecords(store, followUp)).run!.id,
+    );
     await reply(firstFollowUpRun, "Checking return shipping now.");
     await end(firstFollowUpRun, "interrupted");
-    await selectModel(task.thread.id, fixture.lentHarnessInstanceId, alternateModel);
+    await selectModel(
+      (await readToolRecords(store, task)).thread.id,
+      fixture.lentHarnessInstanceId,
+      alternateModel,
+    );
     const nudge = await commands.enqueueThreadInput({
       content: [{ text: "Please finish the return shipping check", type: "text" }],
       idempotencyKey: `model-follow-up-${randomUUID()}`,
       policy: "queue",
       requestedBy: fixture.userId,
       source: { kind: "human" },
-      threadId: task.thread.id,
+      threadId: (await readToolRecords(store, task)).thread.id,
     });
     expect(nudge.input.assignmentId).toBe(followUp.assignmentId);
     const finalFollowUpRun = await activateRun(fixture, nudge.run!.id);
@@ -2333,13 +2413,15 @@ integration("cross-environment delegation reaches the Runner", () => {
       title: "Mattress research",
       workspaceId: fixture.workspaceId,
     });
-    const taskFirst = await activateRun(fixture, task.run!.id);
+    const taskFirst = await activateRun(fixture, (await readToolRecords(store, task)).run!.id);
     const helper = await delegate(taskFirst.token, {
       task: "Check the warranty",
       title: "Warranty check",
       workspaceId: fixture.workspaceId,
     });
-    expect(helper.thread.parentThreadId).toBe(task.thread.id);
+    expect((await readToolRecords(store, helper)).thread.parentThreadId).toBe(
+      (await readToolRecords(store, task)).thread.id,
+    );
 
     // What a person's client reads: the realtime snapshot, the next page, and
     // the live event for each new Thread must make the same decision.
@@ -2358,13 +2440,19 @@ integration("cross-environment delegation reaches the Runner", () => {
         snapshot: snapshot.threads.map(({ id }) => id).sort(),
       };
     };
-    const expected = [fixture.parentThreadId, task.thread.id].sort();
+    const expected = [
+      fixture.parentThreadId,
+      (await readToolRecords(store, task)).thread.id,
+    ].sort();
     expect(await listedIds()).toEqual({ page: expected, snapshot: expected });
     const created = await database
       .selectFrom("workspaceEvents")
       .select(["data", "threadId"])
       .where("type", "=", "thread.created")
-      .where("threadId", "in", [task.thread.id, helper.thread.id])
+      .where("threadId", "in", [
+        (await readToolRecords(store, task)).thread.id,
+        (await readToolRecords(store, helper)).thread.id,
+      ])
       .execute();
     expect(
       Object.fromEntries(
@@ -2373,15 +2461,21 @@ integration("cross-environment delegation reaches the Runner", () => {
           (data as { thread: { listed: boolean } }).thread.listed,
         ]),
       ),
-    ).toEqual({ [helper.thread.id]: false, [task.thread.id]: true });
+    ).toEqual({
+      [(await readToolRecords(store, helper)).thread.id]: false,
+      [(await readToolRecords(store, task)).thread.id]: true,
+    });
 
     // Finishing the task and handing it more work reuses its one row.
-    const helperWorker = await activateRun(fixture, helper.run!.id);
+    const helperWorker = await activateRun(fixture, (await readToolRecords(store, helper)).run!.id);
     const helperActor = await store.resolvePlaceActor({
       agentBindingId: `run:${helperWorker.runId}`,
       ownerId: fixture.userId,
     });
-    expect(helperActor).toMatchObject({ threadId: task.thread.id, home: false });
+    expect(helperActor).toMatchObject({
+      threadId: (await readToolRecords(store, task)).thread.id,
+      home: false,
+    });
     expect(
       await store.resolvePlaceActor({
         agentBindingId: `run:${fixture.parent.runId}`,
@@ -2406,25 +2500,30 @@ integration("cross-environment delegation reaches the Runner", () => {
     await reply(taskFirst, "Waiting on the warranty check.");
     await end(taskFirst, "completed");
     await drainReturns();
-    const taskSecond = await activateRun(fixture, (await queuedRun(task.thread.id)).id);
+    const taskSecond = await activateRun(
+      fixture,
+      (await queuedRun((await readToolRecords(store, task)).thread.id)).id,
+    );
     await reply(taskSecond, "100-night trial and a 10-year warranty.");
     await end(taskSecond, "completed");
     expect((await assignmentRow(task.assignmentId)).status).toBe("completed");
     const followUp = await delegate(fixture.token, {
       task: "Also compare return shipping",
-      threadId: task.thread.id,
+      threadId: (await readToolRecords(store, task)).thread.id,
     });
-    expect(followUp.thread.id).toBe(task.thread.id);
+    expect((await readToolRecords(store, followUp)).thread.id).toBe(
+      (await readToolRecords(store, task)).thread.id,
+    );
     expect(await listedIds()).toEqual({ page: expected, snapshot: expected });
     acceptanceEvidence.push({
       caseId: "sidebar-listing",
       helperActor,
-      helperThreadId: helper.thread.id,
+      helperThreadId: (await readToolRecords(store, helper)).thread.id,
       homeThreadId: fixture.parentThreadId,
       voiceThreadId: null,
       listedThreadIds: expected,
       reusedAssignmentId: followUp.assignmentId,
-      taskThreadId: task.thread.id,
+      taskThreadId: (await readToolRecords(store, task)).thread.id,
     });
   }, 60_000);
 
@@ -2435,13 +2534,13 @@ integration("cross-environment delegation reaches the Runner", () => {
       title: "Mattress research",
       workspaceId: fixture.workspaceId,
     });
-    const taskRun = await activateRun(fixture, task.run!.id);
+    const taskRun = await activateRun(fixture, (await readToolRecords(store, task)).run!.id);
     const helper = await delegate(taskRun.token, {
       task: "Check the warranty",
       title: "Warranty check",
       workspaceId: fixture.workspaceId,
     });
-    const helperRun = await activateRun(fixture, helper.run!.id);
+    const helperRun = await activateRun(fixture, (await readToolRecords(store, helper)).run!.id);
     const asked = await openDurableRequest(fixture, helperRun);
 
     // The question is Alex's, and it holds up the helper, the task and so Home.
@@ -2453,13 +2552,19 @@ integration("cross-environment delegation reaches the Runner", () => {
         assignments: [
           {
             id: helper.assignmentId,
-            parentThreadId: task.thread.id,
-            workerThread: { id: helper.thread.id, title: "Warranty check" },
+            parentThreadId: (await readToolRecords(store, task)).thread.id,
+            workerThread: {
+              id: (await readToolRecords(store, helper)).thread.id,
+              title: "Warranty check",
+            },
           },
           {
             id: task.assignmentId,
             parentThreadId: fixture.parentThreadId,
-            workerThread: { id: task.thread.id, title: "Mattress research" },
+            workerThread: {
+              id: (await readToolRecords(store, task)).thread.id,
+              title: "Mattress research",
+            },
           },
         ],
         id: asked.request.id,
@@ -2475,7 +2580,7 @@ integration("cross-environment delegation reaches the Runner", () => {
     const [handoff] = await database
       .selectFrom("messages")
       .select("author")
-      .where("threadId", "=", task.thread.id)
+      .where("threadId", "=", (await readToolRecords(store, task)).thread.id)
       .orderBy("sequence", "asc")
       .execute();
     expect(handoff?.author).toMatchObject({ displayName: "Alex’s Opensteer", kind: "agent" });
@@ -2491,17 +2596,20 @@ integration("cross-environment delegation reaches the Runner", () => {
     // The declined question resumes the helper once before it can finish.
     await end(helperRun, "completed");
     await drainContinuations();
-    const helperResumed = await activateRun(fixture, (await queuedRun(helper.thread.id)).id);
+    const helperResumed = await activateRun(
+      fixture,
+      (await queuedRun((await readToolRecords(store, helper)).thread.id)).id,
+    );
     await reply(helperResumed, "Warranty: 10 years.");
     await end(helperResumed, "completed");
     expect((await assignmentRow(helper.assignmentId)).status).toBe("completed");
     await drainReturns();
-    expect(await listedFlag(helper.thread.id)).toBe(false);
+    expect(await listedFlag((await readToolRecords(store, helper)).thread.id)).toBe(false);
     const adopted = await delegate(fixture.token, {
       task: "Now compare return shipping",
-      threadId: helper.thread.id,
+      threadId: (await readToolRecords(store, helper)).thread.id,
     });
-    expect(await listedFlag(helper.thread.id)).toBe(true);
+    expect(await listedFlag((await readToolRecords(store, helper)).thread.id)).toBe(true);
     const listedEvents = await database
       .selectFrom("workspaceEvents")
       .select(["data", "threadId"])
@@ -2510,18 +2618,21 @@ integration("cross-environment delegation reaches the Runner", () => {
     expect(listedEvents).toEqual([
       {
         data: expect.objectContaining({
-          thread: expect.objectContaining({ id: helper.thread.id, listed: true }),
+          thread: expect.objectContaining({
+            id: (await readToolRecords(store, helper)).thread.id,
+            listed: true,
+          }),
         }),
-        threadId: helper.thread.id,
+        threadId: (await readToolRecords(store, helper)).thread.id,
       },
     ]);
-    const adoptedRun = await activateRun(fixture, adopted.run!.id);
+    const adoptedRun = await activateRun(fixture, (await readToolRecords(store, adopted)).run!.id);
     expect(
       await store.resolvePlaceActor({
         agentBindingId: `run:${adoptedRun.runId}`,
         ownerId: fixture.userId,
       }),
-    ).toMatchObject({ threadId: helper.thread.id, home: false });
+    ).toMatchObject({ threadId: (await readToolRecords(store, helper)).thread.id, home: false });
     expect(
       await store.resolvePlaceActor({
         agentBindingId: `run:${helperRun.runId}`,
@@ -2542,7 +2653,10 @@ integration("cross-environment delegation reaches the Runner", () => {
           {
             id: adopted.assignmentId,
             parentThreadId: fixture.parentThreadId,
-            workerThread: { id: helper.thread.id, title: "Warranty check" },
+            workerThread: {
+              id: (await readToolRecords(store, helper)).thread.id,
+              title: "Warranty check",
+            },
           },
         ],
         id: askedAgain.request.id,
@@ -2552,7 +2666,7 @@ integration("cross-environment delegation reaches the Runner", () => {
       adoptedAssignmentId: adopted.assignmentId,
       caseId: "waiting-on-you",
       helperAssignmentId: helper.assignmentId,
-      helperThreadId: helper.thread.id,
+      helperThreadId: (await readToolRecords(store, helper)).thread.id,
       taskAssignmentId: task.assignmentId,
     });
   }, 60_000);
@@ -2565,7 +2679,7 @@ integration("cross-environment delegation reaches the Runner", () => {
       title: "Launch announcement",
       workspaceId: shared.id,
     });
-    const worker = await activateRun(fixture, task.run!.id);
+    const worker = await activateRun(fixture, (await readToolRecords(store, task)).run!.id);
     await reply(worker, "Draft: private launch details.");
     await end(worker, "completed");
     // Alex leaves the Workspace; it keeps an owner of its own.
