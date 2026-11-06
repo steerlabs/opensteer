@@ -174,6 +174,9 @@ import {
   type RunnerModuleName,
   type ShellModuleEvent,
   type WorkspaceView,
+  runFileMaxBytes,
+  runFileNameHeader,
+  runFileTransferContentType,
 } from "@opensteer/protocol";
 import {
   BrowserRelayFrameError,
@@ -225,6 +228,7 @@ import {
 import type { RunnerAuthenticator } from "./agents/runner-authenticator.js";
 import type { SecurityEffectService } from "./agents/security-effect-service.js";
 import type { AttachmentService } from "./attachments/attachment-service.js";
+import type { RunFileRelay } from "./integrations/run-file-relay.js";
 import { browserRuntimeCompatibilityReason } from "./browser/browser-runtime-compatibility.js";
 import type { BrowserSourceService } from "./browser/browser-source-service.js";
 import type {
@@ -356,6 +360,7 @@ export interface HostServerDependencies {
   readonly passkeys?: boolean;
   readonly fetch?: typeof globalThis.fetch;
   readonly attachments: AttachmentService;
+  readonly runFiles: RunFileRelay;
   readonly apps: AppService;
   readonly appOriginSigningKey: Uint8Array;
   readonly appRealOrigins: boolean;
@@ -482,6 +487,10 @@ export async function createHostServer(
     ["application/octet-stream", "application/x-www-form-urlencoded", "text/plain"],
     { parseAs: "buffer" },
     (_request, body, done) => done(null, body),
+  );
+  // Left as a stream: a run file may be far larger than any body this app buffers.
+  app.addContentTypeParser(runFileTransferContentType, (_request, payload, done) =>
+    done(null, payload),
   );
   const runnerChallenges = new RunnerChallengeAdmission(maxChallengedRunnerConnections);
   const phoneUpdates = new AgentPhoneUpdateHub({
@@ -2629,6 +2638,36 @@ export async function createHostServer(
       .header("etag", content.metadata.etag)
       .type(content.metadata.contentType)
       .send(Buffer.from(content.bytes));
+  });
+
+  app.put("/v1/runner/file-transfers/:id", { bodyLimit: runFileMaxBytes }, async (request, reply) => {
+    const token = requireBearerToken(request);
+    const { id } = z.strictObject({ id: z.uuid() }).parse(request.params);
+    const sizeBytes = Number(request.headers["content-length"]);
+    const name = request.headers[runFileNameHeader];
+    if (!Number.isSafeInteger(sizeBytes) || typeof name !== "string")
+      throw new OpensteerError({ code: "bad_request", message: "This file has no size or name." });
+    await dependencies.runFiles.upload(id, token, {
+      name: decodeURIComponent(name),
+      sizeBytes,
+      stream: request.body as Readable,
+    });
+    return reply.code(204).send();
+  });
+
+  app.get("/v1/runner/file-transfers/:id", async (request, reply) => {
+    const token = requireBearerToken(request);
+    const { id } = z.strictObject({ id: z.uuid() }).parse(request.params);
+    const file = await dependencies.runFiles.download(id, token);
+    reply.raw.once("close", () =>
+      file.settled(reply.raw.writableFinished ? undefined : new Error("The download stopped.")),
+    );
+    return reply
+      .header("cache-control", "no-store")
+      .header("content-length", file.sizeBytes)
+      .header(runFileNameHeader, encodeURIComponent(file.name))
+      .type(runFileTransferContentType)
+      .send(file.stream);
   });
 
   app.get(hostInternalRoutePaths.triggerRevisionProgram, async (request, reply) => {

@@ -19,6 +19,7 @@ export function hostServerTestDependencies(
     appOriginSigningKey: Buffer.alloc(32, 1),
     appRealOrigins: true,
     attachments: inert(),
+    runFiles: inert(),
     runToolTokens: inert(),
     agentTools: inert(),
     authenticator: inert(),

@@ -131,6 +131,7 @@ import {
   AttachmentService,
   RunAttachmentsTokenService,
 } from "../attachments/attachment-service.js";
+import { RunFileRelay } from "../integrations/run-file-relay.js";
 import { AppStore } from "@opensteer/database";
 import { AppService } from "../apps/app-service.js";
 import { BrowserLocalProfiles } from "../browser/browser-local-profiles.js";
@@ -601,6 +602,7 @@ export async function createHostRuntime(
     // flight, so those callers address it through this indirection rather than
     // forcing the whole composition order to change.
     let runnerRegistry: RunnerRegistry | undefined;
+    const runFileRelay = new RunFileRelay();
     let disconnectBrowserSources = () => {};
     const personalAccessAuthority =
       config.workspace.shape.kind === "personal" && config.exposure === "loopback"
@@ -1391,6 +1393,23 @@ export async function createHostRuntime(
           "computerTool" in agents &&
           agents.computerTool === 1
         );
+      },
+      runFiles: {
+        appFiles: (runnerId) => {
+          const integrations = runnerRegistry?.identityForRunner(runnerId)?.modules.integrations;
+          return !!integrations && "appFiles" in integrations && integrations.appFiles === 1;
+        },
+        relay: runFileRelay,
+        request: (runnerId, request, signal) =>
+          requiredService(runnerRegistry, "Runner registry").requestRunFile(
+            runnerId,
+            request,
+            signal,
+          ),
+        runFiles: (runnerId) => {
+          const agents = runnerRegistry?.identityForRunner(runnerId)?.modules.agents;
+          return !!agents && "runFiles" in agents && agents.runFiles === 1;
+        },
       },
       computerUseVersion: (runnerId) => {
         const integrations = runnerRegistry?.identityForRunner(runnerId)?.modules.integrations;
@@ -2428,6 +2447,7 @@ export async function createHostRuntime(
             }
           : {}),
         attachments,
+        runFiles: runFileRelay,
         apps,
         appOriginSigningKey: createHmac("sha256", config.authSecret)
           .update("opensteer-app-cookie-v1")

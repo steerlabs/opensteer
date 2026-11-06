@@ -20,9 +20,12 @@ import type {
 import { createId, OpensteerError, placeInputFailure } from "@opensteer/core";
 import {
   type HostAppRequest,
+  type HostRunFileRequest,
   type RunnerAppResult,
+  type RunnerRunFileResult,
   type RunnerVoiceCommand,
   type RunnerVoiceResult,
+  computerAppMaxTimeoutMs,
   CorrelationIdSchema,
   RunnerCommandSchema,
   sameRunnerConnectionFence,
@@ -380,6 +383,10 @@ interface RunnerConnection {
     string,
     { appId: string; resolve: (result: RunnerAppResult) => void; reject: (error: unknown) => void }
   >;
+  readonly pendingRunFiles: Map<
+    string,
+    { resolve: (result: RunnerRunFileResult) => void; reject: (error: unknown) => void }
+  >;
   /**
    * Work that may have crossed the transport boundary on this exact socket.
    * An acknowledgement can be lost after the Runner accepted a command. The Host must retain ownership
@@ -598,6 +605,7 @@ export class RunnerRegistry {
       pendingTriggerPrograms: new Map(),
       pendingWorkspaceLocal: new Map(),
       pendingApps: new Map(),
+      pendingRunFiles: new Map(),
       ownedRunIds: new Set(),
       ownedRunBindings: new Map(),
       ownedTriggerOccurrenceIds: new Set(),
@@ -1497,6 +1505,61 @@ export class RunnerRegistry {
     }
   }
 
+  /**
+   * Asks the Runner holding a Run to move files for it, inside one live tool
+   * call. Fenced to that connection and never queued or replayed: a call that
+   * loses the Runner fails, and the next execution starts clean.
+   */
+  async requestRunFile(
+    runnerId: RunnerId,
+    request:
+      | Pick<Extract<HostRunFileRequest, { type: "host.run-file.receive" }>, "execution" | "transfers" | "type">
+      | Pick<Extract<HostRunFileRequest, { type: "host.run-file.send" }>, "execution" | "files" | "type">,
+    signal: AbortSignal,
+  ): Promise<RunnerRunFileResult> {
+    const connection = this.#byRunner.get(runnerId);
+    if (!connection)
+      throw new OpensteerError({
+        code: "conflict",
+        message: "The computer running this task is not connected",
+      });
+    const fence = connection.identity.fence;
+    const requestId = randomUUID();
+    const pending = deferred<RunnerRunFileResult>();
+    connection.pendingRunFiles.set(requestId, pending);
+    let canceled = false;
+    const cancel = () => {
+      if (canceled) return;
+      canceled = true;
+      void connection.peer
+        .send({ ...fence, requestId, type: "host.run-file.cancel" })
+        .catch(() => undefined);
+    };
+    signal.addEventListener("abort", cancel, { once: true });
+    try {
+      signal.throwIfAborted();
+      await connection.peer.send({ ...fence, ...request, requestId });
+      const result = await withDeadline(
+        pending.promise,
+        runFileRequestTimeoutMs,
+        signal,
+        "The computer running this task did not finish moving the file in time",
+      );
+      if (!sameRunnerConnectionFence(result, fence))
+        throw new OpensteerError({
+          code: "conflict",
+          message: "File response belongs to another connection",
+        });
+      return result;
+    } catch (error) {
+      cancel();
+      throw error;
+    } finally {
+      signal.removeEventListener("abort", cancel);
+      connection.pendingRunFiles.delete(requestId);
+    }
+  }
+
   appConnectionSignal(environmentId: EnvironmentId, connectionId: RunnerConnectionId): AbortSignal {
     const connection = this.#byEnvironment.get(environmentId);
     return connection?.identity.connectionId === connectionId
@@ -2183,6 +2246,9 @@ export class RunnerRegistry {
         pending?.resolve(message);
         break;
       }
+      case "runner.run-file.result":
+        connection.pendingRunFiles.get(message.requestId)?.resolve(message);
+        break;
       case "runner.workspace.local.provisioned":
       case "runner.workspace.local.relocated":
       case "runner.workspace.local.inspected":
@@ -2484,6 +2550,7 @@ export class RunnerRegistry {
     for (const pending of connection.pendingTriggerPrograms.values()) pending.reject(error);
     for (const pending of connection.pendingWorkspaceLocal.values()) pending.reject(error);
     for (const pending of connection.pendingApps.values()) pending.reject(error);
+    for (const pending of connection.pendingRunFiles.values()) pending.reject(error);
     connection.pendingAcks.clear();
     connection.pendingCatalogs.clear();
     connection.pendingHarnessAuthentications.clear();
@@ -2493,6 +2560,7 @@ export class RunnerRegistry {
     connection.pendingTriggerPrograms.clear();
     connection.pendingWorkspaceLocal.clear();
     connection.pendingApps.clear();
+    connection.pendingRunFiles.clear();
     connection.ownedRunIds.clear();
     connection.ownedRunBindings.clear();
     connection.ownedTriggerOccurrenceIds.clear();
@@ -2622,6 +2690,9 @@ function auxiliarySnapshot(stream: AuxiliaryStream): RunnerAuxiliaryStream {
     streamLeaseExpiresAt: new Date(stream.leaseExpiresAt).toISOString(),
   };
 }
+
+/** A file call's own deadline, plus time for its answer to arrive. */
+const runFileRequestTimeoutMs = computerAppMaxTimeoutMs + 5_000;
 
 function deferred<T>(): {
   readonly promise: Promise<T>;
