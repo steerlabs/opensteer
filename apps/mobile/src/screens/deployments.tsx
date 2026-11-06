@@ -2,7 +2,15 @@ import { useHeaderHeight } from "@react-navigation/elements";
 import { useNavigation, useRoute } from "@react-navigation/native";
 import type { AccountDeploymentDirectoryUnavailable } from "@opensteer/client/connections";
 import type { DesktopAccountAuthState } from "@opensteer/protocol/desktop";
-import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   AccessibilityInfo,
   Alert,
@@ -46,6 +54,7 @@ import {
 import { deploymentInitial, deploymentTone, statusTone } from "./deployment-row.js";
 import { deploymentRecoveryLabel, runDeploymentRecovery } from "./deployment-recovery.js";
 import { DeploymentMenu } from "./deployment-menu.js";
+import { useSetupScanner } from "./setup-scanner.js";
 import { Welcome } from "./welcome.js";
 
 const signedInStatuses: ReadonlySet<DeploymentStatus> = new Set<DeploymentStatus>([
@@ -407,49 +416,61 @@ export function DeploymentsScreen(): ReactNode {
 
   const identity = account.account.identity;
   const presentation = deploymentsPresentation(rows.length, identity !== null);
+  const welcome = presentation === "welcome" && !switching;
 
-  if (presentation !== "list") {
+  // The first run titles itself; a bar title above it would say it twice.
+  useLayoutEffect(() => {
+    if (switching) return;
+    navigation.setOptions({ headerLargeTitle: !welcome, title: welcome ? "" : "Computers" });
+  }, [navigation, switching, welcome]);
+
+  const enterAddress = useCallback(() => {
+    accountFlowGeneration.current += 1;
+    setStartingAccountSignIn(false);
+    navigation.navigate("AddPersonal");
+  }, [navigation]);
+  const scan = useSetupScanner(enterAddress);
+
+  if (presentation === "welcome") {
+    return (
+      <Welcome
+        portalOrigin={client.portalOrigin}
+        account={account.account}
+        failure={failure}
+        onAccount={signInAccount}
+        onAddress={enterAddress}
+        onScan={() => {
+          accountFlowGeneration.current += 1;
+          setStartingAccountSignIn(false);
+          scan();
+        }}
+        signingIn={startingAccountSignIn || account.account.status === "authorizing"}
+      />
+    );
+  }
+
+  if (presentation === "signed-in-empty") {
     return (
       <Screen>
         <ScrollView
           // The bar's height is stated as padding rather than left to the
           // automatic inset: the inset would add it to a container that is
-          // already the viewport's height, and centre the welcome column in a
-          // box taller than the screen — visibly low on every phone.
+          // already the viewport's height, and centre the column in a box
+          // taller than the screen — visibly low on every phone.
           contentContainerStyle={[styles.empty, column, { paddingTop: headerHeight }]}
           contentInsetAdjustmentBehavior="never"
         >
-          {presentation === "welcome" ? (
-            <Welcome
-              portalOrigin={client.portalOrigin}
-              account={account.account}
-              failure={failure}
-              onAccount={signInAccount}
-              onPersonal={() => {
-                accountFlowGeneration.current += 1;
-                setStartingAccountSignIn(false);
-                navigation.navigate("AddPersonal");
-              }}
-              onServer={() => {
-                accountFlowGeneration.current += 1;
-                setStartingAccountSignIn(false);
-                navigation.navigate("AddServer");
-              }}
-              signingIn={startingAccountSignIn || account.account.status === "authorizing"}
-            />
-          ) : (
-            <SignedInEmptyDeployments
-              directoryDetail={directory.detail}
-              directoryStatus={directory.status}
-              failure={failure}
-              identity={identity!}
-              onPersonal={() => navigation.navigate("AddPersonal")}
-              onRefresh={refresh}
-              onServer={() => navigation.navigate("AddServer")}
-              refreshing={refreshing}
-              unavailable={directory.unavailable}
-            />
-          )}
+          <SignedInEmptyDeployments
+            directoryDetail={directory.detail}
+            directoryStatus={directory.status}
+            failure={failure}
+            identity={identity!}
+            onPersonal={() => navigation.navigate("AddPersonal")}
+            onRefresh={refresh}
+            onServer={() => navigation.navigate("AddServer")}
+            refreshing={refreshing}
+            unavailable={directory.unavailable}
+          />
         </ScrollView>
       </Screen>
     );

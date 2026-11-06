@@ -57,6 +57,7 @@ export type SFSymbolName =
   | "key"
   | "keyboard"
   | "laptopcomputer"
+  | "laptopcomputer.and.iphone"
   | "lightbulb"
   | "line.3.horizontal"
   | "line.3.horizontal.decrease"
@@ -220,6 +221,7 @@ const glyph: Record<SFSymbolName, string> = {
   key: "⚷",
   keyboard: "⌨",
   laptopcomputer: "⌨",
+  "laptopcomputer.and.iphone": "⌨",
   lightbulb: "✱",
   "line.3.horizontal": "☰",
   "line.3.horizontal.decrease": "≡",

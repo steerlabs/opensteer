@@ -55,8 +55,8 @@ Send a build to external TestFlight before submitting for review.
 ## Review demo server
 
 Reviewers have no computer, and the mock Host is dev-only, so they get a real server Deployment from
-[deploy/self-host](../../../../deploy/self-host/README.md) reached through "Other ways to connect",
-"Add a server by address". It bypasses the Opensteer Account, and needs a public HTTPS address with a
+[deploy/self-host](../../../../deploy/self-host/README.md) reached through "Enter address", then "Add a
+server instead". It bypasses the Opensteer Account, and needs a public HTTPS address with a
 certificate iOS trusts.
 
 - Use an isolated Linux machine that holds nothing else: no cloud instance role, no production

@@ -34,6 +34,7 @@ import { DeploymentsScreen } from "./screens/deployments.js";
 import { HomeScreen } from "./screens/home.js";
 import { NewProjectScreen } from "./screens/new-project.js";
 import { NewTaskScreen } from "./screens/new-task.js";
+import { NotificationsIntroScreen } from "./screens/notifications-intro.js";
 import { OpenAppScreen } from "./screens/open-app.js";
 import { ProjectSettingsScreen } from "./screens/project-settings.js";
 import { ProjectScreen } from "./screens/project.js";
@@ -414,6 +415,18 @@ const RootStack = createNativeStackNavigator({
         title: "Add this iPhone",
       }),
     },
+    // Asked once, over Chat, the first time this phone reaches a computer. It
+    // sizes to its content and is dismissed like any sheet.
+    NotificationsIntro: {
+      screen: NotificationsIntroScreen,
+      options: {
+        headerShown: false,
+        presentation: "formSheet",
+        sheetAllowedDetents: "fitToContents",
+        sheetGrabberVisible: true,
+        title: "Notifications",
+      },
+    },
     DeploymentSwitcher: {
       screen: DeploymentsScreen,
       options: ({ navigation }) => ({
@@ -453,10 +466,12 @@ const RootStack = createNativeStackNavigator({
             title: "Server",
           }),
         },
+        // Opened from the first run, an address, a scanned code or a pairing
+        // link, and often as the only sheet: its way out is Cancel, not Back.
         AddPersonal: {
           screen: AddPersonalScreen,
           options: ({ navigation }) => ({
-            ...headerActions({ left: { label: "Back", onPress: () => navigation.goBack() } }),
+            ...headerActions({ left: { label: "Cancel", onPress: () => navigation.goBack() } }),
             title: "Computer",
           }),
         },
@@ -483,7 +498,13 @@ function destinationOptions(): NativeStackNavigationOptions {
 type OpensteerRootParamList = {
   readonly AddDeployment: undefined;
   readonly AddIphone: { readonly deploymentId: string };
-  readonly AddPersonal: undefined;
+  /** A pairing link or scanned code fills the form; the person still confirms it. */
+  readonly AddPersonal:
+    | {
+        readonly code?: string | undefined;
+        readonly origin?: string | undefined;
+      }
+    | undefined;
   readonly AddServer: undefined;
   readonly Chrome: ChromeDestination;
   readonly BrowserProfiles: BrowserProfilesDestination;
@@ -510,6 +531,7 @@ type OpensteerRootParamList = {
     readonly requestId?: string | undefined;
   };
   readonly NewProject: { readonly deploymentId: string };
+  readonly NotificationsIntro: undefined;
   readonly NewTask: {
     readonly deploymentId: string;
     readonly draftId: string;
