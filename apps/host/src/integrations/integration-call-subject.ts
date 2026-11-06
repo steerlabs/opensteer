@@ -16,6 +16,8 @@ import { describedOperation, resolveOperation } from "./integration-operation.js
 
 /** The two gateway tools whose `operation` and `account` name one operation under one grant. */
 const addressingTools = new Set(["integration_call", "integration_describe"]);
+/** The one Opensteer server, and the retired integrations server a resumed native session still names. */
+const gatewayNamespaces = new Set(["opensteer", "opensteer.integrations"]);
 const AddressingArgumentsSchema = z.object({
   account: z.string().optional(),
   operation: z.string(),
@@ -54,7 +56,7 @@ export async function integrationCallSubject(
 ): Promise<IntegrationCallSubject | undefined> {
   if (event.type !== "tool.started") return undefined;
   const { tool } = event.data;
-  if (tool.namespace !== "opensteer.integrations" || !addressingTools.has(tool.name)) {
+  if (!gatewayNamespaces.has(tool.namespace) || !addressingTools.has(tool.name)) {
     return undefined;
   }
   const call = AddressingArgumentsSchema.safeParse(event.data.arguments);
