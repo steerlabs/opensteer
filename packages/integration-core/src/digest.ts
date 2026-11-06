@@ -14,7 +14,7 @@ export function integrationSchemaDigest(value: unknown): string {
 }
 
 /**
- * What a toolRef pins: a tool's schemas and each shared definition they reach,
+ * What identifies a stored tool's shape: its schemas and each shared definition they reach,
  * named with that definition's own digest. Hashing a definition once however
  * many tools reach it keeps the cost to the size of the catalog. A tool that
  * reaches none hashes exactly as `{inputSchema, outputSchema}` always has.

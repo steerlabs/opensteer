@@ -1,4 +1,5 @@
 import { BrowserVideoHub } from "../browser/browser-video-hub.js";
+import { RequestHold } from "../mcp/request-hold.js";
 import { ThreadNaming } from "../agents/thread-naming.js";
 import { AdministrationService } from "../administration/administration-service.js";
 import { AdministrationToolHandlers } from "../mcp/handlers/administration.js";
@@ -6,8 +7,7 @@ import { HarnessCatalogReconciliationOwner } from "../agents/harness-catalogs.js
 import { ThreadService } from "../threads/thread-service.js";
 import { ConnectionOAuth } from "../mcp/connections/index.js";
 import { AgentConnectionStore } from "@opensteer/database";
-import { requestSpecialistRequirements } from "../integrations/specialist-access-requests.js";
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import { withWorkspacePluginPackage } from "../integrations/workspace-plugin-package.js";
 import { AppTunnelHub } from "../apps/app-tunnel-hub.js";
 import {
@@ -31,6 +31,7 @@ import {
   type RunnerId,
   type UserId,
   type Workspace,
+  deploymentSupportsSharing,
 } from "@opensteer/core";
 import {
   AccountDirectoryStore,
@@ -148,6 +149,7 @@ import { MessagingRelayHub } from "../channels/messaging-relay-hub.js";
 import { ComputerAppHub } from "../computer-apps/computer-app-hub.js";
 import { ComputerUseService } from "../computer-use/computer-use-service.js";
 import { ComputerViewService } from "../computer-use/computer-view-service.js";
+import { PhoneTabs } from "../computer-use/phone-tabs.js";
 import { DisplayStreamHub } from "../computer-use/display-stream-hub.js";
 import { PlaceContextService } from "../computer-use/place-context-service.js";
 import { HostAuthenticator } from "../identity/auth.js";
@@ -654,6 +656,7 @@ export async function createHostRuntime(
     // lost, so one of the two is bound after the other exists.
     let computerUse: ComputerUseService | undefined;
     let computerViews: ComputerViewService | undefined;
+    let phoneTabs: PhoneTabs | undefined;
     let displayStreams: DisplayStreamHub | undefined;
     let pluginPackages: PluginPackageService | undefined;
     const computerApps = new ComputerAppHub({
@@ -677,6 +680,7 @@ export async function createHostRuntime(
     });
     computerUse = new ComputerUseService({
       onSessionEnded: (sessionId) => displayStreams?.endSession(sessionId),
+      onPhoneHeld: (runnerId) => phoneTabs?.opened(runnerId),
       onAuthorityRevoked: ({ runId, bindingGeneration }) =>
         integrationPlatform.resetComputerGeneration(runId, bindingGeneration),
       // The same minute tick that ends idle sessions settles the approvals
@@ -1010,7 +1014,14 @@ export async function createHostRuntime(
     let logComputerLifecycle = (event: string, details: Readonly<Record<string, unknown>>) =>
       console.info(event, details);
     computerViews = new ComputerViewService({
-      onPhoneView: (status) => app.log.info(status, "Phone owner view command"),
+      onPhoneView: (status) => {
+        app.log.info(status, "Phone owner view command");
+        if (status.operation === "computer.view.open" && status.viewId !== null)
+          phoneTabs?.opened(
+            status.machineId,
+            () => computerViews?.holdsPhoneView(status.machineId) ?? false,
+          );
+      },
       hub: computerApps,
       connections: (ownerId) => integrationStore.listConnections(ownerId),
       owners: (ids) => store.effectiveMachineOwners(ids),
@@ -1030,6 +1041,14 @@ export async function createHostRuntime(
       log: (event, details) => logComputerLifecycle(event, details),
       ended: (viewId, generation, reason) =>
         displayStreams?.endOwnerView(viewId, generation, reason),
+    });
+    phoneTabs = new PhoneTabs({
+      store,
+      heldByTask: (machine) =>
+        computerUse?.sessionsForRunner(machine).some(({ display }) => display) ?? false,
+      closeViews: (owner, machine) => computerViews?.closePhoneViews(owner, machine),
+      changed: () => notifyMachinesChanged(realtime, "phone-tab"),
+      onError: (error) => reportComputerUseSweepError(error),
     });
     // A connection gaining authority settles the Main-target Requests waiting
     // on it and resumes their agents. The reaction is bound once the platform
@@ -2320,6 +2339,30 @@ export async function createHostRuntime(
       (ownerId) => integrationStore.listConnections(ownerId),
     );
     const agentTools = new OpensteerMcpService({
+      requestHold: new RequestHold({
+        store,
+        continuations,
+        onStopped: (stopped) => {
+          for (const event of stopped.events) publishWorkspaceEvent(event);
+          wakeExecutionCoordinator();
+        },
+        onError: (error) => app.log.error({ err: error }, "A Request hold could not read"),
+      }),
+      longRequestHold: async (caller) => {
+        const run = await database
+          .selectFrom("runs")
+          .innerJoin("harnessInstances", "harnessInstances.id", "runs.harnessInstanceId")
+          .select(["runs.environmentId", "harnessInstances.driverKind"])
+          .where("runs.id", "=", caller.claims.runId)
+          .executeTakeFirst();
+        return (
+          !!run &&
+          requiredService(runnerRegistry, "Runner registry").supportsLongRequestHold(
+            run.environmentId,
+            run.driverKind,
+          )
+        );
+      },
       publicUrl: config.runtimeOrigin,
       realtime,
       onToolError: (error, tool) => app.log.error({ err: error, tool }, "Agent tool failed"),
@@ -2363,16 +2406,8 @@ export async function createHostRuntime(
                       workspaceId: scope.workspaceId,
                       pluginId,
                       actorUserId: scope.requestedBy,
-                      autoBind: false,
                     })
                   : null;
-              if (registration)
-                await requestSpecialistRequirements({
-                  registration,
-                  scope: { ...scope, aud: "opensteer-integration-tools" },
-                  browser,
-                  integrations: integrationTools,
-                });
               return {
                 pluginId,
                 issues: result.issues,
@@ -2398,6 +2433,10 @@ export async function createHostRuntime(
           : {}),
         attachments,
         apps,
+        appOriginSigningKey: createHmac("sha256", config.authSecret)
+          .update("opensteer-app-cookie-v1")
+          .digest(),
+        appRealOrigins: !deploymentSupportsSharing(config.workspace.shape),
         liveRuns,
         machineFullDiskAccess,
         requestResponseVault: integrationVault,
@@ -2417,6 +2456,7 @@ export async function createHostRuntime(
         computerApps,
         computerUse,
         computerViews,
+        phoneTabs,
         displayStreams,
         placeContext,
         credentials,

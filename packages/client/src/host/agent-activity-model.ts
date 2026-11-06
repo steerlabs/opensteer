@@ -2914,7 +2914,12 @@ function shownArguments(tool: ToolEntry): unknown {
       return args.replace(/("code"\s*:\s*)"(?:[^"\\]|\\.)*("|$)/gu, '$1"[hidden]"');
   }
   if (!isIntegrationGateway(tool) || !isRecord(args)) return args;
-  const { toolRef: _reference, ...rest } = args;
+  // `toolRef` was the address before `operation` and `account`; old transcripts still hold it.
+  const { toolRef: _reference, ...unaddressed } = args;
+  const addressed =
+    tool.tool?.name === "integration_call" || tool.tool?.name === "integration_describe";
+  const { account: _account, operation: _operation, ...named } = unaddressed;
+  const rest = addressed ? named : unaddressed;
   const sent =
     tool.tool?.name === "integration_call" && "arguments" in rest ? rest.arguments : rest;
   return isRecord(sent) && Object.keys(sent).length === 0 ? undefined : sent;

@@ -319,6 +319,7 @@ export interface ComputerUseServiceOptions {
   readonly passwords?: Pick<PasswordSignInService, "seal" | "validateLease">;
   readonly loginReceiver?: (runnerId: RunnerId) => LoginReceiverKey | null;
   readonly onSessionEnded?: (sessionId: ComputerUseSessionId) => void;
+  readonly onPhoneHeld?: (runnerId: RunnerId) => void;
   readonly onAuthorityRevoked?: (
     context: Pick<ComputerUseContext, "runId" | "bindingGeneration">,
   ) => void;
@@ -499,6 +500,7 @@ export class ComputerUseService {
   readonly #machineOwners: ComputerUseServiceOptions["machineOwners"];
   readonly #now: () => number;
   readonly #onSessionsChanged: () => void;
+  readonly #onPhoneHeld: ComputerUseServiceOptions["onPhoneHeld"];
   readonly #onAuthorityRevoked: ComputerUseServiceOptions["onAuthorityRevoked"];
   readonly #onSessionEnded: NonNullable<ComputerUseServiceOptions["onSessionEnded"]>;
   readonly #onPresenceChanged: NonNullable<ComputerUseServiceOptions["onPresenceChanged"]>;
@@ -552,6 +554,7 @@ export class ComputerUseService {
     this.#now = options.now ?? (() => Date.now());
     this.#onSessionsChanged = options.onSessionsChanged;
     this.#onSessionEnded = options.onSessionEnded ?? (() => undefined);
+    this.#onPhoneHeld = options.onPhoneHeld;
     this.#onPresenceChanged = options.onPresenceChanged ?? (() => undefined);
     this.#actingWindowMs = options.actingWindowMs ?? computerUseActingWindowMs;
     this.#authorizer = options.authorizer;
@@ -1145,6 +1148,7 @@ export class ComputerUseService {
     session.confirmed = true;
     session.lastUsedAt = this.#now();
     if (wasUnconfirmed || addedApp || windowChanged) this.#onSessionsChanged();
+    if (wasUnconfirmed && session.display !== null) this.#onPhoneHeld?.(session.runnerId);
     const owners = this.#appOwners.get(session.runnerId) ?? new Map<string, Session>();
     owners.set(computerUseHolderKey(holdingOf(target)), session);
     this.#appOwners.set(session.runnerId, owners);

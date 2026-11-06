@@ -455,6 +455,39 @@ describe("desktop bridge", () => {
     }
   });
 
+  it("logs where a renderer failed, and refuses the error's own words", () => {
+    const log = vi.fn();
+    const handlers = registerWith(passwordsPort(), {}, log);
+    const report = (input: unknown) =>
+      handlers.invoke(
+        desktopBridgeChannels.reportRendererFailure,
+        ipcEvent("app://opensteer/workspaces"),
+        { bridgeToken: "b".repeat(43), input },
+      );
+    const record = {
+      componentFrames: ["at VoiceAsk (app://opensteer/assets/app.js:1:2)"],
+      errorFrames: ["at Island (app://opensteer/assets/app.js:3:4)", "at render (app.js:5:6)"],
+      errorName: "TypeError",
+    };
+    try {
+      report(record);
+      expect(log).toHaveBeenCalledExactlyOnceWith("desktop.renderer.failed", {
+        componentFrames: "at VoiceAsk (app://opensteer/assets/app.js:1:2)",
+        errorFrames: "at Island (app://opensteer/assets/app.js:3:4);at render (app.js:5:6)",
+        errorName: "TypeError",
+        suppressed: 0,
+      });
+      for (const smuggled of [
+        { ...record, message: "os_secret_PRIVATE" },
+        { ...record, errorName: "os_secret PRIVATE" },
+      ])
+        expect(() => report(smuggled)).toThrow();
+      expect(log).toHaveBeenCalledOnce();
+    } finally {
+      handlers.unregister();
+    }
+  });
+
   it("refuses a malformed Passwords status rather than forwarding it", async () => {
     const malformed = passwordsPort({
       availability: "available",

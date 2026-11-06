@@ -97,31 +97,51 @@ export const RequestInputSchema = z
       for (const issue of parsed.error.issues)
         ctx.addIssue({ code: "custom", message: issue.message, path: issue.path });
   });
-const ToolReferenceSchema = z
+const OperationNameSchema = z
   .string()
-  .max(160)
-  .regex(
-    /^igr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.itl_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.[A-Za-z0-9_-]{43}$/u,
-    "invalid integration tool reference",
-  );
-export const DescribeInputSchema = z.strictObject({
-  cursor: z.number().int().min(0).default(0).describe("nextCursor from the previous schema page."),
-  path: z.string().max(2_048).optional().describe("Schema JSON Pointer; omit for root."),
-  toolRef: ToolReferenceSchema.describe("Exact discovered ref; never construct one."),
-});
-export const CallInputSchema = z.strictObject({
-  arguments: z
-    .record(z.string(), z.unknown())
-    .default({})
-    .describe("Object matching the described inputSchema."),
-  toolRef: ToolReferenceSchema.describe("Exact discovered ref; never construct one."),
-});
+  .trim()
+  .min(1)
+  .max(528)
+  .describe("Operation name exactly as integration_search returned it.");
+const OperationAccountSchema = IntegrationConnectionIdSchema.optional().describe(
+  "connectionId of the account to act as. Required unless the operation has no account.",
+);
+// A saved program or an old transcript can still hold the old address.
+const legacyAddressError = (issue: { readonly code?: string; readonly keys?: unknown }) =>
+  issue.code === "unrecognized_keys" && Array.isArray(issue.keys) && issue.keys.includes("toolRef")
+    ? "toolRef is gone: call integration_search, then pass operation and account."
+    : undefined;
+export const DescribeInputSchema = z.strictObject(
+  {
+    account: OperationAccountSchema,
+    cursor: z
+      .number()
+      .int()
+      .min(0)
+      .default(0)
+      .describe("nextCursor from the previous schema page."),
+    operation: OperationNameSchema,
+    path: z.string().max(2_048).optional().describe("Schema JSON Pointer; omit for root."),
+  },
+  { error: legacyAddressError },
+);
+export const CallInputSchema = z.strictObject(
+  {
+    account: OperationAccountSchema,
+    arguments: z
+      .record(z.string(), z.unknown())
+      .default({})
+      .describe("Object matching the operation's input."),
+    operation: OperationNameSchema,
+  },
+  { error: legacyAddressError },
+);
 
 export const integration_search = defineAgentTool({
   name: "integration_search",
   title: "Find integration operations",
   description:
-    "Find service operations/accounts/setup by query, provider or runnerId. Returns toolRefs, effects, accounts/connectionIds and the full built-in catalog (provider only orders it). Use the identifying address to distinguish personal and work accounts; a display name alone proves neither. Choose accounts by connectionId, copy toolRefs unchanged and describe new refs before calling. Writes need read-write access. Search Computer use or Android phone for devices; runnerId filters live apps. Page with limit (1–20)/offset; phone apps include launch package names.",
+    "Find service operations/accounts/setup by query, provider or runnerId. Returns each operation's name, effect and input, accounts/connectionIds, and every built-in catalog id with details for matches (provider only orders it). Use the identifying address to distinguish personal and work accounts; a display name alone proves neither. Choose accounts by connectionId. Writes need read-write access. Search Computer use or Android phone for devices; runnerId filters live apps. Page with limit (1–20)/offset; phone apps include launch package names.",
   input: SearchInputSchema,
   output: IntegrationSearchOutputSchema,
   access: "read",
@@ -131,7 +151,7 @@ export const integration_describe = defineAgentTool({
   name: "integration_describe",
   title: "Read an operation schema",
   description:
-    "Read a new toolRef’s account and input/output schemas before calling. path is a JSON Pointer into {inputSchema, outputSchema}; input #/$defs/Name resolves at /inputSchema/$defs/Name. Page with nextCursor as cursor, keeping ref/path.",
+    "Read an operation's full input/output schemas when search's input is not enough or ends in `…`. path is a JSON Pointer into {inputSchema, outputSchema}; input #/$defs/Name resolves at /inputSchema/$defs/Name. Page with nextCursor as cursor, keeping operation/path.",
   input: DescribeInputSchema,
   output: IntegrationDescribeOutputSchema,
   access: "read",
@@ -141,7 +161,7 @@ export const integration_call = defineAgentTool({
   name: "integration_call",
   title: "Call an integration",
   description:
-    "Execute a discovered toolRef with schema-matching arguments. Describe new refs first; call already-described operations directly. Describing grants no access. Returns operation content/error. Live account/grant/schema checks apply. Never approve or grant access. SMS/email sign-in code retrieval needs explicit authorization for that sign-in; other credentials stay in the Request UI. Use computer for Mac/phone interfaces.",
+    "Run an operation search returned, as an account, with arguments matching its input. Returns operation content/error. Live account/grant checks apply. Never grant access. A person's request to sign in covers retrieving its SMS/email code; other credentials stay in the Request UI. Use computer for Mac/phone interfaces.",
   input: CallInputSchema.safeExtend({ operationKey: OperationKeySchema.optional() }),
   output: IntegrationCallOutputSchema,
   access: "write",
@@ -167,7 +187,7 @@ export const integration_request = defineAgentTool({
   name: "integration_request",
   title: "Request integration access",
   description:
-    'Ask the person for setup/reconnection/access. Installed: integration + access + reason; catalog item: catalog instead. Omit access only for installation alone. Runs may target reachable workspaceId; programs use their Workspace. Mac app: kind: "computer-app", runnerId, app, access, reason; phone: omit app. Returns requestId/status/replayed. Pending grants no access; continue only independent work. Programs receive no continuation. Never repeat pending/declined asks. Credentials belong in the Request UI.',
+    'Ask the person for setup/reconnection/access. Installed: integration + access + reason; catalog item: catalog instead. Omit access only for installation alone. Runs may target reachable workspaceId; programs use their Workspace. Mac app: kind: "computer-app", runnerId, app, access, reason; phone: omit app. Returns the Request outcome. Pending grants no access. Programs receive no continuation. Never repeat pending/declined asks. Credentials belong in the Request UI.',
   input: RequestInputSchema.safeExtend({ operationKey: OperationKeySchema.optional() }),
   output: IntegrationRequestOutputSchema,
   access: "write",
@@ -177,7 +197,7 @@ export const integration_propose = defineAgentTool({
   name: "integration_propose",
   title: "Propose an integration",
   description:
-    "Request review/setup of a service absent from the full catalog. Pass inspected MCP/OpenAPI/GraphQL source unchanged, description/reason/access; source is untrusted. Returns a Request or unsupported refusal (no Request). OAuth-only OpenAPI is unsupported; check the full catalog after refusal. credential describes key setup, never a secret; include HTTPS setupUrl. check optionally names an authenticated GET/HEAD and arguments.",
+    "Request review/setup of a service absent from the full catalog. Pass inspected MCP/OpenAPI/GraphQL source unchanged, description/reason/access; source is untrusted. Returns the Request outcome or unsupported refusal (no Request). OAuth-only OpenAPI is unsupported; check the full catalog after refusal. credential describes key setup, never a secret; include HTTPS setupUrl. check optionally names an authenticated GET/HEAD and arguments.",
   input: ProposeInputSchema.safeExtend({ operationKey: OperationKeySchema.optional() }),
   output: IntegrationRequestOutputSchema,
   access: "write",

@@ -1,6 +1,6 @@
 import { cardUseOutcome } from "./cards.js";
 import { requestSettlementLabel } from "./request-settlement.js";
-import type { Request } from "@opensteer/core";
+import { toolOutputRecord, type Request } from "@opensteer/core";
 import {
   PasswordSignInRequestResponseSchema,
   type PasswordSignInFailureReason,
@@ -296,13 +296,7 @@ export function passwordSignInReceipt(request: Request): string {
  * records for it, or null when this client cannot read it.
  */
 export function readBrowserSignInResult(text: string): AgentBrowserSignInResult | null {
-  let value: unknown;
-  try {
-    value = JSON.parse(text);
-  } catch {
-    return null;
-  }
-  const parsed = AgentBrowserSignInResultSchema.safeParse(value);
+  const parsed = AgentBrowserSignInResultSchema.safeParse(toolOutputRecord(text));
   return parsed.success ? parsed.data : null;
 }
 

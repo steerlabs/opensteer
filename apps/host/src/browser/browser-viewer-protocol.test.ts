@@ -20,6 +20,17 @@ it("projects passkey fields only to opted-in viewers while preserving old snapsh
   expect(
     browserViewerMessage(snapshot, undefined, "notice", "e2799da2-9fe9-438e-a160-47e275ee2703"),
   ).toMatchObject({ passkeys: "notice" });
+  expect(old).not.toHaveProperty("consumerToken");
+  expect(
+    browserViewerMessage(
+      snapshot,
+      undefined,
+      undefined,
+      "e2799da2-9fe9-438e-a160-47e275ee2703",
+      false,
+      true,
+    ),
+  ).toMatchObject({ consumerToken: "e2799da2-9fe9-438e-a160-47e275ee2703" });
 });
 
 it("drops popup extensions for watch and old viewers, including coarse click extensions", () => {

@@ -4,8 +4,10 @@
 cannot depend on Node APIs. Start at [connections](../packages/client/src/connections) and
 [auth](../packages/client/src/auth). Credential authority and Account origins are in
 [Host boundaries](host-boundaries.md); focused checks are in the
-[testing skill](../.agents/skills/testing/SKILL.md). Connect routes live under `opensteerapp.com`.
-The Account never provisions or hosts Deployments.
+[testing skill](../.agents/skills/testing/SKILL.md). Connect routes live under `opensteerapp.com`,
+beside [app origins](apps.md#origins), which reach a Deployment through a stateless Worker. Connect
+hostnames keep exact no-script routes so they skip it, and the Worker must be live before a Host
+that returns Connect app origins ships. The Account never provisions or hosts Deployments.
 
 ## Route selection and lifetime
 

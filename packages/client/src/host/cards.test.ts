@@ -1,4 +1,6 @@
+import { normalizeToolOutput } from "@opensteer/core";
 import { expect, it } from "vitest";
+import { readCardUseResult } from "./cards.js";
 import {
   mockCardUseScenario,
   mockCardUseRequest,
@@ -98,3 +100,14 @@ it.each(["no-card", "off", "not-set-up"] as const)(
     expect(scenario.result.status).toBe("unavailable");
   },
 );
+
+it("reads a held card result with its outcome prose after it", () => {
+  const record = { status: "declined", site: "https://example.com" };
+  const { text } = normalizeToolOutput({
+    content: [
+      { type: "text", text: JSON.stringify(record) },
+      { type: "text", text: "The person declined this card." },
+    ],
+  });
+  expect(readCardUseResult(text)).toEqual(record);
+});

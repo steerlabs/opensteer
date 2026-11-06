@@ -1,14 +1,9 @@
-const { withAppDelegate, withMainApplication, withInfoPlist } = require("expo/config-plugins");
+const { withAppDelegate, withMainApplication } = require("expo/config-plugins");
 
 // Use a speaker default, never a forced speaker override: OS routing must still
 // follow headsets. Android media output also follows Bluetooth without scan or
 // connect permissions; voice has no device picker or background service.
 module.exports = function withVoice(config) {
-  config = withInfoPlist(config, (next) => {
-    // The upstream WebRTC plugin unconditionally adds this video-only key.
-    delete next.modResults.NSCameraUsageDescription;
-    return next;
-  });
   config = withAppDelegate(config, (next) => {
     const anchor = "    let delegate = ReactNativeDelegate()";
     const code = `    let voiceAudio = RTCAudioSessionConfiguration.webRTC()

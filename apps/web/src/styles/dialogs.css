@@ -301,6 +301,19 @@
   padding: var(--space-4) 0;
 }
 
+.toast__action {
+  flex: none;
+  align-self: center;
+  padding: var(--space-2) var(--space-6);
+  border-radius: var(--radius-xs);
+  color: var(--ember);
+  font-weight: var(--weight-strong);
+}
+
+.toast__action:hover {
+  color: var(--ember-bright);
+}
+
 .toast__dismiss {
   flex: none;
   width: var(--control-height-sm);

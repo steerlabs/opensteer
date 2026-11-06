@@ -4714,6 +4714,9 @@ export function migrationProvider() {
         "0160_memory_pass_waiting": memoryPassWaitingMigration,
         "0161_app_tabs": appTabsMigration,
         "0162_voice_thread": voiceThreadMigration,
+        "0163_phone_tabs": phoneTabsMigration,
+        "0164_specialists_adopt_access": specialistsAdoptAccessMigration,
+        "0165_request_tool_delivery": requestToolDeliveryMigration,
       };
     },
   };
@@ -7385,6 +7388,71 @@ const specialistAutoBindMigration: Migration = {
   },
 };
 
+/**
+ * A specialist adopts its caller's access and runs from its Workspace root, so
+ * nothing is left to bind or wait on. Native sessions are tied to the folder they
+ * began in, so a specialist Thread moves to a fresh one, as an engine switch does:
+ * its next Run replays the Thread's history. A Thread with an unfinished Run stays
+ * put, because that Run is bound to its session; an engine switch still moves it.
+ */
+const specialistsAdoptAccessMigration: Migration = {
+  async up(database) {
+    await sql`
+      update specialists set status = 'ready' where status = 'pending';
+      update provider_sessions session set active = false, updated_at = now()
+        where session.active and session.provider_session_reference is not null
+          and session.thread_id in (select id from threads where specialist_id is not null)
+          and not exists (
+            select 1 from runs run where run.provider_session_id = session.id
+              and run.status in ('queued', 'starting', 'running', 'waiting')
+          );
+      insert into provider_sessions (
+        id, thread_id, harness_instance_id, continuation_identity, active, status, state_layout,
+        binding_generation
+      )
+      select 'psn_' || gen_random_uuid()::text, thread.id, thread.harness_instance_id,
+        latest.continuation_identity, true, 'starting', 'session', 0
+      from threads thread
+      cross join lateral (
+        select session.continuation_identity from provider_sessions session
+        where session.thread_id = thread.id
+        order by session.created_at desc
+        limit 1
+      ) latest
+      where thread.specialist_id is not null
+        and not exists (
+          select 1 from provider_sessions session
+          where session.thread_id = thread.id and session.active
+        );
+      create or replace function opensteer_legacy_plugin_revision() returns trigger language plpgsql as $$
+      declare changed jsonb; consent_owner text; definition_id text; target_kind text;
+      begin
+        changed := case when TG_OP = 'DELETE' then to_jsonb(OLD) else to_jsonb(NEW) end;
+        if TG_OP = 'UPDATE' then
+          if TG_TABLE_NAME = 'specialists' then
+            if NEW.plugin_version_id is not distinct from OLD.plugin_version_id and NEW.removed_at is not distinct from OLD.removed_at then return NEW; end if;
+          end if;
+          if TG_TABLE_NAME = 'integration_grants' and to_jsonb(NEW) is not distinct from to_jsonb(OLD) then return NEW; end if;
+        end if;
+        if TG_TABLE_NAME = 'plugin_activations' then
+          for consent_owner in select user_id from workspace_memberships where workspace_id = changed->>'workspace_id' and state = 'active' order by user_id loop
+            perform opensteer_advance_plugin_setting(consent_owner,jsonb_build_object('kind','plugin','pluginId',changed->>'plugin_id'));
+          end loop;
+        elsif TG_TABLE_NAME = 'specialists' then
+          perform opensteer_advance_plugin_setting(changed->>'owner_user_id',jsonb_build_object('kind','specialist','pluginId',changed->>'plugin_id','ownerUserId',changed->>'owner_user_id'));
+        else
+          select coalesce(manifest->'definition'->>'id',name) into definition_id from integration_installations where id = changed->>'installation_id';
+          target_kind := 'service';
+          if exists(select 1 from integration_connections where id = changed->>'connection_id' and connection_kind = 'computer') then target_kind := 'device-app'; end if;
+          if definition_id is not null then perform opensteer_advance_plugin_setting(changed->>'owner_user_id',jsonb_build_object('kind',target_kind,'definitionId',definition_id)); end if;
+        end if;
+        return null;
+      end $$;
+      alter table specialists drop column bindings, drop column auto_bind;
+    `.execute(database);
+  },
+};
+
 const voiceCallsMigration: Migration = {
   async up(database) {
     await sql`ALTER TABLE threads ADD COLUMN voice_session_id text UNIQUE;
@@ -7508,5 +7576,28 @@ const voiceThreadMigration: Migration = {
       UPDATE threads SET status = 'archived', listed = false, updated_at = now()
         WHERE voice_session_id IS NOT NULL;
       ALTER TABLE threads DROP COLUMN voice_session_id;`.execute(database);
+  },
+};
+
+const phoneTabsMigration: Migration = {
+  async up(database) {
+    await sql`alter table runners add column tab_opened_at timestamptz`.execute(database);
+  },
+  async down(database) {
+    await sql`alter table runners drop column tab_opened_at`.execute(database);
+  },
+};
+
+export const requestToolDeliveryMigration: Migration = {
+  async up(database) {
+    await sql`alter table request_continuations
+      drop constraint request_continuations_status_check,
+      drop constraint request_continuations_state_check,
+      add constraint request_continuations_status_check check (status in ('waiting', 'queued', 'undeliverable', 'delivered')),
+      add constraint request_continuations_state_check check (
+        (status = 'waiting' and reason is null) or
+        (status in ('queued', 'delivered') and attempted_at is not null and reason is null) or
+        (status = 'undeliverable' and attempted_at is not null and reason is not null)
+      )`.execute(database);
   },
 };

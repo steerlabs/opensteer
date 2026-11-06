@@ -2043,8 +2043,10 @@ export class BrowserController {
       // Remote input that names a surface the session has moved on from is
       // discarded in silence, exactly as a stale pointer or wheel event is.
       if (message.surfaceId !== active.surface.id) return;
-      if (message.action === "down")
+      if (message.action === "down") {
         this.ledger.recordHumanActivity(message.surfaceId, { kind: "typing" });
+        this.ledger.recordViewerInput(message.surfaceId, message.producerId);
+      }
       // Cut mutates the page as the key lands, so the selection is captured
       // before dispatch and published after — the page always sees the chord.
       const selection =
@@ -2296,12 +2298,14 @@ export class BrowserController {
     const effectiveButton = message.action === "move" ? heldButton(held) : message.button;
     // Recorded as the press is sent: a press that opens a dialog is answered
     // only once the person has answered that dialog.
-    if (message.action === "down")
+    if (message.action === "down") {
       this.ledger.recordHumanActivity(message.surfaceId, {
         kind: "click",
         x: point.x,
         y: point.y,
       });
+      this.ledger.recordViewerInput(message.surfaceId, message.producerId);
+    }
     const hints =
       message.cursorSequence === undefined
         ? this.cursorHints.get(message.surfaceId)?.hints
@@ -2690,6 +2694,15 @@ export class BrowserController {
     if (event.type === "navigation.committed") {
       if (!this.closed && this.claims.navigationAttributionVersion === 1)
         void this.send(event).catch(() => undefined);
+      return;
+    }
+    if (event.type === "popup") {
+      if (!this.closed && this.claims.popupFollowVersion === 1)
+        void this.send({
+          type: "browser.popupFollow.opened",
+          surfaceId: event.surfaceId,
+          consumerToken: event.consumerToken,
+        }).catch(() => undefined);
       return;
     }
     if (

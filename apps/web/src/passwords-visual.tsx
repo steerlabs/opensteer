@@ -24,7 +24,7 @@ import {
   type OpensteerDesktopBridge,
 } from "@opensteer/protocol/desktop";
 import { AgentTranscript } from "./components/agent-activity.js";
-import type { ShellContext } from "./components/app-shell.js";
+import { ShellContext } from "./components/app-shell.js";
 import { InputSurface } from "./components/input-surface.js";
 import { SettingsSectionRoute, SettingsShell } from "./components/settings/settings-shell.js";
 import { PasswordsSuggestion } from "./components/passwords-suggestion.js";
@@ -97,7 +97,6 @@ function useShellContext(): ShellContext {
       : live;
   return {
     actionError: null,
-    askOpensteerAbout: noOp,
     clearActionError: noOp,
     clearHomeHandoff: noOp,
     createThreadAndSend: async () => null,
@@ -118,7 +117,6 @@ function useShellContext(): ShellContext {
         })
       : null,
     executionPreferences: emptyExecutionPreferences,
-    homeDraft: "",
     homeHandoff: null,
     homeThreadId: null,
     hostClient: client,
@@ -136,14 +134,17 @@ function useShellContext(): ShellContext {
     rememberExecution: noOp,
     reportActionError: noOp,
     setTaskDone: noOp,
-    setHomeDraft: noOp,
     snapshot: { ...snapshot, connection: "connected" },
     writeInChat: noOp,
   };
 }
 
 function Shell() {
-  return <Outlet context={useShellContext()} />;
+  return (
+    <ShellContext value={useShellContext()}>
+      <Outlet />
+    </ShellContext>
+  );
 }
 
 function CardView() {

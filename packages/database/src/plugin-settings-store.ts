@@ -423,7 +423,7 @@ export class PluginSettingsStore {
             canRemove: canManage,
             canUpdate: false,
           },
-          issues: registrations.some((s) => s.status === "pending") ? ["choose-resource"] : [],
+          issues: [],
         });
       }
     }

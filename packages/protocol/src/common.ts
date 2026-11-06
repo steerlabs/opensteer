@@ -35,6 +35,16 @@ export const RealtimeFrameDiagnosticSchema = z.strictObject({
 });
 export type RealtimeFrameDiagnostic = z.infer<typeof RealtimeFrameDiagnosticSchema>;
 
+const CodeFramesSchema = z.array(z.string().min(1).max(512)).max(32);
+
+/** All a page may record of what took it down: where in the code, never the error's words. */
+export const RendererFailureDiagnosticSchema = z.strictObject({
+  componentFrames: CodeFramesSchema,
+  errorFrames: CodeFramesSchema,
+  errorName: z.string().regex(/^[A-Za-z][A-Za-z0-9]{0,63}$/),
+});
+export type RendererFailureDiagnostic = z.infer<typeof RendererFailureDiagnosticSchema>;
+
 export function parseJsonFrame(schema: z.ZodType, frame: string | Uint8Array): unknown {
   let value: unknown;
   try {

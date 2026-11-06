@@ -172,6 +172,7 @@ function macosApp(): MachineAppStatus {
 function harness(
   options: {
     readonly beginPlaceEntry?: ComputerUseServiceOptions["beginPlaceEntry"];
+    readonly onPhoneHeld?: ComputerUseServiceOptions["onPhoneHeld"];
     readonly passwords?: ComputerUseServiceOptions["passwords"];
     readonly loginReceiver?: ComputerUseServiceOptions["loginReceiver"];
     readonly expireSetupRequests?: () => Promise<void>;
@@ -194,6 +195,7 @@ function harness(
   const state: { now: number } = { now: 1_000_000 };
   const service = new ComputerUseService({
     ...(options.beginPlaceEntry ? { beginPlaceEntry: options.beginPlaceEntry } : {}),
+    ...(options.onPhoneHeld ? { onPhoneHeld: options.onPhoneHeld } : {}),
     ...(options.passwords ? { passwords: options.passwords } : {}),
     ...(options.loginReceiver ? { loginReceiver: options.loginReceiver } : {}),
     ...(options.expireSetupRequests ? { expireSetupRequests: options.expireSetupRequests } : {}),
@@ -1505,6 +1507,14 @@ describe("display sessions on an Android phone", () => {
       threadTitle: async (id) => (id === context.threadId ? "Reply to the driver" : "Order lunch"),
     });
   }
+
+  it("opens the phone's tab once, when the phone first answers a session", async () => {
+    const onPhoneHeld = vi.fn();
+    const test = harness({ onPhoneHeld });
+    await observePhone(test.service, context);
+    await observePhone(test.service, context);
+    expect(onPhoneHeld).toHaveBeenCalledExactlyOnceWith(phoneId);
+  });
 
   it("records a successful phone observation as entering its main display", async () => {
     const complete = vi.fn();

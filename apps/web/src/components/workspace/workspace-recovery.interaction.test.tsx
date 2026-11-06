@@ -1,5 +1,6 @@
 import { placeIdentityKey } from "@opensteer/protocol";
 import { runPlaceDestination } from "@opensteer/client/host";
+import { sharedDisplayStreams } from "@opensteer/client/integrations";
 // @vitest-environment happy-dom
 import { act } from "react";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -723,28 +724,19 @@ describe("the v7 web review's findings", () => {
     const before = client.runPlace(runId)!;
     const destination = runPlaceDestination(before, client.getSnapshot());
     expect(before.data.place.kind).toBe("phone");
-    expect(destination).toMatchObject({
-      kind: "phone",
-      computerSessionId: expect.any(String),
-    });
+    expect(destination).toMatchObject({ kind: "phone" });
     expect(document.querySelector(".viewfinder .computer-watch")).not.toBeNull();
     await openTile("Pixel 7");
     expect(element(".owner-view")).toBeTruthy();
-    const row = placeList(client.getSnapshot()).find(
-      (item) =>
-        item.destination.kind === "phone" &&
-        destination?.kind === "phone" &&
-        item.destination.computerSessionId === destination.computerSessionId,
-    )!;
-    // The sidebar keeps the task's row and the person's independent view.
-    expect(row.destination).toMatchObject({ kind: "phone", computerSessionId: expect.any(String) });
-    expect(row.ownerView).toBeNull();
-    expect(
-      placeList(client.getSnapshot()).some((place) => place.ownerView?.target.kind === "phone"),
-    ).toBe(true);
+    const phones = placeList(client.getSnapshot()).filter((item) => item.kind === "phone");
+    // One phone is one row: the person's own view is in front of the task still holding it.
+    expect(phones).toHaveLength(1);
+    const row = phones[0]!;
+    expect(row.destination).toEqual(destination);
+    expect(row.ownerView?.target.kind).toBe("phone");
+    expect(row.task).not.toBeNull();
     expect(row.occupants.map((occupant) => occupant.threadId)).toContain(threadId);
     expect(runPlaceDestination(client.runPlace(runId)!, client.getSnapshot())).toEqual(destination);
-    expect(document.querySelector(".viewfinder .computer-watch")).not.toBeNull();
     // The person's view ending is not the task's: its reference stays live.
     const view = ownerViews().find((candidate) => candidate.target.kind === "phone")!;
     await act(async () => {
@@ -752,7 +744,54 @@ describe("the v7 web review's findings", () => {
     });
     await settle(60);
     expect(runPlaceDestination(client.runPlace(runId)!, client.getSnapshot())).toEqual(destination);
-    expect(document.querySelector(".viewfinder .computer-watch")).not.toBeNull();
+    // The tab in front opens another, so it never falls back to needing a press.
+    expect(element(".place .owner-view")).toBeTruthy();
+    expect(
+      ownerViews().find((candidate) => candidate.target.kind === "phone")?.generation,
+    ).toBeGreaterThan(view.generation);
+  });
+
+  it("a phone's tab stays live through its task's end, without waking it, until the person closes it", async () => {
+    const threadId = "thr_00000000-0000-4000-8000-000000000903";
+    await mount(`/threads/${threadId}`);
+    await settle(200);
+    const phone = () => placeList(client.getSnapshot()).find((place) => place.kind === "phone");
+    const held = phone()!;
+    if (held.destination.kind !== "phone" || !held.task) throw new Error("No held phone");
+    const { machineId } = held.destination;
+    const open = vi.spyOn(client, "openComputerView");
+    const wake = vi.spyOn(sharedDisplayStreams(client), "armAutoWake");
+    await act(async () => goTo!({ pathname: "/", search: `?panel=browser&phone=${machineId}` }));
+    await settle(120);
+    expect(open).toHaveBeenCalledExactlyOnceWith(
+      machineId,
+      { kind: "phone", display: "main" },
+      { wake: false },
+    );
+    expect(element(".place .owner-view")).toBeTruthy();
+    const address = history.at(-1);
+    const shown = phone()?.ownerView;
+    expect(shown).toBeTruthy();
+
+    await act(async () => {
+      await client.rpc["integration.computer.session.stop"]({ sessionId: held.task!.sessionId });
+    });
+    await settle(120);
+    // The agent stopping is not an event for the tab: same address, same view, no new open.
+    expect(history.at(-1)).toEqual(address);
+    expect(phone()?.task).toBeNull();
+    expect(phone()?.ownerView?.viewId).toBe(shown?.viewId);
+    expect(phone()?.ownerView?.generation).toBe(shown?.generation);
+    expect(element(".place .owner-view")).toBeTruthy();
+    expect(open).toHaveBeenCalledOnce();
+    expect(wake).not.toHaveBeenCalled();
+
+    await act(async () => client.closePhoneTab(machineId));
+    await settle(120);
+    expect(phone()).toBeUndefined();
+    expect(ownerViews().some((view) => view.target.kind === "phone")).toBe(false);
+    expect(open).toHaveBeenCalledOnce();
+    expect(history.at(-1)?.search).not.toBe(address?.search);
   });
 
   it("M6 · clearing recent sites never fails an owner view the Host already opened", async () => {

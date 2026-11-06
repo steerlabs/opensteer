@@ -3,7 +3,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { BrowserSessionIdSchema } from "@opensteer/protocol";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import {
   connectCallerMachine,
@@ -209,13 +209,22 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       await evidence.run("workspace-reuse", async () => {
         await fulfillFill(connection);
       });
-      const cardResult = await client.callTool({
+      const cardResult = client.callTool({
         name: "use_card",
         arguments: { site: passwordFixture.site, sessionId, reason: "Fill the approved purchase" },
       });
-      const cardPending = z
-        .object({ status: z.literal("pending"), requestId: z.string() })
-        .parse(cardResult.structuredContent);
+      void cardResult.catch(() => undefined);
+      const cardPending = await vi.waitFor(
+        async () => {
+          const rows = await host.store.requests.listPendingPasswordSignIns({
+            after: null,
+            limit: 64,
+          });
+          expect(rows, "use_card did not open its Request").toHaveLength(1);
+          return { requestId: rows[0]!.id };
+        },
+        { timeout: 10_000 },
+      );
       const chooser = await testRpcData(
         host.origin,
         "browser.password-sign-in.get",
@@ -241,6 +250,12 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         },
         { headers: host.ownerHeaders },
       );
+      const approved = await cardResult;
+      expect(approved.structuredContent).toMatchObject({
+        status: "ready",
+        brand: "Visa",
+        lastFour: "4242",
+      });
       const reused = await client.callTool({
         name: "use_card",
         arguments: { site: passwordFixture.site, sessionId, reason: "Continue approved purchase" },
@@ -253,6 +268,7 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
           lastFour: z.literal("4242"),
         })
         .parse(reused.structuredContent);
+      expect(approved.structuredContent).toMatchObject(cardReady);
       const cardFill = {
         method: "Opensteer.fillCard",
         sessionId: "page-cdp",

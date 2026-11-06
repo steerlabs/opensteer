@@ -64,6 +64,10 @@ const state = vi.hoisted(() => ({
   /** Every claim of the active Thread a pane beside the page made. */
   conversationClaims: [] as string[],
   drafts: null as ThreadDraftStore | null,
+  popupFollow: null as {
+    readonly tab: { readonly sessionId: string; readonly tabId: string } | null;
+    readonly follow: (tabId: string) => void;
+  } | null,
 }));
 
 vi.mock("@react-navigation/native", () => ({
@@ -109,6 +113,13 @@ vi.mock("@opensteer/client/react", async () => ({
     retry: () => undefined,
     view: { app: { title: "Budget" }, url: `https://host.test/v1/apps/${appId}/dark/token/` },
   }),
+  useBrowserPopupFollow: (
+    _client: unknown,
+    tab: { sessionId: string; tabId: string } | null,
+    follow: (tabId: string) => void,
+  ) => {
+    state.popupFollow = { tab, follow };
+  },
   useHostSelector: (_client: unknown, selector: (snapshot: HostSnapshot) => unknown) =>
     selector(state.snapshot!),
   useHostSnapshot: () => ({ snapshot: state.snapshot, loadError: null, reload: state.refresh }),
@@ -482,13 +493,21 @@ vi.mock("../thread/thread-pane.js", async () => {
   };
 });
 vi.mock("./new-task.js", () => ({
-  NewTaskPane: (props: { onStarted: (threadId: string) => boolean }) => (
-    <section>
+  NewTaskPane: (props: { draftId: string; onStarted: (threadId: string) => boolean }) => (
+    <section data-draft={props.draftId}>
       New task beside
       <button onClick={() => props.onStarted("thread-started")}>Start the task</button>
     </section>
   ),
 }));
+
+/** The route Ask last pushed for a new task. */
+function askedFor(): { readonly draftId: string } {
+  const action = state.dispatch.mock.calls.findLast(
+    ([call]) => (call as { name?: string }).name === "NewTask",
+  )?.[0] as { params: { draftId: string } };
+  return action.params;
+}
 
 function PageProbe(props: { children?: ReactNode }): ReactNode {
   useEffect(() => {
@@ -776,6 +795,40 @@ describe("mobile pages", () => {
     expect(state.dispatch).not.toHaveBeenCalled();
     expect(state.hostClient.sendBrowserCommand).not.toHaveBeenCalled();
     expect(container.textContent).not.toContain("Back to tabs");
+  });
+
+  it("opens a popup the person's input opened over its page, ready to go back", () => {
+    const chosen = mailSession("chosen");
+    const tabId = chosen.tabs[0]!.id;
+    const { render } = setup({ sessionId: chosen.id, tabId });
+    state.snapshot = snapshot([chosen]);
+    render();
+    expect(state.popupFollow?.tab).toEqual({ sessionId: chosen.id, tabId });
+    state.popupFollow?.follow("popup-tab");
+    expect(state.dispatch).toHaveBeenLastCalledWith({
+      type: "PUSH",
+      name: "WorkspaceBrowser",
+      params: expect.objectContaining({
+        editAddress: false,
+        popup: true,
+        sessionId: chosen.id,
+        tabId: "popup-tab",
+      }),
+    });
+  });
+
+  it("leaves a followed popup that ended, to the page under it, once it is in front again", () => {
+    state.focused = false;
+    state.navigationFocused = false;
+    const { render } = setup(
+      { popup: true, sessionId: "chosen", tabId: "missing-page" },
+      { snapshot: snapshot([mailSession("chosen")]) },
+    );
+    expect(state.dispatch).not.toHaveBeenCalled();
+    state.focused = true;
+    state.navigationFocused = true;
+    render();
+    expect(state.dispatch).toHaveBeenCalledExactlyOnceWith({ type: "POP", count: 1 });
   });
 
   it("views a linked inactive page without activating it and targets its navigation", () => {
@@ -1578,7 +1631,6 @@ describe("the page's bar", () => {
       url: "https://example.com",
     };
     const drafts = state.drafts!;
-    const taskDraft = newTaskDraftKey(source.id);
     press(ask, "Ask in Chat");
     expect(state.dispatch).toHaveBeenLastCalledWith({
       name: "Home",
@@ -1587,12 +1639,17 @@ describe("the page's bar", () => {
     });
     expect(drafts.readDraft("deployment-a", "user-a", "thread-home")?.page).toEqual(page);
     press(ask, "New task");
+    const { draftId } = askedFor();
     expect(state.dispatch).toHaveBeenLastCalledWith({
       name: "NewTask",
-      params: { deploymentId: "deployment-a", workspaceId: source.id },
+      params: { deploymentId: "deployment-a", draftId, workspaceId: source.id },
       type: "PUSH",
     });
-    expect(drafts.readDraft("deployment-a", "user-a", taskDraft)?.page).toEqual(page);
+    const taskDraft = newTaskDraftKey(draftId);
+    expect(drafts.readDraft("deployment-a", "user-a", taskDraft)).toMatchObject({
+      page,
+      workspaceId: source.id,
+    });
     // Whoever signs in next on this Deployment has drafts of their own.
     expect(drafts.readDraft("deployment-a", "user-b", "thread-home")).toBeNull();
     expect(drafts.readDraft("deployment-a", "user-b", taskDraft)).toBeNull();
@@ -1608,8 +1665,8 @@ describe("the page's bar", () => {
       });
       state.snapshot = withAgents([]);
       opened.render();
+      // A page an earlier Ask left on another draft does not stand for this one.
       const draftKey = newTaskDraftKey(source.id);
-      // A page an earlier Ask left on the draft does not stand for this one.
       const earlier = BrowserPageContentPartSchema.parse({
         sessionId: "bsn_00000000-0000-4000-8000-0000000000aa",
         tabId: "page-1",
@@ -1620,12 +1677,16 @@ describe("the page's bar", () => {
       await act(() => state.drafts!.writeDraftPage("deployment-a", "user-a", draftKey, earlier));
       expect(state.drafts!.readDraft("deployment-a", "user-a", draftKey)?.page).toEqual(earlier);
       press(element(header(), "Ask")!, "New task");
+      const { draftId } = askedFor();
       expect(state.dispatch).toHaveBeenCalledWith({
         name: "NewTask",
         type: "PUSH",
-        params: { deploymentId: "deployment-a", workspaceId: source.id },
+        params: { deploymentId: "deployment-a", draftId, workspaceId: source.id },
       });
-      expect(state.drafts!.readDraft("deployment-a", "user-a", draftKey)).toBeNull();
+      expect(
+        state.drafts!.readDraft("deployment-a", "user-a", newTaskDraftKey(draftId)),
+      ).toBeNull();
+      expect(state.drafts!.readDraft("deployment-a", "user-a", draftKey)?.page).toEqual(earlier);
     },
   );
 
@@ -1997,8 +2058,17 @@ describe("a page beside its agent's thread", () => {
     );
     press(element(header(), "Ask")!, "New task");
     expect(second(container)).toContain("New task beside");
+    const besideDraft = () =>
+      container.querySelector<HTMLElement>("[data-draft]")!.dataset["draft"]!;
+    const asked = besideDraft();
     expect(
-      state.drafts!.readDraft("deployment-a", "user-a", newTaskDraftKey(source.id))?.page?.title,
+      state.drafts!.readDraft("deployment-a", "user-a", newTaskDraftKey(asked))?.page?.title,
+    ).toBe("Page");
+    // A draft with something on it waits in the sidebar; Ask starts another.
+    press(element(header(), "Ask")!, "New task");
+    expect(besideDraft()).not.toBe(asked);
+    expect(
+      state.drafts!.readDraft("deployment-a", "user-a", newTaskDraftKey(asked))?.page?.title,
     ).toBe("Page");
     press(container, "Start the task");
     expect(second(container)).toContain("Thread thread-started beside with Page");
@@ -2453,6 +2523,7 @@ describe("native page layout and controls", () => {
     press(container, "Other, other.example");
     expect(state.setParams).toHaveBeenCalledExactlyOnceWith({
       editAddress: false,
+      popup: false,
       tabId: other.id,
     });
     expect(send).not.toHaveBeenCalled();

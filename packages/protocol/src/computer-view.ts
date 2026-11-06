@@ -123,6 +123,8 @@ export const ComputerViewRemovedSchema = z.object({
   ...ComputerViewRefSchema.shape,
   machineId: RunnerIdSchema,
   reason: z.enum(["closed", "expired", "revoked", "disconnected", "host-restarted"]),
+  /** The phone's tab went with it, so no client mistakes this for a tab left without a view. */
+  tabClosed: z.literal(true).optional(),
 });
 /** Joins existing connected, unblocked, owner-approved connections to device identities and icons. */
 export const ApprovedComputerAppSchema = z.object({

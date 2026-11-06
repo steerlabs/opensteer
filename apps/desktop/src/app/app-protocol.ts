@@ -19,7 +19,7 @@ const contentSecurityPolicy = [
   "object-src 'none'",
   "base-uri 'none'",
   "form-action 'none'",
-  `frame-src ${appFrameScheme}://view`,
+  `frame-src ${appFrameScheme}://view http://*.localhost:* https:`,
   // The HEIC photo decoder runs in a worker it creates from its own code; it
   // needs neither eval nor WebAssembly (see attachments/upload-file.ts).
   "worker-src blob:",

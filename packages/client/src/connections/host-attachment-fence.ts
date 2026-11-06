@@ -42,6 +42,8 @@ export class HostAttachmentFence {
   /** `undefined` until the first resolution, so startup never bumps the fence. */
   #selectedKey: string | null | undefined;
   #generation = 0;
+  #refreshes = 0;
+  #appliedRefresh = 0;
 
   constructor(options: {
     readonly catalog: Pick<DeploymentCatalogStore, "load" | "subscribe">;
@@ -112,6 +114,7 @@ export class HostAttachmentFence {
    * own projection of the same catalog read has to refresh both together.
    */
   async refresh(): Promise<SelectedAttachment | null> {
+    const turn = ++this.#refreshes;
     const [catalog, localRuntime] = await Promise.all([
       this.#catalog.load(),
       this.#localRuntime.current(),
@@ -121,6 +124,7 @@ export class HostAttachmentFence {
       ({ authority }) => authority.document.deploymentId === deploymentId,
     );
     if (!connection) {
+      if (this.#superseded(turn)) return this.refresh();
       this.#applySelection(null);
       return null;
     }
@@ -136,14 +140,22 @@ export class HostAttachmentFence {
       // Invalidation happens once. Notifying observers is what brings the next
       // caller back through here, so re-notifying on an authority that is
       // already unavailable would feed itself and abort every passing request.
-      if (this.#selectedKey) {
+      if (!this.#superseded(turn) && this.#selectedKey) {
         this.#selectedKey = null;
         this.#invalidate("The selected deployment’s authority is unavailable.");
       }
       throw error;
     }
+    if (this.#superseded(turn)) return this.refresh();
     this.#applySelection(selected.resolved.key);
     return selected;
+  }
+
+  /** Reads overlap and credentials can stall, so a slower read must not undo a newer one. */
+  #superseded(turn: number): boolean {
+    if (turn < this.#appliedRefresh) return true;
+    this.#appliedRefresh = turn;
+    return false;
   }
 
   #applySelection(key: string | null): void {

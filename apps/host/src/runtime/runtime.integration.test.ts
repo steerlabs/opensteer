@@ -3432,6 +3432,7 @@ integration("Host vertical slice", () => {
     expect(bootstrap.user.instanceRole).toBe("administrator");
     expect(bootstrap.user.displayName).toBe("You");
     expect(bootstrap.sessionSurface).toBe("canonical");
+    expect(bootstrap.sessionId).toMatch(/^ses_/u);
     expect(bootstrap.workspaceSharingAvailable).toBe(false);
     // Main exists without anyone naming it, and is the only Workspace.
     expect(bootstrap.workspaces).toHaveLength(1);

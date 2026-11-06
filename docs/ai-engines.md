@@ -110,14 +110,21 @@ isolation, and Runner death must end inspection subprocesses too.
 ## Opensteer tools through the Runner
 
 The Host builds each Run's tool plan, instructions and skills
-([plan construction](../apps/host/src/agents/agent-tools-plan.ts)), and every engine configures one
-`opensteer` MCP server from it; Runners never rebuild a tool list from their own release, and
+([plan construction](../apps/host/src/agents/agent-tools-plan.ts)), and every engine configures its
+MCP servers from it; Runners never rebuild a tool list from their own release, and
 `toolsRevision` is part of warm-engine identity. Engines never receive a Host token: the loopback
 [credential proxy](../apps/runner/src/credentials/credential-proxy.ts) gives each Run a secret
 usable only for its tool endpoints, never put on a command line and revoked on interrupt. Loopback
 alone is no tenant isolation. Token refresh belongs to the Runner boot holding the Run; refusal ends
 access, temporary unavailability does not
 ([Run tool authority](agent-orchestration.md#run-tool-authority)).
+
+Codex Request tools use a second server so the model calls them directly: code-mode cells can
+otherwise yield while the Request is held and let the model keep acting. `longRequestHold` requires
+an explicitly configured MCP deadline above the Host hold limit (both Pi deadlines), plus real-account
+qualification through the production transport: one invocation must survive the old deadline and
+return an unpredictable marker in that same result. Codex must also prove direct invocation and no
+other tool activity during the hold; source inspection alone does not qualify the behavior.
 
 Claude defers Opensteer tool schemas through ToolSearch, which must stay available in every mode.
 Its synthetic project root supplies loose skills without the real project settings, though CLAUDE.md

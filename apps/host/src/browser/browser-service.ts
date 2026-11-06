@@ -485,6 +485,7 @@ export interface BrowserRuntimeTarget {
   readonly navigationVersion?: boolean;
   readonly navigationAttributionVersion?: boolean;
   readonly workspaceTabRestoreVersion?: boolean;
+  readonly popupFollowVersion?: boolean;
   readonly captureRegion?: boolean;
   readonly rasterDemand?: boolean;
   readonly passkeys?: boolean;
@@ -3336,7 +3337,8 @@ export class BrowserService {
       readonly authSessionId: AuthSessionId;
       readonly mode: BrowserConsumerMode;
       readonly passkeys?: PasskeyMode | undefined;
-      readonly popups?: boolean;
+      readonly popups?: boolean | undefined;
+      readonly popupFollow?: boolean | undefined;
       readonly editing?: 1 | 2 | undefined;
       /**
        * Whether the login that opened the socket is still signed in. Read once,
@@ -3393,6 +3395,7 @@ export class BrowserService {
         detachAuth,
         options.editing,
         options.passkeys,
+        options.popupFollow === true,
         ownerId,
         options.signedIn,
         options.popups,
@@ -3692,6 +3695,7 @@ export class BrowserService {
       ...(target.popups === 1 ? { popupVersion: 1 } : {}),
       ...(target.navigationVersion ? { navigationVersion: 1 } : {}),
       ...(target.navigationAttributionVersion ? { navigationAttributionVersion: 1 } : {}),
+      ...(target.popupFollowVersion ? { popupFollowVersion: 1 } : {}),
       ...(target.editing
         ? {
             editingVersion: target.editing,
@@ -4751,6 +4755,7 @@ class HostedBrowserBroker {
     onClose: () => void,
     editing: 1 | 2 | undefined = undefined,
     passkeys: PasskeyMode | undefined = undefined,
+    popupFollow: boolean,
     userId: UserId,
     signedIn: () => Promise<boolean>,
     popups = false,
@@ -4788,6 +4793,7 @@ class HostedBrowserBroker {
     outlet.userId = userId;
     outlet.popups = popups && mode === "control" && this.#snapshot.popupVersion === 1;
     outlet.passkeys = this.passkeys ? passkeys : undefined;
+    outlet.popupFollow = popupFollow && mode === "control";
     outlet.authorized = () =>
       withTimeout(
         (async () => (await stillVisible()) && (await signedIn()))(),
@@ -4809,6 +4815,7 @@ class HostedBrowserBroker {
             outlet.passkeys,
             outlet.clipboardToken,
             outlet.popups,
+            outlet.popupFollow,
           ),
         ),
       );
@@ -5388,6 +5395,11 @@ class HostedBrowserBroker {
       )
         continue;
       if (
+        message.type === "browser.popupFollow.opened" &&
+        (!consumer.popupFollow || message.consumerToken !== consumer.clipboardToken)
+      )
+        continue;
+      if (
         message.type === "clipboard.result" &&
         message.consumerToken === consumer.clipboardToken
       ) {
@@ -5473,6 +5485,7 @@ class HostedBrowserBroker {
         consumer.passkeys,
         consumer.clipboardToken,
         consumer.popups,
+        consumer.popupFollow,
       );
       if (projected) void consumer.sendText(JSON.stringify(projected)).catch(() => undefined);
     }
@@ -6775,6 +6788,8 @@ export class BrowserConsumerOutlet {
   #paceTimer: NodeJS.Timeout | null = null;
   userId: UserId | null = null;
   passkeys: PasskeyMode | undefined;
+  /** Understands `browser.popupFollow.opened`, and hears its own token for reporting native input. */
+  popupFollow = false;
   authorized: () => Promise<boolean> = async () => false;
   readonly clipboardToken = randomUUID();
   readonly legacyClipboard = new LegacyBrowserClipboard(this.clipboardToken, maxBrowserTextBytes);

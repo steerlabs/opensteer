@@ -13,9 +13,12 @@ import { WorkspaceOrb } from "./workspace-orb.js";
  * goes there; with no project there is nothing to choose and nothing shows.
  */
 export function AssigneePicker({
+  draftId,
   projects,
   workspace,
 }: {
+  /** The draft being written: it goes with the choice, words and all. */
+  readonly draftId: string;
   readonly projects: readonly WorkspaceSummary[];
   /** The Workspace the composer on screen starts its task in. */
   readonly workspace: WorkspaceSummary;
@@ -28,7 +31,7 @@ export function AssigneePicker({
   const name = main ? "Opensteer" : workspace.name;
   const choose = (path: string) => {
     setOpen(false);
-    void navigate(path);
+    void navigate(`${path}?draft=${encodeURIComponent(draftId)}`);
   };
   return (
     <div className="assignee">

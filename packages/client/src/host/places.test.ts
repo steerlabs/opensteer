@@ -97,6 +97,87 @@ describe("place catalog", () => {
     }
   });
 
+  it("keeps one phone row through its task until its owner closes the tab", async () => {
+    const client = new MockHostClient({ latencyMs: 0, now });
+    try {
+      const phones = () =>
+        placeList(client.getSnapshot()).filter((place) => place.kind === "phone");
+      expect(phones()).toHaveLength(1);
+      const held = phones()[0]!;
+      const { destination } = held;
+      if (destination.kind !== "phone" || !held.task) throw new Error("No held phone");
+      expect(held.closable).toBe(false);
+
+      await client.rpc["integration.computer.session.stop"]({ sessionId: held.task.sessionId });
+      expect(phones()).toHaveLength(1);
+      expect(phones()[0]).toMatchObject({
+        closable: true,
+        destination,
+        key: held.key,
+        occupants: [],
+        ownerView: null,
+        task: null,
+      });
+      expect(placeDestinationEnded(client.getSnapshot(), destination)).toBe(false);
+
+      await client.closePhoneTab(destination.machineId);
+      expect(phones()).toEqual([]);
+      expect(placeDestinationEnded(client.getSnapshot(), destination)).toBe(true);
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it("keeps a phone's tab offline and never lets a dead view hide a live task", () => {
+    const client = new MockHostClient({ latencyMs: 0, now });
+    try {
+      const snapshot = client.getSnapshot();
+      const phone = snapshot.machines.find(
+        (machine) => machine.computerUse?.sessions.some(({ display }) => display) === true,
+      )!;
+      const withPhone = (next: typeof phone) => ({
+        ...snapshot,
+        machines: snapshot.machines.map((machine) => (machine.id === phone.id ? next : machine)),
+      });
+      const offline = withPhone({ ...phone, computerUse: null, status: "offline" });
+      const row = placeList(offline).find((place) => place.kind === "phone")!;
+      expect(row.availability).toBe("unavailable");
+      expect(placeDestinationEnded(offline, row.destination)).toBe(false);
+      const closed = withPhone({
+        ...phone,
+        computerUse: null,
+        status: "offline",
+        tabOpenedAt: null,
+      });
+      expect(placeDestinationEnded(closed, row.destination)).toBe(true);
+
+      const view = {
+        generation: 1,
+        state: "unavailable",
+        target: { display: "main", kind: "phone" },
+        viewId: "cvw_dead",
+      } as unknown as NonNullable<NonNullable<typeof phone.computerUse>["ownerViews"]>[number];
+      const dead = withPhone({
+        ...phone,
+        computerUse: { ...phone.computerUse!, ownerViews: [view] },
+      });
+      const held = placeList(dead).find((place) => place.kind === "phone")!;
+      expect(held.ownerView).toBeNull();
+      expect(held.task).not.toBeNull();
+      expect(held.ownerClose).toEqual({ generation: 1, viewId: "cvw_dead" });
+
+      const live = withPhone({
+        ...phone,
+        computerUse: { ...phone.computerUse!, ownerViews: [{ ...view, state: "ready" }] },
+      });
+      const shown = placeList(live).find((place) => place.kind === "phone")!;
+      expect(shown.ownerView?.viewId).toBe("cvw_dead");
+      expect(shown.ownerClose).toBeNull();
+    } finally {
+      client.dispose();
+    }
+  });
+
   it("keeps live-only sessions visible when the Host also offers durable tabs", () => {
     const client = new MockHostClient({ latencyMs: 0, now });
     try {

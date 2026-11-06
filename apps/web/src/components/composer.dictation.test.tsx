@@ -8,6 +8,7 @@ import type {
   DictationEvent,
   DictationPort,
 } from "@opensteer/protocol/dictation";
+import { composerDrafts } from "./composer-drafts.js";
 import { Composer } from "./composer.js";
 import * as dictationHooks from "./dictation.js";
 import { DictationContext } from "./dictation.js";
@@ -26,7 +27,10 @@ const ready: DictationAvailability = {
   model: "installed",
   microphone: "granted",
 };
-async function setup(availability: DictationAvailability | null = ready) {
+async function setup(
+  availability: DictationAvailability | null = ready,
+  draftKey: string | null = null,
+) {
   let receive: (event: DictationEvent) => void = () => {};
   let session = "";
   let seq = 0;
@@ -64,6 +68,7 @@ async function setup(availability: DictationAvailability | null = ready) {
         <DictationContext value={controller}>
           <Composer
             disabled={disabled}
+            draftKey={draftKey}
             hidden={hidden}
             onSend={send}
             placeholder="Reply…"
@@ -215,6 +220,17 @@ it("leaves on unmount and never sends afterwards", async () => {
   root = undefined;
   await t.end();
   expect(t.send).not.toHaveBeenCalled();
+});
+it("keeps words recognised after leaving in the draft they were spoken into", async () => {
+  const draft = "dictated-draft";
+  const t = await setup(ready, draft);
+  await t.start();
+  await t.text();
+  act(() => root!.unmount());
+  root = undefined;
+  await t.end();
+  expect(composerDrafts.read(draft)?.text).toBe("a good day");
+  composerDrafts.clear(draft);
 });
 it("opens microphone settings from the owner notice", async () => {
   const t = await setup({ ...ready, microphone: "denied" } as DictationAvailability);

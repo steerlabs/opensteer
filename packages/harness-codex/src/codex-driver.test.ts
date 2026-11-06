@@ -1,4 +1,4 @@
-import { agentTools } from "@opensteer/agent-tools";
+import { agentTools, requestToolNames } from "@opensteer/agent-tools";
 import { collisionSkills } from "@opensteer/shared/test-support/agentSkills";
 import {
   lstat,
@@ -18,6 +18,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PassThrough } from "node:stream";
 import {
+  heldToolCallTimeoutMs,
   ModelSelectionSchema,
   createId,
   harnessUsageLimitFailureCode,
@@ -324,30 +325,52 @@ describe("Codex app-server harness", () => {
     }
   });
 
-  it.each([["host_only_tool"], ["thread_read", "integration_call", "computer"]])(
-    "enables exactly the Host plan %j",
-    async (...tools) => {
-      const fixture = await setup("happy");
+  it.each([
+    ["host_only_tool"],
+    ["thread_read", "integration_call", "computer"],
+    ["thread_read", ...requestToolNames],
+    [...requestToolNames],
+  ])("enables exactly the Host plan %j", async (...tools) => {
+    const fixture = await setup("happy");
+    expect(fixture.adapter.capabilities.longRequestHold).toBe(true);
+    try {
+      const session = await fixture.adapter.startSession({
+        ...fixture.context,
+        agentTools: { ...fixture.context.agentTools, tools },
+      });
       try {
-        const session = await fixture.adapter.startSession({
-          ...fixture.context,
-          agentTools: { ...fixture.context.agentTools, tools },
-        });
-        try {
-          const captured = await fixture.capture();
-          const threadStart = captured.find((message) => message.method === "thread/start");
-          const config =
-            (threadStart?.params as { config: Record<string, unknown> } | undefined)?.config ?? {};
-          expect(config["mcp_servers.opensteer.enabled_tools"]).toEqual(tools);
-          expect(config["mcp_servers.opensteer_integrations.enabled"]).toBeUndefined();
-        } finally {
-          await session.stop();
+        const captured = await fixture.capture();
+        const threadStart = captured.find((message) => message.method === "thread/start");
+        const config =
+          (threadStart?.params as { config: Record<string, unknown> } | undefined)?.config ?? {};
+        const directTools = tools.filter((tool) => requestToolNames.some((name) => name === tool));
+        expect(config["mcp_servers.opensteer.enabled_tools"]).toEqual(
+          tools.filter((tool) => !directTools.includes(tool)),
+        );
+        if (directTools.length > 0) {
+          expect(config).toMatchObject({
+            "mcp_servers.opensteer-direct.enabled_tools": directTools,
+            "mcp_servers.opensteer-direct.omit_tools_from": ["code_mode", "deferred"],
+            "mcp_servers.opensteer-direct.url": fixture.context.agentTools.url,
+            "mcp_servers.opensteer-direct.bearer_token_env_var": "OPENSTEER_AGENT_TOOLS_TOKEN",
+            "mcp_servers.opensteer-direct.default_tools_approval_mode": "approve",
+            "mcp_servers.opensteer-direct.required": true,
+            "mcp_servers.opensteer-direct.enabled": true,
+            "mcp_servers.opensteer-direct.tool_timeout_sec": heldToolCallTimeoutMs / 1_000,
+          });
+        } else {
+          expect(
+            Object.keys(config).some((key) => key.startsWith("mcp_servers.opensteer-direct.")),
+          ).toBe(false);
         }
+        expect(config["mcp_servers.opensteer_integrations.enabled"]).toBeUndefined();
       } finally {
-        await fixture.adapter.close();
+        await session.stop();
       }
-    },
-  );
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
 
   it("maps every Opensteer access mode to an explicit Codex policy", () => {
     const workspacePath = "/workspace";
@@ -1579,7 +1602,7 @@ describe("Codex app-server harness", () => {
           "mcp_servers.opensteer.default_tools_approval_mode": "approve",
           "mcp_servers.opensteer.enabled": true,
           "mcp_servers.opensteer.required": true,
-          "mcp_servers.opensteer.tool_timeout_sec": 120,
+          "mcp_servers.opensteer.tool_timeout_sec": heldToolCallTimeoutMs / 1_000,
           "mcp_servers.opensteer.url": fixture.context.agentTools.url,
           // A whole computer-use observation or describe page must reach the
           // model uncut, including on models whose default policy is 10,000 bytes.
@@ -1635,6 +1658,24 @@ describe("Codex app-server harness", () => {
       },
     });
     await fixture.adapter.close();
+  });
+
+  it("reports direct Request calls as Opensteer tools", async () => {
+    const fixture = await setup("direct-tools");
+    const session = await fixture.adapter.startSession(fixture.context);
+    const observer = observe(session.events);
+    try {
+      await session.execute(fixture.turn("Sign in"));
+      expect(observer.events.filter((event) => event.type === "tool.started")).toMatchObject([
+        { data: { callId: "direct-1", tool: { name: "sign_in", namespace: "opensteer" } } },
+      ]);
+      expect(observer.events.filter((event) => event.type === "tool.completed")).toMatchObject([
+        { data: { callId: "direct-1", isError: false, output: { text: "ready" } } },
+      ]);
+    } finally {
+      await session.stop();
+      await fixture.adapter.close();
+    }
   });
 
   it("preserves Runner command capabilities while excluding credentials", async () => {
@@ -2226,19 +2267,21 @@ describe("Codex app-server harness", () => {
     }
   });
 
-  it.each(["mcp-extra-tool", "mcp-missing-required-tool"])(
-    "rejects %s against the exact Host plan",
-    async (scenario) => {
-      const fixture = await setup(scenario);
-      try {
-        await expect(fixture.adapter.startSession(fixture.context)).rejects.toMatchObject({
-          message: expect.stringContaining("unexpected tool contract"),
-        });
-      } finally {
-        await fixture.adapter.close();
-      }
-    },
-  );
+  it.each([
+    "mcp-extra-tool",
+    "mcp-missing-required-tool",
+    "mcp-direct-extra-tool",
+    "mcp-direct-missing-required-tool",
+  ])("rejects %s against the exact Host plan", async (scenario) => {
+    const fixture = await setup(scenario);
+    try {
+      await expect(fixture.adapter.startSession(fixture.context)).rejects.toMatchObject({
+        message: expect.stringContaining("unexpected tool contract"),
+      });
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
 
   it("fails closed when the Codex CLI is older than the driver supports", async () => {
     const fixture = await setup("version-mismatch");

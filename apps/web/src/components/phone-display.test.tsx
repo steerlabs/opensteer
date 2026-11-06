@@ -1210,6 +1210,7 @@ describe("phone owner controls", () => {
           leading={null}
           trailing={null}
           place={null}
+          source={{ kind: "owner-view", viewId: view.viewId, generation: view.generation }}
         />,
       ),
     );

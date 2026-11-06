@@ -12,11 +12,14 @@ import { androidPhoneDefinitionId, type PendingAgentEvent } from "@opensteer/pro
 import { z } from "zod";
 import { computerUseDefinitionId } from "../computer-use/computer-use-service.js";
 import type { IntegrationPlatformService } from "./integration-platform-service.js";
-import { IntegrationToolRefSchema } from "./integration-tool-ref.js";
+import { describedOperation, resolveOperation } from "./integration-operation.js";
 
-/** The two gateway tools whose `toolRef` names one operation under one grant. */
+/** The two gateway tools whose `operation` and `account` name one operation under one grant. */
 const addressingTools = new Set(["integration_call", "integration_describe"]);
-const AddressingArgumentsSchema = z.object({ toolRef: z.string() });
+const AddressingArgumentsSchema = z.object({
+  account: z.string().optional(),
+  operation: z.string(),
+});
 
 export interface IntegrationCallSubjectSources {
   /** The gateway's own listing, cached per owner and Workspace, so a call is named as it resolves. */
@@ -35,13 +38,12 @@ export interface IntegrationCallSubjectSources {
  * What a Runner's `tool.started` for an integration gateway call addressed,
  * resolved exactly as the gateway resolves the call — from its cached listing
  * for the Run's owner and the event's Workspace — to that one grant and tool
- * and the schema the model was shown.
  * This is the one place the Host names a recorded call's subject.
  *
- * Undefined for every other event, and for a reference that names nothing
- * this Run could reach — a hallucinated or revoked ref, another Workspace's
- * grant, a schema that has since changed. The record of such a call is the
- * honest one: it addressed nothing, so it names nothing.
+ * Undefined for every other event, and for an address that names nothing
+ * this Run could reach — a hallucinated or revoked operation or another
+ * Workspace's account. The record of such a call is the honest one: it
+ * addressed nothing, so it names nothing.
  *
  * It runs before the event commits, so a lookup that fails is reported and
  * the event is committed without a subject rather than refused.
@@ -57,8 +59,6 @@ export async function integrationCallSubject(
   }
   const call = AddressingArgumentsSchema.safeParse(event.data.arguments);
   if (!call.success) return undefined;
-  const reference = IntegrationToolRefSchema.safeParse(call.data.toolRef);
-  if (!reference.success) return undefined;
   try {
     const ownerUserId = await sources.runRequester({
       runId: event.runId,
@@ -66,16 +66,22 @@ export async function integrationCallSubject(
       workspaceId: event.workspaceId,
     });
     if (!ownerUserId) return undefined;
-    const callable = (
+    const resolution = resolveOperation(
       await sources.listCallableTools({
         ownerUserId,
         threadId: event.threadId,
         workspaceId: event.workspaceId,
-      })
-    ).find(
-      ({ grant, tool }) => grant.id === reference.data.grantId && tool.id === reference.data.toolId,
+      }),
+      call.data.operation,
+      call.data.account,
     );
-    if (!callable || callable.tool.schemaDigest !== reference.data.schemaDigest) return undefined;
+    const callable =
+      tool.name === "integration_describe"
+        ? describedOperation(resolution)
+        : resolution.kind === "found"
+          ? resolution.callable
+          : undefined;
+    if (!callable) return undefined;
     const computer = await computerSubject(sources, callable, ownerUserId);
     if (computer === undefined) return undefined;
     return IntegrationCallSubjectSchema.parse({

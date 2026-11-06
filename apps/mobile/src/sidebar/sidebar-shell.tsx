@@ -38,9 +38,14 @@ import {
 } from "react-native-reserved-regions";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { paramsDestination, workspaceRoute } from "../browser/surface-route.js";
+import { newTaskDraftBlank, newTaskDraftId } from "../client/thread-drafts.js";
 import { deriveShell, edgesAround, type SidebarArrangement, type Size } from "../layout.js";
 import { color } from "../theme.js";
-import { useHostUserId, useSelectedHostClient } from "../ui/mobile-client-context.js";
+import {
+  useHostUserId,
+  useMobileClient,
+  useSelectedHostClient,
+} from "../ui/mobile-client-context.js";
 import { appear, exit } from "../ui/motion.js";
 import { Pane } from "../ui/pane.js";
 import type { ScrollMemory } from "../ui/retained-scroll.js";
@@ -176,6 +181,10 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
     focused?.name === "Thread" && typeof focusedParams?.["threadId"] === "string"
       ? focusedParams["threadId"]
       : null;
+  const openDraftId =
+    focused?.name === "NewTask" && typeof focusedParams?.["draftId"] === "string"
+      ? focusedParams["draftId"]
+      : null;
   const openProjectId =
     (focused?.name === "Project" || focused?.name === "ProjectSettings") &&
     typeof focusedParams?.["workspaceId"] === "string"
@@ -266,6 +275,7 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
   const focusedKey = focused?.key ?? null;
   const hostClient = useSelectedHostClient();
   const readerId = useHostUserId(hostClient);
+  const { drafts } = useMobileClient();
   useEffect(() => {
     if (visibleRef.current) drawer.current?.closeDrawer();
   }, [deploymentId, docked, focusedKey, hostClient, readerId]);
@@ -354,7 +364,29 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
       },
       onNewTask: (targetDeploymentId, workspaceId) => {
         leave();
-        go("NewTask", { deploymentId: targetDeploymentId, workspaceId }, false);
+        const state = latest.current;
+        const current = state.routes[state.index];
+        const open =
+          current?.name === "NewTask" && isRecord(current.params) ? current.params : null;
+        const openId = open?.["draftId"];
+        // The blank draft already in front is the one this asks for.
+        if (
+          open?.["deploymentId"] === targetDeploymentId &&
+          open["workspaceId"] === workspaceId &&
+          typeof openId === "string" &&
+          readerId !== null &&
+          newTaskDraftBlank(drafts, targetDeploymentId, readerId, openId)
+        )
+          return;
+        go(
+          "NewTask",
+          { deploymentId: targetDeploymentId, draftId: newTaskDraftId(), workspaceId },
+          false,
+        );
+      },
+      onOpenDraft: (targetDeploymentId, workspaceId, draftId) => {
+        leave();
+        go("NewTask", { deploymentId: targetDeploymentId, draftId, workspaceId }, false);
       },
       onOpenProject: (targetDeploymentId, workspaceId) => {
         leave();
@@ -393,7 +425,7 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
       onProjects: () => show("Projects"),
       onTabs: () => show("Tabs"),
     };
-  }, [close, leave, props.navigation]);
+  }, [close, drafts, leave, props.navigation, readerId]);
 
   return (
     <SidebarControlContext.Provider value={control}>
@@ -432,6 +464,7 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
                   docked={false}
                   scroll={scrollMemory}
                   shelves={shelfMemory}
+                  openDraftId={openDraftId}
                   openProjectId={openProjectId}
                   selectedThreadId={selectedThreadId}
                   openThreadId={selectedThreadId}
@@ -469,6 +502,7 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
                       docked
                       scroll={scrollMemory}
                       shelves={shelfMemory}
+                      openDraftId={openDraftId}
                       openProjectId={openProjectId}
                       selectedThreadId={selectedThreadId}
                       openThreadId={selectedThreadId}

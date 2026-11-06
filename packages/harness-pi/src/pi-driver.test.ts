@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import {
+  heldToolCallTimeoutMs,
   ModelSelectionSchema,
   createId,
   harnessUsageLimitFailureCode,
@@ -867,10 +868,6 @@ describe("Pi sessions", () => {
     await fixture.adapter.close();
   });
 
-  it("pins Opensteer tool calls above the autonomous sign-in wait", () => {
-    expect(piToolCallTimeoutMs).toBeGreaterThanOrEqual(120_000);
-  });
-
   it("runs an Opensteer tool through the driver's own MCP client", async () => {
     const calls: { name: string; args: unknown }[] = [];
     const fixture = await setup({
@@ -880,6 +877,7 @@ describe("Pi sessions", () => {
       }),
       scenario: "opensteer-tool",
     });
+    expect(fixture.adapter.capabilities.longRequestHold).toBe(true);
     const session = await fixture.adapter.startSession(fixture.context);
     const observer = observe(session.events);
     await session.execute(fixture.turn("Read the Thread"));
@@ -920,6 +918,7 @@ describe("Pi sessions", () => {
     const token = "os_secret_test_token";
     const url = await startFakeMcpServer(directory, token, ["thread_read", "workspace_list"]);
     const connectOptions = { signal: new AbortController().signal, timeoutMs: 10_000 };
+    expect(piToolCallTimeoutMs).toBe(heldToolCallTimeoutMs);
     const connection = await connectPiMcpServer(
       { name: "opensteer", token, toolNames: ["thread_read"], url },
       connectOptions,

@@ -2,6 +2,7 @@ import { randomInt, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   HarnessIdSchema,
   ModelSelectionSchema,
@@ -17,8 +18,10 @@ import {
   type ModelSelection,
   type ThreadAccessMode,
   type WorkspaceId,
+  shortRequestHoldMs,
 } from "@opensteer/core";
 import { findExecutableOnPath, nativeUserHarnessRuntimeBoundary } from "@opensteer/harness";
+import { RunnerRegistry } from "@opensteer/orchestration";
 import { createHarnessRegistry, parseAgentExecutionConfig } from "@opensteer/runner";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import sharp from "sharp";
@@ -30,9 +33,12 @@ import {
 import {
   installedCommand,
   qualificationAccount,
+  qualificationAccounts,
+  qualifiedEngines,
   qualifiedVersion,
   shippedEnginesFirstOnPath,
   type QualifiedEngine,
+  qualificationHoldMs,
 } from "./engine-qualification.test-support.js";
 
 /*
@@ -63,79 +69,6 @@ beforeAll(async () => {
 afterAll(async () => {
   if (runtimeCacheDirectory) await rm(runtimeCacheDirectory, { force: true, recursive: true });
   runtimeCacheDirectory = undefined;
-});
-
-/**
- * Each engine is qualified on a first-party source. Given the source's key
- * in this process's environment, a private account is signed in with it
- * through the setup commands Settings sends — a Runner never hands its own
- * environment's keys to an engine. Without one, the account is the engine's
- * own sign-in on this machine (`CODEX_HOME`, Claude Code's login, Pi's home).
- * Antigravity uses a private Gemini API-key account because its profile is
- * isolated and the test Runner is disposable. OpenCode's Zen gateway serves
- * free models with no credential at all.
- */
-type QualificationAccount = Omit<QualifiedEngine, "executable" | "label">;
-
-const qualificationAccounts = {
-  antigravity: {
-    apiKey: { methodId: "gemini-api-key", variable: "GEMINI_API_KEY" },
-    driverKind: "antigravity",
-    signInGuidance: "Set GEMINI_API_KEY to a dedicated spending-limited Gemini API key.",
-    sourceId: "google-gemini-api-key",
-    stateKind: "isolated",
-  },
-  claude: {
-    apiKey: { methodId: "claude-api-key", variable: "ANTHROPIC_API_KEY" },
-    driverKind: "claude",
-    sourceId: "anthropic",
-    stateKind: "ambient",
-  },
-  codex: {
-    apiKey: { methodId: "codex-api-key", variable: "OPENAI_API_KEY" },
-    driverKind: "codex",
-    sourceId: "openai",
-    stateKind: "ambient",
-  },
-  cursor: {
-    driverKind: "cursor",
-    sourceId: "cursor",
-    stateKind: "ambient",
-  },
-  grok: {
-    driverKind: "grok",
-    signInGuidance: "Sign in with `grok login --device-auth`.",
-    sourceId: "xai",
-    stateKind: "ambient",
-  },
-  muse: {
-    driverKind: "muse",
-    signInGuidance: "Sign in with `muse login`.",
-    sourceId: "meta",
-    stateKind: "ambient",
-  },
-  opencode: { driverKind: "opencode", sourceId: "opencode", stateKind: "isolated" },
-  pi: {
-    apiKey: { methodId: "pi-api-key", variable: "OPENAI_API_KEY" },
-    driverKind: "pi",
-    sourceId: "openai",
-    stateKind: "ambient",
-  },
-} as const satisfies Record<HarnessKind, QualificationAccount>;
-
-const qualifiedEngines: readonly QualifiedEngine[] = harnessCatalog.flatMap((entry) => {
-  const account = qualificationAccounts[entry.kind];
-  const engines: QualifiedEngine[] = [];
-  if (shipsHarnessRuntimeBytes(entry)) {
-    engines.push({ ...account, executable: "shipped", label: `shipped ${entry.label}` });
-  }
-  if (entry.runtime.shape === "downloaded") {
-    engines.push({ ...account, executable: "downloaded", label: `downloaded ${entry.label}` });
-  }
-  if (installedCommand(entry.kind)) {
-    engines.push({ ...account, executable: "installed", label: `installed ${entry.label}` });
-  }
-  return engines;
 });
 
 const newEngineKinds = new Set<HarnessKind>(["antigravity", "grok", "muse"]);
@@ -191,22 +124,30 @@ describe("engine qualification", () => {
       restorePath = undefined;
     }, 60_000);
 
-    it.each(["normal", ...(engine.driverKind === "claude" ? ["background"] : [])])(
-      "continues independent work with a pending Request and recalls native context after its continuation (mode=%s)",
-      async (mode) => {
-        const background = mode === "background";
+    it.each(qualificationHoldMs[engine.driverKind] === undefined ? ["short"] : ["long", "short"])(
+      "holds a Request call until the person answers, and keeps native context (%s hold)",
+      async (hold) => {
         if (!databaseUrl) throw new Error("Run the engine suite through pnpm test:engines");
+        const long = hold === "long";
+        if (!long)
+          vi.spyOn(RunnerRegistry.prototype, "supportsLongRequestHold").mockReturnValue(false);
+        const harnesses = createHarnessRegistry(
+          parseAgentExecutionConfig(process.env).harnessExecutables,
+          {
+            nodeExecutable: process.execPath,
+            runtimeCacheDirectory: runtimeCacheDirectory!,
+          },
+        );
+        expect(
+          harnesses.driverCapabilities(HarnessIdSchema.parse(engine.driverKind))
+            ?.longRequestHold === true,
+          "The engine's capability disagrees with its qualification hold",
+        ).toBe(qualificationHoldMs[engine.driverKind] !== undefined);
         stack = await startVerticalStack({
           catalogTimeoutMs: 180_000,
           databaseUrl,
           harnessInstance: qualificationAccount(engine),
-          harnesses: createHarnessRegistry(
-            parseAgentExecutionConfig(process.env).harnessExecutables,
-            {
-              nodeExecutable: process.execPath,
-              runtimeCacheDirectory: runtimeCacheDirectory!,
-            },
-          ),
+          harnesses,
           harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
           runTimeoutMs: 180_000,
           runnerWire: {},
@@ -216,66 +157,100 @@ describe("engine qualification", () => {
         const active = stack;
         const model = active.catalog.models.find((candidate) => candidate.isDefault);
         if (!model) throw new Error("The engine has no default model");
-        const workspace = await active.createWorkspace(`${engine.label} Request judgment`);
+        const workspace = await active.createWorkspace(`${engine.label} Request hold`);
         const threadId = await active.createThread({
           modelSelection: ModelSelectionSchema.parse({
             modelId: model.modelId,
             options: {},
             providerId: model.providerId,
           }),
-          title: `${engine.label} Request judgment`,
+          title: `${engine.label} Request hold`,
           workspaceId: workspace.id,
         });
         const nonce = randomUUID();
-        const prompt = `${background ? "First use Bash with run_in_background: true to start node -e 'setInterval(() => {}, 1000)' as a long-running task; keep it alive and remember its task ID. " : ""}Remember ${nonce} for the later continuation. Request a new browser profile named Receipts with browser_profile_request for this expense task. After requesting it, try thread_list to find running tasks, as independent work, then end your turn. Do not open a browser or sign in. When the person chooses the profile in a later continuation, reply with the chosen profile name and the remembered code${background ? "; before replying, stop only the background task you started using TaskStop with its captured task ID" : ", without tools"}.`;
-        const first = background
-          ? await active.queueMessage({ text: prompt, threadId })
-          : await active.sendMessage({ text: prompt, threadId, workspaceId: workspace.id });
+        // Told to keep working on purpose: only the runtime can stop it.
+        const prompt = `Remember ${nonce}. Request a new browser profile named Receipts with browser_profile_request for this expense task. After requesting it, try thread_list to find running tasks, as independent work. Do not open a browser or sign in. Once the person has chosen the profile, reply with the chosen profile name and the remembered code.`;
+        const first = await active.queueMessage({ text: prompt, threadId });
         if (!first.runId) throw new Error("The engine's first Run was not queued");
-        if (background)
-          await vi.waitFor(
-            async () => {
-              const run = await active.host.store.database
-                .selectFrom("runs")
-                .select(["status", "phase"])
-                .where("id", "=", first.runId!)
-                .executeTakeFirstOrThrow();
-              expect(run).toMatchObject({ status: "running", phase: "background" });
-            },
-            { timeout: 180_000, interval: 100 },
-          );
+        const firstRunId = first.runId;
         const database = active.host.store.database;
-        const requests = await database
-          .selectFrom("requests")
-          .select(["id", "status", "mode"])
-          .where("originatingRunId", "=", first.runId)
-          .execute();
-        expect(requests).toHaveLength(1);
-        expect(requests[0]).toMatchObject({ mode: "durable", status: "pending" });
-        expect(
-          await database
-            .selectFrom("runs")
-            .select("status")
-            .where("id", "=", first.runId)
-            .executeTakeFirstOrThrow(),
-        ).toEqual({ status: background ? "running" : "completed" });
-        const toolSteps = await database
+        const request = await vi.waitFor(
+          async () => {
+            const rows = await database
+              .selectFrom("requests")
+              .select(["id", "status", "mode"])
+              .where("originatingRunId", "=", firstRunId)
+              .execute();
+            expect(rows, "The engine did not open the Request").toHaveLength(1);
+            return rows[0]!;
+          },
+          { timeout: 180_000, interval: 100 },
+        );
+        expect(request).toMatchObject({ mode: "durable", status: "pending" });
+        const runStatus = async () =>
+          (
+            await database
+              .selectFrom("runs")
+              .select("status")
+              .where("id", "=", firstRunId)
+              .executeTakeFirstOrThrow()
+          ).status;
+        if (long) {
+          // oxlint-disable-next-line opensteer/no-real-time-wait-in-tests -- Measures the real engine deadline; fake clocks
+          await delay(qualificationHoldMs[engine.driverKind] ?? 0);
+          expect(await runStatus(), "The held Run ended before its answer").toBe("running");
+        } else {
+          await vi.waitFor(
+            async () =>
+              expect(await runStatus(), "The hold limit did not stop the Run").toBe("interrupted"),
+            { timeout: shortRequestHoldMs + 60_000, interval: 100 },
+          );
+        }
+        const toolEvent = (data: unknown) =>
+          data as { callId?: string; isError?: boolean; tool?: { name?: string } };
+        const held = await database
           .selectFrom("workspaceEvents")
-          .select("data")
-          .where("runId", "=", first.runId)
-          .where("type", "=", "tool.started")
+          .select(["type", "data"])
+          .where("runId", "=", firstRunId)
           .orderBy("sequence", "asc")
           .execute();
-        const askedAt = toolSteps.findIndex(({ data }) =>
-          JSON.stringify(data).includes("browser_profile_request"),
+        const heldCall = held.find(
+          ({ type, data }) =>
+            type === "tool.started" && toolEvent(data).tool?.name === "browser_profile_request",
         );
-        expect(askedAt, "The engine did not request the profile").toBeGreaterThanOrEqual(0);
+        const sinceOpened = held.slice(held.findIndex(({ type }) => type === "request.opened"));
+        const returned = sinceOpened.findIndex(
+          ({ type, data }) =>
+            type === "tool.completed" &&
+            toolEvent(data).callId === toolEvent(heldCall?.data).callId,
+        );
+        const during = returned < 0 ? sinceOpened : sinceOpened.slice(0, returned);
+        // A call issued in the same step as the Request may still run; a tool starting after
+        // one has finished can only come from a new step, which the hold must prevent.
+        const finished = during.findIndex(({ type }) => type === "tool.completed");
         expect(
-          toolSteps
-            .slice(askedAt + 1)
-            .some(({ data }) => JSON.stringify(data).includes("thread_list")),
-          "The engine did not complete independent work after requesting the profile",
-        ).toBe(true);
+          finished < 0 ? [] : during.slice(finished).filter(({ type }) => type === "tool.started"),
+          "The engine took another step while the Request was held",
+        ).toEqual([]);
+        // Access ends before the interrupt lands, so an engine may try one more step. It gets nothing.
+        const windDown = returned < 0 ? [] : sinceOpened.slice(returned + 1);
+        const attempted = new Set(
+          windDown
+            .filter(
+              ({ type, data }) =>
+                type === "tool.started" && toolEvent(data).tool?.name === "thread_list",
+            )
+            .map(({ data }) => toolEvent(data).callId),
+        );
+        expect(
+          windDown.filter(
+            ({ type, data }) =>
+              type === "tool.completed" &&
+              attempted.has(toolEvent(data).callId) &&
+              toolEvent(data).isError !== true,
+          ),
+          "A tool reached the Host after the Run's access ended",
+        ).toEqual([]);
         const before = await database
           .selectFrom("providerSessions")
           .select("providerSessionReference")
@@ -283,8 +258,9 @@ describe("engine qualification", () => {
           .where("active", "=", true)
           .executeTakeFirstOrThrow();
         expect(before.providerSessionReference).toBeTruthy();
-        const opened = await active.host.store.requests.get(requests[0]!.id);
+        const opened = await active.host.store.requests.get(request.id);
         if (!opened) throw new Error("The browser profile Request disappeared");
+        expect(opened.status, "The Request did not outlive the hold").toBe("pending");
         await active.host.store.requests.resolveBrowserRequest({
           requestId: opened.id,
           resolvedBy: opened.requestedBy,
@@ -293,43 +269,58 @@ describe("engine qualification", () => {
             value: { decision: "fulfilled", createProfile: { name: "Chosen Receipts" } },
           },
         });
-        const continued = await vi.waitFor(
-          async () => {
-            const run = await database
-              .selectFrom("runs")
-              .select(["id", "status"])
-              .where("threadId", "=", threadId)
-              .where("id", background ? "=" : "!=", first.runId)
-              .orderBy("runOrdinal", "desc")
-              .executeTakeFirst();
-            expect(run, "The Request did not create a continuation Run").toBeDefined();
-            expect(run!.status, "The Request continuation did not complete").toBe("completed");
-            return run!;
-          },
-          { timeout: 180_000, interval: 100 },
-        );
-        if (background) {
-          const input = await database
-            .selectFrom("threadInputs")
-            .select(["runId", "state"])
-            .where("threadId", "=", threadId)
-            .where("idempotencyKey", "like", "request-continuation:%")
-            .execute();
-          expect(input).toEqual([{ runId: first.runId, state: "delivered" }]);
-        }
-        const usage = await database
-          .selectFrom("workspaceEvents")
-          .select("data")
-          .where("runId", "=", first.runId)
-          .where("type", "=", "run.usage")
+        const stalled = async (error: unknown) => {
+          const evidence = process.env.OPENSTEER_ENGINE_E2E_OUTPUT;
+          if (evidence) {
+            await mkdir(evidence, { recursive: true });
+            await writeFile(
+              join(evidence, `${engine.label.replaceAll(" ", "-")}-${hold}-stalled.json`),
+              JSON.stringify(
+                await database
+                  .selectFrom("workspaceEvents")
+                  .select(["sequence", "type", "createdAt", "data"])
+                  .where("threadId", "=", threadId)
+                  .orderBy("sequence", "asc")
+                  .execute(),
+              ),
+            );
+          }
+          throw error;
+        };
+        const answered = await vi
+          .waitFor(
+            async () => {
+              const run = await database
+                .selectFrom("runs")
+                .select(["id", "status"])
+                .where("threadId", "=", threadId)
+                .$if(long, (query) => query.where("id", "=", firstRunId))
+                .$if(!long, (query) => query.where("id", "!=", firstRunId))
+                .orderBy("runOrdinal", "desc")
+                .executeTakeFirst();
+              expect(run, "The answer did not reach a Run").toBeDefined();
+              expect(run!.status, "The answered Run did not complete").toBe("completed");
+              return run!;
+            },
+            { timeout: 180_000, interval: 100 },
+          )
+          .catch(stalled);
+        const delivery = await database
+          .selectFrom("requestContinuations")
+          .select("status")
+          .where("requestId", "=", request.id)
+          .executeTakeFirstOrThrow();
+        expect(delivery.status).toBe(long ? "delivered" : "queued");
+        const runs = await database
+          .selectFrom("runs")
+          .select("id")
+          .where("threadId", "=", threadId)
           .execute();
-        console.info(
-          `${engine.label}: pending Request first Run usage=${JSON.stringify(usage.map(({ data }) => data))}`,
-        );
+        expect(runs, "The answer was delivered twice").toHaveLength(long ? 1 : 2);
         const replies = await database
           .selectFrom("messages")
           .select("content")
-          .where("runId", "=", continued.id)
+          .where("runId", "=", answered.id)
           .where("kind", "=", "assistant")
           .execute();
         expect(JSON.stringify(replies)).toContain(nonce);
@@ -344,28 +335,16 @@ describe("engine qualification", () => {
         const evidence = process.env.OPENSTEER_ENGINE_E2E_OUTPUT;
         if (evidence) {
           await mkdir(evidence, { recursive: true });
-          const continuedUsage = await database
-            .selectFrom("workspaceEvents")
-            .select("data")
-            .where("runId", "=", continued.id)
-            .where("type", "=", "run.usage")
-            .execute();
           await writeFile(
-            join(evidence, `${engine.driverKind}-${mode}.json`),
+            join(evidence, `${engine.label.replaceAll(" ", "-")}-${hold}-request-hold.json`),
             JSON.stringify(
               {
                 engine: engine.label,
-                firstRunUsage: usage.map(({ data }) => data),
-                continuationUsage: continuedUsage.map(({ data }) => data),
+                model: model.modelId,
+                hold,
+                delivery: delivery.status,
+                runs: runs.length,
                 sessionRetained: after.providerSessionReference === before.providerSessionReference,
-                sessionBindings: active
-                  .wire!.frames.filter(
-                    ({ direction, frame }) =>
-                      direction === "runner" &&
-                      frame.type === "runner.session-bound" &&
-                      frame.runId === continued.id,
-                  )
-                  .map(({ frame }) => ({ type: frame.type, engineStart: frame.engineStart })),
               },
               null,
               2,
@@ -374,6 +353,80 @@ describe("engine qualification", () => {
         }
       },
     );
+
+    it("reaches the agent with the person's message during a hold, leaving the Request open", async () => {
+      if (!databaseUrl) throw new Error("Run the engine suite through pnpm test:engines");
+      stack = await startVerticalStack({
+        catalogTimeoutMs: 180_000,
+        databaseUrl,
+        harnessInstance: qualificationAccount(engine),
+        harnesses: createHarnessRegistry(
+          parseAgentExecutionConfig(process.env).harnessExecutables,
+          {
+            nodeExecutable: process.execPath,
+            runtimeCacheDirectory: runtimeCacheDirectory!,
+          },
+        ),
+        harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
+        runTimeoutMs: 180_000,
+      }).catch((error: unknown) => {
+        throw qualificationFailure(engine, error);
+      });
+      const active = stack;
+      const model = active.catalog.models.find((candidate) => candidate.isDefault);
+      if (!model) throw new Error("The engine has no default model");
+      const threadId = await active.createThread({
+        home: true,
+        modelSelection: ModelSelectionSchema.parse({
+          modelId: model.modelId,
+          options: {},
+          providerId: model.providerId,
+        }),
+        title: `${engine.label} message during a hold`,
+        workspaceId: active.mainWorkspaceId,
+      });
+      const first = await active.queueMessage({
+        text: "Request a new browser profile named Receipts with browser_profile_request for this expense task. Do not open a browser or sign in.",
+        threadId,
+      });
+      if (!first.runId) throw new Error("The engine's first Run was not queued");
+      const firstRunId = first.runId;
+      const database = active.host.store.database;
+      const request = await vi.waitFor(
+        async () => {
+          const rows = await database
+            .selectFrom("requests")
+            .select(["id", "status"])
+            .where("originatingRunId", "=", firstRunId)
+            .execute();
+          expect(rows, "The engine did not open the Request").toHaveLength(1);
+          return rows[0]!;
+        },
+        { timeout: 180_000, interval: 100 },
+      );
+      const marker = `MESSAGE-${randomUUID()}`;
+      await active.queueMessage({
+        text: `New instruction from me: reply with exactly ${marker} and nothing else.`,
+        threadId,
+      });
+      await vi.waitFor(
+        async () => {
+          const replies = await database
+            .selectFrom("messages")
+            .select("content")
+            .where("threadId", "=", threadId)
+            .where("kind", "=", "assistant")
+            .execute();
+          expect(
+            JSON.stringify(replies),
+            "The person's message did not reach the agent during the hold",
+          ).toContain(marker);
+        },
+        { timeout: 180_000, interval: 250 },
+      );
+      const after = await active.host.store.requests.get(request.id);
+      expect(after?.status, "A message must never answer a Request").toBe("pending");
+    });
 
     it("contributes the person's Chat follow-ups to the reply under way", async () => {
       if (!databaseUrl) throw new Error("Run the engine suite through pnpm test:engines");

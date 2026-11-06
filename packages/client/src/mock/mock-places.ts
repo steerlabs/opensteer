@@ -1698,7 +1698,7 @@ export class MockPlaceWorld {
               : {
                   kind: "phone" as const,
                   machineId: place.destination.machineId,
-                  display: place.destination.display,
+                  display: "main",
                 },
         );
         if (identity.kind !== "browser") {

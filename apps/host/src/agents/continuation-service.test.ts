@@ -89,6 +89,33 @@ describe("ContinuationService", () => {
     expect(fixture.enqueueThreadInput).not.toHaveBeenCalled();
     expect(fixture.recordContinuationAttempt).not.toHaveBeenCalled();
   });
+  it("reads a sign-in's publication only once its Request is settled", async () => {
+    const answered = fulfilledRequest("browser.access");
+    const pending = RequestSchema.parse({
+      ...answered,
+      kind: "browser.password-sign-in",
+      payload: {
+        kind: "browser.password-sign-in",
+        computerName: "Test Mac",
+        runnerId: createId("runner"),
+        expiresAt: now,
+        operationId: crypto.randomUUID(),
+        reason: "Read email",
+        sessionId: createBrowserSessionId(),
+        site: "https://example.com",
+      },
+      resolvedAt: null,
+      resolvedBy: null,
+      response: null,
+      status: "pending",
+    });
+    const passwordSignIn = vi.fn(() => ({ publishing: false as const, loginRef: undefined }));
+    const fixture = makeService([], { passwordSignIn });
+    await expect(fixture.service.outcome(pending)).resolves.toBeNull();
+    expect(passwordSignIn).not.toHaveBeenCalled();
+    await fixture.service.close();
+  });
+
   it("batches a Run's outcomes, retaining siblings when one outcome cannot be rendered", async () => {
     const first = fulfilledRequest("browser.access");
     const second = {
@@ -756,11 +783,12 @@ function makeService(
     ...(options.passwordSignIn ? { passwordSignIn: options.passwordSignIn } : {}),
     onError: (error) => errors.push(error),
     requests: {
+      get: async (id: Request["id"]) => requests.find((request) => request.id === id) ?? null,
       listPendingContinuations,
       recordContinuationAttempt,
     } as unknown as Pick<
       OpensteerStore["requests"],
-      "listPendingContinuations" | "recordContinuationAttempt"
+      "listPendingContinuations" | "recordContinuationAttempt" | "get"
     >,
   });
   return {

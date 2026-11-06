@@ -9,7 +9,7 @@ import {
   selectedDeploymentFrom,
 } from "../../desktop/desktop-deployment-selection.js";
 import { useMediaQuery } from "../../ui-utils.js";
-import { useShell, type ShellContext } from "../app-shell.js";
+import { ShellContext, useShell } from "../app-shell.js";
 import { Icon } from "../icon.js";
 import { PageTopbar } from "../page-header.js";
 import {
@@ -236,7 +236,9 @@ export function SettingsShell() {
         inert={mobile && navigationOpen}
         aria-hidden={mobile && navigationOpen}
       >
-        <Outlet context={context} />
+        <ShellContext value={context}>
+          <Outlet context={context} />
+        </ShellContext>
       </div>
     </div>
   );

@@ -552,6 +552,8 @@ interface RunnerTable {
   enrolledAt: Timestamp;
   lastSeenAt: NullableTimestamp;
   revokedAt: NullableTimestamp;
+  /** An Agent Phone's tab: open from its first use until its owner closes it. */
+  tabOpenedAt: NullableTimestamp;
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }
@@ -1123,7 +1125,7 @@ interface RequestCallJoinTable {
 
 interface RequestContinuationTable {
   requestId: RequestId;
-  status: "waiting" | "queued" | "undeliverable";
+  status: "waiting" | "queued" | "undeliverable" | "delivered";
   attemptedAt: NullableTimestamp;
   reason: string | null;
   createdAt: Timestamp;
@@ -2235,8 +2237,6 @@ export interface DatabaseSchema {
     ownerUserId: UserId;
     createdBy: UserId;
     status: "pending" | "ready" | "removing" | "removal-failed";
-    bindings: JsonColumn<readonly import("@opensteer/core").SpecialistBinding[]>;
-    autoBind: Generated<boolean>;
     createdAt: Timestamp;
     updatedAt: Timestamp;
   };

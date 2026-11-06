@@ -596,17 +596,25 @@ vi.mock("./composer-bar.js", () => ({
   ComposerGlyph: () => null,
   composerLaneHeight: 36,
 }));
+type MenuOption = {
+  readonly disabled?: boolean;
+  readonly id: string;
+  readonly label: string;
+  readonly onPress: () => void;
+};
 vi.mock("./composer-menu.js", () => ({
   NativeMenu: (props: {
-    readonly options: readonly {
-      readonly disabled?: boolean;
-      readonly id: string;
-      readonly label: string;
-      readonly onPress: () => void;
-    }[];
+    readonly accessibilityLabel: string;
+    readonly children?: ReactNode;
+    readonly options: readonly (MenuOption | readonly MenuOption[])[];
+    readonly title?: string;
+    readonly triggerRef?: Ref<HTMLDivElement>;
   }) => (
     <div aria-label="Thread actions">
-      {props.options.map((option) => (
+      <div aria-label={props.accessibilityLabel} ref={props.triggerRef}>
+        {props.children}
+      </div>
+      {props.options.flat().map((option) => (
         <button disabled={option.disabled} key={option.id} onClick={option.onPress}>
           {option.label}
         </button>
@@ -2483,6 +2491,36 @@ describe("a conversation's own title in its bar", () => {
     expect(hasButton(container, "Retry")).toBe(false);
   });
 
+  // Ways the conversation's actions can go missing: Chat's title answers a tap
+  // with nothing, or moving them to the title strands them beside a page,
+  // where there is no title; or they appear twice where there is one.
+  it("offers Find and the link once: in Chat's title, and in the composer beside a page", async () => {
+    const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: chatId }));
+    const chat = await mount(host, chatId, { header: true });
+    const named = (name: string) =>
+      [...chat.container.querySelectorAll("button")].filter(
+        (candidate) => candidate.textContent === name,
+      );
+    expect(named("Find in conversation…")).toHaveLength(1);
+    expect(named("Copy thread link")).toHaveLength(1);
+    expect(hasButton(chat.container, "Rename…")).toBe(false);
+    expect(hasButton(chat.container, "Mark Done")).toBe(false);
+
+    await press(chat.container, "Find in conversation…");
+    expect(harness.navigate).toHaveBeenCalledWith("ThreadFind", { deploymentId, threadId: chatId });
+    await press(chat.container, "Copy thread link");
+    const { setStringAsync } = await import("expo-clipboard");
+    expect(setStringAsync).toHaveBeenCalledWith(expect.stringContaining(chatId));
+
+    const beside = await mount(
+      fakeHost(snapshotFor({ entries: [], run: null, threadId: workId })),
+      workId,
+      { withPage: { page: null } },
+    );
+    expect(hasButton(beside.container, "Find in conversation…")).toBe(true);
+    expect(hasButton(beside.container, "Copy thread link")).toBe(true);
+  });
+
   it("gives a lost connection no line of its own on a docked Request", async () => {
     const runId = createId("run");
     const host = fakeHost({
@@ -3042,10 +3080,9 @@ describe("a task", () => {
 });
 
 // Ways a finished task's title can fail: the bar drops "Finished" while the
-// drawn transcript is a window from before the ending, and the title has no
-// menu either — nothing on screen, nor its accessible name, says the task
-// ended; or the bar keeps a second status line beside a menu that already
-// says it.
+// drawn transcript is a window from before the ending, and nothing on screen,
+// nor its accessible name, says the task ended; or the bar keeps a second
+// status line beside a menu that already says it.
 describe("a finished task's title", () => {
   it.each([
     ["a menu to mark Done", false, false],
@@ -3102,8 +3139,8 @@ describe("a finished task's title", () => {
       // The window is from before the ending, so the transcript does not say it.
       expect(text(container)).not.toContain("Returned to");
       const bar = container.querySelector("header")!;
-      const trigger = bar.querySelector('[aria-label$="Task actions"]');
-      expect(trigger?.getAttribute("aria-label")).toMatch(/, Finished\. Task actions$/);
+      const trigger = bar.querySelector('[aria-label$="Actions"]');
+      expect(trigger?.getAttribute("aria-label")).toMatch(/, Finished\. Actions$/);
       expect(bar.textContent).not.toContain("Finished");
       expect(hasButton(container, "Mark Done")).toBe(true);
       expect(hasButton(container, "Rename…")).toBe(capable);
@@ -3232,7 +3269,7 @@ describe("task marks on a phone", () => {
       await press(container, "Change icon…");
       expect(container.querySelector('[aria-label="Search icons"]')).not.toBeNull();
       const focus = (await import("react-native")).AccessibilityInfo.setAccessibilityFocus;
-      const opener = container.querySelector('[aria-label$="Task actions"]');
+      const opener = container.querySelector('[aria-label$="Actions"]');
       vi.mocked(focus).mockClear();
       await press(container, "Plane");
       await settle();
@@ -4010,8 +4047,6 @@ it("offers voice on Chat's first message but not on a new task composer", async 
           deploymentId={deploymentId}
           hostClient={host.client}
           onHomeReady={vi.fn()}
-          onQuoteTaken={vi.fn()}
-          quote={null}
           userId={host.client.getSnapshot().user!.id}
           workspaceId={host.client.getSnapshot().workspaces[0]!.id}
         />
@@ -4105,6 +4140,7 @@ it("hands a new task to its transcript, with the page Ask started it from, witho
       <NewTaskPane
         autoFocus={false}
         deploymentId={deploymentId}
+        draftId={workspaceId}
         hostClient={host.client}
         onStarted={onStarted}
         underHeader={false}
@@ -4168,6 +4204,7 @@ it("keeps New task creation and message keys when Ask is left after a lost creat
     <NewTaskPane
       autoFocus={false}
       deploymentId={deploymentId}
+      draftId={workspaceId}
       hostClient={host.client}
       onStarted={() => false}
       underHeader={false}
@@ -4219,7 +4256,7 @@ describe("a new task Ask started", () => {
     document.body.append(container);
     const root = createRoot(container);
     roots.push(root);
-    const params = (route ?? { deploymentId, workspaceId }) as Parameters<
+    const params = { deploymentId, draftId: workspaceId, workspaceId, ...route } as Parameters<
       typeof NewTaskScreen
     >[0]["route"]["params"];
     await act(async () => root.render(<NewTaskScreen route={{ params }} />));
@@ -4249,6 +4286,86 @@ describe("a new task Ask started", () => {
     const third = await open(files);
     expect(field(third.container)).toBe("Compare these");
     expect(text(third.container)).not.toContain("Research page");
+  });
+
+  it("reopens each of several drafts as it was left, and an unknown one blank", async () => {
+    const files = new MemoryPrivateFilesystem();
+    const first = await open(files, { draftId: "draft-first" });
+    await type(first.container, "Message", "First words");
+    await act(async () => first.root.render(<div />));
+    const second = await open(files, { draftId: "draft-second" });
+    expect(field(second.container)).toBe("");
+    await type(second.container, "Message", "Second words");
+    await act(() =>
+      second.drafts.writeDraftPage(
+        deploymentId,
+        userId,
+        newTaskDraftKey("draft-second"),
+        included(),
+      ),
+    );
+    await act(async () => second.root.render(<div />));
+
+    const again = await open(files, { draftId: "draft-first" });
+    expect(field(again.container)).toBe("First words");
+    expect(text(again.container)).not.toContain("Research page");
+    expect(
+      again.drafts
+        .readDraftSummary(deploymentId, userId)
+        .newTasks.map((draft) => [draft.draftId, draft.workspaceId]),
+    ).toEqual(
+      expect.arrayContaining([
+        ["draft-first", workspaceId],
+        ["draft-second", workspaceId],
+      ]),
+    );
+    await act(async () => again.root.render(<div />));
+    const unknown = await open(files, { draftId: "draft-gone" });
+    expect(field(unknown.container)).toBe("");
+    expect(text(unknown.container)).toContain("What should this task take care of?");
+  });
+
+  it("opens a draft whose Workspace is gone, with its words kept and Send held", async () => {
+    const files = new MemoryPrivateFilesystem();
+    const gone = "wsp_00000000-0000-4000-8000-0000000000ff";
+    const seeded = createThreadDraftStore({
+      filePath: "/private/new-task.json",
+      now: () => new Date(at),
+      privateFiles: files,
+    });
+    await seeded.writeDraft(deploymentId, userId, newTaskDraftKey("draft-gone"), "Kept words");
+    const { container, drafts } = await open(files, { draftId: "draft-gone", workspaceId: gone });
+    expect(field(container)).toBe("Kept words");
+    expect(
+      container.querySelector<HTMLButtonElement>('[aria-label="Send message"]')?.disabled,
+    ).toBe(true);
+    expect(drafts.readDraft(deploymentId, userId, newTaskDraftKey("draft-gone"))?.text).toBe(
+      "Kept words",
+    );
+  });
+
+  it("gives a refused message back to the draft it came from, under new keys next time", async () => {
+    const files = new MemoryPrivateFilesystem();
+    const { container, drafts } = await open(files, { draftId: "draft-refused" });
+    const key = newTaskDraftKey("draft-refused");
+    const createThread = vi.fn().mockRejectedValue(
+      new HostClientRequestError({
+        code: "workspace_not_ready",
+        message: "Not ready.",
+        status: 409,
+      }),
+    );
+    Object.assign(harness.activeHost!, { createThread });
+    await type(container, "Message", "Refused words");
+    await press(container, "Send message");
+    expect(createThread).toHaveBeenCalledOnce();
+    await settle();
+    expect(drafts.readPending(deploymentId, userId, key)).toBeNull();
+    expect(drafts.readDraft(deploymentId, userId, key)).toMatchObject({
+      text: "Refused words",
+      workspaceId,
+    });
+    expect(field(container)).toBe("Refused words");
   });
 
   it("never shows another reader's Ask page, nor one a route still carries", async () => {
@@ -4452,7 +4569,7 @@ describe("the Run's live place over the composer", () => {
         expect.objectContaining({
           params: expect.objectContaining({
             machineId: macMini!.id,
-            computerSessionId: session.sessionId,
+            ...(kind === "app" ? { computerSessionId: session.sessionId } : { phone: true }),
           }),
         }),
       );

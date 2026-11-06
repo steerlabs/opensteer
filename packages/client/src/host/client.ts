@@ -480,8 +480,8 @@ export interface RequestReceiptEntry {
   succeeded?: boolean;
   title: string;
   /**
-   * When the Run that asked began waiting on the answer: a live Request holds
-   * it from when it opened. Absent for a durable one, which leaves it working.
+   * When a native harness Request began holding its Run. Durable tool-call
+   * holds are not measured here.
    */
   waitedSince?: string;
 }
@@ -920,6 +920,8 @@ export interface HostSnapshot {
   transcriptWindows: Record<string, TranscriptWindow>;
   transcripts: Record<string, TranscriptEntry[]>;
   user: AuthenticatedUser | null;
+  /** Recovery can replace the session with no other visible change, ending what was bound to it. */
+  sessionId?: string;
   /** Host-declared deployment capability; false for Personal deployments. */
   workspaceSharingAvailable: boolean;
   workspaceWindow: DurableWindow;
@@ -1084,6 +1086,12 @@ export interface HostClient {
   /** A Host without a network supplies its own; every other client reaches updates by route. */
   readonly desktopUpdates?: DesktopUpdates;
   readonly browserPasskeys?: BrowserPasskeys;
+  /** Popups this client's own input opens from one tab, as each one opens. */
+  readonly subscribeBrowserPopups?: (
+    sessionId: string,
+    surfaceId: string,
+    listener: (popupId: string) => void,
+  ) => () => void;
   readonly browserHistory: BrowserHistoryClient;
   readonly browserPreferences: BrowserPreferences;
   retainComputerView(
@@ -1099,13 +1107,17 @@ export interface HostClient {
   openComputerView(
     machineId: string,
     target: ComputerViewTarget,
-    options?: ComputerViewMutationOptions,
+    options?: ComputerViewMutationOptions & {
+      /** False when nobody pressed anything: a phone wakes only for a person's Open. */
+      readonly wake?: boolean;
+    },
   ): Promise<ComputerView>;
   closeComputerView(
     viewId: string,
     generation: number,
     options?: ComputerViewMutationOptions,
   ): Promise<ComputerView>;
+  closePhoneTab(machineId: string): Promise<void>;
   renewComputerView(
     viewId: string,
     generation: number,

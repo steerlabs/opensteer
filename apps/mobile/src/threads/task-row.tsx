@@ -49,6 +49,8 @@ export const taskTextInset = space[12] + markColumn + space[12];
 export type TaskShelf = "open" | "done";
 
 export interface TaskRowProps {
+  /** The reader has an unsent reply here. */
+  readonly drafted?: boolean;
   readonly onOpen: (threadId: string) => void;
   readonly onSetDone: (row: TaskRow, done: boolean) => void;
   readonly row: TaskRow;
@@ -72,7 +74,9 @@ export const TaskRowView = memo(function TaskRowView(props: TaskRowProps): React
     <Pressable
       accessibilityActions={move === null ? [] : [{ label: move.label, name: "move" }]}
       accessibilityHint="Opens this task"
-      accessibilityLabel={`${taskRowLabel(row)}${row.unread && needsYou ? ", unread" : ""}`}
+      accessibilityLabel={`${taskRowLabel(row)}${row.unread && needsYou ? ", unread" : ""}${
+        props.drafted === true ? `, ${draftPenLabel}` : ""
+      }`}
       accessibilityRole="button"
       accessibilityState={{ selected: props.selected }}
       onAccessibilityAction={(event: AccessibilityActionEvent) => {
@@ -109,7 +113,7 @@ export const TaskRowView = memo(function TaskRowView(props: TaskRowProps): React
       >
         {row.title}
       </AppText>
-      <TaskRowState row={row} shelf={props.shelf} time={time} />
+      <TaskRowState drafted={props.drafted === true} row={row} shelf={props.shelf} time={time} />
     </Pressable>
   );
 
@@ -145,8 +149,11 @@ export const TaskRowView = memo(function TaskRowView(props: TaskRowProps): React
  * State in its own words; unread is never used as task identity. A task with
  * nothing to say draws nothing, so its title keeps the row's width.
  */
-export function TaskRowState(props: Pick<TaskRowProps, "row" | "shelf" | "time">): ReactNode {
+export function TaskRowState(
+  props: Pick<TaskRowProps, "drafted" | "row" | "shelf" | "time">,
+): ReactNode {
   const { row, shelf, time } = props;
+  const drafted = props.drafted === true;
   const reducedMotion = useReducedMotion();
   const tone =
     row.tone === "needs-you" ? (
@@ -168,10 +175,11 @@ export function TaskRowState(props: Pick<TaskRowProps, "row" | "shelf" | "time">
     ) : null;
   const when =
     time !== null && (row.tone === "finished" || shelf === "done") ? <Time text={time} /> : null;
-  if (tone === null && !row.unread && when === null) return null;
+  if (tone === null && !drafted && !row.unread && when === null) return null;
   return (
     <View style={styles.state}>
       {tone}
+      {drafted ? <DraftPen /> : null}
       {row.unread ? <UnreadDot /> : null}
       {when}
     </View>
@@ -191,6 +199,13 @@ export function NeedsYouTag(): ReactNode {
 
 export function UnreadDot(): ReactNode {
   return <View style={styles.unread} />;
+}
+
+export const draftPenLabel = "unsent reply";
+
+/** Something written here and not sent: quieter than any state it sits beside. */
+export function DraftPen(): ReactNode {
+  return <Symbol name="pencil" size={13} tint={color.muted} />;
 }
 
 /** Unread work and questions read bright; finished work the reader has seen steps back. */
@@ -223,6 +238,7 @@ function Time(props: { readonly text: string }): ReactNode {
  */
 function sameTaskRowProps(left: TaskRowProps, right: TaskRowProps): boolean {
   return (
+    left.drafted === right.drafted &&
     left.onOpen === right.onOpen &&
     left.onSetDone === right.onSetDone &&
     left.selected === right.selected &&

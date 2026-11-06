@@ -19,6 +19,7 @@ export function browserViewerMessage(
   passkeys?: "native" | "notice",
   consumerToken?: string,
   popups = false,
+  popupFollow = false,
 ): BrowserServerMessage | null {
   if (
     !popups &&
@@ -51,6 +52,7 @@ export function browserViewerMessage(
           : baseline;
     if (popups) message = { ...message, popupVersion: 1 };
     if (passkeys) message = { ...message, passkeys, passkeyConsumerToken: consumerToken };
+    if (popupFollow) message = { ...message, consumerToken };
   }
   if (message.type !== "browser.snapshot" && message.type !== "browser.surfaces.changed")
     return message;

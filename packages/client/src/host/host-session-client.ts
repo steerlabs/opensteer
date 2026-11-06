@@ -24,6 +24,7 @@ import { computerViewMethods } from "./computer-views.js";
 import { OwnerViewRecords } from "./owner-view-records.js";
 import { ViewerScope, viewerScopeOf } from "./viewer-scope.js";
 import {
+  RunnerIdSchema,
   AgentEventViewSchema,
   BrowserSurfaceIdSchema,
   CHAT_THREAD_TITLE,
@@ -547,6 +548,9 @@ export class HttpHostClient {
       this.#browserPopups.receive(sessionId, message);
       this.#browserCursor.receive(sessionId, message);
       this.browserPasskeys.receive(sessionId, surfaceId, message);
+      if (message.type === "browser.popupFollow.opened")
+        for (const listener of this.#browserPopupFollowers.get(`${sessionId}:${surfaceId}`) ?? [])
+          listener(message.surfaceId);
       if (message.type === "browser.snapshot") {
         this.#browserPopups.negotiate(
           sessionId,
@@ -634,6 +638,7 @@ export class HttpHostClient {
     if (mode === "watch") url.searchParams.set("mode", mode);
     const passkeys = this.browserPasskeys.optIn(this.#capabilities);
     if (mode === "control" && passkeys) url.searchParams.set("passkeys", passkeys);
+    if (mode === "control") url.searchParams.set("popupFollow", "1");
     url.searchParams.set("editing", "2");
     if (
       mode === "control" &&
@@ -644,6 +649,21 @@ export class HttpHostClient {
       url.searchParams.set("popups", "1");
     return this.#webSocketFactory(url.toString().replace(/^http/, "ws"));
   }
+  readonly #browserPopupFollowers = new Map<string, Set<(popupId: string) => void>>();
+  readonly subscribeBrowserPopups = (
+    sessionId: string,
+    surfaceId: string,
+    listener: (popupId: string) => void,
+  ): (() => void) => {
+    const key = `${sessionId}:${surfaceId}`;
+    const listeners = this.#browserPopupFollowers.get(key) ?? new Set();
+    listeners.add(listener);
+    this.#browserPopupFollowers.set(key, listeners);
+    return () => {
+      listeners.delete(listener);
+      if (!listeners.size) this.#browserPopupFollowers.delete(key);
+    };
+  };
   readonly connectComputerDisplay = (
     source: NativeViewerSource,
     options?: { readonly editing?: 1 },
@@ -1249,7 +1269,7 @@ export class HttpHostClient {
     this.retainComputerView = views.retainComputerView;
     this.openComputerView = async (...args) => {
       const view = await views.openComputerView(...args);
-      if (view.target.kind === "phone" && view.state === "ready")
+      if (view.target.kind === "phone" && view.state === "ready" && args[2]?.wake !== false)
         sharedDisplayStreams(this).armAutoWake({
           kind: "owner-view",
           viewId: view.viewId,
@@ -1350,6 +1370,20 @@ export class HttpHostClient {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
   };
+
+  async closePhoneTab(machineId: string): Promise<void> {
+    await this.dispatch({
+      type: "phone.tab.close",
+      machineId: RunnerIdSchema.parse(machineId),
+      idempotencyKey: crypto.randomUUID(),
+    });
+    this.#update({
+      ...this.#snapshot,
+      machines: this.#snapshot.machines.map((machine) =>
+        machine.id === machineId ? { ...machine, tabOpenedAt: null } : machine,
+      ),
+    });
+  }
 
   async dispatch(command: HostApiCommandInput): Promise<HostApiCommandOutput> {
     const parsedCommand = hostApi["commands.dispatch"].payload.parse(command);
@@ -1791,7 +1825,7 @@ export class HttpHostClient {
     const view = unwrapRpcResult(
       await this.rpc["apps.view"]({ appId, theme }, signal ? { signal } : undefined),
     );
-    return { app: view.app, url: this.#url(view.path) };
+    return { app: view.app, url: view.entryUrl ?? this.#url(view.path) };
   }
 
   async getAttachment(attachmentId: string): Promise<Attachment> {
@@ -4317,6 +4351,7 @@ export class HttpHostClient {
       ),
       ownerName: payload.user.displayName,
       session: "authenticated",
+      ...(payload.sessionId ? { sessionId: payload.sessionId } : {}),
       sessionSurface: payload.sessionSurface ?? null,
       threads,
       transcriptWindows,

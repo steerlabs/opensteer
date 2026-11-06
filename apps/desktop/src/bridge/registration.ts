@@ -24,6 +24,7 @@ import {
   DesktopUpdateStateSchema,
   DisplayClientDiagnosticSchema,
   RealtimeFrameDiagnosticSchema,
+  RendererFailureDiagnosticSchema,
   DeploymentAccessSnapshotSchema,
   DesktopLocalExecutionStatusSchema,
   DesktopPasswordsStatusSchema,
@@ -237,6 +238,25 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
       options.log?.(name, { ...fields, issuePaths: issuePaths.join(";"), suppressed });
     } catch {
       /* Diagnostics must not affect the channel they describe. */
+    }
+  });
+  const admitRendererFailure = diagnosticBudget();
+  register(desktopBridgeChannels.reportRendererFailure, (event, envelope) => {
+    assertAuthorizedRenderer(context, event, envelope);
+    const { componentFrames, errorFrames, errorName } = RendererFailureDiagnosticSchema.parse(
+      envelope.input,
+    );
+    const suppressed = admitRendererFailure();
+    if (suppressed === null) return;
+    try {
+      options.log?.("desktop.renderer.failed", {
+        componentFrames: componentFrames.join(";"),
+        errorFrames: errorFrames.join(";"),
+        errorName,
+        suppressed,
+      });
+    } catch {
+      /* Diagnostics must not affect the page's recovery. */
     }
   });
   register(desktopBridgeChannels.getLocalVisibility, (event, envelope) => {

@@ -3,9 +3,9 @@ import { browserPlaceUnavailableReason, threadMark } from "@opensteer/client/hos
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useLocation } from "react-router";
 import type { ReactNode } from "react";
-import type { HostClient, PlaceItem } from "@opensteer/client/host";
+import type { HostClient, PlaceItem, WorkspaceSurfaceDestination } from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema, CHAT_THREAD_TITLE } from "@opensteer/core";
-import { useHostSelector, usePlaceList } from "@opensteer/client/react";
+import { useHostSelector, usePhoneTabView, usePlaceList } from "@opensteer/client/react";
 import { usePageVisible } from "../../ui-utils.js";
 import { PlaceBrowserView, type BrowserChromeSignIn } from "../browser/browser-view.js";
 import { ComputerWatchView } from "../computer-watch.js";
@@ -332,6 +332,17 @@ function SelectedPlace({
           leading={leading}
           trailing={trailing}
         />
+      ) : destination.kind === "phone" ? (
+        <PhoneTab
+          destination={destination}
+          hostClient={hostClient}
+          hostConnected={hostConnected}
+          inFront={pageVisible}
+          leading={leading}
+          marks={marks}
+          place={live}
+          trailing={trailing}
+        />
       ) : destination.source?.kind === "owner-view" ? (
         <OwnerView
           destination={destination}
@@ -357,7 +368,7 @@ function SelectedPlace({
       ) : (
         <ComputerWatchView
           app={place?.icon.kind === "app" ? place.icon.app : null}
-          appKey={destination.kind === "app" ? destination.appKey : null}
+          appKey={destination.appKey}
           marks={marks}
           hostClient={hostClient}
           hostConnected={hostConnected}
@@ -379,6 +390,63 @@ function SelectedPlace({
  * conversation, which carries no history state of its own: the opening's id,
  * the place it was opened from and any link it opens are read once, as it opens.
  */
+/** A phone's one tab: the person's own view, with the task's Watch until that view is there. */
+function PhoneTab({
+  destination,
+  hostClient,
+  hostConnected,
+  inFront,
+  leading,
+  marks,
+  place,
+  trailing,
+}: {
+  readonly destination: Extract<WorkspaceSurfaceDestination, { kind: "phone" }>;
+  readonly hostClient: HostClient;
+  readonly hostConnected: boolean;
+  readonly inFront: boolean;
+  readonly leading: ReactNode;
+  readonly marks: ReactNode;
+  readonly place: PlaceItem | null;
+  readonly trailing: ReactNode;
+}) {
+  const opening = usePhoneTabView(hostClient, destination.machineId, inFront);
+  if (place?.task && !place.ownerView)
+    return (
+      <ComputerWatchView
+        app={null}
+        appKey={null}
+        marks={marks}
+        hostClient={hostClient}
+        hostConnected={hostConnected}
+        key={place.task.sessionId}
+        leading={leading}
+        machineId={destination.machineId}
+        machines={hostClient.getSnapshot().machines}
+        sessionId={place.task.sessionId}
+        trailing={trailing}
+        visible
+      />
+    );
+  const view = place?.ownerView ?? null;
+  return (
+    <OwnerView
+      destination={destination}
+      marks={marks}
+      hostClient={hostClient}
+      hostConnected={hostConnected}
+      key={view ? `${view.viewId}:${view.generation}` : "open"}
+      leading={leading}
+      opening={opening}
+      place={place}
+      source={
+        view ? { kind: "owner-view", viewId: view.viewId, generation: view.generation } : null
+      }
+      trailing={trailing}
+    />
+  );
+}
+
 function StartPageSlot({
   hostClient,
   leading,

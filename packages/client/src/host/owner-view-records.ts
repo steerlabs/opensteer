@@ -53,7 +53,12 @@ export class OwnerViewRecords {
 
   remove(
     machines: readonly MachineSummary[],
-    removal: { readonly machineId: string; readonly viewId: string; readonly generation: number },
+    removal: {
+      readonly machineId: string;
+      readonly viewId: string;
+      readonly generation: number;
+      readonly tabClosed?: true | undefined;
+    },
   ): readonly MachineSummary[] {
     if (!this.#gone(removal)) {
       this.#removed.delete(removal.viewId);
@@ -66,6 +71,7 @@ export class OwnerViewRecords {
         ? machine
         : {
             ...machine,
+            tabOpenedAt: removal.tabClosed ? null : machine.tabOpenedAt,
             computerUse: {
               ...machine.computerUse,
               ownerViews: (machine.computerUse.ownerViews ?? []).filter(

@@ -8,7 +8,7 @@ Choose the identity for each piece of work yourself. Ask the person which profil
 
 Main inherits the owner’s profiles: when the person supplies an existing owner profile’s ID, open that ID directly. A profile the Workspace that needs it can already use never needs a Request; asking for it is refused. Omit `workspaceId` to ask for this Workspace. From Main, `browser_profile_list` shows every profile the person has, but a Project can use only those granted to it: to give a Project one, pass the Project's `workspaceId`.
 
-The Request returns `pending`. Pending permits only independent work; do not poll, repeat or route around the Request. The continuation names the profile the person chose, which may differ from your suggestion: open that one, before anyone signs in. If they decline, carry on without it and do not ask again unless the person brings it up.
+The call waits for the person and returns the outcome, naming the profile they chose, which may differ from your suggestion: open that one, before anyone signs in. Pending gives no profile; do not poll, repeat or route around the Request. If they decline, carry on without it and do not ask again unless the person brings it up.
 
 ## Sessions
 
@@ -16,7 +16,7 @@ The Request returns `pending`. Pending permits only independent work; do not pol
 
 To continue work, reuse the session ID from earlier in the Thread or find it with `browser_session_list` (`attached` marks sessions this Run has open). `browser_tab_read` gives every saved tab's `profileId`, asleep tabs included; null is Guest. An ended session is not listed, but its profile still exists: open the profile again.
 
-Several Runs may share a session; `activeAttachmentCount` is not a lock. Sessions outlive Runs. Close a session only when asked or when it is deliberately disposable. Main sees the owner's sessions across Workspaces. Delegated Runs use the same tools within their inherited reach; a specialist's bindings may narrow what is listed.
+Several Runs may share a session; `activeAttachmentCount` is not a lock. Sessions outlive Runs. Close a session only when asked or when it is deliberately disposable. Main sees the owner's sessions across Workspaces. Delegated Runs and specialists use the same tools within their inherited reach.
 
 A profile's data stays on its computer, fixed at first open. `environmentId` picks the computer only for a profile that has never been opened, or for Guest; it defaults to this Run's machine, else the only connected browser. It never moves a profile or changes identity.
 

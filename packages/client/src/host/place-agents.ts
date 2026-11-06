@@ -1,3 +1,4 @@
+import { phoneTaskSession } from "./phone-tab.js";
 import { CHAT_THREAD_TITLE } from "@opensteer/core";
 import type { HostSnapshot } from "./client.js";
 import { threadInDirectory } from "./host-snapshot-selectors.js";
@@ -95,14 +96,18 @@ function actingWithoutIdentity(
     );
   }
   if (destination.kind === "opensteer-app") return false;
+  const machine = snapshot.machines.find(({ id }) => id === destination.machineId);
+  if (destination.kind === "phone") {
+    const session = machine ? phoneTaskSession(machine) : null;
+    return session !== null && !session.actor && session.actingDisplay === true;
+  }
   if (destination.source?.kind === "owner-view") return false;
-  const session = snapshot.machines
-    .find(({ id }) => id === destination.machineId)
-    ?.computerUse?.sessions.find(({ sessionId }) => sessionId === destination.computerSessionId);
-  if (session === undefined || session.actor) return false;
-  return destination.kind === "phone"
-    ? session.actingDisplay === true
-    : session.actingAppKeys.includes(destination.appKey);
+  const session = machine?.computerUse?.sessions.find(
+    ({ sessionId }) => sessionId === destination.computerSessionId,
+  );
+  return (
+    session !== undefined && !session.actor && session.actingAppKeys.includes(destination.appKey)
+  );
 }
 
 /** Whether two answers say the same thing, so a bar redraws only when who is here changes. */

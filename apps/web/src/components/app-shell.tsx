@@ -17,8 +17,18 @@ import { lastBrowsingChoice, openWorkspaceWebLink } from "./workspace/start-page
 import { DownloadFeedback } from "./browser/browser-downloads.js";
 import { provisionalThreadTitle } from "@opensteer/core";
 import { useNativeBrowserOverlay } from "./native-browser-overlays.js";
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { Outlet, useLocation, useNavigate, useOutletContext } from "react-router";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
+import { Outlet, useLocation, useNavigate } from "react-router";
 import {
   DesktopNotificationTargetSchema,
   DesktopUseComputerViewInputSchema,
@@ -62,7 +72,7 @@ import {
 } from "@opensteer/client/host";
 import { Dialog } from "./dialog.js";
 import { useActionReview, useHostSelector } from "@opensteer/client/react";
-import type { ComposerQuote, PendingSubmission } from "./composer.js";
+import type { PendingSubmission } from "./composer.js";
 import {
   claimFirstMessage,
   pendingScopeUnavailable,
@@ -112,31 +122,18 @@ import { useToast } from "./toast.js";
 
 export interface ShellContext {
   actionError: string | null;
-  /**
-   * Quotes an update into Chat's composer and goes there. It never sends, and
-   * never changes who the reply addresses: a report from Email is still
-   * answered to Opensteer, in Chat.
-   */
-  askOpensteerAbout: (quote: ComposerQuote) => void;
   clearActionError: () => void;
   /** Taken once, by Home's composer, so a later visit starts from its own draft. */
   clearHomeHandoff: () => void;
-  /**
-   * What was written into Home before Home existed. Creation replaces one
-   * composer with another; the words must not be what that costs.
-   */
-  homeDraft: string;
-  setHomeDraft: (draft: string) => void;
   /**
    * The Home conversation, once the Host has one. Null before the first valid
    * execution choice creates it — the Home route then shows a real empty
    * composer, not a Thread that does not exist.
    */
   homeThreadId: string | null;
-  /** Words or a quote handed to Home's composer from elsewhere, to land focused and unsent. */
+  /** Words handed to Home's composer from elsewhere, to land focused and unsent. */
   homeHandoff: {
     readonly key: number;
-    readonly quote?: ComposerQuote;
     readonly text: string;
   } | null;
   /**
@@ -263,10 +260,37 @@ export async function removeLocalComputer(input: {
   return input.bridge.stopLocalRunner({ deploymentId: input.deploymentId });
 }
 
-type ShellSharedContext = Omit<ShellContext, "snapshot">;
+export type ShellSharedContext = Omit<ShellContext, "snapshot">;
+
+export const ShellContext = createContext<ShellContext | null>(null);
 
 export function useShell(): ShellContext {
-  return useOutletContext<ShellContext>();
+  const shell = useContext(ShellContext);
+  if (!shell) throw new Error("The shell is not available here.");
+  return shell;
+}
+
+/**
+ * A subtree's view of the shell. Only a live scope observes the full streaming
+ * snapshot; the rest use the stable projection, so the surrounding shell and
+ * dialogs stay outside this subscription boundary.
+ */
+export function ShellScope({
+  children,
+  context,
+  live,
+}: {
+  readonly children: ReactNode;
+  readonly context: ShellSharedContext;
+  readonly live: boolean;
+}) {
+  const snapshot = useHostSelector(
+    context.hostClient,
+    selectHostSnapshot,
+    live ? Object.is : sameStableHostSnapshot,
+  );
+  const value = useMemo<ShellContext>(() => ({ ...context, snapshot }), [context, snapshot]);
+  return <ShellContext value={value}>{children}</ShellContext>;
 }
 
 const sidebarCollapsedKey = "opensteer.sidebar-collapsed";
@@ -423,7 +447,6 @@ export function AppShell({
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [homeHandoff, setHomeHandoff] = useState<ShellContext["homeHandoff"]>(null);
-  const [homeDraft, setHomeDraft] = useState("");
   const [sharingWorkspaceId, setSharingWorkspaceId] = useState<string | null>(null);
   const [newWorkspaceOpen, setNewWorkspaceOpen] = useState(false);
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
@@ -562,13 +585,6 @@ export function AppShell({
   const clearHomeHandoff = useCallback(() => setHomeHandoff(null), []);
   // Handing words to Chat changes only the conversation: the place stays.
   const { openConversation } = nav;
-  const askOpensteerAbout = useCallback(
-    (quote: ComposerQuote) => {
-      setHomeHandoff((current) => ({ key: (current?.key ?? 0) + 1, quote, text: "" }));
-      openConversation("/");
-    },
-    [openConversation],
-  );
   const writeInChat = useCallback(
     (text: string) => {
       setHomeHandoff((current) => ({ key: (current?.key ?? 0) + 1, text }));
@@ -912,7 +928,6 @@ export function AppShell({
   const context = useMemo<ShellSharedContext>(
     () => ({
       actionError,
-      askOpensteerAbout,
       clearActionError,
       clearHomeHandoff,
       createThreadAndSend,
@@ -921,11 +936,9 @@ export function AppShell({
       desktopBridge: localBridge,
       desktopDeployment,
       executionPreferences,
-      homeDraft,
       homeHandoff,
       homeThreadId: snapshot.homeThreadId,
       hostClient,
-      setHomeDraft,
       localExecutionStatus: viewedLocalExecutionStatus,
       localExecutionAction,
       localExecutionError,
@@ -945,7 +958,6 @@ export function AppShell({
     }),
     [
       actionError,
-      askOpensteerAbout,
       clearActionError,
       clearHomeHandoff,
       createThreadAndSend,
@@ -954,7 +966,6 @@ export function AppShell({
       desktopDeployment,
       executionPreferences,
       harnessAuthenticationEnvironmentIds,
-      homeDraft,
       homeHandoff,
       snapshot.homeThreadId,
       hostClient,
@@ -1004,7 +1015,7 @@ export function AppShell({
     [chromeEnvironment, hostClient, hostOnline],
   );
   const openShortcuts = useCallback(() => setShortcutsOpen(true), []);
-  const routes = <ShellRouteOutlet context={context} hostClient={hostClient} />;
+  const routes = <ShellRouteOutlet context={context} />;
 
   return (
     <VoiceContext value={voice}>
@@ -1120,7 +1131,7 @@ export function AppShell({
               it, because it outlives navigation and every mutating control on
               those pages is disabled while it runs. */}
                 <DeploymentOperationBanner bridge={localBridge} snapshot={deploymentAccess} />
-                <VoiceIsland ask={<VoiceAsk />} />
+                <VoiceIsland ask={<VoiceAsk shell={context} />} />
                 <SidebarChromeProvider
                   onRestore={toggleSidebar}
                   restoreVisible={!fullWindow && !mobileNavigation && sidebarCollapsed}
@@ -1324,30 +1335,14 @@ const selectBrowsersKnown = (snapshot: HostSnapshot) =>
 const selectDeploymentId = (snapshot: HostSnapshot) => snapshot.deploymentId;
 const selectUserId = (snapshot: HostSnapshot) => snapshot.user?.id ?? null;
 
-/**
- * Only the routed Thread trees — Home at the root and a Thread under
- * /threads — observe the full streaming snapshot. Other routes use the stable
- * projection, while the surrounding shell and dialogs remain outside this
- * subscription boundary.
- */
-function ShellRouteOutlet({
-  context,
-  hostClient,
-}: {
-  readonly context: ShellSharedContext;
-  readonly hostClient: HostClient;
-}) {
+/** Home at the root and a Thread under /threads stream; other routes stay stable. */
+function ShellRouteOutlet({ context }: { readonly context: ShellSharedContext }) {
   const { pathname } = useLocation();
-  const snapshot = useHostSelector(
-    hostClient,
-    selectHostSnapshot,
-    pathname === "/" || pathname.startsWith("/threads/") ? Object.is : sameStableHostSnapshot,
+  return (
+    <ShellScope context={context} live={pathname === "/" || pathname.startsWith("/threads/")}>
+      <Outlet />
+    </ShellScope>
   );
-  const outletContext = useMemo<ShellContext>(
-    () => ({ ...context, snapshot }),
-    [context, snapshot],
-  );
-  return <Outlet context={outletContext} />;
 }
 
 function navigationDrawerElement() {

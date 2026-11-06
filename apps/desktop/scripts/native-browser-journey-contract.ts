@@ -8,6 +8,7 @@ export const journeySteps: Record<string, string> = {
   find: "Find and Escape",
   fullscreen: "Contained HTML fullscreen and Escape",
   download: "Visible native download feedback and overlay isolation",
+  popup: "A person's popup comes forward, from a page or a cross-site frame, and closes back",
   backgroundDialog: "Background dialog does not activate Opensteer",
   return: "Hide, return and reconnect",
   nativeFailure: "Failed native replacement shows unavailable without picture streaming",

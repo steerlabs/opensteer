@@ -208,7 +208,7 @@ export const AgentBrowserSignInResultSchema = z.discriminatedUnion("status", [
     waitingFor: PasswordSignInNeedSchema.optional(),
   }),
   z.object({ requestId: RequestIdSchema, status: z.literal("declined") }),
-  /** A repeated call whose Request already ended; its continuation carries the result. */
+  /** The Request ended; its outcome accompanies the tool result or a later continuation. */
   z.object({ requestId: RequestIdSchema, status: z.literal("resolved") }),
   z.object({
     passwords: BrowserSignInPasswordsSchema.optional(),

@@ -98,7 +98,11 @@ interface OperationShared {
 
 export type PasswordSignInContinuationState =
   | { readonly publishing: true }
-  | { readonly publishing: false; readonly loginRef: string | undefined };
+  | {
+      readonly publishing: false;
+      readonly loginRef: string | undefined;
+      readonly publicCard?: { readonly brand: string; readonly lastFour: string };
+    };
 
 export interface PasswordLoginLease {
   readonly loginRef: string;
@@ -329,7 +333,12 @@ export class PasswordSignInService {
     const operation = this.#operations.get(operationId);
     if (operation?.requestId && operation.settlement && !operation.settled)
       return { publishing: true };
-    return { publishing: false, loginRef: this.leaseForOperation(operationId)?.loginRef };
+    const lease = this.leaseForOperation(operationId);
+    return {
+      publishing: false,
+      loginRef: lease?.loginRef,
+      ...(lease?.publicCard ? { publicCard: lease.publicCard } : {}),
+    };
   }
 
   validateLease(input: { loginRef: string; workspaceId: WorkspaceId }): boolean {

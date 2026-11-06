@@ -49,6 +49,7 @@ import {
   useStagedAttachments,
   type AttachmentTarget,
 } from "./attachments/use-staged-attachments.js";
+import { composerDrafts, type ReturnedToDraft } from "./composer-drafts.js";
 import { composerFold, FoldRow, FoldToFit } from "./fold-to-fit.js";
 import { Icon } from "./icon.js";
 import { textWidth } from "./text-width.js";
@@ -155,11 +156,12 @@ interface ComposerProps {
    */
   inputRef?: React.RefObject<HTMLTextAreaElement | null> | undefined;
   /**
-   * Reports the draft as it is written, for a surface that has to keep it
-   * alive across a change of route — Home's composer becoming the Home
-   * conversation's composer, for instance.
+   * Where this draft is kept. Fixed for the life of a composer: a parent that
+   * shows another draft mounts another composer, and its place context with it.
    */
-  onDraftChange?: ((draft: string) => void) | undefined;
+  draftKey?: string | null | undefined;
+  /** The Workspace a new task's draft would start in. */
+  draftWorkspaceId?: string | undefined;
   /**
    * Whether anything is in this composer: words, files, a quote, or a send
    * still in flight. A surface that another route may replace asks for this
@@ -230,7 +232,8 @@ export function Composer({
   leadingFooter,
   voice,
   inputRef,
-  onDraftChange,
+  draftKey = null,
+  draftWorkspaceId,
   onHoldingChange,
   onEscape,
   onSend,
@@ -245,7 +248,8 @@ export function Composer({
   stopLabel = "Stop the run",
   stopping: runStopping = false,
 }: ComposerProps) {
-  const [draft, setDraft] = useState("");
+  const [saved] = useState(() => (draftKey ? composerDrafts.read(draftKey) : null));
+  const [draft, setDraft] = useState(saved?.text ?? "");
   const { controller: dictation, snapshot: speech } = useDictation();
   const { snapshot: voiceState } = useVoice();
   const instance = useId();
@@ -270,7 +274,7 @@ export function Composer({
     return () => dictation?.leave(owner);
   }, [dictation, owner, hidden]);
 
-  const [quote, setQuote] = useState<ComposerQuote | null>(null);
+  const [quote, setQuote] = useState<ComposerQuote | null>(saved?.quote ?? null);
   const context = placeContext?.context ?? null;
   const freezeContext = useEffectEvent(() => context?.freeze());
   // `@` typed at a word start: where it began, what follows it, the row chosen.
@@ -287,7 +291,8 @@ export function Composer({
   const [submitting, setSubmitting] = useState(false);
   const [requestingStop, setRequestingStop] = useState(false);
   const stopping = requestingStop || runStopping;
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(saved?.refusal ?? null);
+  const [draftUnsaved, setDraftUnsaved] = useState(false);
   const [sending, setSending] = useState(nothingSending);
   const [dropping, setDropping] = useState(false);
   const [held, setHeld] = useState(() => ({ owner: pendingSends, ...readHeld(pendingSends) }));
@@ -332,7 +337,18 @@ export function Composer({
         },
       }),
       commit: (text, selection) => {
+        const before = ownerDraft.text;
         ownerDraft.text = text;
+        // Recognition finished after leaving: the words still belong to this
+        // draft, and any written there since stay.
+        if (!mounted.current) {
+          if (draftKey)
+            composerDrafts.handBack(draftKey, {
+              edit: (current) =>
+                current === before || !current.trim() ? text : `${text}\n${current}`,
+            });
+          return;
+        }
         if (currentOwner.current !== owner) return;
         latestDraft.current = text;
         pendingSelection.current = selection;
@@ -401,11 +417,6 @@ export function Composer({
     });
   }, [resize]);
 
-  const reportDraft = useEffectEvent((value: string) => onDraftChange?.(value));
-  useEffect(() => {
-    reportDraft(draft);
-  }, [draft]);
-
   useEffect(() => {
     if (!restore || appliedRestore.current === restore) return;
     appliedRestore.current = restore;
@@ -455,6 +466,45 @@ export function Composer({
     reportHolding(holding);
   }, [holding]);
 
+  const receiveReturned = useRef((_returned: ReturnedToDraft) => {});
+  receiveReturned.current = ({ edit, places, quote: returnedQuote, reason }) => {
+    setDraft(edit);
+    if (places?.length) context?.prepend(places);
+    if (returnedQuote) setQuote(returnedQuote);
+    if (reason) setError(reason);
+  };
+  useEffect(
+    () =>
+      draftKey
+        ? composerDrafts.open(draftKey, (returned) => receiveReturned.current(returned))
+        : undefined,
+    [draftKey],
+  );
+  // A message held for sending holds its files too, so a reload that found them
+  // in the draft does not offer them a second time.
+  const { releaseSent } = staged;
+  useEffect(() => {
+    if (pending) releaseSent(pending.attachments);
+  }, [pending, releaseSent]);
+  // A place the draft only picked up by itself is not worth keeping a draft for.
+  const keepDraft = hasContent || quote !== null;
+  const followingPlace = context?.following ?? true;
+  useEffect(() => {
+    if (!draftKey) return;
+    const kept = composerDrafts.update(
+      draftKey,
+      keepDraft
+        ? {
+            quote,
+            text: draft,
+            ...(followingPlace || !context ? {} : { places: context.parts() }),
+            ...(draftWorkspaceId ? { workspaceId: draftWorkspaceId } : {}),
+          }
+        : { places: [], quote: null, text: "" },
+    );
+    setDraftUnsaved(!kept);
+  }, [chips, context, draft, draftKey, draftWorkspaceId, followingPlace, keepDraft, quote]);
+
   /**
    * One attempt. `carried` names the tray files this attempt took; an attempt
    * from the held message has none there.
@@ -498,8 +548,26 @@ export function Composer({
       }
       // Refused after this composer closed: the message stays kept, so the
       // next time this Thread opens it is answered again and handed back to
-      // that draft, rather than to no draft at all.
-      if (owner && !mounted.current) return;
+      // that draft, rather than to no draft at all. It holds its files now.
+      if (owner && !mounted.current) {
+        staged.release(carried);
+        return;
+      }
+      // Nothing kept it, so it goes back to the draft it came from, with its
+      // files still there, and says why when that draft is next opened.
+      if (!mounted.current) {
+        const { body } = submission;
+        if (draftKey)
+          composerDrafts.handBack(draftKey, {
+            edit: (current) => (body && current.trim() ? `${body}\n${current}` : body || current),
+            places: submission.places ?? [],
+            quote: carriedQuote,
+            reason:
+              sendError instanceof Error ? sendError.message : "The message could not be sent.",
+            workspaceId: draftWorkspaceId,
+          });
+        return;
+      }
       // Refused: the Host answered, so the words and files go back to be
       // changed, and whatever is sent next is a new message.
       forgetPending(owner, submission.idempotencyKey);
@@ -553,6 +621,7 @@ export function Composer({
     setQuote(null);
     setMention(null);
     context?.reset();
+    if (draftKey) composerDrafts.update(draftKey, { places: [], quote: null, text: "" });
     await deliver(submission, false, ids, carriedQuote);
   };
 
@@ -1038,6 +1107,12 @@ export function Composer({
           onRetry={staged.retry}
           sending={sending}
         />
+      ) : null}
+      {draftUnsaved ? (
+        <p className="composer__error" role="status">
+          <Icon name="alert-circle" />
+          <span>This draft is not being saved. It stays here until this window closes.</span>
+        </p>
       ) : null}
       {error ? (
         <p aria-live="assertive" className="composer__error" role="alert">

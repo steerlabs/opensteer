@@ -95,7 +95,11 @@ export class DesktopBrowserPresentationManager {
   readonly #authority = new Map<number, Map<BrowserSessionId, Authority>>();
   readonly #transport: Pick<
     DesktopHostTransport,
-    "observeBrowserSockets" | "closeSocketsForOwner" | "openBrowserSurface" | "passkeyConsumerToken"
+    | "observeBrowserSockets"
+    | "closeSocketsForOwner"
+    | "openBrowserSurface"
+    | "passkeyConsumerToken"
+    | "viewerConsumerToken"
   >;
   readonly #glassPreload: string;
   readonly #onError: (error: unknown) => void;
@@ -109,6 +113,7 @@ export class DesktopBrowserPresentationManager {
       | "closeSocketsForOwner"
       | "openBrowserSurface"
       | "passkeyConsumerToken"
+      | "viewerConsumerToken"
     >;
     glassPreload: string;
     onError: (error: unknown) => void;
@@ -536,20 +541,29 @@ export class DesktopBrowserPresentationManager {
       this.#valid(presentation) &&
       presentation.page === page &&
       presentation.owner.current === presentation;
-    const passkeyInput = page.surface.page.observePasskeyInput?.(() => {
-      if (!current()) return;
+    // A presentation shared by several viewers cannot say which of them acted.
+    const soleToken = (
+      token: (ownerId: number, connectionId: string, surfaceId: string) => string | null,
+    ) => {
       const tokens = new Set<string>();
       for (const connectionId of presentation.authority.sockets) {
-        const token = this.#transport.passkeyConsumerToken(
-          presentation.owner.contents.id,
-          connectionId,
-          page.surface.surfaceId,
-        );
-        if (token) tokens.add(token);
+        const named = token(presentation.owner.contents.id, connectionId, page.surface.surfaceId);
+        if (named) tokens.add(named);
       }
-      page.surface.passkeyInput?.(
-        tokens.size === 1 ? (tokens.values().next().value ?? null) : null,
-      );
+      return tokens.size === 1 ? (tokens.values().next().value ?? null) : null;
+    };
+    const passkeyInput = page.surface.page.observePasskeyInput?.(() => {
+      if (current())
+        page.surface.passkeyInput?.(
+          soleToken((...socket) => this.#transport.passkeyConsumerToken(...socket)),
+        );
+    });
+    // Heard before the page acts on the input, so a popup it opens finds it.
+    const viewerInput = page.surface.page.observeHumanInput?.(() => {
+      if (current())
+        page.surface.viewerInput?.(
+          soleToken((...socket) => this.#transport.viewerConsumerToken(...socket)),
+        );
     });
     const surfaceEvents = page.surface.onEvent((event) => {
       if (event.type === "closed") this.#end(presentation, "page-closed");
@@ -699,6 +713,7 @@ export class DesktopBrowserPresentationManager {
     contents.on("render-process-gone", gone);
     return () => {
       passkeyInput?.();
+      viewerInput?.();
       surfaceEvents();
       contents.off("before-input-event", key);
       contents.off("found-in-page", find);

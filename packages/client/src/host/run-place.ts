@@ -6,6 +6,7 @@ import {
 } from "@opensteer/core";
 import { computerAppIdentityKey, type MachineSummary } from "@opensteer/protocol";
 import type { BrowserSessionSummary, HostSnapshot } from "./client.js";
+import { phoneTabOpen } from "./phone-tab.js";
 import type { SurfaceDestination } from "./surfaces.js";
 
 /** Current Run places live outside every transcript window and catalog. */
@@ -103,27 +104,34 @@ export function runPlaceDestination(
     return { kind: "browser", sessionId: ready?.id ?? place.sessionId, tabId: place.surfaceId };
   }
   const machine = snapshot.machines.find((machine) => machine.id === place.machineId);
-  const session = machine?.computerUse?.sessions.find(
-    (session) =>
-      session.runId === entry.runId &&
-      (place.kind === "phone"
-        ? session.display
-        : session.apps.some((app) => computerAppIdentityKey(app) === place.appKey)),
-  );
-  if (!session) return null;
-  return place.kind === "app"
-    ? {
-        kind: "app",
-        machineId: place.machineId,
-        appKey: place.appKey,
-        computerSessionId: session.sessionId,
-        source: { kind: "task-session", sessionId: session.sessionId },
-      }
-    : {
-        kind: "phone",
-        machineId: place.machineId,
-        display: place.display,
-        computerSessionId: session.sessionId,
-        source: { kind: "task-session", sessionId: session.sessionId },
-      };
+  if (place.kind === "phone")
+    return machine && phoneTabOpen(machine) ? { kind: "phone", machineId: machine.id } : null;
+  const sessionId = runPlaceSessionId(entry, snapshot);
+  if (sessionId === null) return null;
+  return {
+    kind: "app",
+    machineId: place.machineId,
+    appKey: place.appKey,
+    computerSessionId: sessionId,
+    source: { kind: "task-session", sessionId },
+  };
+}
+
+/** The Run's own session in a native place, which a picture of its work reads. */
+export function runPlaceSessionId(
+  entry: { readonly runId: string; readonly data: Pick<EventData<"place.entered">, "place"> },
+  snapshot: { readonly machines: readonly MachineSummary[] },
+): string | null {
+  const place = entry.data.place;
+  if (place.kind === "browser") return null;
+  const session = snapshot.machines
+    .find((machine) => machine.id === place.machineId)
+    ?.computerUse?.sessions.find(
+      (session) =>
+        session.runId === entry.runId &&
+        (place.kind === "phone"
+          ? session.display
+          : session.apps.some((app) => computerAppIdentityKey(app) === place.appKey)),
+    );
+  return session?.sessionId ?? null;
 }

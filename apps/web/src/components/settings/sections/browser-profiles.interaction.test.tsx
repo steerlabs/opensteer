@@ -6,7 +6,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Outlet, Route, Routes } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ShellContext } from "../../app-shell.js";
+import { ShellContext } from "../../app-shell.js";
 import { lastBrowsingChoice, rememberBrowsingChoice } from "../../workspace/start-page.js";
 import { settingsRail } from "../copy.js";
 import { BrowserProfilesSection } from "./browser-profiles.js";
@@ -158,7 +158,13 @@ async function mount(
     root.render(
       <MemoryRouter initialEntries={[input.path ?? "/settings/browser-profiles"]}>
         <Routes>
-          <Route element={<Outlet context={context} />}>
+          <Route
+            element={
+              <ShellContext value={context}>
+                <Outlet />
+              </ShellContext>
+            }
+          >
             <Route element={<BrowserProfilesSection />} path="settings/browser-profiles" />
           </Route>
         </Routes>

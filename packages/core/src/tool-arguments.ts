@@ -13,7 +13,7 @@ const omissionMarkerReserveBytes = 64;
 /**
  * The least a cut text keeps. Arguments holding too many long texts for each
  * to keep this much are too broad to keep in shape, and a short value such as
- * a `toolRef` is never cut.
+ * an integration `operation` is never cut.
  */
 const minimumKeptBytes = 512;
 const encoder = new TextEncoder();
@@ -23,7 +23,7 @@ const encoder = new TextEncoder();
  * Arguments that fit are kept exactly. Larger ones keep as much of their shape
  * as fits: their longest texts are cut, all to the same length, to equal head
  * and tail windows around a marker saying how much was omitted, so short
- * values such as a path, a working directory or an integration's `toolRef`
+ * values such as a path, a working directory or an integration's `operation`
  * stay whole. A parameter too broad to fit that way, such as a list of
  * thousands of rows, is kept as its JSON text, cut the same way, and arguments
  * too broad even for that are kept whole as cut JSON text. The Runner records

@@ -161,6 +161,7 @@ const opencodeHarnessCapabilities: HarnessCapabilities = Object.freeze({
     },
   },
   interruption: true,
+  longRequestHold: true,
   // OpenCode hands an MCP tool result's content straight to the AI SDK, so an
   // image content block reaches the model as an image.
   mcpImageContent: true,

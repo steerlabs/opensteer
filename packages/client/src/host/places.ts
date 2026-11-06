@@ -3,6 +3,7 @@ import { browserIdentity, displayAddress, type PlaceBrowserIdentity } from "./st
 import { searchText, type SearchField } from "./search.js";
 import {
   type BrowserSessionOpener,
+  type ComputerUseSessionSummary,
   type ComputerView,
   type ComputerViewRef,
   computerAppIdentityKey,
@@ -11,6 +12,7 @@ import {
   type PlaceOccupant,
 } from "@opensteer/protocol";
 import type { BrowserSessionSummary, HostSnapshot } from "./client.js";
+import { phoneOwnerView, phonePlaceKey, phoneTabOpen, phoneTaskSession } from "./phone-tab.js";
 import type { WorkspaceSurfaceDestination as SurfaceDestination } from "./surfaces.js";
 export type { PlaceOccupant } from "@opensteer/protocol";
 
@@ -52,12 +54,10 @@ export interface PlaceItem {
   readonly ownerClose: ComputerViewRef | null;
   readonly key: string;
   readonly destination: SurfaceDestination;
-  /**
-   * Where a task's own picture of this place is live now: its tab, or its
-   * task session on the app or phone. Owner views have independent rows.
-   * Null while no task binding here can be shown.
-   */
-  readonly taskDestination: SurfaceDestination | null;
+  /** The task session holding this app or phone now. */
+  readonly task: Pick<ComputerUseSessionSummary, "runId" | "sessionId"> | null;
+  /** The Host keeps this phone's tab, so closing it is `phone.tab.close`, not a view's close. */
+  readonly phoneTab?: boolean;
   readonly kind: PlaceKind;
   readonly title: string;
   readonly site: string | null;
@@ -151,7 +151,7 @@ export function placeList(source: PlaceListSource): readonly PlaceItem[] {
         browser: null,
         ownerView: null,
         ownerClose: null,
-        taskDestination: null,
+        task: null,
         site: null,
         loading: false,
       },
@@ -207,7 +207,7 @@ export function placeList(source: PlaceListSource): readonly PlaceItem[] {
           },
           key: `browser:${row.sessionId}:${row.id}`,
           destination,
-          taskDestination: live ? destination : null,
+          task: null,
           kind: "browser",
           identity,
           browser: {
@@ -283,7 +283,7 @@ export function placeList(source: PlaceListSource): readonly PlaceItem[] {
         item: {
           key: `browser:${session.id}:${tab.id}`,
           destination,
-          taskDestination: availability === "ready" ? destination : null,
+          task: null,
           kind: "browser",
           title: tab.title.trim() || tab.site || "New tab",
           site: tab.site || null,
@@ -320,13 +320,10 @@ export function placeList(source: PlaceListSource): readonly PlaceItem[] {
       const values: PlaceOccupant[] = session.actor
         ? [{ ...session.actor, holding: true, acting: false, lastActiveAt: session.openedAt }]
         : [];
-      const bindings = session.display
-        ? [{ key: "main", app: null }]
-        : session.apps.map((app) => ({ key: computerAppIdentityKey(app), app }));
-      for (const { key, app } of bindings) {
-        const kind = app ? "app" : "phone";
-        const placeKey = `${kind}:${machine.id}:${key}:task:${session.sessionId}`;
-        const acting = app ? session.actingAppKeys.includes(key) : session.actingDisplay === true;
+      for (const app of session.display ? [] : session.apps) {
+        const key = computerAppIdentityKey(app);
+        const placeKey = `app:${machine.id}:${key}:task:${session.sessionId}`;
+        const acting = session.actingAppKeys.includes(key);
         const own = values.map((occupant) => ({
           ...occupant,
           acting,
@@ -336,21 +333,13 @@ export function placeList(source: PlaceListSource): readonly PlaceItem[] {
           session.openedAt,
         );
         const held = native.get(placeKey);
-        const destination: SurfaceDestination = app
-          ? {
-              kind: "app",
-              appKey: key,
-              machineId: machine.id,
-              computerSessionId: session.sessionId,
-              source: { kind: "task-session", sessionId: session.sessionId },
-            }
-          : {
-              kind: "phone",
-              machineId: machine.id,
-              display: key,
-              computerSessionId: session.sessionId,
-              source: { kind: "task-session", sessionId: session.sessionId },
-            };
+        const destination: SurfaceDestination = {
+          kind: "app",
+          appKey: key,
+          machineId: machine.id,
+          computerSessionId: session.sessionId,
+          source: { kind: "task-session", sessionId: session.sessionId },
+        };
         const availability: PlaceItem["availability"] =
           machine.status === "online" && machine.computerUse?.state === "ready"
             ? "ready"
@@ -361,16 +350,14 @@ export function placeList(source: PlaceListSource): readonly PlaceItem[] {
           ownerView: null,
           ownerClose: null,
           key: placeKey,
-          kind,
+          kind: "app",
           destination,
-          taskDestination: availability === "ready" ? destination : null,
-          title: app
-            ? [app.displayName, session.windows?.find((window) => window.appKey === key)?.title]
-                .filter(Boolean)
-                .join(" — ")
-            : machine.name,
+          task: { sessionId: session.sessionId, runId: session.runId },
+          title: [app.displayName, session.windows?.find((window) => window.appKey === key)?.title]
+            .filter(Boolean)
+            .join(" — "),
           site: null,
-          icon: app ? { kind: "app", app, machineId: machine.id } : { kind: "phone" },
+          icon: { kind: "app", app, machineId: machine.id },
           device: { machineId: machine.id, name: machine.name },
           occupants: occupants([...(held?.item.occupants ?? []), ...own]),
           availability,
@@ -387,17 +374,11 @@ export function placeList(source: PlaceListSource): readonly PlaceItem[] {
   }
   for (const machine of source.machines) {
     for (const view of machine.computerUse?.ownerViews ?? []) {
-      if (view.state === "closed") continue;
-      const app = view.target.kind === "app" ? view.target.app : null;
-      const key = app
-        ? computerAppIdentityKey(app)
-        : view.target.kind === "phone"
-          ? view.target.display
-          : "main";
-      const kind = app ? "app" : "phone";
-      const windowId =
-        view.window?.id ?? (view.target.kind === "app" ? view.target.window : undefined);
-      const placeKey = `${kind}:${machine.id}:${key}:${app ? (windowId ?? view.viewId) : `owner:${view.viewId}`}`;
+      if (view.state === "closed" || view.target.kind !== "app") continue;
+      const { app } = view.target;
+      const key = computerAppIdentityKey(app);
+      const windowId = view.window?.id ?? view.target.window;
+      const placeKey = `app:${machine.id}:${key}:${windowId ?? view.viewId}`;
       const held = native.get(placeKey);
       const ownerView = { viewId: view.viewId, generation: view.generation };
       const item: PlaceItem = {
@@ -406,27 +387,18 @@ export function placeList(source: PlaceListSource): readonly PlaceItem[] {
         ownerView: view,
         ownerClose: { viewId: view.viewId, generation: view.generation },
         key: placeKey,
-        kind,
-        destination: app
-          ? {
-              kind: "app",
-              machineId: machine.id,
-              appKey: key,
-              ...(windowId === undefined ? {} : { windowId }),
-              source: { kind: "owner-view", ...ownerView },
-            }
-          : {
-              kind: "phone",
-              machineId: machine.id,
-              display: key,
-              source: { kind: "owner-view", ...ownerView },
-            },
-        taskDestination: null,
-        title: app
-          ? [app.displayName, view.window?.title].filter(Boolean).join(" — ")
-          : machine.name,
+        kind: "app",
+        destination: {
+          kind: "app",
+          machineId: machine.id,
+          appKey: key,
+          ...(windowId === undefined ? {} : { windowId }),
+          source: { kind: "owner-view", ...ownerView },
+        },
+        task: null,
+        title: [app.displayName, view.window?.title].filter(Boolean).join(" — "),
         site: null,
-        icon: app ? { kind: "app", machineId: machine.id, app } : { kind: "phone" },
+        icon: { kind: "app", machineId: machine.id, app },
         device: { machineId: machine.id, name: machine.name },
         occupants: [],
         availability:
@@ -446,6 +418,14 @@ export function placeList(source: PlaceListSource): readonly PlaceItem[] {
         lastActiveAt: held?.lastActiveAt ?? view.openedAt,
       });
     }
+  }
+  for (const machine of source.machines) {
+    if (!phoneTabOpen(machine)) continue;
+    const item = phoneTabPlace(machine);
+    const session = phoneTaskSession(machine);
+    const openedAt =
+      machine.tabOpenedAt ?? session?.openedAt ?? phoneOwnerView(machine)?.openedAt ?? "";
+    native.set(item.key, { item, openedAt, lastActiveAt: openedAt });
   }
   for (const value of native.values()) result.push({ ...value, order: 0 });
   const sorted = result
@@ -479,10 +459,54 @@ export function placeList(source: PlaceListSource): readonly PlaceItem[] {
   ];
 }
 /**
+ * A phone's one row. It shows the person's own view while that can show
+ * anything, else the holding task's, else nothing until the person opens it;
+ * each picture keeps its own authority, and neither is inferred from the other.
+ */
+function phoneTabPlace(machine: PlaceListSource["machines"][number]): PlaceItem {
+  const session = phoneTaskSession(machine);
+  const view = phoneOwnerView(machine);
+  const shownView =
+    view && (view.state === "ready" || view.state === "opening" || !session) ? view : null;
+  const acting = session?.actingDisplay === true;
+  return {
+    identity: null,
+    browser: null,
+    ownerView: shownView,
+    // Under a task the tab would only open a live view again; Stop is the way out.
+    ownerClose:
+      view && !(session && shownView) ? { viewId: view.viewId, generation: view.generation } : null,
+    key: phonePlaceKey(machine.id),
+    kind: "phone",
+    destination: { kind: "phone", machineId: machine.id },
+    task: session ? { sessionId: session.sessionId, runId: session.runId } : null,
+    phoneTab: Boolean(machine.tabOpenedAt),
+    title: machine.name,
+    site: null,
+    icon: { kind: "phone" },
+    device: { machineId: machine.id, name: machine.name },
+    occupants: occupants(
+      session?.actor
+        ? [{ ...session.actor, holding: true, acting, lastActiveAt: session.openedAt }]
+        : [],
+    ),
+    availability:
+      machine.status !== "online" || machine.computerUse?.state !== "ready"
+        ? "unavailable"
+        : shownView?.state === "opening"
+          ? "starting"
+          : shownView && shownView.state !== "ready"
+            ? "unavailable"
+            : "ready",
+    loading: false,
+    closable: !session,
+  };
+}
+/**
  * Whether the exact place a destination names has ended, by its identity and
  * lifecycle alone: a tab its browser no longer lists (a closed or failed
- * browser lists none), a task's computer session no longer holding that app
- * or display, the person's view closed or replaced by a newer one. Readiness
+ * browser lists none), a phone whose tab closed, a task's computer session no
+ * longer holding that app, the person's view closed or replaced by a newer one. Readiness
  * never decides it — a Mac asking for permission, offline or unreachable, a
  * profile or placement unavailable — and a computer whose computer use is not
  * reported at all proves nothing either way.
@@ -515,6 +539,7 @@ export function placeDestinationEnded(
   if (destination.kind === "opensteer-app") return !isAppTabOpen(source, destination.appId);
   const machine = source.machines.find((item) => item.id === destination.machineId);
   if (!machine) return true;
+  if (destination.kind === "phone") return !phoneTabOpen(machine);
   const computerUse = machine.computerUse;
   if (!computerUse) return false;
   if (destination.source?.kind === "owner-view") {
@@ -526,9 +551,7 @@ export function placeDestinationEnded(
     (item) => item.sessionId === destination.computerSessionId,
   );
   if (!session) return true;
-  return destination.kind === "phone"
-    ? !session.display
-    : !session.apps.some((app) => computerAppIdentityKey(app) === destination.appKey);
+  return !session.apps.some((app) => computerAppIdentityKey(app) === destination.appKey);
 }
 
 export interface BrowserTabCloseImpact {

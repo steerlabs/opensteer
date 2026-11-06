@@ -1,16 +1,22 @@
 import { useHostSelector } from "@opensteer/client/react";
-import type { HostClient, HostSnapshot } from "@opensteer/client/host";
+import type { HostClient } from "@opensteer/client/host";
 import { StackActions, useNavigation } from "@react-navigation/native";
 import { useCallback, useLayoutEffect, useMemo, useState, type ReactNode } from "react";
-import { StyleSheet, View } from "react-native";
+import { Platform, StyleSheet, View } from "react-native";
+import type { NativeStackNavigationOptions } from "@react-navigation/native-stack";
 import { headerFontScaleLimit, space } from "../theme.js";
-import { AroundButton, aroundHeaderOptions } from "../thread/around-button.js";
+import {
+  AroundButton,
+  aroundHeaderOptions,
+  conversationBarGround,
+} from "../thread/around-button.js";
 import { aroundGlanceSelector, sameAroundGlance } from "../thread/around-model.js";
 import { sameThreadHeader, type ThreadHeaderState } from "../thread/thread-pane.js";
-import { TaskMenu, useTaskMenuChoices } from "../thread/task-status.js";
+import { TaskStateIndicator } from "../thread/task-status.js";
+import { ThreadMenu } from "../thread/thread-menu.js";
 import { ThreadName, ThreadSubtitle } from "../thread/thread-subtitle.js";
 import { AppText } from "../ui/primitives.js";
-import { useLiquidGlass } from "../ui/glass.js";
+import { GlassSurface, useLiquidGlass } from "../ui/glass.js";
 import { useHostUserId } from "../ui/mobile-client-context.js";
 
 interface ScopedHeader {
@@ -68,19 +74,17 @@ export function useScopedThreadHeader(
 /**
  * The bar over a conversation — Chat or a task.
  *
- * The bar is transparent and the transcript runs under it. That is why the
- * header is configured by the screen rather than in the route table: it needs
- * the thread's own name and state, and it needs to know whether this build
- * draws Liquid Glass — on iOS 26 the scroll edge effect is the system's own
- * answer, and below it a blur is.
+ * The transcript runs under it, which is why the header is configured by the
+ * screen rather than in the route table: it needs the thread's own name and
+ * state, and what separates it from the words beneath differs by platform.
  *
  * What is around the conversation stays contextual: one control appears only
  * while it has a tab, Mac app or phone open, tasks or schedules of its own, or
  * a conversation it works for, and it opens Around this thread, where each
- * row opens exactly what it names. The title is the conversation's name and,
- * for a task someone handed out, where it stands and its menu: Run details
- * opens from the reply under way and from each reply's menu, where the reader
- * is already looking.
+ * row opens exactly what it names. The title is the conversation's name and
+ * where it stands, and it opens the conversation's menu: Run details opens
+ * from the reply under way and from each reply's menu, where the reader is
+ * already looking.
  */
 export function useThreadHeader(props: {
   readonly deploymentId: string;
@@ -104,24 +108,8 @@ export function useThreadHeader(props: {
     const attached = hostClient !== null && threadId !== null;
     navigation.setOptions({
       ...(attached && header !== null && !savedSubtitle ? {} : aroundHeaderOptions(null)),
-      // The route table paints every header with the product's ground. A
-      // transparent header has to be told to keep none, or nothing scrolls
-      // under it and the blur has nothing to blur.
-      headerStyle: { backgroundColor: "transparent" },
+      ...conversationBarGroundOptions(glass),
       headerTransparent: true,
-      ...(glass
-        ? {
-            // iOS 26's own answer, and it must not be combined with a blur:
-            // the two effects stack and the bar doubles its own haze. The
-            // bottom edge is the composer's, so the system draws none there.
-            scrollEdgeEffects: {
-              bottom: "hidden" as const,
-              left: "automatic" as const,
-              right: "automatic" as const,
-              top: "soft" as const,
-            },
-          }
-        : { headerBlurEffect: "systemChromeMaterialDark" as const }),
       // Both keys are always written: the navigator merges options, so a title
       // left out would keep whatever an earlier header put there.
       ...(savedSubtitle
@@ -143,7 +131,7 @@ export function useThreadHeader(props: {
             ),
             title: fallbackTitle,
           }
-        : header === null || hostClient === null
+        : header === null || hostClient === null || threadId === null
           ? { headerTitle: fallbackTitle, title: fallbackTitle }
           : {
               headerTitle: () => (
@@ -172,28 +160,50 @@ export function useThreadHeader(props: {
 }
 
 /**
- * The task subject and title, with a small project tile and state below.
- * The two lines share the native menu's touch target.
+ * What keeps a bar's words apart from the transcript under it. The route table
+ * paints every header with the product's ground, so each answer says its own.
+ */
+function conversationBarGroundOptions(glass: boolean): NativeStackNavigationOptions {
+  if (glass)
+    return {
+      headerStyle: { backgroundColor: "transparent" },
+      // iOS 26's own answer, and it must not be combined with a blur: the two
+      // effects stack and the bar doubles its own haze. The bottom edge is the
+      // composer's, so the system draws none there.
+      scrollEdgeEffects: { bottom: "hidden", left: "automatic", right: "automatic", top: "soft" },
+    };
+  return Platform.OS === "ios"
+    ? {
+        headerBlurEffect: "systemChromeMaterialDark",
+        headerStyle: { backgroundColor: "transparent" },
+      }
+    : { headerStyle: { backgroundColor: conversationBarGround } };
+}
+
+/**
+ * The conversation's mark and name, where it stands, and its menu.
+ *
+ * Liquid Glass draws them as one capsule beside the bar's others: the state
+ * shrinks to its mark, and its word and project move to the menu's heading.
+ * Elsewhere the two lines stay, and Android's menu has no heading to move to.
  */
 function ThreadTitle(
   props: ThreadHeaderState & {
     readonly deploymentId: string;
     readonly hostClient: HostClient;
-    readonly threadId: string | null;
+    readonly threadId: string;
     readonly onOpenThread: (threadId: string) => void;
   },
 ): ReactNode {
   const navigation = useNavigation();
-  const selectAround = useMemo(
-    () => (props.threadId === null ? selectNothing : aroundGlanceSelector(props.threadId)),
-    [props.threadId],
-  );
+  const glass = useLiquidGlass();
+  const selectAround = useMemo(() => aroundGlanceSelector(props.threadId), [props.threadId]);
   const glance = useHostSelector(props.hostClient, selectAround, sameAroundGlance);
   const { deploymentId, threadId } = props;
   useLayoutEffect(() => {
     navigation.setOptions(
       aroundHeaderOptions(
-        glance === null || threadId === null ? null : (
+        glance === null ? null : (
           <AroundButton
             glance={glance}
             onPress={() => navigation.navigate("ThreadAround", { deploymentId, threadId })}
@@ -202,53 +212,90 @@ function ThreadTitle(
       ),
     );
   }, [deploymentId, glance, navigation, threadId]);
-  const menu = useTaskMenuChoices(props.hostClient, props.threadId, props.task);
+  const name = (
+    <ThreadName
+      maxFontSizeMultiplier={headerFontScaleLimit}
+      numberOfLines={1}
+      title={props.title}
+      icon={props.icon}
+      color={props.color}
+      isHome={props.isHome}
+      isVoice={props.isVoice}
+    />
+  );
+  const menu = (children: ReactNode, maxWidth: number) => (
+    <ThreadMenu
+      connectionLabel={props.connectionLabel}
+      deploymentId={deploymentId}
+      hostClient={props.hostClient}
+      isHome={props.isHome}
+      maxWidth={maxWidth}
+      onFind={() => navigation.navigate("ThreadFind", { deploymentId, threadId })}
+      onOpenThread={props.onOpenThread}
+      projectName={props.workspaceName}
+      task={props.task}
+      threadId={threadId}
+      title={props.title}
+    >
+      {children}
+    </ThreadMenu>
+  );
+  if (glass)
+    return (
+      <GlassSurface interactive shape="capsule" style={styles.capsule}>
+        {menu(
+          <>
+            <View style={styles.words}>
+              {name}
+              {/* The one state worth a second line: nothing will answer until it is back. */}
+              {props.connectionLabel === null ? null : (
+                <ThreadSubtitle
+                  connectionLabel={props.connectionLabel}
+                  task={null}
+                  workspaceColor={null}
+                  workspaceIcon={null}
+                  workspaceName={null}
+                />
+              )}
+            </View>
+            {props.task === null ? null : (
+              <TaskStateIndicator moving={props.task.moving} tone={props.task.tone} />
+            )}
+          </>,
+          titleWidth - 2 * capsuleInset,
+        )}
+      </GlassSurface>
+    );
   return (
     <View style={styles.title}>
-      <TaskMenu
-        hostClient={props.hostClient}
-        maxWidth={titleWidth}
-        onOpenThread={props.onOpenThread}
-        task={props.task}
-        projectName={props.workspaceName}
-        connectionLabel={props.connectionLabel}
-        threadId={props.threadId}
-        title={props.title}
-      >
+      {menu(
         <View style={styles.words}>
-          <ThreadName
-            maxFontSizeMultiplier={headerFontScaleLimit}
-            numberOfLines={1}
-            title={props.title}
-            icon={props.icon}
-            color={props.color}
-            isHome={props.isHome}
-            isVoice={props.isVoice}
-          />
+          {name}
           <ThreadSubtitle
             workspaceName={props.workspaceName}
             workspaceColor={props.workspaceColor}
             workspaceIcon={props.workspaceIcon}
             connectionLabel={props.connectionLabel}
-            // A title with a menu says "Completed" in the menu and in its
-            // accessible name, so the bar keeps one line for the title. A
-            // title without one keeps the word: the drawn transcript may be a
-            // window from before the ending. Every other state stays here.
-            task={menu.any && props.task?.tone === "completed" ? null : props.task}
+            // iOS says "Completed" in the menu's heading and its accessible
+            // name, so the bar keeps one line for the title. Android's menu
+            // has no heading, and every other state stays here.
+            task={Platform.OS === "ios" && props.task?.tone === "completed" ? null : props.task}
           />
-        </View>
-      </TaskMenu>
+        </View>,
+        titleWidth,
+      )}
     </View>
   );
 }
 
-const selectNothing = (_snapshot: HostSnapshot) => null;
-
 // Wide enough for a real thread title, narrow enough never to reach the bar's
 // own controls: the native title slot is centred between them.
 const titleWidth = 260;
+const capsuleInset = space[12];
 
 const styles = StyleSheet.create({
+  capsule: { maxWidth: titleWidth, paddingHorizontal: capsuleInset },
   title: { alignItems: "center", flexDirection: "row", maxWidth: titleWidth, gap: space[4] },
-  words: { alignItems: "center", flexShrink: 1 },
+  // Material's title leads; iOS centres it in the bar.
+  words: { alignItems: Platform.OS === "android" ? "flex-start" : "center", flexShrink: 1 },
 });

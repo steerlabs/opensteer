@@ -142,6 +142,18 @@ export function utf8Prefix(value: string, maximumBytes: number): string {
   return decoder.decode(bytes.subarray(0, utf8PrefixBoundary(bytes, maximumBytes)));
 }
 
+/** The JSON record a tool's output leads with; any prose block is joined after it on a new line. */
+export function toolOutputRecord(text: string): unknown {
+  for (const candidate of [text, text.split("\n", 1)[0]!]) {
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      continue;
+    }
+  }
+  return undefined;
+}
+
 function textBlocks(values: readonly unknown[]): string | null {
   const text: string[] = [];
   for (const value of values) {

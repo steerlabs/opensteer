@@ -46,6 +46,24 @@ type GooglePreset = {
   };
 };
 
+/**
+ * Discovery adds these to every method, but the Host owns credentials and
+ * transport, so an agent has no use for them. `alt` and `fields` stay: Drive
+ * downloads need `alt`, and `fields` lets an agent ask for a smaller response.
+ */
+const googleTransportParameters = [
+  "$.xgafv",
+  "access_token",
+  "callback",
+  "key",
+  "oauth_token",
+  "prettyPrint",
+  "quotaUser",
+  "uploadType",
+  "upload_protocol",
+  "userIp",
+];
+
 const presets: readonly GooglePreset[] = [
   {
     id: "google-gmail",
@@ -252,10 +270,13 @@ function definitionFor(preset: GooglePreset) {
         oauth: { ...googleOAuth, scopes: preset.scopes },
       },
     ],
-    config: googleDiscoveryOpenApiConfig([preset.service], {
-      timeoutMs: 30_000,
-      ...(preset.healthCheck ? { healthCheck: preset.healthCheck } : {}),
-    }),
+    config: googleDiscoveryOpenApiConfig(
+      [{ ...preset.service, hiddenParameters: googleTransportParameters }],
+      {
+        timeoutMs: 30_000,
+        ...(preset.healthCheck ? { healthCheck: preset.healthCheck } : {}),
+      },
+    ),
     description: preset.description,
     hostedOAuth: {
       providerApplicationRevision: 1,

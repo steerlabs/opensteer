@@ -3663,15 +3663,15 @@ describe("RunnerRuntime", () => {
       await waitUntil(() => runtime.activeRunIds().length === 0);
 
       if (specialist) {
-        const cwd = join(workspacePath, ".specialists", "registration-1");
-        expect(driver.context?.workspacePath).toBe(cwd);
-        expect(driver.context?.writableRoots).toEqual([cwd]);
+        const pluginData = join(workspacePath, ".specialists", "registration-1");
+        expect(driver.context?.workspacePath).toBe(workspacePath);
+        expect(driver.context?.writableRoots).toEqual(["/runner/workspaces"]);
         expect(driver.context?.instructions).toContain(
-          `Workspace instructions\n\nPlugin instructions ${pluginRoot} ${cwd}`,
+          `Workspace instructions\n\nPlugin instructions ${pluginRoot} ${pluginData}`,
         );
         expect(driver.context?.environment).toMatchObject({
           PLUGIN_ROOT: pluginRoot,
-          PLUGIN_DATA: cwd,
+          PLUGIN_DATA: pluginData,
         });
         expect(driver.context?.skills?.skills.some((skill) => skill.plugin === null)).toBe(false);
         expect(
@@ -4155,7 +4155,7 @@ describe("RunnerRuntime", () => {
      */
     const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value), "utf8");
     const command = `python HEAD:${"x".repeat(1_024 * 1_024)}:TAIL`;
-    const toolRef = `google-sheets.spreadsheets.values.batchUpdate.${"a".repeat(82)}`;
+    const operation = `google-sheets.spreadsheets.values.batchUpdate.${"a".repeat(82)}`;
     const bulk = {
       spreadsheetId: "x",
       values: Array.from({ length: 5_000 }, (_, row) => [`row-${row}`, "short", "cell"]),
@@ -4257,13 +4257,13 @@ describe("RunnerRuntime", () => {
           expectCut(z.object({ command: z.string() }).parse(value).command, unicode),
       },
       {
-        name: "bulk integration preserves its 128 character toolRef",
-        arguments: { toolRef, arguments: bulk },
+        name: "bulk integration preserves its 128 character operation",
+        arguments: { operation, arguments: bulk },
         integration: true,
         check: (value) => {
-          expect(toolRef).toHaveLength(128);
-          const fitted = z.object({ toolRef: z.string(), arguments: z.string() }).parse(value);
-          expect(fitted.toolRef).toBe(toolRef);
+          expect(operation).toHaveLength(128);
+          const fitted = z.object({ operation: z.string(), arguments: z.string() }).parse(value);
+          expect(fitted.operation).toBe(operation);
           expectCut(fitted.arguments, JSON.stringify(bulk));
         },
       },
@@ -4303,12 +4303,12 @@ describe("RunnerRuntime", () => {
         },
       },
       {
-        name: "many long rows never cut a short toolRef",
-        arguments: { toolRef, arguments: { rows: longRows } },
+        name: "many long rows never cut a short operation",
+        arguments: { operation, arguments: { rows: longRows } },
         integration: true,
         check: (value) => {
-          const fitted = z.object({ toolRef: z.string(), arguments: z.string() }).parse(value);
-          expect(fitted.toolRef).toBe(toolRef);
+          const fitted = z.object({ operation: z.string(), arguments: z.string() }).parse(value);
+          expect(fitted.operation).toBe(operation);
           expectCut(fitted.arguments, JSON.stringify({ rows: longRows }));
         },
       },

@@ -91,6 +91,7 @@ export interface RunnerInventoryRecord {
   readonly ownerUserId: UserId | null;
   readonly publicKeyFingerprint: string;
   readonly revokedAt: Date | null;
+  readonly tabOpenedAt: Date | null;
 }
 
 export interface RunnerEnrollmentIssuanceRecord {
@@ -875,6 +876,7 @@ export async function listRunners(
       "ownerUserId",
       "publicKeyFingerprint",
       "revokedAt",
+      "tabOpenedAt",
     ])
     .where((expression) =>
       expression.or([
@@ -1148,6 +1150,32 @@ export async function revokeRunner(
       );
     },
   );
+}
+
+/** Reports whether this opened the tab, so an already open one changes nothing for anybody. */
+export async function openPhoneTab(
+  database: Kysely<DatabaseSchema>,
+  runnerId: RunnerId,
+): Promise<boolean> {
+  const result = await database
+    .updateTable("runners")
+    .set({ tabOpenedAt: new Date() })
+    .where("id", "=", runnerId)
+    .where("tabOpenedAt", "is", null)
+    .where("revokedAt", "is", null)
+    .executeTakeFirst(databaseOperationOptions());
+  return result.numUpdatedRows === 1n;
+}
+
+export async function closePhoneTab(
+  database: Kysely<DatabaseSchema>,
+  runnerId: RunnerId,
+): Promise<void> {
+  await database
+    .updateTable("runners")
+    .set({ tabOpenedAt: null })
+    .where("id", "=", runnerId)
+    .executeTakeFirst(databaseOperationOptions());
 }
 
 export async function renameRunner(

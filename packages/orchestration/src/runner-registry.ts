@@ -1031,6 +1031,13 @@ export class RunnerRegistry {
     return null;
   }
 
+  supportsLongRequestHold(environmentId: EnvironmentId, driverKind: HarnessId): boolean {
+    const driver = this.#byEnvironment
+      .get(environmentId)
+      ?.identity.modules.agents?.harnessDrivers.find((entry) => entry.driverKind === driverKind);
+    return driver?.readiness !== "unavailable" && driver?.longRequestHold === true;
+  }
+
   supportsMessageAttachments(environmentId: EnvironmentId, driverKind: HarnessId): boolean {
     const advertised = this.#byEnvironment
       .get(environmentId)

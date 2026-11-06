@@ -45,6 +45,12 @@ destination draft, never in a route, because routes carry no reader identity and
 Drafts work offline, but approvals need a live authenticated Host, because replaying a stale
 decision is unsafe; only Host state resolves a Request, and sending does not answer one.
 
+Unsent drafts never leave the device: no Host API carries them, so a task begun on a Mac does not
+appear on a phone, and each client keeps its own store. A new task's draft has its own id, and its
+Workspace is a field that can change. Changing it must stage the draft's files again, because the
+Host refuses attachments held in another Workspace. A route may name that id and nothing else: an
+id with no draft behind it is a blank page, so nothing about a draft is readable from an address.
+
 Execution preferences belong to the Host: never silently replace an unavailable model, account or
 computer, and a pending execution change blocks Send. A hidden mounted pane neither claims the
 active Thread nor marks content read; mark read only published content actually shown. Layout uses
@@ -116,6 +122,18 @@ native H.264 viewing, Opensteer Apps (`react-native-webview`) and notification p
 rebuilt binary; a JavaScript update cannot add them. Expo's generated UIKit scene lifecycle is the
 sole startup and link owner, and multiple scenes stay disabled so there is one navigation history
 and draft owner.
+
+## The conversation bar
+
+The bar stays: Menu carries the "Needs you" badge, and a transparent bar costs no height, so removing
+it would win back about 44 points at the price of the way out of a task. Liquid Glass draws the title
+as a capsule beside the bar's other capsules. Material's app bars are full width and its floating
+toolbars hold actions, so Android keeps a title and status line, as does earlier iOS, and paints the
+bar solid because it has no blur to separate it from text scrolling beneath.
+
+Every title opens a menu, so a capsule is never a button that does nothing. Android's menu has no
+header slot, which is why its status line can't move into the menu as Liquid Glass's does. Beside a
+page there is no title menu, so the composer's menu carries Find and Copy thread link there.
 
 ## The call bar
 

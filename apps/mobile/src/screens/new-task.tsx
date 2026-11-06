@@ -18,6 +18,7 @@ import { StackActions, useNavigation, type StaticScreenProps } from "@react-navi
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -61,6 +62,8 @@ import { useThreadHeader } from "./thread-header.js";
 
 export type NewTaskScreenProps = StaticScreenProps<{
   readonly deploymentId: string;
+  /** Which draft this is. One nothing is saved under simply opens blank. */
+  readonly draftId: string;
   /** Main for a task from Tasks; a project's own Workspace from its page. */
   readonly workspaceId: string;
 }>;
@@ -89,7 +92,7 @@ const examples = [
 export function NewTaskScreen(props: NewTaskScreenProps): ReactNode {
   const navigation = useNavigation();
   const headerHeight = useHeaderHeight();
-  const { deploymentId, workspaceId } = props.route.params;
+  const { deploymentId, draftId, workspaceId } = props.route.params;
   const hostClient = useAttachedHost(deploymentId);
   useThreadHeader({
     deploymentId,
@@ -121,8 +124,9 @@ export function NewTaskScreen(props: NewTaskScreenProps): ReactNode {
       <NewTaskPane
         autoFocus
         deploymentId={deploymentId}
+        draftId={draftId}
         hostClient={hostClient}
-        key={`${deploymentId}:${workspaceId}`}
+        key={`${deploymentId}:${draftId}`}
         onStarted={onStarted}
         underHeader
         workspaceId={workspaceId}
@@ -142,6 +146,7 @@ const selectUserId = (snapshot: { readonly user: { readonly id: string } | null 
 export function NewTaskPane(props: {
   readonly autoFocus: boolean;
   readonly deploymentId: string;
+  readonly draftId: string;
   readonly hostClient: HostClient;
   /**
    * The Host has made the task. Answers whether the reader is now looking at
@@ -166,6 +171,7 @@ export function NewTaskPane(props: {
 function NewTask(props: {
   readonly autoFocus: boolean;
   readonly deploymentId: string;
+  readonly draftId: string;
   readonly hostClient: HostClient;
   readonly onStarted: (threadId: string) => boolean;
   readonly underHeader: boolean;
@@ -177,16 +183,20 @@ function NewTask(props: {
   const client = useMobileClient();
   const drafts = client.drafts;
   const { snapshot } = useHostSnapshot(props.hostClient, sameNewTaskSnapshot);
-  const { deploymentId, hostClient, onStarted, userId, workspaceId } = props;
-  const draftKey = newTaskDraftKey(workspaceId);
+  const { deploymentId, draftId, hostClient, onStarted, userId, workspaceId } = props;
+  const draftKey = newTaskDraftKey(draftId);
+  useLayoutEffect(
+    () => drafts.placeNewTaskDraft(deploymentId, userId, draftId, workspaceId),
+    [deploymentId, draftId, drafts, userId, workspaceId],
+  );
   useSyncExternalStore(drafts.subscribe, drafts.getVersion);
   const draft = drafts.readDraft(deploymentId, userId, draftKey);
   const text = draft?.text ?? "";
   const held = drafts.readPending(deploymentId, userId, draftKey);
   const input = useRef<TextInputInstance>(null);
   const files = useMemo<FirstMessageAttachmentDraftScope>(
-    () => ({ deploymentId, kind: "new-task", userId, workspaceId }),
-    [deploymentId, userId, workspaceId],
+    () => ({ deploymentId, draftId, kind: "new-task", userId }),
+    [deploymentId, draftId, userId],
   );
   // The message and task it starts, already handed to the Host under keys it
   // may have accepted, are read from the same draft store as another view.

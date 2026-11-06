@@ -827,11 +827,11 @@ integration.sequential("iPhone integrations Host contract", () => {
     const gateway = keep(await integrationGateway(run.integrationTools));
     await grant(host, gateway, connection.id, "read-write");
     const search = await gateway.call("integration_search", { query: "Calendar" });
-    const writeRef = operation(search, "create_event").toolRef;
+    const writeAddress = operation(search, "create_event").address;
     expect(
       await gateway.call("integration_call", {
         arguments: {},
-        toolRef: operation(search, "list_calendars").toolRef,
+        ...operation(search, "list_calendars").address,
       }),
     ).toEqual({ calendars: [] });
     const before = phone.invocations.length;
@@ -844,7 +844,7 @@ integration.sequential("iPhone integrations Host contract", () => {
         (
           await gateway.callRaw("integration_call", {
             arguments: args,
-            toolRef: operation(search, "list_events").toolRef,
+            ...operation(search, "list_events").address,
           })
         ).isError,
       ).toBe(true);
@@ -875,7 +875,7 @@ integration.sequential("iPhone integrations Host contract", () => {
       (
         await gateway.callRaw("integration_call", {
           arguments: { title: "no write", start: "2026-10-28T12:00", end: "2026-10-28T13:00" },
-          toolRef: writeRef,
+          ...writeAddress,
         })
       ).isError,
     ).toBe(true);
@@ -933,8 +933,8 @@ integration.sequential("iPhone integrations Host contract", () => {
       ),
     );
     const phoneTools = await gateway.call("integration_search", { query: "Calendar" });
-    const phoneReadRef = operation(phoneTools, "list_calendars").toolRef;
-    const phoneWriteRef = operation(phoneTools, "create_event").toolRef;
+    const phoneReadAddress = operation(phoneTools, "list_calendars").address;
+    const phoneWriteAddress = operation(phoneTools, "create_event").address;
     await phone.disconnectStream();
     expect(
       toolReadiness(await gateway.call("integration_search", { query: "Calendar" }), "list_events")
@@ -991,7 +991,7 @@ integration.sequential("iPhone integrations Host contract", () => {
         start: "2026-10-28T12:00",
         end: "2026-10-28T13:00",
       },
-      toolRef: phoneWriteRef,
+      ...phoneWriteAddress,
     });
     expect(toolText(lost)).toBe(
       "Test iPhone did not confirm this. Check whether it happened before trying again.",
@@ -1007,7 +1007,7 @@ integration.sequential("iPhone integrations Host contract", () => {
     expect(macCalls).toHaveLength(0);
     await phone.disconnectStream();
     expect(
-      toolText(await gateway.callRaw("integration_call", { arguments: {}, toolRef: phoneReadRef })),
+      toolText(await gateway.callRaw("integration_call", { arguments: {}, ...phoneReadAddress })),
     ).toBe(offline("Test iPhone"));
     await phone.close();
     await waitForCondition(
@@ -1015,7 +1015,7 @@ integration.sequential("iPhone integrations Host contract", () => {
         (await machines(host)).find(({ id }) => id === phone.runnerId)?.status === "offline",
     );
     expect(
-      toolText(await gateway.callRaw("integration_call", { arguments: {}, toolRef: phoneReadRef })),
+      toolText(await gateway.callRaw("integration_call", { arguments: {}, ...phoneReadAddress })),
     ).toBe(offline("Test iPhone"));
     expect(macCalls).toHaveLength(0);
     await writeFile(
@@ -1273,14 +1273,14 @@ async function grant(
   connectionId: string,
   access: IntegrationAccess,
 ) {
-  await gateway.call("integration_request", {
+  const held = gateway.call("integration_request", {
     access,
     integration: "apple-calendar",
     reason: "Use phone Calendar",
   });
-  const request = (await host.store.requests.listPendingIntegrationAccessRequests(host.ownerId)).at(
-    -1,
-  )!;
+  const pending = () => host.store.requests.listPendingIntegrationAccessRequests(host.ownerId);
+  await waitForCondition(async () => (await pending()).length > 0);
+  const request = (await pending()).at(-1)!;
   await testRpcData(
     host.origin,
     "commands.dispatch",
@@ -1301,4 +1301,5 @@ async function grant(
     },
     { headers: host.ownerHeaders },
   );
+  await held;
 }

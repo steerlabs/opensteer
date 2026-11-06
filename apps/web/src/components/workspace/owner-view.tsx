@@ -4,6 +4,7 @@ import {
   ownerViewDestination,
   type HostClient,
   type HostSnapshot,
+  type NativeViewerSource,
   type PlaceItem,
   type WorkspaceSurfaceDestination,
 } from "@opensteer/client/host";
@@ -11,6 +12,7 @@ import { useHostSelector } from "@opensteer/client/react";
 import { computerAppIdentityKey, type ComputerView } from "@opensteer/protocol";
 import { actionErrorMessage, usePageVisible } from "../../ui-utils.js";
 import { AppMark } from "../computer-apps/computer-use-section.js";
+import { ComputerStopButton } from "../computer-watch.js";
 import { ComputerDisplayScreen, PhoneControlBar, useComputerDisplay } from "../phone-display.js";
 import {
   canStreamComputerDisplay,
@@ -32,6 +34,8 @@ const renewSoonMs = 90_000;
  * The person's independent view: a phone display or negotiated Mac app control.
  * Visible retainers renew its authority independently of tasks and transport
  * recovery. Closing it ends this generation without closing the app or task.
+ * A phone's tab with no view yet is the same page, while its view opens or,
+ * when that was refused, waiting for a press of Open.
  */
 export function OwnerView({
   destination,
@@ -39,7 +43,9 @@ export function OwnerView({
   hostClient,
   hostConnected,
   leading,
+  opening = false,
   place,
+  source: phoneSource,
   trailing,
 }: {
   readonly destination: OwnerDestination;
@@ -47,11 +53,20 @@ export function OwnerView({
   readonly hostClient: HostClient;
   readonly hostConnected: boolean;
   readonly leading: ReactNode;
+  /** A phone's tab is opening its view by itself. */
+  readonly opening?: boolean;
   readonly place: PlaceItem | null;
+  /** A phone's address names no view: its tab says which one is live. */
+  readonly source?: Extract<NativeViewerSource, { kind: "owner-view" }> | null;
   readonly trailing: ReactNode;
 }) {
   const visible = usePageVisible();
-  const source = destination.source?.kind === "owner-view" ? destination.source : null;
+  const source =
+    destination.kind === "phone"
+      ? (phoneSource ?? null)
+      : destination.source?.kind === "owner-view"
+        ? destination.source
+        : null;
   const viewId = source?.viewId ?? "";
   const generation = source?.generation ?? 0;
   const { localMachine, nav } = useWorkspace();
@@ -197,6 +212,7 @@ export function OwnerView({
   };
 
   const held = (place?.occupants.length ?? 0) > 0;
+  const closesTab = place?.phoneTab === true && place.closable;
   const menu: SurfaceMenuItem[] = [
     ...(shown
       ? [
@@ -207,36 +223,43 @@ export function OwnerView({
           },
         ]
       : []),
-    ...(place?.ownerClose
-      ? [
-          {
-            detail: held ? "The task keeps working" : `${targetName} stays open`,
-            icon: "close" as const,
-            label: "Close view",
-            onSelect: () => requestClose(place),
-          },
-        ]
-      : []),
+    ...(closesTab
+      ? [{ icon: "close" as const, label: "Close tab", onSelect: () => requestClose(place) }]
+      : place?.ownerClose
+        ? [
+            {
+              detail: held ? "The task keeps working" : `${targetName} stays open`,
+              icon: "close" as const,
+              label: "Close view",
+              onSelect: () => requestClose(place),
+            },
+          ]
+        : []),
   ];
 
-  const reopenEligible = hostConnected && ownerViewComputerReadiness(machine, phone) === null;
+  const computer = ownerViewComputerReadiness(machine, phone);
+  const reopenEligible = hostConnected && computer === null;
+  const resting = phone && source === null;
   const state: { readonly words: string; readonly busy: boolean; readonly reopen: boolean } | null =
     readiness !== null
       ? {
-          busy: readiness === "opening" || readiness === "connecting",
+          busy: opening || readiness === "opening" || readiness === "connecting",
           reopen:
+            !opening &&
             reopenEligible &&
             (current === null || (current.state !== "ready" && current.state !== "opening")),
           words:
             current === null && view !== null
               ? "This view was replaced."
-              : readiness === "opening"
+              : opening || readiness === "opening"
                 ? `Opening ${targetName}…`
-                : computerReasonWords(readiness, {
-                    machine: machineName,
-                    phone,
-                    target: targetName,
-                  }),
+                : resting && computer === null
+                  ? `Open ${machineName} to see it and use it.`
+                  : computerReasonWords(resting && computer !== null ? computer : readiness, {
+                      machine: machineName,
+                      phone,
+                      target: targetName,
+                    }),
         }
       : display.reason
         ? {
@@ -274,7 +297,7 @@ export function OwnerView({
           <span className="computer-watch__app">{targetName}</span>
           {phone ? null : <span className="computer-watch__place">{machineName}</span>}
         </span>
-        {!inputAvailable ? (
+        {!inputAvailable && !resting ? (
           <span className="owner-view__view-only" title="You can watch it here, not use it">
             <Icon name="eye" />
             View only
@@ -282,6 +305,16 @@ export function OwnerView({
         ) : null}
         {marks}
         <span className="computer-watch__spacer" />
+        {place?.task ? (
+          <ComputerStopButton
+            hostClient={hostClient}
+            hostConnected={hostConnected}
+            label={`Stop the agent using ${machineName}`}
+            machineName={machineName}
+            runId={place.task.runId}
+            sessionId={place.task.sessionId}
+          />
+        ) : null}
         {local ? (
           <button className="btn owner-view__use" onClick={() => void useHere()} type="button">
             <Icon name="external-link" />
@@ -326,7 +359,7 @@ export function OwnerView({
                 onClick={() => void reopen()}
                 type="button"
               >
-                {reopening ? "Opening…" : "Open again"}
+                {reopening ? "Opening…" : resting ? "Open" : "Open again"}
               </button>
             ) : null}
           </div>

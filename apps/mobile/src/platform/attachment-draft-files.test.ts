@@ -142,6 +142,40 @@ describe("sharing a Host attachment", () => {
   });
 });
 
+describe("new-task attachment drafts", () => {
+  const first = {
+    deploymentId,
+    draftId: "0192f4a1-7777-4000-8000-000000000007",
+    kind: "new-task" as const,
+    userId,
+  };
+  const second = { ...first, draftId: "0192f4a1-8888-4000-8000-000000000008" };
+
+  it("keeps each draft's files out of every other draft's reach", async () => {
+    disk.files.set("file:///picker/source.txt", sourceBytes);
+    const picked = await draftFiles.pickChatFile(first);
+    expect(picked?.localUri).toContain(`/new-task-${first.draftId}/`);
+    expect(() => draftFiles.openChatDraftFile(second, picked!.localUri)).toThrow();
+    expect(() => draftFiles.removeChatDraftFile(second, picked!.localUri)).toThrow();
+    expect(disk.files.has(picked!.localUri)).toBe(true);
+    draftFiles.removeChatDraftFile(first, picked!.localUri);
+    expect(disk.files.has(picked!.localUri)).toBe(false);
+  });
+
+  it("still finds a file saved under its Workspace's one draft", () => {
+    const workspaceId = "wsp_0192f4a1-4444-4000-8000-000000000004";
+    const saved = `file:///documents/attachment-drafts/${deploymentId}/${userId}/new-task-${workspaceId}/00000000-0000-4000-8000-000000000001.draft`;
+    disk.files.set(saved, sourceBytes);
+    expect(draftFiles.openChatDraftFile({ ...first, draftId: workspaceId }, saved).uri).toBe(saved);
+  });
+
+  it("refuses a draft id that would name another folder", async () => {
+    await expect(draftFiles.pickChatFile({ ...first, draftId: "../thread" })).rejects.toThrow(
+      "invalid scope",
+    );
+  });
+});
+
 describe("Home-intro attachment drafts", () => {
   it("copies a picked file under an explicit local intro scope while rejecting malformed Threads", async () => {
     const picked = await draftFiles.pickChatFile(intro);

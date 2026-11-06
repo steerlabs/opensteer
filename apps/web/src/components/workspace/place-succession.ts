@@ -7,18 +7,24 @@ import {
   type PlaceItem,
   type PlaceListSource,
 } from "@opensteer/client/host";
-import { useHostSelector, usePlaceList, useBrowserTabStrip } from "@opensteer/client/react";
+import {
+  useBrowserPopupFollow,
+  useBrowserTabStrip,
+  useHostSelector,
+  usePlaceList,
+} from "@opensteer/client/react";
 import { destinationPlaceKey, placeAddress } from "./navigation.js";
 import { tabSections } from "./tab-order.js";
 import { useWorkspace } from "./workspace-context.js";
 
 /**
  * The row that takes the middle when the place it showed is no longer listed,
- * as a browser picks the tab beside a closed one: the nearest independent
- * row after it on its side of the Tabs' hairline, else before it. Owner and
- * task destinations keep their own authority and never replace each other. Web
- * tabs stay on their side of the hairline. A row that cannot
- * be shown is passed over; null when none is left.
+ * as a browser picks a tab after one closes: the tab that opened it, so a
+ * finished sign-in returns to the page that asked for it, else the nearest
+ * independent row after it on its side of the Tabs' hairline, else before it.
+ * A Mac app's owner and task destinations keep their own authority and never
+ * replace each other. Web tabs stay on their side of the hairline. A row that
+ * cannot be shown is passed over; null when none is left.
  */
 export function placeSuccessor(
   before: readonly PlaceItem[],
@@ -31,7 +37,9 @@ export function placeSuccessor(
   if (at < 0) return null;
   const previous = order[at]!;
   const listed = new Map(after.map((place) => [place.key, place]));
-  for (const candidate of [...order.slice(at + 1), ...order.slice(0, at).reverse()]) {
+  const openerId = previous.workspaceTab?.openerId;
+  const opener = order.filter((place) => openerId && place.workspaceTab?.id === openerId);
+  for (const candidate of [...opener, ...order.slice(at + 1), ...order.slice(0, at).reverse()]) {
     const place = listed.get(candidate.key);
     if (
       place &&
@@ -45,8 +53,7 @@ export function placeSuccessor(
   return null;
 }
 
-const independent = (place: PlaceItem) =>
-  place.kind === "browser" || place.kind === "opensteer-app";
+const independent = (place: PlaceItem) => place.kind !== "app";
 
 /**
  * One rule for the place in the middle going away, whoever made it go — ×,
@@ -74,6 +81,9 @@ export function usePlaceSuccession(hostClient: HostClient): void {
     selection.kind === "place" && selection.destination.kind === "browser"
       ? selection.destination
       : null;
+  useBrowserPopupFollow(hostClient, browser, (tabId) => {
+    if (browser) nav.showPlace({ kind: "browser", sessionId: browser.sessionId, tabId });
+  });
   const group = browser
     ? source.workspaceTabs?.find(
         (group) =>

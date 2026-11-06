@@ -40,7 +40,6 @@ import {
   SpecialistManifestSchema,
   type SpecialistRegistration,
   type SpecialistManifest,
-  type SpecialistBinding,
   AgentEventSchema,
   PlaceEnteredEventViewSchema,
   AssignmentIdSchema,
@@ -1544,6 +1543,7 @@ function mockConflict(message: string): HostClientRequestError {
  */
 const mockMachines: readonly MachineSummary[] = [
   {
+    tabOpenedAt: null,
     // The Mac this deployment runs on: it offers Messages and can read it.
     apps: [
       {
@@ -1611,6 +1611,7 @@ const mockMachines: readonly MachineSummary[] = [
     unlinkedLocalFolders: 0,
   },
   {
+    tabOpenedAt: null,
     // A Mac offering Messages that macOS has not let Opensteer read yet.
     apps: [
       {
@@ -1692,6 +1693,7 @@ const mockMachines: readonly MachineSummary[] = [
     unlinkedLocalFolders: 1,
   },
   {
+    tabOpenedAt: null,
     // A Mac with Messages on that is asleep. `apps` is null because a computer
     // that is away reports nothing, so the row reads the connection alone and
     // says the change waits rather than claiming the app is broken.
@@ -1726,6 +1728,7 @@ const mockMachines: readonly MachineSummary[] = [
     unlinkedLocalFolders: 0,
   },
   {
+    tabOpenedAt: mockAgentPhoneSession.openedAt,
     // An Android phone set up over USB: it lends its screen to one task.
     apps: [
       {
@@ -1768,6 +1771,7 @@ const mockMachines: readonly MachineSummary[] = [
     unlinkedLocalFolders: 0,
   },
   {
+    tabOpenedAt: null,
     // A service the deployment provisioned: it offers no apps and says so.
     apps: null,
     access: {
@@ -2492,6 +2496,9 @@ function placeMockMessage(
 
 async function executeMockCommand(client: MockHostState, command: HostApiCommand) {
   switch (command.type) {
+    case "phone.tab.close":
+      client.closePhoneTab(command.machineId);
+      return rpcSuccess(hostApi["commands.dispatch"].success.parse({ type: command.type }));
     case "app.tab.open":
     case "app.tab.close":
       client.setAppTab(command.appId, command.type === "app.tab.open");
@@ -3044,8 +3051,6 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
         type: command.type,
         specialist: await client.addSpecialist(command.workspaceId, command.pluginId),
       });
-    case "specialist.bind":
-      return rpcSuccess({ type: command.type, specialist: client.bindSpecialist(command) });
     case "specialist.remove":
       client.removeSpecialist(command.workspaceId, command.specialistId);
       return rpcSuccess({ type: command.type });
@@ -3891,7 +3896,8 @@ export class MockHostClient implements HostClient {
     this.retainComputerView = views.retainComputerView;
     this.openComputerView = async (...args) => {
       const view = await views.openComputerView(...args);
-      if (view.target.kind === "phone" && view.state === "ready")
+      if (view.target.kind === "phone") this.#state.openPhoneTab(view.machineId);
+      if (view.target.kind === "phone" && view.state === "ready" && args[2]?.wake !== false)
         sharedDisplayStreams(this).armAutoWake({
           kind: "owner-view",
           viewId: view.viewId,
@@ -4367,6 +4373,9 @@ export class MockHostClient implements HostClient {
   }
   async closeAppTab(appId: string): Promise<void> {
     this.#state.setAppTab(appId, false);
+  }
+  async closePhoneTab(machineId: string): Promise<void> {
+    this.#state.closePhoneTab(machineId);
   }
   async viewApp(
     _appId: string,
@@ -5015,6 +5024,39 @@ interface MockPlugin {
   updatedAt: string;
 }
 class MockHostState {
+  openPhoneTab(machineId: string) {
+    this.update({
+      ...this.snapshot,
+      machines: this.snapshot.machines.map((machine) =>
+        machine.id === machineId
+          ? { ...machine, tabOpenedAt: machine.tabOpenedAt ?? this.now().toISOString() }
+          : machine,
+      ),
+    });
+  }
+  /** As the Host does: the person's view goes with the tab, and a held phone refuses. */
+  closePhoneTab(machineId: string) {
+    const machine = this.snapshot.machines.find(({ id }) => id === machineId);
+    if (machine?.computerUse?.sessions.some(({ display }) => display))
+      throw new Error("An agent is using this phone. Stop it to close the tab.");
+    this.update({
+      ...this.snapshot,
+      machines: this.snapshot.machines.map((value) =>
+        value.id === machineId
+          ? {
+              ...value,
+              tabOpenedAt: null,
+              computerUse: value.computerUse && {
+                ...value.computerUse,
+                ownerViews: value.computerUse.ownerViews?.filter(
+                  ({ target }) => target.kind !== "phone",
+                ),
+              },
+            }
+          : value,
+      ),
+    });
+  }
   setAppTab(appId: string, open: boolean) {
     const appTabs = (this.snapshot.appTabs ?? []).filter((tab) => tab.appId !== appId);
     if (open) {
@@ -5128,7 +5170,6 @@ class MockHostState {
     pluginId: string;
     pluginVersionId: string;
     ownerUserId: string;
-    bindings: SpecialistBinding[];
     manifest: SpecialistManifest;
   }[] = [];
   listSpecialists(workspaceId: string) {
@@ -5138,77 +5179,6 @@ class MockHostState {
   }
   private refreshSpecialist(s: (typeof this.specialists)[number]): SpecialistRegistration {
     const plugin = this.plugins.find((p) => p.id === s.pluginId)!;
-    const main =
-      this.snapshot.homeWorkspaceId === s.workspaceId && s.ownerUserId === this.snapshot.user?.id;
-    const access = (s.manifest.access ?? []).map((requirement, index) => {
-      const candidates =
-        requirement.type === "browser-profile"
-          ? this.snapshot.browserProfiles
-              .filter(
-                (p) =>
-                  main ||
-                  this.snapshot.browserProfileGrants.some(
-                    (g) =>
-                      g.workspaceId === s.workspaceId &&
-                      g.profileId === p.id &&
-                      (g.access === "read-write" || g.access === requirement.level),
-                  ),
-              )
-              .map((p) => ({ resourceId: p.id, name: p.name }))
-          : this.integrations.connections
-              .filter(
-                (c) =>
-                  c.status === "connected" &&
-                  (requirement.type === "integration"
-                    ? c.provider === requirement.service || c.definitionId === requirement.service
-                    : requirement.type === "phone"
-                      ? c.definitionId === "android-phone"
-                      : c.definitionId === "macos-app" &&
-                        c.computer?.app?.bundleId.toLowerCase() ===
-                          requirement.app.toLowerCase()) &&
-                  (!c.computer ||
-                    (c.computer.blockedAt === null &&
-                      (c.computer.access === "read-write" ||
-                        c.computer.access === requirement.level))) &&
-                  (main ||
-                    this.integrations.grants.some(
-                      (g) =>
-                        g.workspaceId === s.workspaceId &&
-                        g.ownerUserId === s.ownerUserId &&
-                        g.connectionId === c.id &&
-                        g.status === "active" &&
-                        g.revokedAt === null &&
-                        (g.access === "read-write" || g.access === requirement.level),
-                    )),
-              )
-              .map((c) => ({ resourceId: c.id, name: c.id }));
-      const previous = s.bindings.find((b) => b.requirement === index);
-      const resourceId =
-        previous && !previous.rebind && candidates.some((c) => c.resourceId === previous.resourceId)
-          ? previous.resourceId
-          : !previous && candidates.length === 1
-            ? candidates[0]!.resourceId
-            : null;
-      const binding = resourceId
-        ? { requirement: index, resourceId, level: requirement.level }
-        : null;
-      return {
-        ...requirement,
-        binding,
-        candidates,
-        state: binding
-          ? ("bound" as const)
-          : previous
-            ? ("rebind" as const)
-            : candidates.length
-              ? ("choose" as const)
-              : ("needs-access" as const),
-      };
-    });
-    s.bindings = access.flatMap((a, index) => {
-      const previous = s.bindings.find((b) => b.requirement === index);
-      return a.binding ? [a.binding] : previous ? [{ ...previous, rebind: true }] : [];
-    });
     return {
       id: s.id,
       workspaceId: s.workspaceId,
@@ -5217,13 +5187,13 @@ class MockHostState {
       ownerUserId: s.ownerUserId,
       ownerName:
         s.ownerUserId === this.snapshot.user?.id ? this.snapshot.user.displayName : s.ownerUserId,
-      canUse: s.ownerUserId === this.snapshot.user?.id && access.every((a) => a.binding),
+      canUse: s.ownerUserId === this.snapshot.user?.id,
       plugin: plugin.name,
       version: plugin.versions.find((v) => v.id === s.pluginVersionId)!.digest,
       models: s.manifest.models,
       fallback: s.manifest.fallback,
-      status: access.every((a) => a.binding) ? "ready" : "pending",
-      access,
+      status: "ready",
+      access: [],
     };
   }
   async addSpecialist(workspaceId: string, pluginId: string) {
@@ -5251,32 +5221,11 @@ class MockHostState {
       pluginId,
       pluginVersionId: version.id,
       ownerUserId,
-      bindings: [],
       manifest: version.specialistManifest,
     };
     if (previous) this.specialists.splice(this.specialists.indexOf(previous), 1);
     this.specialists.push(registration);
     return this.refreshSpecialist(registration);
-  }
-  bindSpecialist(input: {
-    workspaceId: string;
-    specialistId: string;
-    requirement: number;
-    resourceId: string;
-  }) {
-    const s = this.specialists.find(
-      (s) => s.id === input.specialistId && s.workspaceId === input.workspaceId,
-    );
-    if (!s || s.ownerUserId !== this.snapshot.user?.id)
-      throw new Error("Only the consent owner may bind this specialist");
-    const requirement = this.refreshSpecialist(s).access[input.requirement];
-    if (!requirement?.candidates.some((c) => c.resourceId === input.resourceId))
-      throw new Error("Choose a currently allowed candidate");
-    s.bindings = [
-      ...s.bindings.filter((b) => b.requirement !== input.requirement),
-      { requirement: input.requirement, resourceId: input.resourceId, level: requirement.level },
-    ];
-    return this.refreshSpecialist(s);
   }
   removeSpecialist(workspaceId: string, id: string) {
     const index = this.specialists.findIndex(
@@ -8711,6 +8660,7 @@ class MockHostState {
       machines: [
         ...this.snapshot.machines,
         {
+          tabOpenedAt: null,
           access: null,
           // A row still waiting to connect has reported no apps either.
           apps: null,
@@ -8824,6 +8774,7 @@ class MockHostState {
       machines: [
         ...this.snapshot.machines,
         {
+          tabOpenedAt: null,
           access: null,
           apps: null,
           allowedModules: ["integrations"],

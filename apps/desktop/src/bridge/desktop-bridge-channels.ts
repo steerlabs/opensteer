@@ -44,6 +44,7 @@ export const desktopBridgeChannels = {
   glassScene: "opensteer.desktop.browser.glassScene",
   reportDisplayDiagnostic: "opensteer.desktop.display.diagnostic",
   reportRealtimeDiagnostic: "opensteer.desktop.realtime.diagnostic",
+  reportRendererFailure: "opensteer.desktop.renderer.failure",
   getLocalVisibility: "opensteer.desktop.visibility.get",
   localVisibilityChanged: "opensteer.desktop.visibility.changed",
   useComputerViewOnThisMac: "opensteer.desktop.computer-use.use-owner-view",

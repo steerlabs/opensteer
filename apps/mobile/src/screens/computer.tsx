@@ -134,20 +134,16 @@ function ComputerDetail(props: {
     setOpeningPhone(true);
     setOpenFailure(null);
     try {
-      const source = await openPhoneOwnerView(
+      const opened = await openPhoneOwnerView(
         props.hostClient,
         props.machineId,
         () => mounted.current && navigation.isFocused(),
       );
-      if (source)
+      if (opened)
         navigation.dispatch(
           StackActions.push(
             "WorkspaceBrowser",
-            workspaceRoute(props.deploymentId, {
-              kind: "phone",
-              machineId: props.machineId,
-              source,
-            }),
+            workspaceRoute(props.deploymentId, { kind: "phone", machineId: props.machineId }),
           ),
         );
     } catch (error) {

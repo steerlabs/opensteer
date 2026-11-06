@@ -19,6 +19,7 @@ import {
 } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import path from "node:path";
 import { promisify } from "node:util";
 import {
@@ -393,7 +394,16 @@ async function main(): Promise<void> {
   const fixture = fixtureHtml();
   artifacts.json("fixtures.json", {
     sha256: createHash("sha256").update(fixture).digest("hex"),
-    paths: ["/p", "/q", "/no-meta", "/tall", "/redirect", "/image.svg"],
+    paths: [
+      "/p",
+      "/q",
+      "/no-meta",
+      "/tall",
+      "/redirect",
+      "/image.svg",
+      "/frame-opener",
+      "/frame-button",
+    ],
   });
   const server = createServer((request, response) => {
     if (serveDownloadFixture(request, response) || serveBrowserPopupFixture(request, response))
@@ -432,6 +442,17 @@ async function main(): Promise<void> {
     }
     if (request.url === "/redirect") {
       response.writeHead(302, { location: "/q" }).end();
+      return;
+    }
+    if (request.url === "/frame-opener" || request.url === "/frame-button") {
+      const { port } = server.address() as AddressInfo;
+      response
+        .writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" })
+        .end(
+          request.url === "/frame-opener"
+            ? `<!doctype html><title>Frame opener</title><iframe id="frame" style="border:0;width:600px;height:400px" src="http://localhost:${port}/frame-button"></iframe>`
+            : `<!doctype html><body style="margin:0"><button style="width:100vw;height:100vh" onclick="window.open('/q','_blank')">Popup</button>`,
+        );
       return;
     }
     if (request.url === "/image.svg") {
@@ -812,6 +833,8 @@ registerHooks({load(url,context,next){const result=next(url,context);if(!url.end
         transport.openBrowserSurface(id, connection, url),
       passkeyConsumerToken: (ownerId, connectionId, surfaceId) =>
         transport.passkeyConsumerToken(ownerId, connectionId, surfaceId),
+      viewerConsumerToken: (ownerId, connectionId, surfaceId) =>
+        transport.viewerConsumerToken(ownerId, connectionId, surfaceId),
       observeBrowserSockets: (listener) =>
         transport.observeBrowserSockets((event) => {
           const before = windowInventory();

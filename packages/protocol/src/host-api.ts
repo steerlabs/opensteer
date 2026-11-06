@@ -374,6 +374,11 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     appId: AppIdSchema,
     idempotencyKey: idempotencyKeySchema,
   }),
+  z.strictObject({
+    type: z.literal("phone.tab.close"),
+    machineId: RunnerIdSchema,
+    idempotencyKey: idempotencyKeySchema,
+  }),
   ComputerViewOpenCommandSchema,
   ComputerViewCloseCommandSchema,
   ComputerViewRenewCommandSchema,
@@ -916,14 +921,6 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
-    type: z.literal("specialist.bind"),
-    workspaceId: WorkspaceIdSchema,
-    specialistId: z.string().min(1),
-    requirement: z.number().int().nonnegative(),
-    resourceId: z.string().min(1),
-  }),
-  z.strictObject({
-    idempotencyKey: idempotencyKeySchema,
     type: z.literal("specialist.remove"),
     workspaceId: WorkspaceIdSchema,
     specialistId: z.string().min(1),
@@ -1420,7 +1417,6 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("plugin.update") }),
   z.object({ type: z.literal("plugin.remove") }),
   z.object({ type: z.literal("specialist.add"), specialist: SpecialistRegistrationViewSchema }),
-  z.object({ type: z.literal("specialist.bind"), specialist: SpecialistRegistrationViewSchema }),
   z.object({ type: z.literal("specialist.remove") }),
   z.object({
     type: z.literal("specialist.list"),
@@ -1541,6 +1537,7 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("app.tab.open"), appTabs: AppTabsSchema }),
   z.object({ type: z.literal("app.tab.close"), appTabs: AppTabsSchema }),
+  z.object({ type: z.literal("phone.tab.close") }),
   z.object({ type: z.literal("browser.session.close") }),
   z.object({ type: z.literal("browser.history.remove") }),
   z.object({ type: z.literal("browser.history.clear") }),
@@ -1607,6 +1604,8 @@ export const hostApi = defineRpc({
     z.object({
       app: AppSchema,
       path: z.string().regex(/^\/v1\/apps\/app_[0-9a-f-]{36}\/(light|dark)\/[A-Za-z0-9_-]{43}\/$/u),
+      /** One-use address on the app's own origin; absent on routes without one. */
+      entryUrl: z.url().max(512).optional(),
     }),
   ),
   "attachment.get": declaration("GET", AttachmentReferenceInputSchema, AttachmentSchema),

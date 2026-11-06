@@ -46,10 +46,13 @@ function onPlatform(platform: NodeJS.Platform): void {
 function fixture() {
   let observe = (_event: DesktopBrowserSocketObservation) => {};
   let input = () => {};
+  let humanInput = () => {};
   const passkeyConsumerToken = vi.fn<() => string | null>(() => null);
+  const viewerConsumerToken = vi.fn<() => string | null>(() => null);
   const manager = new DesktopBrowserPresentationManager({
     transport: {
       passkeyConsumerToken,
+      viewerConsumerToken,
       observeBrowserSockets: (fn) => {
         observe = fn;
         return () => {};
@@ -103,6 +106,7 @@ function fixture() {
     sessionId,
     surfaceId,
     passkeyInput: vi.fn(),
+    viewerInput: vi.fn(),
     page: {
       native,
       isClosed: () => false,
@@ -110,6 +114,12 @@ function fixture() {
         input = listener;
         return () => {
           input = () => {};
+        };
+      },
+      observeHumanInput: (listener: () => void) => {
+        humanInput = listener;
+        return () => {
+          humanInput = () => {};
         };
       },
     },
@@ -138,7 +148,9 @@ function fixture() {
     contents,
     unregister,
     passkeyConsumerToken,
+    viewerConsumerToken,
     input: () => input(),
+    humanInput: () => humanInput(),
   };
 }
 
@@ -373,6 +385,23 @@ it("attributes native page input only to the window's admitted presentation cons
   f.surface.passkeyInput.mockClear();
   f.input();
   expect(f.surface.passkeyInput).not.toHaveBeenCalled();
+});
+
+it("names the viewer behind a person's input to the page, however it reached the page", async () => {
+  const f = fixture();
+  const token = "00000000-0000-4000-8000-000000000004";
+  f.native.waitForPaint = () => Promise.resolve();
+  f.socket("admitted");
+  await f.manager.present(f.sender, f.request);
+  await Promise.resolve();
+  f.viewerConsumerToken.mockReturnValue(token);
+  f.humanInput();
+  expect(f.surface.viewerInput).toHaveBeenLastCalledWith(token);
+  expect(f.viewerConsumerToken).toHaveBeenLastCalledWith(f.sender.id, "control", surfaceId);
+  f.socket("closed");
+  f.surface.viewerInput.mockClear();
+  f.humanInput();
+  expect(f.surface.viewerInput).not.toHaveBeenCalled();
 });
 
 it.each(["release", "replacement", "failure", "zero-size"] as const)(

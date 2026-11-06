@@ -3007,6 +3007,73 @@ describe("BrowserService", () => {
     });
   });
 
+  it("tells a popup only to the viewer whose input opened it, if it asked to hear", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
+    const ownerId = createId("user");
+    const workspaceId = createId("workspace");
+    const service = freshService({
+      keys,
+      runtime,
+      repository: new MemoryBrowserRepository(ownerId, workspaceId),
+      targetControl: true,
+    });
+    const opened = await service.openAgentSession({
+      agentBindingId: "run:popup",
+      ownerId,
+      workspaceId,
+      fresh: true,
+    });
+    const attach = async (
+      name: string,
+      options: { readonly mode?: "control" | "watch"; readonly popupFollow?: boolean },
+    ) => {
+      const peer = new RecordingPeer(name);
+      await service.attach(ownerId, opened.session.id, peer, {
+        ...consumerOptions(),
+        ...options,
+      });
+      const snapshot = BrowserServerMessageSchema.parse(peer.text()[0]);
+      if (snapshot.type !== "browser.snapshot") throw new Error("Missing snapshot");
+      return { peer, token: snapshot.consumerToken };
+    };
+    const actor = await attach("popup-actor", { popupFollow: true });
+    const bystander = await attach("popup-bystander", { popupFollow: true });
+    const old = await attach("popup-old", {});
+    const watcher = await attach("popup-watch", { mode: "watch", popupFollow: true });
+    expect(old.token).toBeUndefined();
+    expect(watcher.token).toBeUndefined();
+
+    runtime.sendServer({
+      type: "browser.popupFollow.opened",
+      surfaceId: "page-2",
+      consumerToken: actor.token!,
+    });
+    const marker = "popup-routing";
+    runtime.sendServer({
+      type: "browser.error",
+      error: { code: "conflict", message: marker, retryable: false },
+    });
+    const received = ({ peer }: { peer: RecordingPeer }) =>
+      peer.text().map((message) => BrowserServerMessageSchema.parse(message));
+    for (const viewer of [actor, bystander, old])
+      await waitFor(() =>
+        received(viewer).some(
+          (message) => message.type === "browser.error" && message.error.message === marker,
+        ),
+      );
+    const popups = (viewer: { peer: RecordingPeer }) =>
+      received(viewer).filter((message) => message.type === "browser.popupFollow.opened");
+    expect(popups(actor)).toEqual([
+      { type: "browser.popupFollow.opened", surfaceId: "page-2", consumerToken: actor.token },
+    ]);
+    expect(popups(bystander)).toEqual([]);
+    expect(popups(old)).toEqual([]);
+    expect(popups(watcher)).toEqual([]);
+  });
+
   it("clears picture credit when switching the same consumer to control and back", async () => {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {

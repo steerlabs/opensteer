@@ -19,9 +19,8 @@ Never mark yourself Done.
    `threadId: "home"`) and the tasks in its lineage: find them with `thread_list` with `limit: 50`
    or less and read their new messages with `thread_read`. Other tasks in Main reach you through
    `memory/inbox/`. Also read the morning notes in `memory/passes/nightly.md` and the mail,
-   Messages and calendar integrations connected to Main: find them with `integration_search`,
-   describe a new `toolRef` with `integration_describe`, and read with `integration_call`. Keep
-   pages small and stop at your saved positions.
+   Messages and calendar integrations connected to Main: find them with `integration_search` and
+   read with `integration_call`. Keep pages small and stop at your saved positions.
 3. Decide what deserves the person's attention now, using the per-person skill. Skip what is
    already in your state as reported, unless it changed, and anything `memory/forgotten.md` covers.
 4. If something does, send one `thread_message` with `threadId: "home"` and `delivery: "queue"`. Say

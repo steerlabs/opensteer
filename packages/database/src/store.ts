@@ -224,7 +224,7 @@ export class OpensteerStore {
     this.#database = database;
     this.#links = options.links ?? threadPathLinks;
     this.#executionNow = options.executionClock?.now ?? (() => Date.now());
-    this.requests = new RequestStore(database, this.#links);
+    this.requests = new RequestStore(database, this.#links, this.#executionNow);
     this.notificationState = new NotificationStateStore(database);
     this.browserHistory = new BrowserHistoryStore(database);
   }
@@ -517,6 +517,14 @@ export class OpensteerStore {
     readonly revokedComputerConnectionIds: readonly IntegrationConnectionId[];
   }> {
     return runnerStore.revokeRunner(this.#database, this.#links, runnerId, ownerId, options);
+  }
+
+  async openPhoneTab(runnerId: RunnerId): Promise<boolean> {
+    return runnerStore.openPhoneTab(this.#database, runnerId);
+  }
+
+  async closePhoneTab(runnerId: RunnerId): Promise<void> {
+    return runnerStore.closePhoneTab(this.#database, runnerId);
   }
 
   async renameRunner(
@@ -1961,6 +1969,21 @@ export class OpensteerStore {
 
   async restartExecutionLeases(leaseExpiresAt: Date): Promise<void> {
     return executionRecovery.restartExecutionLeases(this.#database, leaseExpiresAt);
+  }
+
+  async stopHeldRun(
+    claims: Parameters<OpensteerStore["assertActiveGrant"]>[0],
+    reason: "limit" | "queued-input",
+  ): Promise<BackgroundDeadlineStop | null> {
+    const stopped = await executionRecovery.stopHeldRun(
+      this.#database,
+      claims,
+      reason,
+      this.#links,
+      this.#executionNow,
+    );
+    if (stopped) this.#announce(stopped.revokedGrants);
+    return stopped;
   }
 
   async stopRunsPastBackgroundDeadline(

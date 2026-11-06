@@ -308,7 +308,8 @@ export class ScreencastController {
     if (
       event.type === "dialog-event" ||
       event.type === "geometry" ||
-      event.type === "navigation.committed"
+      event.type === "navigation.committed" ||
+      event.type === "popup"
     )
       return;
     const binding = this.surfaceId ? this.ledger.binding(this.surfaceId) : this.ledger.active();

@@ -600,6 +600,7 @@ export class RunnerRuntime {
         driverKind: kind,
         ...(installation ? { installation } : {}),
         mcpImageContent: capabilities?.mcpImageContent ?? false,
+        ...(capabilities?.longRequestHold ? { longRequestHold: true } : {}),
         ...(this.#canDeliverMessageAttachments(kind)
           ? {
               messageAttachments: {
@@ -2423,7 +2424,7 @@ export class RunnerRuntime {
         attachmentRoot && attachmentDirectory ? { attachmentDirectory, attachmentRoot } : {};
       this.#requireInputAttachments(command.inputs, attachments);
       this.#requireInputAttachments(command.reports.messages, attachments);
-      let writableRoots = this.#workspaceManager.writableRoots({
+      const writableRoots = this.#workspaceManager.writableRoots({
         plan: context.workspaceAccess,
         requestedBy: context.requestedBy,
         workspaceKind: context.workspaceKind,
@@ -2457,29 +2458,25 @@ export class RunnerRuntime {
         await mkdir(parent, { recursive: true });
         if ((await lstat(parent)).isSymbolicLink())
           throw new Error("Specialist directory cannot be a symlink");
-        const cwd = join(parent, context.specialistId);
-        await mkdir(cwd, { recursive: true });
-        if ((await lstat(cwd)).isSymbolicLink())
+        const pluginData = join(parent, context.specialistId);
+        await mkdir(pluginData, { recursive: true });
+        if ((await lstat(pluginData)).isSymbolicLink())
           throw new Error("Specialist directory cannot be a symlink");
         const pluginInstructions = (await readFile(join(pluginRoot, "INSTRUCTIONS.md"), "utf8"))
           .replaceAll("${PLUGIN_ROOT}", pluginRoot)
-          .replaceAll("${PLUGIN_DATA}", cwd);
+          .replaceAll("${PLUGIN_DATA}", pluginData);
         workspace = {
           ...workspace,
-          path: cwd,
           instructions: [
             workspace.instructions,
             pluginInstructions,
-            `PLUGIN_ROOT=${pluginRoot}\nPLUGIN_DATA=${cwd}\nName outputs per task; this folder is shared by this registration's tasks.`,
+            `PLUGIN_ROOT=${pluginRoot}\nPLUGIN_DATA=${pluginData}\nName outputs per task; this folder is shared by this registration's tasks.`,
           ]
             .filter(Boolean)
             .join("\n\n"),
         };
-        writableRoots = [cwd];
       }
-      const workspaceSkills = context.specialistId
-        ? await discoverWorkspaceSkills(workspace.path)
-        : await this.#scanWorkspaceSkills(context.workspaceId, workspace.path);
+      const workspaceSkills = await this.#scanWorkspaceSkills(context.workspaceId, workspace.path);
       for (const warning of workspaceSkills.warnings) {
         this.#logger?.info(warning, {
           runId: context.runId,
@@ -2686,7 +2683,7 @@ export class RunnerRuntime {
                 "plugins",
                 context.plugins.versions[0]!.digest,
               ),
-              PLUGIN_DATA: workspace.path,
+              PLUGIN_DATA: join(workspace.path, ".specialists", context.specialistId),
             }
           : {}),
         OPENSTEER_AGENT_WORKSPACE: workspace.path,
@@ -2886,7 +2883,7 @@ export class RunnerRuntime {
           ? { data: { status: "interrupted" }, type: "run.interrupted" }
           : failureEvent(safeMessage(error, safeMessageOptions), "runner_execution_error");
     } finally {
-      if (workspace && !context.specialistId && this.#skillObserver) {
+      if (workspace && this.#skillObserver) {
         await this.#scanWorkspaceSkills(context.workspaceId, workspace.path).catch(() => undefined);
       }
       // Naming owns another process in this containment scope. It must exit

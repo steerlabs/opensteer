@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { act, type ReactNode } from "react";
+import { act, useLayoutEffect, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { HostClient } from "@opensteer/client/host";
@@ -8,20 +8,59 @@ import { MockHostClient } from "@opensteer/client/mock";
 import { VoiceContext } from "@opensteer/client/react";
 import { idleVoiceSnapshot, type VoiceControls, type VoiceSnapshot } from "@opensteer/client/voice";
 import { Alert } from "react-native";
+import { MemoryPrivateFilesystem } from "@opensteer/client/test-support";
+import {
+  createThreadDraftStore,
+  newTaskDraftKey,
+  type ThreadDraftStore,
+} from "../client/thread-drafts.js";
 
 // What could break: a Project's task listed again under Main, a folded
 // folder hiding that something needs the reader, "new task here" starting it
 // in Main, or the folder and its + going nowhere.
 
-const harness = vi.hoisted(() => ({ client: null as HostClient | null }));
-vi.mock(
-  "react-native",
-  async () => (await import("../../test-support/settings-screens.js")).reactNative,
-);
+const harness = vi.hoisted(() => ({
+  client: null as HostClient | null,
+  drafts: null as ThreadDraftStore | null,
+  rowDraws: 0,
+}));
+const removeChatDraftFile = vi.hoisted(() => vi.fn());
+vi.mock("react-native", async () => {
+  const { reactNative } = await import("../../test-support/settings-screens.js");
+  const Box = reactNative.View;
+  return {
+    ...reactNative,
+    // A draft's menu wraps it only once the list has said how wide it is.
+    View: (props: {
+      readonly children?: ReactNode;
+      readonly onLayout?: (event: { nativeEvent: { layout: { width: number } } }) => void;
+    }) => {
+      useLayoutEffect(() => props.onLayout?.({ nativeEvent: { layout: { width: 300 } } }), []);
+      return <Box {...props} />;
+    },
+  };
+});
 vi.mock("react-native-reanimated", () => ({
   default: { View: ({ children }: { readonly children?: ReactNode }) => <div>{children}</div> },
 }));
 vi.mock("../ui/motion.js", () => ({ move: undefined }));
+vi.mock("../platform/attachment-draft-files.js", () => ({ removeChatDraftFile }));
+vi.mock("@expo/ui/community/menu", () => ({
+  MenuView: (props: {
+    readonly actions: readonly { readonly id: string; readonly title: string }[];
+    readonly children?: ReactNode;
+    readonly onPressAction: (event: { nativeEvent: { event: string } }) => void;
+  }) => (
+    <div>
+      {props.children}
+      {props.actions.map(({ id, title }) => (
+        <button key={id} onClick={() => props.onPressAction({ nativeEvent: { event: id } })}>
+          {title}
+        </button>
+      ))}
+    </div>
+  ),
+}));
 vi.mock("./saved-tasks.js", () => ({ SavedTasks: () => null }));
 vi.mock("@opensteer/client/react", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@opensteer/client/react")>()),
@@ -38,18 +77,34 @@ vi.mock("../screens/deployment-row.js", () => ({
 }));
 vi.mock("../threads/deployment-mark.js", () => ({ DeploymentMarkView: () => null }));
 vi.mock("../threads/task-row.js", () => ({
+  DraftPen: () => <b>pen</b>,
+  draftPenLabel: "unsent reply",
   NeedsYouTag: () => <em>Needs you</em>,
   setTaskDone: () => undefined,
   taskTextInset: 48,
   TaskRowView: (props: {
+    readonly drafted?: boolean;
     readonly onOpen: (threadId: string) => void;
     readonly row: { readonly threadId: string; readonly title: string };
-  }) => <button onClick={() => props.onOpen(props.row.threadId)}>{props.row.title}</button>,
+  }) => {
+    harness.rowDraws += 1;
+    return (
+      <button
+        data-drafted={props.drafted === true}
+        data-thread={props.row.threadId}
+        onClick={() => props.onOpen(props.row.threadId)}
+      >
+        {props.row.title}
+      </button>
+    );
+  },
   UnreadDot: () => <i>unread</i>,
 }));
 vi.mock("../ui/mobile-client-context.js", () => ({
+  useHostUserId: () => "user-a",
   useMobileClient: () => ({
     doneShelf: { read: async () => false, write: async () => undefined },
+    drafts: harness.drafts,
     getSnapshot: () => ({ rows: [] }),
     subscribe: () => () => undefined,
   }),
@@ -97,16 +152,34 @@ function voice(patch: Partial<VoiceSnapshot>, openThread: VoiceControls["openThr
   };
 }
 
-async function mount(controller: VoiceControls | null = null) {
+async function mount(
+  controller: VoiceControls | null = null,
+  shown: {
+    readonly destination?: "Home" | null;
+    readonly openDraftId?: string;
+    readonly seed?: (drafts: ThreadDraftStore, host: MockHostClient) => Promise<void>;
+    readonly selectedTitle?: string;
+  } = {},
+) {
   const host = new MockHostClient({ automations: "absent", latencyMs: 0 });
   clients.push(host);
   await host.load();
   harness.client = host;
+  harness.drafts = createThreadDraftStore({
+    filePath: "/private/drafts.json",
+    now: () => new Date(),
+    privateFiles: new MemoryPrivateFilesystem(),
+  });
+  await harness.drafts.load();
+  await shown.seed?.(harness.drafts, host);
+  const selectedThreadId =
+    host.getSnapshot().threads.find(({ title }) => title === shown.selectedTitle)?.id ?? null;
   const actions = {
     close: vi.fn(),
     onChat: vi.fn(),
     onNewProject: vi.fn(),
     onNewTask: vi.fn(),
+    onOpenDraft: vi.fn(),
     onOpenPlace: vi.fn(),
     onOpenProject: vi.fn(),
     onOpenTask: vi.fn(),
@@ -120,26 +193,31 @@ async function mount(controller: VoiceControls | null = null) {
   document.body.append(container);
   const root = createRoot(container);
   roots.push(root);
-  await act(async () =>
-    root.render(
-      <VoiceContext value={controller}>
-        <SidebarPanel
-          actions={actions}
-          deploymentId="deployment-a"
-          destination="Home"
-          docked
-          openProjectId={null}
-          openThreadId={null}
-          scroll={{ offset: 0 }}
-          selectedThreadId={null}
-          shelves={{ closedProjects: new Set(), list: null }}
-          visible
-        />
-      </VoiceContext>,
-    ),
-  );
+  const scroll = { offset: 0 };
+  const shelves = { closedProjects: new Set<string>(), list: null };
+  const draw = (openDraftId: string | null) =>
+    act(async () =>
+      root.render(
+        <VoiceContext value={controller}>
+          <SidebarPanel
+            actions={actions}
+            deploymentId="deployment-a"
+            destination={shown.destination === undefined ? "Home" : shown.destination}
+            docked
+            openDraftId={openDraftId}
+            openProjectId={null}
+            openThreadId={selectedThreadId}
+            scroll={scroll}
+            selectedThreadId={selectedThreadId}
+            shelves={shelves}
+            visible
+          />
+        </VoiceContext>,
+      ),
+    );
+  await draw(shown.openDraftId ?? null);
   const launch = host.getSnapshot().workspaces.find(({ name }) => name === "Customer launch")!;
-  return { actions, container, launch };
+  return { actions, container, draw, drafts: harness.drafts, host, launch };
 }
 
 function button(container: HTMLElement, label: string): HTMLButtonElement {
@@ -149,6 +227,182 @@ function button(container: HTMLElement, label: string): HTMLButtonElement {
   if (!found) throw new Error(`No button ${label}`);
   return found;
 }
+
+describe("the sidebar's drafts", () => {
+  const scope = ["deployment-a", "user-a"] as const;
+  const firstRow = (container: HTMLElement) =>
+    container.querySelector<HTMLElement>("[data-thread]")!;
+
+  it("lists waiting drafts, a saved one with no Workspace left included, and opens the one chosen", async () => {
+    const { actions, container } = await mount(null, {
+      seed: async (drafts) => {
+        await drafts.writeDraft(...scope, newTaskDraftKey("wsp_gone"), "Saved before");
+        drafts.placeNewTaskDraft(...scope, "draft-new", "workspace-main");
+        await drafts.writeDraft(...scope, newTaskDraftKey("draft-new"), "Book a table\nfor two");
+        await drafts.writeDraft(...scope, newTaskDraftKey("draft-open"), "In front");
+      },
+      openDraftId: "draft-open",
+    });
+    expect(container.textContent).toContain("Drafts");
+    expect(container.textContent).not.toContain("In front");
+    await act(async () => button(container, "Draft, Book a table").click());
+    expect(actions.onOpenDraft).toHaveBeenCalledWith("deployment-a", "workspace-main", "draft-new");
+    await act(async () => button(container, "Draft, Saved before").click());
+    expect(actions.onOpenDraft).toHaveBeenLastCalledWith("deployment-a", "wsp_gone", "wsp_gone");
+  });
+
+  it("holds the row of a draft opened from the list, its title as it was", async () => {
+    const { container, draw, drafts } = await mount(null, {
+      seed: async (store) => {
+        await store.writeDraft(...scope, newTaskDraftKey("draft-a"), "As it was");
+      },
+    });
+    await draw("draft-a");
+    await act(() => drafts.writeDraft(...scope, newTaskDraftKey("draft-a"), "Rewritten"));
+    expect(button(container, "Draft, As it was")).toBeDefined();
+    expect(container.textContent).not.toContain("Rewritten");
+
+    await draw(null);
+    expect(button(container, "Draft, Rewritten")).toBeDefined();
+  });
+
+  it("draws nothing for a person with no drafts", async () => {
+    const { container } = await mount();
+    expect(container.textContent).not.toContain("Drafts");
+  });
+
+  it("asks before discarding, then forgets the draft, its files and the Host's copies", async () => {
+    const attachment = {
+      attachmentId: "attachment-1",
+      localUri: "file:///photo.draft",
+      mediaType: "image/png",
+      name: "photo.png",
+      sizeBytes: 3,
+      status: "ready",
+    } as const;
+    const { container, drafts, host } = await mount(null, {
+      seed: async (store) => {
+        await store.writeDraft(...scope, newTaskDraftKey("draft-a"), "Discard me");
+        await store.writeDraftAttachments(...scope, newTaskDraftKey("draft-a"), [attachment]);
+        await store.writeDraft(...scope, newTaskDraftKey("draft-b"), "Keep me");
+      },
+    });
+    const discarded = vi.spyOn(host, "discardAttachment").mockResolvedValue(undefined as never);
+    const confirm = vi.spyOn(Alert, "alert").mockImplementation(() => undefined);
+    removeChatDraftFile.mockClear();
+    const discards = [...container.querySelectorAll("button")].filter(
+      ({ textContent }) => textContent === "Discard",
+    );
+    await act(async () => discards[0]!.click());
+    expect(drafts.readDraft(...scope, newTaskDraftKey("draft-a"))).not.toBeNull();
+    expect(removeChatDraftFile).not.toHaveBeenCalled();
+    const [title, detail, options] = confirm.mock.calls.at(-1)!;
+    expect([title, detail]).toEqual(["Discard draft?", "“Discard me” will be removed."]);
+    await act(async () => options!.find(({ text }) => text === "Discard")!.onPress!());
+    await vi.waitFor(() => expect(removeChatDraftFile).toHaveBeenCalled(), {
+      timeout: 2_000,
+    });
+    expect(drafts.readDraft(...scope, newTaskDraftKey("draft-a"))).toBeNull();
+    expect(drafts.readDraft(...scope, newTaskDraftKey("draft-b"))?.text).toBe("Keep me");
+    expect(removeChatDraftFile).toHaveBeenCalledExactlyOnceWith(
+      {
+        deploymentId: "deployment-a",
+        draftId: "draft-a",
+        kind: "new-task",
+        userId: "user-a",
+      },
+      "file:///photo.draft",
+    );
+    expect(discarded).toHaveBeenCalledExactlyOnceWith("attachment-1");
+    await vi.waitFor(() => expect(container.textContent).not.toContain("Discard me"), {
+      timeout: 2_000,
+    });
+  });
+
+  it("offers no discard on a message the Host has not answered", async () => {
+    const { container } = await mount(null, {
+      seed: async (drafts) => {
+        const key = newTaskDraftKey("draft-held");
+        await drafts.claimPending(...scope, key, {
+          idempotencyKey: "message:held",
+          text: "Sent, not confirmed",
+          threadId: key,
+        });
+      },
+    });
+    expect(button(container, "Draft, Sent, not confirmed, not confirmed")).toBeDefined();
+    expect(container.textContent).not.toContain("Discard");
+  });
+
+  it("takes discard off the open draft's row the moment its message is sent", async () => {
+    const key = newTaskDraftKey("draft-a");
+    const { container, draw, drafts } = await mount(null, {
+      seed: async (store) => {
+        await store.writeDraft(...scope, key, "Send me");
+      },
+    });
+    await draw("draft-a");
+    await act(() =>
+      drafts.claimPending(...scope, key, {
+        idempotencyKey: "message:open",
+        text: "Send me",
+        threadId: key,
+      }),
+    );
+    expect(button(container, "Draft, Send me, not confirmed")).toBeDefined();
+    expect(container.textContent).not.toContain("Discard");
+  });
+
+  it("pens a Thread with an unsent reply and Chat, but not the Thread open", async () => {
+    const seed = async (drafts: ThreadDraftStore, host: MockHostClient) => {
+      const { homeThreadId, threads } = host.getSnapshot();
+      await drafts.writeDraft(...scope, homeThreadId!, "A reply to Chat");
+      for (const { id } of threads) await drafts.writeDraft(...scope, id, "A reply");
+    };
+    const launch = (container: HTMLElement) =>
+      [...container.querySelectorAll<HTMLElement>("[data-thread]")].find(
+        ({ textContent }) => textContent === "Prepare the product launch",
+      )!;
+    const away = await mount(null, { destination: null, seed });
+    expect(launch(away.container).dataset["drafted"]).toBe("true");
+    const chatRow = () =>
+      away.container.querySelector('button[aria-label^="Chat"][aria-label$=", unsent reply"]');
+    expect(chatRow()?.textContent).toContain("pen");
+
+    const open = await mount(null, {
+      destination: null,
+      seed,
+      selectedTitle: "Prepare the product launch",
+    });
+    expect(launch(open.container).dataset["drafted"]).toBe("false");
+
+    const chat = await mount(null, { seed });
+    expect(
+      chat.container.querySelector('button[aria-label^="Chat"][aria-label$=", unsent reply"]'),
+    ).toBeNull();
+  });
+
+  it("does not redraw for a keystroke in a reply or in the draft open", async () => {
+    const { container, drafts, host } = await mount(null, {
+      openDraftId: "draft-open",
+      seed: async (store, client) => {
+        await store.writeDraft(...scope, client.getSnapshot().threads[0]!.id, "One");
+        await store.writeDraft(...scope, newTaskDraftKey("draft-open"), "O");
+      },
+    });
+    expect(firstRow(container)).toBeDefined();
+    const draws = harness.rowDraws;
+    await act(async () => {
+      await drafts.writeDraft(...scope, host.getSnapshot().threads[0]!.id, "One more");
+      await drafts.writeDraft(...scope, newTaskDraftKey("draft-open"), "Op");
+      await drafts.writeDraft(...scope, newTaskDraftKey("draft-open"), "Ope");
+    });
+    expect(harness.rowDraws).toBe(draws);
+    // A change the list does show still reaches it.
+    await act(() => drafts.writeDraft(...scope, newTaskDraftKey("draft-b"), "Another"));
+    expect(button(container, "Draft, Another")).toBeDefined();
+  });
+});
 
 describe("the sidebar's Project folders", () => {
   it("lists a Project's work in its folder, not under Main, and keeps its ask when folded", async () => {

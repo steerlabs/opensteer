@@ -3,12 +3,21 @@ import { withTimeout } from "@opensteer/shared/withTimeout";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { createId, OpensteerError, type Thread } from "@opensteer/core";
+import {
+  createId,
+  OpensteerError,
+  type Thread,
+  type Request,
+  shortRequestHoldMs,
+  requestHoldLimitMs,
+} from "@opensteer/core";
 import { MANAGED_MEMORY_WAKE_SKIPPED } from "@opensteer/triggers";
 import { createServer, type Server } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentCaller, RunCaller } from "./agent-caller.js";
 import type { AgentToolHandlers } from "./handlers/index.js";
+import { RequestHold } from "./request-hold.js";
+import { requestPendingGuidance } from "@opensteer/shared/requestGuidance";
 import { OpensteerMcpService } from "./opensteer-mcp-service.js";
 import { ProductToolHandlers } from "./handlers/product.js";
 
@@ -100,6 +109,14 @@ function fixture() {
   const changes = new Set<
     Parameters<import("@opensteer/orchestration").RealtimeHub["observe"]>[0]
   >();
+  const holdSnapshot = vi.fn<
+    ConstructorParameters<typeof RequestHold>[0]["store"]["requests"]["holdSnapshot"]
+  >(async () => null);
+  const markToolDelivered = vi.fn(async () => "delivered" as const);
+  const outcome = vi.fn(async (request: Request) =>
+    request.status === "pending" ? null : { request, text: `Answered ${request.status}` },
+  );
+  const stopHeldRun = vi.fn(async () => null);
   const options = {
     realtime: {
       observe: (
@@ -121,7 +138,12 @@ function fixture() {
     handlers,
 
     store: {
-      requests: { get: vi.fn(async () => null) },
+      requests: {
+        get: vi.fn(async () => null),
+        holdSnapshot,
+        markToolDelivered,
+        personSteerCount: vi.fn(async () => 0),
+      },
       getThreadForOwner: async (id: Thread["id"]) => targets.get(id) ?? null,
       findMainWorkspaceForOwner: async () => undefined,
       getAssignmentForOwner: async () => null,
@@ -129,7 +151,21 @@ function fixture() {
     publicUrl: new URL("http://127.0.0.1"),
     onToolError: vi.fn(),
   };
+  const configuredOptions = {
+    ...options,
+    longRequestHold: vi.fn(async (_caller: RunCaller) => false),
+    requestHold: new RequestHold({
+      store: { ...options.store, stopHeldRun },
+      continuations: { outcome },
+      onStopped: vi.fn(),
+      onError: vi.fn(),
+    }),
+  };
   return {
+    holdSnapshot,
+    markToolDelivered,
+    outcome,
+    stopHeldRun,
     change: () => {
       for (const listener of changes) listener({ type: "host.tasks-changed" });
     },
@@ -139,8 +175,8 @@ function fixture() {
     targets,
     handlers,
     personMessage,
-    options,
-    service: new OpensteerMcpService(options),
+    options: configuredOptions,
+    service: new OpensteerMcpService(configuredOptions),
   };
 }
 async function httpFixture() {
@@ -200,106 +236,424 @@ describe("Opensteer MCP spine", () => {
     "other-run",
     "integration",
     "program",
-  ] as const)(
-    "adds pending guidance only for this Run's pending durable Request (%s)",
-    async (state) => {
-      const f = await httpFixture();
-      const requestId = createId("request");
-      Object.assign(f.options.store.requests, {
-        get: vi.fn(async () => ({
-          id: requestId,
-          mode: state === "live" ? "live" : "durable",
-          status: state === "settled" ? "fulfilled" : "pending",
-          originatingRunId: state === "other-run" ? createId("run") : f.run.claims.runId,
-        })),
-      });
-      const pending = { requestId, kind: "browser.access", status: "pending", replayed: false };
-      Object.assign(f.handlers, {
-        sign_in: async () => pending,
-        browser_profile_request: async () => pending,
-        integration_request: async () => pending,
-        integration_call: async () => ({
-          content: [{ type: "text", text: JSON.stringify(pending) }],
-          structuredContent: pending,
-        }),
-      });
-      try {
-        let sessionId = "detached-parking-test";
-        if (state === "pending-active") {
-          const initialized = await fetch(f.url, {
-            method: "POST",
-            headers: {
-              authorization: "Bearer run",
-              accept: "application/json, text/event-stream",
-              "content-type": "application/json",
-            },
-            body: JSON.stringify({
-              jsonrpc: "2.0",
-              id: 1,
-              method: "initialize",
-              params: {
-                protocolVersion: "2025-11-25",
-                capabilities: {},
-                clientInfo: { name: "parking", version: "1" },
-              },
-            }),
-          });
-          sessionId = initialized.headers.get("mcp-session-id")!;
-          await initialized.arrayBuffer();
-        }
-        const response = await fetch(f.url, {
+  ] as const)("keeps non-held results and pending guidance compatible (%s)", async (state) => {
+    const f = await httpFixture();
+    const requestId = createId("request");
+    Object.assign(f.options.store.requests, {
+      get: vi.fn(async () => ({
+        id: requestId,
+        mode: state === "live" ? "live" : "durable",
+        status: state === "settled" ? "fulfilled" : "pending",
+        originatingRunId: state === "other-run" ? createId("run") : f.run.claims.runId,
+      })),
+    });
+    const pending = { requestId, kind: "browser.access", status: "pending", replayed: false };
+    Object.assign(f.handlers, {
+      sign_in: async () => pending,
+      browser_profile_request: async () => pending,
+      integration_request: async () => pending,
+      integration_call: async () => ({
+        content: [{ type: "text", text: JSON.stringify(pending) }],
+        structuredContent: pending,
+      }),
+    });
+    try {
+      let sessionId = "detached-parking-test";
+      if (state === "pending-active") {
+        const initialized = await fetch(f.url, {
           method: "POST",
           headers: {
-            authorization: state === "program" ? "Bearer program" : "Bearer run",
+            authorization: "Bearer run",
             accept: "application/json, text/event-stream",
             "content-type": "application/json",
-            "mcp-session-id": sessionId,
-            "mcp-protocol-version": "2025-11-25",
           },
           body: JSON.stringify({
             jsonrpc: "2.0",
-            id: "pending-call",
-            method: "tools/call",
-            params:
-              state === "program"
-                ? {
-                    name: "integration_request",
-                    arguments: { catalog: "google-gmail", access: "read", reason: "Read email" },
-                  }
-                : state === "integration"
-                  ? {
-                      name: "integration_call",
-                      arguments: {
-                        toolRef:
-                          "igr_00000000-0000-4000-8000-000000000001.itl_00000000-0000-4000-8000-000000000001.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-                        arguments: {},
-                      },
-                    }
-                  : state === "settled"
-                    ? { name: "sign_in", arguments: { site: "example.com", reason: "Check email" } }
-                    : {
-                        name: "browser_profile_request",
-                        arguments: {
-                          reason: "Check email",
-                          suggestion: { kind: "new", suggestedName: "Personal" },
-                        },
-                      },
+            id: 1,
+            method: "initialize",
+            params: {
+              protocolVersion: "2025-11-25",
+              capabilities: {},
+              clientInfo: { name: "parking", version: "1" },
+            },
           }),
         });
-        const body = await response.json();
-        expect(body.error).toBeUndefined();
-        expect(body.result.isError, JSON.stringify(body)).not.toBe(true);
-        expect(response.headers.get("x-opensteer-request-pending")).toBeNull();
-        if (state.startsWith("pending"))
-          expect(
-            body.result.content.map((part: { text: string }) => part.text).join("\n"),
-          ).toContain("Continue work that does not depend on the answer");
-        if (state === "integration") expect(f.options.store.requests.get).not.toHaveBeenCalled();
+        sessionId = initialized.headers.get("mcp-session-id")!;
+        await initialized.arrayBuffer();
+      }
+      const response = await fetch(f.url, {
+        method: "POST",
+        headers: {
+          authorization: state === "program" ? "Bearer program" : "Bearer run",
+          accept: "application/json, text/event-stream",
+          "content-type": "application/json",
+          "mcp-session-id": sessionId,
+          "mcp-protocol-version": "2025-11-25",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: "pending-call",
+          method: "tools/call",
+          params:
+            state === "program"
+              ? {
+                  name: "integration_request",
+                  arguments: { catalog: "google-gmail", access: "read", reason: "Read email" },
+                }
+              : state === "integration"
+                ? {
+                    name: "integration_call",
+                    arguments: {
+                      operation: "issues.list",
+                      arguments: {},
+                    },
+                  }
+                : state === "settled"
+                  ? { name: "sign_in", arguments: { site: "example.com", reason: "Check email" } }
+                  : {
+                      name: "browser_profile_request",
+                      arguments: {
+                        reason: "Check email",
+                        suggestion: { kind: "new", suggestedName: "Personal" },
+                      },
+                    },
+        }),
+      });
+      const body = await response.json();
+      expect(body.error).toBeUndefined();
+      expect(body.result.isError, JSON.stringify(body)).not.toBe(true);
+      expect(response.headers.get("x-opensteer-request-pending")).toBeNull();
+      if (state.startsWith("pending"))
+        expect(body.result.content.map((part: { text: string }) => part.text).join("\n")).toContain(
+          requestPendingGuidance,
+        );
+      if (state === "integration") expect(f.options.store.requests.get).not.toHaveBeenCalled();
+    } finally {
+      await f.service.close();
+    }
+  });
+  it.each([false, true])(
+    "holds a Request until answered, including an early answer (%s)",
+    async (early) => {
+      const f = await httpFixture();
+      const request = {
+        id: createId("request"),
+        status: early ? "declined" : "pending",
+        payload: { kind: "browser.access" },
+      } as Request;
+      const read = Promise.withResolvers<void>();
+      f.holdSnapshot.mockImplementation(async () => {
+        read.resolve();
+        return {
+          request,
+          run: { status: "running", phase: "turn", voiceSessionId: null },
+          steered: false,
+          queued: false,
+        };
+      });
+      Object.assign(f.handlers, {
+        browser_profile_request: async () => ({
+          requestId: request.id,
+          kind: "browser.access",
+          status: "pending",
+          replayed: false,
+        }),
+      });
+      f.options.longRequestHold.mockResolvedValue(true);
+      const client = await connect(f.url, "run");
+      f.options.longRequestHold.mockResolvedValue(false);
+      const wait = vi.spyOn(f.options.requestHold, "wait");
+      try {
+        let returned = false;
+        const call = client
+          .callTool(
+            {
+              name: "browser_profile_request",
+              arguments: { reason: "Read email", suggestion: { kind: "user_choice" } },
+            },
+            undefined,
+            { timeout: 2000 },
+          )
+          .then((result) => {
+            returned = true;
+            return result;
+          });
+        await withTimeout(read.promise, 1000, {
+          timeoutError: () => new Error("Hold never read its Request"),
+        });
+        if (!early) expect(returned).toBe(false);
+        Object.assign(request, { status: "declined" });
+        const result = await call;
+        expect(result).toMatchObject({
+          structuredContent: { status: "declined" },
+          content: [expect.anything(), { type: "text", text: "Answered declined" }],
+        });
+        expect(f.markToolDelivered).toHaveBeenCalledOnce();
+        expect(wait.mock.calls[0]?.[0].limitMs).toBe(requestHoldLimitMs);
+      } finally {
+        await client.close();
+        await f.service.close();
+      }
+    },
+  );
+
+  it.each(["initialize", "detached"])(
+    "lets go of a response that ends while its %s session is being made",
+    async (kind) => {
+      const f = await httpFixture();
+      const resolver = Promise.withResolvers<boolean>();
+      f.options.longRequestHold.mockImplementationOnce(() => resolver.promise);
+      const handle = vi.spyOn(f.service, "handle");
+      const client = new AbortController();
+      const call = fetch(f.url, {
+        method: "POST",
+        signal: client.signal,
+        headers: {
+          authorization: "Bearer run",
+          accept: "application/json, text/event-stream",
+          "content-type": "application/json",
+          "mcp-protocol-version": "2025-11-25",
+          ...(kind === "detached" ? { "mcp-session-id": "held-by-an-earlier-host" } : {}),
+        },
+        body: JSON.stringify(
+          kind === "detached"
+            ? { jsonrpc: "2.0", id: 1, method: "tools/list" }
+            : {
+                jsonrpc: "2.0",
+                id: 1,
+                method: "initialize",
+                params: {
+                  protocolVersion: "2025-11-25",
+                  capabilities: {},
+                  clientInfo: { name: "gone", version: "1" },
+                },
+              },
+        ),
+      }).catch(() => undefined);
+      try {
+        await vi.waitFor(() => expect(f.options.longRequestHold).toHaveBeenCalled());
+        const response = handle.mock.calls[0]![1];
+        const closed = new Promise((resolve) => response.once("close", resolve));
+        client.abort();
+        await withTimeout(closed, 1000, {
+          timeoutError: () => new Error("The disconnect never reached the Host"),
+        });
+        resolver.resolve(false);
+        await withTimeout(handle.mock.results[0]!.value as Promise<void>, 1000, {
+          timeoutError: () => new Error("The Host kept waiting on a response that had ended"),
+        });
+        await call;
       } finally {
         await f.service.close();
       }
     },
   );
+
+  it("makes no session for a response that ended during authentication", async () => {
+    const f = await httpFixture();
+    const authenticated = Promise.withResolvers<void>();
+    const { authenticate } = f.options.callers;
+    const real = authenticate.getMockImplementation()!;
+    authenticate.mockImplementationOnce(async (token) => {
+      await authenticated.promise;
+      return real(token);
+    });
+    const handle = vi.spyOn(f.service, "handle");
+    const client = new AbortController();
+    const call = fetch(f.url, {
+      method: "POST",
+      signal: client.signal,
+      headers: {
+        authorization: "Bearer run",
+        accept: "application/json, text/event-stream",
+        "content-type": "application/json",
+        "mcp-protocol-version": "2025-11-25",
+        "mcp-session-id": "held-by-an-earlier-host",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    }).catch(() => undefined);
+    try {
+      await vi.waitFor(() => expect(authenticate).toHaveBeenCalled());
+      const response = handle.mock.calls[0]![1];
+      const closed = new Promise((resolve) => response.once("close", resolve));
+      client.abort();
+      await withTimeout(closed, 1000, {
+        timeoutError: () => new Error("The disconnect never reached the Host"),
+      });
+      authenticated.resolve();
+      await withTimeout(handle.mock.results[0]!.value as Promise<void>, 1000, {
+        timeoutError: () => new Error("The Host kept waiting on a response that had ended"),
+      });
+      await call;
+      expect(f.options.longRequestHold).not.toHaveBeenCalled();
+    } finally {
+      await f.service.close();
+    }
+  });
+
+  it("counts handler work against the absolute short hold deadline", async () => {
+    const f = await httpFixture();
+    const request = {
+      id: createId("request"),
+      status: "pending",
+      payload: { kind: "browser.access" },
+    } as Request;
+    f.holdSnapshot.mockResolvedValue({
+      request,
+      run: { status: "running", phase: "turn", voiceSessionId: null },
+      steered: false,
+      queued: false,
+    });
+    const realNow = Date.now;
+    const clock = vi.spyOn(Date, "now");
+    Object.assign(f.handlers, {
+      browser_profile_request: async () => {
+        clock.mockImplementation(() => realNow() + shortRequestHoldMs);
+        return {
+          requestId: request.id,
+          kind: "browser.access",
+          status: "pending",
+          replayed: false,
+        };
+      },
+    });
+    const client = await connect(f.url, "run");
+    try {
+      const result = await client.callTool(
+        {
+          name: "browser_profile_request",
+          arguments: { reason: "Read email", suggestion: { kind: "user_choice" } },
+        },
+        undefined,
+        { timeout: 2000 },
+      );
+      expect(result.isError).toBe(true);
+      expect(f.stopHeldRun).toHaveBeenCalledWith(f.run.claims, "limit");
+    } finally {
+      clock.mockRestore();
+      await client.close();
+      await f.service.close();
+    }
+  });
+
+  it.each(["run", "short-run", "program", "connection"])(
+    "selects SSE only for a long-hold Run on stateful and detached sessions (%s)",
+    async (kind) => {
+      const f = await httpFixture();
+      f.options.longRequestHold.mockResolvedValue(kind === "run");
+      const token = kind === "short-run" ? "run" : kind;
+      const post = (body: object, sessionId?: string) =>
+        fetch(f.url, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${token}`,
+            accept: "application/json, text/event-stream",
+            "content-type": "application/json",
+            ...(sessionId ? { "mcp-session-id": sessionId } : {}),
+          },
+          body: JSON.stringify(body),
+        });
+      try {
+        const initialized = await post({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: {
+            protocolVersion: "2025-11-25",
+            capabilities: {},
+            clientInfo: { name: "transport", version: "1" },
+          },
+        });
+        expect(initialized.headers.get("content-type")).toContain(
+          kind === "run" ? "text/event-stream" : "application/json",
+        );
+        const sessionId = initialized.headers.get("mcp-session-id")!;
+        await initialized.text();
+        for (const id of [sessionId, "forgotten"]) {
+          const response = await post({ jsonrpc: "2.0", id: 2, method: "tools/list" }, id);
+          expect(response.headers.get("content-type")).toContain(
+            kind === "run" ? "text/event-stream" : "application/json",
+          );
+          await response.text();
+        }
+      } finally {
+        await f.service.close();
+      }
+    },
+  );
+
+  it("keeps an active SSE response out of the idle sweep and starts idle time at completion", async () => {
+    const f = await httpFixture();
+    f.options.longRequestHold.mockResolvedValue(true);
+    const created = vi.spyOn(f.service, "createServer");
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    f.personMessage.mockImplementation(async () => {
+      entered.resolve();
+      await withTimeout(release.promise, 2000, {
+        timeoutError: () => new Error("Held handler never released"),
+      });
+      return { messageId: createId("message"), unnamedSecret: "private" };
+    });
+    let now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    const post = (body: object, sessionId?: string) =>
+      fetch(f.url, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer run",
+          accept: "application/json, text/event-stream",
+          "content-type": "application/json",
+          ...(sessionId ? { "mcp-session-id": sessionId } : {}),
+        },
+        body: JSON.stringify(body),
+      });
+    let heldBody: Promise<string> | undefined;
+    try {
+      const initialized = await post({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-11-25",
+          capabilities: {},
+          clientInfo: { name: "idle", version: "1" },
+        },
+      });
+      const sessionId = initialized.headers.get("mcp-session-id")!;
+      await initialized.text();
+      const response = await post(
+        {
+          jsonrpc: "2.0",
+          id: 2,
+          method: "tools/call",
+          params: { name: "person_message", arguments: { message: "waiting" } },
+        },
+        sessionId,
+      );
+      heldBody = response.text();
+      await withTimeout(entered.promise, 1000, {
+        timeoutError: () => new Error("SSE handler never started"),
+      });
+      now += 31 * 60_000;
+      await (await post({ jsonrpc: "2.0", id: 3, method: "tools/list" }, sessionId)).text();
+      expect(created).toHaveBeenCalledOnce();
+      release.resolve();
+      expect(await heldBody).toContain("messageId");
+      now += 29 * 60_000;
+      await (await post({ jsonrpc: "2.0", id: 4, method: "tools/list" }, sessionId)).text();
+      expect(created).toHaveBeenCalledOnce();
+      now += 31 * 60_000;
+      await (await post({ jsonrpc: "2.0", id: 5, method: "tools/list" }, sessionId)).text();
+      expect(created).toHaveBeenCalledTimes(2);
+    } finally {
+      release.resolve();
+      clock.mockRestore();
+      await f.service.close();
+      if (heldBody) await heldBody.catch(() => undefined);
+    }
+  });
+
   it("lists integration and product tools on the same Run server", async () => {
     const f = await httpFixture();
     const client = await connect(f.url, "run");
@@ -826,7 +1180,7 @@ describe("Opensteer MCP spine", () => {
       [{ host: "127.0.0.1", origin: "https://evil.test" }, 403],
       [{ host: "127.0.0.1" }, 401],
     ] as const) {
-      const response = { statusCode: 0, setHeader: vi.fn(), end: vi.fn() };
+      const response = { once: vi.fn(), statusCode: 0, setHeader: vi.fn(), end: vi.fn() };
       await f.service.handle(
         { headers, method: "POST" } as never,
         response as never,
@@ -859,7 +1213,7 @@ describe("Opensteer MCP spine", () => {
       ["run", "connect.example", route, 403],
       ["expired", "connect.example", route, 401],
     ] as const) {
-      const response = { statusCode: 0, setHeader: vi.fn(), end: vi.fn() };
+      const response = { once: vi.fn(), statusCode: 0, setHeader: vi.fn(), end: vi.fn() };
       await f.service.handle(
         { headers: { host }, method: "POST" } as never,
         response as never,

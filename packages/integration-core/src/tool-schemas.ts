@@ -106,7 +106,7 @@ export function materializeToolCatalog(catalog: IntegrationToolCatalog): {
 /**
  * The digest of a stored tool, from its schemas and exactly the definitions its
  * closure names. Describe recomputes it so what it returns is provably what the
- * toolRef pinned.
+ * tool stored.
  */
 export function storedToolSchemaDigest(input: {
   readonly definitions: Definitions;

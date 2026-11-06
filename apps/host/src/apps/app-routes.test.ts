@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import { Readable, Writable } from "node:stream";
 import { createId } from "@opensteer/core";
 import { hostApi } from "@opensteer/protocol";
+import { appFrameContentSecurityPolicy } from "@opensteer/shared/appFrame";
 import { expect, it, vi } from "vitest";
 import type { AppService } from "./app-service.js";
 import { createAppHandlers, registerAppRoutes } from "./app-routes.js";
@@ -119,6 +120,48 @@ it("authorizes CORS preflight without starting a server and supports opaque-orig
     expect(post.json()).toEqual({ ok: true });
     expect(response).toHaveBeenCalledWith(
       expect.objectContaining({ method: "POST", path: "/api/", body: expect.anything() }),
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+it.each([
+  "localhost:1234",
+  "example.test",
+  "[::1]:1234",
+  "localhost; connect-src *",
+  "localhost,evil",
+  "evil@localhost",
+  "localhost/path",
+  "localhost *",
+  "",
+])("owns the final CSP and safely handles Host %j", async (host) => {
+  const server = Fastify();
+  if (!host)
+    server.addHook("onRequest", async (request) => {
+      delete request.headers.host;
+    });
+  registerAppRoutes(server, {
+    response: async () => ({
+      status: 200,
+      headers: { "Content-Security-Policy": appFrameContentSecurityPolicy },
+      body: Readable.from(["app"]),
+    }),
+  } as unknown as AppService);
+  try {
+    const response = await server.inject({
+      url: `/v1/apps/${appId}/dark/${"a".repeat(43)}/`,
+      headers: { host, "x-forwarded-proto": "https" },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["content-security-policy"]).toBe(
+      ["localhost:1234", "example.test", "[::1]:1234"].includes(host)
+        ? appFrameContentSecurityPolicy.replace(
+            "connect-src 'self'",
+            `connect-src 'self' http://${host}`,
+          )
+        : appFrameContentSecurityPolicy,
     );
   } finally {
     await server.close();

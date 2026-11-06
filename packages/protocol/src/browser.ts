@@ -215,6 +215,8 @@ export const BrowserAttachTicketClaimsSchema = z
     /** V2 makes the isolated engine clipboard explicit; v1 implies true. */
     clipboard: z.boolean().optional(),
     workspaceTabRestoreVersion: z.literal(1).optional(),
+    /** The Host relays `browser.popupFollow.opened`, so the runtime may send it. */
+    popupFollowVersion: z.literal(1).optional(),
     initialSurfaceId: BrowserSurfaceIdSchema.optional(),
     dormantSurfaceIds: z.array(BrowserSurfaceIdSchema).max(63).optional(),
     expiresAt: IsoDateTimeSchema,
@@ -757,6 +759,8 @@ const BrowserSnapshotSchema = z
     passkeyConsumerToken: z.uuid().optional(),
     videoVersion: z.literal(1).optional(),
     popupVersion: z.literal(1).optional(),
+    /** Host → viewer only: its own token, for a client whose input never crosses this socket. */
+    consumerToken: z.uuid().optional(),
     targetedStreamingVersion: z.literal(1).optional(),
     inputLanesVersion: z.literal(1).optional(),
     /** Runtime → Host only; permits Host-issued navigationId on navigation commands. */
@@ -920,6 +924,17 @@ const BaselineBrowserServerMessageSchema = z.discriminatedUnion("type", [
     ...browserBase,
     type: z.literal("browser.error"),
     error: ProtocolErrorSchema,
+  }),
+  /**
+   * The viewer named by `consumerToken` opened this popup with its own input.
+   * Sent once and never stored: each viewer owns what it shows, so this is an
+   * event for one of them, not a fact about the tab.
+   */
+  z.strictObject({
+    ...browserBase,
+    type: z.literal("browser.popupFollow.opened"),
+    surfaceId: BrowserSurfaceIdSchema,
+    consumerToken: z.uuid(),
   }),
   z.strictObject({
     ...browserRequestBase,

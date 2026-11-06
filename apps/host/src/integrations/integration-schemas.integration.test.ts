@@ -1,3 +1,4 @@
+import { startHeldRequest } from "./held-request.test-support.js";
 import { startUpstream } from "./integration-schemas.test-support.js";
 /**
  * A large API's schemas through the integration gateway, end to end on real
@@ -21,7 +22,7 @@ import { startUpstream } from "./integration-schemas.test-support.js";
  *     call does not reach the upstream as its operation declares, or the
  *     upstream's refusal does not come back as it was written.
  *  7. A `..` path argument reaches a different upstream path.
- *  8. A toolRef issued before its operation's schema changed still describes
+ *  8. An address issued before its operation's schema changed still describes
  *     or calls it; one whose schemas did not change stops working.
  *
  * Writes `result.json` to `OPENSTEER_INTEGRATION_SCHEMAS_E2E_ARTIFACT_DIR`,
@@ -31,7 +32,6 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { RequestIdSchema } from "@opensteer/core";
 import { IntegrationPlatformStore, replaceServerToolsInTransaction } from "@opensteer/database";
 import {
   IntegrationToolIdSchema,
@@ -129,7 +129,7 @@ integration("integration schemas", () => {
 
       // An agent proposes the API and its owner approves it.
       const installing = performance.now();
-      const installationId = await proposeAndInstall(host, gateway);
+      const installationId = await proposeAndInstall(host, gateway, run.runId);
       record("installed", { elapsedMs: Math.round(performance.now() - installing) });
       await testRpcData(
         host.origin,
@@ -184,11 +184,11 @@ integration("integration schemas", () => {
         storedToolSchemaBytes: storage.toolSchemaBytes,
       });
 
-      // The operations an agent finds, each with the toolRef it describes and calls.
+      // The operations an agent finds, each with the address it describes and calls.
       const found = await searchAll(gateway);
       expect(found.total).toBe(api.operations.length);
       const operation = (name: string) => {
-        const match = found.operations.find((candidate) => candidate.name === name);
+        const match = found.operations.find((candidate) => candidate.name.startsWith(`${name}@`));
         if (!match) throw new Error(`${name} was not found`);
         return match;
       };
@@ -197,14 +197,23 @@ integration("integration schemas", () => {
       const listLogs = operation("logs.listLogs");
 
       // 2–4. The whole document, page by page: bounded, complete and exact.
-      const expected = await describedDocument(store, createAssistant.toolRef);
-      const whole = await describeAll(gateway, createAssistant.toolRef, undefined);
+      const expected = await describedDocument(
+        store,
+        (
+          await host.store.database
+            .selectFrom("integrationTools")
+            .select("id")
+            .where("name", "=", "assistants.createAssistant")
+            .executeTakeFirstOrThrow()
+        ).id,
+      );
+      const whole = await describeAll(gateway, createAssistant.name, undefined);
       expect(whole.first).toMatchObject({
         account: { alias: "Voice", connectionId: null, isDefault: true },
         integration: { title: apiTitle, trust: "administrator-approved" },
         operation: { name: "assistants.createAssistant" },
+        name: "assistants.createAssistant",
         path: "",
-        toolRef: createAssistant.toolRef,
       });
       expect(whole.pages).toBeGreaterThan(1);
       expect(whole.joined).toBe(JSON.stringify(expected));
@@ -231,7 +240,7 @@ integration("integration schemas", () => {
       // 5. Narrowed to one part, as a `$ref` names it.
       const properties = await describeAll(
         gateway,
-        createAssistant.toolRef,
+        createAssistant.name,
         "/inputSchema/properties",
       );
       expect(properties.pages).toBe(1);
@@ -240,7 +249,7 @@ integration("integration schemas", () => {
       expect(bodyReference.$ref).toBe("#/$defs/CreateAssistantDTO");
       const assistant = await describeAll(
         gateway,
-        createAssistant.toolRef,
+        createAssistant.name,
         "#/inputSchema/$defs/Assistant",
       );
       expect(assistant.first).toMatchObject({ path: "/inputSchema/$defs/Assistant" });
@@ -250,7 +259,7 @@ integration("integration schemas", () => {
       );
       const viaReference = await describeAll(
         gateway,
-        createAssistant.toolRef,
+        createAssistant.name,
         `/inputSchema${String(bodyReference.$ref).slice(1)}`,
       );
       expect(JSON.parse(viaReference.joined)).toEqual(
@@ -258,7 +267,7 @@ integration("integration schemas", () => {
       );
       const allOutputDefinitions = await describeAll(
         gateway,
-        createAssistant.toolRef,
+        createAssistant.name,
         "/outputSchema/$defs",
       );
       expect(allOutputDefinitions.pages).toBeGreaterThan(1);
@@ -267,14 +276,14 @@ integration("integration schemas", () => {
       );
       const missing = await gateway.callRaw("integration_describe", {
         path: "/inputSchema/$defs/NoSuchType",
-        toolRef: createAssistant.toolRef,
+        operation: createAssistant.name,
       });
       expect(missing.isError).toBe(true);
       expect(toolText(missing)).toContain('"/inputSchema/$defs/NoSuchType"');
       const pastEnd = await gateway.callRaw("integration_describe", {
         cursor: properties.schemaBytes + 10,
         path: "/inputSchema/properties",
-        toolRef: createAssistant.toolRef,
+        operation: createAssistant.name,
       });
       expect(pastEnd.isError).toBe(true);
       expect(toolText(pastEnd)).toContain("past the end");
@@ -287,10 +296,10 @@ integration("integration schemas", () => {
       });
 
       // 6. Calls reach the upstream as declared, and its refusal comes back as written.
-      const call = (toolRef: string, args: Json) =>
-        gateway.callRaw("integration_call", { arguments: args, toolRef });
+      const call = (operation: string, args: Json) =>
+        gateway.callRaw("integration_call", { arguments: args, operation });
       const invalidBody = { firstMessage: "Hello", unexpected: true };
-      const refused = await call(createAssistant.toolRef, { body: invalidBody });
+      const refused = await call(createAssistant.name, { body: invalidBody });
       expect(refused.isError).toBe(true);
       expect(toolText(refused)).toContain(refusalBody);
       expect(upstream.received).toEqual([
@@ -301,11 +310,11 @@ integration("integration schemas", () => {
           url: "/assistant",
         },
       ]);
-      const fetched = await call(getAssistant.toolRef, { id: "asst_1" });
+      const fetched = await call(getAssistant.name, { id: "asst_1" });
       expect(fetched.isError).toBeFalsy();
       expect(fetched.structuredContent).toEqual({ id: "asst_1", name: "Riley" });
       expect(upstream.received.at(-1)).toMatchObject({ method: "GET", url: "/assistant/asst_1" });
-      const undeclared = await call(getAssistant.toolRef, { id: "asst_1", voiceId: "v" });
+      const undeclared = await call(getAssistant.name, { id: "asst_1", voiceId: "v" });
       expect(undeclared.isError).toBe(true);
       expect(toolText(undeclared)).toContain("invalid_arguments");
       record("called", {
@@ -317,39 +326,35 @@ integration("integration schemas", () => {
 
       // 7. A `..` argument never addresses another path.
       const beforeEscape = upstream.received.length;
-      const escaped = await call(getAssistant.toolRef, { id: ".." });
+      const escaped = await call(getAssistant.name, { id: ".." });
       expect(escaped.isError).toBe(true);
       expect(toolText(escaped)).toContain("invalid_arguments");
       expect(upstream.received).toHaveLength(beforeEscape);
       record("path escape refused", toolText(escaped));
 
-      // 8. Rematerialized unchanged, every toolRef holds; with one definition
-      // changed, exactly the toolRefs whose schemas reach it are retired.
+      // 8. Rematerialized unchanged, every address holds; with one definition
+      // changed, exactly the addresses whose schemas reach it are retired.
       await rematerialize(host, server.id, null);
       const unchanged = await searchAll(gateway);
-      expect(unchanged.operations.map(({ toolRef }) => toolRef).sort()).toEqual(
-        found.operations.map(({ toolRef }) => toolRef).sort(),
+      expect(unchanged.operations.map(({ name }) => name).sort()).toEqual(
+        found.operations.map(({ name }) => name).sort(),
       );
       await rematerialize(host, server.id, "Assistant");
       const stale = await gateway.callRaw("integration_describe", {
-        toolRef: createAssistant.toolRef,
+        operation: createAssistant.name,
       });
       expect(stale.isError).toBe(true);
-      expect(toolText(stale)).toBe(
-        "Integration operation schema changed; search and describe it again",
-      );
-      const staleCall = await call(getAssistant.toolRef, { id: "asst_1" });
+      expect(toolText(stale)).toBe("Integration operation changed; search again");
+      const staleCall = await call(getAssistant.name, { id: "asst_1" });
       expect(staleCall.isError).toBe(true);
-      expect(toolText(staleCall)).toBe(
-        "Integration operation schema changed; search and describe it again",
-      );
-      const untouched = await describeAll(gateway, listLogs.toolRef, "/outputSchema");
+      expect(toolText(staleCall)).toBe("Integration operation changed; search again");
+      const untouched = await describeAll(gateway, listLogs.name, "/outputSchema");
       expect(JSON.parse(untouched.joined)).toMatchObject({ type: "array" });
-      const fresh = (await searchAll(gateway)).operations.find(
-        ({ name }) => name === "assistants.createAssistant",
+      const fresh = (await searchAll(gateway)).operations.find(({ name }) =>
+        name.startsWith("assistants.createAssistant@"),
       )!;
-      expect(fresh.toolRef).not.toBe(createAssistant.toolRef);
-      const changed = await describeAll(gateway, fresh.toolRef, "/inputSchema/$defs/Assistant");
+      expect(fresh.name).not.toBe(createAssistant.name);
+      const changed = await describeAll(gateway, fresh.name, "/inputSchema/$defs/Assistant");
       expect(JSON.parse(changed.joined)).toMatchObject({
         properties: { recordingEnabled: { type: "boolean" } },
       });
@@ -357,7 +362,7 @@ integration("integration schemas", () => {
         changed: changed.summary,
         stale: toolText(stale),
         staleCall: toolText(staleCall),
-        untouchedToolRef: listLogs.toolRef,
+        untouchedOperation: listLogs.name,
       });
     } catch (error) {
       failure = error;
@@ -385,8 +390,6 @@ integration("integration schemas", () => {
 
 interface FoundOperation {
   readonly name: string;
-  readonly connectionId: string | null;
-  readonly toolRef: string;
 }
 
 /** Every operation integration_search finds for the API, page by page. */
@@ -407,7 +410,7 @@ async function searchAll(
     offset = page.operationNextOffset as number | null;
   }
   for (const found of operations) {
-    expect(found.connectionId).toBeNull();
+    expect(found).not.toHaveProperty("accounts");
     expect(found).not.toHaveProperty("readiness");
   }
   return { operations, total };
@@ -417,20 +420,23 @@ async function searchAll(
 async function proposeAndInstall(
   host: MachineAccessHost,
   gateway: Gateway,
+  runId: import("@opensteer/core").RunId,
 ): Promise<IntegrationInstallationId> {
-  const proposed = await gateway.call("integration_propose", {
-    description: "Voice AI agents that answer and place phone calls.",
-    kind: "openapi",
-    reason: "Manage this person's voice assistants",
-    source: `${upstreamOrigin}/openapi.json`,
-  });
-  expect(proposed).toMatchObject({ status: "pending" });
+  const proposed = await startHeldRequest(host, runId, () =>
+    gateway.call("integration_propose", {
+      description: "Voice AI agents that answer and place phone calls.",
+      kind: "openapi",
+      reason: "Manage this person's voice assistants",
+      source: `${upstreamOrigin}/openapi.json`,
+    }),
+  );
+  expect(proposed.request.status).toBe("pending");
   await testRpcData(
     host.origin,
     "commands.dispatch",
     {
       idempotencyKey: "integration-schemas-install",
-      requestId: RequestIdSchema.parse(proposed.requestId),
+      requestId: proposed.request.id,
       response: { kind: "choice", optionId: "installed" },
       type: "request.respond",
     },
@@ -442,6 +448,7 @@ async function proposeAndInstall(
     .where("sourceKind", "=", "proposed")
     .where("status", "=", "active")
     .executeTakeFirstOrThrow();
+  await expect(proposed.result).resolves.toMatchObject({ status: "fulfilled" });
   return installation.id;
 }
 
@@ -456,7 +463,7 @@ interface DescribedPages {
 /** Every page of one part, following nextCursor, each answer checked against the bound. */
 async function describeAll(
   gateway: Gateway,
-  toolRef: string,
+  operation: string,
   path: string | undefined,
 ): Promise<DescribedPages> {
   const bodies: string[] = [];
@@ -470,7 +477,7 @@ async function describeAll(
     const result = await gateway.callRaw("integration_describe", {
       ...(cursor === 0 ? {} : { cursor }),
       ...(path === undefined ? {} : { path }),
-      toolRef,
+      operation,
     });
     if (result.isError) throw new Error(`integration_describe refused: ${toolText(result)}`);
     expect(result.structuredContent).toBeUndefined();
@@ -481,7 +488,7 @@ async function describeAll(
     largest = Math.max(largest, bytes);
     const newline = text.indexOf("\n");
     const header = JSON.parse(text.slice(0, newline)) as Json;
-    expect(header).toMatchObject({ cursor, toolRef });
+    expect(header).toMatchObject({ cursor, name: operation.split("@", 1)[0] });
     if (first === undefined) first = header;
     else expect(Object.keys(header).sort()).toEqual(continuationKeys(header));
     schemaBytes = header.schemaBytes as number;
@@ -520,17 +527,17 @@ async function describeAll(
 function continuationKeys(header: Json): readonly string[] {
   return [
     "cursor",
+    "name",
     ...(header.nextCursor === null ? [] : ["next"]),
     "nextCursor",
     "path",
     "schemaBytes",
-    "toolRef",
   ];
 }
 
-/** What describe must return for a toolRef: the stored schemas, each made standalone. */
-async function describedDocument(store: IntegrationPlatformStore, toolRef: string): Promise<Json> {
-  const stored = await store.getToolSchemas(IntegrationToolIdSchema.parse(toolRef.split(".")[1]));
+/** What describe must return for an operation: the stored schemas, each made standalone. */
+async function describedDocument(store: IntegrationPlatformStore, toolId: string): Promise<Json> {
+  const stored = await store.getToolSchemas(IntegrationToolIdSchema.parse(toolId));
   if (!stored) throw new Error("The described tool has no schemas");
   return {
     inputSchema: standaloneToolSchema(stored.inputSchema, stored.definitions),

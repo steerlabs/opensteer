@@ -1,5 +1,6 @@
 import { createSettingsReadHandlers } from "./settings-read-handlers.js";
 import type { ComputerViewService } from "../computer-use/computer-view-service.js";
+import type { PhoneTabs } from "../computer-use/phone-tabs.js";
 import { OpensteerError, RunnerIdSchema } from "@opensteer/core";
 import { requireSession } from "../integrations/integration-rpc-context.js";
 import {
@@ -123,6 +124,7 @@ export function createHostApiHandlers(
     context: HostApiServerContext,
   ) => Promise<HostApiCommandOutput>,
   computerViews?: ComputerViewService,
+  phoneTabs?: PhoneTabs,
 ): Omit<
   HostApiHandlers,
   "personal.remoteAccess.get" | "connections.list" | "connections.authorization.get"
@@ -238,6 +240,15 @@ export function createHostApiHandlers(
           }),
         );
       }
+      if (command.type === "phone.tab.close") {
+        if (!phoneTabs)
+          throw new OpensteerError({
+            code: "conflict",
+            message: "This Host does not keep phone tabs.",
+          });
+        await phoneTabs.close(requireSession(context).user.id, command.machineId);
+        return rpcSuccess(hostApi["commands.dispatch"].success.parse({ type: command.type }));
+      }
       if (isBrowserSourceCommand(command)) {
         return rpcSuccess(
           hostApi["commands.dispatch"].success.parse(
@@ -288,7 +299,7 @@ export function createHostApiHandlers(
 type TriggerCommand = Extract<HostApiCommand, { readonly type: `trigger.${string}` }>;
 export type CoreCommand = Exclude<
   HostApiCommand,
-  | Extract<HostApiCommand, { type: `computer.view.${string}` }>
+  | Extract<HostApiCommand, { type: `computer.view.${string}` | "phone.tab.close" }>
   | TriggerCommand
   | IntegrationCommand
   | IntegrationAuthorizationCommand
@@ -322,7 +333,6 @@ function isIntegrationPlatformCommand(
     case "plugin.update":
     case "plugin.remove":
     case "plugin.activation.set":
-    case "specialist.bind":
     case "specialist.add":
     case "specialist.remove":
     case "specialist.list":

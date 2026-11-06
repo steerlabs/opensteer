@@ -1433,10 +1433,12 @@ it("holds passkey messages in main before renderer delivery and binds native inp
         ],
         passkeys: "native",
         passkeyConsumerToken: token,
+        consumerToken: token,
       }),
     );
     expect(trace).toEqual(["main", "renderer"]);
     expect(transport.passkeyConsumerToken(7, connectionId, "tab")).toBeNull();
+    expect(transport.viewerConsumerToken(7, connectionId, "tab")).toBeNull();
     transport.sendWebSocket(7, {
       connectionId,
       type: "text",
@@ -1445,6 +1447,9 @@ it("holds passkey messages in main before renderer delivery and binds native inp
     expect(transport.passkeyConsumerToken(7, connectionId, "tab")).toBe(token);
     expect(transport.passkeyConsumerToken(8, connectionId, "tab")).toBeNull();
     expect(transport.passkeyConsumerToken(7, connectionId, "other")).toBeNull();
+    expect(transport.viewerConsumerToken(7, connectionId, "tab")).toBe(token);
+    expect(transport.viewerConsumerToken(8, connectionId, "tab")).toBeNull();
+    expect(transport.viewerConsumerToken(7, connectionId, "other")).toBeNull();
     const claim = { type: "passkey.claim" as const, requestId: token };
     expect(() =>
       transport.sendWebSocket(7, { connectionId, type: "text", data: JSON.stringify(claim) }),

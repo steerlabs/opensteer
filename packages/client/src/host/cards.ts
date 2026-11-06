@@ -1,4 +1,4 @@
-import type { Request } from "@opensteer/core";
+import { toolOutputRecord, type Request } from "@opensteer/core";
 import {
   PasswordSignInRequestResponseSchema,
   UseCardResultSchema,
@@ -52,10 +52,6 @@ export function cardUseOutcome(request: Request): { signedIn: boolean; text: str
   };
 }
 export function readCardUseResult(text: string) {
-  try {
-    const result = UseCardResultSchema.safeParse(JSON.parse(text));
-    return result.success ? result.data : null;
-  } catch {
-    return null;
-  }
+  const result = UseCardResultSchema.safeParse(toolOutputRecord(text));
+  return result.success ? result.data : null;
 }

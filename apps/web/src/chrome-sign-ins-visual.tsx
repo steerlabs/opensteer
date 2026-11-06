@@ -15,7 +15,7 @@ import { MockHostClient, mockBrowserSignInRequest } from "@opensteer/client/mock
 import { emptyExecutionPreferences } from "@opensteer/core";
 import { BrowserSurfaceIdSchema } from "@opensteer/protocol/browser";
 import { AgentTranscript } from "./components/agent-activity.js";
-import type { ShellContext } from "./components/app-shell.js";
+import { ShellContext } from "./components/app-shell.js";
 import { BrowserToolbar } from "./components/browser/browser-chrome.js";
 import {
   BrowserSignInPopover,
@@ -93,12 +93,9 @@ function useShellContext(): ShellContext {
   return {
     actionError: null,
     clearActionError: noOp,
-    askOpensteerAbout: noOp,
     clearHomeHandoff: noOp,
-    homeDraft: "",
     homeHandoff: null,
     homeThreadId: null,
-    setHomeDraft: noOp,
     createThreadAndSend: async () => null,
     defaultPlacement: undefined,
     deploymentAccess: null,
@@ -126,7 +123,11 @@ function useShellContext(): ShellContext {
 }
 
 function Shell() {
-  return <Outlet context={useShellContext()} />;
+  return (
+    <ShellContext value={useShellContext()}>
+      <Outlet />
+    </ShellContext>
+  );
 }
 
 function CardView() {

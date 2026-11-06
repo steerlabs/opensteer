@@ -1,5 +1,4 @@
 import {
-  type AskAbout,
   incomingMessageAction,
   activityStepHead,
   conversationActivities,
@@ -90,8 +89,6 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
   readonly onOpenStep: (entryId: string) => void;
   /** Opens another Thread this one points at: a delegation, or an agent's message. */
   readonly onOpenThread: (threadId: string) => void;
-  /** Given, every update another agent published offers it. */
-  readonly askAbout?: AskAbout | undefined;
   /** The air above this row: a turn's own rows sit closer than two turns do. */
   readonly spacingTop: number;
   /** True for the first row holding something published since the reader's last visit. */
@@ -152,7 +149,6 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
           onToggle={() => props.onToggleOpen(group.key, props.open === true)}
           open={props.open === true}
           message={group.entry}
-          askAbout={props.askAbout}
           onOpenThread={props.onOpenThread}
           viewerUserId={props.viewerUserId}
           workspaces={props.workspaces}
@@ -956,7 +952,6 @@ export function Message(props: {
   readonly homeThreadId: string | null;
   readonly onReply: ((message: MessageEntry) => void) | undefined;
   readonly message: MessageEntry;
-  readonly askAbout?: AskAbout | undefined;
   /** Whether the reader opened the folded words, which the pane keeps across scrolling. */
   readonly open: boolean;
   readonly onToggle: () => void;
@@ -1010,6 +1005,7 @@ export function Message(props: {
       ) : null}
       {mine ? null : (
         <Attribution
+          action={incomingMessageAction(message)}
           mark={
             author.kind === "agent" ? (
               <ThreadMark threadId={author.threadId} />
@@ -1069,21 +1065,6 @@ export function Message(props: {
           </AppText>
         </View>
       ) : null}
-      {props.askAbout !== undefined &&
-      author.kind === "agent" &&
-      message.body !== "" &&
-      (!update || open || !preview.truncated) ? (
-        <Pressable
-          accessibilityHint="Quotes this update into Chat without sending"
-          accessibilityRole="button"
-          onPress={() => props.askAbout?.quote(message)}
-          style={styles.askAbout}
-        >
-          <AppText role="secondaryMedium" tone="ember">
-            {props.askAbout.label}
-          </AppText>
-        </Pressable>
-      ) : null}
     </View>
   );
 }
@@ -1119,7 +1100,7 @@ function MessageFold(props: {
           accessibilityRole="button"
           accessibilityState={{ expanded: props.open }}
           onPress={props.onToggle}
-          style={styles.askAbout}
+          style={styles.foldToggle}
         >
           <AppText
             role="secondaryMedium"
@@ -1229,6 +1210,7 @@ function RecoveryNote(props: {
  * have, so a trigger is named and not linked.
  */
 function Attribution(props: {
+  readonly action: string | null;
   readonly mark: ReactNode;
   readonly name: string;
   readonly onOpen?: () => void;
@@ -1244,6 +1226,11 @@ function Attribution(props: {
       >
         {props.name}
       </AppText>
+      {props.action === null ? null : (
+        <AppText role="caption" style={{ flexShrink: 0 }} tone="muted">
+          {props.action}
+        </AppText>
+      )}
     </>
   );
   if (props.onOpen === undefined) return <View style={styles.attribution}>{content}</View>;
@@ -1363,7 +1350,6 @@ export function WorkingIndicator({
 }
 
 const styles = StyleSheet.create({
-  askAbout: { justifyContent: "center", minHeight: touchTarget, paddingTop: space[4] },
   earlierSteps: { alignSelf: "flex-start", justifyContent: "center", minHeight: touchTarget },
   call: {
     alignItems: "center",
@@ -1383,7 +1369,7 @@ const styles = StyleSheet.create({
   assistant: { gap: space[2] },
   /** Assistant prose keeps the reading ground, without a card around long Markdown. */
   reply: {
-    flexShrink: 1,
+    flex: 1,
     gap: space[4],
     paddingHorizontal: space[16],
     paddingVertical: space[12],
@@ -1391,7 +1377,7 @@ const styles = StyleSheet.create({
   replyColumn: { gap: space[6] },
   replyRow: {
     alignItems: "flex-end",
-    alignSelf: "flex-start",
+    alignSelf: "stretch",
     flexDirection: "row",
     gap: space[2],
     maxWidth: "92%",
@@ -1466,6 +1452,7 @@ const styles = StyleSheet.create({
   // `scroll`, not `hidden`: layout leaves a scrolling box's words their whole
   // height, so they measure all they hold, and the box still clips them.
   fold: { overflow: "scroll" },
+  foldToggle: { justifyContent: "center", minHeight: touchTarget, paddingTop: space[4] },
   /** The work's one line: no ground of its own, so the reply below stays the loudest thing in the turn. */
   head: {
     alignItems: "center",

@@ -1,3 +1,4 @@
+import { startHeldRequest } from "./held-request.test-support.js";
 /**
  * Real Host/PostgreSQL proposal, review, connection and repair journey.
  * Asserts refusal of unsafe checks and malformed guidance, approval integrity,
@@ -195,11 +196,14 @@ integration("proposal credential guidance", () => {
       );
       expect(await count()).toEqual(before);
       await search("Gmail");
-      const request = await gateway.call("integration_request", {
-        catalog: "google-gmail",
-        access: "read",
-        reason: "Read the requested Gmail messages",
-      });
+      const requesting = await startHeldRequest(host, run.runId, () =>
+        gateway.call("integration_request", {
+          catalog: "google-gmail",
+          access: "read",
+          reason: "Read the requested Gmail messages",
+        }),
+      );
+      const request = { requestId: requesting.request.id };
       const detail = await host.store.database
         .selectFrom("integrationRequestDetails")
         .selectAll()
@@ -221,6 +225,18 @@ integration("proposal credential guidance", () => {
         { headers: host.ownerHeaders },
       );
       expect(await search("email Gmail")).toMatchObject({ installed: true });
+      await testRpcData(
+        host.origin,
+        "commands.dispatch",
+        {
+          type: "request.respond",
+          requestId: requesting.request.id,
+          response: { kind: "external", value: { decision: "declined" } },
+          idempotencyKey: "gmail-access-decline",
+        },
+        { headers: host.ownerHeaders },
+      );
+      await expect(requesting.result).resolves.toMatchObject({ status: "declined" });
       passed = true;
     } finally {
       await mkdir(artifactDirectory, { recursive: true });
@@ -335,12 +351,23 @@ integration("proposal credential guidance", () => {
         await expect(propose(overrides)).rejects.toThrow();
         refused.push(label);
       }
-      await expect(
-        propose({ check: { ...check, args: { limit: "provider-validates-this" } } }),
-      ).resolves.toBeDefined();
-      await expect(
-        propose({ check: { ...check, args: { limit: [1, "two", null, true] } } }),
-      ).resolves.toBeDefined();
+      for (const limit of ["provider-validates-this", [1, "two", null, true]]) {
+        const held = await startHeldRequest(host, run.runId, () =>
+          propose({ check: { ...check, args: { limit } } }),
+        );
+        await testRpcData(
+          host.origin,
+          "commands.dispatch",
+          {
+            type: "request.respond",
+            requestId: held.request.id,
+            response: { kind: "choice", optionId: "declined" },
+            idempotencyKey: `decline-valid-${JSON.stringify(limit)}`,
+          },
+          { headers: host.ownerHeaders },
+        );
+        await expect(held.result).resolves.toMatchObject({ status: "declined" });
+      }
       await expect(propose({}, spec({ requiredHeader: true }))).rejects.toThrow();
       refused.push("required header cannot be supplied by check args");
       facts.push({
@@ -349,8 +376,8 @@ integration("proposal credential guidance", () => {
       });
 
       // The approval path reads the durable detail, not an agent's current call.
-      const proposal = await propose();
-      const requestId = RequestIdSchema.parse(proposal.requestId);
+      const proposing = await startHeldRequest(host, run.runId, () => propose());
+      const requestId = proposing.request.id;
       const detail = await host.store.database
         .selectFrom("integrationRequestDetails")
         .select("manifest")
@@ -516,6 +543,7 @@ integration("proposal credential guidance", () => {
       provider.rejectWith(401);
       const accepted = await connect(true, "good-first");
       expect(accepted.ok).toBe(true);
+      await expect(proposing.result).resolves.toMatchObject({ status: "fulfilled" });
       const saved = await connections();
       expect(saved).toHaveLength(1);
       const sealedBeforeRepair = await credentials();
@@ -544,7 +572,10 @@ integration("proposal credential guidance", () => {
         },
       });
 
-      const legacy = await propose({ credential: undefined, check: undefined });
+      const legacyHeld = await startHeldRequest(host, run.runId, () =>
+        propose({ credential: undefined, check: undefined }),
+      );
+      const legacy = { requestId: legacyHeld.request.id };
       const legacyRequestId = RequestIdSchema.parse(legacy.requestId);
       const legacyRequest = await host.store.database
         .selectFrom("integrationRequestDetails")
@@ -600,6 +631,7 @@ integration("proposal credential guidance", () => {
         { headers: host.ownerHeaders },
       );
       expect(unchecked.ok).toBe(true);
+      await expect(legacyHeld.result).resolves.toMatchObject({ status: "fulfilled" });
       expect(provider.requests).toHaveLength(6);
       const catalogEntry = dashboard.catalog.find(
         ({ definition }) => definition.id === "vercel-rest",
@@ -749,7 +781,7 @@ integration("proposal credential guidance", () => {
       if (!callable) throw new Error("Missing catalog snapshot operation");
       const invoked = await gateway.callRaw("integration_call", {
         arguments: {},
-        toolRef: callable.toolRef,
+        ...callable.address,
       });
       expect(invoked.isError).toBeFalsy();
       expect(provider.fetches.slice(fetchesBeforeMutation)).toEqual([
@@ -1176,9 +1208,13 @@ integration("proposal credential guidance", () => {
       }
       facts.push({ step: "argument refusals name their field", observed: refusals });
 
-      const bare = await propose();
+      const bareHeld = await startHeldRequest(host, run.runId, () => propose());
+      const bare = { requestId: bareHeld.request.id };
       const unnamed = await proposalOf(bare.requestId);
-      const proposed = await propose({ name: "  Vapi  ", description: `  ${description}  ` });
+      const namedHeld = await startHeldRequest(host, run.runId, () =>
+        propose({ name: "  Vapi  ", description: `  ${description}  ` }),
+      );
+      const proposed = { requestId: namedHeld.request.id };
       const reviewed = await proposalOf(proposed.requestId);
       expect(unnamed.proposal.name).toBeUndefined();
       expect(unnamed.proposal.description).toBe(description);
@@ -1240,6 +1276,8 @@ integration("proposal credential guidance", () => {
         description,
         title: "Vapi fixture",
       });
+      await expect(bareHeld.result).resolves.toMatchObject({ status: "fulfilled" });
+      await expect(namedHeld.result).resolves.toMatchObject({ status: "fulfilled" });
       facts.push({
         step: "the agent's name is reviewed, bound and installed",
         observed: {
@@ -1269,10 +1307,10 @@ integration("proposal credential guidance", () => {
   }, 120_000);
 
   // The ways it could fail: a call found by a name planned again from the stored
-  // document runs another operation, so a read tool's toolRef performs a write
+  // document runs another operation, so a read tool's address performs a write
   // under a read-only grant; two operations planned one name, so starting stops
   // on a unique violation; binding a stored tool to the wrong operation, or a
-  // renamed operation taking another's row, name or effect; a held toolRef
+  // renamed operation taking another's row, name or effect; a held address
   // reaching a different operation after a restart; the account or grant
   // changed; starting reaching the network, or changing anything a second time;
   // one integration the Host cannot bind, from a name too long, a path too
@@ -1530,19 +1568,19 @@ integration("proposal credential guidance", () => {
         for (const [name, ref] of Object.entries(held)) {
           const called = await nextGateway.callRaw("integration_call", {
             arguments: name === "details" ? { account_id: "42" } : {},
-            toolRef: ref.toolRef,
+            ...ref.address,
           });
           expect(called.isError, toolText(called)).toBeFalsy();
         }
         const retired = await nextGateway.callRaw("integration_call", {
           arguments: { account_id: "42" },
-          toolRef: retiredRef.toolRef,
+          ...retiredRef.address,
         });
         expect(retired.isError).toBe(true);
         expect(toolText(retired)).toContain("no longer available");
         const broken = await nextGateway.callRaw("integration_call", {
           arguments: {},
-          toolRef: brokenRef.toolRef,
+          ...brokenRef.address,
         });
         expect(broken.isError).toBe(true);
         expect(
@@ -1561,12 +1599,13 @@ integration("proposal credential guidance", () => {
         )!;
         const refused = await nextGateway.callRaw("integration_call", {
           arguments: {},
-          toolRef: `${grant.id}.${write.id}.${write.schemaDigest}`,
+          operation: write.name,
+          ...(grant.connectionId ? { account: grant.connectionId } : {}),
         });
         expect(refused.isError).toBe(true);
         expect(calls.some(({ method }) => method === "POST")).toBe(false);
         facts.push({
-          step: "held toolRefs call the operation they were stored for; a read grant never writes",
+          step: "held addresses call the operation they were stored for; a read grant never writes",
           observed: {
             calls: calls.map(({ method, url }) => ({ method, url: url.slice(0, 120) })),
             refusedBroken: toolText(broken),
@@ -1717,7 +1756,7 @@ integration("proposal credential guidance", () => {
   // preset again, stopping the Host, or marking it for good, so a cause that
   // has gone never lets it work again; binding it again clearing another
   // reason the integration is unavailable for; recovery losing its account, its
-  // grant or the rows held toolRefs name; the failure left unlogged.
+  // grant or the rows held addresses name; the failure left unlogged.
   it("keeps an integration it cannot store unavailable, and stores it on a later start once it can", async () => {
     const facts: { step: string; observed: unknown }[] = [];
     const recovering = await createMachineAccessDatabase(baseDatabaseUrl!);
@@ -2076,7 +2115,7 @@ integration("proposal credential guidance", () => {
       closers.unshift(() => nextGateway.close());
       const called = await nextGateway.callRaw("integration_call", {
         arguments: {},
-        toolRef: held.toolRef,
+        ...held.address,
       });
       expect(called.isError, toolText(called)).toBeFalsy();
       expect(calls).toEqual([
