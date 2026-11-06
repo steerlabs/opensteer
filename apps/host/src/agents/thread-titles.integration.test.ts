@@ -1,3 +1,4 @@
+import { readToolRecords } from "../mcp/product-tools.test-support.js";
 import { TriggerToolsTestClient } from "../mcp/product-tools.test-support.js";
 import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import {
@@ -819,8 +820,9 @@ integration.sequential("Thread title lifecycle", () => {
         const response = await handle(request);
         if (response.type !== "thread.delegate.result")
           throw new Error("Expected a delegated Thread");
-        if (!response.result.run) throw new Error("Expected a delegated Run");
-        const worker = response.result.thread;
+        if (!(await readToolRecords(store, response.result)).run!)
+          throw new Error("Expected a delegated Run");
+        const worker = (await readToolRecords(store, response.result)).thread;
         expect(await row(worker.id)).toMatchObject({
           title: title ?? provisionalThreadTitle(task),
           titleSource: title === undefined ? "provisional" : "chosen",
@@ -855,7 +857,7 @@ integration.sequential("Thread title lifecycle", () => {
         const command = await database
           .selectFrom("commands")
           .select("id")
-          .where("runId", "=", response.result.run.id)
+          .where("runId", "=", (await readToolRecords(store, response.result)).run!.id)
           .where("type", "=", "run.execute")
           .executeTakeFirstOrThrow();
         await store.claimCommand(command.id, "title-dispatcher");

@@ -65,11 +65,12 @@ export function agentToolHandlers(options: {
     thread_configure: async (c) => await p.thread_configure(c),
     thread_queue: async (c) => await p.thread_queue(c),
     thread_message: async (c) => await p.thread_message(c),
-    thread_write: async (c) => await p.thread_write(c),
-    assignment_cancel: Object.assign(
-      async (c: ToolCall<"assignment_cancel">) => p.assignment_cancel(c),
-      { targets: (c: ToolCall<"assignment_cancel">) => p.assignmentTargets(c) },
-    ),
+    thread_update: async (c) => await p.thread_update(c),
+    thread_interrupt: async (c) => await p.thread_interrupt(c),
+    task_status: async (c) => await p.task_status(c),
+    task_cancel: Object.assign(async (c: ToolCall<"task_cancel">) => p.task_cancel(c), {
+      targets: (c: ToolCall<"task_cancel">) => p.assignmentTargets(c),
+    }),
     person_message: async (c) => await p.person_message(c),
     person_show: Object.assign(async (c: ToolCall<"person_show">) => await p.person_show(c), {
       targets: async (c: ToolCall<"person_show">) =>

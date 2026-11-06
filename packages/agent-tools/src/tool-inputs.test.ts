@@ -21,8 +21,20 @@ describe("Opensteer tool inputs", () => {
     ).toBe(false);
   });
   it("reads Chat by its home alias", () => {
-    expect(tool("thread_read").input.safeParse({ threadId: "home", maxMessages: 1 }).success).toBe(
+    expect(tool("thread_read").input.safeParse({ threadId: "home", limit: 1 }).success).toBe(true);
+  });
+  it("requires itemId for text offsets and refuses removed history fields", () => {
+    const schema = tool("thread_read").input;
+    expect(schema.safeParse({ threadId: "home", textOffset: 2 }).success).toBe(false);
+    expect(schema.safeParse({ threadId: "home", itemId: "item", textOffset: 2 }).success).toBe(
       true,
+    );
+    expect(schema.safeParse({ threadId: "home", itemId: "item", before: "cursor" }).success).toBe(
+      false,
+    );
+    expect(schema.safeParse({ threadId: "home", maxMessages: 1 }).success).toBe(false);
+    expect(schema.safeParse({ threadId: "home", view: "activity", query: "text" }).success).toBe(
+      false,
     );
   });
   it("keeps browser session identity explicit", () => {

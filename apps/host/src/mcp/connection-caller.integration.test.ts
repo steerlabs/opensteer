@@ -18,6 +18,7 @@ import {
   createId,
   ModelSelectionSchema,
   ThreadIdSchema,
+  MessageIdSchema,
   type ThreadAccessMode,
   ThreadAccessModeSchema,
 } from "@opensteer/core";
@@ -122,6 +123,9 @@ async function serveMcp(
     threads,
     realtime: observations,
     commands,
+    browser: {
+      readablePlaces: async (_owner: unknown, references: readonly unknown[]) => [...references],
+    },
     isEnvironmentConnected: options.connected ?? (() => true),
     canRunHarness: () => true,
     harnessAccessModes: () => ThreadAccessModeSchema.options,
@@ -279,7 +283,7 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     expect(listed).toEqual(
       agentTools.filter((tool) => tool.callers.includes("connection")).map(({ name }) => name),
     );
-    expect(listed).toContain("thread_write");
+    expect(listed).toContain("thread_update");
 
     const read = await agent.client.callTool({
       name: "thread_read",
@@ -358,8 +362,8 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     expect(
       errorText(
         await cautious.client.callTool({
-          name: "thread_write",
-          arguments: { threadId: fullAccess.id, action: "interrupt" },
+          name: "thread_interrupt",
+          arguments: { threadId: fullAccess.id },
         }),
       ),
     ).toContain("stronger access mode");
@@ -398,16 +402,12 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     expect(result.isError, JSON.stringify(result.content)).not.toBe(true);
     expect(result.structuredContent).toMatchObject({
       assignmentId: null,
-      thread: {
-        parentThreadId: null,
-        inheritsMain: false,
-        workspaceId: f.workspace.id,
-        accessMode: "approval-required",
-      },
-      message: { author: { kind: "connection", connectionId: agent.id } },
+      parentThreadId: null,
+      workspaceId: f.workspace.id,
+      status: "open",
     });
     const threadId = ThreadIdSchema.parse(
-      (result.structuredContent as { thread: { id: string } }).thread.id,
+      (result.structuredContent as { threadId: string }).threadId,
     );
     expect(
       await storeFixture.database
@@ -462,9 +462,14 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
       },
     });
     expect(message.isError).not.toBe(true);
-    expect(message.structuredContent).toMatchObject({
-      message: { author: { kind: "connection", connectionId: agent.id } },
-    });
+    const messageId = (message.structuredContent as { messageId: string }).messageId;
+    expect(
+      await storeFixture.database
+        .selectFrom("messages")
+        .select("author")
+        .where("id", "=", MessageIdSchema.parse(messageId))
+        .executeTakeFirstOrThrow(),
+    ).toMatchObject({ author: { kind: "connection", connectionId: agent.id } });
     const messageReplay = await agent.client.callTool({
       name: "thread_message",
       arguments: {
@@ -488,16 +493,16 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
         .execute(),
     ).toHaveLength(2);
     const stopped = await agent.client.callTool({
-      name: "thread_write",
-      arguments: { action: "interrupt", threadId, operationKey: "stop-independent" },
+      name: "thread_interrupt",
+      arguments: { threadId, operationKey: "stop-independent" },
     });
     expect(stopped.isError, JSON.stringify(stopped.content)).not.toBe(true);
     expect(stopped.structuredContent).toMatchObject({
-      interruptedRunId: (result.structuredContent as { run: { id: string } }).run.id,
+      interruptedRunId: (result.structuredContent as { runId: string }).runId,
     });
     const stopReplay = await agent.client.callTool({
-      name: "thread_write",
-      arguments: { action: "interrupt", threadId, operationKey: "stop-independent" },
+      name: "thread_interrupt",
+      arguments: { threadId, operationKey: "stop-independent" },
     });
     expect(stopReplay.structuredContent).toEqual(stopped.structuredContent);
     const other = await createTestWorkspace(storeFixture.store, {
@@ -641,8 +646,11 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     await exclude(f.harnessInstance.id);
     const started = await call("default-excluded");
     expect(started.isError, JSON.stringify(started.content)).not.toBe(true);
-    expect(started.structuredContent).toMatchObject({
-      thread: { harnessInstanceId: second.id },
+    const threadId = ThreadIdSchema.parse(
+      (started.structuredContent as { threadId: string }).threadId,
+    );
+    expect(await storeFixture.store.getThreadForOwner(threadId, f.userId)).toMatchObject({
+      harnessInstanceId: second.id,
     });
   });
 
@@ -734,19 +742,17 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     expect(errorText(described)).toBe("Integration operation is no longer available; search again");
     for (const arguments_ of [
       { action: "rename", title: "Renamed" },
-      { action: "set_icon", icon: "folder" },
       { action: "done" },
       { action: "reopen" },
     ]) {
       const result = await agent.client.callTool({
-        name: "thread_write",
+        name: "thread_update",
         arguments: { threadId: f.thread.id, ...arguments_ },
       });
       expect(result.isError, JSON.stringify(result.content)).not.toBe(true);
     }
     expect(await storeFixture.store.getThreadForOwner(f.thread.id, f.userId)).toMatchObject({
       title: "Renamed",
-      icon: "folder",
       doneAt: null,
     });
   });
@@ -764,7 +770,7 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     const unavailableModel = { providerId: "openai", modelId: "not-offered", options: {} };
     const result = await agent.client.callTool({
       name: "thread_configure",
-      arguments: { action: "set", threadId: f.thread.id, modelSelection: unavailableModel },
+      arguments: { threadId: f.thread.id, modelSelection: unavailableModel },
     });
     expect(errorText(result)).toBe(
       "The selected model is not available in this AI engine on this Runner",
@@ -774,8 +780,8 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
       arguments: { threadId: f.thread.id },
     });
     expect(read.structuredContent).toMatchObject({
-      execution: {
-        threadId: f.thread.id,
+      thread: {
+        id: f.thread.id,
         environmentId: f.environmentId,
         harnessInstanceId: f.harnessInstance.id,
         modelSelection: testModelSelection,
@@ -784,7 +790,6 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     const changed = await agent.client.callTool({
       name: "thread_configure",
       arguments: {
-        action: "set",
         threadId: f.thread.id,
         modelSelection: { ...testModelSelection, options: {} },
       },
@@ -806,14 +811,14 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
       accessMode: "approval-required",
       reach: { kind: "user" },
     });
-    for (const name of ["thread_configure", "thread_write"]) {
+    for (const name of ["thread_configure", "thread_interrupt"]) {
       expect(
         errorText(
           await cautious.client.callTool({
             name,
             arguments: {
               threadId: f.thread.id,
-              action: name === "thread_write" ? "interrupt" : "set",
+
               ...(name === "thread_configure" ? { modelSelection: testModelSelection } : {}),
             },
           }),
@@ -838,7 +843,7 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
         arguments: { threadId: f.thread.id, delivery: "queue", message },
       });
       expect(result.isError, JSON.stringify(result.content)).not.toBe(true);
-      return (result.structuredContent as { message: { id: string } }).message.id;
+      return (result.structuredContent as { messageId: string }).messageId;
     };
     const first = await send("First");
     const second = await send("Second");
@@ -857,48 +862,37 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     ).toBe("Only your own queued messages can be cancelled");
     const queue = async (action: string, args = {}) => {
       const result = await agent.client.callTool({
-        name: action === "list" ? "thread_read" : "thread_queue",
-        arguments:
-          action === "list"
-            ? { threadId: f.thread.id }
-            : { threadId: f.thread.id, action, ...args },
+        name: "thread_queue",
+        arguments: { threadId: f.thread.id, action, ...args },
       });
       expect(result.isError, JSON.stringify(result.content)).not.toBe(true);
-      return action === "list"
-        ? (result.structuredContent as { queue: unknown })?.queue
-        : result.structuredContent;
+      return result.structuredContent;
     };
     expect(await queue("move", { messageId: second, beforeMessageId: first })).toMatchObject({
       items: [
         {
-          input: { messageId: second },
-          message: {
-            preview: "Second",
-            truncated: false,
-            author: { kind: "connection", connectionId: agent.id },
-          },
+          messageId: second,
+          preview: "Second",
+          truncated: false,
+          author: { kind: "connection", connectionId: agent.id },
         },
-        { input: { messageId: first } },
+        { messageId: first },
       ],
     });
     expect(await queue("cancel", { messageId: first })).toMatchObject({
-      items: [{ input: { messageId: second } }],
-      input: { messageId: first, state: "cancelled" },
+      items: [{ messageId: second }],
     });
     expect(await queue("steer", { messageId: second, expectedRunId: f.run.id })).toMatchObject({
       items: [],
-      input: { messageId: second, runId: f.run.id },
     });
     const long = await send("x".repeat(1000));
     expect(await queue("list")).toMatchObject({
-      items: [
-        { input: { messageId: long }, message: { preview: "x".repeat(500), truncated: true } },
-      ],
+      items: [{ messageId: long, preview: "x".repeat(500), truncated: true }],
     });
     await queue("cancel", { messageId: long });
     const stopped = await agent.client.callTool({
-      name: "thread_write",
-      arguments: { action: "interrupt", threadId: f.thread.id, operationKey: "stop-queue" },
+      name: "thread_interrupt",
+      arguments: { threadId: f.thread.id, operationKey: "stop-queue" },
     });
     expect(stopped.isError, JSON.stringify(stopped.content)).not.toBe(true);
     expect(stopped.structuredContent).toMatchObject({ interruptedRunId: f.run.id });
@@ -930,7 +924,7 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
       arguments: { threadId: f.thread.id, timeoutMs: 10 },
     });
     expect(timed.isError, JSON.stringify(timed.content)).not.toBe(true);
-    expect(timed.structuredContent).toMatchObject({ status: "timed_out", messages: [] });
+    expect(timed.structuredContent).toMatchObject({ status: "timed_out", items: [] });
     connected = false;
     expect(
       (await agent.client.callTool({ name: "thread_wait", arguments: { threadId: f.thread.id } }))
@@ -1077,7 +1071,7 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
         arguments: { threadId: f.thread.id, delivery: "report", message },
       });
     const anchor = await send("Already seen");
-    const afterMessageId = (anchor.structuredContent as { message: { id: string } }).message.id;
+    const afterMessageId = (anchor.structuredContent as { messageId: string }).messageId;
     const waiting = agent.client.callTool({
       name: "thread_wait",
       arguments: { threadId: f.thread.id, afterMessageId },
@@ -1088,9 +1082,9 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     expect(result.isError, JSON.stringify(result.content)).not.toBe(true);
     expect(result.structuredContent).toMatchObject({
       status: "running",
-      messages: [
+      items: [
         {
-          id: (next.structuredContent as { message: { id: string } }).message.id,
+          itemId: (next.structuredContent as { messageId: string }).messageId,
           author: { kind: "connection", connectionId: agent.id },
         },
       ],
@@ -1142,8 +1136,8 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     });
     try {
       const result = await client.callTool({
-        name: "thread_write",
-        arguments: { action: "interrupt", operationKey: "self-stop" },
+        name: "thread_interrupt",
+        arguments: { operationKey: "self-stop" },
       });
       expect(result.isError, JSON.stringify(result.content)).not.toBe(true);
       expect(result.structuredContent).toMatchObject({ interruptedRunId: f.run.id });
