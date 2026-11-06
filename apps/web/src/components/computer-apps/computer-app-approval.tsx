@@ -90,6 +90,10 @@ export function ComputerSetupApprovals(props: {
   readonly hostClient: HostClient;
   readonly requests: readonly import("@opensteer/integration-core").ComputerAppSetupSummary[];
   readonly onChanged: () => Promise<void>;
+  /** A line under each approval's name, where the name alone would not say what it asks. */
+  readonly detail?: (
+    request: import("@opensteer/integration-core").ComputerAppSetupSummary,
+  ) => string;
 }) {
   const approval = useComputerAppApproval(props.hostClient);
   const [error, setError] = useState<string | null>(null);
@@ -112,9 +116,18 @@ export function ComputerSetupApprovals(props: {
       {props.requests.map((request) => (
         <div className="card__row" key={request.id}>
           <span className="card__row-body">
-            {request.server?.name ??
+            {props.detail ? (
+              <>
+                <span className="card__row-title">
+                  {request.server?.installationTitle ?? request.definitionId}
+                </span>
+                <span className="card__row-detail">{props.detail(request)}</span>
+              </>
+            ) : (
+              (request.server?.name ??
               request.app?.displayName ??
-              (request.kind === "policy" ? "Automatic app approval" : request.definitionId)}
+              (request.kind === "policy" ? "Automatic app approval" : request.definitionId))
+            )}
           </span>
           <button
             className="btn btn--small"

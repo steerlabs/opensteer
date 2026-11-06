@@ -1,3 +1,4 @@
+import { ThreadServerApprovals } from "./computer-apps/thread-server-approvals.js";
 import { threadMark, type PasswordsSetupOffer } from "@opensteer/client/host";
 import { observeResize } from "@opensteer/shared/resizeObserver";
 import { useCallback, useId, useLayoutEffect, useEffect, useMemo, useRef, useState } from "react";
@@ -1114,6 +1115,7 @@ function ThreadView({
             </button>
           ) : null}
         </div>
+        <ThreadServerApprovals threadId={thread.id} />
         <RequestStack
           disabled={!canRespond}
           items={dockedRequests}

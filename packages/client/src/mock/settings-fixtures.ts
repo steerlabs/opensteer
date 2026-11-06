@@ -232,7 +232,14 @@ export class MockSettingsFixtures {
     return this.details;
   }
   private packageIds = new Set<string>();
-  syncPackages(workspaceId: WorkspaceId, stored: readonly unknown[]) {
+  syncPackages(
+    workspaceId: WorkspaceId,
+    stored: readonly unknown[],
+    deviceOf: (pluginId: string) => {
+      readonly device: NonNullable<PluginDetailView["row"]["device"]>;
+      readonly setupThreadId: string | null;
+    } | null = () => null,
+  ) {
     const packages = pluginSummaries(stored);
     const current = this.inventory(workspaceId).filter(
       (detail) =>
@@ -253,6 +260,7 @@ export class MockSettingsFixtures {
         )
       )
         continue;
+      const declared = deviceOf(plugin.id);
       current.push(
         PluginDetailViewSchema.parse({
           row: {
@@ -264,6 +272,7 @@ export class MockSettingsFixtures {
               version: plugin.version,
             },
             tags: ["skills"],
+            ...(declared ? { device: declared.device } : {}),
             placement: {
               enabled: true,
               mainIncluded: plugin.activeIn.includes(workspaceId),
@@ -300,6 +309,7 @@ export class MockSettingsFixtures {
           permissions: [],
           contents: [],
           sourceFolder,
+          ...(declared ? { setupThreadId: declared.setupThreadId } : {}),
         }),
       );
     }

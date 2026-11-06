@@ -560,11 +560,16 @@ function ActionBody({
     );
   }
   return (
-    <ActionForm
-      request={request}
-      onRespond={(response) => respond(response, "form")}
-      pending={disabled || pendingId !== null}
-    />
+    <>
+      {request.kind === "integration.input" ? (
+        <ActionNote>Only this plugin receives your answer. The agent never sees it.</ActionNote>
+      ) : null}
+      <ActionForm
+        request={request}
+        onRespond={(response) => respond(response, "form")}
+        pending={disabled || pendingId !== null}
+      />
+    </>
   );
 }
 
@@ -606,7 +611,11 @@ function requestIcon(request: Request): IconName {
   // Both name one enrolled computer, so both read as one.
   if (request.kind === "machine.full-disk-access" || request.kind === "computer.app.access")
     return "laptop";
-  if (request.kind === "browser.sign-in" || request.kind === "browser.password-sign-in") {
+  if (
+    request.kind === "browser.sign-in" ||
+    request.kind === "browser.password-sign-in" ||
+    request.kind === "integration.input"
+  ) {
     return "key";
   }
   if (request.kind.startsWith("browser.")) return "browser";

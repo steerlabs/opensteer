@@ -639,9 +639,12 @@ html.electron-shell .settings-navigation__header :is(a, button) {
   flex-wrap: wrap;
   gap: var(--space-8);
 }
-.settings-device-list {
+.settings-content__inner .settings-device-list {
   padding: 0;
   list-style: none;
+}
+button.card__row > .card__row-body {
+  text-align: start;
 }
 .settings-content__inner > .text-input {
   width: 100%;
