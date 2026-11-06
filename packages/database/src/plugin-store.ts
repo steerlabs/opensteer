@@ -19,9 +19,11 @@ import { jsonValue } from "./store-primitives.js";
 export function canRemovePlugin(
   plugin: { scope: string; installedBy: UserId | null },
   actor: { userId: UserId; isAdministrator: boolean },
+  isActiveWorkspaceMember: boolean,
 ): boolean {
   return (
-    actor.isAdministrator || (plugin.scope === "workspace" && plugin.installedBy === actor.userId)
+    actor.isAdministrator ||
+    (plugin.scope === "workspace" && plugin.installedBy === actor.userId && isActiveWorkspaceMember)
   );
 }
 
@@ -35,9 +37,21 @@ export class PluginStore {
     const plugin = await this.database
       .selectFrom("plugins")
       .select(["scope", "installedBy"])
+      .select((eb) =>
+        eb
+          .exists(
+            eb
+              .selectFrom("workspaceMemberships")
+              .select("id")
+              .whereRef("workspaceMemberships.workspaceId", "=", "plugins.workspaceId")
+              .where("userId", "=", actor.userId)
+              .where("state", "=", "active"),
+          )
+          .as("isActiveWorkspaceMember"),
+      )
       .where("id", "=", pluginId)
       .executeTakeFirst();
-    if (!plugin || !canRemovePlugin(plugin, actor))
+    if (!plugin || !canRemovePlugin(plugin, actor, Boolean(plugin.isActiveWorkspaceMember)))
       throw new OpensteerError({ code: "forbidden", message: "Plugin removal is unavailable" });
   }
 

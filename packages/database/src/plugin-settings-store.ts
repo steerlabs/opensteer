@@ -387,10 +387,11 @@ export class PluginSettingsStore {
         permissions: {
           canEnable: true,
           canPlace: manage,
-          canRemove: canRemovePlugin(plugin, {
-            userId: owner,
-            isAdministrator: viewer.instanceRole === "administrator",
-          }),
+          canRemove: canRemovePlugin(
+            plugin,
+            { userId: owner, isAdministrator: viewer.instanceRole === "administrator" },
+            places.some((place) => place.id === plugin.workspaceId),
+          ),
           // Agent-made plugins update when an agent installs their folder again.
           canUpdate:
             manage && plugin.scope === "deployment" && typeof plugin.source.directory === "string",

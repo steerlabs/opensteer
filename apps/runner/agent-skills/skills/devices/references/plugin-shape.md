@@ -32,7 +32,7 @@ is what the person calls it.
   "mcpServers": {
     "apple-tv": {
       "type": "stdio",
-      "command": "/opt/homebrew/bin/uvx",
+      "command": "uvx",
       "args": [
         "--python",
         "3.13",
@@ -45,14 +45,14 @@ is what the person calls it.
         "python",
         "${PLUGIN_ROOT}/server.py"
       ],
-      "env": { "DEVICE_ADDRESS": "192.168.1.10" }
+      "env": { "PATH": "/opt/homebrew/bin:/usr/bin:/bin", "DEVICE_ADDRESS": "192.168.1.10" }
     }
   }
 }
 ```
 
-- The server starts with a minimal environment, not your shell's: give `command` as an absolute
-  path (find it with `command -v`) and pass settings through `env`.
+- `command` is a bare executable or a `./` path inside the plugin. The server starts with a minimal
+  environment, so set `PATH` in `env` to the directory `command -v` shows for the launcher.
 - Write state to the folder named by the `PLUGIN_DATA` environment variable. It survives updates and
   is deleted from that computer when the person removes the plugin.
 - Give each action its own plainly named tool, such as `pause` or `launch_app`, that returns the

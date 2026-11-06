@@ -309,7 +309,7 @@ describeStore("plugin devices", (test) => {
     }
   });
 
-  test("removal and canRemove use the same administrator or workspace-installer rule", async ({
+  test("removal and canRemove use the same administrator or active workspace-installer rule", async ({
     storeFixture: f,
   }) => {
     const run = await f.createRunFixture("device-remove");
@@ -329,7 +329,7 @@ describeStore("plugin devices", (test) => {
           workspaceId: run.workspace.id,
           userId,
           state: "active",
-          role: "collaborator",
+          role: userId === member ? "owner" : "collaborator",
           generation: 1,
           invitedBy: run.userId,
           joinedAt: new Date(),
@@ -338,69 +338,164 @@ describeStore("plugin devices", (test) => {
           updatedAt: new Date(),
         })
         .execute();
-    const pluginId = randomUUID();
-    const install = () =>
-      platform.plugins.install({
+    const directory = await mkdtemp(join(tmpdir(), "plugin-removal-authority-"));
+    const removeRunnerData = vi.fn(async () => undefined);
+    const service = new IntegrationPlatformService({
+      store: platform,
+      dataDirectory: directory,
+      adapters: [],
+      definitions: [],
+      authorizationSource: { providerAuthorizations: async () => ({}) },
+      listConnections: async () => [],
+      credentialMaterializer: {} as ConstructorParameters<
+        typeof IntegrationPlatformService
+      >[0]["credentialMaterializer"],
+      computerApps: { removePluginData: removeRunnerData } as unknown as ConstructorParameters<
+        typeof IntegrationPlatformService
+      >[0]["computerApps"],
+      isRunnerConnected: () => false,
+      mcpOauth: {} as ConstructorParameters<typeof IntegrationPlatformService>[0]["mcpOauth"],
+      secretVault: new AesGcmSecretVault(
+        new StaticEncryptionKeyProvider(new Map([[1, randomBytes(32)]]), 1),
+      ),
+      onWorkspaceEvent: () => undefined,
+      onConnectionsChanged: () => undefined,
+      onRequestsChanged: () => undefined,
+    });
+    try {
+      const source = join(directory, "source");
+      await mkdir(source);
+      await writeFile(
+        join(source, "plugin.json"),
+        JSON.stringify({
+          $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+          name: "removable",
+        }),
+      );
+      await writeFile(
+        join(source, "mcp.json"),
+        JSON.stringify({
+          $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+          mcpServers: { device: { type: "stdio", command: "node" } },
+        }),
+      );
+      const install = () =>
+        service.installAgentPlugin({
+          actorUserId: run.userId,
+          workspaceId: run.workspace.id,
+          runnerId: run.runnerId,
+          directory: source,
+          requestId: randomUUID(),
+        });
+      let installed = await install();
+      let pluginId = installed.installation.pluginId!;
+      expect(await platform.settings.otherDevices(member, [])).toEqual([]);
+      const target = { kind: "plugin", pluginId } as const;
+      for (const [userId, allowed] of [
+        [run.userId, true],
+        [member, false],
+        [admin, true],
+      ] as const) {
+        expect((await platform.settings.detail(userId, target)).row.permissions.canRemove).toBe(
+          allowed,
+        );
+      }
+      const options = { platform: service };
+      await expect(
+        executeIntegrationAdministration(
+          options,
+          { userId: member, isAdministrator: false },
+          { type: "plugin.remove", pluginId, idempotencyKey: "denied" },
+          "denied",
+        ),
+      ).rejects.toMatchObject({ code: "forbidden" });
+      await f.database
+        .updateTable("workspaceMemberships")
+        .set({ state: "revoked", revokedAt: new Date(), revokedBy: admin })
+        .where("workspaceId", "=", run.workspace.id)
+        .where("userId", "=", run.userId)
+        .execute();
+      const data = join(directory, "plugins", "data", pluginId, "pairing");
+      await writeFile(data, "retained");
+      await expect(
+        executeIntegrationAdministration(
+          options,
+          { userId: run.userId, isAdministrator: false },
+          { type: "plugin.remove", pluginId, idempotencyKey: randomUUID() },
+          randomUUID(),
+        ),
+      ).rejects.toMatchObject({ code: "forbidden" });
+      expect(await f.database.selectFrom("runnerPluginDataRemovals").selectAll().execute()).toEqual(
+        [],
+      );
+      expect((await platform.plugins.list()).find((p) => p.id === pluginId)).toBeDefined();
+      expect(
+        (await platform.listInstallations()).find((i) => i.id === installed.installation.id),
+      ).toBeDefined();
+      expect(await readFile(data, "utf8")).toBe("retained");
+      expect(removeRunnerData).not.toHaveBeenCalled();
+      await expect(platform.settings.detail(run.userId, target)).rejects.toMatchObject({
+        code: "forbidden",
+      });
+      expect(
+        (await platform.settings.overview(run.userId)).rows.some(
+          (row) =>
+            row.target.kind === "plugin" &&
+            row.target.pluginId === pluginId &&
+            row.permissions.canRemove,
+        ),
+      ).toBe(false);
+      await f.database
+        .updateTable("workspaceMemberships")
+        .set({ state: "active", revokedAt: null, revokedBy: null })
+        .where("workspaceId", "=", run.workspace.id)
+        .where("userId", "=", run.userId)
+        .execute();
+      for (const [userId, isAdministrator] of [
+        [run.userId, false],
+        [admin, true],
+      ] as const) {
+        const pairing = join(directory, "plugins", "data", pluginId, "pairing");
+        await writeFile(pairing, "remove-on-success");
+        await executeIntegrationAdministration(
+          options,
+          { userId, isAdministrator },
+          { type: "plugin.remove", pluginId, idempotencyKey: randomUUID() },
+          randomUUID(),
+        );
+        expect((await platform.plugins.list()).find((p) => p.id === pluginId)).toBeUndefined();
+        expect((await platform.listInstallations()).some((i) => i.pluginId === pluginId)).toBe(
+          false,
+        );
+        await expect(readFile(pairing)).rejects.toMatchObject({ code: "ENOENT" });
+        if (!isAdministrator) {
+          installed = await install();
+          pluginId = installed.installation.pluginId!;
+          await f.database
+            .updateTable("workspaceMemberships")
+            .set({ state: "revoked", revokedAt: new Date(), revokedBy: admin })
+            .where("workspaceId", "=", run.workspace.id)
+            .where("userId", "=", admin)
+            .execute();
+        }
+      }
+      await platform.plugins.install({
         id: pluginId,
-        name: "removable",
+        name: "deployment",
         actorUserId: run.userId,
-        workspaceId: run.workspace.id,
         source: {},
         digest: "one",
-        manifest: { name: "removable" },
+        manifest: { name: "deployment" },
       });
-    await install();
-    expect(await platform.settings.otherDevices(member, [])).toEqual([]);
-    const target = { kind: "plugin", pluginId } as const;
-    for (const [userId, allowed] of [
-      [run.userId, true],
-      [member, false],
-      [admin, true],
-    ] as const) {
-      expect((await platform.settings.detail(userId, target)).row.permissions.canRemove).toBe(
-        allowed,
-      );
+      expect(
+        (await platform.settings.detail(run.userId, { kind: "plugin", pluginId })).row.permissions
+          .canRemove,
+      ).toBe(false);
+      await expect(
+        platform.plugins.assertCanRemove(pluginId, { userId: run.userId, isAdministrator: false }),
+      ).rejects.toMatchObject({ code: "forbidden" });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
     }
-    const options = {
-      platform: {
-        store: platform,
-        removePluginData: async () => undefined,
-      } as unknown as IntegrationPlatformService,
-    };
-    await expect(
-      executeIntegrationAdministration(
-        options,
-        { userId: member, isAdministrator: false },
-        { type: "plugin.remove", pluginId, idempotencyKey: "denied" },
-        "denied",
-      ),
-    ).rejects.toMatchObject({ code: "forbidden" });
-    for (const [userId, isAdministrator] of [
-      [run.userId, false],
-      [admin, true],
-    ] as const) {
-      await executeIntegrationAdministration(
-        options,
-        { userId, isAdministrator },
-        { type: "plugin.remove", pluginId, idempotencyKey: randomUUID() },
-        randomUUID(),
-      );
-      expect((await platform.plugins.list()).find((p) => p.id === pluginId)).toBeUndefined();
-      if (!isAdministrator) await install();
-    }
-    await platform.plugins.install({
-      id: pluginId,
-      name: "deployment",
-      actorUserId: run.userId,
-      source: {},
-      digest: "one",
-      manifest: { name: "deployment" },
-    });
-    expect((await platform.settings.detail(run.userId, target)).row.permissions.canRemove).toBe(
-      false,
-    );
-    await expect(
-      platform.plugins.assertCanRemove(pluginId, { userId: run.userId, isAdministrator: false }),
-    ).rejects.toMatchObject({ code: "forbidden" });
   });
 });
