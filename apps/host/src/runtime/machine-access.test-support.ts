@@ -1068,6 +1068,7 @@ export async function connectCallerMachine(
      */
     readonly rendersImages?: boolean;
     readonly computerTool?: 1;
+    readonly longRequestHold?: boolean;
     readonly runFiles?: boolean;
     readonly runnerKind?: "local" | "main";
   } & (
@@ -1115,6 +1116,9 @@ export async function connectCallerMachine(
           {
             accessModes: ["approval-required", "auto-accept-edits", "auto", "full-access"],
             driverKind: "codex",
+            ...(input.longRequestHold === undefined
+              ? {}
+              : { longRequestHold: input.longRequestHold }),
             ...(input.rendersImages ? { mcpImageContent: true } : {}),
             readiness: "configured",
             sources: [
