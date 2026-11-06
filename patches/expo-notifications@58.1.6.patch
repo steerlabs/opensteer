@@ -111,7 +111,7 @@
  
 -    semaphore.wait()
 +    // Notification services can stall; do not hold Expo's shared async queue indefinitely.
-+    let outcome = semaphore.wait(timeout: .now() + .milliseconds(250))
++    let outcome = semaphore.wait(timeout: .now() + .seconds(1))
 +    lock.lock()
 +    defer { lock.unlock() }
 +    finished = true
