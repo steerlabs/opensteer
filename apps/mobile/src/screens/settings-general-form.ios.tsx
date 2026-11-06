@@ -1,11 +1,22 @@
-import { Button, HStack, LabeledContent, Section, Spacer, Text, Toggle } from "@expo/ui/swift-ui";
+import {
+  Button,
+  HStack,
+  LabeledContent,
+  Picker,
+  Section,
+  Spacer,
+  Text,
+  Toggle,
+} from "@expo/ui/swift-ui";
 import {
   accessibilityLabel,
   contentShape,
   disabled,
   font,
   foregroundStyle,
+  pickerStyle,
   shapes,
+  tag,
 } from "@expo/ui/swift-ui/modifiers";
 import type { ReactNode } from "react";
 import { Linking } from "react-native";
@@ -19,7 +30,13 @@ import {
   LinkRow,
 } from "./settings-form-primitives.ios.js";
 import type { SettingsFormProps } from "./settings-form.types.js";
-import { privacyPolicyUrl, projectNotificationsFooter } from "./settings-model.js";
+import {
+  privacyPolicyUrl,
+  projectNotificationsFooter,
+  quietTaskChoices,
+  quietTasksFooter,
+  quietTasksTitle,
+} from "./settings-model.js";
 const secondary = foregroundStyle({ type: "hierarchical", style: "secondary" });
 const footnote = font({ textStyle: "footnote" });
 export function GeneralSettingsForm(
@@ -36,12 +53,14 @@ export function GeneralSettingsForm(
     | "onPreferenceChange"
     | "onAgentMuteChange"
     | "storageError"
+    | "quietTasks"
     | "version"
   >,
 ): ReactNode {
   const notifications = props.notifications;
   const preferences = notifications?.preferences ?? null;
   const update = props.desktopUpdate;
+  const quietTasks = props.quietTasks ?? null;
   return (
     <>
       {
@@ -113,6 +132,26 @@ export function GeneralSettingsForm(
           )}
           <ActionButton action={notifications.action} onPress={props.onNotificationAction} />
           <ErrorText detail={props.notificationError} />
+        </Section>
+      )}
+      {quietTasks === null ? null : (
+        <Section footer={<Footer text={quietTasksFooter} />} title="Tasks">
+          <Picker
+            label={quietTasksTitle}
+            modifiers={[pickerStyle("menu")]}
+            onSelectionChange={(days) => {
+              const choice = quietTaskChoices.find((item) => item.days === days);
+              if (choice !== undefined) quietTasks.onChange(choice.days);
+            }}
+            selection={quietTasks.days}
+          >
+            {quietTaskChoices.map((choice) => (
+              <Text key={choice.days} modifiers={[tag(choice.days)]}>
+                {choice.label}
+              </Text>
+            ))}
+          </Picker>
+          <ErrorText detail={quietTasks.error} />
         </Section>
       )}
       {notifications === null || props.agents.length === 0 ? null : (

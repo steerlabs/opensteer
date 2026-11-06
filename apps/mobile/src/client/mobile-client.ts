@@ -83,7 +83,7 @@ import {
   personalSessionFrom,
   type PersonalSessionStore,
 } from "./personal-session-store.js";
-import { createDoneShelfFile, type DoneShelfFile } from "./done-shelf-file.js";
+import { createQuietSeen, type QuietSeen } from "./quiet-seen-file.js";
 import { createUsageNoticesFile } from "./usage-notices-file.js";
 import { createSelectionFile, type SelectionFile } from "./selection-file.js";
 import { createSignedOutFile, type SignedOutFile } from "./signed-out-file.js";
@@ -169,7 +169,7 @@ export interface MobileClientOptions {
   readonly accountOrigin: string | null;
   readonly portalOrigin?: string | null;
   readonly catalogFilePath: string;
-  readonly doneShelfFilePath: string;
+  readonly quietSeenFilePath: string;
   readonly draftsFilePath: string;
   readonly usageNoticesFilePath: string;
   readonly fetch: HostFetch;
@@ -229,8 +229,8 @@ export class MobileClient {
   readonly accountDirectory: AccountDeploymentDirectoryService;
   readonly catalog: DeploymentCatalogStore;
   readonly directoryRefresh: AccountDirectoryRefreshService<void>;
-  /** Whether the sidebar's Done shelf is open on this phone. */
-  readonly doneShelf: DoneShelfFile;
+  /** The quiet moves to Done this phone has shown, behind the sidebar's "+N". */
+  readonly quietSeen: QuietSeen;
   /** Usage-limit notices dismissed on this phone, shared by every composer. */
   readonly usageNotices: UsageNoticeDismissals;
   /** Unsent message text, per Thread, kept where a killed app cannot lose it. */
@@ -401,8 +401,8 @@ export class MobileClient {
         }
       },
     });
-    this.doneShelf = createDoneShelfFile({
-      filePath: options.doneShelfFilePath,
+    this.quietSeen = createQuietSeen({
+      filePath: options.quietSeenFilePath,
       privateFiles: options.privateFiles,
     });
     this.usageNotices = createUsageNoticeDismissals(
