@@ -1,7 +1,8 @@
+import { startHeldRequest } from "../integrations/held-request.test-support.js";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createId } from "@opensteer/core";
 import { IntegrationPlatformStore } from "@opensteer/database";
 import {
@@ -290,11 +291,13 @@ integration("computer apps", () => {
     const gateway = await integrationGateway(run.integrationTools);
     closers.unshift(() => gateway.close());
 
-    await gateway.call("integration_request", {
-      access: "read",
-      integration: "apple-messages",
-      reason: "Read recent conversations",
-    });
+    const held = await startHeldRequest(host, run.runId, () =>
+      gateway.call("integration_request", {
+        access: "read",
+        integration: "apple-messages",
+        reason: "Read recent conversations",
+      }),
+    );
     const [readRequest] = await host.store.requests.listPendingIntegrationAccessRequests(
       host.ownerId,
     );
@@ -319,6 +322,7 @@ integration("computer apps", () => {
       },
       { headers: host.ownerHeaders },
     );
+    await expect(held.result).resolves.toMatchObject({ status: "fulfilled" });
     const readSearch = await gateway.call("integration_search", { query: "Messages" });
     const readOperation = operation(readSearch, "list_conversations");
     expect(readOperation).toMatchObject({
@@ -338,11 +342,13 @@ integration("computer apps", () => {
       "messages-read-write",
     );
     await setComputerApp(host, computer, writeSetup, writeSetup.id);
-    await gateway.call("integration_request", {
-      access: "read-write",
-      integration: "apple-messages",
-      reason: "Send a message",
-    });
+    const writeHeld = await startHeldRequest(host, run.runId, () =>
+      gateway.call("integration_request", {
+        access: "read-write",
+        integration: "apple-messages",
+        reason: "Send a message",
+      }),
+    );
     const writeRequests = await host.store.requests.listPendingIntegrationAccessRequests(
       host.ownerId,
     );
@@ -368,6 +374,7 @@ integration("computer apps", () => {
       },
       { headers: host.ownerHeaders },
     );
+    await expect(writeHeld.result).resolves.toMatchObject({ status: "fulfilled" });
     const writeSearch = await gateway.call("integration_search", { query: "Messages" });
     const sendOperation = operation(writeSearch, "send_message");
     await expect(
@@ -450,11 +457,13 @@ integration("computer apps", () => {
       },
       { headers: host.ownerHeaders },
     );
-    await gateway.call("integration_request", {
-      access: "read-write",
-      integration: "apple-messages",
-      reason: "Send a follow-up",
-    });
+    const pendingHeld = await startHeldRequest(host, run.runId, () =>
+      gateway.call("integration_request", {
+        access: "read-write",
+        integration: "apple-messages",
+        reason: "Send a follow-up",
+      }),
+    );
     const pending = await host.store.requests.listPendingIntegrationAccessRequests(host.ownerId);
     expect(pending).toHaveLength(1);
     await revokeMachine(host, { key: "revoke-computer-app", runnerId: computer.runnerId });
@@ -491,6 +500,8 @@ integration("computer apps", () => {
         .where("status", "=", "active")
         .execute(),
     ).resolves.toEqual([]);
+    await run.complete();
+    await expect(pendingHeld.result).rejects.toThrow();
   }, 180_000);
 
   it("rejects out-of-sequence, malformed, and stale integration heartbeats", async () => {
@@ -698,11 +709,13 @@ integration("computer apps", () => {
     closers.unshift(() => run.complete());
     const gateway = await integrationGateway(run.integrationTools);
     closers.unshift(() => gateway.close());
-    await gateway.call("integration_request", {
-      access: "read",
-      integration: "apple-messages",
-      reason: "Read recent conversations",
-    });
+    const held = await startHeldRequest(host, run.runId, () =>
+      gateway.call("integration_request", {
+        access: "read",
+        integration: "apple-messages",
+        reason: "Read recent conversations",
+      }),
+    );
     const [readRequest] = await host.store.requests.listPendingIntegrationAccessRequests(
       host.ownerId,
     );
@@ -727,6 +740,7 @@ integration("computer apps", () => {
       },
       { headers: host.ownerHeaders },
     );
+    await expect(held.result).resolves.toMatchObject({ status: "fulfilled" });
     const searched = await gateway.call("integration_search", { query: "Messages" });
     const list = operation(searched, "list_conversations");
     expect(list).toMatchObject({ account: "Studio Mac", connectionId: enabled.connection.id });
@@ -1073,13 +1087,20 @@ async function grantAccess(
     readonly integration: string;
   },
 ) {
-  await gateway.call("integration_request", {
+  const held = gateway.call("integration_request", {
     access: input.access,
     integration: input.integration,
     reason: `Use ${input.integration}`,
   });
-  const pending = await host.store.requests.listPendingIntegrationAccessRequests(host.ownerId);
-  const request = pending.at(-1);
+  const request = await vi.waitFor(
+    async () => {
+      const pending = await host.store.requests.listPendingIntegrationAccessRequests(host.ownerId);
+      const row = pending.at(-1);
+      expect(row, "The access Request was not created").toBeDefined();
+      return row!;
+    },
+    { timeout: 10_000 },
+  );
   if (!request) throw new Error(`The ${input.integration} access Request was not created`);
   await testRpcData(
     host.origin,
@@ -1101,6 +1122,7 @@ async function grantAccess(
     },
     { headers: host.ownerHeaders },
   );
+  await expect(held).resolves.toMatchObject({ status: "fulfilled" });
 }
 
 function contractOf(definitionId: string, name: string): string {

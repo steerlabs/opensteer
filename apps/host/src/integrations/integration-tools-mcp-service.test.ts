@@ -657,7 +657,9 @@ describe("Opensteer MCP integration access classes", () => {
             ),
           ),
         ).toMatchObject({
-          guidance: { computers: expect.stringContaining("do not repeat pending Requests") },
+          guidance: {
+            computers: expect.stringContaining("do not poll, repeat or route around the Request"),
+          },
           catalog: expect.arrayContaining([
             expect.objectContaining({
               computers: [expect.objectContaining({ name: "Studio Mac" })],
