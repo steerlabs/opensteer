@@ -887,11 +887,12 @@ label.action-row input {
   min-width: 0;
 }
 
-/* In the composer's row they neither wrap nor shrink: FoldToFit folds their
-   words instead, and it measures overflow at the row's edge. */
-.composer__settings .exec-controls {
+/* In a row that fits itself they neither wrap nor shrink: FoldToFit folds
+   their words instead, and it measures overflow at the row's edge. */
+[data-fold-row] > .exec-controls {
   flex: none;
   flex-wrap: nowrap;
+  margin-left: auto;
 }
 
 /* A pill keeps its whole width: a squeezed pill is how names became "G…".
@@ -2243,9 +2244,6 @@ fieldset.action-panel {
 }
 .composer__settings {
   justify-content: flex-start;
-}
-.composer__settings .exec-controls {
-  margin-left: auto;
 }
 
 .execution-menu [aria-label="Models"] .picker__detail {
