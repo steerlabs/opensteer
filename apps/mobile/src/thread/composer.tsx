@@ -12,6 +12,7 @@ import {
   deriveSurface,
   isHostRefusal,
   mutationIdempotencyKey,
+  pageSiteLabel,
   type HostClient,
   type UsageLimitNotice,
 } from "@opensteer/client/host";
@@ -47,7 +48,7 @@ import {
   View,
 } from "react-native";
 import Animated from "react-native-reanimated";
-import { pageIdentity, pageSite } from "../browser/surface-route.js";
+import { pageIdentity } from "../browser/surface-route.js";
 import { operationDetail } from "../client/mobile-client.js";
 import type {
   PendingCommand,
@@ -1115,7 +1116,7 @@ function PageChip(props: {
   readonly page: BrowserPageContentPart;
 }): ReactNode {
   const title = props.page.title || "This page";
-  const site = pageSite(props.page.url) ?? title;
+  const site = pageSiteLabel(props.page.url) ?? title;
   return (
     <NativeMenu
       accessibilityHint="Shows how to leave this page out of your message"
