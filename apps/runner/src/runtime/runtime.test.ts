@@ -367,16 +367,7 @@ describe("RunnerRuntime", () => {
     registry.registerDriver(driver);
     const environmentId = createId("environment");
     const command = executeCommand(environmentId);
-    const runtime = configuredRuntime({
-      environmentId,
-      registry,
-      // This in-memory harness has no processes; native inventory is covered by containment tests.
-      containment: new ExecutionContainment({
-        bootId: "boot-control-test",
-        dataDirectory: testPrivateStateRoot,
-        listProcesses: async () => [],
-      }),
-    });
+    const runtime = configuredRuntime({ environmentId, registry });
     await reconcile(registry, command);
     const generation = runtime.generateBackgroundText(
       HostBackgroundTextSchema.parse({
@@ -6038,7 +6029,17 @@ function runtimeWithLeaseGrants(
   options: ConstructorParameters<typeof RunnerRuntime>[0],
   grantLeases = true,
 ): RunnerRuntime {
-  const runtime = new RunnerRuntime(options);
+  const runtime = new RunnerRuntime({
+    ...options,
+    // These harness sessions and program executors run in memory; native inventory has its own tests.
+    containment:
+      options.containment ??
+      new ExecutionContainment({
+        bootId: options.bootId,
+        dataDirectory: options.dataDirectory,
+        listProcesses: async () => [],
+      }),
+  });
   const handleCommand = runtime.handleCommand.bind(runtime);
   runtime.handleCommand = async (command, sink) => {
     const decision = await handleCommand(command, sink);
