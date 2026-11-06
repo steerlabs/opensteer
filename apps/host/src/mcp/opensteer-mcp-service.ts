@@ -59,6 +59,7 @@ interface McpSession {
   readonly kind: AgentCaller["kind"];
   readonly server: McpServer;
   readonly transport: StreamableHTTPServerTransport;
+  readonly streams: boolean;
   lastSeenAt: number;
 }
 export class OpensteerMcpService {
@@ -192,10 +193,9 @@ export class OpensteerMcpService {
       }
     }
 
-    const completed = responseLifetime(session, response, ended);
+    void responseLifetime(session, response, ended);
     try {
       await session.transport.handleRequest(request, response, body);
-      await completed;
     } catch (error) {
       if (createdSession) {
         const initializedId = session.transport.sessionId;
@@ -207,7 +207,6 @@ export class OpensteerMcpService {
         sendJsonRpcError(response, 500, safeMessage(error, safeMessageOptions));
       }
     } finally {
-      session.lastSeenAt = Date.now();
       if (createdSession) this.#release(authorization.key);
     }
   }
@@ -267,13 +266,13 @@ export class OpensteerMcpService {
     const completed = responseLifetime(session, response, ended);
     try {
       await session.transport.handleRequest(request, response, body);
-      await completed;
+      // A stream outlives handleRequest, and this session closes with its one response.
+      if (session.streams) await completed;
     } catch (error) {
       if (!response.headersSent) {
         sendJsonRpcError(response, 500, safeMessage(error, safeMessageOptions));
       }
     } finally {
-      session.lastSeenAt = Date.now();
       this.#activeSessions.delete(session);
       await session.server.close().catch(() => undefined);
     }
@@ -333,6 +332,7 @@ export class OpensteerMcpService {
       kind: input.kind,
       lastSeenAt: Date.now(),
       server,
+      streams: longRequestHold,
       transport,
     };
     this.#activeSessions.add(session);
