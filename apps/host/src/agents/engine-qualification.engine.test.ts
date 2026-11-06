@@ -206,18 +206,21 @@ describe("engine qualification", () => {
             { timeout: shortRequestHoldMs + 60_000, interval: 100 },
           );
         }
-        const steps = await database
+        // A call issued in the same step as the Request may still run; a tool starting after
+        // one has finished can only come from a new step, which the hold must prevent.
+        const held = await database
           .selectFrom("workspaceEvents")
-          .select("data")
+          .select(["type", "data"])
           .where("runId", "=", firstRunId)
-          .where("type", "=", "tool.started")
           .orderBy("sequence", "asc")
           .execute();
+        const sinceOpened = held.slice(held.findIndex(({ type }) => type === "request.opened"));
+        const finished = sinceOpened.findIndex(({ type }) => type === "tool.completed");
         expect(
-          steps.filter(
-            ({ data }) => (data as { tool?: { name?: string } }).tool?.name === "thread_list",
-          ),
-          "The engine kept working while the Request was held",
+          finished < 0
+            ? []
+            : sinceOpened.slice(finished).filter(({ type }) => type === "tool.started"),
+          "The engine took another step while the Request was held",
         ).toEqual([]);
         const before = await database
           .selectFrom("providerSessions")
