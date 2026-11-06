@@ -37,7 +37,7 @@ is what the person calls it.
         "--python",
         "3.13",
         "--with",
-        "mcp",
+        "mcp>=2,<3",
         "--with",
         "pyatv",
         "--with",
@@ -56,15 +56,23 @@ is what the person calls it.
 - Write state to the folder named by the `PLUGIN_DATA` environment variable. It survives updates and
   is deleted from that computer when the person removes the plugin.
 - Give each action its own plainly named tool, such as `pause` or `launch_app`, that returns the
-  device's new state. Mark reads with `readOnlyHint`.
+  device's new state. Mark reads as read-only.
+- Test the server the way its computer will start it: launch the exact `command` and `args` from
+  a small MCP stdio client, list its tools and call a read.
 - If the shell reaches the device but the server can't, macOS may need Local Network access for
   Opensteer in System Settings › Privacy & Security › Local Network. Tell the person.
 
 ## Asking for a code
 
-Pair from a tool that asks the person with MCP elicitation. With the Python MCP SDK:
+Pair from a tool that asks the person with MCP elicitation. With the Python MCP SDK 2.x, where
+FastMCP is now `MCPServer`:
 
 ```python
+from mcp.server.mcpserver import Context, MCPServer
+from pydantic import BaseModel
+
+mcp = MCPServer("apple-tv")
+
 class Code(BaseModel):
     code: str
 
