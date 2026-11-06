@@ -16432,6 +16432,9 @@ it.each([false, true])(
       const release = client.retainBrowserViewer(sessionId, tabId, { picture: false });
       const connection = sockets.find(({ url }) => url.includes("/browser-sessions/"))!;
       expect(new URL(connection.url).searchParams.get("passkeys")).toBe(capable ? "notice" : null);
+      expect(new URL(connection.url).searchParams.get("popups")).toBe("1");
+      const popups: string[] = [];
+      const stopPopups = client.subscribeBrowserPopups(sessionId, tabId, (id) => popups.push(id));
       connection.socket.open();
       connection.socket.receiveRaw({
         type: "browser.snapshot",
@@ -16447,6 +16450,16 @@ it.each([false, true])(
         connection.socket.receiveRaw({ type: "browser.passkey.notice", surfaceId: tabId });
         expect(client.browserPasskeys.get(sessionId, tabId)).toEqual({ kind: "notice" });
       }
+      const opened = {
+        type: "browser.popup.opened",
+        surfaceId: "srf_00000000-0000-4000-8000-000000000099",
+        consumerToken: "00000000-0000-4000-8000-000000000098",
+      };
+      connection.socket.receiveRaw(opened);
+      expect(popups).toEqual([opened.surfaceId]);
+      stopPopups();
+      connection.socket.receiveRaw(opened);
+      expect(popups).toHaveLength(1);
       release();
       expect(client.browserPasskeys.get(sessionId, tabId)).toBeNull();
     } finally {

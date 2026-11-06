@@ -1278,6 +1278,12 @@ export const RunnerBrowserModuleSchema = z
       .positive()
       .transform((version) => (version === 1 ? version : undefined))
       .optional(),
+    popupFollowVersion: z
+      .number()
+      .int()
+      .positive()
+      .transform((version) => (version === 1 ? version : undefined))
+      .optional(),
     // Older signed Runner descriptors have no version. Keep them admissible so
     // their agents, shell and integrations modules continue to work; browser
     // placement checks the capability version before it can be used.

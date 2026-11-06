@@ -515,6 +515,39 @@ describe("SurfaceLedger", () => {
     await ledger.close();
   });
 
+  it.each([
+    { name: "a recent input from the person", follows: true },
+    { name: "an agent command after the input", agent: true, follows: false },
+    { name: "an input from nobody known", viewer: null, follows: false },
+    { name: "an input past its activation", lateMs: 5_000, follows: false },
+    { name: "a tab opened behind its opener", background: true, follows: false },
+  ])("a popup after $name follows its viewer: $follows", async (scenario) => {
+    const viewer = "00000000-0000-4000-8000-000000000001";
+    const root = new FakePage({ title: "Root" });
+    const context = new FakeContext([root]);
+    const ledger = new SurfaceLedger(context);
+    const followers: string[] = [];
+    ledger.subscribe((event) => {
+      if (event.type === "popup") followers.push(event.consumerToken);
+    });
+    await ledger.start();
+    const open = async () => {
+      const popup = new FakePage({ opener: root, title: "Popup" });
+      if (scenario.background) Object.assign(popup, { openedInBackground: true });
+      context.addPage(popup);
+      await ledger.resolveTarget(await popup.targetId());
+    };
+    const at = Date.now();
+    ledger.recordViewerInput(ledger.snapshot()[0]!.id, scenario.viewer === null ? null : viewer);
+    if (scenario.agent) ledger.recordAgentCommand(await root.targetId());
+    const now = vi.spyOn(Date, "now").mockReturnValue(at + (scenario.lateMs ?? 0));
+    await open();
+    await open();
+    now.mockRestore();
+    expect(followers).toEqual(scenario.follows ? [viewer] : []);
+    await ledger.close();
+  });
+
   it("gives every page and popup its starting size before announcing it", async () => {
     const root = new FakePage({ title: "Root" });
     const context = new FakeContext([root]);

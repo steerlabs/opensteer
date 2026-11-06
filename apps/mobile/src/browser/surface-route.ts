@@ -29,6 +29,8 @@ type SurfacesTarget =
       readonly sessionId: string;
       readonly tabId: string;
       readonly editAddress?: boolean;
+      /** A popup the person's input opened: when it ends they return to the page under it. */
+      readonly popup?: boolean;
       readonly appId?: never;
       readonly machineId?: never;
       readonly computerSessionId?: never;
@@ -42,6 +44,7 @@ type SurfacesTarget =
       readonly sessionId?: never;
       readonly tabId?: never;
       readonly editAddress?: never;
+      readonly popup?: never;
       readonly appId?: never;
       readonly machineId?: string;
       /** A task's own session on the app or phone. */
@@ -60,6 +63,7 @@ type SurfacesTarget =
       readonly sessionId?: never;
       readonly tabId?: never;
       readonly editAddress?: never;
+      readonly popup?: never;
       readonly machineId?: never;
       readonly computerSessionId?: never;
       readonly appKey?: never;

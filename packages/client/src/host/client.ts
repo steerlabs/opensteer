@@ -1081,6 +1081,12 @@ export interface HostClient {
   /** A Host without a network supplies its own; every other client reaches updates by route. */
   readonly desktopUpdates?: DesktopUpdates;
   readonly browserPasskeys?: BrowserPasskeys;
+  /** Popups this client's own input opens from one tab, as each one opens. */
+  readonly subscribeBrowserPopups?: (
+    sessionId: string,
+    surfaceId: string,
+    listener: (popupId: string) => void,
+  ) => () => void;
   readonly browserHistory: BrowserHistoryClient;
   readonly browserPreferences: BrowserPreferences;
   retainComputerView(

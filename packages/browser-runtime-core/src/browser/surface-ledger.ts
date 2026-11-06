@@ -23,6 +23,9 @@ import { PageFavicon } from "./favicon.js";
 import { PageTitleReader } from "./page-title.js";
 import { PageScriptTargets, type ScriptTarget } from "./script-targets.js";
 
+/** How long Chromium lets one person input open a popup. */
+const userActivationLifespanMs = 5_000;
+
 export type SurfaceLedgerEvent =
   | BrowserNavigationCommitted
   | {
@@ -32,6 +35,8 @@ export type SurfaceLedgerEvent =
       type: "changed";
     }
   | { surfaces: BrowserSurface[]; type: "snapshot" }
+  /** The viewer whose own input opened this popup; see `recordViewerInput`. */
+  | { consumerToken: string; surfaceId: BrowserSurfaceId; type: "popup" }
   /** A size that waited for a page's dialog reached it once the dialog closed. */
   | { surfaceId: BrowserSurfaceId; type: "resized" }
   /** A page's JavaScript dialog opened or closed. */
@@ -179,6 +184,8 @@ interface SurfaceRecord {
   userActivity?: BrowserUserActivity;
   /** Sequence number of `userActivity`; 0 while the person has not acted here. */
   userActivitySequence: number;
+  /** The viewer behind this page's latest person input, while it can still open a popup. */
+  viewerInput: { at: number; consumerToken: string; sequence: number } | null;
 }
 
 /** The person's latest action on one page. It never carries keys, text or dialog answers. */
@@ -640,6 +647,34 @@ export class SurfaceLedger {
     record.userActivitySequence = ++this.sequence;
   }
 
+  /**
+   * Names the viewer behind the person input a page is receiving, before the
+   * page can act on it. Null clears it: whoever gave that input is unknown.
+   */
+  recordViewerInput(surfaceId: BrowserSurfaceId, consumerToken: string | null | undefined): void {
+    const record = this.records.get(surfaceId);
+    if (!record) return;
+    record.viewerInput = consumerToken
+      ? { at: Date.now(), consumerToken, sequence: ++this.sequence }
+      : null;
+  }
+
+  /**
+   * The viewer whose input opened a popup from this page. Only the page that
+   * took the input can answer, and one input opens one popup, as the
+   * browser's own user activation does. Nothing separates an agent's timer
+   * firing just after that input from the input itself; Chromium reports both
+   * as a user gesture.
+   */
+  private takeViewerInput(record: SurfaceRecord | undefined): string | null {
+    const input = record?.viewerInput;
+    if (!record || !input) return null;
+    record.viewerInput = null;
+    return input.sequence > record.agentSequence && Date.now() - input.at < userActivationLifespanMs
+      ? input.consumerToken
+      : null;
+  }
+
   recordAgentCommand(targetId: string): void {
     const record = this.recordForTarget(targetId);
     if (record) record.agentSequence = ++this.sequence;
@@ -1018,6 +1053,7 @@ export class SurfaceLedger {
         const forward =
           makeActive ||
           (answersPerson && Date.now() < this.legacyPersonUntil && openerId === this.activeId);
+        const follower = page.openedInBackground ? null : this.takeViewerInput(openerRecord);
         const record: SurfaceRecord = {
           commitSequence: 0,
           pendingNavigations: new Map(),
@@ -1160,6 +1196,7 @@ export class SurfaceLedger {
             record.titleReader?.sample();
           },
           userActivitySequence: 0,
+          viewerInput: null,
         };
         announce = () => {
           if (record.announced || this.closed || this.records.get(id) !== record) return;
@@ -1172,6 +1209,7 @@ export class SurfaceLedger {
             type: "changed",
           });
           if (forward) this.emitSnapshot();
+          if (follower) this.emit({ consumerToken: follower, surfaceId: id, type: "popup" });
           void this.refresh(id).catch(() => undefined);
         };
         registered = record;

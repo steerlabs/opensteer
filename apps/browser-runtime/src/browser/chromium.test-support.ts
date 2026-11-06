@@ -135,7 +135,7 @@ class FrameTap {
 async function startFollowSession(options: { readonly path?: string } = {}) {
   const site = await serveFollowFixture();
   cleanup.push(() => site.close());
-  const claims = validClaims();
+  const claims = { ...validClaims(), popupFollowVersion: 1 as const };
   const browser = await new PlaywrightChromiumLauncher({
     chromiumSandbox: false,
     executablePath,

@@ -13,7 +13,12 @@ import {
   type PlaceItem,
   type WorkspaceSurfaceDestination,
 } from "@opensteer/client/host";
-import { useHostSelector, useHostSnapshot, usePlaceList } from "@opensteer/client/react";
+import {
+  useBrowserPopupFollow,
+  useHostSelector,
+  useHostSnapshot,
+  usePlaceList,
+} from "@opensteer/client/react";
 import type { BrowserPageContentPart } from "@opensteer/core";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { useHeaderHeight } from "@react-navigation/elements";
@@ -424,8 +429,16 @@ function Focused(props: {
   // Another tab of the same browser takes this one's place in the route, as
   // Safari's tab swipe does; Back still returns where the page came from.
   const onSwitchTab = useCallback(
-    (tabId: string) => navigation.setParams({ editAddress: false, tabId }),
+    (tabId: string) => navigation.setParams({ editAddress: false, popup: false, tabId }),
     [navigation],
+  );
+  // Over the page that opened it, so Back and its ending both return there.
+  const onPopup = useCallback(
+    (tabId: string) =>
+      navigation.dispatch(
+        StackActions.push("WorkspaceBrowser", { ...route, editAddress: false, popup: true, tabId }),
+      ),
+    [navigation, route],
   );
   const onShowTabs = useCallback(() => {
     if (destination.kind === "browser")
@@ -481,11 +494,13 @@ function Focused(props: {
         hostClient={hostClient}
         onClosed={onClosed}
         onOpenTab={onOpenTab}
+        onPopup={onPopup}
         onShowTabs={onShowTabs}
         onSwitchTab={onSwitchTab}
         onTyping={setTyping}
         onViewing={setPage}
         place={place}
+        popup={route.popup === true}
         sessionId={destination.sessionId}
         snapshot={snapshot}
         tabId={destination.tabId}
@@ -585,12 +600,14 @@ function BrowserTab(props: {
   readonly hostClient: HostClient;
   readonly onClosed: () => void;
   readonly onOpenTab: (opening: BrowserTabOpenHandle) => void;
+  readonly onPopup: (tabId: string) => void;
   readonly onShowTabs: () => void;
   readonly onSwitchTab: (tabId: string) => void;
   readonly onTyping: (typing: boolean) => void;
   readonly onViewing: (page: BrowserPageContentPart | null) => void;
   /** This tab in the place list, found by its own id; null while it is not listed. */
   readonly place: PlaceItem | null;
+  readonly popup: boolean;
   readonly sessionId: string;
   readonly snapshot: HostSnapshot;
   readonly tabId: string;
@@ -632,6 +649,18 @@ function BrowserTab(props: {
   const onClosed = () => {
     if (currentPage.current === pageKey && navigation.isFocused()) props.onClosed();
   };
+  useBrowserPopupFollow(
+    hostClient,
+    live && props.active ? { sessionId, tabId } : null,
+    props.onPopup,
+  );
+  const popupEnded =
+    props.popup && placeDestinationEnded(snapshot, { kind: "browser", sessionId, tabId });
+  const latestClosed = useRef(onClosed);
+  latestClosed.current = onClosed;
+  useEffect(() => {
+    if (popupEnded && props.active) latestClosed.current();
+  }, [popupEnded, props.active]);
 
   if (live && session !== null)
     return (

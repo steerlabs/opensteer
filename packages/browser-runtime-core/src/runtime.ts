@@ -416,6 +416,9 @@ export class BrowserRuntime implements NativePresentationSource {
             consumerToken ? { person: consumerToken } : "unknown",
           );
       },
+      viewerInput: (consumerToken) => {
+        if (!released) session.ledger.recordViewerInput(surfaceId, consumerToken);
+      },
       page: binding.page,
       sessionId,
       surfaceId,
