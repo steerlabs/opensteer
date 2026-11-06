@@ -768,6 +768,8 @@ export const ComputerUseDataInvokeParamsSchema = z.strictObject({
   definitionId: z.string().min(1).max(64),
   effect: z.enum(["read", "write"]),
   operation: z.string().min(1).max(64),
+  /** A private directory the Runner made for this call. Never from model arguments. */
+  scratchDirectory: z.string().min(1).max(4_096).optional(),
 });
 export type ComputerUseDataInvokeParams = z.infer<typeof ComputerUseDataInvokeParamsSchema>;
 

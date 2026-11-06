@@ -1,6 +1,7 @@
 import { DelegationModelChoiceSchema } from "@opensteer/core";
 import { RunnerSkillMetadataReportSchema } from "./runner-skill-metadata.js";
 import { HostAppRequestSchema, RunnerAppResultSchema } from "./apps.js";
+import { HostRunFileRequestSchema, RunnerRunFileResultSchema } from "./run-files.js";
 import { ChannelRuntimeCapabilitySchema } from "@opensteer/channel-core";
 import {
   AssignmentRunContextSchema,
@@ -1186,6 +1187,8 @@ export const RunnerAgentsModuleSchema = z
     // loop over it.
     environmentIds: z.array(EnvironmentIdSchema).length(1),
     computerTool: z.literal(1).optional(),
+    /** Absent on Runners that cannot give a Run files or take them from it. */
+    runFiles: z.literal(1).optional(),
     harnessDrivers: RunnerHarnessDriversSchema,
     // Present exactly when this Runner advertises local-directory. It carries
     // the disk's durable identity plus what that disk currently holds, so a
@@ -1397,6 +1400,13 @@ export const runnerIntegrationsProtocolVersion = 6;
 export const androidIntegrationsProtocolVersion = 4;
 
 export const RunnerIntegrationsModuleSchema = z.object({
+  /** Absent on Runners whose apps cannot move files for an operation. */
+  appFiles: z
+    .number()
+    .int()
+    .positive()
+    .transform((v) => (v === 1 ? (1 as const) : undefined))
+    .optional(),
   cardUse: z
     .number()
     .int()
@@ -1768,6 +1778,7 @@ export const RunnerOperationalMessageSchema = z.discriminatedUnion("type", [
   RunnerBackgroundTextResultSchema,
   RunnerSkillMetadataReportSchema,
   RunnerAppResultSchema,
+  ...RunnerRunFileResultSchema.options,
   ...RunnerWorkspaceLocalResultSchema.options,
   z.strictObject({
     ...fencedMessageBase,
@@ -1976,6 +1987,7 @@ export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
   RunnerChallengeSchema,
   ...HostWorkspaceLocalRequestSchema.options,
   ...HostAppRequestSchema.options,
+  ...HostRunFileRequestSchema.options,
   z.strictObject({
     ...fencedMessageBase,
     /**

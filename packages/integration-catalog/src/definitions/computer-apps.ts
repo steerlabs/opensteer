@@ -570,13 +570,75 @@ export const computerAppIntegrations = [
     config: {
       accessLabels: { read: "Read only", readWrite: "Read and send" },
       accessSummaries: {
-        read: "Allows searching and reading conversations with names from Contacts; reading also needs Contacts access. Sending is off.",
+        read: "Allows searching and reading conversations and their attachments, with names from Contacts; reading also needs Contacts access. Sending is off.",
         // Readiness is established for reading; macOS decides a send when it
         // happens, so the summary says so rather than implying it is settled.
         readWrite:
-          "Allows searching and reading conversations with names from Contacts, and sending messages as you. Reading also needs Contacts access. Sending may ask for macOS Automation permission on this Mac.",
+          "Allows searching and reading conversations and their attachments with names from Contacts, and sending messages and files as you. Reading also needs Contacts access. Sending may ask for macOS Automation permission on this Mac.",
       },
       operations: [
+        {
+          description:
+            "Run one read-only SQLite SELECT on this Mac's Messages database (chat.db): messages, chats, handles, attachments, reactions, edits, anything it holds. Read the Apple Messages reference in opensteer:integrations for the schema and examples. Helpers: message_text(text, attributedBody) gives a message's text, contact_name(handle) a name from Contacts, message_time(date) an ISO time. Returns columns, rows, and truncated: true when more rows matched than fit, so narrow the query or page on ROWID. Integers past 2^53 arrive as strings and blobs as a size note; use hex() or substr() to see one.",
+          effect: "read",
+          inputSchema: {
+            additionalProperties: false,
+            properties: {
+              sql: {
+                description: "One SELECT, WITH or read-only schema statement.",
+                maxLength: 16_384,
+                minLength: 1,
+                type: "string",
+              },
+            },
+            required: ["sql"],
+            type: "object",
+          },
+          name: "query_messages",
+          outputSchema: {
+            additionalProperties: false,
+            properties: {
+              columns: { items: { type: "string" }, type: "array" },
+              rows: { items: { type: "array" }, type: "array" },
+              truncated: { type: "boolean" },
+            },
+            required: ["columns", "rows", "truncated"],
+            type: "object",
+          },
+          title: "Query messages",
+        },
+        {
+          description:
+            "Copy one attachment's original file to a path this task can read: photo, document, voice note, video, any type. Find attachmentId as attachment.guid with query_messages. The file is unchanged, so inspect or convert it yourself with your own tools and scripts (on a Mac, sips converts HEIC). The copy lasts until this task's turn ends; copy anything you keep into the Workspace.",
+          effect: "read",
+          files: "export",
+          inputSchema: {
+            additionalProperties: false,
+            properties: {
+              attachmentId: {
+                description: "attachment.guid from query_messages.",
+                maxLength: 256,
+                minLength: 1,
+                type: "string",
+              },
+            },
+            required: ["attachmentId"],
+            type: "object",
+          },
+          name: "export_attachment",
+          outputSchema: {
+            additionalProperties: false,
+            properties: {
+              mediaType: { type: ["string", "null"] },
+              name: { type: "string" },
+              path: { type: "string" },
+              sizeBytes: { type: "number" },
+            },
+            required: ["path", "name", "mediaType", "sizeBytes"],
+            type: "object",
+          },
+          title: "Export attachment",
+        },
         {
           description:
             "List Messages conversations, most recently active first. query matches conversation names, participant handles or names from Contacts, case- and accent-insensitively; phone numbers match however formatted. For message text use read_messages. Keep calling with the returned nextCursor until it is null; a cursor is valid only for the same operation and arguments.",
@@ -658,13 +720,21 @@ export const computerAppIntegrations = [
         },
         {
           description:
-            "Ask Messages to send text to one named conversation or iMessage address. A group is reachable only by conversationId. {accepted: true} means Messages accepted the send, not that it was delivered.",
+            "Ask Messages to send text, files or both to one named conversation or address. A group is reachable only by conversationId. Text goes first, then each file in order. files are paths in this task's Workspace or its exported attachments; copy a file there first if it is elsewhere. {accepted: true} means Messages accepted the send, not that it was delivered.",
           effect: "write",
+          files: "send",
           inputSchema: {
             additionalProperties: false,
             properties: {
+              files: {
+                description: "Paths of images or other files to send.",
+                items: { maxLength: 4_096, minLength: 1, type: "string" },
+                maxItems: 20,
+                minItems: 1,
+                type: "array",
+              },
               text: {
-                description: "The message body; must not be empty.",
+                description: "The message body.",
                 maxLength: 4_000,
                 minLength: 1,
                 type: "string",
@@ -687,7 +757,12 @@ export const computerAppIntegrations = [
                     additionalProperties: false,
                     properties: {
                       address: {
-                        description: "Phone number or email address reached over iMessage.",
+                        description: "Phone number or email address.",
+                        type: "string",
+                      },
+                      service: {
+                        description: "How to reach the address; defaults to iMessage.",
+                        enum: ["imessage", "sms"],
                         type: "string",
                       },
                     },
@@ -697,7 +772,8 @@ export const computerAppIntegrations = [
                 ],
               },
             },
-            required: ["to", "text"],
+            anyOf: [{ required: ["text"] }, { required: ["files"] }],
+            required: ["to"],
             type: "object",
           },
           name: "send_message",
