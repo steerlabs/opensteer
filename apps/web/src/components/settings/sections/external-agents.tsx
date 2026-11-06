@@ -58,6 +58,24 @@ export function ExternalAgentsSection({
   return (
     <>
       <SectionHeader title="External agents" lead={externalAgentsLead} />
+      {agents.connections === null && agents.error ? (
+        <div className="card">
+          <SettingsRow
+            icon="sparkles"
+            title="Your agents couldn’t be loaded"
+            detail={agents.error}
+            action={
+              <button
+                className="btn btn--small"
+                onClick={() => void agents.refresh?.()}
+                type="button"
+              >
+                Try again
+              </button>
+            }
+          />
+        </div>
+      ) : null}
       {connections.length > 0 ? (
         <SettingsGroup heading="Connected" headingId="external-agents-connected">
           {connections.map((connection) => (
@@ -125,7 +143,10 @@ export function ExternalAgentsSection({
         ))}
       </SettingsGroup>
       <SettingsError
-        message={agents.error ?? (reach.kind === "unavailable" ? reach.detail : null)}
+        message={
+          (agents.connections === null ? null : agents.error) ??
+          (reach.kind === "unavailable" ? reach.detail : null)
+        }
       />
       {guide && available(guide) ? (
         <ExternalAgentSetup

@@ -72,6 +72,21 @@ describe("External agents in web and desktop Settings", () => {
     expect(page.textContent).not.toContain("Connected");
   });
 
+  it("keeps a failed first load visible and recovers on an explicit retry", async () => {
+    host = new MockHostClient({ latencyMs: 0 });
+    Object.defineProperty(host.rpc, "connections.list", {
+      value: vi.fn(host.rpc["connections.list"]).mockRejectedValueOnce(new Error("offline")),
+      configurable: true,
+    });
+    const page = await mount(host);
+    await vi.waitFor(() => expect(page.textContent).toContain("Your agents couldn’t be loaded"));
+    expect(button("Add Another agent").disabled).toBe(true);
+    const retry = [...page.querySelectorAll("button")].find((b) => b.textContent === "Try again")!;
+    await act(async () => retry.click());
+    await vi.waitFor(() => expect(button("Add Another agent").disabled).toBe(false));
+    expect(page.textContent).not.toContain("Your agents couldn’t be loaded");
+  });
+
   it("waits for the initial connection list before taking the setup baseline", async () => {
     host = new MockHostClient({ latencyMs: 0 });
     let finish:

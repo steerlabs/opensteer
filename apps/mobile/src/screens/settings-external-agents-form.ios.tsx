@@ -31,7 +31,7 @@ export function ExternalAgentsForm(props: ExternalAgentsFormProps): ReactNode {
               <Button
                 modifiers={[
                   accessibilityLabel(`${connection.title}, ${connection.detail}`),
-                  disabled(connection.removing),
+                  disabled(props.removeDisabled),
                 ]}
                 onPress={() => props.onRemove(connection.id)}
               >
@@ -51,6 +51,7 @@ export function ExternalAgentsForm(props: ExternalAgentsFormProps): ReactNode {
               <SwipeActions.Actions allowsFullSwipe={false}>
                 <Button
                   label="Remove"
+                  modifiers={[disabled(props.removeDisabled)]}
                   role="destructive"
                   onPress={() => props.onRemove(connection.id)}
                 />
@@ -76,7 +77,7 @@ export function ExternalAgentsForm(props: ExternalAgentsFormProps): ReactNode {
             key={guide.id}
             modifiers={[
               accessibilityLabel(`Add ${guide.name}, ${guide.summary}`),
-              disabled(props.notice !== null),
+              disabled(props.addDisabled),
             ]}
             onPress={() => props.onAdd(guide)}
           >

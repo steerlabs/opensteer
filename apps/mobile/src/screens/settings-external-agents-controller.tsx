@@ -8,12 +8,13 @@ import {
 } from "@opensteer/client/host";
 import { useConnectedAgents, usePersonalRemoteAccess } from "@opensteer/client/react";
 import { useNavigation } from "@react-navigation/native";
-import { useEffect, useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { Alert } from "react-native";
 import { useMobileState } from "../ui/mobile-client-context.js";
 import { ExternalAgentSetupSheet } from "./external-agent-setup-sheet.js";
 import { externalAgentsFootnote, externalAgentsNeedsRemote } from "./external-agents-model.js";
 import { ExternalAgentsForm } from "./settings-external-agents-form.js";
+import type { ExternalAgentsFormProps } from "./settings-external-agents-form.types.js";
 import { SettingsPageLayout } from "./settings-page-layout.js";
 import { useSettingsHost } from "./use-settings-host.js";
 
@@ -31,10 +32,9 @@ export function ExternalAgentsSettingsController(): ReactNode {
   const [guide, setGuide] = useState<ExternalAgentGuide | null>(null);
   const [baseline, setBaseline] = useState<ReadonlySet<string> | null>(null);
   const connections = agents.connections;
-  useEffect(() => {
-    if (guide !== null && baseline === null && connections !== null)
-      setBaseline(new Set(connections.map((connection) => connection.id)));
-  }, [baseline, connections, guide]);
+  // A confirmation answered later reads the pending revoke as it is then.
+  const pending = useRef(agents.pending);
+  pending.current = agents.pending;
   const arrived = guide === null ? null : arrivedConnection(connections, baseline);
   const openRemoteAccess = () => {
     setGuide(null);
@@ -44,16 +44,45 @@ export function ExternalAgentsSettingsController(): ReactNode {
   const workspaces = snapshot?.workspaces ?? [];
   const remove = (connectionId: string) => {
     const connection = connections?.find((row) => row.id === connectionId);
-    if (!connection) return;
+    if (!connection || pending.current !== null) return;
     Alert.alert(
       `Remove ${connection.label}?`,
       "It loses access to Opensteer right away, even in a conversation it has open.",
       [
         { text: "Cancel", style: "cancel" },
-        { text: "Remove", style: "destructive", onPress: () => void agents.revoke?.(connectionId) },
+        {
+          text: "Remove",
+          style: "destructive",
+          onPress: () => {
+            // The client takes one revoke at a time; never let a confirmation pass silently.
+            if (pending.current !== null)
+              Alert.alert(
+                `${connection.label} wasn’t removed`,
+                "Another removal was still finishing. Remove it again.",
+              );
+            else void agents.revoke?.(connectionId);
+          },
+        },
       ],
     );
   };
+  const loadError = connections === null ? agents.error : null;
+  const notice: ExternalAgentsFormProps["notice"] =
+    loadError !== null
+      ? {
+          title: "Your agents couldn’t be loaded",
+          detail: loadError,
+          action: { label: "Try again", onPress: () => void agents.refresh?.() },
+        }
+      : reach.kind === "needs-remote"
+        ? {
+            title: "Remote access is off",
+            detail: externalAgentsNeedsRemote,
+            action: { label: "Open Remote access", onPress: openRemoteAccess },
+          }
+        : reach.kind === "unavailable"
+          ? { title: "Remote access couldn’t be checked", detail: reach.detail, action: null }
+          : null;
   return (
     <>
       <SettingsPageLayout>
@@ -64,26 +93,18 @@ export function ExternalAgentsSettingsController(): ReactNode {
             detail: connectionDetail(connection, workspaces),
             removing: agents.pending === connection.id,
           }))}
-          error={agents.error}
+          addDisabled={connections === null || reach.kind !== "ready"}
+          error={loadError === null ? agents.error : null}
           footnote={personal ? externalAgentsFootnote : null}
           guides={externalAgentGuides}
-          notice={
-            reach.kind === "needs-remote"
-              ? {
-                  title: "Remote access is off",
-                  detail: externalAgentsNeedsRemote,
-                  action: { label: "Open Remote access", onPress: openRemoteAccess },
-                }
-              : reach.kind === "unavailable"
-                ? { title: "Remote access couldn’t be checked", detail: reach.detail, action: null }
-                : null
-          }
+          notice={notice}
           onAdd={(next) => {
-            setBaseline(
-              connections === null ? null : new Set(connections.map((connection) => connection.id)),
-            );
+            // Setup starts from the loaded list, so a later arrival is the new agent.
+            if (connections === null || reach.kind !== "ready") return;
+            setBaseline(new Set(connections.map((connection) => connection.id)));
             setGuide(next);
           }}
+          removeDisabled={agents.pending !== null}
           onRemove={remove}
         />
       </SettingsPageLayout>

@@ -9,6 +9,10 @@ export interface ExternalAgentsFormProps {
   }[];
   readonly error: string | null;
   readonly guides: readonly ExternalAgentGuide[];
+  /** Setup needs the loaded list as its baseline and a reachable address. */
+  readonly addDisabled: boolean;
+  /** One removal at a time: the client ignores a second while the first is pending. */
+  readonly removeDisabled: boolean;
   /** Why agents cannot be added yet, and the way to fix it; null when they can. */
   readonly notice: {
     readonly title: string;

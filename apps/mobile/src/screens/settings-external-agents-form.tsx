@@ -9,7 +9,7 @@ import { ErrorText, Section, styles } from "./settings-form-primitives.js";
 import type { ExternalAgentsFormProps } from "./settings-external-agents-form.types.js";
 
 export function ExternalAgentsForm(props: ExternalAgentsFormProps): ReactNode {
-  const addDisabled = props.notice !== null;
+  const { addDisabled } = props;
   return (
     <>
       <AppText role="secondary" tone="soft">
@@ -29,8 +29,8 @@ export function ExternalAgentsForm(props: ExternalAgentsFormProps): ReactNode {
                 <Pressable
                   accessibilityLabel={`Remove ${connection.title}`}
                   accessibilityRole="button"
-                  accessibilityState={{ disabled: connection.removing }}
-                  disabled={connection.removing}
+                  accessibilityState={{ disabled: props.removeDisabled }}
+                  disabled={props.removeDisabled}
                   hitSlop={12}
                   onPress={() => props.onRemove(connection.id)}
                 >
