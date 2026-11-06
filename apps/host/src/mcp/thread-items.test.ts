@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { boundedThreadItems, itemText, withheldTool } from "./thread-items.js";
+import { boundedThreadItems, itemText, messageItem, withheldTool } from "./thread-items.js";
 
 it("keeps the newest item past the byte bound, so paging always advances", () => {
   const large = "\u0001".repeat(50_000);
@@ -36,4 +36,23 @@ it.each([
 
 it.each(["shell", "integration_call", "thread_read", "computers_list"])("keeps %s", (name) => {
   expect(withheldTool(name)).toBe(false);
+});
+
+it("names a file a message carries", () => {
+  const item = messageItem(
+    {
+      author: { kind: "human", displayName: "Tim", principalId: "principal:test" },
+      content: [
+        { type: "artifact", artifactId: "art_1", mediaType: "application/pdf", name: "menu.pdf" },
+      ],
+      createdAt: "2026-11-06T12:00:00.000Z",
+      id: "msg_00000000-0000-4000-8000-000000000001",
+      kind: "input",
+      runId: null,
+      sequence: "1",
+      threadId: "thr_00000000-0000-4000-8000-000000000001",
+    } as Parameters<typeof messageItem>[0],
+    100,
+  );
+  expect(item.text).toBe("[file: menu.pdf (application/pdf)]");
 });

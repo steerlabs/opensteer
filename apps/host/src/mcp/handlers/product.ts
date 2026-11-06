@@ -1704,15 +1704,16 @@ export class ProductToolHandlers {
       timeoutMs: input.timeoutMs,
       ...(call.signal ? { signal: call.signal } : {}),
     });
+    // Oldest first, so the last item is where the next wait resumes.
     const items = boundedThreadItems(
-      result.messages.map((message) => messageItem(message, 20_000)).reverse(),
+      result.messages.map((message) => messageItem(message, 20_000)),
     );
     return {
       status: result.status,
       ...(result.run ? { run: result.run } : {}),
       ...(result.pendingRequest ? { pendingRequest: result.pendingRequest } : {}),
       items,
-      hasMore: items.length < result.messages.length,
+      hasMore: result.hasMore === true || items.length < result.messages.length,
     };
   }
   async #reachableThread(caller: AgentCaller, threadId?: Thread["id"]) {

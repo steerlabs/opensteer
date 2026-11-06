@@ -261,7 +261,7 @@ export const thread_wait = defineAgentTool({
   targetFields: ["threadId"],
   title: "Wait for a Thread",
   description:
-    "Wait for a Run to settle, a pending Request, or a message after `afterMessageId`, up to 100 seconds. A timeout stops nothing; call again.",
+    "Wait for a Run to settle, a pending Request, or a message after `afterMessageId`, up to 100 seconds. A timeout stops nothing; call again. `hasMore`: wait again with `afterMessageId` set to the last item's `itemId`.",
   input: z.strictObject({
     threadId: ThreadIdSchema,
     afterMessageId: MessageIdSchema.optional().describe(

@@ -4,6 +4,7 @@ import { describeStore } from "./store.integration.test-support.js";
 import { appendHostWorkspaceEvent } from "./workspace-events.js";
 import { withDatabaseTransaction } from "./connection.js";
 import { readAgentThreadActivity, readAgentThreadRecent } from "./agent-thread-history.js";
+import { readThreadWaitSnapshot } from "./thread-wait.js";
 
 describeStore("agent Thread history", (it) => {
   it("orders messages by their newest published event marker and never event content", async ({
@@ -137,5 +138,30 @@ describeStore("agent Thread history", (it) => {
         runLimit: 1,
       }),
     ).toBeNull();
+  });
+
+  it("says a wait has more when messages after it were left unread", async ({ storeFixture }) => {
+    const { store, database, startRunFixture } = storeFixture;
+    const f = await startRunFixture("agent-wait-more");
+    const sent: Awaited<ReturnType<typeof store.enqueueThreadInput>>[] = [];
+    for (let index = 0; index < 102; index += 1)
+      sent.push(
+        await store.enqueueThreadInput({
+          threadId: f.thread.id,
+          requestedBy: f.userId,
+          policy: "report",
+          content: [{ type: "text", text: `Report ${index}` }],
+          source: { kind: "human" },
+          idempotencyKey: `wait-more-${index}`,
+        }),
+      );
+    const read = (afterMessageId: (typeof sent)[number]["message"]["id"]) =>
+      readThreadWaitSnapshot(database, { threadId: f.thread.id, userId: f.userId, afterMessageId });
+    const first = await read(sent[0]!.message.id);
+    expect(first).toMatchObject({ hasMore: true });
+    expect(first.messages).toHaveLength(100);
+    const rest = await read(first.messages.at(-1)!.id);
+    expect(rest).toMatchObject({ hasMore: false });
+    expect(rest.messages.map(({ id }) => id)).toEqual([sent[101]!.message.id]);
   });
 });

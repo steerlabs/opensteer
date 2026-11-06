@@ -34,7 +34,7 @@ export function messageItem(message: Message, maxChars: number, offset = 0): Thr
         ? part.text
         : isPlaceContentPart(part)
           ? placeContentLabel(part)
-          : `[${part.type}]`,
+          : `[file: ${part.name} (${part.mediaType})]`,
     )
     .join("\n");
   const places = message.content.filter(isPlaceContentPart);

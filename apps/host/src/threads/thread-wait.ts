@@ -6,6 +6,8 @@ export interface ThreadWaitSnapshot {
   readonly authorityExpiresAt?: number;
   readonly run?: { readonly id: RunId; readonly status: Run["status"] };
   readonly messages: readonly Message[];
+  /** Messages after these were not read yet. */
+  readonly hasMore?: boolean;
 }
 export class ThreadWaitService {
   readonly options: {
