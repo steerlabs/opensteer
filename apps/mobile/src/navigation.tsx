@@ -1,3 +1,4 @@
+import { screenPresentations } from "./navigation-presentations.js";
 import type { ReactNode } from "react";
 import { SheetAnchor } from "./ui/sheet.js";
 import { SettingsAiSharingScreen } from "./screens/settings-ai-sharing.js";
@@ -195,7 +196,7 @@ const RootStack = createNativeStackNavigator({
       screen: BrowserTabsScreen,
       options: {
         headerShown: false,
-        presentation: "formSheet",
+        presentation: screenPresentations.BrowserTabs,
         sheetAllowedDetents: [0.5, 0.95],
         sheetGrabberVisible: true,
         title: "Tabs",
@@ -207,7 +208,7 @@ const RootStack = createNativeStackNavigator({
       screen: OpenAppScreen,
       options: {
         headerShown: false,
-        presentation: "formSheet",
+        presentation: screenPresentations.OpenApp,
         sheetAllowedDetents: [0.6, 0.95],
         sheetGrabberVisible: true,
         title: "Open",
@@ -221,7 +222,7 @@ const RootStack = createNativeStackNavigator({
       screen: ThreadSettingsScreen,
       options: {
         headerShown: false,
-        presentation: "formSheet",
+        presentation: screenPresentations.ThreadSettings,
         sheetAllowedDetents: [0.6, 0.95],
         sheetGrabberVisible: true,
         title: "Model",
@@ -233,7 +234,7 @@ const RootStack = createNativeStackNavigator({
       screen: ThreadFindScreen,
       options: ({ navigation }) => ({
         ...headerActions({ right: { label: "Done", onPress: () => navigation.goBack() } }),
-        presentation: "formSheet",
+        presentation: screenPresentations.ThreadFind,
         sheetAllowedDetents: [0.6, 0.95],
         sheetGrabberVisible: true,
         title: "Find",
@@ -243,7 +244,7 @@ const RootStack = createNativeStackNavigator({
       screen: NewThreadScreen,
       options: {
         headerShown: false,
-        presentation: "formSheet",
+        presentation: screenPresentations.NewThread,
         sheetAllowedDetents: [0.6, 0.95],
         sheetGrabberVisible: true,
         title: "Choose AI",
@@ -255,7 +256,7 @@ const RootStack = createNativeStackNavigator({
       screen: NewProjectScreen,
       options: {
         headerShown: false,
-        presentation: "formSheet",
+        presentation: screenPresentations.NewProject,
         sheetAllowedDetents: [0.95],
         sheetGrabberVisible: true,
         title: "New project",
@@ -267,7 +268,7 @@ const RootStack = createNativeStackNavigator({
       screen: ThreadStepScreen,
       options: {
         headerShown: false,
-        presentation: "formSheet",
+        presentation: screenPresentations.ThreadStep,
         sheetAllowedDetents: [0.6, 0.95],
         sheetGrabberVisible: true,
         title: "Step",
@@ -280,7 +281,7 @@ const RootStack = createNativeStackNavigator({
       screen: ConversationActivityScreen,
       options: {
         headerShown: false,
-        presentation: "formSheet",
+        presentation: screenPresentations.ConversationActivity,
         sheetAllowedDetents: [0.6, 0.95],
         sheetGrabberVisible: true,
         title: "Run details",
@@ -293,7 +294,7 @@ const RootStack = createNativeStackNavigator({
       screen: AroundScreen,
       options: {
         headerShown: false,
-        presentation: "formSheet",
+        presentation: screenPresentations.ThreadAround,
         sheetAllowedDetents: [0.6, 0.95],
         sheetGrabberVisible: true,
         title: "Around this thread",
@@ -337,7 +338,7 @@ const RootStack = createNativeStackNavigator({
         ...headerActions({
           right: { label: "Done", onPress: () => navigation.goBack(), variant: "done" },
         }),
-        presentation: "modal",
+        presentation: screenPresentations.Settings,
         title: "Settings",
       }),
     },
@@ -350,7 +351,7 @@ const RootStack = createNativeStackNavigator({
         ...headerActions({
           right: { label: "Done", onPress: () => navigation.goBack(), variant: "done" },
         }),
-        presentation: "modal",
+        presentation: screenPresentations.Chrome,
         title: "Chrome",
       }),
     },
@@ -364,7 +365,7 @@ const RootStack = createNativeStackNavigator({
         ...headerActions({
           right: { label: "Done", onPress: () => navigation.goBack(), variant: "done" },
         }),
-        presentation: "modal",
+        presentation: screenPresentations.BrowserProfiles,
         title: "Browser profiles",
       }),
     },
@@ -376,7 +377,7 @@ const RootStack = createNativeStackNavigator({
         ...headerActions({
           right: { label: "Done", onPress: () => navigation.goBack(), variant: "done" },
         }),
-        presentation: "modal",
+        presentation: screenPresentations.ConnectedApps,
         headerShown: Platform.OS !== "ios",
         title: "Plugins",
       }),
@@ -389,7 +390,7 @@ const RootStack = createNativeStackNavigator({
         ...headerActions({
           right: { label: "Done", onPress: () => navigation.goBack(), variant: "done" },
         }),
-        presentation: "modal",
+        presentation: screenPresentations.Plugins,
         headerShown: Platform.OS !== "ios",
         title: "Plugins",
       }),
@@ -400,7 +401,7 @@ const RootStack = createNativeStackNavigator({
         ...headerActions({
           right: { label: "Done", onPress: () => navigation.goBack(), variant: "done" },
         }),
-        presentation: "modal",
+        presentation: screenPresentations.Computer,
         title: "Computer",
       }),
     },
@@ -408,7 +409,7 @@ const RootStack = createNativeStackNavigator({
       screen: AddIphoneScreen,
       options: ({ navigation }) => ({
         ...headerActions({ left: { label: "Cancel", onPress: () => navigation.goBack() } }),
-        presentation: "formSheet",
+        presentation: screenPresentations.AddIphone,
         sheetAllowedDetents: [0.95],
         sheetGrabberVisible: true,
         title: "Add this iPhone",
@@ -425,7 +426,7 @@ const RootStack = createNativeStackNavigator({
             onPress: () => navigation.navigate("AddDeployment"),
           },
         }),
-        presentation: "modal",
+        presentation: screenPresentations.DeploymentSwitcher,
         title: "Switch deployment",
       }),
     },
@@ -436,7 +437,7 @@ const RootStack = createNativeStackNavigator({
     // has no back chevron of its own, so each one carries the way out it needs.
     Add: {
       screenOptions: {
-        presentation: "modal",
+        presentation: screenPresentations.Add,
       },
       screens: {
         AddDeployment: {

@@ -1609,8 +1609,25 @@ describe("the page's bar", () => {
     expect(container.querySelector('[data-testid="conversation-slot"]')?.textContent).toContain(
       "Thread thread-trip beside",
     );
+    press(container, "Tabs, 1");
+    expect(state.dispatch).toHaveBeenLastCalledWith({
+      name: "BrowserTabs",
+      params: {
+        deploymentId: "deployment-a",
+        sessionId,
+        tabId: "page-1",
+        threadId: "thread-trip",
+      },
+      type: "PUSH",
+    });
     closeBeside(container, "thread-trip");
     expect(container.querySelector('[data-testid="conversation-slot"]')).toBeNull();
+    press(container, "Tabs, 1");
+    expect(state.dispatch).toHaveBeenLastCalledWith({
+      name: "BrowserTabs",
+      params: { deploymentId: "deployment-a", sessionId, tabId: "page-1" },
+      type: "PUSH",
+    });
   });
 
   it("pushes an agent deeper in the stack and renders an old grid route without choosing a tab", () => {

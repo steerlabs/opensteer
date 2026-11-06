@@ -1,3 +1,4 @@
+import { layoutRoute } from "../navigation-presentations.js";
 import { pageSiteLabel, type HostClient } from "@opensteer/client/host";
 import { useHostSelector, useRunPlace, useRunPlaceBinding } from "@opensteer/client/react";
 import { useNavigationState } from "@react-navigation/native";
@@ -30,7 +31,7 @@ export const LivePlace = memo(function LivePlace(props: {
     (snapshot) => snapshot.session === "authenticated" && snapshot.user !== null,
   );
   const foreground = useAppForeground();
-  const current = useNavigationState((state) => state.routes[state.index]);
+  const current = useNavigationState(layoutRoute);
   if (entry === null || !authorized) return null;
   if (
     current?.name === "WorkspaceBrowser" &&

@@ -496,9 +496,10 @@ function Focused(props: {
           deploymentId,
           sessionId: destination.sessionId,
           tabId: destination.tabId,
+          ...(besideId === null ? {} : { threadId: besideId }),
         }),
       );
-  }, [deploymentId, destination, navigation]);
+  }, [besideId, deploymentId, destination, navigation]);
   const [paired, setPaired] = useState(false);
   const selectPlaces = useCallback(
     (current: HostSnapshot): readonly PlaceEntry[] => {
