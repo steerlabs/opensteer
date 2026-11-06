@@ -9,6 +9,7 @@ import {
   type SpecialistManifest,
   OpensteerError,
   type UserId,
+  type RunnerId,
   type WorkspaceId,
 } from "@opensteer/core";
 import type { DatabaseSchema } from "./schema.js";
@@ -387,6 +388,25 @@ export class PluginStore {
             .execute();
       }),
     );
+  }
+
+  async pendingDataRemovals(runnerId?: RunnerId) {
+    // Installations share state; delivery waits until the whole plugin is gone.
+    let query = this.database
+      .selectFrom("runnerPluginDataRemovals")
+      .leftJoin("plugins", "plugins.id", "runnerPluginDataRemovals.pluginId")
+      .select(["runnerPluginDataRemovals.runnerId", "runnerPluginDataRemovals.pluginId"])
+      .where("plugins.id", "is", null);
+    if (runnerId) query = query.where("runnerPluginDataRemovals.runnerId", "=", runnerId);
+    return query.execute();
+  }
+
+  async confirmDataRemoval(runnerId: RunnerId, pluginId: string) {
+    await this.database
+      .deleteFrom("runnerPluginDataRemovals")
+      .where("runnerId", "=", runnerId)
+      .where("pluginId", "=", pluginId)
+      .execute();
   }
 
   async remove(pluginId: string, administration?: AdministrationCommandIdentity | undefined) {

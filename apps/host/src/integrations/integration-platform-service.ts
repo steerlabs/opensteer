@@ -1,3 +1,5 @@
+import { realpath } from "node:fs/promises";
+import { removePluginData } from "@opensteer/shared/privateFiles";
 import type { AdministrationCommandIdentity } from "@opensteer/database";
 import { z } from "zod";
 import {
@@ -350,7 +352,12 @@ export class IntegrationPlatformService {
   readonly #credentialMaterializer: IntegrationAdapterCredentialMaterializer;
   readonly #computerApps: Pick<
     ComputerAppHub,
-    "appStatus" | "attached" | "openMcpSession" | "send" | "withRunnerAdmission"
+    | "appStatus"
+    | "attached"
+    | "openMcpSession"
+    | "send"
+    | "withRunnerAdmission"
+    | "removePluginData"
   >;
   readonly #dataDirectory: string;
   readonly #definitions: readonly IntegrationDefinition[];
@@ -398,6 +405,7 @@ export class IntegrationPlatformService {
       | "openMcpSession"
       | "send"
       | "withRunnerAdmission"
+      | "removePluginData"
     >;
     /**
      * Sessions for the one definition whose connections name an app's whole
@@ -1308,11 +1316,24 @@ export class IntegrationPlatformService {
     await this.#store.localMcp.requestApprovals();
   }
 
+  async deliverPluginDataRemovals(runnerId?: RunnerId): Promise<void> {
+    for (const pending of await this.#store.plugins.pendingDataRemovals(runnerId))
+      await this.#computerApps.removePluginData(pending.runnerId, pending.pluginId);
+  }
+
+  async removePluginData(pluginId: string): Promise<void> {
+    await removePluginData(`${await realpath(this.#dataDirectory)}/plugins/data`, pluginId);
+    await this.deliverPluginDataRemovals();
+  }
+
   /**
    * A computer's stream attached. Servers it approved and has not started
    * yet — approved while it was offline, or whose start failed — start now.
    */
   computerRunnerAttached(runnerId: RunnerId): void {
+    void this.deliverPluginDataRemovals(runnerId).catch((error: unknown) =>
+      console.warn("Plugin data removal could not be delivered", error),
+    );
     this.#startApprovedServers((server) => server.runnerId === runnerId);
   }
 
@@ -1619,6 +1640,7 @@ export class IntegrationPlatformService {
    * command, which an administrator runs deliberately.
    */
   async uninstallIntegration(input: {
+    readonly removePluginData?: boolean;
     readonly administration?: AdministrationCommandIdentity | undefined;
     readonly actorUserId: UserId;
     readonly installationId: IntegrationInstallationId;

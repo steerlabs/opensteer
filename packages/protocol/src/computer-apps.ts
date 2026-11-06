@@ -341,6 +341,7 @@ export const HostIntegrationsMcpCloseSchema = z.strictObject({
 export type HostIntegrationsMcpClose = z.infer<typeof HostIntegrationsMcpCloseSchema>;
 
 export type HostIntegrationsOperation =
+  | HostIntegrationsPluginDataRemove
   | HostIntegrationsPasswordSignIn
   | z.infer<typeof HostIntegrationsDisplayResolveSchema>
   | HostIntegrationsComputerAppWindows

@@ -97,6 +97,7 @@ export function prepareIntegrationsModule(options: {
             loginText: 1,
             passwordSignIn: 2,
             cardUse: 1,
+            pluginDataRemoval: 1,
           }
         : {}),
       ...(options.helperBinary ? { appFiles: 1 as const } : {}),

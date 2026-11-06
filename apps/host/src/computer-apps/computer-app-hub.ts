@@ -288,6 +288,7 @@ export interface ComputerAppHubOptions {
    * owed the whole approval list, which is how an approval made while it was
    * away reaches it.
    */
+  readonly onPluginDataRemoved?: (runnerId: RunnerId, pluginId: string) => Promise<void>;
   readonly onRunnerAttached?: (runnerId: RunnerId) => void;
   /** The person's answer to one approval, from the Mac it waits on. */
 
@@ -504,6 +505,10 @@ export class ComputerAppHub {
       this.#mcpFrame(entry, message);
       return;
     }
+    if (message.type === "runner.integrations.plugin-data.removed") {
+      await this.#options.onPluginDataRemoved?.(stream.identity.runnerId, message.pluginId);
+      return;
+    }
     if (message.type === "runner.integrations.display.resolved") {
       entry.displayResolutions.get(message.requestId)?.(message.target);
       return;
@@ -547,6 +552,17 @@ export class ComputerAppHub {
   }
 
   // ---- MCP servers a computer runs ----------------------------------------
+
+  async removePluginData(runnerId: RunnerId, pluginId: string): Promise<void> {
+    const entry = this.#byRunner.get(runnerId);
+    if (entry?.stream.identity.modules.integrations?.pluginDataRemoval !== 1) return;
+    await entry.peer.send({
+      ...entry.stream.fence,
+      type: "host.integrations.plugin-data.remove",
+      module: "integrations",
+      pluginId,
+    });
+  }
 
   /**
    * Opens a session with an MCP server that computer runs, resolving once
