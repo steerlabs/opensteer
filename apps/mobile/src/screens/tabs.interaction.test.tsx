@@ -115,6 +115,7 @@ const harness = vi.hoisted(() => ({
 type Children = { readonly children?: ReactNode };
 
 const dictation = new DictationController({ port: null, createId: () => crypto.randomUUID() });
+vi.mock("../voice/cursor-mark.js", () => ({ PillMic: () => null, VoiceCursor: () => null }));
 vi.mock("react-native-webview", () => ({ WebView: () => null }));
 vi.mock("../dictation/context.js", () => ({ useDictation: () => dictation }));
 

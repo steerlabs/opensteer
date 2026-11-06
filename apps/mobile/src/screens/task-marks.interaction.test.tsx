@@ -29,6 +29,7 @@ const harness = vi.hoisted(() => ({
   platform: "ios",
   setOptions: vi.fn(),
 }));
+vi.mock("../voice/cursor-mark.js", () => ({ PillMic: () => null, VoiceCursor: () => null }));
 vi.mock("react-native", async () => {
   const React = await vi.importActual<typeof import("react")>("react");
   type Children = { readonly children?: ReactNode };

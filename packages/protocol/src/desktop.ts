@@ -1541,7 +1541,8 @@ export type DesktopBrowserFindInput = z.infer<typeof DesktopBrowserFindInputSche
 /**
  * One agent's cursor on a native page, in the page's CSS pixels. The glass
  * page holds no Host snapshot, so the renderer resolves the task's mark and
- * sends it: `icon` and `color` are null while unknown (and for Chat).
+ * sends it: `icon` and `color` are null while unknown, and for `home`, which
+ * is Opensteer's own cursor: Chat's, or Voice's and the tasks Voice started.
  */
 export const DesktopGlassCursorSchema = z.strictObject({
   color: MarkColorSchema.nullable(),

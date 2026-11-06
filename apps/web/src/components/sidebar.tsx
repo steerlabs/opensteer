@@ -16,6 +16,7 @@ import {
   type MouseEvent,
   type ReactNode,
   type RefObject,
+  useContext,
 } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router";
 import type { BrowserTabGroupColor } from "@opensteer/protocol";
@@ -37,7 +38,15 @@ import {
   type TaskRow,
 } from "@opensteer/client/host";
 import { CHAT_THREAD_TITLE } from "@opensteer/core";
-import { useHostSelector, usePlaceList, useVoice } from "@opensteer/client/react";
+import {
+  VoiceContext,
+  useHostSelector,
+  usePlaceList,
+  useVoiceValue,
+} from "@opensteer/client/react";
+import type { VoiceSnapshot } from "@opensteer/client/voice";
+import { VoiceClock, VoiceMark } from "./voice.js";
+import { voiceRowKey } from "./voice-cursor.js";
 import { deploymentNameFrom } from "./deployment-name.js";
 import { selectedDeploymentFrom } from "../desktop/desktop-deployment-selection.js";
 import { Icon } from "./icon.js";
@@ -986,7 +995,7 @@ function ChatRow({
   const label = unsent ? `${named}, unsent draft` : named;
   const classes = ["side-home", open ? (workspace.work ? "is-open" : "is-filled") : ""];
   return (
-    <div className={classes.filter(Boolean).join(" ")}>
+    <div className={classes.filter(Boolean).join(" ")} data-voice-row="chat">
       <Link
         aria-current={open ? "page" : undefined}
         aria-label={label}
@@ -1015,6 +1024,9 @@ function ChatRow({
   );
 }
 
+const selectSince = ({ since }: VoiceSnapshot) => since;
+const selectOffered = ({ available, phase }: VoiceSnapshot) => available || phase !== "idle";
+
 /** The way to the person's Voice Thread, which shows a live call wherever they are. */
 function VoiceRow({
   asked,
@@ -1029,10 +1041,11 @@ function VoiceRow({
   readonly threadId: string | null;
   readonly workspace: WorkspaceState;
 }) {
-  const { controller, snapshot } = useVoice();
+  const controller = useContext(VoiceContext);
+  const since = useVoiceValue(selectSince);
+  const offered = useVoiceValue(selectOffered);
   // A Thread that exists holds history and Requests, whether or not a call can start.
-  if (threadId === null && (!controller || (!snapshot.available && snapshot.phase === "idle")))
-    return null;
+  if (threadId === null && (!controller || !offered)) return null;
   const go = async () => {
     const id = threadId ?? (await controller?.openThread());
     if (!id) return;
@@ -1051,10 +1064,10 @@ function VoiceRow({
         onClick={() => void go()}
         type="button"
       >
-        <span aria-hidden className="voice-mark" />
+        <VoiceMark />
         <span className="side-home__title">Voice</span>
-        {snapshot.since !== null ? (
-          <VoiceTimer since={snapshot.since} />
+        {since !== null ? (
+          <VoiceClock />
         ) : asked ? (
           <span aria-hidden className="side-bang">
             !
@@ -1062,20 +1075,6 @@ function VoiceRow({
         ) : null}
       </button>
     </div>
-  );
-}
-
-function VoiceTimer({ since }: { readonly since: number }) {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 1_000);
-    return () => clearInterval(timer);
-  }, []);
-  const seconds = Math.max(0, Math.floor((now - since) / 1_000));
-  return (
-    <span className="side-home__timer">
-      {Math.floor(seconds / 60)}:{String(seconds % 60).padStart(2, "0")}
-    </span>
   );
 }
 
@@ -1240,6 +1239,7 @@ const TaskRowItem = memo(function TaskRowItem({
       data-motion-key={row.threadId}
       className={classes.filter(Boolean).join(" ")}
       data-thread-id={threadId}
+      data-voice-row={threadId}
       onContextMenu={(event) => {
         if (!hasMenu) return;
         event.preventDefault();
@@ -1483,6 +1483,7 @@ const TabRowItem = memo(function TabRowItem({
       data-motion-key={placeKey}
       data-place-key={placeKey}
       data-row-index={index}
+      data-voice-row={voiceRowKey({ kind: "place", destination: place.destination })}
       // The wheel button closes a tab, as on a browser's tab strip, and never starts autoscroll.
       onAuxClick={(event) => {
         if (event.button === 1 && place.closable) requestClose(place);

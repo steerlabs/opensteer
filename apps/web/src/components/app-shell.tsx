@@ -3,7 +3,8 @@ import { DesktopWebLinkDeliverySchema } from "@opensteer/protocol/desktop";
 import { VoiceContext } from "@opensteer/client/react";
 import { VoiceAsk } from "./voice-ask.js";
 import { VoiceIsland, useVoiceRuntime } from "./voice.js";
-import { handlePersonShow } from "@opensteer/client/host";
+import { useVoiceCursor } from "./voice-cursor.js";
+import { handlePersonShow, personShowFromCall } from "@opensteer/client/host";
 import type { VoiceController } from "@opensteer/client/voice";
 import { useDictation } from "./dictation.js";
 import {
@@ -1391,9 +1392,10 @@ function PersonShowNavigation({
   readonly hostClient: HostClient;
   readonly voice: VoiceController | null;
   readonly settingsMode: boolean;
-}): null {
+}): ReactNode {
   const location = useLocation();
   const { nav } = useWorkspace();
+  const cursor = useVoiceCursor();
   const personShowPort = useRef<(message: PersonShowMessage) => void>(() => undefined);
   personShowPort.current = (message) => {
     const match = /^\/threads\/([^/]+)/.exec(location.pathname);
@@ -1406,27 +1408,30 @@ function PersonShowNavigation({
     // a place; a voice call's agent shows to the person talking to it, even while
     // a page holds focus.
     const focused = document.hasFocus();
+    const snapshot = hostClient.getSnapshot();
+    const call = voice?.call() ?? null;
     const shown = handlePersonShow(
-      hostClient.getSnapshot(),
+      snapshot,
       message,
       {
         foreground: document.visibilityState === "visible",
-        call: voice?.call() ?? null,
+        call,
         threadId:
           focused && !editing && (match || location.pathname === "/")
             ? match
               ? decodeURIComponent(match[1]!)
-              : hostClient.getSnapshot().homeThreadId
+              : snapshot.homeThreadId
             : null,
       },
-      (target) => {
-        // Settings covers places, so a shown place opens over Chat instead.
-        if (target.kind === "place")
-          if (settingsMode) nav.showPlaceWithConversation(target.destination, "/");
-          else nav.showPlace(target.destination);
-        else if (target.kind === "thread") nav.openConversation(nav.threadPath(target.threadId));
-        else nav.openConversation("/");
-      },
+      (target) =>
+        cursor.show(target, personShowFromCall(message, call), () => {
+          // Settings covers places, so a shown place opens over Chat instead.
+          if (target.kind === "place")
+            if (settingsMode) nav.showPlaceWithConversation(target.destination, "/");
+            else nav.showPlace(target.destination);
+          else if (target.kind === "thread") nav.openConversation(nav.threadPath(target.threadId));
+          else nav.openConversation("/");
+        }),
     );
     if (shown) voice?.showed(message);
   };
@@ -1434,5 +1439,5 @@ function PersonShowNavigation({
     () => hostClient.subscribePersonShow((message) => personShowPort.current(message)),
     [hostClient],
   );
-  return null;
+  return cursor.layer;
 }

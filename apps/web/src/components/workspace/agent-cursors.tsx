@@ -5,7 +5,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 
 import { placeActivityPoint, type HostClient, type PlaceActivity } from "@opensteer/client/host";
 import { browserFrameContentRect } from "@opensteer/shared/browserPresentation";
 import { useMediaQuery } from "../../ui-utils.js";
-import { taskCursorPaint } from "./task-mark.js";
+import { ownCursor, taskCursorPaint } from "./task-mark.js";
 import { CursorMark, CursorMotion } from "./cursor-motion.js";
 import { useTaskDirectory } from "./task-directory.js";
 
@@ -153,10 +153,11 @@ function PictureCursors({ hostClient, placeKey, tabId, variant }: AgentCursorsPr
     >
       {cursors.threadIds.map((threadId) => {
         const home = threadId === directory.homeThreadId;
+        const own = ownCursor(threadId, home, directory.snapshot);
         return (
           <CursorMark
-            color={taskCursorPaint(threadMark(threadId, directory.snapshot), home)}
-            icon={home ? null : threadMark(threadId, directory.snapshot).icon}
+            color={taskCursorPaint(threadMark(threadId, directory.snapshot), own)}
+            icon={own ? null : threadMark(threadId, directory.snapshot).icon}
             id={threadId}
             key={threadId}
             motion={motion}
