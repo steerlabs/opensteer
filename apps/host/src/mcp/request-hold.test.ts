@@ -32,7 +32,10 @@ function fixture() {
   });
   const onStopped = vi.fn();
   const hold = new RequestHold({
-    store: { requests: { holdSnapshot, markToolDelivered }, stopHeldRun },
+    store: {
+      requests: { holdSnapshot, markToolDelivered, personSteerCount: async () => 0 },
+      stopHeldRun,
+    },
     continuations: { outcome },
     onStopped,
   });
@@ -46,6 +49,7 @@ function fixture() {
     },
     tool: "integration_propose",
     admittedAt: Date.now(),
+    steersAtAdmission: 0,
     limitMs: 45_000,
     signal: controller.signal,
   };

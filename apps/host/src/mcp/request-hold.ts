@@ -7,7 +7,10 @@ import type { ContinuationService } from "../agents/continuation-service.js";
 import type { RunCaller } from "./agent-caller.js";
 
 type HoldStore = Pick<OpensteerStore, "stopHeldRun"> & {
-  readonly requests: Pick<OpensteerStore["requests"], "holdSnapshot" | "markToolDelivered">;
+  readonly requests: Pick<
+    OpensteerStore["requests"],
+    "holdSnapshot" | "markToolDelivered" | "personSteerCount"
+  >;
 };
 
 interface RequestHoldOptions {
@@ -25,11 +28,17 @@ export class RequestHold {
     this.options = options;
   }
 
+  /** Read before the handler runs, so a steer arriving while it works still counts. */
+  admit(caller: RunCaller): Promise<number> {
+    return this.options.store.requests.personSteerCount(caller.claims.runId);
+  }
+
   async wait(input: {
     readonly caller: RunCaller;
     readonly result: Record<string, unknown>;
     readonly tool: string;
     readonly admittedAt: number;
+    readonly steersAtAdmission: number;
     readonly limitMs: number;
     readonly signal: AbortSignal;
   }): Promise<{ readonly record: Record<string, unknown>; readonly text?: string } | null> {
@@ -51,7 +60,7 @@ export class RequestHold {
       const snapshot = await this.options.store.requests.holdSnapshot(
         id.data,
         claims.runId,
-        input.admittedAt,
+        input.steersAtAdmission,
       );
       if (!snapshot) return null;
       if (["completed", "failed", "interrupted"].includes(snapshot.run.status)) throw ended();

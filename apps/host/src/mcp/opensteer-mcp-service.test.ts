@@ -138,7 +138,12 @@ function fixture() {
     handlers,
 
     store: {
-      requests: { get: vi.fn(async () => null), holdSnapshot, markToolDelivered },
+      requests: {
+        get: vi.fn(async () => null),
+        holdSnapshot,
+        markToolDelivered,
+        personSteerCount: vi.fn(async () => 0),
+      },
       getThreadForOwner: async (id: Thread["id"]) => targets.get(id) ?? null,
       findMainWorkspaceForOwner: async () => undefined,
       getAssignmentForOwner: async () => null,

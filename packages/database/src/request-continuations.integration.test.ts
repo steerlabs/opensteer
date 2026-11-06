@@ -432,7 +432,7 @@ describeStore("Request continuation admission", (it) => {
     const { store, database, startRunFixture } = storeFixture;
     const fixture = await startRunFixture("held-person-steer");
     const opened = await open(store, fixture, "held");
-    const admittedAt = Date.now();
+    const steersAtAdmission = await store.requests.personSteerCount(fixture.run.id);
     const steered = await store.enqueueThreadInput({
       content: [{ type: "text", text: "Use another route" }],
       idempotencyKey: "person-steer",
@@ -471,15 +471,15 @@ describeStore("Request continuation admission", (it) => {
         .executeTakeFirstOrThrow(),
     ).toEqual({ state: "delivered" });
     for (const snapshot of await Promise.all([
-      store.requests.holdSnapshot(opened.request.id, fixture.run.id, admittedAt),
-      store.requests.holdSnapshot(opened.request.id, fixture.run.id, admittedAt),
+      store.requests.holdSnapshot(opened.request.id, fixture.run.id, steersAtAdmission),
+      store.requests.holdSnapshot(opened.request.id, fixture.run.id, steersAtAdmission),
     ]))
       expect(snapshot).toMatchObject({ steered: true, queued: false });
     expect(
       await store.requests.holdSnapshot(
         opened.request.id,
         fixture.run.id,
-        command.createdAt.getTime() + 1,
+        await store.requests.personSteerCount(fixture.run.id),
       ),
     ).toMatchObject({ steered: false, queued: false });
   });
@@ -490,7 +490,7 @@ describeStore("Request continuation admission", (it) => {
     const { store, startRunFixture } = storeFixture;
     const fixture = await startRunFixture("held-machine-inputs");
     const opened = await open(store, fixture, "held");
-    const admittedAt = Date.now();
+    const steersAtAdmission = await store.requests.personSteerCount(fixture.run.id);
     const sources = [
       {
         source: {
@@ -512,7 +512,7 @@ describeStore("Request continuation admission", (it) => {
         threadId: fixture.thread.id,
       });
       expect(
-        await store.requests.holdSnapshot(opened.request.id, fixture.run.id, admittedAt),
+        await store.requests.holdSnapshot(opened.request.id, fixture.run.id, steersAtAdmission),
       ).toMatchObject({ queued: false, steered: false });
     }
   });

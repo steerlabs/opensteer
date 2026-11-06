@@ -58,6 +58,7 @@ async function setup(
       stopHeldRun: (scope, reason) => store.stopHeldRun(scope, reason),
       requests: {
         markToolDelivered: (id, scope) => store.requests.markToolDelivered(id, scope),
+        personSteerCount: (id) => store.requests.personSteerCount(id),
         holdSnapshot: async (...args) => {
           const snapshot = await store.requests.holdSnapshot(...args);
           read.resolve();
@@ -76,6 +77,7 @@ async function setup(
     result: { requestId: opened.request.id, status: "pending" },
     tool: "browser_profile_request",
     admittedAt: Date.now(),
+    steersAtAdmission: 0,
     limitMs: 45_000,
     signal: controller.signal,
   };

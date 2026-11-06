@@ -261,6 +261,8 @@ export interface PreparedIntegrationInstallFulfillment {
  * changes remain explicit callers of this store, but creation, visibility,
  * replay, withdrawal, cancellation, and continuation bookkeeping do not fork.
  */
+const personAuthorities = ["workspace-membership", "channel-ingress"];
+
 export class RequestStore {
   readonly #database: Kysely<DatabaseSchema>;
 
@@ -2910,28 +2912,26 @@ export class RequestStore {
     );
   }
 
-  async holdSnapshot(requestId: RequestId, runId: RunId, admittedAt: number) {
+  /** A person's steers into a Run so far: a hold's cutoff, free of any clock. */
+  async personSteerCount(runId: RunId): Promise<number> {
+    const { count } = await this.#database
+      .selectFrom("threadInputs")
+      .innerJoin("commands", "commands.id", "threadInputs.steerCommandId")
+      .select(({ fn }) => fn.countAll<string>().as("count"))
+      .where("commands.runId", "=", runId)
+      .where("commands.type", "=", "run.steer")
+      .where(sql<string>`thread_inputs.authority_source->>'kind'`, "in", personAuthorities)
+      .executeTakeFirstOrThrow();
+    return Number(count);
+  }
+
+  async holdSnapshot(requestId: RequestId, runId: RunId, steersAtAdmission: number) {
     const row = await this.#database
       .selectFrom("requests")
       .innerJoin("runs", "runs.id", "requests.originatingRunId")
       .selectAll("requests")
       .select(["runs.status as runStatus", "runs.phase as runPhase", "runs.voiceSessionId"])
-      .select((eb) => [
-        eb
-          .exists(
-            eb
-              .selectFrom("threadInputs")
-              .innerJoin("commands", "commands.id", "threadInputs.steerCommandId")
-              .select("threadInputs.messageId")
-              .whereRef("commands.runId", "=", "runs.id")
-              .where("commands.type", "=", "run.steer")
-              .where("commands.createdAt", ">=", new Date(admittedAt))
-              .where(sql<string>`thread_inputs.authority_source->>'kind'`, "in", [
-                "workspace-membership",
-                "channel-ingress",
-              ]),
-          )
-          .as("steered"),
+      .select((eb) =>
         eb
           .exists(
             eb
@@ -2940,13 +2940,10 @@ export class RequestStore {
               .whereRef("threadInputs.threadId", "=", "runs.threadId")
               .where("threadInputs.state", "=", "pending")
               .where("threadInputs.policy", "!=", "report")
-              .where(sql<string>`thread_inputs.authority_source->>'kind'`, "in", [
-                "workspace-membership",
-                "channel-ingress",
-              ]),
+              .where(sql<string>`thread_inputs.authority_source->>'kind'`, "in", personAuthorities),
           )
           .as("queued"),
-      ])
+      )
       .where("requests.id", "=", requestId)
       .where("requests.mode", "=", "durable")
       .where("runs.id", "=", runId)
@@ -2955,7 +2952,7 @@ export class RequestStore {
       ? {
           request: requestFromRow(row),
           run: { status: row.runStatus, phase: row.runPhase, voiceSessionId: row.voiceSessionId },
-          steered: row.steered,
+          steered: (await this.personSteerCount(runId)) > steersAtAdmission,
           queued: row.queued,
         }
       : null;
