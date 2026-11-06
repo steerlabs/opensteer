@@ -329,7 +329,6 @@ export interface DelegateThreadRequest {
   readonly threadId?: ThreadId;
   readonly title: string;
   readonly titleSource?: ThreadTitleSource;
-  readonly icon?: WorkspaceIconName;
   readonly workspaceId: WorkspaceId;
 }
 
