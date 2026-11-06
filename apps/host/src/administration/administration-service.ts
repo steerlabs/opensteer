@@ -61,6 +61,7 @@ export type AdministrationDependencies = Pick<
 const coreTypes = [
   "workspace.notifications.update",
   "viewer.timeZone.update",
+  "viewer.quietTasks.update",
   "workspace.storage.retry",
   "workspace.icon.set",
   "workspace.color.set",
@@ -241,6 +242,7 @@ export class AdministrationService {
       command.type.startsWith("automaticModels.") ||
       command.type === "execution.preferences.remember" ||
       command.type === "viewer.timeZone.update" ||
+      command.type === "viewer.quietTasks.update" ||
       command.type === "browser.site.remove"
     )
       notifyMachinesChanged(this.dependencies.realtime, "unspecified");
@@ -305,6 +307,7 @@ export class AdministrationService {
         }
         if (command.type === "execution.preferences.remember") fields = { preferences: result };
         if (command.type === "viewer.timeZone.update") fields = { timeZone: result };
+        if (command.type === "viewer.quietTasks.update") fields = { quietTaskDays: result };
         if (command.type === "workspace.notifications.update")
           fields = z.record(z.string(), z.unknown()).parse(result);
         if (command.type === "integration.disconnect")
@@ -389,6 +392,15 @@ export class AdministrationService {
         dependencies.realtime.publishNotificationPreference(userId, preference);
         return { type: command.type, ...preference };
       }
+      case "viewer.quietTasks.update":
+        return {
+          quietTaskDays: await dependencies.store.notificationState.setQuietTaskDays({
+            administration,
+            quietTaskDays: command.quietTaskDays,
+            userId,
+          }),
+          type: command.type,
+        };
       case "viewer.timeZone.update":
         return {
           timeZone: await dependencies.store.notificationState.setTimeZone({

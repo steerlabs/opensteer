@@ -401,6 +401,13 @@ export function sameProviderContinuationIdentity(
 export const ThreadStatusSchema = z.enum(["idle", "running", "waiting", "failed", "archived"]);
 export type ThreadStatus = z.infer<typeof ThreadStatusSchema>;
 export const ThreadRoleSchema = z.enum(["conversation", "work"]);
+/** Why a Done task is Done, when the Host rather than a person put it there. */
+export const ThreadDoneReasonSchema = z.enum(["quiet"]);
+export type ThreadDoneReason = z.infer<typeof ThreadDoneReasonSchema>;
+/** Days a person's task sits untouched before the Host moves it to Done; 0 never. */
+export const QuietTaskDaysSchema = z.union([z.literal(0), z.literal(1), z.literal(3), z.literal(7)]);
+export type QuietTaskDays = z.infer<typeof QuietTaskDaysSchema>;
+export const defaultQuietTaskDays: QuietTaskDays = 3;
 export type ThreadRole = z.infer<typeof ThreadRoleSchema>;
 
 /**
@@ -449,6 +456,8 @@ export const ThreadSchema = z.object({
    * reopens it. Older durable Thread events carry no such field.
    */
   doneAt: IsoDateTimeSchema.nullable().default(null),
+  /** Null while open and when a person or its own agent marked it Done. */
+  doneReason: ThreadDoneReasonSchema.nullable().default(null),
   environmentId: EnvironmentIdSchema,
   harnessInstanceId: HarnessInstanceIdSchema,
   id: ThreadIdSchema,
@@ -484,6 +493,7 @@ export const ThreadViewSchema = z.object({
   ...ThreadSchema.shape,
   // A colour a newer Host added reads as none rather than failing the view.
   color: MarkColorSchema.optional().catch(undefined),
+  doneReason: ThreadDoneReasonSchema.nullable().default(null).catch(null),
   continuationIdentity: ProviderContinuationIdentityViewSchema.nullable(),
   modelSelection: ModelSelectionViewSchema,
 });

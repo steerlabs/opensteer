@@ -1,4 +1,8 @@
-import { AuthSessionIdSchema, WorkspaceNotificationPreferenceSchema } from "@opensteer/core";
+import {
+  AuthSessionIdSchema,
+  QuietTaskDaysSchema,
+  WorkspaceNotificationPreferenceSchema,
+} from "@opensteer/core";
 import {
   AppIdSchema,
   AppTitleSchema,
@@ -106,6 +110,8 @@ export const HostBootstrapSchema = z.object({
    * nothing remembered, and the client reads absence as exactly that.
    */
   executionPreferences: ExecutionPreferencesViewSchema.optional(),
+  /** Days untouched before this person's tasks move to Done; absent before `quiet-tasks-v1`. */
+  quietTaskDays: QuietTaskDaysSchema.optional(),
   harnesses: z.array(HostBootstrapHarnessSchema),
   homeWorkspace: WorkspaceViewSchema.nullable(),
   identityConfig: IdentityConfigViewSchema,

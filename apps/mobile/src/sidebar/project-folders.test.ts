@@ -33,6 +33,8 @@ function row(threadId: string, tone: TaskRow["tone"]): TaskRow {
     unread: false,
     stopped: tone !== "working" && tone !== "needs-you",
     done: false,
+    doneAt: null,
+    quietlyDone: false,
     canBeDone: true,
     askedAt: "2026-10-01T00:00:00.000Z",
   };
