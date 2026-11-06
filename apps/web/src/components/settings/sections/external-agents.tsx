@@ -51,8 +51,10 @@ export function ExternalAgentsSection({
   const [guide, setGuide] = useState<ExternalAgentGuide | null>(null);
   const workspaces = shell.snapshot.workspaces;
   const connections = agents.connections ?? [];
+  // Setup takes its baseline from the loaded list, so it waits for the first read.
   const available = (entry: ExternalAgentGuide) =>
-    reach.kind === "ready" || (entry.providerId === null && thisComputer !== null);
+    agents.connections !== null &&
+    (reach.kind === "ready" || (entry.providerId === null && thisComputer !== null));
   return (
     <>
       <SectionHeader title="External agents" lead={externalAgentsLead} />
@@ -184,7 +186,13 @@ function ExternalAgentSetup({
               Copy this address.
               {address ? (
                 <AddressBlock
-                  label={thisComputer ? "From anywhere" : "Address"}
+                  label={
+                    !thisComputer
+                      ? "Address"
+                      : reach.kind === "ready" && reach.reach === "private-network"
+                        ? "On your private network"
+                        : "From anywhere"
+                  }
                   value={address.url}
                 />
               ) : null}

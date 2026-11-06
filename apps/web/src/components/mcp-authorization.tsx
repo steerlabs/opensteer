@@ -91,7 +91,7 @@ export function McpAuthorization({
     }
   }
   return (
-    <main className="page settings">
+    <main className="page settings settings-layout">
       <div className="settings-content">
         <div className="settings-content__inner agent-consent">
           {consent ? (
@@ -209,7 +209,7 @@ export function McpAuthorizationLaunch({
   const target = AgentConnectionAuthorizationTargetSchema.safeParse({ requestId, deploymentId });
   const { client, device } = installedClient();
   return (
-    <main className="page settings">
+    <main className="page settings settings-layout">
       <div className="settings-content">
         <div className="settings-content__inner">
           <SectionHeader

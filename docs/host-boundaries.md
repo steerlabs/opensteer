@@ -69,9 +69,10 @@ completion on the consent's `resource` origin, because completion is bound to th
 signed in through. Consent picks an access ceiling and either everything the person can reach or one
 Workspace they own, lost when ownership ends.
 
-Settings → External agents explains only agents that reach the Host from elsewhere, through Remote
-access or a networked origin: Opensteer already runs local agents itself. Client names are
-self-reported, so a connection is shown by its label and never matched to a product's logo.
+Settings → External agents guides cloud agents to the Host's networked origin or Personal Remote
+access route; Opensteer already runs local agents itself, so on the Host computer it only adds the
+loopback address for other MCP clients. Client names are self-reported, so a connection is shown by
+its label and never matched to a product's logo.
 
 MCP credentials are opaque, stored hashed in their own record, and never become Host sessions or
 authenticate Runners, Runs or programs. A connection works only on the route origin it was approved
