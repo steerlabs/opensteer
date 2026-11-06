@@ -473,7 +473,9 @@ function phoneTabPlace(machine: PlaceListSource["machines"][number]): PlaceItem 
     identity: null,
     browser: null,
     ownerView: shownView,
-    ownerClose: view ? { viewId: view.viewId, generation: view.generation } : null,
+    // Under a task the tab would only open a live view again; Stop is the way out.
+    ownerClose:
+      view && !(session && shownView) ? { viewId: view.viewId, generation: view.generation } : null,
     key: phonePlaceKey(machine.id),
     kind: "phone",
     destination: { kind: "phone", machineId: machine.id },

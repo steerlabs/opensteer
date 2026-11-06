@@ -282,6 +282,7 @@ async function setup(
       }),
     );
   let snapshot = {
+    connection: "connected",
     session: "authenticated",
     user: { id: "person" },
     deploymentId: "deployment",
@@ -1109,6 +1110,7 @@ it("keeps Open's wake when the Host's notice replaces the resting page before th
     tabOpenedAt: "2026-11-02T12:00:00.000Z",
     computerUse: { ...held!.computerUse!, sessions: [] },
   };
+  vi.mocked(client.openComputerView).mockRejectedValueOnce(new Error("refused"));
   move!({ machines: [resting] });
   await render();
   const view = {
@@ -1125,7 +1127,7 @@ it("keeps Open's wake when the Host's notice replaces the resting page before th
   );
   const cancel = vi.spyOn(sharedDisplayStreams(client), "cancelAutoWake");
   await press("Open Your phone");
-  await vi.waitFor(() => expect(client.openComputerView).toHaveBeenCalledOnce());
+  await vi.waitFor(() => expect(client.openComputerView).toHaveBeenCalledTimes(2));
   await act(async () =>
     move!({
       machines: [{ ...resting, computerUse: { ...resting.computerUse, ownerViews: [view] } }],
@@ -1139,11 +1141,10 @@ it("keeps Open's wake when the Host's notice replaces the resting page before th
   expect(cancel).not.toHaveBeenCalled();
 });
 
-it("rests a phone's tab on one Open after its task lets go, and closes it on request", async () => {
+it("opens a phone's tab by itself when its task lets go, without waking the phone", async () => {
   const { client, move, render } = await setup(true, "android", false, true, "tab");
   await render();
   expect(client.openComputerView).not.toHaveBeenCalled();
-  expect(container.textContent).not.toContain("to see it and use it.");
 
   const [held] = client.getSnapshot().machines;
   move!({
@@ -1156,11 +1157,35 @@ it("rests a phone's tab on one Open after its task lets go, and closes it on req
     ],
   });
   await render();
+  expect(client.openComputerView).toHaveBeenCalledExactlyOnceWith(
+    "machine",
+    { kind: "phone", display: "main" },
+    { wake: false },
+  );
+  expect(container.textContent).toContain("Opening Your phone…");
+  expect(container.textContent).not.toContain("to see it and use it.");
+});
+
+it("offers Open once when the Host refuses a tab's view, and closes it on request", async () => {
+  const { client, move, render } = await setup(true, "android", false, true, "tab");
+  await render();
+  vi.mocked(client.openComputerView).mockRejectedValueOnce(new Error("refused"));
+  const [held] = client.getSnapshot().machines;
+  move!({
+    machines: [
+      {
+        ...held!,
+        tabOpenedAt: "2026-11-02T12:00:00.000Z",
+        computerUse: { ...held!.computerUse!, sessions: [] },
+      },
+    ],
+  });
+  await render();
   expect(container.textContent).toContain("to see it and use it.");
-  expect(client.openComputerView).not.toHaveBeenCalled();
+  expect(client.openComputerView).toHaveBeenCalledOnce();
 
   await press("Open Your phone");
-  expect(client.openComputerView).toHaveBeenCalledExactlyOnceWith("machine", {
+  expect(client.openComputerView).toHaveBeenLastCalledWith("machine", {
     kind: "phone",
     display: "main",
   });

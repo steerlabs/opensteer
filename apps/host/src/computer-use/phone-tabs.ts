@@ -42,8 +42,9 @@ export class PhoneTabs {
           code: "conflict",
           message: "An agent is using this phone. Stop it to close the tab.",
         });
-      this.#options.closeViews(owner, machine);
+      // Written first: a tab in front reopens a view it loses, unless the tab has gone too.
       await this.#options.store.closePhoneTab(machine);
+      this.#options.closeViews(owner, machine);
       this.#options.changed();
     });
   }

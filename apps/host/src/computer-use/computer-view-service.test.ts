@@ -24,6 +24,7 @@ const app: ComputerAppIdentity = {
   teamId: null,
 };
 function harness(phone = false) {
+  const notices: unknown[] = [];
   let focused = 11;
   let approved = true;
   let access: "read" | "read-write" = "read";
@@ -47,7 +48,7 @@ function harness(phone = false) {
           ]
         : [],
     owners: async () => new Map([[machine, { effectiveOwner: owner }]]),
-    changed: () => undefined,
+    changed: (_owner, notice) => notices.push(notice),
     hub: {
       attached: () => true,
       ownerViewSupported: () => true,
@@ -114,6 +115,7 @@ function harness(phone = false) {
     return handlers["computer.app.windows"]({ machineId: runner, app: identity }, context);
   };
   return {
+    notices,
     service,
     setAccess: (next: "read" | "read-write") => {
       access = next;
@@ -285,6 +287,27 @@ describe("independent Mac control authorization", () => {
       h.service.shutdown();
     }
   });
+});
+
+it("says a view left with its phone's tab, and only then", async () => {
+  const h = harness(true);
+  try {
+    const removal = { type: "host.computer-view.removed", reason: "closed" };
+    const first = await h.open();
+    await h.service.command(owner, {
+      type: "computer.view.close",
+      viewId: first.viewId,
+      generation: first.generation,
+      idempotencyKey: crypto.randomUUID(),
+    });
+    expect(h.notices.at(-1)).toMatchObject(removal);
+    expect(h.notices.at(-1)).not.toHaveProperty("tabClosed");
+    await h.open();
+    h.service.closePhoneViews(owner, machine);
+    expect(h.notices.at(-1)).toMatchObject({ ...removal, tabClosed: true });
+  } finally {
+    h.service.shutdown();
+  }
 });
 
 it("keeps phone viewing live while read-write approval alone controls input", async () => {

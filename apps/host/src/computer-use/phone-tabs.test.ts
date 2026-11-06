@@ -46,6 +46,10 @@ describe("phone tabs", () => {
     expect(test.closeViews).toHaveBeenCalledExactlyOnceWith(owner, machine);
     expect(test.store.closePhoneTab).toHaveBeenCalledExactlyOnceWith(machine);
     expect(test.changed).toHaveBeenCalledOnce();
+    // A view ended before the write would be reopened by a tab still in front elsewhere.
+    expect(test.store.closePhoneTab.mock.invocationCallOrder[0]).toBeLessThan(
+      test.closeViews.mock.invocationCallOrder[0]!,
+    );
   });
 
   it("keeps a tab that a new task opened while a close was being written", async () => {

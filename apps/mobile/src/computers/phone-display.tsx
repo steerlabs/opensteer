@@ -16,7 +16,7 @@ import {
   type DisplaySnapshot,
   type DisplayLease,
 } from "@opensteer/client/integrations";
-import { useHostSelector, usePlaceList } from "@opensteer/client/react";
+import { useHostSelector, usePhoneTabView, usePlaceList } from "@opensteer/client/react";
 import {
   displayViewerCloseCodes,
   displayViewerWindowFrames,
@@ -703,6 +703,7 @@ export function PhoneTabView(props: {
   const stillHere = useCallback(() => mounted.current && navigation.isFocused(), [navigation]);
   const key = phonePlaceKey(machineId);
   const place = usePlaceList(hostClient).find((item) => item.key === key) ?? null;
+  const viewOpening = usePhoneTabView(hostClient, machineId, props.active);
   const closeTab = () => {
     hostClient.closePhoneTab(machineId).then(onClosed, (error: unknown) => {
       Alert.alert(
@@ -757,6 +758,7 @@ export function PhoneTabView(props: {
       hostClient={hostClient}
       machineId={machineId}
       onClose={closable ? closeTab : null}
+      opening={viewOpening}
       stillHere={stillHere}
     />
   );
@@ -766,6 +768,8 @@ function PhoneTabResting(props: {
   readonly hostClient: HostClient;
   readonly machineId: string;
   readonly onClose: (() => void) | null;
+  /** The tab is opening its view by itself. */
+  readonly opening: boolean;
   readonly stillHere: () => boolean;
 }) {
   const { hostClient, machineId } = props;
@@ -804,11 +808,13 @@ function PhoneTabResting(props: {
     <View style={styles.stage}>
       <View style={styles.status}>
         <AppText role="bodyMedium" style={styles.statusText}>
-          {computer === null
-            ? `Open ${name} to see it and use it.`
-            : computerReasonWords(computer, { machine: name, phone: true, target: name })}
+          {props.opening
+            ? `Opening ${name}…`
+            : computer === null
+              ? `Open ${name} to see it and use it.`
+              : computerReasonWords(computer, { machine: name, phone: true, target: name })}
         </AppText>
-        {computer === null ? (
+        {computer === null && !props.opening ? (
           <SecondaryButton
             accessibilityLabel={`Open ${name}`}
             disabled={opening}

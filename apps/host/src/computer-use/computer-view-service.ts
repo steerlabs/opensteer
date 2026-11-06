@@ -162,7 +162,7 @@ export class ComputerViewService {
         view.record.machineId === machine &&
         view.record.target.kind === "phone"
       )
-        this.#end(view, "closed");
+        this.#end(view, "closed", true);
   }
 
   async command(owner: UserId, command: ViewCommand): Promise<ComputerView> {
@@ -619,6 +619,7 @@ export class ComputerViewService {
   #end(
     view: HeldView,
     reason: "closed" | "expired" | "revoked" | "disconnected" | "host-restarted",
+    tabClosed = false,
   ): void {
     if (view.record.state === "closed" || view.record.state === "expired") return;
     if (view.timer) clearTimeout(view.timer);
@@ -642,6 +643,7 @@ export class ComputerViewService {
       generation: view.record.generation,
       machineId: view.record.machineId,
       reason,
+      ...(tabClosed ? { tabClosed } : {}),
     });
     if (reason !== "disconnected") void this.#send(view, "close").catch(() => undefined);
     // Closed generations are needed only for bounded command replay and stale-generation checks.

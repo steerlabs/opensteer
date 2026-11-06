@@ -18,6 +18,7 @@ import {
 } from "@opensteer/core";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import { createIntegrationId } from "@opensteer/integration-core";
+import { sharedDisplayStreams } from "../integrations/phone-display-stream.js";
 import {
   BrowserSurfaceIdSchema,
   ComputerViewSchema,
@@ -13020,6 +13021,50 @@ describe("HttpHostClient owner views", () => {
       view: reopened,
     } as HostToClientMessage);
     expect(shown()).toEqual([reopened]);
+    host.client.dispose();
+  });
+
+  it("arms a phone's wake only for an open that did not decline it", async () => {
+    const { machine, view: app } = await ownerViewWorld();
+    const view = { ...app, target: { kind: "phone", display: "main" } } as typeof app;
+    const host = ownerViewHost(
+      () => [machine],
+      async () => json({ type: "computer.view.open", view }),
+    );
+    await host.client.load();
+    const arm = vi.spyOn(sharedDisplayStreams(host.client), "armAutoWake");
+    await host.client.openComputerView(view.machineId, view.target, { wake: false });
+    expect(arm).not.toHaveBeenCalled();
+    await host.client.openComputerView(view.machineId, view.target);
+    expect(arm).toHaveBeenCalledOnce();
+    host.client.dispose();
+  });
+
+  it("takes a phone's tab away with its view, or a tab in front would reopen it", async () => {
+    const { machine, view } = await ownerViewWorld();
+    const tabOpenedAt = "2026-11-02T12:00:00.000Z";
+    const host = ownerViewHost(
+      () => [{ ...machine, tabOpenedAt }],
+      async () => json({ view }),
+    );
+    await host.client.load();
+    host.connect();
+    const removal = {
+      type: "host.computer-view.removed",
+      viewId: view.viewId,
+      machineId: view.machineId,
+      reason: "closed",
+    };
+    const tab = () =>
+      host.client.getSnapshot().machines.find(({ id }) => id === view.machineId)?.tabOpenedAt;
+    host.sockets[0]!.receive({ ...removal, generation: view.generation } as HostToClientMessage);
+    expect(tab()).toBe(tabOpenedAt);
+    host.sockets[0]!.receive({
+      ...removal,
+      generation: view.generation + 1,
+      tabClosed: true,
+    } as HostToClientMessage);
+    expect(tab()).toBeNull();
     host.client.dispose();
   });
 
