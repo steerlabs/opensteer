@@ -79,3 +79,5 @@ export * from "./automatic-models.js";
 export type { AppTab } from "@opensteer/protocol";
 
 export * from "./browser-last-picture.js";
+export * from "./browser-thread-tabs.js";
+export * from "./browser-agent-follow.js";
