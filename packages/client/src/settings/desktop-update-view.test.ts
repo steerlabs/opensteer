@@ -243,12 +243,8 @@ describe("when the computer can't be updated from here", () => {
     expect(view({ failure: "forbidden" }).hidden).toBe(true);
   });
 
-  it("sends a server Deployment to that computer", () => {
-    const shown = view({ status: status({ supported: false, state: null }) });
-    expect(shown.detail).toBe(
-      "Opensteer on Studio Mac can't be updated from here. Update it on that computer.",
-    );
-    expect(shown.action).toBeNull();
+  it("hides on a server Deployment, which has nothing to offer here", () => {
+    expect(view({ status: status({ supported: false, state: null }) }).hidden).toBe(true);
   });
 
   it("asks for one local update on a Host that predates the contract", () => {

@@ -1055,3 +1055,5 @@ it.each(["live", "durable"] as const)(
     );
   },
 );
+
+vi.mock("../ui/ai-sharing.js", () => import("../../test-support/ai-sharing.js"));

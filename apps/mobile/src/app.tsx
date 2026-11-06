@@ -1,3 +1,6 @@
+import { AiSharing } from "@opensteer/client/ai-sharing";
+import { AiSharingProvider } from "./ui/ai-sharing.js";
+import { readAiSharing } from "./client/ai-sharing-storage.js";
 import { createBrowsingChoiceStorage } from "./client/browsing-choice-storage.js";
 import { notificationPreviewNative } from "../modules/notification-preview/index.js";
 import { NotificationPreviews } from "./notifications/notification-preview.js";
@@ -641,40 +644,55 @@ export function App(): ReactNode {
     <GestureHandlerRootView style={styles.root}>
       <DictationProvider>
         <MobileClientProvider client={client}>
-          <VoiceProvider>
-            <IphoneAppsProvider controller={iphone}>
-              <MobileNotificationsProvider notifications={notifications}>
-                <SafeAreaProvider>
-                  <StatusBar style="light" />
-                  <IphoneAppsNotice controller={iphone} />
-                  {linkFailure === null ? null : (
-                    <LinkFailure detail={linkFailure} onDismiss={() => setLinkFailure(null)} />
-                  )}
-                  {integrationNotice === null ? null : (
-                    <IntegrationNotice
-                      detail={integrationNotice.detail}
-                      onDismiss={() => setIntegrationNotice(null)}
-                      title={integrationNotice.title}
+          <AiSharingProvider
+            create={(confirm) => {
+              const file = new File(Paths.document, `${storeName}-ai-sharing.json`);
+              return new AiSharing({
+                records: readAiSharing(file),
+                confirm,
+                now: () => new Date().toISOString(),
+                save: (records) => {
+                  if (!file.exists) file.create({ intermediates: true });
+                  file.writeSync(JSON.stringify(records));
+                },
+              });
+            }}
+          >
+            <VoiceProvider>
+              <IphoneAppsProvider controller={iphone}>
+                <MobileNotificationsProvider notifications={notifications}>
+                  <SafeAreaProvider>
+                    <StatusBar style="light" />
+                    <IphoneAppsNotice controller={iphone} />
+                    {linkFailure === null ? null : (
+                      <LinkFailure detail={linkFailure} onDismiss={() => setLinkFailure(null)} />
+                    )}
+                    {integrationNotice === null ? null : (
+                      <IntegrationNotice
+                        detail={integrationNotice.detail}
+                        onDismiss={() => setIntegrationNotice(null)}
+                        title={integrationNotice.title}
+                      />
+                    )}
+                    <Navigation
+                      initialState={initialNavigationState}
+                      onReady={handleNavigatorReady}
+                      onStateChange={syncDeferredRootSelection}
+                      ref={navigationRef}
+                      theme={navigationTheme}
                     />
-                  )}
-                  <Navigation
-                    initialState={initialNavigationState}
-                    onReady={handleNavigatorReady}
-                    onStateChange={syncDeferredRootSelection}
-                    ref={navigationRef}
-                    theme={navigationTheme}
-                  />
-                  <ConnectionPill />
-                  <OpenComputer />
-                  {/* Outside the navigator: a Request card on the bar still navigates. */}
-                  <NavigationContainerRefContext value={navigationRef}>
-                    <VoiceOverlay />
-                  </NavigationContainerRefContext>
-                  <IphoneAppsPrompt controller={iphone} />
-                </SafeAreaProvider>
-              </MobileNotificationsProvider>
-            </IphoneAppsProvider>
-          </VoiceProvider>
+                    <ConnectionPill />
+                    <OpenComputer />
+                    {/* Outside the navigator: a Request card on the bar still navigates. */}
+                    <NavigationContainerRefContext value={navigationRef}>
+                      <VoiceOverlay />
+                    </NavigationContainerRefContext>
+                    <IphoneAppsPrompt controller={iphone} />
+                  </SafeAreaProvider>
+                </MobileNotificationsProvider>
+              </IphoneAppsProvider>
+            </VoiceProvider>
+          </AiSharingProvider>
         </MobileClientProvider>
       </DictationProvider>
     </GestureHandlerRootView>

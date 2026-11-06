@@ -172,6 +172,7 @@ vi.mock("./message-hold.js", () => ({
       {props.onActivity ? <button onClick={props.onActivity}>Run details</button> : null}
     </>
   ),
+  MessageMore: () => null,
 }));
 vi.mock("../ui/copy-mark.js", () => ({ CopyMark: () => null }));
 vi.mock("./attachment-views.js", async () => ({
@@ -1172,3 +1173,5 @@ describe("an app's card and its tab", () => {
     }
   });
 });
+
+vi.mock("../report-mail.js", () => ({ contactSupport: vi.fn() }));

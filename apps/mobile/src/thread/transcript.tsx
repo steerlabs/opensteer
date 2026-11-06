@@ -34,7 +34,7 @@ import {
 import { voiceCallSeed } from "@opensteer/core";
 import { replyParts, type ReplyPart } from "@opensteer/shared/markdown";
 import { memo, useMemo, useRef, useState, type ReactNode } from "react";
-import { Alert, Pressable, Share, StyleSheet, View, useWindowDimensions } from "react-native";
+import { Pressable, StyleSheet, View, useWindowDimensions } from "react-native";
 import Animated, { LayoutAnimationConfig } from "react-native-reanimated";
 import { CodeLines, Markdown, PlainProse } from "../markdown/markdown.js";
 import { color, material, radius, space, touchTarget, type } from "../theme.js";
@@ -48,7 +48,7 @@ import { AppCard } from "./app-card.js";
 import { MessageAttachments } from "./attachment-views.js";
 import { Bubble, bubble } from "./bubble.js";
 import { ComputerUseLine, KeptComputerStopLine, useComputerLine } from "./computer-use-line.js";
-import { MessageHold } from "./message-hold.js";
+import { MessageHold, MessageMore } from "./message-hold.js";
 import { MessagePages, ReplySurfaces, TracePlace } from "./surface-chips.js";
 
 /**
@@ -450,16 +450,18 @@ function ReplyBubble(props: {
           onActivity={props.onActivity}
           onReply={reply}
           part={part}
+          reportId={message.id}
           tail={!props.continued && index === parts.length - 1}
           whole={parts.length > 1 ? message.body : undefined}
         />
       ))}
       {parts.length === 0 ? (
-        // With no words to hold, the files are what offers Reply and Run Details.
+        // With no words to hold, the files are what offers Reply, Run Details and Report.
         <MessageHold
           onActivity={props.onActivity}
           onReply={reply}
           previewRadius={radius.md}
+          reportId={message.id}
           text=""
         >
           <MessageAttachments attachments={message.attachments ?? []} />
@@ -485,6 +487,7 @@ function ReplyPartRow(props: {
   readonly onActivity: (() => void) | undefined;
   readonly onReply: (() => void) | undefined;
   readonly part: ReplyPart;
+  readonly reportId: string;
   readonly tail: boolean;
   readonly whole: string | undefined;
 }): ReactNode {
@@ -498,6 +501,7 @@ function ReplyPartRow(props: {
         onActivity={props.onActivity}
         onReply={props.onReply}
         previewRadius={bubble.radius}
+        reportId={props.reportId}
         style={wide ? styles.wideHold : styles.bubbleHold}
         text={part.text}
         whole={props.whole}
@@ -991,24 +995,14 @@ function AssistantMessage(props: {
     <View style={styles.assistant}>
       {body ? <Markdown streaming={props.message.streaming === true} text={body} /> : null}
       <MessageAttachments attachments={props.message.attachments ?? []} />
-      {props.answer && body ? (
+      {props.message.streaming === true ? null : (
         <View style={styles.marks}>
-          <CopyMark accessibilityLabel="Copy reply" style={styles.mark} text={body} />
-          <Pressable
-            accessibilityLabel="Share reply"
-            accessibilityRole="button"
-            hitSlop={space[12]}
-            onPress={() => {
-              void Share.share({ message: body }).catch(() =>
-                Alert.alert("Share unavailable", "Copy the text instead."),
-              );
-            }}
-            style={styles.mark}
-          >
-            <Symbol name="square.and.arrow.up" size={16} tint={color.muted} />
-          </Pressable>
+          {props.answer && body ? (
+            <CopyMark accessibilityLabel="Copy reply" style={styles.mark} text={body} />
+          ) : null}
+          <MessageMore reportId={props.message.id} text={body} />
         </View>
-      ) : null}
+      )}
     </View>
   );
 }
@@ -1512,8 +1506,8 @@ const styles = StyleSheet.create({
   },
   unreadRule: { backgroundColor: color.emberLine, flex: 1, height: 1 },
   assistant: { gap: space[2] },
-  /** Under a task's answer, level with its words: a thumb's reach, no ground of their own. */
-  marks: { flexDirection: "row", gap: space[14], minHeight: 30, paddingTop: space[6] },
+  /** Under a task's words, level with them: a thumb's reach, no ground of their own. */
+  marks: { alignItems: "center", flexDirection: "row", marginBottom: -space[8] },
   mark: { alignItems: "center", height: 24, justifyContent: "center", width: 24 },
   replyColumn: { gap: bubble.gap },
   partRow: { alignItems: "flex-end", flexDirection: "row", gap: space[8] },

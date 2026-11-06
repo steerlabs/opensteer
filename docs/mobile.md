@@ -59,6 +59,16 @@ only a wake-up: read the attempt back with the same Host credential. Transcript 
 [transcriptLinks.ts](../packages/shared/src/transcriptLinks.ts) so generated content cannot switch
 Deployments. Composer dictation is in [Dictation](dictation.md).
 
+## AI sharing
+
+Mobile asks before sending content or live audio to the AI companies named by the computer's
+existing account/model choices, using a generic disclosure for unknown services. Permission is
+stored on this device, separately for content and live audio; Settings can clear it for future
+sends without stopping work already running. Attachment staging goes only to the person's Host;
+on-device dictation and computer-side background work do not pass through this mobile gate. Live
+audio names OpenAI alone because voice only runs through Codex, and also needs content permission
+because a call can start agent work.
+
 ## Saved views
 
 While attachment connects, Chat and the sidebar can show the remembered Deployment's last published
@@ -123,8 +133,9 @@ page there is no title menu, so the composer's menu carries Find and Copy thread
 ## Messages
 
 Chat takes its shapes from Messages: bubbles with nothing on them, held to act on. A task doesn't,
-because long Markdown needs the full width, so an agent's words stay bare there and its copy marks
-sit under the reply. Holding a task's words has to stay free to select them.
+because long Markdown needs the full width, so an agent's words stay bare there with their copy mark
+and menu under them. Holding a task's words has to stay free to select them. Report stays on
+everything an agent wrote, in both places, including a reply with no words.
 
 A bubble's words can't be `selectable`: the system's selection answers the same hold and puts its
 own Copy over the menu. Select opens them in a sheet instead.

@@ -446,6 +446,8 @@ vi.mock("expo-haptics", () => ({
   notificationAsync: vi.fn(async () => undefined),
   selectionAsync: vi.fn(async () => undefined),
 }));
+vi.mock("expo-application", () => ({ nativeApplicationVersion: "1.0.0" }));
+vi.mock("../ui/ai-sharing.js", () => import("../../test-support/ai-sharing.js"));
 vi.mock("expo-clipboard", () => ({ setStringAsync: vi.fn(async () => true) }));
 vi.mock("expo-web-browser", () => ({ openAuthSessionAsync: vi.fn(), openBrowserAsync: vi.fn() }));
 vi.mock("@expo/ui/community/menu", () => ({
@@ -556,6 +558,7 @@ vi.mock("../markdown/markdown.js", () => ({
 }));
 vi.mock("../thread/message-hold.js", () => ({
   MessageHold: (props: { children: ReactNode }) => props.children,
+  MessageMore: () => null,
 }));
 vi.mock("../thread/attachment-views.js", async () => {
   const React = await vi.importActual<typeof import("react")>("react");

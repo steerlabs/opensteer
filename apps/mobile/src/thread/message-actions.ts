@@ -1,9 +1,16 @@
-/** What holding a message offers, in the menu's order, and how it is grouped. */
+/** What can be done with a message, in the menu's order, and how it is grouped. */
 export interface MessageAction {
   readonly group: number;
-  readonly id: "activity" | "copy" | "copy-whole" | "reply" | "select" | "share";
+  readonly id: "activity" | "copy" | "copy-whole" | "reply" | "report" | "select" | "share";
   /** The system's own symbol for each; iOS draws SF Symbols by name. */
-  readonly image: string;
+  readonly image:
+    | "arrowshape.turn.up.left"
+    | "doc.on.clipboard"
+    | "doc.on.doc"
+    | "flag"
+    | "list.bullet"
+    | "selection.pin.in.out"
+    | "square.and.arrow.up";
   readonly title: string;
 }
 
@@ -14,9 +21,13 @@ export interface MessageActionOptions {
   readonly onActivity?: (() => void) | undefined;
   /** Given, Reply quotes the message into this conversation's composer. */
   readonly onReply?: (() => void) | undefined;
+  /** What an agent wrote can be reported, by the message's id; a person's own words can't. */
+  readonly reportId?: string | undefined;
+  /** Its words can already be selected where they stand, as a task's can. */
+  readonly selectable?: boolean | undefined;
   /** The whole reply this bubble is one part of, where it is only a part. */
   readonly whole?: string | undefined;
-  /** It has words to act on; a reply of attachments alone still has Reply and Run Details. */
+  /** It has words to act on; a reply of attachments alone still has its other actions. */
   readonly worded?: boolean | undefined;
 }
 
@@ -46,7 +57,7 @@ export function messageActions(options: MessageActionOptions): readonly MessageA
             title: "Copy Whole Reply",
           } as const,
         ]),
-    ...(wordless || options.code === true
+    ...(wordless || options.code === true || options.selectable === true
       ? []
       : [{ group: 1, id: "select", image: "selection.pin.in.out", title: "Select" } as const]),
     ...(wordless
@@ -55,5 +66,8 @@ export function messageActions(options: MessageActionOptions): readonly MessageA
     ...(options.onActivity === undefined
       ? []
       : [{ group: 2, id: "activity", image: "list.bullet", title: "Run Details" } as const]),
+    ...(options.reportId === undefined
+      ? []
+      : [{ group: 2, id: "report", image: "flag", title: "Report…" } as const]),
   ];
 }

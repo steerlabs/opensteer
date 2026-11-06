@@ -99,6 +99,14 @@ integration("Host native OAuth routes", () => {
       });
       expect(prompt.statusCode).toBe(200);
       const oauthQuery = new URL(prompt.json().url as string, origin).search.slice(1);
+      const wrongPassword = await injectRpcRequest(
+        app,
+        "auth.password.signIn",
+        { email: "native-route@example.com", password: "incorrect password", oauthQuery },
+        { origin },
+      );
+      expect(wrongPassword.statusCode).toBe(401);
+      expect(wrongPassword.body).toContain("Email or password is incorrect");
       const signIn = await injectRpcRequest(
         app,
         "auth.password.signIn",
@@ -114,6 +122,29 @@ integration("Host native OAuth routes", () => {
       const consentPage = new URL(signedIn.data.redirectUrl);
       expect(consentPage.origin).toBe(origin);
       const sessionCookie = cookieHeader(signIn.headers["set-cookie"]);
+      vi.setSystemTime(new Date(Date.now() + 11 * 60_000));
+      try {
+        const expired = await injectRpcRequest(
+          app,
+          "auth.native.complete",
+          { accept: true, oauthQuery: consentPage.search.slice(1) },
+          { cookie: sessionCookie, origin },
+        );
+        expect(expired.statusCode, expired.body).toBe(400);
+        expect(expired.json()).toMatchObject({ error: { code: "bad_request" } });
+      } finally {
+        vi.useRealTimers();
+      }
+      const tampered = new URLSearchParams(consentPage.search);
+      tampered.set("redirect_uri", "https://attacker.example/return");
+      const refused = await injectRpcRequest(
+        app,
+        "auth.native.complete",
+        { accept: true, oauthQuery: tampered.toString() },
+        { cookie: sessionCookie, origin },
+      );
+      expect(refused.statusCode, refused.body).toBe(400);
+      expect(refused.json()).toMatchObject({ error: { code: "bad_request" } });
       const consent = await injectRpcRequest(
         app,
         "auth.native.complete",
@@ -126,6 +157,7 @@ integration("Host native OAuth routes", () => {
         data: { url: expect.any(String) },
       });
       const callback = new URL(consentPayload.data.url);
+      expect(callback.searchParams.get("state")).toBe(authorize.searchParams.get("state"));
       const token = await app.inject({
         headers: { "content-type": "application/x-www-form-urlencoded" },
         method: "POST",
@@ -140,6 +172,21 @@ integration("Host native OAuth routes", () => {
         url: "/v1/auth/native/oauth2/token",
       });
       expect(token.statusCode).toBe(200);
+      const reused = await app.inject({
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        method: "POST",
+        payload: new URLSearchParams({
+          client_id: opensteerDesktopOAuthClientId,
+          code: callback.searchParams.get("code") ?? "",
+          code_verifier: verifier,
+          grant_type: "authorization_code",
+          redirect_uri: opensteerDesktopHostOAuthCallback,
+          resource: origin,
+        }).toString(),
+        url: "/v1/auth/native/oauth2/token",
+      });
+      expect(reused.statusCode, reused.body).toBe(400);
+
       const tokenBody = token.json<{ access_token: string; id_token: string }>();
       expect(tokenBody).toMatchObject({
         access_token: expect.any(String),

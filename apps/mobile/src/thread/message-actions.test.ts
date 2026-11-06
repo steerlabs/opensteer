@@ -29,10 +29,28 @@ describe("what holding a message offers", () => {
     ]);
   });
 
-  it("keeps Reply and Run Details on a reply with no words to copy", () => {
+  it("keeps everything but words on a reply with none to copy", () => {
     expect(
-      titles({ onActivity: () => undefined, onReply: () => undefined, worded: false }),
-    ).toEqual(["Reply", "Run Details"]);
+      titles({
+        onActivity: () => undefined,
+        onReply: () => undefined,
+        reportId: "message",
+        worded: false,
+      }),
+    ).toEqual(["Reply", "Run Details", "Report…"]);
+  });
+
+  it("lets an agent's message be reported, and never a person's own", () => {
+    expect(titles({ reportId: "message" })).toContain("Report…");
+    expect(titles({})).not.toContain("Report…");
+  });
+
+  it("offers no Select where the words can already be selected", () => {
+    expect(titles({ reportId: "message", selectable: true })).toEqual([
+      "Copy",
+      "Share…",
+      "Report…",
+    ]);
   });
 
   it("names a code bubble's copy, and has nothing to select in it", () => {

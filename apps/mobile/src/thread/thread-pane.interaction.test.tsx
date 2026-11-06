@@ -1,3 +1,4 @@
+import { aiSharingTestPermission } from "../../test-support/ai-sharing.js";
 // @vitest-environment happy-dom
 
 import { idleVoiceSnapshot, type VoiceSnapshot } from "@opensteer/client/voice";
@@ -575,6 +576,7 @@ vi.mock("./message-hold.js", async () => {
         </div>
       </>
     ),
+    MessageMore: () => null,
   };
 });
 vi.mock("./task-line.js", async () => {
@@ -705,6 +707,7 @@ function WithNativeHeader(props: {
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const roots: Root[] = [];
 afterEach(() => {
+  aiSharingTestPermission.allowed = true;
   for (const root of roots.splice(0)) act(() => root.unmount());
   dictation.dispose();
   dictation = new DictationController({ port: null, createId: () => crypto.randomUUID() });
@@ -4652,4 +4655,39 @@ it("opens Chat with a whole-turn page in one read", async () => {
     fixture.client.dispose();
     source.dispose();
   }
+});
+
+vi.mock("../ui/ai-sharing.js", () => import("../../test-support/ai-sharing.js"));
+
+vi.mock("../report-mail.js", () => ({ contactSupport: vi.fn() }));
+
+it("keeps a declined message's text, files and quote without claiming or dispatching it", async () => {
+  aiSharingTestPermission.allowed = false;
+  const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
+  const { container, drafts } = await mount(host, workId);
+  await act(async () => {
+    await drafts.writeDraft(deploymentId, userId, workId, "Keep my words");
+    await drafts.writeDraftQuote(deploymentId, userId, workId, {
+      messageId: "msg_quote",
+      attribution: "Earlier reply",
+      excerpt: "Keep my quote",
+    });
+    await drafts.writeDraftAttachments(deploymentId, userId, workId, [
+      {
+        attachmentId: "art_file",
+        localUri: null,
+        name: "notes.txt",
+        mediaType: "text/plain",
+        sizeBytes: 4,
+        status: "ready",
+      },
+    ]);
+  });
+  const before = structuredClone(drafts.readDraft(deploymentId, userId, workId));
+  await press(container, "Send message");
+  expect(drafts.readDraft(deploymentId, userId, workId)).toEqual(before);
+  expect(drafts.readPending(deploymentId, userId, workId)).toBeNull();
+  expect(host.dispatch).not.toHaveBeenCalledWith(
+    expect.objectContaining({ type: "thread.sendMessage" }),
+  );
 });

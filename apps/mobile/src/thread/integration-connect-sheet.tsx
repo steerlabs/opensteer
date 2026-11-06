@@ -1,3 +1,4 @@
+import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
 import {
   requestAgentProposedDetail,
   requestAgentProposedLabel,
@@ -83,6 +84,7 @@ export function IntegrationConnectCard(props: {
   readonly onPresent?: () => void;
   readonly onClose?: () => void;
 }): ReactNode {
+  const aiSharing = useAiSharing();
   const mobile = useMobileClient();
   const navigation = useNavigation();
   const payload =
@@ -264,7 +266,13 @@ export function IntegrationConnectCard(props: {
       props.onClose?.();
     }
   };
-  const run = async (operation: (generation: number) => Promise<void>): Promise<void> => {
+  const run = async (
+    operation: (generation: number) => Promise<void>,
+    needsConsent = true,
+  ): Promise<void> => {
+    const reviewGeneration = operationGeneration.current;
+    if (needsConsent && !(await authorizeAiSharing(aiSharing, props.hostClient))) return;
+    if (reviewGeneration !== operationGeneration.current) return;
     if (responding.current || props.disabled || props.canStartResponse?.() === false) return;
     const claim = props.mutationGate?.acquire("request");
     if (props.mutationGate && !claim) return;
@@ -584,7 +592,7 @@ export function IntegrationConnectCard(props: {
         type: "request.respond",
       });
       if (generation === operationGeneration.current) props.onResponded();
-    });
+    }, false);
   const allow = () => {
     lastAction.current = "allow";
     return run(async (generation) => {
