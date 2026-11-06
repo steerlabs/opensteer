@@ -45,6 +45,27 @@ final class MessagesFilesTests: XCTestCase {
     XCTAssertEqual(try Data(contentsOf: fixture.scratch.appendingPathComponent(file)), original)
   }
 
+  func testExportsAnAttachmentWhoseNameOnDiskIsLong() throws {
+    let fixture = try Fixture()
+    defer { fixture.clean() }
+    let source = fixture.attachments.appendingPathComponent(String(repeating: "a", count: 246) + ".HEIC")
+    try Data("long".utf8).write(to: source)
+    try fixture.point(source.path)
+    let result = try fixture.files.export("att-1", scratch: fixture.scratch.path)
+    guard case .object(let value) = result, let file = value["file"]?.stringValue else { return XCTFail() }
+    XCTAssertEqual(try Data(contentsOf: fixture.scratch.appendingPathComponent(file)), Data("long".utf8))
+  }
+
+  func testFailedStagingLeavesNoCopies() throws {
+    let fixture = try Fixture()
+    defer { fixture.clean() }
+    try Data("one".utf8).write(to: fixture.scratch.appendingPathComponent("one"))
+    let expired = WorkBudget(requestEnd: Date().addingTimeInterval(-1))
+    XCTAssertThrowsError(try fixture.files.stage(["one", "one"], scratch: fixture.scratch.path, budget: expired))
+    let left = (try? FileManager.default.contentsOfDirectory(atPath: fixture.staging.path)) ?? []
+    XCTAssertEqual(left, [])
+  }
+
   func testAttachmentEscapesAndMissingFile() throws {
     let fixture = try Fixture()
     defer { fixture.clean() }

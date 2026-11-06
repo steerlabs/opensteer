@@ -48,10 +48,11 @@ struct MessagesFiles {
     return current
   }
 
-  static func validName(_ name: String) -> Bool {
+  /// Names this helper is given or makes stay under 240 bytes; a file already on disk may use NAME_MAX.
+  static func validName(_ name: String, maxBytes: Int = 240) -> Bool {
     !name.isEmpty && name != "." && name != ".." && !name.contains("/") && !name.contains("\\")
       && !name.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) })
-      && name.utf8.count <= 240
+      && name.utf8.count <= maxBytes
   }
 
   private static func safeName(_ name: String) -> String {
@@ -61,8 +62,8 @@ struct MessagesFiles {
     return validName(cleaned) && cleaned.utf8.count <= 180 ? cleaned : "attachment"
   }
 
-  private static func regular(_ name: String, in directory: Descriptor) throws -> Descriptor {
-    guard validName(name) else { throw invalid }
+  private static func regular(_ name: String, in directory: Descriptor, maxBytes: Int = 240) throws -> Descriptor {
+    guard validName(name, maxBytes: maxBytes) else { throw invalid }
     let file = try Descriptor(openat(directory.value, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC))
     var info = stat()
     guard fstat(file.value, &info) == 0, info.st_mode & S_IFMT == S_IFREG else { throw invalid }
@@ -115,7 +116,7 @@ struct MessagesFiles {
       for part in suffix.dropLast() {
         parent = try Descriptor(openat(parent.value, part, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC))
       }
-      source = try Self.regular(leaf, in: parent)
+      source = try Self.regular(leaf, in: parent, maxBytes: Int(NAME_MAX))
     } catch let error as HelperError {
       if error.code == .permissionRequired { throw error }
       throw missing
@@ -138,7 +139,19 @@ struct MessagesFiles {
     let unique = UUID().uuidString
     guard mkdirat(root.value, unique, 0o700) == 0 else { throw Self.ioFailure }
     let destination = try Descriptor(openat(root.value, unique, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC))
-    return try sources.enumerated().map { index, source in
+    // Nothing has been sent yet, so a partly staged send leaves no copies behind.
+    do {
+      return try stageEach(sources, names: names, unique: unique, into: destination, budget: budget)
+    } catch {
+      try? Self.removeTree(unique, in: root, depth: 2)
+      throw error
+    }
+  }
+
+  private func stageEach(
+    _ sources: [Descriptor], names: [String], unique: String, into destination: Descriptor, budget: WorkBudget
+  ) throws -> [String] {
+    try sources.enumerated().map { index, source in
       let folder = String(index)
       guard mkdirat(destination.value, folder, 0o700) == 0 else { throw Self.ioFailure }
       let into = try Descriptor(openat(destination.value, folder, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC))
