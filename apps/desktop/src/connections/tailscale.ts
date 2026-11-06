@@ -58,14 +58,30 @@ export function tailscaleCommand(
   };
 }
 
-/** The one handler Opensteer added to this computer's Tailscale serve config. */
+const LoopbackTargetSchema = z.string().regex(/^http:\/\/127\.0\.0\.1:\d{1,5}$/u);
+
+/**
+ * The one handler Opensteer added to this computer's Tailscale serve config.
+ * While it is being re-pointed, `previousTarget` names where it pointed
+ * before, so a change that applied but never answered — or a crash in the
+ * middle — still leaves a handler the record recognises.
+ */
 const ShareRecordSchema = z.strictObject({
   origin: z.url({ protocol: /^https$/u }).max(512),
   port: z.union([z.literal(443), z.literal(8443)]),
+  previousTarget: LoopbackTargetSchema.optional(),
   schemaVersion: z.literal(1),
-  target: z.string().regex(/^http:\/\/127\.0\.0\.1:\d{1,5}$/u),
+  target: LoopbackTargetSchema,
 });
 type ShareRecord = z.infer<typeof ShareRecordSchema>;
+
+/** Whether the port still serves the handler the record names, at either target. */
+function ownsHandler(config: TailscaleServeConfig, record: ShareRecord): boolean {
+  return (
+    servesOnly(config, record.port, record.target) ||
+    (record.previousTarget !== undefined && servesOnly(config, record.port, record.previousTarget))
+  );
+}
 
 const StatusSchema = z.looseObject({
   BackendState: z.string().optional(),
@@ -145,9 +161,9 @@ export function servesOnly(config: TailscaleServeConfig, port: number, target: s
 /** Opensteer's own port when its handler is still there, else the first one free. */
 export function chooseHttpsPort(
   config: TailscaleServeConfig,
-  record: Pick<ShareRecord, "port" | "target"> | null,
+  record: ShareRecord | null,
 ): HttpsPort | null {
-  if (record && servesOnly(config, record.port, record.target)) return record.port;
+  if (record && ownsHandler(config, record)) return record.port;
   const used = usedServePorts(config);
   return httpsPorts.find((port) => !used.has(port)) ?? null;
 }
@@ -243,7 +259,7 @@ export class TailscaleShare {
     let sharedOrigin: string | null = null;
     if (record && sameOrigin(record.origin, originFor(tailnet.dnsName, record.port))) {
       const config = await this.#serveConfig(tailnet.executable).catch(() => null);
-      if (config && servesOnly(config, record.port, record.target)) sharedOrigin = record.origin;
+      if (config && ownsHandler(config, record)) sharedOrigin = record.origin;
     }
     return DesktopTailscaleStatusSchema.parse({
       dnsName: tailnet.dnsName,
@@ -284,10 +300,18 @@ export class TailscaleShare {
       schemaVersion: 1,
       target,
     };
-    // A new handler is recorded before it exists and a re-pointed one after,
-    // so a crash in between never leaves a handler the record doesn't match.
-    const ours = previous !== null && servesOnly(config, previous.port, previous.target);
-    if (!ours) await this.#writeRecord(record);
+    // Every change is recorded before it is made — a re-pointed handler with
+    // both its targets — so a crash or a lost answer in between never leaves
+    // a handler the record does not recognise.
+    const ours = previous !== null && ownsHandler(config, previous);
+    const pointedAt = !ours
+      ? undefined
+      : servesOnly(config, previous.port, previous.target)
+        ? previous.target
+        : previous.previousTarget;
+    await this.#writeRecord(
+      pointedAt && pointedAt !== target ? { ...record, previousTarget: pointedAt } : record,
+    );
     try {
       await this.#serve(tailnet.executable, port, target);
     } catch (error) {
@@ -301,7 +325,7 @@ export class TailscaleShare {
         ? shareFailure(error.output)
         : failure("failed", "Tailscale couldn't share Opensteer. Try again.");
     }
-    if (ours) await this.#writeRecord(record);
+    await this.#writeRecord(record);
     this.#sharedThisRun = {
       origin: record.origin,
       until: this.#now() + tailscaleHandoffMilliseconds,
@@ -336,7 +360,7 @@ export class TailscaleShare {
     // The record stays until its handler can be seen to be gone.
     if (tailnet.state !== "ready") return;
     const config = await this.#serveConfig(tailnet.executable);
-    if (servesOnly(config, record.port, record.target)) {
+    if (ownsHandler(config, record)) {
       await this.#command(tailnet.executable, ["serve", `--https=${record.port}`, "off"]);
     }
     await this.#removeRecord();
@@ -349,7 +373,7 @@ export class TailscaleShare {
     const tailnet = await this.#tailnet();
     if (tailnet.state !== "ready") return;
     const config = await this.#serveConfig(tailnet.executable);
-    if (servesOnly(config, record.port, record.target)) {
+    if (ownsHandler(config, record)) {
       await this.#command(tailnet.executable, ["serve", `--https=${record.port}`, "off"]);
     }
   }
@@ -358,16 +382,30 @@ export class TailscaleShare {
     const tailnet = await this.#tailnet();
     if (tailnet.state !== "ready") return;
     const config = await this.#serveConfig(tailnet.executable);
+    const settled: ShareRecord = {
+      origin: record.origin,
+      port: record.port,
+      schemaVersion: 1,
+      target,
+    };
     if (servesOnly(config, record.port, target)) {
-      if (record.target !== target) await this.#writeRecord({ ...record, target });
+      if (record.target !== target || record.previousTarget) await this.#writeRecord(settled);
       return;
     }
-    const ours = servesOnly(config, record.port, record.target);
+    const ours = ownsHandler(config, record);
     // Something else took the port; it is not Opensteer's to replace.
     if (!ours && usedServePorts(config).has(record.port)) return;
-    if (!ours) await this.#writeRecord({ ...record, target });
+    // Recorded before the change, with where it pointed until now.
+    const pointedAt = servesOnly(config, record.port, record.target)
+      ? record.target
+      : record.previousTarget;
+    await this.#writeRecord(
+      ours && pointedAt && pointedAt !== target
+        ? { ...settled, previousTarget: pointedAt }
+        : settled,
+    );
     await this.#serve(tailnet.executable, record.port, target);
-    if (ours) await this.#writeRecord({ ...record, target });
+    await this.#writeRecord(settled);
   }
 
   async #tailnet(): Promise<
