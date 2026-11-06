@@ -89,6 +89,7 @@ const testAgentSkills = {
     "opensteer:browser": join(agentSkillsRoot, "skills", "browser"),
     "opensteer:computer-use": join(agentSkillsRoot, "skills", "computer-use"),
     "opensteer:computers": join(agentSkillsRoot, "skills", "computers"),
+    "opensteer:devices": join(agentSkillsRoot, "skills", "devices"),
     "opensteer:skills": join(agentSkillsRoot, "skills", "skills"),
     "opensteer:memory": join(agentSkillsRoot, "skills", "memory"),
     "opensteer:integrations": join(agentSkillsRoot, "skills", "integrations"),

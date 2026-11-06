@@ -54,6 +54,7 @@ const testAgentSkills = {
     "opensteer:browser": "/runner/agent-skills/skills/browser",
     "opensteer:computer-use": "/runner/agent-skills/skills/computer-use",
     "opensteer:computers": "/runner/agent-skills/skills/computers",
+    "opensteer:devices": "/runner/agent-skills/skills/devices",
     "opensteer:threads": "/runner/agent-skills/skills/threads",
     "opensteer:triggers": "/runner/agent-skills/skills/triggers",
     "opensteer:projects": "/runner/agent-skills/skills/projects",
