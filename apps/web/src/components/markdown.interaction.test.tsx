@@ -62,6 +62,83 @@ const inertLinks = [
   ["a URL carrying credentials", "https://reader:secret@example.test/private"],
 ] as const;
 
+describe("Markdown an agent wrote", () => {
+  it("draws bold CommonMark refuses, and keeps list text past a blank line out of a code box", () => {
+    const list = render("**Note:**next\n\n1. **First**\n\n    Details **bold** here");
+    expect(list.querySelector("strong")?.textContent).toBe("Note:");
+    expect(list.querySelector("pre")).toBeNull();
+    expect(list.textContent).not.toContain("**");
+  });
+
+  it("keeps the block being written mounted as it grows, so a selection in it survives", () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    roots.push(root);
+    act(() => root.render(<Markdown streaming text={"Done.\n\nThis is **par"} />));
+    const growing = container.querySelectorAll("p")[1];
+    expect(growing?.querySelector("strong")?.textContent).toBe("par");
+    act(() => root.render(<Markdown streaming text={"Done.\n\nThis is **partial"} />));
+    expect(container.querySelectorAll("p")[1]).toBe(growing);
+  });
+});
+
+describe("Copying from a block in a reading column", () => {
+  const codeBlock = "```ts\nconst a = 1;\n```";
+
+  function press(container: HTMLElement, label: string): HTMLButtonElement {
+    const button = container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
+    expect(button).not.toBeNull();
+    return button!;
+  }
+
+  it("copies a block's own words, without the newline its element ends with", async () => {
+    const writeText = vi.fn(async () => undefined);
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    const container = render(codeBlock);
+    await act(async () => press(container, "Copy code").click());
+    expect(writeText).toHaveBeenCalledWith("const a = 1;");
+    expect(press(container, "Copy code").hasAttribute("data-done")).toBe(true);
+    vi.unstubAllGlobals();
+  });
+
+  it("still copies where a Host over plain HTTP has no clipboard API", async () => {
+    vi.stubGlobal("navigator", { ...navigator, clipboard: undefined });
+    let copied = "";
+    Object.assign(document, {
+      execCommand: vi.fn(() => {
+        copied = document.querySelector("textarea")?.value ?? "";
+        return true;
+      }),
+    });
+    const container = render(codeBlock);
+    await act(async () => press(container, "Copy code").click());
+    expect(copied).toBe("const a = 1;");
+    expect(document.querySelector("textarea")).toBeNull();
+    vi.unstubAllGlobals();
+    Reflect.deleteProperty(document, "execCommand");
+  });
+
+  it("keeps a copy mark on code held in words, and leaves a bubble's own to its bubble", () => {
+    const list = render("1. Step\n   ```bash\n   pnpm dev\n   ```");
+    expect(list.querySelector('button[aria-label="Copy code"]')).not.toBeNull();
+
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    roots.push(root);
+    act(() => root.render(<Markdown bare text={"```bash\npnpm dev\n```"} />));
+    expect(container.querySelector("pre")).not.toBeNull();
+    expect(container.querySelector("button")).toBeNull();
+  });
+
+  it("reads a draft as words a person will send, not as code", () => {
+    const container = render("```draft\nHeads up: staging is back.\n```");
+    expect(container.querySelector(".md-block--draft")?.textContent).toContain("Heads up");
+    expect(container.querySelector('button[aria-label="Copy draft"]')).not.toBeNull();
+  });
+});
+
 describe("Markdown links written by an agent, in a browser", () => {
   it.each(inertLinks)("shows %s as text, never as a link", (_name, href) => {
     const container = render(`Saved it: [the label](${href}).`);

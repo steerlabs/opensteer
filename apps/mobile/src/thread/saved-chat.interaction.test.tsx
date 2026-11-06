@@ -48,6 +48,7 @@ vi.mock("react-native-reanimated", () => ({
 vi.mock("expo-clipboard", () => ({ setStringAsync: observed.clipboard }));
 vi.mock("expo-haptics", () => ({ selectionAsync: vi.fn() }));
 vi.mock("../ui/screen.js", () => ({ useReadingColumn: () => ({}) }));
+vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
 vi.mock("react-native-svg", () => {
   const graphic = ({ children }: { readonly children?: ReactNode }) => <svg>{children}</svg>;
   return {

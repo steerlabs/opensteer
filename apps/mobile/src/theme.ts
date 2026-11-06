@@ -57,6 +57,8 @@ export const color = {
    */
   bubble: ember,
   bubbleInk: inkOnEmber,
+  /** What an agent says in a chat: a flat grey, as the other side of Messages is. */
+  bubbleTheirs: "#242424",
 
   green: "#71c6a5",
   amber: "#dfb36b",
@@ -117,6 +119,10 @@ export const type = {
   secondaryMedium: { fontWeight: "500", fontSize: 15, lineHeight: 21 },
   caption: { fontWeight: "400", fontSize: 13, lineHeight: 18 },
   action: { fontWeight: "600", fontSize: 17, lineHeight: 24 },
+  /** Long Markdown in a task's column: iOS's own body measure. */
+  reading: { fontWeight: "400", fontSize: 17, lineHeight: 22 },
+  /** Words in a chat bubble, set as Messages sets them. */
+  bubble: { fontWeight: "400", fontSize: 17, lineHeight: 20 },
 } as const;
 
 /** The smallest a control may be, in points, whatever it contains. */

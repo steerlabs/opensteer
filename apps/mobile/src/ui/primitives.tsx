@@ -1,9 +1,6 @@
-import * as Clipboard from "expo-clipboard";
-import * as Haptics from "expo-haptics";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import {
   ActivityIndicator,
-  Alert,
   Platform,
   Pressable,
   ScrollView,
@@ -36,6 +33,7 @@ import {
   touchTarget,
   type,
 } from "../theme.js";
+import { useCopy } from "./copy-mark.js";
 
 /**
  * The pieces every screen is built from.
@@ -521,27 +519,7 @@ export const monoFontFamily = Platform.select({ android: "monospace", default: "
  * moment because the clipboard gives no other sign.
  */
 export function CodeBlock(props: { readonly label?: string; readonly text: string }): ReactNode {
-  const [copied, setCopied] = useState(false);
-  const reset = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(
-    () => () => {
-      if (reset.current !== null) clearTimeout(reset.current);
-    },
-    [],
-  );
-
-  const copy = (): void => {
-    void Clipboard.setStringAsync(props.text).then(
-      () => {
-        void Haptics.selectionAsync();
-        setCopied(true);
-        if (reset.current !== null) clearTimeout(reset.current);
-        reset.current = setTimeout(() => setCopied(false), 1500);
-      },
-      () => Alert.alert("Copy unavailable", "Please try again."),
-    );
-  };
-
+  const { copied, copy } = useCopy();
   return (
     <View style={styles.codeBlock}>
       <View style={styles.codeHead}>
@@ -552,7 +530,7 @@ export function CodeBlock(props: { readonly label?: string; readonly text: strin
           accessibilityLabel={copied ? "Copied" : "Copy this block"}
           accessibilityRole="button"
           hitSlop={space[12]}
-          onPress={copy}
+          onPress={() => copy(props.text)}
           style={styles.codeCopy}
         >
           <AppText role="caption" tone={copied ? "ember" : "muted"}>

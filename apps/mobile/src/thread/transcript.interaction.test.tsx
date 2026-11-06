@@ -133,7 +133,12 @@ vi.mock("react-native-reanimated", () => ({
   },
   LayoutAnimationConfig: ({ children }: { children?: ReactNode }) => <>{children}</>,
 }));
-vi.mock("../ui/motion.js", () => ({ appear: undefined, exit: undefined }));
+vi.mock("../ui/motion.js", () => ({
+  appear: undefined,
+  bubblePop: undefined,
+  bubbleRise: undefined,
+  exit: undefined,
+}));
 vi.mock("../ui/sheet.js", () => ({ Sheet: () => null }));
 vi.mock("../ui/primitives.js", () => ({
   AppText: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
@@ -160,10 +165,16 @@ vi.mock("../ui/workspace-mark.js", () => ({
   WorkspaceIconGlyph: () => null,
 }));
 // The native menu's Activity item, as `messageActions` titles it.
-vi.mock("./message-menu.js", () => ({
-  MessageMenu: (props: { onActivity?: () => void }) =>
-    props.onActivity ? <button onClick={props.onActivity}>Run details</button> : null,
+vi.mock("./message-hold.js", () => ({
+  MessageHold: (props: { children: ReactNode; onActivity?: () => void }) => (
+    <>
+      {props.children}
+      {props.onActivity ? <button onClick={props.onActivity}>Run details</button> : null}
+    </>
+  ),
+  MessageMore: () => null,
 }));
+vi.mock("../ui/copy-mark.js", () => ({ CopyMark: () => null }));
 vi.mock("./attachment-views.js", async () => ({
   MessageAttachments: () => null,
   TranscriptHostClientContext: (await import("react")).createContext<
@@ -292,8 +303,8 @@ function setup(conversation = false, surfaces: TranscriptSurfaces | null = null)
 }
 
 function press(container: HTMLElement, text: string): void {
-  const button = [...container.querySelectorAll("button")].find((item) =>
-    item.textContent?.includes(text),
+  const button = [...container.querySelectorAll("button")].find(
+    (item) => item.textContent?.includes(text) || item.getAttribute("aria-label") === text,
   );
   if (!button) throw new Error(`Missing button: ${text}`);
   act(() => button.click());

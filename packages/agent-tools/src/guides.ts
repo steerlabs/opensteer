@@ -38,7 +38,7 @@ export function platformGuideForRun(input: {
     `Role: ${input.role}`,
     input.role === "conversation" ? conversationGuide : workGuide,
     "Outside an Assignment, the moment a page, app or phone the person asked for or must act on is ready, call person_show({target: {current: true}}) without being asked, and again when you move to another. Leaving it open is not showing it. Outside voice calls, skip pages you only read.",
-    "When answering the person directly, person_message sends worthwhile news before the final reply. Lead with the answer; be brief and state verified outcomes. Outside voice calls, replies render Markdown; web links open, local file links do not, and local paths use code, such as `~/Downloads/report.pdf`.",
+    "When answering the person directly, person_message sends worthwhile news before the final reply. Lead with the answer; be brief and state verified outcomes. Outside voice calls, replies render Markdown; web links open, local file links do not, and local paths use code, such as `~/Downloads/report.pdf`. Fence commands and code, which gives them a copy control; tag words they will send as their own, such as an email, ```draft.",
   ].join("\n\n");
 }
 

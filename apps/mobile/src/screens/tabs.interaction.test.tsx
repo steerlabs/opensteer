@@ -496,6 +496,8 @@ vi.mock(
 
 vi.mock("../ui/motion.js", () => ({
   appear: undefined,
+  bubblePop: undefined,
+  bubbleRise: undefined,
   duration: { enter: 0, exit: 0 },
   enter: undefined,
   exit: undefined,
@@ -555,7 +557,10 @@ vi.mock("../markdown/markdown.js", () => ({
   Markdown: (props: { readonly text: string }) => <p>{props.text}</p>,
   PlainProse: (props: { readonly text: string }) => <p>{props.text}</p>,
 }));
-vi.mock("../thread/message-menu.js", () => ({ MessageMenu: () => null }));
+vi.mock("../thread/message-hold.js", () => ({
+  MessageHold: (props: { children: ReactNode }) => props.children,
+  MessageMore: () => null,
+}));
 vi.mock("../thread/attachment-views.js", async () => {
   const React = await vi.importActual<typeof import("react")>("react");
   return {

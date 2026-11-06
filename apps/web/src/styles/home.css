@@ -11,136 +11,127 @@
 
 .thread--home .transcript {
   padding-top: var(--space-28);
-  gap: var(--space-8);
-}
-
-.thread--home .turn {
-  margin: var(--space-8) 0;
-  padding: var(--space-4) 0;
 }
 
 /* ---- A conversation reads as messages ----
 
-   Two voices, one shape: the reader's bubble on the right, Opensteer's on the
-   left, each with its tail toward the side it speaks from. Task cards share
-   that shape, so everything Opensteer says or starts reads as its side. */
+   Two voices, one shape: the reader's bubbles on the right, Opensteer's on the
+   left, a run from one voice standing close together with a single tail on its
+   last. Task cards share that shape, so everything Opensteer says or starts
+   reads as its side. */
 
-.transcript--conversation .msg--user {
-  max-width: min(82%, 560px);
-  margin: var(--space-4) 0;
-  padding: var(--space-8) var(--space-14);
-  border-color: var(--rim-accent);
-  border-radius: 18px 18px 5px 18px;
-  background: var(--sheen-accent) var(--fill-accent);
-  box-shadow: var(--edge-accent);
-  color: var(--ink-on-ember);
-  font-size: var(--text-2xl);
-  line-height: 1.55;
+.transcript--conversation {
+  gap: var(--bubble-group-gap);
 }
 
-.transcript--conversation .msg--user::selection {
-  background: var(--ink-on-ember);
-  color: var(--ember-bright);
+.transcript--conversation .transcript__row[data-joined] {
+  margin-top: calc(var(--bubble-gap) - var(--bubble-group-gap));
+}
+
+.transcript__time {
+  margin: var(--space-8) 0 0;
+  color: var(--muted);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  line-height: 16px;
+  text-align: center;
+}
+
+.transcript--conversation .msg--user-line {
+  margin: 0;
+}
+
+.transcript--conversation .msg--user {
+  max-width: min(74%, 500px);
 }
 
 /* Loading history and reconnecting must not animate a page of old messages. */
-.transcript--conversation .msg--user,
 .transcript--conversation .msg--input,
 .transcript--conversation .turn {
   animation: none;
 }
 
+.thread--home .turn,
 .turn--conversation {
-  gap: var(--space-8);
+  gap: var(--bubble-group-gap);
+  margin: 0;
+  padding: 0;
 }
 
 .reply {
-  position: relative;
-  align-self: flex-start;
+  display: flex;
+  flex-direction: column;
+  gap: var(--bubble-gap);
   min-width: 0;
-  max-width: min(88%, 640px);
+}
+
+.reply--arrived {
+  transform-origin: left bottom;
+  animation: bubble-pop var(--duration-bubble) var(--ease-bubble);
+}
+
+.reply__line {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-2);
+  min-width: 0;
 }
 
 .reply__bubble {
-  padding: var(--space-8) var(--space-14);
-  border: 1px solid var(--rim-plate);
-  border-radius: 18px 18px 18px 5px;
-  background: var(--sheen) var(--fill-plate);
-  box-shadow: var(--edge-plate);
+  position: relative;
+  width: fit-content;
+  min-width: 0;
+  max-width: min(74%, 500px);
+  padding: var(--bubble-padding);
+  border-radius: var(--bubble-radius);
+  background: var(--bubble-fill);
   overflow-wrap: anywhere;
 }
 
 .reply__bubble .md-prose {
+  gap: 0.55em;
   font-size: var(--text-2xl);
-  line-height: 1.6;
+  line-height: var(--bubble-line);
 }
 
-.reply__bubble .msg--assistant__body {
-  margin-top: 0;
+.reply__bubble--tail::before {
+  left: 4.8px;
+  border-bottom-left-radius: 1.3px;
+  transform: rotate(-32deg);
 }
 
-.reply__bubble .md-prose > :first-child {
-  margin-top: 0;
+.reply__bubble--tail::after {
+  left: -0.9px;
 }
 
-/* What can be done with a reply floats on its corner: one More, shown where a
-   pointer rests, focus lands or a finger taps, and kept while its menu is open. */
-.reply__actions {
-  position: absolute;
-  top: -15px;
-  right: var(--space-10);
-  z-index: var(--layer-raised);
-  display: flex;
-  gap: var(--space-2);
-  padding: 3px;
-  /* One per message, so it floats without glass: a blur per reply would cost
-     a compositing layer for every bubble on screen. */
-  border: 1px solid var(--rim-plate);
-  border-radius: 10px;
-  background: var(--sheen) var(--surface-raised);
-  box-shadow: var(--edge-plate), var(--lift-float);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity var(--duration-fast) var(--ease-out);
-}
-
-.reply__actions:empty {
+.transcript__row[data-continued] .reply__bubble--tail::before,
+.transcript__row[data-continued] .reply__bubble--tail::after {
   display: none;
 }
 
-.reply:hover .reply__actions,
-.reply:focus-within .reply__actions,
-.reply--tapped .reply__actions,
-.reply--menu .reply__actions {
-  opacity: 1;
-  pointer-events: auto;
+.reply__bubble--wide,
+.reply__bubble--code {
+  max-width: calc(100% - 56px);
 }
 
-.reply__action {
-  display: grid;
-  place-items: center;
-  width: 28px;
-  height: 28px;
+.reply__bubble--code {
+  width: 100%;
+  background: var(--surface-elevated);
+}
+
+.reply__bubble--code .md-prose pre {
   padding: 0;
   border: 0;
-  border-radius: 7px;
+  border-radius: 0;
   background: none;
-  color: var(--muted);
-  cursor: pointer;
-  transition:
-    background-color var(--duration-fast) var(--ease-out),
-    color var(--duration-fast) var(--ease-out);
+  line-height: 18px;
 }
 
-.reply__action:hover,
-.reply__action[aria-expanded="true"] {
+.reply__bubble--draft {
   color: var(--text);
-  background-color: var(--fill-quiet);
-}
-
-.reply__action .icon {
-  width: 15px;
-  height: 15px;
+  font-size: var(--text-2xl);
+  line-height: var(--bubble-line);
+  white-space: pre-wrap;
 }
 
 .popover.reply-menu {
@@ -157,38 +148,58 @@
 }
 
 .typing__body {
+  position: relative;
   display: inline-flex;
   align-items: center;
-  height: 38px;
-  padding: 0 var(--space-16);
-  border: 1px solid var(--rim-plate);
-  border-radius: 18px 18px 18px 6px;
-  background: var(--sheen) var(--fill-plate);
+  height: 33px;
+  padding: 0 var(--space-14);
+  border: 0;
+  border-radius: var(--bubble-radius);
+  background: var(--bubble-fill);
   font: inherit;
-  box-shadow: var(--edge-plate);
+}
+
+/* The two small circles Messages trails from a bubble still being written. */
+.typing__body::before,
+.typing__body::after {
+  position: absolute;
+  border-radius: 50%;
+  background: inherit;
+  content: "";
+}
+
+.typing__body::before {
+  bottom: -1px;
+  left: -1px;
+  width: 11px;
+  height: 11px;
+}
+
+.typing__body::after {
+  bottom: -5px;
+  left: -5px;
+  width: 5px;
+  height: 5px;
 }
 
 .typing__body--opens {
   cursor: pointer;
-  transition:
-    background-color var(--duration-fast) var(--ease-out),
-    border-color var(--duration-fast) var(--ease-out);
+  transition: background-color var(--duration-fast) var(--ease-out);
 }
 
 .typing__body--opens:hover,
 .typing__body--opens[aria-expanded="true"] {
-  border-color: var(--line-strong);
-  background-color: var(--fill-plate-hover);
+  background-color: var(--surface-raised);
 }
 
 .typing__dots {
   display: flex;
-  gap: 5px;
+  gap: 4px;
 }
 
 .typing__dots i {
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: var(--muted);
   animation: home-pulse 1200ms ease-in-out infinite;
@@ -495,8 +506,10 @@ a.update-line__source:hover {
 
   /* A phone is held further from the eye than its pixel density suggests. */
   .transcript--conversation .msg--user,
-  .reply__bubble .md-prose {
+  .reply__bubble .md-prose,
+  .reply__bubble--draft {
     font-size: var(--text-root);
+    line-height: 1.4;
   }
 
   .message-disclosure {
@@ -507,20 +520,12 @@ a.update-line__source:hover {
   .typing__body--opens {
     height: 44px;
   }
-
-  .reply__action {
-    width: var(--touch-target);
-    height: var(--touch-target);
-  }
 }
 
 @media (max-width: 680px) {
-  .transcript--conversation .reply {
-    max-width: 94%;
-  }
-
+  .reply__bubble,
   .transcript--conversation .msg--user {
-    max-width: 90%;
+    max-width: 82%;
   }
 
   .composer--conversation .composer__input {
