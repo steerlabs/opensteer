@@ -2,6 +2,7 @@ import { randomInt, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   HarnessIdSchema,
   ModelSelectionSchema,
@@ -17,6 +18,7 @@ import {
   type ModelSelection,
   type ThreadAccessMode,
   type WorkspaceId,
+  shortRequestHoldMs,
 } from "@opensteer/core";
 import { findExecutableOnPath, nativeUserHarnessRuntimeBoundary } from "@opensteer/harness";
 import { createHarnessRegistry, parseAgentExecutionConfig } from "@opensteer/runner";
@@ -35,6 +37,7 @@ import {
   qualifiedVersion,
   shippedEnginesFirstOnPath,
   type QualifiedEngine,
+  qualificationHoldMs,
 } from "./engine-qualification.test-support.js";
 
 /*
@@ -120,189 +123,173 @@ describe("engine qualification", () => {
       restorePath = undefined;
     }, 60_000);
 
-    it.each(["normal", ...(engine.driverKind === "claude" ? ["background"] : [])])(
-      "continues independent work with a pending Request and recalls native context after its continuation (mode=%s)",
-      async (mode) => {
-        const background = mode === "background";
-        if (!databaseUrl) throw new Error("Run the engine suite through pnpm test:engines");
-        stack = await startVerticalStack({
-          catalogTimeoutMs: 180_000,
-          databaseUrl,
-          harnessInstance: qualificationAccount(engine),
-          harnesses: createHarnessRegistry(
-            parseAgentExecutionConfig(process.env).harnessExecutables,
-            {
-              nodeExecutable: process.execPath,
-              runtimeCacheDirectory: runtimeCacheDirectory!,
-            },
-          ),
-          harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
-          runTimeoutMs: 180_000,
-          runnerWire: {},
-        }).catch((error: unknown) => {
-          throw qualificationFailure(engine, error);
-        });
-        const active = stack;
-        const model = active.catalog.models.find((candidate) => candidate.isDefault);
-        if (!model) throw new Error("The engine has no default model");
-        const workspace = await active.createWorkspace(`${engine.label} Request judgment`);
-        const threadId = await active.createThread({
-          modelSelection: ModelSelectionSchema.parse({
-            modelId: model.modelId,
-            options: {},
-            providerId: model.providerId,
-          }),
-          title: `${engine.label} Request judgment`,
-          workspaceId: workspace.id,
-        });
-        const nonce = randomUUID();
-        const prompt = `${background ? "First use Bash with run_in_background: true to start node -e 'setInterval(() => {}, 1000)' as a long-running task; keep it alive and remember its task ID. " : ""}Remember ${nonce} for the later continuation. Request a new browser profile named Receipts with browser_profile_request for this expense task. After requesting it, try thread_list to find running tasks, as independent work, then end your turn. Do not open a browser or sign in. When the person chooses the profile in a later continuation, reply with the chosen profile name and the remembered code${background ? "; before replying, stop only the background task you started using TaskStop with its captured task ID" : ", without tools"}.`;
-        const first = background
-          ? await active.queueMessage({ text: prompt, threadId })
-          : await active.sendMessage({ text: prompt, threadId, workspaceId: workspace.id });
-        if (!first.runId) throw new Error("The engine's first Run was not queued");
-        if (background)
-          await vi.waitFor(
-            async () => {
-              const run = await active.host.store.database
-                .selectFrom("runs")
-                .select(["status", "phase"])
-                .where("id", "=", first.runId!)
-                .executeTakeFirstOrThrow();
-              expect(run).toMatchObject({ status: "running", phase: "background" });
-            },
-            { timeout: 180_000, interval: 100 },
-          );
-        const database = active.host.store.database;
-        const requests = await database
-          .selectFrom("requests")
-          .select(["id", "status", "mode"])
-          .where("originatingRunId", "=", first.runId)
-          .execute();
-        expect(requests).toHaveLength(1);
-        expect(requests[0]).toMatchObject({ mode: "durable", status: "pending" });
-        expect(
+    it("holds a Request call until the person answers, and keeps native context", async () => {
+      if (!databaseUrl) throw new Error("Run the engine suite through pnpm test:engines");
+      const harnesses = createHarnessRegistry(
+        parseAgentExecutionConfig(process.env).harnessExecutables,
+        {
+          nodeExecutable: process.execPath,
+          runtimeCacheDirectory: runtimeCacheDirectory!,
+        },
+      );
+      const long =
+        harnesses.driverCapabilities(HarnessIdSchema.parse(engine.driverKind))?.longRequestHold ===
+        true;
+      stack = await startVerticalStack({
+        catalogTimeoutMs: 180_000,
+        databaseUrl,
+        harnessInstance: qualificationAccount(engine),
+        harnesses,
+        harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
+        runTimeoutMs: 180_000,
+        runnerWire: {},
+      }).catch((error: unknown) => {
+        throw qualificationFailure(engine, error);
+      });
+      const active = stack;
+      const model = active.catalog.models.find((candidate) => candidate.isDefault);
+      if (!model) throw new Error("The engine has no default model");
+      const workspace = await active.createWorkspace(`${engine.label} Request hold`);
+      const threadId = await active.createThread({
+        modelSelection: ModelSelectionSchema.parse({
+          modelId: model.modelId,
+          options: {},
+          providerId: model.providerId,
+        }),
+        title: `${engine.label} Request hold`,
+        workspaceId: workspace.id,
+      });
+      const nonce = randomUUID();
+      // Told to keep working on purpose: only the runtime can stop it.
+      const prompt = `Remember ${nonce}. Request a new browser profile named Receipts with browser_profile_request for this expense task. After requesting it, try thread_list to find running tasks, as independent work. Do not open a browser or sign in. Once the person has chosen the profile, reply with the chosen profile name and the remembered code.`;
+      const first = await active.queueMessage({ text: prompt, threadId });
+      if (!first.runId) throw new Error("The engine's first Run was not queued");
+      const firstRunId = first.runId;
+      const database = active.host.store.database;
+      const request = await vi.waitFor(
+        async () => {
+          const rows = await database
+            .selectFrom("requests")
+            .select(["id", "status", "mode"])
+            .where("originatingRunId", "=", firstRunId)
+            .execute();
+          expect(rows, "The engine did not open the Request").toHaveLength(1);
+          return rows[0]!;
+        },
+        { timeout: 180_000, interval: 100 },
+      );
+      expect(request).toMatchObject({ mode: "durable", status: "pending" });
+      const runStatus = async () =>
+        (
           await database
             .selectFrom("runs")
             .select("status")
-            .where("id", "=", first.runId)
-            .executeTakeFirstOrThrow(),
-        ).toEqual({ status: background ? "running" : "completed" });
-        const toolSteps = await database
-          .selectFrom("workspaceEvents")
-          .select("data")
-          .where("runId", "=", first.runId)
-          .where("type", "=", "tool.started")
-          .orderBy("sequence", "asc")
-          .execute();
-        const askedAt = toolSteps.findIndex(({ data }) =>
-          JSON.stringify(data).includes("browser_profile_request"),
+            .where("id", "=", firstRunId)
+            .executeTakeFirstOrThrow()
+        ).status;
+      if (long) {
+        // oxlint-disable-next-line opensteer/no-real-time-wait-in-tests -- Measures the real engine deadline; fake clocks
+        await delay(qualificationHoldMs[engine.driverKind] ?? 0);
+        expect(await runStatus(), "The held Run ended before its answer").toBe("running");
+      } else {
+        await vi.waitFor(
+          async () =>
+            expect(await runStatus(), "The hold limit did not stop the Run").toBe("interrupted"),
+          { timeout: shortRequestHoldMs + 60_000, interval: 100 },
         );
-        expect(askedAt, "The engine did not request the profile").toBeGreaterThanOrEqual(0);
-        expect(
-          toolSteps
-            .slice(askedAt + 1)
-            .some(({ data }) => JSON.stringify(data).includes("thread_list")),
-          "The engine did not complete independent work after requesting the profile",
-        ).toBe(true);
-        const before = await database
-          .selectFrom("providerSessions")
-          .select("providerSessionReference")
-          .where("threadId", "=", threadId)
-          .where("active", "=", true)
-          .executeTakeFirstOrThrow();
-        expect(before.providerSessionReference).toBeTruthy();
-        const opened = await active.host.store.requests.get(requests[0]!.id);
-        if (!opened) throw new Error("The browser profile Request disappeared");
-        await active.host.store.requests.resolveBrowserRequest({
-          requestId: opened.id,
-          resolvedBy: opened.requestedBy,
-          response: {
-            kind: "external",
-            value: { decision: "fulfilled", createProfile: { name: "Chosen Receipts" } },
-          },
-        });
-        const continued = await vi.waitFor(
-          async () => {
-            const run = await database
-              .selectFrom("runs")
-              .select(["id", "status"])
-              .where("threadId", "=", threadId)
-              .where("id", background ? "=" : "!=", first.runId)
-              .orderBy("runOrdinal", "desc")
-              .executeTakeFirst();
-            expect(run, "The Request did not create a continuation Run").toBeDefined();
-            expect(run!.status, "The Request continuation did not complete").toBe("completed");
-            return run!;
-          },
-          { timeout: 180_000, interval: 100 },
-        );
-        if (background) {
-          const input = await database
-            .selectFrom("threadInputs")
-            .select(["runId", "state"])
+      }
+      const steps = await database
+        .selectFrom("workspaceEvents")
+        .select("data")
+        .where("runId", "=", firstRunId)
+        .where("type", "=", "tool.started")
+        .orderBy("sequence", "asc")
+        .execute();
+      expect(
+        steps.filter(({ data }) => JSON.stringify(data).includes("thread_list")),
+        "The engine kept working while the Request was held",
+      ).toEqual([]);
+      const before = await database
+        .selectFrom("providerSessions")
+        .select("providerSessionReference")
+        .where("threadId", "=", threadId)
+        .where("active", "=", true)
+        .executeTakeFirstOrThrow();
+      expect(before.providerSessionReference).toBeTruthy();
+      const opened = await active.host.store.requests.get(request.id);
+      if (!opened) throw new Error("The browser profile Request disappeared");
+      expect(opened.status, "The Request did not outlive the hold").toBe("pending");
+      await active.host.store.requests.resolveBrowserRequest({
+        requestId: opened.id,
+        resolvedBy: opened.requestedBy,
+        response: {
+          kind: "external",
+          value: { decision: "fulfilled", createProfile: { name: "Chosen Receipts" } },
+        },
+      });
+      const answered = await vi.waitFor(
+        async () => {
+          const run = await database
+            .selectFrom("runs")
+            .select(["id", "status"])
             .where("threadId", "=", threadId)
-            .where("idempotencyKey", "like", "request-continuation:%")
-            .execute();
-          expect(input).toEqual([{ runId: first.runId, state: "delivered" }]);
-        }
-        const usage = await database
-          .selectFrom("workspaceEvents")
-          .select("data")
-          .where("runId", "=", first.runId)
-          .where("type", "=", "run.usage")
-          .execute();
-        console.info(
-          `${engine.label}: pending Request first Run usage=${JSON.stringify(usage.map(({ data }) => data))}`,
+            .$if(long, (query) => query.where("id", "=", firstRunId))
+            .$if(!long, (query) => query.where("id", "!=", firstRunId))
+            .orderBy("runOrdinal", "desc")
+            .executeTakeFirst();
+          expect(run, "The answer did not reach a Run").toBeDefined();
+          expect(run!.status, "The answered Run did not complete").toBe("completed");
+          return run!;
+        },
+        { timeout: 180_000, interval: 100 },
+      );
+      const delivery = await database
+        .selectFrom("requestContinuations")
+        .select("status")
+        .where("requestId", "=", request.id)
+        .executeTakeFirstOrThrow();
+      expect(delivery.status).toBe(long ? "delivered" : "queued");
+      const runs = await database
+        .selectFrom("runs")
+        .select("id")
+        .where("threadId", "=", threadId)
+        .execute();
+      expect(runs, "The answer was delivered twice").toHaveLength(long ? 1 : 2);
+      const replies = await database
+        .selectFrom("messages")
+        .select("content")
+        .where("runId", "=", answered.id)
+        .where("kind", "=", "assistant")
+        .execute();
+      expect(JSON.stringify(replies)).toContain(nonce);
+      expect(JSON.stringify(replies)).toContain("Chosen Receipts");
+      const after = await database
+        .selectFrom("providerSessions")
+        .select("providerSessionReference")
+        .where("threadId", "=", threadId)
+        .where("active", "=", true)
+        .executeTakeFirstOrThrow();
+      expect(after.providerSessionReference).toBe(before.providerSessionReference);
+      const evidence = process.env.OPENSTEER_ENGINE_E2E_OUTPUT;
+      if (evidence) {
+        await mkdir(evidence, { recursive: true });
+        await writeFile(
+          join(evidence, `${engine.label.replaceAll(" ", "-")}-request-hold.json`),
+          JSON.stringify(
+            {
+              engine: engine.label,
+              model: model.modelId,
+              long,
+              delivery: delivery.status,
+              runs: runs.length,
+              sessionRetained: after.providerSessionReference === before.providerSessionReference,
+            },
+            null,
+            2,
+          ),
         );
-        const replies = await database
-          .selectFrom("messages")
-          .select("content")
-          .where("runId", "=", continued.id)
-          .where("kind", "=", "assistant")
-          .execute();
-        expect(JSON.stringify(replies)).toContain(nonce);
-        expect(JSON.stringify(replies)).toContain("Chosen Receipts");
-        const after = await database
-          .selectFrom("providerSessions")
-          .select("providerSessionReference")
-          .where("threadId", "=", threadId)
-          .where("active", "=", true)
-          .executeTakeFirstOrThrow();
-        expect(after.providerSessionReference).toBe(before.providerSessionReference);
-        const evidence = process.env.OPENSTEER_ENGINE_E2E_OUTPUT;
-        if (evidence) {
-          await mkdir(evidence, { recursive: true });
-          const continuedUsage = await database
-            .selectFrom("workspaceEvents")
-            .select("data")
-            .where("runId", "=", continued.id)
-            .where("type", "=", "run.usage")
-            .execute();
-          await writeFile(
-            join(evidence, `${engine.driverKind}-${mode}.json`),
-            JSON.stringify(
-              {
-                engine: engine.label,
-                firstRunUsage: usage.map(({ data }) => data),
-                continuationUsage: continuedUsage.map(({ data }) => data),
-                sessionRetained: after.providerSessionReference === before.providerSessionReference,
-                sessionBindings: active
-                  .wire!.frames.filter(
-                    ({ direction, frame }) =>
-                      direction === "runner" &&
-                      frame.type === "runner.session-bound" &&
-                      frame.runId === continued.id,
-                  )
-                  .map(({ frame }) => ({ type: frame.type, engineStart: frame.engineStart })),
-              },
-              null,
-              2,
-            ),
-          );
-        }
-      },
-    );
+      }
+    });
 
     it("contributes the person's Chat follow-ups to the reply under way", async () => {
       if (!databaseUrl) throw new Error("Run the engine suite through pnpm test:engines");

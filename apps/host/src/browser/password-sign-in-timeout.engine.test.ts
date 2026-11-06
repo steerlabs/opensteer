@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
-import { ModelSelectionSchema, heldToolCallTimeoutMs, type HarnessKind } from "@opensteer/core";
+import { ModelSelectionSchema, heldToolCallTimeoutMs } from "@opensteer/core";
 import { nativeUserHarnessRuntimeBoundary } from "@opensteer/harness";
 import { createHarnessRegistry, parseAgentExecutionConfig } from "@opensteer/runner";
 import { isRecord } from "@opensteer/shared/isRecord";
@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CodexStdioClient } from "@opensteer/harness-codex/test-support";
 import {
   qualificationAccount,
+  qualificationHoldMs,
   qualifiedEngines,
   qualifiedVersion,
   shippedEnginesFirstOnPath,
@@ -18,14 +19,8 @@ import {
 import { startVerticalStack, type VerticalStack } from "../agents/vertical-stack.test-support.js";
 import { BrowserSourceService } from "./browser-source-service.js";
 
-const holdDurations: Partial<Record<HarnessKind, number>> = {
-  claude: 125_000,
-  codex: 125_000,
-  opencode: 125_000,
-  pi: 305_000,
-};
 const holdEngines = qualifiedEngines.flatMap((engine) => {
-  const holdMs = holdDurations[engine.driverKind];
+  const holdMs = qualificationHoldMs[engine.driverKind];
   return holdMs === undefined ? [] : [{ ...engine, holdMs }];
 });
 

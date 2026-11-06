@@ -87,6 +87,14 @@ export const qualificationAccounts = {
   },
 } as const satisfies Record<HarnessKind, QualificationAccount>;
 
+/** How long to hold a call on each long-hold engine: just past the limit it used to have. */
+export const qualificationHoldMs: Partial<Record<HarnessKind, number>> = {
+  claude: 125_000,
+  codex: 125_000,
+  opencode: 125_000,
+  pi: 305_000,
+};
+
 export const qualifiedEngines: readonly QualifiedEngine[] = harnessCatalog.flatMap((entry) => {
   const account = qualificationAccounts[entry.kind];
   const engines: QualifiedEngine[] = [];
