@@ -232,7 +232,12 @@ describeStore("plugin devices", (test) => {
         allowed,
       );
     }
-    const options = { platform: { store: platform } as unknown as IntegrationPlatformService };
+    const options = {
+      platform: {
+        store: platform,
+        removePluginData: async () => undefined,
+      } as unknown as IntegrationPlatformService,
+    };
     await expect(
       executeIntegrationAdministration(
         options,
