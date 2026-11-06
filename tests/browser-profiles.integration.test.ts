@@ -13,8 +13,9 @@ import { mkdir, mkdtemp, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { z } from "zod";
+import { RequestHold } from "../apps/host/src/mcp/request-hold.js";
 import type { VerticalStack } from "../apps/host/src/agents/vertical-stack.test-support.js";
 import { WebSocket } from "../apps/host/src/browser/browser-watch-e2e.test-support.js";
 import {
@@ -27,6 +28,7 @@ import {
   RequestIdSchema,
   ThreadIdSchema,
   type ThreadId,
+  type RequestId,
 } from "../packages/core/src/index.js";
 import {
   addCleanup,
@@ -180,6 +182,7 @@ async function profileTurn(
   plan: Record<string, unknown>,
   threadId?: ThreadId,
   workspaceId = stack.mainWorkspaceId,
+  onQueued?: Parameters<VerticalStack["sendMessage"]>[0]["onQueued"],
 ): Promise<{ report: Report; threadId: ThreadId }> {
   threadId ??= await stack.createThread({
     idempotencyKey: randomUUID(),
@@ -192,6 +195,7 @@ async function profileTurn(
     }),
   });
   const result = await stack.sendMessage({
+    onQueued,
     threadId,
     workspaceId,
     text: `BROWSER_PROFILE_JOURNEY:${JSON.stringify(plan)}`,
@@ -235,6 +239,7 @@ async function fulfillNewProfile(
   stack: VerticalStack,
   evidence: Evidence,
   people?: HttpHostClient[],
+  laterWake = false,
 ) {
   const workspace = await stack.createWorkspace("Brex project workspace");
   expect(
@@ -250,19 +255,81 @@ async function fulfillNewProfile(
       )
     ).isDirectory(),
   ).toBe(true);
-  const first = await profileTurn(stack, evidence, { request: true }, undefined, workspace.id);
-  const requestId = first.report.request!.requestId;
-  const resolved = await stack.api["commands.dispatch"]({
-    type: "request.respond",
-    requestId,
-    idempotencyKey: randomUUID(),
-    response: {
-      kind: "external",
-      value: { decision: "fulfilled", createProfile: { name: "Brex Ops" } },
-    },
-  });
-  evidence.observations.push({ resolved });
-  if (!resolved.ok) throw new Error(resolved.error.message);
+  let requestId!: RequestId;
+  const originalWait = RequestHold.prototype.wait;
+  const limit = laterWake
+    ? vi.spyOn(RequestHold.prototype, "wait").mockImplementation(function (
+        this: RequestHold,
+        input,
+      ) {
+        return originalWait.call(this, { ...input, limitMs: 1 });
+      })
+    : undefined;
+  let first: Awaited<ReturnType<typeof profileTurn>>;
+  try {
+    first = await profileTurn(
+      stack,
+      evidence,
+      { request: true },
+      undefined,
+      workspace.id,
+      async (runId) => {
+        const request = await vi.waitFor(
+          async () => {
+            const rows = await stack.host.store.database
+              .selectFrom("requests")
+              .selectAll()
+              .where("originatingRunId", "=", runId)
+              .execute();
+            expect(rows, "profile tool did not open its Request").toHaveLength(1);
+            return rows[0]!;
+          },
+          { timeout: 10_000 },
+        );
+        requestId = request.id;
+        if (laterWake)
+          await vi.waitFor(
+            async () => {
+              const run = await stack.host.store.database
+                .selectFrom("runs")
+                .select("status")
+                .where("id", "=", runId)
+                .executeTakeFirstOrThrow();
+              expect(run.status, "hold limit did not stop the originating Run").toBe("interrupted");
+            },
+            { timeout: 10_000 },
+          );
+        const resolved = await stack.api["commands.dispatch"]({
+          type: "request.respond",
+          requestId,
+          idempotencyKey: randomUUID(),
+          response: {
+            kind: "external",
+            value: { decision: "fulfilled", createProfile: { name: "Brex Ops" } },
+          },
+        });
+        evidence.observations.push({ resolved });
+        if (!resolved.ok) throw new Error(resolved.error.message);
+        if (laterWake)
+          return vi.waitFor(
+            async () => {
+              const next = await stack.host.store.database
+                .selectFrom("runs")
+                .select("id")
+                .where("threadId", "=", request.originatingThreadId!)
+                .where("id", "!=", runId)
+                .executeTakeFirst();
+              expect(next, "Request answer did not wake the Thread").toBeDefined();
+              return next!.id;
+            },
+            { timeout: 10_000 },
+          );
+      },
+    );
+    if (!laterWake) expect(first.report.request).toMatchObject({ requestId, status: "fulfilled" });
+  } finally {
+    limit?.mockRestore();
+  }
   const bootstrap = await stack.api["bootstrap.get"]({});
   if (!bootstrap.ok) throw new Error(bootstrap.error.message);
   const profile = bootstrap.data.browser.profiles.find((profile) => profile.name === "Brex Ops");
@@ -294,9 +361,39 @@ run("Browser profiles through a whole deployment", () => {
   journey("J2 Main request replay creates an owner profile without a grant", async (evidence) => {
     const { stack } = await profileDeployment();
     const people = await connectedPeople(stack);
-    const { report } = await profileTurn(stack, evidence, {
-      request: { replay: true, workspaceId: stack.mainWorkspaceId },
-    });
+    const { report } = await profileTurn(
+      stack,
+      evidence,
+      {
+        request: { replay: true, workspaceId: stack.mainWorkspaceId },
+      },
+      undefined,
+      stack.mainWorkspaceId,
+      async (runId) => {
+        const request = await vi.waitFor(
+          async () => {
+            const rows = await stack.host.store.database
+              .selectFrom("requests")
+              .select("id")
+              .where("originatingRunId", "=", runId)
+              .execute();
+            expect(rows, "replayed profile call did not open one Request").toHaveLength(1);
+            return rows[0]!;
+          },
+          { timeout: 10_000 },
+        );
+        const resolved = await stack.api["commands.dispatch"]({
+          type: "request.respond",
+          requestId: request.id,
+          idempotencyKey: randomUUID(),
+          response: {
+            kind: "external",
+            value: { decision: "fulfilled", createProfile: { name: "Brex" } },
+          },
+        });
+        if (!resolved.ok) throw new Error(resolved.error.message);
+      },
+    );
     equal(
       evidence,
       "same call replays the same Request",
@@ -304,16 +401,7 @@ run("Browser profiles through a whole deployment", () => {
       report.request!.requestId,
     );
     equal(evidence, "replay is identified", report.replayed!.replayed, true);
-    const resolved = await stack.api["commands.dispatch"]({
-      type: "request.respond",
-      requestId: report.request!.requestId,
-      idempotencyKey: randomUUID(),
-      response: {
-        kind: "external",
-        value: { decision: "fulfilled", createProfile: { name: "Brex" } },
-      },
-    });
-    if (!resolved.ok) throw new Error(resolved.error.message);
+    expect(report.request).toMatchObject({ status: "fulfilled" });
     const bootstrap = await stack.api["bootstrap.get"]({});
     if (!bootstrap.ok) throw new Error(bootstrap.error.message);
     equal(
@@ -441,7 +529,7 @@ run("Browser profiles through a whole deployment", () => {
     "J3 renamed Request outcome survives restart and names its exact profile",
     async (evidence) => {
       const { stack } = await profileDeployment();
-      const result = await fulfillNewProfile(stack, evidence);
+      const result = await fulfillNewProfile(stack, evidence, undefined, true);
       await stack.restartHost();
       await browserAvailable(stack);
       let continuation: Report | undefined;

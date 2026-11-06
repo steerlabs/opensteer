@@ -553,53 +553,58 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
         .where("kind", "=", "browser.sign-in")
         .execute();
 
+    const heldSignIn = signIn(agent, sessionOne, url("www.beta.test", "/account"));
+    void heldSignIn.catch(() => undefined);
     const pendingRequestId = await step(
       "agent: a site without a grant opens one sign-in Request",
       async () => {
-        const result = await signIn(agent, sessionOne, url("www.beta.test", "/account"));
-        if (result.status !== "pending") throw new Error(`Expected pending, got ${result.status}`);
-        const request = await runtime.store.requests.get(result.requestId);
+        const request = await vi.waitFor(
+          async () => {
+            const rows = await signInRequests();
+            expect(rows, "sign_in did not open its Request").toHaveLength(1);
+            return runtime.store.requests.get(rows[0]!.id);
+          },
+          { timeout: 10_000 },
+        );
         expect(request).toMatchObject({
           kind: "browser.sign-in",
           payload: { kind: "browser.sign-in", sessionId: sessionOne, site: "https://beta.test" },
           status: "pending",
           targetWorkspaceId: workspaceId,
         });
-        return result.requestId;
+        return request!.id;
       },
     );
 
-    await step(
-      "owner: Allow fulfils the Request, signs in and queues the continuation",
-      async () => {
-        const response = await rpc.command({
-          decision: { decision: "allow", sourceId },
-          requestId: pendingRequestId,
-          type: "browser.sign-in.respond",
-        });
-        expect(response.outcome).toMatchObject({ site: "https://beta.test", status: "applied" });
-        expect(await runtime.store.requests.get(pendingRequestId)).toMatchObject({
-          status: "fulfilled",
-        });
-        const reloaded = await visit(viewerOne, "www.beta.test");
-        expect(signedIn(reloaded, "beta")).toBe(true);
-        await waitFor("the agent's continuation to be recorded", async () => {
-          const continuation = await runtime.store.database
-            .selectFrom("requestContinuations")
-            .select("status")
-            .where("requestId", "=", pendingRequestId)
-            .executeTakeFirst();
-          return continuation?.status === "queued" || continuation?.status === "waiting";
-        });
-        expect((await rpc.sources()).sites).toContainEqual(
-          expect.objectContaining({
-            preferredSourceId: sourceId,
-            site: "https://beta.test",
-            workspaceId,
-          }),
-        );
-      },
-    );
+    await step("owner: Allow fulfils the Request, signs in and answers the held call", async () => {
+      const response = await rpc.command({
+        decision: { decision: "allow", sourceId },
+        requestId: pendingRequestId,
+        type: "browser.sign-in.respond",
+      });
+      expect(response.outcome).toMatchObject({ site: "https://beta.test", status: "applied" });
+      expect(await runtime.store.requests.get(pendingRequestId)).toMatchObject({
+        status: "fulfilled",
+      });
+      expect(await heldSignIn).toEqual({ status: "resolved", requestId: pendingRequestId });
+      const reloaded = await visit(viewerOne, "www.beta.test");
+      expect(signedIn(reloaded, "beta")).toBe(true);
+      await waitFor("the held call to own delivery of the answer", async () => {
+        const continuation = await runtime.store.database
+          .selectFrom("requestContinuations")
+          .select("status")
+          .where("requestId", "=", pendingRequestId)
+          .executeTakeFirst();
+        return continuation?.status === "delivered";
+      });
+      expect((await rpc.sources()).sites).toContainEqual(
+        expect.objectContaining({
+          preferredSourceId: sourceId,
+          site: "https://beta.test",
+          workspaceId,
+        }),
+      );
+    });
 
     const sessionTwo = await startSession();
     const viewerTwo = await Viewer.open(hostOrigin, sessionTwo, headers);
@@ -619,6 +624,7 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
     });
 
     // ---- 5. Offline Chrome: the Request waits and drains by itself ----
+    let heldOfflineSignIn: ReturnType<typeof signIn>;
     const drainedRequestId = await step(
       "agent: preferred Chrome offline leaves the Request pending",
       async () => {
@@ -626,12 +632,21 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
         await waitFor("the Host to see Chrome offline", async () =>
           (await rpc.sources()).sources.every((source) => !source.connected),
         );
-        const result = await signIn(agent, sessionTwo, "https://www.alpha.test/");
-        if (result.status !== "pending") throw new Error(`Expected pending, got ${result.status}`);
-        expect(await runtime.store.requests.get(result.requestId)).toMatchObject({
-          status: "pending",
-        });
-        return result.requestId;
+        const before = await signInRequests();
+        heldOfflineSignIn = signIn(agent, sessionTwo, "https://www.alpha.test/");
+        void heldOfflineSignIn.catch(() => undefined);
+        const request = await vi.waitFor(
+          async () => {
+            const rows = (await signInRequests()).filter(
+              (row) => !before.some(({ id }) => id === row.id),
+            );
+            expect(rows, "offline sign_in did not open its Request").toHaveLength(1);
+            return rows[0]!;
+          },
+          { timeout: 10_000 },
+        );
+        expect(request).toMatchObject({ status: "pending" });
+        return request.id;
       },
     );
 
@@ -653,6 +668,7 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
           `${String(error)} sources=${JSON.stringify((await rpc.sources()).sources)} inspect=${JSON.stringify(inspection)} request=${request?.status} extension=${JSON.stringify((await extensionConnections(everyday.worker)).map((connection) => ({ ended: connection.ended, sourceId: connection.sourceId })))}`,
         );
       });
+      expect(await heldOfflineSignIn!).toEqual({ status: "resolved", requestId: drainedRequestId });
       expect((await rpc.sources()).sources).toEqual([
         expect.objectContaining({ connected: true, id: sourceId }),
       ]);
