@@ -258,8 +258,10 @@
 .toast-layer {
   position: fixed;
   z-index: var(--layer-toast);
+  /* A floating voice pill keeps its controls clear of what passes through here. */
   inset: auto env(safe-area-inset-right, 0px)
-    calc(var(--space-24) + env(safe-area-inset-bottom, 0px)) env(safe-area-inset-left, 0px);
+    calc(max(var(--space-24), var(--voice-reserve, 0px)) + env(safe-area-inset-bottom, 0px))
+    env(safe-area-inset-left, 0px);
   display: flex;
   flex-direction: column;
   align-items: center;

@@ -1035,7 +1035,8 @@ svg.icon {
     .onboarding__card,
     .browser-address,
     .surface-chip,
-    .voice-island,
+    .voice-island__fill,
+    .voice-notice,
     .place-card,
     .projects-list,
     .automation-time,
@@ -1099,8 +1100,7 @@ svg.icon {
     .chat-btn,
     .surface-chip,
     .computer-now__stop,
-    .dictation-keep,
-    .voice-island__end
+    .dictation-keep
   ):active:not(:disabled) {
   box-shadow: none;
   transform: scale(0.97);

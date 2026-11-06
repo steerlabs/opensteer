@@ -17,6 +17,8 @@ const maxStepSeconds = 1 / 30;
 /** Closer than this (px) and slower than this (px/s), a cursor is at rest. */
 const restDistance = 0.25;
 const restSpeed = 6;
+/** Closer than this (px) the eye has it there, long before a spring's tail settles. */
+const landedDistance = 3;
 /** A cursor's name stays up this long after it comes to rest. */
 const cursorLabelQuietMs = 2_600;
 /** How long a removed cursor fades before its element goes. */
@@ -68,6 +70,8 @@ interface Cursor {
   quietTimer: ReturnType<typeof setTimeout> | undefined;
   swapTimer: ReturnType<typeof setTimeout> | undefined;
   fadeTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Runs once when a glide reaches its point; a new target takes its place. */
+  landed: (() => void) | undefined;
 }
 
 export class CursorMotion {
@@ -77,6 +81,11 @@ export class CursorMotion {
   #reduced = false;
   #frame: number | null = null;
   #last = 0;
+  readonly #omega: number;
+
+  constructor({ stiffness = omega }: { readonly stiffness?: number } = {}) {
+    this.#omega = stiffness;
+  }
 
   /** The layer says whether its loop runs, so a resting layer can be seen to ask for no frames. */
   readonly layerRef = (layer: HTMLElement | null): void => {
@@ -116,6 +125,7 @@ export class CursorMotion {
       quietTimer: undefined,
       swapTimer: undefined,
       fadeTimer: undefined,
+      landed: undefined,
     });
   }
 
@@ -153,10 +163,19 @@ export class CursorMotion {
   place(
     id: string,
     target: CursorTarget,
-    { arrive = true, snap = false }: { readonly arrive?: boolean; readonly snap?: boolean } = {},
+    {
+      arrive = true,
+      landed,
+      snap = false,
+    }: {
+      readonly arrive?: boolean;
+      readonly landed?: () => void;
+      readonly snap?: boolean;
+    } = {},
   ): void {
     const cursor = this.#cursors.get(id);
     if (!cursor) return;
+    cursor.landed = landed;
     this.#measure(cursor);
     if (cursor.leaving) {
       cursor.leaving = false;
@@ -323,12 +342,16 @@ export class CursorMotion {
     let moving = false;
     for (const cursor of this.#cursors.values()) {
       if (!cursor.moving) continue;
-      const [ex, vx] = spring(cursor.x - cursor.tx, cursor.vx, dt);
-      const [ey, vy] = spring(cursor.y - cursor.ty, cursor.vy, dt);
+      const [ex, vx] = spring(cursor.x - cursor.tx, cursor.vx, dt, this.#omega);
+      const [ey, vy] = spring(cursor.y - cursor.ty, cursor.vy, dt, this.#omega);
       cursor.x = cursor.tx + ex;
       cursor.y = cursor.ty + ey;
       cursor.vx = vx;
       cursor.vy = vy;
+      if (cursor.landed && Math.hypot(ex * scaleX, ey * scaleY) < landedDistance) {
+        cursor.landed();
+        cursor.landed = undefined;
+      }
       if (
         Math.abs(ex * scaleX) < restDistance &&
         Math.abs(ey * scaleY) < restDistance &&
@@ -352,10 +375,15 @@ export class CursorMotion {
  * integrated, so no frame rate makes it overshoot from rest; a new target
  * keeps the velocity, which bends the path instead of restarting it.
  */
-function spring(offset: number, velocity: number, dt: number): readonly [number, number] {
-  const decay = Math.exp(-omega * dt);
-  const drift = velocity + omega * offset;
-  return [(offset + drift * dt) * decay, (velocity - omega * drift * dt) * decay];
+function spring(
+  offset: number,
+  velocity: number,
+  dt: number,
+  stiffness: number,
+): readonly [number, number] {
+  const decay = Math.exp(-stiffness * dt);
+  const drift = velocity + stiffness * offset;
+  return [(offset + drift * dt) * decay, (velocity - stiffness * drift * dt) * decay];
 }
 
 /** One agent's cursor: a small arrow in its colour and its name, nothing else. */

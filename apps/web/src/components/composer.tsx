@@ -5,7 +5,7 @@ import {
   type DictationSelection,
 } from "@opensteer/client/dictation";
 import { DictationStatus, DictationLive, useDictation } from "./dictation.js";
-import { useVoice } from "@opensteer/client/react";
+import { useVoiceOn } from "@opensteer/client/react";
 import { observeResize } from "@opensteer/shared/resizeObserver";
 import {
   useCallback,
@@ -251,7 +251,7 @@ export function Composer({
   const [saved] = useState(() => (draftKey ? composerDrafts.read(draftKey) : null));
   const [draft, setDraft] = useState(saved?.text ?? "");
   const { controller: dictation, snapshot: speech } = useDictation();
-  const { snapshot: voiceState } = useVoice();
+  const onCall = useVoiceOn();
   const instance = useId();
   const owner = `${dictationScope}/${instance}`;
   const view = dictationView(speech, owner);
@@ -898,7 +898,7 @@ export function Composer({
 
   // While voice holds the microphone, dictation steps aside.
   const microphone =
-    view.visible && voiceState.phase === "idle" ? (
+    view.visible && !onCall ? (
       <button
         ref={microphoneRef}
         className="composer__attach"

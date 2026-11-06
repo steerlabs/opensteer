@@ -56,7 +56,7 @@ import { PasswordsSuggestion } from "./passwords-suggestion.js";
 import { Icon } from "./icon.js";
 import type { ComposerQuote, ComposerRestore } from "./composer.js";
 import { InputSurface, RequestStack, focusOpenRequest, useRequestDock } from "./input-surface.js";
-import { useVoice } from "@opensteer/client/react";
+import { useVoiceOn } from "@opensteer/client/react";
 import { VoiceStart } from "./voice.js";
 import { QueuedMessages } from "./queued-messages.js";
 import { setThreadReading } from "./thread-reading.js";
@@ -266,9 +266,9 @@ function ThreadView({
       ? location.state.focusRequest
       : null;
   const voiceThread = snapshot.voiceThreadId === thread.id;
-  const { snapshot: call } = useVoice();
+  const onCall = useVoiceOn();
   // On a call, this Thread's Requests ride on the call bar, on every screen.
-  const dock = useRequestDock(thread.id, requests, voiceThread && call.phase !== "idle");
+  const dock = useRequestDock(thread.id, requests, voiceThread && onCall);
   const { items: dockedRequests, openId: openRequestId, setOpenId: openRequest } = dock;
   // The exact request is opened and focused once it can be: its body may load
   // after the conversation does, and it may wait behind another request. Once
@@ -1153,6 +1153,7 @@ function ThreadView({
         ) : null}
         {voiceThread ? (
           <VoiceStart
+            dockHidden={phoneStage && !sheetOpen}
             controls={
               <ExecutionControls
                 disabled={!canRespond}
@@ -1175,6 +1176,7 @@ function ThreadView({
             variant={conversational ? "conversation" : "work"}
             key={composerKey}
             composerHidden={dock.composerHidden}
+            voiceHidden={phoneStage && !sheetOpen}
             disabled={!canRespond}
             inputRef={composerInputRef}
             onEscape={

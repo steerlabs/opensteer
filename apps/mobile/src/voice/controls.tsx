@@ -1,6 +1,7 @@
-import { VoiceContext, useVoice } from "@opensteer/client/react";
+import { VoiceContext } from "@opensteer/client/react";
 import {
   voiceBar,
+  type VoiceBarView,
   type VoiceControls,
   type VoicePhase,
   type VoiceSnapshot,
@@ -11,27 +12,38 @@ import { useContext, useEffect, useRef, useSyncExternalStore, type ReactNode } f
 import { ActivityIndicator, Pressable, StyleSheet, View } from "react-native";
 import Animated, {
   Easing,
-  ZoomIn,
-  cancelAnimation,
   useAnimatedStyle,
   useReducedMotion,
   useSharedValue,
   withRepeat,
   withSequence,
-  withSpring,
   withTiming,
+  type SharedValue,
 } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { color, controlFontScaleLimit, material, radius, space, touchTarget } from "../theme.js";
+import {
+  color,
+  controlFontScaleLimit,
+  floatShadowInset,
+  material,
+  pillHeight,
+  plateFill,
+  radius,
+  space,
+  touchTarget,
+} from "../theme.js";
 import { ComposerGlyph } from "../thread/composer-bar.js";
 import { activitySymbol } from "../ui/activity-symbol.js";
-import { appear, enter, exit } from "../ui/motion.js";
+import { appear, duration, enter, exit } from "../ui/motion.js";
 import { AppText } from "../ui/primitives.js";
 import { usePaneInView } from "../ui/pane.js";
 import { Symbol } from "../ui/symbol.js";
 import { VoiceAsk } from "./ask.js";
+import { CallTimer } from "./call-timer.js";
+import { PillMic, VoiceCursor } from "./cursor-mark.js";
 import { floatLift, floatRest } from "./float-lift.js";
 import { useKeyboardHeight } from "./keyboard-height.js";
+import { usePillFit } from "./pill-fit.js";
 import { useVoiceAvailable, useVoiceValue } from "./use-voice-value.js";
 
 const selectShowing = ({ notice, phase }: VoiceSnapshot) => phase !== "idle" || notice !== null;
@@ -41,6 +53,10 @@ const selectActivity = ({ activity }: VoiceSnapshot) => activity;
 const selectTasks = ({ tasks }: VoiceSnapshot) => tasks;
 const selectNotice = ({ notice }: VoiceSnapshot) => notice;
 const selectStatus = (snapshot: VoiceSnapshot) => voiceBar(snapshot).status;
+const selectSpeaker = (snapshot: VoiceSnapshot) => voiceBar(snapshot).speaker;
+const selectWords = (snapshot: VoiceSnapshot) => voiceBar(snapshot).words;
+const selectLive = (snapshot: VoiceSnapshot) => voiceBar(snapshot).live;
+const selectTone = (snapshot: VoiceSnapshot) => voiceBar(snapshot).tone;
 
 /**
  * Chat composer's way in: starts voice, or ends the call. `disc` is the bar's
@@ -134,6 +150,7 @@ export function VoiceDock(props: { readonly slot?: boolean }): ReactNode {
     <Animated.View
       entering={props.slot === true ? appear : enter}
       exiting={exit}
+      pointerEvents="box-none"
       style={props.slot === true ? styles.stack : [styles.stack, styles.dock]}
     >
       <VoiceAsk />
@@ -187,15 +204,14 @@ function VoiceBar(props: {
 }): ReactNode {
   const { controller } = props;
   const phase = useVoiceValue(selectPhase);
-  const muted = useVoiceValue(selectMuted);
-  const activity = useVoiceValue(selectActivity);
-  const tasks = useVoiceValue(selectTasks);
   const notice = useVoiceValue(selectNotice);
-  const status = useVoiceValue(selectStatus);
-  const shell = [styles.bar, props.floating === true && styles.floating];
   if (phase === "idle" && notice)
     return (
-      <View accessibilityRole="alert" style={[shell, styles.notice]}>
+      <Animated.View
+        accessibilityRole="alert"
+        entering={appear}
+        style={[styles.notice, props.floating === true && material.float]}
+      >
         <Symbol name="exclamationmark.circle" size={17} tint={color.amber} weight="medium" />
         <AppText role="caption" tone="soft" style={styles.noticeText}>
           {notice.message}
@@ -215,91 +231,172 @@ function VoiceBar(props: {
           accessibilityLabel="Dismiss"
           accessibilityRole="button"
           onPress={() => controller.dismissNotice()}
-          style={styles.button}
+          style={styles.control}
         >
           <Symbol name="xmark" size={14} tint={color.muted} weight="semibold" />
         </Pressable>
-      </View>
+      </Animated.View>
     );
+  return <Pill controller={controller} floating={props.floating === true} />;
+}
+
+function useRide(cut: SharedValue<number>) {
+  return useAnimatedStyle(() => ({ transform: [{ translateX: cut.value }] }));
+}
+
+/**
+ * The lane is fixed and only `cut` moves, so the pill changes size without one
+ * layout pass: a plate slides under a static clip, and what stands on its left
+ * edge slides with it. The clip's rounding is the pill's right end, whose rim
+ * the moving plate has left behind, so that half of the rim is drawn on its own.
+ * The words hold still in a window that slides over them.
+ */
+function Pill(props: {
+  readonly controller: VoiceControls;
+  readonly floating: boolean;
+}): ReactNode {
+  const { controller, floating } = props;
+  const phase = useVoiceValue(selectPhase);
+  const muted = useVoiceValue(selectMuted);
+  const activity = useVoiceValue(selectActivity);
+  const tasks = useVoiceValue(selectTasks);
+  const status = useVoiceValue(selectStatus);
+  const speaker = useVoiceValue(selectSpeaker);
+  const lead = activity === null ? leadRoom : leadRoom + activityRoom;
+  const dialing = phase === "connecting";
+  const { clipped, cut, lane, onLane, onTrailing, onWords, tail } = usePillFit(lead, speaker);
+  // A clipped plate can cast no shadow, so a bare view squeezed to the pill's span casts it.
+  const shadowSpan = useAnimatedStyle(() => ({
+    transform: [
+      { translateX: cut.value / 2 },
+      { scaleX: lane.value === 0 ? 0 : Math.max(0, 1 - cut.value / lane.value) },
+    ],
+  }));
+  const plateRide = useRide(cut);
+  const leadRide = useRide(cut);
+  const windowRide = useRide(cut);
+  const hold = useAnimatedStyle(() => ({ transform: [{ translateX: -cut.value - tail.value }] }));
+  const softEdge = useAnimatedStyle(() => ({ opacity: clipped.value }));
   return (
-    <View
-      accessibilityLabel={`Voice: ${status}`}
-      accessibilityLiveRegion="polite"
-      style={[shell, (phase === "hearing" || phase === "speaking") && styles.barLive]}
-    >
-      <Glow controller={controller} />
-      <Orb controller={controller} phase={phase} muted={muted} activity={activity} />
-      <BarWords />
-      {tasks > 0 ? (
-        <Animated.View entering={appear} exiting={exit} style={styles.tasks}>
-          <AppText
-            maxFontSizeMultiplier={controlFontScaleLimit}
-            numberOfLines={1}
-            role="caption"
-            tone="soft"
-          >
-            {tasks === 1 ? "1 task" : `${tasks} tasks`}
-          </AppText>
+    <View onLayout={onLane} pointerEvents="box-none" style={styles.lane}>
+      {floating ? <Animated.View pointerEvents="none" style={[styles.shadow, shadowSpan]} /> : null}
+      <View pointerEvents="box-none" style={styles.clip}>
+        <Animated.View style={[styles.plate, floating && styles.plateFloating, plateRide]}>
+          <Glow controller={controller} />
         </Animated.View>
-      ) : null}
-      <Pressable
-        accessibilityLabel={muted ? "Unmute microphone" : "Mute microphone"}
-        accessibilityRole="button"
-        accessibilityState={{ selected: muted, disabled: phase === "connecting" }}
-        disabled={phase === "connecting"}
-        onPress={() => {
-          void Haptics.selectionAsync();
-          controller.setMuted(!muted);
-        }}
-        style={[styles.button, muted && styles.buttonOn, phase === "connecting" && styles.dim]}
+      </View>
+      <View pointerEvents="none" style={styles.rimEnd}>
+        <View style={styles.rim} />
+      </View>
+      <Animated.View
+        accessibilityLabel={`Voice: ${status}`}
+        accessibilityLiveRegion="polite"
+        accessible
+        pointerEvents="none"
+        style={[styles.lead, leadRide]}
       >
-        <Symbol
-          name={muted ? "mic.slash" : "mic"}
-          size={16}
-          tint={muted ? color.red : color.textSoft}
-          weight="medium"
-        />
-      </Pressable>
-      <Pressable
-        accessibilityLabel="End voice"
-        accessibilityRole="button"
-        onPress={() => {
-          void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-          void controller.stop();
-        }}
-        style={styles.end}
-      >
-        <AppText
-          maxFontSizeMultiplier={controlFontScaleLimit}
-          role="secondaryMedium"
-          style={styles.endText}
+        <VoiceCursorMark controller={controller} muted={muted} phase={phase} speaker={speaker} />
+        {activity === null ? null : (
+          <Animated.View entering={appear} exiting={exit} key={activity}>
+            <Symbol
+              name={activitySymbol[activity]}
+              size={activitySize}
+              tint={color.textSoft}
+              weight="medium"
+            />
+          </Animated.View>
+        )}
+      </Animated.View>
+      <Animated.View pointerEvents="none" style={[styles.window, { left: lead }, windowRide]}>
+        <Animated.View style={[styles.words, hold]}>
+          <View onLayout={onWords}>
+            <BarWords />
+          </View>
+        </Animated.View>
+        <Animated.View style={[styles.softEdge, floating && styles.softEdgeFloating, softEdge]} />
+      </Animated.View>
+      <View onLayout={onTrailing} pointerEvents="box-none" style={styles.trailing}>
+        {tasks > 0 ? (
+          <Animated.View entering={appear} exiting={exit} style={styles.tasks}>
+            <AppText
+              maxFontSizeMultiplier={controlFontScaleLimit}
+              numberOfLines={1}
+              role="caption"
+              tone="soft"
+            >
+              {tasks === 1 ? "1 task" : `${tasks} tasks`}
+            </AppText>
+          </Animated.View>
+        ) : null}
+        <CallTimer tone="muted" />
+        <Pressable
+          accessibilityLabel={muted ? "Unmute microphone" : "Mute microphone"}
+          accessibilityRole="button"
+          accessibilityState={{ selected: muted, disabled: dialing }}
+          disabled={dialing}
+          onPress={() => {
+            void Haptics.selectionAsync();
+            controller.setMuted(!muted);
+          }}
+          style={styles.control}
         >
-          End
-        </AppText>
-      </Pressable>
+          {({ pressed }) => (
+            <View
+              style={[
+                styles.disc,
+                muted && styles.discMuted,
+                pressed && styles.discPressed,
+                dialing && styles.dim,
+              ]}
+            >
+              <PillMic muted={muted} size={15} tint={muted ? color.red : color.textSoft} />
+            </View>
+          )}
+        </Pressable>
+        <Pressable
+          accessibilityLabel="End"
+          accessibilityRole="button"
+          onPress={() => {
+            void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            void controller.stop();
+          }}
+          style={styles.control}
+        >
+          {({ pressed }) => (
+            <View style={[styles.disc, pressed && styles.discPressed]}>
+              <Symbol name="xmark" size={13} tint={color.red} weight="semibold" />
+            </View>
+          )}
+        </Pressable>
+      </View>
     </View>
   );
 }
 
 /** The one line of the bar that changes with every token, alone in its own leaf. */
 function BarWords(): ReactNode {
-  const { live, tone, words } = voiceBar(useVoice().snapshot);
+  const words = useVoiceValue(selectWords);
+  const live = useVoiceValue(selectLive);
+  const tone = useVoiceValue(selectTone);
+  if (words === null) return null;
   return (
-    <View style={styles.text}>
-      {words === null ? null : (
-        <Animated.View entering={appear} key={live ? "live" : "quiet"}>
-          <AppText ellipsizeMode="head" numberOfLines={1} role="secondary" tone={tone}>
-            {words}
-          </AppText>
-        </Animated.View>
-      )}
-    </View>
+    <Animated.View entering={appear} exiting={exit} key={live ? "live" : "quiet"}>
+      <AppText
+        ellipsizeMode="head"
+        maxFontSizeMultiplier={controlFontScaleLimit}
+        numberOfLines={1}
+        role="secondary"
+        tone={tone}
+      >
+        {words}
+      </AppText>
+    </Animated.View>
   );
 }
 
 /**
- * When the agent opens something, the screen changing is the answer; the bar
- * only glints once to say it was the call. It runs on the UI thread.
+ * When the agent opens something, the screen changing is the answer; the pill
+ * only warms once to say it was the call. It runs on the UI thread.
  */
 function Glow(props: { readonly controller: VoiceControls }): ReactNode {
   const glow = useSharedValue(0);
@@ -314,201 +411,132 @@ function Glow(props: { readonly controller: VoiceControls }): ReactNode {
       }),
     [props.controller, glow, reduceMotion],
   );
-  const style = useAnimatedStyle(() => ({
-    opacity: glow.value,
-    transform: [{ scale: reduceMotion ? 1 : 0.985 + glow.value * 0.02 }],
-  }));
+  const style = useAnimatedStyle(() => ({ opacity: glow.value }));
   return <Animated.View pointerEvents="none" style={[styles.glow, style]} />;
 }
 
 /**
- * The orb is the call's face, readable without words: a pale core with a
- * dialing ring while connecting, a slow breath while listening, swelling with
- * whoever talks, and, while the agent works, a ring circling a settled core
- * that holds the glyph of the step it is taking. Levels go straight into
- * shared values, so meters animate on the UI thread without re-rendering React.
+ * The call's face. Its color says who is talking, its size how loudly, and a
+ * slow pulse that the call is getting somewhere on its own. Levels go straight
+ * into a shared value, so all of it runs on the UI thread without a render.
  */
-function Orb(props: {
+function VoiceCursorMark(props: {
   readonly controller: VoiceControls;
-  readonly phase: VoicePhase;
   readonly muted: boolean;
-  readonly activity: VoiceSnapshot["activity"];
+  readonly phase: VoicePhase;
+  readonly speaker: VoiceBarView["speaker"];
 }): ReactNode {
-  const level = useSharedValue(0);
-  const breath = useSharedValue(1);
-  const turn = useSharedValue(0);
-  const settle = useSharedValue(1);
-  const ring = useSharedValue(0);
+  const { controller, muted, phase, speaker } = props;
   const reduceMotion = useReducedMotion();
-  const latest = useRef({ phase: props.phase, muted: props.muted });
-  latest.current = { phase: props.phase, muted: props.muted };
-  useEffect(
-    () =>
-      props.controller.subscribeLevel(({ input, output }) => {
-        const { phase, muted } = latest.current;
-        const next = phase === "speaking" ? output : muted || phase === "thinking" ? 0 : input;
-        level.value = withTiming(Math.min(1, Math.max(0, next)), { duration: 110 });
-      }),
-    [props.controller, level],
-  );
-  useEffect(
-    () =>
-      props.controller.subscribeShown?.(() => {
-        if (reduceMotion) return;
-        settle.value = withSequence(
-          withTiming(1.16, { duration: 160 }),
-          withSpring(props.phase === "thinking" ? 0.84 : 1),
-        );
-      }),
-    [props.controller, props.phase, reduceMotion, settle],
-  );
-  const working = props.phase === "thinking";
-  const dialing = props.phase === "connecting";
+  const level = useSharedValue(0);
+  const pop = useSharedValue(1);
+  const pulse = useSharedValue(1);
+  const person = useSharedValue(0);
+  const opensteer = useSharedValue(0);
+  const latest = useRef({ phase, muted });
+  latest.current = { phase, muted };
   useEffect(() => {
-    cancelAnimation(breath);
-    cancelAnimation(turn);
-    breath.value = 1;
-    turn.value = 0;
-    settle.value = withTiming(working ? 0.84 : dialing ? 0.86 : 1, { duration: 220 });
-    ring.value = withTiming(working ? 1 : dialing ? 0.55 : 0, { duration: 220 });
-    if (reduceMotion || props.muted) return;
-    if (props.phase === "listening")
-      breath.value = withRepeat(
-        withTiming(0.94, { duration: 1300, easing: Easing.inOut(Easing.sin) }),
-        -1,
-        true,
+    if (reduceMotion) return;
+    return controller.subscribeLevel(({ input, output }) => {
+      const { phase, muted } = latest.current;
+      const next = phase === "speaking" ? output : muted || phase === "thinking" ? 0 : input;
+      level.value = withTiming(Math.min(1, Math.max(0, next)), { duration: 110 });
+    });
+  }, [controller, level, reduceMotion]);
+  useEffect(() => {
+    if (reduceMotion) return;
+    return controller.subscribeShown?.(() => {
+      pop.value = withSequence(
+        withTiming(1.24, { duration: 130, easing: Easing.out(Easing.quad) }),
+        withTiming(1, { duration: 260, easing: Easing.inOut(Easing.quad) }),
       );
-    if (working || dialing)
-      turn.value = withRepeat(
-        withTiming(360, { duration: working ? 1400 : 1100, easing: Easing.linear }),
-        -1,
-      );
-  }, [props.phase, props.muted, reduceMotion, working, dialing, breath, turn, settle, ring]);
-  const speaking = props.phase === "speaking";
-  const core = useAnimatedStyle(() => ({
-    transform: [{ scale: (0.88 + level.value * 0.32) * breath.value * settle.value }],
+    });
+  }, [controller, pop, reduceMotion]);
+  const pulsing = (phase === "connecting" || phase === "thinking") && !muted && !reduceMotion;
+  useEffect(() => {
+    pulse.value = pulsing
+      ? withRepeat(withTiming(0.4, { duration: 850, easing: Easing.inOut(Easing.sin) }), -1, true)
+      : withTiming(1, { duration: duration.exit });
+  }, [pulse, pulsing]);
+  useEffect(() => {
+    person.value = withTiming(speaker === "person" ? 1 : 0, { duration: duration.enter });
+    opensteer.value = withTiming(speaker === "opensteer" ? 1 : 0, { duration: duration.enter });
+  }, [opensteer, person, speaker]);
+  const mark = useAnimatedStyle(() => ({
+    opacity: pulse.value,
+    transform: [{ scale: (1 + level.value * 0.18) * pop.value }],
   }));
-  const halo = useAnimatedStyle(() => ({
-    opacity: 0.22 + level.value * 0.78,
-    transform: [
-      { scale: reduceMotion ? 1 : (speaking ? 0.9 : 0.84) + level.value * (speaking ? 0.6 : 0.46) },
-    ],
-  }));
-  const arc = useAnimatedStyle(() => ({
-    opacity: ring.value,
-    transform: [{ rotate: `${turn.value}deg` }],
-  }));
-  const quiet = props.muted || dialing;
+  const personInk = useAnimatedStyle(() => ({ opacity: person.value }));
+  const opensteerInk = useAnimatedStyle(() => ({ opacity: opensteer.value }));
   return (
-    <View style={styles.orb}>
-      <Animated.View
-        style={[styles.halo, speaking && styles.haloSpeaking, halo, quiet && styles.quiet]}
-      />
-      <Animated.View
-        style={[styles.ring, reduceMotion && styles.ringStill, dialing && styles.ringDialing, arc]}
-      />
-      <Animated.View style={[styles.core, core, quiet && styles.quiet]}>
-        <View style={styles.shine} />
-        {props.activity ? (
-          <Animated.View entering={ZoomIn.springify()} key={props.activity} style={styles.glyph}>
-            <Symbol
-              name={activitySymbol[props.activity]}
-              size={12}
-              tint={color.inkOnEmber}
-              weight="bold"
-            />
-          </Animated.View>
-        ) : null}
+    <Animated.View style={[styles.mark, mark]}>
+      <VoiceCursor size={markSize} tint={color.muted} />
+      <Animated.View style={[styles.ink, personInk]}>
+        <VoiceCursor size={markSize} tint={color.text} />
       </Animated.View>
-    </View>
+      <Animated.View style={[styles.ink, opensteerInk]}>
+        <VoiceCursor size={markSize} tint={color.ember} />
+      </Animated.View>
+    </Animated.View>
   );
 }
 
 /** The call bar and the Voice Thread's start bar, so one takes the other's place exactly. */
 export const voiceBarHeight = 56;
 
+const plateHeight = touchTarget;
+const plateInset = (voiceBarHeight - plateHeight) / 2;
+const markSize = 18;
+const markWidth = (markSize * 16) / 18;
+const activitySize = 14;
+const activityRoom = activitySize + space[6];
+const leadRoom = space[14] + markWidth + space[8];
+
 const styles = StyleSheet.create({
-  bar: {
-    ...material.plate,
-    alignItems: "center",
+  clip: {
     borderRadius: radius.full,
-    flexDirection: "row",
-    gap: space[8],
-    minHeight: voiceBarHeight,
-    paddingLeft: space[14],
-    paddingRight: space[6],
-    paddingVertical: space[6],
+    bottom: plateInset,
+    left: 0,
+    overflow: "hidden",
+    position: "absolute",
+    right: 0,
+    top: plateInset,
   },
-  barLive: { borderColor: color.emberLine },
-  button: {
+  control: {
     alignItems: "center",
-    borderRadius: radius.full,
     height: touchTarget,
     justifyContent: "center",
     width: touchTarget,
   },
-  buttonOn: { backgroundColor: color.redWash },
-  core: {
-    backgroundColor: color.ember,
-    borderRadius: radius.full,
-    bottom: 3,
-    left: 3,
-    overflow: "hidden",
-    position: "absolute",
-    right: 3,
-    top: 3,
-  },
   dim: { opacity: 0.45 },
+  disc: {
+    ...material.quiet,
+    alignItems: "center",
+    borderRadius: radius.full,
+    height: pillHeight,
+    justifyContent: "center",
+    width: pillHeight,
+  },
+  discMuted: { backgroundColor: color.redWash },
+  discPressed: { opacity: 0.6 },
+  dock: { paddingBottom: space[2] },
   glow: {
-    borderColor: color.emberLine,
-    borderRadius: radius.full,
-    borderWidth: 1,
-    bottom: -1,
-    left: -1,
-    position: "absolute",
-    right: -1,
-    shadowColor: color.ember,
-    shadowOffset: { height: 0, width: 0 },
-    shadowOpacity: 0.55,
-    shadowRadius: 12,
-    top: -1,
-  },
-  glyph: {
-    alignItems: "center",
-    bottom: 0,
-    justifyContent: "center",
-    left: 0,
-    position: "absolute",
-    right: 0,
-    top: 0,
-  },
-  dock: { paddingBottom: space[8], paddingHorizontal: space[4] },
-  end: {
-    alignItems: "center",
-    backgroundColor: color.redWash,
-    borderColor: color.redLine,
-    borderRadius: radius.full,
-    borderWidth: 1,
-    justifyContent: "center",
-    minHeight: touchTarget,
-    paddingHorizontal: space[16],
-  },
-  endText: { color: color.red },
-  floating: {
-    ...material.float,
-  },
-  haloSpeaking: { backgroundColor: "rgba(241, 202, 190, 0.2)" },
-  halo: {
+    ...StyleSheet.absoluteFill,
     backgroundColor: color.emberWash,
-    borderColor: color.emberLine,
     borderRadius: radius.full,
-    borderWidth: 6,
-    bottom: -6,
-    left: -6,
-    position: "absolute",
-    right: -6,
-    top: -6,
   },
+  ink: { left: 0, position: "absolute", top: 0 },
+  lane: { height: voiceBarHeight },
+  lead: {
+    alignItems: "center",
+    bottom: plateInset,
+    flexDirection: "row",
+    gap: space[6],
+    left: space[14],
+    position: "absolute",
+    top: plateInset,
+  },
+  mark: { height: markSize, width: markWidth },
   micBox: { alignItems: "center", height: 44, justifyContent: "center", width: 44 },
   micOn: {
     ...material.accent,
@@ -529,52 +557,106 @@ const styles = StyleSheet.create({
     width: 34,
   },
   micDiscPressed: { backgroundColor: color.textSoft, transform: [{ scale: 0.95 }] },
-  notice: { gap: space[8], paddingLeft: space[16] },
-  noticeText: { flex: 1 },
-  orb: { height: 32, width: 32 },
-  overlay: { left: space[12], position: "absolute", right: space[12] },
-  quiet: { opacity: 0.45 },
-  // An arc a third of the way round: rotating, it reads as working, never as loading a page.
-  ring: {
-    borderBottomColor: "transparent",
-    borderColor: color.emberBright,
-    borderLeftColor: "transparent",
+  notice: {
+    ...material.plate,
+    alignItems: "center",
     borderRadius: radius.full,
-    borderWidth: 2,
-    bottom: -1,
-    left: -1,
+    flexDirection: "row",
+    gap: space[8],
+    minHeight: voiceBarHeight,
+    paddingLeft: space[16],
+    paddingRight: space[6],
+    paddingVertical: space[6],
+  },
+  noticeText: { flex: 1 },
+  overlay: { left: space[12], position: "absolute", right: space[12] },
+  // Flat, without the plate's sheen, so the soft edge can match it exactly.
+  plate: {
+    ...material.plate,
+    ...StyleSheet.absoluteFill,
+    backgroundImage: undefined,
+    borderRadius: radius.full,
+  },
+  plateFloating: { backgroundColor: color.surfaceElevated },
+  quiet: { opacity: 0.45 },
+  rim: {
+    ...material.plate,
+    backgroundColor: "transparent",
+    backgroundImage: undefined,
+    borderRadius: radius.full,
+    bottom: 0,
     position: "absolute",
-    right: -1,
-    top: -1,
+    right: 0,
+    top: 0,
+    width: plateHeight,
   },
-  ringDialing: {
-    borderColor: color.muted,
-    borderBottomColor: "transparent",
-    borderLeftColor: "transparent",
+  rimEnd: {
+    bottom: plateInset,
+    overflow: "hidden",
+    position: "absolute",
+    right: 0,
+    top: plateInset,
+    width: plateHeight / 2,
   },
-  // Held still, a full ring says the same thing.
-  ringStill: { borderBottomColor: color.emberBright, borderLeftColor: color.emberBright },
   settings: {
     ...material.control,
     borderRadius: radius.full,
     paddingHorizontal: space[12],
     paddingVertical: space[6],
   },
+  shadow: {
+    ...material.floatShadow,
+    borderRadius: radius.full,
+    bottom: plateInset + floatShadowInset,
+    left: space[16],
+    position: "absolute",
+    right: space[16],
+    top: plateInset + floatShadowInset,
+  },
+  // Short of the plate's rim and top light, which it would otherwise wipe away.
+  softEdge: {
+    backgroundImage: `linear-gradient(to right, ${plateFill}, ${plateFill}00)`,
+    bottom: space[2],
+    left: 0,
+    position: "absolute",
+    top: space[2],
+    width: space[24],
+  },
+  softEdgeFloating: {
+    backgroundImage: `linear-gradient(to right, ${color.surfaceElevated}, ${color.surfaceElevated}00)`,
+  },
   stack: { gap: space[6] },
   tasks: {
     ...material.quiet,
     borderRadius: radius.full,
+    marginRight: space[8],
     paddingHorizontal: space[8],
     paddingVertical: space[2],
   },
-  shine: {
-    backgroundColor: "rgba(255, 244, 239, 0.85)",
-    borderRadius: radius.full,
-    height: 9,
-    left: 6,
+  trailing: {
+    alignItems: "center",
+    bottom: plateInset,
+    flexDirection: "row",
     position: "absolute",
-    top: 5,
-    width: 9,
+    right: 0,
+    top: plateInset,
   },
-  text: { flex: 1, justifyContent: "center", minWidth: 0 },
+  window: {
+    bottom: plateInset,
+    overflow: "hidden",
+    position: "absolute",
+    right: 0,
+    top: plateInset,
+  },
+  // Wider than any screen, so a long line is never fitted to the window: it runs off to the left.
+  words: {
+    alignItems: "center",
+    bottom: 0,
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    position: "absolute",
+    right: 0,
+    top: 0,
+    width: 4000,
+  },
 });

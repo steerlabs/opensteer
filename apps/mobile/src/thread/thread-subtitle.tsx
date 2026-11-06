@@ -2,10 +2,10 @@ import { Pressable, StyleSheet, View } from "react-native";
 import { taskMark, type ThreadSummary, type WorkspaceSummary } from "@opensteer/client/host";
 import { color, headerFontScaleLimit, space, touchTarget } from "../theme.js";
 import { AppText } from "../ui/primitives.js";
-import { Symbol } from "../ui/symbol.js";
 import { WorkspaceMark } from "../ui/workspace-mark.js";
 import { ChatOrb } from "../ui/chat-orb.js";
 import { TaskMark } from "../ui/task-mark.js";
+import { VoiceCursor } from "../voice/cursor-mark.js";
 import { TaskStatus, type TaskHeading } from "./task-status.js";
 
 /** A Thread's subject and name in both the native bar and the split pane. */
@@ -23,7 +23,7 @@ export function ThreadName(props: {
       {props.isHome ? (
         <ChatOrb size={22} />
       ) : props.isVoice === true ? (
-        <Symbol name="waveform" size={18} tint={color.ember} weight="semibold" />
+        <VoiceCursor size={20} tint={color.ember} />
       ) : (
         <TaskMark mark={taskMark(props)} size={22} />
       )}
