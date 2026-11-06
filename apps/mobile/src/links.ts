@@ -1,4 +1,9 @@
-import { parseMobileOpenDeepLink, parseMobileThreadDeepLink } from "@opensteer/core";
+import {
+  opensteerMobileClient,
+  parseMobileOpenDeepLink,
+  parseMobileThreadDeepLink,
+} from "@opensteer/core";
+import { parseAgentConnectionDeepLink } from "@opensteer/protocol";
 
 /**
  * What a link the operating system handed this app asks for.
@@ -12,9 +17,18 @@ import { parseMobileOpenDeepLink, parseMobileThreadDeepLink } from "@opensteer/c
  * `ignore` covers every URL this app is not the destination for, including the
  * two OAuth callbacks the authorization broker takes. An unreadable link is an
  * ordinary thing for an operating system to deliver and is never an error.
+ *
+ * `authorize-agent` opens an agent's connection request for review. The link
+ * carries no authority: the Host decides whether this phone's session may
+ * answer it, and the person still chooses Allow or Deny.
  */
-export type ThreadLinkOutcome =
+export type ApplicationLinkOutcome =
   | { readonly kind: "ignore" }
+  | {
+      readonly deploymentId: string;
+      readonly kind: "authorize-agent";
+      readonly requestId: string;
+    }
   | {
       readonly deploymentId: string;
       readonly kind: "open";
@@ -24,10 +38,19 @@ export type ThreadLinkOutcome =
     }
   | { readonly detail: string; readonly kind: "unknown-deployment" };
 
-export function resolveThreadLink(
+export function resolveApplicationLink(
   url: string,
   knownDeploymentIds: readonly string[],
-): ThreadLinkOutcome {
+): ApplicationLinkOutcome {
+  const agent = parseAgentConnectionDeepLink(url, opensteerMobileClient.applicationId);
+  if (agent !== null)
+    return knownDeploymentIds.includes(agent.deploymentId)
+      ? { deploymentId: agent.deploymentId, kind: "authorize-agent", requestId: agent.requestId }
+      : {
+          detail:
+            "That agent wants to connect to a deployment this phone has not been added to. Add it, then start again from the agent.",
+          kind: "unknown-deployment",
+        };
   const link = parseMobileThreadDeepLink(url);
   if (link === null) return { kind: "ignore" };
   if (!knownDeploymentIds.includes(link.deploymentId)) {

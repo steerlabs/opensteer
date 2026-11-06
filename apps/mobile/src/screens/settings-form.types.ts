@@ -85,7 +85,8 @@ export interface RemoteAdministrationSettings {
   readonly onRefresh: () => void;
 }
 
-export type SettingsPage = "general" | "account" | "devices" | "ai" | "sign-ins";
+export type SettingsPage =
+  "general" | "account" | "devices" | "ai" | "sign-ins" | "external-agents";
 
 export interface SettingsFormProps extends SettingsFormActionHandlers {
   readonly page?: SettingsPage;
