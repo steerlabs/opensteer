@@ -64,8 +64,10 @@ and explicit resource binding. It works on Personal loopback without an Account 
 server-only Host-native OAuth. Discovery is pinned to the configured Host origin or its current
 signed Personal route, kept exactly through consent and code exchange. Only a signed-in owner
 approves; a Personal browser without a session hands a request ID to the signed-in desktop app, or
-from a phone to the mobile app, and the link grants nothing. Consent picks an access ceiling and
-either everything the person can reach or one Workspace they own, lost when ownership ends.
+from a phone to the mobile app, and the link grants nothing. The app answers it, then opens
+completion on the consent's `resource` origin, because completion is bound to the origin the agent
+signed in through. Consent picks an access ceiling and either everything the person can reach or one
+Workspace they own, lost when ownership ends.
 
 Settings → External agents explains only agents that reach the Host from elsewhere, through Remote
 access or a networked origin: Opensteer already runs local agents itself. Client names are

@@ -6,12 +6,14 @@ import { AccountSettingsController } from "./settings-account-controller.js";
 import { DevicesSettingsController } from "./settings-devices-controller.js";
 import { AiSettingsController } from "./settings-ai-controller.js";
 import { SignInsSettingsController } from "./settings-sign-ins-controller.js";
+import { ExternalAgentsSettingsController } from "./settings-external-agents-controller.js";
 const pages = {
   general: GeneralSettingsController,
   account: AccountSettingsController,
   devices: DevicesSettingsController,
   ai: AiSettingsController,
   "sign-ins": SignInsSettingsController,
+  "external-agents": ExternalAgentsSettingsController,
 };
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 import type { SettingsPage } from "./settings-form.types.js";
@@ -47,6 +49,9 @@ export const SettingsAccountScreen = (props: Props) => <Page {...props} page="ac
 export const SettingsDevicesScreen = (props: Props) => <Page {...props} page="devices" />;
 export const SettingsAIScreen = (props: Props) => <Page {...props} page="ai" />;
 export const SettingsSignInsScreen = (props: Props) => <Page {...props} page="sign-ins" />;
+export const SettingsExternalAgentsScreen = (props: Props) => (
+  <Page {...props} page="external-agents" />
+);
 
 export function SettingsRemoteAccessScreen({ route }: Props) {
   const host = useAttachedHost(route.params.deploymentId);

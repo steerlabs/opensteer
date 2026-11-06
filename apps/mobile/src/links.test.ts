@@ -2,12 +2,15 @@ import { routeComputerLink } from "./links.js";
 import {
   buildMobileThreadDeepLink,
   DeploymentIdSchema,
+  opensteerDesktopClient,
+  opensteerMobileClient,
   opensteerMobileHostOAuthCallback,
   RequestIdSchema,
   ThreadIdSchema,
 } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
-import { resolveThreadLink } from "./links.js";
+import { agentConnectionDeepLink } from "@opensteer/protocol";
+import { resolveApplicationLink } from "./links.js";
 
 const deploymentId = DeploymentIdSchema.parse("dep_0192f4a1-1111-4000-8000-000000000001");
 const otherDeploymentId = DeploymentIdSchema.parse("dep_0192f4a1-2222-4000-8000-000000000002");
@@ -22,9 +25,9 @@ function link(overrides: { readonly requestId?: typeof requestId } = {}): string
   });
 }
 
-describe("resolveThreadLink", () => {
+describe("resolveApplicationLink", () => {
   it("opens a thread on a deployment this phone has", () => {
-    expect(resolveThreadLink(link(), [deploymentId])).toEqual({
+    expect(resolveApplicationLink(link(), [deploymentId])).toEqual({
       deploymentId,
       kind: "open",
       requestId: null,
@@ -33,7 +36,7 @@ describe("resolveThreadLink", () => {
   });
 
   it("carries the request a notification is about", () => {
-    expect(resolveThreadLink(link({ requestId }), [deploymentId])).toEqual({
+    expect(resolveApplicationLink(link({ requestId }), [deploymentId])).toEqual({
       deploymentId,
       kind: "open",
       requestId,
@@ -42,7 +45,7 @@ describe("resolveThreadLink", () => {
   });
 
   it("says what to do about a deployment this phone has never been added to", () => {
-    const outcome = resolveThreadLink(link(), [otherDeploymentId]);
+    const outcome = resolveApplicationLink(link(), [otherDeploymentId]);
 
     expect(outcome.kind).toBe("unknown-deployment");
     expect(outcome.kind === "unknown-deployment" ? outcome.detail : "").toContain("Add it");
@@ -58,7 +61,35 @@ describe("resolveThreadLink", () => {
     ["an unreadable identifier", "com.opensteer.mobile:/deployments/nope/threads/nope"],
     ["nonsense", "not a url at all"],
   ])("ignores %s", (_label, url) => {
-    expect(resolveThreadLink(url, [deploymentId])).toEqual({ kind: "ignore" });
+    expect(resolveApplicationLink(url, [deploymentId])).toEqual({ kind: "ignore" });
+  });
+});
+
+describe("agent connection links", () => {
+  const agentRequestId = "a".repeat(43);
+  const agentLink = agentConnectionDeepLink(opensteerMobileClient.applicationId, {
+    deploymentId,
+    requestId: agentRequestId,
+  });
+
+  it("opens the request for review on a deployment this phone has", () => {
+    expect(resolveApplicationLink(agentLink, [deploymentId])).toEqual({
+      deploymentId,
+      kind: "authorize-agent",
+      requestId: agentRequestId,
+    });
+  });
+
+  it("says what to do about a deployment this phone has never been added to", () => {
+    expect(resolveApplicationLink(agentLink, [otherDeploymentId]).kind).toBe("unknown-deployment");
+  });
+
+  it("ignores the desktop app's link", () => {
+    const desktop = agentConnectionDeepLink(opensteerDesktopClient.applicationId, {
+      deploymentId,
+      requestId: agentRequestId,
+    });
+    expect(resolveApplicationLink(desktop, [deploymentId])).toEqual({ kind: "ignore" });
   });
 });
 
