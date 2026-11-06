@@ -157,7 +157,7 @@ enum MessagesFixture {
       CREATE TABLE chat_handle_join (chat_id INTEGER, handle_id INTEGER,
         UNIQUE (chat_id, handle_id));
       CREATE TABLE attachment (ROWID INTEGER PRIMARY KEY AUTOINCREMENT,
-        guid TEXT UNIQUE NOT NULL, filename TEXT, mime_type TEXT);
+        guid TEXT UNIQUE NOT NULL, filename TEXT, mime_type TEXT, transfer_name TEXT);
       CREATE TABLE message_attachment_join (message_id INTEGER, attachment_id INTEGER,
         UNIQUE (message_id, attachment_id));
       INSERT INTO handle (id, service) VALUES ('\(Handle.friend)', 'iMessage'),
