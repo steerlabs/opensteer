@@ -170,6 +170,16 @@
       }
     },
     "apple-messages" : {
+      "export_attachment" : {
+        "contract" : "hz6GMk2GYuNh_85q_0335wVz-23oLvpsZrGT3tkAX78",
+        "effect" : "read",
+        "output" : {
+          "mediaType" : "image/heic",
+          "name" : "IMG_1234.HEIC",
+          "path" : "/private/run/exports/IMG_1234.HEIC",
+          "sizeBytes" : 1834221
+        }
+      },
       "list_conversations" : {
         "contract" : "DZQfXGN1OVVuwsQvUIs57ELYtEUocKMJ9YV8A5baU-Y",
         "effect" : "read",
@@ -209,6 +219,21 @@
           "nextCursor" : null
         }
       },
+      "query_messages" : {
+        "contract" : "xbrO_lyJIS8Td9aZ7P9XH9u84UgHdgXTw9FVCdpz7jo",
+        "effect" : "read",
+        "output" : {
+          "columns" : [
+            "guid"
+          ],
+          "rows" : [
+            [
+              "msg-1"
+            ]
+          ],
+          "truncated" : false
+        }
+      },
       "read_messages" : {
         "contract" : "00ne9olh8CdjDZclOrQbBXcJQ36Y3oybGzWf1Mxi6H0",
         "effect" : "read",
@@ -245,7 +270,7 @@
         }
       },
       "send_message" : {
-        "contract" : "6DllRKp2ve1qELJ7htQj6Dk3w4wwUUHZgbjAVCTWh2A",
+        "contract" : "J4ICUOxBhSNWYNZVXfasgT5HzB92rOlLTxDbmmf14Sc",
         "effect" : "write",
         "output" : {
           "accepted" : true

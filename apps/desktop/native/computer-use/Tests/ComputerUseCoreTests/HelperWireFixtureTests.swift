@@ -149,6 +149,14 @@ final class HelperWireFixtureTests: XCTestCase {
               truncated: false, undecoded: true),
           ],
           nextCursor: "e3b0c44298fc1c149afbf4c8.759952500000000000.2"),
+        "export_attachment": JSONValue.object([
+          "mediaType": .string("image/heic"), "name": .string("IMG_1234.HEIC"),
+          "path": .string("/private/run/exports/IMG_1234.HEIC"), "sizeBytes": .number(1_834_221),
+        ]),
+        "query_messages": JSONValue.object([
+          "columns": .array([.string("guid")]), "rows": .array([.array([.string("msg-1")])]),
+          "truncated": .bool(false),
+        ]),
         "send_message": JSONValue.object(["accepted": .bool(true)]),
       ],
       "apple-reminders": [

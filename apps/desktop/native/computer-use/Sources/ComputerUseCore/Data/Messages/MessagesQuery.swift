@@ -9,6 +9,11 @@ struct MessagesQuery {
   var byteBudget = Paging.byteBudget
   let contacts: () throws -> [ContactRecord]
 
+  /// Ordinary SQL only: the system library also exposes internals such as `fts3_tokenizer`.
+  private static let functions = Set(
+    "row_number rank dense_rank percent_rank cume_dist ntile lag lead first_value last_value nth_value abs avg char coalesce concat concat_ws count format glob group_concat hex ifnull iif instr length like likelihood likely lower ltrim max min nullif octet_length printf quote random replace round rtrim sign soundex sqlite_version strftime date time datetime julianday unixepoch timediff string_agg substr substring sum total trim typeof unhex unicode unlikely upper json json_array json_array_length json_error_position json_extract json_insert json_object json_patch json_quote json_remove json_replace json_set json_type json_valid json_group_array json_group_object message_text contact_name message_time"
+      .split(separator: " ").map(String.init))
+
   private final class Context {
     var function = ""
     let clock: DataClock
@@ -33,30 +38,13 @@ struct MessagesQuery {
       (SQLITE_LIMIT_LIKE_PATTERN_LENGTH, 4096), (SQLITE_LIMIT_VDBE_OP, 100_000),
       (SQLITE_LIMIT_FUNCTION_ARG, 100), (SQLITE_LIMIT_ATTACHED, 0)
     ] { sqlite3_limit(db, category, limit) }
-    guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "sqlite3_db_config") else {
-      throw HelperError(.failed, "Messages query protections are unavailable on this Mac.")
-    }
-    func configure(_ option: Int32, _ value: Int32) throws {
-      var actual: Int32 = -1
-      let status: Int32
-      #if arch(arm64)
-      // Darwin arm64 passes variadic arguments on the stack, after the eight argument registers.
-      let call = unsafeBitCast(symbol, to: (@convention(c) (OpaquePointer?, Int32, Int, Int, Int, Int, Int, Int, Int32, UnsafeMutablePointer<Int32>) -> Int32).self)
-      status = call(db, option, 0, 0, 0, 0, 0, 0, value, &actual)
-      #else
-      let call = unsafeBitCast(symbol, to: (@convention(c) (OpaquePointer?, Int32, Int32, UnsafeMutablePointer<Int32>) -> Int32).self)
-      status = call(db, option, value, &actual)
-      #endif
-      guard status == SQLITE_OK, actual == value else {
-        throw HelperError(.failed, "Messages query protections could not be enabled (option \(option), status \(status), value \(actual)).")
-      }
-    }
-    // Apple's SQLite omits extension loading; its ENABLE_LOAD_EXTENSION config is a no-op.
+    // Apple's SQLite omits extension loading, so a statement can never load one.
     guard sqlite3_compileoption_used("OMIT_LOAD_EXTENSION") != 0 else {
       throw HelperError(.failed, "Messages requires SQLite without extension loading.")
     }
-    try configure(SQLITE_DBCONFIG_DEFENSIVE, 1)
-    try configure(SQLITE_DBCONFIG_TRUSTED_SCHEMA, 0)
+    // Before the authorizer exists, which refuses every other pragma.
+    guard sqlite3_exec(db, "PRAGMA trusted_schema=OFF; PRAGMA query_only=ON", nil, nil, nil) == SQLITE_OK
+    else { throw MessagesReader.readFailure }
     let context = Context(clock: clock, load: contacts, budget: budget)
     let pointer = Unmanaged.passUnretained(context).toOpaque()
     sqlite3_progress_handler(db, 1000, { raw in
@@ -90,7 +78,10 @@ struct MessagesQuery {
             result = TypedStream.text(Array(UnsafeRawBufferPointer(start: bytes, count: Int(sqlite3_value_bytes(value)))))
           }
         } else if name == "message_time" {
-          result = state.clock.text(Date(timeIntervalSinceReferenceDate: Double(sqlite3_value_int64(values?[0])) / 1e9))
+          // Modern rows count nanoseconds and old ones seconds; no plausible count of either crosses 2^32.
+          let stamp = sqlite3_value_int64(values?[0])
+          let seconds = stamp.magnitude > 4_294_967_296 ? Double(stamp) / 1e9 : Double(stamp)
+          result = state.clock.text(Date(timeIntervalSinceReferenceDate: seconds))
         } else {
           do {
             guard sqlite3_value_bytes(values?[0]) <= 1024 else {
@@ -111,8 +102,7 @@ struct MessagesQuery {
         // SQLite supplies no database for CTEs and column-free table scans.
         return database.map { String(cString: $0) == "main" } != false ? SQLITE_OK : SQLITE_DENY
       case SQLITE_FUNCTION:
-        let allowed = Set("row_number rank dense_rank percent_rank cume_dist ntile lag lead first_value last_value nth_value abs avg char coalesce concat concat_ws count format glob group_concat hex ifnull iif instr length like likelihood likely lower ltrim max min nullif octet_length printf quote random replace round rtrim sign soundex sqlite_version strftime date time datetime julianday unixepoch timediff string_agg substr substring sum total trim typeof unhex unicode unlikely upper json json_array json_array_length json_error_position json_extract json_insert json_object json_patch json_quote json_remove json_replace json_set json_type json_valid json_group_array json_group_object message_text contact_name message_time".split(separator: " ").map(String.init))
-        return second.map { allowed.contains(String(cString: $0).lowercased()) } == true ? SQLITE_OK : SQLITE_DENY
+        return second.map { Self.functions.contains(String(cString: $0).lowercased()) } == true ? SQLITE_OK : SQLITE_DENY
       case SQLITE_PRAGMA:
         let allowed = ["table_info", "table_xinfo", "index_list", "index_info", "index_xinfo", "foreign_key_list"]
         return first.map { allowed.contains(String(cString: $0).lowercased()) } == true ? SQLITE_OK : SQLITE_DENY

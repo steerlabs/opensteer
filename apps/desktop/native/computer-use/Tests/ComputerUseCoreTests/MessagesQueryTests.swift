@@ -28,6 +28,9 @@ final class MessagesQueryTests: XCTestCase {
     guard case .object(let object) = result, case .array(let rows) = object["rows"], case .array(let row) = rows.first else { return XCTFail() }
     XCTAssertEqual(Array(row.prefix(7)), [.string("9007199254740993"), .string("-9007199254740993"), .number(42), .string("[blob 2 bytes]"), .null, .number(1.5), .string("Sounds good, see you then")])
     XCTAssertTrue(row[7].stringValue?.hasPrefix("2024-03-01T10:05:00") == true)
+    let old = try query.run("SELECT message_time(100)", budget: .unlimited)
+    guard case .object(let oldObject) = old, case .array(let oldRows) = oldObject["rows"], case .array(let oldRow) = oldRows.first else { return XCTFail() }
+    XCTAssertTrue(oldRow[0].stringValue?.hasPrefix("2001-01-01T00:01:40") == true)
     let names = try query.run("SELECT contact_name(id) FROM handle WHERE id = 'work@example.com'", budget: .unlimited)
     XCTAssertEqual(names, .object(["columns": .array([.string("contact_name(id)")]), "rows": .array([.array([.string("Alice")])]), "truncated": .bool(false)]))
     XCTAssertEqual(loads, 1)
