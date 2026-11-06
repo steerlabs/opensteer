@@ -34,8 +34,8 @@ const renewSoonMs = 90_000;
  * The person's independent view: a phone display or negotiated Mac app control.
  * Visible retainers renew its authority independently of tasks and transport
  * recovery. Closing it ends this generation without closing the app or task.
- * A phone's tab with no view yet is the same page, waiting to be opened: only
- * that press arms the phone's wake.
+ * A phone's tab with no view yet is the same page, while its view opens or,
+ * when that was refused, waiting for a press of Open.
  */
 export function OwnerView({
   destination,
@@ -43,6 +43,7 @@ export function OwnerView({
   hostClient,
   hostConnected,
   leading,
+  opening = false,
   place,
   source: phoneSource,
   trailing,
@@ -52,6 +53,8 @@ export function OwnerView({
   readonly hostClient: HostClient;
   readonly hostConnected: boolean;
   readonly leading: ReactNode;
+  /** A phone's tab is opening its view by itself. */
+  readonly opening?: boolean;
   readonly place: PlaceItem | null;
   /** A phone's address names no view: its tab says which one is live. */
   readonly source?: Extract<NativeViewerSource, { kind: "owner-view" }> | null;
@@ -240,14 +243,15 @@ export function OwnerView({
   const state: { readonly words: string; readonly busy: boolean; readonly reopen: boolean } | null =
     readiness !== null
       ? {
-          busy: readiness === "opening" || readiness === "connecting",
+          busy: opening || readiness === "opening" || readiness === "connecting",
           reopen:
+            !opening &&
             reopenEligible &&
             (current === null || (current.state !== "ready" && current.state !== "opening")),
           words:
             current === null && view !== null
               ? "This view was replaced."
-              : readiness === "opening"
+              : opening || readiness === "opening"
                 ? `Opening ${targetName}…`
                 : resting && computer === null
                   ? `Open ${machineName} to see it and use it.`

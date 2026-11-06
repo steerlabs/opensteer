@@ -91,10 +91,16 @@ agents release before they reply, so a tab tied to a session vanished just as th
 to use the phone. The tab opens when a session or owner view first confirms and stays until the
 owner closes it, offline included; a task holding the phone refuses the close on the Host.
 
-The tab carries no authority. It shows the owner's view while that can show anything, else the
-holding task's Watch, each under its own exact authority, else a resting page. Nothing opens by
-itself: a press of Open is the only way out of resting, because it alone may arm the wake. A second
-device on the tab shows the same owner view while the tab is in front there, and keeps renewing it.
+The tab carries no authority. While it is in front a client keeps an owner view open under it, so
+the picture never depends on a task and a release changes nothing there. Until that view is there
+it shows the holding task's Watch, else a resting page. Opening a view only records a lease on the
+phone, so it needs no press and arms no wake. A refused open or an unavailable view waits for a
+press of Open, because asking again by itself would loop. A second device on the tab shows the same
+owner view while the tab is in front there, and keeps renewing it.
+
+Closing the tab writes it closed before ending the view, and that view's removal says so: a tab in
+front elsewhere would otherwise reopen the view, and with it the tab. An open received before the
+close is refused, and a view that ended cannot record its tab as open.
 
 ## Live display
 
@@ -106,8 +112,8 @@ Open arms one wake, and restore or reconnect never rearms it. See
 
 Every viewer needs an authenticated owner session, effective ownership and current source
 authorization. Task viewers also need the exact held session and Run grant; owner views need their
-exact lease generation, which expires on the phone's monotonic clock and needs explicit reopening
-after a disconnect. Input needs current read-write approval. No frame, ack or old response may renew
+exact lease generation, which expires on the phone's monotonic clock and never survives a
+disconnect; a tab in front opens a new generation. Input needs current read-write approval. No frame, ack or old response may renew
 authority or revive a removed generation.
 
 Protection closes publication atomically: detach the Surface, retire its encoder and drop queued

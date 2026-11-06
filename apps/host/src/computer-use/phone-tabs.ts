@@ -23,11 +23,14 @@ export class PhoneTabs {
     this.#options = options;
   }
 
-  /** A live session or view lists its phone without this, so nothing waits on it. */
-  opened(machine: RunnerId): void {
+  /**
+   * A live session or view lists its phone without this, so nothing waits on it.
+   * `still` is asked in turn: a close ahead of this may have ended what opened it.
+   */
+  opened(machine: RunnerId, still: () => boolean = () => true): void {
     void this.#turns
       .run(machine, async () => {
-        if (await this.#options.store.openPhoneTab(machine)) this.#options.changed();
+        if (still() && (await this.#options.store.openPhoneTab(machine))) this.#options.changed();
       })
       .catch(this.#options.onError);
   }
@@ -42,8 +45,9 @@ export class PhoneTabs {
           code: "conflict",
           message: "An agent is using this phone. Stop it to close the tab.",
         });
-      this.#options.closeViews(owner, machine);
+      // Written first: a tab in front reopens a view it loses, unless the tab has gone too.
       await this.#options.store.closePhoneTab(machine);
+      this.#options.closeViews(owner, machine);
       this.#options.changed();
     });
   }

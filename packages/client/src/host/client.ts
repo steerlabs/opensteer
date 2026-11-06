@@ -1102,7 +1102,10 @@ export interface HostClient {
   openComputerView(
     machineId: string,
     target: ComputerViewTarget,
-    options?: ComputerViewMutationOptions,
+    options?: ComputerViewMutationOptions & {
+      /** False when nobody pressed anything: a phone wakes only for a person's Open. */
+      readonly wake?: boolean;
+    },
   ): Promise<ComputerView>;
   closeComputerView(
     viewId: string,
