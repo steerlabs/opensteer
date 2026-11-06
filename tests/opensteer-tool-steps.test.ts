@@ -42,7 +42,7 @@ it("names every current administration and Thread action in running and complete
     "channel_manage",
     "plugin_manage",
     "browser_profile_write",
-    "thread_write",
+    "thread_update",
     "thread_configure",
     "thread_queue",
   ]);
@@ -70,13 +70,11 @@ it.each([["browser_profile_save", "Saving the browser profile", "Saved the brows
   },
 );
 
-it("keeps execution and queue inspection on read tools", () => {
+it("keeps Thread reads on read access and setup changes on write access", () => {
   const read = agentTools.find((t) => t.name === "thread_read")!;
   expect(read.access).toBe("read");
   const configure = agentTools.find((t) => t.name === "thread_configure")!;
   const queue = agentTools.find((t) => t.name === "thread_queue")!;
-  expect(configure.input.shape.action.options).toEqual(["set"]);
-  expect(queue.input.shape.action.options).toEqual(["cancel", "move", "steer", "resume"]);
   expect(configure.access).toBe("write");
   expect(queue.access).toBe("write");
 });

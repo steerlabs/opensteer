@@ -223,7 +223,7 @@ export async function recoverLostRunTransaction(
             : [],
         ),
       ...(openTools.length > 10
-        ? [`- and ${openTools.length - 10} more commands; read them with thread_read.`]
+        ? [`- and ${openTools.length - 10} more commands; read them with thread_read view activity.`]
         : []),
       ...nodes
         .slice(0, 10)
@@ -253,7 +253,7 @@ export async function recoverLostRunTransaction(
     }
     if (omittedFacts)
       summary +=
-        "- Further interrupted activity details were omitted; read them with thread_read. Live approvals and questions did not complete; ask again if needed.\n";
+        "- Further interrupted activity details were omitted; read them with thread_read view activity. Live approvals and questions did not complete; ask again if needed.\n";
     const content: ContentPart[] = [{ type: "text", text: summary }];
     if (!lost.firstEventAt) {
       content.push({

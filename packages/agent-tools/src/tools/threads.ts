@@ -33,7 +33,7 @@ export const thread_read = defineAgentTool({
   targetFields: ["threadId"],
   title: "Read a Thread",
   description:
-    "Read a reachable Thread; `home` means Chat. `messages` (default): published messages. `activity`: also its tools, places, apps and Requests. Always returns `recentRuns` and `recentPlaces`, where it worked recently, which may be gone. Keep reads small: low `limit` and `maxCharsPerItem`. Page older items with `before=nextBefore`. Cut-off text: `itemId` with `textOffset=nextTextOffset`. Tool text is short unless you name its `itemId`.",
+    "Read a reachable Thread; `home` means Chat. `messages` (default): published messages, newest first. `activity`: also its tools, places, apps and Requests. `recentRuns` and `recentPlaces` always come back; a place is recent, never proof it is still open, and its `runId` goes to `person_show`. Keep reads small: low `limit` and `maxCharsPerItem`. Page with `before=nextBefore`. Cut-off text: `itemId` with `textOffset=nextTextOffset`. Tool text is clipped unless you name its `itemId`; sign-in, card and `computer` calls show status only.",
   input: z
     .strictObject({
       threadId: z.union([ThreadIdSchema, z.literal("home")]),
@@ -78,7 +78,7 @@ export const thread_list = defineAgentTool({
   name: "thread_list",
   title: "List Threads",
   description:
-    "List reachable Threads, newest updated first. `parentThreadId`: the tasks that Thread delegated; `self` for yours. A task row names its `assignmentId` and `taskStatus`. Page with `before=nextBefore`.",
+    "List reachable Threads, newest updated first. `parentThreadId`: the tasks that Thread delegated; `self` for yours. A task row has `assignmentId` and `taskStatus`. Up to 50 per page; page with `before=nextBefore`.",
   input: z.strictObject({
     before: CursorSchema.optional(),
     limit: z.number().int().min(1).max(50).default(25),
@@ -96,7 +96,7 @@ export const thread_delegate = defineAgentTool({
   targetFields: ["threadId"],
   title: "Start or continue a task",
   description:
-    "Start one task in `workspaceId` or with `specialist`, or give a finished one more work with `threadId`, which keeps its engine and model. It gets only `task`, no history. No secrets in `task`. Keep `assignmentId` for `task_status` and `task_cancel`. Runs and programs get its result automatically, so end your turn; a task that ends with no reply returns nothing. Connections get no Assignment: use `thread_wait`. Change active work with `thread_message`.",
+    "Start one task in `workspaceId`, from `project_list`, or with `specialist`, or give a finished one more work with `threadId`, which keeps its engine and model. It gets only `task` and `places`, no history. No secrets in `task`. Returns the task; keep `assignmentId` for `task_status` and `task_cancel`. Runs and programs get its result automatically: do other work or end your turn. A task that ends with no reply returns nothing. Connections get no Assignment: use `thread_wait`. Change active work with `thread_message`.",
   input: z
     .strictObject({
       environmentId: EnvironmentIdSchema.optional().describe("New task computer; omit to inherit."),
@@ -170,7 +170,7 @@ export const task_status = defineAgentTool({
   name: "task_status",
   title: "Read a task",
   description:
-    "Read one task's state. Results of tasks you delegated reach you automatically, so don't check in a loop; check when someone asks or you need it.",
+    "Read one task. Results of tasks you delegated reach you automatically, so do not poll. Check once when someone asks or you need its state now.",
   input: z.strictObject({ assignmentId: AssignmentIdSchema }),
   output: TaskSchema,
   access: "read",
@@ -196,12 +196,10 @@ export const thread_message = defineAgentTool({
   targetFields: ["threadId"],
   title: "Message a Thread",
   description:
-    "Send to a Thread; `home` means Chat. `report`: context for its next turn, starts nothing. `queue`: its next turn. `steer`: its active Run now, never falls back. `assignmentId` names the task it joined. Null means nothing returns on its own, so to get a result from a finished task use `thread_delegate` with `threadId` instead. Accepted is not read; `cancelled` will not run.",
+    "Send to a Thread; `home` means Chat. `report`: context for its next turn, starts nothing. `queue`: starts its next turn, or waits for it. `steer`: its active Run now, never falls back. `assignmentId` names the task it joined. Null means nothing returns on its own, so to get a result from a finished task use `thread_delegate` with `threadId` instead. Accepted is not read; `cancelled` will not run, so do not resend.",
   input: z
     .strictObject({
-      delivery: z
-        .enum(["report", "queue", "steer"])
-        .describe("report, queue or steer."),
+      delivery: z.enum(["report", "queue", "steer"]).describe("report, queue or steer."),
       message: z
         .string()
         .trim()
@@ -265,7 +263,7 @@ export const thread_wait = defineAgentTool({
   targetFields: ["threadId"],
   title: "Wait for a Thread",
   description:
-    "Wait for a Run to settle, a pending Request, or a message after `afterMessageId`, up to 100 seconds. Programs and connections only. A timeout stops nothing.",
+    "Wait for a Run to settle, a pending Request, or a message after `afterMessageId`, up to 100 seconds. A timeout stops nothing; call again.",
   input: z.strictObject({
     threadId: ThreadIdSchema,
     afterMessageId: MessageIdSchema.optional().describe(

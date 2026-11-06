@@ -161,7 +161,7 @@ describe("harnessReportsPrompt", () => {
     expect(prompt).toContain(`Report-ID: ${messageId}`);
     expect(prompt).toContain("Created: 2026-09-19T12:00:00.000Z");
     expect(prompt).toContain("additional report(s)");
-    expect(prompt).toContain("window.nextBefore as before");
+    expect(prompt).toContain("pass nextBefore as before");
     expect(prompt).not.toContain("beforeSequence");
     expect(prompt).toContain("not necessarily one contiguous slice");
     expect(prompt).toContain("same Report-ID");

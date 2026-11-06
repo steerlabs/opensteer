@@ -2,9 +2,11 @@ import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { ThreadSchema } from "@opensteer/core";
 import { TriggerSchema, TriggerRevisionSchema } from "../../packages/triggers/src/models.js";
-import { ThreadWriteOutputSchema } from "../../packages/agent-tools/src/tools/outputs.js";
+import {
+  ThreadDetailSchema,
+  ThreadUpdateOutputSchema,
+} from "../../packages/agent-tools/src/tools/outputs.js";
 import { toolsFor } from "@opensteer/agent-tools";
 import { CaseSchema, caseReach, inputForCaseTurn, parseCases } from "./cases.js";
 import { grade, gradeWorkspaceFiles, gradeToolBoundary } from "./grader.js";
@@ -154,11 +156,11 @@ it("offers every expected call and uses production-shaped control fixtures", asy
     }
     for (const result of results(c.mocks.trigger_write))
       if (!result.$error) expect(() => TriggerSchema.parse(result)).not.toThrow();
-    if (c.mocks.thread_write) {
+    if (c.mocks.thread_update) {
       for (const result of results(c.mocks.thread_read))
-        expect(() => ThreadSchema.parse(result.thread)).not.toThrow();
-      for (const result of results(c.mocks.thread_write))
-        expect(() => ThreadWriteOutputSchema.shape.thread.parse(result.thread)).not.toThrow();
+        expect(() => ThreadDetailSchema.parse(result.thread)).not.toThrow();
+      for (const result of results(c.mocks.thread_update))
+        expect(() => ThreadUpdateOutputSchema.parse(result)).not.toThrow();
     }
   }
 });

@@ -17,7 +17,8 @@ Never mark yourself Done.
    changed them.
 2. Read only what is new since the positions in your state. You can reach Chat (`thread_read` with
    `threadId: "home"`) and the tasks in its lineage: find them with `thread_list` with `limit: 50`
-   or less and read their new messages with `thread_read`. Other tasks in Main reach you through
+   or less and read their new messages with `thread_read`, newest first, paging with
+   `before=nextBefore`. Other tasks in Main reach you through
    `memory/inbox/`. Also read the morning notes in `memory/passes/nightly.md` and the mail,
    Messages and calendar integrations connected to Main: find them with `integration_search` and
    read with `integration_call`. Keep pages small and stop at your saved positions.

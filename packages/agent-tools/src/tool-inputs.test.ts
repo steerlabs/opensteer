@@ -21,7 +21,7 @@ describe("Opensteer tool inputs", () => {
     ).toBe(false);
   });
   it("reads Chat by its home alias", () => {
-    expect(tool("thread_read").input.safeParse({ threadId: "home", maxMessages: 1 }).success).toBe(
+    expect(tool("thread_read").input.safeParse({ threadId: "home", limit: 1 }).success).toBe(
       true,
     );
   });
