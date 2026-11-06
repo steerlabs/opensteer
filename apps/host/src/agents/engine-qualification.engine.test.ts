@@ -305,6 +305,80 @@ describe("engine qualification", () => {
       },
     );
 
+    it("reaches the agent with the person's message during a hold, leaving the Request open", async () => {
+      if (!databaseUrl) throw new Error("Run the engine suite through pnpm test:engines");
+      stack = await startVerticalStack({
+        catalogTimeoutMs: 180_000,
+        databaseUrl,
+        harnessInstance: qualificationAccount(engine),
+        harnesses: createHarnessRegistry(
+          parseAgentExecutionConfig(process.env).harnessExecutables,
+          {
+            nodeExecutable: process.execPath,
+            runtimeCacheDirectory: runtimeCacheDirectory!,
+          },
+        ),
+        harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
+        runTimeoutMs: 180_000,
+      }).catch((error: unknown) => {
+        throw qualificationFailure(engine, error);
+      });
+      const active = stack;
+      const model = active.catalog.models.find((candidate) => candidate.isDefault);
+      if (!model) throw new Error("The engine has no default model");
+      const threadId = await active.createThread({
+        home: true,
+        modelSelection: ModelSelectionSchema.parse({
+          modelId: model.modelId,
+          options: {},
+          providerId: model.providerId,
+        }),
+        title: `${engine.label} message during a hold`,
+        workspaceId: active.mainWorkspaceId,
+      });
+      const first = await active.queueMessage({
+        text: "Request a new browser profile named Receipts with browser_profile_request for this expense task. Do not open a browser or sign in.",
+        threadId,
+      });
+      if (!first.runId) throw new Error("The engine's first Run was not queued");
+      const firstRunId = first.runId;
+      const database = active.host.store.database;
+      const request = await vi.waitFor(
+        async () => {
+          const rows = await database
+            .selectFrom("requests")
+            .select(["id", "status"])
+            .where("originatingRunId", "=", firstRunId)
+            .execute();
+          expect(rows, "The engine did not open the Request").toHaveLength(1);
+          return rows[0]!;
+        },
+        { timeout: 180_000, interval: 100 },
+      );
+      const marker = `MESSAGE-${randomUUID()}`;
+      await active.queueMessage({
+        text: `New instruction from me: reply with exactly ${marker} and nothing else.`,
+        threadId,
+      });
+      await vi.waitFor(
+        async () => {
+          const replies = await database
+            .selectFrom("messages")
+            .select("content")
+            .where("threadId", "=", threadId)
+            .where("kind", "=", "assistant")
+            .execute();
+          expect(
+            JSON.stringify(replies),
+            "The person's message did not reach the agent during the hold",
+          ).toContain(marker);
+        },
+        { timeout: 180_000, interval: 250 },
+      );
+      const after = await active.host.store.requests.get(request.id);
+      expect(after?.status, "A message must never answer a Request").toBe("pending");
+    });
+
     it("contributes the person's Chat follow-ups to the reply under way", async () => {
       if (!databaseUrl) throw new Error("Run the engine suite through pnpm test:engines");
       const command = installedCommand(engine.driverKind);

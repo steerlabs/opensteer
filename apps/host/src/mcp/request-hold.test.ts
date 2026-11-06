@@ -179,6 +179,23 @@ describe("Request hold", () => {
     expect(f.onError).toHaveBeenCalledOnce();
   });
 
+  it("stops the Run at the limit even while every read fails", async () => {
+    const f = fixture();
+    f.input.admittedAt = Date.now() - f.input.limitMs + 20;
+    f.holdSnapshot.mockRejectedValue(new Error("connection lost"));
+    await expect(f.hold.wait(f.input)).rejects.toThrow("stopped");
+    expect(f.stopHeldRun).toHaveBeenCalledWith(f.input.caller.claims, "limit");
+  });
+
+  it("retries a stop that fails", async () => {
+    const f = fixture();
+    f.input.admittedAt = Date.now() - f.input.limitMs;
+    f.stopHeldRun.mockRejectedValueOnce(new Error("connection lost"));
+    await expect(f.hold.wait(f.input)).rejects.toThrow("stopped");
+    expect(f.stopHeldRun).toHaveBeenCalledTimes(2);
+    expect(f.onError).toHaveBeenCalledOnce();
+  });
+
   it("recovers from a failed read and still returns the answer", async () => {
     const f = fixture();
     Object.assign(f.snapshot.request, { status: "declined" });

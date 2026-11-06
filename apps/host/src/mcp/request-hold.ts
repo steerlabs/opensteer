@@ -58,6 +58,14 @@ export class RequestHold {
       stopped = true;
       this.options.onStopped(stop);
     };
+    // The Request is open, so a failed read must not hand a live Run back its turn.
+    const survive = (error: unknown) => {
+      if (error === executionEnded || input.signal.aborted) throw error;
+      if (error !== pastDeadline && !reported) {
+        reported = true;
+        this.options.onError(error);
+      }
+    };
     for (;;) {
       input.signal.throwIfAborted();
       try {
@@ -91,16 +99,10 @@ export class RequestHold {
             if (snapshot.steered) return { record: input.result };
           }
         }
-        if (!stopped && Date.now() >= deadline) await stopRun("limit");
       } catch (error) {
-        if (error === executionEnded || input.signal.aborted) throw error;
-        if (error === pastDeadline) continue;
-        // The Request is open, so a failed read must not hand a live Run back its turn.
-        if (!reported) {
-          reported = true;
-          this.options.onError(error);
-        }
+        survive(error);
       }
+      if (!stopped && Date.now() >= deadline) await stopRun("limit").catch(survive);
       const remaining = deadline - Date.now();
       await delay(stopped || remaining <= 0 ? 500 : Math.min(500, remaining), input.signal);
     }

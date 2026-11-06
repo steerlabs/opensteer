@@ -2912,7 +2912,7 @@ export class RequestStore {
     );
   }
 
-  /** A person's steers into a Run so far: a hold's cutoff, free of any clock. */
+  /** A person's steers the engine has taken so far: a hold's cutoff, free of any clock. */
   async personSteerCount(runId: RunId): Promise<number> {
     const { count } = await this.#database
       .selectFrom("threadInputs")
@@ -2920,6 +2920,7 @@ export class RequestStore {
       .select(({ fn }) => fn.countAll<string>().as("count"))
       .where("commands.runId", "=", runId)
       .where("commands.type", "=", "run.steer")
+      .where("threadInputs.deliveredAt", "is not", null)
       .where(sql<string>`thread_inputs.authority_source->>'kind'`, "in", personAuthorities)
       .executeTakeFirstOrThrow();
     return Number(count);

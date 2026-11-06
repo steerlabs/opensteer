@@ -448,6 +448,10 @@ describeStore("Request continuation admission", (it) => {
       .executeTakeFirstOrThrow();
     expect(command.type).toBe("run.steer");
     await store.claimCommand(command.id, "person-steer-dispatch");
+    expect(
+      await store.requests.holdSnapshot(opened.request.id, fixture.run.id, steersAtAdmission),
+      "A steer still on its way must keep the call held",
+    ).toMatchObject({ steered: false, queued: false });
     await store.commitRunnerEvent({
       environmentId: fixture.environmentId,
       runnerId: fixture.runnerId,
