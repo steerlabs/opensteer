@@ -59,12 +59,21 @@ try {
   };
   try {
     await page.getByRole("button", { name: /^Set up / }).click();
-    await page
-      .locator(".setup__actions button:not(:disabled)")
-      .filter({ hasText: /^(Start|Done|Set up later)$/ })
-      .first()
-      .click({ timeout: 90_000 });
-    await page.getByRole("textbox", { name: "Message" }).waitFor({ timeout: 90_000 });
+    // Setup's steps each leave through Skip; the last one says "Skip for now".
+    const message = page.getByRole("textbox", { name: "Message" });
+    for (let step = 0; step < 3; step += 1) {
+      const skip = page
+        .locator(".setup-frame__foot button:not(:disabled)")
+        .filter({ hasText: /^Skip( for now)?$/ })
+        .first();
+      await Promise.race([
+        skip.waitFor({ timeout: 90_000 }),
+        message.waitFor({ timeout: 90_000 }),
+      ]);
+      if (await message.isVisible()) break;
+      await skip.click();
+    }
+    await message.waitFor({ timeout: 90_000 });
     await page.getByRole("button", { name: /Places and menu|:.*Menu$/ }).click();
     await page.getByRole("menuitem", { name: "Projects", exact: true }).click();
     const navigation = page.getByRole("navigation", { name: "Main navigation", exact: true });

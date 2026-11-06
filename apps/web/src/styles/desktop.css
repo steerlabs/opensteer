@@ -155,6 +155,18 @@ html.electron-shell .splash__inner {
   user-select: text;
 }
 
+/* Setup's empty margins move the window; its content and footer do not. */
+html.electron-shell .setup-frame__body {
+  app-region: drag;
+  user-select: none;
+}
+
+html.electron-shell .setup-frame__column,
+html.electron-shell .setup-frame__foot {
+  app-region: no-drag;
+  user-select: text;
+}
+
 /* Three ways to add a place, each a framed row that opens its own form in
    place — so nothing has to be classified before a field appears. */
 .add-deployment {

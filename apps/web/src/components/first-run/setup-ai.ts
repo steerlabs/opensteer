@@ -8,6 +8,12 @@ import type { EnvironmentSummary, ThreadPlacementOption } from "@opensteer/clien
  * in Settings → AI.
  */
 export interface SetupPlan {
+  /**
+   * Whether a new Opensteer-made account of this source can take the plan's
+   * own sign-in. Claude's subscription signs in only through the person's own
+   * Claude Code, whose account Opensteer creates when it finds the CLI.
+   */
+  readonly addable: boolean;
   readonly driverKind: string;
   readonly featured: boolean;
   readonly id: string;
@@ -18,14 +24,14 @@ export interface SetupPlan {
 }
 
 export const setupPlans: readonly SetupPlan[] = [
-  plan("claude", "Claude", "claude", "anthropic", "anthropic", true),
-  plan("chatgpt", "ChatGPT", "codex", "openai", "openai", true),
-  plan("gemini", "Gemini", "antigravity", "google", "google", true),
-  plan("grok", "Grok", "grok", "xai", "xai", true),
-  plan("cursor", "Cursor", "cursor", "cursor", "cursor", false),
-  plan("copilot", "GitHub Copilot", "pi", "github-copilot", "github", false),
-  plan("meta", "Meta", "muse", "meta", "meta", false),
-  plan("kimi", "Kimi", "pi", "kimi-coding", "moonshot", false),
+  plan("claude", "Claude", "claude", "anthropic", "anthropic", { addable: false, featured: true }),
+  plan("chatgpt", "ChatGPT", "codex", "openai", "openai", { featured: true }),
+  plan("gemini", "Gemini", "antigravity", "google", "google", { featured: true }),
+  plan("grok", "Grok", "grok", "xai", "xai", { featured: true }),
+  plan("cursor", "Cursor", "cursor", "cursor", "cursor"),
+  plan("copilot", "GitHub Copilot", "pi", "github-copilot", "github"),
+  plan("meta", "Meta", "muse", "meta", "meta"),
+  plan("kimi", "Kimi", "pi", "kimi-coding", "moonshot"),
 ];
 
 function plan(
@@ -34,9 +40,17 @@ function plan(
   driverKind: string,
   sourceId: string,
   providerId: string,
-  featured: boolean,
+  options: { readonly addable?: boolean; readonly featured?: boolean } = {},
 ): SetupPlan {
-  return { driverKind, featured, id, name, providerId, sourceId };
+  return {
+    addable: options.addable ?? true,
+    driverKind,
+    featured: options.featured ?? false,
+    id,
+    name,
+    providerId,
+    sourceId,
+  };
 }
 
 /** What one plan row offers right now, read from live state. */
@@ -86,12 +100,15 @@ export function setupAiRows(
   const ready = local.filter((placement) => placement.available);
   const readyRows: SetupAiRow[] = ready.map((placement) => {
     const matched = setupPlans.find((candidate) => matches(candidate, placement));
-    const name = matched?.name ?? placement.engineName;
     return {
-      detail: placement.accountName !== placement.engineName ? placement.accountName : null,
+      detail: matched
+        ? "Signed in"
+        : placement.source?.kind === "compatible-endpoint"
+          ? "Running on this computer"
+          : "Ready",
       key: `ready:${placement.harnessInstanceId}`,
       kind: "ready",
-      name,
+      name: matched?.name ?? placement.accountName,
       placement,
       providerId: matched?.providerId ?? null,
     };
@@ -149,7 +166,7 @@ function planAction(
   // An account of this engine exists already but cannot sign in to the plan
   // from here; Settings → AI explains it. A new account is added only where
   // a person-made account of that source can carry the plan's own sign-in.
-  if (accounts.length > 0) return null;
+  if (accounts.length > 0 || !candidate.addable) return null;
   const source = driver.sources.find(({ sourceId }) => sourceId === candidate.sourceId);
   if (!source || !source.stateKinds.includes("isolated") || source.fields.length > 0) return null;
   if (!main.harnessAuthenticationAllowed || !main.providerStateModes.includes("isolated")) {
