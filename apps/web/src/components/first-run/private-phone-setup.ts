@@ -66,9 +66,14 @@ export function usePrivatePhoneSetup(input: {
   readonly hostClient: HostClient;
   readonly remote: ReturnType<typeof usePersonalRemoteAccess>;
   readonly share: () => Promise<DesktopTailscaleShareResult>;
+  /** Whether a private choice is on screen; a code is issued only then. */
+  readonly showing: boolean;
 }) {
-  const { hostClient, remote, share } = input;
+  const { hostClient, remote, share, showing } = input;
   const [phase, setPhase] = useState<PrivatePhase>({ kind: "idle" });
+  // The tailnet address this visit shared, known before Tailscale's own
+  // status is read again, so the code shows the moment the Host answers there.
+  const [sharedOrigin, setSharedOrigin] = useState<string | null>(null);
   const attempt = useRef(0);
   const activeOrigin = privateRouteOrigin(remote.status);
   const generation = remote.status?.access.generation ?? null;
@@ -117,6 +122,7 @@ export function usePrivatePhoneSetup(input: {
           setPhase({ kind: "failed", message: result.message });
           return;
         }
+        setSharedOrigin(sameOrigin(result.origin));
         void turnOn(result.origin);
       },
       (reason: unknown) => {
@@ -166,14 +172,22 @@ export function usePrivatePhoneSetup(input: {
   // code deletes the previous one, so it is never replaced behind a phone
   // that may be scanning it.
   const pairing = remote.pairing;
-  const asked = useRef<number | null>(null);
+  const [askedGeneration, setAskedGeneration] = useState<number | null>(null);
   useEffect(() => {
-    if (activeOrigin === null || generation === null || pairing !== null) return;
-    if (asked.current === generation || remote.working) return;
-    asked.current = generation;
+    if (!showing || activeOrigin === null || generation === null || pairing !== null) return;
+    if (askedGeneration === generation || remote.working) return;
+    setAskedGeneration(generation);
     void remote.pair?.();
-  }, [activeOrigin, generation, pairing, remote]);
+  }, [activeOrigin, askedGeneration, generation, pairing, remote, showing]);
   const renew = useCallback(() => void remote.pair?.(), [remote]);
+  // A code that could not be issued says so and offers to try again, rather
+  // than leaving the panel waiting on a code that is not coming.
+  const pairingFailed =
+    activeOrigin !== null &&
+    pairing === null &&
+    askedGeneration === generation &&
+    !remote.working &&
+    remote.error !== null;
 
   const link =
     activeOrigin !== null && pairing !== null
@@ -182,11 +196,14 @@ export function usePrivatePhoneSetup(input: {
 
   return {
     activeOrigin,
+    code: activeOrigin !== null ? (pairing?.code ?? null) : null,
     expiresAt: pairing?.expiresAt ?? null,
     link,
+    pairingError: pairingFailed ? remote.error : null,
     phase,
     renew,
     reset,
+    sharedOrigin,
     turnOnAddress,
     turnOnTailscale,
   };

@@ -182,8 +182,16 @@ export function shareFailure(
   );
 }
 
+/**
+ * How long a handler shared for setup waits for the Host to take its route.
+ * The page gives up after two minutes; the margin keeps a slow but successful
+ * hand-off from being taken down under it.
+ */
+export const tailscaleHandoffMilliseconds = 3 * 60_000;
+
 export interface TailscaleShareOptions {
   readonly command: TailscaleCommand;
+  readonly now?: () => number;
   /** Where the record of Opensteer's own handler lives, in this app's data directory. */
   readonly recordPath: string;
   readonly files: Pick<PrivateFilesystem, "readFile" | "removeFile" | "writeFileAtomic">;
@@ -206,9 +214,12 @@ export class TailscaleShare {
   /**
    * The origin shared in this run whose Private route the Host has not taken
    * yet. The page asks the Host for that route only after `share` answers, so
-   * a reconcile in between must leave the handler it is about to use.
+   * a reconcile in between must leave the handler it is about to use — but
+   * only for a while: a page that gave up never asks, and the next reconcile
+   * after `until` takes the handler down.
    */
-  #sharedThisRun: string | null = null;
+  #sharedThisRun: { readonly origin: string; readonly until: number } | null = null;
+  readonly #now: () => number;
 
   constructor(options: TailscaleShareOptions) {
     this.#command = options.command;
@@ -220,6 +231,7 @@ export class TailscaleShare {
           () => false,
         ));
     this.#files = options.files;
+    this.#now = options.now ?? Date.now;
     this.#platform = options.platform ?? process.platform;
     this.#recordPath = options.recordPath;
   }
@@ -279,13 +291,21 @@ export class TailscaleShare {
     try {
       await this.#serve(tailnet.executable, port, target);
     } catch (error) {
-      if (!ours) await this.#removeRecord();
+      // A command that timed out or lost its answer may still have applied,
+      // so the record goes only once the handler is seen not to exist.
+      if (!ours) {
+        const after = await this.#serveConfig(tailnet.executable).catch(() => null);
+        if (after && !servesOnly(after, port, target)) await this.#removeRecord();
+      }
       return error instanceof TailscaleCommandError
         ? shareFailure(error.output)
         : failure("failed", "Tailscale couldn't share Opensteer. Try again.");
     }
     if (ours) await this.#writeRecord(record);
-    this.#sharedThisRun = record.origin;
+    this.#sharedThisRun = {
+      origin: record.origin,
+      until: this.#now() + tailscaleHandoffMilliseconds,
+    };
     return DesktopTailscaleShareResultSchema.parse({ ok: true, origin: record.origin });
   }
 
@@ -307,7 +327,10 @@ export class TailscaleShare {
       await this.#ensure(record, loopbackTarget(input.hostOrigin));
       return;
     }
-    if (!input.authoritative && this.#sharedThisRun === record.origin) return;
+    const handoff = this.#sharedThisRun;
+    if (!input.authoritative && handoff?.origin === record.origin && this.#now() < handoff.until) {
+      return;
+    }
     this.#sharedThisRun = null;
     const tailnet = await this.#tailnet();
     // The record stays until its handler can be seen to be gone.

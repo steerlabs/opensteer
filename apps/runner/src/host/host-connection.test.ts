@@ -1886,6 +1886,49 @@ describe("ReconnectingHostConnection engine rechecks", () => {
     }
   });
 
+  it("waits while a command the Host sent is still queued, so nothing admitted is cancelled", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const host = await fakeAgentsHost();
+    let installed = false;
+    const runner = engineRecheckRunner(host.url, () => installed);
+    const abort = new AbortController();
+    const running = runner.connection.run(abort.signal);
+    const reconcile = Promise.withResolvers<void>();
+    try {
+      await host.until(() => host.attaches.length === 1, "the first connection");
+      // A slow reconcile holds the ordered queue; a trigger sent after it waits there.
+      const reconciling = Promise.withResolvers<void>();
+      vi.spyOn(runner.runtime, "reconcileHarnesses").mockImplementation(async () => {
+        reconciling.resolve();
+        await reconcile.promise;
+      });
+      host.send(1, { harnesses: [], requestId: randomUUID(), type: "host.reconcile-harnesses" });
+      await withTimeout(reconciling.promise, 2_000, {
+        timeoutError: () => new Error("the reconcile never started"),
+      });
+      installed = true;
+      runner.connection.recheckEngines();
+      vi.advanceTimersByTime(1_000);
+      await host.until(() => host.heartbeats(1) === 1, "a heartbeat while the queue is busy");
+      expect(host.hellos).toHaveLength(1);
+
+      // The queue empties a few microtasks after the reconcile does; the
+      // heartbeat that follows is the first to see it empty.
+      reconcile.resolve();
+      vi.advanceTimersByTime(1_000);
+      await host.until(() => host.heartbeats(1) === 2, "a heartbeat as the queue drains");
+      vi.advanceTimersByTime(1_000);
+      await host.until(() => host.hellos.length === 2, "the reconnect once the queue drained");
+    } finally {
+      reconcile.resolve();
+      abort.abort(new Error("test complete"));
+      await running;
+      await runner.runtime.close();
+      await host.close();
+      vi.useRealTimers();
+    }
+  });
+
   function engineRecheckRunner(hostUrl: URL, installed: () => boolean) {
     const registry = new HarnessRegistry();
     const driver: HarnessDriver = {
@@ -2016,6 +2059,10 @@ async function fakeAgentsHost() {
   const hellos: unknown[] = [];
   const attaches: unknown[] = [];
   const heartbeats = new Map<number, number>();
+  const connections = new Map<
+    number,
+    { readonly fence: Record<string, unknown>; readonly socket: import("ws").WebSocket }
+  >();
   const waiters = new Set<{ readonly check: () => boolean; readonly resolve: () => void }>();
   const observed = () => {
     for (const waiter of waiters) {
@@ -2040,17 +2087,21 @@ async function fakeAgentsHost() {
       const message = RunnerToHostMessageSchema.parse(JSON.parse(raw.toString("utf8")));
       if (message.type === "runner.enroll" || message.type === "runner.authenticate") {
         hellos.push(message.descriptor.modules.agents?.harnessDrivers);
+        const fence = {
+          bootId: message.descriptor.bootId,
+          connectionGeneration: generation,
+          connectionId: RunnerConnectionIdSchema.parse(`rcn_${randomUUID()}`),
+          connectionLeaseId: RunnerConnectionLeaseIdSchema.parse(`rls_${randomUUID()}`),
+          runnerId: message.descriptor.runnerId,
+        };
+        connections.set(generation, { fence, socket });
         socket.send(
           JSON.stringify({
+            ...fence,
             allowedModules: ["agents"],
-            bootId: message.descriptor.bootId,
-            connectionGeneration: generation,
-            connectionId: RunnerConnectionIdSchema.parse(`rcn_${randomUUID()}`),
             connectionLeaseExpiresAt: new Date(Date.now() + 120_000).toISOString(),
-            connectionLeaseId: RunnerConnectionLeaseIdSchema.parse(`rls_${randomUUID()}`),
             environmentIds: runnerEnvironmentIds(message.descriptor),
             heartbeatIntervalMs: 1_000,
-            runnerId: message.descriptor.runnerId,
             serverTime: new Date().toISOString(),
             type: "host.welcome",
           }),
@@ -2067,6 +2118,12 @@ async function fakeAgentsHost() {
     attaches,
     heartbeats: (generation: number) => heartbeats.get(generation) ?? 0,
     hellos,
+    /** Sends a fenced Host message on one connection. */
+    send: (generation: number, message: Record<string, unknown>) => {
+      const connection = connections.get(generation);
+      if (!connection) throw new Error(`No connection ${generation}`);
+      connection.socket.send(JSON.stringify({ ...connection.fence, ...message }));
+    },
     /** Resolves once `check` holds after a frame, or fails naming what never happened. */
     until: (check: () => boolean, what: string): Promise<void> => {
       if (check()) return Promise.resolve();

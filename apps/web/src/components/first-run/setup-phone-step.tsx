@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import type { AuthSessionSummary } from "@opensteer/core";
 import type { DesktopTailscaleStatus, OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
 import { remoteAccessDisconnectWarning } from "@opensteer/client/host";
@@ -56,9 +56,11 @@ export function SetupPhoneStep({
     remote,
   });
   const connectAvailable = connect.reach.kind !== "unavailable";
-  const tailscale = useTailscaleStatus(bridge);
-  const share = useCallback(() => bridge.tailscaleShare(), [bridge]);
-  const privately = usePrivatePhoneSetup({ hostClient, remote, share });
+  const { refresh: refreshTailscale, status: tailscale } = useTailscaleStatus(bridge);
+  const share = useCallback(
+    () => bridge.tailscaleShare().finally(refreshTailscale),
+    [bridge, refreshTailscale],
+  );
   const [mode, setMode] = useState<PhoneConnectionMode | null>(null);
   const ready = remote.status !== null && tailscale !== null;
   const chosen: PhoneConnectionMode =
@@ -68,11 +70,18 @@ export function SetupPhoneStep({
       status: remote.status,
       tailscaleOrigin: tailscale?.state === "ready" ? tailscale.sharedOrigin : null,
     });
+  const privately = usePrivatePhoneSetup({
+    hostClient,
+    remote,
+    share,
+    showing: ready && chosen !== "connect",
+  });
   const activeMode = remote.status?.access.mode ?? "off";
+  const tailnetOrigin =
+    privately.sharedOrigin ??
+    (tailscale?.state === "ready" ? sameOrigin(tailscale.sharedOrigin ?? "") : null);
   const tailscaleActive =
-    privately.activeOrigin !== null &&
-    tailscale?.state === "ready" &&
-    privately.activeOrigin === sameOrigin(tailscale.sharedOrigin ?? "");
+    privately.activeOrigin !== null && privately.activeOrigin === tailnetOrigin;
 
   /** Replacing a way that is on disconnects whoever uses it, so it asks. */
   const confirmReplacing = (next: PhoneConnectionMode): boolean => {
@@ -237,6 +246,7 @@ function Panel({ children }: { readonly children: ReactNode }) {
 function ScanPanel({
   expired = false,
   label,
+  manual = null,
   onRenew,
   steps,
   value,
@@ -246,6 +256,8 @@ function ScanPanel({
   readonly onRenew?: () => void;
   readonly steps: readonly string[];
   readonly value: string;
+  /** What the code carries, for a phone that cannot scan it. */
+  readonly manual?: { readonly address: string; readonly code: string } | null;
 }) {
   return (
     <Panel>
@@ -276,7 +288,46 @@ function ScanPanel({
           )}
         </div>
       </div>
+      {manual && !expired ? (
+        <details className="setup-manual">
+          <summary>Can’t scan? Enter it on your phone</summary>
+          <dl className="setup-manual__fields">
+            <ManualField label="Address" value={manual.address} />
+            <ManualField label="Pairing code" value={manual.code} />
+          </dl>
+        </details>
+      ) : null}
     </Panel>
+  );
+}
+
+function ManualField({ label, value }: { readonly label: string; readonly value: string }) {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(false), 1_500);
+    return () => clearTimeout(timer);
+  }, [copied]);
+  return (
+    <div className="setup-manual__field">
+      <dt>{label}</dt>
+      <dd>
+        <span className="setup-mono">{value}</span>
+        <button
+          aria-label={`Copy ${label.toLowerCase()}`}
+          className="btn btn--small btn--ghost"
+          onClick={() =>
+            void navigator.clipboard.writeText(value).then(
+              () => setCopied(true),
+              () => undefined,
+            )
+          }
+          type="button"
+        >
+          {copied ? "Copied" : "Copy"}
+        </button>
+      </dd>
+    </div>
   );
 }
 
@@ -381,6 +432,7 @@ function TailscalePanel({
       <ScanPanel
         expired={expired}
         label="Code that pairs your phone over Tailscale"
+        manual={manualEntry(privately)}
         onRenew={privately.renew}
         steps={[
           "Turn on Tailscale on your phone.",
@@ -389,6 +441,9 @@ function TailscalePanel({
         value={link}
       />
     );
+  }
+  if (active && privately.pairingError) {
+    return <PairingFailed message={privately.pairingError} onRetry={privately.renew} />;
   }
   const { phase } = privately;
   if (phase.kind === "failed") {
@@ -477,6 +532,7 @@ function AddressPanel({
         <ScanPanel
           expired={expired}
           label="Code that pairs your phone at your address"
+          manual={manualEntry(privately)}
           onRenew={privately.renew}
           steps={["In the Opensteer app, tap Scan QR Code and scan this code."]}
           value={link}
@@ -493,6 +549,9 @@ function AddressPanel({
         </p>
       </>
     );
+  }
+  if (active && !editing && privately.pairingError) {
+    return <PairingFailed message={privately.pairingError} onRetry={privately.renew} />;
   }
   const { phase } = privately;
   const submit = (event: FormEvent) => {
@@ -540,6 +599,35 @@ function AddressPanel({
   );
 }
 
+function manualEntry(
+  privately: ReturnType<typeof usePrivatePhoneSetup>,
+): { readonly address: string; readonly code: string } | null {
+  return privately.activeOrigin && privately.code
+    ? { address: privately.activeOrigin, code: privately.code }
+    : null;
+}
+
+function PairingFailed({
+  message,
+  onRetry,
+}: {
+  readonly message: string;
+  readonly onRetry: () => void;
+}) {
+  return (
+    <ActionPanel
+      action={
+        <button className="btn btn--small" onClick={onRetry} type="button">
+          Try again
+        </button>
+      }
+      tone="attention"
+    >
+      A code for your phone couldn’t be made: {message}
+    </ActionPanel>
+  );
+}
+
 function ArrivedRow({ phone }: { readonly phone: AuthSessionSummary }) {
   return (
     <SetupRow
@@ -557,34 +645,44 @@ function ArrivedRow({ phone }: { readonly phone: AuthSessionSummary }) {
 }
 
 /** Tailscale's state on this computer, read again whenever the window comes back. */
-function useTailscaleStatus(bridge: OpensteerDesktopBridge): DesktopTailscaleStatus | null {
+function useTailscaleStatus(bridge: OpensteerDesktopBridge): {
+  readonly refresh: () => void;
+  readonly status: DesktopTailscaleStatus | null;
+} {
   const [status, setStatus] = useState<DesktopTailscaleStatus | null>(null);
-  useEffect(() => {
-    let live = true;
-    let reading = false;
-    const read = () => {
-      if (reading) return;
-      reading = true;
-      void bridge
-        .tailscaleStatus()
-        .then(
-          (next) => {
-            if (live) setStatus(next);
-          },
-          () => {
-            if (live) setStatus({ state: "not-installed" });
-          },
-        )
-        .finally(() => {
-          reading = false;
-        });
-    };
-    read();
-    window.addEventListener("focus", read);
-    return () => {
-      live = false;
-      window.removeEventListener("focus", read);
-    };
+  const live = useRef(true);
+  // One read at a time; a request made during a read runs once it ends.
+  const reading = useRef<"idle" | "again" | "reading">("idle");
+  const refresh = useCallback(() => {
+    if (reading.current !== "idle") {
+      reading.current = "again";
+      return;
+    }
+    reading.current = "reading";
+    void bridge
+      .tailscaleStatus()
+      .then(
+        (next) => {
+          if (live.current) setStatus(next);
+        },
+        () => {
+          if (live.current) setStatus({ state: "not-installed" });
+        },
+      )
+      .finally(() => {
+        const again = reading.current === "again";
+        reading.current = "idle";
+        if (again && live.current) refresh();
+      });
   }, [bridge]);
-  return status;
+  useEffect(() => {
+    live.current = true;
+    refresh();
+    window.addEventListener("focus", refresh);
+    return () => {
+      live.current = false;
+      window.removeEventListener("focus", refresh);
+    };
+  }, [refresh]);
+  return { refresh, status };
 }

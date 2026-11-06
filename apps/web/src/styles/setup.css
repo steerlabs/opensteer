@@ -516,6 +516,55 @@
   padding-left: 0;
 }
 
+/* What the code carries, for a phone that cannot scan it: folded away until asked. */
+.setup-manual {
+  margin-top: var(--space-12);
+  padding-top: var(--space-10);
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.setup-manual summary {
+  width: fit-content;
+  cursor: pointer;
+}
+
+.setup-manual summary:hover {
+  color: var(--text-soft);
+}
+
+.setup-manual__fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  margin: var(--space-10) 0 0;
+}
+
+.setup-manual__field {
+  display: grid;
+  grid-template-columns: 6.5rem minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-8);
+}
+
+.setup-manual__field dd {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  margin: 0;
+  color: var(--text-soft);
+}
+
+.setup-manual__field .setup-mono {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .setup-address {
   display: flex;
   gap: var(--space-8);

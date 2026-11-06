@@ -335,6 +335,8 @@ export class ReconnectingHostConnection {
   #socket: WebSocket | undefined;
   /** The engines the current socket's hello advertised; see `recheckEngines`. */
   #advertisedEngines: { readonly signature: string; readonly socket: WebSocket } | undefined;
+  /** The work this socket is serving, so a recheck can see whether any is still queued. */
+  #work: { readonly socket: WebSocket; readonly work: RunnerWorkSession } | undefined;
   /** This Runner hung up itself to say hello again, which is not a failure. */
   #reconnectForEngines = false;
 
@@ -459,7 +461,8 @@ export class ReconnectingHostConnection {
    * The Host learns this computer's engines only from a hello, so when a CLI
    * has appeared or gone since this socket's, the Runner reconnects to say
    * hello again. Runs survive that; trigger programs do not, so it waits while
-   * one is running and the next heartbeat looks again.
+   * one is running or a command the Host sent is still queued, and the next
+   * heartbeat looks again.
    */
   recheckEngines(): void {
     const advertised = this.#advertisedEngines;
@@ -468,6 +471,8 @@ export class ReconnectingHostConnection {
     if (advertised.socket.readyState !== WebSocket.OPEN) return;
     if (engineSignature(runtime.harnessDriverAvailability()) === advertised.signature) return;
     if (runtime.activeTriggerOccurrenceIds().length > 0) return;
+    const serving = this.#work;
+    if (serving?.socket === advertised.socket && !serving.work.settled()) return;
     this.#reconnectForEngines = true;
     this.#logger.info("This computer's AI engines changed; reconnecting to tell the Host");
     advertised.socket.close(1000, "Runner engines changed");
@@ -1121,6 +1126,7 @@ export class ReconnectingHostConnection {
           sink,
         })
       : reachOnlyWorkSession(sink);
+    this.#work = { socket, work };
     // Module streams are opened from inside the serving loop, because the
     // ticket each one needs is answered on this connection: the loop below is
     // the only reader of it, so it is the only place that can hand a ticket
@@ -1245,6 +1251,12 @@ type HarnessCatalogRequest = Extract<
  */
 interface RunnerWorkSession {
   activity(): RunnerHeartbeatActivity;
+  /**
+   * Whether no command or reconcile the Host sent is still waiting its turn.
+   * One that is — a trigger queued behind a slow reconcile — would be admitted
+   * and then cancelled by a reconnect.
+   */
+  settled(): boolean;
   /** Every Run this Runner holds, announced before any other work on a connection. */
   attachInventory(): Extract<
     RunnerOperationalReport,
@@ -1452,6 +1464,10 @@ class AgentsWorkSession implements RunnerWorkSession {
       connectionOperationStopWaitMs,
       { timeoutError: () => new Error("Runner connection cleanup timed out") },
     ).catch(() => undefined);
+  }
+
+  settled(): boolean {
+    return this.#orderedPending === 0;
   }
 
   /** Runs `work` after every command and reconcile the Host sent before it. */
@@ -1878,6 +1894,7 @@ function reachOnlyWorkSession(sink: CausallyOrderedRunnerSink): RunnerWorkSessio
     }),
     attachInventory: () => [],
     close: () => Promise.resolve(),
+    settled: () => true,
     handle: async (message) => {
       switch (message.type) {
         case "host.reconcile-harnesses":

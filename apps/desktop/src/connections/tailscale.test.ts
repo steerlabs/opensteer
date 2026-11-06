@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   shareFailure,
+  tailscaleHandoffMilliseconds,
   TailscaleCommandError,
   TailscaleShare,
   type TailscaleCommand,
@@ -171,6 +172,29 @@ describe("TailscaleShare", () => {
     expect(tailnet.record()).toBeNull();
   });
 
+  it("keeps owning a handler whose command failed after Tailscale applied it", async () => {
+    const tailnet = share({ appliedThenFailed: true });
+    expect(await tailnet.tailscale.share(hostOrigin)).toMatchObject({ ok: false });
+    expect(tailnet.serve.Web?.[`${host}:443`]).toBeDefined();
+    expect(tailnet.record()).not.toBeNull();
+    // Quitting still takes down what Opensteer made.
+    await tailnet.tailscale.stop();
+    expect(tailnet.serve.Web?.[`${host}:443`]).toBeUndefined();
+  });
+
+  it("takes down a handler shared for setup once its route can no longer be coming", async () => {
+    const tailnet = share();
+    await tailnet.tailscale.share(hostOrigin);
+    // Within the hand-off the page may still be asking the Host for the route.
+    await tailnet.tailscale.reconcile({ authoritative: false, hostOrigin, routeOrigin: null });
+    expect(tailnet.serve.Web?.[`${host}:443`]).toBeDefined();
+    // The page gave up (closed, chose another way, or its request failed).
+    tailnet.state.now += tailscaleHandoffMilliseconds;
+    await tailnet.tailscale.reconcile({ authoritative: false, hostOrigin, routeOrigin: null });
+    expect(tailnet.serve.Web?.[`${host}:443`]).toBeUndefined();
+    expect(tailnet.record()).toBeNull();
+  });
+
   it("never touches a handler someone else put in its place, and keeps its record while it cannot look", async () => {
     const replaced = share();
     await replaced.tailscale.share(hostOrigin);
@@ -192,6 +216,7 @@ describe("TailscaleShare", () => {
 
 function share(
   options: {
+    readonly appliedThenFailed?: boolean;
     readonly backend?: string;
     readonly daemonDown?: boolean;
     readonly installed?: boolean;
@@ -200,7 +225,7 @@ function share(
     readonly serveFailure?: { readonly stderr: string; readonly stdout: string };
   } = {},
 ) {
-  const state = { backend: options.backend ?? "Running" };
+  const state = { backend: options.backend ?? "Running", now: 1_000_000 };
   const serve: { -readonly [Key in keyof TailscaleServeConfig]: TailscaleServeConfig[Key] } =
     structuredClone(options.serve ?? {});
   const files = new Map<string, string>();
@@ -236,6 +261,8 @@ function share(
         ...serve.Web,
         [`${host}:${port}`]: { Handlers: { "/": { Proxy: args.at(-1) } } },
       };
+      // The daemon applied it, but the command's answer never came back.
+      if (options.appliedThenFailed) throw new Error("Tailscale timed out");
       return { stderr: "", stdout: "" };
     }
     throw new Error(`Unexpected tailscale ${joined}`);
@@ -257,6 +284,7 @@ function share(
           );
         },
       },
+      now: () => state.now,
       platform: options.platform ?? "darwin",
       recordPath,
     });

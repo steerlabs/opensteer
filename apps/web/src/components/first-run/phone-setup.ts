@@ -204,6 +204,16 @@ export function usePhoneSetup(input: {
     }
   }, [hostClient, link, phase.kind, reach.kind, started]);
 
+  // Reaching Connect ends the attempt. A mode changed after that, from any
+  // device, is that device's choice: it is never undone from here without the
+  // person asking again.
+  useEffect(() => {
+    if (!started || reach.kind !== "reachable") return;
+    attempt.current += 1;
+    setStarted(false);
+    setPhase({ kind: "idle" });
+  }, [reach.kind, started]);
+
   // A Connect request settles when the Host reports its operation finished
   // and the route it publishes is in place.
   const operationId = phase.kind === "connecting" ? phase.operationId : null;

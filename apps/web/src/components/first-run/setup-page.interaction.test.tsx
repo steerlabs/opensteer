@@ -515,12 +515,8 @@ it("shares this Mac on the tailnet, then shows a one-time pairing code for the p
       type: "personal.remoteAccess.request",
     }),
   );
-  (bridge.tailscaleStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
-    dnsName: "studio.tail2f9.ts.net",
-    sharedOrigin: origin,
-    state: "ready",
-  });
-  await act(async () => window.dispatchEvent(new Event("focus")));
+  // Tailscale's own status still says nothing is shared; the code must show
+  // as soon as the Host answers at the address this visit shared.
   await remoteChanged({
     ...remoteStatus,
     access: {
@@ -536,6 +532,85 @@ it("shares this Mac on the tailnet, then shows a one-time pairing code for the p
   );
   expect(container.querySelector(".setup-scan__svg")?.getAttribute("aria-label")).toContain(
     "over Tailscale",
+  );
+  // A phone that cannot scan gets the same two things to type.
+  expect(container.querySelector(".setup-manual")?.textContent).toContain(origin);
+  expect(container.querySelector(".setup-manual")?.textContent).toContain(`osp_${"a".repeat(43)}`);
+});
+
+it("never undoes a mode another device chose after Connect came on", async () => {
+  const { access, bridge } = desktopBridge();
+  onThisMac(bridge, access);
+  remoteStatus = {
+    ...remoteStatus,
+    access: { ...(remoteStatus.access as object), accountLink: { state: "active" } },
+  };
+  localStorage.setItem(`opensteer.setup.v1:${shell.snapshot.deploymentId}`, "phone");
+  shell.hostClient.dispatch.mockResolvedValue({
+    operation: { id: "8f0b6c6e-2a4b-4f6d-9e1a-555555555555", state: "pending" },
+    type: "personal.remoteAccess.request",
+  });
+  await mount();
+  await act(async () => button("Turn on").click());
+  expect(shell.hostClient.dispatch).toHaveBeenCalledTimes(1);
+  await remoteChanged({
+    ...remoteStatus,
+    access: { ...(remoteStatus.access as object), mode: "connect", route: {} },
+    revision: 2,
+  });
+  expect(container.querySelector(".setup-scan__svg")).not.toBeNull();
+  // Another device switches this computer to a private network.
+  await remoteChanged({
+    ...remoteStatus,
+    access: {
+      ...(remoteStatus.access as object),
+      generation: 2,
+      mode: "private",
+      route: { document: { route: { origin: "https://mac.example.com" } } },
+    },
+    revision: 3,
+  });
+  // Connect is never asked for again on the person's behalf; the step now
+  // shows the address the other device chose.
+  const configures = shell.hostClient.dispatch.mock.calls.filter(
+    ([command]) => (command as { type: string }).type === "personal.remoteAccess.request",
+  );
+  expect(configures).toHaveLength(1);
+  expect(radio("Your own address").getAttribute("aria-checked")).toBe("true");
+});
+
+it("offers to try again when the phone's code could not be made", async () => {
+  const origin = "https://mac.example.com";
+  const { access, bridge } = desktopBridge();
+  onThisMac(bridge, access);
+  remoteStatus = {
+    ...remoteStatus,
+    access: {
+      ...(remoteStatus.access as object),
+      mode: "private",
+      route: { document: { route: { origin } } },
+    },
+  };
+  localStorage.setItem(`opensteer.setup.v1:${shell.snapshot.deploymentId}`, "phone");
+  let failing = true;
+  shell.hostClient.dispatch.mockImplementation(async () => {
+    if (failing) throw new Error("Opensteer is offline.");
+    return {
+      pairing: {
+        code: `osp_${"b".repeat(43)}`,
+        expiresAt: new Date(Date.now() + 600_000).toISOString(),
+        generation: 1,
+        schemaVersion: 1,
+      },
+      type: "personal.remoteAccess.pairing.create",
+    };
+  });
+  await mount();
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain("Opensteer is offline.");
+  failing = false;
+  await act(async () => button("Try again").click());
+  expect(container.querySelector(".setup-scan__svg")?.getAttribute("aria-label")).toContain(
+    "at your address",
   );
 });
 

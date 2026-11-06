@@ -23,7 +23,7 @@ import type {
   DesktopTailscaleShareResult,
   DesktopTailscaleStatus,
 } from "@opensteer/protocol/desktop";
-import type { TailscaleShare } from "./tailscale.js";
+import { tailscaleHandoffMilliseconds, type TailscaleShare } from "./tailscale.js";
 
 type Listener = (status: DesktopPersonalRemoteAccessStatus) => void;
 
@@ -57,6 +57,8 @@ export class DesktopPersonalRemoteAccessService {
   #shutdown = false;
   #shutdownPromise: Promise<void> | undefined;
   #status: DesktopPersonalRemoteAccessStatus = emptyStatus();
+  /** The check that takes down a shared handler whose route never came. */
+  #handoffCheck: ReturnType<typeof setTimeout> | undefined;
 
   constructor(options: {
     readonly connectFactory: (runtime: PersonalHostRuntimeRecord) => PersonalHostConnectComponents;
@@ -188,8 +190,30 @@ export class DesktopPersonalRemoteAccessService {
       });
     return this.#mutations.run("remote-access", async () => {
       const runtime = await this.#requireRuntime();
-      return tailscale.share(runtime.localOrigin);
+      const result = await tailscale.share(runtime.localOrigin);
+      if (result.ok) this.#scheduleHandoffCheck();
+      return result;
     });
+  }
+
+  /**
+   * A page that shares and then never asks the Host for the route — it was
+   * closed, the person chose another way, the request failed — would leave
+   * the handler up for this whole run. Once the hand-off can no longer be in
+   * flight, reconcile with whatever route the Host has.
+   */
+  #scheduleHandoffCheck(): void {
+    if (this.#handoffCheck) clearTimeout(this.#handoffCheck);
+    this.#handoffCheck = setTimeout(() => {
+      this.#handoffCheck = undefined;
+      if (this.#shutdown) return;
+      void this.#mutations
+        .run("remote-access", () => this.#reconcileTailscale(false))
+        .catch((error: unknown) =>
+          this.#log?.("desktop.personal.tailscale.reconcile-failed", error),
+        );
+    }, tailscaleHandoffMilliseconds + 1_000);
+    this.#handoffCheck.unref?.();
   }
 
   issuePairingCode(): Promise<DesktopPersonalPairingCode> {
@@ -228,6 +252,7 @@ export class DesktopPersonalRemoteAccessService {
 
   shutdown(signal?: AbortSignal): Promise<void> {
     this.#shutdown = true;
+    if (this.#handoffCheck) clearTimeout(this.#handoffCheck);
     this.#shutdownPromise ??= (async () => {
       if (this.#connectInstance) {
         const { management, teardown } = this.#connectInstance.value;
