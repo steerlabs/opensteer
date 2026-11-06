@@ -84,6 +84,22 @@ Access and Contacts, because `chat.db` holds only handles; sends need Automation
 Reminders need full access. A lost write answer is `outcome-unknown`. macOS grant queries can block
 behind another consent question, so `unknown` is neither denial nor success.
 
+### Messages: SQL and files
+
+Agents read Messages with their own SQL and get original files, because a fixed set of read and
+media operations cannot predict what a task needs. The helper still owns the boundary: it runs one
+read-only statement under an authorizer, and agent code never runs inside it. Full Disk Access
+reaches far more than Messages, so anything that widened that boundary would widen it to the whole
+Mac. Agents name an attachment by id, never a path, and the helper opens it by descriptor.
+
+A file moves for one live tool call. When the Run is on the Mac's own Runner it never leaves that
+computer, so a photo does not reach a server Deployment. When the Run is elsewhere it streams through
+the Host, because Runners reach the Host and never each other; nothing is spooled, and the
+[relay](../apps/host/src/integrations/run-file-relay.ts) ends with the call. Exports land in the
+Thread's attachment directory and go at the end of the Run. Files an agent sends must already be in
+its Workspace or that directory: the Runner checks, so a send cannot read what the Run could not.
+Trigger and Watch programs have no Run, so their file operations refuse.
+
 ### Setting an app up on this Mac
 
 macOS grants belong to **Opensteer Computer Use**, not Opensteer. Setup is person-driven and one app
