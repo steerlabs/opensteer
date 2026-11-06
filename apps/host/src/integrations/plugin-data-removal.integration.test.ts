@@ -1,3 +1,5 @@
+import { createHostRuntime } from "../runtime/runtime.js";
+import { ownTestDatabaseProducer } from "@opensteer/database/test-support/database";
 import { mkdir, mkdtemp, realpath, rm, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -130,6 +132,24 @@ it("queues plugin cleanup atomically, gates old Runners, acknowledges and replay
     expect(remove).toHaveBeenCalledWith(installed.id);
     await expect(readFile(join(data, "pairing"))).rejects.toMatchObject({ code: "ENOENT" });
     expect(await store.plugins.pendingDataRemovals(old.runnerId)).toHaveLength(1);
+    // A crash after commit can leave the Host directory, as can a failed pre-commit install.
+    await mkdir(hostData, { recursive: true });
+    await writeFile(join(hostData, "pairing"), "stranded");
+    const packageData = join(host.config.dataDirectory, "plugins", "data", "packages");
+    await mkdir(packageData, { recursive: true });
+    await writeFile(join(packageData, "snapshot"), "retained");
+    const survivorId = globalThis.crypto.randomUUID();
+    await store.plugins.install({
+      id: survivorId,
+      name: "survivor",
+      actorUserId: host.ownerId,
+      source: {},
+      digest: "one",
+      manifest: { name: "survivor" },
+    });
+    const survivorData = join(host.config.dataDirectory, "plugins", "data", survivorId);
+    await mkdir(survivorData);
+    await writeFile(join(survivorData, "pairing"), "retained");
     // Simulate a lost confirmation: the next attachment must repeat safely.
     await host.store.database
       .insertInto("runnerPluginDataRemovals")
@@ -150,6 +170,16 @@ it("queues plugin cleanup atomically, gates old Runners, acknowledges and replay
         ).toEqual([]),
       { timeout: 10_000 },
     );
+    for (const close of closers.splice(0).reverse()) await close();
+    await host.runtime.close();
+    const restarted = await ownTestDatabaseProducer(database.url, () =>
+      createHostRuntime(host.config, { logger: false }),
+    );
+    closers.push(() => restarted.close());
+    await restarted.listen();
+    await expect(readFile(join(hostData, "pairing"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(join(packageData, "snapshot"), "utf8")).toBe("retained");
+    expect(await readFile(join(survivorData, "pairing"), "utf8")).toBe("retained");
   } finally {
     for (const close of closers.reverse()) await close();
     await host.close();

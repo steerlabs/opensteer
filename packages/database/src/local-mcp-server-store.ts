@@ -131,6 +131,13 @@ export class LocalMcpServerStore {
           .selectFrom("integrationInstallations")
           .innerJoin("plugins", "plugins.id", "integrationInstallations.pluginId")
           .innerJoin("threads", "threads.id", "plugins.setupThreadId")
+          .innerJoin(
+            "workspaceMemberships",
+            "workspaceMemberships.workspaceId",
+            "threads.workspaceId",
+          )
+          .where("workspaceMemberships.userId", "=", owner)
+          .where("workspaceMemberships.state", "=", "active")
           .select(["threads.id as threadId", "threads.title as threadTitle", "threads.workspaceId"])
           .where("integrationInstallations.id", "=", locked.installationId)
           .executeTakeFirst();

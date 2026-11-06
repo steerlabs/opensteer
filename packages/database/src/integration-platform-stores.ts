@@ -1244,6 +1244,17 @@ export async function installIntegrationInTransaction(
   for (const discovered of input.servers) {
     const existing = serverByName.get(discovered.name);
     const retained = existing ? retainedUpdates.get(existing.id) : undefined;
+    const previousRunner = existing ? runnerOf(existing.transport) : null;
+    if (
+      installation.pluginId &&
+      previousRunner &&
+      previousRunner !== runnerOf(discovered.transport)
+    )
+      await transaction
+        .insertInto("runnerPluginDataRemovals")
+        .values({ runnerId: previousRunner as RunnerId, pluginId: installation.pluginId })
+        .onConflict((oc) => oc.columns(["runnerId", "pluginId"]).doNothing())
+        .execute();
     const server = existing
       ? await transaction
           .updateTable("integrationServers")
@@ -1293,13 +1304,13 @@ export async function installIntegrationInTransaction(
   if (retainedServerIds.length === 0) {
     await transaction
       .updateTable("integrationServers")
-      .set({ status: "disabled", updatedAt: now })
+      .set({ status: "disabled", statusDetail: null, updatedAt: now })
       .where("installationId", "=", installation.id)
       .execute();
   } else {
     await transaction
       .updateTable("integrationServers")
-      .set({ status: "disabled", updatedAt: now })
+      .set({ status: "disabled", statusDetail: null, updatedAt: now })
       .where("installationId", "=", installation.id)
       .where("id", "not in", retainedServerIds)
       .execute();

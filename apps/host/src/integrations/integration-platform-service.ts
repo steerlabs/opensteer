@@ -1,5 +1,6 @@
-import { realpath } from "node:fs/promises";
-import { removePluginData } from "@opensteer/shared/privateFiles";
+import { isNodeError } from "@opensteer/shared/nodeError";
+import { readdir, realpath } from "node:fs/promises";
+import { assertPluginDataId, removePluginData } from "@opensteer/shared/privateFiles";
 import type { AdministrationCommandIdentity } from "@opensteer/database";
 import { z } from "zod";
 import {
@@ -1341,6 +1342,32 @@ export class IntegrationPlatformService {
       await this.#computerApps.removePluginData(pending.runnerId, pending.pluginId);
   }
 
+  async recoverPluginData(): Promise<void> {
+    const directory = `${await realpath(this.#dataDirectory)}/plugins/data`;
+    const plugins = await this.#store.plugins.list();
+    const retained = new Set(plugins.map((plugin) => plugin.id));
+    // Package snapshots and pre-migration name-based data are not orphan plugin state.
+    retained.add("packages");
+    for (const installation of await this.#store.listInstallations())
+      if (installation.id === installation.pluginId) retained.add(installation.name);
+    let entries: string[];
+    try {
+      entries = await readdir(directory);
+    } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") return;
+      throw error;
+    }
+    for (const id of entries) {
+      if (retained.has(id)) continue;
+      try {
+        assertPluginDataId(id);
+      } catch {
+        continue;
+      }
+      await removePluginData(directory, id);
+    }
+  }
+
   async removePluginData(pluginId: string): Promise<void> {
     await removePluginData(`${await realpath(this.#dataDirectory)}/plugins/data`, pluginId);
     await this.deliverPluginDataRemovals();
@@ -2482,7 +2509,13 @@ export class IntegrationPlatformService {
     } catch (error) {
       return refusal(await this.#computerServerRefusal(callable, server, error));
     }
-    const call = this.inputRequests.start(upstream.client, callable, caller, signal);
+    const call = this.inputRequests.start(
+      upstream.client,
+      callable,
+      caller,
+      signal,
+      server?.runnerName ?? "its computer",
+    );
     try {
       const result = await upstream.client.callTool(
         { arguments: { ...args }, name: callable.tool.name },
@@ -3633,6 +3666,7 @@ export class IntegrationPlatformService {
           // A session that ended — a computer gone offline, a server that
           // stopped — leaves a client that can only fail, so it is not kept.
           value.client.onclose = () => {
+            this.inputRequests.forget(value.client);
             if (this.#clients.get(key) === open) this.#clients.delete(key);
           };
           return { ...value, letGo: () => this.#letGo(key, open) };
@@ -3734,6 +3768,7 @@ export class IntegrationPlatformService {
       return client;
     } catch (error) {
       await client.close().catch(() => undefined);
+      this.inputRequests.forget(client);
       // The computer's own reason says more than the SDK's "Connection closed".
       throw computer?.closeError ?? error;
     } finally {

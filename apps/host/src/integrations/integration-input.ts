@@ -34,18 +34,27 @@ interface InputWaiter {
 }
 
 export class InputCall {
+  readonly computerName: string;
   readonly callable: CallableIntegrationTool;
   readonly caller: ToolCaller;
   readonly #cancel = new AbortController();
   readonly #startedAt = Date.now();
-  readonly #secrets: string[] = [];
+  #secrets: string[];
   #timer: ReturnType<typeof setTimeout>;
   readonly pending = new Set<Promise<ElicitResult>>();
   readonly signal: AbortSignal;
   timedOut = false;
   cancellationReason: RequestCancellationReason = "source-closed";
 
-  constructor(callable: CallableIntegrationTool, caller: ToolCaller, signal?: AbortSignal) {
+  constructor(
+    callable: CallableIntegrationTool,
+    caller: ToolCaller,
+    signal?: AbortSignal,
+    secrets: string[] = [],
+    computerName = "its computer",
+  ) {
+    this.computerName = computerName;
+    this.#secrets = secrets;
     this.callable = callable;
     this.caller = caller;
     this.signal = signal ? AbortSignal.any([signal, this.#cancel.signal]) : this.#cancel.signal;
@@ -60,6 +69,10 @@ export class InputCall {
       Math.max(0, this.#startedAt + integrationInputTimeoutMs - Date.now()),
     );
     this.#timer.unref();
+  }
+
+  detach(): void {
+    this.#secrets = [...this.#secrets];
   }
 
   remember(values: readonly string[]): void {
@@ -83,7 +96,7 @@ export class InputCall {
     clearTimeout(this.#timer);
     this.abort(this.cancellationReason);
     await Promise.all(this.pending);
-    this.#secrets.length = 0;
+    this.#secrets = [];
   }
 }
 
@@ -96,8 +109,9 @@ interface IntegrationInputOptions {
   readonly publish: (events: readonly AgentEvent[]) => void;
 }
 
-/** Pairing answers live only as long as the upstream call that asked for them. */
+/** Pairing answers live only as long as the upstream client that received them. */
 export class IntegrationInput {
+  readonly #secrets = new WeakMap<Client, string[]>();
   readonly #calls = new Map<Client, Set<InputCall>>();
   readonly #waiters = new Map<RequestId, InputWaiter>();
   readonly #options: IntegrationInputOptions;
@@ -106,12 +120,14 @@ export class IntegrationInput {
   }
 
   register(client: Client): void {
+    this.#secrets.set(client, []);
     // The client declares form mode only, so the SDK refuses URL-mode requests itself.
     client.setRequestHandler(ElicitRequestSchema, (request, extra) => {
       const params = request.params;
       if (params.mode === "url" || params.task)
         return decline("Only flat form input during a tool call is supported.");
       const calls = this.#calls.get(client);
+      // A late elicitation can only be matched to the single currently active call.
       const call = calls?.size === 1 ? calls.values().next().value : undefined;
       if (!call?.caller.run || call.signal.aborted)
         return decline("Device input requires a single active call from a Run.");
@@ -127,12 +143,20 @@ export class IntegrationInput {
     callable: CallableIntegrationTool,
     caller: ToolCaller,
     signal?: AbortSignal,
+    computerName?: string,
   ): InputCall {
-    const call = new InputCall(callable, caller, signal);
+    const call = new InputCall(callable, caller, signal, this.#secrets.get(client), computerName);
     const calls = this.#calls.get(client) ?? new Set<InputCall>();
     calls.add(call);
     this.#calls.set(client, calls);
     return call;
+  }
+
+  forget(client: Client): void {
+    const secrets = this.#secrets.get(client);
+    for (const call of this.#calls.get(client) ?? []) call.detach();
+    if (secrets) secrets.length = 0;
+    this.#secrets.delete(client);
   }
 
   async finish(client: Client, call: InputCall): Promise<void> {
@@ -208,7 +232,18 @@ export class IntegrationInput {
       return decline(
         "This AI engine cannot wait for device input; use an engine that supports long Request holds.",
       );
-    const presentation = inputPresentation(call.callable.installation.title, params);
+    if (
+      Object.keys(params.requestedSchema.properties).some(
+        (id) => !params.requestedSchema.required?.includes(id),
+      )
+    )
+      return decline("Every device input field must be required.");
+    const presentation = inputPresentation(
+      call.callable.installation.title,
+      params,
+      call.computerName,
+      call.redactor(),
+    );
     if (!presentation) return decline("This device input form is unsupported or too large.");
     const ended = AbortSignal.any([call.signal, signal]);
     if (ended.aborted) return { action: "cancel" };
@@ -268,7 +303,12 @@ function decline(reason: string): ElicitResult {
   return { action: "decline", _meta: { "opensteer/reason": reason } };
 }
 
-function inputPresentation(title: string, params: FormParams) {
+function inputPresentation(
+  title: string,
+  params: FormParams,
+  computerName: string,
+  redactor: ReturnType<InputCall["redactor"]>,
+) {
   const fields = [];
   for (const [id, property] of Object.entries(params.requestedSchema.properties)) {
     if (property.type === "array" || "oneOf" in property) return null;
@@ -284,19 +324,32 @@ function inputPresentation(title: string, params: FormParams) {
               label: ("enumNames" in property ? property.enumNames?.[index] : undefined) ?? value,
             }))
           : undefined;
+    if (
+      redactor.redactText(id) !== id ||
+      choices?.some((choice) => redactor.redactText(choice.value) !== choice.value)
+    )
+      return null;
     fields.push({
       id,
-      label: property.title ?? id,
-      prompt: property.description ?? property.title ?? id,
+      label: redactor.redactText(property.title ?? id),
+      prompt: redactor.redactText(property.description ?? property.title ?? id),
       secret: true,
       multiSelect: false,
-      ...(choices ? { choices } : {}),
+      ...(choices
+        ? {
+            choices: choices.map((choice) => ({
+              ...choice,
+              label: redactor.redactText(choice.label),
+            })),
+          }
+        : {}),
     });
   }
   const result = RequestPresentationSchema.safeParse({
     kind: "form",
-    title,
-    detail: params.message,
+    title: redactor.redactText(title),
+    agentProposed: true,
+    detail: redactor.redactText(`From its plugin on ${computerName}\n\n${params.message}`),
     fields,
   });
   return result.success ? result.data : null;
