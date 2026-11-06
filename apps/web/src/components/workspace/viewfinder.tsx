@@ -6,8 +6,18 @@ import {
 import { observeResize } from "@opensteer/shared/resizeObserver";
 import { BrowserCropCue } from "../browser/browser-crop-cue.js";
 import { browserFrameContentRect } from "@opensteer/shared/browserPresentation";
-import { memo, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
+import {
+  getBrowserLastPicture,
+  rememberBrowserLastPicture,
   pageSiteLabel,
   placeActivityPoint,
   type HostClient,
@@ -117,7 +127,7 @@ export const Viewfinder = memo(function Viewfinder({
       <span aria-hidden className="viewfinder__frame">
         {destination?.kind === "browser" && destination.tabId ? (
           <BrowserFinder
-            key={destination.tabId}
+            key={`${destination.sessionId}:${destination.tabId}`}
             onLive={setPictureLive}
             enabled={live}
             hostClient={hostClient}
@@ -222,10 +232,21 @@ function BrowserFinder({
   const frameRef = useRef<HTMLSpanElement | null>(null);
   const imageRef = useRef<HTMLSpanElement | null>(null);
   const [shown, setShown] = useState(false);
+  useSyncExternalStore(
+    useCallback(
+      (listener) => hostClient.browserWatchFrames.subscribe(sessionId, listener, tabId),
+      [hostClient, sessionId, tabId],
+    ),
+    useCallback(
+      () => hostClient.browserWatchFrames.invalidationKey?.(sessionId, tabId) ?? 0,
+      [hostClient, sessionId, tabId],
+    ),
+  );
+  const cached = getBrowserLastPicture(hostClient.browserWatchFrames, sessionId, tabId);
   const reducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || !surfaceId) return;
     return attachBrowserCanvas(
@@ -234,7 +255,10 @@ function BrowserFinder({
       tabId,
       true,
       canvas,
-      () => setShown(true),
+      (frame) => {
+        rememberBrowserLastPicture(hostClient.browserWatchFrames, sessionId, tabId, frame);
+        setShown(true);
+      },
       true,
       { preservePixels: true, active: enabled },
     );
@@ -304,6 +328,13 @@ function BrowserFinder({
         }
         ref={imageRef}
       >
+        {!shown && cached ? (
+          <img
+            alt=""
+            src={cached.uri}
+            style={{ position: "absolute", top: 0, left: 0, width: "100%", display: "block" }}
+          />
+        ) : null}
         <canvas className={shown ? "" : "viewfinder__canvas--empty"} ref={canvasRef} />
         <BrowserCropCue />
         {shown ? (

@@ -75,7 +75,7 @@ it("keeps the card and its watch lease across independent inventories, Request w
     runPlace: store.get,
     subscribeRunPlace: store.subscribe,
     retainBrowserWatch: retain,
-    browserWatchFrames: {},
+    browserWatchFrames: { subscribe: () => () => {} },
     placeActivity: () => [],
     subscribePlaceActivity: () => () => {},
     browserWatchState: () => watchState,
@@ -119,7 +119,7 @@ it("keeps the card and its watch lease across independent inventories, Request w
   });
   expect(store.get(runId)!.data.place).toMatchObject({ sessionId });
   expect(node.querySelector(".viewfinder")).toBe(card);
-  expect(node.querySelector("canvas")).toBe(canvas);
+  expect(node.querySelector("canvas")).not.toBe(canvas);
   expect(retain).toHaveBeenLastCalledWith(
     "bsn_00000000-0000-4000-8000-000000000002",
     surfaceId,

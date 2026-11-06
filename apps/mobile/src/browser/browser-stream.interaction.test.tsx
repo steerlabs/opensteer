@@ -259,6 +259,7 @@ function setup(interactive = true, cursor?: BrowserCursorStore) {
       feed = { ...feed, status: viewerState === "synchronized" ? "live" : "connecting" };
       root?.render(
         <BrowserStream
+          key={overrides.tabId ?? surfaceId}
           active={active}
           hostClient={hostClient}
           interactive={interactive}
@@ -271,10 +272,14 @@ function setup(interactive = true, cursor?: BrowserCursorStore) {
         />,
       );
     });
-  const emit = (target = surfaceId, header: Partial<BrowserFrameView["header"]> = {}) =>
+  const emit = (
+    target = surfaceId,
+    header: Partial<BrowserFrameView["header"]> = {},
+    data: BrowserFrameView["data"] = frame().data,
+  ) =>
     act(() => {
       if (!streaming && interactive) return;
-      picture = { ...frame(), header: { ...frame().header, surfaceId: target, ...header } };
+      picture = { ...frame(), data, header: { ...frame().header, surfaceId: target, ...header } };
       feed = { ...feed, frame: picture };
       watch = { ...watch, frame: picture };
       for (const listener of listeners) listener();
@@ -825,7 +830,44 @@ describe("native browser picture presenter", () => {
 });
 
 describe.each(["image", "picture"] as const)("passive Run preview on %s", (presenter) => {
-  it("holds the drawn frame across gaps and same-tab session rebinding, then clears on revocation and inactivity", async () => {
+  it("restores only the returning tab's presented picture and forgets revoked unmounted tabs", async () => {
+    native.presenter = presenter;
+    const preview = setup(false);
+    const b = BrowserSurfaceIdSchema.parse("srf_00000000-0000-4000-8000-000000000002");
+    const render = (tabId = surfaceId) =>
+      preview.render("synchronized", true, {
+        preserveLastFrame: true,
+        tabId,
+        label: tabId === surfaceId ? "A" : "B",
+      });
+    render();
+    preview.emit();
+    await preview.decode();
+    preview.gap();
+    render(b);
+    expect(preview.container.textContent).toContain("Loading the page");
+    expect(preview.container.querySelector('img[alt="B"]')).toBeNull();
+    preview.emit(b, { frameId: 2 }, new Uint8Array([0xff, 0xd8, 0x00]));
+    await preview.decode();
+    preview.gap();
+    render();
+    expect(preview.container.textContent).not.toContain("Loading the page");
+    expect(preview.container.querySelector('img[alt="A"]')).not.toBeNull();
+    expect(preview.container.querySelector('img[alt="A"]')!.getAttribute("src")).toBe(
+      "data:image/jpeg;base64,/9j/",
+    );
+    render(b);
+    expect(preview.container.querySelector('img[alt="B"]')!.getAttribute("src")).toBe(
+      "data:image/jpeg;base64,/9gA",
+    );
+    expect(preview.watchRelease).toHaveBeenCalledTimes(3);
+    preview.gap(true);
+    render();
+    expect(preview.container.querySelector('img[alt="A"]')).toBeNull();
+    expect(preview.container.textContent).toContain("Loading the page");
+  });
+
+  it("holds the drawn frame across gaps, then clears on revocation, session changes and inactivity", async () => {
     native.presenter = presenter;
     const preview = setup(false);
     const render = (active = true, targetSession = sessionId) =>
@@ -840,14 +882,14 @@ describe.each(["image", "picture"] as const)("passive Run preview on %s", (prese
     expect(picture).not.toBeNull();
     preview.gap();
     expect(preview.container.querySelector('img[alt="A page, example.com"]')).toBe(picture);
-    render(true, "bsn_00000000-0000-4000-8000-000000000002");
-    expect(preview.container.querySelector('img[alt="A page, example.com"]')).toBe(picture);
-    expect(preview.watchRelease).toHaveBeenCalledOnce();
     preview.gap(true);
     expect(preview.container.querySelector('img[alt="A page, example.com"]')).toBeNull();
     preview.emit(surfaceId, { frameId: 2, watchToken: "00000000-0000-4000-8000-000000000002" });
     await preview.decode();
     expect(preview.container.querySelector('img[alt="A page, example.com"]')).not.toBeNull();
+    preview.gap();
+    render(true, "bsn_00000000-0000-4000-8000-000000000002");
+    expect(preview.container.querySelector('img[alt="A page, example.com"]')).toBeNull();
     render(false);
     expect(preview.container.querySelector("img")).toBeNull();
     expect(preview.watchRelease).toHaveBeenCalledTimes(2);
