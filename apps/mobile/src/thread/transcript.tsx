@@ -31,7 +31,7 @@ import {
   type WorkSummary,
   type WorkspaceSummary,
 } from "@opensteer/client/host";
-import { voiceCallSeed } from "@opensteer/core";
+import { placeIdentityKey, voiceCallSeed } from "@opensteer/core";
 import { replyParts, type ReplyPart } from "@opensteer/shared/markdown";
 import { memo, useMemo, useRef, useState, type ReactNode } from "react";
 import { Pressable, StyleSheet, View, useWindowDimensions } from "react-native";
@@ -715,6 +715,7 @@ function WorkRowView(props: {
     case "steps":
       return (
         <StepsRow
+          latestPlaceId={props.latestPlaceId}
           highlightRequestId={props.highlightRequestId}
           onOpenStep={props.onOpenStep}
           row={row}
@@ -778,6 +779,7 @@ function SubagentRow(props: {
 }
 
 function StepsRow(props: {
+  readonly latestPlaceId: string | null;
   readonly highlightRequestId: string | null;
   readonly onOpenStep: (entryId: string) => void;
   readonly row: Extract<WorkRow, { kind: "steps" }>;
@@ -804,20 +806,47 @@ function StepsRow(props: {
       <StepHead
         expanded={open}
         head={row.head}
+        places={
+          row.places.length > 0 ? (
+            <View style={{ flexDirection: "row" }}>
+              {row.places.slice(0, 3).map((entry) => {
+                const place =
+                  row.currentPlace &&
+                  placeIdentityKey(row.currentPlace.place) === placeIdentityKey(entry.place)
+                    ? row.currentPlace
+                    : entry;
+                return (
+                  <TracePlace
+                    entry={place}
+                    latest={place.id === props.latestPlaceId}
+                    markOnly
+                    key={entry.id}
+                  />
+                );
+              })}
+            </View>
+          ) : null
+        }
         highlighted={false}
         onPress={() => setOpen(!open)}
       />
       {open ? (
         <Animated.View entering={appear} exiting={exit} style={styles.lines}>
-          {row.entries.map((entry) => (
-            <StepHead
-              compact
-              head={activityStepHead(entry)}
-              highlighted={entry.kind === "request" && entry.requestId === props.highlightRequestId}
-              key={entry.id}
-              {...(entry.kind === "request" ? {} : { onPress: () => props.onOpenStep(entry.id) })}
-            />
-          ))}
+          {row.entries.map((entry) =>
+            entry.kind === "place" ? (
+              <TracePlace entry={entry} latest={entry.id === props.latestPlaceId} key={entry.id} />
+            ) : (
+              <StepHead
+                compact
+                head={activityStepHead(entry)}
+                highlighted={
+                  entry.kind === "request" && entry.requestId === props.highlightRequestId
+                }
+                key={entry.id}
+                {...(entry.kind === "request" ? {} : { onPress: () => props.onOpenStep(entry.id) })}
+              />
+            ),
+          )}
         </Animated.View>
       ) : null}
     </View>
@@ -860,6 +889,7 @@ function ReasoningRow(props: {
  */
 function StepHead(props: {
   readonly compact?: boolean;
+  readonly places?: ReactNode;
   readonly expanded?: boolean;
   readonly head: ActivityStepHead;
   readonly highlighted: boolean;
@@ -868,14 +898,18 @@ function StepHead(props: {
   const { head } = props;
   const content = (
     <>
-      <View style={styles.icon}>
-        <Symbol
-          name={props.compact === true ? toneSymbol(head) : activitySymbol[head.icon]}
-          size={props.compact === true ? 12 : 14}
-          tint={toneColor(head.tone)}
-          weight="medium"
-        />
-      </View>
+      {props.places ? (
+        props.places
+      ) : (
+        <View style={styles.icon}>
+          <Symbol
+            name={props.compact === true ? toneSymbol(head) : activitySymbol[head.icon]}
+            size={props.compact === true ? 12 : 14}
+            tint={toneColor(head.tone)}
+            weight="medium"
+          />
+        </View>
+      )}
       <View style={styles.stepText}>
         {/* A label with nothing under it — a computer-use headline is the whole
             step — says its outcome last, so it may take a second line; so may
@@ -944,7 +978,7 @@ function StepHead(props: {
 function ErrorCount(props: { readonly count: number }): ReactNode {
   return (
     <AppText role="caption" style={styles.errors}>
-      {props.count === 1 ? "1 error" : `${props.count} errors`}
+      {`· ${props.count} failed`}
     </AppText>
   );
 }

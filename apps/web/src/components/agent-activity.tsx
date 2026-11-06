@@ -1,4 +1,4 @@
-import { voiceCallSeed } from "@opensteer/core";
+import { placeIdentityKey, voiceCallSeed } from "@opensteer/core";
 import { AppCard } from "./apps/app-card.js";
 import { AppMark } from "./computer-apps/computer-use-section.js";
 import { useTaskSnapshot } from "./task-rows.js";
@@ -1376,7 +1376,7 @@ function WorkRowView({
     case "subagent":
       return <SubagentRow active={active} live={live} row={row} turn={turn} />;
     case "steps":
-      return <StepsRow row={row} />;
+      return <StepsRow row={row} turn={turn} />;
     case "place":
       return <TracePlace entry={row.entry} turn={turn} />;
   }
@@ -1387,7 +1387,15 @@ function WorkRowView({
  * a step. It names the page as it was then and opens that exact tab while it
  * is open; a closed one stays, muted, and opens nothing.
  */
-function TracePlace({ entry, turn }: { entry: PlaceEntry; turn: Turn }) {
+function TracePlace({
+  entry,
+  turn,
+  markOnly = false,
+}: {
+  entry: PlaceEntry;
+  turn: Turn;
+  markOnly?: boolean;
+}) {
   const sessions = useContext(TranscriptBrowsers);
   const { threadId } = useContext(Speakers);
   const computers = useContext(ReaderComputers);
@@ -1407,6 +1415,19 @@ function TracePlace({ entry, turn }: { entry: PlaceEntry; turn: Turn }) {
     page.acting &&
     !page.ended &&
     turn.work.findLast((work) => work.kind === "place") === entry;
+  if (markOnly)
+    return (
+      <>
+        {place.kind === "phone" ? (
+          <Icon name="phone" />
+        ) : place.kind === "app" ? (
+          <AppMark identity={place.app.app} />
+        ) : (
+          <SiteMark favicon={page.favicon ?? null} />
+        )}
+        {acting ? <span aria-hidden className="live-dot" /> : null}
+      </>
+    );
   const site = page.site !== null && page.site !== page.title ? page.site : null;
   const label = [page.title, page.site, page.ended ? "closed" : acting ? "agent working" : null]
     .filter(Boolean)
@@ -1516,7 +1537,7 @@ function SubagentPrompt({ text }: { text: string }) {
   );
 }
 
-function StepsRow({ row }: { row: Extract<WorkRow, { kind: "steps" }> }) {
+function StepsRow({ row, turn }: { row: Extract<WorkRow, { kind: "steps" }>; turn: Turn }) {
   const [open, setOpen] = useState(false);
   const [only] = row.entries;
   const single = row.entries.length === 1 ? only : undefined;
@@ -1528,6 +1549,19 @@ function StepsRow({ row }: { row: Extract<WorkRow, { kind: "steps" }> }) {
     <div className={open ? "trace-step trace-step--open" : "trace-step"}>
       <StepHead
         head={row.head}
+        places={row.places.slice(0, 3).map((entry) => (
+          <TracePlace
+            entry={
+              row.currentPlace &&
+              placeIdentityKey(row.currentPlace.place) === placeIdentityKey(entry.place)
+                ? row.currentPlace
+                : entry
+            }
+            turn={turn}
+            markOnly
+            key={entry.id}
+          />
+        ))}
         {...(single?.kind === "request" ? {} : { onToggle: () => setOpen(!open), open })}
       />
       {open && computer && !single ? <p className="trace-step__place">on {computer}</p> : null}
@@ -1543,15 +1577,19 @@ function StepsRow({ row }: { row: Extract<WorkRow, { kind: "steps" }> }) {
               : "trace-step__lines"
           }
         >
-          {row.entries.map((entry) => (
-            <Step
-              compact
-              entry={entry}
-              head={activityStepHead(entry)}
-              key={entry.id}
-              mark={row.group === "computer"}
-            />
-          ))}
+          {row.entries.map((entry) =>
+            entry.kind === "place" ? (
+              <TracePlace entry={entry} turn={turn} key={entry.id} />
+            ) : (
+              <Step
+                compact
+                entry={entry}
+                head={activityStepHead(entry)}
+                key={entry.id}
+                mark={row.group === "computer"}
+              />
+            ),
+          )}
         </div>
       ) : null}
     </div>
@@ -1671,12 +1709,14 @@ function DisclosedSection({ label, text }: { label: string; text: string }) {
  */
 function StepHead({
   head,
+  places,
   listed = false,
   mark = false,
   onToggle,
   open,
 }: {
   head: ActivityStepHead;
+  places?: readonly ReactNode[];
   /**
    * A step listed under a row, which already counts its errors: the step's own
    * glyph or mark says it failed, and one failure is counted once.
@@ -1695,21 +1735,30 @@ function StepHead({
     <>
       <span
         className={`trace-step__icon trace-step__icon--${tone}${mark ? " trace-step__icon--mark" : ""}`}
+        style={
+          places && places.length > 0
+            ? { display: "inline-flex", width: "auto", gap: 2 }
+            : undefined
+        }
       >
-        <Icon
-          name={mark ? toneMark(head.tone) : head.icon}
-          title={
-            head.tone === "running"
-              ? live
-                ? "Running"
-                : "Last known: running"
-              : head.tone === "error"
-                ? "Returned an error"
-                : head.tone === "stopped"
-                  ? "Stopped"
-                  : undefined
-          }
-        />
+        {places && places.length > 0 ? (
+          places
+        ) : (
+          <Icon
+            name={mark ? toneMark(head.tone) : head.icon}
+            title={
+              head.tone === "running"
+                ? live
+                  ? "Running"
+                  : "Last known: running"
+                : head.tone === "error"
+                  ? "Returned an error"
+                  : head.tone === "stopped"
+                    ? "Stopped"
+                    : undefined
+            }
+          />
+        )}
       </span>
       <span
         className={
@@ -1774,7 +1823,7 @@ function toneMark(tone: ActivityTone): "alert-circle" | "check" | "check-circle"
 }
 
 function ErrorCount({ count }: { count: number }) {
-  return <span className="trace-errors">{count === 1 ? "1 error" : `${count} errors`}</span>;
+  return <span className="trace-errors">{`· ${count} failed`}</span>;
 }
 
 /* ---- Messages ---- */

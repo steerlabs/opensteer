@@ -1,3 +1,5 @@
+import { placeIdentityKey } from "@opensteer/core";
+import { pageSiteLabel } from "./surfaces.js";
 import type {
   AssignmentSummary,
   BrowserTabWriteInput,
@@ -1130,7 +1132,9 @@ function countNoun(count: number, noun: string): string {
  */
 export type WorkRow =
   | {
-      readonly entries: readonly (RequestReceiptEntry | ToolEntry)[];
+      readonly entries: readonly (RequestReceiptEntry | ToolEntry | PlaceEntry)[];
+      readonly places: readonly PlaceEntry[];
+      readonly currentPlace: PlaceEntry | null;
       /** What the row's steps share, so a renderer can lay a Computer use row out as a timeline. */
       readonly group: StepGroup | null;
       readonly head: ActivityStepHead;
@@ -1149,7 +1153,8 @@ export type WorkRow =
   | { readonly entry: PlaceEntry; readonly key: string; readonly kind: "place" }
   | { readonly entry: ReasoningEntry; readonly key: string; readonly kind: "reasoning" };
 
-export type StepGroup = "command" | "computer" | "edit" | "explore" | "integrations" | "web";
+export type StepGroup =
+  "command" | "computer" | "edit" | "explore" | "integrations" | "integration-call" | "web";
 
 // Bounds what a long turn mounts and redraws on each streamed step on a phone.
 export const traceWindowRows = 30;
@@ -1175,21 +1180,32 @@ export function traceWindow(
 
 /**
  * Rows are only ever appended to or grown at the end, so a row's key — its
- * first entry — is stable while the turn streams, and a row a reader opened
+ * first step — is stable while the turn streams, and a row a reader opened
  * stays open.
  */
 export function workRows(work: readonly WorkEntry[]): WorkRow[] {
   type Steps = {
-    entries: (RequestReceiptEntry | ToolEntry)[];
+    entries: (RequestReceiptEntry | ToolEntry | PlaceEntry)[];
     group: StepGroup | null;
-    /** Steps join a row only when they share this: the group, and for Computer use the app and Runner. */
+    /** Steps share a group and, for targeted calls, the same resource identity. */
     joinKey: string | null;
     key: string;
     kind: "steps";
   };
   const result: (Exclude<WorkRow, { kind: "steps" }> | Steps)[] = [];
 
+  let pending: PlaceEntry[] = [];
+  const flushPlaces = () => {
+    for (const entry of pending) result.push({ entry, key: `place:${entry.id}`, kind: "place" });
+    pending = [];
+  };
   for (const entry of work) {
+    if (entry.kind === "place") {
+      pending.push(entry);
+      continue;
+    }
+    if (entry.kind === "message" || entry.kind === "reasoning" || entry.kind === "node")
+      flushPlaces();
     const last = result.at(-1);
     if (entry.kind === "message") {
       result.push({ entry, key: `note:${entry.id}`, kind: "note" });
@@ -1203,25 +1219,24 @@ export function workRows(work: readonly WorkEntry[]): WorkRow[] {
       result.push({ entry, head: nodeHead(entry), key: `subagent:${entry.id}`, kind: "subagent" });
       continue;
     }
-    if (entry.kind === "place") {
-      result.push({ entry, key: `place:${entry.id}`, kind: "place" });
-      continue;
-    }
     const group = entry.kind === "tool" ? stepGroup(toolPresentation(entry).kind) : null;
     const joinKey = entry.kind === "tool" && group !== null ? groupJoinKey(entry, group) : null;
     if (last?.kind === "steps" && joinKey !== null && last.joinKey === joinKey) {
-      last.entries.push(entry);
+      last.entries.push(...pending, entry);
+      pending = [];
       continue;
     }
     const row = {
-      entries: [entry],
+      entries: [...pending, entry],
       group,
       joinKey,
       key: `row:${entry.id}`,
       kind: "steps" as const,
     };
     result.push(row);
+    pending = [];
   }
+  flushPlaces();
 
   return result.map((row) =>
     row.kind !== "steps"
@@ -1229,7 +1244,9 @@ export function workRows(work: readonly WorkEntry[]): WorkRow[] {
       : {
           entries: row.entries,
           group: row.group,
-          head: rowHead(row.entries, row.group),
+          head: placesRowHead(row.entries, row.group),
+          places: rowPlaces(row.entries),
+          currentPlace: row.entries.findLast((entry) => entry.kind === "place") ?? null,
           key: row.key,
           kind: "steps",
         },
@@ -1240,7 +1257,18 @@ export function workRows(work: readonly WorkEntry[]): WorkRow[] {
  * Computer use folds steps on one app or phone. Runner ids keep computers
  * apart even when they share a display name.
  */
-function groupJoinKey(tool: ToolEntry, group: StepGroup): string {
+function groupJoinKey(tool: ToolEntry, group: StepGroup): string | null {
+  if (group === "integration-call") {
+    const subject = tool.integration;
+    if (!subject || subject.effect !== "read") return null;
+    const args = effectiveArguments(tool);
+    return JSON.stringify([
+      group,
+      stringField(args, "operation") ?? subject.integration,
+      subject.operation.name,
+      stringField(args, "account") ?? subject.account,
+    ]);
+  }
   if (group !== "computer") return group;
   const place = computerPlace(tool);
   return place
@@ -1262,6 +1290,8 @@ function stepGroup(kind: StepKind): StepGroup | null {
       return "edit";
     case "computer":
       return "computer";
+    case "integration-call":
+      return "integration-call";
     case "integration-lookup":
       return "integrations";
     case "web-page":
@@ -1270,6 +1300,46 @@ function stepGroup(kind: StepKind): StepGroup | null {
     default:
       return null;
   }
+}
+
+function rowPlaces(
+  entries: readonly (RequestReceiptEntry | ToolEntry | PlaceEntry)[],
+): PlaceEntry[] {
+  const places = new Map<string, PlaceEntry>();
+  for (const entry of entries) {
+    if (entry.kind !== "place") continue;
+    const key = placeIdentityKey(entry.place);
+    if (!places.has(key)) places.set(key, entry);
+  }
+  return [...places.values()];
+}
+
+function placesRowHead(
+  entries: readonly (RequestReceiptEntry | ToolEntry | PlaceEntry)[],
+  group: StepGroup | null,
+): ActivityStepHead {
+  const steps = entries.filter((entry) => entry.kind !== "place");
+  const head = rowHead(steps, group);
+  const places = rowPlaces(entries);
+  if (places.length === 0) return head;
+  const labels = places.map(
+    (entry) => (entry.site ? pageSiteLabel(entry.site) : null) || entry.title || "Page",
+  );
+  const names =
+    labels.length > 2
+      ? `${labels.slice(0, 2).join(", ")} and ${labels.length - 2} more`
+      : labels.join(" and ");
+  const tools = steps.filter((entry) => entry.kind === "tool");
+  const running = tools.findLast((entry) => entry.state === "running");
+  return {
+    ...head,
+    label: `${running ? "Using" : "Used"} ${names}`,
+    detail: running
+      ? toolPresentation(running).hint || toolPresentation(running).activeLabel
+      : countNoun(tools.length, "step"),
+    detailKind: "prose",
+    icon: "browser",
+  };
 }
 
 function rowHead(
@@ -1332,6 +1402,20 @@ function rowHead(
     }
     case "computer":
       throw new Error("A Computer use row has its own head");
+    case "integration-call": {
+      const latest = tools.at(-1);
+      if (!latest) throw new Error("An integration group must contain a call");
+      const presentation = toolPresentation(running ?? latest);
+      return {
+        detail: `${presentation.hint} · ${countNoun(tools.length, "call")}`,
+        detailKind: "prose",
+        duration: null,
+        errors,
+        icon: "puzzle",
+        label: (running ?? latest).integration?.operation.title ?? presentation.label,
+        tone,
+      };
+    }
     case "integrations": {
       // Every search here was a Mac listing its apps, or some were integration lookups.
       const listingApps = tools.every(listsAppsOnMac);
@@ -2350,12 +2434,7 @@ function webSearchPresentation(args: unknown): ToolPresentation {
   });
 }
 
-/**
- * The integration gateway, read by what each call addressed. A call's
- * arguments name its target only by an opaque reference, so the words come
- * from the subject the Host resolved when it recorded the call; a call with
- * none addressed nothing the Host could name, and says only what it was.
- */
+/** The Host supplies resolved titles; older calls retain their readable operation name. */
 function integrationPresentation(
   tool: ToolEntry,
   name: string,
@@ -2375,10 +2454,10 @@ function integrationPresentation(
         });
       }
       return gatewayStep({
-        activeLabel: "Calling an integration",
+        activeLabel: `Calling ${stringField(args, "operation")?.split("@")[0] || "an integration"}`,
         hint: "",
         kind: "integration-call",
-        label: "Called an integration",
+        label: stringField(args, "operation")?.split("@")[0] || "Called an integration",
       });
     case "integration_describe":
       return gatewayStep({
