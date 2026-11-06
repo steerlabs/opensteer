@@ -465,13 +465,13 @@ export const DesktopNotificationResultSchema = z.strictObject({
 });
 export type DesktopNotificationResult = z.infer<typeof DesktopNotificationResultSchema>;
 /**
- * What happened to one real notification shown to find out whether this app
- * may notify. The operating system has no read for that answer, so showing one
- * is the question: macOS asks the first time, `shown` means it arrived,
- * `denied` that the system refused it, `unknown` that neither was heard in time.
+ * One real notification, sent so the person sees what notifications look like
+ * and macOS asks its question the first time. It is not a permission read:
+ * `sent` means the system accepted it for delivery, which a person who turned
+ * notifications off still gets, so nothing may show it as "allowed".
  */
 export const DesktopNotificationTestResultSchema = z.strictObject({
-  outcome: z.enum(["shown", "denied", "unsupported", "unknown"]),
+  outcome: z.enum(["sent", "failed", "unsupported"]),
 });
 export type DesktopNotificationTestResult = z.infer<typeof DesktopNotificationTestResultSchema>;
 /**
