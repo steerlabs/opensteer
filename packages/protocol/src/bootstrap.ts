@@ -1,4 +1,4 @@
-import { WorkspaceNotificationPreferenceSchema } from "@opensteer/core";
+import { AuthSessionIdSchema, WorkspaceNotificationPreferenceSchema } from "@opensteer/core";
 import {
   AppIdSchema,
   AppTitleSchema,
@@ -90,6 +90,8 @@ export type AppTab = z.infer<typeof AppTabSchema>;
 
 export const HostBootstrapSchema = z.object({
   appTabs: AppTabsSchema.optional(),
+  /** Recovery can replace the session silently, and a running app's access ends with the old one. */
+  sessionId: AuthSessionIdSchema.optional(),
   notificationPreferences: z.array(WorkspaceNotificationPreferenceSchema).max(101),
   /** Stable identity for client drafts; a route or public origin is not an identity. */
   deploymentId: DeploymentIdSchema,

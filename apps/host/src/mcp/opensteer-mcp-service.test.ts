@@ -304,8 +304,7 @@ describe("Opensteer MCP spine", () => {
                 ? {
                     name: "integration_call",
                     arguments: {
-                      toolRef:
-                        "igr_00000000-0000-4000-8000-000000000001.itl_00000000-0000-4000-8000-000000000001.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                      operation: "issues.list",
                       arguments: {},
                     },
                   }

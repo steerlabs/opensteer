@@ -19,6 +19,8 @@ export type PresentedSurfaceEvent =
 export interface PresentedSurface {
   /** Trusted input from this live presentation, attributed by desktop main. */
   passkeyInput?(consumerToken: string | null): void;
+  /** The viewer behind input a person gave this presentation; null when that is unknown. */
+  viewerInput?(consumerToken: string | null): void;
   readonly page: BrowserPage;
   readonly sessionId: BrowserSessionId;
   readonly surfaceId: BrowserSurfaceId;

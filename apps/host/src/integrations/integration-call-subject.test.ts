@@ -10,9 +10,10 @@ import {
 const grantId = "igr_5b0c4c3e-1f7a-4a8e-9a53-6c1e2d3f4a5b";
 const toolId = "itl_9d8c7b6a-5f4e-4d3c-8b2a-1f0e9d8c7b6a";
 const digest = "a".repeat(43);
-const toolRef = `${grantId}.${toolId}.${digest}`;
 const owner = createId("user");
-const connectionId = "icn_0f1e2d3c-4b5a-4968-8776-655443322110";
+const connectionId = "con_0f1e2d3c-4b5a-4968-8776-655443322110";
+const appAddress = { account: connectionId, operation: "act" };
+const gmailAddress = { operation: "search_messages" };
 const runnerId = createId("runner");
 
 function started(
@@ -139,7 +140,7 @@ describe("integrationCallSubject", () => {
       getComputerConnectionForCall: vi.fn(async () => phoneConnection) as never,
     });
 
-    await expect(integrationCallSubject(source, started({ toolRef }))).resolves.toEqual({
+    await expect(integrationCallSubject(source, started(appAddress))).resolves.toEqual({
       account: "Pixel 8",
       computerApp: null,
       effect: "write",
@@ -148,14 +149,14 @@ describe("integrationCallSubject", () => {
       phone: { computer: "Pixel 8", runnerId },
     });
     const confused = sources(phoneAct());
-    await expect(integrationCallSubject(confused, started({ toolRef }))).resolves.toBeUndefined();
+    await expect(integrationCallSubject(confused, started(appAddress))).resolves.toBeUndefined();
   });
 
   it("names an ordinary integration's account and operation, with no app", async () => {
     const source = sources(gmail());
 
     await expect(
-      integrationCallSubject(source, started({ arguments: { query: "invoice" }, toolRef })),
+      integrationCallSubject(source, started({ ...gmailAddress, arguments: { query: "invoice" } })),
     ).resolves.toEqual({
       account: "Work",
       computerApp: null,
@@ -172,25 +173,27 @@ describe("integrationCallSubject", () => {
     await expect(
       integrationCallSubject(
         source,
-        started({ toolRef }, { name: "integration_describe", namespace: "opensteer.integrations" }),
+        started(gmailAddress, {
+          name: "integration_describe",
+          namespace: "opensteer.integrations",
+        }),
       ),
     ).resolves.toMatchObject({ integration: "Gmail", operation: { name: "search_messages" } });
   });
 
-  it("names nothing for a reference that resolves to no tool", async () => {
+  it("names nothing for an address that resolves to no tool", async () => {
     const source = sources(null);
 
-    await expect(integrationCallSubject(source, started({ toolRef }))).resolves.toBeUndefined();
+    await expect(integrationCallSubject(source, started(gmailAddress))).resolves.toBeUndefined();
     expect(source.onError).not.toHaveBeenCalled();
   });
 
-  it("names nothing, and looks nothing up, for a reference that does not parse", async () => {
+  it("names nothing, and looks nothing up, for an address that does not parse", async () => {
     const source = sources(gmail());
 
     for (const args of [
-      { toolRef: "gmail.search_messages" },
-      { toolRef: `${grantId}.${toolId}` },
-      { toolRef: 42 },
+      { toolRef: `${grantId}.${toolId}.${digest}` },
+      { operation: 42 },
       {},
       "not an object",
       null,
@@ -209,12 +212,12 @@ describe("integrationCallSubject", () => {
       { name: "integration_call", namespace: "mcp:someone_else" },
       { name: "integration_call", namespace: "opensteer" },
     ]) {
-      await expect(integrationCallSubject(source, started({ toolRef }, tool))).resolves.toBe(
+      await expect(integrationCallSubject(source, started(gmailAddress, tool))).resolves.toBe(
         undefined,
       );
     }
     const completed: PendingAgentEvent = {
-      ...started({ toolRef }),
+      ...started(gmailAddress),
       data: { callId: "call-1", isError: false, output: { text: "done" } },
       type: "tool.completed",
     } as PendingAgentEvent;
@@ -225,7 +228,7 @@ describe("integrationCallSubject", () => {
   it("names nothing for a Computer use call whose app is no longer on a Mac", async () => {
     const source = sources(slackApp(), { getComputerConnectionForCall: vi.fn(async () => null) });
 
-    await expect(integrationCallSubject(source, started({ toolRef }))).resolves.toBeUndefined();
+    await expect(integrationCallSubject(source, started(appAddress))).resolves.toBeUndefined();
     expect(source.onError).not.toHaveBeenCalled();
   });
 
@@ -233,24 +236,34 @@ describe("integrationCallSubject", () => {
     const callable = slackApp();
     const source = sources({ ...callable, grant: { ...callable.grant, connectionId: null } });
 
-    await expect(integrationCallSubject(source, started({ toolRef }))).resolves.toBeUndefined();
+    await expect(
+      integrationCallSubject(source, started({ operation: "act" })),
+    ).resolves.toBeUndefined();
     expect(source.getComputerConnectionForCall).not.toHaveBeenCalled();
   });
 
-  it("names only the grant and tool the reference names", async () => {
-    const otherGrant = {
+  it("names only the account the call addressed, never another one", async () => {
+    const personal = {
       ...gmail(),
-      grant: { ...gmail().grant, id: "igr_00000000-0000-4000-8000-000000000001" },
+      grant: { ...gmail().grant, alias: "Personal", connectionId },
     } as unknown as CallableIntegrationTool;
-    const otherTool = {
-      ...gmail(),
-      tool: { ...gmail().tool, id: "itl_00000000-0000-4000-8000-000000000002" },
-    } as unknown as CallableIntegrationTool;
-    const source = sources(null, {
-      listCallableTools: vi.fn(async () => [otherGrant, otherTool]),
-    });
+    const source = sources(null, { listCallableTools: vi.fn(async () => [personal]) });
 
-    await expect(integrationCallSubject(source, started({ toolRef }))).resolves.toBeUndefined();
+    await expect(
+      integrationCallSubject(
+        source,
+        started({
+          account: "con_00000000-0000-4000-8000-000000000001",
+          operation: "search_messages",
+        }),
+      ),
+    ).resolves.toBeUndefined();
+    await expect(
+      integrationCallSubject(
+        source,
+        started({ account: connectionId, operation: "search_messages" }),
+      ),
+    ).resolves.toMatchObject({ account: "Personal" });
   });
 
   it("reports a failed lookup and names nothing, so the event still commits", async () => {
@@ -260,7 +273,7 @@ describe("integrationCallSubject", () => {
         throw failure;
       }),
     });
-    const event = started({ toolRef });
+    const event = started(gmailAddress);
 
     await expect(integrationCallSubject(source, event)).resolves.toBeUndefined();
     expect(source.onError).toHaveBeenCalledWith(failure, event);
@@ -273,7 +286,7 @@ describe("integrationCallSubject", () => {
       installation: { ...callable.installation, title: "G".repeat(241) },
     });
 
-    await expect(integrationCallSubject(source, started({ toolRef }))).resolves.toBeUndefined();
+    await expect(integrationCallSubject(source, started(gmailAddress))).resolves.toBeUndefined();
     expect(source.onError).toHaveBeenCalledOnce();
   });
 });

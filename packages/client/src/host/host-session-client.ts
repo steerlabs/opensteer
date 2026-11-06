@@ -542,6 +542,9 @@ export class HttpHostClient {
     (sessionId, message, surfaceId) => {
       this.#browserCursor.receive(sessionId, message);
       this.browserPasskeys.receive(sessionId, surfaceId, message);
+      if (message.type === "browser.popup.opened")
+        for (const listener of this.#browserPopups.get(`${sessionId}:${surfaceId}`) ?? [])
+          listener(message.surfaceId);
       if (message.type === "browser.snapshot")
         this.#browserEditing.negotiate(
           sessionId,
@@ -603,9 +606,25 @@ export class HttpHostClient {
     if (mode === "watch") url.searchParams.set("mode", mode);
     const passkeys = this.browserPasskeys.optIn(this.#capabilities);
     if (mode === "control" && passkeys) url.searchParams.set("passkeys", passkeys);
+    if (mode === "control") url.searchParams.set("popups", "1");
     url.searchParams.set("editing", "2");
     return this.#webSocketFactory(url.toString().replace(/^http/, "ws"));
   }
+  readonly #browserPopups = new Map<string, Set<(popupId: string) => void>>();
+  readonly subscribeBrowserPopups = (
+    sessionId: string,
+    surfaceId: string,
+    listener: (popupId: string) => void,
+  ): (() => void) => {
+    const key = `${sessionId}:${surfaceId}`;
+    const listeners = this.#browserPopups.get(key) ?? new Set();
+    listeners.add(listener);
+    this.#browserPopups.set(key, listeners);
+    return () => {
+      listeners.delete(listener);
+      if (!listeners.size) this.#browserPopups.delete(key);
+    };
+  };
   readonly connectComputerDisplay = (
     source: NativeViewerSource,
     options?: { readonly editing?: 1 },
@@ -1758,7 +1777,7 @@ export class HttpHostClient {
     const view = unwrapRpcResult(
       await this.rpc["apps.view"]({ appId, theme }, signal ? { signal } : undefined),
     );
-    return { app: view.app, url: this.#url(view.path) };
+    return { app: view.app, url: view.entryUrl ?? this.#url(view.path) };
   }
 
   async getAttachment(attachmentId: string): Promise<Attachment> {
@@ -4283,6 +4302,7 @@ export class HttpHostClient {
       ),
       ownerName: payload.user.displayName,
       session: "authenticated",
+      ...(payload.sessionId ? { sessionId: payload.sessionId } : {}),
       sessionSurface: payload.sessionSurface ?? null,
       threads,
       transcriptWindows,

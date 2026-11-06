@@ -22,6 +22,7 @@ import {
 } from "./mcp/connections/index.js";
 import { afterResponse } from "./server/after-response.js";
 import type { AppService } from "./apps/app-service.js";
+import { AppGateway, hasAppAuthority } from "./apps/app-gateway.js";
 import { createAppHandlers, registerAppRoutes } from "./apps/app-routes.js";
 import { bootstrapDiagnosticHeader } from "@opensteer/shared/bootstrapDiagnostics";
 import { AgentPhoneUpdateHub } from "./agent-phone/update-hub.js";
@@ -184,7 +185,7 @@ import {
 import { BoundedAsyncInbox } from "@opensteer/shared/boundedAsyncInbox";
 import { parseHttpEndpointBaseUrl } from "@opensteer/shared/httpEndpoint";
 import { rawDataBuffer } from "@opensteer/shared/webSocketFrame";
-import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
+import Fastify, { LogController, type FastifyInstance, type FastifyRequest } from "fastify";
 import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import type WebSocket from "ws";
@@ -352,6 +353,8 @@ export interface HostServerDependencies {
   readonly fetch?: typeof globalThis.fetch;
   readonly attachments: AttachmentService;
   readonly apps: AppService;
+  readonly appOriginSigningKey: Uint8Array;
+  readonly appRealOrigins: boolean;
   readonly requestResponseVault: RequestResponseVault;
   /** Present when account attachment uses adoption. */
   readonly accountAdoption?:
@@ -437,7 +440,18 @@ export async function createHostServer(
     bodyLimit: maxWebSocketFrameBytes,
     logger: options.logger ?? false,
     requestIdHeader: false,
+    logController: new LogController({
+      disableRequestLogging: (request) => hasAppAuthority(request.headers),
+    }),
   });
+  const appGateway = new AppGateway({
+    apps: dependencies.apps,
+    identity: dependencies.authenticator.identity,
+    signingKey: dependencies.appOriginSigningKey,
+    canonicalOrigin: dependencies.discovery.document.canonicalOrigin,
+    realOrigins: dependencies.appRealOrigins,
+  });
+  appGateway.installHttp(app);
   app.addHook("onRequest", rejectDuplicateCredentialHeaders);
   await registerResponseCompression(app);
   const harnessCatalogReconciliations = new HarnessCatalogReconciliationOwner({
@@ -483,6 +497,7 @@ export async function createHostServer(
       readonly mode: "control" | "watch";
       readonly editing: 1 | 2 | undefined;
       readonly passkeys: "native" | "notice" | undefined;
+      readonly popups: boolean;
     }
   >();
   const realtimeSocketSessions = new WeakMap<object, AuthenticatedSession>();
@@ -1104,7 +1119,7 @@ export async function createHostServer(
         hostApi["agentPhone.target.get"].success.parse(await agentPhoneHostTarget(dependencies)),
       );
     },
-    ...createAppHandlers(dependencies.apps),
+    ...createAppHandlers(dependencies.apps, appGateway),
     "attachment.get": async (input, context) =>
       rpcSuccess(
         await dependencies.attachments.get(input.attachmentId, requireRpcSession(context).user.id),
@@ -1222,6 +1237,7 @@ export async function createHostServer(
           identityConfig,
           machines,
           ...(context.surface ? { sessionSurface: context.surface } : {}),
+          sessionId: session.id,
           user: session.user,
           workspaceSharingAvailable: deploymentSupportsSharing(
             dependencies.discovery.document.deploymentShape,
@@ -2781,7 +2797,7 @@ export async function createHostServer(
 
   app.get<{
     Params: { sessionId: string };
-    Querystring: { mode?: string; editing?: string; passkeys?: string };
+    Querystring: { mode?: string; editing?: string; passkeys?: string; popups?: string };
   }>(
     "/v1/browser-sessions/:sessionId/connect",
     {
@@ -2806,6 +2822,7 @@ export async function createHostServer(
               : undefined,
           editing:
             request.query.editing === "2" ? 2 : request.query.editing === "1" ? 1 : undefined,
+          popups: request.query.popups === "1",
         });
       },
       websocket: true,
@@ -2821,6 +2838,7 @@ export async function createHostServer(
         admitted.mode,
         admitted.editing,
         admitted.passkeys,
+        admitted.popups,
         async () => {
           try {
             const current = await dependencies.authenticator.authenticateSession(request.headers, {
@@ -2837,6 +2855,7 @@ export async function createHostServer(
   );
 
   dependencies.staticDistribution?.service.register(app);
+  appGateway.installUpgrades(app);
   return app;
 }
 
@@ -2932,6 +2951,7 @@ function attachBrowserSocket(
   mode: "control" | "watch",
   editing: 1 | 2 | undefined,
   passkeys: "native" | "notice" | undefined,
+  popups: boolean,
   signedIn: () => Promise<boolean>,
 ): void {
   installWebSocketLiveness(socket);
@@ -2985,6 +3005,7 @@ function attachBrowserSocket(
       mode,
       editing,
       passkeys,
+      popups,
       signedIn,
     });
     if (socket.readyState !== socket.OPEN) {

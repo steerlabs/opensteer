@@ -776,7 +776,8 @@ class ElectronBrowserContext implements BrowserContext {
             }
           : { webPreferences: securePreferences },
       );
-      if (details.disposition === "background-tab" && !popupOptions.webContents) {
+      popup.openedInBackground = details.disposition === "background-tab";
+      if (popup.openedInBackground && !popupOptions.webContents) {
         void popup.loadInitialUrl(details.url).catch(() => popup.close());
       }
       setImmediate(() => {
@@ -900,6 +901,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
   #passkeyBridge: PasskeyBridge | undefined;
   readonly #hub: ElectronDebuggerHub;
   readonly #opener: ElectronBrowserPage | null;
+  openedInBackground = false;
   readonly #cdpPromise: Promise<CdpSession>;
   #dialog: unknown = null;
   #targetIdPromise: Promise<string> | null = null;

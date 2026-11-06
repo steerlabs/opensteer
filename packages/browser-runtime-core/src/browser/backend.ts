@@ -79,6 +79,8 @@ export interface BrowserPage {
   /** Trusted input delivered to a native view, after application shortcut interception. */
   observePasskeyInput?(listener: () => void): () => void;
   observeHumanInput?(listener: (observation: HumanInputObservation) => void): () => void;
+  /** Opened behind its opener, as a ⌘-click opens a tab: nobody asked to look at it yet. */
+  readonly openedInBackground?: boolean;
   agentCdp(): Promise<CdpSession>;
   cdp(): Promise<CdpSession>;
   close(): Promise<void>;

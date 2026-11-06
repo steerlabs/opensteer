@@ -121,7 +121,7 @@ it("sets the tab on the page route by key and dismisses the sheet", () => {
   expect(state.dispatch).toHaveBeenCalledExactlyOnceWith({
     type: "SET_PARAMS",
     source: "page-under-sheet",
-    payload: { params: { editAddress: false, tabId: "first" } },
+    payload: { params: { editAddress: false, popup: false, tabId: "first" } },
   });
   expect(state.goBack).toHaveBeenCalledOnce();
 });

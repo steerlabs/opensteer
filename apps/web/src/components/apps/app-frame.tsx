@@ -2,6 +2,8 @@ import {
   appContentHeight,
   appFrameReady,
   appFrameSandbox,
+  appOriginFrameSandbox,
+  isAppOriginUrl,
   appFrameScheme,
   type AppTheme,
 } from "@opensteer/shared/appFrame";
@@ -87,39 +89,50 @@ export function AppFrame({
   const ready = useRef(false);
   const [loaded, setLoaded] = useState(false);
   const [failed, setFailed] = useState(false);
+  const origin = isAppOriginUrl(url) ? new URL(url).origin : "null";
   const sendTheme = () =>
-    frame.current?.contentWindow?.postMessage({ type: "opensteer-app:theme", theme }, "*");
+    frame.current?.contentWindow?.postMessage(
+      { type: "opensteer-app:theme", theme },
+      origin === "null" ? "*" : origin,
+    );
   useEffect(() => {
     const receive = (event: MessageEvent) => {
-      if (event.source !== frame.current?.contentWindow || event.origin !== "null") return;
+      if (event.source !== frame.current?.contentWindow || event.origin !== origin) return;
       if (appFrameReady(event.data)) {
         ready.current = true;
         setLoaded(true);
+        setFailed(false);
       }
       const height = appContentHeight(event.data);
       if (height !== null && !fill) setHeight(height);
     };
     window.addEventListener("message", receive);
     return () => window.removeEventListener("message", receive);
-  }, [fill, url]);
+  }, [fill, url, origin]);
   useEffect(sendTheme, [theme]);
-  if (failed) return <AppLoadFailure fill={fill} retry={retry} />;
   const parsed = new URL(url);
   const src =
-    globalThis.location?.protocol === "app:"
+    origin === "null" && globalThis.location?.protocol === "app:"
       ? `${appFrameScheme}://view${parsed.pathname}${parsed.search}`
       : url;
   return (
     <div className={fill ? "app-frame app-frame--fill" : "app-frame"}>
-      {!loaded ? <AppLoading fill={fill} /> : null}
+      {failed ? (
+        <AppLoadFailure fill={fill} retry={retry} />
+      ) : !loaded ? (
+        <AppLoading fill={fill} />
+      ) : null}
       <iframe
         ref={frame}
         key={src}
         title={title}
         src={src}
-        sandbox={appFrameSandbox}
+        sandbox={origin === "null" ? appFrameSandbox : appOriginFrameSandbox}
         referrerPolicy="no-referrer"
-        style={fill ? undefined : { height: Math.max(160, Math.min(640, height)) }}
+        style={{
+          ...(fill ? {} : { height: Math.max(160, Math.min(640, height)) }),
+          ...(failed ? { display: "none" } : {}),
+        }}
         onError={() => setFailed(true)}
         onLoad={() => {
           if (!ready.current) setFailed(true);

@@ -473,6 +473,7 @@ export interface BrowserRuntimeTarget {
   readonly navigationVersion?: boolean;
   readonly navigationAttributionVersion?: boolean;
   readonly workspaceTabRestoreVersion?: boolean;
+  readonly popupFollowVersion?: boolean;
   readonly captureRegion?: boolean;
   readonly rasterDemand?: boolean;
   readonly passkeys?: boolean;
@@ -3323,6 +3324,7 @@ export class BrowserService {
       readonly authSessionId: AuthSessionId;
       readonly mode: BrowserConsumerMode;
       readonly passkeys?: PasskeyMode | undefined;
+      readonly popups?: boolean | undefined;
       readonly editing?: 1 | 2 | undefined;
       /**
        * Whether the login that opened the socket is still signed in. Read once,
@@ -3379,6 +3381,7 @@ export class BrowserService {
         detachAuth,
         options.editing,
         options.passkeys,
+        options.popups === true,
         ownerId,
         options.signedIn,
       );
@@ -3676,6 +3679,7 @@ export class BrowserService {
       ...(target.passkeys && this.#passkeys ? { passkeys: 1 } : {}),
       ...(target.navigationVersion ? { navigationVersion: 1 } : {}),
       ...(target.navigationAttributionVersion ? { navigationAttributionVersion: 1 } : {}),
+      ...(target.popupFollowVersion ? { popupFollowVersion: 1 } : {}),
       ...(target.editing
         ? {
             editingVersion: target.editing,
@@ -4725,6 +4729,7 @@ class HostedBrowserBroker {
     onClose: () => void,
     editing: 1 | 2 | undefined = undefined,
     passkeys: PasskeyMode | undefined = undefined,
+    popups: boolean,
     userId: UserId,
     signedIn: () => Promise<boolean>,
   ): Promise<BrowserConsumerAttachment> {
@@ -4757,6 +4762,7 @@ class HostedBrowserBroker {
     });
     outlet.userId = userId;
     outlet.passkeys = this.passkeys ? passkeys : undefined;
+    outlet.popups = popups && mode === "control";
     outlet.authorized = async () => (await stillVisible()) && (await signedIn());
     this.#consumers.set(peer.id, outlet);
     try {
@@ -4772,6 +4778,7 @@ class HostedBrowserBroker {
             outlet.editing,
             outlet.passkeys,
             outlet.clipboardToken,
+            outlet.popups,
           ),
         ),
       );
@@ -5291,6 +5298,11 @@ class HostedBrowserBroker {
       )
         continue;
       if (
+        message.type === "browser.popup.opened" &&
+        (!consumer.popups || message.consumerToken !== consumer.clipboardToken)
+      )
+        continue;
+      if (
         message.type === "clipboard.result" &&
         message.consumerToken === consumer.clipboardToken
       ) {
@@ -5378,6 +5390,7 @@ class HostedBrowserBroker {
               consumer.editing,
               consumer.passkeys,
               consumer.clipboardToken,
+              consumer.popups,
             ),
           ),
         )
@@ -6219,6 +6232,8 @@ export class BrowserConsumerOutlet {
   #paceTimer: NodeJS.Timeout | null = null;
   userId: UserId | null = null;
   passkeys: PasskeyMode | undefined;
+  /** Understands `browser.popup.opened`, and hears its own token for reporting native input. */
+  popups = false;
   authorized: () => Promise<boolean> = async () => false;
   readonly clipboardToken = randomUUID();
   readonly legacyClipboard = new LegacyBrowserClipboard(this.clipboardToken, maxBrowserTextBytes);

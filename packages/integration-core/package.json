@@ -16,7 +16,8 @@
     "./ids": "./src/ids.ts",
     "./models": "./src/models.ts",
     "./ports": "./src/ports.ts",
-    "./tool-schemas": "./src/tool-schemas.ts"
+    "./tool-schemas": "./src/tool-schemas.ts",
+    "./tool-signature": "./src/tool-signature.ts"
   },
   "scripts": {
     "clean": "rm -rf dist *.tsbuildinfo",

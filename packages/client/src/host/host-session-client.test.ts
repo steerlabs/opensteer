@@ -434,7 +434,12 @@ describe("HttpHostClient Workspace files", () => {
 
 describe("HttpHostClient authentication and onboarding", () => {
   it("projects, clears, and tolerates an absent authenticated session surface", async () => {
-    const remoteBootstrap = { ...bootstrap([]), sessionSurface: "personal-remote" as const };
+    const sessionId = createId("authSession");
+    const remoteBootstrap = {
+      ...bootstrap([]),
+      sessionId,
+      sessionSurface: "personal-remote" as const,
+    };
     let authenticated = true;
     const remote = createHttpHostClient({
       fetch: async (input) => {
@@ -446,6 +451,7 @@ describe("HttpHostClient authentication and onboarding", () => {
     });
     await remote.load();
     expect(remote.getSnapshot().sessionSurface).toBe("personal-remote");
+    expect(remote.getSnapshot().sessionId).toBe(sessionId);
 
     authenticated = false;
     await remote.refresh();
@@ -16426,6 +16432,9 @@ it.each([false, true])(
       const release = client.retainBrowserViewer(sessionId, tabId, { picture: false });
       const connection = sockets.find(({ url }) => url.includes("/browser-sessions/"))!;
       expect(new URL(connection.url).searchParams.get("passkeys")).toBe(capable ? "notice" : null);
+      expect(new URL(connection.url).searchParams.get("popups")).toBe("1");
+      const popups: string[] = [];
+      const stopPopups = client.subscribeBrowserPopups(sessionId, tabId, (id) => popups.push(id));
       connection.socket.open();
       connection.socket.receiveRaw({
         type: "browser.snapshot",
@@ -16441,6 +16450,16 @@ it.each([false, true])(
         connection.socket.receiveRaw({ type: "browser.passkey.notice", surfaceId: tabId });
         expect(client.browserPasskeys.get(sessionId, tabId)).toEqual({ kind: "notice" });
       }
+      const opened = {
+        type: "browser.popup.opened",
+        surfaceId: "srf_00000000-0000-4000-8000-000000000099",
+        consumerToken: "00000000-0000-4000-8000-000000000098",
+      };
+      connection.socket.receiveRaw(opened);
+      expect(popups).toEqual([opened.surfaceId]);
+      stopPopups();
+      connection.socket.receiveRaw(opened);
+      expect(popups).toHaveLength(1);
       release();
       expect(client.browserPasskeys.get(sessionId, tabId)).toBeNull();
     } finally {
@@ -17183,4 +17202,31 @@ describe("app tab bootstrap races", () => {
       f.client.dispose();
     }
   });
+});
+
+it("uses a real app entry URL when supplied and resolves legacy paths for previous Hosts", async () => {
+  const client = createHttpHostClient();
+  const app = {
+    id: "app_11111111-1111-4111-8111-111111111111",
+    workspaceId: createId("workspace"),
+    threadId: createId("thread"),
+    runId: createId("run"),
+    title: "App",
+    latestVersion: 1,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  const path = `/v1/apps/${app.id}/dark/legacy/`;
+  const entryUrl =
+    "https://aaaaaaaaaaaaaaaaaaaaaaaaaa-11111111111111111111111111111111.example.test/?opensteer-ticket=test";
+  const read = vi.fn<(typeof client.rpc)["apps.view"]>();
+  Object.defineProperty(client.rpc, "apps.view", { value: read });
+  read.mockResolvedValueOnce({ ok: true, data: { app, path, entryUrl } });
+  read.mockResolvedValueOnce({ ok: true, data: { app, path } });
+  try {
+    expect((await client.viewApp(app.id, "dark")).url).toBe(entryUrl);
+    expect((await client.viewApp(app.id, "dark")).url).toBe(`http://127.0.0.1${path}`);
+  } finally {
+    client.dispose();
+  }
 });

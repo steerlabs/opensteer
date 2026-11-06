@@ -20,7 +20,7 @@ const hintAnnotations = new Set([
 
 type JsonObject = Readonly<Record<string, unknown>>;
 
-/** Who and what one toolRef names, as the first page shows it. */
+/** Who and what one operation address names, as the first page shows it. */
 export interface DescribedOperation {
   readonly account: {
     readonly alias: string;
@@ -39,7 +39,6 @@ export interface DescribedOperation {
     readonly name: string;
     readonly title: string;
   };
-  readonly toolRef: string;
 }
 
 /** A stored tool's schemas in reference form and exactly the definitions they reach. */
@@ -91,7 +90,7 @@ export function renderIntegrationDescribe(input: {
   const narrower = narrowerPaths(selected, path);
   const header = (nextCursor: number | null) =>
     JSON.stringify({
-      toolRef: input.described.toolRef,
+      name: input.described.operation.name,
       ...operation,
       path,
       schemaBytes: bytes.length,
@@ -100,7 +99,7 @@ export function renderIntegrationDescribe(input: {
       ...(nextCursor === null
         ? {}
         : {
-            next: `This page is bytes ${cursor} to ${nextCursor}. Call integration_describe with this toolRef and path and cursor ${nextCursor} for the next page${
+            next: `This page is bytes ${cursor} to ${nextCursor}. Call integration_describe with this operation and path and cursor ${nextCursor} for the next page${
               narrower.length === 0
                 ? ""
                 : `, or read one part with a narrower path such as ${narrower.join(" or ")}`

@@ -4,7 +4,37 @@ import { connect } from "node:net";
 import { Readable } from "node:stream";
 import { expect, it } from "vitest";
 import { closeHttpServerNow } from "@opensteer/shared/httpServer";
-import { requestAppHttp, appRequestBodyMaxBytes } from "./app-proxy.js";
+import { appOriginResponseHeaders, appRequestBodyMaxBytes, requestAppHttp } from "./app-proxy.js";
+
+it("drops the headers that would make the Connect edge cache an app response", () => {
+  const headers = appOriginResponseHeaders(
+    {
+      "content-type": "text/javascript",
+      "cloudflare-cdn-cache-control": "public, max-age=3600",
+      "cdn-cache-control": "public, max-age=3600",
+      "surrogate-control": "max-age=3600",
+      "surrogate-key": "app",
+      "cache-tag": "app",
+    },
+    { origin: "https://app.test", parents: [] },
+  );
+  expect(Object.keys(headers).filter((name) => /cdn|surrogate|cache-tag/u.test(name))).toEqual([]);
+});
+
+it.each([
+  [undefined, "private, no-cache"],
+  ["public, max-age=60, s-maxage=600", "private, max-age=60"],
+  ["no-store", "private, no-store"],
+])("keeps app files out of the shared Connect cache: %s", (cacheControl, expected) => {
+  const headers = appOriginResponseHeaders(
+    {
+      "content-type": "text/javascript",
+      ...(cacheControl ? { "cache-control": cacheControl } : {}),
+    },
+    { origin: "https://app.test", parents: [] },
+  );
+  expect(headers["cache-control"]).toBe(expected);
+});
 
 it("injects HTML with exact lengths, strips connection and credential headers, rewrites redirects and streams SSE and binary responses", async () => {
   let seen: import("node:http").IncomingHttpHeaders = {};
@@ -52,6 +82,7 @@ it("injects HTML with exact lengths, strips connection and credential headers, r
     res.writeHead(200, {
       "content-type": "text/html",
       "content-length": "18",
+      "x-frame-options": "DENY",
       connection: "close, x-private",
       "x-private": "secret",
     });
@@ -84,6 +115,7 @@ it("injects HTML with exact lengths, strips connection and credential headers, r
     expect(text).toContain("opensteer-app:ready");
     expect(Number(html.headers["content-length"])).toBe(Buffer.byteLength(text));
     expect(html.headers["x-private"]).toBeUndefined();
+    expect(html.headers["x-frame-options"]).toBeUndefined();
     expect(seen.cookie).toBeUndefined();
     expect(seen.authorization).toBeUndefined();
     expect(seen["x-private"]).toBeUndefined();
@@ -217,5 +249,42 @@ it("returns 413 for an oversized chunked upload without destroying the client's 
   } finally {
     await closeHttpServerNow(host);
     await closeHttpServerNow(upstream);
+  }
+});
+
+it("shows an app its loopback self so host allowlists and CSRF checks both pass", async () => {
+  const origin = "https://app.example.test";
+  const server = createServer((request, response) => {
+    const local = `http://${request.headers.host}`;
+    const valid =
+      request.headers.host?.startsWith("127.0.0.1:") &&
+      request.headers.origin === local &&
+      request.headers.referer === `${local}/form`;
+    response.writeHead(valid ? 200 : 403);
+    response.end();
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening", { signal: AbortSignal.timeout(3_000) });
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Missing listener");
+  try {
+    const result = await requestAppHttp({
+      connect: async () => ({
+        stream: connect({ host: "127.0.0.1", port: address.port }),
+        port: address.port,
+      }),
+      method: "POST",
+      path: "/submit",
+      prefix: "",
+      theme: "dark",
+      originMode: { origin, parents: [] },
+      headers: { origin, referer: `${origin}/form` },
+      body: Readable.from(["form=value"]),
+      signal: AbortSignal.timeout(3_000),
+    });
+    result.body.resume();
+    expect(result.status).toBe(200);
+  } finally {
+    await closeHttpServerNow(server);
   }
 });

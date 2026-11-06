@@ -207,6 +207,7 @@ async function startBrowserRelay(options: {
           navigationVersion: 1,
           navigationAttributionVersion: 1,
           workspaceTabRestoreVersion: 1,
+          popupFollowVersion: 1,
           captureRegion: 1,
           rasterDemand: 1,
           ...(options.passkeys ? { passkeys: options.passkeys } : {}),

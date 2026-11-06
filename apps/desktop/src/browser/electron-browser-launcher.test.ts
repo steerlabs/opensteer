@@ -1417,6 +1417,29 @@ describe("native page security formerly exercised by Sec01, I and C", () => {
       await browser.close();
     }
   });
+  it("keeps a tab opened behind its page apart from a popup a person will look at", async () => {
+    const launcher = new ElectronBrowserLauncher({
+      downloads: { accept: () => undefined },
+      pagePolicyPreloadPath: "/policy.cjs",
+    });
+    const browser = await launcher.launch({
+      initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
+      partitionKey: "session:background-tab",
+      sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000001"),
+      storage: { kind: "guest" },
+    });
+    try {
+      const opened: { readonly openedInBackground?: boolean }[] = [];
+      browser.context.onPage((page) => opened.push(page));
+      const open = electron.views.at(-1)!.webContents.setWindowOpenHandler.mock.calls[0]![0];
+      for (const disposition of ["background-tab", "foreground-tab", "new-window"])
+        open({ url: "https://example.test/", disposition }).createWindow({});
+      await vi.waitFor(() => expect(opened).toHaveLength(3));
+      expect(opened.map((page) => page.openedInBackground)).toEqual([true, false, false]);
+    } finally {
+      await browser.close();
+    }
+  });
   it("binds different partition identities to different Electron sessions (Sec01)", async () => {
     const { session } = await import("electron");
     const launcher = new ElectronBrowserLauncher({

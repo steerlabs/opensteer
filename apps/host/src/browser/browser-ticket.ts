@@ -18,6 +18,7 @@ interface IssueBrowserAttachTicketInput {
   readonly navigationVersion?: 1;
   readonly initialNavigation?: BrowserAttachTicketClaims["initialNavigation"];
   readonly navigationAttributionVersion?: 1;
+  readonly popupFollowVersion?: 1;
   readonly editingVersion?: 1 | 2;
   readonly clipboard?: boolean;
   readonly workspaceTabRestoreVersion?: 1;
@@ -132,6 +133,7 @@ export class BrowserAttachTicketSigner {
           }
         : {}),
       ...(input.navigationAttributionVersion === 1 ? { navigationAttributionVersion: 1 } : {}),
+      ...(input.popupFollowVersion === 1 ? { popupFollowVersion: 1 } : {}),
       ...(input.workspaceTabRestoreVersion
         ? {
             workspaceTabRestoreVersion: input.workspaceTabRestoreVersion,

@@ -81,6 +81,7 @@ interface OwnedSocket {
   readonly ownerId: number;
   readonly end: (code: number, reason: string, initiator: SocketEndInitiator) => void;
   readonly passkeyConsumer: (surfaceId: string) => string | null;
+  readonly viewerConsumer: (surfaceId: string) => string | null;
   readonly diagnoseTarget: (data: string | Uint8Array) => void;
 }
 
@@ -526,6 +527,7 @@ export class DesktopHostTransport extends HostTransport {
     };
     let presentedSurface: string | null = null;
     let consumerToken: string | null = null;
+    let viewerToken: string | null = null;
     const diagnoseTarget = (data: string | Uint8Array) => {
       if (diagnostic.kind !== "browser" || typeof data !== "string") return;
       try {
@@ -665,6 +667,7 @@ export class DesktopHostTransport extends HostTransport {
                 snapshot.data.passkeys === "native" || snapshot.data.passkeys === "notice"
                   ? (snapshot.data.passkeyConsumerToken ?? null)
                   : null;
+              viewerToken = snapshot.data.consumerToken ?? null;
               admitted = true;
               observe("admitted");
             }
@@ -734,6 +737,8 @@ export class DesktopHostTransport extends HostTransport {
         diagnoseTarget,
         passkeyConsumer: (surfaceId) =>
           admitted && presentedSurface === surfaceId ? consumerToken : null,
+        viewerConsumer: (surfaceId) =>
+          admitted && presentedSurface === surfaceId ? viewerToken : null,
       });
     else if (!closed) {
       end(4_001, "Deployment changed", "deployment-changed");
@@ -794,6 +799,11 @@ export class DesktopHostTransport extends HostTransport {
   passkeyConsumerToken(ownerId: number, connectionId: string, surfaceId: string): string | null {
     const socket = this.#sockets.get(connectionId);
     return socket?.ownerId === ownerId ? socket.passkeyConsumer(surfaceId) : null;
+  }
+
+  viewerConsumerToken(ownerId: number, connectionId: string, surfaceId: string): string | null {
+    const socket = this.#sockets.get(connectionId);
+    return socket?.ownerId === ownerId ? socket.viewerConsumer(surfaceId) : null;
   }
   observeBrowserControl(listener: (event: DesktopBrowserControlObservation) => void): () => void {
     this.#browserControlListeners.add(listener);

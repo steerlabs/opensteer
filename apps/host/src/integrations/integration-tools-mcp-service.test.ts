@@ -217,23 +217,17 @@ describe("Opensteer MCP integration access classes", () => {
     expect(mcp.instructions).toBe("");
 
     const search = listed.tools.find(({ name }) => name === "integration_search");
-    expect(search?.description).toContain(
-      "Choose accounts by connectionId, copy toolRefs unchanged and describe new refs before calling.",
-    );
+    expect(search?.description).toContain("Choose accounts by connectionId.");
     expect(search?.description).toContain("Writes need read-write access");
     expect(search?.description).toContain("by query, provider or runnerId");
     const call = listed.tools.find(({ name }) => name === "integration_call");
-    expect(call?.description).toContain("Live account/grant/schema checks apply");
-    expect(call?.description).toContain(
-      "Describe new refs first; call already-described operations directly.",
-    );
+    expect(call?.description).toContain("Live account/grant checks apply");
     const request = listed.tools.find(({ name }) => name === "integration_request");
     expect(request?.description).toContain(
       "integration + access + reason; catalog item: catalog instead.",
     );
-    expect(call?.description).toContain("Describing grants no access");
     const describe = listed.tools.find(({ name }) => name === "integration_describe");
-    expect(describe?.description).toContain("input/output schemas before calling");
+    expect(describe?.description).toContain("full input/output schemas");
     expect(request?.description).toContain("Never repeat pending/declined asks");
     expect(request?.description).not.toContain("requestSelection");
     // One object for every request shape: Claude Code drops tools whose input
@@ -267,7 +261,7 @@ describe("Opensteer MCP integration access classes", () => {
     });
   });
 
-  it("returns access, effect, readiness, accounts, and live toolRefs without selection tokens", async () => {
+  it("returns access, effect, readiness and accounts, with no address tokens", async () => {
     const entry = inventoryEntry();
     const callable = callableTool({
       entry,
@@ -275,7 +269,16 @@ describe("Opensteer MCP integration access classes", () => {
       name: "issues.list",
       title: "List issues",
     });
-    const { handler } = await createHarness({ callableTools: [callable], inventory: [entry] });
+    const { handler } = await createHarness({
+      callableTools: [callable],
+      inventory: [entry],
+      toolSchemas: {
+        ...linearToolSchemas,
+        definitions: {},
+        schemaDigest: callable.tool.schemaDigest,
+        status: "active",
+      },
+    });
     const searched = result(
       await handler(
         { params: { arguments: { query: "Linear" }, name: "integration_search" } },
@@ -290,13 +293,11 @@ describe("Opensteer MCP integration access classes", () => {
       operationTotal: 1,
       operations: [
         {
-          account: "Work",
+          description: "List issues",
           effect: "read",
-          integration: "Linear",
-          name: "issues.list",
-          connectionId: callable.grant.connectionId,
-          title: "List issues",
-          toolRef: toolReference(callable),
+          input: "{}",
+          installation: "linear",
+          name: expect.stringMatching(/^issues\.list@[\w-]{8}$/u),
         },
       ],
       results: [
@@ -311,27 +312,269 @@ describe("Opensteer MCP integration access classes", () => {
           ],
           integration: "Linear",
           name: "linear",
-          tools: [
-            {
-              effect: "read",
-              name: "issues.list",
-              readiness: { code: "READY" },
-              title: "List issues",
-            },
-          ],
         },
       ],
       total: 1,
     });
+    expect((searched.results as Record<string, unknown>[])[0]).not.toHaveProperty("tools");
+    expect((searched.operations as Record<string, unknown>[])[0]).not.toHaveProperty("accounts");
     const serialized = JSON.stringify(searched);
     for (const removed of [
       "requestSelection",
       "connectionSelections",
       "readOnly",
       "isDefaultAccount",
+      "toolRef",
     ]) {
       expect(serialized).not.toContain(removed);
     }
+  });
+
+  it("shows one row for accounts sharing an operation, and which accounts when they differ", async () => {
+    const entry = inventoryEntry();
+    const second = createIntegrationId("connection");
+    entry.accounts.push({
+      access: "read",
+      account: "Home",
+      connectionId: second,
+      isDefault: false,
+    });
+    const list = callableTool({ entry, effect: "read", name: "issues.list", title: "List issues" });
+    const secondList = {
+      ...list,
+      grant: { ...list.grant, connectionId: second, id: createIntegrationId("grant") },
+    };
+    const onlyFirst = callableTool({
+      entry,
+      effect: "read",
+      name: "issues.archived",
+      title: "List archived issues",
+    });
+    const { handler } = await createHarness({
+      callableTools: [list, secondList, onlyFirst],
+      inventory: [entry],
+    });
+    const searched = result(
+      await handler(
+        { params: { arguments: { query: "issues" }, name: "integration_search" } },
+        callExtra("rows"),
+      ),
+    );
+    expect(searched.operationTotal).toBe(2);
+    const rows = searched.operations as { accounts?: string[]; name: string }[];
+    expect(rows.find(({ name }) => name.startsWith("issues.list@"))).not.toHaveProperty("accounts");
+    expect(rows.find(({ name }) => name.startsWith("issues.archived@"))?.accounts).toEqual([
+      entry.accounts[0]!.connectionId,
+    ]);
+  });
+
+  it("names the working account when another account of the integration needs repair", async () => {
+    const entry = inventoryEntry();
+    entry.accounts.push({
+      access: "read",
+      account: "Needs repair",
+      connectionId: createIntegrationId("connection"),
+      isDefault: false,
+    });
+    const working = callableTool({
+      entry,
+      effect: "read",
+      name: "issues.list",
+      title: "List issues",
+    });
+    const { handler } = await createHarness({ callableTools: [working], inventory: [entry] });
+    const searched = result(
+      await handler(
+        { params: { arguments: { query: "issues" }, name: "integration_search" } },
+        callExtra("needs-repair"),
+      ),
+    );
+    expect(searched.operations).toMatchObject([{ accounts: [working.grant.connectionId] }]);
+  });
+
+  it("keeps close matches, so a word in the query does not hide the operation after it", async () => {
+    const entry = inventoryEntry();
+    const list = callableTool({
+      entry,
+      effect: "read",
+      name: "gmail.usersMessagesList",
+      title: "gmail.usersMessagesList",
+    });
+    const get = callableTool({
+      entry,
+      effect: "read",
+      name: "gmail.usersMessagesGet",
+      title: "gmail.usersMessagesGet",
+    });
+    const { handler } = await createHarness({ callableTools: [get, list], inventory: [entry] });
+    const searched = result(
+      await handler(
+        { params: { arguments: { query: "gmail messages list" }, name: "integration_search" } },
+        callExtra("near"),
+      ),
+    );
+    expect(
+      (searched.operations as { name: string }[]).map(({ name }) => name.split("@", 1)[0]),
+    ).toEqual(["gmail.usersMessagesList", "gmail.usersMessagesGet"]);
+  });
+
+  it("keeps two integrations' same-named operations apart", async () => {
+    const first = inventoryEntry();
+    const other = inventoryEntry();
+    other.installation.name = "tracker";
+    const linear = callableTool({
+      entry: first,
+      effect: "read",
+      name: "issues.list",
+      title: "List issues",
+    });
+    const tracker = callableTool({
+      entry: other,
+      effect: "read",
+      name: "issues.list",
+      title: "List issues",
+    });
+    const callTool = vi.fn(async () => ({ content: [{ text: "called", type: "text" }] }));
+    const { handler } = await createHarness({
+      callTool,
+      callableTools: [linear, tracker],
+      inventory: [first, other],
+    });
+    const searched = result(
+      await handler(
+        { params: { arguments: { query: "issues" }, name: "integration_search" } },
+        callExtra("shared"),
+      ),
+    );
+    const rows = searched.operations as { installation: string; name: string }[];
+    expect(rows).toHaveLength(2);
+    const account = tracker.grant.connectionId;
+    expect(
+      errorText(
+        await handler(
+          {
+            params: { arguments: { account, operation: "issues.list" }, name: "integration_call" },
+          },
+          callExtra("plain-shared"),
+        ),
+      ),
+    ).toContain("names more than one operation");
+    const trackerRow = rows.find(({ installation }) => installation === "tracker")!;
+    await handler(
+      { params: { arguments: { account, operation: trackerRow.name }, name: "integration_call" } },
+      callExtra("addressed"),
+    );
+    expect(callTool).toHaveBeenCalledWith(tracker, {}, expect.anything(), expect.any(AbortSignal));
+  });
+
+  it("ties each operation to its installation when two share a title", async () => {
+    const first = inventoryEntry();
+    const second = inventoryEntry();
+    second.installation.name = "linear-other";
+    const firstTool = callableTool({
+      entry: first,
+      effect: "read",
+      name: "issues.list",
+      title: "List issues",
+    });
+    const secondTool = callableTool({
+      entry: second,
+      effect: "read",
+      name: "tickets.list",
+      title: "List tickets",
+    });
+    const { handler } = await createHarness({
+      callableTools: [firstTool, secondTool],
+      inventory: [first, second],
+    });
+    const searched = result(
+      await handler(
+        { params: { arguments: { query: "list" }, name: "integration_search" } },
+        callExtra("same-title"),
+      ),
+    );
+    const rows = searched.operations as { installation: string; name: string }[];
+    expect(rows.find(({ name }) => name.startsWith("tickets.list@"))?.installation).toBe(
+      "linear-other",
+    );
+    expect(searched.results).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          accounts: second.accounts,
+          integration: "Linear",
+          name: "linear-other",
+        }),
+      ]),
+    );
+  });
+
+  it("shows an integration's accounts whenever one of its operations is on the page", async () => {
+    const entry = inventoryEntry();
+    entry.installation.title = "Unrelated title";
+    entry.installation.name = "unrelated";
+    entry.installation.description = "Nothing in common";
+    const callable = callableTool({ entry, effect: "read", name: "widgets.list", title: "x" });
+    const { handler } = await createHarness({ callableTools: [callable], inventory: [entry] });
+    const searched = result(
+      await handler(
+        { params: { arguments: { query: "widgets" }, name: "integration_search" } },
+        callExtra("accounts-visible"),
+      ),
+    );
+    expect(searched.results).toMatchObject([
+      { accounts: [{ connectionId: entry.accounts[0]!.connectionId }] },
+    ]);
+  });
+
+  it("still shows an operation that needs more access, and only those", async () => {
+    const entry = inventoryEntry({ readinessCode: "ACCESS_GRANT_REQUIRED", toolEffect: "write" });
+    const { handler } = await createHarness({ inventory: [entry] });
+    const searched = result(
+      await handler(
+        { params: { arguments: { query: "Linear create" }, name: "integration_search" } },
+        callExtra("blocked"),
+      ),
+    );
+    expect(searched).toMatchObject({
+      guidance: { readiness: expect.stringContaining("ACCESS_GRANT_REQUIRED") },
+      operations: [],
+      results: [
+        {
+          tools: [
+            {
+              effect: "write",
+              name: "issues.create",
+              readiness: { code: "ACCESS_GRANT_REQUIRED", requiredAccess: "read-write" },
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it("lists every definition, and details only what the search concerns", async () => {
+    const { handler } = await createHarness({
+      definitions: integrationDefinitions,
+      inventory: [],
+    });
+    const searched = result(
+      await handler(
+        { params: { arguments: { query: "slack" }, name: "integration_search" } },
+        callExtra("catalog"),
+      ),
+    );
+    const catalog = searched.catalog as { definitionId: string; description?: string }[];
+    expect(catalog.map(({ definitionId }) => definitionId).sort()).toEqual(
+      integrationDefinitions.map(({ id }) => id).sort(),
+    );
+    expect(catalog.find(({ definitionId }) => definitionId === "slack")).toMatchObject({
+      description: expect.any(String),
+      installed: false,
+      integration: expect.any(String),
+    });
+    expect(catalog.find(({ definitionId }) => definitionId === "google-gmail")).toEqual({
+      definitionId: "google-gmail",
+    });
   });
 
   // Failure cases: catalog omissions under queries/provider/paging; repeated setup prose;
@@ -400,15 +643,29 @@ describe("Opensteer MCP integration access classes", () => {
       expect(
         (response.catalog as { definitionId: string }[]).map((row) => row.definitionId).sort(),
       ).toEqual(integrationDefinitions.map((row) => row.id).sort());
-      expect(full).toMatchObject({
-        guidance: { catalog: expect.stringContaining("definitionId is the catalog argument") },
-      });
-      if (fixture === "populated") {
+      if (fixture === "all-uninstalled") {
         expect(full).toMatchObject({
-          guidance: {
-            readiness: expect.stringContaining("REAUTHORIZATION_REQUIRED"),
-            computers: expect.stringContaining("do not repeat pending Requests"),
-          },
+          guidance: { catalog: expect.stringContaining("definitionId is the catalog argument") },
+        });
+      }
+      if (fixture === "populated") {
+        expect(
+          result(
+            await handler(
+              { params: { name: "integration_search", arguments: { query: "Computer use" } } },
+              callExtra("computers"),
+            ),
+          ),
+        ).toMatchObject({
+          guidance: { computers: expect.stringContaining("do not repeat pending Requests") },
+          catalog: expect.arrayContaining([
+            expect.objectContaining({
+              computers: [expect.objectContaining({ name: "Studio Mac" })],
+            }),
+          ]),
+        });
+        expect(full).toMatchObject({
+          guidance: { readiness: expect.stringContaining("REAUTHORIZATION_REQUIRED") },
           results: expect.arrayContaining([
             expect.objectContaining({
               name: "attention",
@@ -431,11 +688,11 @@ describe("Opensteer MCP integration access classes", () => {
       );
     }
     expect(JSON.stringify(captures)).not.toContain('"nextAction"');
-    expect(Buffer.byteLength(JSON.stringify(captures["all-uninstalled"]))).toBeLessThan(14000);
-    expect(Buffer.byteLength(JSON.stringify(captures.populated))).toBeLessThan(18000);
+    expect(Buffer.byteLength(JSON.stringify(captures["all-uninstalled"]))).toBeLessThan(6000);
+    expect(Buffer.byteLength(JSON.stringify(captures.populated))).toBeLessThan(8000);
   });
 
-  it("describes and calls an operation while preserving the schema digest fence", async () => {
+  it("describes and calls an operation by its name and account", async () => {
     const entry = inventoryEntry();
     entry.accounts[0]!.account = "Tim Jang (tim@opensteer.com)";
     const callable = callableTool({
@@ -466,9 +723,10 @@ describe("Opensteer MCP integration access classes", () => {
     store.listDiscoveryInventory.mockRejectedValue(
       new Error("Describe must not scan discovery inventory"),
     );
-    const toolRef = toolReference(callable);
+    const operation = "issues.get";
+    const account = callable.grant.connectionId;
     const described = await handler(
-      { params: { arguments: { toolRef }, name: "integration_describe" } },
+      { params: { arguments: { operation }, name: "integration_describe" } },
       callExtra("describe"),
     );
     // The page is the whole answer, sent once as text and never wrapped in JSON.
@@ -483,18 +741,18 @@ describe("Opensteer MCP integration access classes", () => {
       },
       cursor: 0,
       nextCursor: null,
+      name: operation,
       operation: { title: "Get issue" },
       path: "",
-      toolRef,
     });
     expect(JSON.parse(text.slice(newline + 1))).toEqual(linearToolSchemas);
     const page = await handler(
-      { params: { arguments: { toolRef, path: "/inputSchema" }, name: "integration_describe" } },
+      { params: { arguments: { operation, path: "/inputSchema" }, name: "integration_describe" } },
       callExtra("describe-input"),
     );
     const pageText = (page as { content: [{ text: string }] }).content[0].text;
     expect(JSON.parse(pageText.slice(0, pageText.indexOf("\n")))).toMatchObject({
-      toolRef,
+      name: operation,
       path: "/inputSchema",
     });
     expect(JSON.parse(pageText.slice(pageText.indexOf("\n") + 1))).toEqual(
@@ -502,7 +760,12 @@ describe("Opensteer MCP integration access classes", () => {
     );
     expect(callable.grant.alias).toBe("Personal only");
     await handler(
-      { params: { arguments: { arguments: { id: "LIN-1" }, toolRef }, name: "integration_call" } },
+      {
+        params: {
+          arguments: { account, arguments: { id: "LIN-1" }, operation },
+          name: "integration_call",
+        },
+      },
       callExtra("call"),
     );
     // The asking Thread travels with the call, and its Run with it for the
@@ -514,20 +777,43 @@ describe("Opensteer MCP integration access classes", () => {
       expect.any(AbortSignal),
     );
 
-    const stale = `${callable.grant.id}.${callable.tool.id}.${"z".repeat(43)}`;
-    const refused = (await handler(
-      { params: { arguments: { toolRef: stale }, name: "integration_call" } },
-      callExtra("stale"),
-    )) as { content: readonly { text: string }[]; isError: boolean };
-    expect(refused).toMatchObject({
-      content: [
-        {
-          text: "Integration operation schema changed; search and describe it again",
-          type: "text",
-        },
-      ],
-      isError: true,
-    });
+    store.listDiscoveryInventory.mockResolvedValue([entry]);
+    expect(
+      errorText(
+        await handler(
+          { params: { arguments: { operation }, name: "integration_call" } },
+          callExtra("no-account"),
+        ),
+      ),
+    ).toBe(
+      `Choose the account for ${operation}: pass account as one of ${account} (Personal only).`,
+    );
+    expect(
+      errorText(
+        await handler(
+          {
+            params: {
+              arguments: { account: createIntegrationId("connection"), operation },
+              name: "integration_call",
+            },
+          },
+          callExtra("other-account"),
+        ),
+      ),
+    ).toBe("Integration operation is no longer available; search again");
+    expect(callTool).toHaveBeenCalledTimes(1);
+  });
+
+  it("tells a caller holding the old address how to continue", async () => {
+    const { handler } = await createHarness({ inventory: [] });
+    expect(
+      errorText(
+        await handler(
+          { params: { arguments: { toolRef: "old" }, name: "integration_call" } },
+          callExtra("legacy"),
+        ),
+      ),
+    ).toContain("call integration_search, then pass operation and account");
   });
 
   it("names the read-write fix when a write operation is blocked by a read grant", async () => {
@@ -545,7 +831,7 @@ describe("Opensteer MCP integration access classes", () => {
     const response = (await handler(
       {
         params: {
-          arguments: { toolRef: `${grant.id}.${writeTool.id}.${writeTool.schemaDigest}` },
+          arguments: { account: grant.connectionId, operation: writeTool.name },
           name: "integration_call",
         },
       },
@@ -562,7 +848,7 @@ describe("Opensteer MCP integration access classes", () => {
     });
   });
 
-  it("keeps an offline computer operation discoverable with its computer account and toolRef", async () => {
+  it("keeps an offline computer operation discoverable with its computer account", async () => {
     const { callable, entry } = computerInventory("INTEGRATION_UNAVAILABLE");
     const { handler } = await createHarness({
       callableTools: [callable] as never,
@@ -577,15 +863,10 @@ describe("Opensteer MCP integration access classes", () => {
     );
     expect(searched).toMatchObject({
       guidance: { readiness: expect.stringContaining("do not repeat access requests") },
-      operations: [
-        {
-          account: "Studio Mac",
-          connectionId: callable.grant.connectionId,
-          toolRef: toolReference(callable as never),
-        },
-      ],
+      operations: [{ name: expect.stringContaining(`${callable.tool.name}@`) }],
       results: [
         {
+          accounts: [{ account: "Studio Mac", connectionId: callable.grant.connectionId }],
           servers: [
             {
               readiness: {
@@ -705,7 +986,7 @@ describe("Opensteer MCP integration access classes", () => {
     });
   });
 
-  it("recovers a narrowed computer write toolRef with read-write guidance", async () => {
+  it("recovers a narrowed computer write with read-write guidance", async () => {
     const { entry } = computerInventory("READY");
     const grant = effectiveGrant({
       access: "read-write",
@@ -715,10 +996,6 @@ describe("Opensteer MCP integration access classes", () => {
     if (!isComputerAppDefinition(computerDefinition))
       throw new Error("Computer definition invalid");
     const send = computerDefinition.config.operations.find(({ effect }) => effect === "write")!;
-    const oldToolRef = `${grant.id}.${createIntegrationId("tool")}.${integrationSchemaDigest({
-      inputSchema: send.inputSchema,
-      outputSchema: send.outputSchema,
-    })}`;
     const { handler } = await createHarness({
       computerConnection: {
         access: "read",
@@ -729,52 +1006,17 @@ describe("Opensteer MCP integration access classes", () => {
       inventory: [entry] as never,
     });
     const response = await handler(
-      { params: { arguments: { toolRef: oldToolRef }, name: "integration_call" } },
+      {
+        params: {
+          arguments: { account: grant.connectionId, operation: send.name },
+          name: "integration_call",
+        },
+      },
       callExtra("narrowed-computer-write"),
     );
     expect(errorText(response)).toBe(
       'Studio Mac allows reading only. Ask for read-write to send: call integration_request with integration "apple-messages" and access "read-write"; do not retry this call until it is fulfilled.',
     );
-  });
-
-  it("does not guess which stale write a shared schema digest named", async () => {
-    const { entry } = computerInventory("READY");
-    const grant = effectiveGrant({
-      access: "read-write",
-      connectionId: entry.accounts[0]!.connectionId,
-      installationId: entry.installation.id,
-    });
-    if (!isComputerAppDefinition(computerDefinition))
-      throw new Error("Computer definition invalid");
-    const send = computerDefinition.config.operations.find(({ effect }) => effect === "write");
-    if (!send) throw new Error("Computer definition has no write operation");
-    const ambiguousDefinition = IntegrationDefinitionSchema.parse({
-      ...computerDefinition,
-      config: {
-        ...computerDefinition.config,
-        operations: [
-          ...computerDefinition.config.operations,
-          { ...send, name: "forward_message", title: "Forward message" },
-        ],
-      },
-    });
-    const oldToolRef = `${grant.id}.${createIntegrationId("tool")}.${integrationSchemaDigest({
-      inputSchema: send.inputSchema,
-      outputSchema: send.outputSchema,
-    })}`;
-    const { handler } = await createHarness({
-      computerConnection: { access: "read", runnerName: "Studio Mac" },
-      definitions: [ambiguousDefinition],
-      grants: [grant],
-      inventory: [entry] as never,
-    });
-
-    const response = await handler(
-      { params: { arguments: { toolRef: oldToolRef }, name: "integration_call" } },
-      callExtra("ambiguous-narrowed-computer-write"),
-    );
-
-    expect(errorText(response)).toBe("Integration operation is no longer available; search again");
   });
 
   it("does not short-circuit a read-write request above a computer's read-only ceiling", async () => {
@@ -1786,10 +2028,6 @@ function effectiveGrant(input: {
     status: "active" as const,
     workspaceId: scope.workspaceId,
   };
-}
-
-function toolReference(callable: ReturnType<typeof callableTool>): string {
-  return `${callable.grant.id}.${callable.tool.id}.${callable.tool.schemaDigest}`;
 }
 
 function callExtra(requestId: string | number): McpCallExtra {

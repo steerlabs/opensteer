@@ -729,11 +729,7 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     }
     const described = await agent.client.callTool({
       name: "integration_describe",
-      arguments: {
-        toolRef:
-          "igr_11111111-1111-4111-8111-111111111111.itl_22222222-2222-4222-8222-222222222222." +
-          "a".repeat(43),
-      },
+      arguments: { operation: "missing.operation" },
     });
     expect(errorText(described)).toBe("Integration operation is no longer available; search again");
     for (const arguments_ of [

@@ -18,10 +18,12 @@ the agent judges the package, publisher and install source. A tricked agent can 
 Secure-field observations suppress text, but screenshots and ordinary fields show what an app
 displays. Revoking or turning off cannot recall input, sign anything out or undo actions.
 
-A person may explicitly authorize an agent to retrieve a fresh SMS/email code through an already
-granted integration for the intended sign-in and enter it into the genuine website or app. That
-code enters the agent transcript; it must not be repeated in replies or retained. This permission
-does not authorize approving an Opensteer Request or granting access.
+A person's request to sign in covers that sign-in's SMS/email code: the agent retrieves the fresh
+code through an already granted integration and enters it into the genuine website or app without
+asking again, unless the person said not to. A second prompt only repeated a decision they had
+already made. Matching the site is the guard, because a tricked agent can relay a code to a
+look-alike site. The code enters the agent transcript; it must not be repeated in replies or
+retained. This does not authorize approving an Opensteer Request or granting access.
 
 ## Authority
 

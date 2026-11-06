@@ -443,6 +443,36 @@ export async function runJourney(kit: NativeBrowserE2EKit): Promise<void> {
     await kit.key(53);
     await kit.selectNativePage(kit.context.sessionId, initial);
   });
+  await step("popup", async () => {
+    const shown = () => {
+      try {
+        return kit.activeSurface().surfaceId;
+      } catch {
+        return null;
+      }
+    };
+    /** A person's click brings its popup forward; the popup closing returns to the opener. */
+    async function follows(opener: string, selector: string) {
+      await nativeClick(selector);
+      await kit.until(async () => ![opener, null].includes(shown()), "popup brought forward");
+      assert.match(String(await kit.evaluateApp("location.search")), new RegExp(shown()!));
+      await kit.pageContents().executeJavaScript("setTimeout(()=>window.close());undefined");
+      await kit.until(async () => shown() === opener, "closing a popup returns to its opener");
+    }
+    const page = await open("/p");
+    await kit.focusPage();
+    await follows(page, "#popup");
+    const framed = await open("/frame-opener");
+    await kit.focusPage();
+    const contents = kit.pageContents();
+    await kit.until(
+      async () => contents.mainFrame.frames[0]?.url.endsWith("/frame-button") === true,
+      "cross-site frame loaded",
+    );
+    assert.notEqual(contents.mainFrame.frames[0]!.processId, contents.mainFrame.processId);
+    await follows(framed, "#frame");
+    await kit.selectNativePage(kit.context.sessionId, initial);
+  });
   await step("backgroundDialog", async () => {
     const page = kit.activeSurface();
     const contents = kit.pageContents();

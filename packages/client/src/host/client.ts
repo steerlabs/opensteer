@@ -915,6 +915,8 @@ export interface HostSnapshot {
   transcriptWindows: Record<string, TranscriptWindow>;
   transcripts: Record<string, TranscriptEntry[]>;
   user: AuthenticatedUser | null;
+  /** Recovery can replace the session with no other visible change, ending what was bound to it. */
+  sessionId?: string;
   /** Host-declared deployment capability; false for Personal deployments. */
   workspaceSharingAvailable: boolean;
   workspaceWindow: DurableWindow;
@@ -1079,6 +1081,12 @@ export interface HostClient {
   /** A Host without a network supplies its own; every other client reaches updates by route. */
   readonly desktopUpdates?: DesktopUpdates;
   readonly browserPasskeys?: BrowserPasskeys;
+  /** Popups this client's own input opens from one tab, as each one opens. */
+  readonly subscribeBrowserPopups?: (
+    sessionId: string,
+    surfaceId: string,
+    listener: (popupId: string) => void,
+  ) => () => void;
   readonly browserHistory: BrowserHistoryClient;
   readonly browserPreferences: BrowserPreferences;
   retainComputerView(

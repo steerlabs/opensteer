@@ -112,7 +112,7 @@ function BrowserTabs(props: {
       const page = state?.routes[state.index - 1];
       if (id !== tabId && page !== undefined)
         navigation.dispatch({
-          ...CommonActions.setParams({ editAddress: false, tabId: id }),
+          ...CommonActions.setParams({ editAddress: false, popup: false, tabId: id }),
           source: page.key,
         });
       navigation.goBack();

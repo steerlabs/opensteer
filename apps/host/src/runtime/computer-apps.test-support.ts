@@ -603,25 +603,54 @@ export async function integrationGateway(plan: { readonly token: string; readonl
   };
 }
 
+/** Search rows, one per account, each with the address that calls it. */
 export function operations(search: Record<string, unknown>) {
-  return search.operations as readonly {
+  const rows = search.operations as readonly {
+    readonly accounts?: readonly string[];
+    readonly installation: string;
     readonly name: string;
-    readonly account: string;
-    readonly connectionId: string | null;
-    readonly toolRef: string;
   }[];
+  const results = search.results as readonly {
+    readonly accounts: readonly { readonly account: string; readonly connectionId: string }[];
+    readonly name: string;
+  }[];
+  return rows.flatMap((row) => {
+    const accounts = results.find(({ name }) => name === row.installation)?.accounts ?? [];
+    const shown = row.accounts
+      ? accounts.filter(({ connectionId }) => row.accounts?.includes(connectionId))
+      : accounts;
+    const name = row.name.slice(0, row.name.lastIndexOf("@"));
+    return shown.length > 0
+      ? shown.map(({ account, connectionId }) => ({
+          account,
+          address: { account: connectionId, operation: row.name },
+          connectionId: connectionId as string | null,
+          name,
+        }))
+      : [
+          {
+            account: row.installation,
+            address: { operation: row.name },
+            connectionId: null as string | null,
+            name,
+          },
+        ];
+  });
 }
 
 export function toolReadiness(search: Record<string, unknown>, name: string) {
   const results = search.results as readonly {
-    readonly tools: readonly {
+    readonly tools?: readonly {
       readonly name: string;
       readonly readiness: { readonly code: string; readonly detail: string | null };
     }[];
   }[];
-  const found = results.flatMap(({ tools }) => tools).find((tool) => tool.name === name);
-  if (!found) throw new Error(`Tool ${name} was not found in ${JSON.stringify(search)}`);
-  return found.readiness;
+  const found = results.flatMap(({ tools }) => tools ?? []).find((tool) => tool.name === name);
+  if (found) return found.readiness;
+  if (operations(search).some((candidate) => candidate.name === name)) {
+    return { code: "READY", detail: null };
+  }
+  throw new Error(`Tool ${name} was not found in ${JSON.stringify(search)}`);
 }
 
 export function operation(search: Record<string, unknown>, name: string) {
