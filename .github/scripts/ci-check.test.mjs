@@ -52,7 +52,7 @@ test("a failing or missing matrix lane cannot pass Check", () => {
     ...Object.fromEntries(lanes.map((k) => [k, { result: "success" }])),
   };
   assert.doesNotThrow(() => validateResults(selected, needs, "push"));
-  for (const lane of ["native-mac", "tests", "integration"]) {
+  for (const lane of ["native-mac", "tests", "integration", "browser-journeys"]) {
     for (const result of ["failure", "cancelled", "skipped"]) {
       assert.throws(() => validateResults(selected, { ...needs, [lane]: { result } }, "push"));
     }
@@ -367,4 +367,40 @@ test("release native proof and release builds share a toolchain; release caches 
       ["~/.gradle/caches/modules-2", "~/.gradle/wrapper/dists"],
     ],
   );
+});
+
+test("real-browser command fails its existing job and Check and uploads inventories", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { workflow } = await ciConfig();
+  const job = workflow.jobs["browser-journeys"];
+  assert.equal(job["runs-on"], "ubuntu-24.04");
+  assert.equal(job["timeout-minutes"], 8);
+  assert.equal(job["continue-on-error"], undefined);
+  const steps = job.steps.filter((step) => /pnpm test:browser/.test(step.run));
+  assert.equal(steps.length, 1);
+  const step = steps[0];
+  assert.equal(step["continue-on-error"], undefined);
+  assert.match(step.run, /set -o pipefail/);
+  assert.doesNotMatch(step.run, /\|\| true/);
+  assert.match(step.run, /vitest list --config vitest.browser.config.ts/);
+  for (const flag of [
+    "--reporter=junit",
+    "--reporter=json",
+    "--reporter=./scripts/ci-inventory-reporter.ts",
+  ])
+    assert.ok(step.run.includes(flag), flag);
+  assert.equal(step.env.CI_LANE, "browser");
+  assert.ok(
+    job.steps.indexOf(step) >
+      job.steps.findIndex((entry) => entry.uses === "./.github/actions/ci-browser"),
+  );
+  assert.ok(workflow.jobs.Check.needs.includes("browser-journeys"));
+  assert.ok(
+    job.steps.some((entry) => entry.if === "always()" && entry.with?.path.includes("evidence")),
+  );
+  const aggregate = readFileSync("scripts/ci-check.ts", "utf8");
+  assert.match(aggregate, /read\("browser-1.inventory.json"\)/);
+  assert.match(aggregate, /checkInventories\(\[inventory\], 1, "browser"\)/);
+  assert.match(aggregate, /inventory.discovered/);
+  assert.match(aggregate, /realBrowserTests/);
 });

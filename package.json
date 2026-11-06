@@ -31,6 +31,7 @@
     "reset:local-password": "pnpm --filter @opensteer/identity reset-local-password",
     "setup:local": "tsx scripts/setup-local.ts",
     "test": "vitest run",
+    "test:browser": "vitest run --config vitest.browser.config.ts",
     "test:agent-phone": "tsx scripts/test-integration.ts --config vitest.device.config.ts",
     "test:agent-phone:soak": "tsx scripts/test-integration.ts --config vitest.soak.config.ts",
     "test:engines": "tsx scripts/test-integration.ts --config vitest.engines.config.ts",
