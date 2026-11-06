@@ -164,24 +164,28 @@ export const externalAgentGuides = [
     id: "chatgpt",
     name: "ChatGPT",
     providerId: "openai",
+    summary: "Use Opensteer from ChatGPT.",
     step: "In ChatGPT's settings, open Apps and create an app with this address. Choose OAuth.",
   },
   {
     id: "claude",
     name: "Claude",
     providerId: "anthropic",
+    summary: "Use Opensteer from Claude.",
     step: "In Claude, open Settings, then Connectors, and add a custom connector with this address.",
   },
   {
     id: "other",
     name: "Another agent",
     providerId: null,
+    summary: "Any agent that supports MCP with OAuth sign-in.",
     step: "Add a remote MCP server with this address, and choose OAuth when it asks how to sign in.",
   },
 ] as const satisfies readonly {
   readonly id: string;
   readonly name: string;
   readonly providerId: string | null;
+  readonly summary: string;
   readonly step: string;
 }[];
 export type ExternalAgentGuide = (typeof externalAgentGuides)[number];
