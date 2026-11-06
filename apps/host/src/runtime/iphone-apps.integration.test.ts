@@ -1273,14 +1273,14 @@ async function grant(
   connectionId: string,
   access: IntegrationAccess,
 ) {
-  await gateway.call("integration_request", {
+  const held = gateway.call("integration_request", {
     access,
     integration: "apple-calendar",
     reason: "Use phone Calendar",
   });
-  const request = (await host.store.requests.listPendingIntegrationAccessRequests(host.ownerId)).at(
-    -1,
-  )!;
+  const pending = () => host.store.requests.listPendingIntegrationAccessRequests(host.ownerId);
+  await waitForCondition(async () => (await pending()).length > 0);
+  const request = (await pending()).at(-1)!;
   await testRpcData(
     host.origin,
     "commands.dispatch",
@@ -1301,4 +1301,5 @@ async function grant(
     },
     { headers: host.ownerHeaders },
   );
+  await held;
 }

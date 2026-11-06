@@ -1,3 +1,4 @@
+import { startHeldRequest } from "./held-request.test-support.js";
 import { startUpstream } from "./integration-schemas.test-support.js";
 /**
  * A large API's schemas through the integration gateway, end to end on real
@@ -31,7 +32,6 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { RequestIdSchema } from "@opensteer/core";
 import { IntegrationPlatformStore, replaceServerToolsInTransaction } from "@opensteer/database";
 import {
   IntegrationToolIdSchema,
@@ -129,7 +129,7 @@ integration("integration schemas", () => {
 
       // An agent proposes the API and its owner approves it.
       const installing = performance.now();
-      const installationId = await proposeAndInstall(host, gateway);
+      const installationId = await proposeAndInstall(host, gateway, run.runId);
       record("installed", { elapsedMs: Math.round(performance.now() - installing) });
       await testRpcData(
         host.origin,
@@ -420,20 +420,23 @@ async function searchAll(
 async function proposeAndInstall(
   host: MachineAccessHost,
   gateway: Gateway,
+  runId: import("@opensteer/core").RunId,
 ): Promise<IntegrationInstallationId> {
-  const proposed = await gateway.call("integration_propose", {
-    description: "Voice AI agents that answer and place phone calls.",
-    kind: "openapi",
-    reason: "Manage this person's voice assistants",
-    source: `${upstreamOrigin}/openapi.json`,
-  });
-  expect(proposed).toMatchObject({ status: "pending" });
+  const proposed = await startHeldRequest(host, runId, () =>
+    gateway.call("integration_propose", {
+      description: "Voice AI agents that answer and place phone calls.",
+      kind: "openapi",
+      reason: "Manage this person's voice assistants",
+      source: `${upstreamOrigin}/openapi.json`,
+    }),
+  );
+  expect(proposed.request.status).toBe("pending");
   await testRpcData(
     host.origin,
     "commands.dispatch",
     {
       idempotencyKey: "integration-schemas-install",
-      requestId: RequestIdSchema.parse(proposed.requestId),
+      requestId: proposed.request.id,
       response: { kind: "choice", optionId: "installed" },
       type: "request.respond",
     },
@@ -445,6 +448,7 @@ async function proposeAndInstall(
     .where("sourceKind", "=", "proposed")
     .where("status", "=", "active")
     .executeTakeFirstOrThrow();
+  await expect(proposed.result).resolves.toMatchObject({ status: "fulfilled" });
   return installation.id;
 }
 

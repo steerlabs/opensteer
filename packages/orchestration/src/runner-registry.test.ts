@@ -2964,3 +2964,55 @@ it("routes correlated app requests only to the owning storage connection and can
     await registry.close();
   }
 });
+
+describe("long Request holds", () => {
+  it("uses the advertised driver on the Run's environment and treats older Runners as short holds", async () => {
+    const registry = new RunnerRegistry({
+      hooks: { authorize: vi.fn(async () => undefined), onEvent: vi.fn(async () => undefined) },
+    });
+    const environmentId = createId("environment");
+    const peer = new MemoryRunnerPeer("holds");
+    try {
+      await registerAttached(
+        registry,
+        hello(createId("runner"), environmentId, "boot-holds", [
+          {
+            accessModes: ThreadAccessModeSchema.options,
+            driverKind: HarnessIdSchema.parse("native"),
+            readiness: "configured",
+            sources: harnessSources("native", "Native"),
+            steering: false,
+            longRequestHold: true,
+          },
+          {
+            accessModes: ThreadAccessModeSchema.options,
+            driverKind: HarnessIdSchema.parse("codex"),
+            readiness: "configured",
+            sources: harnessSources("codex", "Codex"),
+            steering: false,
+          },
+          {
+            driverKind: HarnessIdSchema.parse("claude"),
+            readiness: "unavailable",
+            reason: "Not installed",
+          },
+        ]),
+        peer,
+      );
+      expect(registry.supportsLongRequestHold(environmentId, HarnessIdSchema.parse("native"))).toBe(
+        true,
+      );
+      expect(registry.supportsLongRequestHold(environmentId, HarnessIdSchema.parse("codex"))).toBe(
+        false,
+      );
+      expect(registry.supportsLongRequestHold(environmentId, HarnessIdSchema.parse("claude"))).toBe(
+        false,
+      );
+      expect(
+        registry.supportsLongRequestHold(createId("environment"), HarnessIdSchema.parse("native")),
+      ).toBe(false);
+    } finally {
+      await registry.close();
+    }
+  });
+});

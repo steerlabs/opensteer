@@ -63,6 +63,12 @@ export interface HarnessCapabilities {
    * screenshot it was never shown.
    */
   readonly mcpImageContent: boolean;
+  /**
+   * The driver lets one MCP call run for `heldToolCallTimeoutMs` and reads a
+   * streamed response, so the Host may hold a call for `requestHoldLimitMs`.
+   * Without it the Host holds for `shortRequestHoldMs` over plain JSON.
+   */
+  readonly longRequestHold?: true;
   readonly resume: boolean;
   /** The provider can accept new input into an already executing Opensteer Run. */
   readonly steering: boolean;

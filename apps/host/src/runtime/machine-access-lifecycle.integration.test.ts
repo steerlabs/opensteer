@@ -1,5 +1,4 @@
 import { callMcpTool } from "../mcp/call-tool.test-support.js";
-import { RequestCreationResultSchema } from "@opensteer/protocol";
 
 import { freePort } from "@opensteer/shared/test-support/loopbackPort";
 import { createDatabase } from "@opensteer/database";
@@ -36,7 +35,7 @@ import {
   startMachineAccessHost,
   type MachineAccessScenario,
 } from "./machine-access.test-support.js";
-import { createId, type CommandId, type RunId } from "@opensteer/core";
+import { createId, type CommandId, type RequestId, type RunId } from "@opensteer/core";
 import { sql } from "kysely";
 import { testRpcData } from "../server/test-host-api-request.js";
 
@@ -118,16 +117,12 @@ integration("Machine access session lifecycle", () => {
         run.machineAccess?.machines.find((machine) => machine.runnerId === target.runnerId)
           ?.fullDiskAccess,
       ).toBe(false);
-      const response = await callMcpTool(
-        host.origin,
-        run.toolsToken,
-        "machine_full_disk_access_request",
-        { operationKey: crypto.randomUUID(), computer: "test-mac", reason: "Read Mail" },
-      );
-      expect(response.isError, JSON.stringify(response)).not.toBe(true);
-      const requestId = RequestCreationResultSchema.parse(
-        JSON.parse((response.content as [{ text: string }])[0].text),
-      ).requestId;
+      const held = callMcpTool(host.origin, run.toolsToken, "machine_full_disk_access_request", {
+        operationKey: crypto.randomUUID(),
+        computer: "test-mac",
+        reason: "Read Mail",
+      });
+      const requestId = await heldRequest(host, run.runId);
       expect(await host.store.requests.get(requestId)).toMatchObject({
         kind: "machine.full-disk-access",
         mode: "durable",
@@ -165,6 +160,7 @@ integration("Machine access session lifecycle", () => {
           .where("requestId", "=", requestId)
           .execute(),
       ).toEqual([{ requestId }]);
+      await expectGrantedInTheHeldCall(held);
     } finally {
       for (const close of closers) await close();
     }
@@ -205,16 +201,12 @@ integration("Machine access session lifecycle", () => {
         key: "fda-relaunch-run",
         title: "Read Mail",
       });
-      const response = await callMcpTool(
-        host.origin,
-        run.toolsToken,
-        "machine_full_disk_access_request",
-        { operationKey: crypto.randomUUID(), computer: "test-mac", reason: "Read Mail" },
-      );
-      expect(response.isError, JSON.stringify(response)).not.toBe(true);
-      const requestId = RequestCreationResultSchema.parse(
-        JSON.parse((response.content as [{ text: string }])[0].text),
-      ).requestId;
+      const held = callMcpTool(host.origin, run.toolsToken, "machine_full_disk_access_request", {
+        operationKey: crypto.randomUUID(),
+        computer: "test-mac",
+        reason: "Read Mail",
+      });
+      const requestId = await heldRequest(host, run.runId);
       expect((await host.store.requests.get(requestId))?.status).toBe("pending");
 
       await target.disconnect();
@@ -230,6 +222,7 @@ integration("Machine access session lifecycle", () => {
       expect(
         (await list()).machines.find((machine) => machine.id === target.runnerId)?.fullDiskAccess,
       ).toBe(true);
+      await expectGrantedInTheHeldCall(held);
     } finally {
       for (const close of closers) await close();
     }
@@ -1241,4 +1234,25 @@ function connectToSocket(path: string): Promise<void> {
     });
     socket.once("error", reject);
   });
+}
+
+/** A Request tool's call stays open, so its Request is read while the call is held. */
+async function heldRequest(host: MachineAccessScenario["host"], runId: RunId): Promise<RequestId> {
+  let id: RequestId | undefined;
+  await waitForCondition(async () => {
+    const row = await host.store.database
+      .selectFrom("requests")
+      .select("id")
+      .where("originatingRunId", "=", runId)
+      .executeTakeFirst();
+    id = row?.id;
+    return id !== undefined;
+  });
+  return id!;
+}
+
+async function expectGrantedInTheHeldCall(held: ReturnType<typeof callMcpTool>): Promise<void> {
+  const response = await held;
+  expect(response.isError, JSON.stringify(response)).not.toBe(true);
+  expect(JSON.stringify(response.content)).toContain("Full Disk Access is now on");
 }

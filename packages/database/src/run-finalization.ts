@@ -1,3 +1,4 @@
+import { sql } from "kysely";
 import { recordPersonWaited } from "./run-visibility.js";
 import { appendDoneState } from "./task-done.js";
 import { pauseTriggerInTransaction } from "./trigger-store.js";
@@ -165,7 +166,17 @@ export async function finalizeRunTransaction(
         threadId: run.threadId,
       });
     }
-  } else if (replyTarget) {
+  } else if (
+    replyTarget &&
+    (input.status !== "interrupted" ||
+      !(await transaction
+        .selectFrom("commands")
+        .select("id")
+        .where("runId", "=", run.id)
+        .where("type", "=", "run.interrupt")
+        .where(sql<string>`authority_source->>'kind'`, "=", "request-hold")
+        .executeTakeFirst()))
+  ) {
     const threadUrl = input.links.threadUrl(run.threadId);
     await enqueueChannelConversationStatus(transaction, {
       conversationId: replyTarget.conversationId,

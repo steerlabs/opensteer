@@ -6,7 +6,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { agentTools } from "@opensteer/agent-tools";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import { BrowserSessionIdSchema, hostApiVersionHeader } from "@opensteer/protocol";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import {
   acceptCallerRun,
@@ -186,12 +186,22 @@ export function passwordsAnywhereJourneys() {
             authority.policy.approval =
               name.startsWith("workspace-approval-") || name === "declined";
             authority.policy.declined = name === "declined";
-            const first = await signIn();
-            await evidence.write("tool-result.json", first);
+            const held = signIn();
+            void held.catch(() => undefined);
+            const request = authority.policy.approval
+              ? await vi.waitFor(
+                  async () => {
+                    const rows = await host.store.requests.listPendingPasswordSignIns({
+                      after: null,
+                      limit: 64,
+                    });
+                    expect(rows, "sign_in did not open its Request").toHaveLength(1);
+                    return rows[0]!;
+                  },
+                  { timeout: 10_000 },
+                )
+              : undefined;
             if (name === "declined") {
-              const pending = z
-                .object({ status: z.literal("pending"), requestId: z.string() })
-                .parse(first.structuredContent);
               const operation = authority.commands.findLast(
                 (c) => c.type === "login.authorize" && "loginRef" in c,
               );
@@ -200,27 +210,26 @@ export function passwordsAnywhereJourneys() {
               const declined = await waitForValue(async () => {
                 const row = (
                   await host.store.requests.listPendingPasswordSignIns({ after: null, limit: 64 })
-                ).find((r) => r.id === pending.requestId);
+                ).find((r) => r.id === request!.id);
                 if (row) return undefined;
                 return host.store.requests.get(
-                  pending.requestId as Parameters<typeof host.store.requests.get>[0],
+                  request!.id as Parameters<typeof host.store.requests.get>[0],
                 );
               });
               expect(declined?.status).toBe("declined");
               expect(authority.commands.filter((c) => c.type === "login.seal")).toHaveLength(0);
+              const result = await held;
+              expect(result.isError).not.toBe(true);
+              expect(result.structuredContent).toMatchObject({
+                status: "declined",
+                requestId: request!.id,
+              });
+              await evidence.write("tool-result.json", result);
               await evidence.write("declined-request.json", declined);
               return;
             }
             if (name.startsWith("workspace-approval-")) {
-              const pending = z
-                .object({ status: z.literal("pending"), requestId: z.string() })
-                .parse(first.structuredContent);
-              const rows = await host.store.requests.listPendingPasswordSignIns({
-                after: null,
-                limit: 64,
-              });
-              expect(rows.filter(({ id }) => id === pending.requestId)).toHaveLength(1);
-              const request = rows.find(({ id }) => id === pending.requestId)!;
+              if (!request) throw new Error("Missing sign-in Request");
               expect(request.payload).toMatchObject({
                 kind: "browser.password-sign-in",
                 scope: "workspace",
@@ -246,6 +255,7 @@ export function passwordsAnywhereJourneys() {
               expect(JSON.stringify(request)).not.toContain(passwordFixture.username);
               const account = card.accounts[0]!;
               if (name.includes("after-read")) await run.complete();
+              expect((await held).isError, "ending the origin Run ends its held call").toBe(true);
               const approve = () =>
                 testRpcData(
                   host.origin,
@@ -324,6 +334,8 @@ export function passwordsAnywhereJourneys() {
               await evidence.write("request.json", fulfilled);
               await evidence.write("continuation.json", continuation);
             } else {
+              const first = await held;
+              await evidence.write("tool-result.json", first);
               const ready = z
                 .object({ status: z.literal("ready"), loginRef: z.string(), account: z.string() })
                 .parse(first.structuredContent);

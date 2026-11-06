@@ -1,3 +1,4 @@
+import { startHeldRequest } from "./held-request.test-support.js";
 /**
  * Real Host/PostgreSQL proposal, review, connection and repair journey.
  * Asserts refusal of unsafe checks and malformed guidance, approval integrity,
@@ -195,11 +196,14 @@ integration("proposal credential guidance", () => {
       );
       expect(await count()).toEqual(before);
       await search("Gmail");
-      const request = await gateway.call("integration_request", {
-        catalog: "google-gmail",
-        access: "read",
-        reason: "Read the requested Gmail messages",
-      });
+      const requesting = await startHeldRequest(host, run.runId, () =>
+        gateway.call("integration_request", {
+          catalog: "google-gmail",
+          access: "read",
+          reason: "Read the requested Gmail messages",
+        }),
+      );
+      const request = { requestId: requesting.request.id };
       const detail = await host.store.database
         .selectFrom("integrationRequestDetails")
         .selectAll()
@@ -221,6 +225,18 @@ integration("proposal credential guidance", () => {
         { headers: host.ownerHeaders },
       );
       expect(await search("email Gmail")).toMatchObject({ installed: true });
+      await testRpcData(
+        host.origin,
+        "commands.dispatch",
+        {
+          type: "request.respond",
+          requestId: requesting.request.id,
+          response: { kind: "external", value: { decision: "declined" } },
+          idempotencyKey: "gmail-access-decline",
+        },
+        { headers: host.ownerHeaders },
+      );
+      await expect(requesting.result).resolves.toMatchObject({ status: "declined" });
       passed = true;
     } finally {
       await mkdir(artifactDirectory, { recursive: true });
@@ -335,12 +351,23 @@ integration("proposal credential guidance", () => {
         await expect(propose(overrides)).rejects.toThrow();
         refused.push(label);
       }
-      await expect(
-        propose({ check: { ...check, args: { limit: "provider-validates-this" } } }),
-      ).resolves.toBeDefined();
-      await expect(
-        propose({ check: { ...check, args: { limit: [1, "two", null, true] } } }),
-      ).resolves.toBeDefined();
+      for (const limit of ["provider-validates-this", [1, "two", null, true]]) {
+        const held = await startHeldRequest(host, run.runId, () =>
+          propose({ check: { ...check, args: { limit } } }),
+        );
+        await testRpcData(
+          host.origin,
+          "commands.dispatch",
+          {
+            type: "request.respond",
+            requestId: held.request.id,
+            response: { kind: "choice", optionId: "declined" },
+            idempotencyKey: `decline-valid-${JSON.stringify(limit)}`,
+          },
+          { headers: host.ownerHeaders },
+        );
+        await expect(held.result).resolves.toMatchObject({ status: "declined" });
+      }
       await expect(propose({}, spec({ requiredHeader: true }))).rejects.toThrow();
       refused.push("required header cannot be supplied by check args");
       facts.push({
@@ -349,8 +376,8 @@ integration("proposal credential guidance", () => {
       });
 
       // The approval path reads the durable detail, not an agent's current call.
-      const proposal = await propose();
-      const requestId = RequestIdSchema.parse(proposal.requestId);
+      const proposing = await startHeldRequest(host, run.runId, () => propose());
+      const requestId = proposing.request.id;
       const detail = await host.store.database
         .selectFrom("integrationRequestDetails")
         .select("manifest")
@@ -516,6 +543,7 @@ integration("proposal credential guidance", () => {
       provider.rejectWith(401);
       const accepted = await connect(true, "good-first");
       expect(accepted.ok).toBe(true);
+      await expect(proposing.result).resolves.toMatchObject({ status: "fulfilled" });
       const saved = await connections();
       expect(saved).toHaveLength(1);
       const sealedBeforeRepair = await credentials();
@@ -544,7 +572,10 @@ integration("proposal credential guidance", () => {
         },
       });
 
-      const legacy = await propose({ credential: undefined, check: undefined });
+      const legacyHeld = await startHeldRequest(host, run.runId, () =>
+        propose({ credential: undefined, check: undefined }),
+      );
+      const legacy = { requestId: legacyHeld.request.id };
       const legacyRequestId = RequestIdSchema.parse(legacy.requestId);
       const legacyRequest = await host.store.database
         .selectFrom("integrationRequestDetails")
@@ -600,6 +631,7 @@ integration("proposal credential guidance", () => {
         { headers: host.ownerHeaders },
       );
       expect(unchecked.ok).toBe(true);
+      await expect(legacyHeld.result).resolves.toMatchObject({ status: "fulfilled" });
       expect(provider.requests).toHaveLength(6);
       const catalogEntry = dashboard.catalog.find(
         ({ definition }) => definition.id === "vercel-rest",
@@ -1176,9 +1208,13 @@ integration("proposal credential guidance", () => {
       }
       facts.push({ step: "argument refusals name their field", observed: refusals });
 
-      const bare = await propose();
+      const bareHeld = await startHeldRequest(host, run.runId, () => propose());
+      const bare = { requestId: bareHeld.request.id };
       const unnamed = await proposalOf(bare.requestId);
-      const proposed = await propose({ name: "  Vapi  ", description: `  ${description}  ` });
+      const namedHeld = await startHeldRequest(host, run.runId, () =>
+        propose({ name: "  Vapi  ", description: `  ${description}  ` }),
+      );
+      const proposed = { requestId: namedHeld.request.id };
       const reviewed = await proposalOf(proposed.requestId);
       expect(unnamed.proposal.name).toBeUndefined();
       expect(unnamed.proposal.description).toBe(description);
@@ -1240,6 +1276,8 @@ integration("proposal credential guidance", () => {
         description,
         title: "Vapi fixture",
       });
+      await expect(bareHeld.result).resolves.toMatchObject({ status: "fulfilled" });
+      await expect(namedHeld.result).resolves.toMatchObject({ status: "fulfilled" });
       facts.push({
         step: "the agent's name is reviewed, bound and installed",
         observed: {

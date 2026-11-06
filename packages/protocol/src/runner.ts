@@ -621,6 +621,8 @@ const runnableHarnessDriver = z.object({
    * is unavailable there. Silence is not a declaration.
    */
   mcpImageContent: z.boolean().optional(),
+  /** Absent on older Runners, whose engines keep a short MCP call limit. */
+  longRequestHold: z.boolean().optional(),
   /** Absent on older Runners. File paths are always readable when advertised. */
   messageAttachments: z
     .object({

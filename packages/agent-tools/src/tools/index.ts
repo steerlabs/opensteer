@@ -68,6 +68,16 @@ export const agentTools = [
 export type AgentTool = (typeof agentTools)[number];
 export type AgentToolName = AgentTool["name"];
 
+/** The tools that can open a durable Request, and so hold their call for a person. */
+export const requestToolNames = [
+  "browser_profile_request",
+  "integration_propose",
+  "integration_request",
+  "machine_full_disk_access_request",
+  "sign_in",
+  "use_card",
+] as const satisfies readonly AgentToolName[];
+
 export * from "./apps.js";
 export * from "./browser.js";
 export * from "./computer.js";

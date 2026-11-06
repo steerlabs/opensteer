@@ -600,6 +600,7 @@ export class RunnerRuntime {
         driverKind: kind,
         ...(installation ? { installation } : {}),
         mcpImageContent: capabilities?.mcpImageContent ?? false,
+        ...(capabilities?.longRequestHold ? { longRequestHold: true } : {}),
         ...(this.#canDeliverMessageAttachments(kind)
           ? {
               messageAttachments: {

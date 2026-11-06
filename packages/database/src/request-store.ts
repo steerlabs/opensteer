@@ -1,3 +1,4 @@
+import { assertActiveGrant } from "./execution-authority.js";
 import { ReplyTargetSchema } from "@opensteer/core";
 import { enqueueChannelConversationStatus } from "./channel-deliveries.js";
 import { requestSettlementActor, readRequestSettlementProvenance } from "./request-settlement.js";
@@ -260,12 +261,20 @@ export interface PreparedIntegrationInstallFulfillment {
  * changes remain explicit callers of this store, but creation, visibility,
  * replay, withdrawal, cancellation, and continuation bookkeeping do not fork.
  */
+const personAuthorities = ["workspace-membership", "channel-ingress"];
+
 export class RequestStore {
   readonly #database: Kysely<DatabaseSchema>;
 
   readonly #links: ChannelLinks;
+  readonly #executionNow: () => number;
 
-  constructor(database: Kysely<DatabaseSchema>, links: ChannelLinks = threadPathLinks) {
+  constructor(
+    database: Kysely<DatabaseSchema>,
+    links: ChannelLinks = threadPathLinks,
+    executionNow: () => number = Date.now,
+  ) {
+    this.#executionNow = executionNow;
     this.#links = links;
     this.#database = database;
   }
@@ -2903,6 +2912,99 @@ export class RequestStore {
     );
   }
 
+  /** A person's steers the engine has taken so far: a hold's cutoff, free of any clock. */
+  async personSteerCount(runId: RunId): Promise<number> {
+    const { count } = await this.#database
+      .selectFrom("threadInputs")
+      .innerJoin("commands", "commands.id", "threadInputs.steerCommandId")
+      .select(({ fn }) => fn.countAll<string>().as("count"))
+      .where("commands.runId", "=", runId)
+      .where("commands.type", "=", "run.steer")
+      .where("threadInputs.deliveredAt", "is not", null)
+      .where(sql<string>`thread_inputs.authority_source->>'kind'`, "in", personAuthorities)
+      .executeTakeFirstOrThrow();
+    return Number(count);
+  }
+
+  async holdSnapshot(requestId: RequestId, runId: RunId, steersAtAdmission: number) {
+    const row = await this.#database
+      .selectFrom("requests")
+      .innerJoin("runs", "runs.id", "requests.originatingRunId")
+      .selectAll("requests")
+      .select(["runs.status as runStatus", "runs.phase as runPhase", "runs.voiceSessionId"])
+      .select((eb) =>
+        eb
+          .exists(
+            eb
+              .selectFrom("threadInputs")
+              .select("threadInputs.messageId")
+              .whereRef("threadInputs.threadId", "=", "runs.threadId")
+              .where("threadInputs.state", "=", "pending")
+              .where("threadInputs.policy", "!=", "report")
+              .where(sql<string>`thread_inputs.authority_source->>'kind'`, "in", personAuthorities),
+          )
+          .as("queued"),
+      )
+      .where("requests.id", "=", requestId)
+      .where("requests.mode", "=", "durable")
+      .where("runs.id", "=", runId)
+      .executeTakeFirst();
+    return row
+      ? {
+          request: requestFromRow(row),
+          run: { status: row.runStatus, phase: row.runPhase, voiceSessionId: row.voiceSessionId },
+          steered: (await this.personSteerCount(runId)) > steersAtAdmission,
+          queued: row.queued,
+        }
+      : null;
+  }
+
+  async markToolDelivered(
+    requestId: RequestId,
+    claims: Parameters<typeof assertActiveGrant>[1],
+  ): Promise<"delivered" | "already-delivered" | "refused"> {
+    return withDatabaseTransaction(this.#database, async (transaction) => {
+      const run = await transaction
+        .selectFrom("runs")
+        .select(["phase", "voiceSessionId"])
+        .where("id", "=", claims.runId)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (!run || run.phase !== "turn" || run.voiceSessionId !== null) return "refused";
+      try {
+        await assertActiveGrant(transaction, claims, this.#executionNow);
+      } catch (error) {
+        if (error instanceof OpensteerError && error.code === "forbidden") return "refused";
+        throw error;
+      }
+      const request = await transaction
+        .selectFrom("requests")
+        .select("status")
+        .where("id", "=", requestId)
+        .where("mode", "=", "durable")
+        .where("originatingRunId", "=", claims.runId)
+        .executeTakeFirst();
+      if (!request || request.status === "pending") return "refused";
+      const now = new Date(this.#executionNow());
+      const updated = await transaction
+        .updateTable("requestContinuations")
+        .set({ status: "delivered", attemptedAt: now, updatedAt: now })
+        .where("requestId", "=", requestId)
+        .where("status", "=", "waiting")
+        .executeTakeFirst();
+      if (updated.numUpdatedRows === 1n) return "delivered";
+      const existing = await transaction
+        .selectFrom("requestContinuations")
+        .select("status")
+        .where("requestId", "=", requestId)
+        .executeTakeFirst();
+      if (existing?.status === "delivered") return "already-delivered";
+      if (!existing && (request.status === "withdrawn" || request.status === "cancelled"))
+        return "delivered";
+      return "refused";
+    });
+  }
+
   async listPendingContinuations(limit = 100): Promise<readonly PendingRequestContinuation[]> {
     const pending = this.#database
       .selectFrom("requestContinuations")
@@ -2985,7 +3087,7 @@ export class RequestStore {
       attemptedAt: row.continuationAttemptedAt?.toISOString() ?? null,
       reason: row.continuationReason,
       request: requestFromRow(row),
-      status: row.continuationStatus,
+      status: "waiting" as const,
     }));
   }
 

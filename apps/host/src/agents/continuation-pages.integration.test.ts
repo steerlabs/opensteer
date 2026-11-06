@@ -67,6 +67,7 @@ describeStore("Continuation paging", (it) => {
     ).toEqual([older, first, second]);
     const service = new ContinuationService({
       requests: {
+        get: (id) => store.requests.get(id),
         listPendingContinuations: () => store.requests.listPendingContinuations(2),
         recordContinuationAttempt: (input) => store.requests.recordContinuationAttempt(input),
       },

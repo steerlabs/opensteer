@@ -495,7 +495,7 @@ describe("foldTranscriptEvent", () => {
     expect(fold([event("request.resolved", { request: declined })])).toEqual([
       expect.objectContaining({ outcome: "Declined", requestId: pending.id }),
     ]);
-    // A durable Request left its Run working, so nothing waited on its answer.
+    // Durable tool-call holds have no recorded wait start in this projection.
     expect(fold([event("request.resolved", { request: declined })])[0]).not.toHaveProperty(
       "waitedSince",
     );

@@ -480,8 +480,8 @@ export interface RequestReceiptEntry {
   succeeded?: boolean;
   title: string;
   /**
-   * When the Run that asked began waiting on the answer: a live Request holds
-   * it from when it opened. Absent for a durable one, which leaves it working.
+   * When a native harness Request began holding its Run. Durable tool-call
+   * holds are not measured here.
    */
   waitedSince?: string;
 }

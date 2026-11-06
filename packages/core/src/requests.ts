@@ -41,6 +41,13 @@ type RequestKind = z.infer<typeof RequestKindSchema>;
 
 export const RequestModeSchema = z.enum(["live", "durable"]);
 
+/** How long the Host keeps a tool call open for a person, on an engine qualified for it. */
+export const requestHoldLimitMs = 10 * 60_000;
+/** The hold on every other engine: inside Cursor's fixed 60 second MCP call limit. */
+export const shortRequestHoldMs = 45_000;
+/** A qualified engine's MCP tool timeout: the hold, plus the tool's own working time. */
+export const heldToolCallTimeoutMs = requestHoldLimitMs + 120_000;
+
 type RequestMode = z.infer<typeof RequestModeSchema>;
 
 export const RequestStatusSchema = z.enum([

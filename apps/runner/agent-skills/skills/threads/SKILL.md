@@ -15,7 +15,7 @@ work or end your turn for continuation; `thread_wait` is absent. Connections get
 or automatic return: keep `thread.id`, observe with `thread_wait` and `thread_read`. Programs
 may also use `thread_wait`. A wait timing out or disconnecting never stops the work.
 
-A pending durable Request permits independent work; end your turn when none remains. Never poll, repeat or route around it.
+Request tools wait for the person and return the outcome. Pending grants no access; never poll, repeat or route around it.
 
 - `thread_message`: report saves passive context; queue asks for a next turn; steer changes a
   compatible active Run. Accepted is not read; cancelled will not execute.

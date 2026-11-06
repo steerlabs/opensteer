@@ -34,7 +34,7 @@ function open(store: OpensteerStore, fixture: Started, callId: string) {
   });
 }
 
-async function finish(store: OpensteerStore, fixture: Started) {
+async function finish(store: OpensteerStore, fixture: Started, interrupted = false) {
   const row = await store.database
     .selectFrom("runs")
     .select("nextRunnerOrdinal")
@@ -51,15 +51,21 @@ async function finish(store: OpensteerStore, fixture: Started) {
       threadId: fixture.thread.id,
       workspaceId: fixture.workspace.id,
       ordinal: row.nextRunnerOrdinal,
-      type: "run.completed",
-      data: { status: "completed" },
+      ...(interrupted
+        ? ({ type: "run.interrupted", data: { status: "interrupted" } } as const)
+        : ({ type: "run.completed", data: { status: "completed" } } as const)),
     }),
   });
 }
 
 describeStore("Request continuation admission", (it) => {
-  for (const narration of [null, "Let me check your calendar", "I asked you to connect Gmail."]) {
-    it(`sends the channel an input-needed notice alongside ${narration ?? "no reply"}`, async ({
+  for (const [narration, heldStop] of [
+    [null, false],
+    ["Let me check your calendar", false],
+    ["I asked you to connect Gmail.", false],
+    [null, true],
+  ] as const) {
+    it(`sends the channel an input-needed notice alongside ${heldStop ? "a hold stop" : (narration ?? "no reply")}`, async ({
       storeFixture,
     }) => {
       const { store, database, createChannelDeliveryFixture, enqueueHumanTrigger } = storeFixture;
@@ -141,7 +147,9 @@ describeStore("Request continuation admission", (it) => {
             data: { content: [{ type: "text", text: narration }], messageId: createId("message") },
           }),
         });
-      await finish(store, fixture);
+      if (heldStop)
+        await store.stopHeldRun((await store.runCapabilityScope(fixture.run.id))!, "limit");
+      await finish(store, fixture, heldStop);
       const notices = await database
         .selectFrom("channelDeliveries")
         .select("content")
@@ -307,6 +315,210 @@ describeStore("Request continuation admission", (it) => {
     expect(
       (await store.requests.listPendingContinuations()).map(({ request }) => request.id),
     ).toEqual([request.request.id]);
+  });
+
+  it("delivers a held answer once and retains fallback for an abandoned call", async ({
+    storeFixture,
+  }) => {
+    const { store, startRunFixture } = storeFixture;
+    const fixture = await startRunFixture("held-request-delivery");
+    const claims = (await store.runCapabilityScope(fixture.run.id))!;
+    const held = await open(store, fixture, "held");
+    const abandoned = await open(store, fixture, "abandoned");
+    for (const requestId of [held.request.id, abandoned.request.id])
+      await store.requests.resolveBrowserRequest({
+        requestId,
+        resolvedBy: fixture.userId,
+        response: { kind: "external", value: { decision: "declined" } },
+      });
+    expect(await store.requests.markToolDelivered(held.request.id, claims)).toBe("delivered");
+    expect(await store.requests.markToolDelivered(held.request.id, claims)).toBe(
+      "already-delivered",
+    );
+    await finish(store, fixture);
+    expect(
+      (await store.requests.listPendingContinuations()).map(({ request }) => request.id),
+    ).toEqual([abandoned.request.id]);
+  });
+
+  it("refuses stale delivery and stop without consuming fallback", async ({ storeFixture }) => {
+    const { store, startRunFixture } = storeFixture;
+    const fixture = await startRunFixture("stale-held-request");
+    const claims = (await store.runCapabilityScope(fixture.run.id))!;
+    const opened = await open(store, fixture, "held");
+    await store.requests.resolveBrowserRequest({
+      requestId: opened.request.id,
+      resolvedBy: fixture.userId,
+      response: { kind: "external", value: { decision: "declined" } },
+    });
+    const stale = { ...claims, bindingGeneration: claims.bindingGeneration + 1 };
+    expect(await store.requests.markToolDelivered(opened.request.id, stale)).toBe("refused");
+    expect(await store.stopHeldRun(stale, "limit")).toBeNull();
+    await finish(store, fixture);
+    expect(
+      (await store.requests.listPendingContinuations()).map(({ request }) => request.id),
+    ).toEqual([opened.request.id]);
+  });
+
+  it("refuses an answered outcome after grant revocation while its Run is still running", async ({
+    storeFixture,
+  }) => {
+    const { store, database, startRunFixture } = storeFixture;
+    const fixture = await startRunFixture("revoked-held-answer");
+    const claims = (await store.runCapabilityScope(fixture.run.id))!;
+    const opened = await open(store, fixture, "held");
+    await store.requests.resolveBrowserRequest({
+      requestId: opened.request.id,
+      resolvedBy: fixture.userId,
+      response: { kind: "external", value: { decision: "declined" } },
+    });
+    expect(await store.stopHeldRun(claims, "limit")).not.toBeNull();
+    expect(
+      await database
+        .selectFrom("runs")
+        .select("status")
+        .where("id", "=", fixture.run.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ status: "running" });
+    expect(await store.requests.markToolDelivered(opened.request.id, claims)).toBe("refused");
+    expect(
+      await database
+        .selectFrom("requestContinuations")
+        .select("status")
+        .where("requestId", "=", opened.request.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ status: "waiting" });
+    await finish(store, fixture, true);
+    expect(
+      (await store.requests.listPendingContinuations()).map(({ request }) => request.id),
+    ).toEqual([opened.request.id]);
+  });
+
+  for (const reason of ["limit", "queued-input"] as const) {
+    it(`stops a held Run for ${reason} without pausing or closing its Request`, async ({
+      storeFixture,
+    }) => {
+      const { store, database, startRunFixture } = storeFixture;
+      const fixture = await startRunFixture(`held-stop-${reason}`);
+      const claims = (await store.runCapabilityScope(fixture.run.id))!;
+      const opened = await open(store, fixture, "held");
+      expect(await store.stopHeldRun(claims, reason)).toMatchObject({
+        commandId: expect.any(String),
+      });
+      expect(await store.requests.markToolDelivered(opened.request.id, claims)).toBe("refused");
+      expect((await store.requests.get(opened.request.id))?.status).toBe("pending");
+      expect(
+        await database
+          .selectFrom("threads")
+          .select("inputQueuePaused")
+          .where("id", "=", fixture.thread.id)
+          .executeTakeFirstOrThrow(),
+      ).toEqual({ inputQueuePaused: false });
+      await finish(store, fixture);
+      await store.requests.resolveBrowserRequest({
+        requestId: opened.request.id,
+        resolvedBy: fixture.userId,
+        response: { kind: "external", value: { decision: "declined" } },
+      });
+      expect(
+        (await store.requests.listPendingContinuations()).map(({ request }) => request.id),
+      ).toEqual([opened.request.id]);
+    });
+  }
+
+  it("sees delivered person steers in every current hold, without replaying them into a later call", async ({
+    storeFixture,
+  }) => {
+    const { store, database, startRunFixture } = storeFixture;
+    const fixture = await startRunFixture("held-person-steer");
+    const opened = await open(store, fixture, "held");
+    const steersAtAdmission = await store.requests.personSteerCount(fixture.run.id);
+    const steered = await store.enqueueThreadInput({
+      content: [{ type: "text", text: "Use another route" }],
+      idempotencyKey: "person-steer",
+      policy: "steer",
+      requestedBy: fixture.userId,
+      source: { kind: "human" },
+      threadId: fixture.thread.id,
+    });
+    const command = await database
+      .selectFrom("commands")
+      .selectAll()
+      .where("id", "=", steered.command!.id)
+      .executeTakeFirstOrThrow();
+    expect(command.type).toBe("run.steer");
+    await store.claimCommand(command.id, "person-steer-dispatch");
+    expect(
+      await store.requests.holdSnapshot(opened.request.id, fixture.run.id, steersAtAdmission),
+      "A steer still on its way must keep the call held",
+    ).toMatchObject({ steered: false, queued: false });
+    await store.commitRunnerEvent({
+      environmentId: fixture.environmentId,
+      runnerId: fixture.runnerId,
+      runnerBootId: fixture.runnerBootId,
+      event: pendingEvent({
+        bindingGeneration: fixture.bindingGeneration,
+        environmentId: fixture.environmentId,
+        runId: fixture.run.id,
+        threadId: fixture.thread.id,
+        workspaceId: fixture.workspace.id,
+        ordinal: 1,
+        type: "message.injected",
+        data: { messageId: steered.input.messageId },
+      }),
+    });
+    expect(
+      await database
+        .selectFrom("threadInputs")
+        .select("state")
+        .where("messageId", "=", steered.input.messageId)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ state: "delivered" });
+    for (const snapshot of await Promise.all([
+      store.requests.holdSnapshot(opened.request.id, fixture.run.id, steersAtAdmission),
+      store.requests.holdSnapshot(opened.request.id, fixture.run.id, steersAtAdmission),
+    ]))
+      expect(snapshot).toMatchObject({ steered: true, queued: false });
+    expect(
+      await store.requests.holdSnapshot(
+        opened.request.id,
+        fixture.run.id,
+        await store.requests.personSteerCount(fixture.run.id),
+      ),
+    ).toMatchObject({ steered: false, queued: false });
+  });
+
+  it("ignores continuations, reports and agent messages while a Request is held", async ({
+    storeFixture,
+  }) => {
+    const { store, startRunFixture } = storeFixture;
+    const fixture = await startRunFixture("held-machine-inputs");
+    const opened = await open(store, fixture, "held");
+    const steersAtAdmission = await store.requests.personSteerCount(fixture.run.id);
+    const sources = [
+      {
+        source: {
+          kind: "platform" as const,
+          cause: "request-resolved",
+          sourceRunId: fixture.run.id,
+        },
+        policy: "queue" as const,
+      },
+      { source: { kind: "human" as const }, policy: "report" as const },
+      { source: { kind: "agent" as const, runId: fixture.run.id }, policy: "queue" as const },
+    ];
+    for (const [index, input] of sources.entries()) {
+      await store.enqueueThreadInput({
+        ...input,
+        content: [{ type: "text", text: "Machine work" }],
+        idempotencyKey: `machine-${index}`,
+        requestedBy: fixture.userId,
+        threadId: fixture.thread.id,
+      });
+      expect(
+        await store.requests.holdSnapshot(opened.request.id, fixture.run.id, steersAtAdmission),
+      ).toMatchObject({ queued: false, steered: false });
+    }
   });
 
   it("releases an old Run's settled outcomes when a person starts newer work without holding their message", async ({

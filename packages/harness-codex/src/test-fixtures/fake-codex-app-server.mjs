@@ -615,7 +615,9 @@ function handleClientMethod(message) {
     case "mcpServerStatus/list":
       requireInitialized(message);
       const ambientNames = scenario === "ambient-extensions" ? ["company.docs", "github"] : [];
-      const managedNames = ["opensteer"];
+      const managedNames = ["opensteer", "opensteer-direct"].filter(
+        (name) => threadConfig[`mcp_servers.${name}.enabled`] === true,
+      );
       send({
         id: message.id,
         result: {
@@ -629,12 +631,16 @@ function handleClientMethod(message) {
                 [
                   ...(threadConfig[`mcp_servers.${name}.enabled_tools`] ?? []).filter(
                     (tool) =>
-                      name !== "opensteer" ||
-                      ((scenario !== "previous-host" || tool !== "computer") &&
-                        (scenario !== "mcp-missing-required-tool" ||
-                          tool !== "integration_search")),
+                      (name !== "opensteer" ||
+                        ((scenario !== "previous-host" || tool !== "computer") &&
+                          (scenario !== "mcp-missing-required-tool" ||
+                            tool !== "integration_search"))) &&
+                      (scenario !== "mcp-direct-missing-required-tool" ||
+                        name !== "opensteer-direct" ||
+                        tool !== "sign_in"),
                   ),
-                  ...(scenario === "mcp-extra-tool" && name === "opensteer"
+                  ...((scenario === "mcp-extra-tool" && name === "opensteer") ||
+                  (scenario === "mcp-direct-extra-tool" && name === "opensteer-direct")
                     ? ["unexpected_tool"]
                     : []),
                 ].map((tool) => [tool, { inputSchema: { type: "object" }, name: tool }]),
@@ -870,6 +876,33 @@ function handleTurnStart(message) {
   });
   if (restateUsage) restateThreadUsage(threadId, turnId);
 
+  if (scenario === "direct-tools") {
+    const item = {
+      arguments: { site: "https://example.test" },
+      id: "direct-1",
+      server: "opensteer-direct",
+      tool: "sign_in",
+      type: "mcpToolCall",
+    };
+    send({
+      method: "item/started",
+      params: { threadId, turnId, item: { ...item, status: "inProgress" } },
+    });
+    send({
+      method: "item/completed",
+      params: {
+        threadId,
+        turnId,
+        item: {
+          ...item,
+          status: "completed",
+          result: { content: [{ type: "text", text: "ready" }] },
+        },
+      },
+    });
+    sendTurnCompleted("completed");
+    return;
+  }
   if (scenario === "conversation") {
     conversationTurn(message.params?.input ?? []);
     return;
