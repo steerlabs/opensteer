@@ -127,7 +127,7 @@
 }
 /* The Voice Thread's own mark, on its row and its header. The cursor is the
    call's, so it stays on the pill. */
-.voice-thread-mark {
+svg.voice-thread-mark {
   flex: none;
   width: 20px;
   height: 20px;
