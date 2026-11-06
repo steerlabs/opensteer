@@ -16,6 +16,7 @@ import { Readable } from "node:stream";
 import { afterEach, expect, it } from "vitest";
 import { runFileMaxBytes } from "@opensteer/protocol";
 import { RunFiles } from "./run-files.js";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -125,7 +126,9 @@ it("keeps exports unpublished until fsync and the full declared size arrive", as
     access.signal,
   );
   try {
-    await started;
+    await withTimeout(started, 2_000, {
+      timeoutError: () => new Error("The install never began writing"),
+    });
     const [folder] = await readdir(access.directory);
     expect(await readdir(join(access.directory, folder!))).toEqual([".partial"]);
   } finally {
