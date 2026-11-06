@@ -56,7 +56,7 @@ describe("signed-in MCP connection consent", () => {
     );
     await act(async () =>
       [...container.querySelectorAll("button")]
-        .find((button) => button.textContent === "Allow connection")!
+        .find((button) => button.textContent === "Allow")!
         .click(),
     );
     expect(finish).toBeTypeOf("function");
@@ -101,17 +101,15 @@ describe("signed-in MCP connection consent", () => {
     await act(async () =>
       root!.render(<McpAuthorization client={host!} requestId={"r".repeat(43)} />),
     );
-    const ceiling = container.querySelector("select")!;
-    await act(async () => {
-      ceiling.value = "full-access";
-      ceiling.dispatchEvent(new Event("change", { bubbles: true }));
-    });
-    expect(ceiling.value).toBe("full-access");
+    const ceiling = (mode: string) =>
+      container.querySelector<HTMLInputElement>(`input[type="radio"][value="${mode}"]`)!;
+    await act(async () => ceiling("full-access").click());
+    expect(ceiling("full-access").checked).toBe(true);
     await act(async () =>
       root!.render(<McpAuthorization client={host!} requestId={"s".repeat(43)} />),
     );
     expect(container.textContent).toContain("Second agent");
-    expect(container.querySelector("select")!.value).toBe("approval-required");
+    expect(ceiling("approval-required").checked).toBe(true);
   });
   it("opens the installed client using request identifiers without granting access", async () => {
     const deploymentId = createId("deployment");
@@ -125,9 +123,20 @@ describe("signed-in MCP connection consent", () => {
     );
     const links = [...container.querySelectorAll("a")];
     expect(links).toHaveLength(1);
+    expect(links[0]!.getAttribute("href")).toMatch(/^com\.opensteer\.opensteer:/);
     expect(links[0]!.getAttribute("href")).toContain(`deploymentId=${deploymentId}`);
     expect(links[0]!.getAttribute("href")).not.toMatch(/token|code|verifier/);
     expect(container.querySelector("input")).toBeNull();
+    // A phone browser hands the same request to the mobile app instead.
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue(
+      "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)",
+    );
+    await act(async () =>
+      root!.render(
+        <McpAuthorizationLaunch requestId={"s".repeat(43)} deploymentId={deploymentId} />,
+      ),
+    );
+    expect(container.querySelector("a")!.getAttribute("href")).toMatch(/^com\.opensteer\.mobile:/);
   });
   it("finishes desktop approval in the external browser without exporting a Host session", async () => {
     host = new MockHostClient({
@@ -157,7 +166,7 @@ describe("signed-in MCP connection consent", () => {
       ),
     );
     const allow = [...container.querySelectorAll("button")].find(
-      (button) => button.textContent === "Allow connection",
+      (button) => button.textContent === "Allow",
     )!;
     await act(async () => allow.click());
     expect(openExternalUrl).toHaveBeenCalledExactlyOnceWith({
@@ -191,12 +200,13 @@ describe("signed-in MCP connection consent", () => {
     );
     expect(dispatch).not.toHaveBeenCalled();
     expect(container.textContent).toContain("not verified");
-    expect(container.textContent).toContain("https://example.agent");
-    const selects = container.querySelectorAll("select");
-    expect(selects[0]!.value).toBe("approval-required");
-    expect(selects[1]!.value).toBe(workspaceId);
+    expect(container.textContent).toContain("Access goes to example.agent.");
+    expect(container.querySelector<HTMLInputElement>('input[type="radio"]:checked')!.value).toBe(
+      "approval-required",
+    );
+    expect(container.querySelector("select")!.value).toBe(workspaceId);
     const allow = [...container.querySelectorAll("button")].find(
-      (button) => button.textContent === "Allow connection",
+      (button) => button.textContent === "Allow",
     )!;
     await act(async () => allow.click());
     expect(dispatch).toHaveBeenCalledWith(

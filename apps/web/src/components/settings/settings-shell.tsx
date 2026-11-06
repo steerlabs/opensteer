@@ -37,9 +37,9 @@ import { PasswordsSection } from "./sections/passwords.js";
 import { PluginsSection } from "./sections/plugins.js";
 
 // Loaded with its page so connections cost nothing on attach.
-const ConnectedAgentsSection = lazy(() =>
-  import("./sections/connected-agents.js").then((module) => ({
-    default: module.ConnectedAgentsSection,
+const ExternalAgentsSection = lazy(() =>
+  import("./sections/external-agents.js").then((module) => ({
+    default: module.ExternalAgentsSection,
   })),
 );
 
@@ -190,9 +190,11 @@ export function SettingsShell() {
         </div>
         <h2 className="settings-navigation__title">Settings</h2>
         <nav className="settings-navigation__links" aria-label="Settings sections">
-          {(["general", "account", "devices", "messaging"] as const).map((id) => (
-            <SettingsNavigationLink key={id} item={settingsItem(id, view.kind)} />
-          ))}
+          {(["general", "account", "devices", "messaging", "external-agents"] as const).map(
+            (id) => (
+              <SettingsNavigationLink key={id} item={settingsItem(id, view.kind)} />
+            ),
+          )}
           <div
             aria-labelledby="settings-navigation-agents"
             className="settings-navigation__group"
@@ -301,10 +303,14 @@ export function SettingsSectionRoute({
             <RemoteAccessSection view={view} compact />
           ) : null}
           <SignedInDevicesSection view={view} />
-          <Suspense fallback={<p role="status">Loading connected agents…</p>}>
-            <ConnectedAgentsSection client={hostClient} />
-          </Suspense>
         </>
+      );
+      break;
+    case "external-agents":
+      content = (
+        <Suspense fallback={<p role="status">Loading external agents…</p>}>
+          <ExternalAgentsSection client={hostClient} view={view} />
+        </Suspense>
       );
       break;
     case "chrome":
