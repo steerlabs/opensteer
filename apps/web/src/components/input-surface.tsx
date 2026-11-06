@@ -44,6 +44,7 @@ export function InputSurface({
   autoContext = false,
   variant = "work",
   composerHidden = false,
+  voiceHidden = false,
   disabled,
   readOnly = false,
   footerExtras,
@@ -65,6 +66,8 @@ export function InputSurface({
   variant?: "conversation" | "work";
   /** A form the open request collects its own answers in takes the field's place. */
   composerHidden?: boolean;
+  /** A call's pill can't dock here: this surface is off screen. */
+  voiceHidden?: boolean;
   disabled: boolean;
   readOnly?: boolean;
   footerExtras?: ReactNode;
@@ -163,7 +166,9 @@ export function InputSurface({
           threadId={threadId}
         />
       ) : null}
-      {composerHidden || (docked && dock.composerHidden) ? null : <VoiceDock />}
+      {composerHidden || (docked && dock.composerHidden) ? null : (
+        <VoiceDock hidden={voiceHidden} />
+      )}
       <div hidden={composerHidden || (docked && dock.composerHidden)}>
         <Composer
           dictationScope={`${deploymentId}/${userId}/${threadId}`}

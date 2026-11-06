@@ -25,6 +25,7 @@ const harness = vi.hoisted(() => ({
   rowDraws: 0,
 }));
 const removeChatDraftFile = vi.hoisted(() => vi.fn());
+vi.mock("../voice/cursor-mark.js", () => ({ PillMic: () => null, VoiceCursor: () => null }));
 vi.mock("react-native", async () => {
   const { reactNative } = await import("../../test-support/settings-screens.js");
   const Box = reactNative.View;

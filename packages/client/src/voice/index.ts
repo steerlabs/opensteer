@@ -1,5 +1,5 @@
 export { idleVoiceSnapshot, VoiceStartError } from "./contract.js";
-export { voiceBar } from "./bar.js";
+export { callClock, heldWords, voiceBar, voiceCursorPath } from "./bar.js";
 export type { VoiceBarView } from "./bar.js";
 export type {
   VoiceAsk,

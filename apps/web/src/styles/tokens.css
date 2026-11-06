@@ -120,7 +120,6 @@
   --sheen-accent: linear-gradient(rgb(255 255 255 / 16%), rgb(255 255 255 / 0%));
   --sheen-mark: linear-gradient(rgb(255 255 255 / 18%), rgb(255 255 255 / 0%) 70%);
 
-  --orb-light: color-mix(in srgb, var(--ember) 20%, var(--text-on-color));
   --orb-core: color-mix(in srgb, var(--ember) 45%, var(--ink-on-ember));
 
   --fill-quiet: rgb(var(--light) / 5%);
@@ -167,6 +166,8 @@
      tint and takes the plate's top light. */
   --edge-tint: inset 0 1px 0 rgb(var(--light) / 10%);
   --lift-float: 0 12px 32px -16px rgb(0 0 0 / 60%);
+  /* The same lift for a shape only a filter can follow. */
+  --lift-float-drop: drop-shadow(0 10px 12px rgb(0 0 0 / 34%));
   /* The colour a row's fill composites to over the page, for a badge's
      cut-out ring that must match what it is cut from. */
   --cutout-quiet: color-mix(in srgb, var(--bg), rgb(var(--light)) 5%);
@@ -180,6 +181,9 @@
      screen, touch laptops and iPads included (below). */
   --control-height: 30px;
   --control-height-sm: 26px;
+  --voice-pill-height: calc(var(--control-height) + var(--space-12));
+  --voice-pill-width: 380px;
+  --voice-ask-width: 440px;
   --control-font: var(--text-lg);
 
   /* ---- Space ----

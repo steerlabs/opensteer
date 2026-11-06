@@ -15,6 +15,7 @@ import { useMediaQuery } from "../../ui-utils.js";
 import { useNativeBrowserLayer } from "../native-browser-overlays.js";
 import { useTaskDirectory } from "../workspace/task-directory.js";
 import { GlassScene } from "../workspace/glass-scene.js";
+import { ownCursor } from "../workspace/task-mark.js";
 import { cursorFadeMs, neutralCursorPoint } from "../workspace/cursor-motion.js";
 import { desktopBridge } from "../../desktop/desktop-bridge.js";
 
@@ -122,10 +123,11 @@ export function NativeAgentCursors({
       cursors: records.slice(0, 32).map(({ record, point, leaving }) => {
         const at = point ?? neutralCursorPoint;
         const mark = threadMark(record.threadId, directory.snapshot);
+        const own = ownCursor(record.threadId, record.home, directory.snapshot);
         return {
-          icon: record.home ? null : mark.icon,
-          color: record.home ? null : mark.color,
-          home: record.home,
+          icon: own ? null : mark.icon,
+          color: own ? null : mark.color,
+          home: own,
           leaving,
           threadId: record.threadId,
           title: record.home

@@ -18,12 +18,19 @@ const asking: VoiceSnapshot = {
   notice: null,
 };
 
-vi.mock("@opensteer/client/react", async (actual) => ({
-  ...(await actual<typeof import("@opensteer/client/react")>()),
-  useVoice: () => ({
-    controller: { subscribeLevel: () => () => undefined },
-    snapshot: asking,
-  }),
+const call = vi.hoisted(() => ({
+  call: () => null,
+  dispose: () => undefined,
+  getSnapshot: () => undefined as unknown,
+  refreshContext: () => undefined,
+  subscribe: () => () => undefined,
+  subscribeLevel: () => () => undefined,
+}));
+call.getSnapshot = () => asking;
+
+vi.mock("./voice.js", async (actual) => ({
+  ...(await actual<typeof import("./voice.js")>()),
+  useVoiceRuntime: () => call,
 }));
 
 it("shows what a call asks in the real shell, live on a page with a stable shell", async () => {
