@@ -69,7 +69,7 @@ export async function executeIntegrationAdministration(
       });
       return { type: command.type };
     case "plugin.remove": {
-      assertAdministrator(actor);
+      await options.platform.store.plugins.assertCanRemove(command.pluginId, actor);
       await options.platform.store.specialists.retirePlugin(command.pluginId);
       for (const installation of await options.platform.store.listInstallations()) {
         if (installation.pluginId === command.pluginId)

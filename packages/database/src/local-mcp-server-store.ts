@@ -127,6 +127,13 @@ export class LocalMcpServerStore {
         }
         const ownership = await machineOwnershipIn(transaction, runnerId);
         const owner = ownership?.effectiveOwner ?? null;
+        const setup = await transaction
+          .selectFrom("integrationInstallations")
+          .innerJoin("plugins", "plugins.id", "integrationInstallations.pluginId")
+          .innerJoin("threads", "threads.id", "plugins.setupThreadId")
+          .select(["threads.id as threadId", "threads.title as threadTitle", "threads.workspaceId"])
+          .where("integrationInstallations.id", "=", locked.installationId)
+          .executeTakeFirst();
         const waiting = await transaction
           .selectFrom("computerAppSetupRequests")
           .selectAll()
@@ -140,6 +147,9 @@ export class LocalMcpServerStore {
           waiting &&
           waiting.definitionDigest === locked.launchDigest &&
           waiting.ownerUserId === owner &&
+          waiting.threadId === (setup?.threadId ?? null) &&
+          waiting.threadTitle === (setup?.threadTitle ?? null) &&
+          waiting.workspaceId === (setup?.workspaceId ?? null) &&
           waiting.expiresAt > now
         ) {
           return false;
@@ -166,6 +176,7 @@ export class LocalMcpServerStore {
           definitionDigest: locked.launchDigest,
           definitionId: locked.id,
           kind: "server",
+          ...setup,
           now,
           ownerUserId: owner,
           runnerId,

@@ -2408,6 +2408,7 @@ export async function createHostRuntime(
               const result = await integrationPlatform.installAgentPlugin({
                 directory: stagedDirectory,
                 workspaceDirectory: directory,
+                threadId: scope.threadId,
                 actorUserId: scope.requestedBy,
                 workspaceId: scope.workspaceId,
                 runnerId: scope.runnerId,
