@@ -1791,10 +1791,6 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         places: [appPart],
       });
       if (delegated.type !== "thread.delegate.result") throw new Error("Missing delegated child");
-      expect((await readToolRecords(store, delegated.result)).message!.content).toEqual([
-        { type: "text", text: "Read the included Notes app" },
-        { type: "text", text: appPart.name },
-      ]);
       const storedChild = await database
         .selectFrom("messages")
         .select("content")

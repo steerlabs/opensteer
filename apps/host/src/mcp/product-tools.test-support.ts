@@ -559,9 +559,12 @@ export class ProductToolsTestClient {
     const unavailableDefaults = new Proxy(
       {},
       {
-        get: () => async () => {
-          throw new Error("Unexpected dependency");
-        },
+        get: (_target, name) =>
+          name === "readablePlaces"
+            ? async (_ownerId: unknown, references: unknown) => references
+            : async () => {
+                throw new Error("Unexpected dependency");
+              },
       },
     );
     const defaultCommands = {

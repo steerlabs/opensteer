@@ -832,7 +832,7 @@ integration.sequential("Thread title lifecycle", () => {
         const retry = kind === "watch" ? { ...request, requestId: randomUUID() } : request;
         expect(await handle(retry)).toMatchObject({
           type: "thread.delegate.result",
-          result: { thread: { id: worker.id }, assignmentId: response.result.assignmentId },
+          result: { threadId: worker.id, assignmentId: response.result.assignmentId },
         });
         for (const changed of [{ task: task + " changed" }, { title: "Changed explicit name" }]) {
           await expect(handle({ ...retry, ...changed })).rejects.toMatchObject({
@@ -847,7 +847,7 @@ integration.sequential("Thread title lifecycle", () => {
         );
         expect(await handle(retry)).toMatchObject({
           type: "thread.delegate.result",
-          result: { thread: { id: worker.id }, assignmentId: response.result.assignmentId },
+          result: { threadId: worker.id, assignmentId: response.result.assignmentId },
         });
         for (const changed of [{ task: task + " changed" }, { title: "Changed explicit name" }]) {
           await expect(handle({ ...request, ...changed })).rejects.toMatchObject({
