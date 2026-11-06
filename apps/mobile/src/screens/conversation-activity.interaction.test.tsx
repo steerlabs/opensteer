@@ -126,7 +126,9 @@ vi.mock("../markdown/markdown.js", () => ({
   Markdown: ({ text }: { readonly text: string }) => <p>{text}</p>,
   PlainProse: ({ text }: { readonly text: string }) => <p>{text}</p>,
 }));
-vi.mock("../thread/message-menu.js", () => ({ MessageMenu: () => null }));
+vi.mock("../thread/message-hold.js", () => ({
+  MessageHold: (props: { children: ReactNode }) => props.children,
+}));
 vi.mock("../thread/attachment-views.js", async () => {
   const React = await vi.importActual<typeof import("react")>("react");
   return {

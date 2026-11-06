@@ -2,6 +2,7 @@ import {
   messageAuthorName,
   conversationActivityTurn,
   conversationActivities,
+  conversationPlaces,
   conversationRows,
   conversationTurnRevealing,
   groupTranscriptEntries,
@@ -15,6 +16,7 @@ import {
   threadStartHold,
   threadRequester,
   threadStopTarget,
+  transcriptVoice,
   turnFolds,
   turnWords,
   usageLimitNotice,
@@ -28,6 +30,7 @@ import {
   type SurfaceDestination,
   type ThreadActivityIndicator,
   type TranscriptGroup,
+  type TranscriptVoice,
   type Turn,
   type WorkspaceSummary,
   type ThreadSummary,
@@ -117,8 +120,8 @@ import {
   firstUnreadGroupKey,
   replyActivityKeys,
   transcriptSpacing,
-  transcriptVoice,
 } from "./transcript.js";
+import { bubble } from "./bubble.js";
 import type { ThreadMutationOwner } from "./thread-mutation-gate.js";
 import { useThreadMutation } from "./thread-mutation-registry.js";
 import { UsageNotice } from "./usage-notice.js";
@@ -135,6 +138,8 @@ type TranscriptItem =
   | {
       /** In a conversation, the Activity this row's reply opens, or null. */
       readonly activityKey: string | null;
+      /** The next row carries on from this one, so the tail belongs to that row. */
+      readonly continued: boolean;
       readonly group: TranscriptGroup;
       readonly key: string;
       readonly kind: "group";
@@ -142,6 +147,8 @@ type TranscriptItem =
       readonly outcome: TaskOutcome | null;
       /** The air above this row, decided from what spoke before it. */
       readonly spacingTop: number;
+      /** When this row was said, where a pause has passed in a conversation. */
+      readonly time: string | null;
       /** True for the row the "New" divider stands above. */
       readonly unreadBoundary: boolean;
     }
@@ -930,6 +937,7 @@ function ThreadPaneForUser(
           <TranscriptHostClientContext value={hostClient}>
             <TranscriptGroupRow
               activityKey={item.activityKey}
+              continued={item.continued}
               conversation={conversational}
               onOpenActivity={conversational ? openActivity : undefined}
               onOpenReplyUnderWay={conversational ? openLatestActivity : undefined}
@@ -943,6 +951,7 @@ function ThreadPaneForUser(
               onOpenStep={openStep}
               onOpenThread={openSource}
               spacingTop={item.spacingTop}
+              time={item.time}
               unreadBoundary={item.unreadBoundary}
               homeThreadId={snapshot.homeThreadId}
               viewerUserId={viewerUserId}
@@ -991,7 +1000,14 @@ function ThreadPaneForUser(
     return heldOutcomes.current;
   }, [snapshot, threadId]);
   const items = useMemo(() => {
-    let previous: ReturnType<typeof transcriptVoice> | null = null;
+    let previous: TranscriptVoice | null = null;
+    const places = conversational
+      ? conversationPlaces(
+          drawn.map(({ group }) => group),
+          viewerUserId,
+          Date.now(),
+        )
+      : null;
     const boundaryKey = firstUnreadGroupKey(groups, conversational ? null : unreadBoundarySequence);
     const activityKeys = conversational ? replyActivityKeys(groups) : null;
     // A task's ending goes under the last stretch of the Run it ended with,
@@ -1007,15 +1023,25 @@ function ThreadPaneForUser(
     }
     const rows: TranscriptItem[] = drawn.map(({ group, key }, index) => {
       const voice = transcriptVoice(group, viewerUserId);
-      const spacingTop = transcriptSpacing(previous, voice);
+      const place = places?.[index];
+      const spacingTop =
+        place === undefined
+          ? transcriptSpacing(previous, voice)
+          : index === 0
+            ? 0
+            : place.joined
+              ? bubble.gap
+              : bubble.groupGap;
       previous = voice;
       return {
         activityKey: activityKeys?.get(group.key) ?? null,
+        continued: place?.continued === true,
         group,
         key,
         kind: "group" as const,
         outcome: endings.get(index) ?? null,
         spacingTop,
+        time: place?.time ?? null,
         unreadBoundary: group.key === boundaryKey,
       };
     });

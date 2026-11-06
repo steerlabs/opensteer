@@ -9,6 +9,7 @@ import {
   threadActivityIndicator,
   threadStartHold,
   threadStopTarget,
+  transcriptVoice,
   type MessageEntry,
 } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
@@ -19,7 +20,7 @@ import {
   withAccountPreparing,
 } from "@opensteer/client/test-support";
 import { composerView, type ComposerState } from "./composer-model.js";
-import { Message, TranscriptGroupRow, transcriptVoice, WorkingIndicator } from "./transcript.js";
+import { Message, TranscriptGroupRow, WorkingIndicator } from "./transcript.js";
 
 // The indicator is drawn by the real component with DOM hosts; the platform
 // primitives and animation drivers are outside this check.
@@ -51,7 +52,10 @@ vi.mock("../ui/workspace-mark.js", () => ({
   WorkspaceMark: () => null,
   WorkspaceIconGlyph: () => null,
 }));
-vi.mock("./message-menu.js", () => ({ MessageMenu: () => null }));
+vi.mock("./message-hold.js", () => ({
+  MessageHold: (props: { children: ReactNode }) => props.children,
+}));
+vi.mock("../ui/copy-mark.js", () => ({ CopyMark: () => null }));
 vi.mock("./attachment-views.js", () => ({ MessageAttachments: () => null }));
 vi.mock("../markdown/markdown.js", () => ({
   Markdown: ({ text }: { text: string }) => <p>{text}</p>,

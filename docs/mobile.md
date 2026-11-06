@@ -120,6 +120,24 @@ Every title opens a menu, so a capsule is never a button that does nothing. Andr
 header slot, which is why its status line can't move into the menu as Liquid Glass's does. Beside a
 page there is no title menu, so the composer's menu carries Find and Copy thread link there.
 
+## Messages
+
+Chat takes its shapes from Messages: bubbles with nothing on them, held to act on. A task doesn't,
+because long Markdown needs the full width, so an agent's words stay bare there and its copy marks
+sit under the reply. Holding a task's words has to stay free to select them.
+
+A bubble's words can't be `selectable`: the system's selection answers the same hold and puts its
+own Copy over the menu. Select opens them in a sheet instead.
+
+The hold is `modules/context-menu`, a plain UIKit container around `UIContextMenuInteraction`, so
+iOS draws the lift and menu with no JavaScript running. `@expo/ui`'s `ContextMenu` hosts each row in
+SwiftUI, which sizes it a layout pass late, so the rows under it overlap. Android mounts its Material
+menu only while held, because a native host per row is paid for by every bubble in a long Thread.
+
+Markdown comes from web's parser, through [markdownParser.ts](../packages/shared/src/markdownParser.ts),
+so a reply reads the same on every client. Parsing is the dear part of drawing a row on Hermes, so
+finished blocks stay cached across the rows a list unmounts.
+
 ## The call bar
 
 The bar floats at the app's root, so an iOS sheet covers it while open. `FullWindowOverlay` would

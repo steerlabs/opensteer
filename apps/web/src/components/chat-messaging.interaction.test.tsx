@@ -470,9 +470,7 @@ describe("Run details", () => {
       [...(menu?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [])].map((item) =>
         item.textContent?.trim(),
       );
-    expect(items()).toEqual(
-      navigator.clipboard ? ["Reply", "Copy", "Run details"] : ["Reply", "Run details"],
-    );
+    expect(items()).toEqual(["Reply", "Run details"]);
     expect(document.activeElement?.textContent?.trim()).toBe("Reply");
     await press(document.activeElement!, "End");
     expect(document.activeElement?.textContent?.trim()).toBe("Run details");

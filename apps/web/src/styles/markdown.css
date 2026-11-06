@@ -2,7 +2,7 @@
 
 .md-prose {
   font-size: var(--text-2xl);
-  line-height: 1.65;
+  line-height: 1.5;
   color: var(--text);
   display: flex;
   flex-direction: column;
@@ -11,6 +11,43 @@
 }
 
 .md-prose--plain {
+  white-space: pre-wrap;
+}
+
+/* Code or a draft in a reading column. Its copy stands in its corner, because
+   the column leaves no gutter; long lines scroll out from under the fade. */
+.md-block {
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  background: var(--surface-elevated);
+}
+
+.md-prose .md-block pre {
+  padding: 9px 38px 9px 12px;
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+
+.md-block__copy {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 40px;
+  height: 36px;
+  padding-left: var(--space-8);
+  border-radius: 0;
+  background: linear-gradient(to left, var(--surface-elevated) 76%, transparent);
+}
+
+.md-prose .md-block--draft pre,
+.md-prose .md-block--draft pre code {
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: var(--text-2xl);
+  line-height: 1.5;
   white-space: pre-wrap;
 }
 

@@ -1,4 +1,4 @@
-import { memo, useMemo, type ComponentProps, type MouseEvent } from "react";
+import { isValidElement, memo, useMemo, useRef, type ComponentProps, type MouseEvent } from "react";
 import ReactMarkdown, {
   defaultUrlTransform,
   type Components,
@@ -6,12 +6,20 @@ import ReactMarkdown, {
 } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
+import { repairStrong, splitMarkdownBlocks } from "@opensteer/shared/markdown";
 import { transcriptLinkUrl } from "@opensteer/shared/transcriptLinks";
 import { desktopBridge } from "../desktop/desktop-bridge.js";
+import { CopyMark } from "./copy-mark.js";
 import { ExternalLink } from "./external-link.js";
 import { useOptionalWorkspace } from "./workspace/workspace-context.js";
 
-const remarkPlugins = [remarkGfm];
+type MarkdownTree = Parameters<typeof repairStrong>[0];
+
+const remarkRepairStrong = () => (tree: MarkdownTree) => repairStrong(tree);
+const remarkRepairStreaming = () => (tree: MarkdownTree) => repairStrong(tree, { streaming: true });
+
+const remarkPlugins = [remarkGfm, remarkRepairStrong];
+const streamingRemarkPlugins = [remarkGfm, remarkRepairStreaming];
 const rehypePlugins = [rehypeHighlight];
 
 /**
@@ -55,32 +63,80 @@ function TranscriptImage({ alt, src }: ComponentProps<"img">) {
   return words ? <span>{words}</span> : null;
 }
 
-const components: Components = { a: TranscriptLink, img: TranscriptImage };
+/** A fence tagged `draft` is words the person will send as their own, so it reads as words. */
+function isDraft(children: ComponentProps<"pre">["children"]): boolean {
+  return (
+    isValidElement<{ className?: string }>(children) &&
+    children.props.className?.split(" ").includes("language-draft") === true
+  );
+}
+
+/** Code or a draft in a reading column, where its copy mark has no gutter to stand in. */
+function TranscriptBlock({ children }: ComponentProps<"pre">) {
+  const words = useRef<HTMLPreElement | null>(null);
+  const draft = isDraft(children);
+  return (
+    <div className={draft ? "md-block md-block--draft" : "md-block"}>
+      <pre ref={words}>{children}</pre>
+      <CopyMark
+        className="md-block__copy"
+        label={draft ? "Copy draft" : "Copy code"}
+        text={() => words.current?.textContent?.replace(/\n$/u, "") ?? ""}
+      />
+    </div>
+  );
+}
+
+const inBubble: Components = { a: TranscriptLink, img: TranscriptImage };
+const inColumn: Components = { ...inBubble, pre: TranscriptBlock };
 
 /** An image's address is only ever shown as words, so it keeps the agent's spelling. */
 const urlTransform: UrlTransform = (url, key, node) =>
   node.tagName === "img" && key === "src" ? url : defaultUrlTransform(url);
 
 /**
- * Assistant markdown. Blocks are split on blank lines and memoized so a
- * streaming message only re-renders its trailing block.
+ * Assistant markdown. Blocks are memoized so a streaming message only redraws
+ * its trailing block; their index is their key, so that block keeps its place,
+ * and a selection in it, as it grows. `bubble` drops the blocks' own copy mark,
+ * because a bubble's stands beside it.
  */
-export const Markdown = memo(function Markdown({ text }: { text: string }) {
-  const blocks = useMemo(() => splitBlocks(text), [text]);
+export const Markdown = memo(function Markdown({
+  bubble = false,
+  streaming = false,
+  text,
+}: {
+  bubble?: boolean;
+  streaming?: boolean;
+  text: string;
+}) {
+  const blocks = useMemo(() => splitMarkdownBlocks(text), [text]);
   return (
     <div className="md-prose">
       {blocks.map((block, index) => (
-        <MarkdownBlock key={`${index}:${block.length}`} text={block} />
+        <MarkdownBlock
+          bubble={bubble}
+          key={index}
+          streaming={streaming && index === blocks.length - 1}
+          text={block}
+        />
       ))}
     </div>
   );
 });
 
-const MarkdownBlock = memo(function MarkdownBlock({ text }: { text: string }) {
+const MarkdownBlock = memo(function MarkdownBlock({
+  bubble,
+  streaming,
+  text,
+}: {
+  bubble: boolean;
+  streaming: boolean;
+  text: string;
+}) {
   return (
     <ReactMarkdown
-      components={components}
-      remarkPlugins={remarkPlugins}
+      components={bubble ? inBubble : inColumn}
+      remarkPlugins={streaming ? streamingRemarkPlugins : remarkPlugins}
       rehypePlugins={rehypePlugins}
       urlTransform={urlTransform}
     >
@@ -90,22 +146,3 @@ const MarkdownBlock = memo(function MarkdownBlock({ text }: { text: string }) {
 });
 
 export default Markdown;
-
-/** Splits markdown into stable blocks, keeping fenced code intact. */
-function splitBlocks(text: string): string[] {
-  const lines = text.split("\n");
-  const blocks: string[] = [];
-  let current: string[] = [];
-  let inFence = false;
-  for (const line of lines) {
-    if (/^(```|~~~)/.test(line.trimStart())) inFence = !inFence;
-    if (!inFence && line.trim() === "" && current.length > 0) {
-      blocks.push(current.join("\n"));
-      current = [];
-      continue;
-    }
-    current.push(line);
-  }
-  if (current.length > 0) blocks.push(current.join("\n"));
-  return blocks.length > 0 ? blocks : [text];
-}

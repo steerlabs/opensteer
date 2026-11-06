@@ -492,6 +492,8 @@ vi.mock("../sidebar/sidebar-context.js", () => ({
 }));
 vi.mock("../ui/motion.js", () => ({
   appear: undefined,
+  bubblePop: undefined,
+  bubbleRise: undefined,
   move: undefined,
   duration: { enter: 0, exit: 0 },
   enter: undefined,
@@ -551,20 +553,27 @@ vi.mock("../markdown/markdown.js", () => ({
   Markdown: ({ text }: { readonly text: string }) => <p>{text}</p>,
   PlainProse: ({ text }: { readonly text: string }) => <p>{text}</p>,
 }));
-// The menus a reply carries, item for item as `messageActions` titles them.
-vi.mock("./message-menu.js", async () => {
-  const actions = await vi.importActual<typeof import("./message-menu-actions.js")>(
-    "./message-menu-actions.js",
-  );
+// What holding a bubble offers, item for item as `messageActions` titles them.
+vi.mock("./message-hold.js", async () => {
+  const { messageActions } =
+    await vi.importActual<typeof import("./message-actions.js")>("./message-actions.js");
   return {
-    MessageMenu: (props: import("./message-menu-actions.js").MessageMenuOptions) => (
-      <div aria-label="Message actions">
-        {actions.messageActions(props).map((action) => (
-          <button key={action.id} onClick={() => actions.performMessageAction(action.id, props)}>
-            {action.title}
-          </button>
-        ))}
-      </div>
+    MessageHold: (
+      props: import("./message-actions.js").MessageActionOptions & { children: ReactNode },
+    ) => (
+      <>
+        {props.children}
+        <div aria-label="Message actions">
+          {messageActions(props).map((action) => (
+            <button
+              key={action.id}
+              onClick={() => (action.id === "reply" ? props.onReply : props.onActivity)?.()}
+            >
+              {action.title}
+            </button>
+          ))}
+        </div>
+      </>
     ),
   };
 });
@@ -1687,10 +1696,10 @@ describe("Chat while Opensteer is replying", () => {
       item.parentElement?.textContent?.includes(chat.replyA.body),
     );
     const titles = [...(menu?.querySelectorAll("button") ?? [])].map((item) => item.textContent);
-    expect(titles).toContain("Run details");
+    expect(titles).toContain("Run Details");
     expect(titles).not.toContain("Show steps");
     const activity = [...(menu?.querySelectorAll("button") ?? [])].find(
-      (item) => item.textContent === "Run details",
+      (item) => item.textContent === "Run Details",
     );
     await act(async () => activity?.click());
     expect(harness.navigate).toHaveBeenCalledWith("ConversationActivity", {
@@ -1878,8 +1887,8 @@ describe("a message that joins the reply under way", () => {
     // stands between the person's two messages, which sit as one person's do.
     expect(rows(container)).toEqual([
       { key: reply.ask.id, top: "0" },
-      { key: reply.more.id, top: "6" },
-      { key: replyRow, top: "16" },
+      { key: reply.more.id, top: "4" },
+      { key: replyRow, top: "10" },
     ]);
     const typing = container.querySelector('[aria-label="Opensteer is replying"]');
     expect(typing).not.toBeNull();
@@ -1919,7 +1928,7 @@ describe("a message that joins the reply under way", () => {
     expect(rows(container).map(({ key }) => key)).toEqual([reply.ask.id, reply.more.id, replyRow]);
     const activity = [...container.querySelectorAll("button")].find(
       (item) =>
-        item.textContent === "Run details" && item.closest(`[data-row="${replyRow}"]`) !== null,
+        item.textContent === "Run Details" && item.closest(`[data-row="${replyRow}"]`) !== null,
     );
     await act(async () => activity?.click());
     // The reply's own turn names its Activity: it began with that step.
@@ -1951,7 +1960,7 @@ describe("a message that joins the reply under way", () => {
 
     expect(rows(container)).toEqual([
       { key: ask.id, top: "0" },
-      { key: waiting.id, top: "6" },
+      { key: waiting.id, top: "4" },
     ]);
   });
 
@@ -2320,8 +2329,8 @@ describe("a reply at work on a Mac", () => {
   }
   const closed = (reply: ReturnType<typeof joinedWhileClicking>) => [
     { key: reply.ask.id, top: "0" },
-    { key: reply.more.id, top: "6" },
-    { key: `turn:after:${reply.more.id}`, top: "16" },
+    { key: reply.more.id, top: "4" },
+    { key: `turn:after:${reply.more.id}`, top: "10" },
   ];
 
   it("leaves no row for work on a Mac this reader is not shown", async () => {
@@ -2399,9 +2408,9 @@ describe("a reply at work on a Mac", () => {
     const lineRow = `turn:after:${reply.ask.id}`;
     expect(rows(container)).toEqual([
       { key: reply.ask.id, top: "0" },
-      { key: lineRow, top: "16" },
-      { key: reply.more.id, top: "16" },
-      { key: `turn:after:${reply.more.id}`, top: "16" },
+      { key: lineRow, top: "10" },
+      { key: reply.more.id, top: "10" },
+      { key: `turn:after:${reply.more.id}`, top: "10" },
     ]);
     const line = () => container.querySelector(`[data-row="${lineRow}"]`)?.textContent ?? "";
     expect(line()).toContain("On Mac mini");

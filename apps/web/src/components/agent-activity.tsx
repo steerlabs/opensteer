@@ -26,6 +26,7 @@ import {
   activityStepHead,
   conversationActivities,
   conversationActivityTurn,
+  conversationPlaces,
   conversationRows,
   passwordsSetupOffer,
   type PasswordsSetupOffer,
@@ -36,6 +37,7 @@ import {
   silentRunLabel,
   isTerminalRunEntryStatus,
   incomingMessagePreview,
+  justSent,
   messagePages,
   placeReply,
   replyPlaces,
@@ -87,10 +89,12 @@ import {
 import { useComputerUseStop, useComputerUseStopForRun } from "@opensteer/client/react";
 import type { AssignmentSummary, BrowserPageContentPart, WaitingRequest } from "@opensteer/core";
 import type { MachineSummary } from "@opensteer/protocol";
+import { replyParts, type ReplyPart } from "@opensteer/shared/markdown";
 import {
   TranscriptHostClientContext,
   MessageAttachments,
 } from "./attachments/message-attachments.js";
+import { CopyMark, copyText } from "./copy-mark.js";
 import { Dialog } from "./dialog.js";
 import { Icon, type IconName } from "./icon.js";
 import { Popover } from "./popover.js";
@@ -104,13 +108,17 @@ import {
   SurfaceLink,
 } from "./surface-chips.js";
 import { MessageFold } from "./message-fold.js";
+import { useToast } from "./toast.js";
 import { WorkspaceOrb } from "./workspace-orb.js";
 import { TaskMark, ChatOrb } from "./workspace/task-mark.js";
 import { automationPath, useMediaQuery } from "../ui-utils.js";
 import { AreaLink } from "./workspace/area-link.js";
 import { DelegationLine } from "./task-line.js";
 
-const Markdown = lazy(() => import("./markdown.js"));
+// Fetched with this module, not when a reply is first drawn: until it lands a
+// reply shows its raw Markdown, and on a weak link that wait is what people see.
+const markdownChunk = import("./markdown.js");
+const Markdown = lazy(() => markdownChunk);
 
 const TranscriptLive = createContext(true);
 /**
@@ -315,6 +323,17 @@ export function AgentTranscript({
         : groups.map((group) => ({ group, key: group.key })),
     [conversation, groups, live, waitingRequests, keptStop],
   );
+  const places = useMemo(
+    () =>
+      conversation
+        ? conversationPlaces(
+            rows.map(({ group }) => group),
+            viewerUserId,
+            Date.now(),
+          )
+        : null,
+    [conversation, rows, viewerUserId],
+  );
   const indicator =
     live && !(requestShown && activity === "waiting_for_you")
       ? threadActivityIndicator(activity, { conversation, groups, startHold })
@@ -340,10 +359,18 @@ export function AgentTranscript({
                           <ReaderComputers value={computers}>
                             <TranscriptBrowsers value={browserSessions}>
                               <Speakers value={speakers}>
-                                {rows.map(({ group, key }) => (
+                                {rows.map(({ group, key }, index) => (
                                   <Fragment key={key}>
                                     {group.key === unreadBoundaryKey ? <UnreadDivider /> : null}
-                                    <div className="transcript__row" data-transcript-row={key}>
+                                    {places?.[index]?.time ? (
+                                      <p className="transcript__time">{places[index].time}</p>
+                                    ) : null}
+                                    <div
+                                      className="transcript__row"
+                                      data-continued={places?.[index]?.continued || undefined}
+                                      data-joined={places?.[index]?.joined || undefined}
+                                      data-transcript-row={key}
+                                    >
                                       {group.kind === "app" ? (
                                         <AppCard entry={group.entry} />
                                       ) : group.kind === "turn" ? (
@@ -768,6 +795,10 @@ function ConversationTurn({ turn, turnKey }: { turn: Turn; turnKey: string }) {
   const placesUnderOutcome = settled && outcome && view.reply === null;
   const tasks = renderTask === undefined ? [] : turn.assignments;
   const openActivity = useContext(OpenActivity);
+  // A reply arrives only if its typing was on screen: one already there when
+  // the Thread opened, or that scrolling brought back, just stands there.
+  const typed = useRef(false);
+  if (composing) typed.current = true;
   // The conversation leaves out a turn with nothing of its own to show
   // (`conversationRows`). One can still come to nothing here for what
   // only this screen knows: a Mac session it is not shown, or tasks it has no
@@ -784,7 +815,7 @@ function ConversationTurn({ turn, turnKey }: { turn: Turn; turnKey: string }) {
       {composing && restartPending(turn.run) ? <RunRestart>{restartingLabel}</RunRestart> : null}
       {turn.source ? <TurnSource source={turn.source} /> : null}
       {view.reply ? (
-        <ReplyBubble message={view.reply} turnKey={turnKey} />
+        <ReplyBubble arrived={typed.current} message={view.reply} turnKey={turnKey} />
       ) : composing ? (
         <Typing turnKey={turnKey} />
       ) : startHold !== null ? (
@@ -864,11 +895,18 @@ function useActivityAnchor(panelId: string | null, control: RefObject<HTMLElemen
   }, [control, panelId, setAnchor]);
 }
 
-/** Opensteer's reply: a message, with what can be done with it one menu away. */
+/**
+ * Opensteer's reply, as the stack of bubbles it reads as: its words, and each
+ * block of code or draft on its own. Every bubble copies what it holds; More
+ * stands beside the last.
+ */
 function ReplyBubble({
+  arrived = false,
   message,
   turnKey = null,
 }: {
+  /** It replaced its typing on this screen, so it arrives rather than just stands there. */
+  arrived?: boolean;
   message: MessageEntry;
   /** The turn it answers, whose Activity it offers; none for a reply no turn wrote. */
   turnKey?: string | null;
@@ -877,38 +915,80 @@ function ReplyBubble({
   const openActivity = useContext(OpenActivity);
   const activity = useContext(ActivityOfTurn).get(turnKey ?? "");
   const activityPanelId = useOwnedActivity(turnKey);
-  // Touch has no hover, so a tap on the message is what shows its menu.
-  const [tapped, setTapped] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const parts = useMemo(() => replyParts(message.body), [message.body]);
   // More stays in view while what it opened is open.
   const holding = menuOpen || activityPanelId !== null;
-  const className = ["reply", tapped ? "reply--tapped" : "", holding ? "reply--menu" : ""]
+  const className = ["reply", arrived ? "reply--arrived" : "", holding ? "reply--menu" : ""]
     .filter(Boolean)
     .join(" ");
+  const more = (
+    <ReplyMenu
+      activityPanelId={activityPanelId}
+      message={message}
+      onActivity={
+        openActivity && turnKey !== null && activity && activity.steps.length > 0
+          ? (opener) => openActivity(turnKey, opener)
+          : undefined
+      }
+      onOpenChange={setMenuOpen}
+      onReply={replyWith}
+      open={menuOpen}
+      whole={parts.length > 1}
+    />
+  );
   return (
-    <div
-      className={className}
-      onPointerUp={(event) => {
-        if (event.pointerType !== "touch") return;
-        if (event.target instanceof Element && event.target.closest("a, button")) return;
-        setTapped(!tapped);
-      }}
-    >
-      <div className="reply__bubble">
-        <Reply message={message} streaming={false} />
+    <div className={className} data-message-id={message.id}>
+      {parts.map((part, index) => (
+        <ReplyBubblePart
+          key={index}
+          more={index === parts.length - 1 ? more : null}
+          only={parts.length === 1}
+          part={part}
+        />
+      ))}
+      {parts.length === 0 ? <div className="reply__line">{more}</div> : null}
+      <MessageAttachments attachments={message.attachments ?? []} />
+    </div>
+  );
+}
+
+function ReplyBubblePart({
+  more,
+  only,
+  part,
+}: {
+  more: ReactNode;
+  only: boolean;
+  part: ReplyPart;
+}) {
+  const label =
+    part.kind === "code" ? "Copy code" : part.kind === "draft" ? "Copy draft" : "Copy message";
+  return (
+    <div className="reply__line" data-kept={part.kind !== "prose" || undefined}>
+      <div
+        className={[
+          "reply__bubble",
+          part.kind === "code" ? "reply__bubble--code" : "",
+          part.kind === "draft" ? "reply__bubble--draft" : "",
+          part.kind === "prose" && part.wide ? "reply__bubble--wide" : "",
+          more === null ? "" : "reply__bubble--tail",
+        ]
+          .filter(Boolean)
+          .join(" ")}
+      >
+        {part.kind === "draft" ? (
+          part.text
+        ) : (
+          <Suspense fallback={<p className="md-prose md-prose--plain">{part.text}</p>}>
+            <Markdown bubble text={part.kind === "code" ? part.source : part.text} />
+          </Suspense>
+        )}
       </div>
-      <ReplyMenu
-        activityPanelId={activityPanelId}
-        message={message}
-        onActivity={
-          openActivity && turnKey !== null && activity && activity.steps.length > 0
-            ? (opener) => openActivity(turnKey, opener)
-            : undefined
-        }
-        onOpenChange={setMenuOpen}
-        onReply={replyWith}
-        open={menuOpen}
-      />
+      <div className="reply__marks">
+        <CopyMark label={only ? "Copy message" : label} text={part.text} />
+        {more}
+      </div>
     </div>
   );
 }
@@ -920,9 +1000,9 @@ interface ReplyMenuItem {
 }
 
 /**
- * A reply's one control: More, opening Reply, Copy and Activity. The menu is
- * the shared anchored one — arrows, Home and End move through it; Escape
- * closes it and goes back to More; Tab closes it and moves on.
+ * More beside a reply: Reply, the whole of a reply drawn as several bubbles,
+ * and Activity. The menu is the shared anchored one — arrows, Home and End move
+ * through it; Escape closes it and goes back to More; Tab closes it and moves on.
  */
 function ReplyMenu({
   activityPanelId,
@@ -931,6 +1011,7 @@ function ReplyMenu({
   onOpenChange,
   onReply,
   open,
+  whole,
 }: {
   /** The Activity this reply's menu opened, while it is open: More controls it. */
   activityPanelId: string | null;
@@ -939,32 +1020,26 @@ function ReplyMenu({
   onOpenChange: (open: boolean) => void;
   onReply: ((message: MessageEntry) => void) | undefined;
   open: boolean;
+  /** Its bubbles each copy their own part, so copying all of it needs saying. */
+  whole: boolean;
 }) {
+  const toast = useToast();
   const moreRef = useRef<HTMLButtonElement | null>(null);
   useActivityAnchor(activityPanelId, moreRef);
   const menuId = useId();
-  const [copied, setCopied] = useState(false);
-  useEffect(() => {
-    if (!copied) return;
-    const timer = window.setTimeout(() => setCopied(false), 1_600);
-    return () => window.clearTimeout(timer);
-  }, [copied]);
-  // The clipboard exists only in a secure context; a Host reached over plain
-  // HTTP leaves the reader selecting the text themselves.
-  const clipboard = globalThis.navigator?.clipboard;
   const items: ReplyMenuItem[] = [
     ...(onReply && message.body
       ? [{ icon: "reply" as const, label: "Reply", run: () => onReply(message) }]
       : []),
-    ...(clipboard && message.body
+    ...(whole
       ? [
           {
             icon: "copy" as const,
-            label: "Copy",
+            label: "Copy whole reply",
             run: () => {
-              void clipboard.writeText(message.body).then(
-                () => setCopied(true),
-                () => undefined,
+              copyText(message.body).then(
+                () => toast.success("Reply copied"),
+                () => toast.error("Copy was blocked. Select the text to copy it."),
               );
             },
           },
@@ -985,13 +1060,13 @@ function ReplyMenu({
   if (items.length === 0) return null;
   const close = () => onOpenChange(false);
   return (
-    <div className="reply__actions">
+    <>
       <button
         aria-controls={open ? menuId : (activityPanelId ?? undefined)}
         aria-expanded={open || activityPanelId !== null}
         aria-haspopup="menu"
         aria-label="More"
-        className="reply__action"
+        className="mark reply__more"
         onClick={() => onOpenChange(!open)}
         ref={moreRef}
         title="More"
@@ -999,11 +1074,6 @@ function ReplyMenu({
       >
         <Icon name="more" />
       </button>
-      {copied ? (
-        <span className="visually-hidden" role="status">
-          Copied
-        </span>
-      ) : null}
       {open && moreRef.current ? (
         <Popover
           anchor={moreRef.current}
@@ -1034,7 +1104,7 @@ function ReplyMenu({
           ))}
         </Popover>
       ) : null}
-    </div>
+    </>
   );
 }
 
@@ -1246,6 +1316,7 @@ function TurnContent({
     [entries, folded, turn],
   );
   const trace = traceWindow(rows, { showAll: folded || showAll, keep: reveal });
+  const lastWord = active ? null : trace.rows.findLast(({ kind }) => kind === "note");
   return (
     <div className="turn__content">
       {summary === null ? null : (
@@ -1261,7 +1332,14 @@ function TurnContent({
         </button>
       ) : null}
       {trace.rows.map((row) => (
-        <WorkRowView active={active} key={row.key} live={live} row={row} turn={turn} />
+        <WorkRowView
+          active={active}
+          answer={row === lastWord}
+          key={row.key}
+          live={live}
+          row={row}
+          turn={turn}
+        />
       ))}
     </div>
   );
@@ -1269,18 +1347,27 @@ function TurnContent({
 
 function WorkRowView({
   active,
+  answer = false,
   live,
   row,
   turn,
 }: {
   active: boolean;
+  /** The turn's finished last word, which is what a person came to copy. */
+  answer?: boolean;
   live: boolean;
   row: WorkRow;
   turn: Turn;
 }) {
   switch (row.kind) {
     case "note":
-      return <Reply message={row.entry} streaming={live && row.entry.streaming === true} />;
+      return (
+        <Reply
+          copyable={answer}
+          message={row.entry}
+          streaming={live && row.entry.streaming === true}
+        />
+      );
     case "reasoning":
       return <Reasoning entry={row.entry} active={active} />;
     case "subagent":
@@ -1689,16 +1776,29 @@ function ErrorCount({ count }: { count: number }) {
 
 /* ---- Messages ---- */
 
-function Reply({ message, streaming }: { message: MessageEntry; streaming: boolean }) {
+function Reply({
+  copyable = false,
+  message,
+  streaming,
+}: {
+  copyable?: boolean;
+  message: MessageEntry;
+  streaming: boolean;
+}) {
   return (
     <div aria-busy={streaming} className="msg--assistant__body" data-message-id={message.id}>
       {message.body ? (
         <Suspense fallback={<p className="md-prose md-prose--plain">{message.body}</p>}>
-          <Markdown text={message.body} />
+          <Markdown streaming={streaming} text={message.body} />
         </Suspense>
       ) : null}
       {streaming ? <span aria-hidden className="stream-caret" /> : null}
       <MessageAttachments attachments={message.attachments ?? []} />
+      {copyable && message.body ? (
+        <div className="msg--assistant__marks">
+          <CopyMark label="Copy reply" text={message.body} />
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1740,7 +1840,11 @@ export function TranscriptMessage({
     ) : (
       <div className="turn">
         <AgentByline author={message.author} />
-        <Reply message={message} streaming={message.streaming === true} />
+        <Reply
+          copyable={message.streaming !== true}
+          message={message}
+          streaming={message.streaming === true}
+        />
       </div>
     );
   }
@@ -1811,6 +1915,7 @@ function OwnMessage({
   useLayoutEffect(() => {
     if (reveal !== null) setOpen(true);
   }, [reveal]);
+  const [arrived] = useState(() => !queued && justSent(message.createdAt, Date.now()));
   return (
     <div
       className={queued ? "msg--user-row msg--queued" : "msg--user-row"}
@@ -1821,14 +1926,19 @@ function OwnMessage({
       <MessagePlaces places={message.places ?? []} />
       <MessageAttachments attachments={message.attachments ?? []} />
       {message.body ? (
-        <div className="msg--user">
-          <MessageFold
-            lines={messageFoldLines(message, viewerUserId)}
-            onOpenChange={setOpen}
-            open={open}
-          >
-            {message.body}
-          </MessageFold>
+        <div className={arrived ? "msg--user-line msg--user-line--arrived" : "msg--user-line"}>
+          <div className="reply__marks">
+            <CopyMark label="Copy message" text={message.body} />
+          </div>
+          <div className="msg--user">
+            <MessageFold
+              lines={messageFoldLines(message, viewerUserId)}
+              onOpenChange={setOpen}
+              open={open}
+            >
+              {message.body}
+            </MessageFold>
+          </div>
         </div>
       ) : null}
       {message.delivery ? (
@@ -2093,6 +2203,9 @@ function InputMessage({
             <span className="input-card__sender">{sender}</span>
           )}
           {action ? <span className="input-card__action">{action}</span> : null}
+          {message.body ? (
+            <CopyMark className="input-card__copy" label="Copy message" text={message.body} />
+          ) : null}
         </header>
         <MessageAttachments attachments={message.attachments ?? []} />
         {message.body ? (
