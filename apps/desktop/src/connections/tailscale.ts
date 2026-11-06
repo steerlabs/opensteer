@@ -300,9 +300,7 @@ export class TailscaleShare {
       schemaVersion: 1,
       target,
     };
-    // Every change is recorded before it is made — a re-pointed handler with
-    // both its targets — so a crash or a lost answer in between never leaves
-    // a handler the record does not recognise.
+    // Persist both possible owned targets before the CLI can apply the change.
     const ours = previous !== null && ownsHandler(config, previous);
     const pointedAt = !ours
       ? undefined
@@ -388,13 +386,13 @@ export class TailscaleShare {
       schemaVersion: 1,
       target,
     };
+    const ours = ownsHandler(config, record);
+    // A matching destination alone does not make a foreign handler ours.
+    if (!ours && usedServePorts(config).has(record.port)) return;
     if (servesOnly(config, record.port, target)) {
       if (record.target !== target || record.previousTarget) await this.#writeRecord(settled);
       return;
     }
-    const ours = ownsHandler(config, record);
-    // Something else took the port; it is not Opensteer's to replace.
-    if (!ours && usedServePorts(config).has(record.port)) return;
     // Recorded before the change, with where it pointed until now.
     const pointedAt = servesOnly(config, record.port, record.target)
       ? record.target

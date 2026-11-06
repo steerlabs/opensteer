@@ -761,3 +761,43 @@ it("keeps an address change and its failure on screen instead of the old code", 
   expect(container.querySelector('input[aria-label="Your HTTPS address"]')).not.toBeNull();
   expect(container.querySelector(".setup-scan__svg")).toBeNull();
 });
+
+it.each(["Finish", "Back", "choice", "generation"])(
+  "discards a pending tailnet share after %s",
+  async (change) => {
+    const origin = "https://studio.tail2f9.ts.net";
+    let resolve!: (value: { ok: true; origin: string }) => void;
+    const pending = new Promise<{ ok: true; origin: string }>((done) => {
+      resolve = done;
+    });
+    const { access, bridge } = desktopBridge({
+      tailscaleShare: vi.fn(() => pending),
+      tailscaleStatus: vi.fn(async () => ({
+        dnsName: "studio.tail2f9.ts.net",
+        sharedOrigin: null,
+        state: "ready",
+      })),
+    });
+    onThisMac(bridge, access);
+    localStorage.setItem(`opensteer.setup.v1:${shell.snapshot.deploymentId}`, "phone");
+    await mount();
+    await act(async () => radio("Tailscale").click());
+    await act(async () => button("Turn on").click());
+    expect(bridge.tailscaleShare).toHaveBeenCalledTimes(1);
+    if (change === "choice") await act(async () => radio("Your own address").click());
+    else if (change === "generation")
+      await remoteChanged({
+        ...remoteStatus,
+        revision: 2,
+        access: { ...(remoteStatus.access as object), generation: 2 },
+      });
+    else await act(async () => button(change).click());
+    await act(async () => {
+      resolve({ ok: true, origin });
+      await pending;
+    });
+    expect(shell.hostClient.dispatch).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "personal.remoteAccess.request" }),
+    );
+  },
+);

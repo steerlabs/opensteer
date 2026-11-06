@@ -19,6 +19,34 @@ import { type PersonalHostRuntimeRecord } from "../supervisor/personal-host-runt
 import { testPersonalHostRuntime } from "../supervisor/personal-host-runtime-test-support.js";
 
 describe("DesktopPersonalRemoteAccessService", () => {
+  it("cleans up a failed share that may have applied during this run", async () => {
+    const fixture = remoteAccessFixture();
+    let handler = false;
+    const service = new DesktopPersonalRemoteAccessService({
+      connectFactory: () => ({ management: null, teardown: teardownSpy([]) }),
+      host: fixture.host,
+      runtime: { current: async () => fixture.runtime },
+      tailscale: {
+        share: async () => {
+          handler = true;
+          return { ok: false, reason: "failed", message: "Lost answer" };
+        },
+        reconcile: async ({ authoritative, routeOrigin }) => {
+          expect(authoritative).toBe(false);
+          if (routeOrigin === null) handler = false;
+        },
+        status: async () => ({ state: "not-installed" }),
+        stop: async () => undefined,
+      },
+    });
+    try {
+      expect(await service.shareOverTailscale()).toMatchObject({ ok: false });
+      expect(handler).toBe(false);
+    } finally {
+      await service.shutdown();
+    }
+  });
+
   it("requires an Account link established on the signing-in device without opening desktop sign-in", async () => {
     const fixture = remoteAccessFixture();
     fixture.host.accountLinked = false;

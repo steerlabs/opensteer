@@ -4,6 +4,8 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AddPersonalScreen } from "./add-personal.js";
 
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+
 const code = `osp_${"Ab3_-".repeat(8)}xyz`;
 const origin = "https://studio-mac.tailnet.ts.net";
 const deploymentId = "dep_0192f4a1-1111-4000-8000-000000000001";
@@ -72,9 +74,45 @@ vi.mock("../client/add-deployment.js", () => ({
 
 afterEach(() => {
   state.params = undefined;
+  vi.clearAllMocks();
 });
 
 describe("pairing a computer from its code", () => {
+  it("keeps a second pairing offer when the first pairing completes late", async () => {
+    const verified = { discovery: { canonicalOrigin: origin, deploymentId }, endpoint: { origin } };
+    state.verify.mockResolvedValue(verified);
+    let resolve!: () => void;
+    const pending = new Promise<void>((done) => {
+      resolve = done;
+    });
+    state.add.mockReturnValueOnce(pending).mockResolvedValue(undefined);
+    state.params = { code, origin };
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<AddPersonalScreen />));
+      await act(async () => container.querySelector("button")!.click());
+      expect(state.add).toHaveBeenCalledTimes(1);
+      const secondOrigin = "https://second.tailnet.ts.net";
+      const secondCode = `${code}second`;
+      state.params = { code: secondCode, origin: secondOrigin };
+      await act(async () => root.render(<AddPersonalScreen />));
+      await act(async () => {
+        resolve();
+        await pending;
+      });
+      expect(state.reset).not.toHaveBeenCalled();
+      expect(state.client.openDeployment).not.toHaveBeenCalled();
+      expect(container.textContent).toContain(secondOrigin);
+      await act(async () => container.querySelector("button")!.click());
+      expect(state.add).toHaveBeenLastCalledWith(
+        expect.objectContaining({ pairingCode: secondCode }),
+      );
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it("shows the address and pairs only after the person confirms", async () => {
     const verified = {
       discovery: { canonicalOrigin: origin, deploymentId },

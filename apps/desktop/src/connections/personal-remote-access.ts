@@ -192,6 +192,7 @@ export class DesktopPersonalRemoteAccessService {
       const runtime = await this.#requireRuntime();
       const result = await tailscale.share(runtime.localOrigin);
       if (result.ok) this.#scheduleHandoffCheck();
+      else await this.#reconcileTailscale(false);
       return result;
     });
   }

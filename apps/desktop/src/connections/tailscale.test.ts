@@ -13,6 +13,72 @@ const hostOrigin = "http://127.0.0.1:4100";
 const recordPath = "/data/tailscale-share.json";
 
 describe("TailscaleShare", () => {
+  it.each([
+    { path: "share", applied: false },
+    { path: "share", applied: true },
+    { path: "ensure", applied: false },
+    { path: "ensure", applied: true },
+  ])(
+    "persists $path re-points before applying (apply then fail: $applied) and recovers both crash targets",
+    async ({ path, applied }) => {
+      const tailnet = share({ appliedThenFailed: applied });
+      tailnet.writeRecord({ origin: `https://${host}`, port: 443, target: hostOrigin });
+      tailnet.serve.Web = { [`${host}:443`]: { Handlers: { "/": { Proxy: hostOrigin } } } };
+      const nextTarget = "http://127.0.0.1:4200";
+      let transition: unknown;
+      const survivingHandlers: boolean[] = [];
+      tailnet.state.beforeServe = async () => {
+        transition = tailnet.record();
+        for (const target of [hostOrigin, nextTarget, "http://127.0.0.1:9999"]) {
+          tailnet.serve.Web = { [`${host}:443`]: { Handlers: { "/": { Proxy: target } } } };
+          await tailnet.restart().stop();
+          survivingHandlers.push(tailnet.serve.Web?.[`${host}:443`] !== undefined);
+        }
+      };
+      if (path === "share") {
+        expect(await tailnet.tailscale.share(nextTarget)).toMatchObject({ ok: !applied });
+      } else {
+        const result = tailnet.tailscale.reconcile({
+          authoritative: false,
+          hostOrigin: nextTarget,
+          routeOrigin: `https://${host}`,
+        });
+        if (applied) await expect(result).rejects.toThrow("timed out");
+        else await result;
+      }
+      expect(transition).toMatchObject({ target: nextTarget, previousTarget: hostOrigin });
+      expect(survivingHandlers).toEqual([false, false, true]);
+      if (!applied)
+        expect(tailnet.record()).toEqual({
+          origin: `https://${host}`,
+          port: 443,
+          schemaVersion: 1,
+          target: nextTarget,
+        });
+      await tailnet
+        .restart()
+        .reconcile({ authoritative: false, hostOrigin: nextTarget, routeOrigin: null });
+      expect(tailnet.serve.Web?.[`${host}:443`]).toBeUndefined();
+      expect(tailnet.record()).toBeNull();
+    },
+  );
+
+  it("does not adopt a foreign handler just because it matches the moved Host port", async () => {
+    const tailnet = share();
+    tailnet.writeRecord({ origin: `https://${host}`, port: 443, target: hostOrigin });
+    const target = "http://127.0.0.1:9999";
+    tailnet.serve.Web = { [`${host}:443`]: { Handlers: { "/": { Proxy: target } } } };
+    await tailnet.tailscale.reconcile({
+      authoritative: false,
+      hostOrigin: target,
+      routeOrigin: `https://${host}`,
+    });
+    await tailnet
+      .restart()
+      .reconcile({ authoritative: true, hostOrigin: target, routeOrigin: null });
+    expect(tailnet.serve.Web?.[`${host}:443`]).toEqual({ Handlers: { "/": { Proxy: target } } });
+  });
+
   it("reports whether Tailscale is installed, signed in, and still serving what Opensteer shared", async () => {
     expect(await share({ installed: false }).tailscale.status()).toEqual({
       state: "not-installed",
@@ -225,7 +291,11 @@ function share(
     readonly serveFailure?: { readonly stderr: string; readonly stdout: string };
   } = {},
 ) {
-  const state = { backend: options.backend ?? "Running", now: 1_000_000 };
+  const state = {
+    backend: options.backend ?? "Running",
+    now: 1_000_000,
+    beforeServe: undefined as (() => Promise<void>) | undefined,
+  };
   const serve: { -readonly [Key in keyof TailscaleServeConfig]: TailscaleServeConfig[Key] } =
     structuredClone(options.serve ?? {});
   const files = new Map<string, string>();
@@ -255,6 +325,7 @@ function share(
       return { stderr: "", stdout: "" };
     }
     if (args[0] === "serve" && args[1] === "--bg" && port) {
+      await state.beforeServe?.();
       if (options.serveFailure) throw new TailscaleCommandError(options.serveFailure, false);
       serve.TCP = { ...serve.TCP, [port]: { HTTPS: true } };
       serve.Web = {

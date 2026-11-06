@@ -1,6 +1,6 @@
 import type { VerifiedPersonalHostEndpoint } from "@opensteer/client/connections";
 import { useNavigation, useRoute, type RouteProp } from "@react-navigation/native";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Pressable, ScrollView, StyleSheet, View } from "react-native";
 import {
   addPersonalDeployment,
@@ -43,8 +43,18 @@ export function AddPersonalScreen(): ReactNode {
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
 
+  const attempt = useRef(0);
+  useEffect(
+    () => () => {
+      attempt.current += 1;
+    },
+    [],
+  );
+
   useEffect(() => {
     if (offered?.code === undefined) return;
+    attempt.current += 1;
+    setBusy(false);
     setOrigin(offered.origin ?? "https://");
     setPairingCode(offered.code);
     setConfirming(true);
@@ -54,12 +64,14 @@ export function AddPersonalScreen(): ReactNode {
   }, [navigation, offered?.code, offered?.origin]);
 
   const connect = useCallback(() => {
+    const current = ++attempt.current;
     setBusy(true);
     setFailure(null);
     void (async () => {
       const endpoint =
         verified ??
         (await verifyPersonalDeployment({ fetch: globalThis.fetch, origin: origin.trim() }));
+      if (attempt.current !== current) return;
       setVerified(endpoint);
       await addPersonalDeployment({
         catalog: client.catalog,
@@ -69,18 +81,24 @@ export function AddPersonalScreen(): ReactNode {
         sessions: client.sessions,
         verified: endpoint,
       });
+      if (attempt.current !== current) return;
       setPairingCode("");
       await client.reconcile();
+      if (attempt.current !== current) return;
       const deploymentId = endpoint.discovery.deploymentId;
       await client.openDeployment(deploymentId);
+      if (attempt.current !== current) return;
       resetToDeployment(deploymentId);
     })()
       .catch((error: unknown) => {
+        if (attempt.current !== current) return;
         setFailure(
           operationDetail(error, "That computer did not accept this phone with that code."),
         );
       })
-      .finally(() => setBusy(false));
+      .finally(() => {
+        if (attempt.current === current) setBusy(false);
+      });
   }, [client, origin, pairingCode, verified]);
 
   const failureNotice =

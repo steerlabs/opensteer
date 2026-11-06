@@ -77,6 +77,13 @@ export function usePrivatePhoneSetup(input: {
   const attempt = useRef(0);
   const activeOrigin = privateRouteOrigin(remote.status);
   const generation = remote.status?.access.generation ?? null;
+  const mode = remote.status?.access.mode ?? null;
+  useEffect(() => {
+    setPhase({ kind: "idle" });
+    return () => {
+      attempt.current += 1;
+    };
+  }, [activeOrigin, generation, hostClient, mode]);
 
   const turnOn = useCallback(
     async (origin: string) => {
@@ -162,6 +169,7 @@ export function usePrivatePhoneSetup(input: {
     const current = attempt.current;
     const timer = setTimeout(() => {
       if (attempt.current !== current) return;
+      attempt.current += 1;
       setPhase({ kind: "failed", message: "This is taking longer than expected. Try again." });
     }, settleMilliseconds);
     return () => clearTimeout(timer);
