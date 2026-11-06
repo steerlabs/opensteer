@@ -822,6 +822,30 @@ describe("Opensteer's own steps", () => {
     },
   );
 
+  // A call the Host could not name still says which operation it asked for;
+  // the digest after `@` only pins the schema.
+  it("names the operation an unresolved call asked for", () => {
+    const asked = (name: string) =>
+      toolPresentation(
+        tool({
+          arguments: {
+            operation: "gmail.usersMessagesGet@7UgI628u",
+            account: "con_1",
+            arguments: { id: "1a18" },
+          },
+          tool: { namespace: "opensteer", name },
+        }),
+      );
+    expect(asked("integration_call")).toMatchObject({
+      activeLabel: "Calling gmail.usersMessagesGet",
+      hint: "",
+      label: "Called gmail.usersMessagesGet",
+    });
+    expect(asked("integration_describe")).toMatchObject({
+      label: "Looked up gmail.usersMessagesGet",
+    });
+  });
+
   it("say what an action did, not which tool did it", () => {
     expect(opensteer("browser_tab_write", { action: "restore", tabIds: ["t1"] })).toMatchObject({
       activeLabel: "Restoring tabs",
