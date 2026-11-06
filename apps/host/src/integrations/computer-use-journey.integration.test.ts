@@ -1766,7 +1766,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       const control = new ProductToolsTestClient({
         browserSources: {} as never,
         machineFullDiskAccess: {} as never,
-        browser: {} as never,
+        browser: { readablePlaces: async () => [] } as never,
         canRunHarness: () => true,
         commands,
         defaultWorkspaceBacking: "local-directory",

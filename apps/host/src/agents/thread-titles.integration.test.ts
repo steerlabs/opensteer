@@ -807,9 +807,7 @@ integration.sequential("Thread title lifecycle", () => {
       }
       for (const title of [undefined, "Automation chosen title"]) {
         const task = "Check   inventory " + "with detailed instructions ".repeat(14);
-        const icon = title === undefined ? undefined : ("plane" as const);
         const request = {
-          ...(icon ? { icon } : {}),
           requestId: randomUUID(),
           ...(kind === "watch" ? { observationId: randomUUID() } : {}),
           type: "thread.delegate",
@@ -826,8 +824,8 @@ integration.sequential("Thread title lifecycle", () => {
         expect(await row(worker.id)).toMatchObject({
           title: title ?? provisionalThreadTitle(task),
           titleSource: title === undefined ? "provisional" : "chosen",
-          icon: icon ?? null,
-          iconSource: icon ? "chosen" : "provisional",
+          icon: null,
+          iconSource: "provisional",
         });
         const retry = kind === "watch" ? { ...request, requestId: randomUUID() } : request;
         expect(await handle(retry)).toMatchObject({
@@ -863,7 +861,7 @@ integration.sequential("Thread title lifecycle", () => {
         await store.claimCommand(command.id, "title-dispatcher");
         expect(
           (await store.getThreadNamingInput(worker.id))?.request.includes("Check   inventory"),
-        ).toBe(icon ? undefined : true);
+        ).toBe(true);
         expect(
           (await store.applyGeneratedThreadName({
             threadId: worker.id,
