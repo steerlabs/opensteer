@@ -247,6 +247,44 @@ describe("RequestCard computer owner approvals", () => {
     await click("Allow");
     expect(dispatch).toHaveBeenCalledTimes(2);
   });
+
+  it("settles a reopened review when the answer sent before closing lands", async () => {
+    const request = computerAppRequest();
+    let land: ((value: { type: string }) => void) | undefined;
+    const dispatch = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          land = resolve;
+        }),
+    );
+    await render(surface(request), dispatch, { review: computerAppReview(request) });
+    await click("Review request");
+    await click("Allow");
+    await click("Allow");
+    await click("Close sheet");
+    await click("Review request");
+    await click("Allow");
+    await act(async () => land?.({ type: "integration.computer.setup.respond" }));
+    expect(document.querySelector("[data-modal]")).toBeNull();
+    expect(dispatch).toHaveBeenCalledOnce();
+  });
+
+  it("closes quietly while the review is still loading", async () => {
+    const request = computerAppRequest();
+    const review = vi.fn(
+      (_input: unknown, call?: { signal?: AbortSignal }) =>
+        new Promise((_, reject) => {
+          call?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+        }),
+    );
+    await render(surface(request), vi.fn(), { review });
+    await click("Review request");
+    await click("Allow");
+    await click("Close sheet");
+    expect(text()).not.toContain("Could not confirm your answer was sent.");
+    await click("Review request");
+    expect(button("Allow").disabled).toBe(false);
+  });
 });
 
 function computerAppReview(request: Request): ReturnType<typeof vi.fn> {
