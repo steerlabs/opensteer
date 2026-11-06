@@ -20,6 +20,7 @@ export function HoldMenu(props: HoldMenuProps): ReactNode {
     <ContextMenu
       actions={native}
       onAction={(event) => onAction(event.nativeEvent.id)}
+      previewBottomEndRadius={props.previewBottomEndRadius}
       previewRadius={props.previewRadius}
       style={props.style}
     >
