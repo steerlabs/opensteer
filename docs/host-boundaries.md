@@ -63,8 +63,9 @@ External agents use the MCP OAuth issuer at `/oauth/mcp` for the single resource
 and explicit resource binding. It works on Personal loopback without an Account and is separate from
 server-only Host-native OAuth. Discovery is pinned to the configured Host origin or its current
 signed Personal route, kept exactly through consent and code exchange. Only a signed-in owner
-approves; a Personal browser without a session hands a request ID to the signed-in desktop app, and
-the link grants nothing. Consent picks an access ceiling and either everything the person can reach
+approves; a Personal browser without a session hands a request ID to a signed-in desktop or phone
+app, and the link grants nothing. The app answers it, then opens completion on the consent's
+`resource` origin, because completion is bound to the origin the agent signed in through. Consent picks an access ceiling and either everything the person can reach
 or one Workspace they own, lost when ownership ends.
 
 MCP credentials are opaque, stored hashed in their own record, and never become Host sessions or
@@ -72,8 +73,7 @@ authenticate Runners, Runs or programs. A connection works only on the route ori
 for, and Runs and programs only on the runtime origin. Every call rechecks expiry and revocation;
 MCP transport sessions hold no authority. Revocation stops future calls, including in an open
 session and waits that wake later, but does not cancel admitted tasks or undo their effects.
-Revoking a login leaves connections alone; people remove them in Settings → Account → Connected
-agents. Connections expire after 30 days with no refresh grant.
+Revoking a login leaves connections alone; people remove them in Settings → External agents. Connections expire after 30 days with no refresh grant.
 
 ## API boundaries
 

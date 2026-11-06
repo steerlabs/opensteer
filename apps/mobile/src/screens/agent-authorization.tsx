@@ -41,12 +41,12 @@ function AgentAuthorization(props: { readonly host: HostClient; readonly request
   const [busy, setBusy] = useState<"allow" | "deny" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const mounted = useRef(true);
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
       mounted.current = false;
-    },
-    [],
-  );
+    };
+  }, []);
   const { host, requestId } = props;
   useEffect(() => {
     const controller = new AbortController();
