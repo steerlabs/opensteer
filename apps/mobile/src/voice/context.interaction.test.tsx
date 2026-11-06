@@ -290,3 +290,5 @@ it("opens what the voice call's agent shows from any screen, and ignores a call 
   expect(state.dispatch).not.toHaveBeenCalled();
   expect(showed).toHaveBeenCalledTimes(5);
 });
+
+vi.mock("../ui/ai-sharing.js", () => import("../../test-support/ai-sharing.js"));

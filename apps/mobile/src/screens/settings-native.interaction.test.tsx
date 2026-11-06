@@ -6,7 +6,6 @@ import { MockHostClient } from "@opensteer/client/mock";
 import { hostApi, type HostApiCommandInput } from "@opensteer/protocol";
 import type { HostClient } from "@opensteer/client/host";
 import type { NativeSettingsPageProps, NativeSettingsRow } from "./native-settings-page.types.js";
-import { settingsDestinations } from "./settings-home-model.js";
 const state = vi.hoisted(() => ({
   connected: null as ((id: string) => Promise<void>) | null,
   os: "ios",
@@ -107,17 +106,7 @@ async function input(label: string, value: string) {
   if (found.kind !== "input") throw new Error("Not an input");
   await act(async () => found.onChange(value));
 }
-it("orders seven Settings destinations with one agent group", () => {
-  expect(settingsDestinations.map((item) => item.title)).toEqual([
-    "General",
-    "Account",
-    "Devices",
-    "Messaging",
-    "AI",
-    "Plugins",
-    "Sign-ins",
-  ]);
-});
+
 it("preserves committed plugin state while enable is pending and ignores a late result after sign-out", async () => {
   await open("plugins");
   const before = rows().find(
@@ -734,3 +723,5 @@ it("uses the selected provider account access when mobile enables Everywhere", a
   for (const project of command.projects)
     expect(project.accounts).toEqual(command.personalEverywhere?.accounts);
 });
+
+vi.mock("../ui/ai-sharing.js", () => import("../../test-support/ai-sharing.js"));

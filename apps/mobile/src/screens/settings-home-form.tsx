@@ -1,3 +1,4 @@
+import { contactSupport } from "../report-mail.js";
 import { FlatList, Pressable, View } from "react-native";
 import { AppText } from "../ui/primitives.js";
 import { Screen } from "../ui/screen.js";
@@ -11,10 +12,21 @@ export function SettingsHomeForm({
     <Screen>
       <FlatList
         data={settingsDestinations}
+        ListFooterComponent={
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => contactSupport()}
+            style={{ minHeight: 48, padding: 16 }}
+          >
+            <AppText>Contact support</AppText>
+          </Pressable>
+        }
         keyExtractor={(item) => item.route}
         renderItem={({ item, index }) => (
           <View>
-            {index === 4 ? <AppText>For your agents</AppText> : null}
+            {item.group !== settingsDestinations[index - 1]?.group && item.group !== "" ? (
+              <AppText>For your agents</AppText>
+            ) : null}
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={item.title}

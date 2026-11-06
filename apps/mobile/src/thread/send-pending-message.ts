@@ -37,8 +37,10 @@ export function beginPendingDelivery(
 export async function sendPendingMessage(
   hostClient: HostClient,
   command: PendingCommand,
+  authorize: () => Promise<boolean>,
   registration?: Pick<PushRegistration, "afterSuccessfulSend">,
-): Promise<void> {
+): Promise<boolean> {
+  if (!(await authorize())) return false;
   await hostClient.dispatch({
     // The words, the page they are about, then the files in the order they
     // were added, as the web sends them; a message of files alone has no text
@@ -57,4 +59,5 @@ export async function sendPendingMessage(
     type: "thread.sendMessage",
   });
   void registration?.afterSuccessfulSend();
+  return true;
 }

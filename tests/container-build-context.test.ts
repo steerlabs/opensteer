@@ -340,6 +340,7 @@ describe("container build context", () => {
     expect(allowlist).toContain("/internal/v1/computer-use/display");
     // The owner display socket shares the public API prefix, like shell viewers.
     expect(caddy).toMatch(/@host_api path [^\n]* \/v1\/\*/u);
+    expect(caddy).toMatch(/@host_api path [^\n]* \/maintenance\/v1\/desktop-update(?: |\n)/u);
     expect(caddy).toMatch(/@host_api path [^\n]* \/oauth\/mcp\/\*/u);
     expect(caddy).not.toContain("/internal/v1/channel-runtime");
     expect(caddy).not.toContain("/internal/v1/devices/connect");

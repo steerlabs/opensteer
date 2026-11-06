@@ -300,12 +300,7 @@ function settledOrActiveView(input: DesktopUpdateViewInput): DesktopUpdateView {
       headline: "Updating",
       progress: { text: "Starting…", percent: null },
     };
-  if (input.status?.supported === false)
-    return {
-      ...base,
-      headline: "Update on that computer",
-      detail: `Opensteer on ${name} can't be updated from here. Update it on that computer.`,
-    };
+  if (input.status?.supported === false) return { ...base, hidden: true };
   switch (input.failure) {
     case "unsupported":
       return {

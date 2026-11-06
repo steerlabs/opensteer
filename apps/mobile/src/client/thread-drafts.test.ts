@@ -763,7 +763,7 @@ describe("a draft file from the release that steered approvals", () => {
 
     const { dispatch, hostClient } = host();
     if (pending === null) throw new Error("The held message was not carried over.");
-    await sendPendingMessage(hostClient, pending);
+    await sendPendingMessage(hostClient, pending, async () => true);
     expect(dispatch.mock.calls).toEqual([
       [
         {
@@ -918,7 +918,7 @@ describe("a draft file from the release that steered approvals", () => {
     expect(pending).toEqual({ ...owed, delivery: "queue" });
     const { dispatch, hostClient } = host();
     if (pending === null) throw new Error("The owed message was not loaded.");
-    await sendPendingMessage(hostClient, pending);
+    await sendPendingMessage(hostClient, pending, async () => true);
     expect(JSON.stringify(dispatch.mock.calls[0]?.[0])).toBe(
       JSON.stringify({
         content: [{ text: "compare these", type: "text" }, ...owed.attachments],
@@ -948,7 +948,7 @@ describe("a draft file from the release that steered approvals", () => {
     expect(pending).toEqual(owed);
     const { dispatch, hostClient } = host();
     if (pending === null) throw new Error("The owed message was not loaded.");
-    await sendPendingMessage(hostClient, pending);
+    await sendPendingMessage(hostClient, pending, async () => true);
     expect(dispatch).toHaveBeenCalledWith({
       content: [{ text: "change course", type: "text" }],
       delivery: "steer",

@@ -1,3 +1,4 @@
+import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
 import {
   localMcpSecretServers,
   localMcpSecretsToSend,
@@ -63,6 +64,7 @@ function Plugins({
   readonly deploymentId: string;
   readonly target?: PluginTarget | undefined;
 }) {
+  const aiSharing = useAiSharing();
   const isCurrent = useSettingsLease(host);
   const navigation = useNavigation();
   const overview = useSettingsRead(host, async () =>
@@ -634,6 +636,9 @@ function Plugins({
                     !pending.presentation.options.some((option) => option.id === optionId)
                   )
                     throw new Error("Request changed");
+                  if (optionId !== "declined" && !(await authorizeAiSharing(aiSharing, host)))
+                    return;
+                  if (!isCurrent()) return;
                   await host.dispatch({
                     type: "request.respond",
                     requestId: request.requestId,

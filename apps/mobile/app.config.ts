@@ -16,6 +16,12 @@ import { z } from "zod";
  * must be.
  */
 const applicationId = "com.opensteer.mobile";
+const photosPermission =
+  "Agents you allow can read photo and album details while Opensteer is open. They cannot view, change or delete your photos. Photos you choose to attach are shared separately.";
+const cameraPermission =
+  "Opensteer does not access your camera. Camera APIs are included by its photo picker and audio calling libraries.";
+const motionPermission =
+  "Opensteer does not collect motion or fitness data. Its animation library includes motion APIs.";
 
 /**
  * The App Store binds a listing to its bundle ID for good, and Opensteer's listing
@@ -106,12 +112,10 @@ const config: ExpoConfig = {
     // Resizing shares one navigation history and draft owner across device poses.
     infoPlist: {
       // Linked camera APIs require this key even though capture is currently audio-only.
-      NSCameraUsageDescription:
-        "Opensteer only uses the camera if you choose a feature that needs it.",
+      NSCameraUsageDescription: cameraPermission,
       NSLocalNetworkUsageDescription:
         "Opensteer uses the local network to connect to your computer.",
-      NSMotionUsageDescription:
-        "Opensteer only uses motion data if you choose a feature that needs it.",
+      NSMotionUsageDescription: motionPermission,
       NSMicrophoneUsageDescription:
         "Opensteer uses the microphone while you dictate a message or talk to Opensteer.",
       NSCalendarsFullAccessUsageDescription:
@@ -122,8 +126,7 @@ const config: ExpoConfig = {
         "Agents you allow can find people in your contacts while Opensteer is open.",
       NSLocationWhenInUseUsageDescription:
         "Agents you allow can read your current location while Opensteer is open.",
-      NSPhotoLibraryUsageDescription:
-        "Agents you allow can read photo and album details while Opensteer is open. They cannot view, change or delete your photos.",
+      NSPhotoLibraryUsageDescription: photosPermission,
       PHPhotoLibraryPreventAutomaticLimitedAccessAlert: true,
       UIApplicationSceneManifest: {
         UIApplicationSupportsMultipleScenes: false,
@@ -170,7 +173,7 @@ const config: ExpoConfig = {
       "expo-local-authentication",
       { faceIDPermission: "Opensteer uses Face ID to confirm saved-login approvals." },
     ],
-    "@config-plugins/react-native-webrtc",
+    ["@config-plugins/react-native-webrtc", { cameraPermission }],
     "./plugins/with-apple-data.cjs",
     "./plugins/with-dictation.cjs",
     "./plugins/with-notification-preview.cjs",
@@ -178,7 +181,8 @@ const config: ExpoConfig = {
     [
       "expo-image-picker",
       {
-        photosPermission: "Allow Opensteer to attach photos you choose to a conversation.",
+        photosPermission,
+        cameraPermission,
       },
     ],
     [

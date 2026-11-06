@@ -1,3 +1,4 @@
+import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
 import { useHostSelector } from "@opensteer/client/react";
 import { useFocusEffect } from "@react-navigation/native";
 import { VoiceDock, VoiceMic } from "../voice/controls.js";
@@ -163,6 +164,7 @@ export function Composer(props: {
   /** Where this Thread's attached files are uploaded; null until the Thread is known. */
   readonly workspaceId: string | null;
 }): ReactNode {
+  const aiSharing = useAiSharing();
   const surface = useMemo(
     () => deriveSurface(props.requests, props.user),
     [props.requests, props.user],
@@ -467,7 +469,15 @@ export function Composer(props: {
       const endDelivery = beginPendingDelivery(drafts, deploymentId, userId, command);
       if (endDelivery === null) return;
       try {
-        await sendPendingMessage(hostClient, command, notifications.registration);
+        if (
+          !(await sendPendingMessage(
+            hostClient,
+            command,
+            () => authorizeAiSharing(aiSharing, hostClient),
+            notifications.registration,
+          ))
+        )
+          return;
         // Acknowledged, and only now: until this line the command is still the
         // one this phone owes the Host.
         const cleared = await drafts.clearPending(
@@ -503,7 +513,7 @@ export function Composer(props: {
         endDelivery();
       }
     },
-    [deploymentId, drafts, hostClient, notifications, threadId, userId],
+    [aiSharing, deploymentId, drafts, hostClient, notifications, threadId, userId],
   );
 
   const deliverExclusively = useCallback(
@@ -556,6 +566,13 @@ export function Composer(props: {
       return part === null ? [] : [part];
     });
     if (attachments.length !== carried.length) return;
+    if (!(await authorizeAiSharing(aiSharing, hostClient))) return;
+    if (
+      !mounted.current ||
+      inFlight.current ||
+      drafts.readPending(deploymentId, userId, threadId) !== null
+    )
+      return;
     const claim = claimMessage();
     if (claim === null) return;
     inFlight.current = true;

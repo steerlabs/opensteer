@@ -1,6 +1,14 @@
+import type { ReactNode } from "react";
+import { SheetAnchor } from "./ui/sheet.js";
+import { SettingsAiSharingScreen } from "./screens/settings-ai-sharing.js";
 import { CHAT_THREAD_TITLE } from "@opensteer/core";
 import { isRecord } from "@opensteer/shared/isRecord";
-import { createStaticNavigation, DarkTheme, type Theme } from "@react-navigation/native";
+import {
+  createStaticNavigation,
+  DarkTheme,
+  useIsFocused,
+  type Theme,
+} from "@react-navigation/native";
 import {
   createNativeStackNavigator,
   type NativeStackNavigationOptions,
@@ -88,6 +96,16 @@ import { Pane } from "./ui/pane.js";
  * inside it. A thread's title is the person's words and can be any length, so
  * that screen keeps the bar-height title that truncates gracefully.
  */
+function ScreenLayout(props: { readonly children: ReactNode; readonly modal: boolean }) {
+  const focused = useIsFocused();
+  return (
+    <>
+      {props.modal ? <Pane>{props.children}</Pane> : props.children}
+      <SheetAnchor active={focused} level={1} />
+    </>
+  );
+}
+
 const RootStack = createNativeStackNavigator({
   layout: ({ children, navigation, state }) => (
     <SidebarShell navigation={navigation} state={state}>
@@ -97,12 +115,11 @@ const RootStack = createNativeStackNavigator({
   // A sheet or modal is presented away from the screens: its safe area is
   // where it was presented, not the stack's or the sidebar's beside it, and no
   // region the shell measured lies over it.
-  screenLayout: ({ children, options }) =>
-    options.presentation === undefined || options.presentation === "card" ? (
-      children
-    ) : (
-      <Pane>{children}</Pane>
-    ),
+  screenLayout: ({ children, options }) => (
+    <ScreenLayout modal={options.presentation !== undefined && options.presentation !== "card"}>
+      {children}
+    </ScreenLayout>
+  ),
   screenOptions: stackScreenOptions,
   screens: {
     Deployments: {
@@ -285,6 +302,15 @@ const RootStack = createNativeStackNavigator({
     // A long list opens full height like the pages it leads to: a half-height
     // detent would spend the first scroll on growing the sheet, and the next
     // on dragging it back down.
+    SettingsAiSharing: {
+      screen: SettingsAiSharingScreen,
+      options: ({ navigation }) => ({
+        ...headerActions({
+          right: { label: "Done", onPress: () => navigation.goBack(), variant: "done" },
+        }),
+        title: "AI sharing",
+      }),
+    },
     SettingsGeneral: { screen: SettingsGeneralScreen, options: { title: "General" } },
     SettingsAccount: { screen: SettingsAccountScreen, options: { title: "Account" } },
     SettingsRemoteAccess: {
@@ -499,6 +525,7 @@ type OpensteerRootParamList = {
   readonly OpenApp: { readonly deploymentId: string };
   readonly Schedule: ScheduleDestination;
   readonly Schedules: { readonly deploymentId: string };
+  readonly SettingsAiSharing: undefined;
   readonly SettingsGeneral: { readonly deploymentId: string };
   readonly SettingsAccount: { readonly deploymentId: string };
   readonly SettingsRemoteAccess: { readonly deploymentId: string };
