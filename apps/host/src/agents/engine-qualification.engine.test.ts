@@ -206,21 +206,50 @@ describe("engine qualification", () => {
             { timeout: shortRequestHoldMs + 60_000, interval: 100 },
           );
         }
-        // A call issued in the same step as the Request may still run; a tool starting after
-        // one has finished can only come from a new step, which the hold must prevent.
+        const toolEvent = (data: unknown) =>
+          data as { callId?: string; isError?: boolean; tool?: { name?: string } };
         const held = await database
           .selectFrom("workspaceEvents")
           .select(["type", "data"])
           .where("runId", "=", firstRunId)
           .orderBy("sequence", "asc")
           .execute();
+        const heldCall = held.find(
+          ({ type, data }) =>
+            type === "tool.started" && toolEvent(data).tool?.name === "browser_profile_request",
+        );
         const sinceOpened = held.slice(held.findIndex(({ type }) => type === "request.opened"));
-        const finished = sinceOpened.findIndex(({ type }) => type === "tool.completed");
+        const returned = sinceOpened.findIndex(
+          ({ type, data }) =>
+            type === "tool.completed" &&
+            toolEvent(data).callId === toolEvent(heldCall?.data).callId,
+        );
+        const during = returned < 0 ? sinceOpened : sinceOpened.slice(0, returned);
+        // A call issued in the same step as the Request may still run; a tool starting after
+        // one has finished can only come from a new step, which the hold must prevent.
+        const finished = during.findIndex(({ type }) => type === "tool.completed");
         expect(
-          finished < 0
-            ? []
-            : sinceOpened.slice(finished).filter(({ type }) => type === "tool.started"),
+          finished < 0 ? [] : during.slice(finished).filter(({ type }) => type === "tool.started"),
           "The engine took another step while the Request was held",
+        ).toEqual([]);
+        // Access ends before the interrupt lands, so an engine may try one more step. It gets nothing.
+        const windDown = returned < 0 ? [] : sinceOpened.slice(returned + 1);
+        const attempted = new Set(
+          windDown
+            .filter(
+              ({ type, data }) =>
+                type === "tool.started" && toolEvent(data).tool?.name === "thread_list",
+            )
+            .map(({ data }) => toolEvent(data).callId),
+        );
+        expect(
+          windDown.filter(
+            ({ type, data }) =>
+              type === "tool.completed" &&
+              attempted.has(toolEvent(data).callId) &&
+              toolEvent(data).isError !== true,
+          ),
+          "A tool reached the Host after the Run's access ended",
         ).toEqual([]);
         const before = await database
           .selectFrom("providerSessions")
