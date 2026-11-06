@@ -340,8 +340,7 @@ integration("agent-to-agent messaging round trip", () => {
       expect(frames.filter((message) => message.type === "host.show")).toHaveLength(1);
       await expect(show(f.tokenA, { current: true })).rejects.toMatchObject({
         code: "bad_request",
-        message:
-          "This Run has not worked in a place yet. Read thread_read for recent Runs and places.",
+        message: "This Run has not worked in a place yet.",
       });
       const place = { kind: "browser" as const, sessionId, surfaceId: tabId };
       drainRunPlaces.mockImplementationOnce(async () => {
