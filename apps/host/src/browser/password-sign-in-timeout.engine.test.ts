@@ -151,7 +151,8 @@ describe.each(holdEngines)("$label held MCP", (engine) => {
         throw new Error("The held call never returned");
       expect(releasedAt - enteredAt).toBeGreaterThanOrEqual(holdMs);
       expect(marker).not.toBe("");
-      expect(turn.assistantText.trim()).toBe(marker);
+      // The model may say what it is doing before the call; its reply is the last line.
+      expect(turn.assistantText.trim().split("\n").at(-1)).toBe(marker);
       const started = turn.events
         .filter((event) => event.type === "tool.started")
         .filter((event) => event.data.tool.name === "sign_in");
