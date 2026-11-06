@@ -160,6 +160,10 @@ vi.mock("react-native-reanimated", () => {
     FadeInUp: transition,
     FadeOut: transition,
     LinearTransition: transition,
+    Easing: { linear: (value: number) => value },
+    useAnimatedStyle: () => ({}),
+    useReducedMotion: () => false,
+    useSharedValue: (value: number[]) => ({ value }),
     withSpring: (value: number) => value,
     withTiming: (value: number) => value,
   };
