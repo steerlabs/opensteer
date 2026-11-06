@@ -446,7 +446,7 @@ async function main(): Promise<void> {
         .end(
           request.url === "/frame-opener"
             ? `<!doctype html><title>Frame opener</title><iframe id="frame" style="border:0;width:600px;height:400px" src="http://localhost:${port}/frame-button"></iframe>`
-            : `<!doctype html><body style="margin:0"><button style="width:100vw;height:100vh" onclick="open('/q','_blank')">Popup</button>`,
+            : `<!doctype html><body style="margin:0"><button style="width:100vw;height:100vh" onclick="window.open('/q','_blank')">Popup</button>`,
         );
       return;
     }

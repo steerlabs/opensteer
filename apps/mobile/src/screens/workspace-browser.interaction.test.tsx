@@ -816,9 +816,16 @@ describe("mobile pages", () => {
     });
   });
 
-  it("leaves a followed popup when it ends, to the page under it", () => {
-    const { render } = setup({ popup: true, sessionId: "chosen", tabId: "missing-page" });
-    state.snapshot = snapshot([mailSession("chosen")]);
+  it("leaves a followed popup that ended, to the page under it, once it is in front again", () => {
+    state.focused = false;
+    state.navigationFocused = false;
+    const { render } = setup(
+      { popup: true, sessionId: "chosen", tabId: "missing-page" },
+      { snapshot: snapshot([mailSession("chosen")]) },
+    );
+    expect(state.dispatch).not.toHaveBeenCalled();
+    state.focused = true;
+    state.navigationFocused = true;
     render();
     expect(state.dispatch).toHaveBeenCalledExactlyOnceWith({ type: "POP", count: 1 });
   });

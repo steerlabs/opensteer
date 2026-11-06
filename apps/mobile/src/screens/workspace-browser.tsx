@@ -659,8 +659,8 @@ function BrowserTab(props: {
   const latestClosed = useRef(onClosed);
   latestClosed.current = onClosed;
   useEffect(() => {
-    if (popupEnded) latestClosed.current();
-  }, [popupEnded]);
+    if (popupEnded && props.active) latestClosed.current();
+  }, [popupEnded, props.active]);
 
   if (live && session !== null)
     return (
