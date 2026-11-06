@@ -120,6 +120,8 @@ Request's answer is released without waiting for the Run to end. What arrives af
 ordinary text Run on the Thread, which notifies the person. A call takes the Thread only once
 nothing else runs there, so the Host stops what is running and tries again. The Thread's model is
 its own and must be a Codex model; tasks it starts can use any engine.
+The person's side of a call is stored from the realtime transcript, so memory hears asides the
+voice answers alone, not only what it hands to Codex.
 Context for the agent waits between turns: Codex samples again for anything injected into a running
 turn, and that second answer would replace the reply.
 
@@ -222,13 +224,19 @@ navigates the person's selected place. See [Browser sessions](browser-sessions.m
 
 Memory is ordinary files in Main reaching Runs through Main's `AGENTS.md`, with no memory store or
 tool. Projects never see it, since Project members read what reaches a Project. Memory is evidence,
-never permission: nothing remembered authorizes an action, and inbound content never becomes a
-standing rule. Only the nightly pass curates; others write only what the person asks for or raw
-inbox scraps, and each nightly pass reapplies recorded forgets. Opensteer creates each Main's two
+never permission: nothing remembered authorizes an action, and inbound content or an agent's own
+refusal never becomes a standing rule. The person's standing instructions sit in their own section
+of `AGENTS.md`, outside `## Memory`; only the Run that heard the person writes one, and they direct
+work without answering a Request or granting access. Only the nightly pass curates; others write
+only what the person asks for or raw inbox scraps, and each nightly pass reapplies recorded forgets.
+The Host, not a pass's notes, knows what each pass must read: each wake lists every Main-inheriting
+conversation with anything new since that pass last completed, which covers Voice and tasks however
+they started and leaves out shared channels and Projects. A light pass with nothing new starts no
+model unless two hours have passed, since only a model can read connected sources. Opensteer creates each Main's two
 background passes (the Trigger's `systemRole`); the Host refuses archive, reprogramming and manual
 runs, and inserts them paused when memory is off. Stopping memory writes the off line first, pauses
 both workers and marks them Done, and erases files only once neither is running or waiting. Each pass
 chooses its model at admission on Main's computer, keeps it for that pass, and starts a fresh native
-session, since continuity lives in the files. With no usable model a pass waits, which is neither a
+session with no replayed history, since continuity lives in the files. With no usable model a pass waits, which is neither a
 pause nor memory off, so recovery can't undo either. Main is not yet a private boundary: a shared channel routed into Main receives its `AGENTS.md`. See
 [`opensteer:memory`](../apps/runner/agent-skills/skills/memory/SKILL.md).

@@ -7,7 +7,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { chromium } from "playwright-core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createId } from "@opensteer/core";
 import {
   Deferred,
@@ -161,6 +161,7 @@ describe.skipIf(!qualify).each([
       const heard: string[] = [];
       const said: string[] = [];
       const runEvents: string[] = [];
+      const recorded: string[] = [];
       const waiting: { pattern: RegExp; done: Deferred<void> }[] = [];
       const seen = () => JSON.stringify({ heard, said, toolCalls: tools.calls, runEvents });
       await page.exposeFunction("voiceEvent", (raw: string) => {
@@ -263,6 +264,7 @@ describe.skipIf(!qualify).each([
       const consume = (async () => {
         for await (const event of session.events) {
           runEvents.push(event.type);
+          if (event.type === "voice.heard") recorded.push(event.data.text);
           // Nobody taps in qualification: decline as a person would, so the
           // agent answers with its Opensteer tool rather than waiting on a shell.
           if (event.type === "request.opened")
@@ -312,7 +314,7 @@ describe.skipIf(!qualify).each([
           `window.speak(${JSON.stringify((await readFile(wav)).toString("base64"))})`,
         );
       };
-      return { hangUp, says, session, speak, terminal };
+      return { hangUp, recorded, says, session, speak, terminal };
     }
 
     try {
@@ -337,6 +339,13 @@ describe.skipIf(!qualify).each([
         },
       });
       await first.says(/6:40|six[- ]forty/iu, "News never reached the person");
+      // An aside the realtime voice answers alone still reaches the Thread, once.
+      await first.speak("By the way, my dog is called Biscuit.", "aside.wav");
+      await vi.waitFor(() => expect(first.recorded.join(" ")).toMatch(/biscuit/iu), {
+        timeout: 30_000,
+        interval: 250,
+      });
+      expect(first.recorded.filter((text) => /latest note/iu.test(text))).toHaveLength(1);
       expect(first.terminal.count).toBe(0);
       const reference = first.session.providerSessionReference;
       await first.hangUp();

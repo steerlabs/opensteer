@@ -173,6 +173,7 @@ const releasedMigrationNames = [
   "0163_phone_tabs",
   "0164_specialists_adopt_access",
   "0165_request_tool_delivery",
+  "0166_memory_pass_activity",
 ];
 
 describe("migration names", () => {

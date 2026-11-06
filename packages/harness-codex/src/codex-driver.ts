@@ -1784,6 +1784,14 @@ class CodexHarnessSession implements HarnessSession {
           this.#voiceSdp.resolve();
         } else this.#context.voiceCall.end();
       }
+      if (message.method === "thread/realtime/transcript/done" && params.role === "user") {
+        const text = optionalString(params.text)?.trim();
+        if (text)
+          this.#publish({
+            data: { messageId: createId("message"), text: text.slice(0, 16_000) },
+            type: "voice.heard",
+          });
+      }
       if (message.method === "thread/realtime/error" || message.method === "thread/realtime/closed")
         this.#context.voiceCall.end();
       return;
@@ -2230,12 +2238,8 @@ class CodexHarnessSession implements HarnessSession {
   #publishItemCompleted(value: unknown): void {
     const item = requireObject(value, "item/completed params.item");
     const type = optionalString(item.type);
-    if (type === "userMessage" && this.#context.voiceCall) {
-      const text = realtimeDelegationText(codexUserMessageText(item));
-      if (text)
-        this.#publish({ data: { messageId: createId("message"), text }, type: "voice.heard" });
-      return;
-    }
+    // A hand-off restates words the realtime transcript already recorded.
+    if (type === "userMessage" && this.#context.voiceCall) return;
     if (type === "agentMessage") {
       this.#publish({
         data: {
@@ -4315,11 +4319,6 @@ function readCommandAction(action: unknown): unknown {
 /** A child agent's name from its path, `/root/researcher` → `researcher`. */
 function codexAgentTitle(path: unknown): string | null {
   return optionalString(path)?.split("/").filter(Boolean).at(-1) ?? null;
-}
-
-/** What the person said, from the wrapper Codex puts around a realtime hand-off. */
-function realtimeDelegationText(text: string | null): string | undefined {
-  return /<input>([\s\S]*?)<\/input>/u.exec(text ?? "")?.[1]?.trim() || undefined;
 }
 
 function isVoiceCallSeed(input: HarnessInput): boolean {

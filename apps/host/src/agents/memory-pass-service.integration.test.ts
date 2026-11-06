@@ -4,6 +4,8 @@ import {
   TimeZoneSchema,
   ThreadAccessModeSchema,
   type HarnessInstanceId,
+  type MessageId,
+  type RunId,
   type Thread,
 } from "@opensteer/core";
 import { createMemoryPass, type MemoryPassExecution } from "@opensteer/database";
@@ -308,6 +310,40 @@ async function wake(
     threadId: trigger.anchorThreadId,
     ...(memoryPass === null ? {} : { memoryPass: memoryPass ?? worker }),
   });
+}
+
+async function delivered(
+  f: StoreFixture,
+  base: Awaited<ReturnType<typeof fixture>>,
+  threadId: Thread["id"],
+  key: string,
+) {
+  const { run } = await f.enqueueHumanTrigger({
+    content: [{ type: "text", text: "Dinner at eight" }],
+    idempotencyKey: key,
+    requestedBy: base.userId,
+    threadId,
+  });
+  await finish(f, run, "completed");
+}
+async function finish(
+  f: StoreFixture,
+  run: { readonly id: RunId; readonly seedInputId: MessageId },
+  status: "completed" | "failed",
+) {
+  await f.database
+    .updateTable("runs")
+    .set({ status, completedAt: new Date() })
+    .where("id", "=", run.id)
+    .execute();
+  await f.database
+    .updateTable("threadInputs")
+    .set({ state: "delivered", deliveredAt: new Date(), runId: run.id, updatedAt: new Date() })
+    .where("messageId", "=", run.seedInputId)
+    .execute();
+}
+function wakeText(admitted: Awaited<ReturnType<typeof wake>>) {
+  return admitted.message.content.flatMap((part) => (part.type === "text" ? [part.text] : []));
 }
 
 describeStore("managed memory passes", (it) => {
@@ -978,6 +1014,7 @@ describeStore("managed memory passes", (it) => {
       .set({ state: "delivered", deliveredAt: new Date(), runId: firstRun!.id })
       .where("messageId", "=", firstRun!.seedInputId)
       .execute();
+    await delivered(f, base, base.chat!.id, "chat-before-next-pass");
     const third = await tick(f, base, light);
     await wake(f, light, third.occurrence.id, "next-pass", {
       harnessInstanceId: base.harnessInstance.id,
@@ -996,6 +1033,90 @@ describeStore("managed memory passes", (it) => {
     });
     expect(nextSession).toMatchObject({ providerSessionReference: null, status: "starting" });
     expect(nextSession!.id).not.toBe(firstSession!.id);
+  });
+
+  it("lists what a light pass must read, with no old wakes, and skips an idle wake", async ({
+    storeFixture: f,
+  }) => {
+    const base = await fixture(f, "activity");
+    await service(f).instance.ensureForMain(base.workspace.id);
+    const light = (await role(f, base.userId)).trigger;
+    const thread = async (title: string, patch: { listed?: boolean; inheritsMain?: boolean }) => {
+      const { thread } = await f.store.createThread({
+        createdBy: base.userId,
+        environmentId: base.environmentId,
+        harnessInstanceId: base.harnessInstance.id,
+        idempotencyKey: `activity-${title}`,
+        modelSelection: base.chat!.modelSelection,
+        title,
+        workspaceId: base.workspace.id,
+      });
+      // Consent is immutable; a real shared route creates its Thread without Main.
+      if (Object.keys(patch).length === 0) return thread;
+      await f.database.transaction().execute(async (transaction) => {
+        await sql`set local session_replication_role = replica`.execute(transaction);
+        await transaction.updateTable("threads").set(patch).where("id", "=", thread.id).execute();
+      });
+      return thread;
+    };
+    const voice = await thread("Voice", { listed: false });
+    const shared = await thread("Shared channel", { inheritsMain: false });
+
+    const first = await wake(f, light, (await tick(f, base, light)).occurrence.id, "activity-1");
+    expect(wakeText(first).join("\n")).toContain("No new conversations");
+    await finish(f, first.run!, "completed");
+
+    await expect(
+      wake(f, light, (await tick(f, base, light)).occurrence.id, "activity-idle"),
+    ).rejects.toThrow(MANAGED_MEMORY_WAKE_SKIPPED);
+
+    await delivered(f, base, voice.id, "activity-voice");
+    await delivered(f, base, shared.id, "activity-shared");
+    await delivered(f, base, base.chat!.id, "activity-chat");
+    await f.enqueueHumanTrigger({
+      content: [{ type: "text", text: "Still waiting behind a Run" }],
+      idempotencyKey: "activity-waiting",
+      requestedBy: base.userId,
+      threadId: (await thread("Waiting", {})).id,
+    });
+    const next = await tick(f, base, light);
+    const second = await wake(f, light, next.occurrence.id, "activity-2");
+    const text = wakeText(second).join("\n");
+    expect(text).toContain(`"Voice": threadId ${voice.id}, 1 new messages`);
+    expect(text).toContain(`threadId home, 1 new messages`);
+    expect(text).not.toContain(shared.id);
+    expect(text).not.toContain("Waiting");
+    expect(text).not.toContain(light.anchorThreadId);
+
+    await f.store.claimCommand(second.command!.id, "activity-dispatcher");
+    expect((await f.store.loadRunDispatchContext(second.command!.id)).initialContext).toBeNull();
+
+    // A replay keeps what the wake froze, though the world has moved on.
+    await delivered(f, base, voice.id, "activity-after-freeze");
+    const replay = await wake(f, light, next.occurrence.id, "activity-2");
+    expect(wakeText(replay)).toEqual(wakeText(second));
+
+    // A failed pass read nothing durable, so its conversations come back.
+    await finish(f, second.run!, "failed");
+
+    // Another Trigger's work on this worker says nothing about what memory read.
+    await sql`update messages set created_at = created_at - interval '1 hour'
+      where thread_id in (${voice.id}, ${light.anchorThreadId})`.execute(f.database);
+    await sql`update thread_inputs set updated_at = updated_at - interval '1 hour'
+      where thread_id in (${voice.id}, ${light.anchorThreadId})`.execute(f.database);
+    const nightly = (await role(f, base.userId, "memory-nightly")).trigger;
+    const other = await f.store.enqueueThreadInput({
+      content: [{ type: "text", text: "Unrelated work" }],
+      idempotencyKey: "activity-other-trigger",
+      policy: "queue",
+      requestedBy: base.userId,
+      source: { kind: "trigger", occurrenceId: (await tick(f, base, nightly)).occurrence.id },
+      threadId: light.anchorThreadId,
+    });
+    await finish(f, other.run!, "completed");
+
+    const retried = await wake(f, light, (await tick(f, base, light)).occurrence.id, "activity-3");
+    expect(wakeText(retried).join("\n")).toContain(`"Voice": threadId ${voice.id}, 2 new messages`);
   });
 
   it("replays an accepted pass's wake without choosing its model again", async ({
