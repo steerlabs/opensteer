@@ -1,3 +1,4 @@
+import { contactSupport } from "../report-mail.js";
 import { PendingBrowserTabView, showPendingBrowserTab } from "../browser/pending-browser-tab.js";
 import {
   browserPlaceUnavailableReason,
@@ -889,6 +890,7 @@ function CloseBar(props: {
   readonly children: ReactNode;
   readonly closeDisabled: boolean;
   readonly onClose: () => void;
+  readonly onReport?: () => void;
 }): ReactNode {
   return (
     <Toolbar edge="bottom" testID="page-toolbar">
@@ -897,6 +899,9 @@ function CloseBar(props: {
         label="More"
         sections={[
           [
+            ...(props.onReport
+              ? [{ id: "report", label: "Report…", onPress: props.onReport }]
+              : []),
             {
               destructive: true,
               disabled: props.closeDisabled,
@@ -977,7 +982,11 @@ const AppTab = memo(function AppTab(props: {
       )}
       <AppFrame appId={appId} client={hostClient} fill />
       {typing ? null : (
-        <CloseBar closeDisabled={!props.connected} onClose={close}>
+        <CloseBar
+          closeDisabled={!props.connected}
+          onClose={close}
+          onReport={() => contactSupport({ kind: "app", id: appId })}
+        >
           <Symbol name={opensteerAppGlyph} size={15} tint={color.muted} />
           <AppText numberOfLines={1} role="secondaryMedium" style={styles.appName}>
             {props.title}

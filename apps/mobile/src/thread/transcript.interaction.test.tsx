@@ -1162,3 +1162,5 @@ describe("an app's card and its tab", () => {
     }
   });
 });
+
+vi.mock("../report-mail.js", () => ({ contactSupport: vi.fn() }));

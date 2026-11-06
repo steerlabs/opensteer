@@ -59,6 +59,14 @@ only a wake-up: read the attempt back with the same Host credential. Transcript 
 [transcriptLinks.ts](../packages/shared/src/transcriptLinks.ts) so generated content cannot switch
 Deployments. Composer dictation is in [Dictation](dictation.md).
 
+## AI sharing
+
+Mobile asks before sending content or live audio to the AI companies named by the computer's
+existing account/model choices, using a generic disclosure for unknown services. Permission is
+stored on this device, separately for content and live audio; Settings can clear it for future
+sends without stopping work already running. Attachment staging goes only to the person's Host;
+on-device dictation and computer-side background work do not pass through this mobile gate.
+
 ## Saved views
 
 While attachment connects, Chat and the sidebar can show the remembered Deployment's last published

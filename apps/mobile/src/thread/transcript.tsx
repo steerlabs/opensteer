@@ -425,13 +425,12 @@ function ReplyBubble(props: {
           {message.body ? <Markdown text={message.body} /> : null}
           <MessageAttachments attachments={message.attachments ?? []} />
         </View>
-        {message.body || props.onActivity !== undefined ? (
-          <MessageMenu
-            onActivity={props.onActivity}
-            onReply={props.onReply ? () => props.onReply?.(message) : undefined}
-            text={message.body}
-          />
-        ) : null}
+        <MessageMenu
+          reportId={message.id}
+          onActivity={props.onActivity}
+          onReply={props.onReply ? () => props.onReply?.(message) : undefined}
+          text={message.body}
+        />
       </View>
       {/* The record of a finished reply; while its Run works, the conversation's header follows it. */}
       {props.turn === undefined || turnState(props.turn) === "settled" ? (
@@ -886,8 +885,8 @@ function AssistantMessage(props: { readonly message: MessageEntry }): ReactNode 
     <View style={styles.assistant}>
       {props.message.body ? <Markdown text={props.message.body} /> : null}
       <MessageAttachments attachments={props.message.attachments ?? []} />
-      {props.message.streaming === true || !props.message.body ? null : (
-        <MessageMenu text={props.message.body} />
+      {props.message.streaming === true ? null : (
+        <MessageMenu text={props.message.body} reportId={props.message.id} />
       )}
     </View>
   );

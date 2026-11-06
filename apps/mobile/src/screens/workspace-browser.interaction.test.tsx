@@ -2765,3 +2765,5 @@ it("fences a menu clipboard read when another page contact changes its destinati
     text: "clipboard",
   });
 });
+
+vi.mock("../report-mail.js", () => ({ contactSupport: vi.fn() }));

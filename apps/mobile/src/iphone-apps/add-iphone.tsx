@@ -1,3 +1,4 @@
+import { aiCompanies, genericAiCompany } from "@opensteer/client/ai-sharing";
 import type { HostClient } from "@opensteer/client/host";
 import type { IntegrationAccess } from "@opensteer/client/integrations";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
@@ -89,6 +90,11 @@ export function AddIphoneForm(props: {
   readonly onAdded: (runnerId: string) => void;
   readonly opensteer: string;
 }): ReactNode {
+  const companies = useHostValue(
+    props.hostClient,
+    (snapshot) => aiCompanies(snapshot).join(", "),
+    genericAiCompany,
+  );
   const state = useIphoneAppsState(props.controller);
   const [name, setName] = useState(() => props.controller.getState().snapshot.deviceName);
   const [draft, setDraft] = useState<Readonly<Partial<Record<IphoneAppId, IntegrationAccess>>>>(
@@ -207,7 +213,7 @@ export function AddIphoneForm(props: {
             })}
           </RowGroup>
           <AppText role="caption" tone="muted">
-            {addIphoneFootnote(props.opensteer)}
+            {addIphoneFootnote(props.opensteer, companies)}
           </AppText>
         </View>
       )}

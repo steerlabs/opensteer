@@ -1,3 +1,4 @@
+import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
 import { useMobileNotifications } from "../ui/notifications-context.js";
 import { provisionalThreadTitle, type BrowserPageContentPart } from "@opensteer/core";
 import {
@@ -251,12 +252,15 @@ function NewTask(props: {
    * the message. A retry repeats both under their own keys, so an answer that
    * was lost is answered with the task the Host already made.
    */
+  const aiSharing = useAiSharing();
   const send = useCallback(
     async (
       existing: PendingCommand | null,
       requestedSelection: ExecutionSelection | null = null,
     ): Promise<void> => {
       if (inFlight.current) return;
+      if (!(await authorizeAiSharing(aiSharing, hostClient))) return;
+      if (!mounted.current || inFlight.current) return;
       inFlight.current = true;
       setSending(true);
       setFailure(null);
@@ -335,7 +339,15 @@ function NewTask(props: {
         const finishDelivery = beginPendingDelivery(drafts, deploymentId, userId, owed);
         if (finishDelivery === null) return;
         try {
-          await sendPendingMessage(hostClient, owed, notifications.registration);
+          if (
+            !(await sendPendingMessage(
+              hostClient,
+              owed,
+              () => authorizeAiSharing(aiSharing, hostClient),
+              notifications.registration,
+            ))
+          )
+            return;
           const cleared = await drafts.clearPending(
             deploymentId,
             userId,
@@ -377,6 +389,7 @@ function NewTask(props: {
       }
     },
     [
+      aiSharing,
       client,
       deploymentId,
       draftKey,

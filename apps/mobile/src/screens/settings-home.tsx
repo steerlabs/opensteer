@@ -21,6 +21,10 @@ export function SettingsScreen() {
   return (
     <SettingsHomeForm
       onOpen={(route) => {
+        if (route === "SettingsAiSharing") {
+          navigation.navigate(route);
+          return;
+        }
         if (selection.deploymentId)
           navigation.navigate(route, { deploymentId: selection.deploymentId });
         else navigation.navigate("DeploymentSwitcher");

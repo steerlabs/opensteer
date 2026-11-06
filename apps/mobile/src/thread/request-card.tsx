@@ -1,3 +1,5 @@
+import { requestOptionDeclines } from "@opensteer/core";
+import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
 import {
   cardUseTitle,
   cardUseConsent,
@@ -169,6 +171,7 @@ export function RequestCard(props: {
   readonly subagentTitle?: string | null;
   readonly surface: SurfaceModel;
 }): ReactNode {
+  const aiSharing = useAiSharing();
   const { request } = props.surface;
   const presentation = request.presentation;
   const [open, setOpen] = useState(false);
@@ -287,6 +290,15 @@ export function RequestCard(props: {
     if (responding.current || !answerable || !props.canRespond || !props.canStartResponse()) {
       return;
     }
+    const option =
+      response.kind === "choice" && presentation.kind === "choice"
+        ? presentation.options.find((option) => option.id === response.optionId)
+        : undefined;
+    const declined =
+      (response.kind === "external" && response.value?.decision === "declined") ||
+      (option !== undefined && requestOptionDeclines(option));
+    if (!declined && !(await authorizeAiSharing(aiSharing, props.hostClient))) return;
+    if (!mounted.current || responding.current || !props.canStartResponse()) return;
     const gate = props.mutationGate;
     const claim = gate.acquire("request");
     if (claim === null) return;
@@ -334,6 +346,8 @@ export function RequestCard(props: {
       !props.canStartResponse()
     )
       return;
+    if (!(await authorizeAiSharing(aiSharing, props.hostClient))) return;
+    if (!mounted.current || responding.current) return;
     const claim = props.mutationGate.acquire("request");
     if (claim === null) return;
     const { access, definitionId, runnerId } = request.payload;
@@ -372,6 +386,9 @@ export function RequestCard(props: {
   // Chrome to finish, so the Host replies with what happened.
   const respondSignIn = async (decision: BrowserSignInDecision, busyId: string): Promise<void> => {
     if (signIn === null || responding.current || !answerable || !props.canRespond) return;
+    if (decision.decision !== "decline" && !(await authorizeAiSharing(aiSharing, props.hostClient)))
+      return;
+    if (!mounted.current || responding.current) return;
     if (!props.canStartResponse()) return;
     const gate = props.mutationGate;
     const claim = gate.acquire("request");
@@ -452,6 +469,8 @@ export function RequestCard(props: {
     remember: boolean;
   }): Promise<void> => {
     if (passwordSignIn === null || responding.current || !answerable || !props.canRespond) return;
+    if (approval && !(await authorizeAiSharing(aiSharing, props.hostClient))) return;
+    if (!mounted.current || responding.current) return;
     if (!props.canStartResponse()) return;
     const gate = props.mutationGate;
     const claim = gate.acquire("request");

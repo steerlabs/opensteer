@@ -1,4 +1,13 @@
-import { useRef, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   type HostInstance,
   KeyboardAvoidingView,
@@ -15,6 +24,59 @@ import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { color, controlFontScaleLimit, space, touchTarget } from "../theme.js";
 import { AppText } from "./primitives.js";
 
+interface SheetLocation {
+  readonly id: string;
+  readonly level: number;
+}
+const PresentationContext = createContext<{
+  readonly sheet: ReactNode;
+  readonly top: string | null;
+  readonly register: (location: SheetLocation) => () => void;
+} | null>(null);
+
+// React Native presents from the host view's controller, which must be the
+// active screen or sheet rather than a controller already presenting it.
+export function SheetPresenter(props: {
+  readonly children: ReactNode;
+  readonly sheet: ReactNode;
+  readonly onDismiss: () => void;
+}) {
+  const [locations, setLocations] = useState<readonly SheetLocation[]>([]);
+  const topId = useRef<string | null>(null);
+  const onDismiss = useRef(props.onDismiss);
+  onDismiss.current = props.onDismiss;
+  const register = useCallback((location: SheetLocation) => {
+    setLocations((current) => [...current, location]);
+    return () => {
+      if (topId.current === location.id) onDismiss.current();
+      setLocations((current) => current.filter((item) => item.id !== location.id));
+    };
+  }, []);
+  const top = locations.reduce<SheetLocation | null>(
+    (top, item) => (!top || item.level >= top.level ? item : top),
+    null,
+  );
+  topId.current = top?.id ?? null;
+  return (
+    <PresentationContext value={{ register, sheet: props.sheet, top: top?.id ?? null }}>
+      {props.children}
+      <SheetAnchor level={0} />
+    </PresentationContext>
+  );
+}
+
+export function SheetAnchor(props: { readonly active?: boolean; readonly level: number }) {
+  const context = useContext(PresentationContext);
+  const id = useId();
+  const active = props.active !== false;
+  const register = context?.register;
+  useLayoutEffect(
+    () => (active ? register?.({ id, level: props.level }) : undefined),
+    [active, id, props.level, register],
+  );
+  return active && context?.top === id ? context.sheet : null;
+}
+
 /**
  * Forms use a full-screen native modal so the keyboard and the pinned action
  * share screen coordinates. Fabric measures a page sheet from its own origin,
@@ -30,6 +92,7 @@ export function Sheet(props: {
   readonly onClose: () => void;
   readonly open: boolean;
   readonly title: string;
+  readonly anchor?: boolean;
 }): ReactNode {
   return (
     <Modal
@@ -41,6 +104,7 @@ export function Sheet(props: {
     >
       <SafeAreaProvider>
         <SheetFrame {...props} />
+        {props.anchor === false ? null : <SheetAnchor active={props.open} level={2} />}
       </SafeAreaProvider>
     </Modal>
   );
