@@ -33,7 +33,7 @@ describe("DesktopMainProcess", () => {
     expect(window.isDestroyed()).toBe(true);
   });
 
-  it("hides a window that finishes loading after shutdown hid the app", async () => {
+  it("stays hidden after shutdown, even for a window still loading or a pending link", async () => {
     const calls: string[] = [];
     let finishLoading!: (window: DesktopWindowHandle) => void;
     const loaded = new Promise<DesktopWindowHandle>((resolve) => {
@@ -48,6 +48,8 @@ describe("DesktopMainProcess", () => {
     main.hideWindow();
     finishLoading(new TestWindow(calls));
     await starting;
+    main.focus();
+    await main.activate();
 
     expect(calls).toEqual(["window.hide"]);
     await main.stop();
