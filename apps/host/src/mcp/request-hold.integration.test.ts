@@ -67,6 +67,9 @@ async function setup(
       },
     },
     continuations,
+    onError: (error) => {
+      throw error;
+    },
     onStopped: () => {
       stopped.resolve();
       controller.abort(new Error("Run stopped"));

@@ -158,6 +158,7 @@ function fixture() {
       store: { ...options.store, stopHeldRun },
       continuations: { outcome },
       onStopped: vi.fn(),
+      onError: vi.fn(),
     }),
   };
   return {
@@ -392,6 +393,58 @@ describe("Opensteer MCP spine", () => {
         expect(wait.mock.calls[0]?.[0].limitMs).toBe(requestHoldLimitMs);
       } finally {
         await client.close();
+        await f.service.close();
+      }
+    },
+  );
+
+  it.each(["initialize", "detached"])(
+    "lets go of a response that ends while its %s session is being made",
+    async (kind) => {
+      const f = await httpFixture();
+      const resolver = Promise.withResolvers<boolean>();
+      f.options.longRequestHold.mockImplementationOnce(() => resolver.promise);
+      const handle = vi.spyOn(f.service, "handle");
+      const client = new AbortController();
+      const call = fetch(f.url, {
+        method: "POST",
+        signal: client.signal,
+        headers: {
+          authorization: "Bearer run",
+          accept: "application/json, text/event-stream",
+          "content-type": "application/json",
+          "mcp-protocol-version": "2025-11-25",
+          ...(kind === "detached" ? { "mcp-session-id": "held-by-an-earlier-host" } : {}),
+        },
+        body: JSON.stringify(
+          kind === "detached"
+            ? { jsonrpc: "2.0", id: 1, method: "tools/list" }
+            : {
+                jsonrpc: "2.0",
+                id: 1,
+                method: "initialize",
+                params: {
+                  protocolVersion: "2025-11-25",
+                  capabilities: {},
+                  clientInfo: { name: "gone", version: "1" },
+                },
+              },
+        ),
+      }).catch(() => undefined);
+      try {
+        await vi.waitFor(() => expect(f.options.longRequestHold).toHaveBeenCalled());
+        const response = handle.mock.calls[0]![1];
+        const closed = new Promise((resolve) => response.once("close", resolve));
+        client.abort();
+        await withTimeout(closed, 1000, {
+          timeoutError: () => new Error("The disconnect never reached the Host"),
+        });
+        resolver.resolve(false);
+        await withTimeout(handle.mock.results[0]!.value as Promise<void>, 1000, {
+          timeoutError: () => new Error("The Host kept waiting on a response that had ended"),
+        });
+        await call;
+      } finally {
         await f.service.close();
       }
     },

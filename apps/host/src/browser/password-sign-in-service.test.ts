@@ -598,6 +598,7 @@ describe("human Passwords settlement", () => {
         },
         continuations,
         onStopped: vi.fn(),
+        onError: vi.fn(),
       });
       let returned = false;
       const call = hold

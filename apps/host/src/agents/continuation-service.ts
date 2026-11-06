@@ -101,6 +101,8 @@ export class ContinuationService {
     readonly loginRef?: string;
     readonly publicCard?: { readonly brand: string; readonly lastFour: string };
   } | null> {
+    // A settled row proves its publication flag is already set, so the flag read next is current.
+    if (request.status === "pending") return null;
     let loginRef: string | undefined;
     let publicCard: { readonly brand: string; readonly lastFour: string } | undefined;
     if (request.payload.kind === "browser.password-sign-in") {
@@ -110,7 +112,6 @@ export class ContinuationService {
       publicCard = state.publicCard;
       request = (await this.#requests.get(request.id)) ?? request;
     }
-    if (request.status === "pending") return null;
     const text =
       request.status === "withdrawn" ||
       (request.status === "cancelled" &&

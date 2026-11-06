@@ -31,6 +31,7 @@ function fixture() {
     return { commandId: null, events: [], revokedGrants: [] };
   });
   const onStopped = vi.fn();
+  const onError = vi.fn();
   const hold = new RequestHold({
     store: {
       requests: { holdSnapshot, markToolDelivered, personSteerCount: async () => 0 },
@@ -38,6 +39,7 @@ function fixture() {
     },
     continuations: { outcome },
     onStopped,
+    onError,
   });
   const input = {
     caller: { claims: { runId: createId("run") } } as RunCaller,
@@ -61,6 +63,7 @@ function fixture() {
     markToolDelivered,
     holdSnapshot,
     stopHeldRun,
+    onError,
     controller,
   };
 }
@@ -166,10 +169,33 @@ describe("Request hold", () => {
     expect(f.markToolDelivered).not.toHaveBeenCalled();
   });
 
-  it("leaves delivery untouched when rendering fails", async () => {
+  it("keeps the Run held through a failed read, and stops it at the limit", async () => {
     const f = fixture();
+    f.input.admittedAt = Date.now() - f.input.limitMs + 20;
     f.outcome.mockRejectedValue(new Error("render failed"));
-    await expect(f.hold.wait(f.input)).rejects.toThrow("render failed");
+    await expect(f.hold.wait(f.input)).rejects.toThrow("stopped");
+    expect(f.stopHeldRun).toHaveBeenCalledWith(f.input.caller.claims, "limit");
     expect(f.markToolDelivered).not.toHaveBeenCalled();
+    expect(f.onError).toHaveBeenCalledOnce();
+  });
+
+  it("recovers from a failed read and still returns the answer", async () => {
+    const f = fixture();
+    Object.assign(f.snapshot.request, { status: "declined" });
+    f.holdSnapshot.mockRejectedValueOnce(new Error("connection lost"));
+    await expect(f.hold.wait(f.input)).resolves.toMatchObject({ text: expect.any(String) });
+    expect(f.stopHeldRun).not.toHaveBeenCalled();
+    expect(f.markToolDelivered).toHaveBeenCalledOnce();
+  });
+
+  it("drops a pending result's instructions from the settled record", async () => {
+    const f = fixture();
+    Object.assign(f.snapshot.request, { status: "declined" });
+    const held = await f.hold.wait({
+      ...f.input,
+      result: { ...f.input.result, guidance: "Wait for it", nextAction: "Ask again" },
+    });
+    expect(held?.record).not.toHaveProperty("guidance");
+    expect(held?.record).not.toHaveProperty("nextAction");
   });
 });

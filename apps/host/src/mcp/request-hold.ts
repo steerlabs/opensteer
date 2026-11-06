@@ -19,6 +19,7 @@ interface RequestHoldOptions {
   readonly onStopped: (
     stop: NonNullable<Awaited<ReturnType<OpensteerStore["stopHeldRun"]>>>,
   ) => void;
+  readonly onError: (error: unknown) => void;
 }
 
 export class RequestHold {
@@ -46,60 +47,62 @@ export class RequestHold {
     if (!id.success) return null;
     const { claims } = input.caller;
     const deadline = input.admittedAt + input.limitMs;
+    const executionEnded = ended();
+    const pastDeadline = new Error("Request hold deadline reached");
     let stopped = false;
     let admitted = false;
-    const deadlineError = new Error("Request hold deadline reached");
+    let reported = false;
     const stopRun = async (reason: "limit" | "queued-input") => {
       const stop = await this.options.store.stopHeldRun(claims, reason);
-      if (!stop) throw ended();
+      if (!stop) throw executionEnded;
       stopped = true;
       this.options.onStopped(stop);
     };
     for (;;) {
       input.signal.throwIfAborted();
-      const snapshot = await this.options.store.requests.holdSnapshot(
-        id.data,
-        claims.runId,
-        input.steersAtAdmission,
-      );
-      if (!snapshot) return null;
-      if (["completed", "failed", "interrupted"].includes(snapshot.run.status)) throw ended();
-      if (!stopped && (snapshot.run.phase !== "turn" || snapshot.run.voiceSessionId !== null))
-        return admitted ? { record: input.result } : null;
-      admitted = true;
-      if (!stopped && (snapshot.queued || Date.now() >= deadline)) {
-        await stopRun(snapshot.queued ? "queued-input" : "limit");
+      try {
+        const snapshot = await this.options.store.requests.holdSnapshot(
+          id.data,
+          claims.runId,
+          input.steersAtAdmission,
+        );
+        if (!snapshot) return null;
+        if (["completed", "failed", "interrupted"].includes(snapshot.run.status))
+          throw executionEnded;
+        if (!stopped) {
+          if (snapshot.run.phase !== "turn" || snapshot.run.voiceSessionId !== null)
+            return admitted ? { record: input.result } : null;
+          admitted = true;
+          if (snapshot.queued) {
+            await stopRun("queued-input");
+          } else if (Date.now() < deadline) {
+            const outcome = await withTimeout(
+              this.options.continuations.outcome(snapshot.request),
+              deadline - Date.now(),
+              { signal: input.signal, timeoutError: () => pastDeadline },
+            );
+            if (outcome) {
+              const record = outcomeRecord(input.tool, input.result, outcome);
+              input.signal.throwIfAborted();
+              const delivery = await this.options.store.requests.markToolDelivered(id.data, claims);
+              if (delivery === "refused") throw executionEnded;
+              return { record, text: outcome.text };
+            }
+            if (snapshot.steered) return { record: input.result };
+          }
+        }
+        if (!stopped && Date.now() >= deadline) await stopRun("limit");
+      } catch (error) {
+        if (error === executionEnded || input.signal.aborted) throw error;
+        if (error === pastDeadline) continue;
+        // The Request is open, so a failed read must not hand a live Run back its turn.
+        if (!reported) {
+          reported = true;
+          this.options.onError(error);
+        }
       }
-      if (!stopped) {
-        let outcome: Awaited<ReturnType<ContinuationService["outcome"]>>;
-        try {
-          outcome = await withTimeout(
-            this.options.continuations.outcome(snapshot.request),
-            Math.max(0, deadline - Date.now()),
-            {
-              signal: input.signal,
-              timeoutError: () => deadlineError,
-            },
-          );
-        } catch (error) {
-          if (error !== deadlineError) throw error;
-          await stopRun("limit");
-          continue;
-        }
-        if (Date.now() >= deadline) {
-          await stopRun("limit");
-          continue;
-        }
-        if (outcome) {
-          const record = outcomeRecord(input.tool, input.result, outcome);
-          input.signal.throwIfAborted();
-          const delivery = await this.options.store.requests.markToolDelivered(id.data, claims);
-          if (delivery === "refused") throw ended();
-          return { record, text: outcome.text };
-        }
-        if (snapshot.steered) return { record: input.result };
-      }
-      await delay(stopped ? 500 : Math.min(500, Math.max(0, deadline - Date.now())), input.signal);
+      const remaining = deadline - Date.now();
+      await delay(stopped || remaining <= 0 ? 500 : Math.min(500, remaining), input.signal);
     }
   }
 }
@@ -148,5 +151,8 @@ function outcomeRecord(
       return { status: "unavailable", site, reason: response.outcome };
     return { status: request.status === "declined" ? "declined" : "resolved", site };
   }
-  return { ...pending, status: request.status };
+  const record: Record<string, unknown> = { ...pending, status: request.status };
+  delete record.guidance;
+  delete record.nextAction;
+  return record;
 }

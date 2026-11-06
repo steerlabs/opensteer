@@ -140,6 +140,7 @@ export class OpensteerMcpService {
     const disconnected = new AbortController();
     const onClose = () => disconnected.abort(new Error("MCP client disconnected"));
     response.once("close", onClose);
+    const ended = responseEnded(response);
     // The SDK hands this to each tool call as its `authInfo`.
     (request as IncomingMessage & { auth?: AuthInfo }).auth = {
       clientId: authorization.key,
@@ -162,7 +163,7 @@ export class OpensteerMcpService {
         existing.kind !== authorization.kind ||
         existing.origin !== origin.origin
       ) {
-        await this.#serveDetached(request, response, body, {
+        await this.#serveDetached(request, response, body, ended, {
           ...authorization,
           origin,
           token,
@@ -191,7 +192,7 @@ export class OpensteerMcpService {
       }
     }
 
-    const completed = responseLifetime(session, response);
+    const completed = responseLifetime(session, response, ended);
     try {
       await session.transport.handleRequest(request, response, body);
       await completed;
@@ -237,6 +238,7 @@ export class OpensteerMcpService {
     request: IncomingMessage,
     response: ServerResponse,
     body: unknown,
+    ended: Promise<void>,
     input: AgentCaller & {
       readonly token: string;
       readonly origin: URL;
@@ -262,7 +264,7 @@ export class OpensteerMcpService {
     } finally {
       this.#release(input.key);
     }
-    const completed = responseLifetime(session, response);
+    const completed = responseLifetime(session, response, ended);
     try {
       await session.transport.handleRequest(request, response, body);
       await completed;
@@ -592,19 +594,27 @@ export class OpensteerMcpService {
   }
 }
 
-function responseLifetime(session: McpSession, response: ServerResponse): Promise<void> {
-  session.responses.add(response);
+function responseEnded(response: ServerResponse): Promise<void> {
   return new Promise((resolve) => {
     const ended = () => {
       response.off("finish", ended);
       response.off("close", ended);
-      session.responses.delete(response);
-      session.lastSeenAt = Date.now();
       resolve();
     };
     response.once("finish", ended);
     response.once("close", ended);
   });
+}
+
+async function responseLifetime(
+  session: McpSession,
+  response: ServerResponse,
+  ended: Promise<void>,
+): Promise<void> {
+  session.responses.add(response);
+  await ended;
+  session.responses.delete(response);
+  session.lastSeenAt = Date.now();
 }
 
 function assertRequestOrigin(request: IncomingMessage, allowed: URL): void {

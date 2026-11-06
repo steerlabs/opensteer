@@ -1,10 +1,17 @@
-import { createId, RunnerIdSchema, type AgentEvent, type Request } from "@opensteer/core";
+import {
+  createId,
+  normalizeToolOutput,
+  RunnerIdSchema,
+  type AgentEvent,
+  type Request,
+} from "@opensteer/core";
 import type { PasswordSignInRequestResponse } from "@opensteer/protocol";
 import type { DesktopPasswordsStatus } from "@opensteer/protocol/desktop";
 import { describe, expect, it } from "vitest";
 import {
   browserSignInStep,
   passwordsOfferLine,
+  readBrowserSignInResult,
   passwordsOfferNeedHere,
   passwordSignInAccountList,
   passwordSignInConsent,
@@ -43,6 +50,18 @@ import { foldTranscriptEvent } from "./transcript.js";
 
 const site = "https://example.com";
 const runnerId = RunnerIdSchema.parse("rnr_11111111-1111-4111-8111-111111111111");
+
+it("reads a held sign-in result with its outcome prose after it", () => {
+  const requestId = createId("request");
+  const { text } = normalizeToolOutput({
+    content: [
+      { type: "text", text: JSON.stringify({ requestId, status: "declined" }) },
+      { type: "text", text: "The person declined this sign-in." },
+    ],
+  });
+  expect(readBrowserSignInResult(text)).toEqual({ requestId, status: "declined" });
+  expect(readBrowserSignInResult("The person declined this sign-in.")).toBeNull();
+});
 
 describe("passwordSignInOutcome", () => {
   const cases: readonly [PasswordSignInRequestResponse, string, boolean][] = [

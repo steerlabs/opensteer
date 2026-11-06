@@ -2338,6 +2338,7 @@ export async function createHostRuntime(
           for (const event of stopped.events) publishWorkspaceEvent(event);
           wakeExecutionCoordinator();
         },
+        onError: (error) => app.log.error({ err: error }, "A Request hold could not read"),
       }),
       longRequestHold: async (caller) => {
         const run = await database
