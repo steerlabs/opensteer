@@ -4645,6 +4645,11 @@ export class MockHostClient implements HostClient {
 
   async loadEarlierDoneTasks(_workspaceId?: string): Promise<void> {}
 
+  /** Moves a task to Done as the Host's quiet pass would, so the preview can show it. */
+  moveQuietly(threadId: string): void {
+    this.#state.moveQuietly(threadId);
+  }
+
   async setQuietTaskDays(days: QuietTaskDays): Promise<void> {
     const result = unwrapRpcResult(
       await this.rpc["commands.dispatch"]({
@@ -4655,7 +4660,6 @@ export class MockHostClient implements HostClient {
     );
     if (result.type !== "viewer.quietTasks.update") throw new Error("Setting command mismatch.");
   }
-
 
   async setWorkspaceNotificationMute(workspaceId: string, muted: boolean): Promise<void> {
     await this.dispatch({
@@ -5644,6 +5648,16 @@ class MockHostState {
     };
     this.applyThreadReadStates([state]);
     return state;
+  }
+
+  /** The preview's stand-in for the Host's hourly pass over quiet tasks. */
+  moveQuietly(threadId: string): void {
+    const thread = this.snapshot.threads.find(({ id }) => id === threadId);
+    if (!thread || thread.doneAt !== null || !this.snapshot.quietTasksAvailable) return;
+    this.publishThreadName(
+      { ...thread, doneAt: this.now().toISOString(), doneReason: "quiet" },
+      {},
+    );
   }
 
   async setTaskDone(threadId: string, done: boolean): Promise<ThreadSummary> {
@@ -10146,14 +10160,14 @@ class MockHostState {
     if (!body && !input.content?.some((part) => part.type !== "text"))
       throw new Error("Message body is required.");
 
-    const thread = this.snapshot.threads.find((item) => item.id === input.threadId);
+    let thread = this.snapshot.threads.find((item) => item.id === input.threadId);
     if (!thread) throw new Error("Thread not found.");
 
     // As the Host does, a person's message reopens a Done task.
     if (thread.doneAt !== null) {
       if (!this.snapshot.quietTasksAvailable)
         throw mockConflict("This task is Done. Reopen it first.");
-      await this.setTaskDone(thread.id, false);
+      thread = await this.setTaskDone(thread.id, false);
     }
 
     const quoted = input.quotedMessageId

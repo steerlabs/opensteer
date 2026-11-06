@@ -6,6 +6,7 @@ import { PlaceMenuPlaces } from "../../places/place-menu.js";
 import { DesktopUpdatesRow } from "./desktop-updates.js";
 import { RemoteDesktopUpdateSection } from "./remote-desktop-update.js";
 import { useEffect, useState } from "react";
+import { QuietTaskDaysSchema, type QuietTaskDays } from "@opensteer/core";
 import {
   requestNotificationPermission,
   resolveNotificationAvailability,
@@ -17,7 +18,9 @@ import { settingsPlace } from "../copy.js";
 import { useHomeComputer } from "./devices.js";
 import {
   SectionHeader,
+  SettingsError,
   SettingsRow,
+  SettingsSegmented,
   SettingsSwitch,
   StatusChip,
   type SettingsView,
@@ -61,6 +64,7 @@ export function GeneralSection({ view }: { readonly view: SettingsView }) {
         <DesktopUpdatesRow />
         <SearchSuggestionsRow />
       </div>
+      <QuietTasksSection />
       <RemoteDesktopUpdateSection view={view} />
       <h2>About</h2>
       <div className="card">
@@ -239,5 +243,51 @@ function SearchSuggestionsRow() {
         />
       }
     />
+  );
+}
+
+const quietTaskChoices = [
+  { value: "0", label: "Off" },
+  { value: "1", label: "1 day" },
+  { value: "3", label: "3 days" },
+  { value: "7", label: "1 week" },
+] as const;
+
+/** When the Host moves this person's untouched tasks to Done, for every device they use. */
+function QuietTasksSection() {
+  const { hostClient, snapshot } = useShell();
+  const [pending, setPending] = useState<QuietTaskDays | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  if (!snapshot.quietTasksAvailable || snapshot.quietTaskDays === null) return null;
+  const choose = (value: string) => {
+    const days = QuietTaskDaysSchema.parse(Number(value));
+    setPending(days);
+    setError(null);
+    void hostClient
+      .setQuietTaskDays(days)
+      .catch((cause: unknown) => setError(actionErrorMessage(cause)))
+      .finally(() => setPending(null));
+  };
+  return (
+    <>
+      <h2>Tasks</h2>
+      <div className="card">
+        <SettingsRow
+          action={
+            <SettingsSegmented
+              label="Move quiet tasks to Done"
+              onChange={choose}
+              options={quietTaskChoices}
+              value={String(pending ?? snapshot.quietTaskDays)}
+            />
+          }
+          className="card__row--choice"
+          detail="Finished tasks you've read, with nothing waiting on you"
+          icon="check-circle"
+          title="Move quiet tasks to Done"
+        />
+      </div>
+      <SettingsError message={error} />
+    </>
   );
 }

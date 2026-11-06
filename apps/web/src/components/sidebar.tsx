@@ -29,8 +29,12 @@ import {
   browserTabStrip,
   browserSiteLabel,
   describeHostConnection,
+  doneDays,
+  doneTaskList,
   groupTasksByProject,
   listedRowThreadId,
+  quietlyMoved,
+  quietSeenScope,
   requestsWaitingOn,
   taskRowLabel,
   type HostClient,
@@ -93,6 +97,7 @@ import { useTabCloser } from "./workspace/tab-closer.js";
 import { TabGroupHeader, tabGroupStyle } from "./workspace/tab-group.js";
 import { NativeTabMenu, TabMenu, nativeTabMenuOffered } from "./workspace/tab-menu.js";
 import { RowMotion } from "./workspace/row-motion.js";
+import { DoneLine, useQuietSeen } from "./workspace/done-line.js";
 import { fullHeightOf, SideSplit, useTasksShare } from "./workspace/side-split.js";
 import { SidebarSearch, type SidebarSearchSources } from "./sidebar-search.js";
 import {
@@ -116,8 +121,6 @@ import {
   folderRowLimit,
   useClosedProjects,
 } from "./sidebar-projects.js";
-
-const doneOpenKey = "opensteer.sidebar-done-open";
 
 export interface SidebarProps {
   collapsed: boolean;
@@ -262,18 +265,23 @@ export function Sidebar({
     : null;
   const tasksList = useRef<HTMLUListElement | null>(null);
   const doneShelf = useRef<HTMLLIElement | null>(null);
-  const [doneOpen, setDoneOpen] = useState(() => localStorage.getItem(doneOpenKey) === "true");
-  const toggleDone = () => {
-    const next = !doneOpen;
-    setDoneOpen(next);
-    try {
-      localStorage.setItem(doneOpenKey, String(next));
-    } catch {
-      // A preference that did not save costs one press next time.
-    }
+  // Done takes the place of Tasks while it is open; Tabs below never move.
+  const [doneView, setDoneView] = useState(false);
+  const quietTasks = directory.snapshot.quietTasksAvailable === true;
+  useEffect(() => {
+    if (quietTasks) void hostClient.loadDoneTasks().catch(() => undefined);
+  }, [hostClient, quietTasks, userId]);
+  const doneList = useMemo(() => doneTaskList(directory.snapshot), [directory.snapshot]);
+  const doneRows = doneList?.rows ?? mainTasks.done;
+  const doneCount = doneList?.total ?? mainTasks.done.length;
+  const [quietSeen, markQuietSeen] = useQuietSeen(quietSeenScope(directory.snapshot));
+  const moved = useMemo(() => quietlyMoved(doneList, quietSeen, Date.now()), [doneList, quietSeen]);
+  const openDone = () => {
+    setDoneView(true);
+    markQuietSeen(moved);
   };
   const [loadingEarlier, setLoadingEarlier] = useState(false);
-  const doneActive = !doneOpen && mainTasks.done.some((row) => row.threadId === openRowThreadId);
+  const doneActive = !doneView && doneRows.some((row) => row.threadId === openRowThreadId);
   useEffect(() => {
     if (doneActive && doneShelf.current) revealInList(doneShelf.current);
   }, [doneActive, openRowThreadId]);
@@ -431,7 +439,7 @@ export function Sidebar({
   const loadEarlier = () => {
     if (loadingEarlier) return;
     setLoadingEarlier(true);
-    void onLoadEarlierTasks()
+    void (doneView ? hostClient.loadEarlierDoneTasks() : onLoadEarlierTasks())
       .catch(() => undefined)
       .finally(() => setLoadingEarlier(false));
   };
@@ -451,7 +459,8 @@ export function Sidebar({
   const classes = ["sidebar"];
   if (mobileOpen) classes.push("sidebar--open");
   const rows = [...mainTasks.working, ...mainTasks.ready];
-  const shownDone = doneOpen ? mainTasks.done : [];
+  const days = doneView ? doneDays(doneRows, Date.now()) : [];
+  const doneMore = doneList?.hasMore ?? list.hasMore;
   // A draft whose project is gone stays reachable, among Main's.
   const projectIds = new Set(grouping.folders.map((folder) => folder.workspace.id));
   const inProject = (draft: TaskDraftRow) =>
@@ -474,22 +483,27 @@ export function Sidebar({
           folder.rows.some((row) => row.threadId === openRowThreadId)),
     };
   });
-  const rowKeys = [
-    ...mainDrafts.map((draft) => `draft:${draft.draftId}`),
-    ...rows.map((row) => row.threadId),
-    ...(mainTasks.done.length ? ["done-shelf"] : []),
-    ...shownDone.map((row) => row.threadId),
-    ...(list.hasMore ? ["show-more"] : []),
-    ...(folders.length > 0 ? ["projects-head"] : []),
-    ...folders.flatMap(({ folder, folderDrafts, open, shown, more }) => [
-      `folder:${folder.workspace.id}`,
-      ...(open && folder.chat ? [folder.chat.threadId] : []),
-      ...(open ? folderDrafts.map((draft) => `draft:${draft.draftId}`) : []),
-      ...shown.map((row) => row.threadId),
-      ...(more > 0 ? [`more:${folder.workspace.id}`] : []),
-    ]),
-  ];
-  const hasTasksSection = rowKeys.length > 0;
+  const doneLine = doneCount > 0 || moved.length > 0;
+  const rowKeys = doneView
+    ? [
+        ...days.flatMap((day) => [`day:${day.id}`, ...day.rows.map((row) => row.threadId)]),
+        ...(doneMore ? ["show-more"] : []),
+      ]
+    : [
+        ...mainDrafts.map((draft) => `draft:${draft.draftId}`),
+        ...rows.map((row) => row.threadId),
+        ...(list.hasMore ? ["show-more"] : []),
+        ...(doneLine ? ["done-shelf"] : []),
+        ...(folders.length > 0 ? ["projects-head"] : []),
+        ...folders.flatMap(({ folder, folderDrafts, open, shown, more }) => [
+          `folder:${folder.workspace.id}`,
+          ...(open && folder.chat ? [folder.chat.threadId] : []),
+          ...(open ? folderDrafts.map((draft) => `draft:${draft.draftId}`) : []),
+          ...shown.map((row) => row.threadId),
+          ...(more > 0 ? [`more:${folder.workspace.id}`] : []),
+        ]),
+      ];
+  const hasTasksSection = doneView || rowKeys.length > 0;
   const taskRow = (row: TaskRow, nested = false) => (
     <TaskRowItem
       hostClient={hostClient}
@@ -659,158 +673,209 @@ export function Sidebar({
           <section
             aria-labelledby="sidebar-tasks"
             className="side-section side-section--tasks"
+            onKeyDown={(event) => {
+              if (doneView && event.key === "Escape" && !event.defaultPrevented) setDoneView(false);
+            }}
             style={sectionFloor(rowKeys.length)}
           >
-            <div className="side-head">
-              <h2 className="side-head__title" id="sidebar-tasks">
-                Tasks
-              </h2>
-              {needsYou.length > 0 ? (
+            {doneView ? (
+              <div className="side-head side-head--done">
                 <button
-                  aria-label={`${needsYou.length} ${needsYou.length === 1 ? "task needs" : "tasks need"} you. Open the first`}
-                  className="side-needs"
-                  onClick={openNeedsYou}
-                  title="Open the first task that needs you"
+                  aria-label="Back to Tasks"
+                  className="icon-btn icon-btn--small side-head__back"
+                  onClick={() => setDoneView(false)}
+                  title="Back to Tasks · Esc"
                   type="button"
                 >
-                  <span aria-hidden className="side-needs__bang">
-                    !
-                  </span>
-                  <span aria-hidden>{needsYou.length}</span>
+                  <Icon name="chevron-left" />
                 </button>
-              ) : null}
-              <button
-                aria-label="New task"
-                className="icon-btn icon-btn--small side-head__action"
-                onClick={newTask}
-                title="New task · ⌘N"
-                type="button"
-              >
-                <Icon name="plus" />
-              </button>
-            </div>
+                <h2 className="side-head__title" id="sidebar-tasks">
+                  Done
+                </h2>
+                <span className="side-head__count">{doneCount}</span>
+              </div>
+            ) : (
+              <div className="side-head">
+                <h2 className="side-head__title" id="sidebar-tasks">
+                  Tasks
+                </h2>
+                {needsYou.length > 0 ? (
+                  <button
+                    aria-label={`${needsYou.length} ${needsYou.length === 1 ? "task needs" : "tasks need"} you. Open the first`}
+                    className="side-needs"
+                    onClick={openNeedsYou}
+                    title="Open the first task that needs you"
+                    type="button"
+                  >
+                    <span aria-hidden className="side-needs__bang">
+                      !
+                    </span>
+                    <span aria-hidden>{needsYou.length}</span>
+                  </button>
+                ) : null}
+                <button
+                  aria-label="New task"
+                  className="icon-btn icon-btn--small side-head__action"
+                  onClick={newTask}
+                  title="New task · ⌘N"
+                  type="button"
+                >
+                  <Icon name="plus" />
+                </button>
+              </div>
+            )}
             <SideList labelledBy="sidebar-tasks" listRef={tasksList} whole>
               <RowMotion snap={false} list={tasksList} signature={rowKeys.join(",")} lifted={false}>
-                {/* One keyed run, so a row moving between Ready and Done keeps its
-                    element and focus, and slides to its new place. */}
-                {[
-                  ...mainDrafts.map((draft) => draftRow(draft)),
-                  ...rows.map((row) => taskRow(row)),
-                  ...(mainTasks.done.length > 0
-                    ? [
+                {/* One keyed run, so a row that moves keeps its element and focus,
+                    and slides to its new place. */}
+                {doneView
+                  ? [
+                      ...days.flatMap((day) => [
                         <li
-                          className={`side-task side-done${doneActive ? " is-filled" : ""}`}
-                          data-motion-key="done-shelf"
-                          key="done-shelf"
-                          ref={doneShelf}
+                          className="side-day"
+                          data-motion-key={`day:${day.id}`}
+                          key={`day:${day.id}`}
                         >
-                          <button
-                            aria-current={doneActive ? "true" : undefined}
-                            aria-expanded={doneOpen}
-                            aria-label={`Done, ${mainTasks.done.length} ${mainTasks.done.length === 1 ? "task" : "tasks"}`}
-                            className="side-task__main side-done__main"
-                            onClick={toggleDone}
-                            type="button"
-                          >
-                            <Icon name={doneOpen ? "chevron-down" : "chevron-right"} />
-                            <span>Done</span>
-                            <span className="side-done__count">{mainTasks.done.length}</span>
-                          </button>
+                          <h3 className="side-day__title">{day.title}</h3>
                         </li>,
-                      ]
-                    : []),
-                  ...shownDone.map((row) => taskRow(row)),
-                  ...(list.hasMore
-                    ? [
-                        <li data-motion-key="show-more" key="show-more">
-                          <button
-                            className="sidebar__more"
-                            disabled={loadingEarlier}
-                            onClick={loadEarlier}
-                            type="button"
-                          >
-                            {loadingEarlier ? "Loading…" : "Show more"}
-                          </button>
-                        </li>,
-                      ]
-                    : []),
-                  ...(folders.length > 0
-                    ? [
-                        <li
-                          className="side-subhead"
-                          data-motion-key="projects-head"
-                          key="projects-head"
-                        >
-                          <h3 className="side-subhead__title">
-                            <Link
-                              className="side-subhead__link"
-                              onClick={(event) => {
-                                onCloseMobile();
-                                openConversationRow(event, nav, "/projects");
-                              }}
-                              title="All projects"
-                              to={nav.conversationHref("/projects")}
+                        ...day.rows.map((row) => taskRow(row)),
+                      ]),
+                      ...(days.length === 0
+                        ? [
+                            <li
+                              className="sidebar__empty"
+                              data-motion-key="done-empty"
+                              key="done-empty"
                             >
-                              Projects
-                            </Link>
-                          </h3>
-                          <button
-                            aria-label="New project"
-                            className="icon-btn icon-btn--small side-head__action"
-                            onClick={() => {
-                              onCloseMobile();
-                              onNewProject();
-                            }}
-                            title="New project"
-                            type="button"
-                          >
-                            <Icon name="plus" />
-                          </button>
-                        </li>,
-                      ]
-                    : []),
-                  ...folders.flatMap(
-                    ({ folder, folderDrafts, open, shown, more, hidden, holdsOpenRow }) => [
-                      <ProjectFolderHeader
-                        current={openProjectId === folder.workspace.id}
-                        folder={folder}
-                        hiddenCount={hidden}
-                        holdsOpenRow={holdsOpenRow}
-                        key={`folder:${folder.workspace.id}`}
-                        nav={nav}
-                        onNavigate={onCloseMobile}
-                        onToggle={toggleProject}
-                        open={open}
-                      />,
-                      ...(open && folder.chat
+                              Nothing in Done yet.
+                            </li>,
+                          ]
+                        : []),
+                      ...(doneMore
                         ? [
-                            <ProjectChatRow
-                              key={folder.chat.threadId}
-                              nav={nav}
-                              onNavigate={onCloseMobile}
-                              open={folder.chat.threadId === openRowThreadId}
-                              row={folder.chat}
-                              unsent={drafts.replies.has(folder.chat.threadId)}
-                              work={workspace.work}
+                            <li data-motion-key="show-more" key="show-more">
+                              <button
+                                className="sidebar__more"
+                                disabled={loadingEarlier}
+                                onClick={loadEarlier}
+                                type="button"
+                              >
+                                {loadingEarlier ? "Loading…" : "Show more"}
+                              </button>
+                            </li>,
+                          ]
+                        : []),
+                    ]
+                  : [
+                      ...mainDrafts.map((draft) => draftRow(draft)),
+                      ...rows.map((row) => taskRow(row)),
+                      ...(list.hasMore
+                        ? [
+                            <li data-motion-key="show-more" key="show-more">
+                              <button
+                                className="sidebar__more"
+                                disabled={loadingEarlier}
+                                onClick={loadEarlier}
+                                type="button"
+                              >
+                                {loadingEarlier ? "Loading…" : "Show more"}
+                              </button>
+                            </li>,
+                          ]
+                        : []),
+                      ...(doneLine
+                        ? [
+                            <DoneLine
+                              active={doneActive}
+                              count={doneCount}
+                              hostClient={hostClient}
+                              key="done-shelf"
+                              lineRef={doneShelf}
+                              moved={moved}
+                              onOpen={openDone}
+                              onOpenTask={openTask}
+                              onSeen={markQuietSeen}
+                              quietTaskDays={directory.snapshot.quietTaskDays}
                             />,
                           ]
                         : []),
-                      ...(open ? folderDrafts.map((draft) => draftRow(draft, true)) : []),
-                      ...shown.map((row) => taskRow(row, true)),
-                      ...(more > 0
+                      ...(folders.length > 0
                         ? [
-                            <FolderMoreRow
-                              count={more}
-                              key={`more:${folder.workspace.id}`}
-                              nav={nav}
-                              onNavigate={onCloseMobile}
-                              workspaceId={folder.workspace.id}
-                            />,
+                            <li
+                              className="side-subhead"
+                              data-motion-key="projects-head"
+                              key="projects-head"
+                            >
+                              <h3 className="side-subhead__title">
+                                <Link
+                                  className="side-subhead__link"
+                                  onClick={(event) => {
+                                    onCloseMobile();
+                                    openConversationRow(event, nav, "/projects");
+                                  }}
+                                  title="All projects"
+                                  to={nav.conversationHref("/projects")}
+                                >
+                                  Projects
+                                </Link>
+                              </h3>
+                              <button
+                                aria-label="New project"
+                                className="icon-btn icon-btn--small side-head__action"
+                                onClick={() => {
+                                  onCloseMobile();
+                                  onNewProject();
+                                }}
+                                title="New project"
+                                type="button"
+                              >
+                                <Icon name="plus" />
+                              </button>
+                            </li>,
                           ]
                         : []),
-                    ],
-                  ),
-                ]}
+                      ...folders.flatMap(
+                        ({ folder, folderDrafts, open, shown, more, hidden, holdsOpenRow }) => [
+                          <ProjectFolderHeader
+                            current={openProjectId === folder.workspace.id}
+                            folder={folder}
+                            hiddenCount={hidden}
+                            holdsOpenRow={holdsOpenRow}
+                            key={`folder:${folder.workspace.id}`}
+                            nav={nav}
+                            onNavigate={onCloseMobile}
+                            onToggle={toggleProject}
+                            open={open}
+                          />,
+                          ...(open && folder.chat
+                            ? [
+                                <ProjectChatRow
+                                  key={folder.chat.threadId}
+                                  nav={nav}
+                                  onNavigate={onCloseMobile}
+                                  open={folder.chat.threadId === openRowThreadId}
+                                  row={folder.chat}
+                                  unsent={drafts.replies.has(folder.chat.threadId)}
+                                  work={workspace.work}
+                                />,
+                              ]
+                            : []),
+                          ...(open ? folderDrafts.map((draft) => draftRow(draft, true)) : []),
+                          ...shown.map((row) => taskRow(row, true)),
+                          ...(more > 0
+                            ? [
+                                <FolderMoreRow
+                                  count={more}
+                                  key={`more:${folder.workspace.id}`}
+                                  nav={nav}
+                                  onNavigate={onCloseMobile}
+                                  workspaceId={folder.workspace.id}
+                                />,
+                              ]
+                            : []),
+                        ],
+                      ),
+                    ]}
               </RowMotion>
             </SideList>
           </section>
@@ -1283,7 +1348,7 @@ const TaskRowItem = memo(function TaskRowItem({
           title={needsYou ? `${row.title}\n${ask}` : row.title}
           to={nav.conversationHref(nav.threadPath(threadId))}
         >
-          <TaskMark size={20} mark={taskMark(row)} quiet={taskMarkQuiet(row, false)} />
+          <TaskMark size={20} mark={taskMark(row)} quiet={taskMarkQuiet(row, row.done)} />
           <span className="side-task__text">
             <span className="side-task__title">{row.title}</span>
             {needsYou ? <span className="side-task__ask">{ask}</span> : null}

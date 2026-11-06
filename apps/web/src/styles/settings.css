@@ -1344,3 +1344,27 @@ html.electron-shell .settings-navigation__header :is(a, button) {
     flex: none;
   }
 }
+
+/* A row whose control is a choice of several: it moves under the words when
+   they would otherwise be squeezed. */
+.card__row--choice {
+  flex-wrap: wrap;
+}
+
+.card__row--choice .card__row-body {
+  flex-basis: 200px;
+}
+
+.card__row--choice .settings-segmented > button {
+  white-space: nowrap;
+}
+
+@media (max-width: 600px) {
+  .card__row--choice .card__row-actions {
+    flex: 1 1 100%;
+  }
+
+  .card__row--choice .settings-segmented {
+    flex: 1;
+  }
+}
