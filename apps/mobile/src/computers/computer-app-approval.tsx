@@ -1,6 +1,9 @@
 import { Modal, ScrollView, StyleSheet, View } from "react-native";
 import { AppText, SecondaryButton } from "../ui/primitives.js";
-import { useComputerAppApproval as useOwnerComputerAppApproval } from "@opensteer/client/react";
+import {
+  useComputerAppApproval as useOwnerComputerAppApproval,
+  useThreadServerApprovals,
+} from "@opensteer/client/react";
 import {
   computerAppApprovalDetails,
   computerAppApprovalSecretFields,
@@ -12,7 +15,6 @@ import { useState } from "react";
 
 import { color, material, radius, space } from "../theme.js";
 import { LocalMcpSecretFields } from "./local-mcp-secret-fields.js";
-import { useThreadServerApprovals } from "./thread-server-approvals.js";
 
 export function useComputerAppApproval(hostClient: HostClient) {
   const { ask, review, error, busy, close, answer } = useOwnerComputerAppApproval(hostClient);
