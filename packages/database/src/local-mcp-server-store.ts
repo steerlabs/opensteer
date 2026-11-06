@@ -147,8 +147,9 @@ export class LocalMcpServerStore {
           waiting &&
           waiting.definitionDigest === locked.launchDigest &&
           waiting.ownerUserId === owner &&
+          // A task's generated title replaces its first line soon after it starts; a
+          // retitle must not replace an approval someone may be reviewing.
           waiting.threadId === (setup?.threadId ?? null) &&
-          waiting.threadTitle === (setup?.threadTitle ?? null) &&
           waiting.workspaceId === (setup?.workspaceId ?? null) &&
           waiting.expiresAt > now
         ) {
