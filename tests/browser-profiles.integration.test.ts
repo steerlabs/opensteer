@@ -195,7 +195,7 @@ async function profileTurn(
     }),
   });
   const result = await stack.sendMessage({
-    onQueued,
+    ...(onQueued ? { onQueued } : {}),
     threadId,
     workspaceId,
     text: `BROWSER_PROFILE_JOURNEY:${JSON.stringify(plan)}`,
@@ -324,6 +324,7 @@ async function fulfillNewProfile(
             },
             { timeout: 10_000 },
           );
+        return undefined;
       },
     );
     if (!laterWake) expect(first.report.request).toMatchObject({ requestId, status: "fulfilled" });
