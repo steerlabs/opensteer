@@ -1,3 +1,7 @@
+import { join } from "node:path";
+import { RunFiles, RunFileError, type RunFilePort } from "../attachments/run-files.js";
+import type { HostRunFileRequest } from "@opensteer/protocol";
+import { sameRunnerConnectionFence, computerAppMaxTimeoutMs } from "@opensteer/protocol";
 import { openAppTunnel } from "../apps/app-tunnel.js";
 import { fenceMismatch } from "../workspace/local-workspace-service.js";
 import type { HostAppRequest } from "@opensteer/protocol";
@@ -142,8 +146,22 @@ function computerAppModuleHandler(
   integrations: PreparedIntegrationsModule,
   logger: RunnerLogger,
   config: Pick<RunnerConfig, "hostUrl" | "controlCaPath" | "mode">,
+  port?: RunFilePort,
 ): RunnerModuleHandler {
   const handler = new ComputerAppModuleHandler({
+    ...(integrations.files
+      ? {
+          files: new RunFiles({
+            ...integrations.files,
+            ...(port ? { port } : {}),
+            transport: {
+              hostOrigin: config.hostUrl,
+              mode: config.mode,
+              ...(config.controlCaPath ? { controlCaPath: config.controlCaPath } : {}),
+            },
+          }),
+        }
+      : {}),
     ...(integrations.computerUse ? { computerUse: integrations.computerUse } : {}),
     ...(integrations.localMcp ? { localMcp: integrations.localMcp } : {}),
     logger,
@@ -204,6 +222,7 @@ export interface RunnerLogger {
  * to advertise, and no browser of its own to relay (`docs/computers.md#runner-and-desktop`).
  */
 export interface RunnerAgentsConnection {
+  readonly runFileOptions?: { readonly dataDirectory: string; readonly helperBinary: string };
   readonly earlierBootsContained?: boolean;
   /**
    * Present when this computer also relays a browser. The Personal Desktop
@@ -332,7 +351,12 @@ export class ReconnectingHostConnection {
     this.#integrationsDescriptor = options.integrationsModule?.descriptor;
     this.#computerUse = options.integrationsModule?.computerUse;
     this.#integrationsHandler = options.integrationsModule
-      ? computerAppModuleHandler(options.integrationsModule, this.#logger, this.#config)
+      ? computerAppModuleHandler(
+          options.integrationsModule,
+          this.#logger,
+          this.#config,
+          options.agents?.runtime,
+        )
       : undefined;
     this.#messagingDescriptor = options.messagingModule?.descriptor;
     this.#messagingHandler = options.messagingModule
@@ -720,6 +744,7 @@ export class ReconnectingHostConnection {
       localStorage: (await agents.localWorkspaces?.inventory()) ?? null,
       loginFill: 1,
       computerTool: 1,
+      ...(agents.runFileOptions ? { runFiles: 1 as const } : {}),
       maxConcurrentRuns: this.#config.maxConcurrentRuns,
       providerStateModes: [...agents.runtime.providerStateModes()],
       workspaceBackings: [...agents.workspaceBackings],
@@ -1207,6 +1232,7 @@ interface AgentsWorkSessionOptions {
 
 /** One connection's worth of agent work: harness catalogs, commands, storage. */
 class AgentsWorkSession implements RunnerWorkSession {
+  readonly #fileRequests = new Map<string, AbortController>();
   readonly #appRequests = new Map<string, { appId: string; controller: AbortController }>();
   readonly #options: AgentsWorkSessionOptions;
   readonly #lifetime = new AbortController();
@@ -1343,6 +1369,13 @@ class AgentsWorkSession implements RunnerWorkSession {
         );
         return;
       }
+      case "host.run-file.receive":
+      case "host.run-file.send":
+      case "host.run-file.cancel":
+        void this.#answerRunFileRequest(message).catch(() =>
+          this.#options.fail("File response failed"),
+        );
+        return;
       case "host.app.start":
       case "host.app.connect":
       case "host.app.stop":
@@ -1523,6 +1556,93 @@ class AgentsWorkSession implements RunnerWorkSession {
       .finally(() => this.#authenticationResponses.delete(response));
     this.#authenticationResponses.add(response);
     void response.catch(() => this.#options.fail("Harness authentication response failed"));
+  }
+
+  async #answerRunFileRequest(request: HostRunFileRequest): Promise<void> {
+    const { bootId, connectionGeneration, connectionId, connectionLeaseId, runnerId } = request;
+    const echo = {
+      bootId,
+      connectionGeneration,
+      connectionId,
+      connectionLeaseId,
+      runnerId,
+      type: "runner.run-file.result" as const,
+      requestId: request.requestId,
+    };
+    let controller: AbortController | undefined;
+    try {
+      if (!sameRunnerConnectionFence(request, this.#options.fence.fence))
+        throw new Error("This Runner connection has changed; retry from the current task.");
+      if (request.type === "host.run-file.cancel") {
+        const pending = this.#fileRequests.get(request.requestId);
+        if (pending) {
+          pending.abort();
+          return;
+        }
+        await this.#options.sink.send({ ...echo, ok: true, paths: [] });
+        return;
+      }
+      if (this.#fileRequests.size >= 20)
+        throw new RunFileError("File transfers are busy; retry when one finishes.");
+      if (this.#fileRequests.has(request.requestId))
+        throw new Error("A file request with this identity is already running.");
+      controller = new AbortController();
+      this.#fileRequests.set(request.requestId, controller);
+      const signal = AbortSignal.any([
+        this.#signal,
+        controller.signal,
+        AbortSignal.timeout(computerAppMaxTimeoutMs),
+      ]);
+      const config = this.#options.appTransport;
+      const fileOptions = this.#options.agents.runFileOptions;
+      if (!fileOptions) throw new Error("Update this Runner to move files.");
+      const files = new RunFiles({
+        ...fileOptions,
+        transport: {
+          hostOrigin: config.hostUrl,
+          mode: config.mode,
+          ...(config.controlCaPath ? { controlCaPath: config.controlCaPath } : {}),
+        },
+      });
+      const paths = await this.#options.agents.runtime.withRunFiles(
+        request.execution,
+        signal,
+        async (access) => {
+          const paths: string[] = [];
+          if (request.type === "host.run-file.receive") {
+            for (const transfer of request.transfers)
+              paths.push(
+                await files.install(
+                  await files.download(transfer, access.signal),
+                  join(access.directory, "exports"),
+                  access.signal,
+                ),
+              );
+          } else {
+            for (const file of request.files)
+              await files.upload(
+                file.transfer,
+                await files.source(file.path, access),
+                access.signal,
+              );
+          }
+          return paths;
+        },
+      );
+      await this.#options.sink.send({ ...echo, ok: true, paths });
+    } catch (error) {
+      await this.#options.sink.send({
+        ...echo,
+        ok: false,
+        message:
+          error instanceof RunFileError
+            ? error.message
+            : "File movement failed. Use a regular file inside this task's Workspace, smaller than 2 GiB, and retry from the current execution.",
+      });
+    } finally {
+      if (controller && this.#fileRequests.get(request.requestId) === controller)
+        this.#fileRequests.delete(request.requestId);
+    }
   }
 
   async #answerAppRequest(request: HostAppRequest): Promise<void> {
@@ -1762,6 +1882,16 @@ function reachOnlyWorkSession(sink: CausallyOrderedRunnerSink): RunnerWorkSessio
             correlationId: message.command.correlationId,
             error: { code: "forbidden", message: notRunningAgents, retryable: false },
             type: "runner.command-rejected",
+          });
+          return;
+        case "host.run-file.receive":
+        case "host.run-file.send":
+        case "host.run-file.cancel":
+          await sink.send({
+            type: "runner.run-file.result",
+            requestId: message.requestId,
+            ok: false,
+            message: notRunningAgents,
           });
           return;
         case "host.app.cancel":

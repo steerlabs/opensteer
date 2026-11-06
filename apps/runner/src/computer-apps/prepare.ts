@@ -11,6 +11,7 @@ import type { ComputerAppProvider } from "./provider.js";
 import { computerAppProviders } from "./registry.js";
 
 export interface PreparedIntegrationsModule {
+  readonly files?: { readonly dataDirectory: string; readonly helperBinary: string };
   /**
    * Present exactly when the desktop app offers this Runner computer use on
    * the Mac they share. It owns the loopback bridge, which is why it is
@@ -31,12 +32,17 @@ export function prepareIntegrationsModule(options: {
   readonly computerUseBridge?: { readonly token: string; readonly url: URL };
   /** Runner state root; obsolete local consent caches are removed at startup. */
   readonly dataDirectory: string;
+  readonly helperBinary?: string;
   readonly platform: NodeJS.Platform;
 }): PreparedIntegrationsModule | undefined {
   // The descriptor names one of three platforms, so a Runner on any other —
   // aix, freebsd, a future one — is narrowed out before the registry is asked:
   // it could only answer with providers none of them declares anyway.
   const { platform } = options;
+  rmSync(path.join(options.dataDirectory, "private", "app-files"), {
+    recursive: true,
+    force: true,
+  });
   // Only the Host's exact-launch consent remains authoritative after upgrade.
   try {
     rmSync(path.join(options.dataDirectory, "integrations", "mcp-approvals.json"), { force: true });
@@ -65,6 +71,9 @@ export function prepareIntegrationsModule(options: {
     return undefined;
   }
   return {
+    ...(options.helperBinary
+      ? { files: { dataDirectory: options.dataDirectory, helperBinary: options.helperBinary } }
+      : {}),
     close: () => computerUse?.close(),
     ...(computerUse
       ? {
@@ -90,6 +99,7 @@ export function prepareIntegrationsModule(options: {
             cardUse: 1,
           }
         : {}),
+      ...(options.helperBinary ? { appFiles: 1 as const } : {}),
       platform,
       protocolVersion: runnerIntegrationsProtocolVersion,
     },
