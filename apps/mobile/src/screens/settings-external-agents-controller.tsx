@@ -1,18 +1,18 @@
-import { externalAgentGuides, type ExternalAgentGuide } from "@opensteer/client/host";
+import {
+  arrivedConnection,
+  connectionDetail,
+  externalAgentGuides,
+  externalAgentsReach,
+  guideAddress,
+  type ExternalAgentGuide,
+} from "@opensteer/client/host";
 import { useConnectedAgents, usePersonalRemoteAccess } from "@opensteer/client/react";
 import { useNavigation } from "@react-navigation/native";
 import { useEffect, useState, type ReactNode } from "react";
 import { Alert } from "react-native";
 import { useMobileState } from "../ui/mobile-client-context.js";
 import { ExternalAgentSetupSheet } from "./external-agent-setup-sheet.js";
-import {
-  arrivedConnection,
-  connectionDetail,
-  externalAgentsFootnote,
-  externalAgentsNeedsRemote,
-  externalAgentsReach,
-  guideAddress,
-} from "./external-agents-model.js";
+import { externalAgentsFootnote, externalAgentsNeedsRemote } from "./external-agents-model.js";
 import { ExternalAgentsForm } from "./settings-external-agents-form.js";
 import { SettingsPageLayout } from "./settings-page-layout.js";
 import { useSettingsHost } from "./use-settings-host.js";

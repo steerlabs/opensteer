@@ -1,13 +1,16 @@
 import { useRef, useState } from "react";
 import { Link } from "react-router";
-import type { HostClient } from "@opensteer/client/host";
 import {
-  connectionAccessLabel,
-  connectionReachLabel,
+  arrivedConnection,
+  connectionDetail,
   externalAgentAddresses,
   externalAgentGuides,
-  type ExternalAgentAddresses,
+  externalAgentsLead,
+  externalAgentsReach,
+  guideAddress,
   type ExternalAgentGuide,
+  type ExternalAgentsReach,
+  type HostClient,
 } from "@opensteer/client/host";
 import { useConnectedAgents, usePersonalRemoteAccess } from "@opensteer/client/react";
 import type { AgentConnection } from "@opensteer/protocol";
@@ -21,11 +24,11 @@ import {
   SettingsError,
   SettingsGroup,
   SettingsRow,
-  formatWhen,
   type SettingsView,
 } from "../primitives.js";
 
 const remoteAccessPath = "/settings/account/remote-access";
+const notReading = { status: null, error: null } as const;
 
 export function ExternalAgentsSection({
   client,
@@ -39,28 +42,20 @@ export function ExternalAgentsSection({
   const identity = shell.snapshot.identityConfig;
   const personal = identity?.exposure === "loopback";
   const remote = usePersonalRemoteAccess(personal ? client : null);
-  const access = remote.status?.access ?? null;
-  const addresses =
-    identity && (!personal || access)
-      ? externalAgentAddresses({
-          identity,
-          remoteAccess: access && {
-            mode: access.mode,
-            origin: access.route?.document.route.origin ?? null,
-          },
-        })
-      : null;
+  const reach = externalAgentsReach({ identity, remote: personal ? remote : notReading });
   // A loopback address is only reachable from the computer the Host runs on.
-  const thisComputer = personal && !view.facts.remote ? (addresses?.thisComputer ?? null) : null;
+  const thisComputer =
+    identity && personal && !view.facts.remote
+      ? externalAgentAddresses({ identity, remoteAccess: null }).thisComputer
+      : null;
   const [guide, setGuide] = useState<ExternalAgentGuide | null>(null);
   const workspaces = shell.snapshot.workspaces;
   const connections = agents.connections ?? [];
+  const available = (entry: ExternalAgentGuide) =>
+    reach.kind === "ready" || (entry.providerId === null && thisComputer !== null);
   return (
     <>
-      <SectionHeader
-        title="External agents"
-        lead="Let ChatGPT, Claude and other agents use Opensteer to get things done. You approve each one."
-      />
+      <SectionHeader title="External agents" lead={externalAgentsLead} />
       {connections.length > 0 ? (
         <SettingsGroup heading="Connected" headingId="external-agents-connected">
           {connections.map((connection) => (
@@ -88,12 +83,12 @@ export function ExternalAgentsSection({
         heading="Add an agent"
         headingId="external-agents-add"
         note={
-          personal && addresses?.remote
+          reach.kind === "ready" && reach.personal
             ? "Agents reach Opensteer through Remote access while this computer is on and awake."
             : null
         }
       >
-        {personal && addresses && !addresses.remote ? (
+        {reach.kind === "needs-remote" ? (
           <SettingsRow
             icon="globe"
             title="Turn on Remote access first"
@@ -117,9 +112,7 @@ export function ExternalAgentsSection({
               <button
                 aria-label={`Add ${entry.name}`}
                 className="btn btn--small"
-                disabled={
-                  !addresses || (!addresses.remote && !(entry.id === "other" && thisComputer))
-                }
+                disabled={!available(entry)}
                 onClick={() => setGuide(entry)}
                 type="button"
               >
@@ -129,28 +122,20 @@ export function ExternalAgentsSection({
           />
         ))}
       </SettingsGroup>
-      <SettingsError message={agents.error ?? remote.error} />
-      {guide && addresses ? (
+      <SettingsError
+        message={agents.error ?? (reach.kind === "unavailable" ? reach.detail : null)}
+      />
+      {guide && available(guide) ? (
         <ExternalAgentSetup
-          addresses={addresses}
           connections={agents.connections}
           guide={guide}
           onClose={() => setGuide(null)}
-          thisComputer={thisComputer}
+          reach={reach}
+          thisComputer={guide.providerId === null ? thisComputer : null}
         />
       ) : null}
     </>
   );
-}
-
-function connectionDetail(
-  connection: AgentConnection,
-  workspaces: readonly { id: string; name: string }[],
-): string {
-  const used = connection.lastUsedAt
-    ? `Used ${formatWhen(connection.lastUsedAt)}.`
-    : "Not used yet.";
-  return `${connectionAccessLabel(connection.accessMode)}, in ${connectionReachLabel(connection, workspaces)}. ${used} Expires ${formatWhen(connection.expiresAt)}.`;
 }
 
 /**
@@ -159,27 +144,23 @@ function connectionDetail(
  * open, which `host.connections-changed` already delivers to every device.
  */
 function ExternalAgentSetup({
-  addresses,
   connections,
   guide,
   onClose,
+  reach,
   thisComputer,
 }: {
-  readonly addresses: ExternalAgentAddresses;
   readonly connections: readonly AgentConnection[] | null;
   readonly guide: ExternalAgentGuide;
   readonly onClose: () => void;
+  readonly reach: ExternalAgentsReach;
   readonly thisComputer: string | null;
 }) {
-  const known = useRef<ReadonlySet<string> | null>(null);
-  if (known.current === null && connections)
-    known.current = new Set(connections.map(({ id }) => id));
-  const connected = known.current
-    ? connections?.find(({ id }) => !known.current!.has(id))
-    : undefined;
-  const cloud = guide.id !== "other";
-  const remote = addresses.remote;
-  const unreachable = cloud && remote?.reach === "private-network";
+  const baseline = useRef<ReadonlySet<string> | null>(null);
+  if (baseline.current === null && connections)
+    baseline.current = new Set(connections.map(({ id }) => id));
+  const connected = arrivedConnection(connections, baseline.current);
+  const address = reach.kind === "ready" ? guideAddress(guide, reach) : null;
   return (
     <Dialog
       title={`Add ${guide.name}`}
@@ -190,37 +171,41 @@ function ExternalAgentSetup({
         </button>
       }
     >
-      {unreachable ? (
+      {address?.kind === "blocked" ? (
         <p className="notice">
           <span>
-            {guide.name} runs in the cloud and can't reach a private network address. Switch Remote
-            access to Opensteer Connect. <Link to={remoteAccessPath}>Open Remote access</Link>
+            {address.detail} <Link to={remoteAccessPath}>Open Remote access</Link>
           </span>
         </p>
       ) : (
-        <ol className="add-computer__steps external-agent-setup__steps">
-          <li>
-            Copy this address.
-            {remote ? (
-              <AddressBlock label={thisComputer ? "From anywhere" : "Address"} value={remote.url} />
-            ) : null}
-            {!cloud && thisComputer ? (
-              <AddressBlock label="From an app on this computer" value={thisComputer} />
-            ) : null}
-          </li>
-          <li>{guide.step}</li>
-          <li>Approve the request in Opensteer when {guide.name} asks.</li>
-        </ol>
+        <>
+          <ol className="add-computer__steps">
+            <li>
+              Copy this address.
+              {address ? (
+                <AddressBlock
+                  label={thisComputer ? "From anywhere" : "Address"}
+                  value={address.url}
+                />
+              ) : null}
+              {thisComputer ? (
+                <AddressBlock label="From an app on this computer" value={thisComputer} />
+              ) : null}
+            </li>
+            <li>{guide.step}</li>
+            <li>Approve the request in Opensteer when {guide.name} asks.</li>
+          </ol>
+          <p className="external-agent-setup__status" role="status">
+            {connected ? (
+              <>
+                <Icon name="check-circle" /> {connected.label} is connected.
+              </>
+            ) : (
+              `Waiting for ${guide.name} to connect.`
+            )}
+          </p>
+        </>
       )}
-      <p className="external-agent-setup__status" role="status">
-        {connected ? (
-          <>
-            <Icon name="check-circle" /> {connected.label} is connected.
-          </>
-        ) : unreachable ? null : (
-          `Waiting for ${guide.name} to connect.`
-        )}
-      </p>
     </Dialog>
   );
 }

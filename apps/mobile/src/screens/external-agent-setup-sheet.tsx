@@ -1,4 +1,4 @@
-import type { ExternalAgentGuide } from "@opensteer/client/host";
+import type { ExternalAgentGuide, guideAddress } from "@opensteer/client/host";
 import type { ReactNode } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import { color, radius, space } from "../theme.js";
@@ -7,7 +7,6 @@ import { AppText, monoFontFamily, PrimaryButton, SecondaryButton } from "../ui/p
 import { Sheet } from "../ui/sheet.js";
 import { Symbol } from "../ui/symbol.js";
 import { ExternalAgentMark } from "./external-agent-mark.js";
-import type { guideAddress } from "./external-agents-model.js";
 
 /**
  * How to add one agent: three plain steps. The only thing that changes while

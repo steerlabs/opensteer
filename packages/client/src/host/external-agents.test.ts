@@ -1,16 +1,16 @@
-import { externalAgentGuides } from "@opensteer/client/host";
-import { MockHostClient } from "@opensteer/client/mock";
 import { WorkspaceIdSchema } from "@opensteer/core";
 import type {
   AgentConnectionConsent,
   PersonalRemoteAdministrationStatus,
 } from "@opensteer/protocol";
 import { describe, expect, it } from "vitest";
+import { MockHostClient } from "../mock/mock-host-client.js";
 import {
-  decideAgentConnection,
+  answerAgentConnection,
+  externalAgentGuides,
   externalAgentsReach,
   guideAddress,
-} from "./external-agents-model.js";
+} from "./connected-agents.js";
 
 const personal = { exposure: "loopback", publicOrigin: "http://127.0.0.1:4310" } as const;
 function remote(mode: "off" | "connect" | "private", origin: string | null) {
@@ -22,7 +22,7 @@ function remote(mode: "off" | "connect" | "private", origin: string | null) {
   };
 }
 
-describe("where cloud agents reach this Deployment from a phone", () => {
+describe("where cloud agents reach this Deployment", () => {
   it("waits for Remote access instead of telling the person to turn it on", () => {
     expect(
       externalAgentsReach({ identity: personal, remote: { status: null, error: null } }),
@@ -62,7 +62,7 @@ describe("where cloud agents reach this Deployment from a phone", () => {
   });
 });
 
-describe("answering an agent's connection request from the phone", () => {
+describe("answering an agent's connection request", () => {
   const workspaceId = WorkspaceIdSchema.parse("wsp_0192f4a1-0000-4000-8000-000000000001");
   const consent: AgentConnectionConsent = {
     requestId: "r".repeat(43),
@@ -78,7 +78,7 @@ describe("answering an agent's connection request from the phone", () => {
     const host = new MockHostClient({ latencyMs: 0, connectionConsent: consent });
     await host.load();
     try {
-      const completion = await decideAgentConnection(host, consent, {
+      const completion = await answerAgentConnection(host, consent, {
         kind: "approve",
         label: "  My ChatGPT  ",
         accessMode: "auto",
@@ -104,7 +104,7 @@ describe("answering an agent's connection request from the phone", () => {
     const host = new MockHostClient({ latencyMs: 0, connectionConsent: consent });
     await host.load();
     try {
-      await expect(decideAgentConnection(host, consent, { kind: "deny" })).resolves.toContain(
+      await expect(answerAgentConnection(host, consent, { kind: "deny" })).resolves.toContain(
         "/oauth/mcp/complete",
       );
       const listed = await host.rpc["connections.list"]({});

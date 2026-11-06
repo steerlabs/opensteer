@@ -1,4 +1,10 @@
-import { accessModeOptions, unwrapRpcResult, type HostClient } from "@opensteer/client/host";
+import {
+  accessModeOptions,
+  answerAgentConnection,
+  connectionDestination,
+  unwrapRpcResult,
+  type HostClient,
+} from "@opensteer/client/host";
 import type { ThreadAccessMode } from "@opensteer/core";
 import type { AgentConnectionConsent } from "@opensteer/protocol";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
@@ -7,12 +13,7 @@ import { Linking } from "react-native";
 import { AgentAuthorizationForm } from "./agent-authorization-form.js";
 import { agentAuthorizationEverything } from "./agent-authorization-form.types.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
-import {
-  agentConnectionExpired,
-  agentConnectionFailure,
-  consentDestination,
-  decideAgentConnection,
-} from "./external-agents-model.js";
+import { agentConnectionExpired, agentConnectionFailure } from "./external-agents-model.js";
 
 type Props = StaticScreenProps<{ readonly deploymentId: string; readonly requestId: string }>;
 
@@ -76,7 +77,7 @@ function AgentAuthorization(props: { readonly host: HostClient; readonly request
     if (!consent || busy !== null || (approve && !label.trim())) return;
     setBusy(approve ? "allow" : "deny");
     setError(null);
-    void decideAgentConnection(
+    void answerAgentConnection(
       host,
       consent,
       approve ? { kind: "approve", label, accessMode: mode, reach } : { kind: "deny" },
@@ -117,7 +118,7 @@ function AgentAuthorization(props: { readonly host: HostClient; readonly request
     <AgentAuthorizationForm
       kind="ready"
       busy={busy}
-      destination={consentDestination(consent.redirectUri)}
+      destination={connectionDestination(consent.redirectUri)}
       error={error}
       label={label}
       mode={mode}

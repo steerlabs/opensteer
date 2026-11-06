@@ -14,7 +14,8 @@ import { Icon } from "./icon.js";
 import { SectionHeader } from "./settings/primitives.js";
 import {
   accessModeOptions,
-  mutationIdempotencyKey,
+  answerAgentConnection,
+  connectionDestination,
   unwrapRpcResult,
   type HostClient,
 } from "@opensteer/client/host";
@@ -73,33 +74,16 @@ export function McpAuthorization({
     setBusy(true);
     setError(null);
     try {
-      const result = await client.dispatch({
-        type: "connection.authorize",
-        requestId: consent.requestId,
-        idempotencyKey: mutationIdempotencyKey("connection-consent"),
-        decision: approve
-          ? {
-              kind: "approve",
-              label,
-              accessMode: mode,
-              reach:
-                reach === "user"
-                  ? { kind: "user" }
-                  : {
-                      kind: "workspace",
-                      workspaceId: consent.workspaces.find((w) => w.id === reach)!.id,
-                    },
-            }
-          : { kind: "deny" },
-      });
+      const completion = await answerAgentConnection(
+        client,
+        consent,
+        approve ? { kind: "approve", label, accessMode: mode, reach } : { kind: "deny" },
+      );
       if (currentRevision !== revision.current) return;
-      if (result.type !== "connection.authorize") throw new Error();
       if (desktopBridge) {
-        await desktopBridge.openExternalUrl({
-          url: new URL(result.completionPath, consent.resource).href,
-        });
+        await desktopBridge.openExternalUrl({ url: completion });
         if (currentRevision === revision.current) onClose?.();
-      } else window.location.assign(result.completionPath);
+      } else window.location.assign(completion);
     } catch {
       if (currentRevision !== revision.current) return;
       setError("The connection could not be approved. Refresh and try again.");
@@ -118,7 +102,7 @@ export function McpAuthorization({
               />
               <p className="agent-consent__where">
                 <Icon name="globe" />
-                <span>{accessDestination(consent.redirectUri)}</span>
+                <span>{connectionDestination(consent.redirectUri)}</span>
               </p>
               <fieldset className="settings-group" disabled={busy}>
                 <legend className="settings-group__title">What it can change</legend>
@@ -206,14 +190,6 @@ export function McpAuthorization({
       </div>
     </main>
   );
-}
-
-/** Where the credential is delivered: the one fact about an agent the Host can vouch for. */
-function accessDestination(redirectUri: string): string {
-  const host = new URL(redirectUri).hostname;
-  return ["localhost", "127.0.0.1", "[::1]"].includes(host)
-    ? "Access goes to an app on the device that started this sign-in."
-    : `Access goes to ${host}. Anyone who runs that service gets it.`;
 }
 
 /** A phone hands the request to the mobile app; anything else to the desktop app. */

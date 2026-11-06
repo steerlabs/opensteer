@@ -4,7 +4,7 @@ import { color } from "../theme.js";
 import { AppText, Notice, RowGroup } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { ExternalAgentMark } from "./external-agent-mark.js";
-import { externalAgentsLead } from "./external-agents-model.js";
+import { externalAgentsLead } from "@opensteer/client/host";
 import { ErrorText, Section, styles } from "./settings-form-primitives.js";
 import type { ExternalAgentsFormProps } from "./settings-external-agents-form.types.js";
 

@@ -219,15 +219,4 @@ describe("external agent addresses", () => {
       thisComputer: "http://127.0.0.1:4310/internal/v1/mcp",
     });
   });
-  it("a networked Host is reached at its own origin", () => {
-    expect(
-      externalAgentAddresses({
-        identity: { exposure: "networked", publicOrigin: "https://steer.example" },
-        remoteAccess: null,
-      }),
-    ).toEqual({
-      remote: { url: "https://steer.example/internal/v1/mcp", reach: "internet" },
-      thisComputer: null,
-    });
-  });
 });

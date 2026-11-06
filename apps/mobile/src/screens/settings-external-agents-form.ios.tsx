@@ -10,7 +10,7 @@ import {
 import type { ReactNode } from "react";
 import { color } from "../theme.js";
 import { ExternalAgentMark } from "./external-agent-mark.js";
-import { externalAgentsLead } from "./external-agents-model.js";
+import { externalAgentsLead } from "@opensteer/client/host";
 import { Chevron, ErrorText, Footer, Lines } from "./settings-form-primitives.ios.js";
 import type { ExternalAgentsFormProps } from "./settings-external-agents-form.types.js";
 
