@@ -27,8 +27,9 @@ building another.
    a specific name, a skill that records the device's address, model and quirks, a server with one
    tool per action, and the device declared in `plugin.json`. One plugin covers what the person would
    remove together, such as a stereo pair. Keep state such as pairing credentials in `PLUGIN_DATA`.
-5. **Install** with `plugin_install`, then ask for access with `integration_request`. The computer's
-   owner approves the server's launch from this task; its tools stay unavailable until then.
+5. **Install** with `plugin_install`, find its installation with `integration_search`, then ask for
+   access with `integration_request` naming that installation. The computer's owner approves the
+   server's launch from this task; its tools stay unavailable until then.
 6. **Codes the device shows,** such as a TV's pairing code, never go through chat. A server tool asks
    the person with MCP elicitation; they type the code on a card and only the server receives it.
 7. **Verify** with the same reversible action through the installed tools. Then tell the person what
