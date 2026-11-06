@@ -39,11 +39,9 @@ export function aiCompanies(snapshot: Pick<HostSnapshot, "harnesses" | "environm
   const result = new Set<string>();
   for (const account of snapshot.harnesses) {
     if (!account.enabled) continue;
-    const sourceCompany = companies.get(account.sourceId);
+    result.add(companies.get(account.sourceId) ?? genericAiCompany);
     const engineCompany = companies.get(account.driverKind);
-    if (sourceCompany) result.add(sourceCompany);
     if (engineCompany) result.add(engineCompany);
-    if (!sourceCompany && !engineCompany) result.add(genericAiCompany);
     if (account.endpoint) result.add(genericAiCompany);
     const catalog = snapshot.environments
       .find((environment) => environment.id === account.environmentId)
