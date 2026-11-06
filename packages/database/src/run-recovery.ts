@@ -223,7 +223,9 @@ export async function recoverLostRunTransaction(
             : [],
         ),
       ...(openTools.length > 10
-        ? [`- and ${openTools.length - 10} more commands; read them with thread_read view activity.`]
+        ? [
+            `- and ${openTools.length - 10} more commands; read them with thread_read view activity.`,
+          ]
         : []),
       ...nodes
         .slice(0, 10)

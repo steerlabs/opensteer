@@ -56,7 +56,10 @@ describe("person show navigation", () => {
         expect(
           handlePersonShow(
             snapshot,
-            { ...message, target: { ...message.target, runId: createId("run") } } as PersonShowMessage,
+            {
+              ...message,
+              target: { ...message.target, runId: createId("run") },
+            } as PersonShowMessage,
             { foreground: true, threadId: source.id },
             navigate,
           ),
