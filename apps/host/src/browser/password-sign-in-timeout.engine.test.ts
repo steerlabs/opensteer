@@ -160,7 +160,8 @@ describe.each(holdEngines)("$label held MCP", (engine) => {
       const started = turn.events
         .filter((event) => event.type === "tool.started")
         .filter((event) => event.data.tool.name === "sign_in");
-      expect(started).toHaveLength(1);
+      // Claude restates a streamed call once with its full arguments, under the same id.
+      expect(new Set(started.map((event) => event.data.callId)).size).toBe(1);
       const callId = started[0]?.data.callId;
       const completed = turn.events.filter(
         (event) => event.type === "tool.completed" && event.data.callId === callId,
