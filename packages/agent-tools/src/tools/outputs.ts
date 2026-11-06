@@ -422,7 +422,7 @@ export const ThreadItemSchema = z.object({
   text: z.string().nullable(),
   textTruncated: z.boolean(),
   nextTextOffset: z.number().int().nonnegative().nullable(),
-  places: z.array(PlaceContentPartSchema).max(63).optional(),
+  places: z.array(PlaceContentPartSchema).max(64).optional(),
   createdAt: z.string(),
 });
 export type ThreadItem = z.infer<typeof ThreadItemSchema>;

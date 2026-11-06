@@ -6,11 +6,21 @@ import {
 } from "@opensteer/core";
 import type { ThreadItem } from "@opensteer/agent-tools/outputs";
 
+/** With a message's other parts, this keeps one item inside the agent output limit. */
+const itemTextMaxBytes = 192 * 1024;
+
 export function itemText(text: string | null, maxChars: number, offset = 0) {
   if (text === null) return { text: null, textTruncated: false, nextTextOffset: null };
   const points = Array.from(text);
-  const value = points.slice(offset, offset + maxChars).join("");
-  const next = offset + Array.from(value).length;
+  let window = points.slice(offset, offset + maxChars);
+  for (
+    let bytes = Buffer.byteLength(JSON.stringify(window.join("")), "utf8");
+    bytes > itemTextMaxBytes;
+    bytes = Buffer.byteLength(JSON.stringify(window.join("")), "utf8")
+  )
+    window = window.slice(0, Math.floor((window.length * itemTextMaxBytes) / bytes));
+  const value = window.join("");
+  const next = offset + window.length;
   const textTruncated = next < points.length;
   return { text: value, textTruncated, nextTextOffset: textTruncated ? next : null };
 }
@@ -55,7 +65,7 @@ export function taskItem(summary: AssignmentSummary, result: string | null) {
     finishedAt: summary.finishedAt,
   };
 }
-/** Always keeps the newest item: escaping can take one item past the bound, and paging must advance. */
+/** Always keeps the newest item, so paging advances; `itemText` bounds what that item can hold. */
 export function boundedThreadItems<T>(items: readonly T[], maxBytes = 256 * 1024): T[] {
   let bytes = 2;
   const kept: T[] = [];

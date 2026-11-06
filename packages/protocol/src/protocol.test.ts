@@ -933,13 +933,6 @@ describe("wire protocol", () => {
         workspaceId: createId("workspace"),
       };
     });
-    const window = {
-      byteCount: 64 * 1_024,
-      hasMore: true,
-      itemCount: 100,
-      nextBefore: "cursor",
-      totalItems: 101,
-    };
     // Every model a discovery page may show, each at its longest names.
     const longestModel = (index: number) => ({
       modelId: `${index}`.padEnd(255, "m"),
@@ -977,48 +970,29 @@ describe("wire protocol", () => {
 
     const threadId = createId("thread");
     const thread = { ...threads[0], id: threadId };
-    const largeMessage = {
-      author: {
-        displayName: "User",
-        kind: "human" as const,
-        principalId: "principal:test",
-      },
-      content: [{ text: "m".repeat(256 * 1_024), type: "text" as const }],
-      createdAt: new Date().toISOString(),
-      id: createId("message"),
-      kind: "input" as const,
+    const largeItem = {
+      itemId: createId("message"),
+      type: "message",
+      status: "published",
       runId: createId("run"),
-      sequence: "0" as Message["sequence"],
-      threadId,
+      title: null,
+      text: "m".repeat(256 * 1_024),
+      textTruncated: false,
+      nextTextOffset: null,
+      createdAt: new Date().toISOString(),
     };
-    const readWindow = { ...window, byteCount: 300 * 1_024, itemCount: 1, threadId };
     const readPage = {
-      execution: {
-        threadId,
-        environmentId: createId("environment"),
-        harnessInstanceId: createId("harnessInstance"),
-        modelSelection: { modelId: "gpt-5", providerId: "openai", options: {} },
-      },
-      queue: { paused: false, items: [] },
-      assignments: [],
-      assignmentWindow: {
-        byteCount: 2,
-        hasMore: false,
-        itemCount: 0,
-        nextBefore: null,
-        totalItems: 0,
-      },
-      messages: [largeMessage],
-      requestId,
+      items: [largeItem],
+      recentRuns: [],
+      recentPlaces: [],
+      hasMore: false,
+      nextBefore: null,
       thread,
-      type: "thread.read.result",
-      window: readWindow,
     };
     expect(thread_read.output.safeParse(readPage).success).toBe(true);
     const oversized = thread_read.output.safeParse({
       ...readPage,
-      messages: [largeMessage, { ...largeMessage, id: createId("message") }],
-      window: { ...readWindow, byteCount: 600 * 1_024, itemCount: 2 },
+      items: [largeItem, { ...largeItem, itemId: createId("message") }],
     });
     expect(oversized.error?.issues.map(({ message }) => message)).toEqual([
       "Thread history exceeds the agent output byte limit",
@@ -1028,6 +1002,8 @@ describe("wire protocol", () => {
   it("fits a full Thread listing page and requires explicit agent message delivery", () => {
     const listing = thread_list.output.parse({
       threads: Array.from({ length: 50 }, () => ({
+        assignmentId: createId("delegation"),
+        taskStatus: "open" as const,
         environmentConnected: true,
         environmentId: createId("environment"),
         id: createId("thread"),
@@ -1039,14 +1015,8 @@ describe("wire protocol", () => {
         workspaceId: createId("workspace"),
         workspaceName: "w".repeat(160),
       })),
-      type: "thread.list.result",
-      window: {
-        byteCount: 64 * 1_024,
-        hasMore: true,
-        itemCount: 50,
-        nextBefore: "cursor",
-        totalItems: 500,
-      },
+      hasMore: true,
+      nextBefore: "cursor",
     });
     expect(Buffer.byteLength(JSON.stringify(listing), "utf8")).toBeLessThanOrEqual(
       agentToolPayloadMaxSerializedBytes,

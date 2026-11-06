@@ -6,6 +6,16 @@ it("keeps the newest item past the byte bound, so paging always advances", () =>
   expect(boundedThreadItems([large, "older"])).toEqual([large]);
 });
 
+it("cuts text that escapes past the item bound and still pages to its end", () => {
+  const text = "\u0001".repeat(50_000);
+  const first = itemText(text, 50_000);
+  expect(Buffer.byteLength(JSON.stringify(first.text), "utf8")).toBeLessThanOrEqual(192 * 1024);
+  expect(first).toMatchObject({ textTruncated: true });
+  const rest = itemText(text, 50_000, first.nextTextOffset!);
+  expect(first.text!.length + rest.text!.length).toBe(text.length);
+  expect(rest).toMatchObject({ textTruncated: false, nextTextOffset: null });
+});
+
 it("pages text by code point without splitting a surrogate pair", () => {
   expect(itemText("a😀b", 2)).toEqual({ text: "a😀", textTruncated: true, nextTextOffset: 2 });
   expect(itemText("a😀b", 2, 2)).toEqual({ text: "b", textTruncated: false, nextTextOffset: null });
