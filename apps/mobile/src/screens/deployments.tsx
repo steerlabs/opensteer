@@ -467,6 +467,7 @@ export function DeploymentsScreen(): ReactNode {
             identity={identity!}
             onPersonal={() => navigation.navigate("AddPersonal")}
             onRefresh={refresh}
+            onScan={scan}
             onServer={() => navigation.navigate("AddServer")}
             refreshing={refreshing}
             unavailable={directory.unavailable}
@@ -528,6 +529,7 @@ function SignedInEmptyDeployments(props: {
   readonly identity: NonNullable<DesktopAccountAuthState["account"]["identity"]>;
   readonly onPersonal: () => void;
   readonly onRefresh: () => void;
+  readonly onScan: () => void;
   readonly onServer: () => void;
   readonly refreshing: boolean;
   readonly unavailable: readonly AccountDeploymentDirectoryUnavailable[];
@@ -565,7 +567,11 @@ function SignedInEmptyDeployments(props: {
         />
       </View>
       <View style={styles.emptyActions}>
-        <ManualDeploymentDoors onPersonal={props.onPersonal} onServer={props.onServer} />
+        <ManualDeploymentDoors
+          onPersonal={props.onPersonal}
+          onScan={props.onScan}
+          onServer={props.onServer}
+        />
       </View>
     </>
   );

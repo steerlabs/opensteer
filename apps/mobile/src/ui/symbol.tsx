@@ -78,6 +78,7 @@ export type SFSymbolName =
   | "plus"
   | "powerplug"
   | "puzzlepiece.extension"
+  | "qrcode.viewfinder"
   | "rectangle.on.rectangle"
   | "repeat"
   | "safari"
@@ -242,6 +243,7 @@ const glyph: Record<SFSymbolName, string> = {
   plus: "+",
   powerplug: "⌁",
   "puzzlepiece.extension": "⧉",
+  "qrcode.viewfinder": "⌗",
   "rectangle.on.rectangle": "❐",
   repeat: "↻",
   safari: "◉",
