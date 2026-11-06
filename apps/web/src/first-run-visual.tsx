@@ -17,7 +17,7 @@ import {
 } from "@opensteer/protocol/desktop";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter, Outlet, Route, Routes } from "react-router";
-import type { ShellContext } from "./components/app-shell.js";
+import { ShellContext } from "./components/app-shell.js";
 import { DesktopPersonalSetup } from "./components/desktop-onboarding.js";
 import { SetupOpening } from "./components/first-run/setup-opening.js";
 import { SetupPage } from "./components/first-run/setup-page.js";
@@ -209,7 +209,13 @@ if (scenario.kind !== "setup") {
       <div className="app-shell app-shell--settings app-shell--setup">
         <main className="app-shell__main">
           <Routes>
-            <Route element={<Outlet context={context} />}>
+            <Route
+              element={
+                <ShellContext value={context}>
+                  <Outlet />
+                </ShellContext>
+              }
+            >
               <Route element={<SetupPage />} path="get-started" />
               <Route element={<p>Chat</p>} path="/" />
             </Route>

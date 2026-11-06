@@ -17,8 +17,18 @@ import { lastBrowsingChoice, openWorkspaceWebLink } from "./workspace/start-page
 import { DownloadFeedback } from "./browser/browser-downloads.js";
 import { provisionalThreadTitle } from "@opensteer/core";
 import { useNativeBrowserOverlay } from "./native-browser-overlays.js";
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { Outlet, useLocation, useNavigate, useOutletContext } from "react-router";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
+import { Outlet, useLocation, useNavigate } from "react-router";
 import {
   DesktopNotificationTargetSchema,
   DesktopUseComputerViewInputSchema,
@@ -250,10 +260,37 @@ export async function removeLocalComputer(input: {
   return input.bridge.stopLocalRunner({ deploymentId: input.deploymentId });
 }
 
-type ShellSharedContext = Omit<ShellContext, "snapshot">;
+export type ShellSharedContext = Omit<ShellContext, "snapshot">;
+
+export const ShellContext = createContext<ShellContext | null>(null);
 
 export function useShell(): ShellContext {
-  return useOutletContext<ShellContext>();
+  const shell = useContext(ShellContext);
+  if (!shell) throw new Error("The shell is not available here.");
+  return shell;
+}
+
+/**
+ * A subtree's view of the shell. Only a live scope observes the full streaming
+ * snapshot; the rest use the stable projection, so the surrounding shell and
+ * dialogs stay outside this subscription boundary.
+ */
+export function ShellScope({
+  children,
+  context,
+  live,
+}: {
+  readonly children: ReactNode;
+  readonly context: ShellSharedContext;
+  readonly live: boolean;
+}) {
+  const snapshot = useHostSelector(
+    context.hostClient,
+    selectHostSnapshot,
+    live ? Object.is : sameStableHostSnapshot,
+  );
+  const value = useMemo<ShellContext>(() => ({ ...context, snapshot }), [context, snapshot]);
+  return <ShellContext value={value}>{children}</ShellContext>;
 }
 
 const sidebarCollapsedKey = "opensteer.sidebar-collapsed";
@@ -978,7 +1015,7 @@ export function AppShell({
     [chromeEnvironment, hostClient, hostOnline],
   );
   const openShortcuts = useCallback(() => setShortcutsOpen(true), []);
-  const routes = <ShellRouteOutlet context={context} hostClient={hostClient} />;
+  const routes = <ShellRouteOutlet context={context} />;
 
   return (
     <VoiceContext value={voice}>
@@ -1094,7 +1131,7 @@ export function AppShell({
               it, because it outlives navigation and every mutating control on
               those pages is disabled while it runs. */}
                 <DeploymentOperationBanner bridge={localBridge} snapshot={deploymentAccess} />
-                <VoiceIsland ask={<VoiceAsk />} />
+                <VoiceIsland ask={<VoiceAsk shell={context} />} />
                 <SidebarChromeProvider
                   onRestore={toggleSidebar}
                   restoreVisible={!fullWindow && !mobileNavigation && sidebarCollapsed}
@@ -1298,30 +1335,14 @@ const selectBrowsersKnown = (snapshot: HostSnapshot) =>
 const selectDeploymentId = (snapshot: HostSnapshot) => snapshot.deploymentId;
 const selectUserId = (snapshot: HostSnapshot) => snapshot.user?.id ?? null;
 
-/**
- * Only the routed Thread trees — Home at the root and a Thread under
- * /threads — observe the full streaming snapshot. Other routes use the stable
- * projection, while the surrounding shell and dialogs remain outside this
- * subscription boundary.
- */
-function ShellRouteOutlet({
-  context,
-  hostClient,
-}: {
-  readonly context: ShellSharedContext;
-  readonly hostClient: HostClient;
-}) {
+/** Home at the root and a Thread under /threads stream; other routes stay stable. */
+function ShellRouteOutlet({ context }: { readonly context: ShellSharedContext }) {
   const { pathname } = useLocation();
-  const snapshot = useHostSelector(
-    hostClient,
-    selectHostSnapshot,
-    pathname === "/" || pathname.startsWith("/threads/") ? Object.is : sameStableHostSnapshot,
+  return (
+    <ShellScope context={context} live={pathname === "/" || pathname.startsWith("/threads/")}>
+      <Outlet />
+    </ShellScope>
   );
-  const outletContext = useMemo<ShellContext>(
-    () => ({ ...context, snapshot }),
-    [context, snapshot],
-  );
-  return <Outlet context={outletContext} />;
 }
 
 function navigationDrawerElement() {

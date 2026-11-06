@@ -16,7 +16,7 @@ import {
   type ThreadInputQueue,
 } from "@opensteer/core";
 import { AgentTranscript } from "./components/agent-activity.js";
-import type { ShellContext } from "./components/app-shell.js";
+import { ShellContext } from "./components/app-shell.js";
 import { artifactPart, type SentContentPart } from "./components/attachments/attachment-parts.js";
 import type { ComposerRestore } from "./components/composer.js";
 import { InputSurface } from "./components/input-surface.js";
@@ -313,7 +313,11 @@ function useShellContext(): ShellContext {
 }
 
 function Shell() {
-  return <Outlet context={useShellContext()} />;
+  return (
+    <ShellContext value={useShellContext()}>
+      <Outlet />
+    </ShellContext>
+  );
 }
 
 function Fixture() {

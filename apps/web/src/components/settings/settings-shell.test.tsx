@@ -12,8 +12,8 @@ import {
 } from "@opensteer/protocol/desktop";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter, Outlet, Route, Routes } from "react-router";
-import { describe, expect, it } from "vitest";
-import type { ShellContext } from "../app-shell.js";
+import { describe, expect, it, vi } from "vitest";
+import { ShellContext, useShell } from "../app-shell.js";
 import { defaultSettingsSection, settingsSectionForPath } from "./copy.js";
 import {
   SettingsNotFound,
@@ -26,6 +26,12 @@ const noOp = () => undefined;
 
 /** The address a seeded Personal Host uses internally. It is never a person. */
 const placeholderEmail = "owner@personal.opensteer.invalid";
+let shellSeenBySettings: ShellContext | null = null;
+
+function ShellProbe() {
+  shellSeenBySettings = useShell();
+  return null;
+}
 
 describe("Settings navigation", () => {
   it("defaults to General and treats an unknown child as a real missing setting", () => {
@@ -38,6 +44,16 @@ describe("Settings navigation", () => {
     expect(html).toContain("Setting not found");
     expect(html).toContain('href="/settings/ai"');
     expect(html).not.toContain("AI service accounts");
+  });
+
+  it("gives pages under Settings its own way to open navigation, not the shell's", () => {
+    const shellNavigation = vi.fn();
+    renderSettings(
+      { ...placementFixtures().browser, openMobileNavigation: shellNavigation },
+      "/settings/shell-probe",
+    );
+    expect(shellSeenBySettings?.openMobileNavigation).toEqual(expect.any(Function));
+    expect(shellSeenBySettings?.openMobileNavigation).not.toBe(shellNavigation);
   });
 });
 
@@ -223,7 +239,13 @@ function renderSettings(overrides: Partial<ShellContext>, path: string): string 
   return renderToStaticMarkup(
     <MemoryRouter initialEntries={[path]}>
       <Routes>
-        <Route element={<Outlet context={context} />}>
+        <Route
+          element={
+            <ShellContext value={context}>
+              <Outlet />
+            </ShellContext>
+          }
+        >
           <Route element={<SettingsShell />} path="settings">
             <Route index element={<SettingsSectionRoute section="ai-engines" />} />
             <Route element={<SettingsSectionRoute section="ai-engines" />} path="ai-engines" />
@@ -232,6 +254,7 @@ function renderSettings(overrides: Partial<ShellContext>, path: string): string 
             <Route element={<SettingsSectionRoute section="general" />} path="general" />
             <Route element={<p>Connected apps route</p>} path="apps/*" />
             <Route element={<p>Computers route</p>} path="computers/*" />
+            <Route element={<ShellProbe />} path="shell-probe" />
             <Route element={<SettingsNotFound />} path="*" />
           </Route>
         </Route>

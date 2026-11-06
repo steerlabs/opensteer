@@ -231,6 +231,11 @@ export class ElectronWindowFactory implements DesktopWindowFactory {
         `${JSON.stringify({ error: error.message, event: "desktop.preload.error", preloadPath })}\n`,
       );
     });
+    window.webContents.on("render-process-gone", (_event, { exitCode, reason }) => {
+      process.stdout.write(
+        `${JSON.stringify({ event: "desktop.renderer.gone", exitCode, reason })}\n`,
+      );
+    });
     window.webContents.on("before-input-event", (event, input) => {
       if (!desktopQuitShortcut(input, process.platform)) return;
       event.preventDefault();

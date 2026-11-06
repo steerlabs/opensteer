@@ -5,11 +5,11 @@ export {
   type AgentConnectionAuthorizationTarget,
 } from "./agent-connections.js";
 import { BrowserOpenIdentitySchema } from "./browser.js";
-import { type RealtimeFrameDiagnostic } from "./common.js";
+import { type RealtimeFrameDiagnostic, type RendererFailureDiagnostic } from "./common.js";
 import { type DisplayClientDiagnostic } from "./display-stream.js";
 import type { DictationPort } from "./dictation.js";
 export { DisplayClientDiagnosticSchema } from "./display-stream.js";
-export { RealtimeFrameDiagnosticSchema } from "./common.js";
+export { RealtimeFrameDiagnosticSchema, RendererFailureDiagnosticSchema } from "./common.js";
 import { HostCapabilitySchema } from "@opensteer/deployment-authority";
 import { ComputerViewRefSchema } from "./computer-view.js";
 import { ComputerAppIdentitySchema } from "@opensteer/core";
@@ -1631,6 +1631,7 @@ export interface OpensteerDesktopBridge {
   onWorkspaceTabCommand(listener: (command: DesktopWorkspaceTabCommand) => void): () => void;
   reportDisplayDiagnostic?(record: DisplayClientDiagnostic): Promise<void>;
   reportRealtimeDiagnostic?(record: RealtimeFrameDiagnostic): Promise<void>;
+  reportRendererFailure?(record: RendererFailureDiagnostic): Promise<void>;
   getLocalVisibility(): Promise<boolean>;
   onLocalVisibilityChanged(listener: (visible: boolean) => void): () => void;
   /** The Agent Phone app this build carries, or null when it carries none. */

@@ -1,3 +1,4 @@
+import { AppErrorBoundary } from "./components/app-error-boundary.js";
 import { DictationContext } from "./components/dictation.js";
 import { StrictMode } from "react";
 import { StartupFailure } from "./components/onboarding-card.js";
@@ -26,7 +27,11 @@ const appRoot = createRoot(root);
 const dictation = installDictation(desktopBridge()?.dictation);
 const reactRoot = {
   render: (children: React.ReactNode) =>
-    appRoot.render(<DictationContext value={dictation}>{children}</DictationContext>),
+    appRoot.render(
+      <DictationContext value={dictation}>
+        <AppErrorBoundary>{children}</AppErrorBoundary>
+      </DictationContext>,
+    ),
 };
 
 /** The path the desktop's floating Full access panel loads. */

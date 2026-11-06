@@ -24,7 +24,7 @@ import {
   type OpensteerDesktopBridge,
 } from "@opensteer/protocol/desktop";
 import { AgentTranscript } from "./components/agent-activity.js";
-import type { ShellContext } from "./components/app-shell.js";
+import { ShellContext } from "./components/app-shell.js";
 import { InputSurface } from "./components/input-surface.js";
 import { SettingsSectionRoute, SettingsShell } from "./components/settings/settings-shell.js";
 import { PasswordsSuggestion } from "./components/passwords-suggestion.js";
@@ -140,7 +140,11 @@ function useShellContext(): ShellContext {
 }
 
 function Shell() {
-  return <Outlet context={useShellContext()} />;
+  return (
+    <ShellContext value={useShellContext()}>
+      <Outlet />
+    </ShellContext>
+  );
 }
 
 function CardView() {
