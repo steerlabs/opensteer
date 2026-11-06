@@ -1,4 +1,10 @@
-import type { AgentConnection } from "@opensteer/protocol";
+import type { IdentityConfig } from "@opensteer/core";
+import {
+  agentConnectionMcpPath,
+  type AgentConnection,
+  type PersonalRemoteAccessMode,
+} from "@opensteer/protocol";
+import { accessModeOptions } from "./access-modes.js";
 import type { HostClient } from "./client.js";
 import { mutationIdempotencyKey, unwrapRpcResult } from "./host-session-client.js";
 
@@ -105,17 +111,84 @@ export class ConnectedAgentsClient {
     }
   };
 }
+/**
+ * Where an agent outside Opensteer adds this Host as an MCP server. `remote`
+ * is the address agents elsewhere use: a networked Host's own origin, or a
+ * Personal Host's Remote access route. `thisComputer` is a loopback Host's own
+ * origin, reachable only by apps on the computer it runs on. The Host accepts
+ * exactly these origins (`connectionRequestOrigin`).
+ */
+export interface ExternalAgentAddresses {
+  readonly remote: {
+    readonly url: string;
+    /** Only Connect and networked Hosts are reachable by agents in the cloud. */
+    readonly reach: "internet" | "private-network";
+  } | null;
+  readonly thisComputer: string | null;
+}
+
+export function externalAgentAddresses(input: {
+  readonly identity: Pick<IdentityConfig, "exposure" | "publicOrigin">;
+  readonly remoteAccess: {
+    readonly mode: PersonalRemoteAccessMode;
+    readonly origin: string | null;
+  } | null;
+}): ExternalAgentAddresses {
+  const address = (origin: string) => new URL(agentConnectionMcpPath, origin).href;
+  if (input.identity.exposure === "networked")
+    return {
+      remote: { url: address(input.identity.publicOrigin), reach: "internet" },
+      thisComputer: null,
+    };
+  const route = input.remoteAccess;
+  return {
+    remote:
+      route && route.mode !== "off" && route.origin
+        ? {
+            url: address(route.origin),
+            reach: route.mode === "connect" ? "internet" : "private-network",
+          }
+        : null,
+    thisComputer: address(input.identity.publicOrigin),
+  };
+}
+
+/**
+ * The agents Settings explains how to connect, in the order it lists them.
+ * Each `step` is the one thing to do in that agent; Opensteer supplies the
+ * address before it and the approval after it. An agent joins this list only
+ * once it has been seen to connect end to end.
+ */
+export const externalAgentGuides = [
+  {
+    id: "chatgpt",
+    name: "ChatGPT",
+    providerId: "openai",
+    step: "In ChatGPT's settings, open Apps and create an app with this address. Choose OAuth.",
+  },
+  {
+    id: "claude",
+    name: "Claude",
+    providerId: "anthropic",
+    step: "In Claude, open Settings, then Connectors, and add a custom connector with this address.",
+  },
+  {
+    id: "other",
+    name: "Another agent",
+    providerId: null,
+    step: "Add a remote MCP server with this address, and choose OAuth when it asks how to sign in.",
+  },
+] as const satisfies readonly {
+  readonly id: string;
+  readonly name: string;
+  readonly providerId: string | null;
+  readonly step: string;
+}[];
+export type ExternalAgentGuide = (typeof externalAgentGuides)[number];
+
+/** The same words every Thread uses for these modes. */
 export function connectionAccessLabel(mode: AgentConnection["accessMode"]): string {
-  switch (mode) {
-    case "approval-required":
-      return "Ask before changes";
-    case "auto-accept-edits":
-      return "Accept edits";
-    case "auto":
-      return "Automatic";
-    case "full-access":
-      return "Full access";
-  }
+  return accessModeOptions.find((option) => option.mode === mode)?.label ?? mode;
 }
 
 export function connectionReachLabel(

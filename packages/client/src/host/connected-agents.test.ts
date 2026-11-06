@@ -2,7 +2,7 @@ import { UserIdSchema } from "@opensteer/core";
 import type { AgentConnection } from "@opensteer/protocol";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { describe, expect, it, vi } from "vitest";
-import { ConnectedAgentsClient } from "./connected-agents.js";
+import { ConnectedAgentsClient, externalAgentAddresses } from "./connected-agents.js";
 import { unwrapRpcResult } from "./host-session-client.js";
 
 function connectionFixture(): AgentConnection {
@@ -194,5 +194,40 @@ describe("Settings connected agents", () => {
       stop();
       host.dispose();
     }
+  });
+});
+
+describe("external agent addresses", () => {
+  // The Host accepts only these origins, so a wrong one fails sign-in.
+  const personal = { exposure: "loopback", publicOrigin: "http://127.0.0.1:4310" } as const;
+  it.each([
+    [personal, null, null],
+    [personal, { mode: "off", origin: null }, null],
+    [
+      personal,
+      { mode: "connect", origin: "https://mac.connect.example" },
+      { url: "https://mac.connect.example/internal/v1/mcp", reach: "internet" },
+    ],
+    [
+      personal,
+      { mode: "private", origin: "https://mac.tailnet.example" },
+      { url: "https://mac.tailnet.example/internal/v1/mcp", reach: "private-network" },
+    ],
+  ] as const)("Personal %#", (identity, remoteAccess, remote) => {
+    expect(externalAgentAddresses({ identity, remoteAccess })).toEqual({
+      remote,
+      thisComputer: "http://127.0.0.1:4310/internal/v1/mcp",
+    });
+  });
+  it("a networked Host is reached at its own origin", () => {
+    expect(
+      externalAgentAddresses({
+        identity: { exposure: "networked", publicOrigin: "https://steer.example" },
+        remoteAccess: null,
+      }),
+    ).toEqual({
+      remote: { url: "https://steer.example/internal/v1/mcp", reach: "internet" },
+      thisComputer: null,
+    });
   });
 });
