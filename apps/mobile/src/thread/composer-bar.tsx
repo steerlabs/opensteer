@@ -23,8 +23,8 @@ import type { ComposerShape } from "./composer-model.js";
  * lies over the field's line and the line leaves room at either end for what
  * the toolbar holds there; open, it sits below.
  *
- * It is glass because it floats over the transcript and the transcript keeps
- * moving under it. Where there is no Liquid Glass the same shape is the opaque
+ * It is glass because it floats over the foot of the transcript, which scrolls
+ * on under it to the pane's bottom edge (`composer-dock.tsx`). Where there is no Liquid Glass the same shape is the opaque
  * float material, and only the material differs.
  *
  * Nothing here decides anything. The bar is handed its slots already filled, so

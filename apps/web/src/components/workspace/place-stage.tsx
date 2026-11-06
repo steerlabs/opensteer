@@ -8,6 +8,7 @@ import { BrowserSurfaceIdSchema, CHAT_THREAD_TITLE } from "@opensteer/core";
 import { useHostSelector, usePhoneTabView, usePlaceList } from "@opensteer/client/react";
 import { usePageVisible } from "../../ui-utils.js";
 import { PlaceBrowserView, type BrowserChromeSignIn } from "../browser/browser-view.js";
+import { useBrowserThreadPair } from "../browser/browser-thread-pair.js";
 import { ComputerWatchView } from "../computer-watch.js";
 import { Icon } from "../icon.js";
 import { useToastToolbar } from "../toast.js";
@@ -125,7 +126,8 @@ function SelectedPlace({
   readonly onReportError: (error: unknown) => void;
   readonly trailing: ReactNode;
 }) {
-  const { nav, phone, selection } = useWorkspace();
+  const { dock, nav, phone, selection } = useWorkspace();
+  const { pathname } = useLocation();
   const toolbarRef = useToastToolbar();
   const places = usePlaceList(hostClient);
   const presentations = useBrowserPresentations(places);
@@ -136,6 +138,32 @@ function SelectedPlace({
     selection.kind === "place" && selection.destination.kind === "browser"
       ? selection.destination.tabId
       : null;
+  const shownBrowser =
+    selection.kind === "place" && selection.destination.kind === "browser" && selectedTab
+      ? { sessionId: selection.destination.sessionId, tabId: selectedTab }
+      : null;
+  const dockedThread =
+    !phone && dock.open && shownBrowser ? conversationAt(pathname, directory.homeThreadId) : null;
+  const showBrowserTab = useCallback(
+    (
+      destination: { readonly sessionId: string; readonly tabId: string },
+      options: { replace: boolean },
+    ) => nav.showPlace({ kind: "browser", ...destination }, options),
+    [nav],
+  );
+  const pair = useBrowserThreadPair({
+    hostClient,
+    mark: dockedThread ? (
+      dockedThread === directory.homeThreadId ? (
+        <ChatOrb size={16} />
+      ) : (
+        <TaskMark mark={threadMark(dockedThread, directory.snapshot)} size={16} />
+      )
+    ) : null,
+    onShow: showBrowserTab,
+    shown: shownBrowser,
+    threadId: dockedThread,
+  });
   const live = placeKey
     ? (places.find(
         (item) =>
@@ -299,6 +327,7 @@ function SelectedPlace({
             lastingReason={lastingReason}
             onRetry={() => setRetry((value) => value + 1)}
             compact={phone}
+            pair={pair}
             marks={marks}
             hostClient={hostClient}
             leading={leading}

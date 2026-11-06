@@ -415,7 +415,10 @@ export interface WorkspaceNavigation {
   /** Includes synchronous choices made since the last render. */
   readonly address: () => Address;
   /** Tab row, viewfinder, chip: the place only (opens Work from Talk). */
-  readonly showPlace: (destination: SurfaceDestination) => void;
+  readonly showPlace: (
+    destination: SurfaceDestination,
+    options?: { readonly replace?: boolean },
+  ) => void;
   /** A mark on a tab: that place and that conversation, as one entry. */
   readonly showPlaceWithConversation: (destination: SurfaceDestination, path: string) => void;
   /** The start page, remembering the place it covers and optionally opening an address on arrival. */
@@ -581,8 +584,11 @@ export function useWorkspaceNavigation(
     },
     [choosePlace, deploymentId, userId],
   );
-  const showPlace = useCallback(
-    (destination: SurfaceDestination) => choosePlace({ kind: "place", destination }),
+  const showPlace = useCallback<WorkspaceNavigation["showPlace"]>(
+    (destination, options) =>
+      choosePlace({ kind: "place", destination }, undefined, {
+        replace: options?.replace === true,
+      }),
     [choosePlace],
   );
   const showPlaceWithConversation = useCallback(

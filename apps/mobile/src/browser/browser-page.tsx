@@ -14,6 +14,7 @@ import {
   type BrowserCommand,
   type BrowserSessionSummary,
   type HostClient,
+  type PlaceAgent,
 } from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema, type BrowserPageContentPart } from "@opensteer/core";
 import { browserPromptTextMaxLength, browserViewportFits } from "@opensteer/protocol";
@@ -30,12 +31,14 @@ import {
 } from "react";
 import {
   Alert,
+  I18nManager,
   Linking,
   Platform,
   Pressable,
   Share,
   StyleSheet,
   TextInput,
+  useWindowDimensions,
   View,
   type LayoutChangeEvent,
 } from "react-native";
@@ -46,10 +49,13 @@ import {
   useSimultaneousGestures,
 } from "react-native-gesture-handler";
 import Animated, {
+  Easing,
   useAnimatedStyle,
+  useReducedMotion,
   useSharedValue,
   withSpring,
   withTiming,
+  type LayoutAnimation,
   type SharedValue,
 } from "react-native-reanimated";
 import type { EditingOperation } from "@opensteer/client/editing";
@@ -71,6 +77,7 @@ import { Symbol } from "../ui/symbol.js";
 import { AddressCapsule, AddressEditor, type OpenTabSuggestion } from "./address-bar.js";
 import { BrowserStream, submitBrowserCommand, useBrowserFeedState } from "./browser-stream.js";
 import { ChromeSignInAction } from "./chrome-sign-in-action.js";
+import { FollowBand, TaskTabChips } from "./pair-chrome.js";
 import { pageSite, viewedPage } from "./surface-route.js";
 import { Toolbar, ToolbarButton, ToolbarCapsule, ToolbarMenu } from "./toolbar.js";
 
@@ -80,6 +87,35 @@ const defaultPageAspect = 16 / 9;
 const refusedNotice = "The page is reconnecting. Try again in a moment.";
 /** Where a page's bar moves from under it to over it, as Safari's does on iPad. */
 const regularWidth = 600;
+/**
+ * What the paired bar's fixed parts take — its padding, Back, Tabs and More,
+ * the gaps between them and the narrowest address worth reading — leaving the
+ * rest to the task's other tabs.
+ */
+const pairedBarFixed = 2 * space[12] + 3 * touchTarget + 4 * space[8] + 160;
+
+/**
+ * The page's bar while a Thread is beside it and the native bar is put away:
+ * Back to the screen under this one, the address as the tab in front, the
+ * task's other tabs, and More, which also carries what the native bar did.
+ */
+export interface PagePairChrome {
+  /** Ask, and whose Thread is beside the page, as More's own sections. */
+  readonly menu: readonly NativeMenuSection[];
+  readonly onBack: () => void;
+  /** This task's tabs in this browser; the one in front is left out of the chips. */
+  readonly taskTabIds: readonly string[];
+}
+
+/** Keeping up with the Thread's agent as it moves between tabs. */
+export interface PageFollow {
+  /** The agent's mark; null for a Thread the reader cannot name. */
+  readonly agent: PlaceAgent | null;
+  /** The agent's tab, while the person is not following it there. */
+  readonly away: { readonly title: string } | null;
+  readonly following: boolean;
+  readonly onResume: () => void;
+}
 /** Room left under a page narrower than its place that is worth offering Fit for. */
 const fitBand = 0.15;
 /** How far a page can be pinched in: enough to read a desktop page's small print. */
@@ -121,6 +157,12 @@ export function BrowserPage(props: {
   readonly onClosed: () => void;
   /** The browser's Workspace, whose agents may use a site once it is signed in. */
   readonly workspaceName: string;
+  /** Which way the page came from another tab, by tab order; 0 when it opened here. */
+  readonly arrival?: -1 | 0 | 1;
+  readonly follow?: PageFollow | null;
+  readonly pair?: PagePairChrome | null;
+  /** The person moved this page themselves: back, forward, an address, a new tab. */
+  readonly onSteer?: () => void;
 }): ReactNode {
   const { hostClient, onSwitchTab, onTyping, onViewing, session, tabId } = props;
   const surfaceId = BrowserSurfaceIdSchema.parse(tabId);
@@ -282,6 +324,12 @@ export function BrowserPage(props: {
       setInputEpoch((value) => value + 1);
       editing.dismissMenu();
     }
+    if (
+      command.type === "navigation.back" ||
+      command.type === "navigation.forward" ||
+      command.type === "navigation.go"
+    )
+      props.onSteer?.();
     const targeted = { ...command, surfaceId };
     const taken = submitBrowserCommand(hostClient, session.id, targeted);
     if (!taken) setRefusedAdmission(feed.admissionId ?? null);
@@ -335,6 +383,7 @@ export function BrowserPage(props: {
   const openTab = () => {
     if (openingTab.current) return;
     openingTab.current = true;
+    props.onSteer?.();
     try {
       const size = viewport();
       props.onOpenTab(
@@ -469,9 +518,32 @@ export function BrowserPage(props: {
     editing.dismissMenu();
   };
 
-  const menu: NativeMenuSection[] = [
-    [
-      ...(regular
+  const pair = props.pair ?? null;
+  const follow = props.follow ?? null;
+  // The bar is over the page where it is wide, and always while a Thread is beside it.
+  const top = regular || pair !== null;
+  const { fontScale } = useWindowDimensions();
+  const reduceMotion = useReducedMotion();
+  const arrival = props.arrival ?? 0;
+  const history: NativeMenuOption[] =
+    pair !== null
+      ? [
+          {
+            disabled: !ready || !canGoBack,
+            icon: "arrow.uturn.backward",
+            id: "back",
+            label: "Go Back",
+            onPress: () => void send({ type: "navigation.back" }),
+          },
+          {
+            disabled: !ready || !canGoForward,
+            icon: "chevron.forward",
+            id: "forward",
+            label: "Go Forward",
+            onPress: () => void send({ type: "navigation.forward" }),
+          },
+        ]
+      : regular
         ? []
         : [
             {
@@ -480,8 +552,11 @@ export function BrowserPage(props: {
               id: "forward",
               label: "Forward",
               onPress: () => void send({ type: "navigation.forward" }),
-            } satisfies NativeMenuOption,
-          ]),
+            },
+          ];
+  const menu: NativeMenuSection[] = [
+    [
+      ...history,
       {
         disabled: !channelReady,
         icon: "plus.square.on.square",
@@ -498,6 +573,16 @@ export function BrowserPage(props: {
               id: "fit",
               label: "Fit to screen",
               onPress: fit,
+            } satisfies NativeMenuOption,
+          ]),
+      ...(pair === null
+        ? []
+        : [
+            {
+              disabled: !ready,
+              id: "drag-select",
+              label: dragSelect ? "Done selecting" : "Drag/select",
+              onPress: () => setDragSelect((value) => !value),
             } satisfies NativeMenuOption,
           ]),
     ],
@@ -533,6 +618,7 @@ export function BrowserPage(props: {
             onPress: () => setSigningIn(true),
           },
         ],
+    ...(pair?.menu ?? []),
     [
       {
         destructive: true,
@@ -545,49 +631,81 @@ export function BrowserPage(props: {
     ],
   ];
 
-  const bar = (
-    <Toolbar edge={regular ? "top" : "bottom"} testID="page-toolbar">
-      <ToolbarButton
-        disabled={!ready || !canGoBack}
-        label="Back"
-        onPress={() => void send({ type: "navigation.back" })}
-        symbol="chevron.left"
-      />
-      {regular ? (
-        <ToolbarButton
-          disabled={!ready || !canGoForward}
-          label="Forward"
-          onPress={() => void send({ type: "navigation.forward" })}
-          symbol="chevron.right"
-        />
-      ) : null}
-      <AddressCapsule
-        acting={acting}
-        favicon={liveTab?.favicon ?? null}
-        loading={loading}
-        onEdit={() => setAddressOpen(true)}
-        onReload={() => void send({ type: "navigation.reload" })}
-        onSwitch={canSwitch ? switchBy : null}
-        reloadable={ready}
-        secure={tab?.url.startsWith("https://") === true}
-        site={site}
-      />
-      <ToolbarButton
-        accessibilityHint="Shows this browser’s tabs"
-        count={tabs.length}
-        label={`Tabs, ${tabs.length}`}
-        onPress={props.onShowTabs}
-      />
-      <ToolbarButton
-        disabled={!ready}
-        label={dragSelect ? "Done selecting" : "Drag/select"}
-        selected={dragSelect}
-        symbol="cursorarrow"
-        onPress={() => setDragSelect((value) => !value)}
-      />
-      <ToolbarMenu label="More" sections={menu} symbol="ellipsis" title={title} />
-    </Toolbar>
+  const address = (
+    <AddressCapsule
+      acting={acting}
+      arriving={arrival !== 0}
+      favicon={liveTab?.favicon ?? null}
+      following={follow?.following === true ? { agent: follow.agent } : null}
+      loading={loading}
+      onEdit={() => setAddressOpen(true)}
+      onReload={() => void send({ type: "navigation.reload" })}
+      onSwitch={canSwitch ? switchBy : null}
+      reloadable={ready}
+      secure={tab?.url.startsWith("https://") === true}
+      site={site}
+    />
   );
+  const tabsButton = (
+    <ToolbarButton
+      accessibilityHint="Shows this browser’s tabs"
+      count={tabs.length}
+      label={`Tabs, ${tabs.length}`}
+      onPress={props.onShowTabs}
+    />
+  );
+  const more = <ToolbarMenu label="More" sections={menu} symbol="ellipsis" title={title} />;
+  const bar =
+    pair !== null ? (
+      <Toolbar edge="top" testID="page-toolbar">
+        <ToolbarButton
+          accessibilityHint="Returns to the previous screen"
+          label="Back"
+          onPress={pair.onBack}
+          symbol="chevron.left"
+        />
+        {address}
+        <TaskTabChips
+          fontScale={fontScale}
+          onSelect={onSwitchTab}
+          room={width - pairedBarFixed}
+          tabs={tabs.filter(({ id }) => id !== tabId && pair.taskTabIds.includes(id))}
+        />
+        {tabsButton}
+        {more}
+      </Toolbar>
+    ) : (
+      <Toolbar edge={regular ? "top" : "bottom"} testID="page-toolbar">
+        <ToolbarButton
+          disabled={!ready || !canGoBack}
+          label="Back"
+          onPress={() => void send({ type: "navigation.back" })}
+          symbol="chevron.left"
+        />
+        {regular ? (
+          <ToolbarButton
+            disabled={!ready || !canGoForward}
+            label="Forward"
+            onPress={() => void send({ type: "navigation.forward" })}
+            symbol="chevron.right"
+          />
+        ) : null}
+        {address}
+        {tabsButton}
+        <ToolbarButton
+          disabled={!ready}
+          label={dragSelect ? "Done selecting" : "Drag/select"}
+          selected={dragSelect}
+          symbol="cursorarrow"
+          onPress={() => setDragSelect((value) => !value)}
+        />
+        {more}
+      </Toolbar>
+    );
+  const band =
+    follow?.away == null || addressOpen ? null : (
+      <FollowBand agent={follow.agent} onFollow={follow.onResume} title={follow.away.title} />
+    );
   const editor = (
     <AddressEditor
       draft={addressDraft ?? (tab?.url === "about:blank" ? "" : tab?.url) ?? ""}
@@ -604,7 +722,7 @@ export function BrowserPage(props: {
         onSwitchTab(next);
       }}
       tabs={tabs.filter(({ id }) => id !== tabId)}
-      under={regular}
+      under={top}
     />
   );
   const keyboardOpen = typing && ready && editable && tab !== undefined;
@@ -649,7 +767,8 @@ export function BrowserPage(props: {
         onConfirmed={props.onClosed}
         onError={(error) => setProblem(operationDetail(error, "This tab could not be closed."))}
       />
-      {regular ? (addressOpen ? editor : bar) : null}
+      {top ? (addressOpen ? editor : bar) : null}
+      {top ? band : null}
       {dragSelect ? (
         <AppText role="caption" tone="muted">
           Drag/select · Drag once to select or move content
@@ -658,44 +777,50 @@ export function BrowserPage(props: {
       <GestureDetector gesture={zoom.gesture}>
         <View onLayout={onStage} style={styles.stage}>
           <Animated.View
-            style={[
-              styles.picture,
-              { height: picture.height, left: picture.left, width: picture.width },
-              placed,
-            ]}
+            {...(arrival === 0 || reduceMotion ? {} : { entering: arriveFrom(arrival) })}
+            pointerEvents="box-none"
+            style={styles.arrival}
           >
-            <BrowserStream
-              active={props.active}
-              tabId={tabId}
-              documentId={liveTab?.documentId}
-              hostClient={hostClient}
-              interactive
-              inputEnabled={closeReview === null && !addressOpen && pageMenu === null}
-              inputEpoch={`${navigationKey}:${keyboardOpen}:${slideTo}`}
-              dragSelect={dragSelect}
-              onDragEnd={() => setDragSelect(false)}
-              label={label}
-              onPageSize={onPageSize}
-              onPresentedGeometry={setDrawnGeometry}
-              onPointerDown={() => {
-                setPageFocused(true);
-                menuInteraction.current++;
-                editing.dismissMenu();
-                proxy.current?.interrupt();
-              }}
-              zoom={zoom.scale}
-              onScroll={() => setMayType(false)}
-              onTap={() => {
-                setAddressOpen(false);
-                setAddressDraft(null);
-                setPageFocused(true);
-                // A page that reports its fields keeps the keyboard up from one
-                // field to the next and puts it away when nothing has focus.
-                if (!editing.get().negotiated) setTyping(false);
-                setMayType(true);
-              }}
-              session={session}
-            />
+            <Animated.View
+              style={[
+                styles.picture,
+                { height: picture.height, left: picture.left, width: picture.width },
+                placed,
+              ]}
+            >
+              <BrowserStream
+                active={props.active}
+                tabId={tabId}
+                documentId={liveTab?.documentId}
+                hostClient={hostClient}
+                interactive
+                inputEnabled={closeReview === null && !addressOpen && pageMenu === null}
+                inputEpoch={`${navigationKey}:${keyboardOpen}:${slideTo}`}
+                dragSelect={dragSelect}
+                onDragEnd={() => setDragSelect(false)}
+                label={label}
+                onPageSize={onPageSize}
+                onPresentedGeometry={setDrawnGeometry}
+                onPointerDown={() => {
+                  setPageFocused(true);
+                  menuInteraction.current++;
+                  editing.dismissMenu();
+                  proxy.current?.interrupt();
+                }}
+                zoom={zoom.scale}
+                onScroll={() => setMayType(false)}
+                onTap={() => {
+                  setAddressOpen(false);
+                  setAddressDraft(null);
+                  setPageFocused(true);
+                  // A page that reports its fields keeps the keyboard up from one
+                  // field to the next and puts it away when nothing has focus.
+                  if (!editing.get().negotiated) setTyping(false);
+                  setMayType(true);
+                }}
+                session={session}
+              />
+            </Animated.View>
           </Animated.View>
           {offerFit ? (
             <Animated.View
@@ -840,7 +965,14 @@ export function BrowserPage(props: {
           sendOperation={(operation) => editing.send(operation)}
         />
       ) : null}
-      {keyboardOpen || regular ? null : addressOpen ? editor : bar}
+      {keyboardOpen || top ? null : addressOpen ? (
+        editor
+      ) : (
+        <>
+          {band}
+          {bar}
+        </>
+      )}
     </View>
   );
 }
@@ -935,6 +1067,26 @@ function usePageZoom(
 }
 
 const settle = { damping: 24, stiffness: 240 } as const;
+
+/**
+ * A tab arriving from another: the picture fades in from a few points toward
+ * the side it came from by tab order, so the change is seen without the pane
+ * itself moving.
+ */
+function arriveFrom(direction: -1 | 1): () => LayoutAnimation {
+  const from = direction * (I18nManager.isRTL ? -8 : 8);
+  return () => {
+    "worklet";
+    const timing = { duration: 180, easing: Easing.out(Easing.quad) };
+    return {
+      animations: {
+        opacity: withTiming(1, timing),
+        transform: [{ translateX: withTiming(0, timing) }],
+      },
+      initialValues: { opacity: 0, transform: [{ translateX: from }] },
+    };
+  };
+}
 
 /**
  * Where a pinch puts the picture: the point of the page that was under the
@@ -1228,6 +1380,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     width: touchTarget + space[4],
   },
+  arrival: { ...StyleSheet.absoluteFill },
   page: { flex: 1, minHeight: 0 },
   // Zoom grows the picture from its top-leading corner, where its offset is measured from.
   picture: { position: "absolute", top: 0, transformOrigin: "left top" },

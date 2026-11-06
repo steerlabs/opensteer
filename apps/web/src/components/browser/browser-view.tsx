@@ -37,6 +37,11 @@ import { BrowserDownloads } from "./browser-downloads.js";
 import { BrowserPageDialog } from "./browser-page-dialog.js";
 import { BrowserPasskeyBar } from "./browser-passkey-bar.js";
 import {
+  BrowserFollowBand,
+  BrowserTaskTabs,
+  type BrowserThreadPair,
+} from "./browser-thread-pair.js";
+import {
   BrowserSignInPopover,
   browserSignInLabel,
   signedInMessage,
@@ -95,6 +100,7 @@ export function PlaceBrowserView({
   leading,
   onLeavePage,
   onReportError,
+  pair = null,
   place,
   presentation,
   sessionId,
@@ -117,6 +123,8 @@ export function PlaceBrowserView({
   /** F6 in the page: where the keyboard goes next. */
   readonly onLeavePage: () => void;
   readonly onReportError: (error: unknown) => void;
+  /** The conversation docked beside this tab, when there is one. */
+  readonly pair?: BrowserThreadPair | null;
   /** What the catalog last said about this tab, so the chrome outlives it. */
   readonly place: PlaceItem | null;
   /** Who the page browses as, in words: its profile and computer. */
@@ -149,6 +157,7 @@ export function PlaceBrowserView({
   const [keyboardOffered, setKeyboardOffered] = useState(false);
   const [fitAvailable, setFitAvailable] = useState(false);
   const stageRef = useRef<HTMLDivElement>(null);
+  const viewRef = useRef<HTMLDivElement>(null);
   const keyboardRef = useRef<BrowserKeyboardHandle | null>(null);
   const dormant = !!place?.workspaceTab && place.workspaceTab.state !== "live";
   const sessionReady = !dormant && session?.state === "ready";
@@ -333,6 +342,24 @@ export function PlaceBrowserView({
       setSignInOpen(false);
     }
   }, [visible]);
+  const paired = useRef(false);
+  paired.current = pair !== null;
+  const crossfadeFrom = useRef(`${sessionId}:${tabId}`);
+  useLayoutEffect(() => {
+    const key = `${sessionId}:${tabId}`;
+    if (crossfadeFrom.current === key) return;
+    crossfadeFrom.current = key;
+    if (!paired.current || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const targets = [
+      stageRef.current,
+      viewRef.current?.querySelector<HTMLElement>(".browser-address__field"),
+    ];
+    for (const target of targets)
+      target?.animate?.([{ opacity: 0.35 }, { opacity: 1 }], {
+        duration: 160,
+        easing: "cubic-bezier(0.22, 1, 0.36, 1)",
+      });
+  }, [sessionId, tabId]);
   // Shift+F6 brings the keyboard back to the page it left.
   const pageReady = visible && live;
   // A page opened from the start page takes the keyboard its field gave up,
@@ -367,9 +394,16 @@ export function PlaceBrowserView({
   }, [keyboardOffered]);
 
   const [inputEpoch, setInputEpoch] = useState(0);
+  const pausePair = pair?.pause;
   const send = useCallback(
     (command: BrowserCommand) => {
       if (command.type.startsWith("navigation.")) setInputEpoch((value) => value + 1);
+      if (
+        command.type === "navigation.go" ||
+        command.type === "navigation.back" ||
+        command.type === "navigation.forward"
+      )
+        pausePair?.();
       try {
         hostClient.sendBrowserCommand(sessionId, command);
         return true;
@@ -378,7 +412,7 @@ export function PlaceBrowserView({
         return false;
       }
     },
-    [hostClient, onReportError, sessionId],
+    [hostClient, onReportError, pausePair, sessionId],
   );
   const acceptFrame = useCallback(
     (frame: BrowserFrameView) => {
@@ -594,6 +628,7 @@ export function PlaceBrowserView({
         className={`browser-view${native ? " browser-view--native" : ""}`}
         data-browser-session={sessionId}
         data-browser-tab={tabId}
+        ref={viewRef}
       >
         <BrowserToolbar
           activeTab={shownTab}
@@ -615,6 +650,8 @@ export function PlaceBrowserView({
             ) : null
           }
           compact={compact}
+          following={pair?.following ? pair.mark : null}
+          tabs={pair ? <BrowserTaskTabs hostClient={hostClient} pair={pair} /> : null}
           disabled={!pageReachable}
           focusAddress={live && blankPage}
           find={
@@ -715,6 +752,7 @@ export function PlaceBrowserView({
             </>
           }
         />
+        {pair ? <BrowserFollowBand pair={pair} /> : null}
         <BrowserPasskeyBar
           key={passkey?.requestId ?? "notice"}
           state={passkey}

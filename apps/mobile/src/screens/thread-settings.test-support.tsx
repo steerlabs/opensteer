@@ -150,6 +150,20 @@ vi.mock("../thread/composer-menu.js", () => ({
   ),
 }));
 vi.mock("@react-navigation/elements", () => ({ useHeaderHeight: () => 0 }));
+vi.mock("react-native-reanimated", () => {
+  const View = ({ children }: { readonly children?: ReactNode }) => <div>{children}</div>;
+  const transition = { duration: () => transition };
+  return {
+    default: { View },
+    FadeIn: transition,
+    FadeInDown: transition,
+    FadeInUp: transition,
+    FadeOut: transition,
+    LinearTransition: transition,
+    withSpring: (value: number) => value,
+    withTiming: (value: number) => value,
+  };
+});
 vi.mock("react-native-safe-area-context", () => ({
   useSafeAreaInsets: () => ({ bottom: 0, left: 0, right: 0, top: 0 }),
 }));

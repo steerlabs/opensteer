@@ -595,15 +595,16 @@ vi.mock("../thread/composer-bar.js", () => ({
   ComposerGlyph: () => null,
   composerLaneHeight: 36,
 }));
+interface MenuChoice {
+  readonly disabled?: boolean;
+  readonly id: string;
+  readonly label: string;
+  readonly onPress: () => void;
+}
 vi.mock("../thread/composer-menu.js", () => ({
   NativeMenu: (props: {
     readonly accessibilityLabel?: string;
-    readonly options: readonly {
-      readonly disabled?: boolean;
-      readonly id: string;
-      readonly label: string;
-      readonly onPress: () => void;
-    }[];
+    readonly options: readonly (MenuChoice | readonly MenuChoice[])[];
   }) => {
     harness.draws.set(
       `menu:${props.accessibilityLabel}`,
@@ -611,7 +612,7 @@ vi.mock("../thread/composer-menu.js", () => ({
     );
     return (
       <div aria-label={props.accessibilityLabel ?? "Menu"} data-menu>
-        {props.options.map((option) => (
+        {props.options.flat().map((option) => (
           <button disabled={option.disabled} key={option.id} onClick={option.onPress}>
             {option.label}
           </button>
@@ -1971,7 +1972,12 @@ describe("J7: a task's page from Tabs, beside its occupant's thread only where t
     await typeDraft(companion(), "Keep the occupant’s question");
     await press(control(screen, "Ask in Chat"));
     expect(draftShown(companion())).toBe("");
-    await press(control(screen, "Close Chat"));
+    // Closed from its pill, the pane goes; the occupant's own thread comes back from the bar.
+    await press(
+      control(screen.querySelector<HTMLElement>('[data-testid="conversation-name"]')!, "Close"),
+    );
+    expect(screen.querySelector('[data-testid="conversation-slot"]')).toBeNull();
+    await press(control(screen, "Switch Slack to Opensteer, working here"));
     expect(draftShown(companion())).toBe("Keep the occupant’s question");
     const mounted = [
       `${occupant}:companion`,

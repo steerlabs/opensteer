@@ -38,6 +38,7 @@ import {
 import {
   AccessibilityInfo,
   Alert,
+  Image,
   Pressable,
   StyleSheet,
   TextInput,
@@ -46,7 +47,7 @@ import {
   View,
 } from "react-native";
 import Animated from "react-native-reanimated";
-import { pageIdentity } from "../browser/surface-route.js";
+import { pageIdentity, pageSite } from "../browser/surface-route.js";
 import { operationDetail } from "../client/mobile-client.js";
 import type {
   PendingCommand,
@@ -264,6 +265,18 @@ export function Composer(props: {
   const [declinedPage, setDeclinedPage] = useState<string | null>(null);
   const includedPage =
     draftPage ?? (offeredKey === null || offeredKey === declinedPage ? null : offeredPage);
+  const pageSessionId = includedPage?.sessionId ?? null;
+  const pageTabId = includedPage?.tabId ?? null;
+  const pageFavicon = useHostSelector(
+    hostClient,
+    useCallback(
+      (snapshot) =>
+        snapshot.browserSessions
+          .find(({ id }) => id === pageSessionId)
+          ?.tabs.find(({ id }) => id === pageTabId)?.favicon ?? null,
+      [pageSessionId, pageTabId],
+    ),
+  );
 
   const done = useHostSelector(
     hostClient,
@@ -708,6 +721,7 @@ export function Composer(props: {
       : []),
   ];
 
+  const pageInBar = view.readOnly ? null : includedPage;
   if (done)
     return (
       <View style={styles.dock}>
@@ -835,18 +849,19 @@ export function Composer(props: {
       <DictationStatus controller={dictation} snapshot={dictationState} owner={owner} />
       <VoiceDock />
       <ComposerBar
-        // Two lines from the start: the page above the field is part of the box.
-        shape={includedPage === null || view.readOnly ? view.shape : "rounded"}
-        {...(includedPage === null || view.readOnly
+        shape={view.shape}
+        // Open, the page stands above the words; at rest it is a chip beside
+        // the `+`, so an empty bar keeps the capsule's height.
+        {...(pageInBar === null || view.shape !== "rounded"
           ? {}
           : {
-              caption: <IncludedPage onRemove={removePage} page={includedPage} />,
+              caption: <IncludedPage onRemove={removePage} page={pageInBar} />,
             })}
         {...(view.readOnly
           ? {}
           : {
               leading: (
-                <View style={{ flexDirection: "row" }}>
+                <View style={styles.leading}>
                   <NativeMenu
                     accessibilityHint="Change the model, and what else can be done here"
                     accessibilityLabel="Thread actions"
@@ -856,6 +871,11 @@ export function Composer(props: {
                   >
                     <ComposerGlyph icon="plus" />
                   </NativeMenu>
+                  {pageInBar === null || view.shape === "rounded" ? null : (
+                    <Animated.View entering={appear} exiting={exit}>
+                      <PageChip favicon={pageFavicon} onRemove={removePage} page={pageInBar} />
+                    </Animated.View>
+                  )}
                 </View>
               ),
             })}
@@ -896,7 +916,13 @@ export function Composer(props: {
                 // more: iOS gives no dismissal event for a native menu, and this
                 // is the moment the bar can stop holding its shape for one.
                 onTouchStart={settle}
-                placeholder={includedPage === null ? props.placeholder : "Ask about this page…"}
+                placeholder={
+                  pageInBar === null
+                    ? props.placeholder
+                    : view.shape === "rounded"
+                      ? "Ask about this page…"
+                      : "Ask…"
+                }
                 placeholderTextColor={color.muted}
                 ref={input}
                 selectionColor={color.ember}
@@ -1079,6 +1105,57 @@ function IncludedPage(props: {
 }
 
 /**
+ * The page the next message includes, as the resting bar carries it: its icon
+ * and site in a chip the height of a control. A tap offers to leave it out;
+ * the menu holds no row of the bar, so the capsule stays as it is under it.
+ */
+function PageChip(props: {
+  readonly favicon: string | null;
+  readonly onRemove: () => void;
+  readonly page: BrowserPageContentPart;
+}): ReactNode {
+  const title = props.page.title || "This page";
+  const site = pageSite(props.page.url) ?? title;
+  return (
+    <NativeMenu
+      accessibilityHint="Shows how to leave this page out of your message"
+      accessibilityLabel={`${title}. This page is included with your message`}
+      options={[
+        {
+          destructive: true,
+          icon: "xmark.circle",
+          id: "remove-page",
+          label: "Remove page",
+          onPress: props.onRemove,
+        },
+      ]}
+      title={title}
+      triggerStyle={styles.chipTarget}
+    >
+      <View style={styles.chip}>
+        {props.favicon === null ? (
+          <Symbol name="globe" size={12} tint={color.textSoft} />
+        ) : (
+          <Image
+            accessibilityIgnoresInvertColors
+            source={{ uri: props.favicon }}
+            style={styles.favicon}
+          />
+        )}
+        <AppText
+          maxFontSizeMultiplier={controlFontScaleLimit}
+          numberOfLines={1}
+          role="caption"
+          style={styles.pageTitle}
+        >
+          {site}
+        </AppText>
+      </View>
+    </NativeMenu>
+  );
+}
+
+/**
  * The field's padding, the same above and below. One line in the system font's
  * own height — about 20 points at the default size — plus this on each side
  * fills the 36-point lane, so a wrapped last line stays level with the controls
@@ -1156,6 +1233,20 @@ const styles = StyleSheet.create({
     paddingLeft: space[8] - 1,
   },
   pageRemove: { alignItems: "center", height: 26, justifyContent: "center", width: 26 },
+  chip: {
+    ...material.control,
+    alignItems: "center",
+    borderRadius: radius.full,
+    flexDirection: "row",
+    gap: space[4],
+    maxWidth: 112,
+    minHeight: 28,
+    paddingHorizontal: space[8],
+  },
+  // A control's full height, so the chip is as easy to hit as the `+` beside it.
+  chipTarget: { justifyContent: "center", minHeight: touchTarget },
+  favicon: { borderRadius: 3, height: 14, width: 14 },
+  leading: { alignItems: "center", flexDirection: "row" },
   pageTitle: { flexShrink: 1 },
   spacer: { flex: 1, minHeight: composerLaneHeight },
 });

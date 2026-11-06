@@ -36,6 +36,7 @@ export function BrowserToolbar({
   disabled,
   focusAddress = false,
   find = null,
+  following = null,
   notice = null,
   leading,
   loading = false,
@@ -47,6 +48,7 @@ export function BrowserToolbar({
   onNavigated,
   onReload,
   onStop,
+  tabs = null,
   trailing,
 }: {
   activeTab: BrowserTabSummary | undefined;
@@ -59,6 +61,8 @@ export function BrowserToolbar({
   /** A blank page: the address takes the keyboard as it appears. */
   focusAddress?: boolean;
   find?: BrowserFindControls | null;
+  /** The docked conversation's mark while the page follows its agent: the address is ringed. */
+  following?: ReactNode;
   notice?: ReactNode;
   leading?: ReactNode;
   /** The page is loading: Reload becomes Stop. */
@@ -73,6 +77,8 @@ export function BrowserToolbar({
   onNavigated?: () => void;
   onReload: () => void;
   onStop?: () => void;
+  /** Beside the address: the docked task's other tabs. */
+  tabs?: ReactNode;
   trailing?: ReactNode;
 }) {
   const [editing, setEditing] = useState(false);
@@ -135,6 +141,7 @@ export function BrowserToolbar({
           loading={loading}
           disabled={disabled}
           focusOnMount={editing || focusAddress}
+          following={following}
           key={activeTab?.id ?? "no-active-tab"}
           mark={mark}
           onDone={compact ? () => setEditing(false) : null}
@@ -144,6 +151,7 @@ export function BrowserToolbar({
           url={url}
         />
       )}
+      {tabs}
       {find ? <BrowserFind controls={find} /> : null}
       {notice ? (
         <div className="browser-notice" role="status">
@@ -184,6 +192,7 @@ function BrowserAddress({
   chip,
   disabled,
   focusOnMount,
+  following,
   loading,
   mark,
   omnibox,
@@ -196,6 +205,7 @@ function BrowserAddress({
   chip: ReactNode;
   disabled: boolean;
   focusOnMount: boolean;
+  following: ReactNode;
   loading: boolean;
   mark: ReactNode;
   omnibox: { readonly hostClient: HostClient; readonly choice: BrowserIdentityChoice };
@@ -248,7 +258,13 @@ function BrowserAddress({
   return (
     <form
       ref={anchor}
-      className={chip ? "browser-address browser-address--chip" : "browser-address"}
+      className={[
+        "browser-address",
+        chip ? "browser-address--chip" : "",
+        following ? "browser-address--following" : "",
+      ]
+        .filter(Boolean)
+        .join(" ")}
       onSubmit={(event) => {
         event.preventDefault();
         controller.submit();
@@ -275,6 +291,16 @@ function BrowserAddress({
         />
         {parts ? <BrowserAddressDisplay url={url} hidden /> : null}
       </span>
+      {following ? (
+        <span
+          aria-label="Following the agent"
+          className="browser-address__following"
+          role="img"
+          title="Following the agent"
+        >
+          {following}
+        </span>
+      ) : null}
       {controller.dirty && !controller.submitting && controller.value !== pageValue ? (
         <button
           aria-label="Go"

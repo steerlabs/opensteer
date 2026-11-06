@@ -189,8 +189,8 @@ const RootStack = createNativeStackNavigator({
     // alone, from Tabs or the sidebar. The native
     // Back (and swipe, and Android's back) returns, and leaving stops nothing.
     WorkspaceBrowser: { screen: WorkspaceBrowserScreen, options: { title: "Tabs" } },
-    // One browser's tabs, from the tab button in a page's bar. It opens at the
-    // height its rows need and grows for a browser with many.
+    // One browser's tabs, from the tab button in a page's bar; opened for a
+    // task, that task's tabs first. It opens at half height and grows for many.
     BrowserTabs: {
       screen: BrowserTabsScreen,
       options: {
@@ -573,6 +573,7 @@ type OpensteerRootParamList = {
     readonly deploymentId: string;
     readonly sessionId: string;
     readonly tabId: string;
+    readonly threadId?: string;
   };
 };
 

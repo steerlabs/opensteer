@@ -48,19 +48,7 @@ export function usePageHeader(props: {
   useLayoutEffect(() => {
     const ask = (target: AskTarget) => latest.current.onAsk(target);
     const open = (threadId: string) => latest.current.onOpenAgent(threadId);
-    const inChat: NativeMenuOption = {
-      icon: "bubble.left",
-      id: "chat",
-      label: "Ask in Chat",
-      onPress: () => ask("chat"),
-    };
-    const newTask: NativeMenuOption = {
-      icon: "square.and.pencil",
-      id: "task",
-      label: "New task",
-      onPress: () => ask("task"),
-    };
-    const choices = chat ? [inChat, newTask] : [newTask];
+    const choices = askChoices({ asksThread: false, chat, onAsk: ask });
     navigation.setOptions({
       headerRight: () =>
         asksThread ? (
@@ -126,6 +114,33 @@ export function usePageHeader(props: {
 }
 
 const threadHint = "Opens the conversation that made this app";
+
+/**
+ * Ask's choices as a menu draws them: in the Thread that made the place, or
+ * in Chat, once it exists, and a new task. The bar draws them, and so does the
+ * page's own More while its bar is put away beside a Thread.
+ */
+export function askChoices(props: {
+  readonly asksThread: boolean;
+  readonly chat: boolean;
+  readonly onAsk: (target: AskTarget) => void;
+}): readonly NativeMenuOption[] {
+  const { onAsk } = props;
+  if (props.asksThread)
+    return [{ icon: "bubble.left", id: "thread", label: "Ask", onPress: () => onAsk("thread") }];
+  const newTask: NativeMenuOption = {
+    icon: "square.and.pencil",
+    id: "task",
+    label: "New task",
+    onPress: () => onAsk("task"),
+  };
+  return props.chat
+    ? [
+        { icon: "bubble.left", id: "chat", label: "Ask in Chat", onPress: () => onAsk("chat") },
+        newTask,
+      ]
+    : [newTask];
+}
 
 function noop(): void {}
 

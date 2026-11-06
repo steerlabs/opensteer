@@ -51,8 +51,6 @@ import {
   ActivityIndicator,
   AppState,
   FlatList,
-  KeyboardAvoidingView,
-  Platform,
   Pressable,
   StyleSheet,
   View,
@@ -74,8 +72,7 @@ import { operationDetail } from "../client/mobile-client.js";
 import { color, material, radius, space, touchTarget } from "../theme.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
 import { useMobileNotifications } from "../ui/notifications-context.js";
-import { useKeyboardVisible } from "../ui/keyboard.js";
-import { enter, exit, move } from "../ui/motion.js";
+import { enter, exit } from "../ui/motion.js";
 import { AppText, Notice } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { useContentInsets, usePaneInView } from "../ui/pane.js";
@@ -100,6 +97,7 @@ import {
 } from "./surface-chips.js";
 import { TranscriptHostClientContext } from "./attachment-views.js";
 import { Composer } from "./composer.js";
+import { ComposerDockLayout } from "./composer-dock.js";
 import { LivePlace } from "./live-place.js";
 import { PasswordsSuggestion } from "./passwords-suggestion.js";
 import { QueuedMessages } from "./queued-messages.js";
@@ -199,6 +197,12 @@ const headThreshold = 160;
 
 interface ThreadPaneProps {
   readonly deploymentId: string;
+  /**
+   * Points at the top of the pane covered by a floating header, such as the
+   * title over a conversation beside a page. The transcript starts below it
+   * and scrolls under it. Left out, the screen's own navigation bar decides.
+   */
+  readonly headerClearance?: number;
   readonly hostClient: HostClient;
   /**
    * Parent offset in screen coordinates. It is zero in both layouts this app
@@ -390,7 +394,6 @@ function ThreadPaneForUser(
     pendingMutationOwner(),
   );
   const paging = useRef(false);
-  const keyboardVisible = useKeyboardVisible();
   const scrollRetry = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scrollAttempts = useRef(0);
 
@@ -1206,9 +1209,9 @@ function ThreadPaneForUser(
   // This pane's list scrolls under the Thread screen's transparent bar. iOS
   // takes the bar's height from the screen's own safe area; Android has no such
   // inset to read, so the number is stated there. Beside a page there is no bar
-  // over it.
+  // over it, only what that surface floats there itself.
   const companion = props.withPage ?? null;
-  const underHeader = companion === null;
+  const headerClearance = props.headerClearance ?? (companion === null ? headerHeight : 0);
   // Beside a page there is no title menu, so the composer's carries these.
   const actionsBesidePage =
     companion === null
@@ -1219,14 +1222,18 @@ function ThreadPaneForUser(
             navigation.navigate("ThreadFind", { deploymentId: props.deploymentId, threadId }),
           threadId,
         });
-  const transcript = (
+  const transcript = (clearance: number): ReactNode => (
     <View style={styles.body}>
       <FlatList
+        automaticallyAdjustsScrollIndicatorInsets={false}
         contentInsetAdjustmentBehavior="never"
         contentContainerStyle={[
-          styles.content,
           column,
-          { ...sides, paddingTop: underHeader ? headerHeight + space[8] : space[8] },
+          {
+            ...sides,
+            paddingBottom: clearance + space[16],
+            paddingTop: headerClearance + space[8],
+          },
         ]}
         data={items}
         keyboardDismissMode="interactive"
@@ -1255,8 +1262,8 @@ function ThreadPaneForUser(
           extent.current.content = height;
           keepPinned();
         }}
-        // The list also changes height on its own: the keyboard opening, and
-        // the composer growing as a Request docks into it or text wraps.
+        // The list also changes height on its own as the keyboard opens; the
+        // composer growing changes its content's clearance instead.
         onLayout={(event) => {
           extent.current.viewport = event.nativeEvent.layout.height;
           keepPinned();
@@ -1296,12 +1303,17 @@ function ThreadPaneForUser(
         // The pill and the load-earlier trigger both read scroll position, so
         // the list reports it every frame rather than every fourth one.
         scrollEventThrottle={16}
+        scrollIndicatorInsets={{ bottom: clearance, top: headerClearance }}
       />
       {/* An older window has to be left deliberately, and the way out is to
           load the live conversation — so the offer stands there whether or
           not anything new has arrived since. */}
       {!historical && atTail ? null : (
-        <Animated.View entering={enter} exiting={exit} style={styles.jumpHome}>
+        <Animated.View
+          entering={enter}
+          exiting={exit}
+          style={[styles.jumpHome, { bottom: clearance + space[12] }]}
+        >
           {/* An opaque capsule, not glass: it floats over whatever the
               reader scrolled to, their own ember messages included, and its
               words have to read over all of it. */}
@@ -1340,196 +1352,168 @@ function ThreadPaneForUser(
       )}
     </View>
   );
-  const content = (
+  const dock = (
     <>
-      {transcript}
-
-      <Animated.View
-        layout={move}
-        style={[
-          styles.dock,
-          column,
-          {
-            paddingBottom: (keyboardVisible ? 0 : insets.bottom) + space[8],
-            // Tighter than the transcript's gutter: the bar floats over the
-            // page rather than sitting in its column, and a floating thing
-            // that lines up with the text under it reads as part of it.
-            paddingLeft: space[8] + insets.left,
-            paddingRight: space[8] + insets.right,
-          },
-        ]}
-        testID="composer-dock"
-      >
-        {failure !== null ? (
-          <Notice
-            action={{ label: "Dismiss", onPress: () => setFailure(null) }}
-            detail={failure}
-            title="Something did not work"
-          />
-        ) : loadError !== null && canRespond ? (
-          <Notice
-            action={{ label: "Try again", onPress: () => void reload().catch(() => undefined) }}
-            detail={loadError}
-            title="This thread could not be loaded"
-          />
-        ) : snapshot.lookup === "failed" ? (
-          <Notice
-            action={{ label: "Try again", onPress: () => hostClient.activateThread(threadId) }}
-            detail="Check your connection and try again."
-            title="Messages could not be loaded"
-          />
-        ) : null}
-        {snapshot.user === null ? null : (
-          <>
-            {stopTarget === null ? null : (
-              <LivePlace
-                active={focused}
-                hostClient={hostClient}
-                key={stopTarget.id}
-                onOpen={openSurface}
-                runId={stopTarget.id}
-              />
-            )}
-            {voiceThread && onCall ? null : (
-              <WaitingQuestions
-                canRespond={canRespond}
-                deploymentId={props.deploymentId}
-                drafts={client.drafts}
-                hostClient={props.hostClient}
-                machines={snapshot.machines}
-                onOpenTask={taskScope.onViewWork}
-                ownQuestions={voiceThread}
-                threadId={thread.id}
-                user={snapshot.user}
-                waitingRequests={dockableWaiting}
-              />
-            )}
-            {voiceThread ? (
-              <>
-                <VoiceDock slot />
-                {onCall ? null : (
-                  <VoiceStartBar
-                    modelHold={settingsDisabledReason({
-                      canRespond,
-                      hasRun: threadRuns.length > 0,
-                      mutationOwner,
-                      kind: "thread",
-                      thread,
-                    })}
-                    modelLabel={
-                      thread.modelLabel.trim() === "" ? "Choose model" : thread.modelLabel
-                    }
-                    onChooseModel={openSettings}
-                  />
-                )}
-                <UsageNotice notice={usageNotice} onOpen={openSettings} />
-              </>
-            ) : (
-              <View>
-                <Composer
-                  variant={conversational ? "conversation" : "work"}
-                  voice={isHome}
-                  accessMode={thread.accessMode}
-                  accessModes={placement?.accessModes ?? null}
-                  canRespond={canRespond}
-                  deploymentId={props.deploymentId}
-                  // Identity, not decoration: the composer's draft and its pending
-                  // command belong to one Thread on one Deployment, so a navigation to
-                  // another Thread builds a new one rather than inheriting this one's.
-                  key={`${props.deploymentId}:${snapshot.user.id}:${thread.id}`}
-                  disabledReason={disabledReason}
-                  readOnly={thread.status === "archived"}
-                  drafts={client.drafts}
-                  driverKind={placement?.driverKind}
-                  executionBlockedReason={
-                    placement === null
-                      ? "This AI account is no longer here."
-                      : !placement.available
-                        ? placement.detail
-                        : null
-                  }
-                  engineName={placement?.engineName ?? thread.harnessLabel}
-                  usageNotice={usageNotice}
-                  highlightRequestId={props.requestId}
-                  hostClient={props.hostClient}
-                  machines={snapshot.machines}
-                  // A thread with no model chosen yet says so on the pill, rather
-                  // than naming a blank.
-                  modelLabel={thread.modelLabel.trim() === "" ? "Choose model" : thread.modelLabel}
-                  model={
-                    placement?.models.find(
-                      (m) =>
-                        m.providerId === thread.modelSelection.providerId &&
-                        m.modelId === thread.modelSelection.modelId,
-                    ) ?? null
-                  }
-                  modelOptions={thread.modelSelection.options}
-                  mutationGate={mutationGate}
-                  conversationActions={actionsBesidePage}
-                  page={companion?.page ?? null}
-                  onChangeModel={openSettings}
-                  placeholder={
-                    isHome
-                      ? "Ask anything…"
-                      : threadComposerPlaceholder(items.length === 0 && !canLoadEarlier)
-                  }
-                  requests={dockableRequests}
-                  restore={restoredDraft}
-                  running={stopTarget !== null}
-                  // A task card in a conversation stops its own task, and a task's
-                  // title menu stops the task. In a conversation this ends only the
-                  // reply under way; in a task it leaves the task paused.
-                  stopLabel={
-                    conversational
-                      ? "Stop the reply"
-                      : task?.open === true
-                        ? "Pause this task"
-                        : "Stop this run"
-                  }
-                  runStopping={activity === "stopping"}
-                  // The sheet's own guard, in the sheet's own words: the model pill
-                  // and the access menu change the same settings from here, so a
-                  // change already in flight — including one whose sheet has since
-                  // been dismissed — has to close both doors, not just that one.
-                  settingsDisabledReason={settingsDisabledReason({
+      {failure !== null ? (
+        <Notice
+          action={{ label: "Dismiss", onPress: () => setFailure(null) }}
+          detail={failure}
+          title="Something did not work"
+        />
+      ) : loadError !== null && canRespond ? (
+        <Notice
+          action={{ label: "Try again", onPress: () => void reload().catch(() => undefined) }}
+          detail={loadError}
+          title="This thread could not be loaded"
+        />
+      ) : snapshot.lookup === "failed" ? (
+        <Notice
+          action={{ label: "Try again", onPress: () => hostClient.activateThread(threadId) }}
+          detail="Check your connection and try again."
+          title="Messages could not be loaded"
+        />
+      ) : null}
+      {snapshot.user === null ? null : (
+        <>
+          {stopTarget === null ? null : (
+            <LivePlace
+              active={focused}
+              hostClient={hostClient}
+              key={stopTarget.id}
+              onOpen={openSurface}
+              runId={stopTarget.id}
+            />
+          )}
+          {voiceThread && onCall ? null : (
+            <WaitingQuestions
+              canRespond={canRespond}
+              deploymentId={props.deploymentId}
+              drafts={client.drafts}
+              hostClient={props.hostClient}
+              machines={snapshot.machines}
+              onOpenTask={taskScope.onViewWork}
+              ownQuestions={voiceThread}
+              threadId={thread.id}
+              user={snapshot.user}
+              waitingRequests={dockableWaiting}
+            />
+          )}
+          {voiceThread ? (
+            <>
+              <VoiceDock slot />
+              {onCall ? null : (
+                <VoiceStartBar
+                  modelHold={settingsDisabledReason({
                     canRespond,
                     hasRun: threadRuns.length > 0,
                     mutationOwner,
                     kind: "thread",
                     thread,
                   })}
-                  subagentTitles={subagentTitles}
-                  threadId={thread.id}
-                  user={snapshot.user}
-                  workspaceId={thread.workspaceId}
+                  modelLabel={thread.modelLabel.trim() === "" ? "Choose model" : thread.modelLabel}
+                  onChooseModel={openSettings}
                 />
-              </View>
-            )}
-          </>
-        )}
-      </Animated.View>
+              )}
+              <UsageNotice notice={usageNotice} onOpen={openSettings} />
+            </>
+          ) : (
+            <View>
+              <Composer
+                variant={conversational ? "conversation" : "work"}
+                voice={isHome}
+                accessMode={thread.accessMode}
+                accessModes={placement?.accessModes ?? null}
+                canRespond={canRespond}
+                deploymentId={props.deploymentId}
+                // Identity, not decoration: the composer's draft and its pending
+                // command belong to one Thread on one Deployment, so a navigation to
+                // another Thread builds a new one rather than inheriting this one's.
+                key={`${props.deploymentId}:${snapshot.user.id}:${thread.id}`}
+                disabledReason={disabledReason}
+                readOnly={thread.status === "archived"}
+                drafts={client.drafts}
+                driverKind={placement?.driverKind}
+                executionBlockedReason={
+                  placement === null
+                    ? "This AI account is no longer here."
+                    : !placement.available
+                      ? placement.detail
+                      : null
+                }
+                engineName={placement?.engineName ?? thread.harnessLabel}
+                usageNotice={usageNotice}
+                highlightRequestId={props.requestId}
+                hostClient={props.hostClient}
+                machines={snapshot.machines}
+                // A thread with no model chosen yet says so on the pill, rather
+                // than naming a blank.
+                modelLabel={thread.modelLabel.trim() === "" ? "Choose model" : thread.modelLabel}
+                model={
+                  placement?.models.find(
+                    (m) =>
+                      m.providerId === thread.modelSelection.providerId &&
+                      m.modelId === thread.modelSelection.modelId,
+                  ) ?? null
+                }
+                modelOptions={thread.modelSelection.options}
+                mutationGate={mutationGate}
+                conversationActions={actionsBesidePage}
+                page={companion?.page ?? null}
+                onChangeModel={openSettings}
+                placeholder={
+                  isHome
+                    ? "Ask anything…"
+                    : threadComposerPlaceholder(items.length === 0 && !canLoadEarlier)
+                }
+                requests={dockableRequests}
+                restore={restoredDraft}
+                running={stopTarget !== null}
+                // A task card in a conversation stops its own task, and a task's
+                // title menu stops the task. In a conversation this ends only the
+                // reply under way; in a task it leaves the task paused.
+                stopLabel={
+                  conversational
+                    ? "Stop the reply"
+                    : task?.open === true
+                      ? "Pause this task"
+                      : "Stop this run"
+                }
+                runStopping={activity === "stopping"}
+                // The sheet's own guard, in the sheet's own words: the model pill
+                // and the access menu change the same settings from here, so a
+                // change already in flight — including one whose sheet has since
+                // been dismissed — has to close both doors, not just that one.
+                settingsDisabledReason={settingsDisabledReason({
+                  canRespond,
+                  hasRun: threadRuns.length > 0,
+                  mutationOwner,
+                  kind: "thread",
+                  thread,
+                })}
+                subagentTitles={subagentTitles}
+                threadId={thread.id}
+                user={snapshot.user}
+                workspaceId={thread.workspaceId}
+              />
+            </View>
+          )}
+        </>
+      )}
     </>
   );
-  // Beside a page, the screen already keeps the keyboard clear; a second
-  // avoiding view would lift the composer twice.
-  const pane =
-    companion !== null ? (
-      <View style={styles.pane}>{content}</View>
-    ) : (
-      <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
-        keyboardVerticalOffset={props.keyboardVerticalOffset ?? 0}
-        style={styles.pane}
-      >
-        {content}
-      </KeyboardAvoidingView>
-    );
   return (
     <TaskScopeContext.Provider value={taskScope}>
       <TranscriptComputersContext.Provider value={computers}>
         <TranscriptSurfacesContext.Provider value={surfaces}>
           <TranscriptAppTabsContext.Provider value={appTabs}>
-            {pane}
+            {/* Beside a page, the screen already keeps the keyboard clear. */}
+            <ComposerDockLayout
+              avoidKeyboard={companion === null}
+              dock={dock}
+              keyboardVerticalOffset={props.keyboardVerticalOffset ?? 0}
+            >
+              {transcript}
+            </ComposerDockLayout>
           </TranscriptAppTabsContext.Provider>
         </TranscriptSurfacesContext.Provider>
       </TranscriptComputersContext.Provider>
@@ -1753,10 +1737,6 @@ function EmptyThread(props: { readonly loading: boolean; readonly voice: boolean
 const styles = StyleSheet.create({
   body: { flex: 1 },
   centred: { flex: 1, gap: space[12], justifyContent: "center" },
-  // No gap: each row carries the air above it, because how much belongs there
-  // depends on whether the row before it was the same voice.
-  content: { paddingBottom: space[16] },
-  dock: { gap: space[8], paddingTop: space[8] },
   // The title's menu sizes to its own words, so the column holds it at the
   // start rather than stretching it across the pane.
   earlier: { alignItems: "center", paddingBottom: space[8] },
@@ -1790,8 +1770,7 @@ const styles = StyleSheet.create({
   },
   // Clear of the composer beneath it: the pill is an offer, and an offer that
   // touches the thing it sits on reads as part of it.
-  jumpHome: { alignItems: "center", bottom: space[12], left: 0, position: "absolute", right: 0 },
+  jumpHome: { alignItems: "center", left: 0, position: "absolute", right: 0 },
   jumpPressed: { ...material.floatPressed },
-  pane: { flex: 1 },
   passwords: { marginTop: space[10] },
 });

@@ -1,9 +1,11 @@
+import type { PlaceAgent } from "@opensteer/client/host";
 import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Image, Pressable, StyleSheet, TextInput, View, useWindowDimensions } from "react-native";
 import { GestureDetector, usePanGesture } from "react-native-gesture-handler";
 import Animated, {
   cancelAnimation,
   Easing,
+  FadeIn,
   useAnimatedStyle,
   useReducedMotion,
   useSharedValue,
@@ -15,6 +17,7 @@ import { scheduleOnRN } from "react-native-worklets";
 import { color, controlFontScaleLimit, radius, space, touchTarget } from "../theme.js";
 import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
+import { AgentMarks } from "./agent-marks.js";
 import { ToolbarCapsule } from "./toolbar.js";
 
 /** How far the address is dragged before letting go moves to the next tab. */
@@ -26,9 +29,16 @@ const switchDistance = 56;
  * browser's next or previous tab, as Safari's does. A line along its bottom
  * edge says what is happening in the page: the page loading, or an agent
  * acting in it.
+ *
+ * While the page keeps up with an agent's tab, a green ring and the agent's
+ * mark say so: the one sign that this is what the agent sees.
  */
 export const AddressCapsule = memo(function AddressCapsule(props: {
   readonly acting: boolean;
+  /** Arrived here from another tab, so the address fades in as the page does. */
+  readonly arriving?: boolean;
+  /** Keeping up with this agent's tab; null for an agent the reader cannot name. */
+  readonly following?: { readonly agent: PlaceAgent | null } | null;
   readonly favicon: string | null;
   readonly loading: boolean;
   readonly onEdit: () => void;
@@ -61,7 +71,10 @@ export const AddressCapsule = memo(function AddressCapsule(props: {
     },
   });
   const moved = useAnimatedStyle(() => ({ transform: [{ translateX: drag.value }] }));
+  const reduceMotion = useReducedMotion();
   const site = props.site ?? "Search or enter address";
+  const following = props.following ?? null;
+  const address = props.site === null ? "Address" : `Address, ${props.site}`;
   return (
     <GestureDetector gesture={swipe}>
       <View style={styles.slot}>
@@ -72,12 +85,16 @@ export const AddressCapsule = memo(function AddressCapsule(props: {
                 ? "Edits the address. Swipe sideways for the next tab."
                 : "Edits the address"
             }
-            accessibilityLabel={props.site === null ? "Address" : `Address, ${props.site}`}
+            accessibilityLabel={following === null ? address : `${address}. Following the agent`}
             accessibilityRole="button"
             onPress={props.onEdit}
             style={({ pressed }) => [styles.address, pressed && styles.pressed]}
           >
-            <Animated.View style={[styles.site, moved]}>
+            <Animated.View
+              {...(props.arriving === true && !reduceMotion ? { entering: arrive } : {})}
+              style={[styles.site, moved]}
+            >
+              {following?.agent ? <AgentMarks agents={[following.agent]} size={16} /> : null}
               {props.favicon !== null ? (
                 <Image
                   accessibilityIgnoresInvertColors
@@ -114,6 +131,7 @@ export const AddressCapsule = memo(function AddressCapsule(props: {
               weight="medium"
             />
           </Pressable>
+          {following === null ? null : <View pointerEvents="none" style={styles.ring} />}
           {props.loading ? (
             <ActivityLine tone="loading" />
           ) : props.acting ? (
@@ -124,6 +142,8 @@ export const AddressCapsule = memo(function AddressCapsule(props: {
     </GestureDetector>
   );
 });
+
+const arrive = FadeIn.duration(180);
 
 /**
  * A short light running along the capsule's bottom edge: blue while the page
@@ -317,6 +337,12 @@ const styles = StyleSheet.create({
   },
   light: { borderRadius: 2, bottom: 0, position: "absolute", top: 0 },
   pressed: { opacity: 0.6 },
+  ring: {
+    ...StyleSheet.absoluteFill,
+    borderColor: color.green,
+    borderRadius: radius.full,
+    borderWidth: 1.5,
+  },
   reload: {
     alignItems: "center",
     height: touchTarget,
