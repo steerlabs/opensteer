@@ -722,7 +722,7 @@ export function PlaceBrowserView({
             await hostClient.browserPasskeys?.continue(sessionId, tabId);
           }}
         />
-        <div className="browser-stage" ref={stageRef}>
+        <div className="browser-stage" data-native={native || undefined} ref={stageRef}>
           {!native && viewer.inputError ? (
             <div className="browser-action-error" role="status">
               {viewer.inputError}

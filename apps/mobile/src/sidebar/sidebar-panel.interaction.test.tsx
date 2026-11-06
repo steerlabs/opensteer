@@ -25,6 +25,7 @@ const harness = vi.hoisted(() => ({
   rowDraws: 0,
 }));
 const removeChatDraftFile = vi.hoisted(() => vi.fn());
+vi.mock("../voice/cursor-mark.js", () => ({ PillMic: () => null, VoiceCursor: () => null }));
 vi.mock("react-native", async () => {
   const { reactNative } = await import("../../test-support/settings-screens.js");
   const Box = reactNative.View;
@@ -290,10 +291,12 @@ describe("the sidebar's drafts", () => {
     const discarded = vi.spyOn(host, "discardAttachment").mockResolvedValue(undefined as never);
     const confirm = vi.spyOn(Alert, "alert").mockImplementation(() => undefined);
     removeChatDraftFile.mockClear();
-    const discards = [...container.querySelectorAll("button")].filter(
-      ({ textContent }) => textContent === "Discard",
+    // Found by its words: two drafts written a millisecond apart swap places.
+    const discard = [...container.querySelectorAll("button")].find(
+      ({ parentElement, textContent }) =>
+        textContent === "Discard" && parentElement?.textContent?.includes("Discard me"),
     );
-    await act(async () => discards[0]!.click());
+    await act(async () => discard!.click());
     expect(drafts.readDraft(...scope, newTaskDraftKey("draft-a"))).not.toBeNull();
     expect(removeChatDraftFile).not.toHaveBeenCalled();
     const [title, detail, options] = confirm.mock.calls.at(-1)!;

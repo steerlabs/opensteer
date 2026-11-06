@@ -88,6 +88,7 @@ export type SFSymbolName =
   | "square"
   | "square.grid.2x2"
   | "square.on.square"
+  | "square.and.arrow.up"
   | "square.and.pencil"
   | "stop.circle"
   | "stop.fill"
@@ -250,6 +251,7 @@ const glyph: Record<SFSymbolName, string> = {
   square: "□",
   "square.grid.2x2": "⊞",
   "square.on.square": "❐",
+  "square.and.arrow.up": "⇧",
   "square.and.pencil": "✎",
   "stop.circle": "◼",
   "stop.fill": "■",

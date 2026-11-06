@@ -3,21 +3,22 @@ import { useRef, type ReactNode } from "react";
 import { StyleSheet, View } from "react-native";
 import { color, touchTarget } from "../theme.js";
 import { Symbol } from "../ui/symbol.js";
-import {
-  messageActions,
-  performMessageAction,
-  type MessageMenuOptions,
-} from "./message-menu-actions.js";
+import type { MessageAction } from "./message-actions.js";
 
-/** A small native menu keeps message actions out of the reading column. */
-export function MessageMenu(props: MessageMenuOptions): ReactNode {
+export interface MessageMenuProps {
+  readonly actions: readonly MessageAction[];
+  readonly onAction: (id: string) => void;
+}
+
+/** A small native menu keeps a task's message actions out of the reading column. */
+export function MessageMenu(props: MessageMenuProps): ReactNode {
   const menu = useRef<MenuComponentRef>(null);
   return (
     <MenuView
-      actions={[...messageActions(props)]}
+      actions={props.actions.map(({ id, image, title }) => ({ id, image, title }))}
       colorScheme="dark"
       onPressAction={({ nativeEvent }) => {
-        performMessageAction(nativeEvent.event, props);
+        props.onAction(nativeEvent.event);
       }}
       ref={menu}
       style={styles.menu}
@@ -38,9 +39,7 @@ export function MessageMenu(props: MessageMenuOptions): ReactNode {
 
 const styles = StyleSheet.create({
   menu: { alignSelf: "flex-start" },
-  // The glyph is small; the region a thumb lands on is not. The row it sits in
-  // is the message's own trailing edge, so the extra height costs the
-  // transcript nothing.
+  // The glyph is small; the region a thumb lands on is not.
   trigger: {
     alignItems: "center",
     justifyContent: "center",

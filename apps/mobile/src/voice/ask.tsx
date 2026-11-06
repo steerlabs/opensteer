@@ -24,6 +24,9 @@ interface AskedState {
   readonly waiting: HostSnapshot["waitingRequests"][number] | null;
 }
 
+/** A phone's whole lane; on anything wider the card stays the pill's, at the same right edge. */
+const cardWidth = 440;
+
 const selectPasswords = ({ ask }: VoiceSnapshot) => ask?.kind === "passwords";
 const selectPasswordsOffer = ({ ask }: VoiceSnapshot) =>
   ask?.kind === "passwords" ? ask.offer : null;
@@ -67,7 +70,7 @@ function AskedRequest(props: {
   const deploymentId = client.getSnapshot().selection.deploymentId;
   if (surface === null || user === null || deploymentId === null) return null;
   return (
-    <Animated.View entering={appear} exiting={exit} style={styles.asked}>
+    <Animated.View entering={appear} exiting={exit} style={[styles.card, styles.asked]}>
       <QuestionCard
         canRespond={canRespond}
         deploymentId={deploymentId}
@@ -105,7 +108,7 @@ function AskedPasswords(props: { readonly hostClient: HostClient }): ReactNode {
   const userId = useHostUserId(props.hostClient);
   if (deploymentId === null || userId === null || offer === null) return null;
   return (
-    <Animated.View entering={appear} exiting={exit}>
+    <Animated.View entering={appear} exiting={exit} style={styles.card}>
       <PasswordsSuggestion
         offer={offer}
         deploymentId={deploymentId}
@@ -118,9 +121,10 @@ function AskedPasswords(props: { readonly hostClient: HostClient }): ReactNode {
 
 const styles = StyleSheet.create({
   asked: { gap: space[4] },
+  card: { alignSelf: "flex-end", maxWidth: cardWidth, width: "100%" },
   more: {
     ...material.plate,
-    alignSelf: "center",
+    alignSelf: "flex-end",
     backgroundColor: color.surfaceElevated,
     borderRadius: radius.full,
     paddingHorizontal: space[10],

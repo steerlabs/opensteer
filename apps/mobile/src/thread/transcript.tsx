@@ -7,6 +7,7 @@ import {
   hasRunOutcome,
   silentRunLabel,
   incomingMessagePreview,
+  justSent,
   messageAuthorName,
   messageFoldLines,
   turnFolds,
@@ -23,6 +24,7 @@ import {
   type RunEntry,
   type ThreadActivityIndicator,
   type TranscriptGroup,
+  type TranscriptVoice,
   type Turn,
   type WorkEntry,
   type WorkRow,
@@ -30,20 +32,23 @@ import {
   type WorkspaceSummary,
 } from "@opensteer/client/host";
 import { voiceCallSeed } from "@opensteer/core";
-import { memo, useMemo, useState, type ReactNode } from "react";
+import { replyParts, type ReplyPart } from "@opensteer/shared/markdown";
+import { memo, useMemo, useRef, useState, type ReactNode } from "react";
 import { Pressable, StyleSheet, View, useWindowDimensions } from "react-native";
 import Animated, { LayoutAnimationConfig } from "react-native-reanimated";
-import { Markdown, PlainProse } from "../markdown/markdown.js";
+import { CodeLines, Markdown, PlainProse } from "../markdown/markdown.js";
 import { color, material, radius, space, touchTarget, type } from "../theme.js";
-import { appear, exit } from "../ui/motion.js";
+import { CopyMark } from "../ui/copy-mark.js";
+import { appear, bubblePop, bubbleRise, exit } from "../ui/motion.js";
 import { AppText, StatusDot, TypingDots, monoFontFamily } from "../ui/primitives.js";
 import { activitySymbol } from "../ui/activity-symbol.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
 import { AssignmentLines, DelegationLine, ThreadMark } from "./task-line.js";
 import { AppCard } from "./app-card.js";
 import { MessageAttachments } from "./attachment-views.js";
+import { Bubble, bubble } from "./bubble.js";
 import { ComputerUseLine, KeptComputerStopLine, useComputerLine } from "./computer-use-line.js";
-import { MessageMenu } from "./message-menu.js";
+import { MessageHold, MessageMore } from "./message-hold.js";
 import { MessagePages, ReplySurfaces, TracePlace } from "./surface-chips.js";
 
 /**
@@ -75,6 +80,8 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
   readonly onOpenReplyUnderWay?: (() => void) | undefined;
   /** Given, each reply in a conversation offers to be quoted into the composer. */
   readonly onReply?: ((message: MessageEntry) => void) | undefined;
+  /** The next row carries on from this one, so the tail belongs to that row. */
+  readonly continued?: boolean;
   readonly group: TranscriptGroup;
   readonly live?: boolean;
   /**
@@ -91,6 +98,8 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
   readonly onOpenThread: (threadId: string) => void;
   /** The air above this row: a turn's own rows sit closer than two turns do. */
   readonly spacingTop: number;
+  /** When this row was said, where a pause has passed in a conversation. */
+  readonly time?: string | null;
   /** True for the first row holding something published since the reader's last visit. */
   readonly unreadBoundary?: boolean;
   /** The reader's own Home, which its messages name as Home rather than as whose it is. */
@@ -104,12 +113,18 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
   return (
     <View style={{ marginTop: props.spacingTop }}>
       {props.unreadBoundary === true && props.conversation !== true ? <UnreadDivider /> : null}
+      {props.time ? (
+        <AppText role="caption" style={styles.time} tone="muted">
+          {props.time}
+        </AppText>
+      ) : null}
       {group.kind === "app" ? (
         <AppCard entry={group.entry} />
       ) : group.kind === "turn" ? (
         props.conversation === true ? (
           <ConversationTurn
             activityKey={props.activityKey ?? null}
+            continued={props.continued === true}
             live={props.live ?? true}
             onOpenActivity={props.onOpenActivity}
             onOpenReplyUnderWay={props.onOpenReplyUnderWay}
@@ -142,6 +157,7 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
         <CallDivider createdAt={group.entry.createdAt} />
       ) : (
         <Message
+          continued={props.continued === true}
           conversation={props.conversation === true}
           joinedRun={props.conversation !== true && group.joinedRun === true}
           homeThreadId={props.homeThreadId}
@@ -159,27 +175,9 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
 });
 
 /**
- * Which of the transcript's three voices a group speaks in.
- *
- * The reader's own messages, an input arriving from elsewhere, and the agent's
- * own work are the three things a thread interleaves, and the gap between two
- * rows is the cheapest way to say whether they belong to one turn or to two.
+ * The air above a row, given what spoke before it: the gap between two rows is
+ * the cheapest way to say whether they belong to one turn or to two.
  */
-export type TranscriptVoice = "agent" | "input" | "mine";
-
-export function transcriptVoice(
-  group: TranscriptGroup,
-  viewerUserId: string | null,
-): TranscriptVoice {
-  if (group.kind !== "message") return "agent";
-  const message = group.entry;
-  if (message.messageKind === "assistant") return "agent";
-  return message.author.kind === "human" && message.author.userId === viewerUserId
-    ? "mine"
-    : "input";
-}
-
-/** The air above a row, given what spoke before it. */
 export function transcriptSpacing(previous: TranscriptVoice | null, next: TranscriptVoice): number {
   if (previous === null) return 0;
   return previous === next ? space[6] : space[16];
@@ -321,6 +319,7 @@ function ConversationTurn(props: {
   readonly workspaces: readonly WorkspaceSummary[];
   readonly homeThreadId: string | null;
   readonly activityKey: string | null;
+  readonly continued: boolean;
   readonly live: boolean;
   readonly onOpenActivity: ((activityKey: string) => void) | undefined;
   readonly onOpenReplyUnderWay: (() => void) | undefined;
@@ -333,6 +332,10 @@ function ConversationTurn(props: {
   // The line the pane drew this row for: a quiet stretch has nothing else to show.
   const line = useComputerLine(turn, props.live);
   const composing = view.composing && props.live && line === null;
+  // A reply arrives only if its typing was on screen: one already there when
+  // the Thread opened, or that scrolling brought back, just stands there.
+  const typed = useRef(false);
+  if (composing) typed.current = true;
   const onActivity =
     activityKey === null || onOpenActivity === undefined
       ? undefined
@@ -369,6 +372,8 @@ function ConversationTurn(props: {
       ) : null}
       {view.reply !== null ? (
         <ReplyBubble
+          arrived={typed.current}
+          continued={props.continued}
           turn={turn}
           turnKey={props.turnKey}
           message={view.reply}
@@ -393,11 +398,19 @@ function ConversationTurn(props: {
       ) : null}
       <AssignmentLines entries={turn.assignments} />
       {/* A turn that ended without a reply says how, and its Activity opens
-          from that line's menu as a reply's would. */}
+          from that line, as a reply's opens from holding it. */}
       {outcome !== null && view.reply === null && onActivity !== undefined ? (
         <View style={styles.outcomeRow}>
           <View style={styles.outcome}>{outcome}</View>
-          <MessageMenu onActivity={onActivity} text="" />
+          <Pressable
+            accessibilityLabel="Run details"
+            accessibilityRole="button"
+            hitSlop={space[12]}
+            onPress={onActivity}
+            style={styles.outcomeOpen}
+          >
+            <Symbol name="chevron.right" size={11} tint={color.muted} />
+          </Pressable>
         </View>
       ) : (
         outcome
@@ -407,31 +420,55 @@ function ConversationTurn(props: {
 }
 
 /**
- * Opensteer's reply: a message, with what can be done with it in its menu,
- * and under it the pages and apps its Run used.
+ * Opensteer's reply, as the stack of bubbles it reads as: its words, and each
+ * block of code or draft on its own. Nothing sits on a bubble; holding one is
+ * what offers what can be done with it. Under them, the pages and apps its Run used.
  */
 function ReplyBubble(props: {
+  readonly arrived?: boolean;
+  readonly continued: boolean;
   readonly turn?: Turn;
   readonly turnKey: string | null;
   readonly message: MessageEntry;
   readonly onActivity?: (() => void) | undefined;
   readonly onReply: ((message: MessageEntry) => void) | undefined;
 }): ReactNode {
-  const { message } = props;
+  const { message, onReply } = props;
+  const parts = useMemo(() => replyParts(message.body), [message.body]);
+  const reply = useMemo(
+    () => (onReply === undefined ? undefined : () => onReply(message)),
+    [message, onReply],
+  );
   return (
-    <View style={styles.replyColumn}>
-      <View style={styles.replyRow}>
-        <View style={styles.reply}>
-          {message.body ? <Markdown text={message.body} /> : null}
-          <MessageAttachments attachments={message.attachments ?? []} />
-        </View>
-        <MessageMenu
-          reportId={message.id}
+    <Animated.View
+      {...(props.arrived === true ? { entering: bubblePop } : {})}
+      style={styles.replyColumn}
+    >
+      {parts.map((part, index) => (
+        <ReplyPartRow
+          key={index}
           onActivity={props.onActivity}
-          onReply={props.onReply ? () => props.onReply?.(message) : undefined}
-          text={message.body}
+          onReply={reply}
+          part={part}
+          reportId={message.id}
+          tail={!props.continued && index === parts.length - 1}
+          whole={parts.length > 1 ? message.body : undefined}
         />
-      </View>
+      ))}
+      {parts.length === 0 ? (
+        // With no words to hold, the files are what offers Reply, Run Details and Report.
+        <MessageHold
+          onActivity={props.onActivity}
+          onReply={reply}
+          previewRadius={radius.md}
+          reportId={message.id}
+          text=""
+        >
+          <MessageAttachments attachments={message.attachments ?? []} />
+        </MessageHold>
+      ) : (
+        <MessageAttachments attachments={message.attachments ?? []} />
+      )}
       {/* The record of a finished reply; while its Run works, the conversation's header follows it. */}
       {props.turn === undefined || turnState(props.turn) === "settled" ? (
         <ReplySurfaces
@@ -439,6 +476,59 @@ function ReplyBubble(props: {
           turnKey={props.turnKey}
         />
       ) : null}
+    </Animated.View>
+  );
+}
+
+/** Words that lay out as lines of a paragraph, so a bubble can size itself by the longest. */
+const notOnlyParagraphs = /^\s*(?:[-*+]\s|\d{1,9}[.)]\s|#{1,6}\s|>|\|)/mu;
+
+function ReplyPartRow(props: {
+  readonly onActivity: (() => void) | undefined;
+  readonly onReply: (() => void) | undefined;
+  readonly part: ReplyPart;
+  readonly reportId: string;
+  readonly tail: boolean;
+  readonly whole: string | undefined;
+}): ReactNode {
+  const { part } = props;
+  const wide = part.kind === "code" || (part.kind === "prose" && part.wide);
+  const fits = !wide && !notOnlyParagraphs.test(part.text);
+  return (
+    <View style={styles.partRow}>
+      <MessageHold
+        code={part.kind === "code"}
+        onActivity={props.onActivity}
+        onReply={props.onReply}
+        previewRadius={bubble.radius}
+        reportId={props.reportId}
+        style={wide ? styles.wideHold : styles.bubbleHold}
+        text={part.text}
+        whole={props.whole}
+      >
+        <Bubble
+          fill={part.kind === "code" ? color.surfaceElevated : color.bubbleTheirs}
+          fit={fits ? part.text : null}
+          side="theirs"
+          style={part.kind === "code" ? styles.codeBubble : undefined}
+          tail={props.tail}
+        >
+          {part.kind === "code" ? (
+            <CodeLines selectable={false} text={part.text} />
+          ) : part.kind === "draft" ? (
+            <PlainProse text={part.text} tone="reply" />
+          ) : (
+            <Markdown look="bubble" text={part.text} />
+          )}
+        </Bubble>
+      </MessageHold>
+      {part.kind === "prose" ? null : (
+        <CopyMark
+          accessibilityLabel={part.kind === "code" ? "Copy code" : "Copy draft"}
+          style={styles.partCopy}
+          text={part.text}
+        />
+      )}
     </View>
   );
 }
@@ -453,12 +543,12 @@ function Typing(props: { readonly onPress?: (() => void) | undefined }): ReactNo
     <Animated.View
       accessibilityLabel="Opensteer is replying"
       accessibilityLiveRegion="polite"
-      entering={appear}
+      entering={bubblePop}
       style={styles.typingRow}
     >
       {props.onPress === undefined ? (
         <View style={styles.typing}>
-          <TypingDots />
+          <TypingShape />
         </View>
       ) : (
         <Pressable
@@ -469,10 +559,21 @@ function Typing(props: { readonly onPress?: (() => void) | undefined }): ReactNo
           onPress={props.onPress}
           style={({ pressed }) => [styles.typing, pressed && styles.typingPressed]}
         >
-          <TypingDots />
+          <TypingShape />
         </Pressable>
       )}
     </Animated.View>
+  );
+}
+
+/** Its dots, and the two small circles Messages trails from a bubble still being written. */
+function TypingShape(): ReactNode {
+  return (
+    <>
+      <TypingDots />
+      <View style={[styles.typingTrail, styles.typingTrailNear]} />
+      <View style={[styles.typingTrail, styles.typingTrailFar]} />
+    </>
   );
 }
 
@@ -534,6 +635,7 @@ function TurnContent(props: {
   const latestPlaceId = active
     ? (turn.work.findLast((entry) => entry.kind === "place")?.id ?? null)
     : null;
+  const lastWord = active ? null : trace.rows.findLast(({ kind }) => kind === "note");
   return (
     <>
       {summary === null ? null : (
@@ -562,6 +664,7 @@ function TurnContent(props: {
           const content = (
             <WorkRowView
               active={active}
+              answer={row === lastWord}
               highlightRequestId={props.highlightRequestId}
               latestPlaceId={latestPlaceId}
               onOpenStep={props.onOpenStep}
@@ -586,6 +689,7 @@ function TurnContent(props: {
 /** One row of a turn's work, or of a subagent's inside it. */
 function WorkRowView(props: {
   readonly active: boolean;
+  readonly answer?: boolean;
   readonly highlightRequestId: string | null;
   /** The turn's newest stop in a tab, the only one its agent can be acting at now. */
   readonly latestPlaceId: string | null;
@@ -596,7 +700,7 @@ function WorkRowView(props: {
   const { row } = props;
   switch (row.kind) {
     case "note":
-      return <AssistantMessage message={row.entry} />;
+      return <AssistantMessage answer={props.answer === true} message={row.entry} />;
     case "reasoning":
       return <ReasoningRow active={props.active} reasoning={row.entry} />;
     case "subagent":
@@ -877,16 +981,27 @@ function toneColor(tone: ActivityTone): string {
 
 /* ---- Messages ---- */
 
-function AssistantMessage(props: { readonly message: MessageEntry }): ReactNode {
+function AssistantMessage(props: {
+  /** The turn's finished last word, which is what a person came to copy. */
+  readonly answer: boolean;
+  readonly message: MessageEntry;
+}): ReactNode {
+  const { body } = props.message;
   return (
     // No bubble, and the full measure: an agent's turn is long markdown with
     // headings, lists and code in it, and a bubble around that is a column
-    // narrowed for nothing. The side it sits on is what says who wrote it.
+    // narrowed for nothing. The side it sits on is what says who wrote it. Its
+    // words stay selectable, so holding them selects and its marks sit under it.
     <View style={styles.assistant}>
-      {props.message.body ? <Markdown text={props.message.body} /> : null}
+      {body ? <Markdown streaming={props.message.streaming === true} text={body} /> : null}
       <MessageAttachments attachments={props.message.attachments ?? []} />
       {props.message.streaming === true ? null : (
-        <MessageMenu text={props.message.body} reportId={props.message.id} />
+        <View style={styles.marks}>
+          {props.answer && body ? (
+            <CopyMark accessibilityLabel="Copy reply" style={styles.mark} text={body} />
+          ) : null}
+          <MessageMore reportId={props.message.id} text={body} />
+        </View>
       )}
     </View>
   );
@@ -945,6 +1060,7 @@ export function firstUnreadGroupKey(
 }
 
 export function Message(props: {
+  readonly continued?: boolean;
   readonly queued?: boolean;
   readonly joinedRun?: boolean;
   readonly conversation: boolean;
@@ -961,11 +1077,19 @@ export function Message(props: {
   const { message, open } = props;
   const preview = useMemo(() => incomingMessagePreview(message), [message]);
   const body = preview.truncated && !open ? preview.text : message.body;
+  const [arrived] = useState(
+    () => props.queued !== true && justSent(message.createdAt, Date.now()),
+  );
   if (message.messageKind === "assistant") {
     return props.conversation ? (
-      <ReplyBubble message={message} onReply={props.onReply} turnKey={null} />
+      <ReplyBubble
+        continued={props.continued === true}
+        message={message}
+        onReply={props.onReply}
+        turnKey={null}
+      />
     ) : (
-      <AssistantMessage message={message} />
+      <AssistantMessage answer={message.streaming !== true} message={message} />
     );
   }
 
@@ -988,8 +1112,29 @@ export function Message(props: {
       ? (props.workspaces.find(({ id }) => id === author.workspaceId) ?? null)
       : null;
 
+  const fold = (
+    <MessageFold
+      lines={messageFoldLines(message, props.viewerUserId)}
+      mine={mine && !props.queued}
+      more={preview.truncated}
+      onToggle={props.onToggle}
+      open={open}
+    >
+      {/* Only an agent or a trigger writes Markdown into a Thread; a person
+          typed exactly what is shown, so it is shown exactly. */}
+      {author.kind === "human" ? (
+        <PlainProse text={message.body} tone={mine && !props.queued ? "bubble" : "default"} />
+      ) : (
+        <Markdown text={body} />
+      )}
+    </MessageFold>
+  );
+
   return (
-    <View style={update ? styles.updateColumn : styles.inputColumn}>
+    <Animated.View
+      {...(mine && arrived ? { entering: bubbleRise } : {})}
+      style={update ? styles.updateColumn : mine ? styles.mineColumn : styles.inputColumn}
+    >
       {props.joinedRun ? (
         <View
           accessible
@@ -1022,7 +1167,18 @@ export function Message(props: {
       )}
       <MessagePages pages={message.pages ?? []} />
       <MessageAttachments attachments={message.attachments ?? []} />
-      {message.body ? (
+      {!message.body ? null : mine && !props.queued ? (
+        <MessageHold previewRadius={bubble.radius} text={message.body}>
+          <Bubble
+            fill={color.bubble}
+            fit={message.body}
+            side="mine"
+            tail={props.continued !== true}
+          >
+            {fold}
+          </Bubble>
+        </MessageHold>
+      ) : (
         <View
           style={
             update
@@ -1034,29 +1190,13 @@ export function Message(props: {
                         styles.bubbleQueued,
                         mine ? styles.bubbleQueuedMine : styles.bubbleQueuedOther,
                       ]
-                    : mine
-                      ? styles.bubbleMine
-                      : styles.bubbleInput,
+                    : styles.bubbleInput,
                 ]
           }
         >
-          <MessageFold
-            lines={messageFoldLines(message, props.viewerUserId)}
-            mine={mine && !props.queued}
-            more={preview.truncated}
-            onToggle={props.onToggle}
-            open={open}
-          >
-            {/* Only an agent or a trigger writes Markdown into a Thread; a person
-                typed exactly what is shown, so it is shown exactly. */}
-            {author.kind === "human" ? (
-              <PlainProse text={message.body} tone={mine && !props.queued ? "bubble" : "default"} />
-            ) : (
-              <Markdown text={body} />
-            )}
-          </MessageFold>
+          {fold}
         </View>
-      ) : null}
+      )}
       {message.delivery ? (
         <View accessibilityRole="alert" style={styles.failure}>
           <AppText role="secondaryMedium" tone="danger">
@@ -1064,7 +1204,7 @@ export function Message(props: {
           </AppText>
         </View>
       ) : null}
-    </View>
+    </Animated.View>
   );
 }
 
@@ -1366,42 +1506,48 @@ const styles = StyleSheet.create({
   },
   unreadRule: { backgroundColor: color.emberLine, flex: 1, height: 1 },
   assistant: { gap: space[2] },
-  /** Assistant prose keeps the reading ground, without a card around long Markdown. */
-  reply: {
-    flex: 1,
-    gap: space[4],
-    paddingHorizontal: space[16],
-    paddingVertical: space[12],
-  },
-  replyColumn: { gap: space[6] },
-  replyRow: {
-    alignItems: "flex-end",
-    alignSelf: "stretch",
-    flexDirection: "row",
-    gap: space[2],
-    maxWidth: "92%",
+  /** Under a task's words, level with them: a thumb's reach, no ground of their own. */
+  marks: { alignItems: "center", flexDirection: "row", marginBottom: -space[8] },
+  mark: { alignItems: "center", height: 24, justifyContent: "center", width: 24 },
+  replyColumn: { gap: bubble.gap },
+  partRow: { alignItems: "flex-end", flexDirection: "row", gap: space[8] },
+  /** Words take Messages' share of the column; what needs its width takes it, less the mark. */
+  bubbleHold: { flexShrink: 1, maxWidth: bubble.maxWidth },
+  wideHold: { flex: 1 },
+  codeBubble: { paddingHorizontal: 0, paddingVertical: 0 },
+  partCopy: {
+    alignItems: "center",
+    height: 24,
+    justifyContent: "center",
+    marginBottom: 8,
+    width: 22,
   },
   steps: { gap: space[4] },
-  /** A turn's outcome and the menu that opens its Activity, on one line. */
+  /** A turn's outcome and the way to its Activity, on one line. */
   outcomeRow: {
     alignItems: "center",
     alignSelf: "flex-start",
     flexDirection: "row",
-    gap: space[2],
+    gap: space[6],
   },
   outcome: { flexShrink: 1, gap: space[4] },
+  outcomeOpen: { alignItems: "center", height: 24, justifyContent: "center", width: 20 },
   typing: {
-    ...material.plate,
     alignItems: "center",
     alignSelf: "flex-start",
-    borderBottomStartRadius: radius.xs,
-    borderRadius: radius.xl,
+    backgroundColor: color.bubbleTheirs,
+    borderCurve: "continuous",
+    borderRadius: bubble.radius,
     height: 40,
     justifyContent: "center",
-    paddingHorizontal: space[16] - (1 - StyleSheet.hairlineWidth),
+    paddingHorizontal: space[16],
   },
-  typingPressed: { ...material.platePressed },
-  typingRow: { alignSelf: "flex-start", flexDirection: "row" },
+  typingPressed: { backgroundColor: color.surfaceRaised },
+  typingRow: { alignSelf: "flex-start", flexDirection: "row", transformOrigin: "left bottom" },
+  typingTrail: { backgroundColor: color.bubbleTheirs, borderRadius: 7, position: "absolute" },
+  typingTrailNear: { bottom: -1, height: 13, left: -1, width: 13 },
+  typingTrailFar: { bottom: -6, height: 6, left: -6, width: 6 },
+  time: { paddingBottom: bubble.groupGap - space[4], paddingTop: space[6], textAlign: "center" },
 
   attribution: { alignItems: "center", flexDirection: "row", flexWrap: "wrap", gap: space[6] },
   bubble: {
@@ -1416,14 +1562,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: space[16] - 1,
     paddingVertical: space[12] - 1,
   },
-  /**
-   * The reader's own words, in the accent. It is the one filled shape in the
-   * transcript, because the one thing a person scanning a long thread looks for
-   * is what they asked — and here, where an agent's message, a trigger and
-   * another thread all arrive on the same side, a neutral fill would leave
-   * nothing that finds itself.
-   */
-  bubbleMine: { ...material.accent },
   bubbleQueued: { backgroundColor: "transparent", borderWidth: 1.5, borderStyle: "dashed" },
   bubbleQueuedMine: { borderColor: color.emberLine },
   bubbleQueuedOther: { borderColor: color.lineStrong },
@@ -1468,6 +1606,12 @@ const styles = StyleSheet.create({
   highlighted: { backgroundColor: color.emberWash },
   icon: { alignItems: "center", width: space[20] },
   inputColumn: { alignItems: "flex-end", alignSelf: "flex-end", gap: space[4], maxWidth: "82%" },
+  mineColumn: {
+    alignItems: "flex-end",
+    alignSelf: "flex-end",
+    gap: space[4],
+    maxWidth: bubble.maxWidth,
+  },
   updateColumn: {
     alignItems: "flex-start",
     alignSelf: "stretch",

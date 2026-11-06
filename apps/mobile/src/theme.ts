@@ -57,6 +57,8 @@ export const color = {
    */
   bubble: ember,
   bubbleInk: inkOnEmber,
+  /** What an agent says in a chat: a flat grey, as the other side of Messages is. */
+  bubbleTheirs: "#242424",
 
   green: "#71c6a5",
   amber: "#dfb36b",
@@ -117,6 +119,10 @@ export const type = {
   secondaryMedium: { fontWeight: "500", fontSize: 15, lineHeight: 21 },
   caption: { fontWeight: "400", fontSize: 13, lineHeight: 18 },
   action: { fontWeight: "600", fontSize: 17, lineHeight: 24 },
+  /** Long Markdown in a task's column: iOS's own body measure. */
+  reading: { fontWeight: "400", fontSize: 17, lineHeight: 22 },
+  /** Words in a chat bubble, set as Messages sets them. */
+  bubble: { fontWeight: "400", fontSize: 17, lineHeight: 20 },
 } as const;
 
 /** The smallest a control may be, in points, whatever it contains. */
@@ -166,10 +172,20 @@ function alpha(hex: string, opacity: number): string {
 // RN's InsetBoxShadowDrawable requires API 29; the app also runs on API 24–28.
 // There the same light occupies the top border, without adding a view per card.
 const insetLight = Platform.OS !== "android" || Number(Platform.Version) >= 29;
+const floatSpread = -16;
+export const floatShadowInset = 8;
 const floatLift: BoxShadowValue[] =
   Platform.OS === "android" && Number(Platform.Version) < 28
     ? []
-    : [{ offsetX: 0, offsetY: 12, blurRadius: 32, spreadDistance: -16, color: alpha(shade, 0.6) }];
+    : [
+        {
+          offsetX: 0,
+          offsetY: 12,
+          blurRadius: 32,
+          spreadDistance: floatSpread,
+          color: alpha(shade, 0.6),
+        },
+      ];
 
 function topLight(edge: string): BoxShadowValue[] {
   return insetLight ? [{ offsetX: 0, offsetY: 1, blurRadius: 0, color: edge, inset: true }] : [];
@@ -186,7 +202,7 @@ function surface(fill: string, rim: string, edge: string, sheen = alpha(light, 0
   };
 }
 
-const plateFill = mix(color.background, light, 0.05);
+export const plateFill = mix(color.background, light, 0.05);
 const plateHover = mix(color.background, light, 0.08);
 const plate = {
   ...surface(plateFill, color.line, alpha(light, 0.07)),
@@ -213,6 +229,16 @@ export const material = {
     ...plate,
     backgroundColor: color.surfaceElevated,
     boxShadow: [...topLight(alpha(light, 0.07)), ...floatLift],
+  },
+  /**
+   * `float`'s lift for a clipped surface, which casts none: a bare view
+   * `floatShadowInset` inside it casts the same shadow, and stays hidden under it.
+   */
+  floatShadow: {
+    boxShadow: floatLift.map((lift) => ({
+      ...lift,
+      spreadDistance: floatSpread + floatShadowInset,
+    })),
   },
   accent: surface(color.ember, accentRim, alpha(light, 0.5), alpha(light, 0.16)),
   /**

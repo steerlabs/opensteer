@@ -34,6 +34,7 @@ const harness = vi.hoisted(() => ({
   setOptions: vi.fn(),
 }));
 
+vi.mock("../voice/cursor-mark.js", () => ({ PillMic: () => null, VoiceCursor: () => null }));
 vi.mock("react-native-webview", () => ({ WebView: () => null }));
 vi.mock("react-native", () => {
   type Children = { readonly children?: ReactNode };
@@ -128,7 +129,10 @@ vi.mock("../markdown/markdown.js", () => ({
   Markdown: ({ text }: { readonly text: string }) => <p>{text}</p>,
   PlainProse: ({ text }: { readonly text: string }) => <p>{text}</p>,
 }));
-vi.mock("../thread/message-menu.js", () => ({ MessageMenu: () => null }));
+vi.mock("../thread/message-hold.js", () => ({
+  MessageHold: (props: { children: ReactNode }) => props.children,
+  MessageMore: () => null,
+}));
 vi.mock("../thread/attachment-views.js", async () => {
   const React = await vi.importActual<typeof import("react")>("react");
   return {

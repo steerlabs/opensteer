@@ -44,6 +44,8 @@
     "./safeMessage": "./src/safeMessage.ts",
     "./secretDigest": "./src/secretDigest.ts",
     "./throwIfAborted": "./src/throwIfAborted.ts",
+    "./markdown": "./src/markdown.ts",
+    "./markdownParser": "./src/markdownParser.ts",
     "./transcriptLinks": "./src/transcriptLinks.ts",
     "./validationIssues": "./src/validationIssues.ts",
     "./webSocketFrame": "./src/webSocketFrame.ts",
@@ -63,8 +65,14 @@
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+    "@types/mdast": "4.0.4",
     "@types/node": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
+  },
+  "dependencies": {
+    "mdast-util-from-markdown": "^2.0.3",
+    "mdast-util-gfm": "^3.1.0",
+    "micromark-extension-gfm": "^3.0.0"
   }
 }
