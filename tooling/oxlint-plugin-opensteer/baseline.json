@@ -5,16 +5,12 @@
     "no-real-time-wait-in-tests:fafcce270ffe84177aa2": 1,
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
   },
-  "apps/browser-runtime/src/browser/agent-cursor.test.ts": {
-    "no-unit-test-timeout:45d730e468aecab5ce28": 1
-  },
   "apps/browser-runtime/src/browser/browser-test-acquisition.test.ts": {
     "no-unit-test-timeout:b1f431e661237a2109f3": 1,
     "no-unreasoned-skip-or-retry:a6e350cf90a1dcdd6a2d": 1
   },
   "apps/browser-runtime/src/browser/browser-test-lifecycle.test.ts": {
     "no-real-time-wait-in-tests:5d6bfe0e4832edbf0213": 1,
-    "no-unit-test-timeout:a667c78df273855343a7": 1,
     "no-unreasoned-skip-or-retry:a6e350cf90a1dcdd6a2d": 1
   },
   "apps/browser-runtime/src/browser/chromium-follow-view.test.ts": {
@@ -24,27 +20,11 @@
     "no-real-time-wait-in-tests:78e8dab4e43cdc8c619b": 2,
     "no-real-time-wait-in-tests:89e10cf942ec27d3eb0b": 1,
     "no-real-time-wait-in-tests:8d9ed028dfc68b44b6ed": 1,
-    "no-real-time-wait-in-tests:b34f9bafc58eba74f565": 1,
-    "no-unit-test-timeout:45d730e468aecab5ce28": 1,
-    "no-unit-test-timeout:af336673280ce1e644d3": 11,
-    "no-unit-test-timeout:b751cf85b709f0cc8c87": 6,
-    "no-unit-test-timeout:c6944dc7854e5cb93cdb": 2
+    "no-real-time-wait-in-tests:b34f9bafc58eba74f565": 1
   },
   "apps/browser-runtime/src/browser/chromium-runtime.test.ts": {
     "no-real-time-wait-in-tests:78e8dab4e43cdc8c619b": 2,
-    "no-real-time-wait-in-tests:b34f9bafc58eba74f565": 4,
-    "no-unit-test-timeout:af336673280ce1e644d3": 5,
-    "no-unit-test-timeout:b751cf85b709f0cc8c87": 4,
-    "no-unit-test-timeout:c6944dc7854e5cb93cdb": 1
-  },
-  "apps/browser-runtime/src/browser/chromium-teardown.test.ts": {
-    "no-unit-test-timeout:b751cf85b709f0cc8c87": 5
-  },
-  "apps/browser-runtime/src/browser/editing.test.ts": {
-    "no-unit-test-timeout:af336673280ce1e644d3": 1
-  },
-  "apps/browser-runtime/src/browser/favicon.test.ts": {
-    "no-unit-test-timeout:af336673280ce1e644d3": 1
+    "no-real-time-wait-in-tests:b34f9bafc58eba74f565": 4
   },
   "apps/browser-runtime/src/browser/harness-actions-deadlines.test.ts": {
     "no-polling-loop-in-tests:51240a2b41919ea97552": 1,
@@ -69,14 +49,8 @@
     "no-polling-loop-in-tests:fbe7469db5e7622e4110": 1,
     "no-real-time-wait-in-tests:5f0694a5b4efdce3518e": 1
   },
-  "apps/browser-runtime/src/browser/passkey-provider.test.ts": {
-    "no-unit-test-timeout:5b833d7dc44d5c885927": 1,
-    "no-unit-test-timeout:af336673280ce1e644d3": 1,
-    "no-unit-test-timeout:b751cf85b709f0cc8c87": 1
-  },
   "apps/browser-runtime/src/browser/session-files.test.ts": {
-    "no-real-time-wait-in-tests:435535af06e6be0c4087": 1,
-    "no-unit-test-timeout:7c1c917aafdf98c402c6": 1
+    "no-real-time-wait-in-tests:435535af06e6be0c4087": 1
   },
   "apps/browser-runtime/src/egress-proxy.test.ts": {
     "no-polling-loop-in-tests:1d85c15b26983b572676": 1,

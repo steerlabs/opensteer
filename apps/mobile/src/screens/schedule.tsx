@@ -44,7 +44,8 @@ import { AppText, Notice, StatusDot } from "../ui/primitives.js";
 import { Screen, useListContentInsets, useReadingColumn } from "../ui/screen.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
-import { AnchorMark, ScheduleGroupHead, ScheduleProblem, useShownSchedule } from "./schedules.js";
+import { AnchorMark, ScheduleGroupHead } from "./automation-parts.js";
+import { ScheduleProblem, useShownSchedule } from "./schedules.js";
 
 /**
  * The `Schedule` route: one schedule, by the id the Host gave it. Anything

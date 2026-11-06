@@ -28,7 +28,10 @@ skips all lanes ([ci-changes.mjs](../.github/scripts/ci-changes.mjs)).
 Default Vitest discovery excludes the integration, GUI, engine, device, soak and VM suffixes; use
 the matching root config or launcher. Direct `pnpm exec vitest` skips the native builds
 `pnpm test` runs first. Browser journeys need Playwright's pinned Chromium: installed Chrome is no
-substitute, and a missing one fails.
+substitute, and a missing one fails. Real Chromium suites are classified by the shared
+[`realBrowserTests` list](../.github/scripts/ci-test-files.mjs), excluded from default discovery,
+and run by `pnpm test:browser` in the existing Linux browser-journeys job. Their process startup
+and cleanup have a separate budget; explicit scenario and operation deadlines still apply.
 
 ## Integration databases
 

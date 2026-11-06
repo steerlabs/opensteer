@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { defaultTestExclude } from "../../.github/scripts/ci-test-files.mjs";
+import { defaultTestExclude, realBrowserTests } from "../../.github/scripts/ci-test-files.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const baseline = JSON.parse(readFileSync(new URL("./baseline.json", import.meta.url), "utf8"));
@@ -336,6 +336,7 @@ const rules = {
     if (!/\.test\.tsx?$/.test(file)) return {};
     // Keep this aligned with the actual default-config lane, not a numerical ceiling on real stacks.
     if (
+      realBrowserTests.includes(file) ||
       defaultTestExclude.some((pattern) =>
         file.includes(pattern.replaceAll("*", "").replaceAll("/", "")),
       )

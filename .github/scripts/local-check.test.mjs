@@ -70,3 +70,20 @@ test("runs the Android wrapper from the workspace root without requiring an Andr
     ":app:lint",
   ]);
 });
+
+test("listed browser edits and source siblings run once through test:browser", async () => {
+  const { realBrowserTests } = await import("./ci-test-files.mjs");
+  for (const file of realBrowserTests) {
+    const source = file.replace(/\.test\.tsx?$/, ".ts");
+    for (const changed of [file, source]) {
+      const plan = localPlan([changed], [], [source, file]);
+      assert.deepEqual(
+        plan.commands.filter((command) => command[0] === "test:browser"),
+        [["test:browser", "--", file]],
+      );
+      assert.ok(
+        !plan.commands.some((command) => command.includes("vitest") && command.includes(file)),
+      );
+    }
+  }
+});

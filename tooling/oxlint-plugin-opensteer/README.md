@@ -14,7 +14,8 @@ the waiting rules in [AGENTS.md](../../AGENTS.md#verifying). Each rule is prefix
   set only `retry: 0`.
 - `require-suppression-reason`: disabling one of these rules needs ` -- <reason>`.
 - `no-unit-test-timeout`: default-lane tests keep the default timeout. Real PostgreSQL, GUI,
-  engine, device, soak and VM suites keep their own budgets, from 30 seconds to hours, so a
+  engine, device, soak and VM suites, plus the exact `realBrowserTests` list in
+  [ci-test-files.mjs](../../.github/scripts/ci-test-files.mjs), keep their own budgets, from 30 seconds to hours, so a
   universal ceiling would be wrong.
 - `no-unbounded-created-promise`: a locally created promise whose resolver escapes its executor
   must be bounded, with `@opensteer/shared/withTimeout` and a useful `timeoutError`, before it is

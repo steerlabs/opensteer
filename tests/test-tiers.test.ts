@@ -3,8 +3,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, matchesGlob, relative, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { configDefaults } from "vitest/config";
-import { darwinOnlyTests } from "../.github/scripts/ci-test-files.mjs";
+import { darwinOnlyTests, realBrowserTests } from "../.github/scripts/ci-test-files.mjs";
 import config from "../vitest.config.js";
+import browserConfig from "../vitest.browser.config.js";
 import integrationConfig from "../vitest.integration.config.js";
 import guiConfig from "../vitest.gui.config.js";
 import enginesConfig from "../vitest.engines.config.js";
@@ -24,6 +25,7 @@ const files = execFileSync(
 const source = (file: string) => readFileSync(resolve(root, file), "utf8");
 const suites = [
   { name: "unit", directory: root, config },
+  { name: "browser", directory: root, config: browserConfig },
   { name: "integration", directory: root, config: integrationConfig },
   { name: "gui", directory: root, config: guiConfig },
   { name: "engines", directory: root, config: enginesConfig },
@@ -56,8 +58,12 @@ describe("test tiers", () => {
           (pattern) => !darwinOnlyTests.includes(pattern),
         );
         return (
-          include.some((pattern) => matchesGlob(path, pattern)) &&
-          !exclude.some((pattern) => matchesGlob(path, pattern))
+          include.some(
+            (pattern) => pattern === path || (pattern.includes("*") && matchesGlob(path, pattern)),
+          ) &&
+          !exclude.some(
+            (pattern) => pattern === path || (pattern.includes("*") && matchesGlob(path, pattern)),
+          )
         );
       });
       return owners.length === 1 ? [] : [{ file, owners: owners.map((suite) => suite.name) }];
@@ -110,5 +116,20 @@ describe("test tiers", () => {
     expect(config.test?.exclude).toContain("**/*.integration.test.*");
     expect(config.test?.exclude).toContain("**/*.gui.test.*");
     expect(config.test?.exclude).toContain("**/*.vm.test.*");
+  });
+});
+
+it("assigns exactly the listed real-browser files to their bounded config", () => {
+  expect(new Set(realBrowserTests).size).toBe(realBrowserTests.length);
+  expect(realBrowserTests.every((file) => files.includes(file))).toBe(true);
+  expect(browserConfig.test?.include).toEqual(realBrowserTests);
+  expect(config.test?.exclude).toEqual(expect.arrayContaining(realBrowserTests));
+  expect(config.test?.testTimeout).toBeUndefined();
+  expect(browserConfig.test).toMatchObject({
+    pool: "forks",
+    maxWorkers: 2,
+    testTimeout: 60_000,
+    hookTimeout: 30_000,
+    retry: 0,
   });
 });
