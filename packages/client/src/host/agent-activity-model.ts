@@ -1928,6 +1928,7 @@ const automationActions: Record<TriggerWriteInput["action"], StepWords> = {
   update: ["Changing an automation", "Changed an automation"],
 };
 
+/** Transcripts outlive their tool inventory, so removed names stay readable. */
 const opensteerSteps = new Map<string, OpensteerStep>([
   ["thread_wait", said(["Waiting for a task", "Waited for a task"], "list")],
   [

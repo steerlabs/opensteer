@@ -111,7 +111,7 @@ it.each(["app", "phone"] as const)(
         PersonShowMessageSchema.parse({
           ...f.message,
           runId: session.runId,
-          target: { place },
+          target: { place, runId: session.runId },
         }),
       ),
     );

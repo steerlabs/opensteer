@@ -42,7 +42,7 @@ it.each(["app", "phone"] as const)(
           workspaceId: source.workspaceId,
           threadId: source.id,
           runId: session.runId,
-          target: { place },
+          target: { place, runId: session.runId },
         }),
       ),
     );
