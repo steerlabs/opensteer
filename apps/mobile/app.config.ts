@@ -105,6 +105,13 @@ const config: ExpoConfig = {
     supportsTablet: true,
     // Resizing shares one navigation history and draft owner across device poses.
     infoPlist: {
+      // Linked camera APIs require this key even though capture is currently audio-only.
+      NSCameraUsageDescription:
+        "Opensteer only uses the camera if you choose a feature that needs it.",
+      NSLocalNetworkUsageDescription:
+        "Opensteer uses the local network to connect to your computer.",
+      NSMotionUsageDescription:
+        "Opensteer only uses motion data if you choose a feature that needs it.",
       NSMicrophoneUsageDescription:
         "Opensteer uses the microphone while you dictate a message or talk to Opensteer.",
       NSCalendarsFullAccessUsageDescription:
@@ -156,7 +163,6 @@ const config: ExpoConfig = {
     },
   },
   plugins: [
-    // Plist mods compose in reverse order: remove the upstream camera key last.
     "./plugins/with-voice.cjs",
     "./plugins/with-single-url-scheme.cjs",
     "expo-secure-store",
@@ -172,7 +178,6 @@ const config: ExpoConfig = {
     [
       "expo-image-picker",
       {
-        cameraPermission: false,
         photosPermission: "Allow Opensteer to attach photos you choose to a conversation.",
       },
     ],
