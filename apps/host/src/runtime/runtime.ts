@@ -677,6 +677,8 @@ export async function createHostRuntime(
         computerUse?.forgetRunner(runnerId);
       },
       onDisplayEvent: (runnerId, event) => displayStreams?.handlePhoneEvent(runnerId, event),
+      onPluginDataRemoved: (runnerId, pluginId) =>
+        integrationPlatform.store.plugins.confirmDataRemoval(runnerId, pluginId),
       onRunnerAttached: (runnerId) => integrationPlatform.computerRunnerAttached(runnerId),
     });
     computerUse = new ComputerUseService({
