@@ -14,12 +14,33 @@ const signedQuery = new URLSearchParams([
 ]).toString();
 
 describe("consumeNativeOAuthQuery", () => {
-  it("keeps the signed query opaque in memory and removes it from browser history", () => {
+  it("keeps the signed query opaque and removes it from the URL", () => {
     const replace = vi.fn();
     expect(
       consumeNativeOAuthQuery({ hash: "", pathname: "/", search: `?${signedQuery}` }, replace),
     ).toBe(signedQuery);
-    expect(replace).toHaveBeenCalledWith("/");
+    expect(replace).toHaveBeenCalledWith("/", { nativeOAuthQuery: signedQuery });
+  });
+
+  it("restores the pending request after reload or back without putting it in the URL", () => {
+    let entry: unknown = { router: "preserved" };
+    let search = `?${signedQuery}`;
+    const replace = (url: string, state: unknown) => {
+      expect(url).toBe("/");
+      search = "";
+      entry = state;
+    };
+    expect(consumeNativeOAuthQuery({ hash: "", pathname: "/", search }, replace, entry)).toBe(
+      signedQuery,
+    );
+    expect(entry).toMatchObject({ router: "preserved" });
+    expect(consumeNativeOAuthQuery({ hash: "", pathname: "/", search }, replace, entry)).toBe(
+      signedQuery,
+    );
+    expect(
+      consumeNativeOAuthQuery({ hash: "", pathname: "/chat", search }, replace, entry),
+    ).toBeNull();
+    expect(consumeNativeOAuthQuery({ hash: "", pathname: "/", search }, replace, null)).toBeNull();
   });
 
   it("does not consume unrelated, incomplete, or oversized query strings", () => {
