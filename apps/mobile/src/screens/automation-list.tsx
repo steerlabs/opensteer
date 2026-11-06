@@ -188,7 +188,14 @@ function Trailing(props: { readonly row: AutomationRowModel }): ReactNode {
       <AppText
         maxFontSizeMultiplier={controlFontScaleLimit}
         role="secondaryMedium"
-        style={[styles.day, trailing.tone === "accent" ? styles.accent : styles.mutedWord]}
+        style={[
+          styles.day,
+          trailing.tone === "accent"
+            ? styles.accent
+            : trailing.tone === "warn"
+              ? styles.warn
+              : styles.mutedWord,
+        ]}
       >
         {trailing.text}
       </AppText>

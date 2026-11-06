@@ -5,6 +5,7 @@ import {
   formatMoment,
   formatNextRun,
   latestRun,
+  watchState,
   type AutomationSection,
   type ScheduleItem,
 } from "@opensteer/client/host";
@@ -17,7 +18,7 @@ export type AutomationRowLook = "attention" | "once" | "paused" | "plain" | "sys
 /** The right-hand column: when it runs next, or what it is doing now. */
 export type AutomationRowTrailing =
   | { readonly kind: "next"; readonly day: string; readonly soon: boolean; readonly time: string }
-  | { readonly kind: "state"; readonly text: string; readonly tone: "accent" | "muted" }
+  | { readonly kind: "state"; readonly text: string; readonly tone: "accent" | "muted" | "warn" }
   | null;
 
 export interface AutomationRowModel {
@@ -65,7 +66,7 @@ export function automationRow(
       : paused
         ? { kind: "state", text: "Paused", tone: "muted" }
         : item.kind === "watch"
-          ? { kind: "state", text: "Watching", tone: "accent" }
+          ? watchTrailing(item.watch)
           : active && run !== null
             ? { kind: "state", text: run.tone === "warn" ? "Waiting" : "Running", tone: "accent" }
             : item.nextFireAt === null
@@ -130,6 +131,22 @@ export function automationRow(
                   : "clock",
     trailing,
     where,
+  };
+}
+
+/** What a watch is doing now, as the web says it: only a running watch reads as active. */
+function watchTrailing(watch: ScheduleItem["watch"]): AutomationRowTrailing {
+  if (watch === null) return null;
+  const state = watchState(watch.observed);
+  return {
+    kind: "state",
+    text: state.text,
+    tone:
+      state.tone === "ok"
+        ? "accent"
+        : state.tone === "warn" || state.tone === "bad"
+          ? "warn"
+          : "muted",
   };
 }
 

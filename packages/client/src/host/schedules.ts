@@ -46,6 +46,8 @@ export interface ScheduleItem {
   readonly timing: string;
   readonly source: TriggerSource;
   readonly updatedAt: string;
+  /** A watch's last observed state; null for anything else, or before it first starts. */
+  readonly watch: TriggerSummary["watch"];
 }
 export interface ScheduleDetail {
   readonly item: ScheduleItem;
@@ -95,6 +97,7 @@ function scheduleItem(
     timing: scheduleTiming(summary.source),
     source: summary.source,
     updatedAt: summary.updatedAt,
+    watch: summary.watch,
     anchor: {
       threadId: summary.anchorThreadId,
       home,

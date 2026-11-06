@@ -20,6 +20,8 @@ import {
   foregroundStyle,
   frame,
   lineLimit,
+  listRowBackground,
+  listRowSeparator,
   listStyle,
   monospacedDigit,
   opacity,
@@ -69,46 +71,47 @@ export function AutomationList(props: AutomationListProps): ReactNode {
     <View style={{ flex: 1 }}>
       {props.banner}
       <Host style={{ flex: 1 }} useViewportSizeMeasurement>
-        {props.sections.length === 0 ? (
-          <ContentUnavailableView
-            description="Ask in Chat for something to happen on its own — “every weekday at 8, sum up my email” — and it shows up here."
-            systemImage="clock"
-            title="No automations yet"
-          />
-        ) : (
-          <List modifiers={[listStyle("insetGrouped"), refreshable(props.onRefresh)]}>
-            {props.sections.map((section, index) => {
-              const note = [
-                sectionNote(section.id),
-                index === last && props.capped ? "Showing the first 100 automations." : null,
-              ]
-                .filter((line) => line !== null)
-                .join("\n");
-              return (
-                <Section
-                  footer={
-                    note === "" ? undefined : <Text modifiers={[footnote, secondary]}>{note}</Text>
-                  }
-                  header={
-                    <Text
-                      modifiers={[
-                        accessibilityLabel(`${section.title}, ${section.rows.length}`),
-                        ...(section.id === "attention" ? [foregroundStyle(color.red)] : []),
-                      ]}
-                    >
-                      {section.title}
-                    </Text>
-                  }
-                  key={section.id}
-                >
-                  {section.rows.map((row) => (
-                    <AutomationRow key={row.id} onOpen={props.onOpen} row={row} />
-                  ))}
-                </Section>
-              );
-            })}
-          </List>
-        )}
+        <List modifiers={[listStyle("insetGrouped"), refreshable(props.onRefresh)]}>
+          {/* Inside the List, so an empty answer can still be pulled to refresh. */}
+          {props.sections.length === 0 ? (
+            <ContentUnavailableView
+              description="Ask in Chat for something to happen on its own — “every weekday at 8, sum up my email” — and it shows up here."
+              modifiers={[listRowBackground("#00000000"), listRowSeparator("hidden")]}
+              systemImage="clock"
+              title="No automations yet"
+            />
+          ) : null}
+          {props.sections.map((section, index) => {
+            const note = [
+              sectionNote(section.id),
+              index === last && props.capped ? "Showing the first 100 automations." : null,
+            ]
+              .filter((line) => line !== null)
+              .join("\n");
+            return (
+              <Section
+                footer={
+                  note === "" ? undefined : <Text modifiers={[footnote, secondary]}>{note}</Text>
+                }
+                header={
+                  <Text
+                    modifiers={[
+                      accessibilityLabel(`${section.title}, ${section.rows.length}`),
+                      ...(section.id === "attention" ? [foregroundStyle(color.red)] : []),
+                    ]}
+                  >
+                    {section.title}
+                  </Text>
+                }
+                key={section.id}
+              >
+                {section.rows.map((row) => (
+                  <AutomationRow key={row.id} onOpen={props.onOpen} row={row} />
+                ))}
+              </Section>
+            );
+          })}
+        </List>
       </Host>
     </View>
   );
@@ -191,7 +194,11 @@ function Trailing(props: { readonly row: AutomationRowModel }): ReactNode {
       <Text
         modifiers={[
           font({ textStyle: "subheadline", weight: "medium" }),
-          trailing.tone === "accent" ? foregroundStyle(color.ember) : secondary,
+          trailing.tone === "accent"
+            ? foregroundStyle(color.ember)
+            : trailing.tone === "warn"
+              ? foregroundStyle(color.amber)
+              : secondary,
         ]}
       >
         {trailing.text}
