@@ -81,7 +81,9 @@ export const RequestInputSchema = z
     access: IntegrationAccessSchema.optional(),
     account: IntegrationConnectionIdSchema.optional(),
     integration: z.string().min(1).max(64).optional(),
-    server: IntegrationServerIdSchema.optional(),
+    server: IntegrationServerIdSchema.optional().describe(
+      "The isv_ serverId from integration_search; omit for a one-server installation.",
+    ),
     reason: z.string().trim().min(1).max(requestReasonMaxLength),
     workspaceId: WorkspaceIdSchema.optional(),
     catalog: z.string().min(1).max(64).optional(),
