@@ -1,3 +1,4 @@
+import { readToolRecords } from "../mcp/product-tools.test-support.js";
 import { ProductToolResultSchema } from "../mcp/product-tools.test-support.js";
 import { NotificationStore } from "@opensteer/database";
 import { ManualClock } from "@opensteer/shared/test-support/clock";
@@ -497,9 +498,17 @@ integration.sequential("Run recovery acceptance", () => {
         await client.close();
       }
     })();
-    if (delegated.type !== "thread.delegate.result" || !delegated.result.run)
+    if (
+      delegated.type !== "thread.delegate.result" ||
+      !(await readToolRecords(current.active.host.store, delegated.result)).run!
+    )
       throw new Error("No delegated Run");
-    const { assignmentId, run: child, thread } = delegated.result;
+    const { assignmentId } = delegated.result;
+    const { run: child, thread } = await readToolRecords(
+      current.active.host.store,
+      delegated.result,
+    );
+    if (!child) throw new Error("No child Run");
     runs.push(child.id);
     await waitFor(
       async () => (await row(current.active, child.id)).startedAt !== null,

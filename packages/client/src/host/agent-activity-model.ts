@@ -4,7 +4,6 @@ import type {
   WaitingRequest,
   MessageAuthor,
   IntegrationCallSubject,
-  ThreadWriteInput,
 } from "@opensteer/core";
 import type { TriggerWriteInput } from "@opensteer/triggers";
 import { readComputerUseResultHeadline, readComputerStepHeadline } from "@opensteer/protocol";
@@ -1914,13 +1913,11 @@ const tabActions: Record<BrowserTabWriteInput["action"], StepWords> = {
   update_group: ["Updating a tab group", "Updated a tab group"],
 };
 
-const taskActions: Record<ThreadWriteInput["action"], StepWords> = {
-  interrupt: ["Stopping a task", "Stopped a task"],
+const taskActions = {
   done: ["Marking a task done", "Marked a task done"],
   rename: ["Renaming a task", "Renamed a task"],
   reopen: ["Reopening a task", "Reopened a task"],
-  set_icon: ["Changing a task’s icon", "Changed a task’s icon"],
-};
+} satisfies Record<string, StepWords>;
 
 const automationActions: Record<TriggerWriteInput["action"], StepWords> = {
   cancel: ["Cancelling an automation run", "Cancelled an automation run"],
@@ -1936,14 +1933,13 @@ const opensteerSteps = new Map<string, OpensteerStep>([
   ["thread_wait", said(["Waiting for a task", "Waited for a task"], "list")],
   [
     "thread_configure",
-    saidByAction(
-      {
-        read: ["Reading a task’s AI settings", "Read a task’s AI settings"],
-        set: ["Changing a task’s AI", "Changed a task’s AI"],
-      },
-      ["Configuring a task", "Configured a task"],
-      "pencil",
-    ),
+    (tool, args) =>
+      said(
+        isRecord(args) && (args.harnessInstanceId || args.modelSelection)
+          ? ["Changing a task’s AI", "Changed a task’s AI"]
+          : ["Reading a task’s AI settings", "Read a task’s AI settings"],
+        "pencil",
+      )(tool, args),
   ],
   [
     "thread_queue",
@@ -2063,7 +2059,9 @@ const opensteerSteps = new Map<string, OpensteerStep>([
       "name",
     ),
   ],
-  ["assignment_cancel", said(["Stopping a task", "Stopped a task"], "stop")],
+  ["task_cancel", said(["Stopping a task", "Stopped a task"], "stop")],
+  ["task_status", said(["Checking a task", "Checked a task"], "list")],
+  ["thread_interrupt", said(["Stopping a task", "Stopped a task"], "stop")],
   [
     "browser_access_request",
     said(["Asking for browser access", "Asked for browser access"], "browser"),
@@ -2156,7 +2154,7 @@ const opensteerSteps = new Map<string, OpensteerStep>([
   ["thread_message", said(["Sending a message", "Sent a message"], "share")],
   ["thread_read", said(["Reading a conversation", "Read a conversation"], "list")],
   [
-    "thread_write",
+    "thread_update",
     saidByAction(taskActions, ["Changing a task", "Changed a task"], "pencil", "title"),
   ],
   ["trigger_read", said(["Looking up automations", "Looked up automations"], "list")],

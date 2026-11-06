@@ -1457,6 +1457,7 @@ export class OpensteerStore {
     readonly scope: AgentThreadListScope;
     readonly scopeId: string;
     readonly workspaceId?: WorkspaceId;
+    readonly parentThreadId?: ThreadId;
   }): Promise<AgentThreadListPage> {
     return threadStore.agentThreadPageForOwner(this.#database, input);
   }

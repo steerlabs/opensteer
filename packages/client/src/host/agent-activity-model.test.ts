@@ -828,7 +828,7 @@ describe("Opensteer's own steps", () => {
       hint: "",
       label: "Restored tabs",
     });
-    expect(opensteer("thread_write", { action: "rename", title: "Tonight" })).toMatchObject({
+    expect(opensteer("thread_update", { action: "rename", title: "Tonight" })).toMatchObject({
       hint: "Tonight",
       hintKind: "prose",
       label: "Renamed a task",

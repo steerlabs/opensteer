@@ -48,3 +48,7 @@ export type { WorkspaceSkillInventory } from "./workspace-skill-inventory-store.
 export * from "./administration-command.js";
 export * from "./background-model-store.js";
 export * from "./personal-desktop-update-store.js";
+
+export * from "./agent-thread-history.js";
+export { encodeThreadHistoryCursor } from "./thread-history.js";
+export { assignmentSummaryInTransaction } from "./assignment-store.js";

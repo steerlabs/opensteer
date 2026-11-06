@@ -471,7 +471,8 @@ export class OpensteerMcpService {
     let caller = identity.caller ?? (await this.options.callers.authenticate(bearer));
     const key = toolOperationKey(caller, input, identity.operationKey);
     const check = async () => {
-      toolAccess[tool.access](caller, await this.#targets(caller, tool, input));
+      const access = "readsOnly" in tool && tool.readsOnly?.(input as never) ? "read" : tool.access;
+      toolAccess[access](caller, await this.#targets(caller, tool, input));
       if (!toolsFor(caller).some((spec) => spec.name === tool.name))
         throw new OpensteerError({
           code: "forbidden",

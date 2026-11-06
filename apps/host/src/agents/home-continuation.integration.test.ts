@@ -1,3 +1,4 @@
+import { readToolRecords } from "../mcp/product-tools.test-support.js";
 import { ProductToolsTestClient } from "../mcp/product-tools.test-support.js";
 import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import {
@@ -955,6 +956,7 @@ integration("durable Thread changes native continuation", () => {
       browser: {
         createProfile: unexpected,
         closeAgentSession: unexpected,
+        readablePlaces: async (_owner, references) => [...references],
         drainRunPlaces: async () => undefined,
         listAgentSessions: unexpected,
         listGrantedProfiles: unexpected,
@@ -1143,6 +1145,7 @@ integration("durable Thread changes native continuation", () => {
       browser: {
         createProfile: unexpected,
         closeAgentSession: unexpected,
+        readablePlaces: async (_owner, references) => [...references],
         drainRunPlaces: async () => undefined,
         listAgentSessions: unexpected,
         listGrantedProfiles: unexpected,
@@ -1239,7 +1242,7 @@ integration("durable Thread changes native continuation", () => {
         if (response.type !== "thread.delegate.result") throw new Error("Delegation failed");
         delegated = {
           assignmentId: response.result.assignmentId,
-          threadId: response.result.thread.id,
+          threadId: (await readToolRecords(store, response.result)).thread.id,
         };
       },
     });

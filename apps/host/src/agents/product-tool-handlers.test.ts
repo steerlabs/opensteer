@@ -1,3 +1,4 @@
+import { messageItem } from "../mcp/thread-items.js";
 import type { AgentWorkspaceMountService } from "./agent-workspace-mount-service.js";
 import type { AgentTriggerManager } from "../mcp/handlers/triggers.js";
 import { mcpToolCallId } from "../integrations/mcp-call-id.js";
@@ -6,6 +7,7 @@ import { ProductToolRequestSchema } from "../mcp/product-tools.test-support.js";
 import { ProductToolsTestClient } from "../mcp/product-tools.test-support.js";
 import { SpecialistStore } from "@opensteer/database";
 import {
+  AssignmentSummarySchema,
   createId,
   threadReachScope,
   HarnessIdSchema,
@@ -32,6 +34,11 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import type { BrowserService } from "../browser/browser-service.js";
 import { type RunToolTokenService } from "./run-tool-tokens.js";
+
+vi.mock("@opensteer/database", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@opensteer/database")>()),
+  readAgentThreadRecent: async () => ({ runs: [], places: [] }),
+}));
 
 const now = "2026-08-09T09:00:00.000Z";
 const ownerId = createId("user");
@@ -442,12 +449,15 @@ describe("Product tool handlers", () => {
     const readId = crypto.randomUUID();
     await expect(
       service.handle("run-token", {
-        maxMessages: 10,
+        limit: 10,
         requestId: readId,
         threadId: target.id,
         type: "thread.read",
       }),
-    ).resolves.toMatchObject({ messages: [targetMessage], thread: target });
+    ).resolves.toMatchObject({
+      items: [messageItem(targetMessage, 20_000)],
+      thread: { id: target.id },
+    });
 
     const delegateId = crypto.randomUUID();
     const delegateRequest = ProductToolRequestSchema.parse({
@@ -459,7 +469,7 @@ describe("Product tool handlers", () => {
     });
     if (delegateRequest.type !== "thread.delegate") throw new Error("Expected delegation");
     await expect(service.handle("run-token", delegateRequest)).resolves.toMatchObject({
-      result: { run: childRun, thread: child },
+      result: { runId: childRun.id, threadId: child.id },
     });
     expect(delegateThread).toHaveBeenCalledWith({
       accessMode: "auto",
@@ -498,7 +508,7 @@ describe("Product tool handlers", () => {
         threadId: target.id,
         type: "thread.message",
       }),
-    ).resolves.toMatchObject({ result: { run: targetRun, thread: target } });
+    ).resolves.toMatchObject({ result: { runId: targetRun.id, messageId: forwardedMessage.id } });
     expect(enqueueThreadInput).toHaveBeenCalledWith({
       content: [{ text: "Please continue", type: "text" }],
       idempotencyKey: expect.stringContaining(
@@ -606,7 +616,8 @@ describe("Product tool handlers", () => {
         { environmentConnected: true, id: unrelated.id, workspaceName: "Client" },
       ],
       type: "thread.list.result",
-      window: { hasMore: false, itemCount: 2, totalItems: 2 },
+      hasMore: false,
+      nextBefore: null,
     });
     const legacyList = await main.service.handle("run-token", {
       requestId: crypto.randomUUID(),
@@ -731,7 +742,7 @@ describe("Product tool handlers", () => {
 
     await expect(
       service.handle("run-token", {
-        maxMessages: 10,
+        limit: 10,
         requestId: crypto.randomUUID(),
         threadId: unrelated.id,
         type: "thread.read",
@@ -815,7 +826,7 @@ describe("Product tool handlers", () => {
         type: "thread.delegate",
         workspaceId: targetWorkspaceId,
       }),
-    ).resolves.toMatchObject({ result: { thread: child } });
+    ).resolves.toMatchObject({ result: { threadId: child.id } });
     expect(delegateThread).toHaveBeenCalledWith(
       expect.objectContaining({ environmentId: targetEnvironmentId }),
     );
@@ -867,7 +878,7 @@ describe("Product tool handlers", () => {
         type: "thread.delegate",
         workspaceId: targetWorkspaceId,
       }),
-    ).resolves.toMatchObject({ result: { thread: child } });
+    ).resolves.toMatchObject({ result: { threadId: child.id } });
 
     const { service: unavailable } = makeService({
       commands: { delegateThread: vi.fn(), enqueueThreadInput: vi.fn() },
@@ -1075,7 +1086,7 @@ describe("Product tool handlers", () => {
 
     await expect(
       service.handle("run-token", {
-        maxMessages: 10,
+        limit: 10,
         requestId: crypto.randomUUID(),
         threadId: foreign.id,
         type: "thread.read",
@@ -1164,7 +1175,7 @@ describe("Product tool handlers", () => {
         type: "thread.delegate",
         workspaceId: targetWorkspaceId,
       }),
-    ).resolves.toMatchObject({ result: { message: childMessage, run: childRun, thread: child } });
+    ).resolves.toMatchObject({ result: { runId: childRun.id, threadId: child.id } });
     expect(delegateThread).not.toHaveBeenCalled();
     expect(enqueueThreadInput).not.toHaveBeenCalled();
   });
@@ -1714,6 +1725,8 @@ function makeService(options: {
             !input.query || candidate.title.toLowerCase().includes(input.query.toLowerCase()),
         )
         .map((candidate) => ({
+          assignmentId: null,
+          taskStatus: null,
           environmentId: candidate.environmentId,
           id: candidate.id,
           parentThreadId: candidate.parentThreadId,
@@ -1739,6 +1752,29 @@ function makeService(options: {
       };
     },
   );
+  function summarized(result: NonNullable<typeof options.existingDelegation>) {
+    return {
+      ...result,
+      assignment: AssignmentSummarySchema.parse({
+        id: result.assignment.id,
+        createdAt: now,
+        updatedAt: now,
+        finishedAt: null,
+        currentRunId: result.run.id,
+        currentRunStatus: result.run.status,
+        initialRunId: result.run.id,
+        modelLabel: null,
+        objectivePreview: "Task",
+        origin: "run",
+        parentThreadId: currentThreadId,
+        resultPreview: null,
+        returnStatus: "pending",
+        revision: 1,
+        status: "open",
+        workerThread: result.thread,
+      }),
+    };
+  }
   const store = {
     getThreadInputQueue: async () => ({ paused: false, items: [] }),
     listThreadAssignmentsForOwner: async () => ({
@@ -1746,6 +1782,7 @@ function makeService(options: {
       window: { byteCount: 0, hasMore: false, itemCount: 0, nextBefore: null, totalItems: 0 },
     }),
     admitRunToolCall,
+    getAssignmentForOwner: async () => ({ resultText: null }),
     runAssignment: vi.fn(async () => options.runAssignment ?? null),
     agentThreadLineage: vi.fn(async (threadId: Thread["id"]) => lineageIds(threadId)),
     agentThreadPageForOwner,
@@ -1753,7 +1790,9 @@ function makeService(options: {
     environmentIsAvailableToUser: vi.fn(
       async (id: EnvironmentId) => environments.includes(id) && id !== options.foreignEnvironmentId,
     ),
-    findDelegatedThreadByIdempotency: vi.fn(async () => options.existingDelegation ?? null),
+    findDelegatedThreadByIdempotency: vi.fn(async () =>
+      options.existingDelegation ? summarized(options.existingDelegation) : null,
+    ),
     getEnvironment: async (id: EnvironmentId) => {
       if (!environments.includes(id)) return null;
       return {
@@ -1940,9 +1979,13 @@ function makeService(options: {
       operation: Parameters<CommandService["delegateAdmittedThread"]>[0],
     ) => {
       await (admitRunToolCall as (input: unknown) => Promise<unknown>)(operation.admission.request);
-      return (options.commands.delegateThread as (input: unknown) => Promise<unknown>)(
-        operation.input,
-      ) as ReturnType<CommandService["delegateAdmittedThread"]>;
+      return summarized(
+        (await (
+          options.commands.delegateThread as (
+            input: unknown,
+          ) => Promise<NonNullable<typeof options.existingDelegation>>
+        )(operation.input)) as NonNullable<typeof options.existingDelegation>,
+      );
     },
     enqueueAdmittedThreadInput: async (
       operation: Parameters<CommandService["enqueueAdmittedThreadInput"]>[0],
@@ -1969,6 +2012,7 @@ function makeService(options: {
       browser: {
         createProfile: options.browser?.createProfile ?? unexpectedBrowserRequest,
         closeAgentSession: options.browser?.closeAgentSession ?? unexpectedBrowserRequest,
+        readablePlaces: async (_owner, references) => [...references],
         drainRunPlaces: async () => undefined,
         listAgentSessions: options.browser?.listAgentSessions ?? unexpectedBrowserRequest,
         listGrantedProfiles: options.browser?.listGrantedProfiles ?? unexpectedBrowserRequest,
@@ -2281,9 +2325,12 @@ it("omits client-only addressing from agent thread history", async () => {
     requestId: crypto.randomUUID(),
     threadId: current.id,
   });
-  expect(response).toMatchObject({ type: "thread.read.result", messages: [original] });
+  expect(response).toMatchObject({
+    type: "thread.read.result",
+    items: [messageItem(original, 20_000)],
+  });
   if (response.type !== "thread.read.result") throw new Error("Wrong response");
-  expect(response.messages[0]).not.toHaveProperty("addressedToUserId");
+  expect(response.items[0]).not.toHaveProperty("addressedToUserId");
 });
 
 it.each([
@@ -2393,9 +2440,12 @@ it("resolves home reads to Chat and returns its IDs and history", async () => {
       type: "thread.read",
       requestId: crypto.randomUUID(),
       threadId: "home",
-      maxMessages: 1,
+      limit: 1,
     }),
-  ).resolves.toMatchObject({ thread: { id: current.id, workspaceId }, messages: [entry] });
+  ).resolves.toMatchObject({
+    thread: { id: current.id, workspaceId },
+    items: [messageItem(entry, 20_000)],
+  });
 });
 it("reports a missing Chat for home reads", async () => {
   const { service } = makeService({

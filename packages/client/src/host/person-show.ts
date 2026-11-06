@@ -57,7 +57,7 @@ export function handlePersonShow(
     );
   }
   if ("place" in target) {
-    const destination = runPlaceDestination({ runId: message.runId, data: target }, snapshot);
+    const destination = runPlaceDestination({ runId: target.runId, data: target }, snapshot);
     return destination !== null && navigate({ kind: "place", destination }) !== false;
   }
   const place = placeList(snapshot).find(

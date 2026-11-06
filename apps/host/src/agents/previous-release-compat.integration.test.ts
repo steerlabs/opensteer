@@ -478,7 +478,7 @@ integration.sequential("previous public release client journeys", () => {
         );
         expect(delegatedResponse.isError, JSON.stringify(delegatedResponse)).not.toBe(true);
         const delegated = thread_delegate.output.parse(delegatedResponse.structuredContent);
-        const delegatedThreadId = delegated.thread.id;
+        const delegatedThreadId = delegated.threadId;
         transcript.push({ delegated });
 
         await current.dispatch({

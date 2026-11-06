@@ -1,3 +1,4 @@
+import { readToolRecords } from "../mcp/product-tools.test-support.js";
 import { TriggerToolsTestClient } from "../mcp/product-tools.test-support.js";
 import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import {
@@ -806,9 +807,7 @@ integration.sequential("Thread title lifecycle", () => {
       }
       for (const title of [undefined, "Automation chosen title"]) {
         const task = "Check   inventory " + "with detailed instructions ".repeat(14);
-        const icon = title === undefined ? undefined : ("plane" as const);
         const request = {
-          ...(icon ? { icon } : {}),
           requestId: randomUUID(),
           ...(kind === "watch" ? { observationId: randomUUID() } : {}),
           type: "thread.delegate",
@@ -819,18 +818,19 @@ integration.sequential("Thread title lifecycle", () => {
         const response = await handle(request);
         if (response.type !== "thread.delegate.result")
           throw new Error("Expected a delegated Thread");
-        if (!response.result.run) throw new Error("Expected a delegated Run");
-        const worker = response.result.thread;
+        if (!(await readToolRecords(store, response.result)).run!)
+          throw new Error("Expected a delegated Run");
+        const worker = (await readToolRecords(store, response.result)).thread;
         expect(await row(worker.id)).toMatchObject({
           title: title ?? provisionalThreadTitle(task),
           titleSource: title === undefined ? "provisional" : "chosen",
-          icon: icon ?? null,
-          iconSource: icon ? "chosen" : "provisional",
+          icon: null,
+          iconSource: "provisional",
         });
         const retry = kind === "watch" ? { ...request, requestId: randomUUID() } : request;
         expect(await handle(retry)).toMatchObject({
           type: "thread.delegate.result",
-          result: { thread: { id: worker.id }, assignmentId: response.result.assignmentId },
+          result: { threadId: worker.id, assignmentId: response.result.assignmentId },
         });
         for (const changed of [{ task: task + " changed" }, { title: "Changed explicit name" }]) {
           await expect(handle({ ...retry, ...changed })).rejects.toMatchObject({
@@ -845,7 +845,7 @@ integration.sequential("Thread title lifecycle", () => {
         );
         expect(await handle(retry)).toMatchObject({
           type: "thread.delegate.result",
-          result: { thread: { id: worker.id }, assignmentId: response.result.assignmentId },
+          result: { threadId: worker.id, assignmentId: response.result.assignmentId },
         });
         for (const changed of [{ task: task + " changed" }, { title: "Changed explicit name" }]) {
           await expect(handle({ ...request, ...changed })).rejects.toMatchObject({
@@ -855,13 +855,13 @@ integration.sequential("Thread title lifecycle", () => {
         const command = await database
           .selectFrom("commands")
           .select("id")
-          .where("runId", "=", response.result.run.id)
+          .where("runId", "=", (await readToolRecords(store, response.result)).run!.id)
           .where("type", "=", "run.execute")
           .executeTakeFirstOrThrow();
         await store.claimCommand(command.id, "title-dispatcher");
         expect(
           (await store.getThreadNamingInput(worker.id))?.request.includes("Check   inventory"),
-        ).toBe(icon ? undefined : true);
+        ).toBe(true);
         expect(
           (await store.applyGeneratedThreadName({
             threadId: worker.id,

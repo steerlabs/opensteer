@@ -1,3 +1,4 @@
+import { readToolRecords } from "../mcp/product-tools.test-support.js";
 import { ProductToolsTestClient } from "../mcp/product-tools.test-support.js";
 import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -112,6 +113,7 @@ integration("agent-to-agent messaging round trip", () => {
       },
     },
     browser: {
+      readablePlaces: async (_owner, references) => [...references],
       drainRunPlaces,
       createProfile: unexpected,
       closeAgentSession: unexpected,
@@ -354,7 +356,7 @@ integration("agent-to-agent messaging round trip", () => {
       expect(frames.at(-1)).toMatchObject({
         type: "host.show",
         runId: f.runA.id,
-        target: { place },
+        target: { place, runId: f.runA.id },
       });
       release();
       frames.length = 0;
@@ -444,7 +446,7 @@ integration("agent-to-agent messaging round trip", () => {
             workspaceId: f.threadA.workspaceId,
             threadId: f.threadA.id,
             runId: f.runA.id,
-            target: { place },
+            target: { place, runId: f.runA.id },
           },
         ]);
         if (kind === "phone") {
@@ -566,12 +568,12 @@ integration("agent-to-agent messaging round trip", () => {
     });
     if (outbound.type !== "thread.message.result") throw new Error("Expected a message result");
     expect(outbound.result.disposition).toBe("run-queued");
-    expect(outbound.result.thread.id).toBe(fixture.threadB.id);
-    expect(outbound.result.run).toMatchObject({
+    expect((await readToolRecords(store, outbound.result)).thread.id).toBe(fixture.threadB.id);
+    expect((await readToolRecords(store, outbound.result)).run!).toMatchObject({
       status: "queued",
       threadId: fixture.threadB.id,
     });
-    expect(outbound.result.message).toMatchObject({
+    expect((await readToolRecords(store, outbound.result)).message!).toMatchObject({
       author: {
         displayName: "Contract coordination",
         kind: "agent",
@@ -584,27 +586,34 @@ integration("agent-to-agent messaging round trip", () => {
       kind: "input",
       threadId: fixture.threadB.id,
     });
-    if (!outbound.result.run) throw new Error("Expected the trigger to queue a Run");
-    const inboundCommandId = await pendingCommandIdForRun(outbound.result.run.id);
+    if (!(await readToolRecords(store, outbound.result)).run!)
+      throw new Error("Expected the trigger to queue a Run");
+    const inboundCommandId = await pendingCommandIdForRun(
+      (await readToolRecords(store, outbound.result)).run!.id,
+    );
     await store.claimCommand(inboundCommandId, "messaging-dispatcher");
     const inboundContext = await store.loadRunDispatchContext(inboundCommandId);
     expect(projectHarnessInputs(inboundContext.inputs)).toEqual([
       {
-        author: outbound.result.message.author,
+        author: (await readToolRecords(store, outbound.result)).message!.author,
         content: [{ text: "Please summarize the signed contract.", type: "text" }],
-        createdAt: outbound.result.message.createdAt,
+        createdAt: (await readToolRecords(store, outbound.result)).message!.createdAt,
         kind: "input",
-        messageId: outbound.result.message.id,
+        messageId: (await readToolRecords(store, outbound.result)).message!.id,
       },
     ]);
-    await activateClaimedRun(fixture, outbound.result.run, fixture.threadB);
+    await activateClaimedRun(
+      fixture,
+      (await readToolRecords(store, outbound.result)).run!,
+      fixture.threadB,
+    );
 
     claimsByToken.set(
       fixture.tokenB,
       testClaims({
         environmentId: fixture.environmentId,
         requestedBy: fixture.userId,
-        runId: outbound.result.run.id,
+        runId: (await readToolRecords(store, outbound.result)).run!.id,
         runnerId: fixture.runnerId,
         threadId: fixture.threadB.id,
         workspaceId: fixture.threadB.workspaceId,
@@ -619,12 +628,12 @@ integration("agent-to-agent messaging round trip", () => {
     });
     if (reply.type !== "thread.message.result") throw new Error("Expected a message result");
     expect(reply.result.disposition).toBe("steering");
-    expect(reply.result.run?.id).toBe(fixture.runA.id);
-    expect(reply.result.message).toMatchObject({
+    expect((await readToolRecords(store, reply.result)).run?.id).toBe(fixture.runA.id);
+    expect((await readToolRecords(store, reply.result)).message!).toMatchObject({
       author: {
         displayName: "Client research",
         kind: "agent",
-        runId: outbound.result.run.id,
+        runId: (await readToolRecords(store, outbound.result)).run!.id,
         threadId: fixture.threadB.id,
         workspaceId: fixture.threadB.workspaceId,
         workspaceName: "Main workspace",
@@ -643,11 +652,11 @@ integration("agent-to-agent messaging round trip", () => {
     const steered = await store.loadSteerDispatchInput(replyCommand.id);
     expect(projectHarnessInputs([steered.message])).toEqual([
       {
-        author: reply.result.message.author,
+        author: (await readToolRecords(store, reply.result)).message!.author,
         content: [{ text: "Summarized: the counterparty signed on Tuesday.", type: "text" }],
-        createdAt: reply.result.message.createdAt,
+        createdAt: (await readToolRecords(store, reply.result)).message!.createdAt,
         kind: "input",
-        messageId: reply.result.message.id,
+        messageId: (await readToolRecords(store, reply.result)).message!.id,
       },
     ]);
   });
@@ -667,13 +676,13 @@ integration("agent-to-agent messaging round trip", () => {
     if (steered.type !== "thread.message.result") throw new Error("Expected a message result");
 
     expect(steered.result.disposition).toBe("steering");
-    expect(steered.result.run?.id).toBe(running.runId);
-    expect(steered.result.input).toMatchObject({
+    expect((await readToolRecords(store, steered.result)).run?.id).toBe(running.runId);
+    expect((await readToolRecords(store, steered.result)).input!).toMatchObject({
       policy: "steer",
       runId: running.runId,
       state: "claimed",
     });
-    expect(steered.result.message).toMatchObject({
+    expect((await readToolRecords(store, steered.result)).message!).toMatchObject({
       author: { kind: "agent", runId: fixture.runA.id, threadId: fixture.threadA.id },
       runId: running.runId,
     });
@@ -689,9 +698,9 @@ integration("agent-to-agent messaging round trip", () => {
     if (retried.type !== "thread.message.result") throw new Error("Expected a message result");
     expect(retried.result).toMatchObject({
       disposition: "steering",
-      input: { messageId: steered.result.input.messageId },
-      message: { id: steered.result.message.id },
-      run: { id: running.runId },
+      assignmentId: null,
+      messageId: steered.result.messageId,
+      runId: running.runId,
     });
     await expect(
       database
@@ -715,9 +724,9 @@ integration("agent-to-agent messaging round trip", () => {
     if (queued.type !== "thread.message.result") throw new Error("Expected a message result");
 
     expect(queued.result.disposition).toBe("pending");
-    expect(queued.result.run).toBeNull();
-    expect(queued.result.input).toMatchObject({
-      messageId: queued.result.message.id,
+    expect((await readToolRecords(store, queued.result)).run!).toBeNull();
+    expect((await readToolRecords(store, queued.result)).input!).toMatchObject({
+      messageId: (await readToolRecords(store, queued.result)).message!.id,
       policy: "report",
       runId: null,
       state: "pending",
@@ -734,7 +743,7 @@ integration("agent-to-agent messaging round trip", () => {
       ownerId: fixture.userId,
       threadId: fixture.threadB.id,
     });
-    expect(history?.messages.find(({ id }) => id === queued.result.message.id)?.policy).toBe(
+    expect(history?.messages.find(({ id }) => id === queued.result.messageId)?.policy).toBe(
       "report",
     );
   });
@@ -804,8 +813,9 @@ integration("agent-to-agent messaging round trip", () => {
         ...(title === undefined ? {} : { title }),
       });
       if (response.type !== "thread.delegate.result") throw new Error("Expected delegation");
-      if (!response.result.run) throw new Error("Expected a delegated Run");
-      const worker = response.result.thread;
+      if (!(await readToolRecords(store, response.result)).run!)
+        throw new Error("Expected a delegated Run");
+      const worker = (await readToolRecords(store, response.result)).thread;
       const summary = async () =>
         (
           await store.listThreadAssignmentsForOwner({
@@ -838,7 +848,7 @@ integration("agent-to-agent messaging round trip", () => {
       const command = await database
         .selectFrom("commands")
         .select("id")
-        .where("runId", "=", response.result.run.id)
+        .where("runId", "=", (await readToolRecords(store, response.result)).run!.id)
         .where("type", "=", "run.execute")
         .executeTakeFirstOrThrow();
       await store.claimCommand(command.id, "title-dispatcher");
@@ -868,17 +878,22 @@ integration("agent-to-agent messaging round trip", () => {
     },
   );
 
-  it("chooses a new delegated icon and preserves every mark when reusing a worker", async () => {
+  it("preserves the person's chosen marks when reusing a worker", async () => {
     const f = await createMessagingFixture();
     const response = await service.handle(f.tokenA, {
       type: "thread.delegate",
       requestId: randomUUID(),
       task: "Book a flight",
-      icon: "plane",
       workspaceId: f.threadA.workspaceId,
     });
     if (response.type !== "thread.delegate.result") throw new Error("Expected delegation");
-    const worker = response.result.thread;
+    const worker = (await readToolRecords(store, response.result)).thread;
+    await commands.setThreadIcon({
+      threadId: worker.id,
+      requestedBy: f.userId,
+      icon: "plane",
+      idempotencyKey: randomUUID(),
+    });
     const before = await database
       .selectFrom("threads")
       .select(["icon", "iconSource", "color"])
@@ -898,7 +913,7 @@ integration("agent-to-agent messaging round trip", () => {
         task: "New task",
         icon: "hotel",
       }),
-    ).rejects.toThrow("An existing Thread keeps its symbol");
+    ).rejects.toThrow("Unrecognized key");
     const reused = await service.handle(f.tokenA, {
       type: "thread.delegate",
       requestId: randomUUID(),
@@ -932,7 +947,7 @@ integration("agent-to-agent messaging round trip", () => {
       expect(await service.handle(fixture.tokenA, request)).toMatchObject({
         type: "thread.delegate.result",
         result: {
-          thread: { id: response.result.thread.id },
+          threadId: response.result.threadId,
           assignmentId: response.result.assignmentId,
         },
       });
@@ -941,14 +956,14 @@ integration("agent-to-agent messaging round trip", () => {
       ).rejects.toMatchObject({ code: "conflict" });
       await sql`update commands set payload = (payload - 'titleSource' - 'callerIntent') ||
         jsonb_build_object('title', ${title ?? task.slice(0, 240)}::text)
-        where payload->>'type' = 'thread.delegate' and thread_id = ${response.result.thread.id}`.execute(
+        where payload->>'type' = 'thread.delegate' and thread_id = ${(await readToolRecords(store, response.result)).thread.id}`.execute(
         database,
       );
       const replay = await service.handle(fixture.tokenA, request);
       expect(replay).toMatchObject({
         type: "thread.delegate.result",
         result: {
-          thread: { id: response.result.thread.id },
+          threadId: response.result.threadId,
           assignmentId: response.result.assignmentId,
         },
       });
@@ -971,13 +986,11 @@ integration("agent-to-agent messaging round trip", () => {
       type: "project.create",
       requestId: randomUUID(),
       name: "Travel",
-      icon: "plane",
       color: "teal",
     });
     if (response.type !== "project.create.result") throw new Error("Expected Project");
     expect(response).toMatchObject({ slug: "travel", path: "/Main/Projects/travel" });
     expect(await store.getWorkspaceForOwner(response.workspace.id, f.userId)).toMatchObject({
-      icon: "plane",
       color: "teal",
     });
   });
@@ -1006,10 +1019,13 @@ integration("agent-to-agent messaging round trip", () => {
         task: "Research the contract",
         workspaceId: workspace.id,
       });
-      if (response.type !== "thread.delegate.result" || !response.result.run)
+      if (
+        response.type !== "thread.delegate.result" ||
+        !(await readToolRecords(store, response.result)).run!
+      )
         throw new Error("Expected delegated Run");
-      const worker = response.result.thread;
-      const run = response.result.run;
+      const worker = (await readToolRecords(store, response.result)).thread;
+      const run = (await readToolRecords(store, response.result)).run!;
       await store.claimCommand(await pendingCommandIdForRun(run.id), "title-review-dispatcher");
       const binding = await activateClaimedRun(fixture, run, worker);
       await store.commitRunnerEvent({
@@ -1189,28 +1205,26 @@ integration("agent-to-agent messaging round trip", () => {
     console.info(`Title review receipt: ${join(evidenceRoot, `${name}.json`)}`);
   }
 
-  it("thread_write shares Done, freezes messages and delegation, and reopens through the same authority", async () => {
+  it("thread_update shares Done, freezes messages and delegation, and reopens through the same authority", async () => {
     const f = await createMessagingFixture();
     const write = (action: string, fields = {}) =>
       service.handle(f.tokenA, {
-        type: "thread.write",
+        type: "thread.update",
         requestId: randomUUID(),
         input: { threadId: f.threadB.id, action, ...fields },
       });
     expect(await write("rename", { title: "Shared result" })).toMatchObject({
-      type: "thread.write.result",
+      type: "thread.update.result",
       doneWhenRunEnds: false,
-      thread: { title: "Shared result", doneAt: null },
-    });
-    expect(await write("set_icon", { icon: null })).toMatchObject({
-      type: "thread.write.result",
-      doneWhenRunEnds: false,
+      title: "Shared result",
+      doneAt: null,
     });
     const done = await write("done");
     expect(done).toMatchObject({
-      type: "thread.write.result",
+      type: "thread.update.result",
       doneWhenRunEnds: false,
-      thread: { id: f.threadB.id, doneAt: expect.any(String) },
+      title: "Shared result",
+      doneAt: expect.any(String),
     });
     await expect(
       service.handle(f.tokenA, {
@@ -1229,7 +1243,7 @@ integration("agent-to-agent messaging round trip", () => {
         task: "No delegation",
       }),
     ).rejects.toMatchObject({ code: "conflict", message: "This task is Done. Reopen it first." });
-    expect(await write("reopen")).toMatchObject({ thread: { doneAt: null } });
+    expect(await write("reopen")).toMatchObject({ doneAt: null });
     const next = await service.handle(f.tokenA, {
       type: "thread.message",
       requestId: randomUUID(),
@@ -1239,8 +1253,10 @@ integration("agent-to-agent messaging round trip", () => {
     });
     expect(next).toMatchObject({
       type: "thread.message.result",
-      result: { run: { status: "queued" } },
+      result: { runId: expect.any(String) },
     });
+    if (next.type !== "thread.message.result") throw new Error("Expected a message result");
+    expect((await readToolRecords(store, next.result)).run).toMatchObject({ status: "queued" });
     await mkdir("/tmp/opensteer-task-done", { recursive: true });
     await writeFile(
       "/tmp/opensteer-task-done/agent-host.json",
@@ -1284,15 +1300,16 @@ integration("agent-to-agent messaging round trip", () => {
           await client.connect(clientTransport);
           const names = (await client.listTools()).tools.map(({ name }) => name);
           inventories.push(names);
-          expect(names).toContain("thread_write");
+          expect(names).toContain("thread_update");
           if (modern) {
             const result = await client.callTool({
-              name: "thread_write",
+              name: "thread_update",
               arguments: { threadId: f.threadB.id, action: "rename", title: "MCP write" },
             });
             expect(result.isError, JSON.stringify(result.content)).not.toBe(true);
             expect(result.structuredContent).toMatchObject({
-              thread: { id: f.threadB.id, title: "MCP write", doneAt: null },
+              title: "MCP write",
+              doneAt: null,
               doneWhenRunEnds: false,
             });
           }
@@ -1303,11 +1320,11 @@ integration("agent-to-agent messaging round trip", () => {
       }
       await expect(
         service.handle(f.tokenA, {
-          type: "thread.write",
+          type: "thread.update",
           requestId: randomUUID(),
           input: { action: "done" },
         }),
-      ).resolves.toMatchObject({ type: "thread.write.result", doneWhenRunEnds: true });
+      ).resolves.toMatchObject({ type: "thread.update.result", doneWhenRunEnds: true });
       await mkdir("/tmp/opensteer-task-done", { recursive: true });
       await writeFile(
         "/tmp/opensteer-task-done/runner-capability.json",

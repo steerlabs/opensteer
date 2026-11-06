@@ -1,3 +1,4 @@
+import { readToolRecords } from "../mcp/product-tools.test-support.js";
 import { ProductToolResultSchema } from "../mcp/product-tools.test-support.js";
 import { randomUUID } from "node:crypto";
 import { ManualClock } from "@opensteer/shared/test-support/clock";
@@ -611,7 +612,11 @@ integration("Runs that outlive their connection", () => {
       }
     })();
     if (delegated.type !== "thread.delegate.result") throw new Error("Parent did not delegate");
-    const { assignmentId, run: childRun, thread: childThread } = delegated.result;
+    const { assignmentId } = delegated.result;
+    const { run: childRun, thread: childThread } = await readToolRecords(
+      active.host.store,
+      delegated.result,
+    );
     if (!childRun) throw new Error("Delegated task has no Run");
     await waitFor(
       async () => (await liveAssistant(active, childThread.id)) === heldText,
