@@ -1925,7 +1925,7 @@ function platform(
             connectionId: null,
             description: "Read messages",
             id: "itl_00000000-0000-4000-8000-000000000001",
-            name: "read_messages",
+            name: "export_attachment",
             schemaDigest: "d".repeat(43),
             serverId: "isv_00000000-0000-4000-8000-000000000001",
             status: "active",
@@ -1956,13 +1956,13 @@ function messagesNeedsFullDiskAccess() {
     definitionId: "apple-messages",
     operations: [
       {
-        operation: "list_conversations",
+        operation: "query_messages",
         detail: "Reading Apple Messages requires macOS permission.",
         remedy: "full-disk-access",
         state: "permission-required",
       },
       {
-        operation: "read_messages",
+        operation: "export_attachment",
         detail: "Reading Apple Messages requires macOS permission.",
         remedy: "full-disk-access",
         state: "permission-required",
@@ -1993,8 +1993,8 @@ function mac(
       {
         definitionId: "apple-messages",
         operations: [
-          { operation: "list_conversations", detail: null, remedy: null, state: "ready" },
-          { operation: "read_messages", detail: null, remedy: null, state: "ready" },
+          { operation: "query_messages", detail: null, remedy: null, state: "ready" },
+          { operation: "export_attachment", detail: null, remedy: null, state: "ready" },
           { operation: "send_message", detail: null, remedy: null, state: "ready" },
         ],
       },
@@ -2105,8 +2105,8 @@ function computerPlatform() {
                 accessLabels: { read: "Read only", readWrite: "Read and send" },
                 accessLevels: ["read", "read-write"],
                 operations: [
-                  { name: "list_conversations", effect: "read" },
-                  { name: "read_messages", effect: "read" },
+                  { name: "query_messages", effect: "read" },
+                  { name: "export_attachment", effect: "read" },
                   { name: "send_message", effect: "write" },
                 ],
                 accessSummaries: {
@@ -2140,7 +2140,7 @@ function computerPlatform() {
             connectionId: messagesConnectionId,
             description: "Read messages",
             id: "itl_00000000-0000-4000-8000-000000000001",
-            name: "read_messages",
+            name: "export_attachment",
             schemaDigest: "d".repeat(43),
             serverId: "isv_00000000-0000-4000-8000-000000000001",
             status: "active",

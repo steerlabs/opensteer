@@ -2,6 +2,61 @@ import XCTest
 @testable import ComputerUseCore
 
 final class MessagesQueryTests: XCTestCase {
+  func testAmbiguousContactKeysNeverGuessEmailsIgnoreCaseAndBusinessesUseTheirCompany() {
+    let records = [
+      ContactRecord(id: "one", name: "One", organization: nil,
+        emails: [LabeledText(label: nil, value: "WORK@example.com")],
+        phones: [LabeledText(label: nil, value: "5551234567")], birthday: nil),
+      ContactRecord(id: "two", name: "Two", organization: nil,
+        emails: [], phones: [LabeledText(label: nil, value: "+15551234567")], birthday: nil),
+      ContactRecord(id: "shop", name: nil, organization: "Local Business",
+        emails: [], phones: [LabeledText(label: nil, value: "555 000 1111")], birthday: nil),
+    ]
+    let names = MessagesContacts(records)
+    XCTAssertNil(names.name(for: "+15551234567"))
+    // Messages shows a business contact by its company name.
+    XCTAssertEqual(names.name(for: "+15550001111"), "Local Business")
+    // A contact with no name is still someone else sharing the number.
+    let shared = MessagesContacts([
+      ContactRecord(id: "mayank", name: "Mayank Patel", organization: nil, emails: [],
+        phones: [LabeledText(label: nil, value: "+15551234567")], birthday: nil),
+      ContactRecord(id: "unnamed", name: nil, organization: nil, emails: [],
+        phones: [LabeledText(label: nil, value: "+445551234567")], birthday: nil),
+    ])
+    XCTAssertNil(shared.name(for: "+445551234567"))
+    // The same person saved twice, say in iCloud and Google, is still one name.
+    let duplicated = MessagesContacts(["icloud", "google"].map {
+      ContactRecord(id: $0, name: "Mayank Patel", organization: nil, emails: [],
+        phones: [LabeledText(label: nil, value: "(555) 123-4567")], birthday: nil)
+    })
+    XCTAssertEqual(duplicated.name(for: "+15551234567"), "Mayank Patel")
+    XCTAssertEqual(names.name(for: "work@EXAMPLE.com"), "One")
+    XCTAssertNil(names.name(for: "not a handle"))
+  }
+
+
+  func testOpenFailuresAndUndecodableBodies() throws {
+    XCTAssertEqual(MessagesDatabase.openFailure(errno: EPERM).code, .permissionRequired)
+    XCTAssertEqual(MessagesDatabase.openFailure(errno: EPERM).message,
+      "Reading Messages needs macOS Full Disk Access for Opensteer Computer Use.")
+    XCTAssertEqual(MessagesDatabase.openFailure(errno: EACCES).code, .failed)
+    XCTAssertEqual(MessagesDatabase.openFailure(errno: EACCES).message, "Messages could not be opened.")
+    let missing = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
+    XCTAssertThrowsError(try MessagesQuery(path: missing, clock: .mac, contacts: { [] }).run("SELECT 1", budget: .unlimited)) {
+      XCTAssertEqual(($0 as? HelperError)?.message, "Messages is not set up.")
+    }
+    let db = try MessagesFixture.create()
+    defer { try? FileManager.default.removeItem(at: db.deletingLastPathComponent()) }
+    let query = MessagesQuery(path: db.path, clock: .mac, contacts: {
+      [ContactRecord(id: "mayank", name: "Mayank Patel", organization: nil, emails: [],
+        phones: [LabeledText(label: nil, value: "(555) 123-4567")], birthday: nil)]
+    })
+    XCTAssertEqual(try query.run("SELECT message_text(text, attributedBody) AS body FROM message WHERE guid='msg-undecodable'", budget: .unlimited),
+      .object(["columns": .array([.string("body")]), "rows": .array([.array([.null])]), "truncated": .bool(false)]))
+    XCTAssertEqual(try query.run("SELECT contact_name('+15551234567') AS name", budget: .unlimited),
+      .object(["columns": .array([.string("name")]), "rows": .array([.array([.string("Mayank Patel")])]), "truncated": .bool(false)]))
+  }
+
   func testReadBoundaryAndSQLiteErrors() throws {
     let db = try MessagesFixture.create()
     defer { try? FileManager.default.removeItem(at: db.deletingLastPathComponent()) }

@@ -35,7 +35,7 @@ const operation = (name: string): ComputerAppOperation => {
   if (!found) throw new Error(`Missing test operation ${name}`);
   return found;
 };
-const readOperation = operation("list_conversations");
+const readOperation = operation("query_messages");
 const writeOperation = operation("send_message");
 
 const fence = {
@@ -74,7 +74,7 @@ describe("ComputerAppModuleHandler", () => {
     expect(statuses(fixture.events)).toHaveLength(1);
 
     inspection = readyInspection().map((entry) =>
-      entry.operation === "read_messages"
+      entry.operation === "export_attachment"
         ? {
             ...entry,
             detail: "Messages needs Full access.",
@@ -469,7 +469,9 @@ function invoke(requestId: string, selected: ComputerAppOperation): InvokeInput 
   return {
     access: "read-write",
     arguments:
-      selected.effect === "write" ? { text: "Hello", to: { address: "person@example.com" } } : {},
+      selected.effect === "write"
+        ? { text: "Hello", to: { address: "person@example.com" } }
+        : { sql: "SELECT 1" },
     contract: computerAppOperationContract(selected),
     definitionId: "apple-messages",
     operation: selected.name,

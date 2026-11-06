@@ -338,8 +338,8 @@ function messages(): IntegrationDefinitionSummary {
       accessLabels: { read: "Read only", readWrite: "Read and send" },
       accessLevels: ["read", "read-write"],
       operations: [
-        { name: "list_conversations", effect: "read" },
-        { name: "read_messages", effect: "read" },
+        { name: "query_messages", effect: "read" },
+        { name: "export_attachment", effect: "read" },
         { name: "send_message", effect: "write" },
       ],
       accessSummaries: {
@@ -443,10 +443,10 @@ function loaded(access: "read" | "read-write" = "read"): LoadedAccessRequest {
           ],
           skills: [],
           tools: [
-            tool("con_mac_mini", "list_conversations", true),
-            tool("con_mac_mini", "read_messages", true),
-            tool("con_macbook", "list_conversations", true),
-            tool("con_macbook", "read_messages", true),
+            tool("con_mac_mini", "query_messages", true),
+            tool("con_mac_mini", "export_attachment", true),
+            tool("con_macbook", "query_messages", true),
+            tool("con_macbook", "export_attachment", true),
             tool("con_macbook", "send_message", false),
           ],
         },

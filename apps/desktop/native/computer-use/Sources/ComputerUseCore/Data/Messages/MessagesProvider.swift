@@ -9,15 +9,10 @@ import OpensteerAppleData
 /// history and is readable with nothing running; sending is the app's own
 /// business, and a row written to the database is a message nobody delivers.
 actor MessagesProvider: DataProvider {
-  /// A search stops this long before its request's deadline, so its page and
-  /// cursor still reach the agent.
-  private static let searchMargin: TimeInterval = 2
-
   private let contacts: @Sendable (WorkBudget) throws -> [ContactRecord]
   private let databasePath: String
   private let clock: DataClock
   private let files: MessagesFiles
-  private let reader: MessagesReader
   private let automation: @Sendable () async -> DataGrantState
   private let outbox: MessagesOutbox
 
@@ -44,7 +39,6 @@ actor MessagesProvider: DataProvider {
       attachmentRoots: attachmentRoots ?? [URL(fileURLWithPath: databasePath).deletingLastPathComponent().appendingPathComponent("Attachments"), home.appendingPathComponent("Library/SMS/Attachments")],
       stagingRoot: stagingRoot ?? home.appendingPathComponent("Library/Messages/Attachments/opensteer"))
     self.contacts = contacts
-    self.reader = MessagesReader(path: databasePath, clock: clock)
     self.automation = automation
     self.outbox = runOsascript.map { MessagesOutbox(runWithBudget: $0) } ?? .shared
   }
@@ -65,19 +59,6 @@ actor MessagesProvider: DataProvider {
       struct Arguments: Decodable { let attachmentId: String }
       let args = try DataArguments.decode(Arguments.self, from: arguments)
       return try files.export(args.attachmentId, scratch: scratchDirectory, budget: budget)
-    case "list_conversations":
-      var reader = self.reader
-      reader.contacts = MessagesContacts(try contacts(budget))
-      return try JSONValue(
-        encoding: reader.listConversations(
-          DataArguments.decode(ListConversationsArguments.self, from: arguments)))
-    case "read_messages":
-      var reader = self.reader
-      reader.contacts = MessagesContacts(try contacts(budget))
-      return try JSONValue(
-        encoding: reader.readMessages(
-          DataArguments.decode(ReadMessagesArguments.self, from: arguments),
-          timeLeft: { budget.remaining() - Self.searchMargin }))
     case "send_message":
       let args = try DataArguments.decode(MessagesSender.Arguments.self, from: arguments)
       _ = try MessagesSender.requests(args, staged: args.files ?? [])

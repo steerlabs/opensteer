@@ -29,7 +29,7 @@ const definition = {
       readWrite: "Agents can search, read, and send messages as you.",
     },
     operations: [
-      { effect: "read", name: "list_conversations" },
+      { effect: "read", name: "query_messages" },
       { effect: "write", name: "send_message" },
     ],
     platforms: ["darwin"],
@@ -51,7 +51,7 @@ const apps = online
         definitionId: "apple-messages",
         operations: [
           operation(
-            "list_conversations",
+            "query_messages",
             scenario === "setup" ? "permission-required" : "ready",
             scenario === "setup" ? "full-disk-access" : null,
             scenario === "setup" ? "Messages needs Full Disk Access." : null,

@@ -55,16 +55,8 @@
         "contract": "hz6GMk2GYuNh_85q_0335wVz-23oLvpsZrGT3tkAX78",
         "effect": "read"
       },
-      "list_conversations": {
-        "contract": "DZQfXGN1OVVuwsQvUIs57ELYtEUocKMJ9YV8A5baU-Y",
-        "effect": "read"
-      },
-      "read_messages": {
-        "contract": "00ne9olh8CdjDZclOrQbBXcJQ36Y3oybGzWf1Mxi6H0",
-        "effect": "read"
-      },
       "send_message": {
-        "contract": "J4ICUOxBhSNWYNZVXfasgT5HzB92rOlLTxDbmmf14Sc",
+        "contract": "sy93-Lr-HtSmslvBNP8vaQagIAGXJ_a0iUxGhZovA24",
         "effect": "write"
       }
     },

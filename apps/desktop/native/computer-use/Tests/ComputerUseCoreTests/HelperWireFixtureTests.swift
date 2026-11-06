@@ -120,35 +120,6 @@ final class HelperWireFixtureTests: XCTestCase {
         "search_contacts": try Self.contactsPage()
       ],
       "apple-messages": [
-        "list_conversations": ConversationsPage(
-          conversations: [
-            ConversationView(
-              conversationId: "iMessage;+;chat483920", displayName: "Weekend Trip", isGroup: true,
-              lastMessageAt: "2024-03-02T23:00:00-08:00",
-              participants: [
-                ConversationParticipant(handle: "+15551234567", name: "Mayank Patel"),
-                ConversationParticipant(handle: "work@example.com", name: nil),
-              ], service: "iMessage"),
-            ConversationView(
-              conversationId: "iMessage;-;work@example.com", displayName: nil, isGroup: false,
-              lastMessageAt: nil, participants: [ConversationParticipant(handle: "work@example.com", name: nil)], service: "iMessage"),
-          ],
-          nextCursor: nil),
-        "read_messages": MessagesPage(
-          messages: [
-            MessageView(
-              conversationId: "iMessage;-;+15551234567", hasAttachments: false,
-              id: "8C5A1E2F-3B4D-4E6F-8A9B-0C1D2E3F4A5B", isFromMe: false, sender: "+15551234567",
-              senderName: "Mayank Patel",
-              sentAt: "2024-03-01T02:00:00-08:00", service: "iMessage", text: "Lunch at one?",
-              truncated: false, undecoded: false),
-            MessageView(
-              conversationId: "iMessage;-;+15551234567", hasAttachments: true,
-              id: "1F2E3D4C-5B6A-4798-8A7B-6C5D4E3F2A1B", isFromMe: true, sender: "me", senderName: nil,
-              sentAt: "2024-03-01T01:55:00-08:00", service: "iMessage", text: nil,
-              truncated: false, undecoded: true),
-          ],
-          nextCursor: "e3b0c44298fc1c149afbf4c8.759952500000000000.2"),
         "export_attachment": JSONValue.object([
           "mediaType": .string("image/heic"), "name": .string("IMG_1234.HEIC"),
           "path": .string("/private/run/exports/IMG_1234.HEIC"), "sizeBytes": .number(1_834_221),

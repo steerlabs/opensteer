@@ -1002,13 +1002,13 @@ describe("rpc envelope", () => {
           definitionId: "apple-messages",
           operations: [
             {
-              operation: "list_conversations",
+              operation: "query_messages",
               detail: "Messages needs Full access.",
               remedy: "full-disk-access" as const,
               state: "permission-required" as const,
             },
             {
-              operation: "read_messages",
+              operation: "export_attachment",
               detail: "Messages needs Full access.",
               remedy: "full-disk-access" as const,
               state: "permission-required" as const,

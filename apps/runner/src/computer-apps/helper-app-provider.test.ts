@@ -81,8 +81,6 @@ describe("an app the helper serves", () => {
     expect(await provider.inspect()).toEqual([
       { detail: "Ready to read", operation: "query_messages", remedy: null, state: "ready" },
       { detail: "Ready to read", operation: "export_attachment", remedy: null, state: "ready" },
-      { detail: "Ready to read", operation: "list_conversations", remedy: null, state: "ready" },
-      { detail: "Ready to read", operation: "read_messages", remedy: null, state: "ready" },
       {
         detail: "Sending in Messages needs macOS Automation permission for Opensteer Computer Use.",
         operation: "send_message",

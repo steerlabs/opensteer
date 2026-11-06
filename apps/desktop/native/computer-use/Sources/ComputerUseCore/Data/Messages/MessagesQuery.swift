@@ -44,7 +44,7 @@ struct MessagesQuery {
     }
     // Before the authorizer exists, which refuses every other pragma.
     guard sqlite3_exec(db, "PRAGMA trusted_schema=OFF; PRAGMA query_only=ON", nil, nil, nil) == SQLITE_OK
-    else { throw MessagesReader.readFailure }
+    else { throw MessagesDatabase.readFailure }
     let context = Context(clock: clock, load: contacts, budget: budget)
     let pointer = Unmanaged.passUnretained(context).toOpaque()
     sqlite3_progress_handler(db, 1000, { raw in
@@ -68,8 +68,8 @@ struct MessagesQuery {
         let name = state.function
         var result: String?
         if name == "message_text" {
-          guard sqlite3_value_bytes(values?[0]) <= MessagesReader.maxBodyBytes,
-            sqlite3_value_bytes(values?[1]) <= MessagesReader.maxBodyBytes else {
+          guard sqlite3_value_bytes(values?[0]) <= MessagesDatabase.maxBodyBytes,
+            sqlite3_value_bytes(values?[1]) <= MessagesDatabase.maxBodyBytes else {
             sqlite3_result_error(ctx, "Message body is too large; use substr() to bound it.", -1)
             return
           }

@@ -82,11 +82,11 @@ final class DataPlaneTests: XCTestCase {
         contract: DataContracts.operations["apple-messages"]![operation]!.contract,
         effect: effect, access: .readWrite)
     }
-    let denied = await refusal(messages(.requestable), request("list_conversations", .read))
+    let denied = await refusal(messages(.requestable), request("query_messages", .read))
     XCTAssertEqual(denied?.code, .permissionRequired)
     XCTAssertEqual(denied?.message, DataPlane.permissionSentence(.contacts))
     XCTAssertEqual(provider.calls, 0)
-    let allowed = await refusal(messages(.granted), request("read_messages", .read))
+    let allowed = await refusal(messages(.granted), request("query_messages", .read))
     XCTAssertNil(allowed)
     let written = await refusal(messages(.denied), request("send_message", .write))
     XCTAssertNil(written)
