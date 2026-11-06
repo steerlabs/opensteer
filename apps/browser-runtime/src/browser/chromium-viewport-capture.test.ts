@@ -7,8 +7,8 @@ import { PlaywrightChromiumLauncher } from "./playwright-launcher.js";
 
 const pngSize = (data: string) => readImageDimensions(Buffer.from(data, "base64"), "png");
 
-function deadline<T>(promise: Promise<T>, message: string): Promise<T> {
-  return withTimeout(promise, 3500, { timeoutError: () => new Error(message) });
+function deadline<T>(promise: Promise<T>, message: string, milliseconds = 3_500): Promise<T> {
+  return withTimeout(promise, milliseconds, { timeoutError: () => new Error(message) });
 }
 
 async function fixture() {
@@ -66,9 +66,7 @@ async function marker(data: string, evaluate: (expression: string) => Promise<un
   })()`)) as { x: number; y: number };
 }
 
-// Each case starts a browser and then waits on deadlines of its own; the file's
-// timeout leaves those deadlines, not the runner, to say what never happened.
-describe("passive Chromium viewport capture", { timeout: 15_000 }, () => {
+describe("passive Chromium viewport capture", () => {
   it.each([1, 2, 3])(
     "leaves layout, focus, scroll and selection untouched at DSF %s",
     async (deviceScaleFactor) => {
@@ -213,6 +211,7 @@ describe("passive Chromium viewport capture", { timeout: 15_000 }, () => {
         await f.pageState(f.rootSurfaceId).then((s) => ({ width: s.width, height: s.height })),
       ),
       "Watcher never received its first frame",
+      1_500,
     );
     const at = performance.now();
     await Promise.all(
@@ -224,6 +223,7 @@ describe("passive Chromium viewport capture", { timeout: 15_000 }, () => {
     await deadline(
       f.frameAt(f.rootSurfaceId, { width: size.width, height: size.height }, at),
       "Watcher received no frame during capture",
+      1_500,
     );
     expect(
       f.frames
