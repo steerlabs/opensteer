@@ -118,7 +118,9 @@ export function ExternalAgentsSection({
                 aria-label={`Add ${entry.name}`}
                 className="btn btn--small"
                 disabled={
-                  !addresses || (!addresses.remote && !(entry.id === "other" && thisComputer))
+                  agents.connections === null ||
+                  !addresses ||
+                  (!addresses.remote && !(entry.id === "other" && thisComputer))
                 }
                 onClick={() => setGuide(entry)}
                 type="button"
@@ -202,7 +204,16 @@ function ExternalAgentSetup({
           <li>
             Copy this address.
             {remote ? (
-              <AddressBlock label={thisComputer ? "From anywhere" : "Address"} value={remote.url} />
+              <AddressBlock
+                label={
+                  thisComputer
+                    ? remote.reach === "internet"
+                      ? "From anywhere"
+                      : "On your private network"
+                    : "Address"
+                }
+                value={remote.url}
+              />
             ) : null}
             {!cloud && thisComputer ? (
               <AddressBlock label="From an app on this computer" value={thisComputer} />

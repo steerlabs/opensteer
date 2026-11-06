@@ -72,6 +72,31 @@ describe("External agents in web and desktop Settings", () => {
     expect(page.textContent).not.toContain("Connected");
   });
 
+  it("waits for the initial connection list before taking the setup baseline", async () => {
+    host = new MockHostClient({ latencyMs: 0 });
+    let finish:
+      | ((value: Awaited<ReturnType<NonNullable<typeof host>["rpc"]["connections.list"]>>) => void)
+      | undefined;
+    Object.defineProperty(host.rpc, "connections.list", {
+      value: vi.fn(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      ),
+      configurable: true,
+    });
+    const page = await mount(host);
+    await vi.waitFor(() => expect(page.textContent).toContain("Turn on Remote access first"));
+    expect(button("Add Another agent").disabled).toBe(true);
+    await act(async () => finish!({ ok: true, data: { connections: [] } }));
+    expect(button("Add Another agent").disabled).toBe(false);
+    await act(async () => button("Add Another agent").click());
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
+      "Waiting for Another agent",
+    );
+  });
+
   it("asks for Remote access before cloud agents, and shows a connection approved while setting up", async () => {
     host = new MockHostClient({
       latencyMs: 0,

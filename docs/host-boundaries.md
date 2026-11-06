@@ -67,8 +67,8 @@ approves; a Personal browser without a session hands a request ID to the signed-
 from a phone to the mobile app, and the link grants nothing. Consent picks an access ceiling and
 either everything the person can reach or one Workspace they own, lost when ownership ends.
 
-Settings → External agents explains only agents that reach the Host from elsewhere, through Remote
-access or a networked origin: Opensteer already runs local agents itself. Client names are
+Settings → External agents offers the Host’s networked origin or Personal Remote access route.
+On the Host computer it also offers the loopback address to local MCP clients. Client names are
 self-reported, so a connection is shown by its label and never matched to a product's logo.
 
 MCP credentials are opaque, stored hashed in their own record, and never become Host sessions or
