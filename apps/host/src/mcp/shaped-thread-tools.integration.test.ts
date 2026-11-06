@@ -355,7 +355,7 @@ describeStore("shaped agent Thread tools", (it) => {
   }) => {
     const f = await storeFixture.startRunFixture("shaped-tools");
     const s = setup(storeFixture, f);
-    for (const name of ["sign_in", "use_card", "computer"]) {
+    for (const name of ["sign_in", "use_card", "computer", "computer.type"]) {
       const t = await tool(storeFixture, f, name);
       for (const event of [t.started, t.completed])
         expect((await s.read({ view: "activity", itemId: event.sequence })).items[0]).toMatchObject(

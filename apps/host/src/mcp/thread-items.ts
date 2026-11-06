@@ -55,12 +55,13 @@ export function taskItem(summary: AssignmentSummary, result: string | null) {
     finishedAt: summary.finishedAt,
   };
 }
+/** Always keeps the newest item: escaping can take one item past the bound, and paging must advance. */
 export function boundedThreadItems<T>(items: readonly T[], maxBytes = 256 * 1024): T[] {
   let bytes = 2;
   const kept: T[] = [];
   for (const item of items) {
     const size = Buffer.byteLength(JSON.stringify(item), "utf8") + (kept.length ? 1 : 0);
-    if (bytes + size > maxBytes) break;
+    if (kept.length && bytes + size > maxBytes) break;
     kept.push(item);
     bytes += size;
   }

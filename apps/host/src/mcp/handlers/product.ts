@@ -595,8 +595,7 @@ export class ProductToolHandlers {
           const machineId = integration?.computerApp?.runnerId ?? integration?.phone?.runnerId;
           if (machineId && owners.get(machineId)?.effectiveOwner !== caller.userId) continue;
           title = start?.data.tool.name ?? null;
-          const withheld =
-            !start || ["sign_in", "use_card", "computer"].includes(start.data.tool.name);
+          const withheld = !start || withheldTool(start.data.tool.name);
           if (event.type === "tool.completed") {
             status = event.data.isError ? "failed" : "completed";
             if (!withheld) text = event.data.output.text;
@@ -1732,6 +1731,10 @@ export class ProductToolHandlers {
     if (caller.kind === "connection") throw badRequest("Connected agents must name threadId");
     return callerThread(caller).id;
   }
+}
+/** Their text can hold a sign-in, a card or typed values, so a reader gets only the call. */
+function withheldTool(name: string): boolean {
+  return name === "sign_in" || name === "use_card" || /^computer(\.|$)/u.test(name);
 }
 function forbidden(message: string, next?: string): OpensteerError {
   return refused("forbidden", message, next);
