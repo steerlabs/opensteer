@@ -2225,8 +2225,15 @@ export interface DatabaseSchema {
     source: JsonColumn<Readonly<Record<string, unknown>>>;
     installedBy: UserId | null;
     currentVersionId: string | null;
+    /** The task whose agent last installed it; null for a person's install. */
+    setupThreadId: Generated<ThreadId | null>;
     createdAt: Timestamp;
     updatedAt: Timestamp;
+  };
+  runnerPluginDataRemovals: {
+    runnerId: RunnerId;
+    pluginId: string;
+    createdAt: Generated<Timestamp>;
   };
   specialists: {
     removedAt: Generated<Date | null>;

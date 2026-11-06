@@ -1413,6 +1413,13 @@ export const RunnerIntegrationsModuleSchema = z.object({
     .positive()
     .transform((v) => (v === 1 ? (1 as const) : undefined))
     .optional(),
+  /** Deletes a removed plugin's data on request; older Runners keep it until they update. */
+  pluginDataRemoval: z
+    .number()
+    .int()
+    .positive()
+    .transform((v) => (v === 1 ? (1 as const) : undefined))
+    .optional(),
   computerUseVersion: z
     .number()
     .int()

@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   RequestIdSchema,
   RunnerIdSchema,
+  ThreadIdSchema,
   UserIdSchema,
   WorkspaceIdSchema,
   WorkspaceKindSchema,
@@ -16,6 +17,7 @@ import {
   IntegrationAccessSchema,
   IntegrationConnectionSummarySchema,
   IntegrationConnectionStatusReasonSchema,
+  PluginDeviceViewSchema,
 } from "@opensteer/integration-core/models";
 import { MachineSummarySchema } from "./machines.js";
 
@@ -81,6 +83,11 @@ export const PluginRowSchema = z.object({
     canRemove: z.boolean(),
     canUpdate: z.boolean(),
   }),
+  /**
+   * The physical thing a plugin package declares it controls. Such a plugin is
+   * listed under Devices rather than Plugins; a Host before devices sends none.
+   */
+  device: PluginDeviceViewSchema.nullable().optional(),
 });
 export type PluginRow = z.infer<typeof PluginRowSchema>;
 export const PluginsOverviewViewSchema = z
@@ -151,6 +158,8 @@ export const PluginDetailViewSchema = z.object({
     .max(100),
   contents: z.array(z.object({ name, kind: z.enum(["skill", "tool", "specialist"]) })).max(500),
   sourceFolder: z.string().max(4096).nullable(),
+  /** The task whose agent last installed this plugin, when the viewer can open it. */
+  setupThreadId: ThreadIdSchema.nullable().optional(),
 });
 export type PluginDetailView = z.infer<typeof PluginDetailViewSchema>;
 export const PluginsDirectoryViewSchema = z.object({
@@ -184,6 +193,21 @@ export const PluginsDirectoryViewSchema = z.object({
     .max(100),
 });
 export type PluginsDirectoryView = z.infer<typeof PluginsDirectoryViewSchema>;
+/**
+ * One device a plugin package declares. Everything but the label comes from the
+ * Host's own records: the computer its server runs on and that server's state.
+ */
+const OtherDeviceShape = {
+  pluginId: name,
+  name: PluginDeviceViewSchema.shape.name,
+  kind: PluginDeviceViewSchema.shape.kind,
+  computer: z
+    .object({ id: RunnerIdSchema, name, status: MachineSummarySchema.shape.status })
+    .nullable(),
+  /** Why its server is not running, in the server's own status words; null when it is. */
+  issue: z.string().max(1_000).nullable(),
+  setupThreadId: ThreadIdSchema.nullable(),
+} as const;
 export const DevicesOverviewViewSchema = z.object({
   devices: z
     .array(
@@ -199,8 +223,11 @@ export const DevicesOverviewViewSchema = z.object({
       }),
     )
     .max(400),
+  /** Devices that run no Opensteer, reached through a plugin's server; a Host before devices sends none. */
+  otherDevices: z.array(z.object(OtherDeviceShape)).max(400).optional(),
 });
 export type DevicesOverviewView = z.infer<typeof DevicesOverviewViewSchema>;
+export type OtherDevice = NonNullable<DevicesOverviewView["otherDevices"]>[number];
 
 export const SettingsPluginEnableCommandSchema = z.strictObject({
   type: z.literal("settings.plugin.enabled.set"),

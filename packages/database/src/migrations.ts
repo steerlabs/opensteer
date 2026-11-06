@@ -4717,6 +4717,7 @@ export function migrationProvider() {
         "0163_phone_tabs": phoneTabsMigration,
         "0164_specialists_adopt_access": specialistsAdoptAccessMigration,
         "0165_request_tool_delivery": requestToolDeliveryMigration,
+        "0166_devices": devicesMigration,
       };
     },
   };
@@ -7599,5 +7600,45 @@ export const requestToolDeliveryMigration: Migration = {
         (status in ('queued', 'delivered') and attempted_at is not null and reason is null) or
         (status = 'undeliverable' and attempted_at is not null and reason is not null)
       )`.execute(database);
+  },
+};
+
+/**
+ * Devices that run no Opensteer. A plugin remembers the task whose agent last
+ * installed it; a computer-run server may ask the person for values with an
+ * `integration.input` Request; and a removed plugin's data waits here, per
+ * computer, until that computer confirms it deleted it.
+ */
+export const devicesMigration: Migration = {
+  async up(database: Kysely<unknown>): Promise<void> {
+    await sql`
+      alter table public.plugins
+        add column setup_thread_id text references public.threads(id) on delete set null;
+
+      create table public.runner_plugin_data_removals (
+        runner_id text not null references public.runners(id) on delete cascade,
+        plugin_id text not null,
+        created_at timestamptz not null default now(),
+        primary key (runner_id, plugin_id)
+      );
+    `.execute(database);
+    // Same textual widening the computer app migration used: the live
+    // definition is the only description of these lists.
+    for (const name of ["requests_kind_check", "requests_kind_mode_check"] as const) {
+      const result = await sql<{ definition: string }>`
+        select pg_get_constraintdef(oid) as definition from pg_constraint
+        where conrelid = 'public.requests'::regclass and conname = ${name}
+      `.execute(database);
+      const definition = result.rows[0]?.definition;
+      if (!definition) throw new Error(`Cannot extend ${name} for integration input`);
+      if (definition.includes("integration.input")) continue;
+      const anchor = "'computer.app.access'::text";
+      if (!definition.includes(anchor)) {
+        throw new Error(`Cannot extend ${name} for integration input`);
+      }
+      const next = definition.replaceAll(anchor, `${anchor}, 'integration.input'::text`);
+      await sql.raw(`alter table public.requests drop constraint ${name}`).execute(database);
+      await sql.raw(`alter table public.requests add constraint ${name} ${next}`).execute(database);
+    }
   },
 };
