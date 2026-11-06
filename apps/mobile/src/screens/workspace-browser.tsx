@@ -280,12 +280,13 @@ function Focused(props: {
   const agents = useHostSelector(hostClient, selectAgents, samePlaceAgents);
   const homeThreadId = useHostSelector(hostClient, selectHomeThreadId);
 
-  // Chosen from the pill's menu or by Ask, and kept until the person closes
-  // it; otherwise the acting agent, else the most recent one.
   const [chosen, setChosen] = useState<Companion | null>(null);
+  const [remembered, setRemembered] = useState<string | null | undefined>(undefined);
   const firstAgent = agents.agents[0]?.threadId ?? null;
+  if (remembered === undefined && firstAgent !== null) setRemembered(firstAgent);
+  const automatic = remembered === undefined ? firstAgent : remembered;
   const companion: Companion | null =
-    chosen ?? (firstAgent === null ? null : { kind: "thread", threadId: firstAgent });
+    chosen ?? (automatic === null ? null : { kind: "thread", threadId: automatic });
 
   const besideId = companion?.kind === "thread" ? companion.threadId : null;
   const onHeader = useCallback(
@@ -390,7 +391,10 @@ function Focused(props: {
     },
     [chosen, deploymentId, drafts, hostClient, putPageOnDraft],
   );
-  const closeCompanion = useCallback(() => setChosen(null), []);
+  const closeCompanion = useCallback(() => {
+    setChosen(null);
+    setRemembered(null);
+  }, []);
   const onStarted = useCallback(
     (threadId: string) => {
       setChosen({ kind: "thread", threadId });
@@ -546,7 +550,7 @@ function Focused(props: {
           ? null
           : {
               content: second,
-              onClose: chosen === null ? null : closeCompanion,
+              onClose: closeCompanion,
               title:
                 companion?.kind === "task"
                   ? "New task"
@@ -1258,7 +1262,7 @@ function pairClearances(
 
 /**
  * Whom the pane beside a page talks to, in its own name — the bar above names
- * the page — and, when the person chose it, the way to put it away.
+ * the page — and the way to put it away.
  */
 function CompanionName(props: {
   readonly onClose: (() => void) | null;

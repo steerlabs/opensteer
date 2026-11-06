@@ -1,7 +1,7 @@
 import type { VoiceTarget } from "@opensteer/client/voice";
-import { StackActions } from "@react-navigation/native";
+import { CommonActions, StackActions } from "@react-navigation/native";
 import { navigationRef } from "../navigation-ref.js";
-import { workspaceRoute } from "../browser/surface-route.js";
+import { paramsDestination, sameDestination, workspaceRoute } from "../browser/surface-route.js";
 
 /** The route naming the conversation here: the one on screen, or beneath the places over it. */
 export function conversationRoute() {
@@ -22,12 +22,40 @@ export function show(deploymentId: string | null, target: VoiceTarget): boolean 
     navigationRef.dispatch(StackActions.popTo("Home", { deploymentId }));
     return true;
   }
+  const current = route?.params as Record<string, unknown> | undefined;
+  if (
+    target.kind === "place" &&
+    route?.name === "WorkspaceBrowser" &&
+    current?.["deploymentId"] === deploymentId
+  ) {
+    if (sameDestination(paramsDestination(current), target.destination)) return false;
+    const { scope: _scope, ...destination } = workspaceRoute(deploymentId, target.destination);
+    navigationRef.dispatch({
+      ...CommonActions.setParams({
+        appId: undefined,
+        appKey: undefined,
+        computerSessionId: undefined,
+        editAddress: false,
+        generation: undefined,
+        machineId: undefined,
+        pendingBrowserTab: undefined,
+        phone: undefined,
+        popup: false,
+        sessionId: undefined,
+        tabId: undefined,
+        viewId: undefined,
+        windowId: undefined,
+        ...destination,
+      }),
+      source: route.key,
+    });
+    return true;
+  }
   const name = target.kind === "thread" ? "Thread" : "WorkspaceBrowser";
   const params =
     target.kind === "thread"
       ? { deploymentId, threadId: target.threadId }
       : workspaceRoute(deploymentId, target.destination);
-  const current = route?.params as Record<string, unknown> | undefined;
   if (
     route?.name === name &&
     current &&
