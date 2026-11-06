@@ -33,8 +33,18 @@ is what the person calls it.
     "apple-tv": {
       "type": "stdio",
       "command": "/opt/homebrew/bin/uvx",
-      "args": ["--python", "3.13", "--with", "mcp", "--with", "pyatv", "--with", "srptools<1",
-        "python", "${PLUGIN_ROOT}/server.py"],
+      "args": [
+        "--python",
+        "3.13",
+        "--with",
+        "mcp",
+        "--with",
+        "pyatv",
+        "--with",
+        "srptools<1",
+        "python",
+        "${PLUGIN_ROOT}/server.py"
+      ],
       "env": { "DEVICE_ADDRESS": "192.168.1.10" }
     }
   }
