@@ -2259,7 +2259,10 @@ export async function enqueueThreadInputInTransaction(
         },
       ));
     if (!reopens)
-      throw new OpensteerError({ code: "conflict", message: "This task is Done. Reopen it first." });
+      throw new OpensteerError({
+        code: "conflict",
+        message: "This task is Done. Reopen it first.",
+      });
     await transaction
       .updateTable("threads")
       .set({ doneAt: null, doneReason: null })

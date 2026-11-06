@@ -405,7 +405,12 @@ export const ThreadRoleSchema = z.enum(["conversation", "work"]);
 export const ThreadDoneReasonSchema = z.enum(["quiet"]);
 export type ThreadDoneReason = z.infer<typeof ThreadDoneReasonSchema>;
 /** Days a person's task sits untouched before the Host moves it to Done; 0 never. */
-export const QuietTaskDaysSchema = z.union([z.literal(0), z.literal(1), z.literal(3), z.literal(7)]);
+export const QuietTaskDaysSchema = z.union([
+  z.literal(0),
+  z.literal(1),
+  z.literal(3),
+  z.literal(7),
+]);
 export type QuietTaskDays = z.infer<typeof QuietTaskDaysSchema>;
 export const defaultQuietTaskDays: QuietTaskDays = 3;
 export type ThreadRole = z.infer<typeof ThreadRoleSchema>;

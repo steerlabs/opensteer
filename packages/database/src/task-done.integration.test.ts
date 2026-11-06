@@ -618,9 +618,17 @@ integration.sequential("Shared task Done", () => {
       .set({ updatedAt: daysAgo(4) })
       .where("threadId", "=", f.thread.id)
       .execute();
-    await database.updateTable("users").set({ quietTaskDays: 0 }).where("id", "=", f.userId).execute();
+    await database
+      .updateTable("users")
+      .set({ quietTaskDays: 0 })
+      .where("id", "=", f.userId)
+      .execute();
     expect(await quiet()).toEqual([]);
-    await database.updateTable("users").set({ quietTaskDays: 3 }).where("id", "=", f.userId).execute();
+    await database
+      .updateTable("users")
+      .set({ quietTaskDays: 3 })
+      .where("id", "=", f.userId)
+      .execute();
     const [candidate] = await quiet();
 
     // Touched between the scan and its turn: nothing changes and nothing is recorded.
