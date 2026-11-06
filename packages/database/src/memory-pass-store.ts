@@ -24,6 +24,7 @@ import { sql, type Kysely, type Transaction } from "kysely";
 import { withDatabaseTransaction } from "./connection.js";
 import type { DatabaseSchema, ThreadRow } from "./schema.js";
 import { jsonValue, lockCommandIdempotency } from "./store-primitives.js";
+import { publishedMessagePredicate } from "./message-visibility.js";
 import { threadFromRow } from "./thread-row-mappers.js";
 import { appendHostWorkspaceEvent } from "./workspace-events.js";
 import { prepareThreadInsertion } from "./thread-insertion.js";
@@ -340,7 +341,7 @@ export async function memoryPassWakeContext(
     .select("homeThreadId")
     .where("id", "=", worker.workspaceId)
     .executeTakeFirstOrThrow();
-  // A waiting input isn't readable yet, and is dated by its delivery once it is.
+  // Only what thread_read shows; a waiting input is dated by its delivery once it is.
   const conversations = await transaction
     .selectFrom("messages")
     .innerJoin("threads", "threads.id", "messages.threadId")
@@ -362,12 +363,7 @@ export async function memoryPassWakeContext(
     )`,
     )
     .where("messages.kind", "!=", "continuation")
-    .where((expression) =>
-      expression.or([
-        expression("threadInputs.messageId", "is", null),
-        expression("threadInputs.state", "=", "delivered"),
-      ]),
-    )
+    .where(publishedMessagePredicate("threadInputs"))
     .where(sql<Date>`coalesce(thread_inputs.updated_at, messages.created_at)`, ">", since)
     .where(
       "messages.id",

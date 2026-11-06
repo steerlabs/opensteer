@@ -1117,6 +1117,22 @@ describeStore("managed memory passes", (it) => {
 
     const retried = await wake(f, light, (await tick(f, base, light)).occurrence.id, "activity-3");
     expect(wakeText(retried).join("\n")).toContain(`"Voice": threadId ${voice.id}, 2 new messages`);
+
+    // A published report is readable before any Run consumes it.
+    await finish(f, retried.run!, "completed");
+    const reported = await thread("Reported", {});
+    await f.store.enqueueThreadInput({
+      content: [{ type: "text", text: "The ferry is booked" }],
+      idempotencyKey: "activity-report",
+      policy: "report",
+      requestedBy: base.userId,
+      source: { kind: "human" },
+      threadId: reported.id,
+    });
+    const after = await wake(f, light, (await tick(f, base, light)).occurrence.id, "activity-4");
+    expect(wakeText(after).join("\n")).toContain(
+      `"Reported": threadId ${reported.id}, 1 new messages`,
+    );
   });
 
   it("replays an accepted pass's wake without choosing its model again", async ({

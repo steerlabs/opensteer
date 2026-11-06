@@ -22,10 +22,9 @@ Never mark yourself Done.
 2. For each listed conversation, call `thread_read` with its `threadId` and `limit` of its count,
    at most 100. Messages come newest first; page with `before` set to `nextBefore` until you reach
    the listed first time. A call counts: the Voice Thread holds what the person said.
-3. If your state's last source check is over 2 hours before this wake, or missing, read the mail,
-   Messages and calendar integrations connected to Main: find them with `integration_search` and
-   read with `integration_call`. Keep pages small and stop at your saved positions. Otherwise skip
-   them.
+3. Read the mail, Messages and calendar integrations connected to Main: find them with
+   `integration_search` and read with `integration_call`. Keep pages small and stop at your saved
+   positions. Opensteer only wakes you for them every two hours when nothing else is new.
 4. Decide, using the per-person skill, and leave out anything already reported, unless it changed,
    and anything `memory/forgotten.md` covers. Most wakes need nothing.
    - **The person should hear it now:** one `thread_message` with `threadId: "home"` and
@@ -42,8 +41,7 @@ Never mark yourself Done.
 ## Your state
 
 `memory/passes/light.md` is yours; only a forget edits it otherwise. Keep three short lists in
-Markdown: connected sources with position and the due time of the wake that last checked them,
-items you reported with their source ID and one line, and what you are watching for. Never log a wake, a "nothing new" or a Thread
+Markdown: connected sources with the position you read through, items you reported with their source ID and one line, and what you are watching for. Never log a wake, a "nothing new" or a Thread
 position. Prune resolved and old entries. Right before writing it, reread it, the off line and
 `memory/forgotten.md`, and leave out anything a forget covers.
 
