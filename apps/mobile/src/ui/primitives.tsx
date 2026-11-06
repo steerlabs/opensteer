@@ -140,6 +140,8 @@ export function PrimaryButton(props: {
   readonly disabled?: boolean;
   readonly label: string;
   readonly onPress: () => void;
+  /** The platform's large capsule, for the one action a whole screen leads to. */
+  readonly prominent?: boolean;
 }): ReactNode {
   const disabled = props.disabled === true || props.busy === true;
   return (
@@ -152,6 +154,7 @@ export function PrimaryButton(props: {
       style={({ pressed }) => [
         styles.primaryButton,
         props.compact === true && styles.buttonCompact,
+        props.prominent === true && styles.buttonProminent,
         pressed && styles.primaryButtonPressed,
         disabled && styles.buttonDisabled,
       ]}
@@ -637,6 +640,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: space[20] - 1,
     paddingVertical: space[12] - 1,
   },
+  buttonProminent: { borderRadius: radius.full, minHeight: 50 },
   primaryButtonLabel: { color: color.inkOnEmber },
   primaryButtonPressed: { ...material.accentPressed },
   rowPressed: { ...material.quiet },

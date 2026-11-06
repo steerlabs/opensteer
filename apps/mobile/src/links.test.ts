@@ -1,5 +1,6 @@
-import { routeComputerLink } from "./links.js";
+import { routeComputerLink, routePairingLink, routeSetupCode } from "./links.js";
 import {
+  buildMobilePairingDeepLink,
   buildMobileThreadDeepLink,
   DeploymentIdSchema,
   opensteerMobileHostOAuthCallback,
@@ -76,5 +77,63 @@ describe("computer URL boundary", () => {
       ),
     ).toBe(false);
     expect(selected).toEqual([id]);
+  });
+});
+
+describe("codes a computer shows", () => {
+  const portal = "https://app.opensteer.example";
+  const pairing = { code: `osp_${"A1_-".repeat(10)}abc`, origin: "https://mac.tailnet.ts.net" };
+
+  function route(text: string, portalOrigin: string | null = portal) {
+    const opened: string[] = [];
+    const offered: unknown[] = [];
+    const routed = routeSetupCode(text, portalOrigin, {
+      offer: (link) => offered.push(link),
+      open: (id) => opened.push(id),
+    });
+    return { offered, opened, routed };
+  }
+
+  it("opens the computer a Connect code names, from the portal or the app's own link", () => {
+    expect(route(`${portal}/open#d=${deploymentId}`)).toEqual({
+      offered: [],
+      opened: [deploymentId],
+      routed: true,
+    });
+    expect(route(`com.opensteer.mobile:/open?d=${deploymentId}`, null).opened).toEqual([
+      deploymentId,
+    ]);
+  });
+
+  it("offers a pairing code for confirmation instead of pairing", () => {
+    expect(route(buildMobilePairingDeepLink(pairing))).toEqual({
+      offered: [pairing],
+      opened: [],
+      routed: true,
+    });
+  });
+
+  it.each([
+    ["another site's page", "https://example.com/menu"],
+    [
+      "a Connect code from a portal this build does not trust",
+      `https://evil.example/open#d=${deploymentId}`,
+    ],
+    [
+      "a pairing link over plain HTTP",
+      `com.opensteer.mobile:/pair?o=http%3A%2F%2Fmac.local&c=${pairing.code}`,
+    ],
+    ["plain text", "hello"],
+  ])("routes nothing for %s", (_label, text) => {
+    expect(route(text)).toEqual({ offered: [], opened: [], routed: false });
+  });
+
+  it("takes an operating-system pairing link to the form and nothing else", () => {
+    const offered: unknown[] = [];
+    expect(
+      routePairingLink(buildMobilePairingDeepLink(pairing), (link) => offered.push(link)),
+    ).toBe(true);
+    expect(routePairingLink(link(), (value) => offered.push(value))).toBe(false);
+    expect(offered).toEqual([pairing]);
   });
 });

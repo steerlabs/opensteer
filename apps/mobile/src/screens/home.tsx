@@ -22,6 +22,7 @@ import { AppText, Notice } from "../ui/primitives.js";
 import { Screen, useReadingColumn } from "../ui/screen.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 import { HomeIntro, homeIntroDraftKey } from "./home-intro.js";
+import { useNotificationsIntro } from "./notifications-intro.js";
 import { useScopedThreadHeader, useThreadHeader } from "./thread-header.js";
 
 export type HomeScreenProps = StaticScreenProps<{
@@ -58,6 +59,7 @@ export function HomeScreen(props: HomeScreenProps): ReactNode {
   // The Thread the pane is showing: none while the first message is written.
   const [shownThreadId, setShownThreadId] = useState<string | null>(null);
   useSidebarMenu(hostClient);
+  useNotificationsIntro(hostClient);
 
   const threadId = hostClient === null ? null : shownThreadId;
   const { header, onHeader } = useScopedThreadHeader(hostClient, threadId);

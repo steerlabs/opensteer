@@ -1,4 +1,10 @@
-import { parseMobileOpenDeepLink, parseMobileThreadDeepLink } from "@opensteer/core";
+import {
+  parseMobileOpenDeepLink,
+  parseMobilePairingDeepLink,
+  parseMobileSetupCode,
+  parseMobileThreadDeepLink,
+  type MobilePairingDeepLink,
+} from "@opensteer/core";
 
 /**
  * What a link the operating system handed this app asks for.
@@ -51,5 +57,35 @@ export function routeComputerLink(url: string, open: (deploymentId: string) => v
   const destination = parseMobileOpenDeepLink(url);
   if (destination === null) return false;
   open(destination.deploymentId);
+  return true;
+}
+
+/**
+ * A pairing link carries a one-time code, so it only ever fills in the pairing
+ * form: `offer` shows it to the person, who decides whether to connect.
+ */
+export function routePairingLink(
+  url: string,
+  offer: (link: MobilePairingDeepLink) => void,
+): boolean {
+  const link = parseMobilePairingDeepLink(url);
+  if (link === null) return false;
+  offer(link);
+  return true;
+}
+
+/** A code read by the camera: a Connect code opens a computer, a pairing code is offered. */
+export function routeSetupCode(
+  text: string,
+  portalOrigin: string | null,
+  to: {
+    readonly offer: (link: MobilePairingDeepLink) => void;
+    readonly open: (deploymentId: string) => void;
+  },
+): boolean {
+  const code = parseMobileSetupCode(text, portalOrigin);
+  if (code === null) return false;
+  if (code.kind === "open") to.open(code.deploymentId);
+  else to.offer({ code: code.code, origin: code.origin });
   return true;
 }
