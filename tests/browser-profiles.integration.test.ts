@@ -57,10 +57,7 @@ const reportSchema = z
       .optional(),
     page: z.object({ signedIn: z.boolean(), url: z.string() }).optional(),
     request: z.object({ requestId: RequestIdSchema }).passthrough().optional(),
-    delegated: z
-      .object({ threadId: ThreadIdSchema })
-      .passthrough()
-      .optional(),
+    delegated: z.object({ threadId: ThreadIdSchema }).passthrough().optional(),
     profiles: z
       .object({
         profiles: z.array(profileSchema),
