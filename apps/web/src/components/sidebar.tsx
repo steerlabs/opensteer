@@ -265,8 +265,10 @@ export function Sidebar({
     : null;
   const tasksList = useRef<HTMLUListElement | null>(null);
   const doneShelf = useRef<HTMLLIElement | null>(null);
-  // Done takes the place of Tasks while it is open; Tabs below never move.
-  const [doneView, setDoneView] = useState(false);
+  // Done takes the place of Tasks while it is open, at the height Tasks had,
+  // so Tabs below never move.
+  const tasksSection = useRef<HTMLElement | null>(null);
+  const [doneView, setDoneView] = useState<{ readonly height: number } | null>(null);
   const quietTasks = directory.snapshot.quietTasksAvailable === true;
   useEffect(() => {
     if (quietTasks) void hostClient.loadDoneTasks().catch(() => undefined);
@@ -277,7 +279,7 @@ export function Sidebar({
   const [quietSeen, markQuietSeen] = useQuietSeen(quietSeenScope(directory.snapshot));
   const moved = useMemo(() => quietlyMoved(doneList, quietSeen, Date.now()), [doneList, quietSeen]);
   const openDone = () => {
-    setDoneView(true);
+    setDoneView({ height: tasksSection.current?.getBoundingClientRect().height ?? 0 });
     markQuietSeen(moved);
   };
   const [loadingEarlier, setLoadingEarlier] = useState(false);
@@ -503,7 +505,7 @@ export function Sidebar({
           ...(more > 0 ? [`more:${folder.workspace.id}`] : []),
         ]),
       ];
-  const hasTasksSection = doneView || rowKeys.length > 0;
+  const hasTasksSection = doneView !== null || rowKeys.length > 0;
   const taskRow = (row: TaskRow, nested = false) => (
     <TaskRowItem
       hostClient={hostClient}
@@ -674,16 +676,26 @@ export function Sidebar({
             aria-labelledby="sidebar-tasks"
             className="side-section side-section--tasks"
             onKeyDown={(event) => {
-              if (doneView && event.key === "Escape" && !event.defaultPrevented) setDoneView(false);
+              if (doneView && event.key === "Escape" && !event.defaultPrevented) setDoneView(null);
             }}
-            style={sectionFloor(rowKeys.length)}
+            ref={tasksSection}
+            style={
+              doneView?.height
+                ? {
+                    flex: "none",
+                    height: doneView.height,
+                    maxHeight: doneView.height,
+                    minHeight: 0,
+                  }
+                : sectionFloor(rowKeys.length)
+            }
           >
             {doneView ? (
               <div className="side-head side-head--done">
                 <button
                   aria-label="Back to Tasks"
                   className="icon-btn icon-btn--small side-head__back"
-                  onClick={() => setDoneView(false)}
+                  onClick={() => setDoneView(null)}
                   title="Back to Tasks · Esc"
                   type="button"
                 >
