@@ -5,6 +5,7 @@ import {
   type LocalMcpSecret,
 } from "@opensteer/integration-core";
 import { mutationIdempotencyKey, unwrapRpcResult, type HostClient } from "../host/index.js";
+import { invalidateComputerSetupRequests } from "./computer-setup-requests.js";
 
 export async function reviewComputerAppApproval(
   host: Pick<HostClient, "rpc">,
@@ -35,6 +36,7 @@ export async function respondComputerAppApproval(
   });
   if (result.type !== "integration.computer.setup.respond")
     throw new Error("The approval was not recorded.");
+  invalidateComputerSetupRequests(host);
 }
 
 /** One secret an MCP server asks its computer's owner for, as a form shows it. */
