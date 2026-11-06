@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { Protocol } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import {
   ElicitRequestSchema,
   type ElicitRequest,
@@ -20,7 +19,6 @@ import {
 } from "@opensteer/core";
 import type { CallableIntegrationTool, RequestStore } from "@opensteer/database";
 import { validateJsonSchema } from "@opensteer/integration-adapters";
-import { z } from "zod";
 import type { RunCapabilityClaims } from "../agents/run-capability.js";
 import type { ToolCaller } from "./integration-platform-service.js";
 
@@ -108,24 +106,20 @@ export class IntegrationInput {
   }
 
   register(client: Client): void {
-    // Client's wrapper rejects unsupported modes before our handler can decline them.
-    Protocol.prototype.setRequestHandler.call(
-      client,
-      z.object({ method: z.literal("elicitation/create"), params: z.unknown() }),
-      (request, extra) => {
-        const parsed = ElicitRequestSchema.safeParse(request);
-        if (!parsed.success || parsed.data.params.mode === "url" || parsed.data.params.task)
-          return decline("Only flat form input during a tool call is supported.");
-        const calls = this.#calls.get(client);
-        const call = calls?.size === 1 ? calls.values().next().value : undefined;
-        if (!call?.caller.run || call.signal.aborted)
-          return decline("Device input requires a single active call from a Run.");
-        const pending = this.#elicit(call, parsed.data.params, extra.signal);
-        call.pending.add(pending);
-        void pending.finally(() => call.pending.delete(pending)).catch(() => undefined);
-        return pending;
-      },
-    );
+    // The client declares form mode only, so the SDK refuses URL-mode requests itself.
+    client.setRequestHandler(ElicitRequestSchema, (request, extra) => {
+      const params = request.params;
+      if (params.mode === "url" || params.task)
+        return decline("Only flat form input during a tool call is supported.");
+      const calls = this.#calls.get(client);
+      const call = calls?.size === 1 ? calls.values().next().value : undefined;
+      if (!call?.caller.run || call.signal.aborted)
+        return decline("Device input requires a single active call from a Run.");
+      const pending = this.#elicit(call, params, extra.signal);
+      call.pending.add(pending);
+      void pending.finally(() => call.pending.delete(pending)).catch(() => undefined);
+      return pending;
+    });
   }
 
   start(

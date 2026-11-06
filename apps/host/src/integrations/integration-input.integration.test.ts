@@ -260,12 +260,21 @@ integration("input from a computer's MCP server", () => {
     expect(toolText(ambiguous)).toContain("single active call from a Run");
     await respond(s.host, request, { kind: "choice", optionId: "decline" });
     await waiting;
-    for (const mode of ["array", "nested", "url", "large"]) {
+    for (const mode of ["array", "large"]) {
       const result = await bounded(
         s.platform.callTool(s.callable, { mode }, s.caller),
         `Unsupported ${mode} input did not decline`,
       );
       expect(toolText(result)).toContain("decline");
+    }
+    // The SDK client refuses URL mode, which it was never offered, and forms outside the
+    // elicitation schema before Opensteer's handler runs; no Request opens for them.
+    for (const mode of ["nested", "url"]) {
+      const result = await bounded(
+        s.platform.callTool(s.callable, { mode }, s.caller),
+        `Unsupported ${mode} input was not refused`,
+      );
+      expect(toolText(result)).toContain("could not complete");
     }
     expect(
       await s.host.store.database
