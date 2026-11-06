@@ -10,6 +10,8 @@ import {
   pageViewport,
   normalizeElectronCursor,
   siteCookieReplacementBatch,
+  viewportCapturePlan,
+  viewportImageScript,
   type BrowserContext,
   type BrowserLauncher,
   type BrowserLaunchRequest,
@@ -23,6 +25,8 @@ import {
   type PageCapture,
   type PageGeometry,
   type Viewport,
+  type ViewportCapture,
+  type ViewportCaptureRequest,
 } from "@opensteer/browser-runtime-core";
 import {
   browserPageDisabledBlinkFeatures,
@@ -37,6 +41,7 @@ import {
   WebContentsView,
   type BrowserWindowConstructorOptions,
   type Debugger,
+  type NativeImage,
   type Session,
   type WebContents,
   type WebPreferences,
@@ -749,6 +754,7 @@ class ElectronBrowserContext implements BrowserContext {
     const page = new ElectronBrowserPage(
       this.#createView(options, opener?.view ?? null, timing, startRenderer),
       opener,
+      (script) => this.#encodeImage(script),
       this.#authenticator,
       this.#providerConfig,
       timing,
@@ -792,6 +798,18 @@ class ElectronBrowserContext implements BrowserContext {
     const targetInfo = await page.targetInfo();
     this.#events.emit("target", "Target.targetCreated", { targetInfo });
     this.#events.emit("page", page);
+  }
+
+  /** nativeImage has no WebP encoder; an empty page lends Chromium's. */
+  async #encodeImage(script: string): Promise<string> {
+    const view = this.#createHelper({ webPreferences: this.#securePreferences() });
+    const contents = view.webContents;
+    try {
+      await contents.loadURL("about:blank");
+      return z.string().parse(await contents.executeJavaScript(script));
+    } finally {
+      if (!contents.isDestroyed()) contents.close({ waitForBeforeUnload: false });
+    }
   }
 
   #securePreferences(): WebPreferences {
@@ -907,6 +925,8 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
   #targetIdPromise: Promise<string> | null = null;
   readonly #passkeyInput = new Set<() => void>();
   readonly #humanInput = new Set<(observation: HumanInputObservation) => void>();
+  readonly #encodeImage: (script: string) => Promise<string>;
+  #frameWorld: number | null = null;
   readonly #restingHost: BaseWindow;
   #requestedRestingSize: { width: number; height: number };
   readonly #paintWaiters = new Set<{
@@ -955,10 +975,12 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
   constructor(
     { view, host, initialLoad }: ElectronBrowserView,
     opener: ElectronBrowserPage | null,
+    encodeImage: (script: string) => Promise<string>,
     authenticator?: PasskeyAuthenticator,
     providerConfig?: BrowserPagePolicyConfig,
     timing?: PageOpenTiming,
   ) {
+    this.#encodeImage = encodeImage;
     this.view = view;
     this.initialLoad = initialLoad;
     this.#restingHost = host;
@@ -1620,6 +1642,104 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     } else if (this.#restingHost.isVisible()) this.#restingHost.hide();
   }
 
+  /**
+   * Copies the surface: unlike `Page.captureScreenshot`, this never resizes the
+   * view, whatever its emulation. The bitmap is view DIPs at the display's
+   * scale, whatever device scale factor a page emulates, cropped from the
+   * top left when the view is smaller than the page.
+   */
+  async captureViewport({
+    clip,
+    format,
+    layout,
+    pageScale,
+    quality,
+  }: ViewportCaptureRequest): Promise<ViewportCapture> {
+    const cdp = await this.cdp();
+    const release = cdp.retainRendering?.();
+    try {
+      await this.#drawnFrame(cdp);
+      const image = await this.#surfaceImage();
+      const bounds = this.view.getBounds();
+      const visible = {
+        height: Math.round(bounds.height / pageScale),
+        width: Math.round(bounds.width / pageScale),
+      };
+      const plan = viewportCapturePlan(image.getSize(), visible, clip);
+      const { crop } = this.#desiredPlacement;
+      const picture = image.crop(plan.source).resize({ ...plan.output, quality: "better" });
+      return {
+        data: await this.#encode(picture, format, quality),
+        ...(crop.right || crop.bottom
+          ? {
+              cropped: {
+                page: {
+                  height: Math.round(layout.height / pageScale),
+                  width: Math.round(layout.width / pageScale),
+                },
+                visible,
+              },
+            }
+          : {}),
+      };
+    } finally {
+      release?.();
+    }
+  }
+
+  /** `capturePage` copies the last frame drawn, which can predate the page's latest change. */
+  async #drawnFrame(cdp: CdpSession): Promise<void> {
+    const drawn = async () => {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          this.#frameWorld ??= z.object({ executionContextId: z.number().int() }).parse(
+            await cdp.send("Page.createIsolatedWorld", {
+              frameId: await this.targetId(),
+              worldName: "opensteer-frame",
+            }),
+          ).executionContextId;
+          await cdp.send("Runtime.evaluate", {
+            awaitPromise: true,
+            contextId: this.#frameWorld,
+            expression:
+              "new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))",
+          });
+          return;
+        } catch {
+          // A navigation takes this world with it.
+          this.#frameWorld = null;
+        }
+      }
+    };
+    // A page that draws nothing has nothing newer to show.
+    await withTimeout(drawn(), 1_000, { timeoutError: () => new Error("No frame.") }).catch(
+      () => undefined,
+    );
+  }
+
+  async #surfaceImage(): Promise<NativeImage> {
+    const copy = () => this.#webContents.capturePage(undefined, { stayHidden: true });
+    // Chromium fails one copy while a navigation swaps the surface.
+    const image = await copy().catch(copy);
+    if (image.isEmpty()) throw new Error("The page has no picture yet.");
+    return image;
+  }
+
+  async #encode(
+    image: NativeImage,
+    format: ViewportCaptureRequest["format"],
+    quality: number | undefined,
+  ): Promise<string> {
+    if (format === "jpeg") return image.toJPEG(quality ?? 80).toString("base64");
+    const data = image.toPNG().toString("base64");
+    if (format === "png") return data;
+    const size = image.getSize();
+    const plan = { output: size, source: { x: 0, y: 0, ...size } };
+    return this.#encodeImage(
+      viewportImageScript(data, plan, { format, ...(quality === undefined ? {} : { quality }) }),
+    );
+  }
+
   loadInitialUrl(url: string): Promise<void> {
     if (!isAllowedBrowserNavigation(url)) {
       return Promise.reject(new Error("Electron browser navigation scheme is not allowed."));
@@ -2013,10 +2133,6 @@ class ElectronDebuggerHub {
     // A first-document dialog can hold Runtime.enable or Page.enable. Its
     // answer releases those waits, so it must reach the browser ahead of them.
     if (method === "Page.handleJavaScriptDialog") return this.#dispatch(method, parameters);
-    if (method === "Page.captureScreenshot") {
-      const release = this.retainRendering(channel);
-      return this.#command(method, parameters).finally(release);
-    }
     if (
       method === "Emulation.setDeviceMetricsOverride" &&
       typeof parameters?.deviceScaleFactor === "number" &&

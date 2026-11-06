@@ -408,6 +408,8 @@ describe("storage retention safety", () => {
           ...(id === ids[2] ? { pid: process.pid } : { endedAt: (now - 25 * 3_600_000) / 1000 }),
         }),
       );
+      // Exported harness homes keep links to paths only the guest had.
+      symlinkSync("/Users/admin/opensteer-job/gone", path.join(directory, "sessions"));
     }
     mkdirSync(path.join(f.state, "merge-queue"));
     writeFileSync(path.join(f.state, "merge-queue/note.md"), ids[1]!);

@@ -791,14 +791,16 @@ function createBrowserHarness(client, initialTargetId) {
 
   const captureScreenshot = async (
     outputPath = path.join(process.env.OPENSTEER_AGENT_WORKSPACE ?? ".", "browser-screenshot.png"),
-    { full = false } = {},
   ) => {
-    const result = await cdp("Page.captureScreenshot", {
-      captureBeyondViewport: full,
-      format: "png",
-    });
+    const result = await cdp("Page.captureScreenshot", { format: "png" });
     const resolved = path.resolve(outputPath);
     await writeFile(resolved, Buffer.from(result.data, "base64"));
+    if (result.cropped) {
+      const { page, visible } = result.cropped;
+      process.stderr.write(
+        `[opensteer] This screenshot shows ${visible.width}×${visible.height} of a ${page.width}×${page.height} page; a person's view crops the rest. Its coordinates are still correct. Scroll to see more.\n`,
+      );
+    }
     return resolved;
   };
 

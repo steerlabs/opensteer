@@ -296,7 +296,6 @@ app.on("web-contents-created", (_event, contents) => {
     if (method.startsWith("Input.")) pending.add(id);
     const safeParams =
       method.startsWith("Emulation.") ||
-      method === "Page.captureScreenshot" ||
       method === "Input.dispatchMouseEvent" ||
       method === "Page.screencastFrameAck" ||
       method === "Runtime.releaseObjectGroup"

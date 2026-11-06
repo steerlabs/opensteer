@@ -10,6 +10,11 @@ import {
   type CdpSession,
   type LaunchedBrowser,
   type LocalProfileEngine,
+  readImageDimensions,
+  viewportCapturePlan,
+  viewportImageScript,
+  type ViewportCapture,
+  type ViewportCaptureRequest,
 } from "@opensteer/browser-runtime-core";
 import {
   browserPageDisabledBlinkFeatures,
@@ -34,6 +39,7 @@ import {
   type CDPSession as PlaywrightCdpSession,
 } from "playwright-core";
 import { z } from "zod";
+import { ChromiumViewportImage } from "./chromium-viewport-image.js";
 import { ChromiumClipboard } from "./chromium-clipboard.js";
 
 import { flushNativeCookies, initializeNativePreferences } from "./native-profile-storage.js";
@@ -747,11 +753,21 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
     const stopped = this.owner.close();
     await (this.cdp as PlaywrightBrowserCdpBackend).close();
     await stopped;
+    await this.contextHandle.closeViewportImage();
   }
 }
 
 class PlaywrightContextHandle implements BrowserContext {
   private closed = false;
+  private imageHelper: ChromiumViewportImage | undefined;
+  get viewportImage(): ChromiumViewportImage {
+    const browser = this.context.browser();
+    if (!browser) throw new Error("Chromium context has no browser.");
+    return (this.imageHelper ??= new ChromiumViewportImage(browser));
+  }
+  async closeViewportImage(): Promise<void> {
+    await this.imageHelper?.close();
+  }
   isConnected(): boolean {
     return !this.closed && this.context.browser()?.isConnected() === true;
   }
@@ -777,6 +793,7 @@ class PlaywrightContextHandle implements BrowserContext {
     this.context = context;
     context.on("close", () => {
       this.closed = true;
+      void this.closeViewportImage().catch(() => undefined);
     });
     this.openDialogs = openDialogs;
   }
@@ -832,6 +849,7 @@ class PlaywrightContextHandle implements BrowserContext {
 }
 
 class PlaywrightPageHandle implements BrowserPage {
+  private captureSession: Promise<PlaywrightCdpSession> | undefined;
   private cdpPromise: Promise<CdpSession> | null = null;
   private targetIdPromise: Promise<string> | null = null;
   private readonly context: PlaywrightBrowserContext;
@@ -857,6 +875,45 @@ class PlaywrightPageHandle implements BrowserPage {
     this.contextHandle = contextHandle;
     this.context = context;
     this.page = page;
+  }
+
+  async captureViewport({
+    clip,
+    format,
+    layout,
+    pageScale,
+    quality,
+  }: ViewportCaptureRequest): Promise<ViewportCapture> {
+    // This session must never enable emulation: an unclipped capture would then resize the page too.
+    const session = await (this.captureSession ??= this.context
+      .newCDPSession(this.page)
+      .catch((error: unknown) => {
+        this.captureSession = undefined;
+        throw error;
+      }));
+    const encoding = { format, ...(quality === undefined ? {} : { quality }) };
+    const direct = format === "jpeg" && !clip ? "jpeg" : "png";
+    const { data } = await session.send(
+      "Page.captureScreenshot",
+      direct === format ? encoding : { format: direct },
+    );
+    const bitmap = readImageDimensions(Buffer.from(data, "base64"), direct);
+    if (!bitmap) throw new Error("Chromium returned an unreadable screenshot.");
+    const visible = {
+      height: Math.round(layout.height / pageScale),
+      width: Math.round(layout.width / pageScale),
+    };
+    if (
+      !clip &&
+      direct === format &&
+      bitmap.width === visible.width &&
+      bitmap.height === visible.height
+    )
+      return { data };
+    const plan = viewportCapturePlan(bitmap, visible, clip);
+    return {
+      data: await this.contextHandle.viewportImage.run(viewportImageScript(data, plan, encoding)),
+    };
   }
 
   agentCdp(): Promise<CdpSession> {

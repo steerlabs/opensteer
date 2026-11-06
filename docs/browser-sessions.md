@@ -86,6 +86,13 @@ The surface ledger alone owns geometry. Keep agent emulation on a long-lived pla
 Chromium drops it on navigation after the issuing channel detaches. Electron frame callbacks cannot
 prove which metrics revision drew a frame, so presentation never invents paint readiness.
 
+Looking at a page never changes it. An agent screenshot may demand rendering and transform the
+returned pixels, but leaves native bounds, layout, emulation, scroll, focus and selection alone.
+Chromium's `Page.captureScreenshot` cannot promise that: with a clip, or on a session holding
+emulation, it resizes the view for the capture and a person watches the page shrink. So each engine
+copies its surface through `captureViewport` instead, and full-page capture, which only that resize
+can make, does not exist.
+
 Watch is passive: it may manage picture subscriptions and raster demand, but never navigate, select,
 resize, input, touch the clipboard or CDP, or move state. Profile owners can always view their
 sessions, whatever the grants; Guest follows Workspace membership.

@@ -14,6 +14,7 @@ import { DesktopDownloadsSnapshotSchema } from "@opensteer/protocol/desktop";
 import { electronPagePresentation } from "../src/browser/electron-browser-launcher.js";
 import type { NativeBrowserE2EKit } from "./electron-native-browser-kit.js";
 import { pageDownloadName } from "./electron-native-browser-download-fixture.js";
+import { captureJourney } from "./native-browser-journey-capture.js";
 
 const runFile = promisify(execFile);
 
@@ -184,6 +185,10 @@ export async function runJourney(kit: NativeBrowserE2EKit): Promise<void> {
       }
     }, "person viewport restored");
   });
+  const capture = captureJourney(kit, step, open);
+  await capture.size();
+  await capture.geometry();
+  await capture.states();
   async function withSentinel(
     action: (
       front: () => Promise<number>,

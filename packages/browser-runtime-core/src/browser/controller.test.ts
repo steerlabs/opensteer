@@ -1127,34 +1127,11 @@ describe("BrowserController", () => {
     },
   );
 
-  it.each([
-    [1, 1],
-    [2, 2],
-    [0, 2],
-    [1, 2],
-  ])(
-    "clips a panned visual viewport at agent DPR %s / native DPR %s",
-    async (agentDpr, nativeDpr) => {
+  describe("agent screenshots", () => {
+    async function agentScreenshots() {
       const controller = createController();
       await controller.start();
       const targetId = await page.targetId();
-      await ledger.agentMetrics(targetId, {
-        width: 709,
-        height: 729,
-        deviceScaleFactor: agentDpr,
-        mobile: false,
-      });
-      page.cdpSession.responses.set("Page.getLayoutMetrics", {
-        layoutViewport: { clientWidth: 694 * nativeDpr },
-        cssLayoutViewport: { clientWidth: 694 },
-        cssVisualViewport: {
-          pageX: 23.6,
-          pageY: 47.2,
-          clientWidth: 347.2,
-          clientHeight: 356.4,
-          scale: 2,
-        },
-      });
       await controller.handle({
         type: "cdp.command",
         requestId: "00000000-0000-4000-8000-000000000911",
@@ -1165,32 +1142,146 @@ describe("BrowserController", () => {
       );
       if (attached?.type !== "cdp.result") throw new Error("Missing attach result");
       const sessionId = (attached.result as { sessionId: string }).sessionId;
-      const capture = (parameters: Record<string, unknown>) =>
-        controller.handle({
+      let request = 912;
+      const capture = async (parameters: Record<string, unknown>) => {
+        const requestId = `00000000-0000-4000-8000-000000000${request++}`;
+        await controller.handle({
           type: "cdp.command",
-          requestId: "00000000-0000-4000-8000-000000000912",
+          requestId,
           command: { method: "Page.captureScreenshot", parameters, sessionId },
         });
-      const dpr = agentDpr || nativeDpr;
-      await capture({});
-      expect(command("Page.captureScreenshot", page)?.parameters).toMatchObject({
-        captureBeyondViewport: false,
-        clip: { x: 24, y: 47, width: 347, height: 356, scale: 1 / dpr },
-      });
-      await capture({ clip: { x: 3.25, y: 7.75, width: 111.5, height: 81.25, scale: 1.5 } });
-      expect(command("Page.captureScreenshot", page)?.parameters).toMatchObject({
-        clip: { x: 3.25, y: 7.75, width: 111.5, height: 81.25, scale: 1.5 / dpr },
-      });
-      const beyond = {
-        captureBeyondViewport: true,
-        clip: { x: 1, y: 2, width: 30, height: 40, scale: 2 },
+        const answer = sink.messages.find(
+          (message) =>
+            (message.type === "cdp.result" || message.type === "cdp.error") &&
+            message.requestId === requestId,
+        );
+        if (answer?.type === "cdp.result") return answer.result;
+        if (answer?.type === "cdp.error") return answer.error.message;
+        throw new Error("The capture was never answered");
       };
-      await capture(beyond);
-      expect(command("Page.captureScreenshot", page)?.parameters).toEqual(beyond);
-      await controller.close();
-      await ledger.close();
-    },
-  );
+      return { capture, close: () => Promise.all([controller.close(), ledger.close()]) };
+    }
+
+    it("asks the page for its viewport, turning a document clip into a viewport region", async () => {
+      const { capture, close } = await agentScreenshots();
+      page.cdpSession.responses.set("Page.getLayoutMetrics", {
+        cssVisualViewport: { pageX: 23.5, pageY: 47, scale: 2, zoom: 1.5 },
+      });
+      const requests: unknown[] = [];
+      page.captureResult = (request) => {
+        requests.push(request);
+        return { data: "aW1hZ2U=" };
+      };
+      await expect(capture({})).resolves.toEqual({ data: "aW1hZ2U=" });
+      await capture({
+        clip: { x: 33.5, y: 57, width: 111.5, height: 81.25, scale: 1.5 },
+        format: "webp",
+        quality: 60,
+      });
+      expect(requests).toEqual([
+        { format: "png", layout: { height: 720, width: 1_280 }, pageScale: 3 },
+        {
+          clip: { x: 10, y: 10, width: 111.5, height: 81.25, scale: 1.5 },
+          format: "webp",
+          layout: { height: 720, width: 1_280 },
+          pageScale: 3,
+          quality: 60,
+        },
+      ]);
+      expect(commandsNamed("Page.captureScreenshot", page)).toHaveLength(0);
+      await close();
+    });
+
+    it.each([
+      [{ captureBeyondViewport: true }, /Full-page capture .* Scroll and capture/],
+      [{ fromSurface: false }, /always comes from the surface/],
+      [{ optimizeForSpeed: "yes" }, /optimizeForSpeed/],
+    ])("refuses %j without touching the page", async (parameters, refusal) => {
+      const { capture, close } = await agentScreenshots();
+      page.captureResult = () => {
+        throw new Error("The page was asked");
+      };
+      await expect(capture(parameters)).resolves.toMatch(refusal);
+      await close();
+    });
+
+    it("never forwards a capture of a page the ledger does not hold", async () => {
+      const { capture, close } = await agentScreenshots();
+      vi.spyOn(ledger, "surfaceIdForTarget").mockReturnValue(undefined);
+      await expect(capture({})).resolves.toMatch(/page closed/);
+      expect(commandsNamed("Page.captureScreenshot", page)).toHaveLength(0);
+      vi.restoreAllMocks();
+      await close();
+    });
+
+    it("accepts CDP's defaults for the parameters it refuses", async () => {
+      const { capture, close } = await agentScreenshots();
+      await expect(
+        capture({ captureBeyondViewport: false, fromSurface: true }),
+      ).resolves.toMatchObject({ data: expect.any(String) });
+      await close();
+    });
+
+    it("holds a result the agent transport cannot carry", async () => {
+      const { capture, close } = await agentScreenshots();
+      page.captureResult = () => ({ data: "a".repeat(433 * 1_024) });
+      await expect(capture({})).resolves.toMatch(/exceeds the bounded agent transport/);
+      await close();
+    });
+
+    it("refuses pixels from a document with another page scale than it measured", async () => {
+      const { capture, close } = await agentScreenshots();
+      const metrics = (scale: number) => ({
+        cssVisualViewport: { pageX: 0, pageY: 0, scale },
+      });
+      page.cdpSession.responses.set("Page.getLayoutMetrics", metrics(0.5));
+      page.captureResult = () => {
+        page.cdpSession.responses.set("Page.getLayoutMetrics", metrics(1));
+        return { data: "aW1hZ2U=" };
+      };
+      await expect(capture({})).resolves.toMatch(/page changed during the screenshot/);
+      await close();
+    });
+
+    it("gives up on a capture still queued behind a resize, and never runs it", async () => {
+      vi.useFakeTimers();
+      try {
+        const { capture, close } = await agentScreenshots();
+        const held = Promise.withResolvers<void>();
+        const surfaceId = ledger.snapshot()[0]!.id;
+        const lock = ledger.withGeometry(surfaceId, () => held.promise);
+        const answer = capture({});
+        await vi.advanceTimersByTimeAsync(5_000);
+        await expect(answer).resolves.toMatch(/did not answer a screenshot in time/);
+        const measured = commandsNamed("Page.getLayoutMetrics", page).length;
+        held.resolve();
+        await lock;
+        await vi.advanceTimersByTimeAsync(0);
+        expect(commandsNamed("Page.getLayoutMetrics", page)).toHaveLength(measured);
+        await close();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("answers at once when the page closes under a capture that would never finish", async () => {
+      const { capture, close } = await agentScreenshots();
+      page.captureResult = () => new Promise(() => undefined);
+      const answer = capture({});
+      await flushMicrotasks();
+      await page.close();
+      await expect(answer).resolves.toMatch(/page closed/);
+      await close();
+    });
+
+    it("refuses while a dialog holds the page, instead of waiting on its renderer", async () => {
+      const { capture, close } = await agentScreenshots();
+      page.cdpSession.emit("Page.javascriptDialogOpening", { message: "Sure?", type: "confirm" });
+      await flushMicrotasks();
+      await expect(capture({})).resolves.toMatch(/dialog is open/);
+      await close();
+    });
+  });
 
   it("publishes state immediately and starts one screencast only while subscribed", async () => {
     const controller = createController();

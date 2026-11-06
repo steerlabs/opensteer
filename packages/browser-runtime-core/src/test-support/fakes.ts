@@ -18,6 +18,7 @@ import type {
   LaunchedBrowser,
 } from "../browser/backend.js";
 import type { BrowserControllerSink } from "../browser/controller.js";
+import type { ViewportCapture, ViewportCaptureRequest } from "../browser/viewport-capture.js";
 import type { AttachTicketVerifier } from "../security/attach-ticket.js";
 import type { BrowserFrame } from "../stream/frame.js";
 interface SentCdpCommand {
@@ -85,11 +86,8 @@ export class FakeCdpSession implements CdpSession {
       return {
         layoutViewport: { clientWidth: 1_280 },
         cssLayoutViewport: { clientWidth: 1_280 },
-        cssVisualViewport: { clientHeight: 720, clientWidth: 1_280 },
+        cssVisualViewport: { clientHeight: 720, clientWidth: 1_280, pageX: 0, pageY: 0, scale: 1 },
       } as Result;
-    }
-    if (method === "Page.captureScreenshot") {
-      return { data: jpeg(32, 24).toString("base64") } as Result;
     }
     if (method === "Page.getNavigationHistory") {
       return { currentIndex: 1, entries: [{ id: 10 }, { id: 11 }, { id: 12 }] } as Result;
@@ -157,6 +155,14 @@ export class FakePage implements BrowserPage {
         throw new Error("uniqueContextId not found");
       return { result: { value: { href: this.pageUrl, title: this.pageTitle } } };
     });
+  }
+
+  /** Answers `captureViewport`; a test replaces it to see the request or shape the result. */
+  captureResult: (request: ViewportCaptureRequest) => Promise<ViewportCapture> | ViewportCapture =
+    () => ({ data: jpeg(32, 24).toString("base64") });
+
+  async captureViewport(request: ViewportCaptureRequest): Promise<ViewportCapture> {
+    return this.captureResult(request);
   }
 
   /** The loader of the document the page shows now. */

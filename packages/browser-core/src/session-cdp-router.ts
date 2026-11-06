@@ -295,6 +295,16 @@ export class SessionCdpRouter {
     this.#admitAttachedCommand(state, command);
   }
 
+  /** Refuses exactly what `send` would refuse of a result the caller produced itself. */
+  admitPageResult(result: unknown): void {
+    if (serializedBytes(result) > this.#limits.maxResultBytes) {
+      throw new SessionCdpRouterError(
+        "too_large",
+        "CDP result exceeds the bounded agent transport. Query a narrower result in the page.",
+      );
+    }
+  }
+
   /**
    * Refuses exactly what `send` would refuse of an agent's
    * `Target.createTarget`, without sending it, for a tab the caller opens
@@ -333,12 +343,7 @@ export class SessionCdpRouter {
       : command.sessionId
         ? await this.#sendAttachedCommand(state, command, beforeActivity)
         : await this.#backend.send(command.method, command.parameters);
-    if (serializedBytes(result) > this.#limits.maxResultBytes) {
-      throw new SessionCdpRouterError(
-        "too_large",
-        "CDP result exceeds the bounded agent transport. Query a narrower result in the page.",
-      );
-    }
+    this.admitPageResult(result);
     return result;
   }
 
