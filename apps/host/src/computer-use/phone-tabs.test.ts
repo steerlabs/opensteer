@@ -78,6 +78,25 @@ describe("phone tabs", () => {
     await vi.waitFor(() => expect(open).toBe(true));
   });
 
+  it("leaves a tab closed when the view that opened it went with the close", async () => {
+    const test = tabs();
+    let live = true;
+    let finishClose = () => undefined as void;
+    test.store.closePhoneTab.mockImplementationOnce(
+      () => new Promise<undefined>((resolve) => (finishClose = () => resolve(undefined))),
+    );
+    test.closeViews.mockImplementation(() => {
+      live = false;
+    });
+    const closing = test.service.close(owner, machine);
+    await vi.waitFor(() => expect(test.store.closePhoneTab).toHaveBeenCalledOnce());
+    test.service.opened(machine, () => live);
+    finishClose();
+    await closing;
+    await test.service.close(owner, machine);
+    expect(test.store.openPhoneTab).not.toHaveBeenCalled();
+  });
+
   it("refuses anyone but the phone's effective owner", async () => {
     const test = tabs({ effectiveOwner: createId("user") });
     await expect(test.service.close(owner, machine)).rejects.toMatchObject({ code: "not_found" });

@@ -310,6 +310,21 @@ it("says a view left with its phone's tab, and only then", async () => {
   }
 });
 
+it("refuses an open waiting when its phone's tab closed, and only that one", async () => {
+  const h = harness(true);
+  try {
+    const waiting = h.open();
+    h.service.closePhoneViews(owner, machine);
+    await expect(waiting).rejects.toMatchObject({ reason: "computer-view-ended" });
+    expect(h.service.holdsPhoneView(machine)).toBe(false);
+
+    await h.open();
+    expect(h.service.holdsPhoneView(machine)).toBe(true);
+  } finally {
+    h.service.shutdown();
+  }
+});
+
 it("keeps phone viewing live while read-write approval alone controls input", async () => {
   const h = harness(true);
   try {

@@ -85,6 +85,8 @@ export class ComputerViewService {
   readonly #views = new Map<string, HeldView>();
   readonly #commands = new Map<string, { fingerprint: string; result: Promise<ComputerView> }>();
   readonly #turns = new Map<UserId, Promise<unknown>>();
+  /** Each phone's tab closes so far: an open received before one must not outlive it. */
+  readonly #tabCloses = new Map<RunnerId, number>();
   readonly #now: () => number;
   #closed = false;
   constructor(options: Options) {
@@ -154,8 +156,19 @@ export class ComputerViewService {
       .map((view) => this.#public(view));
   }
 
-  /** A tab closing takes the person's view of the phone with it. */
+  /** Whether a view of this phone is live: one that ended cannot keep its tab open. */
+  holdsPhoneView(machine: RunnerId): boolean {
+    return [...this.#views.values()].some(
+      (view) =>
+        view.record.machineId === machine &&
+        view.record.target.kind === "phone" &&
+        this.#live(view),
+    );
+  }
+
+  /** A tab closing takes the person's view of the phone with it, and any open still waiting. */
   closePhoneViews(owner: UserId, machine: RunnerId): void {
+    this.#tabCloses.set(machine, (this.#tabCloses.get(machine) ?? 0) + 1);
     for (const view of this.#views.values())
       if (
         view.record.ownerUserId === owner &&
@@ -222,12 +235,16 @@ export class ComputerViewService {
       });
     }
     const receivedAt = this.#now();
+    const tabCloses =
+      command.type === "computer.view.open" ? (this.#tabCloses.get(command.machineId) ?? 0) : 0;
     const before = this.#turns.get(owner) ?? Promise.resolve();
     // Revocation cannot wait for a native open/renew answer already in flight.
     const result =
       command.type === "computer.view.close"
-        ? this.#command(owner, command, receivedAt)
-        : before.catch(() => undefined).then(() => this.#command(owner, command, receivedAt));
+        ? this.#command(owner, command, receivedAt, tabCloses)
+        : before
+            .catch(() => undefined)
+            .then(() => this.#command(owner, command, receivedAt, tabCloses));
     this.#commands.set(key, { fingerprint, result });
     if (command.type !== "computer.view.close") {
       this.#turns.set(owner, result);
@@ -241,11 +258,21 @@ export class ComputerViewService {
     return result;
   }
 
-  async #command(owner: UserId, command: ViewCommand, receivedAt: number): Promise<ComputerView> {
+  async #command(
+    owner: UserId,
+    command: ViewCommand,
+    receivedAt: number,
+    tabCloses: number,
+  ): Promise<ComputerView> {
     if (this.#closed)
       throw this.#refusal("computer-view-ended", "The Host ended this view. Reopen it explicitly.");
     if (command.type === "computer.view.open") {
       const approved = await this.#approvedTarget(owner, command.machineId, command.target);
+      if (
+        command.target.kind === "phone" &&
+        (this.#tabCloses.get(command.machineId) ?? 0) !== tabCloses
+      )
+        throw this.#refusal("computer-view-ended", "This phone's tab was closed.");
       const held = [...this.#views.values()].find(
         ({ record }) =>
           record.ownerUserId === owner &&

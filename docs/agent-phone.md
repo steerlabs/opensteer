@@ -99,7 +99,8 @@ press of Open, because asking again by itself would loop. A second device on the
 owner view while the tab is in front there, and keeps renewing it.
 
 Closing the tab writes it closed before ending the view, and that view's removal says so: a tab in
-front elsewhere would otherwise reopen the view, and with it the tab.
+front elsewhere would otherwise reopen the view, and with it the tab. An open received before the
+close is refused, and a view that ended cannot record its tab as open.
 
 ## Live display
 
