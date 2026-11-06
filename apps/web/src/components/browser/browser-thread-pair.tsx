@@ -69,39 +69,12 @@ export function useBrowserThreadPair({
     () => (threadId ? browserThreadAgentTab(sessions, threadId) : null),
     [sessions, threadId],
   );
-  const shownTabId = shown?.tabId ?? null;
-  const shownNow = useRef(shownTabId);
-  shownNow.current = shownTabId;
-  const followedTo = useRef<string | null>(null);
   const onFollow = useCallback(
-    (tab: BrowserTabDestination) => {
-      if (tab.tabId !== shownNow.current) followedTo.current = tab.tabId;
-      onShow({ sessionId: tab.sessionId, tabId: tab.tabId }, { replace: true });
-    },
+    (tab: BrowserTabDestination) => onShow(tab, { replace: true }),
     [onShow],
   );
   const follow = useBrowserAgentFollow({ threadId, shownTab: shown, agentTab, onFollow });
   const { pause, resume } = follow;
-  // Read when the shown tab changes: the agent's own moves are not the person's.
-  const agentNow = useRef(agentTab);
-  agentNow.current = agentTab;
-  const seen = useRef<{ readonly threadId: string | null; readonly tabId: string | null } | null>(
-    null,
-  );
-  useEffect(() => {
-    const previous = seen.current;
-    seen.current = { threadId, tabId: shownTabId };
-    if (!previous || threadId === null || previous.threadId !== threadId) return;
-    if (previous.tabId === shownTabId) return;
-    if (followedTo.current === shownTabId) {
-      followedTo.current = null;
-      return;
-    }
-    // Going to the agent's own tab is choosing to see what it sees.
-    if (shownTabId !== null && shownTabId === agentNow.current?.tabId) resume();
-    else pause();
-  }, [pause, resume, shownTabId, threadId]);
-
   const session = shown ? sessions.find((candidate) => candidate.id === shown.sessionId) : null;
   const tabsMemo = useRef<BrowserThreadTabs | undefined>(undefined);
   const tabs = useMemo(() => {

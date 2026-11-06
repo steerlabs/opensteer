@@ -61,6 +61,7 @@ export const LivePlace = memo(function LivePlace(props: {
               hostClient={hostClient}
               label={title}
               preserveLastFrame
+              previewSessionId={place.sessionId}
               session={{
                 id: destination?.kind === "browser" ? destination.sessionId : place.sessionId,
                 state: "ready",

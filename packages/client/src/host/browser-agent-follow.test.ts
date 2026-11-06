@@ -81,6 +81,30 @@ describe("browser agent following", () => {
     expect(controller.state.following).toBe(true);
     expect(onFollow).toHaveBeenCalledExactlyOnceWith(c);
   });
+  it("pauses on navigation, cancels a pending switch, and follows when the person returns", () => {
+    const { controller, update, onFollow } = setup();
+    update(b);
+    update(c, b);
+    update(c, a);
+    vi.advanceTimersByTime(2000);
+    expect(controller.state.following).toBe(false);
+    expect(onFollow).toHaveBeenCalledExactlyOnceWith(b);
+    update(c, c);
+    expect(controller.state.following).toBe(true);
+    update(b, c);
+    expect(onFollow.mock.calls.map(([tab]) => tab)).toEqual([b, b]);
+  });
+  it("accepts delayed acknowledgements of its own destination without pausing", () => {
+    const { controller, update, onFollow } = setup();
+    update(b);
+    update(c);
+    update(c, b);
+    expect(controller.state.following).toBe(true);
+    vi.advanceTimersByTime(1000);
+    expect(onFollow.mock.calls.map(([tab]) => tab)).toEqual([b, c]);
+    update(c, c);
+    expect(controller.state.following).toBe(true);
+  });
   it("run end cancels pending switches and following quietly", () => {
     const { controller, update, onFollow } = setup();
     update(b);

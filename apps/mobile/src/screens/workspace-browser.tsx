@@ -461,10 +461,8 @@ function Focused(props: {
   );
   const agentTab = useHostSelector(hostClient, selectAgentTab, sameAgentTab);
   const shownTab = destination.kind === "browser" ? destination : null;
-  const followedTo = useRef<BrowserTabDestination | null>(null);
   const onFollow = useCallback(
     (tab: BrowserTabDestination) => {
-      followedTo.current = tab;
       navigation.setParams({
         editAddress: false,
         popup: false,
@@ -476,25 +474,14 @@ function Focused(props: {
   );
   const follow = useBrowserAgentFollow({ agentTab, onFollow, shownTab, threadId: besideId });
   const { pause } = follow;
-  // Any other way the tab in front changed — a chip, a swipe, the tab sheet,
-  // a suggestion — was the person's. A layout effect, so following stops
-  // before the follow hook's own effect sees the new tab and pulls them back.
-  const shownTabId = shownTab?.tabId ?? null;
-  const lastShown = useRef(shownTabId);
-  useLayoutEffect(() => {
-    if (lastShown.current === shownTabId) return;
-    lastShown.current = shownTabId;
-    if (followedTo.current?.tabId !== shownTabId) pause();
-  }, [pause, shownTabId]);
   // Over the page that opened it, so Back and its ending both return there.
   const onPopup = useCallback(
     (tabId: string) => {
-      pause();
       navigation.dispatch(
         StackActions.push("WorkspaceBrowser", { ...route, editAddress: false, popup: true, tabId }),
       );
     },
-    [navigation, pause, route],
+    [navigation, route],
   );
   const onShowTabs = useCallback(() => {
     if (destination.kind === "browser")

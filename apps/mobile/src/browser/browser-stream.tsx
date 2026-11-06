@@ -87,6 +87,8 @@ export interface BrowserStreamProps {
   readonly session: Pick<BrowserSessionSummary, "id" | "state">;
   /** Passive Run preview: retain the last presented picture of each recently visited tab. */
   readonly preserveLastFrame?: boolean;
+  /** Original Run session identity when its tab is rebound to a replacement session. */
+  readonly previewSessionId?: string;
   readonly style?: StyleProp<ViewStyle>;
   /**
    * How far this phone has pinched the picture in. A drag is measured on the
@@ -132,7 +134,12 @@ export function BrowserStream(props: BrowserStreamProps) {
   const reader = useRef({ client: props.hostClient, epoch: 0 });
   if (reader.current.client !== props.hostClient)
     reader.current = { client: props.hostClient, epoch: reader.current.epoch + 1 };
-  return <BrowserStreamView key={`${reader.current.epoch}:${props.session.id}`} {...props} />;
+  return (
+    <BrowserStreamView
+      key={`${reader.current.epoch}:${props.preserveLastFrame && !props.interactive ? (props.previewSessionId ?? props.session.id) : props.session.id}`}
+      {...props}
+    />
+  );
 }
 
 function BrowserStreamView({
