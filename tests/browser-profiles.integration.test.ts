@@ -58,7 +58,7 @@ const reportSchema = z
     page: z.object({ signedIn: z.boolean(), url: z.string() }).optional(),
     request: z.object({ requestId: RequestIdSchema }).passthrough().optional(),
     delegated: z
-      .object({ thread: z.object({ id: ThreadIdSchema }) })
+      .object({ threadId: ThreadIdSchema })
       .passthrough()
       .optional(),
     profiles: z
@@ -472,7 +472,7 @@ run("Browser profiles through a whole deployment", () => {
         { delegate: workspace.id },
         main.threadId,
       );
-      const childId = delegated.report.delegated!.thread.id;
+      const childId = delegated.report.delegated!.threadId;
       let child: Report | undefined;
       await waitFor(async () => {
         const snapshot = await stack.host.store.workspaceSnapshot(workspace.id);
