@@ -39,7 +39,6 @@ import {
   type CDPSession as PlaywrightCdpSession,
 } from "playwright-core";
 import { z } from "zod";
-import { ChromiumViewportImage } from "./chromium-viewport-image.js";
 import { ChromiumClipboard } from "./chromium-clipboard.js";
 
 import { flushNativeCookies, initializeNativePreferences } from "./native-profile-storage.js";
@@ -753,21 +752,11 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
     const stopped = this.owner.close();
     await (this.cdp as PlaywrightBrowserCdpBackend).close();
     await stopped;
-    await this.contextHandle.closeViewportImage();
   }
 }
 
 class PlaywrightContextHandle implements BrowserContext {
   private closed = false;
-  private imageHelper: ChromiumViewportImage | undefined;
-  get viewportImage(): ChromiumViewportImage {
-    const browser = this.context.browser();
-    if (!browser) throw new Error("Chromium context has no browser.");
-    return (this.imageHelper ??= new ChromiumViewportImage(browser));
-  }
-  async closeViewportImage(): Promise<void> {
-    await this.imageHelper?.close();
-  }
   isConnected(): boolean {
     return !this.closed && this.context.browser()?.isConnected() === true;
   }
@@ -793,7 +782,6 @@ class PlaywrightContextHandle implements BrowserContext {
     this.context = context;
     context.on("close", () => {
       this.closed = true;
-      void this.closeViewportImage().catch(() => undefined);
     });
     this.openDialogs = openDialogs;
   }
@@ -850,6 +838,7 @@ class PlaywrightContextHandle implements BrowserContext {
 
 class PlaywrightPageHandle implements BrowserPage {
   private captureSession: Promise<PlaywrightCdpSession> | undefined;
+  private captureWorld: number | undefined;
   private cdpPromise: Promise<CdpSession> | null = null;
   private targetIdPromise: Promise<string> | null = null;
   private readonly context: PlaywrightBrowserContext;
@@ -911,9 +900,34 @@ class PlaywrightPageHandle implements BrowserPage {
     )
       return { data };
     const plan = viewportCapturePlan(bitmap, visible, clip);
-    return {
-      data: await this.contextHandle.viewportImage.run(viewportImageScript(data, plan, encoding)),
-    };
+    return { data: await this.inCaptureWorld(session, viewportImageScript(data, plan, encoding)) };
+  }
+
+  /** A world page scripts and agents never reach, lending the page's own image codecs. */
+  private async inCaptureWorld(session: PlaywrightCdpSession, expression: string): Promise<string> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const { frameTree } = await session.send("Page.getFrameTree");
+        this.captureWorld ??= (
+          await session.send("Page.createIsolatedWorld", {
+            frameId: frameTree.frame.id,
+            worldName: "opensteer-capture",
+          })
+        ).executionContextId;
+        const { exceptionDetails, result } = await session.send("Runtime.evaluate", {
+          awaitPromise: true,
+          contextId: this.captureWorld,
+          expression,
+          returnByValue: true,
+        });
+        if (exceptionDetails) throw new Error("The page could not encode the screenshot.");
+        return z.string().parse(result.value);
+      } catch (error) {
+        // A navigation takes the world with it.
+        this.captureWorld = undefined;
+        if (attempt > 0) throw error;
+      }
+    }
   }
 
   agentCdp(): Promise<CdpSession> {

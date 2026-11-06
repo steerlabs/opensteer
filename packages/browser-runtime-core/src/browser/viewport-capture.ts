@@ -73,15 +73,14 @@ export function viewportCapturePlan(
     );
   const horizontal = bitmap.width / visible.width;
   const vertical = bitmap.height / visible.height;
-  const left = Math.floor(region.x * horizontal);
-  const top = Math.floor(region.y * vertical);
+  // Fractional: rounding the source to whole bitmap pixels would shift a resampled region.
   return {
     output,
     source: {
-      height: Math.max(1, Math.ceil((region.y + region.height) * vertical) - top),
-      width: Math.max(1, Math.ceil((region.x + region.width) * horizontal) - left),
-      x: left,
-      y: top,
+      height: region.height * vertical,
+      width: region.width * horizontal,
+      x: region.x * horizontal,
+      y: region.y * vertical,
     },
   };
 }

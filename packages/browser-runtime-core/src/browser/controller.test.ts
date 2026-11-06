@@ -1159,7 +1159,17 @@ describe("BrowserController", () => {
         if (answer?.type === "cdp.error") return answer.error.message;
         throw new Error("The capture was never answered");
       };
-      return { capture, close: () => Promise.all([controller.close(), ledger.close()]) };
+      const detach = () =>
+        controller.handle({
+          type: "cdp.command",
+          requestId: "00000000-0000-4000-8000-000000000999",
+          command: { method: "Target.detachFromTarget", parameters: { sessionId } },
+        });
+      return {
+        capture,
+        detach,
+        close: () => Promise.all([controller.close(), ledger.close()]),
+      };
     }
 
     it("asks the page for its viewport, turning a document clip into a viewport region", async () => {
@@ -1262,6 +1272,22 @@ describe("BrowserController", () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+
+    it("drops a capture whose agent detached while it waited, without looking", async () => {
+      const { capture, detach, close } = await agentScreenshots();
+      const held = Promise.withResolvers<void>();
+      const lock = ledger.withGeometry(ledger.snapshot()[0]!.id, () => held.promise);
+      const measured = commandsNamed("Page.getLayoutMetrics", page).length;
+      const answer = capture({});
+      await flushMicrotasks();
+      await detach();
+      await expect(answer).resolves.toMatch(/session ended/);
+      held.resolve();
+      await lock;
+      await flushMicrotasks();
+      expect(commandsNamed("Page.getLayoutMetrics", page)).toHaveLength(measured);
+      await close();
     });
 
     it("answers at once when the page closes under a capture that would never finish", async () => {

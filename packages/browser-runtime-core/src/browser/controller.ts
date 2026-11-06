@@ -2769,7 +2769,8 @@ export class BrowserController {
       );
     if (fromSurface !== undefined && fromSurface !== true)
       throw new BrowserRuntimeError("bad_message", "A screenshot always comes from the surface.");
-    this.cdpRouter.admitPageCommand(this.claims.sessionId, { ...command, parameters });
+    const admitted = { ...command, parameters };
+    const detached = this.cdpRouter.admitPageCommand(this.claims.sessionId, admitted);
     if (!surfaceId) throw new BrowserRuntimeError("not_found", "The browser page closed.");
     // Chromium's renderer answers neither metrics nor a capture under a dialog.
     if (this.ledger.dialogOpen(surfaceId))
@@ -2784,11 +2785,12 @@ export class BrowserController {
     const closed = () =>
       stop.abort(new BrowserRuntimeError("not_found", "The browser page closed."));
     page.onClose(closed);
+    const ended = AbortSignal.any([stop.signal, detached]);
     // Bounded both queued and running: a capture holds the geometry lock, and a
     // resize ahead of it can wait on a stopped renderer.
     const bounded = <T>(work: Promise<T>) =>
       withTimeout(work, screenshotTimeoutMs, {
-        signal: stop.signal,
+        signal: ended,
         timeoutError: () => {
           const late = new BrowserRuntimeError(
             "conflict",
@@ -2801,7 +2803,9 @@ export class BrowserController {
       });
     return bounded(
       this.ledger.withGeometry(surfaceId, (cdp, geometry) => {
-        stop.signal.throwIfAborted();
+        ended.throwIfAborted();
+        // Access may have changed while this waited, as `send` would recheck.
+        this.cdpRouter.admitPageCommand(this.claims.sessionId, admitted);
         return bounded(this.lookAt(page, cdp, geometry, request));
       }),
     ).finally(() => page.offClose(closed));

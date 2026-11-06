@@ -29,7 +29,7 @@ describe("viewportCapturePlan", () => {
       }),
     ).toEqual({
       output: { width: 200, height: 101 },
-      source: { x: 21, y: 40, width: 200, height: 101 },
+      source: { x: 21, y: 40, width: 200, height: 100.5 },
     });
   });
 

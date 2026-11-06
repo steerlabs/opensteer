@@ -754,7 +754,6 @@ class ElectronBrowserContext implements BrowserContext {
     const page = new ElectronBrowserPage(
       this.#createView(options, opener?.view ?? null, timing, startRenderer),
       opener,
-      (script) => this.#encodeImage(script),
       this.#authenticator,
       this.#providerConfig,
       timing,
@@ -798,18 +797,6 @@ class ElectronBrowserContext implements BrowserContext {
     const targetInfo = await page.targetInfo();
     this.#events.emit("target", "Target.targetCreated", { targetInfo });
     this.#events.emit("page", page);
-  }
-
-  /** nativeImage has no WebP encoder; an empty page lends Chromium's. */
-  async #encodeImage(script: string): Promise<string> {
-    const view = this.#createHelper({ webPreferences: this.#securePreferences() });
-    const contents = view.webContents;
-    try {
-      await contents.loadURL("about:blank");
-      return z.string().parse(await contents.executeJavaScript(script));
-    } finally {
-      if (!contents.isDestroyed()) contents.close({ waitForBeforeUnload: false });
-    }
   }
 
   #securePreferences(): WebPreferences {
@@ -925,7 +912,6 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
   #targetIdPromise: Promise<string> | null = null;
   readonly #passkeyInput = new Set<() => void>();
   readonly #humanInput = new Set<(observation: HumanInputObservation) => void>();
-  readonly #encodeImage: (script: string) => Promise<string>;
   #frameWorld: number | null = null;
   readonly #restingHost: BaseWindow;
   #requestedRestingSize: { width: number; height: number };
@@ -975,12 +961,10 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
   constructor(
     { view, host, initialLoad }: ElectronBrowserView,
     opener: ElectronBrowserPage | null,
-    encodeImage: (script: string) => Promise<string>,
     authenticator?: PasskeyAuthenticator,
     providerConfig?: BrowserPagePolicyConfig,
     timing?: PageOpenTiming,
   ) {
-    this.#encodeImage = encodeImage;
     this.view = view;
     this.initialLoad = initialLoad;
     this.#restingHost = host;
@@ -1667,9 +1651,19 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       };
       const plan = viewportCapturePlan(image.getSize(), visible, clip);
       const { crop } = this.#desiredPlacement;
-      const picture = image.crop(plan.source).resize({ ...plan.output, quality: "better" });
+      const size = image.getSize();
+      const x = Math.min(size.width - 1, Math.round(plan.source.x));
+      const y = Math.min(size.height - 1, Math.round(plan.source.y));
+      const picture = image
+        .crop({
+          x,
+          y,
+          width: Math.max(1, Math.min(size.width - x, Math.round(plan.source.width))),
+          height: Math.max(1, Math.min(size.height - y, Math.round(plan.source.height))),
+        })
+        .resize({ ...plan.output, quality: "better" });
       return {
-        data: await this.#encode(picture, format, quality),
+        data: await this.#encode(cdp, picture, format, quality),
         ...(crop.right || crop.bottom
           ? {
               cropped: {
@@ -1687,34 +1681,47 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     }
   }
 
+  /** A world page scripts and agents never reach. */
+  async #inFrameWorld(cdp: CdpSession, expression: string): Promise<unknown> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        this.#frameWorld ??= z.object({ executionContextId: z.number().int() }).parse(
+          await cdp.send("Page.createIsolatedWorld", {
+            frameId: await this.targetId(),
+            worldName: "opensteer-frame",
+          }),
+        ).executionContextId;
+        const { exceptionDetails, result } = z
+          .object({
+            exceptionDetails: z.unknown().optional(),
+            result: z.object({ value: z.unknown().optional() }),
+          })
+          .parse(
+            await cdp.send("Runtime.evaluate", {
+              awaitPromise: true,
+              contextId: this.#frameWorld,
+              expression,
+              returnByValue: true,
+            }),
+          );
+        if (exceptionDetails) throw new Error("The page could not run a capture step.");
+        return result.value;
+      } catch (error) {
+        // A navigation takes the world with it.
+        this.#frameWorld = null;
+        if (attempt > 0) throw error;
+      }
+    }
+  }
+
   /** `capturePage` copies the last frame drawn, which can predate the page's latest change. */
   async #drawnFrame(cdp: CdpSession): Promise<void> {
-    const drawn = async () => {
-      for (let attempt = 0; attempt < 2; attempt++) {
-        try {
-          this.#frameWorld ??= z.object({ executionContextId: z.number().int() }).parse(
-            await cdp.send("Page.createIsolatedWorld", {
-              frameId: await this.targetId(),
-              worldName: "opensteer-frame",
-            }),
-          ).executionContextId;
-          await cdp.send("Runtime.evaluate", {
-            awaitPromise: true,
-            contextId: this.#frameWorld,
-            expression:
-              "new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))",
-          });
-          return;
-        } catch {
-          // A navigation takes this world with it.
-          this.#frameWorld = null;
-        }
-      }
-    };
+    const frames =
+      "new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))";
     // A page that draws nothing has nothing newer to show.
-    await withTimeout(drawn(), 1_000, { timeoutError: () => new Error("No frame.") }).catch(
-      () => undefined,
-    );
+    await withTimeout(this.#inFrameWorld(cdp, frames), 1_000, {
+      timeoutError: () => new Error("No frame."),
+    }).catch(() => undefined);
   }
 
   async #surfaceImage(): Promise<NativeImage> {
@@ -1726,6 +1733,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
   }
 
   async #encode(
+    cdp: CdpSession,
     image: NativeImage,
     format: ViewportCaptureRequest["format"],
     quality: number | undefined,
@@ -1735,9 +1743,18 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     if (format === "png") return data;
     const size = image.getSize();
     const plan = { output: size, source: { x: 0, y: 0, ...size } };
-    return this.#encodeImage(
-      viewportImageScript(data, plan, { format, ...(quality === undefined ? {} : { quality }) }),
-    );
+    // nativeImage has no WebP encoder; the page's own does.
+    return z
+      .string()
+      .parse(
+        await this.#inFrameWorld(
+          cdp,
+          viewportImageScript(data, plan, {
+            format,
+            ...(quality === undefined ? {} : { quality }),
+          }),
+        ),
+      );
   }
 
   loadInitialUrl(url: string): Promise<void> {
