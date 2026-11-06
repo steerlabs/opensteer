@@ -117,6 +117,7 @@ export interface VoiceControllerInput extends VoiceTimers {
     readonly threadId: string | null;
     readonly tabId: string | null;
   };
+  readonly authorize?: () => Promise<boolean>;
   readonly onStart?: () => void | Promise<void>;
   /** Semantic provider seam, also usable by offline implementations and tests. */
   readonly createProvider?: (input: CodexVoiceProviderInput) => VoiceProvider;
@@ -241,6 +242,11 @@ export class VoiceController {
       ask: null,
     });
     try {
+      if (this.#input.authorize && !(await this.#input.authorize())) {
+        await this.#end(session);
+        return;
+      }
+      if (this.#session !== session) return;
       await this.#input.onStart?.();
       if (this.#session !== session) return;
       const opened = await this.#open();

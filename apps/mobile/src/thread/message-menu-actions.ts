@@ -1,3 +1,4 @@
+import { contactSupport } from "../report-mail.js";
 import * as Clipboard from "expo-clipboard";
 import * as Haptics from "expo-haptics";
 import { Alert, Share } from "react-native";
@@ -5,6 +6,7 @@ import { Alert, Share } from "react-native";
 /** What a message's menu can do with it, and what it is shown with. */
 export interface MessageMenuOptions {
   readonly text: string;
+  readonly reportId?: string;
   /** Given, Reply quotes the message into this conversation's composer. */
   readonly onReply?: (() => void) | undefined;
   /** Given, Run details opens what the reply did on the way, in a sheet. */
@@ -12,9 +14,10 @@ export interface MessageMenuOptions {
 }
 
 export interface MessageAction {
-  readonly id: "activity" | "copy" | "reply" | "share";
+  readonly id: "activity" | "copy" | "reply" | "share" | "report";
   /** The system's own symbol for each; both menus draw SF Symbols by name. */
-  readonly image: "arrowshape.turn.up.left" | "doc.on.doc" | "list.bullet" | "square.and.arrow.up";
+  readonly image:
+    "arrowshape.turn.up.left" | "doc.on.doc" | "list.bullet" | "square.and.arrow.up" | "flag";
   readonly title: string;
 }
 
@@ -29,12 +32,16 @@ export function messageActions(options: MessageMenuOptions): readonly MessageAct
     ...(options.onActivity
       ? [{ id: "activity", image: "list.bullet", title: "Run details" } as const]
       : []),
+    ...(options.reportId ? [{ id: "report", image: "flag", title: "Report…" } as const] : []),
     ...(worded ? [{ id: "share", image: "square.and.arrow.up", title: "Share…" } as const] : []),
   ];
 }
 
 export function performMessageAction(actionId: string, options: MessageMenuOptions): void {
   switch (actionId) {
+    case "report":
+      if (options.reportId) contactSupport({ kind: "reply", id: options.reportId });
+      return;
     case "reply":
       options.onReply?.();
       return;

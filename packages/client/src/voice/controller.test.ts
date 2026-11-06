@@ -72,6 +72,19 @@ function step(
 }
 
 describe("VoiceController", () => {
+  it("never opens a call or touches media while consent is pending or declined", async () => {
+    const permission = Promise.withResolvers<boolean>();
+    const f = setup({ input: { authorize: () => permission.promise } });
+    const opening = f.controller.start();
+    await settle();
+    expect(f.provider.open).not.toHaveBeenCalled();
+    expect(f.onStart).not.toHaveBeenCalled();
+    permission.resolve(false);
+    await opening;
+    expect(f.provider.open).not.toHaveBeenCalled();
+    expect(f.controller.call()).toBeNull();
+    f.dispose();
+  });
   it("selects Chat's signed-in Codex subscription account, then the first eligible account", () => {
     const f = setup();
     const snapshot = f.host.getSnapshot();

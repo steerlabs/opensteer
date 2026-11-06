@@ -138,7 +138,7 @@ vi.mock("../ui/screen.js", () => ({
   useReadingColumn: () => ({}),
 }));
 vi.mock("../ui/mobile-client-context.js", () => ({
-  useHostValue: () => false,
+  useHostValue: (_client: unknown, _read: unknown, fallback: unknown) => fallback,
   useMobileState: () => ({ rows: [], selection: { deploymentId: null, hostClient: null } }),
 }));
 vi.mock("../ui/sheet.js", () => ({
@@ -315,7 +315,7 @@ describe("Add this iPhone", () => {
     );
     expect(input("Name").value).toBe("Alex's iPhone");
     expect(text()).toContain(
-      "What agents see goes to Opensteer on Mac mini and the AI service the task uses. Tasks in Main can use these apps; a project needs your approval first. Nothing else on this iPhone is shared: not other apps, files, messages or the screen.",
+      "What agents see goes to Opensteer on Mac mini and may go to the AI services set up on your computer. Tasks in Main can use these apps; a project needs your approval first. Nothing else on this iPhone is shared: not other apps, files, messages or the screen.",
     );
     // Everything but Photos starts on, at its widest.
     expect(switches()).toEqual([

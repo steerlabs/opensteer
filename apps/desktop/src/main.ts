@@ -195,7 +195,12 @@ app.once("will-quit", () => webLinks.dispose());
 app.once("will-quit", () => void integrationAuthorizations.close());
 let activeMainProcess: DesktopMainProcess | null = null;
 let desktopLog: RotatingPersonalLog | null = null;
-const shutdown = new DesktopShutdown({ application: app, power: powerMonitor, log: reportEvent });
+const shutdown = new DesktopShutdown({
+  application: app,
+  power: powerMonitor,
+  log: reportEvent,
+  hideWindow: () => activeMainProcess?.hideWindow(),
+});
 app.on("open-url", (event, url) => {
   if (mcpAuthorizationLinks.accept(url)) {
     event.preventDefault();

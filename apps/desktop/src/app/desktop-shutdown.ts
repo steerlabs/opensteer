@@ -31,9 +31,20 @@ export class DesktopShutdown {
     readonly application: Pick<App, "on" | "exit">;
     readonly power: Pick<PowerMonitor, "on">;
     readonly log: ShutdownLog;
+    readonly hideWindow?: () => void;
   }) {
     this.#application = options.application;
     this.#log = options.log;
+    // Every other step takes away something the page needs, and a person who can
+    // see it can act on it. Hidden, not destroyed: `stop-window` still owns that.
+    if (options.hideWindow)
+      this.#steps.push({
+        component: "desktop",
+        step: "hide-window",
+        order: Number.NEGATIVE_INFINITY,
+        timeoutMs: 1_000,
+        stop: options.hideWindow,
+      });
     options.application.on("before-quit", (event) => {
       if (this.#installing) return;
       event.preventDefault();

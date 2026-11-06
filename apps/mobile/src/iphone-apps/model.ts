@@ -1,3 +1,4 @@
+import { genericAiCompany } from "@opensteer/client/ai-sharing";
 import {
   computerAppAccessLabel,
   type IntegrationAccess,
@@ -200,8 +201,8 @@ export const addIphoneNameHint = "This is how it's listed on Computers.";
  * review they get: where what agents see goes, who can use it, and that
  * nothing else on the iPhone is reachable.
  */
-export function addIphoneFootnote(opensteer: string): string {
-  return `What agents see goes to ${opensteer} and the AI service the task uses. Tasks in Main can use these apps; a project needs your approval first. Nothing else on this iPhone is shared: not other apps, files, messages or the screen.`;
+export function addIphoneFootnote(opensteer: string, companies: string = genericAiCompany): string {
+  return `What agents see goes to ${opensteer} and may go to ${companies}. Tasks in Main can use these apps; a project needs your approval first. Nothing else on this iPhone is shared: not other apps, files, messages or the screen.`;
 }
 
 /** Add's label says how many apps it turns on, since switching them is only a draft until then. */

@@ -109,6 +109,26 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+it("keeps a reloaded native authorization on consent even with an existing web session", () => {
+  installWindow();
+  const client = createClient();
+  snapshot = { ...client.getSnapshot(), identityConfig, session: "authenticated" };
+  const state = {
+    nativeOAuthQuery: new URLSearchParams({
+      response_type: "code",
+      code_challenge_method: "S256",
+      client_id: "opensteer-mobile",
+      redirect_uri: "com.opensteer.opensteer:/oauth/host-callback",
+      code_challenge: "a".repeat(43),
+      sig: "opaque-signed-value",
+      ba_iat: "1786499200000",
+      ba_param: "client_id",
+    }).toString(),
+  };
+  Object.defineProperty(window.history, "state", { value: state });
+  expect(renderApp(client)).toContain("Connect Opensteer");
+});
+
 describe("App automatic OIDC sign-in", () => {
   it("renders the splash and starts the sole provider once before redirecting", async () => {
     const browser = installWindow();

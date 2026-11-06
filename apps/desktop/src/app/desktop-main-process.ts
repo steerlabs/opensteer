@@ -1,6 +1,7 @@
 export interface DesktopWindowHandle {
   destroy(): void;
   focus(): void;
+  hide(): void;
   isDestroyed(): boolean;
   show(): void;
 }
@@ -28,6 +29,7 @@ export class DesktopMainProcess {
   #stopPromise: Promise<void> | undefined;
   #serviceStartPromise: Promise<void> | undefined;
   #window: DesktopWindowHandle | null = null;
+  #windowHidden = false;
   #windowOpening: Promise<void> | undefined;
 
   constructor(options: {
@@ -70,16 +72,23 @@ export class DesktopMainProcess {
   }
 
   async activate(): Promise<void> {
-    if (!this.#started || this.#stopPromise) return;
+    if (!this.#started || this.#stopPromise || this.#windowHidden) return;
     if (!this.#window || this.#window.isDestroyed()) await this.#openWindow({ show: true });
     this.focus();
   }
 
   focus(): void {
     const window = this.#window;
-    if (!window || window.isDestroyed()) return;
+    if (!window || window.isDestroyed() || this.#windowHidden) return;
     window.show();
     window.focus();
+  }
+
+  /** One-way, as shutdown is: a window still loading stays hidden, and nothing reshows it. */
+  hideWindow(): void {
+    this.#windowHidden = true;
+    const window = this.#window;
+    if (window && !window.isDestroyed()) window.hide();
   }
 
   stop(): Promise<void> {
@@ -126,6 +135,7 @@ export class DesktopMainProcess {
         return;
       }
       this.#window = created;
+      if (this.#windowHidden) created.hide();
     })();
     this.#windowOpening = opening;
     try {

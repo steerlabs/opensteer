@@ -1,3 +1,4 @@
+import { contactSupport } from "../report-mail.js";
 import { Button, Form, Host, Section } from "@expo/ui/swift-ui";
 import { settingsDestinations } from "./settings-home-model.js";
 export function SettingsHomeForm({
@@ -17,6 +18,9 @@ export function SettingsHomeForm({
               ))}
           </Section>
         ))}
+        <Section>
+          <Button label="Contact support" onPress={() => contactSupport()} />
+        </Section>
       </Form>
     </Host>
   );
