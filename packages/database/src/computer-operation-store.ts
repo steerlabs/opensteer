@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import {
   AgentEventSchema,
   createToolOutput,
+  legacyIntegrationsNamespace,
   type AgentEvent,
   type EnvironmentId,
   type IntegrationCallSubject,
@@ -44,7 +45,7 @@ export class ComputerOperationStore {
           type: "tool.started",
           data: {
             callId: `computer:${randomUUID()}`,
-            tool: { namespace: "opensteer.integrations", name: `computer.${input.operation}` },
+            tool: { namespace: legacyIntegrationsNamespace, name: `computer.${input.operation}` },
             arguments: input.window === undefined ? {} : { window: input.window },
             integration: input.subject,
           },

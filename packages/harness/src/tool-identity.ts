@@ -1,4 +1,8 @@
-import type { ToolIdentity } from "@opensteer/core";
+import {
+  legacyIntegrationsNamespace,
+  opensteerToolNamespace,
+  type ToolIdentity,
+} from "@opensteer/core";
 
 /**
  * The identity a tool call made through an MCP server is reported under.
@@ -18,9 +22,9 @@ export function opensteerToolIdentity(server: unknown, toolName: unknown): ToolI
     name: String(toolName ?? "unknown"),
     namespace:
       serverName === "opensteer" || serverName === "opensteer-direct"
-        ? "opensteer"
+        ? opensteerToolNamespace
         : serverName === "opensteer_integrations"
-          ? "opensteer.integrations"
+          ? legacyIntegrationsNamespace
           : `mcp:${serverName}`,
   };
 }

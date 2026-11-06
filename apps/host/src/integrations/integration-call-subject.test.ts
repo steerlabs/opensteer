@@ -20,7 +20,7 @@ function started(
   args: unknown,
   tool: { readonly name: string; readonly namespace: string } = {
     name: "integration_call",
-    namespace: "opensteer.integrations",
+    namespace: "opensteer",
   },
 ): PendingAgentEvent {
   return {
@@ -152,19 +152,29 @@ describe("integrationCallSubject", () => {
     await expect(integrationCallSubject(confused, started(appAddress))).resolves.toBeUndefined();
   });
 
+  // The one Opensteer server reports `opensteer`; a native session resumed from
+  // before it still reports the retired `opensteer_integrations` server's calls.
   it("names an ordinary integration's account and operation, with no app", async () => {
-    const source = sources(gmail());
+    for (const namespace of ["opensteer", "opensteer.integrations"]) {
+      const source = sources(gmail());
 
-    await expect(
-      integrationCallSubject(source, started({ ...gmailAddress, arguments: { query: "invoice" } })),
-    ).resolves.toEqual({
-      account: "Work",
-      computerApp: null,
-      effect: "read",
-      integration: "Gmail",
-      operation: { name: "search_messages", title: "Search messages" },
-    });
-    expect(source.getComputerConnectionForCall).not.toHaveBeenCalled();
+      await expect(
+        integrationCallSubject(
+          source,
+          started(
+            { ...gmailAddress, arguments: { query: "invoice" } },
+            { name: "integration_call", namespace },
+          ),
+        ),
+      ).resolves.toEqual({
+        account: "Work",
+        computerApp: null,
+        effect: "read",
+        integration: "Gmail",
+        operation: { name: "search_messages", title: "Search messages" },
+      });
+      expect(source.getComputerConnectionForCall).not.toHaveBeenCalled();
+    }
   });
 
   it("names what integration_describe was asked about", async () => {
@@ -173,10 +183,7 @@ describe("integrationCallSubject", () => {
     await expect(
       integrationCallSubject(
         source,
-        started(gmailAddress, {
-          name: "integration_describe",
-          namespace: "opensteer.integrations",
-        }),
+        started(gmailAddress, { name: "integration_describe", namespace: "opensteer" }),
       ),
     ).resolves.toMatchObject({ integration: "Gmail", operation: { name: "search_messages" } });
   });
@@ -208,9 +215,9 @@ describe("integrationCallSubject", () => {
     const source = sources(gmail());
 
     for (const tool of [
-      { name: "integration_search", namespace: "opensteer.integrations" },
+      { name: "integration_search", namespace: "opensteer" },
       { name: "integration_call", namespace: "mcp:someone_else" },
-      { name: "integration_call", namespace: "opensteer" },
+      { name: "integration_call", namespace: "functions" },
     ]) {
       await expect(integrationCallSubject(source, started(gmailAddress, tool))).resolves.toBe(
         undefined,

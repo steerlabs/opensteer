@@ -1,5 +1,6 @@
 import {
   IntegrationCallSubjectSchema,
+  isIntegrationGatewayTool,
   type IntegrationCallSubject,
   type RunId,
   type ThreadId,
@@ -54,7 +55,7 @@ export async function integrationCallSubject(
 ): Promise<IntegrationCallSubject | undefined> {
   if (event.type !== "tool.started") return undefined;
   const { tool } = event.data;
-  if (tool.namespace !== "opensteer.integrations" || !addressingTools.has(tool.name)) {
+  if (!isIntegrationGatewayTool(tool) || !addressingTools.has(tool.name)) {
     return undefined;
   }
   const call = AddressingArgumentsSchema.safeParse(event.data.arguments);

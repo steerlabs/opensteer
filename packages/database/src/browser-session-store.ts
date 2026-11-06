@@ -3,7 +3,12 @@ import {
   type AdministrationCommandIdentity,
 } from "./administration-command.js";
 import { resolveResourceAccess } from "./resource-access.js";
-import { eventDataSchemas, placeIdentityKey, type EventData } from "@opensteer/core";
+import {
+  eventDataSchemas,
+  integrationGatewayNamespaces,
+  placeIdentityKey,
+  type EventData,
+} from "@opensteer/core";
 import { storableText } from "./runner-event-store.js";
 import { appendHostWorkspaceEvent } from "./workspace-events.js";
 import {
@@ -703,7 +708,7 @@ export async function latestNativePlaces(
         and coalesce(c.data->>'nodeId', '') = coalesce(s.data->>'nodeId', '')
         and c.sequence > s.sequence and c.data->>'isError' = 'false'
       where s.type = 'tool.started'
-        and s.data->'tool'->>'namespace' = 'opensteer.integrations'
+        and s.data->'tool'->>'namespace' in (${sql.join([...integrationGatewayNamespaces])})
         and (s.data->'tool'->>'name' = 'integration_call'
           or (s.runner_ordinal is null and c.runner_ordinal is null
             and s.data->'tool'->>'name' in ('computer.windows', 'computer.bind', 'computer.observe',
