@@ -1543,8 +1543,9 @@ describe("the page's bar", () => {
     });
   });
 
-  it("updates the menu by identity when acting moves, and removes a departing agent", () => {
-    const { render } = openPage([
+  it("updates live occupants while keeping the companion after its agent departs", () => {
+    state.pair = { height: 1000, width: 744 };
+    const { container, render } = openPage([
       { acting: true, threadId: "thread-trip" },
       { threadId: "thread-agent" },
     ]);
@@ -1559,17 +1560,19 @@ describe("the page's bar", () => {
     render();
     pill = element(header(), "2 agents, 1 working")!;
     expect(pill.querySelector("button")?.textContent).toContain("Compare hotels");
-    press(pill, "Tokyo trip · Idle");
-    expect(state.dispatch).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        params: { deploymentId: "deployment-a", threadId: "thread-trip" },
-      }),
+    expect(container.querySelector('[data-testid="conversation-slot"]')?.textContent).toContain(
+      "Thread thread-trip beside",
     );
     state.snapshot = withAgents([occupied(sessionId, [])]);
     render();
     expect(element(header(), "Tokyo trip, idle")).toBeNull();
     expect(element(header(), "2 agents, 1 working")).toBeNull();
     expect(element(header(), "Ask")).not.toBeNull();
+    expect(container.querySelector('[data-testid="conversation-slot"]')?.textContent).toContain(
+      "Thread thread-trip beside",
+    );
+    press(container, "Close thread-trip");
+    expect(container.querySelector('[data-testid="conversation-slot"]')).toBeNull();
   });
 
   it("pushes an agent deeper in the stack and renders an old grid route without choosing a tab", () => {
@@ -2029,12 +2032,43 @@ describe("a page beside its agent's thread", () => {
     press(pill, "Tokyo trip · Idle");
     expect(second(container)).toContain("Thread thread-trip beside");
     expect(state.dispatch).not.toHaveBeenCalled();
-    // Chosen by the person, it can be put away, back to the acting agent.
+    // Closing keeps the companion away even while an agent is still present.
     expect(container.querySelector('[data-testid="conversation-name"]')?.textContent).toBe(
       "thread-trip",
     );
     press(container, "Close thread-trip");
+    expect(second(container)).toBeNull();
+  });
+
+  it("keeps the automatic companion across in-place tab changes and departure, until closed", () => {
+    state.pair = { height: 1000, width: 744 };
+    const { container, render, route } = openPage();
+    const mounts = state.conversationMounts;
+    route.params = {
+      deploymentId: "deployment-a",
+      threadId: "thread-parent",
+      sessionId: "other-browser",
+      tabId: "page-1",
+    };
+    state.snapshot = withAgents([
+      occupied("other-browser", [{ acting: true, threadId: "thread-trip" }]),
+    ]);
+    render();
     expect(second(container)).toContain("Thread thread-agent beside");
+    expect(state.conversationMounts).toBe(mounts);
+    expect(element(header(), "Tokyo trip, working here")).not.toBeNull();
+    state.snapshot = withAgents([occupied("other-browser", [])]);
+    render();
+    expect(second(container)).toContain("Thread thread-agent beside");
+    press(container, "Close thread-agent");
+    expect(second(container)).toBeNull();
+    state.snapshot = withAgents([
+      occupied("other-browser", [{ acting: true, threadId: "thread-trip" }]),
+    ]);
+    render();
+    expect(second(container)).toBeNull();
+    press(header(), "Tokyo trip, working here");
+    expect(second(container)).toContain("Thread thread-trip beside");
   });
 
   it("gives the page the whole surface with no agent, until Ask opens Chat or a new task beside it", () => {
