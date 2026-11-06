@@ -16,16 +16,33 @@ afterEach(() => {
       if (!existing.includes(listener)) process.removeListener(name, listener);
   vi.useRealTimers();
 });
-function fixture() {
+function fixture(hideWindow?: () => void) {
   const application = Object.assign(new EventEmitter(), { exit: vi.fn() });
   const log = vi.fn();
   const shutdown = new DesktopShutdown({
     application: application as unknown as Pick<App, "on" | "exit">,
     power: new EventEmitter() as unknown as Pick<PowerMonitor, "on">,
     log,
+    ...(hideWindow ? { hideWindow } : {}),
   });
   return { application, log, shutdown };
 }
+it("hides the window before any step takes away what its page depends on", async () => {
+  const calls: string[] = [];
+  const { shutdown } = fixture(() => calls.push("hide"));
+  shutdown.add({
+    component: "earliest",
+    step: "stop",
+    order: -1_000,
+    timeoutMs: 100,
+    stop: () => {
+      calls.push("stop");
+    },
+  });
+  shutdown.request("before-quit");
+  await vi.advanceTimersByTimeAsync(1);
+  expect(calls).toEqual(["hide", "stop"]);
+});
 it.each([500, 60_000])(
   "a hung cleanup bounded at %s ms aborts and still dispatches every later owner before the quit deadline",
   async (timeoutMs) => {

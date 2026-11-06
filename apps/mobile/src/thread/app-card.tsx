@@ -1,3 +1,4 @@
+import { contactSupport } from "../report-mail.js";
 import {
   isAppTabOpen,
   type AppEntry,
@@ -72,6 +73,14 @@ function Card(props: { readonly client: HostClient; readonly entry: AppEntry }):
     <View style={styles.card}>
       <View style={styles.header}>
         <AppText style={styles.title}>{title}</AppText>
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => contactSupport({ kind: "app", id: appId })}
+          hitSlop={8}
+          style={{ minHeight: 44, justifyContent: "center" }}
+        >
+          <AppText>Report…</AppText>
+        </Pressable>
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={`Open ${title}`}

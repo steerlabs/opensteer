@@ -43,7 +43,7 @@ import {
 } from "@opensteer/client/host";
 import { useHostSnapshot } from "@opensteer/client/react";
 import { consumeOAuthErrorQuery } from "./account/auth-error-query.js";
-import { consumeNativeOAuthQuery } from "./account/native-oauth-query.js";
+import { consumeNativeOAuthQuery, withoutNativeOAuthQuery } from "./account/native-oauth-query.js";
 import { Icon } from "./components/icon.js";
 import { SetupOpening } from "./components/first-run/setup-opening.js";
 import { setupPath } from "./components/workspace/navigation.js";
@@ -136,7 +136,11 @@ export function App({
   }, [continuingSetup, onSetupOpened, shellReady]);
   const [recoveryToken] = useState(takeRecoveryToken);
   const [nativeOAuthQuery] = useState(() =>
-    consumeNativeOAuthQuery(window.location, (url) => window.history.replaceState(null, "", url)),
+    consumeNativeOAuthQuery(
+      window.location,
+      (url, state) => window.history.replaceState(state, "", url),
+      window.history.state,
+    ),
   );
   const [authorizationError, setAuthorizationError] = useState(() =>
     consumeOAuthErrorQuery(window.location, (url) => window.history.replaceState(null, "", url)),
@@ -211,7 +215,11 @@ export function App({
       if (redirectUrl) window.location.assign(redirectUrl);
       else await hostClient.refresh();
     } catch (error) {
-      setOnboardingError(actionErrorMessage(error));
+      setOnboardingError(
+        nativeOAuthQuery
+          ? `${actionErrorMessage(error)} You can close this browser and start sign-in again in the Opensteer app.`
+          : actionErrorMessage(error),
+      );
     } finally {
       setOnboardingPending(false);
     }
@@ -270,13 +278,15 @@ export function App({
     setOnboardingError(null);
     setNativeAuthorizationPending(true);
     try {
-      window.location.assign(
-        unwrapRpcResult(
-          await hostClient.rpc["auth.native.complete"]({ accept, oauthQuery: nativeOAuthQuery }),
-        ).url,
+      const { url } = unwrapRpcResult(
+        await hostClient.rpc["auth.native.complete"]({ accept, oauthQuery: nativeOAuthQuery }),
       );
+      window.history.replaceState(withoutNativeOAuthQuery(window.history.state), "");
+      window.location.assign(url);
     } catch (error) {
-      setOnboardingError(actionErrorMessage(error));
+      setOnboardingError(
+        `${actionErrorMessage(error)} Close this browser and start sign-in again in the Opensteer app.`,
+      );
       setNativeAuthorizationPending(false);
     }
   }

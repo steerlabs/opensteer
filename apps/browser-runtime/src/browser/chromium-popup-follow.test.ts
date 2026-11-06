@@ -10,6 +10,8 @@ import { asRecord, rootCdpNavigate, startFollowSession } from "./chromium.test-s
 const viewer = randomUUID();
 const size = { width: 800, height: 600 };
 const inButton = { x: 0.1, y: 0.1 };
+/** Well inside the test timeout, so a lost step fails naming itself instead of timing out. */
+const step = { timeout: 2_000 };
 
 /** A page with a big button running `onclick`, and a frame on another site with the same. */
 async function popupSite() {
@@ -38,9 +40,14 @@ async function openPage() {
   await rootCdpNavigate(session.ledger, id, site.origin);
   await session.controller.handle({ type: "stream.subscribe", surfaceId: id });
   await session.fit(id, size);
-  await vi.waitFor(() => expect(session.frames.some((f) => f.header.surfaceId === id)).toBe(true), {
-    timeout: 5_000,
-  });
+  await vi.waitFor(
+    () =>
+      expect(
+        session.frames.some((f) => f.header.surfaceId === id),
+        "the page streamed its first frame",
+      ).toBe(true),
+    step,
+  );
   const opened = () =>
     session.sink.messages.flatMap((message) =>
       message.type === "browser.popupFollow.opened" ? [message] : [],
@@ -84,7 +91,7 @@ describe("a popup follows the viewer whose input opened it", () => {
     const page = await openPage();
     await page.button();
     await page.click();
-    await vi.waitFor(() => expect(page.opened()).toHaveLength(1), { timeout: 5_000 });
+    await vi.waitFor(() => expect(page.opened(), "a click in the page").toHaveLength(1), step);
     expect(page.opened()[0]).toMatchObject({
       consumerToken: viewer,
       surfaceId: page.popups()[0]?.id,
@@ -96,15 +103,15 @@ describe("a popup follows the viewer whose input opened it", () => {
          window.onmessage = () => { window.frameReady = true; };
          document.body.innerHTML = '<iframe style="border:0;width:500px;height:300px" src="${page.site.otherSite}/frame"></iframe>';`,
     );
-    await vi.waitFor(
-      async () => {
-        expect(await page.read(page.id, "window.frameReady")).toBe(true);
-        expect(JSON.stringify(await page.agent("Target.getTargets"))).toContain(`"type":"iframe"`);
-      },
-      { timeout: 5_000 },
-    );
+    await vi.waitFor(async () => {
+      expect(await page.read(page.id, "window.frameReady"), "the frame loaded").toBe(true);
+      expect(
+        JSON.stringify(await page.agent("Target.getTargets")),
+        "the frame has its own target",
+      ).toContain(`"type":"iframe"`);
+    }, step);
     await page.click();
-    await vi.waitFor(() => expect(page.opened()).toHaveLength(2), { timeout: 5_000 });
+    await vi.waitFor(() => expect(page.opened(), "a click in the frame").toHaveLength(2), step);
     expect(page.opened()[1]?.consumerToken).toBe(viewer);
   });
 
@@ -121,7 +128,7 @@ describe("a popup follows the viewer whose input opened it", () => {
         surfaceId: page.id,
         producerId: viewer,
       });
-    await vi.waitFor(() => expect(page.popups()).toHaveLength(2), { timeout: 5_000 });
+    await vi.waitFor(() => expect(page.popups(), "a key's two popups").toHaveLength(2), step);
     expect(page.opened()).toHaveLength(1);
   });
 
@@ -137,7 +144,7 @@ describe("a popup follows the viewer whose input opened it", () => {
         { type, x: 40, y: 40, button: "left", clickCount: 1 },
         String(sessionId),
       );
-    await vi.waitFor(() => expect(page.popups()).toHaveLength(1), { timeout: 5_000 });
+    await vi.waitFor(() => expect(page.popups(), "an agent's popup").toHaveLength(1), step);
     expect(page.opened()).toHaveLength(0);
   });
 });

@@ -1,3 +1,4 @@
+import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
 import { conversationRoute, show } from "./navigation.js";
 import { VoiceController } from "@opensteer/client/voice";
 import { handlePersonShow } from "@opensteer/client/host";
@@ -22,6 +23,7 @@ type RouteParams = { deploymentId?: string; threadId?: string; tabId?: string } 
  */
 export function VoiceProvider({ children }: { readonly children: ReactNode }): ReactNode {
   const client = useMobileClient();
+  const aiSharing = useAiSharing();
   const hostClient = useSelectedHostClient();
   const dictation = useDictation();
   const [controller, setController] = useState<VoiceController | null>(null);
@@ -29,6 +31,7 @@ export function VoiceProvider({ children }: { readonly children: ReactNode }): R
     if (!hostClient) return;
     const created = new VoiceController({
       hostClient,
+      authorize: () => authorizeAiSharing(aiSharing, hostClient, "audio"),
       media: voiceMediaPort,
       createId: randomUUID,
       currentView: () => {
@@ -83,7 +86,7 @@ export function VoiceProvider({ children }: { readonly children: ReactNode }): R
       created.dispose();
       setController(null);
     };
-  }, [client, dictation, hostClient]);
+  }, [aiSharing, client, dictation, hostClient]);
   return (
     <VoiceContext value={controller}>
       {controller ? <BackgroundStop controller={controller} /> : null}

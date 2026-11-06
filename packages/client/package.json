@@ -20,7 +20,8 @@
     "./voice": "./src/voice/index.ts",
     "./settings": "./src/settings/index.ts",
     "./media": "./src/media/display-media.ts",
-    "./host/browser-video": "./src/host/browser-video.ts"
+    "./host/browser-video": "./src/host/browser-video.ts",
+    "./ai-sharing": "./src/ai-sharing/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

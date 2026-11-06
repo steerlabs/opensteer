@@ -2250,3 +2250,5 @@ function connection(id: string, displayName = "Oversteer") {
     updatedAt: "2026-09-17T00:00:00.000Z",
   };
 }
+
+vi.mock("../ui/ai-sharing.js", () => import("../../test-support/ai-sharing.js"));

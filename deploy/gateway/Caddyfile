@@ -40,7 +40,7 @@
 	# Host discovery and OAuth metadata are part of the public Host API. Route
 	# the entire well-known namespace to Host so unknown documents fail closed
 	# as API 404s instead of falling through to the SPA shell.
-	@host_api path /healthz /.well-known/* /oauth/mcp/* /v1/*
+	@host_api path /healthz /.well-known/* /oauth/mcp/* /v1/* /maintenance/v1/desktop-update
 	handle @host_api {
 		reverse_proxy host:4310
 	}
