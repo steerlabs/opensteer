@@ -66,6 +66,8 @@ export type ReplyPart =
 /** Only a fence at the margin stands alone: an indented one belongs to the list holding it. */
 const topFence = /^(`{3,}|~{3,})[ \t]*([^\s`]*)[^`]*$/u;
 const closingFence = /^ {0,3}(`{3,}|~{3,})[ \t]*$/u;
+const heldFence = /^[ \t]+(`{3,}|~{3,})/u;
+const heldClosingFence = /^[ \t]*(`{3,}|~{3,})[ \t]*$/u;
 const needsWidth = /^[ \t]*\|?[ \t]*:?-{3,}:?[ \t]*\||^[ \t]+(?:`{3,}|~{3,})/mu;
 
 /** Without the blank lines around it. Its first line keeps its indent, which can mean code. */
@@ -81,6 +83,8 @@ export function replyParts(text: string): readonly ReplyPart[] {
   const parts: ReplyPart[] = [];
   let prose: string[] = [];
   let fence: { readonly marker: string; readonly language: string; lines: string[] } | null = null;
+  // A fence staying inside the words: its closer must not read as a new opener.
+  let held: string | null = null;
 
   const closeProse = (): void => {
     const body = withoutBlankEdges(prose.join("\n"));
@@ -111,9 +115,18 @@ export function replyParts(text: string): readonly ReplyPart[] {
       else fence.lines.push(line);
       continue;
     }
+    if (held !== null) {
+      prose.push(line);
+      const closing = heldClosingFence.exec(line)?.[1];
+      if (closing !== undefined && closing[0] === held[0] && closing.length >= held.length) {
+        held = null;
+      }
+      continue;
+    }
     const opener = topFence.exec(line);
     if (opener === null) {
       prose.push(line);
+      held = heldFence.exec(line)?.[1] ?? null;
       continue;
     }
     closeProse();

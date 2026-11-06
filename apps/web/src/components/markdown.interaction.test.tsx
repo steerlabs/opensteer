@@ -119,6 +119,19 @@ describe("Copying from a block in a reading column", () => {
     Reflect.deleteProperty(document, "execCommand");
   });
 
+  it("keeps a copy mark on code held in words, and leaves a bubble's own to its bubble", () => {
+    const list = render("1. Step\n   ```bash\n   pnpm dev\n   ```");
+    expect(list.querySelector('button[aria-label="Copy code"]')).not.toBeNull();
+
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    roots.push(root);
+    act(() => root.render(<Markdown bare text={"```bash\npnpm dev\n```"} />));
+    expect(container.querySelector("pre")).not.toBeNull();
+    expect(container.querySelector("button")).toBeNull();
+  });
+
   it("reads a draft as words a person will send, not as code", () => {
     const container = render("```draft\nHeads up: staging is back.\n```");
     expect(container.querySelector(".md-block--draft")?.textContent).toContain("Heads up");

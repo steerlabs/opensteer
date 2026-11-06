@@ -981,7 +981,10 @@ function ReplyBubblePart({
           part.text
         ) : (
           <Suspense fallback={<p className="md-prose md-prose--plain">{part.text}</p>}>
-            <Markdown bubble text={part.kind === "code" ? part.source : part.text} />
+            <Markdown
+              bare={part.kind === "code"}
+              text={part.kind === "code" ? part.source : part.text}
+            />
           </Suspense>
         )}
       </div>
@@ -1927,9 +1930,11 @@ function OwnMessage({
       <MessageAttachments attachments={message.attachments ?? []} />
       {message.body ? (
         <div className={arrived ? "msg--user-line msg--user-line--arrived" : "msg--user-line"}>
-          <div className="reply__marks">
-            <CopyMark label="Copy message" text={message.body} />
-          </div>
+          {queued ? null : (
+            <div className="reply__marks">
+              <CopyMark label="Copy message" text={message.body} />
+            </div>
+          )}
           <div className="msg--user">
             <MessageFold
               lines={messageFoldLines(message, viewerUserId)}
@@ -2203,7 +2208,7 @@ function InputMessage({
             <span className="input-card__sender">{sender}</span>
           )}
           {action ? <span className="input-card__action">{action}</span> : null}
-          {message.body ? (
+          {message.body && !queued ? (
             <CopyMark className="input-card__copy" label="Copy message" text={message.body} />
           ) : null}
         </header>

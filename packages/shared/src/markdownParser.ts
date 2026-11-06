@@ -11,7 +11,10 @@ const mdastExtensions = [gfmFromMarkdown()];
 function resolveReferences(tree: Root): void {
   const definitions = new Map<string, Definition>();
   const gather = (node: Nodes): void => {
-    if (node.type === "definition") definitions.set(node.identifier, node);
+    // The first definition of a label wins, as CommonMark and web read it.
+    if (node.type === "definition" && !definitions.has(node.identifier)) {
+      definitions.set(node.identifier, node);
+    }
     if ("children" in node) node.children.forEach(gather);
   };
   gather(tree);

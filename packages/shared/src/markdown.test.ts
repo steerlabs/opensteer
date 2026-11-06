@@ -159,6 +159,11 @@ describe("replyParts", () => {
     expect(replyParts(steps)).toEqual([{ kind: "prose", text: steps, wide: true }]);
   });
 
+  it("does not read the closer of a fence held in the words as a new opener", () => {
+    const steps = " ```bash\nls\n```\nDone.";
+    expect(replyParts(steps)).toEqual([{ kind: "prose", text: steps, wide: true }]);
+  });
+
   it("draws a table's bubble wide", () => {
     const table = "| a | b |\n|---|---|\n| 1 | 2 |";
     expect(replyParts(table)).toEqual([{ kind: "prose", text: table, wide: true }]);
@@ -196,6 +201,11 @@ describe("replyParts", () => {
 });
 
 describe("parseMarkdown", () => {
+  it("takes a label's first definition, as web does", () => {
+    const tree = parseMarkdown("[docs][ref]\n\n[ref]: https://a.co\n[ref]: https://b.co");
+    expect(tree.children[0]).toMatchObject({ children: [{ url: "https://a.co" }] });
+  });
+
   it("resolves a reference to the link or image it names", () => {
     const tree = parseMarkdown(
       "[docs][ref] and ![chart][img]\n\n[ref]: https://a.co\n[img]: b.png",

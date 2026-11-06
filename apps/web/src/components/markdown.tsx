@@ -87,8 +87,8 @@ function TranscriptBlock({ children }: ComponentProps<"pre">) {
   );
 }
 
-const inBubble: Components = { a: TranscriptLink, img: TranscriptImage };
-const inColumn: Components = { ...inBubble, pre: TranscriptBlock };
+const bareComponents: Components = { a: TranscriptLink, img: TranscriptImage };
+const components: Components = { ...bareComponents, pre: TranscriptBlock };
 
 /** An image's address is only ever shown as words, so it keeps the agent's spelling. */
 const urlTransform: UrlTransform = (url, key, node) =>
@@ -97,15 +97,15 @@ const urlTransform: UrlTransform = (url, key, node) =>
 /**
  * Assistant markdown. Blocks are memoized so a streaming message only redraws
  * its trailing block; their index is their key, so that block keeps its place,
- * and a selection in it, as it grows. `bubble` drops the blocks' own copy mark,
- * because a bubble's stands beside it.
+ * and a selection in it, as it grows. `bare` is for code that is a bubble of its
+ * own, whose copy mark stands beside it; code held in words keeps its own.
  */
 export const Markdown = memo(function Markdown({
-  bubble = false,
+  bare = false,
   streaming = false,
   text,
 }: {
-  bubble?: boolean;
+  bare?: boolean;
   streaming?: boolean;
   text: string;
 }) {
@@ -114,7 +114,7 @@ export const Markdown = memo(function Markdown({
     <div className="md-prose">
       {blocks.map((block, index) => (
         <MarkdownBlock
-          bubble={bubble}
+          bare={bare}
           key={index}
           streaming={streaming && index === blocks.length - 1}
           text={block}
@@ -125,17 +125,17 @@ export const Markdown = memo(function Markdown({
 });
 
 const MarkdownBlock = memo(function MarkdownBlock({
-  bubble,
+  bare,
   streaming,
   text,
 }: {
-  bubble: boolean;
+  bare: boolean;
   streaming: boolean;
   text: string;
 }) {
   return (
     <ReactMarkdown
-      components={bubble ? inBubble : inColumn}
+      components={bare ? bareComponents : components}
       remarkPlugins={streaming ? streamingRemarkPlugins : remarkPlugins}
       rehypePlugins={rehypePlugins}
       urlTransform={urlTransform}
