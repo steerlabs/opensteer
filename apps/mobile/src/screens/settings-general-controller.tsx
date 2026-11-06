@@ -1,3 +1,4 @@
+import type { QuietTaskDays } from "@opensteer/core";
 import { useNavigation } from "@react-navigation/native";
 import Constants from "expo-constants";
 import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
@@ -7,6 +8,7 @@ import type { NotificationPreferences } from "../notifications/push-registration
 import { useMobileState } from "../ui/mobile-client-context.js";
 import { useMobileNotifications, usePushRegistration } from "../ui/notifications-context.js";
 import { GeneralSettingsForm } from "./settings-general-form.js";
+import type { QuietTasksSetting } from "./settings-form.types.js";
 import {
   deploymentSettingsModel,
   notificationSettingsModel,
@@ -43,6 +45,29 @@ export function GeneralSettingsController(): ReactNode {
             })),
     [snapshot],
   );
+
+  const [quietDays, setQuietDays] = useState<QuietTaskDays | null>(null);
+  const [quietError, setQuietError] = useState<string | null>(null);
+  const hostQuietDays = snapshot?.quietTaskDays ?? null;
+  const quietTasks: QuietTasksSetting | null =
+    hostQuietDays === null
+      ? null
+      : {
+          days: quietDays ?? hostQuietDays,
+          error: quietError,
+          onChange: (days) => {
+            const hostClient = selection.hostClient;
+            if (hostClient === null || days === (quietDays ?? hostQuietDays)) return;
+            setQuietDays(days);
+            setQuietError(null);
+            void hostClient
+              .setQuietTaskDays(days)
+              .catch((error: unknown) =>
+                setQuietError(operationDetail(error, "That setting could not be saved.")),
+              )
+              .finally(() => setQuietDays(null));
+          },
+        };
 
   const deploymentModel = deploymentSettingsModel(selectedRow);
   const notificationModel = notificationSettingsModel(registrationState, notificationWorking);
@@ -106,6 +131,7 @@ export function GeneralSettingsController(): ReactNode {
           onDeploymentAction={() => navigation.navigate("DeploymentSwitcher")}
           onNotificationAction={onNotificationAction}
           onPreferenceChange={onPreferenceChange}
+          quietTasks={quietTasks}
           storageError={storageFailure ?? savedViewFailure}
           version={Constants.expoConfig?.version ?? "unknown"}
         />
