@@ -406,6 +406,7 @@ vi.mock("../../modules/remote-text-input/src/remote-text-input.js", () => ({
   ),
 }));
 vi.mock("../computers/phone-display-native.js", () => ({ nativePictureView: () => null }));
+vi.mock("../../modules/browser-popup/index.js", () => ({ browserPopupNative: () => null }));
 vi.mock("../browser/browser-stream.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../browser/browser-stream.js")>()),
   BrowserStream: ({

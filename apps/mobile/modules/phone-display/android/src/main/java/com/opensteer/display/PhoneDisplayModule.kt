@@ -34,6 +34,7 @@ class PhoneDisplayModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("PhoneDisplay")
     Constant("decoderRecoveryVersion") { 1 }
+    Constant("browserPresentationIdentityVersion") { 1 }
     // JavaScript reads this before using decodeBytes or the picture view: an
     // older binary has neither, and keeps the base64 and Image paths.
     Constant("binaryPresentationVersion") { 1 }
@@ -52,6 +53,13 @@ class PhoneDisplayModule : Module() {
       AsyncFunction("decodeBytes") { view: PhoneDisplayView, bytes: ByteArray, metadata: FrameMetadata, promise: Promise ->
         if (bytes.size > 4_194_306) { view.lost(metadata.epoch); promise.resolve(false) } else view.decode(metadata, promise) { bytes }
       }
+    }
+    View(BrowserVideoView::class) {
+      Name("PhoneDisplayVideo")
+      Events("onReady", "onNeedsKeyframe", "onVideoPresented", "onVideoGesture", "onVideoTap", "onVideoScroll")
+      OnViewDestroys { view: BrowserVideoView -> view.destroy() }
+      AsyncFunction("reset") { view: BrowserVideoView, epoch: String -> view.reset(epoch) }
+      AsyncFunction("decodeBytes") { view: BrowserVideoView, bytes: ByteArray, metadata: FrameMetadata, promise: Promise -> view.decode(bytes,metadata,promise) }
     }
     View(PhoneDisplayPictureView::class) {
       Name("PhoneDisplayPicture")
@@ -76,6 +84,11 @@ class FramePacket : Record {
 }
 
 class FrameMetadata() : Record {
+  @Field var identity: String = ""
+  @Field var cropX: Double = 0.0
+  @Field var cropY: Double = 0.0
+  @Field var cropWidth: Double = 0.0
+  @Field var cropHeight: Double = 0.0
   @Field var epoch: String = ""
   @Field var width: Int = 0
   @Field var height: Int = 0

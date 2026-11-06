@@ -23,6 +23,7 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import { pageViewport, type PageGeometry } from "./browser/backend.js";
 import { BrowserRuntime } from "./runtime.js";
+import { BrowserController } from "./browser/controller.js";
 import { BrowserRuntimeServer } from "./server.js";
 import {
   FakeContext,
@@ -36,6 +37,89 @@ import {
 } from "./test-support/fakes.js";
 
 describe("BrowserRuntimeServer", () => {
+  it("keeps control admitted when source cleanup follows media loss", async () => {
+    const stopped = vi.spyOn(BrowserController.prototype, "stopVideo");
+    const runtime = new BrowserRuntime({
+      launcher: new FakeLauncher(),
+      runtimeId: "runtime_test",
+      sessionFilesRoot: testSessionFilesRoot(),
+      ticketVerifier: new FakeTicketVerifier(),
+    });
+    const bridgeToken = "b".repeat(64),
+      channelId = `bch_${randomUUID()}`;
+    const keys = generateKeyPairSync("ed25519");
+    const streamId = `dsp_${randomUUID()}`;
+    const server = new BrowserRuntimeServer({
+      port: 0,
+      runtime,
+      relayBridge: { token: bridgeToken, updateAttachKeys: () => {} },
+    });
+    let control: WebSocket | undefined, media: WebSocket | undefined;
+    try {
+      const address = await server.start();
+      const origin = `ws://${address.host}:${address.port}`;
+      control = new WebSocket(`${origin}/v1/browser`, {
+        headers: {
+          authorization: "Bearer signed-ticket",
+          "x-opensteer-browser-bridge-token": bridgeToken,
+          "x-opensteer-browser-channel": channelId,
+          "x-opensteer-browser-attach-keys": Buffer.from(
+            JSON.stringify([
+              {
+                keyId: "test-key",
+                publicKeyPem: keys.publicKey.export({ format: "pem", type: "spki" }).toString(),
+              },
+            ]),
+          ).toString("base64url"),
+        },
+      });
+      const frames: Record<string, unknown>[] = [];
+      control.on("message", (data) => frames.push(JSON.parse(String(data))));
+      await vi.waitFor(() => expect(frames.some((m) => m.type === "browser.attached")).toBe(true), {
+        timeout: 2000,
+      });
+      media = new WebSocket(`${origin}/v1/browser/video`, {
+        headers: {
+          "x-opensteer-browser-bridge-token": bridgeToken,
+          "x-opensteer-browser-channel": channelId,
+          "x-opensteer-browser-stream": streamId,
+        },
+      });
+      await once(media, "open", { signal: AbortSignal.timeout(2000) });
+      media.close();
+      await once(media, "close", { signal: AbortSignal.timeout(2000) });
+      await vi.waitFor(() => expect(stopped).toHaveBeenCalledWith(streamId), { timeout: 2000 });
+      control.send(
+        JSON.stringify({
+          type: "browser.video.stop",
+          channelId,
+          streamId,
+          target: { kind: "browser-tab", sessionId: validClaims().sessionId, surfaceId: "page-1" },
+        }),
+      );
+      const requestId = randomUUID();
+      control.send(
+        JSON.stringify({
+          type: "cdp.command",
+          requestId,
+          command: { method: "Target.getTargets" },
+        }),
+      );
+      await vi.waitFor(
+        () =>
+          expect(frames.some((m) => m.type === "cdp.result" && m.requestId === requestId)).toBe(
+            true,
+          ),
+        { timeout: 2000 },
+      );
+      expect(control.readyState).toBe(WebSocket.OPEN);
+    } finally {
+      stopped.mockRestore();
+      media?.terminate();
+      control?.terminate();
+      await server.close();
+    }
+  });
   it("negotiates initial-page readiness through the authenticated bridge", async () => {
     const claims = validClaims({
       initialNavigation: { operationKey: "initial-test", url: "https://example.test/" },

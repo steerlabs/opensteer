@@ -17,7 +17,7 @@ export interface BrowserHostClientOptions {
   readonly bufferedResponses?: boolean;
   /** The Desktop renderer states how long its hidden sockets last; a browser tab cannot. */
   readonly lifecycle?: ClientLifecycle;
-  readonly webSocketFactory?: (url: string) => WebSocketClient;
+  readonly webSocketFactory?: (url: string, protocols?: string[]) => WebSocketClient;
 }
 
 /**
@@ -28,6 +28,8 @@ export interface BrowserHostClientOptions {
  */
 export function createBrowserHostClient(options: BrowserHostClientOptions): HttpHostClient {
   return new HttpHostClient({
+    browserPopupPresentationVersion: 1,
+    browserPresentation: import.meta.env.VITE_BROWSER_PRESENTATION === "h264" ? "h264" : "jpeg",
     ...(options.passkeys ? { passkeys: options.passkeys } : {}),
     capabilities: options.capabilities ?? null,
     baseUrl: options.baseUrl ?? window.location.origin,

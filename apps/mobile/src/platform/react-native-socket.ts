@@ -22,6 +22,7 @@ declare const WebSocket: {
 export function openReactNativeSocket(
   url: string,
   headers: Readonly<Record<string, string>>,
+  protocols?: string[],
 ): WebSocketClient {
-  return new WebSocket(url, undefined, { headers });
+  return new WebSocket(url, protocols, { headers });
 }

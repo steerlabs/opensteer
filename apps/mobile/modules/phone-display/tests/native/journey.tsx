@@ -4,11 +4,14 @@ import * as SplashScreen from "expo-splash-screen";
 import { useEffect, useRef, useState, type ComponentRef, type RefObject } from "react";
 import { AppState, Dimensions, Platform, Text, View } from "react-native";
 import type { BrowserFrameStore, BrowserFrameView } from "@opensteer/client/host";
+import { browserVideoTestHeader } from "@opensteer/protocol/test-support/browser-video";
 import { BrowserSurfaceIdSchema } from "@opensteer/protocol";
 import { useNativeBrowserPicture } from "../../../../src/browser/native-browser-picture.js";
 import { decodeDisplayFrame } from "../../../../src/computers/phone-display.js";
 import {
   NativeDisplay,
+  nativeBrowserVideoView,
+  type NativeBrowserVideoDecoder,
   nativePictureView,
   phoneDisplayBinary,
   type DisplayFrameMetadata,
@@ -213,6 +216,11 @@ function Journey() {
   const [tab, setTab] = useState<(typeof tabs)[number]>(tabs[0]);
   const [pictureMounted, setPictureMounted] = useState(true);
   const [videoMounted, setVideoMounted] = useState(false);
+  const [CertifiedVideo] = useState(nativeBrowserVideoView);
+  const [certifiedMounted, setCertifiedMounted] = useState(false);
+  const certifiedDecoder = useRef<NativeBrowserVideoDecoder | null>(null);
+  const certifiedOutputs = useRef(deferredStream<{ epoch: string; identity: string }>()).current;
+  const certifiedKeyframes = useRef(deferredStream<string>()).current;
   const [status, setStatus] = useState("starting");
   const pictureBox = useRef<ComponentRef<typeof View>>(null);
   const videoBox = useRef<ComponentRef<typeof View>>(null);
@@ -426,6 +434,128 @@ function Journey() {
         counts.length === frameId && counts.every((count) => count === 1),
         { frameId, settled: Object.fromEntries(settled) },
       );
+    };
+
+    const certifiedVideo = async () => {
+      if (!CertifiedVideo) {
+        log("browser-video-unsupported", {
+          platform: Platform.OS,
+          qualification:
+            "unrun: requires drawable presentation identity on a supported binary/device",
+        });
+        return;
+      }
+      setVideoMounted(false);
+      setCertifiedMounted(true);
+      await settledLayout();
+      await certifiedKeyframes.next(() => true, "certified view joined", 4000, true);
+      const native = certifiedDecoder.current;
+      if (!native) throw new Error("certified native presenter ref missing");
+      const [key, delta] = await Promise.all([
+        fixture("lime-key-128x128.h264"),
+        fixture("blue-delta-128x128.h264"),
+      ]);
+      const area = await measure(videoBox);
+      const pixels = (color: Color): Probe[] => [
+        { ...at(fit(area, 128, 128), 0.5, 0.5), color, label: "certified H.264 marker" },
+      ];
+      const metadata = (epoch: string, sequence: number, keyframe: boolean, replayed = false) => ({
+        epoch,
+        width: 128,
+        height: 128,
+        pts: sequence + 1,
+        key: keyframe,
+        replayed,
+        cropX: 0,
+        cropY: 0,
+        cropWidth: 128,
+        cropHeight: 128,
+        identity: JSON.stringify({
+          ...browserVideoTestHeader,
+          sequence,
+          ptsUs: sequence + 1,
+          key: keyframe,
+          codec: keyframe ? "avc1.420015" : undefined,
+          presentation: {
+            ...browserVideoTestHeader.presentation,
+            rootCssWidth: 128,
+            rootCssHeight: 128,
+
+            rasterCrop: { x: 0, y: 0, width: 128, height: 128 },
+            drawnRevision: `native-marker-${sequence}`,
+          },
+        }),
+      });
+      await native.reset("certified");
+      const keyOutput = certifiedOutputs.next(
+        (v) => v.epoch === "certified",
+        "lone certified key drawable/texture receipt",
+      );
+      await expect(
+        "certified binary key admitted",
+        await native.decodeBytes(offsetBytes(key), metadata("certified", 0, true)),
+      );
+      const presentedKey = await keyOutput;
+      await expect(
+        "key receipt retains its own certificate",
+        JSON.parse(presentedKey.identity).presentation.drawnRevision === "native-marker-0",
+      );
+      await check("certified-lone-key", pixels([0, 255, 0]));
+      const deltaOutput = certifiedOutputs.next(
+        (v) => v.epoch === "certified" && JSON.parse(v.identity).sequence === 1,
+        "final certified delta presentation",
+      );
+      await expect(
+        "certified final delta admitted",
+        await native.decodeBytes(offsetBytes(delta), metadata("certified", 1, false)),
+      );
+      await deltaOutput;
+      await check("certified-final-delta", pixels([0, 0, 255]));
+      await native.reset("certified");
+      await expect(
+        "delta after a dropped reference is refused",
+        !(await native.decodeBytes(offsetBytes(delta), metadata("certified", 2, false))),
+      );
+      await check("certified-loss-keeps-last-good-picture", pixels([0, 0, 255]));
+      const repaired = certifiedOutputs.next(
+        (v) => v.epoch === "certified" && JSON.parse(v.identity).sequence === 3,
+        "key repairs dropped delta",
+      );
+      await expect(
+        "resync key admitted",
+        await native.decodeBytes(offsetBytes(key), metadata("certified", 3, true)),
+      );
+      await repaired;
+      await check("certified-key-repairs-loss", pixels([0, 255, 0]));
+      await native.reset("certified-replay");
+      const beforeReplay = certifiedOutputs.seen.length;
+      await expect(
+        "certified historical key admitted",
+        await native.decodeBytes(offsetBytes(key), metadata("certified-replay", 0, true, true)),
+      );
+      await check("certified-replay-never-presents", pixels([0, 255, 0]), { never: true, ms: 800 });
+      await expect(
+        "historical output never owns native input",
+        certifiedOutputs.seen.length === beforeReplay,
+      );
+      const replayTip = certifiedOutputs.next(
+        (v) => v.epoch === "certified-replay" && JSON.parse(v.identity).sequence === 1,
+        "certified replay tip",
+      );
+      await expect(
+        "certified replay tip admitted",
+        await native.decodeBytes(offsetBytes(delta), metadata("certified-replay", 1, false)),
+      );
+      await replayTip;
+      await check("certified-replay-tip", pixels([0, 0, 255]));
+      await native.reset("certified-cleared");
+      await check("certified-reset-clears", pixels([0, 0, 0]));
+      await expect(
+        "certified retired epoch refused",
+        !(await native.decodeBytes(offsetBytes(key), metadata("certified-replay", 2, true))),
+      );
+      setCertifiedMounted(false);
+      await settledLayout();
     };
 
     const video = async () => {
@@ -648,6 +778,7 @@ function Journey() {
         await post("/start", { platform: Platform.OS, version: Platform.Version });
         await pictures();
         await video();
+        await certifiedVideo();
         setStatus("done");
         await post("/done", { failed: false });
       } catch (error) {
@@ -688,6 +819,19 @@ function Journey() {
         collapsable={false}
         style={{ width: 160, height: 160, backgroundColor: "#808080" }}
       >
+        {certifiedMounted && CertifiedVideo ? (
+          <CertifiedVideo
+            ref={certifiedDecoder}
+            style={{ flex: 1 }}
+            onNeedsKeyframe={({ nativeEvent }) => certifiedKeyframes.push(nativeEvent.epoch)}
+            onVideoPresented={({ nativeEvent }) => {
+              log("browser-video-presented", nativeEvent);
+              certifiedOutputs.push(nativeEvent);
+            }}
+            onVideoGesture={({ nativeEvent }) => log("browser-video-gesture", nativeEvent)}
+            onVideoTap={({ nativeEvent }) => log("browser-video-tap", nativeEvent)}
+          />
+        ) : null}
         {videoMounted ? (
           <NativeDisplay
             ref={decoder}

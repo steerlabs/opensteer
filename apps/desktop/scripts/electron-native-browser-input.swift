@@ -77,6 +77,22 @@ if captureInventory {
     exit(0)
 }
 if mode == "windows" { emit(["pid": pid, "windows": windows]); exit(0) }
+if mode == "popup-inventory" {
+    var roleCounts: [String: Int] = [:]
+    var visited = 0
+    func walk(_ element: AXUIElement, _ depth: Int) {
+        guard depth < 12, visited < 4096 else { return }
+        visited += 1
+        var rawRole: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &rawRole) == .success, let role = rawRole as? String { roleCounts[role, default: 0] += 1 }
+        var rawChildren: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &rawChildren) == .success, let children = rawChildren as? [AXUIElement] { for child in children { walk(child, depth + 1) } }
+    }
+    walk(AXUIElementCreateApplication(pid), 0)
+    let safe = windows.map { window in ["id": window[kCGWindowNumber as String] ?? 0, "layer": window[kCGWindowLayer as String] ?? 0, "bounds": window[kCGWindowBounds as String] ?? [:]] }
+    emit(["pid": pid, "windows": safe, "roles": roleCounts, "frontPid": NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0]); exit(0)
+}
+
 if mode == "clipboard-save" || mode == "clipboard-restore" {
     guard args.count == 4 else { exit(2) }
     let file = URL(fileURLWithPath: args[3])

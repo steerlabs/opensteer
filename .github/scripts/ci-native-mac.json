@@ -49,6 +49,9 @@
         "apps/mobile/modules/phone-display/ios/Package.swift",
         "apps/mobile/modules/phone-display/ios/Core",
         "apps/mobile/modules/phone-display/ios/Tests",
+        "apps/mobile/modules/browser-popup/ios/Package.swift",
+        "apps/mobile/modules/browser-popup/ios/Core",
+        "apps/mobile/modules/browser-popup/ios/Tests",
         "apps/mobile/modules/notification-preview/ios"
       ],
       "tests": [
@@ -56,6 +59,7 @@
         "apps/mobile/modules/iphone-apps/ios",
         "apps/mobile/modules/dictation/ios",
         "apps/mobile/modules/phone-display/ios",
+        "apps/mobile/modules/browser-popup/ios",
         "apps/mobile/modules/notification-preview/ios"
       ],
       "scripts": [
@@ -77,6 +81,7 @@
         "scripts/mac-app-tree.py",
         "scripts/install.sh",
         "apps/desktop/native/computer-use/Tests/Fixtures/helper-wire.json",
+        "apps/mobile/modules/phone-display/tests/native/fixtures/lime-key-128x128.h264",
         "apps/desktop/native/passwords/Tests/Fixtures/passwords-wire.json",
         "packages/core/src/fixtures/notification-preview-v1.json"
       ],

@@ -1,3 +1,4 @@
+import { browserPresentationRef } from "@opensteer/protocol";
 import { createBrowserTouchGesture } from "@opensteer/shared/browserTouch";
 import type { EditingOperation } from "@opensteer/client/editing";
 import {
@@ -5,10 +6,10 @@ import {
   type RemoteEditingProxyHandle,
 } from "../remote-editing/remote-editing-proxy.js";
 import { BrowserEditingStore, type BrowserEditingState } from "@opensteer/client/host";
-import type { EditingCaret, EditingContext } from "@opensteer/protocol/editing";
+import type { EditingCaret, EditingContext, EditingKeystroke } from "@opensteer/protocol/editing";
 import { StreamedContextMenu, type StreamedMenuAction } from "./streamed-context-menu.js";
 import type { DesktopWindowRect } from "@opensteer/protocol/desktop";
-import { attachBrowserCanvas } from "./browser-presenter.js";
+import { attachBrowserCanvas, sampleBrowserVideo } from "./browser-presenter.js";
 import { BrowserCropCue } from "./browser-crop-cue.js";
 import {
   browserFrameContentRect,
@@ -122,7 +123,14 @@ export function BrowserViewport({
   const framePresentedRef = useRef(onFramePresented);
   framePresentedRef.current = onFramePresented;
   const markFramePresented = useCallback((presentedFrame: BrowserFrameView) => {
+    const previous = presentedFrameRef.current;
     presentedFrameRef.current = presentedFrame;
+    if (
+      presentedFrame.video &&
+      previous?.video &&
+      sameBrowserFrameGeometry(previous, presentedFrame)
+    )
+      return;
     setPresentedSurfaceId(presentedFrame.header.surfaceId);
     setPresentedGeometry((previous) =>
       sameBrowserFrameGeometry(previous, presentedFrame)
@@ -416,6 +424,13 @@ export function BrowserViewport({
       }
       const { live, visible, phoneLayout } = eligibilityRef.current;
       const size = browserTargetViewport(viewport.getBoundingClientRect(), phoneLayout);
+      if (activeSurfaceRef.current && frames.video?.selected())
+        frames.video.budget(
+          sessionId,
+          activeSurfaceRef.current,
+          rect.width * devicePixelRatio,
+          rect.height * devicePixelRatio,
+        );
       const now = phase();
       // While the place's size is still moving the picture is only scaled;
       // nothing re-renders for each frame of it.
@@ -459,7 +474,7 @@ export function BrowserViewport({
       announcer.dispose();
       measureRef.current = null;
     };
-  }, [layout, sessionId]);
+  }, [frames.video, layout, sessionId]);
 
   useLayoutEffect(() => {
     measureRef.current?.();
@@ -566,26 +581,77 @@ export function BrowserViewport({
     },
     [discardMove, resetCursor, touchGesture],
   );
+  const popupTarget = useMemo(
+    () => (activeSurfaceId ? frames.popups?.target(sessionId, activeSurfaceId) : undefined),
+    [frames.popups, sessionId, activeSurfaceId],
+  );
   const flushMove = useCallback(() => {
     if (animationFrame.current !== null) cancelAnimationFrame(animationFrame.current);
     animationFrame.current = null;
     const point = pendingMove.current;
     pendingMove.current = null;
-    if (point && canInputRef.current)
+    if (point && canInputRef.current && !popupTarget?.get().popup)
       onCommandRef.current({ action: "move", button: "none", ...point, type: "input.pointer" });
-  }, []);
+  }, [popupTarget]);
+  const heldPopupKeys = useRef(new Map<string, EditingKeystroke>());
+  const modalPopup = useSyncExternalStore(popupTarget?.subscribe ?? noEditingSubscription, () => {
+    const p = popupTarget?.get().popup;
+    return !!p && p.state.kind !== "datalist";
+  });
+  const hadModalPopup = useRef(false);
+  useEffect(() => {
+    if (hadModalPopup.current && !modalPopup && viewportCanInput) textInputRef.current?.focus();
+    hadModalPopup.current = modalPopup;
+    if (!modalPopup) return;
+    const release = (event: KeyboardEvent) => {
+      const key = heldPopupKeys.current.get(event.code);
+      if (!key) return;
+      heldPopupKeys.current.delete(event.code);
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      void editingTarget
+        ?.send({ kind: "key", keystroke: { ...key, action: "up", text: "" } })
+        .catch(() => undefined);
+    };
+    window.addEventListener("keyup", release, true);
+    return () => window.removeEventListener("keyup", release, true);
+  }, [modalPopup, viewportCanInput, editingTarget]);
+  useEffect(
+    () => () => {
+      heldPopupKeys.current.clear();
+    },
+    [sessionId, activeSurfaceId],
+  );
   const wire = useMemo(
     () =>
       editingTarget
         ? {
             send: (operation: EditingOperation) => {
-              flushMove();
+              const popup = activeSurfaceId
+                ? frames.popups?.target(sessionId, activeSurfaceId)
+                : undefined;
+              if (
+                operation.kind === "key" &&
+                popup?.consumeKey(
+                  operation.keystroke.key,
+                  operation.keystroke.code,
+                  operation.keystroke.action,
+                )
+              )
+                return Promise.resolve(undefined);
+              if (operation.kind === "key") {
+                if (operation.keystroke.action === "down")
+                  heldPopupKeys.current.set(operation.keystroke.code, operation.keystroke);
+                else heldPopupKeys.current.delete(operation.keystroke.code);
+              }
+              if (popup?.get().popup?.state.kind === "datalist") discardMove();
+              else flushMove();
               return editingTarget.send(operation);
             },
             subscribeClipboard: editingTarget.activate,
           }
         : null,
-    [editingTarget, flushMove],
+    [editingTarget, flushMove, discardMove, activeSurfaceId, frames.popups, sessionId],
   );
   useEffect(() => {
     const cancel = () => {
@@ -643,7 +709,61 @@ export function BrowserViewport({
     return count;
   }
 
+  const videoGesture = useRef<{
+    sample: NonNullable<ReturnType<typeof sampleBrowserVideo>>;
+    id: string;
+    pointer: number;
+    canvas: HTMLCanvasElement;
+    x: number;
+    y: number;
+    lastX: number;
+    lastY: number;
+    scrolling: boolean;
+  } | null>(null);
+  const cancelVideoGesture = useCallback(() => {
+    videoGesture.current = null;
+  }, [activeSurfaceId, frames.video, sessionId]);
+  useLayoutEffect(() => {
+    if (!viewportCanInput) cancelVideoGesture();
+    return cancelVideoGesture;
+  }, [cancelVideoGesture, viewportCanInput]);
   function pointerDown(event: PointerEvent<HTMLDivElement>) {
+    const popup = activeSurfaceId ? frames.popups?.target(sessionId, activeSurfaceId) : undefined;
+    if (popup?.get().popup) {
+      if (popup.get().popup?.state.kind !== "datalist") return;
+      popup.cancel();
+    }
+    if (
+      frames.video?.selected() &&
+      !dragSelect &&
+      (event.pointerType === "touch" || event.button === 0)
+    ) {
+      discardMove();
+      if (!canInputRef.current || !activeSurfaceId) return;
+      const canvas = event.currentTarget.querySelector("canvas");
+      const sample = canvas && sampleBrowserVideo(canvas, event.clientX, event.clientY);
+      if (!sample || !canvas) return;
+      if (videoGesture.current) {
+        cancelVideoGesture();
+        return;
+      }
+      const id = crypto.randomUUID();
+      videoGesture.current = {
+        sample,
+        id,
+        pointer: event.pointerId,
+        canvas,
+        x: event.clientX,
+        y: event.clientY,
+        lastX: event.clientX,
+        lastY: event.clientY,
+        scrolling: false,
+      };
+      event.preventDefault();
+      event.currentTarget.setPointerCapture(event.pointerId);
+      textInputRef.current?.pointerDown();
+      return;
+    }
     flushMove();
     if (event.pointerType === "touch") {
       resetCursor();
@@ -726,6 +846,70 @@ export function BrowserViewport({
   }
 
   function pointerMove(event: PointerEvent<HTMLDivElement>) {
+    if (activeSurfaceId && frames.popups?.target(sessionId, activeSurfaceId).get().popup) return;
+    if (frames.video?.selected() && videoGesture.current) {
+      const gesture = videoGesture.current;
+      if (gesture.pointer !== event.pointerId || !activeSurfaceId) return;
+      const rect = gesture.canvas.getBoundingClientRect();
+      if (
+        rect.left !== gesture.sample.rect.left ||
+        rect.top !== gesture.sample.rect.top ||
+        rect.width !== gesture.sample.rect.width ||
+        rect.height !== gesture.sample.rect.height
+      ) {
+        cancelVideoGesture();
+        return;
+      }
+      if (
+        Math.hypot(event.clientX - gesture.x, event.clientY - gesture.y) > 8 &&
+        !gesture.scrolling
+      ) {
+        gesture.scrolling = true;
+        if (event.pointerType !== "touch") {
+          const p = gesture.sample.header.presentation;
+          const point = {
+            surfaceId: activeSurfaceId as import("@opensteer/core").BrowserSurfaceId,
+            x: (gesture.sample.point.x - p.rasterCrop.x) / p.rasterCrop.width,
+            y: (gesture.sample.point.y - p.rasterCrop.y) / p.rasterCrop.height,
+            viewportWidth: p.rootCssWidth,
+            viewportHeight: p.rootCssHeight,
+            geometryRevision: gesture.sample.header.geometryRevision,
+          };
+          onCommand({
+            type: "input.pointer",
+            action: "down",
+            button: "left",
+            buttons: 1,
+            modifiers: keyboardModifiers(event),
+            ...point,
+          });
+          pressedButton.current = "left";
+          pointerPress.current = { id: event.pointerId, x: gesture.x, y: gesture.y, clickCount: 1 };
+          videoGesture.current = null;
+          pointerMove(event);
+          return;
+        }
+      }
+      if (gesture.scrolling && event.pointerType === "touch") {
+        const p = gesture.sample.header.presentation;
+        onCommand({
+          type: "input.wheel",
+          surfaceId: activeSurfaceId as import("@opensteer/core").BrowserSurfaceId,
+          x: (gesture.sample.point.x - p.rasterCrop.x) / p.rasterCrop.width,
+          y: (gesture.sample.point.y - p.rasterCrop.y) / p.rasterCrop.height,
+          viewportWidth: p.rootCssWidth,
+          viewportHeight: p.rootCssHeight,
+          geometryRevision: gesture.sample.header.geometryRevision,
+          deltaX: ((gesture.lastX - event.clientX) * p.rootCssWidth) / rect.width,
+          deltaY: ((gesture.lastY - event.clientY) * p.rootCssHeight) / rect.height,
+          modifiers: [],
+        });
+      }
+      gesture.lastX = event.clientX;
+      gesture.lastY = event.clientY;
+      event.preventDefault();
+      return;
+    }
     if (!canInputRef.current) return;
     if (event.pointerType === "touch") {
       if (!fingers.current.has(event.pointerId)) return;
@@ -793,6 +977,40 @@ export function BrowserViewport({
   }
 
   function pointerUp(event: PointerEvent<HTMLDivElement>) {
+    if (frames.video?.selected() && videoGesture.current) {
+      const gesture = videoGesture.current;
+      if (gesture.pointer !== event.pointerId || !activeSurfaceId) return;
+      const rect = gesture.canvas.getBoundingClientRect();
+      if (
+        !canInputRef.current ||
+        rect.left !== gesture.sample.rect.left ||
+        rect.top !== gesture.sample.rect.top ||
+        rect.width !== gesture.sample.rect.width ||
+        rect.height !== gesture.sample.rect.height
+      ) {
+        cancelVideoGesture();
+        return;
+      }
+      videoGesture.current = null;
+      event.preventDefault();
+      if (gesture.scrolling) return;
+      const modifiers =
+        (event.altKey ? 1 : 0) |
+        (event.ctrlKey ? 2 : 0) |
+        (event.metaKey ? 4 : 0) |
+        (event.shiftKey ? 8 : 0);
+      frames.video.click(
+        sessionId,
+        activeSurfaceId,
+        gesture.sample.header.streamId,
+        browserPresentationRef(gesture.sample.header),
+        gesture.id,
+        gesture.sample.point,
+        modifiers,
+      );
+      textInputRef.current?.activate();
+      return;
+    }
     flushMove();
     if (event.pointerType === "touch") {
       if (fingerId.current === event.pointerId) touchGesture.release();
@@ -829,6 +1047,10 @@ export function BrowserViewport({
   }
 
   function pointerCancel(event: PointerEvent<HTMLDivElement>) {
+    if (frames.video?.selected() && videoGesture.current) {
+      cancelVideoGesture();
+      return;
+    }
     resetCursor();
     if (event.pointerType === "touch") {
       discardMove();
@@ -851,6 +1073,7 @@ export function BrowserViewport({
     discardMove();
     const point = lastPointerPoint.current;
     lastPointerPoint.current = null;
+    if (popupTarget?.get().popup) return;
     if (point && canInputRef.current)
       onCommand({
         ...point,
@@ -891,14 +1114,36 @@ export function BrowserViewport({
         data-live-page=""
         onBlur={(event) => {
           if (!event.currentTarget.contains(event.relatedTarget)) {
-            cancelInput(activeSurfaceId);
+            cancelVideoGesture();
+            const popup =
+              popupTarget?.get().popup &&
+              event.currentTarget
+                .closest(".browser-stage")
+                ?.querySelector(".browser-popup, .browser-popup-suggestions");
+            if (!(event.relatedTarget instanceof Node && popup?.contains(event.relatedTarget)))
+              cancelInput(activeSurfaceId);
           }
+        }}
+        onFocusCapture={(event) => {
+          if (!activeSurfaceId || !frames.video?.selected()) return;
+          const rect = event.currentTarget.getBoundingClientRect();
+          frames.video.budget(
+            sessionId,
+            activeSurfaceId,
+            rect.width * devicePixelRatio,
+            rect.height * devicePixelRatio,
+            true,
+          );
         }}
         onContextMenu={(event) => event.preventDefault()}
         onPointerDown={pointerDown}
         onPointerCancel={pointerCancel}
         onLostPointerCapture={(event) => {
-          if (fingers.current.has(event.pointerId) || pointerPress.current?.id === event.pointerId)
+          if (
+            fingers.current.has(event.pointerId) ||
+            pointerPress.current?.id === event.pointerId ||
+            videoGesture.current?.pointer === event.pointerId
+          )
             pointerCancel(event);
         }}
         onPointerLeave={pointerLeave}
@@ -953,7 +1198,7 @@ export function BrowserViewport({
           />
         ) : null}
         <BrowserCropCue />
-        {frame ? (
+        {frame || frames.video?.selected() ? (
           <BrowserFrameImage
             frames={frames}
             sessionId={sessionId}
@@ -1143,6 +1388,7 @@ function browserViewportFocused(): boolean {
 }
 
 interface BrowserFramePoint {
+  readonly streamId?: import("@opensteer/protocol").DisplayStreamId;
   readonly geometryRevision?: number;
   readonly captureRevision?: number;
   readonly surfaceId: BrowserFrameView["header"]["surfaceId"];
@@ -1175,6 +1421,7 @@ export function normalizedBrowserFramePoint(
       ? {}
       : { geometryRevision: frame.header.geometryRevision }),
     ...(frame.header.capture ? { captureRevision: frame.header.capture.revision } : {}),
+    ...(frame.video ? { streamId: frame.video.streamId } : {}),
     surfaceId: frame.header.surfaceId,
     viewportHeight: frame.header.viewportHeight,
     viewportWidth: frame.header.viewportWidth,

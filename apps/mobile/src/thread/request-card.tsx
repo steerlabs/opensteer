@@ -1067,6 +1067,7 @@ function BrowserAccessBody(props: {
   );
   return (
     <View style={styles.choices}>
+      <AppText>Controlling a streamed tab shares its displayed choices with that device.</AppText>
       {
         <>
           <RowGroup>

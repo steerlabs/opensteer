@@ -40,6 +40,22 @@ const domains = new Map<string, SpecDomain>(
  * every allowlisted name, type and enum value must exist in it.
  */
 describe("agent CDP allowlist against the shipped CDP spec", () => {
+  it("keeps human private input and popup commands/events out of every agent CDP channel", () => {
+    for (const method of [
+      "OpensteerInput.enable",
+      "OpensteerInput.edit",
+      "OpensteerInput.click",
+      "OpensteerPopup.answer",
+      "OpensteerPopup.cancel",
+    ])
+      expect(agentCdpAllowlist.methods.has(method)).toBe(false);
+    for (const event of [
+      "OpensteerPopup.opened",
+      "OpensteerPopup.updated",
+      "OpensteerPopup.closed",
+    ])
+      expect(agentCdpAllowlist.events.has(event)).toBe(false);
+  });
   it("was reviewed against the devtools-protocol this runtime ships", () => {
     expect(runtimePackage.dependencies["devtools-protocol"]).toBe(installed.version);
     expect(agentCdpAllowlist.protocolVersion).toBe(installed.version);

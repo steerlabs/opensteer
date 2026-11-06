@@ -19,3 +19,14 @@ export type { BrowserOpenTiming } from "./runtime.js";
 export * from "./native-profile-ready.js";
 
 export { normalizeElectronCursor } from "./browser/cursor-hints.js";
+
+export {
+  BrowserPresentationSession,
+  type BrowserPresentationPort,
+  type BrowserProducerFrame,
+} from "./browser/browser-presentation-session.js";
+
+export type {
+  NativeBrowserPopupRef,
+  NativeBrowserPopupEvent,
+} from "./browser/browser-presentation-session.js";

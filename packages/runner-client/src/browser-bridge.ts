@@ -1,3 +1,13 @@
+import {
+  DisplayStreamIdSchema,
+  displayMaxEnvelopeBytes,
+  type DisplayStreamId,
+} from "@opensteer/protocol";
+import {
+  BrowserLocalVideoOperationSchema,
+  browserLocalVideoOperation,
+  type BrowserVideoOperation,
+} from "@opensteer/protocol/browser-relay";
 import { isLoopbackHostname } from "@opensteer/core";
 import {
   BrowserAttachPublicKeysSchema,
@@ -26,6 +36,7 @@ import { z } from "zod";
 const maxBrowserRelayChannels = 32;
 
 const LocalHealthSchema = z.object({
+  popups: z.literal(1).optional().catch(undefined),
   wireVersion: z.number().int().optional(),
   runtimeId: z.string().min(1).max(255),
   sessionId: z.string().max(255).nullable().optional(),
@@ -175,6 +186,7 @@ export class LocalBrowserRuntimeBridge {
     const health = await this.#readHealth();
     return {
       wireVersion: health.wireVersion,
+      ...(health.popups === 1 ? { popups: 1 as const } : {}),
       ...(health.localProfileStorage
         ? {
             localProfileStorage: health.localProfileStorage,
@@ -235,6 +247,7 @@ export class LocalBrowserRuntimeBridge {
         authorization: `Bearer ${attachTicket}`,
         "x-opensteer-browser-attach-keys": attachKeysHeader,
         "x-opensteer-browser-bridge-token": this.#bridgeToken,
+        "x-opensteer-browser-channel": channelId,
       },
       maxPayload: this.#maxBufferedBytes,
       perMessageDeflate: false,
@@ -301,6 +314,45 @@ export class LocalBrowserRuntimeBridge {
     }
   }
 
+  async openVideo(channelId: BrowserChannelId, streamId: DisplayStreamId): Promise<WebSocket> {
+    const control = this.#channels.get(channelId)?.socket;
+    if (control?.readyState !== WebSocket.OPEN)
+      throw new BrowserRelayError("Browser control channel ended.");
+    const url = new URL("/v1/browser/video", this.#url);
+    url.protocol = "ws:";
+    const media = new WebSocket(url, {
+      followRedirects: false,
+      perMessageDeflate: false,
+      maxPayload: displayMaxEnvelopeBytes,
+      headers: {
+        "x-opensteer-browser-bridge-token": this.#bridgeToken,
+        "x-opensteer-browser-channel": channelId,
+        "x-opensteer-browser-stream": DisplayStreamIdSchema.parse(streamId),
+      },
+    });
+    try {
+      await waitForOpen(media, 4000);
+      if (this.#channels.get(channelId)?.socket !== control)
+        throw new Error("Browser channel replaced.");
+      return media;
+    } catch (error) {
+      media.terminate();
+      throw error;
+    }
+  }
+  sendVideo(operation: BrowserVideoOperation): Promise<void> {
+    const socket = this.#channels.get(operation.channelId)?.socket;
+    if (socket?.readyState !== WebSocket.OPEN)
+      return Promise.reject(new BrowserRelayError("Browser control ended."));
+    const bytes = JSON.stringify(
+      BrowserLocalVideoOperationSchema.parse(browserLocalVideoOperation(operation)),
+    );
+    if (socket.bufferedAmount + Buffer.byteLength(bytes) > this.#maxBufferedBytes)
+      return Promise.reject(new Error("Browser control backlog exceeded."));
+    return new Promise((resolve, reject) =>
+      socket.send(bytes, (error) => (error ? reject(error) : resolve())),
+    );
+  }
   send(channelId: BrowserChannelId, message: BrowserClientMessage): Promise<void> {
     const socket = this.#channels.get(channelId)?.socket;
     if (!socket || socket.readyState !== WebSocket.OPEN) {

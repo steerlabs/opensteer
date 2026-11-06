@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { BrowserSurfaceIdSchema } from "@opensteer/protocol";
 import { BrowserWatchStore } from "./browser-watch.js";
 import type { WebSocketClient } from "./host-session-client.js";
 import { healthySocketMs } from "./realtime-frames.js";
@@ -814,3 +815,234 @@ it.each([false, true])(
     }
   },
 );
+
+describe("H.264 browser lifecycle", () => {
+  it("uses the measured budget, resumes paused video, retries stopped video and ends picture demand", () => {
+    vi.useFakeTimers();
+    const socket = new TargetSocket(),
+      media = new TargetSocket();
+    const connect = vi.fn(() => media);
+    const store = new BrowserWatchStore(
+      () => socket,
+      "control",
+      undefined,
+      () => 100,
+      () => false,
+      undefined,
+      () => false,
+      () => false,
+      { selected: () => true, connect },
+    );
+    try {
+      const control = store.retain(sessionId, surfaceId, { picture: false });
+      let picture = store.retain(sessionId, surfaceId);
+      store.video.budget(sessionId, surfaceId, 640, 480);
+      socket.open();
+      socket.receive({
+        type: "browser.snapshot",
+        sessionId,
+        state: "ready",
+        access: "read-write",
+        targetedStreamingVersion: 1,
+        videoVersion: 1,
+        dialog: null,
+        surfaces: [{ id: surfaceId, active: true, title: "", url: "about:blank" }],
+      });
+      const sent = () => socket.sent.map((s) => JSON.parse(s));
+      expect(sent().find((m) => m.type === "video.subscribe").budget).toMatchObject({
+        maxWidth: 640,
+        maxHeight: 480,
+      });
+      const streamId = "dsp_00000000-0000-4000-8000-000000000002";
+      picture();
+      expect(sent().at(-2)).toMatchObject({ type: "video.unsubscribe" });
+      socket.receive({
+        type: "browser.video.attached",
+        surfaceId,
+        streamId,
+        mediaToken: "z".repeat(43),
+      });
+      expect(connect).not.toHaveBeenCalled();
+      picture = store.retain(sessionId, surfaceId);
+
+      socket.receive({
+        type: "browser.video.attached",
+        surfaceId,
+        streamId,
+        mediaToken: "x".repeat(43),
+      });
+      expect(connect).toHaveBeenCalledWith("x".repeat(43));
+      media.open();
+      socket.receive({
+        type: "browser.video.state",
+        surfaceId,
+        streamId,
+        state: "paused",
+        reason: "budget",
+      });
+      vi.advanceTimersByTime(100);
+      expect(sent().at(-1)).toMatchObject({ type: "video.budget", streamId });
+      socket.receive({
+        type: "browser.video.state",
+        surfaceId,
+        streamId,
+        state: "stopped",
+        reason: "source-ended",
+      });
+      vi.advanceTimersByTime(100);
+      expect(sent().filter((m) => m.type === "video.subscribe")).toHaveLength(3);
+      socket.receive({
+        type: "browser.video.attached",
+        surfaceId,
+        streamId,
+        mediaToken: "y".repeat(43),
+      });
+      picture();
+      expect(sent().some((m) => m.type === "video.unsubscribe")).toBe(true);
+      expect(store.video.state(sessionId, surfaceId)?.state).toBe("stopped");
+      expect(socket.closes).toHaveLength(0);
+      control();
+    } finally {
+      store.dispose();
+      vi.useRealTimers();
+    }
+  });
+  it("keeps unsupported producers visible without disconnecting the control socket", () => {
+    const socket = new TargetSocket();
+    const store = new BrowserWatchStore(
+      () => socket,
+      "control",
+      undefined,
+      () => 100,
+      () => false,
+      undefined,
+      () => false,
+      () => false,
+      { selected: () => true, connect: () => new TargetSocket() },
+    );
+    try {
+      store.retain(sessionId, surfaceId);
+      socket.open();
+      socket.admit();
+      expect(store.get(sessionId, surfaceId).error).toContain("Update the browser computer");
+      expect(socket.closes).toHaveLength(0);
+    } finally {
+      store.dispose();
+    }
+  });
+});
+it("tells a viewer when a press has no guarded path, and clears it on the next tap", () => {
+  const socket = new TargetSocket();
+  const store = new BrowserWatchStore(
+    () => socket,
+    "control",
+    undefined,
+    () => 100,
+    () => false,
+    undefined,
+    () => false,
+    () => false,
+    { selected: () => true, connect: () => new TargetSocket() },
+  );
+  try {
+    store.retain(sessionId, surfaceId);
+    socket.open();
+    socket.receive({
+      type: "browser.snapshot",
+      sessionId,
+      state: "ready",
+      access: "read-write",
+      targetedStreamingVersion: 1,
+      videoVersion: 1,
+      popupVersion: 1,
+      dialog: null,
+      surfaces: [{ id: surfaceId, active: true, title: "", url: "about:blank" }],
+    });
+    socket.receive({
+      type: "browser.video.attached",
+      surfaceId,
+      streamId: "dsp_00000000-0000-4000-8000-000000000001",
+      mediaToken: "a".repeat(43),
+    });
+    const surface = BrowserSurfaceIdSchema.parse(surfaceId);
+    const pointer = {
+      type: "input.pointer" as const,
+      surfaceId: surface,
+      x: 1,
+      y: 1,
+      viewportWidth: 100,
+      viewportHeight: 100,
+      geometryRevision: 1,
+      modifiers: [],
+      buttons: 2,
+      button: "right" as const,
+      clickCount: 1,
+    };
+    store.send(sessionId, surfaceId, { ...pointer, action: "down" });
+    store.send(sessionId, surfaceId, { ...pointer, action: "up", buttons: 0 });
+    expect(store.get(sessionId, surfaceId).inputError).toContain("aren't available");
+    expect(socket.sent.map((s) => JSON.parse(s).action)).toContain("down");
+    store.send(sessionId, surfaceId, { type: "input.cancel", surfaceId: surface });
+    expect(store.get(sessionId, surfaceId).inputError).toBeNull();
+  } finally {
+    store.dispose();
+  }
+});
+it("does not re-subscribe over a Host-issued controller replacement", () => {
+  vi.useFakeTimers();
+  const socket = new TargetSocket();
+  const store = new BrowserWatchStore(
+    () => socket,
+    "control",
+    undefined,
+    () => 100,
+    () => false,
+    undefined,
+    () => false,
+    () => false,
+    { selected: () => true, connect: () => new TargetSocket() },
+  );
+  try {
+    store.retain(sessionId, surfaceId);
+    socket.open();
+    socket.receive({
+      type: "browser.snapshot",
+      sessionId,
+      state: "ready",
+      access: "read-write",
+      targetedStreamingVersion: 1,
+      videoVersion: 1,
+      popupVersion: 1,
+      dialog: null,
+      surfaces: [{ id: surfaceId, active: true, title: "", url: "about:blank" }],
+    });
+    const first = "dsp_00000000-0000-4000-8000-000000000001",
+      second = "dsp_00000000-0000-4000-8000-000000000002";
+    socket.receive({
+      type: "browser.video.attached",
+      surfaceId,
+      streamId: first,
+      mediaToken: "a".repeat(43),
+    });
+    socket.receive({
+      type: "browser.video.state",
+      surfaceId,
+      streamId: first,
+      state: "stopped",
+      reason: "replaced",
+    });
+    socket.receive({
+      type: "browser.video.attached",
+      surfaceId,
+      streamId: second,
+      mediaToken: "b".repeat(43),
+    });
+    vi.advanceTimersByTime(100);
+    expect(
+      socket.sent.map((s) => JSON.parse(s)).filter((m) => m.type === "video.subscribe"),
+    ).toHaveLength(1);
+  } finally {
+    store.dispose();
+    vi.useRealTimers();
+  }
+});

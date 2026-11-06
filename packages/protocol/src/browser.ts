@@ -1,3 +1,13 @@
+import {
+  BrowserPopupClientMessageSchema,
+  BrowserPopupServerMessageSchema,
+} from "./browser-popup.js";
+import {
+  BrowserVideoClickResultSchema,
+  BrowserVideoClientMessageSchema,
+  BrowserVideoAttachmentSchema,
+  BrowserVideoStateSchema,
+} from "./browser-video.js";
 export const browserRuntimeWireVersion = 1;
 import { browserFrameFits, browserFrameLimits } from "@opensteer/browser-core/frame-limits";
 import { BrowserCookieSchema } from "@opensteer/browser-profile/cookies";
@@ -188,6 +198,7 @@ export const BrowserAttachTicketClaimsSchema = z
     access: BrowserProfileAccessSchema,
     audience: z.literal("opensteer-browser-runtime"),
     passkeys: z.literal(1).optional(),
+    popupVersion: z.literal(1).optional(),
     navigationVersion: z.literal(1).optional(),
     wireVersion: z.literal(browserRuntimeWireVersion),
     operationExpiresAt: IsoDateTimeSchema,
@@ -204,7 +215,7 @@ export const BrowserAttachTicketClaimsSchema = z
     /** V2 makes the isolated engine clipboard explicit; v1 implies true. */
     clipboard: z.boolean().optional(),
     workspaceTabRestoreVersion: z.literal(1).optional(),
-    /** The Host relays `browser.popup.opened`, so the runtime may send it. */
+    /** The Host relays `browser.popupFollow.opened`, so the runtime may send it. */
     popupFollowVersion: z.literal(1).optional(),
     initialSurfaceId: BrowserSurfaceIdSchema.optional(),
     dormantSurfaceIds: z.array(BrowserSurfaceIdSchema).max(63).optional(),
@@ -730,6 +741,8 @@ const BaselineBrowserClientMessageSchema = z
     }
   });
 export const BrowserClientMessageSchema = z.union([
+  BrowserVideoClientMessageSchema,
+  BrowserPopupClientMessageSchema,
   BaselineBrowserClientMessageSchema,
   PasskeyCancelSchema,
 ]);
@@ -744,6 +757,8 @@ const BrowserSnapshotSchema = z
     state: z.literal("ready"),
     passkeys: PasskeyModeSchema.optional(),
     passkeyConsumerToken: z.uuid().optional(),
+    videoVersion: z.literal(1).optional(),
+    popupVersion: z.literal(1).optional(),
     /** Host → viewer only: its own token, for a client whose input never crosses this socket. */
     consumerToken: z.uuid().optional(),
     targetedStreamingVersion: z.literal(1).optional(),
@@ -917,7 +932,7 @@ const BaselineBrowserServerMessageSchema = z.discriminatedUnion("type", [
    */
   z.strictObject({
     ...browserBase,
-    type: z.literal("browser.popup.opened"),
+    type: z.literal("browser.popupFollow.opened"),
     surfaceId: BrowserSurfaceIdSchema,
     consumerToken: z.uuid(),
   }),
@@ -967,6 +982,10 @@ const BaselineBrowserServerMessageSchema = z.discriminatedUnion("type", [
   }),
 ]);
 export const BrowserServerMessageSchema = z.union([
+  BrowserPopupServerMessageSchema,
+  BrowserVideoClickResultSchema,
+  BrowserVideoAttachmentSchema,
+  BrowserVideoStateSchema,
   BaselineBrowserServerMessageSchema,
   PasskeyCeremonySchema,
   PasskeyRuntimeCancelSchema,

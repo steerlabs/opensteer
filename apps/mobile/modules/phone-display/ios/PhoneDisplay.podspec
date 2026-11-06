@@ -11,6 +11,6 @@ Pod::Spec.new do |s|
   s.source = { :git => '' }
   s.static_framework = true
   s.dependency 'ExpoModulesCore'
-  s.frameworks = 'AVFoundation', 'CoreMedia', 'ImageIO'
-  s.source_files = 'PhoneDisplayModule.swift', 'Core/*.swift'
+  s.frameworks = 'AVFoundation', 'CoreMedia', 'ImageIO', 'MetalKit', 'VideoToolbox'
+  s.source_files = 'PhoneDisplayModule.swift', 'BrowserVideoView.swift', 'Core/*.swift'
 end

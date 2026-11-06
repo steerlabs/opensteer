@@ -1091,6 +1091,19 @@ popup.onclick=()=>open('/q','_blank');fullscreen.onclick=()=>document.documentEl
     key,
     /** Actual owned Electron windows and child order. */
     windowInventory,
+    async popupInventory() {
+      const { stdout } = await runFile(inputHelper, ["popup-inventory", String(process.pid)], {
+        timeout: 5000,
+      });
+      return z
+        .object({
+          pid: z.number(),
+          windows: z.array(z.object({ id: z.number(), layer: z.number(), bounds: z.unknown() })),
+          roles: z.record(z.string(), z.number()),
+          frontPid: z.number(),
+        })
+        .parse(JSON.parse(stdout));
+    },
     /** Resolve the actual native child currently mounted. */
     activeSurface,
     /** Actual mounted page webContents. */

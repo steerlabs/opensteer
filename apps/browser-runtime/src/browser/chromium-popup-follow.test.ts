@@ -50,7 +50,7 @@ async function openPage() {
   );
   const opened = () =>
     session.sink.messages.flatMap((message) =>
-      message.type === "browser.popup.opened" ? [message] : [],
+      message.type === "browser.popupFollow.opened" ? [message] : [],
     );
   const popups = () => session.ledger.snapshot().filter((surface) => surface.id !== id);
   return {

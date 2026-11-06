@@ -6,6 +6,7 @@ export const hostInternalRoutePaths = {
   browserSourcePair: "/internal/v1/browser-sources/pair",
   browserSourcePairChallenge: "/internal/v1/browser-sources/pair/challenge",
   browserSourceConnect: "/internal/v1/browser-sources/connect",
+  browserVideo: "/internal/v1/browser/video",
   computerUseDisplay: "/internal/v1/computer-use/display",
   egress: "/internal/v1/egress",
   plugins: "/internal/v1/plugin-cache/:digest",

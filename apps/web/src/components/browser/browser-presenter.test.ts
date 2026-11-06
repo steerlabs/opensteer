@@ -344,3 +344,184 @@ it("cannot draw an old authorization's pending decode after the new one uses the
     await Promise.resolve();
   }
 });
+
+it("samples the certificate committed with decoder output, including delayed/reordered output and local resize", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { browserVideoTestHeader } = await import("@opensteer/protocol/test-support/browser-video");
+  const { sampleBrowserVideo } = await import("./browser-presenter.js");
+  const key = readFileSync(
+    "apps/mobile/modules/phone-display/tests/native/fixtures/lime-key-128x128.h264",
+  );
+  const delta = readFileSync(
+    "apps/mobile/modules/phone-display/tests/native/fixtures/blue-delta-128x128.h264",
+  );
+  const pending = new Map<number, FrameRequestCallback>();
+  let paintId = 0;
+  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+    pending.set(++paintId, callback);
+    return paintId;
+  });
+  vi.stubGlobal("cancelAnimationFrame", (id: number) => pending.delete(id));
+  const paint = () => {
+    const callbacks = [...pending.values()];
+    pending.clear();
+    for (const callback of callbacks) callback(0);
+  };
+  const codecs: FakeDecoder[] = [];
+  class FakeDecoder extends EventTarget {
+    static async isConfigSupported() {
+      return { supported: true };
+    }
+    state: CodecState = "unconfigured";
+    decodeQueueSize = 0;
+    readonly init: VideoDecoderInit;
+    readonly chunks: { timestamp: number }[] = [];
+    constructor(init: VideoDecoderInit) {
+      super();
+      this.init = init;
+      codecs.push(this);
+    }
+    configure() {
+      this.state = "configured";
+    }
+    decode(chunk: { timestamp: number }) {
+      this.chunks.push(chunk);
+      this.decodeQueueSize++;
+    }
+    output(index: number) {
+      const chunk = this.chunks[index]!;
+      this.decodeQueueSize = 0;
+      this.dispatchEvent(new Event("dequeue"));
+      const picture = { timestamp: chunk.timestamp, close: vi.fn() };
+      this.init.output(picture as unknown as VideoFrame);
+      return picture;
+    }
+    reset() {
+      this.state = "unconfigured";
+      this.decodeQueueSize = 0;
+    }
+    close() {
+      this.state = "closed";
+    }
+  }
+  vi.stubGlobal("VideoDecoder", FakeDecoder);
+  vi.stubGlobal(
+    "EncodedVideoChunk",
+    class {
+      readonly timestamp: number;
+      constructor(value: { timestamp: number }) {
+        this.timestamp = value.timestamp;
+      }
+    },
+  );
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+    drawImage: vi.fn(),
+    clearRect: vi.fn(),
+  } as unknown as CanvasRenderingContext2D);
+  const stage = document.createElement("div");
+  const canvas = document.createElement("canvas");
+  stage.append(canvas);
+  document.body.append(stage);
+  let rect = {
+    left: 10,
+    top: 20,
+    width: 100,
+    height: 100,
+    right: 110,
+    bottom: 120,
+    x: 10,
+    y: 20,
+    toJSON: () => ({}),
+  };
+  vi.spyOn(canvas, "getBoundingClientRect").mockImplementation(() => rect);
+  let receive: (frame: import("@opensteer/client/host").BrowserVideoFrame) => void = () => {};
+  let notify = () => {};
+  let state: import("@opensteer/protocol").BrowserVideoState = {
+    type: "browser.video.state",
+    surfaceId: "tab" as import("@opensteer/core").BrowserSurfaceId,
+    streamId: browserVideoTestHeader.streamId,
+    state: "live",
+  };
+  const video = {
+    selected: () => true,
+    budget: vi.fn(),
+    onFrame: (_session: string, _surface: string, listener: typeof receive) => {
+      receive = listener;
+      return () => {};
+    },
+    state: () => state,
+    presented: vi.fn(),
+    failed: vi.fn(),
+    retry: vi.fn(),
+    keyframe: vi.fn(),
+    click: vi.fn(),
+  };
+  const source: BrowserFrameStore = {
+    video,
+    get: () => null,
+    subscribe: (_session, listener) => {
+      notify = listener;
+      return () => {};
+    },
+  };
+  const shown = vi.fn();
+  const detach = attachBrowserCanvas(source, "browser", "tab", true, canvas, shown);
+  const emit = (sequence: number, keyframe: boolean) => {
+    const header = {
+      ...browserVideoTestHeader,
+      sequence,
+      ptsUs: sequence,
+      key: keyframe,
+      ...(keyframe ? { codec: "avc1.420015" } : { codec: undefined }),
+      presentation: {
+        ...browserVideoTestHeader.presentation,
+        drawnRevision: `picture-${sequence}`,
+      },
+    };
+    receive({
+      connection: 1,
+      header,
+      payload: keyframe ? key : delta,
+      replayed: false,
+      done: vi.fn(),
+    });
+  };
+  try {
+    emit(1, true);
+    emit(2, false);
+    await vi.waitFor(() => expect(codecs, "WebCodecs configured").toHaveLength(1), {
+      timeout: 1000,
+    });
+    const decoder = codecs[0]!;
+    expect(sampleBrowserVideo(canvas, 60, 70)).toBeNull();
+    decoder.output(0);
+    paint();
+    expect(sampleBrowserVideo(canvas, 60, 70)?.header.presentation.drawnRevision).toBe("picture-1");
+    decoder.output(1);
+    expect(sampleBrowserVideo(canvas, 60, 70)?.header.sequence).toBe(1);
+    paint();
+    expect(sampleBrowserVideo(canvas, 60, 70)?.header.sequence).toBe(2);
+    emit(3, true);
+    emit(4, false);
+    decoder.output(3);
+    const old = decoder.output(2);
+    expect(old.close).toHaveBeenCalledOnce();
+    paint();
+    expect(sampleBrowserVideo(canvas, 60, 70)?.header.sequence).toBe(4);
+    rect = { ...rect, left: 11, right: 111 };
+    expect(sampleBrowserVideo(canvas, 60, 70)?.header.sequence).toBe(4);
+    for (const sequence of [5, 6, 7]) {
+      emit(sequence, true);
+      codecs.at(-1)!.init.error(new DOMException("native decoder failed", "EncodingError"));
+    }
+    expect(video.keyframe).toHaveBeenCalledTimes(2);
+    expect(video.failed).toHaveBeenCalledExactlyOnceWith("browser", "tab", "decoder");
+    expect(sampleBrowserVideo(canvas, 60, 70)).toBeNull();
+    state = { ...state, state: "stopped" };
+    notify();
+    expect(sampleBrowserVideo(canvas, 60, 70)).toBeNull();
+    expect(video.presented.mock.calls.map((call) => call[2].sequence)).toEqual([1, 2, 4]);
+  } finally {
+    detach();
+  }
+});

@@ -80,6 +80,27 @@ describe("DesktopHostTransport", () => {
     },
   );
 
+  it("carries the browser media subprotocol through admission without logging it", async () => {
+    const selected = deployment("Home", "https://home.connect.opensteer.test");
+    const log = vi.fn();
+    const openWebSocket = vi.fn<HostNetwork["openWebSocket"]>(() => socket());
+    const transport = desktopHostTransport({
+      catalog: catalogStore([selected], selected.authority.document.deploymentId),
+      log,
+      network: { openWebSocket, request: async () => new Response("{}") },
+    });
+    const protocols = [`opensteer-video.${"x".repeat(43)}`];
+    try {
+      await transport.openWebSocket(7, { path: "/v1/browser/video", protocols }, vi.fn());
+      expect(openWebSocket.mock.calls[0]?.[0]).toMatchObject({
+        url: "wss://home.connect.opensteer.test/v1/browser/video",
+        protocols,
+      });
+      expect(JSON.stringify(log.mock.calls)).not.toContain(protocols[0]);
+    } finally {
+      transport.closeAllSockets();
+    }
+  });
   it("F5 correlates surfaces privately across sockets without persisting raw identifiers", async () => {
     const selected = deployment("Home", "https://home.connect.opensteer.test");
     const log = vi.fn();

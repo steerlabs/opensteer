@@ -24,7 +24,7 @@ Verification for browser sessions and Opensteer Passwords.
 ## Procedures
 
 - [Browser sessions](references/browser-sessions.md): editing, downloads, CDP boundary, native
-  profiles.
+  profiles, certified H.264 and popups.
 - [Passkeys](references/passkeys.md): flag, routing tests, VM journey.
 - [Chrome sign-ins](references/chrome-signins.md): extension pairing and delivery.
 - [Passwords](references/passwords.md): Swift broker, wire fixtures, saved logins.

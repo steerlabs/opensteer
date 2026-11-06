@@ -1,3 +1,4 @@
+import { BrowserPopup } from "./browser-popup.js";
 import { BrowserPageMenu, type BrowserPageMenuAction } from "./browser-page-menu.js";
 import { editingClipboardMaxBytes } from "@opensteer/protocol/editing";
 import { useActionReview } from "@opensteer/client/react";
@@ -820,12 +821,25 @@ export function BrowserPage(props: {
           ) : null}
         </View>
       </GestureDetector>
+      {hostClient.browserFrames.popups ? (
+        <BrowserPopup
+          store={hostClient.browserFrames.popups}
+          sessionId={session.id}
+          surfaceId={tabId}
+          active={props.active && props.connected && !addressOpen && !dialog && !signingIn}
+        />
+      ) : null}
       {ready && tab !== undefined && !addressOpen && !dialog && !signingIn ? (
         <PageTyping
           ref={proxy}
           focused={pageFocused}
           softKeyboard={keyboardOpen}
           onBlur={() => {
+            if (
+              hostClient.browserFrames.popups?.target(session.id, tabId).get().popup?.state.kind ===
+              "datalist"
+            )
+              return;
             setPageFocused(false);
             setTyping(false);
             setMayType(false);

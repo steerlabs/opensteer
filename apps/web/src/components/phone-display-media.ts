@@ -53,21 +53,20 @@ export function knownPhoneDisplayDecoding(): HardwareAcceleration | null | undef
  * dropped unshown. Credit never waits for output, which a decoder may hold
  * back for a reorder window however static the screen.
  *
- * There is no queue bound here. The Host's live credit bounds live frames,
- * and a replay is bounded by bytes; skipping part of a replay of a static
- * screen would wait for a keyframe that never comes.
+ * Host credit bounds live frames; encoded work awaiting output has its own
+ * frame/byte bounds because decoder dequeue alone does not prove output.
  */
-export class PhoneDisplayDecoder {
-  readonly #onPicture: (picture: VideoFrame, frame: DisplayFrame) => void;
+export class PhoneDisplayDecoder<Frame extends DisplayFrame = DisplayFrame> {
+  readonly #onPicture: (picture: VideoFrame, frame: Frame) => void;
   readonly #onWaiting: () => void;
   readonly #onLost: () => void;
   /** Frames given to the decoder and not yet off its queue, oldest first. */
-  #queued: DisplayFrame[] = [];
+  #queued: Frame[] = [];
   /**
    * Frames awaiting output, by the chunk timestamp this decoder gave them:
    * a replay repeats sequences that may still be decoding, so they cannot name frames.
    */
-  readonly #pending = new Map<number, DisplayFrame>();
+  readonly #pending = new Map<number, Frame>();
   #chunks = 0;
   #acceleration: HardwareAcceleration;
   #decoder: VideoDecoder | null = null;
@@ -81,7 +80,7 @@ export class PhoneDisplayDecoder {
   constructor(options: {
     readonly acceleration: HardwareAcceleration;
     /** Owns the picture from here: close it once it is superseded. */
-    readonly onPicture: (picture: VideoFrame, frame: DisplayFrame) => void;
+    readonly onPicture: (picture: VideoFrame, frame: Frame) => void;
     readonly onWaiting?: () => void;
     /** The decoder failed or could not be configured: only a keyframe recovers it. */
     readonly onLost?: () => void;
@@ -97,7 +96,7 @@ export class PhoneDisplayDecoder {
     return this.#waitingForKey;
   }
 
-  push(frame: DisplayFrame): void {
+  push(frame: Frame): void {
     const { header } = frame;
     // A new socket may be a new stream: its numbering owes nothing to the last.
     if (frame.connection !== this.#connection) {
@@ -124,6 +123,16 @@ export class PhoneDisplayDecoder {
     const decoder = this.#decoder;
     if (!decoder) {
       this.#drop(frame);
+      return;
+    }
+    if (
+      this.#pending.size >= 600 ||
+      [...this.#pending.values()].reduce((sum, entry) => sum + entry.payload.byteLength, 0) +
+        frame.payload.byteLength >
+        8 * 1024 * 1024
+    ) {
+      this.#drop(frame);
+      this.#failed(decoder);
       return;
     }
     const chunk = this.#chunks++;
@@ -231,7 +240,7 @@ export class PhoneDisplayDecoder {
     this.#setWaiting(true);
   }
 
-  #drop(frame: DisplayFrame): void {
+  #drop(frame: Frame): void {
     this.stats.dropped += 1;
     frame.done();
   }

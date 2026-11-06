@@ -1,3 +1,5 @@
+import type { BrowserVideoHub } from "./browser/browser-video-hub.js";
+import { registerBrowserVideoRoutes } from "./browser/browser-video-routes.js";
 import { readAutomaticModelPreview } from "./agents/automatic-models.js";
 import { registerDesktopUpdateMaintenance } from "./access/personal-desktop-update-routes.js";
 import { ThreadService, assertAccessModeEnforceable } from "./threads/thread-service.js";
@@ -351,6 +353,7 @@ const WorkspaceFileContentQuerySchema = z.strictObject({ file: WorkspaceFileKeyS
 const machinePageLimit = 100;
 
 export interface HostServerDependencies {
+  readonly browserVideo?: BrowserVideoHub;
   readonly connections?: ConnectionOAuth;
   readonly notificationPreviews?: import("./notifications/notification-preview-service.js").NotificationPreviewService;
   readonly passkeys?: boolean;
@@ -502,6 +505,7 @@ export async function createHostServer(
       readonly editing: 1 | 2 | undefined;
       readonly passkeys: "native" | "notice" | undefined;
       readonly popups: boolean;
+      readonly popupFollow: boolean;
     }
   >();
   const realtimeSocketSessions = new WeakMap<object, AuthenticatedSession>();
@@ -2766,6 +2770,10 @@ export async function createHostServer(
   );
 
   registerShellRoutes(app, { shell: dependencies.shellControl });
+  if (dependencies.browserVideo)
+    registerBrowserVideoRoutes(app, dependencies.browserVideo, (request) =>
+      dependencies.authenticator.authenticateSession(request.headers, { mutation: true }),
+    );
   if (dependencies.displayStreams)
     registerComputerUseDisplayRoutes(app, {
       hub: dependencies.displayStreams,
@@ -2801,7 +2809,13 @@ export async function createHostServer(
 
   app.get<{
     Params: { sessionId: string };
-    Querystring: { mode?: string; editing?: string; passkeys?: string; popups?: string };
+    Querystring: {
+      mode?: string;
+      editing?: string;
+      passkeys?: string;
+      popups?: string;
+      popupFollow?: string;
+    };
   }>(
     "/v1/browser-sessions/:sessionId/connect",
     {
@@ -2819,6 +2833,7 @@ export async function createHostServer(
         browserSocketSessions.set(request.raw, {
           mode,
           session,
+          popups: mode === "control" && request.query.popups === "1",
           passkeys:
             dependencies.passkeys === true &&
             (request.query.passkeys === "native" || request.query.passkeys === "notice")
@@ -2826,7 +2841,7 @@ export async function createHostServer(
               : undefined,
           editing:
             request.query.editing === "2" ? 2 : request.query.editing === "1" ? 1 : undefined,
-          popups: request.query.popups === "1",
+          popupFollow: request.query.popupFollow === "1",
         });
       },
       websocket: true,
@@ -2843,6 +2858,7 @@ export async function createHostServer(
         admitted.editing,
         admitted.passkeys,
         admitted.popups,
+        admitted.popupFollow,
         async () => {
           try {
             const current = await dependencies.authenticator.authenticateSession(request.headers, {
@@ -2930,6 +2946,7 @@ export function advertisedCapabilities(
     "integration-app-finish-v1",
     "integration-app-return-port-v1",
     ...(dependencies.passkeys === true ? ["browser-passkeys-v1" as const] : []),
+    "browser-popups-v1",
     "browser-frame-window-v1",
     "browser-raster-demand-v1",
     "browser-capture-region-v1",
@@ -2956,6 +2973,7 @@ function attachBrowserSocket(
   editing: 1 | 2 | undefined,
   passkeys: "native" | "notice" | undefined,
   popups: boolean,
+  popupFollow: boolean,
   signedIn: () => Promise<boolean>,
 ): void {
   installWebSocketLiveness(socket);
@@ -3010,6 +3028,7 @@ function attachBrowserSocket(
       editing,
       passkeys,
       popups,
+      popupFollow,
       signedIn,
     });
     if (socket.readyState !== socket.OPEN) {

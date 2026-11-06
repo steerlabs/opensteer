@@ -3,6 +3,16 @@ import { z } from "zod";
 export const scenarios = ["article-scroll", "nested-scroll", "typing", "click"] as const;
 export type Scenario = (typeof scenarios)[number];
 export const browserStreamOptions = z.object({
+  producer: z
+    .enum(["jpeg", "fixture-h264", "electron-h264-hardware", "chromium-h264-software"])
+    .default("jpeg"),
+  decoder: z
+    .enum(["prefer-hardware", "prefer-software", "no-preference"])
+    .default("prefer-software"),
+  viewer: z.enum(["web", "ios", "android"]).default("web"),
+  devices: z.coerce.number().int().min(1).max(8).default(2),
+  sourceProfile: z.enum(["lan", "4g", "weak-cell"]).default("lan"),
+  executable: z.string().optional(),
   profile: z.enum(["all", "lan", "4g", "weak-cell"]),
   scenario: z.enum(["all", ...scenarios]),
   runs: z.coerce.number().int().min(1).max(20),
@@ -24,7 +34,9 @@ export function scenarioDeadlineMs(scenario: Scenario, durationSeconds: number):
  * minutes of launch, attach and cleanup, and per scenario two 25 s setup
  * deadlines, clock calibration and its own workload deadline.
  */
-export function benchmarkTimeoutMs(options: BrowserStreamOptions): number {
+export function benchmarkTimeoutMs(
+  options: Pick<BrowserStreamOptions, "profile" | "scenario" | "runs" | "duration">,
+): number {
   const profiles = options.profile === "all" ? 3 : 1;
   const selected = scenarios.filter(
     (scenario) => options.scenario === "all" || options.scenario === scenario,

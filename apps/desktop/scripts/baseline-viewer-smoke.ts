@@ -81,7 +81,7 @@ function project(message: BrowserServerMessage): BrowserServerMessage | undefine
     ].includes(message.type)
   )
     return;
-  return browserViewerMessage(message, viewerVersion);
+  return browserViewerMessage(message, viewerVersion) ?? undefined;
 }
 const bundle = process.env.OPENSTEER_VIEWER_SMOKE_BUNDLE;
 if (!bundle) throw new Error("Missing viewer fixture bundle.");

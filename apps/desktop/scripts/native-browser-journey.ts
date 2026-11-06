@@ -10,6 +10,7 @@ import { z } from "zod";
 import {
   journeySteps,
   passkeyJourneySteps,
+  popupJourneySteps,
   JourneyResultSchema,
 } from "./native-browser-journey-contract.js";
 import { homedir } from "node:os";
@@ -24,8 +25,11 @@ assert.match(
   "Refusing native input outside the VM",
 );
 const passkeys = process.argv.includes("--passkeys");
+const popups = process.argv.includes("--popups");
 const selection = {
-  ids: new Set(Object.keys(passkeys ? passkeyJourneySteps : journeySteps)),
+  ids: new Set(
+    Object.keys(passkeys ? passkeyJourneySteps : popups ? popupJourneySteps : journeySteps),
+  ),
   noSerial: false,
   args: [],
 };
@@ -94,6 +98,28 @@ try {
     ],
     "swift-capture-build",
   );
+  if (popups) {
+    assert.equal(
+      process.env.VITE_BROWSER_PRESENTATION,
+      "h264",
+      "Build the renderer with VITE_BROWSER_PRESENTATION=h264 before popup qualification",
+    );
+    const root = process.env.ELECTRON_OVERRIDE_DIST_PATH;
+    assert(root, "Popup journey requires the staged qualified Electron distribution");
+    const hashes: Record<string, string> = {};
+    for (const relative of [
+      "Contents/MacOS/Electron",
+      "Contents/Frameworks/Electron Framework.framework/Versions/A/Electron Framework",
+    ]) {
+      hashes[relative] = createHash("sha256")
+        .update(await readFile(path.join(root, "Electron.app", relative)))
+        .digest("hex");
+    }
+    artifacts.json("popup-executable.json", {
+      path: path.join(root, "Electron.app/Contents/MacOS/Electron"),
+      hashes,
+    });
+  }
   const electron: unknown = createRequire(path.join(desktop, "package.json"))("electron");
   assert.equal(typeof electron, "string");
   const revision = (await runFile("git", ["rev-parse", "HEAD"], { cwd: desktop })).stdout.trim();
@@ -164,7 +190,11 @@ try {
       electron as string,
       [
         path.join(import.meta.dirname, "electron-native-browser-child.js"),
-        ...(passkeys ? ["--passkeys", ...(id === "notice" ? ["--passkeys-notice"] : [])] : []),
+        ...(passkeys
+          ? ["--passkeys", ...(id === "notice" ? ["--passkeys-notice"] : [])]
+          : popups
+            ? ["--popups"]
+            : []),
       ],
       {
         cwd: desktop,

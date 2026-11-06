@@ -5,6 +5,7 @@ import { createId } from "@opensteer/core";
 import type { RunnerAuxiliaryStream } from "@opensteer/orchestration";
 import {
   RunnerAuxiliaryFrameFenceSchema,
+  runnerIntegrationsProtocolVersion,
   type DisplayStreamId,
   type HostIntegrationsOperation,
 } from "@opensteer/protocol";
@@ -50,7 +51,7 @@ export async function macHub(
       modules: {
         integrations: {
           platform: "darwin",
-          protocolVersion: 5,
+          protocolVersion: runnerIntegrationsProtocolVersion,
           computerUseVersion: 2,
           ownerViewVersion: 3,
           macWindowVideoVersion: 1,

@@ -1,3 +1,10 @@
+import { BrowserPopupStore } from "../host/browser-popup.js";
+import {
+  BrowserSurfaceIdSchema,
+  DisplayStreamIdSchema,
+  type BrowserPopupState,
+  type BrowserPopupRef,
+} from "@opensteer/protocol";
 /** Raster page fixtures used by targeted mock viewers without browser APIs. */
 const frames: Readonly<Record<string, string>> = {
   "Your reading list":
@@ -25,4 +32,96 @@ const frames: Readonly<Record<string, string>> = {
 };
 export function mockBrowserPageImage(title: string): string {
   return frames[title] ?? frames["New tab"]!;
+}
+
+/** The mock uses the same transient store and answer contract as live viewers. */
+export function mockBrowserPopups() {
+  const live = new Map<
+    string,
+    { ref: BrowserPopupRef; state: BrowserPopupState; refuse: boolean }
+  >();
+  const key = (session: string, surface: string) => JSON.stringify([session, surface]);
+  const store = new BrowserPopupStore((session, surface, command) => {
+    const popup = live.get(key(session, surface));
+    if (command.type === "input.control") {
+      if (popup)
+        store.receive(session, {
+          type: "browser.input.control",
+          surfaceId: popup.ref.surfaceId,
+          streamId: popup.ref.streamId,
+          state: command.action === "acquire" ? "self" : "available",
+        });
+      return;
+    }
+    if (!popup) return;
+    if (command.type === "popup.answer" || command.type === "popup.cancel") {
+      const outcome =
+        command.type === "popup.cancel" ? "canceled" : popup.refuse ? "refused" : "applied";
+      store.receive(session, {
+        ...popup.ref,
+        type: "browser.popup.result",
+        operationId: command.operationId,
+        outcome,
+      });
+      if (outcome !== "refused") {
+        store.receive(session, {
+          type: "browser.popup.closed",
+          ...popup.ref,
+          reason: outcome === "applied" ? "applied" : "canceled",
+        });
+        live.delete(key(session, surface));
+      }
+    }
+  });
+  return {
+    store,
+    dispose() {
+      live.clear();
+      store.dispose();
+    },
+    open(
+      session: string,
+      surface: string,
+      state: BrowserPopupState,
+      options: { supported?: boolean; refuse?: boolean } = {},
+    ) {
+      const surfaceId = BrowserSurfaceIdSchema.parse(surface),
+        streamId = DisplayStreamIdSchema.parse(`dsp_${crypto.randomUUID()}`);
+      store.negotiate(session, surface, options.supported !== false);
+      store.receive(session, {
+        type: "browser.video.attached",
+        surfaceId,
+        streamId,
+        mediaToken: "a".repeat(43),
+      });
+      store.receive(session, { type: "browser.input.control", surfaceId, streamId, state: "self" });
+      const ref = {
+        surfaceId,
+        streamId,
+        popupId: crypto.randomUUID(),
+        documentGeneration: "mock-document",
+        authorityEpoch: "mock-authority",
+        revision: "1",
+      };
+      live.set(key(session, surface), { ref, state, refuse: options.refuse ?? false });
+      store.receive(session, { type: "browser.popup.opened", ...ref, state });
+    },
+    update(session: string, surface: string, state: BrowserPopupState) {
+      const popup = live.get(key(session, surface));
+      if (!popup) return;
+      popup.state = state;
+      popup.ref = { ...popup.ref, revision: String(BigInt(popup.ref.revision) + 1n) };
+      store.receive(session, { type: "browser.popup.updated", ...popup.ref, state });
+    },
+    disappear(session: string, surface: string) {
+      const popup = live.get(key(session, surface));
+      if (popup)
+        store.receive(session, {
+          type: "browser.popup.closed",
+          ...popup.ref,
+          reason: "interrupted",
+        });
+      live.delete(key(session, surface));
+    },
+  };
 }

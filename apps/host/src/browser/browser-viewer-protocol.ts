@@ -19,10 +19,21 @@ export function browserViewerMessage(
   passkeys?: "native" | "notice",
   consumerToken?: string,
   popups = false,
-): BrowserServerMessage {
+  popupFollow = false,
+): BrowserServerMessage | null {
+  if (
+    !popups &&
+    (message.type.startsWith("browser.popup.") || message.type === "browser.input.control")
+  )
+    return null;
+  if (!popups && message.type === "browser.guarded-click.result") {
+    const { reason: _reason, hostReason: _hostReason, ...baseline } = message;
+    return baseline;
+  }
   if (message.type === "browser.snapshot") {
     const {
       navigationAttributionVersion: _navigationAttributionVersion,
+      popupVersion: _popupVersion,
       editingVersion: _editingVersion,
       clipboard: _clipboard,
       passkeys: _passkeys,
@@ -39,8 +50,9 @@ export function browserViewerMessage(
         : editing === 1
           ? { ...baseline, editingVersion: 1 }
           : baseline;
+    if (popups) message = { ...message, popupVersion: 1 };
     if (passkeys) message = { ...message, passkeys, passkeyConsumerToken: consumerToken };
-    if (popups) message = { ...message, consumerToken };
+    if (popupFollow) message = { ...message, consumerToken };
   }
   if (message.type !== "browser.snapshot" && message.type !== "browser.surfaces.changed")
     return message;

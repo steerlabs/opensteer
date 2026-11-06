@@ -1,3 +1,4 @@
+import type { BrowserVideoHub, BrowserVideoBinding } from "./browser-video-hub.js";
 import { OpensteerError, type RunnerId } from "@opensteer/core";
 import { sameProfileBinding } from "@opensteer/database";
 import type { RunnerAuxiliaryStream } from "@opensteer/orchestration";
@@ -116,6 +117,7 @@ interface RoutedChannel {
 }
 
 interface RunnerBrowserRuntimeRouterOptions {
+  readonly video?: () => BrowserVideoHub | undefined;
   readonly now?: () => number;
   readonly registry: RunnerBrowserRegistry;
   readonly requestTimeoutMs?: number;
@@ -135,6 +137,7 @@ interface RunnerBrowserRuntimeRouterOptions {
  * Host has already given up on.
  */
 export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver {
+  readonly #video: (() => BrowserVideoHub | undefined) | undefined;
   readonly #channels = new Map<BrowserChannelId, RoutedChannel>();
   readonly #generationByPlacement = new Map<string, number>();
   readonly #leaseByPlacement = new Map<string, PlacementCapabilityLease>();
@@ -155,6 +158,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
   readonly #onDeletionsChanged: RunnerBrowserRuntimeRouterOptions["onDeletionsChanged"];
 
   constructor(options: RunnerBrowserRuntimeRouterOptions) {
+    this.#video = options.video;
     this.#localProfiles = options.localProfiles;
     this.#onDeletionsChanged = options.onDeletionsChanged;
     this.#now = options.now ?? Date.now;
@@ -215,6 +219,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       sharedControl: browser.sharedControl === 1,
       passkeys: browser.passkeys === 1,
       editing: browser.editing,
+      popups: browser.popups,
       clipboard: browser.editing === 1 || browser.clipboard === true,
       targetControl: browser.targetControl === 1,
       navigationVersion: browser.navigationVersion === 1,
@@ -238,6 +243,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     if (this.#closed) return;
     this.#closed = true;
     this.#unsubscribe();
+    this.#video?.()?.close();
     const error = new Error("The browser relay router is closed.");
     for (const pending of this.#pending.values()) {
       clearTimeout(pending.timer);
@@ -323,6 +329,27 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       };
       channel = routedChannel;
       this.#channels.set(channelId, routedChannel);
+      const hub = this.#video?.();
+      if (hub) {
+        const binding: BrowserVideoBinding = {
+          channelId,
+          fence: () => routedChannel.placementLease.fence,
+          capability: () => routedChannel.placementLease.capability,
+          current: () => {
+            try {
+              this.#assertCurrentConnection(routedChannel);
+              return this.#channels.get(channelId) === routedChannel;
+            } catch {
+              return false;
+            }
+          },
+          send: async (operation) => {
+            this.#assertCurrentConnection(routedChannel);
+            await this.#registry.send(runnerId, operation);
+          },
+        };
+        connection.video = { hub, binding };
+      }
       activePlacementLease.channels.add(channelId);
       const attached = await this.#request(runnerId, stream.fence, {
         capability: activePlacementLease.capability,
@@ -660,6 +687,16 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       return;
     }
 
+    if (message.type === "browser.video.state") {
+      const channel = this.#requireChannel(stream, message.channelId, message.capability);
+      if (channel.connection.video)
+        channel.connection.video.hub.state(
+          channel.connection.video.binding,
+          message.streamId,
+          message.state,
+        );
+      return;
+    }
     if (message.type === "browser.server-message") {
       const channel = this.#requireChannel(stream, message.channelId, message.capability);
       channel.connection.acceptServerMessage(message.message);
@@ -1024,6 +1061,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
 }
 
 class RunnerBrowserConnection extends EventEmitter implements BrowserRuntimeConnection {
+  video: { hub: BrowserVideoHub; binding: BrowserVideoBinding } | undefined;
   #closed = false;
   #controlBytes = 0;
   readonly #controls: Buffer[] = [];
@@ -1126,6 +1164,7 @@ class RunnerBrowserConnection extends EventEmitter implements BrowserRuntimeConn
   acceptClose(code: number, reason: string): void {
     if (this.#closed) return;
     this.#closed = true;
+    if (this.video) this.video.hub.retire(this.video.binding);
     this.readyState = WebSocket.CLOSED;
     this.#controls.length = 0;
     this.#controlBytes = 0;

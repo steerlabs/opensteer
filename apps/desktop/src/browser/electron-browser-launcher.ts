@@ -1,3 +1,5 @@
+import { opensteerOwnerAvailable } from "./opensteer-owner-contract.js";
+import { electronBrowserPresentation } from "./electron-browser-presentation.js";
 import {
   agentCdpAllowlist,
   ExecutionContextInventory,
@@ -132,6 +134,10 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
   };
   #preparation: Promise<void> | undefined;
   #nativeProfilesAvailable = false;
+
+  get popupVersion(): 1 | undefined {
+    return opensteerOwnerAvailable ? 1 : undefined;
+  }
 
   get nativeProfilesAvailable(): boolean {
     return this.#nativeProfilesAvailable;
@@ -871,6 +877,7 @@ class ElectronBrowserContext implements BrowserContext {
 }
 
 class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
+  readonly presentation?: import("@opensteer/browser-runtime-core").BrowserPresentationPort;
   #cursor: import("@opensteer/protocol/browser").BrowserCursor = "default";
   readonly #cursorListeners = new Set<
     (cursor: import("@opensteer/protocol/browser").BrowserCursor | null) => void
@@ -960,6 +967,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     timing?: PageOpenTiming,
   ) {
     this.view = view;
+    if (opensteerOwnerAvailable) this.presentation = electronBrowserPresentation(view.webContents);
     this.initialLoad = initialLoad;
     this.#restingHost = host;
     this.#webContents = view.webContents;

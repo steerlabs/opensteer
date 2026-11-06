@@ -1,3 +1,6 @@
+import { PhoneDisplayDecoder } from "../phone-display-media.js";
+import type { BrowserVideoFrame } from "@opensteer/client/host";
+import { browserVideoFrameView } from "@opensteer/client/host/browser-video";
 import type {
   BrowserFrameStore,
   BrowserFrameView,
@@ -42,6 +45,7 @@ const bindings = new WeakMap<
   }
 >();
 export interface BrowserCanvasOptions {
+  readonly acceleration?: HardwareAcceleration;
   readonly preservePixels?: boolean;
   /** Inactive presenters observe authorization only, without decoding or frame credit. */
   readonly active?: boolean;
@@ -62,6 +66,16 @@ export function attachBrowserCanvas(
   allowUpscale = false,
   options: BrowserCanvasOptions = {},
 ): () => void {
+  if (source.video?.selected())
+    return attachBrowserVideoCanvas(
+      source,
+      sessionId,
+      surfaceId,
+      canvas,
+      presented,
+      allowUpscale,
+      options,
+    );
   const scope = source.scope ?? source;
   let targets = scopes.get(scope);
   if (!targets) {
@@ -502,4 +516,189 @@ function pictureKey(frame: BrowserFrameView): string {
     h.rasterWidth,
     h.rasterHeight,
   ]);
+}
+
+/** H.264 has its own presented record; input never reads last-received or React metadata. */
+const videoDecoderStats = new WeakMap<HTMLCanvasElement, PhoneDisplayDecoder["stats"]>();
+export function browserVideoDecoderStats(canvas: HTMLCanvasElement) {
+  return videoDecoderStats.get(canvas) ?? null;
+}
+const drawnVideo = new WeakMap<
+  HTMLCanvasElement,
+  {
+    header: import("@opensteer/protocol").BrowserVideoFrameHeader;
+    rect: { left: number; top: number; width: number; height: number };
+  }
+>();
+export function sampleBrowserVideo(canvas: HTMLCanvasElement, clientX: number, clientY: number) {
+  const shown = drawnVideo.get(canvas);
+  if (!shown) return null;
+  const { header } = shown;
+  const rect = canvas.getBoundingClientRect();
+  if (
+    rect.width <= 0 ||
+    rect.height <= 0 ||
+    clientX < rect.left ||
+    clientY < rect.top ||
+    clientX >= rect.right ||
+    clientY >= rect.bottom
+  )
+    return null;
+  if (rect.width !== shown.rect.width || rect.height !== shown.rect.height) return null;
+  const crop = header.presentation.rasterCrop;
+  return {
+    header,
+    rect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
+    point: {
+      x: crop.x + ((clientX - rect.left) * crop.width) / rect.width,
+      y: crop.y + ((clientY - rect.top) * crop.height) / rect.height,
+    },
+  };
+}
+function attachBrowserVideoCanvas(
+  source: BrowserFrameStore,
+  sessionId: string,
+  surfaceId: string,
+  canvas: HTMLCanvasElement,
+  presented: (frame: BrowserFrameView) => void,
+  allowUpscale: boolean,
+  options: BrowserCanvasOptions,
+): () => void {
+  const video = source.video!;
+  let disposed = false;
+  let recoveries = 0;
+  let decoder: PhoneDisplayDecoder<BrowserVideoFrame> | null = null;
+  let waiting: BrowserVideoFrame[] = [];
+  let latest: { picture: VideoFrame; frame: BrowserVideoFrame } | null = null;
+  let scheduled: number | null = null;
+  const clear = () => {
+    decoder?.reset();
+    latest?.picture.close();
+    latest = null;
+    for (const frame of waiting) frame.done();
+    waiting = [];
+    drawnVideo.delete(canvas);
+    drawn.delete(canvas);
+    if (scheduled !== null) cancelAnimationFrame(scheduled);
+    scheduled = null;
+    canvas.getContext("2d")?.clearRect(0, 0, canvas.width, canvas.height);
+  };
+  const draw = () => {
+    scheduled = null;
+    if (disposed || !latest) return;
+    const { header } = latest.frame;
+    const crop = header.presentation.rasterCrop;
+    canvas.width = crop.width;
+    canvas.height = crop.height;
+    const context = canvas.getContext("2d", { alpha: false });
+    if (!context) return;
+    context.drawImage(
+      latest.picture,
+      crop.x,
+      crop.y,
+      crop.width,
+      crop.height,
+      0,
+      0,
+      crop.width,
+      crop.height,
+    );
+    const view = browserVideoFrameView(surfaceId, header);
+    // Canvas pixels and their input identity change in this same synchronous operation.
+    layoutBrowserCanvas(canvas, view, allowUpscale);
+    const stage = canvas.parentElement;
+    if (stage)
+      video.budget(
+        sessionId,
+        surfaceId,
+        stage.clientWidth * devicePixelRatio,
+        stage.clientHeight * devicePixelRatio,
+      );
+    const rect = canvas.getBoundingClientRect();
+    drawnVideo.set(canvas, {
+      header,
+      rect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
+    });
+    drawn.set(canvas, view);
+    recoveries = 0;
+    video.presented(sessionId, surfaceId, header);
+    presented(view);
+    canvas.dispatchEvent(new Event(browserPicturePresentedEvent, { bubbles: true }));
+  };
+  const unframe = video.onFrame(sessionId, surfaceId, (frame) => {
+    if (disposed || options.active === false) {
+      frame.done();
+      return;
+    }
+    if (decoder) decoder.push(frame);
+    else if (waiting.length < 4) waiting.push(frame);
+    else {
+      frame.done();
+      for (const pending of waiting) pending.done();
+      waiting = [];
+      video.keyframe(sessionId, surfaceId);
+    }
+  });
+  const unstate = source.subscribe(
+    sessionId,
+    () => {
+      const state = video.state(sessionId, surfaceId);
+      if (state?.state === "stopped" || state?.state === "failed") clear();
+    },
+    surfaceId,
+  );
+  // Browser hardware decoders can buffer a lone AU despite optimizeForLatency.
+  // Select a low-delay decoder before admission; never feed fake wake-up frames.
+  const selected = options.acceleration ?? "prefer-software";
+  const supported =
+    typeof VideoDecoder === "undefined"
+      ? Promise.resolve(null)
+      : VideoDecoder.isConfigSupported({
+          codec: "avc1.42C01F",
+          hardwareAcceleration: selected,
+          optimizeForLatency: true,
+        }).then(
+          (result) => (result.supported ? selected : null),
+          () => null,
+        );
+  void supported.then((acceleration) => {
+    if (disposed) return;
+    if (acceleration === null) {
+      clear();
+      video.failed(sessionId, surfaceId, "unsupported");
+      return;
+    }
+    decoder = new PhoneDisplayDecoder<BrowserVideoFrame>({
+      acceleration,
+      onLost: () => {
+        if (++recoveries >= 3) {
+          clear();
+          video.failed(sessionId, surfaceId, "decoder");
+        } else video.keyframe(sessionId, surfaceId);
+      },
+      onPicture: (picture, frame) => {
+        if (disposed || frame.replayed) {
+          picture.close();
+          return;
+        }
+        latest?.picture.close();
+        latest = { picture, frame };
+        scheduled ??= requestAnimationFrame(draw);
+      },
+    });
+    videoDecoderStats.set(canvas, decoder.stats);
+    for (const frame of waiting) decoder.push(frame);
+    waiting = [];
+  });
+  const resize = observeResize([canvas.parentElement ?? canvas], () => {
+    if (latest) scheduled ??= requestAnimationFrame(draw);
+  });
+  return () => {
+    disposed = true;
+    unframe();
+    unstate();
+    resize();
+    clear();
+    decoder?.close();
+  };
 }

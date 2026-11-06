@@ -987,6 +987,11 @@ export class ReconnectingHostConnection {
         runtimeId: bridge.runtimeId,
         url: bridge.url,
       }),
+      {
+        hostOrigin: this.#config.hostUrl,
+        mode: this.#config.mode,
+        ...(this.#config.controlCaPath ? { controlCaPath: this.#config.controlCaPath } : {}),
+      },
     );
     return {
       attach: (stream) => relay.attach(stream),

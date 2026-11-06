@@ -1,3 +1,4 @@
+import { MediaForwarder } from "@opensteer/shared/mediaForwarder";
 import {
   DisplayAckSchema,
   displayMaxEnvelopeBytes,
@@ -53,6 +54,7 @@ interface Entry {
   readonly deadline: number;
   readonly displayProfile: boolean;
   sources: readonly DisplaySource[];
+  forwarding?: MediaForwarder<{ type: "display.ack"; sequence: number }>;
   data: WebSocket | null;
   media: WebSocket | null;
   closed: boolean;
@@ -352,13 +354,28 @@ export class MacWindowVideoRelay {
       maxPayload: 16 * 1_024,
     });
     entry.data = data;
+    entry.forwarding = new MediaForwarder({
+      maxBytes: 8 * displayMaxEnvelopeBytes,
+      writable: (bytes) =>
+        data.readyState === WebSocket.OPEN &&
+        data.bufferedAmount + bytes <= displayMaxEnvelopeBytes,
+      send: (bytes) =>
+        data.send(bytes, { binary: true }, (error) => {
+          if (error) this.#close(entry, "data-send-error");
+        }),
+      admit: (ack) => {
+        if (entry.media?.readyState !== WebSocket.OPEN) throw new Error("Native media ended");
+        entry.media.send(JSON.stringify(ack));
+      },
+      failed: () => this.#fail(entry, "capture-failed"),
+    });
     data.on("error", () => this.#close(entry, "data-socket-error"));
     data.on("close", () => this.#close(entry, "data-socket-close"));
     data.on("message", (raw, binary) => {
       try {
         if (binary) throw Error("JSON display credit required");
         const ack = DisplayAckSchema.parse(JSON.parse(rawDataBuffer(raw).toString("utf8")));
-        if (entry.media?.readyState === WebSocket.OPEN) entry.media.send(JSON.stringify(ack));
+        entry.forwarding?.ack(ack);
       } catch {
         this.#fail(entry, "capture-failed");
       }
@@ -408,20 +425,7 @@ export class MacWindowVideoRelay {
         const bytes = rawDataBuffer(raw);
         const frame = decodeDisplayMediaFrame(bytes);
         if (frame.header.streamId !== entry.id || entry.closed || entry.terminal) return;
-        if (
-          data.readyState !== WebSocket.OPEN ||
-          data.bufferedAmount + bytes.byteLength > displayMaxEnvelopeBytes
-        ) {
-          this.#ended(
-            entry,
-            data.readyState !== WebSocket.OPEN ? "data-socket-not-open" : "buffer-limit",
-          );
-          this.#fail(entry, "capture-failed");
-          return;
-        }
-        data.send(bytes, { binary: true }, (error) => {
-          if (error) this.#close(entry, "data-send-error");
-        });
+        entry.forwarding?.forward(frame.header.sequence, bytes);
       } catch {
         this.#fail(entry, "capture-failed");
       }
@@ -459,6 +463,7 @@ export class MacWindowVideoRelay {
       height: 0,
       rotation: 0,
     }).catch(() => this.#close(entry));
+    entry.forwarding?.close();
     entry.media?.terminate();
     void this.#computerUse
       .videoRequest("display.stop", { streamId: entry.id }, Date.now() + 5_000)
@@ -478,6 +483,7 @@ export class MacWindowVideoRelay {
     this.#ended(entry, reason);
     entry.closed = true;
     this.#streams.delete(entry.id);
+    entry.forwarding?.close();
     entry.media?.terminate();
     entry.data?.terminate();
     const released = this.#computerUse

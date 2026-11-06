@@ -67,6 +67,7 @@ interface Target {
   readonly surfaceId: string;
   state: BrowserEditingState;
   readonly listeners: Set<() => void>;
+  privateMode: boolean;
   active: {
     onWritten: (items: readonly EditingClipboardPayloadItem[]) => void;
     onError?: ((message: string) => void) | undefined;
@@ -117,6 +118,7 @@ export class BrowserEditingStore {
           : empty,
         listeners: new Set(),
         active: null,
+        privateMode: false,
       };
       this.#targets.set(key, target);
     }
@@ -158,9 +160,11 @@ export class BrowserEditingStore {
     version: 1 | 2 | undefined,
     surfaceId?: string,
     clipboard?: boolean,
+    privateMode = false,
   ): void {
-    const abilities =
-      version === 1 || (version === 2 && clipboard === true)
+    const abilities = privateMode
+      ? baseline
+      : version === 1 || (version === 2 && clipboard === true)
         ? full
         : version === 2
           ? textClipboard
@@ -171,6 +175,7 @@ export class BrowserEditingStore {
     }
     for (const target of this.#targets.values()) {
       if (target.sessionId !== sessionId || (surfaceId && target.surfaceId !== surfaceId)) continue;
+      target.privateMode = privateMode;
       this.#set(target, {
         ...empty,
         negotiated: version !== undefined,
@@ -179,6 +184,7 @@ export class BrowserEditingStore {
     }
     if (surfaceId) {
       const target = this.#target(sessionId, surfaceId);
+      target.privateMode = privateMode;
       this.#set(target, {
         ...empty,
         negotiated: version !== undefined,
@@ -203,6 +209,16 @@ export class BrowserEditingStore {
         (operation.kind === "copy" || operation.kind === "cut" || operation.kind === "paste"))
     )
       return this.#legacy(target, operation, send);
+    if (target.privateMode && operation.kind === "compose")
+      throw new Error(
+        "Live composition is not supported in this view. Commit text on your device.",
+      );
+    if (
+      target.privateMode &&
+      operation.kind === "edit" &&
+      (operation.edit.before || operation.edit.after)
+    )
+      throw new Error("This view cannot apply verified text replacements.");
     switch (operation.kind) {
       case "key":
         send({
@@ -457,6 +473,14 @@ export class BrowserEditingStore {
     for (const [id, pending] of this.#pending)
       if (pending.target === target) this.#fail(id, new Error(message));
   }
+  /** Replacement media stays on this control socket, so no new snapshot renegotiates editing. */
+  mediaEnded(sessionId: string, surfaceId: string): void {
+    const target = this.#targets.get(JSON.stringify([sessionId, surfaceId]));
+    if (!target) return;
+    this.#cancel(target, "The browser viewer disconnected.");
+    const { negotiated, abilities } = target.state;
+    this.#set(target, { ...empty, negotiated, abilities });
+  }
   disconnect(sessionId: string, surfaceId?: string): void {
     if (!surfaceId) this.#versions.delete(sessionId);
     for (const target of this.#targets.values()) {
@@ -477,6 +501,8 @@ export class BrowserEditingStore {
     send: (command: BrowserCommand) => void,
   ): Promise<ViewerClipboardResult | undefined> {
     const surfaceId = BrowserSurfaceIdSchema.parse(target.surfaceId);
+    if (target.privateMode && (operation.kind === "copy" || operation.kind === "cut"))
+      throw new Error("Copy and Cut are not supported in this view.");
     const platform = this.legacyPlatform(target.sessionId);
     const chord = (
       key: string,

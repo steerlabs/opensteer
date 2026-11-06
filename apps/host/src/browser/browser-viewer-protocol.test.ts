@@ -27,7 +27,26 @@ it("projects passkey fields only to opted-in viewers while preserving old snapsh
       undefined,
       undefined,
       "e2799da2-9fe9-438e-a160-47e275ee2703",
+      false,
       true,
     ),
   ).toMatchObject({ consumerToken: "e2799da2-9fe9-438e-a160-47e275ee2703" });
+});
+
+it("drops popup extensions for watch and old viewers, including coarse click extensions", () => {
+  const ref = {
+    surfaceId: "page",
+    streamId: "dsp_00000000-0000-4000-8000-000000000001",
+    documentGeneration: "d",
+    authorityEpoch: "a",
+    popupId: "p",
+    revision: "1",
+  };
+  const event = BrowserServerMessageSchema.parse({
+    type: "browser.popup.opened",
+    ...ref,
+    state: { kind: "select", multiple: false, rtl: false, items: [] },
+  });
+  expect(browserViewerMessage(event)).toBeNull();
+  expect(browserViewerMessage(event, undefined, undefined, undefined, true)).toEqual(event);
 });

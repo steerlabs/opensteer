@@ -15,6 +15,7 @@ interface IssueBrowserAttachTicketInput {
   readonly operationExpiresAt?: string;
   readonly remainingBudgetMs?: number;
   readonly passkeys?: 1;
+  readonly popupVersion?: 1;
   readonly navigationVersion?: 1;
   readonly initialNavigation?: BrowserAttachTicketClaims["initialNavigation"];
   readonly navigationAttributionVersion?: 1;
@@ -120,6 +121,7 @@ export class BrowserAttachTicketSigner {
     const claims: BrowserAttachTicketClaims = BrowserAttachTicketClaimsSchema.parse({
       access: input.access,
       ...(input.passkeys === 1 ? { passkeys: 1 } : {}),
+      ...(input.popupVersion === 1 ? { popupVersion: 1 } : {}),
       ...(input.editingVersion
         ? {
             editingVersion: input.editingVersion,

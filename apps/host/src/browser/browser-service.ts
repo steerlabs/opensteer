@@ -1,3 +1,9 @@
+import {
+  browserPopupJsonBytes,
+  type BrowserPopupServerMessage,
+  type DisplayStreamId,
+} from "@opensteer/protocol";
+import type { BrowserVideoHub, BrowserVideoBinding } from "./browser-video-hub.js";
 import type { AdministrationCommandIdentity } from "@opensteer/database";
 import type { ResourceAccessInput } from "@opensteer/database";
 import { RunPlaceRecorder } from "../agents/run-place-recorder.js";
@@ -151,6 +157,10 @@ export class BrowserCdpConnectionEnded extends Error {
  * control only the Host itself issues, so it is never relayed from a consumer.
  */
 const consumerMessageTypes: ReadonlySet<BrowserClientMessage["type"]> = new Set([
+  "input.guarded-click",
+  "input.control",
+  "popup.answer",
+  "popup.cancel",
   "cursor.query",
   "cursor.reset",
   "input.command",
@@ -441,6 +451,8 @@ export interface BrowserUsageCredit {
 }
 
 export interface BrowserRuntimeConnection {
+  readonly video?:
+    { readonly hub: BrowserVideoHub; readonly binding: BrowserVideoBinding } | undefined;
   readonly initialPage?: InitialPageReady | undefined;
   readonly readyState: number;
   close(code?: number, reason?: string): void;
@@ -477,6 +489,7 @@ export interface BrowserRuntimeTarget {
   readonly captureRegion?: boolean;
   readonly rasterDemand?: boolean;
   readonly passkeys?: boolean;
+  readonly popups?: 1 | undefined;
   readonly editing?: 1 | 2 | undefined;
   readonly clipboard?: boolean | undefined;
   /** The computer whose Runner relays this Runtime, as this Deployment names it. */
@@ -574,6 +587,7 @@ interface BrowserServiceOptions {
   readonly history?: BrowserHistoryStore;
   readonly onHistoryChanged?: (ownerId: UserId, profileId: BrowserProfileId) => void;
   readonly passkeys?: boolean;
+  readonly popups?: 1 | undefined;
   readonly passkeyOwnOrigins?: () => readonly string[];
   readonly onProfilesChanged?: (ownerId: UserId, workspaceId: WorkspaceId) => void;
   readonly workspaceTabs?: WorkspaceTabStore;
@@ -1969,7 +1983,6 @@ export class BrowserService {
               code: "conflict",
               reason: staleBrowserTabInventoryReason,
               message: "The browser tabs changed. Review them before closing.",
-              cause: error,
             });
           throw error;
         });
@@ -3325,6 +3338,7 @@ export class BrowserService {
       readonly mode: BrowserConsumerMode;
       readonly passkeys?: PasskeyMode | undefined;
       readonly popups?: boolean | undefined;
+      readonly popupFollow?: boolean | undefined;
       readonly editing?: 1 | 2 | undefined;
       /**
        * Whether the login that opened the socket is still signed in. Read once,
@@ -3381,9 +3395,10 @@ export class BrowserService {
         detachAuth,
         options.editing,
         options.passkeys,
-        options.popups === true,
+        options.popupFollow === true,
         ownerId,
         options.signedIn,
+        options.popups,
       );
     } catch (error) {
       detachAuth();
@@ -3677,6 +3692,7 @@ export class BrowserService {
         : {}),
       access: "read-write",
       ...(target.passkeys && this.#passkeys ? { passkeys: 1 } : {}),
+      ...(target.popups === 1 ? { popupVersion: 1 } : {}),
       ...(target.navigationVersion ? { navigationVersion: 1 } : {}),
       ...(target.navigationAttributionVersion ? { navigationAttributionVersion: 1 } : {}),
       ...(target.popupFollowVersion ? { popupFollowVersion: 1 } : {}),
@@ -4491,6 +4507,16 @@ class HostedBrowserBroker {
    * arriving while an import is outstanding cannot be taken for an export's.
    */
   readonly #pendingStateImports = new Map<string, PendingStateImport>();
+  readonly #controllers = new Map<
+    string,
+    {
+      outlet: BrowserConsumerOutlet;
+      streamId: DisplayStreamId;
+      viewerSlot: string;
+      generation: number;
+    }
+  >();
+  readonly #controllerChanges = new Set<string>();
   #commandTail = Promise.resolve();
   #runtimeFrameTail = Promise.resolve();
   #stateImportTail = Promise.resolve();
@@ -4729,9 +4755,10 @@ class HostedBrowserBroker {
     onClose: () => void,
     editing: 1 | 2 | undefined = undefined,
     passkeys: PasskeyMode | undefined = undefined,
-    popups: boolean,
+    popupFollow: boolean,
     userId: UserId,
     signedIn: () => Promise<boolean>,
+    popups = false,
   ): Promise<BrowserConsumerAttachment> {
     if (this.#settled) throw new OpensteerError({ code: "conflict", message: "Browser closed." });
     if (!this.#snapshot || !this.#runtimeReady) {
@@ -4744,7 +4771,10 @@ class HostedBrowserBroker {
     outlet = new BrowserConsumerOutlet(peer, mode, stillVisible, () => {
       onClose();
       const wasSubscribed = outlet.subscription !== null;
+      this.#revokeController(outlet);
       this.#consumers.delete(peer.id);
+      const video = this.#socket.video;
+      video?.hub.remove(outlet.clipboardToken);
       this.#passkeys?.refresh();
       if (
         outlet.mode === "control" &&
@@ -4761,9 +4791,15 @@ class HostedBrowserBroker {
       }
     });
     outlet.userId = userId;
+    outlet.popups = popups && mode === "control" && this.#snapshot.popupVersion === 1;
     outlet.passkeys = this.passkeys ? passkeys : undefined;
-    outlet.popups = popups && mode === "control";
-    outlet.authorized = async () => (await stillVisible()) && (await signedIn());
+    outlet.popupFollow = popupFollow && mode === "control";
+    outlet.authorized = () =>
+      withTimeout(
+        (async () => (await stillVisible()) && (await signedIn()))(),
+        consumerAccessRecheckMs,
+        { timeoutError: () => new Error("Browser authorization check timed out.") },
+      );
     this.#consumers.set(peer.id, outlet);
     try {
       const version = this.#snapshot.editingVersion;
@@ -4779,6 +4815,7 @@ class HostedBrowserBroker {
             outlet.passkeys,
             outlet.clipboardToken,
             outlet.popups,
+            outlet.popupFollow,
           ),
         ),
       );
@@ -5066,8 +5103,8 @@ class HostedBrowserBroker {
     let decoded: unknown;
     try {
       decoded = JSON.parse(frame.toString("utf8"));
-    } catch (error) {
-      throw new Error("Browser Runtime sent invalid JSON.", { cause: error });
+    } catch {
+      throw new Error("Browser Runtime sent invalid JSON.");
     }
     if (
       !this.sharedControl &&
@@ -5083,7 +5120,64 @@ class HostedBrowserBroker {
         dialog: { ...olderBrowserDialogSchema.parse(decoded.dialog), id: randomUUID() },
       };
     }
-    const message = BrowserServerMessageSchema.parse(decoded);
+    const parsedMessage = BrowserServerMessageSchema.safeParse(decoded);
+    if (!parsedMessage.success) throw new Error("Invalid browser runtime message.");
+    const message = parsedMessage.data;
+    if (message.type.startsWith("browser.popup.") || message.type === "browser.input.control") {
+      if (message.type === "browser.input.control") return false;
+      if (
+        !("surfaceId" in message) ||
+        !("streamId" in message) ||
+        !("producerId" in message) ||
+        !("viewerSlot" in message) ||
+        !("inputGeneration" in message) ||
+        !message.surfaceId
+      )
+        return false;
+      const record = this.#controllers.get(message.surfaceId);
+      if (
+        !record ||
+        record.streamId !== message.streamId ||
+        record.outlet.clipboardToken !== message.producerId ||
+        record.viewerSlot !== message.viewerSlot ||
+        record.generation !== message.inputGeneration
+      )
+        return false;
+      const outlet = record.outlet;
+      const surfaceId = message.surfaceId;
+      const {
+        producerId: _producer,
+        viewerSlot: _slot,
+        inputGeneration: _generation,
+        ...payload
+      } = message;
+      outlet.sendPopup(payload as BrowserPopupServerMessage, async () => {
+        if (!(await outlet.authorized()) || !this.#controllerCurrent(surfaceId, record)) {
+          this.#revokeController(outlet);
+          return false;
+        }
+        return true;
+      });
+      return false;
+    }
+    if (message.type === "browser.guarded-click.result") {
+      if (!message.viewerSlot) return false;
+      const id = this.#socket.video?.hub.outlet(message.streamId, message.viewerSlot);
+      const consumer = id && [...this.#consumers.values()].find((c) => c.clipboardToken === id);
+      if (consumer && (await consumer.authorized())) {
+        const { viewerSlot: _slot, reason, hostReason, ...result } = message;
+        await consumer.sendText(
+          JSON.stringify({
+            ...result,
+            ...(consumer.popups
+              ? { ...(reason ? { reason } : {}), ...(hostReason ? { hostReason } : {}) }
+              : {}),
+          }),
+        );
+      }
+      return false;
+    }
+
     if (message.type === "passkey.ceremony" || message.type === "passkey.cancel") {
       if (!this.#passkeys || !this.#runtimeReady)
         throw new Error("Browser passkeys were not negotiated.");
@@ -5174,8 +5268,11 @@ class HostedBrowserBroker {
       const previousSurfaces = this.#snapshot.surfaces;
       for (const surface of previousSurfaces) {
         const next = message.surfaces.find((candidate) => candidate.id === surface.id);
-        if (!next || next.documentId !== surface.documentId)
+        if (!next || next.documentId !== surface.documentId) {
           this.#passkeys?.documentChanged(surface.id);
+          const video = this.#socket.video;
+          if (video) video.hub.retireTarget(video.binding, surface.id);
+        }
       }
       const previousIcons = this.#durableIconRefs();
       const inventoryChanged =
@@ -5298,8 +5395,8 @@ class HostedBrowserBroker {
       )
         continue;
       if (
-        message.type === "browser.popup.opened" &&
-        (!consumer.popups || message.consumerToken !== consumer.clipboardToken)
+        message.type === "browser.popupFollow.opened" &&
+        (!consumer.popupFollow || message.consumerToken !== consumer.clipboardToken)
       )
         continue;
       if (
@@ -5382,19 +5479,15 @@ class HostedBrowserBroker {
         message.surfaceId !== this.#snapshot?.surfaces.find((surface) => surface.active)?.id
       )
         continue;
-      void consumer
-        .sendText(
-          JSON.stringify(
-            browserViewerMessage(
-              message,
-              consumer.editing,
-              consumer.passkeys,
-              consumer.clipboardToken,
-              consumer.popups,
-            ),
-          ),
-        )
-        .catch(() => undefined);
+      const projected = browserViewerMessage(
+        message,
+        consumer.editing,
+        consumer.passkeys,
+        consumer.clipboardToken,
+        consumer.popups,
+        consumer.popupFollow,
+      );
+      if (projected) void consumer.sendText(JSON.stringify(projected)).catch(() => undefined);
     }
     if (message.type === "browser.surfaces.changed" && this.#latestFrame) {
       for (const consumer of this.#consumers.values())
@@ -5430,7 +5523,185 @@ class HostedBrowserBroker {
     pending.resolve(message);
   }
 
-  #handleConsumerFrame(
+  #controllerCurrent(
+    surface: string,
+    record: {
+      outlet: BrowserConsumerOutlet;
+      streamId: DisplayStreamId;
+      viewerSlot: string;
+      generation: number;
+    },
+  ): boolean {
+    const outlet = record.outlet;
+    return (
+      !this.#settled &&
+      this.#controllers.get(surface) === record &&
+      outlet.peer.isOpen() &&
+      this.#consumers.get(outlet.peer.id) === outlet &&
+      outlet.popups &&
+      outlet.mode === "control" &&
+      outlet.subscription !== null &&
+      outlet.surfaceId === surface &&
+      outlet.videoStream === record.streamId &&
+      outlet.inputGeneration === record.generation &&
+      this.#socket.video?.hub.inputSlot(outlet.clipboardToken, record.streamId) ===
+        record.viewerSlot
+    );
+  }
+  #publishControl(surface: string, _streamId: DisplayStreamId, changing = false): void {
+    const controller = this.#controllers.get(surface);
+    for (const outlet of this.#consumers.values()) {
+      if (
+        !outlet.popups ||
+        outlet.surfaceId !== surface ||
+        outlet.subscription === null ||
+        !outlet.videoStream
+      )
+        continue;
+      void outlet
+        .sendText(
+          JSON.stringify({
+            type: "browser.input.control",
+            surfaceId: surface,
+            streamId: outlet.videoStream,
+            state: changing
+              ? "changing"
+              : !controller
+                ? "available"
+                : controller.outlet === outlet
+                  ? "self"
+                  : "other",
+          }),
+        )
+        .catch(() => outlet.close());
+    }
+  }
+  #revokeController(outlet: BrowserConsumerOutlet): void {
+    outlet.clearPopups();
+    for (const [surface, record] of this.#controllers) {
+      if (record.outlet !== outlet) continue;
+      this.#controllers.delete(surface);
+      ++outlet.inputGeneration;
+      void this.#sendCommand({
+        type: "input.control",
+        action: "release",
+        surfaceId: BrowserSurfaceIdSchema.parse(surface),
+        streamId: record.streamId,
+        producerId: outlet.clipboardToken,
+        viewerSlot: record.viewerSlot,
+        inputGeneration: record.generation,
+      }).catch(() => undefined);
+      this.#publishControl(surface, record.streamId, true);
+      // The hub retains independently authorized spectators while replacing native authority.
+      void this.#socket.video?.hub
+        .replace(record.streamId)
+        .catch(() => undefined)
+        .finally(() => this.#publishControl(surface, record.streamId));
+    }
+  }
+  async #admitPrivateInput(
+    outlet: BrowserConsumerOutlet,
+    surface: BrowserSurfaceId,
+    streamId: DisplayStreamId,
+    acquire: boolean,
+  ): Promise<boolean> {
+    const video = this.#socket.video;
+    const generation = outlet.inputGeneration;
+    const slot = video?.hub.inputSlot(outlet.clipboardToken, streamId);
+    const current = () =>
+      !this.#settled &&
+      outlet.peer.isOpen() &&
+      this.#consumers.get(outlet.peer.id) === outlet &&
+      outlet.mode === "control" &&
+      outlet.popups &&
+      this.#snapshot?.popupVersion === 1 &&
+      this.#snapshot.access === "read-write" &&
+      outlet.subscription !== null &&
+      outlet.surfaceId === surface &&
+      outlet.videoStream === streamId &&
+      outlet.inputGeneration === generation &&
+      video?.hub.inputSlot(outlet.clipboardToken, streamId) === slot &&
+      !!slot;
+    if (
+      !current() ||
+      !(await outlet.authorized()) ||
+      !current() ||
+      this.#controllerChanges.has(surface)
+    ) {
+      await outlet.sendText(
+        JSON.stringify({
+          type: "browser.error",
+          producerId: outlet.clipboardToken,
+          error: {
+            code: "conflict",
+            message: "Browser control is unavailable. Update the app or take control again.",
+            retryable: false,
+            reason: "browser-control-unavailable",
+          },
+        }),
+      );
+      return false;
+    }
+    const record = this.#controllers.get(surface);
+    if (record && record.outlet !== outlet) {
+      if (!acquire) {
+        this.#publishControl(surface, streamId);
+        return false;
+      }
+      this.#controllerChanges.add(surface);
+      this.#controllers.delete(surface);
+      record.outlet.clearPopups();
+      ++record.outlet.inputGeneration;
+      this.#publishControl(surface, streamId, true);
+      try {
+        await this.#sendCommand({
+          type: "input.control",
+          action: "release",
+          surfaceId: surface,
+          streamId,
+          producerId: record.outlet.clipboardToken,
+          viewerSlot: record.viewerSlot,
+          inputGeneration: record.generation,
+        });
+        await video!.hub.replace(streamId, {
+          producerId: outlet.clipboardToken,
+          inputGeneration: generation,
+        });
+        if (
+          this.#settled ||
+          !outlet.peer.isOpen() ||
+          outlet.inputGeneration !== generation ||
+          !(await outlet.authorized())
+        )
+          return false;
+        const replacement = outlet.videoStream;
+        const newSlot = replacement && video!.hub.slot(outlet.clipboardToken, replacement);
+        if (replacement && newSlot)
+          this.#controllers.set(surface, {
+            outlet,
+            streamId: replacement,
+            viewerSlot: newSlot,
+            generation,
+          });
+      } finally {
+        this.#controllerChanges.delete(surface);
+        this.#publishControl(surface, outlet.videoStream ?? streamId);
+      }
+      return false; // Device handoff never carries its action through replacement.
+    }
+    if (!record)
+      this.#controllers.set(surface, { outlet, streamId, viewerSlot: slot!, generation });
+    else if (
+      record.streamId !== streamId ||
+      record.viewerSlot !== slot ||
+      record.generation !== generation
+    )
+      return false;
+    this.#publishControl(surface, streamId);
+    return true;
+  }
+
+  async #handleConsumerFrame(
     outlet: BrowserConsumerOutlet,
     frame: Buffer,
     isBinary: boolean,
@@ -5451,19 +5722,18 @@ class HostedBrowserBroker {
     let decoded: unknown;
     try {
       decoded = JSON.parse(frame.toString("utf8"));
-    } catch (error) {
+    } catch {
       return Promise.reject(
         new OpensteerError({
           code: "bad_request",
           message: "Browser command is invalid JSON.",
-          cause: error,
         }),
       );
     }
     let message: BrowserClientMessage;
     try {
       message = BrowserClientMessageSchema.parse(decoded);
-    } catch (error) {
+    } catch {
       if (outlet.clipboard && outlet.mode === "control") {
         const paste = z
           .object({
@@ -5504,7 +5774,6 @@ class HostedBrowserBroker {
         new OpensteerError({
           code: "bad_request",
           message: "Browser command is invalid.",
-          cause: error,
         }),
       );
     }
@@ -5553,6 +5822,105 @@ class HostedBrowserBroker {
           message: "The engine clipboard was not negotiated.",
         }),
       );
+    // Receipts already in flight can outlive their stream; no producer holds depend on them.
+    if (message.type === "video.presented" || message.type === "video.gesture") return;
+    const refuseClick = async (
+      hostReason: "control-lost" | "access-lost" | "stream-ended" | "unavailable" = "unavailable",
+    ) => {
+      if (message.type !== "input.guarded-click") return;
+      await outlet.sendText(
+        JSON.stringify({
+          type: "browser.guarded-click.result",
+          surfaceId: message.surfaceId,
+          streamId: message.streamId,
+          gestureId: message.gestureId,
+          outcome: "refused",
+          ...(outlet.popups ? { hostReason } : {}),
+        }),
+      );
+    };
+    if (message.type === "input.guarded-click") {
+      if (
+        message.inputSequence === undefined ||
+        message.inputSequence <= outlet.guardedClientSequence
+      ) {
+        await refuseClick();
+        return;
+      }
+      outlet.guardedClientSequence = message.inputSequence;
+    }
+
+    if (
+      message.type === "video.subscribe" ||
+      message.type === "video.budget" ||
+      message.type === "video.unsubscribe"
+    ) {
+      if (message.type === "video.subscribe" && outlet.mode === "control")
+        outlet.privateInputMode = true;
+      const video = this.#socket.video;
+      if (!video || this.#snapshot?.videoVersion !== 1) {
+        if (message.type === "video.subscribe")
+          await outlet.sendText(
+            JSON.stringify({
+              type: "browser.video.state",
+              surfaceId: message.surfaceId,
+              streamId: `dsp_${randomUUID()}`,
+              state: "failed",
+              reason: "unsupported",
+            }),
+          );
+        return;
+      }
+      if (
+        (outlet.surfaceId && outlet.surfaceId !== message.surfaceId) ||
+        !(await outlet.authorized())
+      )
+        throw new Error("Browser video target is not authorized.");
+      if (message.type === "video.subscribe") {
+        const videoSurface = message.surfaceId;
+        if (!this.#snapshot.surfaces.some((s) => s.id === videoSurface)) return;
+        outlet.surfaceId = message.surfaceId;
+        outlet.subscription = "control";
+        await this.#reconcileStreaming();
+        await video.hub.add(video.binding, {
+          id: outlet.clipboardToken,
+          ended: () => this.#revokeController(outlet),
+          input: outlet.mode === "control",
+          target: { kind: "browser-tab", sessionId: this.#sessionId, surfaceId: message.surfaceId },
+          budget: message.budget,
+          authorized: () => outlet.authorized(),
+          send: async (response) => {
+            if (response.type === "browser.video.attached") outlet.videoStream = response.streamId;
+            if (
+              response.type === "browser.video.state" &&
+              (response.state === "stopped" || response.state === "failed") &&
+              outlet.videoStream === response.streamId
+            )
+              outlet.videoStream = null;
+            await outlet.sendText(JSON.stringify(response));
+            if (response.type === "browser.video.attached" && outlet.editing) {
+              const context = this.#editingContexts.get(videoSurface);
+              if (context) await outlet.sendText(JSON.stringify(context));
+            }
+          },
+        });
+        if (outlet.videoStream) this.#publishControl(message.surfaceId, outlet.videoStream);
+      } else if (message.type === "video.unsubscribe") {
+        this.#revokeController(outlet);
+        video.hub.remove(outlet.clipboardToken);
+        outlet.videoStream = null;
+        outlet.subscription = null;
+        await this.#reconcileStreaming();
+      } else if (outlet.videoStream === message.streamId) {
+        video.hub.update(
+          outlet.clipboardToken,
+          message.streamId,
+          message.budget,
+          message.focus === true,
+        );
+      }
+      return;
+    }
     if (message.type === "stream.subscribe" || message.type === "stream.unsubscribe") {
       const subscription =
         message.type === "stream.subscribe"
@@ -5607,6 +5975,7 @@ class HostedBrowserBroker {
         outlet.frameWindow === frameWindow
       )
         return Promise.resolve();
+      if (outlet.surfaceId !== surfaceId || subscription === null) this.#revokeController(outlet);
       if (
         outlet.mode === "control" &&
         outlet.subscription !== null &&
@@ -5784,6 +6153,134 @@ class HostedBrowserBroker {
       message = { ...message, targeted: outlet.surfaceId !== null };
     if (message.type === "input.cancel" && this.#snapshot?.inputLanesVersion !== 1)
       return Promise.resolve();
+    if (
+      message.type === "input.control" ||
+      message.type === "popup.answer" ||
+      message.type === "popup.cancel"
+    ) {
+      const acquiring = message.type === "input.control" && message.action === "acquire";
+      if (!acquiring && this.#controllers.get(message.surfaceId)?.outlet !== outlet) return;
+      if (!(await this.#admitPrivateInput(outlet, message.surfaceId, message.streamId, acquiring)))
+        return;
+      if (message.type === "input.control" && message.action === "release") {
+        this.#revokeController(outlet);
+        return;
+      }
+      const record = this.#controllers.get(message.surfaceId)!;
+      return this.#sendCommand({
+        ...message,
+        producerId: outlet.clipboardToken,
+        viewerSlot: record.viewerSlot,
+        inputGeneration: record.generation,
+        inputSequence: ++outlet.inputSequence,
+        inputSequenceStart: undefined,
+      });
+    }
+    if (message.type === "input.cancel" && outlet.privateInputMode) {
+      const generation = outlet.inputGeneration;
+      this.#revokeController(outlet);
+      if (outlet.inputGeneration === generation) outlet.inputGeneration++;
+      return this.#sendCommand({
+        ...message,
+        producerId: outlet.clipboardToken,
+        inputGeneration: generation,
+        inputSequence: ++outlet.inputSequence,
+        inputSequenceStart: undefined,
+      });
+    }
+    if (
+      outlet.privateInputMode &&
+      (message.type === "input.key" ||
+        message.type === "input.text" ||
+        message.type === "input.command" ||
+        message.type === "input.compose" ||
+        message.type === "clipboard.paste" ||
+        message.type === "clipboard.copy" ||
+        message.type === "clipboard.cut" ||
+        message.type === "clipboard.paste-data" ||
+        message.type === "clipboard.part")
+    ) {
+      if (!outlet.videoStream || message.streamId !== outlet.videoStream) {
+        await outlet.sendText(
+          JSON.stringify({
+            type: "browser.error",
+            error: {
+              code: "conflict",
+              retryable: false,
+              reason: "browser-control-stream-ended",
+              message: "The browser stream ended. Wait for a fresh picture.",
+            },
+          }),
+        );
+        return;
+      }
+      if (
+        !("surfaceId" in message) ||
+        message.surfaceId !== outlet.surfaceId ||
+        !(await this.#admitPrivateInput(outlet, message.surfaceId, outlet.videoStream, false))
+      )
+        return;
+      const record = this.#controllers.get(message.surfaceId)!;
+      return this.#sendCommand({
+        ...message,
+        producerId: outlet.clipboardToken,
+        streamId: record.streamId,
+        viewerSlot: record.viewerSlot,
+        inputGeneration: record.generation,
+        inputSequence: ++outlet.inputSequence,
+        inputSequenceStart: undefined,
+      });
+    }
+    if (
+      outlet.privateInputMode &&
+      (message.type === "input.pointer" || message.type === "input.wheel")
+    ) {
+      const record = this.#controllers.get(message.surfaceId);
+      if (message.type === "input.pointer" && message.action === "down") return;
+      if (
+        !outlet.videoStream ||
+        message.streamId !== outlet.videoStream ||
+        message.surfaceId !== outlet.surfaceId
+      )
+        return;
+      if (message.type === "input.pointer" && !record) return;
+      if (!(await this.#admitPrivateInput(outlet, message.surfaceId, outlet.videoStream, false)))
+        return;
+    }
+    if (message.type === "input.guarded-click") {
+      if (!(await this.#admitPrivateInput(outlet, message.surfaceId, message.streamId, false))) {
+        await refuseClick("control-lost");
+        return;
+      }
+      const video = this.#socket.video;
+      if (
+        !video ||
+        outlet.videoStream !== message.streamId ||
+        outlet.surfaceId !== message.surfaceId ||
+        !(await video.hub.allowsClick(
+          outlet.clipboardToken,
+          message.streamId,
+          message.reference,
+        )) ||
+        !video.hub.consumeClick(outlet.clipboardToken, message.streamId, message.gestureId)
+      ) {
+        await refuseClick();
+        return;
+      }
+      const viewerSlot = video.hub.slot(outlet.clipboardToken, message.streamId);
+      if (!viewerSlot) {
+        await refuseClick();
+        return;
+      }
+      return this.#sendCommand({
+        ...message,
+        producerId: outlet.clipboardToken,
+        viewerSlot,
+        inputGeneration: outlet.inputGeneration,
+        inputSequence: ++outlet.inputSequence,
+        inputSequenceStart: undefined,
+      });
+    }
     // A consumer can advance only its own generation, never choose its identity.
     if (
       message.inputGeneration !== undefined &&
@@ -6121,6 +6618,9 @@ class HostedBrowserBroker {
   ): Promise<void> {
     if (this.#finishPromise) return this.#finishPromise;
     this.#settled = true;
+    this.#controllers.clear();
+    this.#controllerChanges.clear();
+    for (const outlet of this.#consumers.values()) outlet.clearPopups();
     this.#historyNavigations.clear();
     this.#historyDocuments.clear();
     this.#historyIcons.clear();
@@ -6222,6 +6722,62 @@ const browserFrameRateEstimateMs = 10_000;
  * to avoid converting a frame-rate improvement into older pictures on screen.
  */
 export class BrowserConsumerOutlet {
+  readonly #popupQueue: {
+    message: BrowserPopupServerMessage | null;
+    current: () => Promise<boolean>;
+  }[] = [];
+  #popupSending = false;
+  #popupActive: { message: BrowserPopupServerMessage | null } | null = null;
+  clearPopups(): void {
+    if (this.#popupActive) this.#popupActive.message = null;
+    this.#popupQueue.length = 0;
+  }
+  sendPopup(message: BrowserPopupServerMessage, current: () => Promise<boolean>): void {
+    if (this.#closed || !this.popups) return;
+    if (message.type === "browser.popup.updated" || message.type === "browser.popup.closed") {
+      for (let i = this.#popupQueue.length - 1; i >= 0; i--) {
+        const before = this.#popupQueue[i]!.message;
+        if (before?.type === "browser.popup.updated" && before.popupId === message.popupId)
+          this.#popupQueue.splice(i, 1);
+      }
+    }
+    if (
+      this.#popupQueue.length >= 8 ||
+      this.#popupQueue.reduce(
+        (n, e) => n + Buffer.byteLength(JSON.stringify(e.message)),
+        Buffer.byteLength(JSON.stringify(message)),
+      ) >
+        browserPopupJsonBytes * 2
+    ) {
+      this.#end(1013, "Browser popup backlog exceeded");
+      return;
+    }
+    this.#popupQueue.push({ message, current });
+    if (!this.#popupSending) void this.#drainPopups();
+  }
+  async #drainPopups(): Promise<void> {
+    this.#popupSending = true;
+    try {
+      while (!this.#closed && this.#popupQueue.length) {
+        const entry = this.#popupQueue.shift()!;
+        this.#popupActive = entry;
+        if ((await entry.current()) && entry.message)
+          await this.sendText(JSON.stringify(entry.message));
+        entry.message = null;
+        this.#popupActive = null;
+      }
+    } catch {
+      this.#end(1013, "Browser popup delivery failed");
+    } finally {
+      if (this.#popupActive) this.#popupActive.message = null;
+      this.#popupActive = null;
+      this.#popupSending = false;
+    }
+  }
+  privateInputMode = false;
+  popups = false;
+  guardedClientSequence = -1;
+  videoStream: import("@opensteer/protocol").DisplayStreamId | null = null;
   frameWindow = false;
   #window = 1;
   #baselineDelay = Infinity;
@@ -6232,8 +6788,8 @@ export class BrowserConsumerOutlet {
   #paceTimer: NodeJS.Timeout | null = null;
   userId: UserId | null = null;
   passkeys: PasskeyMode | undefined;
-  /** Understands `browser.popup.opened`, and hears its own token for reporting native input. */
-  popups = false;
+  /** Understands `browser.popupFollow.opened`, and hears its own token for reporting native input. */
+  popupFollow = false;
   authorized: () => Promise<boolean> = async () => false;
   readonly clipboardToken = randomUUID();
   readonly legacyClipboard = new LegacyBrowserClipboard(this.clipboardToken, maxBrowserTextBytes);
@@ -6516,6 +7072,7 @@ export class BrowserConsumerOutlet {
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
+    this.clearPopups();
     this.legacyClipboard.close();
     this.legacyClipboardKeys.clear();
     this.#pending = null;

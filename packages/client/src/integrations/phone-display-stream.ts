@@ -1,3 +1,4 @@
+import { MediaReceiver, acceptMediaOrder, type MediaFrame } from "../media/display-media.js";
 import { computerAppIdentityKey } from "@opensteer/integration-core";
 import type { NativeViewerSource } from "../host/surfaces.js";
 import {
@@ -56,25 +57,7 @@ export function computerDisplayTargetKey(target: ComputerDisplayTarget): string 
 }
 
 /** One H.264 access unit, held by a view until its decoder is done with it. */
-export interface DisplayFrame {
-  /**
-   * The socket that delivered it. A new socket may join a new stream whose
-   * generations and sequences start over, so a decoder starts over with it.
-   */
-  readonly connection: number;
-  readonly header: DisplayViewerFrameHeader;
-  readonly payload: Uint8Array;
-  /**
-   * A cached frame older than its replay's `replayThrough`: decode it so the
-   * frames after it decode, but never show it, so catching up plays nothing stale.
-   */
-  readonly replayed: boolean;
-  /**
-   * The decoder took this frame off its submission queue, or the view dropped it. The Host
-   * gets the frame's credit back once every view is done; repeats are ignored.
-   */
-  done(): void;
-}
+export interface DisplayFrame extends MediaFrame {}
 
 export interface DisplaySnapshot {
   /**
@@ -144,13 +127,8 @@ interface LeaseState {
   readonly editingMessages: Set<(message: DisplayEditingMessage) => void>;
   maxLongSide: number | null;
   readonly frames: Set<(frame: DisplayFrame) => void>;
+  readonly deliver: (frame: DisplayFrame) => void;
   readonly listeners: Set<() => void>;
-}
-
-/** A delivered frame's credit, returned once no view still holds the frame. */
-interface Credit {
-  readonly sequence: number;
-  readonly holders: Set<LeaseState>;
 }
 
 interface Connection {
@@ -158,7 +136,7 @@ interface Connection {
   confirmed: boolean;
   readonly socket: WebSocketClient;
   /** Unreturned credits in stream order; the Host returns credit cumulatively. */
-  readonly credits: Credit[];
+  readonly receiver: MediaReceiver<DisplayViewerFrameHeader>;
   sequence: number;
   generation: number;
   /** The end of the replay announced on this socket, until a frame reaches it. */
@@ -331,6 +309,9 @@ export class DisplayStreams {
     }
     const current = entry;
     const lease: LeaseState = {
+      deliver: (frame) => {
+        for (const listener of lease.frames) listener(frame);
+      },
       editingMessages: new Set(),
       frames: new Set(),
       listeners: new Set(),
@@ -348,7 +329,10 @@ export class DisplayStreams {
       },
       onFrame: (listener) => {
         if (!released) lease.frames.add(listener);
-        return () => lease.frames.delete(listener);
+        return () => {
+          lease.frames.delete(listener);
+          if (!lease.frames.size) current.connection?.receiver.release(lease.deliver);
+        };
       },
       onEditingMessage: (listener) => {
         if (!released) lease.editingMessages.add(listener);
@@ -388,8 +372,7 @@ export class DisplayStreams {
         lease.listeners.clear();
         const connection = current.connection;
         if (connection) {
-          for (const credit of connection.credits) credit.holders.delete(lease);
-          this.#acknowledge(current, connection);
+          connection.receiver.release(lease.deliver);
         }
         if (current.leases.size > 0 || current.disposed) return;
         this.#close(current);
@@ -509,7 +492,10 @@ export class DisplayStreams {
       id: this.#connections++,
       confirmed: false,
       socket,
-      credits: [],
+      receiver: new MediaReceiver((sequence) => {
+        if (entry.connection === connection && socket.readyState === 1)
+          send(connection, { type: "display.ack", sequence });
+      }),
       sequence: -1,
       generation: 0,
       replayThrough: null,
@@ -601,6 +587,7 @@ export class DisplayStreams {
     entry.autoWake = false;
     if (entry.connection === connection) entry.connection = null;
     stopKeyframeRequests(connection);
+    connection.receiver.close();
     this.#forgetHeld(entry);
     if (isRetryableDisplayViewerClose(code)) {
       this.#set(entry, { closeCode: code, input: "unavailable" });
@@ -633,6 +620,7 @@ export class DisplayStreams {
     entry.connection = null;
     if (!connection) return;
     stopKeyframeRequests(connection);
+    connection.receiver.close();
     connection.socket.close(1000, "Display viewer closed");
   }
 
@@ -677,30 +665,13 @@ export class DisplayStreams {
     connection: Connection,
     { header, payload, replayed }: Extract<Received, { kind: "frame" }>,
   ): void {
-    const credit: Credit = { sequence: header.sequence, holders: new Set() };
-    connection.credits.push(credit);
-    for (const lease of entry.leases) if (lease.frames.size > 0) credit.holders.add(lease);
-    for (const lease of credit.holders) {
-      const frame: DisplayFrame = {
-        connection: connection.id,
-        header,
-        payload,
-        replayed,
-        done: () => {
-          if (credit.holders.delete(lease)) this.#acknowledge(entry, connection);
-        },
-      };
-      for (const listener of lease.frames) listener(frame);
-    }
-    this.#acknowledge(entry, connection);
-  }
-
-  #acknowledge(entry: Entry, connection: Connection): void {
-    while (connection.credits[0]?.holders.size === 0) {
-      const credit = connection.credits.shift()!;
-      if (entry.connection === connection && connection.socket.readyState === 1)
-        send(connection, { type: "display.ack", sequence: credit.sequence });
-    }
+    connection.receiver.receive(
+      connection.id,
+      header,
+      payload,
+      replayed,
+      [...entry.leases].filter((lease) => lease.frames.size > 0).map((lease) => lease.deliver),
+    );
   }
 
   #forgetHeld(entry: Entry): void {
@@ -848,11 +819,7 @@ function read(connection: Connection, data: unknown): Received {
       previousGeneration: connection.generation,
       incomingGeneration: header.generation,
     });
-  connection.replayRestarts = false;
-  connection.sequence = header.sequence;
-  connection.generation = header.generation;
-  const replayed = connection.replayThrough !== null && header.sequence < connection.replayThrough;
-  if (!replayed) connection.replayThrough = null;
+  const replayed = acceptMediaOrder(connection, header);
   return { kind: "frame", header, payload, replayed };
 }
 

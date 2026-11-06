@@ -1,3 +1,5 @@
+import { BrowserVideoRelay } from "./browser-video-relay.js";
+import type { RunnerTransportPolicy } from "./transport.js";
 import {
   type BrowserBridgeAttached,
   type ProtocolError,
@@ -49,8 +51,25 @@ export class BrowserModuleRelay {
   #authority = Symbol();
   #stream: RunnerModuleStream | undefined;
 
-  constructor(bridge: LocalBrowserRuntimeBridge) {
+  readonly #video: BrowserVideoRelay | undefined;
+  constructor(bridge: LocalBrowserRuntimeBridge, transport?: RunnerTransportPolicy) {
     this.#bridge = bridge;
+    if (transport)
+      this.#video = new BrowserVideoRelay(bridge, transport, (operation, state) => {
+        const stream = this.#stream;
+        const channel = this.#channels.get(operation.channelId);
+        if (stream && channel)
+          void this.#send({
+            ...stream.fence,
+            module: "browser",
+            capability: channel.capability,
+            channelId: operation.channelId,
+            target: operation.target,
+            streamId: operation.streamId,
+            type: "browser.video.state",
+            state,
+          }).catch(() => undefined);
+      });
   }
 
   get runtimeId(): string {
@@ -97,6 +116,7 @@ export class BrowserModuleRelay {
   }
 
   detach(): void {
+    this.#video?.close();
     this.#bridge.setPasskeysEnabled(false);
     this.#stream = undefined;
     this.#capability = undefined;
@@ -135,6 +155,30 @@ export class BrowserModuleRelay {
       } catch (error) {
         if (this.#stream !== stream) return;
         if (message.type === "browser.client-message") throw error;
+        if (
+          message.type === "browser.video.start" ||
+          message.type === "browser.video.budget" ||
+          message.type === "browser.video.keyframe" ||
+          message.type === "browser.video.stop"
+        ) {
+          await this.#send({
+            ...stream.fence,
+            module: "browser",
+            capability: message.capability,
+            channelId: message.channelId,
+            target: message.target,
+            streamId: message.streamId,
+            type: "browser.video.state",
+            state: {
+              type: "browser.video.state",
+              surfaceId: message.target.surfaceId,
+              streamId: message.streamId,
+              state: "failed",
+              reason: "unsupported",
+            },
+          });
+          return;
+        }
         await this.#send({
           ...stream.fence,
           channelId: "channelId" in message ? message.channelId : null,
@@ -146,7 +190,11 @@ export class BrowserModuleRelay {
     };
     // Process start/import never occupies the auxiliary stream's ordered input
     // dispatcher. Channel registration happens synchronously before the await.
-    if (message.type === "browser.attach" || message.type === "browser.profile.delete") {
+    if (
+      message.type === "browser.attach" ||
+      message.type === "browser.profile.delete" ||
+      message.type.startsWith("browser.video.")
+    ) {
       void handle().catch(() => undefined);
       return;
     }
@@ -167,6 +215,14 @@ export class BrowserModuleRelay {
   ): Promise<void> {
     const stream = this.#requireStream();
     switch (message.type) {
+      case "browser.video.start":
+      case "browser.video.budget":
+      case "browser.video.keyframe":
+      case "browser.video.stop":
+        this.#assertChannel(message.channelId, message.capability);
+        if (!this.#video) throw new BrowserRelayError("Browser media transport is unavailable.");
+        this.#video.handle(message);
+        return;
       case "capability.grant":
         if (
           !this.#capability ||
@@ -337,6 +393,21 @@ export class BrowserModuleRelay {
         const channel = this.#channels.get(channelId);
         const stream = this.#stream;
         if (!channel || channel !== owner || !stream) return;
+        if (message.type === "browser.video.state") {
+          const operation = this.#video?.state(channelId, message);
+          if (operation)
+            void this.#send({
+              ...stream.fence,
+              module: "browser",
+              capability: channel.capability,
+              channelId,
+              target: operation.target,
+              streamId: operation.streamId,
+              type: "browser.video.state",
+              state: message,
+            }).catch(() => undefined);
+          return;
+        }
         void this.#send({
           ...stream.fence,
           capability: channel.capability,
@@ -429,6 +500,7 @@ export class BrowserModuleRelay {
   }
 
   #removeChannel(channelId: BrowserChannelId): void {
+    this.#video?.closeChannel(channelId);
     const channel = this.#channels.get(channelId);
     if (!channel) return;
     this.#channels.delete(channelId);

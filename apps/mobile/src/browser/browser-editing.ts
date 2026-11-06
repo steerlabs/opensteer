@@ -4,7 +4,12 @@ import type { MobileClipboardPort } from "../../modules/remote-text-input/src/cl
 
 /** The shared transport owns negotiation, legacy projection and clipboard assembly. */
 export function createMobileBrowserEditing(
-  client: { readonly browserFrames?: { readonly editing?: BrowserEditingStore } },
+  client: {
+    readonly browserFrames?: {
+      readonly editing?: BrowserEditingStore;
+      readonly popups?: import("@opensteer/client/host").BrowserPopupStore;
+    };
+  },
   session: string,
   surface: string,
   sendBaseline: (command: BrowserCommand) => boolean,
@@ -49,6 +54,13 @@ export function createMobileBrowserEditing(
     },
     send(operation: EditingOperation): boolean {
       if (!active) return false;
+      if (
+        operation.kind === "key" &&
+        client.browserFrames?.popups
+          ?.target(session, surface)
+          .consumeKey(operation.keystroke.key, operation.keystroke.code, operation.keystroke.action)
+      )
+        return true;
       admitted = true;
       const current = epoch;
       void target

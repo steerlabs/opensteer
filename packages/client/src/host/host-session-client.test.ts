@@ -16477,7 +16477,7 @@ it.each([false, true])(
       const release = client.retainBrowserViewer(sessionId, tabId, { picture: false });
       const connection = sockets.find(({ url }) => url.includes("/browser-sessions/"))!;
       expect(new URL(connection.url).searchParams.get("passkeys")).toBe(capable ? "notice" : null);
-      expect(new URL(connection.url).searchParams.get("popups")).toBe("1");
+      expect(new URL(connection.url).searchParams.get("popupFollow")).toBe("1");
       const popups: string[] = [];
       const stopPopups = client.subscribeBrowserPopups(sessionId, tabId, (id) => popups.push(id));
       connection.socket.open();
@@ -16496,7 +16496,7 @@ it.each([false, true])(
         expect(client.browserPasskeys.get(sessionId, tabId)).toEqual({ kind: "notice" });
       }
       const opened = {
-        type: "browser.popup.opened",
+        type: "browser.popupFollow.opened",
         surfaceId: "srf_00000000-0000-4000-8000-000000000099",
         consumerToken: "00000000-0000-4000-8000-000000000098",
       };

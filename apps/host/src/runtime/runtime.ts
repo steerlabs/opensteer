@@ -1,3 +1,4 @@
+import { BrowserVideoHub } from "../browser/browser-video-hub.js";
 import { RequestHold } from "../mcp/request-hold.js";
 import { ThreadNaming } from "../agents/thread-naming.js";
 import { AdministrationService } from "../administration/administration-service.js";
@@ -761,7 +762,9 @@ export async function createHostRuntime(
           );
       },
     });
+    let browserVideo: BrowserVideoHub | undefined;
     const runnerBrowsers = new RunnerBrowserRuntimeRouter({
+      video: () => browserVideo,
       registry: browserRelay,
       localProfiles,
       onDeletionsChanged: async (runnerId) => {
@@ -1471,6 +1474,7 @@ export async function createHostRuntime(
       issuancePrivateKey: keys.privateKey,
       store,
     });
+    browserVideo = new BrowserVideoHub(runnerAuthenticator);
     displayStreams = new DisplayStreamHub({
       onState: (runnerId, streamId, state) =>
         app.log.info({ runnerId, streamId, ...state }, "Phone display state changed"),
@@ -2446,6 +2450,7 @@ export async function createHostRuntime(
           sign(null, bytes, keys.privateKey).toString("base64url"),
         browserAttachPublicKeys,
         browserRelay,
+        browserVideo,
         channels: { relay: messagingRelay, service: channels },
         commands,
         computerApps,

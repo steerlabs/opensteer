@@ -621,107 +621,110 @@ export class DesktopHostTransport extends HostTransport {
         lifetimeMs: Math.max(0, Math.round(performance.now() - startedAt)),
       });
     };
-    const network = await this.openSocket({ path: parsed.path }, (socket) => {
-      if (
-        generation !== this.#socketGeneration ||
-        ownerGeneration !== (this.#ownerGenerations.get(ownerId) ?? 0)
-      ) {
-        end(4_001, "Deployment changed", "deployment-changed");
-        socket.close(4_001, "Deployment changed");
-      }
-      const invalidate = (code: number, reason: string, ownerMessage: string): void => {
-        if (closed) return;
-        deliver({ message: ownerMessage, type: "error" });
-        end(code, reason, "undeliverable");
-        socket.close(code, reason);
-      };
-      return {
-        close: (code, reason) => end(code, reason, "network"),
-        error: (message) => {
+    const network = await this.openSocket(
+      { path: parsed.path, ...(parsed.protocols ? { protocols: parsed.protocols } : {}) },
+      (socket) => {
+        if (
+          generation !== this.#socketGeneration ||
+          ownerGeneration !== (this.#ownerGenerations.get(ownerId) ?? 0)
+        ) {
+          end(4_001, "Deployment changed", "deployment-changed");
+          socket.close(4_001, "Deployment changed");
+        }
+        const invalidate = (code: number, reason: string, ownerMessage: string): void => {
           if (closed) return;
-          if (
-            !deliver({ message: boundedMessage(message) || "Host socket failed.", type: "error" })
-          )
-            invalidate(
-              consumerUnavailableCloseCode,
-              "Client unavailable",
-              "The client could not receive this frame.",
-            );
-        },
-        message: (data) => {
-          if (closed) return;
-          if (browser && !admitted && typeof data === "string") {
-            let message: unknown;
-            try {
-              message = JSON.parse(data);
-            } catch {
-              message = null;
-            }
-            const snapshot = BrowserServerMessageSchema.safeParse(message);
+          deliver({ message: ownerMessage, type: "error" });
+          end(code, reason, "undeliverable");
+          socket.close(code, reason);
+        };
+        return {
+          close: (code, reason) => end(code, reason, "network"),
+          error: (message) => {
+            if (closed) return;
             if (
-              snapshot.success &&
-              snapshot.data.type === "browser.snapshot" &&
-              snapshot.data.sessionId === browser.sessionId
-            ) {
-              consumerToken =
-                snapshot.data.passkeys === "native" || snapshot.data.passkeys === "notice"
-                  ? (snapshot.data.passkeyConsumerToken ?? null)
-                  : null;
-              viewerToken = snapshot.data.consumerToken ?? null;
-              admitted = true;
-              observe("admitted");
+              !deliver({ message: boundedMessage(message) || "Host socket failed.", type: "error" })
+            )
+              invalidate(
+                consumerUnavailableCloseCode,
+                "Client unavailable",
+                "The client could not receive this frame.",
+              );
+          },
+          message: (data) => {
+            if (closed) return;
+            if (browser && !admitted && typeof data === "string") {
+              let message: unknown;
+              try {
+                message = JSON.parse(data);
+              } catch {
+                message = null;
+              }
+              const snapshot = BrowserServerMessageSchema.safeParse(message);
+              if (
+                snapshot.success &&
+                snapshot.data.type === "browser.snapshot" &&
+                snapshot.data.sessionId === browser.sessionId
+              ) {
+                consumerToken =
+                  snapshot.data.passkeys === "native" || snapshot.data.passkeys === "notice"
+                    ? (snapshot.data.passkeyConsumerToken ?? null)
+                    : null;
+                viewerToken = snapshot.data.consumerToken ?? null;
+                admitted = true;
+                observe("admitted");
+              }
             }
-          }
-          let rendererData = data;
-          if (browser && admitted && typeof data === "string") {
-            let raw: unknown = null;
-            try {
-              raw = JSON.parse(data);
-              const message = BrowserServerMessageSchema.parse(raw);
-              for (const listener of this.#browserControlListeners)
-                listener({ connectionId, ownerId, ...browser, type: "message", message });
-              // Main presents the request; the renderer learns only that its offer ended.
-              if (message.type === "browser.passkey.request")
-                rendererData = JSON.stringify({
-                  type: "browser.passkey.withdrawn",
-                  requestId: message.requestId,
-                });
-            } catch {
-              /* The renderer's existing protocol boundary reports invalid frames. */
+            let rendererData = data;
+            if (browser && admitted && typeof data === "string") {
+              let raw: unknown = null;
+              try {
+                raw = JSON.parse(data);
+                const message = BrowserServerMessageSchema.parse(raw);
+                for (const listener of this.#browserControlListeners)
+                  listener({ connectionId, ownerId, ...browser, type: "message", message });
+                // Main presents the request; the renderer learns only that its offer ended.
+                if (message.type === "browser.passkey.request")
+                  rendererData = JSON.stringify({
+                    type: "browser.passkey.withdrawn",
+                    requestId: message.requestId,
+                  });
+              } catch {
+                /* The renderer's existing protocol boundary reports invalid frames. */
+              }
+              // A malformed request still never carries its ceremony details to the renderer.
+              if (
+                rendererData === data &&
+                typeof raw === "object" &&
+                raw !== null &&
+                (raw as { type?: unknown }).type === "browser.passkey.request"
+              )
+                return;
             }
-            // A malformed request still never carries its ceremony details to the renderer.
             if (
-              rendererData === data &&
-              typeof raw === "object" &&
-              raw !== null &&
-              (raw as { type?: unknown }).type === "browser.passkey.request"
+              !deliver(
+                typeof rendererData === "string"
+                  ? { data: rendererData, type: "text" }
+                  : { data: new Uint8Array(rendererData), type: "binary" },
+              )
             )
-              return;
-          }
-          if (
-            !deliver(
-              typeof rendererData === "string"
-                ? { data: rendererData, type: "text" }
-                : { data: new Uint8Array(rendererData), type: "binary" },
-            )
-          )
-            invalidate(
-              invalidHostFrameCloseCode,
-              "Invalid Host frame",
-              "The Host sent an invalid frame.",
-            );
-        },
-        open: () => {
-          if (!closed) diagnose("desktop.host-socket.opened");
-          if (!closed && !deliver({ type: "open" }))
-            invalidate(
-              consumerUnavailableCloseCode,
-              "Client unavailable",
-              "The client could not receive this frame.",
-            );
-        },
-      };
-    }).catch((error: unknown) => {
+              invalidate(
+                invalidHostFrameCloseCode,
+                "Invalid Host frame",
+                "The Host sent an invalid frame.",
+              );
+          },
+          open: () => {
+            if (!closed) diagnose("desktop.host-socket.opened");
+            if (!closed && !deliver({ type: "open" }))
+              invalidate(
+                consumerUnavailableCloseCode,
+                "Client unavailable",
+                "The client could not receive this frame.",
+              );
+          },
+        };
+      },
+    ).catch((error: unknown) => {
       release();
       throw error;
     });

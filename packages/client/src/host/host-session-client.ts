@@ -1,3 +1,4 @@
+import { BrowserPopupStore } from "./browser-popup.js";
 import { AppTabSchema } from "@opensteer/protocol";
 import { KeyedMutationQueue } from "@opensteer/shared/mutationQueue";
 import { invalidateScheduleAnchor } from "./schedule-anchor-invalidation.js";
@@ -421,6 +422,8 @@ export type HostCapabilityReader = (options?: {
 }) => Promise<readonly HostCapability[]>;
 
 export interface HttpHostClientOptions {
+  readonly browserPresentation?: "jpeg" | "h264";
+  readonly browserPopupPresentationVersion?: 1;
   readonly passkeys?: BrowserPasskeyPort;
   /** The viewer's command platform for exact baseline shortcut projection. */
   readonly viewerPlatform?: "mac" | "pc";
@@ -448,7 +451,7 @@ export interface HttpHostClientOptions {
    * elsewhere an unopened Home would be held outside the Workspace's Thread page.
    */
   readonly prefetchHome?: boolean;
-  readonly webSocketFactory?: (url: string) => WebSocketClient;
+  readonly webSocketFactory?: (url: string, protocols?: string[]) => WebSocketClient;
 }
 
 // Keep thumbnails across remounts without retaining unbounded file bytes on phones.
@@ -536,23 +539,32 @@ export class HttpHostClient {
   readonly #tabCatalogs = new Map<string, BrowserTabCatalog>();
   readonly #placeActivity = new PlaceActivityStore();
   readonly #runPlaces = new RunPlaceStore();
+  #browserPresentation: "jpeg" | "h264" = "jpeg";
+  #popupPresentationVersion: 1 | undefined;
   readonly #targetedControl = new BrowserWatchStore(
     (sessionId, surfaceId) => this.#targetedBrowserSocket(sessionId, surfaceId, "control"),
     "control",
     (sessionId, message, surfaceId) => {
+      this.#browserPopups.receive(sessionId, message);
       this.#browserCursor.receive(sessionId, message);
       this.browserPasskeys.receive(sessionId, surfaceId, message);
-      if (message.type === "browser.popup.opened")
-        for (const listener of this.#browserPopups.get(`${sessionId}:${surfaceId}`) ?? [])
+      if (message.type === "browser.popupFollow.opened")
+        for (const listener of this.#browserPopupFollowers.get(`${sessionId}:${surfaceId}`) ?? [])
           listener(message.surfaceId);
-      if (message.type === "browser.snapshot")
+      if (message.type === "browser.snapshot") {
+        this.#browserPopups.negotiate(
+          sessionId,
+          surfaceId,
+          message.popupVersion === 1 && this.#browserPresentation === "h264",
+        );
         this.#browserEditing.negotiate(
           sessionId,
           message.editingVersion,
           surfaceId,
           message.clipboard,
+          message.popupVersion === 1 && this.#browserPresentation === "h264",
         );
-      else this.#browserEditing.receive(sessionId, message);
+      } else this.#browserEditing.receive(sessionId, message);
       if (message.type === "browser.snapshot" || message.type === "browser.surfaces.changed")
         this.#patchBrowserSession(sessionId, {
           tabs: browserTabs(message.surfaces),
@@ -565,12 +577,25 @@ export class HttpHostClient {
     },
     (attempt, unreadableFrames) => this.#retryDelay(attempt, unreadableFrames),
     () => this.#capabilities?.includes("browser-capture-region-v1") === true,
-    (sessionId, surfaceId) => {
+    (sessionId, surfaceId, reason) => {
+      if (reason === "media") {
+        this.#browserPopups.mediaEnded(sessionId, surfaceId);
+        this.#browserEditing.mediaEnded(sessionId, surfaceId);
+        return;
+      }
+      this.#browserPopups.disconnect(sessionId, surfaceId);
       this.#browserEditing.disconnect(sessionId, surfaceId);
       this.browserPasskeys.disconnect(sessionId, surfaceId);
     },
     () => this.#capabilities?.includes("browser-frame-window-v1") === true,
     () => this.#capabilities?.includes("browser-raster-demand-v1") === true,
+    {
+      selected: () => this.#browserPresentation === "h264",
+      connect: (token) =>
+        this.#webSocketFactory(this.#webSocketUrl("/v1/browser/video"), [
+          `opensteer-video.${token}`,
+        ]),
+    },
   );
   readonly #targetedWatch = new BrowserWatchStore(
     (sessionId, surfaceId) => this.#targetedBrowserSocket(sessionId, surfaceId, "watch"),
@@ -584,6 +609,13 @@ export class HttpHostClient {
     undefined,
     () => this.#capabilities?.includes("browser-frame-window-v1") === true,
     () => this.#capabilities?.includes("browser-raster-demand-v1") === true,
+    {
+      selected: () => this.#browserPresentation === "h264",
+      connect: (token) =>
+        this.#webSocketFactory(this.#webSocketUrl("/v1/browser/video"), [
+          `opensteer-video.${token}`,
+        ]),
+    },
   );
   #targetedBrowserSocket(
     sessionId: string,
@@ -606,23 +638,30 @@ export class HttpHostClient {
     if (mode === "watch") url.searchParams.set("mode", mode);
     const passkeys = this.browserPasskeys.optIn(this.#capabilities);
     if (mode === "control" && passkeys) url.searchParams.set("passkeys", passkeys);
-    if (mode === "control") url.searchParams.set("popups", "1");
+    if (mode === "control") url.searchParams.set("popupFollow", "1");
     url.searchParams.set("editing", "2");
+    if (
+      mode === "control" &&
+      this.#popupPresentationVersion === 1 &&
+      this.#browserPresentation === "h264" &&
+      this.#capabilities?.includes("browser-popups-v1")
+    )
+      url.searchParams.set("popups", "1");
     return this.#webSocketFactory(url.toString().replace(/^http/, "ws"));
   }
-  readonly #browserPopups = new Map<string, Set<(popupId: string) => void>>();
+  readonly #browserPopupFollowers = new Map<string, Set<(popupId: string) => void>>();
   readonly subscribeBrowserPopups = (
     sessionId: string,
     surfaceId: string,
     listener: (popupId: string) => void,
   ): (() => void) => {
     const key = `${sessionId}:${surfaceId}`;
-    const listeners = this.#browserPopups.get(key) ?? new Set();
+    const listeners = this.#browserPopupFollowers.get(key) ?? new Set();
     listeners.add(listener);
-    this.#browserPopups.set(key, listeners);
+    this.#browserPopupFollowers.set(key, listeners);
     return () => {
       listeners.delete(listener);
-      if (!listeners.size) this.#browserPopups.delete(key);
+      if (!listeners.size) this.#browserPopupFollowers.delete(key);
     };
   };
   readonly connectComputerDisplay = (
@@ -1066,7 +1105,7 @@ export class HttpHostClient {
   #lostFrameRereadTimer: Timer | null = null;
   readonly #refreshIntervalMs: number;
   readonly #prefetchHome: boolean;
-  readonly #webSocketFactory: (url: string) => WebSocketClient;
+  readonly #webSocketFactory: (url: string, protocols?: string[]) => WebSocketClient;
   readonly #lifecycleDisposers: (() => void)[] = [];
   readonly #socketTrustWindowMs: number;
   #network: ClientNetworkState;
@@ -1095,6 +1134,8 @@ export class HttpHostClient {
 
   readonly #viewerPlatform: "mac" | "pc" | null;
   constructor(options: HttpHostClientOptions) {
+    this.#browserPresentation = options.browserPresentation ?? "jpeg";
+    this.#popupPresentationVersion = options.browserPopupPresentationVersion;
     this.browserPasskeys = new BrowserPasskeys(options.passkeys);
     this.#viewerPlatform = options.viewerPlatform ?? null;
     this.#readCapabilities =
@@ -1177,7 +1218,8 @@ export class HttpHostClient {
     this.#refreshIntervalMs = Math.max(0, options.refreshIntervalMs ?? defaultRefreshIntervalMs);
     this.#reportRealtimeFrame = options.reportRealtimeFrame;
     this.#prefetchHome = options.prefetchHome === true;
-    this.#webSocketFactory = options.webSocketFactory ?? ((url) => new globalThis.WebSocket(url));
+    this.#webSocketFactory =
+      options.webSocketFactory ?? ((url, protocols) => new globalThis.WebSocket(url, protocols));
     this.#socketTrustWindowMs = options.lifecycle?.socketTrustWindowMs ?? socketTrustWindowMs;
     const lifecycle = options.lifecycle?.getSnapshot();
     this.#network = lifecycle?.network ?? "unknown";
@@ -1251,6 +1293,9 @@ export class HttpHostClient {
   readonly getSnapshot = (): HostSnapshot => this.#snapshot;
 
   readonly #browserCursor = new BrowserCursorStore();
+  readonly #browserPopups = new BrowserPopupStore((sessionId, surfaceId, command) =>
+    this.#targetedControl.send(sessionId, surfaceId, command),
+  );
   readonly #browserEditing = new BrowserEditingStore(
     (sessionId, surfaceId, command) => {
       if (this.#targetedControl.has(sessionId, surfaceId))
@@ -1261,8 +1306,10 @@ export class HttpHostClient {
   );
   readonly #browserPresentationScope = {};
   readonly browserFrames: BrowserFrameStore = {
+    video: this.#targetedControl.video,
     invalidationKey: this.#targetedControl.invalidationKey,
     editing: this.#browserEditing,
+    popups: this.#browserPopups,
     cursor: this.#browserCursor,
     scope: this.#browserPresentationScope,
     claim: (sessionId, surfaceId, token) => {
@@ -1294,6 +1341,7 @@ export class HttpHostClient {
     },
   };
   readonly browserWatchFrames: BrowserFrameStore = {
+    video: this.#targetedWatch.video,
     invalidationKey: this.#targetedWatch.invalidationKey,
     scope: this.#browserPresentationScope,
     claim: (sessionId, surfaceId, token) => {
@@ -3683,6 +3731,7 @@ export class HttpHostClient {
     this.#runPlaces.dispose();
     this.#targetedWatch.dispose();
     this.#targetedControl.dispose();
+    this.#browserPopups.dispose();
     this.#browserEditing.dispose();
     this.#browserFrameListeners.clear();
     this.#browserWatchFrameListeners.clear();

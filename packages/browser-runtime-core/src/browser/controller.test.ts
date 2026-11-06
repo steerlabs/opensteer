@@ -59,6 +59,108 @@ describe("BrowserController", () => {
     await ledger.start();
   });
 
+  it("keeps a replacement video owner when an old start or native stop completes late", async () => {
+    const { DisplayStreamIdSchema } = await import("@opensteer/protocol");
+    const { BrowserLocalVideoOperationSchema } = await import("@opensteer/protocol/browser-relay");
+    const old = Promise.withResolvers<{
+      producerStreamId: string;
+      capacity: { backend: "software"; maxSessions: number; maxFps: number };
+    }>();
+    const starts: Parameters<
+      import("./browser-presentation-session.js").BrowserPresentationPort["start"]
+    >[0][] = [];
+    const port: import("./browser-presentation-session.js").BrowserPresentationPort = {
+      start: vi.fn<import("./browser-presentation-session.js").BrowserPresentationPort["start"]>(
+        async (options) => {
+          starts.push(options);
+          if (starts.length === 1) return old.promise;
+          return {
+            producerStreamId: "00000000-0000-4000-8000-000000000002",
+            capacity: { backend: "software" as const, maxSessions: 2, maxFps: 15 },
+          };
+        },
+      ),
+      budget: vi.fn(async () => {}),
+      keyframe: vi.fn(async () => {}),
+      ack: vi.fn(async () => {}),
+      click: vi.fn(async () => ({ dispatched: false })),
+      stop: vi.fn(async () => {}),
+    };
+    Object.assign(page, { presentation: port });
+    const controller = createController();
+    await controller.start();
+    const operation = BrowserLocalVideoOperationSchema.parse({
+      type: "browser.video.start",
+      channelId: "bch_00000000-0000-4000-8000-000000000001",
+      target: {
+        kind: "browser-tab",
+        sessionId: validClaims().sessionId,
+        surfaceId: ledger.active()!.surface.id,
+      },
+      streamId: "dsp_00000000-0000-4000-8000-000000000001",
+      budget: { maxWidth: 128, maxHeight: 128, maxFps: 15, maxBitrate: 500000 },
+      creditWindow: 2,
+      timeoutMs: 2000,
+    });
+    if (operation.type !== "browser.video.start") throw new Error("Invalid fixture start");
+    const first = controller.video(operation, vi.fn());
+    const failed = expect(first).rejects.toThrow("old start failed");
+    try {
+      await controller.stopVideo(operation.streamId);
+      const next = {
+        ...operation,
+        streamId: DisplayStreamIdSchema.parse("dsp_00000000-0000-4000-8000-000000000003"),
+      };
+      await controller.video(next, vi.fn());
+      starts[0]!.onStopped("source-ended");
+      old.reject(new Error("old start failed"));
+      await failed;
+      await controller.video(
+        {
+          type: "browser.video.budget",
+          channelId: next.channelId,
+          target: next.target,
+          streamId: next.streamId,
+          revision: 1,
+          budget: { ...next.budget, maxBitrate: 300000 },
+        },
+        vi.fn(),
+      );
+      expect(port.budget).toHaveBeenCalledExactlyOnceWith({ ...next.budget, maxBitrate: 300000 });
+      vi.mocked(port.budget).mockRejectedValueOnce(new Error("Rate update refused"));
+      await expect(
+        controller.video(
+          {
+            type: "browser.video.budget",
+            channelId: next.channelId,
+            target: next.target,
+            streamId: next.streamId,
+            revision: 2,
+            budget: next.budget,
+          },
+          vi.fn(),
+        ),
+      ).resolves.toBeUndefined();
+      vi.mocked(port.keyframe).mockRejectedValueOnce(new Error("Key request refused"));
+      await expect(
+        controller.video(
+          {
+            type: "browser.video.keyframe",
+            channelId: next.channelId,
+            target: next.target,
+            streamId: next.streamId,
+          },
+          vi.fn(),
+        ),
+      ).resolves.toBeUndefined();
+      expect(port.stop).toHaveBeenCalledTimes(1);
+    } finally {
+      old.reject(new Error("test cleanup"));
+      await controller.close();
+      await ledger.close();
+    }
+  });
+
   it("queries cursor hints outside the mutation lane and fences canceled observations", async () => {
     const controller = createController();
     await controller.start();

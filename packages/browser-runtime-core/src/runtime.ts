@@ -46,6 +46,7 @@ const cleanupTimeoutMs = 2_000;
 const shutdownTimeoutMs = 5_000;
 export interface BrowserRuntimeOptions {
   initialViewport?: Viewport;
+  popupVersion?: 1;
   launcher: BrowserLauncher;
   maxProfileHosts?: number;
   maxSessionsPerProfile?: number;
@@ -81,6 +82,7 @@ export interface BrowserOpenTiming {
 }
 
 export interface BrowserRuntimeHealth {
+  popups?: 1;
   wireVersion: 1;
   localProfileStorage?: { storageInstanceId: string; engine: BrowserEngine };
   profileHostCount: number;
@@ -171,6 +173,21 @@ export class BrowserAttachment {
     return this.controller.handleRaw(frame);
   }
 
+  video(
+    operation: import("@opensteer/protocol/browser-relay").BrowserLocalVideoOperation,
+    send: (bytes: Uint8Array) => void,
+  ): Promise<void> {
+    return this.controller.video(operation, send);
+  }
+  videoAck(
+    streamId: import("@opensteer/protocol").DisplayStreamId,
+    sequence: number,
+  ): Promise<void> {
+    return this.controller.videoAck(streamId, sequence);
+  }
+  stopVideo(streamId: import("@opensteer/protocol").DisplayStreamId): Promise<void> {
+    return this.controller.stopVideo(streamId);
+  }
   close(): Promise<void> {
     this.closePromise ??= this.detach();
     return this.closePromise;
@@ -186,6 +203,7 @@ export class BrowserRuntime implements NativePresentationSource {
   private generation = 0;
   private readonly initialViewport: Viewport;
   private readonly launcher: BrowserLauncher;
+  private readonly popupVersion: 1 | undefined;
   private readonly maxProfileHosts: number;
   private readonly maxSessionsPerProfile: number;
   private readonly lanes = new LifecycleLanes<BrowserPartitionKey>();
@@ -238,6 +256,7 @@ export class BrowserRuntime implements NativePresentationSource {
       throw new TypeError("The initial browser viewport is invalid.");
     }
     this.launcher = options.launcher;
+    this.popupVersion = options.popupVersion;
     this.acknowledgeProfileReady = options.acknowledgeProfileReady ?? acknowledgeNativeProfileReady;
     this.onOpenTiming = options.onOpenTiming ?? (() => {});
     this.localProfilesOptions = options.localProfiles;
@@ -291,6 +310,7 @@ export class BrowserRuntime implements NativePresentationSource {
   health(): BrowserRuntimeHealth {
     return {
       wireVersion: 1,
+      ...(this.popupVersion === 1 ? { popups: 1 as const } : {}),
       ...(this.localProfileStorage
         ? {
             localProfileStorage: this.localProfileStorage,
@@ -584,7 +604,8 @@ export class BrowserRuntime implements NativePresentationSource {
       }
     };
     const verified = await wait(this.ticketVerifier.verify(ticket, { runtimeId: this.runtimeId }));
-    const claims = options.passkeys ? verified : { ...verified, passkeys: undefined };
+    const supported = this.popupVersion === 1 ? verified : { ...verified, popupVersion: undefined };
+    const claims = options.passkeys ? supported : { ...supported, passkeys: undefined };
     if (claims.wireVersion !== 1)
       throw new BrowserRuntimeError(
         "conflict",

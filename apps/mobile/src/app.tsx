@@ -1,3 +1,4 @@
+import { browserPopupNative } from "../modules/browser-popup/index.js";
 import { AiSharing } from "@opensteer/client/ai-sharing";
 import { AiSharingProvider } from "./ui/ai-sharing.js";
 import { readAiSharing } from "./client/ai-sharing-storage.js";
@@ -234,6 +235,7 @@ function mobileClient(): MobileRoot {
           initialHome: configuration.mockHome,
         })
       : createNetworkHostPort({
+          ...(browserPopupNative() ? { browserPopupPresentationVersion: 1 as const } : {}),
           browserPreferencesStorage: createBrowsingChoiceStorage(
             new File(`${root}${storeName}/browsing-choices.json`),
           ),

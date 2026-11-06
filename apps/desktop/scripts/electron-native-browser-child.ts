@@ -1,3 +1,4 @@
+import { serveBrowserPopupFixture } from "./native-browser-popup-fixture.js";
 import { DesktopPasskeyRequests } from "../src/passkeys/passkey-requests.js";
 import { createNativePasskeyJourney } from "./test-support/native-passkey-journey.js";
 import { passkeyProviderCertificate } from "@opensteer/browser-runtime-core/test-support/passkey-provider";
@@ -92,6 +93,7 @@ const resources = path.resolve(
   z.string().min(1).parse(process.env.OPENSTEER_PERSONAL_E2E_RESOURCES),
 );
 const passkeyJourney = process.argv.includes("--passkeys");
+const popupJourney = process.argv.includes("--popups");
 const passkeyNoticeOnly = process.argv.includes("--passkeys-notice");
 if (passkeyJourney)
   app.commandLine.appendSwitch("host-resolver-rules", "MAP *.example.test 127.0.0.1");
@@ -99,7 +101,9 @@ const selection = {
   ids: new Set(
     passkeyJourney
       ? [passkeyNoticeOnly ? "passkeys-notice" : "passkeys"]
-      : Object.keys(journeySteps),
+      : popupJourney
+        ? ["popups"]
+        : Object.keys(journeySteps),
   ),
   noSerial: false,
 };
@@ -179,7 +183,7 @@ function observeRuntimeMessage(
   try {
     const parsed = BrowserClientMessageSchema.safeParse(value);
     if (!parsed.success) {
-      artifacts.event("compat.runtimeInvalid", { boundary, error: parsed.error.message });
+      artifacts.event("compat.runtimeInvalid", { boundary });
       return;
     }
     const message = parsed.data;
@@ -402,7 +406,8 @@ async function main(): Promise<void> {
     ],
   });
   const server = createServer((request, response) => {
-    if (serveDownloadFixture(request, response)) return;
+    if (serveDownloadFixture(request, response) || serveBrowserPopupFixture(request, response))
+      return;
     if (request.url?.startsWith("/conversation-engine/")) {
       const metadataOnly =
         request.method === "GET" && request.url === "/conversation-engine/v1/models";

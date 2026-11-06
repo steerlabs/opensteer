@@ -85,6 +85,7 @@ export async function startLocalBrowserRuntime(
         `${JSON.stringify({ event: "browser.session.start.failed", correlationId, stage, error: profileFailureDiagnostic(error) })}\n`,
       ),
     launcher,
+    ...(launcher.popupVersion === 1 ? { popupVersion: 1 as const } : {}),
     // Native data and its exclusive root ownership outlive enrollment slots.
     ...profileStorage,
     runtimeId: options.runtimeId,

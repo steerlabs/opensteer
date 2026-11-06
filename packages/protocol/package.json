@@ -6,6 +6,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./browser-popup": "./src/browser-popup.ts",
     "./browser": "./src/browser.ts",
     "./browser-sources": "./src/browser-sources.ts",
     "./browser-relay": "./src/browser-relay.ts",
@@ -19,7 +20,9 @@
     "./passwords-broker": "./src/passwords-broker.ts",
     "./passkeys": "./src/passkeys.ts",
     "./dictation-helper": "./src/dictation-helper.ts",
-    "./voice": "./src/voice.ts"
+    "./voice": "./src/voice.ts",
+    "./browser-video": "./src/browser-video.ts",
+    "./test-support/browser-video": "./src/browser-video.test-support.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

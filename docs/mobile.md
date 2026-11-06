@@ -112,6 +112,21 @@ can hold pictures until more input arrives, and
 continuous playback does not qualify a lone or final still picture. Remote editing follows the
 [editing contract](../packages/client/src/editing/README.md).
 
+H.264 browser selection needs `browserPresentationIdentityVersion` in the installed PhoneDisplay
+binary; an older binary shows an update-required state. The native presenter carries each decoder
+output's identity into Metal presentation on iOS or owned texture latching on Android, and touches
+sample that record, never the most recently received frame or React state. The iOS Simulator can't
+prove drawable presentation and advertises the identity as unsupported, so physical iOS qualification
+is required. The last presented picture keeps its input identity until the next one presents;
+background, revocation and target replacement clear both.
+
+Browser popups belong to the exact visible tab and its control admission. iOS and Android present
+native pickers, and datalist suggestions sit above the typing proxy and keep its keyboard open.
+Backgrounding, hiding, switching tabs or Deployments, losing media or control, and sign-out dismiss
+the native draft and shared state, and late native callbacks can't answer a new admission. This needs
+a rebuilt binary; choices can disclose more than the picture
+([certified control](browser-sessions.md#certified-h264-control)).
+
 Expo Go lacks the native modules and OAuth scheme, so use a custom client. Face ID confirmation,
 native H.264 viewing, Opensteer Apps (`react-native-webview`) and notification previews need a
 rebuilt binary; a JavaScript update cannot add them. Expo's generated UIKit scene lifecycle is the

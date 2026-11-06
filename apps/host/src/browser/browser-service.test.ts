@@ -46,6 +46,7 @@ import {
 } from "./browser-local-profiles.js";
 import {
   BrowserService,
+  type BrowserRuntimeConnection,
   type ActiveBrowserProfileGrant,
   type BrowserConsumerPeer,
   type BrowserProfileRecord,
@@ -56,6 +57,9 @@ import {
   type BrowserUsageCredit,
   type BrowserUsePage,
 } from "./browser-service.js";
+import { browserVideoFixture } from "./browser-video.test-support.js";
+import { once } from "node:events";
+import { browserPresentationRef } from "@opensteer/protocol";
 import { BrowserAttachTicketSigner } from "./browser-ticket.js";
 
 const editingEvidenceRoot =
@@ -77,6 +81,8 @@ function runnerTarget(options: {
   readonly sharedControl?: boolean;
   readonly targetControl?: boolean;
   readonly rasterDemand?: boolean;
+  readonly video?: BrowserRuntimeConnection["video"];
+  readonly popups?: 1;
   readonly editing?: boolean | 1 | 2 | undefined;
   readonly clipboard?: boolean | undefined;
   readonly workspaceTabRestoreVersion?: boolean;
@@ -123,6 +129,7 @@ function runnerTarget(options: {
                   },
                 });
               }
+              if (options.video) Object.assign(socket, { video: options.video });
               installWebSocketLiveness(socket);
               return socket;
             },
@@ -130,6 +137,7 @@ function runnerTarget(options: {
             navigationVersion: options.navigationVersion ?? false,
             navigationAttributionVersion: options.navigationAttributionVersion ?? false,
             passkeys: options.passkeys === true,
+            ...(options.popups === 1 ? { popups: 1 as const } : {}),
             cdpBoundary: true,
             workspaceTabRestoreVersion: options.workspaceTabRestoreVersion ?? false,
             sharedControl: options.sharedControl ?? true,
@@ -137,6 +145,7 @@ function runnerTarget(options: {
             clipboard: options.clipboard,
             targetControl: options.targetControl ?? false,
             rasterDemand: options.rasterDemand ?? false,
+            ...(options.video ? { video: options.video } : {}),
             placementKey: `runner:${runnerId}:${runtimeId}`,
             runtimeId,
           }
@@ -189,6 +198,316 @@ afterEach(async () => {
 });
 
 describe("BrowserService", () => {
+  it("addresses popup payloads only to their live controller and fences a delayed old owner after handoff", async () => {
+    const diagnostics = (["info", "warn", "error", "debug", "log"] as const).map((method) =>
+      vi.spyOn(console, method).mockImplementation(() => {}),
+    );
+    const f = await browserVideoFixture();
+    cleanups.push(f.close);
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+      inputLanes: true,
+      video: true,
+    });
+    const ownerId = createId("user"),
+      workspaceId = createId("workspace");
+    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+    const profile = await repository.createBrowserProfile({ ownerId, name: "Popups" });
+    const service = freshService({
+      keys,
+      runtime,
+      repository,
+      popups: 1,
+      video: { hub: f.hub, binding: f.binding },
+    });
+    const opened = await service.start({ ownerId, workspaceId, profileId: profile.id });
+    const peers = [
+      new RecordingPeer("popup-A"),
+      new RecordingPeer("popup-B"),
+      new RecordingPeer("popup-watch"),
+    ];
+    const attachments = await Promise.all(
+      peers.map((peer, i) =>
+        service.attach(ownerId, opened.session.id, peer, {
+          ...consumerOptions(),
+          mode: i === 2 ? "watch" : "control",
+          popups: true,
+        }),
+      ),
+    );
+    const send = (i: number, message: Record<string, unknown>) =>
+      attachments[i]!.handle(Buffer.from(JSON.stringify(message)), false);
+    const budget = { maxWidth: 128, maxHeight: 128, maxFps: 15, maxBitrate: 1000000 };
+    for (let i = 0; i < 3; i++)
+      await send(i, { type: "video.subscribe", surfaceId: "page-1", budget });
+    const admissions = peers.map((p) =>
+      p
+        .text()
+        .map((m) => BrowserServerMessageSchema.parse(m))
+        .find((m) => m.type === "browser.video.attached")!,
+    );
+    const media = admissions.map(
+      (a) => new WebSocket(`${f.origin}/v1/browser/video`, [`opensteer-video.${a.mediaToken}`]),
+    );
+    cleanups.push(async () => {
+      for (const socket of media) socket.terminate();
+    });
+    await Promise.all(
+      media.map((socket) => once(socket, "open", { signal: AbortSignal.timeout(2000) })),
+    );
+    const beforeRelease = f.operations.length;
+    await send(1, {
+      type: "input.control",
+      action: "release",
+      surfaceId: "page-1",
+      streamId: admissions[1]!.streamId,
+    });
+    expect(f.operations.slice(beforeRelease)).toEqual([]);
+    expect(runtime.receivedCommands().filter((m) => m.type === "input.control")).toEqual([]);
+    await send(0, {
+      type: "input.control",
+      action: "acquire",
+      surfaceId: "page-1",
+      streamId: admissions[0]!.streamId,
+    });
+    await vi.waitFor(
+      () => expect(runtime.receivedCommands().some((m) => m.type === "input.control")).toBe(true),
+      { timeout: 2000 },
+    );
+    const controller = runtime.receivedCommands().find((m) => m.type === "input.control")!;
+    const ref = {
+      surfaceId: "page-1",
+      streamId: admissions[0]!.streamId,
+      documentGeneration: "d",
+      authorityEpoch: "a",
+      popupId: "p",
+      revision: "9007199254740993",
+    };
+    const canary = "synthetic-controller-secret-canary";
+    const state = {
+      kind: "select",
+      multiple: false,
+      rtl: false,
+      items: [
+        {
+          id: "opaque",
+          kind: "option",
+          label: canary,
+          enabled: true,
+          selected: false,
+          rtl: false,
+          directionOverride: false,
+        },
+      ],
+    };
+    const event = {
+      ...ref,
+      type: "browser.popup.opened",
+      state,
+      producerId: controller.producerId,
+      viewerSlot: controller.viewerSlot,
+      inputGeneration: controller.inputGeneration,
+    };
+    runtime.sendServer(event);
+    await vi.waitFor(
+      () => expect(peers[0]!.text().some((m) => m.type === "browser.popup.opened")).toBe(true),
+      { timeout: 2000 },
+    );
+    expect(peers[0]!.text().find((m) => m.type === "browser.popup.opened")).not.toHaveProperty(
+      "producerId",
+    );
+    for (const peer of peers.slice(1)) expect(JSON.stringify(peer.text())).not.toContain(canary);
+    const beforeOtherRelease = f.operations.length;
+    await send(1, {
+      type: "input.control",
+      action: "release",
+      surfaceId: "page-1",
+      streamId: admissions[1]!.streamId,
+    });
+    expect(f.operations).toHaveLength(beforeOtherRelease);
+    const before = runtime.receivedCommands().length;
+    await send(1, {
+      ...ref,
+      type: "popup.answer",
+      answer: { itemIds: ["opaque"] },
+      operationId: randomUUID(),
+      producerId: controller.producerId,
+      viewerSlot: controller.viewerSlot,
+      inputGeneration: controller.inputGeneration,
+    });
+    expect(
+      runtime
+        .receivedCommands()
+        .slice(before)
+        .some((m) => m.type === "popup.answer"),
+    ).toBe(false);
+    await expect(
+      send(2, { ...ref, type: "popup.cancel", operationId: randomUUID() }),
+    ).rejects.toThrow("Watch");
+    await send(1, {
+      type: "input.control",
+      action: "acquire",
+      surfaceId: "page-1",
+      streamId: ref.streamId,
+    });
+    const oldCount = peers[0]!.text().filter((m) => m.type === "browser.popup.opened").length;
+    runtime.sendServer({ ...event, popupId: "late-old" });
+    runtime.sendServer({
+      type: "browser.error",
+      error: { code: "conflict", message: "popup-fence-marker", retryable: false },
+    });
+    await vi.waitFor(
+      () =>
+        expect(
+          peers[1]!
+            .text()
+            .map((m) => BrowserServerMessageSchema.parse(m))
+            .some((m) => m.type === "browser.error" && m.error.message === "popup-fence-marker"),
+        ).toBe(true),
+      { timeout: 2000 },
+    );
+    expect(peers[0]!.text().filter((m) => m.type === "browser.popup.opened")).toHaveLength(
+      oldCount,
+    );
+    expect(peers[1]!.text().some((m) => m.type.startsWith("browser.popup."))).toBe(false);
+    expect(peers[2]!.text().some((m) => m.type.startsWith("browser.popup."))).toBe(false);
+    expect(f.operations.filter((m) => m.type === "browser.video.stop")).toHaveLength(1);
+    runtime.sendServer({ ...event, state: { ...state, kind: canary } });
+    await vi.waitFor(() => expect(diagnostics[2]).toHaveBeenCalled(), { timeout: 2000 });
+    expect(JSON.stringify(diagnostics.flatMap((spy) => spy.mock.calls))).not.toContain(canary);
+    for (const spy of diagnostics) spy.mockRestore();
+    for (const attachment of attachments) attachment.close();
+  });
+
+  it("keeps browser control connected through stale video messages, double taps, generation changes and capacity refusals", async () => {
+    const f = await browserVideoFixture();
+    cleanups.push(f.close);
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+      inputLanes: true,
+      video: true,
+    });
+    const ownerId = createId("user"),
+      workspaceId = createId("workspace");
+    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+    const profile = await repository.createBrowserProfile({ ownerId, name: "Video" });
+    const service = freshService({
+      keys,
+      runtime,
+      repository,
+      video: { hub: f.hub, binding: f.binding },
+      popups: 1,
+    });
+    const opened = await service.start({ ownerId, workspaceId, profileId: profile.id });
+    const peer = new RecordingPeer("video-control");
+    const attachment = await service.attach(ownerId, opened.session.id, peer, {
+      ...consumerOptions(),
+      popups: true,
+    });
+    const send = (message: Record<string, unknown>) =>
+      attachment.handle(Buffer.from(JSON.stringify(message)), false);
+    const messages = () => peer.textFrames.map((s) => JSON.parse(s));
+    await send({
+      type: "video.subscribe",
+      surfaceId: "page-1",
+      budget: { maxWidth: 128, maxHeight: 128, maxFps: 15, maxBitrate: 1000000 },
+    });
+    const attached = messages().find((m) => m.type === "browser.video.attached");
+    const media = new WebSocket(`${f.origin}/v1/browser/video`, [
+      `opensteer-video.${attached.mediaToken}`,
+    ]);
+    cleanups.push(async () => {
+      media.terminate();
+    });
+    await once(media, "open", { signal: AbortSignal.timeout(2000) });
+    const source = await f.source();
+    source.send(1);
+    await vi.waitFor(() => expect(source.acks, "picture admitted by Host").toHaveLength(1), {
+      timeout: 2000,
+    });
+    const reference = browserPresentationRef(f.header(1));
+    const click = {
+      type: "input.guarded-click",
+      surfaceId: "page-1",
+      streamId: attached.streamId,
+      reference,
+      gestureId: randomUUID(),
+      point: { x: 64, y: 32 },
+      button: "left",
+      modifiers: 0,
+      inputSequence: 1,
+      inputGeneration: 1,
+    };
+    await send(click);
+    await vi.waitFor(
+      () =>
+        expect(
+          runtime.receivedCommands().some((m) => m.type === "input.guarded-click"),
+          "advanced input generation accepted",
+        ).toBe(true),
+      { timeout: 2000 },
+    );
+    await send({ ...click, inputSequence: 2 });
+    expect(messages().at(-1)).toMatchObject({
+      type: "browser.guarded-click.result",
+      outcome: "refused",
+    });
+    await send({
+      type: "video.budget",
+      surfaceId: "page-1",
+      streamId: "dsp_00000000-0000-4000-8000-000000000009",
+      budget: { maxWidth: 128, maxHeight: 128, maxFps: 15, maxBitrate: 1000000 },
+    });
+    await send({
+      type: "video.gesture",
+      surfaceId: "page-1",
+      streamId: attached.streamId,
+      reference,
+      gestureId: randomUUID(),
+      phase: "begin",
+    });
+    await send({
+      type: "video.gesture",
+      surfaceId: "page-1",
+      streamId: attached.streamId,
+      reference,
+      gestureId: randomUUID(),
+      phase: "begin",
+    });
+    f.hub.retireTarget(f.binding, "page-1");
+    await send({
+      type: "video.presented",
+      surfaceId: "page-1",
+      streamId: attached.streamId,
+      reference,
+    });
+    await send({ ...click, inputSequence: 3, gestureId: randomUUID() });
+    expect(messages().at(-1)).toMatchObject({
+      type: "browser.guarded-click.result",
+      outcome: "refused",
+    });
+    const full = vi.spyOn(f.hub, "add").mockImplementationOnce(async (_binding, viewer) => {
+      await viewer.send({
+        type: "browser.video.state",
+        surfaceId: viewer.target.surfaceId,
+        streamId: attached.streamId,
+        state: "failed",
+        reason: "capacity",
+      });
+    });
+    await send({
+      type: "video.subscribe",
+      surfaceId: "page-1",
+      budget: { maxWidth: 128, maxHeight: 128, maxFps: 15, maxBitrate: 1000000 },
+    });
+    expect(messages().at(-1)).toMatchObject({ state: "failed", reason: "capacity" });
+    expect(peer.closed).toBeNull();
+    full.mockRestore();
+    attachment.close();
+  });
+
   it("bounds queued database admission and fences it when the owner retries after timeout", async () => {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
@@ -2709,7 +3028,7 @@ describe("BrowserService", () => {
     });
     const attach = async (
       name: string,
-      options: { readonly mode?: "control" | "watch"; readonly popups?: boolean },
+      options: { readonly mode?: "control" | "watch"; readonly popupFollow?: boolean },
     ) => {
       const peer = new RecordingPeer(name);
       await service.attach(ownerId, opened.session.id, peer, {
@@ -2720,15 +3039,15 @@ describe("BrowserService", () => {
       if (snapshot.type !== "browser.snapshot") throw new Error("Missing snapshot");
       return { peer, token: snapshot.consumerToken };
     };
-    const actor = await attach("popup-actor", { popups: true });
-    const bystander = await attach("popup-bystander", { popups: true });
+    const actor = await attach("popup-actor", { popupFollow: true });
+    const bystander = await attach("popup-bystander", { popupFollow: true });
     const old = await attach("popup-old", {});
-    const watcher = await attach("popup-watch", { mode: "watch", popups: true });
+    const watcher = await attach("popup-watch", { mode: "watch", popupFollow: true });
     expect(old.token).toBeUndefined();
     expect(watcher.token).toBeUndefined();
 
     runtime.sendServer({
-      type: "browser.popup.opened",
+      type: "browser.popupFollow.opened",
       surfaceId: "page-2",
       consumerToken: actor.token!,
     });
@@ -2746,9 +3065,9 @@ describe("BrowserService", () => {
         ),
       );
     const popups = (viewer: { peer: RecordingPeer }) =>
-      received(viewer).filter((message) => message.type === "browser.popup.opened");
+      received(viewer).filter((message) => message.type === "browser.popupFollow.opened");
     expect(popups(actor)).toEqual([
-      { type: "browser.popup.opened", surfaceId: "page-2", consumerToken: actor.token },
+      { type: "browser.popupFollow.opened", surfaceId: "page-2", consumerToken: actor.token },
     ]);
     expect(popups(bystander)).toEqual([]);
     expect(popups(old)).toEqual([]);
@@ -4980,6 +5299,8 @@ function freshService(options: {
   readonly sharedControl?: boolean;
   readonly targetControl?: boolean;
   readonly rasterDemand?: boolean;
+  readonly video?: BrowserRuntimeConnection["video"];
+  readonly popups?: 1;
   readonly editing?: boolean | 1 | 2 | undefined;
   readonly clipboard?: boolean | undefined;
   readonly actorMetadataTimeoutMs?: number;
@@ -5009,11 +5330,13 @@ function freshService(options: {
     }),
     targetResolver: runnerTarget({
       url: options.runtime.url,
+      ...(options.video ? { video: options.video } : {}),
       navigationAttributionVersion: options.navigationAttribution ?? options.history !== undefined,
       sharedControl: options.sharedControl ?? true,
       targetControl: options.targetControl ?? false,
       rasterDemand: options.rasterDemand ?? false,
       passkeys: options.passkeys === true,
+      ...(options.popups === 1 ? { popups: 1 as const } : {}),
       editing: options.editing,
       clipboard: options.clipboard,
     }),
@@ -5850,6 +6173,7 @@ async function startFakeRuntime(
     readonly deferInitialSnapshot?: boolean;
     readonly initialDialog?: Record<string, unknown> | null;
     readonly inputLanes?: boolean;
+    readonly video?: boolean;
     readonly targetedStreaming?: boolean;
     readonly navigationAttribution?: boolean;
     readonly navigation?: boolean;
@@ -5927,6 +6251,8 @@ async function startFakeRuntime(
             ? { navigationAttributionVersion: 1 }
             : {}),
           ...(options.inputLanes ? { inputLanesVersion: 1 } : {}),
+          ...(options.video ? { videoVersion: 1 } : {}),
+          ...(claims.popupVersion === 1 ? { popupVersion: 1 } : {}),
           ...(options.targetedStreaming ? { targetedStreamingVersion: 1 } : {}),
           ...(options.editing && claims.editingVersion
             ? {

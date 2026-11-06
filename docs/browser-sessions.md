@@ -74,6 +74,42 @@ Watch, and any agent command ends a person's page-write attribution. Diagnostics
 clipboard bytes. Client adapters, the native proxies and their evidence follow the
 [editing contract](../packages/client/src/editing/README.md).
 
+## Certified H.264 control
+
+A certificate names pixels, not permission: the browser, profile, login and exact-tab checks still
+authorize each action. H.264 media uses a separate connection from browser control. A tap names the
+picture presented at contact start, and Chromium refuses evicted or out-of-date pictures. Input is
+dispatched at most once and never replayed after a refusal or an uncertain result. The patched
+Electron reports its private owner contract in `process.versions`; only an
+[exact match](../apps/desktop/src/browser/opensteer-owner-contract.ts) enables presentation and
+popups, so stock Electron and headless producers can't. An incompatible owner change bumps that
+version on both sides.
+
+Controlling a tab shares its displayed choices with that device. Select labels, displayed datalist
+suggestions and date, time and color values and constraints can hold private information outside the
+streamed rectangle. They cross the authenticated Deployment Host and reach only the initiating
+controller; other viewers get the resulting picture, never the picker, its answers or its choices.
+Select submission values and undisplayed datalist contents stay in Chromium. Account and Connect add
+no popup storage or processing.
+
+Popup state lives only in bounded, transient memory, outside Workspace events, history, agent
+context, saved views and diagnostics. Answers use the live browser socket's authority; no RPC or
+durable command can reconstruct or replay one. Disconnect, navigation, hiding or backgrounding a
+viewer revokes it. Taking control from another device replaces the private producer and briefly
+interrupts every viewer's video; it needs a fresh tap and transfers no draft or input.
+
+This mode commits text with viewer-local preedit. Live composition, verified replacements and
+unrepresented editing commands refuse visibly until a qualified native contract supplies them.
+Private keyboard input, including Space and Enter, never falls through to ordinary CDP. Taps reach
+out-of-process child frames only when each frame on the route proves its own step against the
+picture; popups opened from inside one stay refused, and never show a Mac picker. The guard refuses
+native views using device emulation, and a native pane smaller than the retained page streams but
+can't take private input. A tap made just after a page change can refuse because the picture is
+still older than the change. The viewer shows a notice and never replays it.
+
+JPEG remains an explicit qualification selection. Browser v1 uses Baseline H.264 on both encoder
+backends; Constrained High needs producer and native-decoder qualification.
+
 ## Shared viewing and previews
 
 Locality is never authority: desktop main mounts a native page only after the first Host snapshot on

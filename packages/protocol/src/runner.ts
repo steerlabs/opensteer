@@ -1255,6 +1255,13 @@ export const RunnerBrowserModuleSchema = z
       .object({ storageInstanceId: z.uuid(), engine: BrowserEngineSchema })
       .optional()
       .catch(undefined),
+    popups: z
+      .number()
+      .int()
+      .positive()
+      .transform((version): 1 | undefined => (version === 1 ? 1 : undefined))
+      .optional()
+      .catch(undefined),
     /** Page-provider contract, available only after the engine Security probe. */
     passkeys: z
       .number()

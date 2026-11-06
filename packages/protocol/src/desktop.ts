@@ -1154,6 +1154,10 @@ export const DesktopHostBinaryReadResponseSchema = desktopHostResultSchema(
 
 export const DesktopOpenHostWebSocketInputSchema = z.strictObject({
   path: DesktopHostPathSchema,
+  protocols: z
+    .array(z.string().regex(/^[A-Za-z0-9._-]{1,128}$/))
+    .max(1)
+    .optional(),
 });
 export type DesktopOpenHostWebSocketInput = z.infer<typeof DesktopOpenHostWebSocketInputSchema>;
 

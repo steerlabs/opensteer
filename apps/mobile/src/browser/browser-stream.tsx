@@ -1,3 +1,4 @@
+import { BrowserVideoStream } from "./browser-video-stream.js";
 import { BrowserSurfaceIdSchema } from "@opensteer/protocol/browser";
 import { createBrowserTouchGesture } from "@opensteer/shared/browserTouch";
 import { useBrowserPresentationWait } from "@opensteer/client/react";
@@ -127,7 +128,17 @@ const emptySlots: FrameSlots = { decoding: null, displayed: null };
  * the caller's to show, and a picture arriving is not news. Words appear only
  * while there is no picture to show.
  */
-export function BrowserStream({
+export function BrowserStream(props: BrowserStreamProps) {
+  const frames = props.interactive
+    ? props.hostClient.browserFrames
+    : props.hostClient.browserWatchFrames;
+  return frames.video?.selected() ? (
+    <BrowserVideoStream {...props} />
+  ) : (
+    <BrowserJpegStream {...props} />
+  );
+}
+function BrowserJpegStream({
   active: requestedActive,
   hostClient,
   label,
