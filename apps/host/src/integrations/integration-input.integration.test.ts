@@ -73,7 +73,8 @@ integration("input from a computer's MCP server", () => {
       presentation: {
         kind: "form",
         title: "pairing-fixture",
-        detail: "Enter the code shown on your TV",
+        agentProposed: true,
+        detail: expect.stringMatching(/^From its plugin on .+\n\nEnter the code shown on your TV$/),
       },
     });
     if (request.presentation.kind !== "form") throw new Error("Expected a secret form");
@@ -125,6 +126,47 @@ integration("input from a computer's MCP server", () => {
       },
     });
     await assertNoAnswers(s.host, request, ["7319", "6723", "13.75"]);
+  }, 60_000);
+
+  it("redacts accepted values from later presentations, results and errors on the reused client", async () => {
+    const s = await scenario();
+    const first = bounded(
+      s.platform.callTool(s.callable, {}, s.caller),
+      "First pairing did not finish",
+    );
+    await respond(s.host, await pendingInput(s.host), {
+      kind: "form",
+      answers: {
+        code: ["7319"],
+        count: ["6723"],
+        enabled: ["true"],
+        ratio: ["13.75"],
+        room: ["Living room"],
+      },
+    });
+    await first;
+    for (const mode of ["echo", "error"]) {
+      const result = await bounded(
+        s.platform.callTool(s.callable, { mode }, s.caller),
+        "Later call did not finish",
+      );
+      expect(JSON.stringify(result)).toContain("****");
+      expect(JSON.stringify(result)).not.toContain("7319");
+    }
+    const later = bounded(
+      s.platform.callTool(s.callable, { mode: "repeat" }, s.caller),
+      "Later input did not finish",
+    );
+    const request = await pendingInput(s.host);
+    expect(JSON.stringify(request.presentation)).not.toContain("7319");
+    await respond(s.host, request, { kind: "choice", optionId: "decline" });
+    await later;
+    const events = await s.host.store.database
+      .selectFrom("workspaceEvents")
+      .selectAll()
+      .where("threadId", "=", s.run.threadId)
+      .execute();
+    expect(JSON.stringify(events)).not.toContain("7319");
   }, 60_000);
 
   it.each(["decline", "cancel"] as const)(
@@ -260,12 +302,14 @@ integration("input from a computer's MCP server", () => {
     expect(toolText(ambiguous)).toContain("single active call from a Run");
     await respond(s.host, request, { kind: "choice", optionId: "decline" });
     await waiting;
-    for (const mode of ["array", "large"]) {
+    for (const mode of ["array", "large", "optional"]) {
       const result = await bounded(
         s.platform.callTool(s.callable, { mode }, s.caller),
         `Unsupported ${mode} input did not decline`,
       );
       expect(toolText(result)).toContain("decline");
+      if (mode === "optional")
+        expect(toolText(result)).toContain("Every device input field must be required");
     }
     // The SDK client refuses URL mode, which it was never offered, and forms outside the
     // elicitation schema before Opensteer's handler runs; no Request opens for them.
@@ -517,20 +561,26 @@ const { StdioServerTransport } = require(${sdk("server/stdio.js")});
 const { CallToolRequestSchema, ListToolsRequestSchema, ElicitResultSchema } = require(${sdk("types.js")});
 const server = new Server({ name: "pairing-fixture", version: "1" }, { capabilities: { tools: {} } });
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: ["ping", "pair"].map(name => ({ name, description: name, annotations: { readOnlyHint: true }, inputSchema: { type: "object" } })) }));
+let acceptedCode;
 server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
   if (params.name === "ping") return { content: [{ type: "text", text: "ready" }] };
   const mode = params.arguments?.mode;
+  if (mode === "echo") return { content: [{ type: "text", text: acceptedCode }] };
+  if (mode === "error") throw new Error("Failed " + acceptedCode);
   let properties = { code: { type: "string", title: "Pairing code", minLength: 4, maxLength: 4 }, count: { type: "integer" }, enabled: { type: "boolean" }, ratio: { type: "number" }, room: { type: "string", enum: ["Living room", "Den"] } };
   if (mode === "array") properties = { codes: { type: "array", items: { type: "string", enum: ["one"] } } };
   if (mode === "nested") properties = { code: { type: "object", properties: { value: { type: "string" } } } };
   if (mode === "large") properties = Object.fromEntries(Array.from({ length: 17 }, (_, i) => ["field" + i, { type: "string" }]));
   const input = mode === "url" ? { mode: "url", message: "Sign in", url: "https://example.test/pair", elicitationId: "pair" }
     : { message: "Enter the code shown on your TV", requestedSchema: { type: "object", properties, required: Object.keys(properties) } };
+  if (mode === "optional") input.requestedSchema.required = ["code"];
+  if (mode === "repeat") { input.message += acceptedCode; input.requestedSchema.properties = { next: { type: "string", title: "Repeat " + acceptedCode, description: "Previous " + acceptedCode } }; input.requestedSchema.required = ["next"]; }
   const options = { timeout: 180000, maxTotalTimeout: 180000 };
   const result = mode === "url"
     ? await server.request({ method: "elicitation/create", params: input }, ElicitResultSchema, options)
     : await server.elicitInput(input, options);
   if (result.action !== "accept") return { content: [{ type: "text", text: result.action + (result._meta ? " " + JSON.stringify(result._meta) : "") }] };
+  acceptedCode = result.content.code;
   const matched = JSON.stringify(result.content) === JSON.stringify({ code: "7319", count: 6723, enabled: true, ratio: 13.75, room: "Living room" });
   return { content: [{ type: "text", text: "accepted " + JSON.stringify(result.content) }], structuredContent: { [result.content.code]: "paired", matched: matched ? "yes" : "no", received: result.content } };
 });

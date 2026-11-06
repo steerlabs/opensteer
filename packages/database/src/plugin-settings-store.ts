@@ -826,6 +826,8 @@ export class PluginSettingsStore {
         "integrationServers.transport",
         "integrationServers.status",
         "integrationServers.statusDetail",
+        "integrationServers.updatedAt",
+        "integrationInstallations.updatedAt as installationUpdatedAt",
       ])
       .where(
         "integrationInstallations.pluginId",
@@ -837,7 +839,12 @@ export class PluginSettingsStore {
     return Promise.all(
       devices.map(async (plugin) => {
         const device = pluginDeviceFromManifest(plugin.manifest)!;
-        const ownServers = servers.filter((s) => s.pluginId === plugin.id);
+        // Reinstall retires omitted servers at its timestamp; a later decline is still current.
+        const ownServers = servers.filter(
+          (s) =>
+            s.pluginId === plugin.id &&
+            (s.status !== "disabled" || s.updatedAt > s.installationUpdatedAt),
+        );
         const runner = ownServers.find((s) => s.transport.type === "runner")?.transport.runnerId;
         const machine = machines.find((m) => m.id === runner);
         return {

@@ -1470,6 +1470,8 @@ export async function createHostRuntime(
       store: integrationPlatformStore,
     });
     observeIntegrationInput = (event) => integrationPlatform.inputRequests.observe(event);
+    // Before accepting installs: their data folder can precede the plugin transaction.
+    await integrationPlatform.recoverPluginData();
     await integrationPlatform.inputRequests.recover();
     for (const event of await integrationPlatformStore.computerOperations.finalize())
       publishWorkspaceEvent(event);

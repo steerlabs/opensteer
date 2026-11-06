@@ -93,3 +93,5 @@ async def pair(ctx: Context) -> str:
 The card appears in the task that called the tool, and the code reaches only the server. Never
 return or log the code. When the person can't answer in time, or the engine can't wait for a card,
 the call reports that; tell the person and try again when they're ready.
+
+Every elicitation field must be required.
