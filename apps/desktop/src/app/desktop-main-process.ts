@@ -1,6 +1,7 @@
 export interface DesktopWindowHandle {
   destroy(): void;
   focus(): void;
+  hide(): void;
   isDestroyed(): boolean;
   show(): void;
 }
@@ -80,6 +81,11 @@ export class DesktopMainProcess {
     if (!window || window.isDestroyed()) return;
     window.show();
     window.focus();
+  }
+
+  hideWindow(): void {
+    const window = this.#window;
+    if (window && !window.isDestroyed()) window.hide();
   }
 
   stop(): Promise<void> {

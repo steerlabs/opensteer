@@ -184,6 +184,7 @@ import {
 } from "@opensteer/protocol/browser-relay";
 import { BoundedAsyncInbox } from "@opensteer/shared/boundedAsyncInbox";
 import { parseHttpEndpointBaseUrl } from "@opensteer/shared/httpEndpoint";
+import { processStopTimeoutMs } from "@opensteer/shared/processControl";
 import { rawDataBuffer } from "@opensteer/shared/webSocketFrame";
 import Fastify, { LogController, type FastifyInstance, type FastifyRequest } from "fastify";
 import { createHash, randomUUID } from "node:crypto";
@@ -323,8 +324,11 @@ const maxWebSocketBufferedBytes = 8 * 1_024 * 1_024;
 const maxBrowserRelayFrameBytes = maxBrowserRelayEnvelopeBytes;
 /** How long a stopping Host lets each WebSocket finish closing before ending it. */
 const webSocketShutdownGraceMs = 2_000;
-/** How long a stopping Host lets an HTTP request in flight finish before cutting it off. */
-const httpShutdownGraceMs = 5_000;
+/**
+ * How long a stopping Host lets an HTTP request in flight finish before cutting
+ * it off, leaving time for what closes after HTTP, the database last of all.
+ */
+const httpShutdownGraceMs = processStopTimeoutMs - 3_000;
 const maxBrowserRelayQueuedBytes = 2 * maxBrowserRelayFrameBytes;
 function harnessUpdateCommandId(...parts: string[]) {
   const digest = createHash("sha256").update(parts.join("\0")).digest("hex");

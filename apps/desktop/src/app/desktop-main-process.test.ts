@@ -165,6 +165,10 @@ class TestWindow implements DesktopWindowHandle {
     this.#calls.push("window.focus");
   }
 
+  hide(): void {
+    this.#calls.push("window.hide");
+  }
+
   isDestroyed(): boolean {
     return this.#destroyed;
   }

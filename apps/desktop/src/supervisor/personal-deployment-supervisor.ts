@@ -26,6 +26,7 @@ import { inspectRunnerIdentity } from "@opensteer/runner-client";
 import { delay } from "@opensteer/shared/delay";
 import { MutationQueue } from "@opensteer/shared/mutationQueue";
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
+import { processStopTimeoutMs } from "@opensteer/shared/processControl";
 import { RestartPolicy } from "@opensteer/shared/restartPolicy";
 import { throwIfAborted } from "@opensteer/shared/throwIfAborted";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -89,7 +90,7 @@ import {
 } from "./personal-user-environment.js";
 
 const defaultStartupTimeoutMs = 60_000;
-const defaultShutdownTimeoutMs = 5_000;
+const defaultShutdownTimeoutMs = processStopTimeoutMs;
 const defaultRestartBackoffMs = 1_000;
 const defaultMaximumRestartBackoffMs = 30_000;
 const defaultRestartResetAfterMs = 5 * 60_000;

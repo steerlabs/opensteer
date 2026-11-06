@@ -119,8 +119,9 @@ refuses the reverse. Beta displays as “Opensteer (Beta)”; the executable, `O
 and credential identities stay fixed. Beta takes
 the first eligible Atom entry, not the highest version, so publish in order with every asset
 ready. Updates run only from Applications and download only when the person asks. Log only the
-fixed failure reason, since native errors carry URLs and paths, and stop children and destroy
-windows before handing off installation ([updater](../apps/desktop/src/app/desktop-updater.ts)).
+fixed failure reason, since native errors carry URLs and paths. Before handing off installation,
+hide the window first, since its page depends on everything stopped after it, then stop children
+and destroy windows ([updater](../apps/desktop/src/app/desktop-updater.ts)).
 Development builds never update; the update-host override works only in release builds
 outside CI.
 
