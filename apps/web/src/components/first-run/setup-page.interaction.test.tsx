@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { act } from "react";
+import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -164,6 +164,7 @@ beforeEach(() => {
 afterEach(() => {
   if (root) act(() => root?.unmount());
   root = undefined;
+  strict = false;
   vi.useRealTimers();
   vi.clearAllMocks();
 });
@@ -175,18 +176,52 @@ async function mount() {
   await render();
 }
 
+/** The app runs under StrictMode; a test opts in where effect replay matters. */
+let strict = false;
+
 async function render() {
-  await act(async () =>
-    root?.render(
-      <MemoryRouter initialEntries={["/get-started"]}>
-        <Routes>
-          <Route element={<SetupPage />} path="/get-started" />
-          <Route element={<p>Chat home</p>} path="/" />
-          <Route element={<p>AI settings</p>} path="/settings/ai" />
-        </Routes>
-      </MemoryRouter>,
-    ),
+  const tree = (
+    <MemoryRouter initialEntries={["/get-started"]}>
+      <Routes>
+        <Route element={<SetupPage />} path="/get-started" />
+        <Route element={<p>Chat home</p>} path="/" />
+        <Route element={<p>AI settings</p>} path="/settings/ai" />
+      </Routes>
+    </MemoryRouter>
   );
+  await act(async () => root?.render(strict ? <StrictMode>{tree}</StrictMode> : tree));
+}
+
+function type(input: HTMLInputElement, value: string) {
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+/** A computer already reachable at its own address, with a code on screen. */
+function atOwnAddress(origin: string) {
+  const { access, bridge } = desktopBridge();
+  onThisMac(bridge, access);
+  remoteStatus = {
+    ...remoteStatus,
+    access: {
+      ...(remoteStatus.access as object),
+      mode: "private",
+      route: { document: { route: { origin } } },
+    },
+  };
+  localStorage.setItem(`opensteer.setup.v1:${shell.snapshot.deploymentId}`, "phone");
+}
+
+function pairingCreated() {
+  return {
+    pairing: {
+      code: `osp_${"c".repeat(43)}`,
+      expiresAt: new Date(Date.now() + 600_000).toISOString(),
+      generation: 1,
+      schemaVersion: 1,
+    },
+    type: "personal.remoteAccess.pairing.create",
+  };
 }
 
 async function remoteChanged(next: Record<string, unknown>) {
@@ -641,4 +676,88 @@ it("asks before replacing a way phones already connect", async () => {
   await act(async () => button("Turn on").click());
   expect(confirm).toHaveBeenCalled();
   expect(bridge.tailscaleShare).not.toHaveBeenCalled();
+});
+
+it("adds a plan's account and opens its own sign-in, under StrictMode as the app runs", async () => {
+  strict = true;
+  shell.snapshot.environments = [
+    mainEnvironment([driver("claude", "anthropic"), driver("antigravity", "google")]),
+  ];
+  shell.hostClient.dispatch.mockResolvedValue({
+    harness: { id: "hin_gemini" },
+    type: "harness.create",
+  });
+  await mount();
+  await act(async () => button("Sign in").click());
+  expect(shell.hostClient.dispatch).toHaveBeenCalledWith(
+    expect.objectContaining({
+      driverKind: "antigravity",
+      sourceId: "google",
+      stateKind: "isolated",
+      type: "harness.create",
+    }),
+  );
+  // The new account reports in, waiting for its sign-in.
+  shell.placements = [
+    placement({}),
+    placement({
+      accountName: "Gemini",
+      available: false,
+      availability: "authentication-required",
+      driverKind: "antigravity",
+      engineName: "Antigravity",
+      harnessInstanceId: "hin_gemini",
+      setupMethods: [
+        { kind: "browser-code", label: "Google account", methodId: "google" },
+      ] as never,
+      sourceId: "google",
+    }),
+  ];
+  await render();
+  expect(shell.openHarnessAuthentication).toHaveBeenCalledWith(
+    expect.objectContaining({ harnessInstanceId: "hin_gemini" }),
+    { methodId: "google" },
+  );
+});
+
+it("asks before moving phones to a different address of the person's own", async () => {
+  atOwnAddress("https://mac.example.com");
+  shell.hostClient.dispatch.mockResolvedValue(pairingCreated());
+  const confirm = vi.fn(() => false);
+  Object.defineProperty(window, "confirm", { configurable: true, value: confirm });
+  await mount();
+  await act(async () => button("Change").click());
+  type(
+    container.querySelector('input[aria-label="Your HTTPS address"]')!,
+    "https://studio.example.com",
+  );
+  await act(async () => button("Turn on").click());
+  expect(confirm).toHaveBeenCalled();
+  const requests = shell.hostClient.dispatch.mock.calls.filter(
+    ([command]) => (command as { type: string }).type === "personal.remoteAccess.request",
+  );
+  expect(requests).toHaveLength(0);
+});
+
+it("keeps an address change and its failure on screen instead of the old code", async () => {
+  atOwnAddress("https://mac.example.com");
+  shell.hostClient.dispatch.mockImplementation(async (command: { type: string }) => {
+    if (command.type === "personal.remoteAccess.request") {
+      throw new Error("That address isn’t this computer’s.");
+    }
+    return pairingCreated();
+  });
+  Object.defineProperty(window, "confirm", { configurable: true, value: vi.fn(() => true) });
+  await mount();
+  await act(async () => button("Change").click());
+  type(
+    container.querySelector('input[aria-label="Your HTTPS address"]')!,
+    "https://studio.example.com",
+  );
+  await act(async () => button("Turn on").click());
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+    "That address isn’t this computer’s.",
+  );
+  expect(container.querySelector('input[aria-label="Your HTTPS address"]')).not.toBeNull();
+  expect(container.querySelector(".setup-scan__svg")).toBeNull();
 });

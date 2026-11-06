@@ -38,13 +38,15 @@ export function usePlanAccount(input: {
   const attempts = useRef(
     new Map<string, Extract<HostApiCommandInput, { type: "harness.create" }>>(),
   );
+  // Set in the effect itself: StrictMode runs it, cleans it up and runs it
+  // again, and a flag only ever cleared would ignore every answer after that.
   const live = useRef(true);
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    live.current = true;
+    return () => {
       live.current = false;
-    },
-    [],
-  );
+    };
+  }, []);
 
   const add = useCallback(
     (candidate: SetupPlan, environmentId: string) => {

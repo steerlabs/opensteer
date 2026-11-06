@@ -84,11 +84,18 @@ export function SetupPhoneStep({
     privately.activeOrigin !== null && privately.activeOrigin === tailnetOrigin;
 
   /** Replacing a way that is on disconnects whoever uses it, so it asks. */
-  const confirmReplacing = (next: PhoneConnectionMode): boolean => {
+  const confirmReplacing = (next: PhoneConnectionMode, origin?: string): boolean => {
+    // A different address is a new route too: the Host ends the sessions
+    // that used the old one, so it asks exactly as a different kind would.
     const replacing =
-      (activeMode === "connect" && next !== "connect") ||
-      (activeMode === "private" &&
-        (next === "connect" || (next === "tailscale") !== tailscaleActive));
+      activeMode === "connect"
+        ? next !== "connect"
+        : activeMode === "private"
+          ? next === "connect" ||
+            (next === "tailscale"
+              ? !tailscaleActive
+              : tailscaleActive || sameOrigin(origin ?? "") !== privately.activeOrigin)
+          : false;
     return !replacing || window.confirm(remoteAccessDisconnectWarning);
   };
 
@@ -196,7 +203,7 @@ export function SetupPhoneStep({
           active={privately.activeOrigin !== null && !tailscaleActive}
           link={privately.link}
           onStart={(origin) => {
-            if (confirmReplacing("address")) privately.turnOnAddress(origin);
+            if (confirmReplacing("address", origin)) privately.turnOnAddress(origin);
           }}
           origin={tailscaleActive ? null : privately.activeOrigin}
           privately={privately}
@@ -525,6 +532,16 @@ function AddressPanel({
 }) {
   const [draft, setDraft] = useState("");
   const [editing, setEditing] = useState(false);
+  // The address asked for: the editor stays open, with its progress and any
+  // failure, until the Host answers there, rather than falling back to the
+  // old address's code while the change is still undecided.
+  const [submitted, setSubmitted] = useState<string | null>(null);
+  useEffect(() => {
+    if (submitted !== null && origin !== null && sameOrigin(submitted) === origin) {
+      setSubmitted(null);
+      setEditing(false);
+    }
+  }, [origin, submitted]);
   const expired = useExpired(active && !editing ? privately.expiresAt : null);
   if (active && link && !editing) {
     return (
@@ -556,8 +573,9 @@ function AddressPanel({
   const { phase } = privately;
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    setEditing(false);
-    onStart(draft.trim());
+    const wanted = draft.trim();
+    setSubmitted(wanted);
+    onStart(wanted);
   };
   const busy = phase.kind === "turning-on";
   return (
@@ -582,6 +600,18 @@ function AddressPanel({
         >
           {busy ? "Turning on…" : "Turn on"}
         </button>
+        {active && editing && !busy ? (
+          <button
+            className="btn btn--small btn--ghost"
+            onClick={() => {
+              setEditing(false);
+              setSubmitted(null);
+            }}
+            type="button"
+          >
+            Cancel
+          </button>
+        ) : null}
       </form>
       <p
         className={
