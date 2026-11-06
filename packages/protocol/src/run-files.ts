@@ -55,19 +55,13 @@ export const HostRunFileRequestSchema = z.discriminatedUnion("type", [
 ]);
 export type HostRunFileRequest = z.infer<typeof HostRunFileRequestSchema>;
 
-export const RunnerRunFileResultSchema = z.discriminatedUnion("ok", [
-  z.strictObject({
-    ...base,
-    ok: z.literal(true),
-    /** Local to the Run's engine, in transfer order. Empty for `host.run-file.send`. */
-    paths: z.array(z.string().min(1).max(4_096)).max(runFileMaxPerCall),
-    type: z.literal("runner.run-file.result"),
-  }),
-  z.strictObject({
-    ...base,
-    message: z.string().min(1).max(500),
-    ok: z.literal(false),
-    type: z.literal("runner.run-file.result"),
-  }),
-]);
+export const RunnerRunFileResultSchema = z.strictObject({
+  ...base,
+  /** Set when `ok` is false: a sentence the agent can act on. */
+  message: z.string().min(1).max(500).optional(),
+  ok: z.boolean(),
+  /** Local to the Run's engine, in transfer order. Empty for `host.run-file.send`. */
+  paths: z.array(z.string().min(1).max(4_096)).max(runFileMaxPerCall).optional(),
+  type: z.literal("runner.run-file.result"),
+});
 export type RunnerRunFileResult = z.infer<typeof RunnerRunFileResultSchema>;

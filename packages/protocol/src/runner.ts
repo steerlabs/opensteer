@@ -1778,7 +1778,7 @@ export const RunnerOperationalMessageSchema = z.discriminatedUnion("type", [
   RunnerBackgroundTextResultSchema,
   RunnerSkillMetadataReportSchema,
   RunnerAppResultSchema,
-  ...RunnerRunFileResultSchema.options,
+  RunnerRunFileResultSchema,
   ...RunnerWorkspaceLocalResultSchema.options,
   z.strictObject({
     ...fencedMessageBase,
