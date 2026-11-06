@@ -21,3 +21,11 @@ export function runnerWorkerSecretsMessage(
 ): RunnerWorkerSecretsMessage {
   return { secrets: { ...secrets }, type: "runner.worker.secrets" };
 }
+
+/** Asks the worker's Runner to look for engines now rather than at its next heartbeat. */
+export const RunnerWorkerEnginesRecheckMessageSchema = z.strictObject({
+  type: z.literal("runner.worker.engines.recheck"),
+});
+export const runnerWorkerEnginesRecheckMessage: z.infer<
+  typeof RunnerWorkerEnginesRecheckMessageSchema
+> = { type: "runner.worker.engines.recheck" };

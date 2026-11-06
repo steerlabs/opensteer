@@ -19,6 +19,11 @@ import {
   type PersonalHostRuntimeRecord,
   type PersonalHostRuntimeSource,
 } from "../supervisor/personal-host-runtime.js";
+import type {
+  DesktopTailscaleShareResult,
+  DesktopTailscaleStatus,
+} from "@opensteer/protocol/desktop";
+import type { TailscaleShare } from "./tailscale.js";
 
 type Listener = (status: DesktopPersonalRemoteAccessStatus) => void;
 
@@ -45,8 +50,10 @@ export class DesktopPersonalRemoteAccessService {
     | "status"
   >;
   readonly #listeners = new Set<Listener>();
+  readonly #log: ((event: string, error: unknown) => void) | undefined;
   readonly #mutations: DesktopPersonalAccountMutationCoordinator;
   readonly #runtime: PersonalHostRuntimeSource;
+  readonly #tailscale: Pick<TailscaleShare, "reconcile" | "share" | "status" | "stop"> | undefined;
   #shutdown = false;
   #shutdownPromise: Promise<void> | undefined;
   #status: DesktopPersonalRemoteAccessStatus = emptyStatus();
@@ -62,14 +69,19 @@ export class DesktopPersonalRemoteAccessService {
       | "issuePairingCode"
       | "status"
     >;
+    readonly log?: (event: string, error: unknown) => void;
     readonly mutations?: DesktopPersonalAccountMutationCoordinator;
     readonly runtime: PersonalHostRuntimeSource;
+    /** Private mode at this computer's tailnet name, kept in step with the Host's route. */
+    readonly tailscale?: Pick<TailscaleShare, "reconcile" | "share" | "status" | "stop">;
   }) {
     this.#connectFactory = options.connectFactory;
     this.#connectUnavailableDetail = options.connectUnavailableDetail ?? null;
     this.#host = options.host;
+    this.#log = options.log;
     this.#mutations = options.mutations ?? new DesktopPersonalAccountMutationCoordinator();
     this.#runtime = options.runtime;
+    this.#tailscale = options.tailscale;
   }
 
   get status(): DesktopPersonalRemoteAccessStatus {
@@ -83,72 +95,100 @@ export class DesktopPersonalRemoteAccessService {
 
   initialize(): Promise<DesktopPersonalRemoteAccessStatus> {
     if (this.#shutdown) return Promise.resolve(this.#status);
-    return this.#serialize(async () => {
-      const runtime = await this.#runtime.current();
-      if (!runtime) return this.#set(emptyStatus());
-      const parsedRuntime = PersonalHostRuntimeRecordSchema.parse(runtime);
-      const hostStatus = await this.#host.status();
-      const components = this.#connectFor(parsedRuntime);
-      if (hostStatus.mode === "private") {
-        // Private is an independent Host-owned route. Any stale Connect intent
-        // is authority-reducing cleanup only and must never replace it.
-        await components.teardown.reconcileIfPresent();
-        return this.#set(fromHost(parsedRuntime, await this.#host.status()));
-      }
-      if (!components.management) {
-        // A build without Account management cannot resurrect enabled intent.
-        // It still owns exact Host teardown for state left by an earlier build.
-        if (hostStatus.mode === "connect") {
-          this.#set(fromHost(parsedRuntime, hostStatus, "revoking", null, true));
-          await this.#host.disableConnect();
-          await components.teardown.disable();
-        } else {
-          await components.teardown.reconcileIfPresent();
-        }
-        return this.#set(fromHost(parsedRuntime, await this.#host.status()));
-      }
+    return this.#serialize(() => this.#withTailscale(false, () => this.#initialize()));
+  }
 
-      this.#set(fromHost(parsedRuntime, hostStatus, "provisioning", null, true));
-      const result = await components.management.reconcile();
-      const reconciledHost = await this.#host.status();
-      if (result.state === "disabled" && reconciledHost.mode === "connect") {
-        // Host Connect with no matching Desktop intent is inconsistent. Revoke
-        // the route first, then delete any deterministic central resource.
+  async #initialize(): Promise<DesktopPersonalRemoteAccessStatus> {
+    const runtime = await this.#runtime.current();
+    if (!runtime) return this.#set(emptyStatus());
+    const parsedRuntime = PersonalHostRuntimeRecordSchema.parse(runtime);
+    const hostStatus = await this.#host.status();
+    const components = this.#connectFor(parsedRuntime);
+    if (hostStatus.mode === "private") {
+      // Private is an independent Host-owned route. Any stale Connect intent
+      // is authority-reducing cleanup only and must never replace it.
+      await components.teardown.reconcileIfPresent();
+      return this.#set(fromHost(parsedRuntime, await this.#host.status()));
+    }
+    if (!components.management) {
+      // A build without Account management cannot resurrect enabled intent.
+      // It still owns exact Host teardown for state left by an earlier build.
+      if (hostStatus.mode === "connect") {
+        this.#set(fromHost(parsedRuntime, hostStatus, "revoking", null, true));
         await this.#host.disableConnect();
         await components.teardown.disable();
-      } else if (result.state !== "disabled" && result.state !== "enabled") {
-        throw new Error(result.detail ?? "Opensteer Connect could not be reconciled.");
+      } else {
+        await components.teardown.reconcileIfPresent();
       }
       return this.#set(fromHost(parsedRuntime, await this.#host.status()));
-    });
+    }
+
+    this.#set(fromHost(parsedRuntime, hostStatus, "provisioning", null, true));
+    const result = await components.management.reconcile();
+    const reconciledHost = await this.#host.status();
+    if (result.state === "disabled" && reconciledHost.mode === "connect") {
+      // Host Connect with no matching Desktop intent is inconsistent. Revoke
+      // the route first, then delete any deterministic central resource.
+      await this.#host.disableConnect();
+      await components.teardown.disable();
+    } else if (result.state !== "disabled" && result.state !== "enabled") {
+      throw new Error(result.detail ?? "Opensteer Connect could not be reconciled.");
+    }
+    return this.#set(fromHost(parsedRuntime, await this.#host.status()));
   }
 
   configure(
     input: DesktopConfigurePersonalRemoteAccessInput,
   ): Promise<DesktopPersonalRemoteAccessStatus> {
     const request = DesktopConfigurePersonalRemoteAccessInputSchema.parse(input);
-    return this.#serialize(async () => {
-      const runtime = await this.#requireRuntime();
-      const current = await this.#host.status();
-      if (request.mode === "connect") return this.#startConnect(runtime, current);
-      if (current.mode === "connect") {
-        this.#set(fromHost(runtime, current, "revoking", null, true));
-        const components = this.#connectFor(runtime);
-        await this.#quiesceConnect(components);
-        await this.#host.disableConnect();
-        await components.teardown.disable();
-      }
-      if (request.mode === "off") {
-        if (current.mode !== "connect") {
+    return this.#serialize(() =>
+      this.#withTailscale(true, async () => {
+        const runtime = await this.#requireRuntime();
+        const current = await this.#host.status();
+        if (request.mode === "connect") return this.#startConnect(runtime, current);
+        if (current.mode === "connect") {
+          this.#set(fromHost(runtime, current, "revoking", null, true));
           const components = this.#connectFor(runtime);
           await this.#quiesceConnect(components);
           await this.#host.disableConnect();
-          await components.teardown.reconcileIfPresent();
+          await components.teardown.disable();
         }
-        return this.#set(fromHost(runtime, await this.#host.status()));
-      }
-      const configured = await this.#host.configureConnectPrivate(request.privateOrigin!);
-      return this.#set(fromHost(runtime, configured));
+        if (request.mode === "off") {
+          if (current.mode !== "connect") {
+            const components = this.#connectFor(runtime);
+            await this.#quiesceConnect(components);
+            await this.#host.disableConnect();
+            await components.teardown.reconcileIfPresent();
+          }
+          return this.#set(fromHost(runtime, await this.#host.status()));
+        }
+        const configured = await this.#host.configureConnectPrivate(request.privateOrigin!);
+        return this.#set(fromHost(runtime, configured));
+      }),
+    );
+  }
+
+  tailscaleStatus(): Promise<DesktopTailscaleStatus> {
+    if (!this.#tailscale) return Promise.resolve({ state: "not-installed" });
+    return this.#tailscale.status();
+  }
+
+  /**
+   * Serves the Host on this computer's tailnet name. Turning Private mode on at
+   * the address it answers is the page's next step, through the Host, so any
+   * device sees the same mode.
+   */
+  shareOverTailscale(): Promise<DesktopTailscaleShareResult> {
+    const tailscale = this.#tailscale;
+    if (!tailscale)
+      return Promise.resolve({
+        message: "Tailscale sharing isn't available in this build.",
+        ok: false,
+        reason: "failed",
+      });
+    return this.#mutations.run("remote-access", async () => {
+      const runtime = await this.#requireRuntime();
+      return tailscale.share(runtime.localOrigin);
     });
   }
 
@@ -189,10 +229,16 @@ export class DesktopPersonalRemoteAccessService {
   shutdown(signal?: AbortSignal): Promise<void> {
     this.#shutdown = true;
     this.#shutdownPromise ??= (async () => {
-      if (!this.#connectInstance) return;
-      const { management, teardown } = this.#connectInstance.value;
-      if (management) await management.shutdown(signal);
-      else await teardown.stopConnector(signal);
+      if (this.#connectInstance) {
+        const { management, teardown } = this.#connectInstance.value;
+        if (management) await management.shutdown(signal);
+        else await teardown.stopConnector(signal);
+      }
+      // The Host stops with this app; the next start restores the handler
+      // once the Host's route says it is still wanted.
+      await this.#tailscale
+        ?.stop()
+        .catch((error: unknown) => this.#log?.("desktop.personal.tailscale.stop-failed", error));
     })();
     return this.#shutdownPromise;
   }
@@ -264,6 +310,37 @@ export class DesktopPersonalRemoteAccessService {
   async #quiesceConnect(components: PersonalHostConnectComponents): Promise<void> {
     if (components.management) await components.management.quiesce();
     else await components.teardown.stopConnector();
+  }
+
+  /**
+   * Runs a mode change and then brings Opensteer's Tailscale handler in line
+   * with the route the Host reports afterwards, whether or not the change
+   * succeeded. `authoritative` is true when someone chose the mode.
+   */
+  async #withTailscale<T>(authoritative: boolean, operation: () => Promise<T>): Promise<T> {
+    try {
+      return await operation();
+    } finally {
+      await this.#reconcileTailscale(authoritative);
+    }
+  }
+
+  async #reconcileTailscale(authoritative: boolean): Promise<void> {
+    const tailscale = this.#tailscale;
+    if (!tailscale) return;
+    try {
+      const runtime = await this.#runtime.current();
+      // Without a Host there is no route to agree with, so nothing changes.
+      if (!runtime) return;
+      const host = await this.#host.status();
+      await tailscale.reconcile({
+        authoritative,
+        hostOrigin: PersonalHostRuntimeRecordSchema.parse(runtime).localOrigin,
+        routeOrigin: host.mode === "private" ? (host.route?.document.route.origin ?? null) : null,
+      });
+    } catch (error) {
+      this.#log?.("desktop.personal.tailscale.reconcile-failed", error);
+    }
   }
 
   #serialize<T>(operation: () => Promise<T>): Promise<T> {

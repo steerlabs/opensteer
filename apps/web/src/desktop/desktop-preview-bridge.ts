@@ -432,6 +432,15 @@ export function desktopPreviewBridge(
     onNotificationActivated: () => () => undefined,
     getNotificationSupport: async () => ({ supported: false }),
     showNotification: async () => ({ status: "unsupported" }),
+    testNotification: async () => ({ outcome: "unsupported" }),
+    openNotificationSettings: async () => undefined,
+    recheckLocalEngines: async () => undefined,
+    tailscaleStatus: async () => ({ state: "not-installed" }),
+    tailscaleShare: async () => ({
+      message: "Install Tailscale on this computer, then try again.",
+      ok: false,
+      reason: "not-installed",
+    }),
     setBadgeCount: async () => undefined,
 
     openExternalUrl: async () => ({ opened: true }),

@@ -84,7 +84,7 @@ describe("installed Claude executable", () => {
     await expect(inspectClaudeExecutable("claude", { PATH: "/missing" })).resolves.toEqual({
       status: "unavailable",
       detail:
-        "Install Claude Code from https://code.claude.com/docs/en/setup, then restart Opensteer.",
+        "Install Claude Code from https://code.claude.com/docs/en/setup. Opensteer finds it within a minute; if it doesn't, restart Opensteer.",
     });
   });
   it("distinguishes an unsupported installed version from absence", async () => {

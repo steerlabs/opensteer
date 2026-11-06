@@ -36,6 +36,18 @@ export const handleStartLocalRunner = (context: DesktopBridgeContext): DesktopBr
     context.options.runner.start(DesktopStartLocalRunnerInputSchema.parse(input)),
   );
 
+/**
+ * Rechecks right away on the Runners this app runs for other Deployments. The
+ * Personal Runner is a separate process with no channel for it, and needs
+ * none: every Runner compares its engines with its hello on each heartbeat.
+ */
+export const handleRecheckLocalEngines =
+  (context: DesktopBridgeContext): DesktopBridgeHandler =>
+  (event, envelope) => {
+    assertAuthorizedRenderer(context, event, envelope);
+    context.options.runner.recheckEngines();
+  };
+
 /** `stopLocalRunner` is the removal call: the web sends it when a person takes
  * this Mac out of the Deployment, so the slot and its identity go with it. */
 export const handleStopLocalRunner = (context: DesktopBridgeContext): DesktopBridgeHandler =>

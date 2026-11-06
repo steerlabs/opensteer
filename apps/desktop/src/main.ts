@@ -131,6 +131,7 @@ import { DesktopPersonalHostRemoteAdapter } from "./supervisor/personal-host-rem
 import { DesktopRemoteAdministrationExecutor } from "./connections/remote-administration-executor.js";
 import { ConnectOperationIdSchema } from "@opensteer/control-plane-protocol";
 import { DesktopPersonalRemoteAccessService } from "./connections/personal-remote-access.js";
+import { TailscaleShare, tailscaleCommand } from "./connections/tailscale.js";
 import { DesktopConnectCredentialStore } from "./secrets/connect-credential-store.js";
 import { VerifiedDesktopSecretCryptography } from "./secrets/verified-secret-cryptography.js";
 import { AccountConnectClient } from "@opensteer/client/connections";
@@ -760,8 +761,18 @@ async function runDesktop(
       ? null
       : "Opensteer Connect isn't available yet.",
     host: personalHostRemote,
+    log: reportNonFatal,
     mutations: personalAccountMutations,
     runtime: personal,
+    tailscale: new TailscaleShare({
+      // The person's login PATH, where a Homebrew or package-manager CLI lives.
+      command: tailscaleCommand(async () => {
+        const login = await personalUserEnvironment.resolve().catch(() => null);
+        return { ...process.env, ...(login?.PATH ? { PATH: login.PATH } : {}) };
+      }),
+      files: privateFiles,
+      recordPath: path.join(loaded.config.dataDirectory, "tailscale-share.json"),
+    }),
   });
   shutdown.add({
     component: "remote-access",
@@ -1086,6 +1097,19 @@ async function runDesktop(
       open: () => passwords.open(),
       status: () => passwords.status(),
       subscribe: (listener) => passwords.onStatusChanged(listener),
+    },
+    notifications: {
+      openSettings: async () => {
+        if (process.platform !== "darwin") return;
+        await shell.openExternal(
+          `x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=${encodeURIComponent(loaded.config.release.id)}`,
+          { activate: true },
+        );
+      },
+    },
+    tailscale: {
+      share: () => personalRemote.shareOverTailscale(),
+      status: () => personalRemote.tailscaleStatus(),
     },
     portal: {
       openExternal: async (url) => {

@@ -88,9 +88,12 @@ import {
 } from "./methods/integrations.js";
 import {
   handleGetNotificationSupport,
+  handleOpenNotificationSettings,
   handleSetBadgeCount,
   handleShowNotification,
+  handleTestNotification,
 } from "./methods/notifications.js";
+import { handleTailscaleShare, handleTailscaleStatus } from "./methods/tailscale.js";
 import {
   handleCheckFullDiskAccess,
   handleCloseFullDiskAccessPanel,
@@ -98,6 +101,7 @@ import {
 } from "./methods/full-disk-access.js";
 import {
   handleGetLocalExecutionStatus,
+  handleRecheckLocalEngines,
   handleStartLocalRunner,
   handleStopLocalRunner,
 } from "./methods/local-execution.js";
@@ -355,7 +359,12 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
   register(desktopBridgeChannels.openExternalUrl, handleOpenExternalUrl(context));
   register(desktopBridgeChannels.getNotificationSupport, handleGetNotificationSupport(context));
   register(desktopBridgeChannels.showNotification, handleShowNotification(context));
+  register(desktopBridgeChannels.testNotification, handleTestNotification(context));
+  register(desktopBridgeChannels.openNotificationSettings, handleOpenNotificationSettings(context));
   register(desktopBridgeChannels.setBadgeCount, handleSetBadgeCount(context));
+  register(desktopBridgeChannels.recheckLocalEngines, handleRecheckLocalEngines(context));
+  register(desktopBridgeChannels.tailscaleStatus, handleTailscaleStatus(context));
+  register(desktopBridgeChannels.tailscaleShare, handleTailscaleShare(context));
   register(desktopBridgeChannels.openHostWebSocket, handleOpenHostWebSocket(context));
   register(
     desktopBridgeChannels.prepareIntegrationAuthorizationReturn,

@@ -55,6 +55,7 @@ import {
   type HarnessLiveEvent,
   type HarnessInstanceDefinition,
   type HarnessRegistry,
+  type HarnessSourceDescriptor,
   spawnSupervised,
   type HarnessProcessLaunchWrapper,
   type HarnessRuntimeBoundary,
@@ -133,6 +134,11 @@ export type RefreshedRunCredentials =
       { readonly status: "issued" }
     >["credentials"]
   | null;
+
+/** Which engines a driver advertisement says this computer can run, and through what. */
+export type HarnessDriverAvailability = Pick<RunnerHarnessDriver, "driverKind" | "readiness"> & {
+  readonly sources?: readonly Pick<HarnessSourceDescriptor, "sourceId" | "stateKinds">[];
+};
 
 export interface RunnerMessageSink {
   send(message: RunnerOperationalReport): Promise<void>;
@@ -579,6 +585,20 @@ export class RunnerRuntime {
 
   activeTriggerOccurrenceIds(): readonly TriggerOccurrenceId[] {
     return [...this.#triggerPrograms.keys()];
+  }
+
+  /**
+   * The part of `harnessDrivers` that a CLI appearing or going changes, read
+   * from PATH lookups alone (no version probe, process or network), so a
+   * connection can compare it with what it advertised on every heartbeat.
+   */
+  harnessDriverAvailability(): readonly HarnessDriverAvailability[] {
+    return this.#harnesses.listDrivers().map(({ kind, readiness }) => ({
+      driverKind: kind,
+      readiness: readiness.status,
+      sources:
+        readiness.status === "unavailable" ? [] : (this.#harnesses.driverSources(kind) ?? []),
+    }));
   }
 
   async harnessDrivers(): Promise<readonly RunnerHarnessDriver[]> {

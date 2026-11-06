@@ -5,7 +5,7 @@ import { promisify } from "node:util";
 import { findExecutableOnPath, meetsMinimumVersion } from "@opensteer/harness";
 import { MINIMUM_CLAUDE_CODE_VERSION } from "./config.js";
 export const claudeInstallGuidance =
-  "Install Claude Code from https://code.claude.com/docs/en/setup, then restart Opensteer.";
+  "Install Claude Code from https://code.claude.com/docs/en/setup. Opensteer finds it within a minute; if it doesn't, restart Opensteer.";
 
 interface ClaudeExecutablePorts {
   readonly locate: typeof findExecutableOnPath;
