@@ -15,17 +15,16 @@ export function useComputerAppApproval(hostClient: HostClient) {
   const generation = useRef(0);
   const submitting = useRef(false);
   const abort = useRef<AbortController | null>(null);
+  /** Also closes mid-answer: a sent answer still lands, a failed one leaves its Request open. */
   function clear() {
     generation.current += 1;
+    submitting.current = false;
     abort.current?.abort();
     setReview(null);
     setBusy(false);
     setError(null);
     pending.current?.(false);
     pending.current = null;
-  }
-  function close() {
-    if (!submitting.current) clear();
   }
   useLayoutEffect(() => {
     clear();
@@ -73,9 +72,11 @@ export function useComputerAppApproval(hostClient: HostClient) {
       if (current === generation.current)
         setError(reason instanceof Error ? reason.message : "Couldn't record this answer.");
     } finally {
-      submitting.current = false;
-      if (current === generation.current) setBusy(false);
+      if (current === generation.current) {
+        submitting.current = false;
+        setBusy(false);
+      }
     }
   }
-  return { ask, review, error, busy, close, answer };
+  return { ask, review, error, busy, close: clear, answer };
 }

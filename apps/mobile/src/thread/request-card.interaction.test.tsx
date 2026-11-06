@@ -223,6 +223,28 @@ describe("RequestCard computer owner approvals", () => {
     expect(review).toHaveBeenCalledTimes(2);
     expect(dispatch).not.toHaveBeenCalled();
   });
+
+  it("frees the Request when its sheet closes while an answer fails", async () => {
+    const request = computerAppRequest();
+    let fail: ((error: Error) => void) | undefined;
+    const dispatch = vi.fn(
+      () =>
+        new Promise((_, reject) => {
+          fail = reject;
+        }),
+    );
+    const review = computerAppReview(request);
+    await render(surface(request), dispatch, { review });
+    await click("Review request");
+    await click("Allow");
+    await click("Allow");
+    expect(dispatch).toHaveBeenCalledOnce();
+    await click("Close sheet");
+    await act(async () => fail?.(new Error("offline")));
+    await click("Review request");
+    await click("Allow");
+    expect(review).toHaveBeenCalledTimes(2);
+  });
 });
 
 function computerAppReview(request: Request): ReturnType<typeof vi.fn> {
