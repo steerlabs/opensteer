@@ -1,4 +1,4 @@
-import { aiCompanies, genericAiCompany } from "@opensteer/client/ai-sharing";
+import { aiCompanies, aiCompanyNames, genericAiCompany } from "@opensteer/client/ai-sharing";
 import type { HostClient } from "@opensteer/client/host";
 import type { IntegrationAccess } from "@opensteer/client/integrations";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
@@ -92,7 +92,7 @@ export function AddIphoneForm(props: {
 }): ReactNode {
   const companies = useHostValue(
     props.hostClient,
-    (snapshot) => aiCompanies(snapshot).join(", "),
+    (snapshot) => aiCompanyNames(aiCompanies(snapshot)),
     genericAiCompany,
   );
   const state = useIphoneAppsState(props.controller);

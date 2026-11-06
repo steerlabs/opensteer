@@ -21,7 +21,7 @@ export function SettingsAiSharingScreen() {
         ) : (
           companies.map((company) => (
             <View key={company} style={{ gap: space[8] }}>
-              <AppText role="bodyMedium">{company}</AppText>
+              <AppText role="bodyMedium">{`${company[0]?.toUpperCase()}${company.slice(1)}`}</AppText>
               <AppText>
                 {records
                   .filter((record) => record.company === company)

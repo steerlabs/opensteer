@@ -65,7 +65,9 @@ Mobile asks before sending content or live audio to the AI companies named by th
 existing account/model choices, using a generic disclosure for unknown services. Permission is
 stored on this device, separately for content and live audio; Settings can clear it for future
 sends without stopping work already running. Attachment staging goes only to the person's Host;
-on-device dictation and computer-side background work do not pass through this mobile gate.
+on-device dictation and computer-side background work do not pass through this mobile gate. Live
+audio names OpenAI alone because voice only runs through Codex, and also needs content permission
+because a call can start agent work.
 
 ## Saved views
 

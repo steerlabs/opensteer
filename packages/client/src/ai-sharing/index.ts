@@ -4,6 +4,8 @@ import type { HostSnapshot } from "../host/client.js";
 export type AiSharingScope = "content" | "audio";
 export const aiSharingDisclosureVersion = 1;
 export const genericAiCompany = "the AI services set up on your computer";
+/** Live voice only runs through Codex, whichever AI the computer's agents use. */
+export const liveAudioCompanies: readonly string[] = ["OpenAI"];
 
 const companies = new Map(
   Object.entries({
@@ -37,9 +39,11 @@ export function aiCompanies(snapshot: Pick<HostSnapshot, "harnesses" | "environm
   const result = new Set<string>();
   for (const account of snapshot.harnesses) {
     if (!account.enabled) continue;
-    result.add(companies.get(account.sourceId) ?? genericAiCompany);
+    const sourceCompany = companies.get(account.sourceId);
     const engineCompany = companies.get(account.driverKind);
+    if (sourceCompany) result.add(sourceCompany);
     if (engineCompany) result.add(engineCompany);
+    if (!sourceCompany && !engineCompany) result.add(genericAiCompany);
     if (account.endpoint) result.add(genericAiCompany);
     const catalog = snapshot.environments
       .find((environment) => environment.id === account.environmentId)
@@ -48,6 +52,17 @@ export function aiCompanies(snapshot: Pick<HostSnapshot, "harnesses" | "environm
       result.add(companies.get(model.providerId) ?? genericAiCompany);
   }
   return [...(result.size ? result : [genericAiCompany])].sort();
+}
+
+/** Companies as one phrase, with the generic description always last. */
+export function aiCompanyNames(names: readonly string[]): string {
+  const named = names.filter((company) => company !== genericAiCompany);
+  if (!named.length) return genericAiCompany;
+  if (named.length < names.length)
+    return `${named.join(", ")} and other AI services set up on your computer`;
+  return named.length === 1
+    ? (named[0] as string)
+    : `${named.slice(0, -1).join(", ")} and ${named.at(-1)}`;
 }
 
 const RecordSchema = z.strictObject({

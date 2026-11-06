@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { AiSharing, aiCompanies, genericAiCompany, type AiSharingRecord } from "./index.js";
+import {
+  AiSharing,
+  aiCompanies,
+  aiCompanyNames,
+  genericAiCompany,
+  type AiSharingRecord,
+} from "./index.js";
 
 function setup(answers: boolean[] = []) {
   let saved: readonly AiSharingRecord[] = [];
@@ -91,4 +97,19 @@ it("uses the generic fallback for unknown ids that are also object property name
     environments: [],
   } as unknown as Parameters<typeof aiCompanies>[0];
   expect(aiCompanies(snapshot)).toEqual([genericAiCompany]);
+});
+
+it("names a known engine without adding the generic description for an unknown source", () => {
+  const account = { enabled: true, sourceId: "chatgpt-login", driverKind: "codex", id: "account" };
+  const snapshot = { harnesses: [account], environments: [] };
+  expect(aiCompanies(snapshot as never)).toEqual(["OpenAI"]);
+});
+
+it("reads as one phrase with the generic description last", () => {
+  expect(aiCompanyNames(["OpenAI"])).toBe("OpenAI");
+  expect(aiCompanyNames(["Anthropic", "OpenAI"])).toBe("Anthropic and OpenAI");
+  expect(aiCompanyNames([genericAiCompany])).toBe(genericAiCompany);
+  expect(aiCompanyNames(["OpenAI", genericAiCompany, "xAI"])).toBe(
+    "OpenAI, xAI and other AI services set up on your computer",
+  );
 });

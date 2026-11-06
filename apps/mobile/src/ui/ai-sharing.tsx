@@ -1,4 +1,11 @@
-import { AiSharing, aiCompanies, type AiSharingPrompt } from "@opensteer/client/ai-sharing";
+import {
+  AiSharing,
+  aiCompanies,
+  aiCompanyNames,
+  genericAiCompany,
+  liveAudioCompanies,
+  type AiSharingPrompt,
+} from "@opensteer/client/ai-sharing";
 import type { HostClient } from "@opensteer/client/host";
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { Alert, Linking, View } from "react-native";
@@ -18,8 +25,13 @@ export function authorizeAiSharing(
   scope: "content" | "audio" = "content",
 ) {
   const initial = host.getSnapshot();
-  return sharing
-    .ensure(scope, () => aiCompanies(host.getSnapshot()))
+  const content = sharing.ensure("content", () => aiCompanies(host.getSnapshot()));
+  // A call's audio goes to one company, but what it asks for can reach the computer's agents.
+  const decided =
+    scope === "audio"
+      ? content.then((allowed) => allowed && sharing.ensure("audio", () => liveAudioCompanies))
+      : content;
+  return decided
     .then((allowed) => {
       const current = host.getSnapshot();
       return (
@@ -60,7 +72,8 @@ export function AiSharingProvider(props: {
     },
     [],
   );
-  const names = prompt?.companies.join(", ") ?? "";
+  const names = aiCompanyNames(prompt?.companies ?? []);
+  const single = prompt?.companies.length === 1 && prompt.companies[0] !== genericAiCompany;
   const sheet = (
     <Sheet
       anchor={false}
@@ -70,7 +83,11 @@ export function AiSharingProvider(props: {
     >
       <View style={{ padding: space[20], gap: space[16] }}>
         <AppText role="title">
-          {prompt?.scope === "audio" ? `Talk with ${names}?` : `Share with ${names}?`}
+          {prompt?.scope === "audio"
+            ? `Talk with ${names}?`
+            : single
+              ? `Share with ${names}?`
+              : "Share with your AI services?"}
         </AppText>
         <AppText>
           {prompt?.scope === "audio"
