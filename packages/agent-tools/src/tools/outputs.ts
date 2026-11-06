@@ -2,7 +2,7 @@ import { z } from "zod";
 import {
   AppIdSchema,
   AssignmentIdSchema,
-  AssignmentSummarySchema,
+  AssignmentStatusSchema,
   BrowserProfileIdSchema,
   BrowserSiteSchema,
   DelegationModelChoiceSchema,
@@ -15,13 +15,15 @@ import {
   ModelIdSchema,
   ModelProviderIdSchema,
   ModelSelectionSchema,
+  PlaceContentPartSchema,
+  PlaceIdentitySchema,
+  ProviderSessionIdSchema,
   RequestIdSchema,
   RequestKindSchema,
   RequestStatusSchema,
   RunSchema,
   ThreadIdSchema,
   TriggerOccurrenceIdSchema,
-  ThreadInputSchema,
   ThreadSchema,
   WorkspaceBackingKindSchema,
   WorkspaceIdSchema,
@@ -131,42 +133,77 @@ export const WindowSchema = z.object({
   totalItems: z.number(),
   threadId: ThreadIdSchema.optional(),
 });
-export const ThreadOutputSchema = z.object(ThreadSchema.shape);
+const thread = ThreadSchema.shape;
+const PageSchema = { hasMore: z.boolean(), nextBefore: z.string().nullable() };
+
+export const ThreadDetailSchema = z.object({
+  id: thread.id,
+  title: thread.title,
+  status: thread.status,
+  role: thread.role,
+  workspaceId: thread.workspaceId,
+  environmentId: thread.environmentId,
+  harnessInstanceId: thread.harnessInstanceId,
+  modelSelection: thread.modelSelection,
+  accessMode: thread.accessMode,
+  parentThreadId: thread.parentThreadId,
+  pendingRequests: thread.pendingRequests,
+  inputQueuePaused: thread.inputQueuePaused,
+  doneAt: thread.doneAt,
+  createdAt: thread.createdAt,
+  updatedAt: thread.updatedAt,
+});
 export const ThreadSummarySchema = z.object({
-  doneAt: ThreadSchema.shape.doneAt.optional(),
+  assignmentId: AssignmentIdSchema.nullable(),
+  doneAt: thread.doneAt.optional(),
   environmentConnected: z.boolean(),
   environmentId: EnvironmentIdSchema,
   id: ThreadIdSchema,
-  parentThreadId: ThreadSchema.shape.parentThreadId,
-  pendingRequests: ThreadSchema.shape.pendingRequests,
-  status: ThreadSchema.shape.status,
+  parentThreadId: thread.parentThreadId,
+  pendingRequests: thread.pendingRequests,
+  status: thread.status,
+  taskStatus: AssignmentStatusSchema.nullable(),
   title: z.string().nullable(),
-  updatedAt: ThreadSchema.shape.updatedAt,
+  updatedAt: thread.updatedAt,
   workspaceId: WorkspaceIdSchema,
   workspaceName: z.string(),
 });
-export const MessageOutputSchema = z.object(MessageSchema.shape);
 export const ThreadListOutputSchema = z.object({
   threads: z.array(ThreadSummarySchema).max(50),
-  window: WindowSchema,
+  ...PageSchema,
 });
-export const ThreadDelegateOutputSchema = z.object({
+/** One shape for `thread_delegate`, `task_status` and `task_cancel`. */
+export const TaskSchema = z.object({
+  /** Null only for a connection's work, which has no Assignment. */
   assignmentId: AssignmentIdSchema.nullable(),
-  input: z.object(ThreadInputSchema.shape),
-  message: MessageOutputSchema,
-  run: z.object(RunSchema.shape).nullable(),
-  thread: ThreadOutputSchema,
+  threadId: ThreadIdSchema,
+  runId: RunSchema.shape.id.nullable(),
+  runStatus: RunSchema.shape.status.nullable(),
+  status: AssignmentStatusSchema,
+  title: z.string(),
+  objective: z.string().nullable(),
+  result: z.string().nullable(),
+  pendingRequests: thread.pendingRequests,
+  parentThreadId: ThreadIdSchema.nullable(),
+  workspaceId: WorkspaceIdSchema,
+  environmentId: EnvironmentIdSchema,
+  createdAt: thread.createdAt,
+  finishedAt: z.string().nullable(),
 });
-export const ThreadMessageOutputSchema = ThreadDelegateOutputSchema.extend({
+export const ThreadMessageOutputSchema = z.object({
   assignmentId: AssignmentIdSchema.nullable(),
   disposition: z.enum(["cancelled", "pending", "steering", "run-queued"]),
+  messageId: MessageIdSchema,
+  runId: RunSchema.shape.id.nullable(),
 });
-export const ThreadWriteOutputSchema = z.object({
-  thread: ThreadSummarySchema,
+export const ThreadInterruptOutputSchema = z.object({
+  interruptedRunId: RunSchema.shape.id.nullable(),
+});
+export const ThreadUpdateOutputSchema = z.object({
+  title: thread.title,
+  doneAt: thread.doneAt,
   doneWhenRunEnds: z.boolean(),
-  interruptedRunId: RunSchema.shape.id.optional(),
 });
-export const AssignmentCancelOutputSchema = z.object({ assignment: AssignmentSummarySchema });
 export const ProjectSummarySchema = z.object({
   id: WorkspaceIdSchema,
   kind: WorkspaceKindSchema,
@@ -374,11 +411,27 @@ export const TriggerWriteOutputSchema = TriggerOutputSchema.extend({
 
 export { AgentMediaContentSchema, IntegrationCallOutputSchema } from "./integration-outputs.js";
 
+/** A timeline entry. `itemId` is a message ID, or an activity event's sequence. */
+export const ThreadItemSchema = z.object({
+  itemId: z.string(),
+  type: z.string(),
+  status: z.string(),
+  runId: RunSchema.shape.id.nullable(),
+  author: MessageSchema.shape.author.optional(),
+  title: z.string().nullable(),
+  text: z.string().nullable(),
+  textTruncated: z.boolean(),
+  nextTextOffset: z.number().int().nonnegative().nullable(),
+  places: z.array(PlaceContentPartSchema).max(63).optional(),
+  createdAt: z.string(),
+});
+export type ThreadItem = z.infer<typeof ThreadItemSchema>;
+
 export const ThreadWaitOutputSchema = z.object({
   status: z.enum(["running", "settled", "offline", "timed_out"]),
   pendingRequest: z.object({ id: z.string(), kind: z.string() }).optional(),
   run: z.object({ id: RunSchema.shape.id, status: RunSchema.shape.status }).optional(),
-  messages: z.array(MessageOutputSchema).max(100),
+  items: z.array(ThreadItemSchema).max(100),
 });
 export const ThreadConfigureOutputSchema = z.object({
   threadId: ThreadIdSchema,
@@ -389,37 +442,53 @@ export const ThreadConfigureOutputSchema = z.object({
     providerId: ModelProviderIdSchema,
     options: ModelSelectionSchema.shape.options,
   }),
+  providerSessionId: ProviderSessionIdSchema.nullable(),
 });
 export const ThreadQueueOutputSchema = z.object({
   paused: z.boolean(),
   items: z
     .array(
       z.object({
-        input: z.object(ThreadInputSchema.shape),
-        message: z.object({
-          id: MessageIdSchema,
-          author: MessageOutputSchema.shape.author,
-          preview: z.string().max(500),
-          truncated: z.boolean(),
-        }),
+        messageId: MessageIdSchema,
+        author: MessageSchema.shape.author,
+        preview: z.string().max(500),
+        truncated: z.boolean(),
         canCancel: z.boolean(),
         canMove: z.boolean(),
         canSteer: z.boolean(),
       }),
     )
     .max(100),
-  input: z.object(ThreadInputSchema.shape).optional(),
 });
 
 export const ThreadReadOutputSchema = z
   .object({
-    assignments: z.array(AssignmentSummarySchema).max(50),
-    assignmentWindow: WindowSchema,
-    messages: z.array(MessageOutputSchema).max(100),
-    thread: ThreadOutputSchema,
-    execution: ThreadConfigureOutputSchema,
-    queue: ThreadQueueOutputSchema,
-    window: WindowSchema,
+    thread: ThreadDetailSchema,
+    recentRuns: z
+      .array(
+        z.object({
+          runId: RunSchema.shape.id,
+          status: RunSchema.shape.status,
+          assignmentId: AssignmentIdSchema.nullable(),
+          modelId: ModelIdSchema,
+          createdAt: z.string(),
+          startedAt: z.string().nullable(),
+          completedAt: z.string().nullable(),
+        }),
+      )
+      .max(50),
+    recentPlaces: z
+      .array(
+        z.object({
+          runId: RunSchema.shape.id,
+          place: PlaceIdentitySchema,
+          title: z.string(),
+          site: z.string().nullable(),
+        }),
+      )
+      .max(10),
+    items: z.array(ThreadItemSchema).max(100),
+    ...PageSchema,
   })
   .refine(
     (result) => new TextEncoder().encode(JSON.stringify(result)).byteLength <= 432 * 1024,

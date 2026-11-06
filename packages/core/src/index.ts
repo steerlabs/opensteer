@@ -17,7 +17,6 @@ export * from "./models.js";
 export * from "./thread-authority.js";
 export * from "./thread-status.js";
 export * from "./thread-title.js";
-export * from "./thread-write.js";
 export * from "./marks.js";
 export * from "./notifications.js";
 export * from "./origins.js";
