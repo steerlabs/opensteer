@@ -1369,7 +1369,7 @@ const styles = StyleSheet.create({
   assistant: { gap: space[2] },
   /** Assistant prose keeps the reading ground, without a card around long Markdown. */
   reply: {
-    flexShrink: 1,
+    flex: 1,
     gap: space[4],
     paddingHorizontal: space[16],
     paddingVertical: space[12],
@@ -1377,7 +1377,7 @@ const styles = StyleSheet.create({
   replyColumn: { gap: space[6] },
   replyRow: {
     alignItems: "flex-end",
-    alignSelf: "flex-start",
+    alignSelf: "stretch",
     flexDirection: "row",
     gap: space[2],
     maxWidth: "92%",
