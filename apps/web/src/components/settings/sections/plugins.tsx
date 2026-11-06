@@ -565,7 +565,13 @@ function PluginDetail({
                 <SectionHeader
                   action={<EnableSwitch row={data.row} reload={detail.reload} />}
                   title={device?.name ?? data.row.title}
-                  lead={[data.row.source.kind, data.row.source.version].filter(Boolean).join(" · ")}
+                  {...(device
+                    ? {}
+                    : {
+                        lead: [data.row.source.kind, data.row.source.version]
+                          .filter(Boolean)
+                          .join(" · "),
+                      })}
                 />
               </div>
               {device ? <DeviceSetup detail={data} name={device.name} /> : null}

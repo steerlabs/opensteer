@@ -351,7 +351,14 @@ function Plugins({
       key: "hero",
       title: device?.name ?? row.title,
       rows: [
-        text("source", `${row.source.kind}${row.source.version ? ` · ${row.source.version}` : ""}`),
+        ...(device
+          ? []
+          : [
+              text(
+                "source",
+                `${row.source.kind}${row.source.version ? ` · ${row.source.version}` : ""}`,
+              ),
+            ]),
         toggle(row),
       ],
     });
