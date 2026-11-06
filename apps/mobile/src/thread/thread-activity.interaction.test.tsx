@@ -9,6 +9,7 @@ import {
   threadActivityIndicator,
   threadStartHold,
   threadStopTarget,
+  transcriptVoice,
   type MessageEntry,
 } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
@@ -19,7 +20,7 @@ import {
   withAccountPreparing,
 } from "@opensteer/client/test-support";
 import { composerView, type ComposerState } from "./composer-model.js";
-import { Message, TranscriptGroupRow, transcriptVoice, WorkingIndicator } from "./transcript.js";
+import { Message, TranscriptGroupRow, WorkingIndicator } from "./transcript.js";
 
 // The indicator is drawn by the real component with DOM hosts; the platform
 // primitives and animation drivers are outside this check.
@@ -51,7 +52,11 @@ vi.mock("../ui/workspace-mark.js", () => ({
   WorkspaceMark: () => null,
   WorkspaceIconGlyph: () => null,
 }));
-vi.mock("./message-menu.js", () => ({ MessageMenu: () => null }));
+vi.mock("./message-hold.js", () => ({
+  MessageHold: (props: { children: ReactNode }) => props.children,
+  MessageMore: (props: { reportId: string }) => <i data-report={props.reportId} />,
+}));
+vi.mock("../ui/copy-mark.js", () => ({ CopyMark: () => null }));
 vi.mock("./attachment-views.js", () => ({ MessageAttachments: () => null }));
 vi.mock("../markdown/markdown.js", () => ({
   Markdown: ({ text }: { text: string }) => <p>{text}</p>,
@@ -149,6 +154,37 @@ describe("a Thread's activity on the phone", () => {
       expect(container.textContent).toContain(message.body);
     },
   );
+
+  it.each([
+    ["with words", "The migration is ready."],
+    ["with nothing but files", ""],
+  ])("keeps what an agent wrote in a task reportable, %s", (_name, body) => {
+    const message: MessageEntry = {
+      author: { kind: "platform", cause: "run-recovery" },
+      body,
+      createdAt: "2026-11-03T10:00:00.000Z",
+      id: "message-reply",
+      kind: "message",
+      messageKind: "assistant",
+      runId: null,
+    };
+    const props = {
+      conversation: false,
+      homeThreadId: null,
+      message,
+      onOpenThread: () => {},
+      onReply: undefined,
+      onToggle: () => {},
+      open: true,
+      viewerUserId: "owner",
+      workspaces: [],
+    };
+    const finished = mount(<Message {...props} />);
+    expect(finished.querySelector("[data-report]")?.getAttribute("data-report")).toBe(message.id);
+
+    const streaming = mount(<Message {...props} message={{ ...message, streaming: true }} />);
+    expect(streaming.querySelector("[data-report]")).toBeNull();
+  });
 
   it.each(threadActivityScenarios(seeded).map((scenario) => [scenario.name, scenario] as const))(
     "shows the line and Stop every client shows when %s",

@@ -10,7 +10,6 @@
    right, on one surface: the reader's own words as a bubble, and what anyone
    or anything else sent as a card that says who sent it. The agent's own
    output stays bare. */
-.msg--user,
 .input-card {
   border: 1px solid var(--rim-plate);
   border-radius: 15px 15px 5px 15px;
@@ -34,13 +33,190 @@
   max-width: 84%;
 }
 
-.msg--user {
-  align-self: flex-end;
-  max-width: 84%;
+.msg--user-line {
+  display: flex;
+  align-items: flex-end;
+  align-self: stretch;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  min-width: 0;
   margin: var(--space-8) 0;
-  padding: var(--space-10) var(--space-14);
+}
+
+/* The reader's own words, in the accent, on every surface: the one filled
+   shape a person scanning a long thread can find. */
+.msg--user {
+  position: relative;
+  min-width: 0;
+  max-width: 84%;
+  padding: var(--bubble-padding);
+  border-radius: var(--bubble-radius);
+  background: var(--fill-accent);
+  color: var(--ink-on-ember);
+  font-size: var(--text-2xl);
+  line-height: var(--bubble-line);
+  overflow-wrap: anywhere;
   white-space: pre-wrap;
-  animation: rise-in var(--duration-med) var(--ease-out);
+}
+
+.msg--user::selection {
+  background: var(--ink-on-ember);
+  color: var(--ember-bright);
+}
+
+/* The last of a run of bubbles hooks under its corner, as in Messages: a bar in
+   the bubble's own fill, with the ground cutting the pinch beside it. */
+.msg--user::before,
+.reply__bubble--tail::before {
+  position: absolute;
+  bottom: -3.4px;
+  width: 13.6px;
+  height: 7.6px;
+  background: inherit;
+  content: "";
+}
+
+.msg--user::after,
+.reply__bubble--tail::after {
+  position: absolute;
+  bottom: -5.3px;
+  width: 9.9px;
+  height: 9.9px;
+  border-radius: 50%;
+  background: var(--ground);
+  content: "";
+}
+
+.msg--user::before {
+  right: 4.8px;
+  border-bottom-right-radius: 1.3px;
+  transform: rotate(32deg);
+}
+
+.msg--user::after {
+  right: -0.9px;
+}
+
+.transcript__row[data-continued] .msg--user::before,
+.transcript__row[data-continued] .msg--user::after,
+.msg--queued .msg--user::before,
+.msg--queued .msg--user::after {
+  display: none;
+}
+
+/* A bare mark beside what it acts on, never over it: no plate of its own, so
+   it reads as part of the message and costs no layer. */
+.mark {
+  position: relative;
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  transition:
+    color var(--duration-fast) var(--ease-out),
+    opacity var(--duration-fast) var(--ease-out);
+}
+
+.mark .icon {
+  width: 14px;
+  height: 14px;
+}
+
+.mark:hover,
+.mark[aria-expanded="true"] {
+  color: var(--text);
+}
+
+.mark[data-done] {
+  color: var(--ember);
+}
+
+.reply__marks {
+  display: flex;
+  flex: none;
+  margin-bottom: var(--space-4);
+}
+
+/* A message's marks wait for a pointer. Code and drafts keep their copy in
+   view, because copying is what they are for. */
+.reply__marks .mark,
+.msg--assistant__marks .mark,
+.input-card__copy {
+  opacity: 0;
+}
+
+.msg--user-line:hover .mark,
+.msg--user-line:focus-within .mark,
+.reply__line:hover .mark,
+.reply__line:focus-within .mark,
+.reply__line[data-kept] .mark:not(.reply__more),
+.reply:hover .reply__more,
+.reply--menu .reply__more,
+.turn:hover .msg--assistant__marks .mark,
+.msg--assistant__marks:focus-within .mark,
+.input-card:hover .input-card__copy,
+.input-card__copy:focus-visible,
+.mark[data-done] {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .reply__marks .mark,
+  .msg--assistant__marks .mark,
+  .input-card__copy {
+    opacity: 1;
+  }
+}
+
+@media (any-pointer: coarse) {
+  .mark::before {
+    position: absolute;
+    inset: -10px;
+    content: "";
+  }
+}
+
+.msg--assistant__marks {
+  display: flex;
+  height: 24px;
+  margin: var(--space-2) 0 0 -5px;
+}
+
+.input-card__copy {
+  margin: -2px -4px -2px auto;
+}
+
+/* It appears only where the person just sent it; history stands still. */
+@keyframes bubble-rise {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+}
+
+@keyframes bubble-pop {
+  from {
+    opacity: 0.2;
+    transform: scale(0.86);
+  }
+}
+
+.msg--user-line--arrived {
+  animation: bubble-rise var(--duration-bubble) var(--ease-bubble);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .msg--user-line--arrived,
+  .reply--arrived {
+    animation: none;
+  }
 }
 
 /* What others sent: a card as wide as its column whatever it holds, so a long
@@ -100,17 +276,16 @@
   opacity: 0.55;
 }
 
-.msg--queued > .msg--user,
+.msg--queued .msg--user,
 .msg--queued > .input-card {
-  border-style: dashed;
-  border-color: color-mix(in srgb, var(--muted) 55%, transparent);
+  border: 1px dashed color-mix(in srgb, var(--muted) 55%, transparent);
   background: transparent;
   box-shadow: none;
   color: var(--text-soft);
   animation: none;
 }
 
-.msg--queued > .msg--user,
+.msg--queued .msg--user-line,
 .msg--input.msg--queued {
   margin-bottom: var(--space-2);
   animation: none;

@@ -15,7 +15,8 @@ export const PersonShowMessageSchema = z.object({
   target: z.union([
     z.object({ tabId: BrowserSurfaceIdSchema }),
     z.object({ threadId: ThreadIdSchema }),
-    z.object({ place: PlaceIdentityViewSchema }),
+    /** `runId` is the Run in the place, which may not be the Run asking to show it. */
+    z.object({ place: PlaceIdentityViewSchema, runId: RunIdSchema }),
   ]),
 });
 export type PersonShowMessage = z.infer<typeof PersonShowMessageSchema>;

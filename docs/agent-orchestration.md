@@ -161,8 +161,8 @@ goes in both.
 ## Conversation roles and Assignments
 
 Role controls instructions and presentation, never access. Only a Run answering the person directly
-may use `person_message` or `person_show`; a task answers its assigner. A completed Run's last
-substantive reply is its single result ([`run-reply.ts`](../packages/database/src/run-reply.ts)). An
+may use `person_message` or `person_show`; a task answers its assigner, which shows what the task
+reports. A completed Run's last substantive reply is its single result ([`run-reply.ts`](../packages/database/src/run-reply.ts)). An
 Assignment spans Runs, one open per worker, and its identity travels with inputs so a late approval
 cannot attach to a new task. Completion is derived transactionally, never declared by an agent;
 results return only if the requester can still read the worker Workspace, and an empty result wakes
@@ -173,6 +173,41 @@ creator or a Workspace owner; Chat and active channel conversations cannot be Do
 open Assignment subtree, withdraws actionable inputs and Requests, pauses anchored Triggers and
 revokes grants; Reopen starts nothing. A task moves in lists only when a person asks it for
 something (`askedAt`). Clients never link to Workspaces the reader cannot open.
+
+Giving a finished task more work is a separate `thread_delegate`, never an effect of
+`thread_message`: choosing delegate or join must be one atomic decision, and a retry after the
+Assignment finishes could start the work twice. For the same reason a message result carries no hint
+to resubmit, since an unassigned queue may already have started a Run.
+
+## Reading another Thread's work
+
+The platform gives agents tools to get context and the agent decides what it needs. Nothing about a
+task's progress is injected or pushed; only its final result returns on its own.
+
+The `activity` view of `thread_read` is summary-first. Events give one ordering, and message text
+comes from published rows, so waiting inputs never appear. Tool text is clipped and arguments are
+absent unless the call names that item. Only the person a Run acted for reads its tool text: other
+members get title and status, because tool output can hold a page, mail or a code that presence
+rules alone would not cover. Node items carry title and status, Request items kind and title, never
+a prompt, result or payload. `sign_in`, `use_card`, `trigger_write` and `computer` keep status and
+title even by item, because they can carry a credential, a webhook secret, typed values or a phone
+PIN, and so does a completion with no resolvable start. A tool call naming a Mac app or phone is
+hidden unless the reader is that machine's effective owner, and a place attached to a message
+becomes a plain label for a reader who couldn't open it.
+
+This reduces exposure and does not remove it: integration output is stored verbatim, so the person
+a Run acted for, through any agent that reaches the Thread, can read an SMS code it returned.
+
+`recentPlaces` means recent, never live. It comes from durable `place.entered` events, filtered for
+the reader as [`latestPlaces`](../apps/host/src/browser/browser-service.ts) filters, and nothing is
+drained before reading. It never proves a place is still open.
+
+`person_show` with a `runId` shows another Run's place after the same Assignment refusal as any
+show. It needs reach to the target Thread, not write access, so a read-write voice Run can show a
+full-access task's page. It runs the `current` path against the target Run: a Mac app needs a live
+session of that Run and is refused rather than substituted, a phone needs its effective owner, and a
+browser is authorized with the caller's actor, never the target Run's. The place names the target
+Run while the message stays the caller's.
 
 ## Pages and apps in a conversation
 

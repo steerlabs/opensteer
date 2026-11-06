@@ -25,6 +25,8 @@ export interface AgentToolSpec<
   Output extends z.ZodType = z.ZodType,
 > {
   readonly access: AgentToolAccess;
+  /** A call that only reads, so it needs read access whatever the tool's own. */
+  readsOnly?(input: z.output<Input>): boolean;
   readonly minimumReach?: "workspace" | "user";
   /** Overrides the schema derived from `input` when a union reads poorly to models. */
   readonly advertisedInputSchema?: Readonly<Record<string, unknown>>;

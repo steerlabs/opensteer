@@ -240,7 +240,14 @@ it("preserves production action validation before consuming mocks", async () => 
         { action: "run", triggerId: "trg_00000000-0000-4000-8000-000000000011", name: "stray" },
       ],
       ["trigger_read", { action: "get" }],
-      ["thread_delegate", { task: "Missing destination" }],
+      [
+        "thread_delegate",
+        {
+          task: "Two destinations",
+          threadId: "thr_00000000-0000-4000-8000-000000000001",
+          workspaceId: "wsp_00000000-0000-4000-8000-000000000001",
+        },
+      ],
       ["browser_session_open", { fresh: true, sessionId: "existing" }],
     ] as const) {
       const result = await client.callTool({ name, arguments: args });

@@ -1,4 +1,12 @@
-import { FadeIn, FadeInDown, FadeInUp, FadeOut, LinearTransition } from "react-native-reanimated";
+import {
+  FadeIn,
+  FadeInDown,
+  FadeInUp,
+  FadeOut,
+  LinearTransition,
+  withSpring,
+  withTiming,
+} from "react-native-reanimated";
 
 /**
  * The app's motion, named once.
@@ -34,3 +42,34 @@ export const exit = FadeOut.duration(duration.exit);
  * so a list that loads appears at once.
  */
 export const move = LinearTransition.duration(duration.enter);
+
+/**
+ * A bubble settles on a spring and stops without a visible bounce. Only
+ * transform and opacity move, on the UI thread, so a bubble costs no layout.
+ * `withSpring` honours Reduce Motion as the builders above do.
+ */
+const bubbleSpring = { dampingRatio: 0.84, duration: 420 } as const;
+
+/** What the reader just sent: it rises out of the composer into its place. */
+export function bubbleRise() {
+  "worklet";
+  return {
+    animations: {
+      opacity: withTiming(1, { duration: 120 }),
+      transform: [{ translateY: withSpring(0, bubbleSpring) }],
+    },
+    initialValues: { opacity: 0, transform: [{ translateY: 36 }] },
+  };
+}
+
+/** A reply taking the place of its typing: it grows out of that bubble. */
+export function bubblePop() {
+  "worklet";
+  return {
+    animations: {
+      opacity: withTiming(1, { duration: 120 }),
+      transform: [{ scale: withSpring(1, bubbleSpring) }],
+    },
+    initialValues: { opacity: 0.2, transform: [{ scale: 0.88 }] },
+  };
+}

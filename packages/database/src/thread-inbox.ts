@@ -3904,7 +3904,6 @@ function canonicalDelegateThreadRequest(
     task: input.task,
     ...(input.threadId ? { threadId: input.threadId } : {}),
     title: input.title,
-    ...(input.icon ? { icon: input.icon } : {}),
     ...(input.titleSource && input.titleSource !== "chosen"
       ? { titleSource: input.titleSource }
       : {}),
@@ -4099,13 +4098,6 @@ export async function findDelegatedThreadByIdempotency(
   database: Kysely<DatabaseSchema>,
   input: DelegateThreadRequest,
 ): Promise<DelegatedThreadResult | null> {
-  if (input.threadId && input.icon !== undefined) {
-    throw new OpensteerError({
-      code: "bad_request",
-      message: "An icon can be chosen only for a new Thread",
-    });
-  }
-
   return (
     (await replayDelegatedThread(database, input, canonicalDelegateThreadRequest(input))) ?? null
   );
@@ -4156,13 +4148,6 @@ export async function delegateThreadInTransaction(
   transaction: Transaction<DatabaseSchema>,
   input: DelegateThreadRequest,
 ): Promise<DelegatedThreadResult> {
-  if (input.threadId && input.icon !== undefined) {
-    throw new OpensteerError({
-      code: "bad_request",
-      message: "An icon can be chosen only for a new Thread",
-    });
-  }
-
   const task = ContentPartSchema.array().min(1).parse(input.task);
   const request = { ...input, task };
   const requestPayload = canonicalDelegateThreadRequest(request);
@@ -4487,7 +4472,7 @@ export async function delegateThreadInTransaction(
       throw new OpensteerError({
         code: "conflict",
         details: { assignmentId: open.id },
-        message: `Thread ${threadId} is still working on task ${open.id}. Send corrections with thread_message, or cancel that task with assignment_cancel before giving the Thread new work.`,
+        message: `Thread ${threadId} is still working on task ${open.id}. Send corrections with thread_message, or cancel that task with task_cancel before giving the Thread new work.`,
       });
     }
     if (busy || queuedInput) {
@@ -4549,8 +4534,8 @@ export async function delegateThreadInTransaction(
         }),
         title: input.title,
         titleSource: input.titleSource ?? "chosen",
-        icon: input.icon ?? null,
-        iconSource: input.icon ? "chosen" : "provisional",
+        icon: null,
+        iconSource: "provisional",
         workspaceId: input.workspaceId,
       });
   await ensureSelectedProviderSession(transaction, threadRow);

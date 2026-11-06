@@ -1,3 +1,4 @@
+import { readToolRecords } from "../mcp/product-tools.test-support.js";
 import { callMcpTool } from "../mcp/call-tool.test-support.js";
 import { thread_delegate } from "@opensteer/agent-tools/tools";
 
@@ -2464,11 +2465,13 @@ integration("Browser presence and conversation usage", () => {
       type: "thread.delegate.result" as const,
       result: thread_delegate.output.parse(delegatedResponse.structuredContent),
     };
-    expect(delegated.result.message.content).toContainEqual(page);
+    expect((await readToolRecords(host.store, delegated.result)).message!.content).toContainEqual(
+      page,
+    );
     const forwardedUsage = await testRpcData(
       host.origin,
       "thread.browserUsage.get",
-      { runIds: [], threadId: delegated.result.thread.id },
+      { runIds: [], threadId: (await readToolRecords(host.store, delegated.result)).thread.id },
       { headers: host.ownerHeaders },
     );
     expect(forwardedUsage.uses).toContainEqual(
@@ -2476,11 +2479,11 @@ integration("Browser presence and conversation usage", () => {
     );
     const projected = resolvedInputParts(
       {
-        author: delegated.result.message.author,
-        content: delegated.result.message.content,
+        author: (await readToolRecords(host.store, delegated.result)).message!.author,
+        content: (await readToolRecords(host.store, delegated.result)).message!.content,
         kind: "input",
-        createdAt: delegated.result.message.createdAt,
-        messageId: delegated.result.message.id,
+        createdAt: (await readToolRecords(host.store, delegated.result)).message!.createdAt,
+        messageId: (await readToolRecords(host.store, delegated.result)).message!.id,
       },
       undefined,
     );
@@ -2491,7 +2494,11 @@ integration("Browser presence and conversation usage", () => {
       await writeFile(
         join(placeArtifactDirectory, "browser-place-input.json"),
         JSON.stringify(
-          { submitted: page, forwarded: delegated.result.message.content, projected },
+          {
+            submitted: page,
+            forwarded: (await readToolRecords(host.store, delegated.result)).message!.content,
+            projected,
+          },
           null,
           2,
         ),

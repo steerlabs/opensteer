@@ -8,12 +8,11 @@ import {
 } from "@opensteer/client/host";
 import { useHostSnapshot } from "@opensteer/client/react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
-import * as Clipboard from "expo-clipboard";
-import * as Haptics from "expo-haptics";
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { useState, type ReactNode } from "react";
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { Markdown } from "../markdown/markdown.js";
 import { color, radius, space, touchTarget, type } from "../theme.js";
+import { useCopy } from "../ui/copy-mark.js";
 import { useMobileState } from "../ui/mobile-client-context.js";
 import { AppText, Notice, monoFontFamily } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
@@ -139,25 +138,7 @@ function Verbatim(props: {
   readonly text: string;
 }): ReactNode {
   const [open, setOpen] = useState(props.collapsed !== true);
-  const [copied, setCopied] = useState(false);
-  const reset = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(
-    () => () => {
-      if (reset.current !== null) clearTimeout(reset.current);
-    },
-    [],
-  );
-  const copy = (): void => {
-    void Clipboard.setStringAsync(props.text).then(
-      () => {
-        void Haptics.selectionAsync();
-        setCopied(true);
-        if (reset.current !== null) clearTimeout(reset.current);
-        reset.current = setTimeout(() => setCopied(false), 1_500);
-      },
-      () => Alert.alert("Copy unavailable", "Please try again."),
-    );
-  };
+  const { copied, copy } = useCopy();
   return (
     <View style={styles.section}>
       <View style={styles.sectionHead}>
@@ -183,7 +164,7 @@ function Verbatim(props: {
           accessibilityLabel={copied ? "Copied" : `Copy ${props.label.toLocaleLowerCase()}`}
           accessibilityRole="button"
           hitSlop={space[12]}
-          onPress={copy}
+          onPress={() => copy(props.text)}
           style={styles.copy}
         >
           <AppText role="caption" tone={copied ? "ember" : "muted"}>

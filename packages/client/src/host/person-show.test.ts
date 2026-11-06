@@ -1,5 +1,6 @@
 import {
   PersonShowMessageSchema,
+  type PersonShowMessage,
   BrowserSurfaceIdSchema,
   computerAppIdentityKey,
 } from "@opensteer/protocol";
@@ -33,7 +34,7 @@ describe("person show navigation", () => {
           workspaceId: source.workspaceId,
           threadId: source.id,
           runId: session.runId,
-          target: { place },
+          target: { place, runId: session.runId },
         });
         const navigate = vi.fn();
         expect(
@@ -55,11 +56,40 @@ describe("person show navigation", () => {
         expect(
           handlePersonShow(
             snapshot,
-            { ...message, runId: createId("run") },
+            {
+              ...message,
+              target: { ...message.target, runId: createId("run") },
+            } as PersonShowMessage,
             { foreground: true, threadId: source.id },
             navigate,
           ),
         ).toBe(kind === "phone");
+        navigate.mockClear();
+        // A voice call shows a task's place: the call's Run asks, the task's Run is in it.
+        const call = {
+          threadId: createId("thread"),
+          runId: createId("run"),
+          workspaceId: source.workspaceId,
+        };
+        expect(
+          handlePersonShow(
+            snapshot,
+            PersonShowMessageSchema.parse({ ...message, ...call }),
+            { foreground: true, threadId: null, call },
+            navigate,
+          ),
+        ).toBe(true);
+        expect(navigate).toHaveBeenCalledExactlyOnceWith({
+          kind: "place",
+          destination:
+            kind === "app"
+              ? {
+                  ...place,
+                  computerSessionId: session.sessionId,
+                  source: { kind: "task-session", sessionId: session.sessionId },
+                }
+              : { kind, machineId: machine.id },
+        });
       } finally {
         client.dispose();
       }
@@ -227,7 +257,7 @@ describe("person show navigation", () => {
         runId: createId("run"),
         workspaceId: source.workspaceId,
         threadId: source.id,
-        target: { place: { kind: "browser", sessionId, surfaceId: tabId } },
+        target: { place: { kind: "browser", sessionId, surfaceId: tabId }, runId: createId("run") },
       });
       expect(
         handlePersonShow(snapshot, message, { foreground: true, threadId: source.id }, navigate),

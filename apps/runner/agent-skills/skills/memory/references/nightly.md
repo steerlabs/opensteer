@@ -17,9 +17,9 @@ last weekly review. Chat may edit it to forget; reread it immediately before wri
 ## Curate memory
 
 Read `memory/inbox/`, `memory/forgotten.md`, and the history since your checkpoint of Chat
-(`thread_read` with `threadId: "home"`) and the tasks in its lineage (`thread_list` with
-`limit: 50` or less, then `thread_read` each with new activity); other tasks in Main reach you
-through the inbox. Turn what will still matter into notes: merge what belongs together, replace
+(`thread_read` with `threadId: "home"`, newest first, paging with `before=nextBefore`) and the
+tasks in its lineage (`thread_list` with `limit: 50` or less, then `thread_read` each with new
+messages); other tasks in Main reach you through the inbox. Turn what will still matter into notes: merge what belongs together, replace
 stale facts, drop what has expired, and keep stated facts apart from inferences, with enough date
 and source to settle conflicts. Choose and reorganize the structure of `memory/` as it grows; keep
 every note reachable by links from the summary, and keep the `## Memory` section of `AGENTS.md`

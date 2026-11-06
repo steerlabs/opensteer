@@ -64,7 +64,6 @@ export class ThreadService {
     selection: {
       readonly specialistId?: string;
       readonly expectedHarnessRevision?: number;
-      readonly icon?: import("@opensteer/core").WorkspaceIconName;
     } = {},
   ) {
     if (
@@ -318,9 +317,7 @@ export class ThreadService {
   async write(
     actor: AgentCaller,
     command: { threadId: ThreadId; idempotencyKey: string } & (
-      | { action: "rename"; title: string }
-      | { action: "set_icon"; icon: import("@opensteer/core").WorkspaceIconName }
-      | { action: "done" | "reopen" }
+      { action: "rename"; title: string } | { action: "done" | "reopen" }
     ),
   ) {
     await this.assertTarget(actor, command.threadId);
@@ -333,11 +330,6 @@ export class ThreadService {
       case "rename":
         return {
           ...(await this.options.commands.renameThread({ ...input, title: command.title })),
-          doneWhenRunEnds: false,
-        };
-      case "set_icon":
-        return {
-          ...(await this.options.commands.setThreadIcon({ ...input, icon: command.icon })),
           doneWhenRunEnds: false,
         };
       default:

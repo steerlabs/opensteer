@@ -3,9 +3,14 @@ import type { ToolEntry } from "../host/client.js";
 /** Shared expectations for the rows people see on web, desktop and phones. */
 export const mcpPresentationScenarios = [
   ["thread_wait", {}, "Waiting for a task", "Waited for a task"],
-  ["thread_configure", { action: "set" }, "Changing a task’s AI", "Changed a task’s AI"],
+  [
+    "thread_configure",
+    { harnessInstanceId: "hin_1" },
+    "Changing a task’s AI",
+    "Changed a task’s AI",
+  ],
   ["thread_queue", { action: "resume" }, "Resuming queued work", "Resumed queued work"],
-  ["thread_write", { action: "interrupt" }, "Stopping a task", "Stopped a task"],
+  ["thread_interrupt", {}, "Stopping a task", "Stopped a task"],
   ["project_write", { action: "recover" }, "Recovering a project", "Recovered a project"],
   ["settings_read", {}, "Reading settings", "Read settings"],
   [

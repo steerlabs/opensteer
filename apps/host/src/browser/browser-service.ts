@@ -2082,7 +2082,15 @@ export class BrowserService {
       if ((latest.get(reference.threadId)?.at ?? "") <= reference.at)
         latest.set(reference.threadId, reference);
     }
-    const references = [...latest.values()];
+    return this.readablePlaces(ownerId, [...latest.values()]);
+  }
+
+  async readablePlaces<
+    T extends {
+      readonly threadId: ThreadId;
+      readonly place: import("@opensteer/core").PlaceIdentity;
+    },
+  >(ownerId: UserId, references: readonly T[]): Promise<T[]> {
     if (references.length === 0) return [];
     const [threads, sessions, owners] = await Promise.all([
       this.#repository.authorizedPlaceThreadIds?.(

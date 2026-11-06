@@ -1,9 +1,24 @@
+import {
+  thread_read,
+  thread_list,
+  thread_delegate,
+  thread_update,
+  thread_interrupt,
+  task_cancel,
+} from "@opensteer/agent-tools/tools";
+import {
+  ThreadReadOutputSchema,
+  ThreadListOutputSchema,
+  TaskSchema,
+  ThreadMessageOutputSchema,
+  ThreadUpdateOutputSchema,
+  ThreadInterruptOutputSchema,
+} from "@opensteer/agent-tools/outputs";
 import type { AgentTriggerManager } from "./handlers/triggers.js";
 import { ThreadService } from "../threads/thread-service.js";
 import {
   OpensteerError,
   AssignmentIdSchema,
-  AssignmentSummarySchema,
   BrowserAccessSuggestionSchema,
   BrowserProfileGrantIdSchema,
   BrowserProfileIdSchema,
@@ -15,23 +30,18 @@ import {
   MarkColorSchema,
   MessageContentSchema,
   MessageIdSchema,
-  MessageSchema,
   ModelIdSchema,
   ModelProviderIdSchema,
   ModelSelectionSchema,
   PersonMessageSchema,
   PersonShowTargetSchema,
-  PlaceContentPartSchema,
   RequestIdSchema,
+  RunIdSchema,
   RequestKindSchema,
   RequestViewSchema,
   RequestStatusSchema,
-  RunSchema,
   ThreadIdSchema,
   ThreadInputPolicySchema,
-  ThreadInputSchema,
-  ThreadSchema,
-  ThreadWriteInputSchema,
   WorkspaceBackingKindSchema,
   WorkspaceIconNameSchema,
   WorkspaceIdSchema,
@@ -54,7 +64,6 @@ import {
 import {
   DurableWindowCursorSchema,
   DurableWindowSchema,
-  ThreadMessageWindowSchema,
   WorkspaceViewSchema,
   workspaceViewFromWorkspace,
 } from "@opensteer/protocol";
@@ -63,9 +72,6 @@ import { PasswordSignInCodeSchema } from "@opensteer/protocol";
 import { MachineAliasSchema } from "@opensteer/protocol";
 
 const AgentDurableWindowSchema = z.strictObject(DurableWindowSchema.shape);
-const AgentThreadMessageWindowSchema = z.strictObject({
-  ...ThreadMessageWindowSchema.shape,
-});
 /**
  * The Workspace an agent is told about. The icon and colour are presentation
  * for people, and a Runner's strict parser from before them must still read
@@ -136,49 +142,10 @@ const ProductToolRequestUnionSchema = z.discriminatedUnion("type", [
     type: z.literal("project.create"),
   }),
 
-  z.strictObject({
-    ...requestBase,
-    assignmentBefore: DurableWindowCursorSchema.optional(),
-    before: DurableWindowCursorSchema.optional(),
-    maxMessages: z.number().int().min(1).max(100).default(100),
-    query: z.string().trim().min(1).max(256).optional(),
-    aroundMessageId: MessageIdSchema.optional(),
-    threadId: z.union([ThreadIdSchema, z.literal("home")]),
-    type: z.literal("thread.read"),
-  }),
-  z.strictObject({
-    ...requestBase,
-    before: DurableWindowCursorSchema.optional(),
-    limit: z.number().int().min(1).max(50).default(25),
-    query: z.string().trim().min(1).max(256).optional(),
-    type: z.literal("thread.list"),
-    workspaceId: WorkspaceIdSchema.optional(),
-  }),
-  z.strictObject({
-    ...requestBase,
-    environmentId: EnvironmentIdSchema.optional(),
-    harnessInstanceId: HarnessInstanceIdSchema.optional(),
-    model: DelegationModelChoiceSchema.optional(),
-    observationId: z.string().trim().min(1).max(255).optional(),
-    places: z.array(PlaceContentPartSchema).max(63).optional(),
-    task: z
-      .string()
-      .trim()
-      .min(1)
-      .max(64 * 1_024),
-    title: z.string().trim().min(1).max(240).optional(),
-    /** A new task Thread's symbol; an existing Thread keeps its own. */
-    icon: WorkspaceIconNameSchema.optional(),
-    specialist: z.string().trim().min(1).max(256).optional(),
-    type: z.literal("thread.delegate"),
-    threadId: ThreadIdSchema.optional(),
-    workspaceId: WorkspaceIdSchema.optional(),
-  }),
-  z.strictObject({
-    ...requestBase,
-    assignmentId: AssignmentIdSchema,
-    type: z.literal("assignment.cancel"),
-  }),
+  thread_read.input.safeExtend({ ...requestBase, type: z.literal("thread.read") }),
+  thread_list.input.safeExtend({ ...requestBase, type: z.literal("thread.list") }),
+  thread_delegate.input.safeExtend({ ...requestBase, type: z.literal("thread.delegate") }),
+  task_cancel.input.safeExtend({ ...requestBase, type: z.literal("task.cancel") }),
   z.strictObject({
     ...requestBase,
     content: MessageContentSchema,
@@ -199,8 +166,13 @@ const ProductToolRequestUnionSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     ...requestBase,
-    input: ThreadWriteInputSchema,
-    type: z.literal("thread.write"),
+    input: thread_update.input,
+    type: z.literal("thread.update"),
+  }),
+  z.strictObject({
+    ...requestBase,
+    input: thread_interrupt.input,
+    type: z.literal("thread.interrupt"),
   }),
   z.strictObject({
     ...requestBase,
@@ -419,33 +391,6 @@ const WorkspaceSummarySchema = z.strictObject({
   ]),
 });
 
-const AcceptedThreadInputResultSchema = z.strictObject({
-  input: ThreadInputSchema,
-  message: MessageSchema,
-  run: RunSchema.nullable(),
-  thread: ThreadSchema,
-});
-
-const DeliveredThreadInputResultSchema = AcceptedThreadInputResultSchema.extend({
-  /** The open Assignment this input joined, so a correction is seen to reach running work. */
-  assignmentId: AssignmentIdSchema.nullable(),
-  disposition: z.enum(["cancelled", "pending", "steering", "run-queued"]),
-});
-
-const AgentThreadSummarySchema = z.strictObject({
-  doneAt: ThreadSchema.shape.doneAt.optional(),
-  environmentConnected: z.boolean(),
-  environmentId: ThreadSchema.shape.environmentId,
-  id: ThreadSchema.shape.id,
-  parentThreadId: ThreadSchema.shape.parentThreadId,
-  pendingRequests: ThreadSchema.shape.pendingRequests,
-  status: ThreadSchema.shape.status,
-  title: ThreadSchema.shape.title.nullable(),
-  updatedAt: ThreadSchema.shape.updatedAt,
-  workspaceId: ThreadSchema.shape.workspaceId,
-  workspaceName: WorkspaceSummarySchema.shape.name,
-});
-
 const GrantedBrowserProfileSchema = z.strictObject({
   access: z.enum(["read", "read-write"]),
   grantId: BrowserProfileGrantIdSchema,
@@ -479,34 +424,17 @@ const ProductToolResultUnionSchema = z.discriminatedUnion("type", [
     workspace: AgentWorkspaceViewSchema,
   }),
 
+  ThreadReadOutputSchema.safeExtend({ ...responseBase, type: z.literal("thread.read.result") }),
   z.strictObject({
     ...responseBase,
-    assignments: z.array(AssignmentSummarySchema).max(50),
-    assignmentWindow: AgentDurableWindowSchema,
-    messages: z.array(MessageSchema).max(100),
-    thread: ThreadSchema,
-    type: z.literal("thread.read.result"),
-    window: AgentThreadMessageWindowSchema,
-  }),
-  z.strictObject({
-    ...responseBase,
-    result: AcceptedThreadInputResultSchema.extend({ assignmentId: AssignmentIdSchema }),
+    result: TaskSchema.extend({ assignmentId: AssignmentIdSchema, runId: RunIdSchema }),
     type: z.literal("thread.delegate.result"),
   }),
+  TaskSchema.safeExtend({ ...responseBase, type: z.literal("task.cancel.result") }),
+  ThreadListOutputSchema.safeExtend({ ...responseBase, type: z.literal("thread.list.result") }),
   z.strictObject({
     ...responseBase,
-    assignment: AssignmentSummarySchema,
-    type: z.literal("assignment.cancel.result"),
-  }),
-  z.strictObject({
-    ...responseBase,
-    threads: z.array(AgentThreadSummarySchema).max(50),
-    type: z.literal("thread.list.result"),
-    window: AgentDurableWindowSchema,
-  }),
-  z.strictObject({
-    ...responseBase,
-    result: DeliveredThreadInputResultSchema,
+    result: ThreadMessageOutputSchema,
     type: z.literal("thread.message.result"),
   }),
   z.strictObject({
@@ -520,12 +448,10 @@ const ProductToolResultUnionSchema = z.discriminatedUnion("type", [
     status: z.enum(["sent-unconfirmed", "no-device-connected", "already-requested"]),
     connectedDevices: z.number().int().nonnegative(),
   }),
-  z.strictObject({
+  ThreadUpdateOutputSchema.safeExtend({ ...responseBase, type: z.literal("thread.update.result") }),
+  ThreadInterruptOutputSchema.safeExtend({
     ...responseBase,
-    /** Done on this Run's own task waits for the Run to end; see `thread_write`. */
-    doneWhenRunEnds: z.boolean(),
-    thread: AgentThreadSummarySchema,
-    type: z.literal("thread.write.result"),
+    type: z.literal("thread.interrupt.result"),
   }),
   z.strictObject({
     ...responseBase,
@@ -633,9 +559,12 @@ export class ProductToolsTestClient {
     const unavailableDefaults = new Proxy(
       {},
       {
-        get: () => async () => {
-          throw new Error("Unexpected dependency");
-        },
+        get: (_target, name) =>
+          name === "readablePlaces"
+            ? async (_ownerId: unknown, references: unknown) => references
+            : async () => {
+                throw new Error("Unexpected dependency");
+              },
       },
     );
     const defaultCommands = {
@@ -741,7 +670,8 @@ export class ProductToolsTestClient {
     let name: string = request.type.replaceAll(".", "_").replaceAll("-", "_");
     const { type: _type, requestId, ...rest } = request;
     let input: Record<string, unknown> = rest;
-    if (request.type === "thread.write") input = request.input;
+    if (request.type === "thread.update" || request.type === "thread.interrupt")
+      input = request.input;
     if (request.type === "browser.tab.read" || request.type === "browser.tab.write")
       input = request.input;
     if (request.type === "request.withdraw") input = { requestId: request.targetRequestId };
@@ -810,4 +740,66 @@ export class WatchToolsTestClient extends ProductToolsTestClient {
   constructor(options: TestOptions) {
     super(options, "watch");
   }
+}
+
+export async function readToolRecords(
+  store: import("@opensteer/database").OpensteerStore,
+  result: {
+    readonly threadId?: import("@opensteer/core").ThreadId;
+    readonly runId: import("@opensteer/core").RunId | null;
+    readonly messageId?: import("@opensteer/core").MessageId;
+    readonly assignmentId?: import("@opensteer/core").AssignmentId | null;
+  },
+) {
+  const { messageFromRow, runFromRow, threadFromRow, threadInputFromRow } =
+    await import("@opensteer/database/test-support/store");
+  const assignment = result.assignmentId ? await store.getAssignment(result.assignmentId) : null;
+  const messageId = result.messageId ?? assignment?.initialInputMessageId;
+  const messageRow = messageId
+    ? await store.database
+        .selectFrom("messages")
+        .selectAll()
+        .where("id", "=", messageId)
+        .executeTakeFirst()
+    : result.runId
+      ? await store.database
+          .selectFrom("messages")
+          .innerJoin("threadInputs", "threadInputs.messageId", "messages.id")
+          .selectAll("messages")
+          .where("threadInputs.runId", "=", result.runId)
+          .orderBy("messages.sequence", "asc")
+          .executeTakeFirst()
+      : undefined;
+  const threadId = result.threadId ?? messageRow?.threadId;
+  if (!threadId) throw new Error("Tool result has no persisted Thread");
+  const threadRow = await store.database
+    .selectFrom("threads")
+    .selectAll()
+    .where("id", "=", threadId)
+    .executeTakeFirstOrThrow();
+  const runRow = result.runId
+    ? await store.database
+        .selectFrom("runs")
+        .selectAll()
+        .where("id", "=", result.runId)
+        .executeTakeFirst()
+    : undefined;
+  const inputRow = messageRow
+    ? await store.database
+        .selectFrom("threadInputs")
+        .selectAll()
+        .where("messageId", "=", messageRow.id)
+        .executeTakeFirst()
+    : undefined;
+  return {
+    thread: threadFromRow({
+      ...threadRow,
+      pendingRequests: threadRow.pendingRequestCount,
+      providerSessionId: null,
+      continuationIdentity: null,
+    }),
+    run: runRow ? runFromRow(runRow) : null,
+    message: messageRow ? messageFromRow(messageRow) : null,
+    input: inputRow ? threadInputFromRow(inputRow) : null,
+  };
 }

@@ -72,8 +72,9 @@ export function readThreadWaitSnapshot(
               .selectAll("messages")
               .where("messages.sequence", ">", after)
               .orderBy("messages.sequence", "asc")
-              .limit(100)
+              .limit(101)
               .execute();
+      const kept = boundedSerializedPrefix(messages.map(messageFromRow), 100, 400 * 1024).items;
       const runQuery = tx
         .selectFrom("runs")
         .select(["id", "status"])
@@ -94,7 +95,8 @@ export function readThreadWaitSnapshot(
       return {
         ...(run ? { run } : {}),
         ...(pendingRequest ? { pendingRequest } : {}),
-        messages: boundedSerializedPrefix(messages.map(messageFromRow), 100, 400 * 1024).items,
+        messages: kept,
+        hasMore: messages.length > kept.length,
         lastSequence: latest ? SequenceSchema.parse(latest.sequence) : undefined,
       };
     },
