@@ -303,15 +303,15 @@ function settledOrActiveView(input: DesktopUpdateViewInput): DesktopUpdateView {
   if (input.status?.supported === false)
     return {
       ...base,
-      headline: "Update on that computer",
-      detail: `Opensteer on ${name} can't be updated from here. Update it on that computer.`,
+      headline: "Managed separately",
+      detail: `Updates for ${name} are managed by its operator.`,
     };
   switch (input.failure) {
     case "unsupported":
       return {
         ...base,
-        headline: "Update on that computer first",
-        detail: `${name} needs one update on that computer. After that, you can update it from here.`,
+        headline: "Remote updates unavailable",
+        detail: `${name} doesn't provide remote updates. Ask its operator about updates.`,
       };
     case "unauthorized":
       return {

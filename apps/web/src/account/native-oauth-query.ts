@@ -4,19 +4,17 @@ interface BrowserLocationParts {
   readonly search: string;
 }
 
-/**
- * Better Auth signs the complete authorization query before sending the
- * browser to the Host login page. Keep that opaque signed value only in
- * memory, remove it from browser history, and return it unchanged so the Host
- * can verify it when password or upstream OIDC login creates the session.
- */
+/** Keep the signed request in this history entry so reload and Back retain consent. */
 export function consumeNativeOAuthQuery(
   location: BrowserLocationParts,
-  replace: (url: string) => void,
+  replace: (url: string, state: Record<string, unknown>) => void,
+  historyState: unknown = null,
 ): string | null {
-  if (location.pathname !== "/" || location.search.length <= 1) return null;
-  const raw = location.search.slice(1);
-  if (raw.length > 32_768) return null;
+  if (location.pathname !== "/") return null;
+  const entry = typeof historyState === "object" && historyState !== null ? historyState : {};
+  const saved = "nativeOAuthQuery" in entry ? entry.nativeOAuthQuery : null;
+  const raw = location.search.length > 1 ? location.search.slice(1) : saved;
+  if (typeof raw !== "string" || raw.length > 32_768) return null;
   const parameters = new URLSearchParams(raw);
   if (
     parameters.get("response_type") !== "code" ||
@@ -30,6 +28,7 @@ export function consumeNativeOAuthQuery(
   ) {
     return null;
   }
-  replace(`${location.pathname}${location.hash}`);
+  if (location.search.length > 1)
+    replace(`${location.pathname}${location.hash}`, { ...entry, nativeOAuthQuery: raw });
   return raw;
 }

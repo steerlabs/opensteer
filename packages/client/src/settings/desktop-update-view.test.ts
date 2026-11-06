@@ -243,17 +243,15 @@ describe("when the computer can't be updated from here", () => {
     expect(view({ failure: "forbidden" }).hidden).toBe(true);
   });
 
-  it("sends a server Deployment to that computer", () => {
+  it("leaves server updates with its operator", () => {
     const shown = view({ status: status({ supported: false, state: null }) });
-    expect(shown.detail).toBe(
-      "Opensteer on Studio Mac can't be updated from here. Update it on that computer.",
-    );
+    expect(shown.detail).toBe("Updates for Studio Mac are managed by its operator.");
     expect(shown.action).toBeNull();
   });
 
-  it("asks for one local update on a Host that predates the contract", () => {
+  it("does not infer an outdated Host from an unsupported endpoint", () => {
     const shown = view({ status: null, failure: "unsupported" });
-    expect(shown.detail).toContain("needs one update on that computer");
+    expect(shown.headline).toBe("Remote updates unavailable");
     expect(shown.action).toBeNull();
   });
 

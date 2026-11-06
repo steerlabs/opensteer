@@ -136,7 +136,11 @@ export function App({
   }, [continuingSetup, onSetupOpened, shellReady]);
   const [recoveryToken] = useState(takeRecoveryToken);
   const [nativeOAuthQuery] = useState(() =>
-    consumeNativeOAuthQuery(window.location, (url) => window.history.replaceState(null, "", url)),
+    consumeNativeOAuthQuery(
+      window.location,
+      (url, state) => window.history.replaceState(state, "", url),
+      window.history.state,
+    ),
   );
   const [authorizationError, setAuthorizationError] = useState(() =>
     consumeOAuthErrorQuery(window.location, (url) => window.history.replaceState(null, "", url)),
@@ -211,7 +215,11 @@ export function App({
       if (redirectUrl) window.location.assign(redirectUrl);
       else await hostClient.refresh();
     } catch (error) {
-      setOnboardingError(actionErrorMessage(error));
+      setOnboardingError(
+        nativeOAuthQuery
+          ? `${actionErrorMessage(error)} You can close this browser and start sign-in again in the Opensteer app.`
+          : actionErrorMessage(error),
+      );
     } finally {
       setOnboardingPending(false);
     }
@@ -276,7 +284,9 @@ export function App({
         ).url,
       );
     } catch (error) {
-      setOnboardingError(actionErrorMessage(error));
+      setOnboardingError(
+        `${actionErrorMessage(error)} Close this browser and start sign-in again in the Opensteer app.`,
+      );
       setNativeAuthorizationPending(false);
     }
   }
