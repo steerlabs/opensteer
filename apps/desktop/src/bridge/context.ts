@@ -18,6 +18,8 @@ import type {
   DesktopAgentPhoneArtifact,
   DesktopChooseUsbDeviceInput,
   DesktopLocalExecutionStatus,
+  DesktopTailscaleShareResult,
+  DesktopTailscaleStatus,
 } from "@opensteer/protocol/desktop";
 import type { DeploymentAccessService } from "../connections/deployment-access-service.js";
 import type { DesktopHostTransport } from "../connections/host-transport.js";
@@ -180,12 +182,23 @@ export interface DesktopBridgeOptions {
     readonly status: () => Promise<DesktopPasswordsStatus>;
     readonly subscribe: (listener: (status: DesktopPasswordsStatus) => void) => () => void;
   };
+  readonly notifications: {
+    /** This app's page in the system's notification settings, where the system has one. */
+    readonly openSettings: () => Promise<void>;
+  };
+  readonly tailscale: {
+    readonly share: () => Promise<DesktopTailscaleShareResult>;
+    readonly status: () => Promise<DesktopTailscaleStatus>;
+  };
   readonly portal: {
     readonly openExternal: (url: string) => Promise<void>;
     /** The chosen folder, or null when the dialog was closed without one. */
     readonly pickFolder: () => Promise<string | null>;
   };
-  readonly runner: Pick<LocalRunnerService, "remove" | "start" | "status" | "subscribe">;
+  readonly runner: Pick<
+    LocalRunnerService,
+    "recheckEngines" | "remove" | "start" | "status" | "subscribe"
+  >;
 }
 
 export interface DesktopBridgeContext {

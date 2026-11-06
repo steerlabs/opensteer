@@ -32,7 +32,10 @@ import { z } from "zod";
 import type { DesktopConfiguration } from "../config.js";
 import { computerName } from "./computer-name.js";
 import type { PersonalLocalBrowserHandle } from "./personal-local-runtime.js";
-import { runnerWorkerSecretsMessage } from "./runner-worker-secrets.js";
+import {
+  runnerWorkerEnginesRecheckMessage,
+  runnerWorkerSecretsMessage,
+} from "./runner-worker-secrets.js";
 import {
   LocalRunnerDeploymentUnavailableError,
   type DesktopLocalRunnerTarget,
@@ -423,6 +426,17 @@ export class LocalRunnerService {
     } catch (error) {
       if (this.#intentIsCurrent(slot, intentGeneration)) this.#disableIntent(slot);
       throw error;
+    }
+  }
+
+  /**
+   * Asks every running worker that runs agents to look for engines now; each
+   * Runner tells its Host only when what it can run changed.
+   */
+  recheckEngines(): void {
+    for (const slot of this.#runners.values()) {
+      if (slot.child && slot.activeRunAgents)
+        slot.child.postMessage(runnerWorkerEnginesRecheckMessage);
     }
   }
 

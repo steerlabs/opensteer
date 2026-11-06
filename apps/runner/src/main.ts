@@ -98,6 +98,12 @@ export async function runRunnerDaemon(
   environment: NodeJS.ProcessEnv = process.env,
   signal?: AbortSignal,
   options: {
+    /**
+     * Hands a supervisor what it may ask of the running daemon: rechecking
+     * engines now rather than at the next heartbeat. Called once, before the
+     * first connection.
+     */
+    readonly control?: (control: { readonly recheckEngines: () => void }) => void;
     readonly onConnected?: (identity: {
       readonly environmentId: EnvironmentId;
       readonly runnerId: RunnerId;
@@ -178,6 +184,8 @@ export async function runRunnerDaemon(
       runtimeVersion: RUNTIME_VERSION,
       ...(started.shellModule ? { shellModule: started.shellModule } : {}),
     });
+    const running = connection;
+    options.control?.({ recheckEngines: () => running.recheckEngines() });
     await connection.run(shutdown.signal);
   } finally {
     signal?.removeEventListener("abort", externalAbort);

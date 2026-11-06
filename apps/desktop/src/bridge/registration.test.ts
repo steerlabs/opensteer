@@ -117,6 +117,8 @@ describe("desktop bridge", () => {
       },
       passwords: passwordsPort().port,
 
+      notifications: { openSettings: vi.fn(async () => undefined) },
+      tailscale: tailscalePort(),
       portal: { openExternal: vi.fn(async () => undefined), pickFolder: vi.fn(async () => null) },
       runner,
     });
@@ -313,6 +315,8 @@ describe("desktop bridge", () => {
       },
       passwords: passwordsPort().port,
 
+      notifications: { openSettings: vi.fn(async () => undefined) },
+      tailscale: tailscalePort(),
       portal: { openExternal: vi.fn(async () => undefined), pickFolder: vi.fn(async () => null) },
       runner: runnerController(),
     });
@@ -590,6 +594,8 @@ function registerWith(
     },
     passwords: passwords.port,
 
+    notifications: { openSettings: vi.fn(async () => undefined) },
+    tailscale: tailscalePort(),
     portal: { openExternal: vi.fn(async () => undefined), pickFolder: vi.fn(async () => null) },
     runner: runnerController(),
   });
@@ -643,6 +649,13 @@ function snapshot(revision = 1) {
   });
 }
 
+function tailscalePort() {
+  return {
+    share: vi.fn(async () => ({ ok: true as const, origin: "https://studio.tailnet.ts.net" })),
+    status: vi.fn(async () => ({ state: "not-installed" as const })),
+  };
+}
+
 function runnerController() {
   const listeners = new Set<() => void>();
   const status = (deploymentId: ReturnType<typeof createId<"deployment">>) => ({
@@ -662,6 +675,7 @@ function runnerController() {
     schemaVersion: 4 as const,
   });
   return {
+    recheckEngines: vi.fn(),
     remove: vi.fn(async (deploymentId) => status(deploymentId)),
     notify: () => {
       for (const listener of listeners) listener();

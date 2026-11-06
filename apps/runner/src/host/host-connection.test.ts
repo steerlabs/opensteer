@@ -4,8 +4,20 @@ import { createServer } from "node:http";
 import { once } from "node:events";
 import type { AddressInfo } from "node:net";
 import type { RunnerConfig } from "@opensteer/config";
-import { createId, type EnvironmentId, type RunId, type ThreadId } from "@opensteer/core";
-import { HarnessRegistry, nativeUserHarnessRuntimeBoundary } from "@opensteer/harness";
+import {
+  createId,
+  HarnessIdSchema,
+  ThreadAccessModeSchema,
+  type EnvironmentId,
+  type RunId,
+  type ThreadId,
+} from "@opensteer/core";
+import {
+  HarnessRegistry,
+  nativeUserHarnessRuntimeBoundary,
+  type HarnessDriver,
+} from "@opensteer/harness";
+import { z } from "zod";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { getIntegrationDefinition } from "@opensteer/integration-catalog";
 import { isComputerAppDefinition } from "@opensteer/integration-core/computer-app";
@@ -1780,6 +1792,298 @@ describe("runnerWebSocketUrl", () => {
     }
   });
 });
+
+describe("ReconnectingHostConnection engine rechecks", () => {
+  const driverKind = HarnessIdSchema.parse("engine-recheck-test");
+
+  it("never reconnects while its engines are unchanged, and re-advertises one installed since its hello with its Runs held", async () => {
+    // Only the heartbeat's interval is faked, so each heartbeat is one the test sends.
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const host = await fakeAgentsHost();
+    let installed = false;
+    const runner = engineRecheckRunner(host.url, () => installed);
+    const heldRun = {
+      bindingGeneration: 1,
+      environmentId: runner.environmentId,
+      nextOrdinal: 3,
+      runId: createId("run"),
+      terminal: false,
+      threadId: createId("thread"),
+      workspaceId: createId("workspace"),
+    };
+    vi.spyOn(runner.runtime, "attachInventory").mockReturnValue([heldRun]);
+    const abort = new AbortController();
+    const running = runner.connection.run(abort.signal);
+    try {
+      await host.until(() => host.attaches.length === 1, "the first connection");
+      runner.connection.recheckEngines();
+      // A heartbeat rechecks before it sends; one arriving on the first
+      // connection afterwards proves neither recheck hung up.
+      vi.advanceTimersByTime(1_000);
+      await host.until(() => host.heartbeats(1) === 1, "a heartbeat on the first connection");
+      expect(host.hellos).toHaveLength(1);
+      expect(host.hellos[0]).toEqual([
+        expect.objectContaining({ driverKind, readiness: "unavailable" }),
+      ]);
+
+      installed = true;
+      runner.connection.recheckEngines();
+      runner.connection.recheckEngines();
+      await host.until(() => host.attaches.length === 2, "the recheck's reconnect");
+      expect(host.hellos).toHaveLength(2);
+      expect(host.hellos[1]).toEqual([
+        expect.objectContaining({
+          driverKind,
+          readiness: "runtime-check",
+          sources: [expect.objectContaining({ sourceId: "test", stateKinds: ["ambient"] })],
+        }),
+      ]);
+      expect(host.attaches[1]).toEqual([heldRun]);
+      // A runnable engine compares equal to its own advertisement too.
+      vi.advanceTimersByTime(1_000);
+      await host.until(() => host.heartbeats(2) === 1, "a heartbeat on the second connection");
+      expect(host.hellos).toHaveLength(2);
+      expect(runner.errors).toEqual([]);
+    } finally {
+      abort.abort(new Error("test complete"));
+      await running;
+      await runner.runtime.close();
+      await host.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("waits while trigger work runs, and reconnects at the next heartbeat once it is idle", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const host = await fakeAgentsHost();
+    let installed = false;
+    const runner = engineRecheckRunner(host.url, () => installed);
+    const abort = new AbortController();
+    const running = runner.connection.run(abort.signal);
+    try {
+      await host.until(() => host.attaches.length === 1, "the first connection");
+      const triggerWork = vi
+        .spyOn(runner.runtime, "activeTriggerOccurrenceIds")
+        .mockReturnValue([createId("triggerOccurrence")]);
+      installed = true;
+      runner.connection.recheckEngines();
+      vi.advanceTimersByTime(1_000);
+      await host.until(() => host.heartbeats(1) === 1, "a heartbeat during trigger work");
+      expect(host.hellos).toHaveLength(1);
+
+      triggerWork.mockReturnValue([]);
+      vi.advanceTimersByTime(1_000);
+      await host.until(() => host.hellos.length === 2, "the reconnect once trigger work ended");
+      expect(host.hellos[1]).toEqual([
+        expect.objectContaining({ driverKind, readiness: "runtime-check" }),
+      ]);
+    } finally {
+      abort.abort(new Error("test complete"));
+      await running;
+      await runner.runtime.close();
+      await host.close();
+      vi.useRealTimers();
+    }
+  });
+
+  function engineRecheckRunner(hostUrl: URL, installed: () => boolean) {
+    const registry = new HarnessRegistry();
+    const driver: HarnessDriver = {
+      accessModes: ThreadAccessModeSchema.options,
+      capabilities: {
+        approvals: false,
+        attachments: false,
+        interruption: false,
+        mcpImageContent: false,
+        resume: false,
+        steering: false,
+        toolCalls: false,
+        userInput: false,
+      },
+      configSchema: z.strictObject({}),
+      create: async () => Promise.reject(new Error("not used")),
+      kind: driverKind,
+      sources: [
+        {
+          fields: [],
+          kind: "first-party",
+          label: "Test source",
+          quota: "none",
+          sourceId: "test",
+          stateKinds: ["ambient"],
+        },
+      ],
+    };
+    registry.registerDriver(
+      driver,
+      { status: "runtime-check" },
+      {
+        create: () => driver,
+        locate: () => (installed() ? "/opt/engine-recheck-test/bin/engine" : undefined),
+        missing: "The test engine is not installed.",
+        scope: "all",
+      },
+    );
+    const runnerId = createId("runner");
+    const environmentId = createId("environment");
+    const bootId = RunnerBootIdSchema.parse(`rbt_${randomUUID()}`);
+    const runtime = new RunnerRuntime({
+      nodeExecutable: process.execPath,
+      agentSkills: testAgentSkills,
+      plugins: noPlugins,
+      bootId,
+      deploymentShape: serverDeploymentShape,
+      environmentId,
+      harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
+      harnesses: registry,
+      maxConcurrentRuns: 1,
+      dataDirectory: "/tmp/opensteer-engine-recheck-test",
+      privateStateDirectory: "/tmp/opensteer-engine-recheck-test/state",
+      browserHarnessExecutable: "/opt/opensteer/browser-harness",
+      projectContinuationIdentity,
+      workspaceManager: {
+        prepare: async () => Promise.reject(new Error("not used")),
+        writableRoots: () => ["/runner/workspaces"],
+      },
+    });
+    const pair = generateKeyPairSync("ed25519");
+    const identity = {
+      createdAt: new Date().toISOString(),
+      environmentId,
+      lastConnectionGeneration: 0,
+      privateKey: pair.privateKey,
+      publicKey: pair.publicKey,
+      publicKeyPem: pair.publicKey.export({ format: "pem", type: "spki" }).toString(),
+      runnerId,
+      version: 3 as const,
+    };
+    const errors: string[] = [];
+    const connection = new ReconnectingHostConnection({
+      agents: {
+        localWorkspaces: localStorageFixture(),
+        runtime,
+        workspaceBackings: ["local-directory"],
+      },
+      bootId,
+      config: {
+        browserBridge: undefined,
+        controlCaPath: undefined,
+        dataDirectory: "/tmp/opensteer-engine-recheck-test",
+        deploymentShape: serverDeploymentShape,
+        enrollmentToken: "e".repeat(32),
+        environmentId,
+        hostUrl,
+        localWorkspaceRegistryPath: undefined,
+        localWorkspaceRoot: undefined,
+        maxConcurrentRuns: 1,
+        maxConcurrentTriggerPrograms: 4,
+        mode: "development",
+        modules: ["agents"],
+        name: "Engine recheck runner",
+        nodeExecutable: process.execPath,
+        runnerId,
+        runnerKind: "main",
+        workspaceBackings: ["local-directory"],
+        workspaceNamespace: "owner-scoped",
+      },
+      identity,
+      identityStore: {
+        acceptHostConnection: async ({ connectionGeneration }) => ({
+          ...identity,
+          lastConnectionGeneration: connectionGeneration,
+        }),
+      },
+      logger: { error: (message) => void errors.push(message), info: () => undefined },
+      runtimeVersion: "test",
+    });
+    return { connection, environmentId, errors, runtime };
+  }
+});
+
+/**
+ * A Host that welcomes every hello and records, per connection, the engines it
+ * advertised, the Runs it attached and how many heartbeats it sent.
+ */
+async function fakeAgentsHost() {
+  const server = createServer();
+  const webSockets = new WebSocketServer({
+    path: "/internal/v1/runners",
+    perMessageDeflate: false,
+    server,
+  });
+  await new Promise<void>((ready) => server.listen(0, "127.0.0.1", ready));
+  const address = server.address() as AddressInfo;
+  const hellos: unknown[] = [];
+  const attaches: unknown[] = [];
+  const heartbeats = new Map<number, number>();
+  const waiters = new Set<{ readonly check: () => boolean; readonly resolve: () => void }>();
+  const observed = () => {
+    for (const waiter of waiters) {
+      if (!waiter.check()) continue;
+      waiters.delete(waiter);
+      waiter.resolve();
+    }
+  };
+  webSockets.on("connection", (socket) => {
+    const generation = hellos.length + 1;
+    socket.send(
+      JSON.stringify({
+        challengeId: RunnerChallengeIdSchema.parse(`rch_${randomUUID()}`),
+        expiresAt: new Date(Date.now() + 30_000).toISOString(),
+        hostSessionId: randomUUID(),
+        nonce: randomUUID(),
+        proofFormatVersion: 2,
+        type: "host.challenge",
+      }),
+    );
+    socket.on("message", (raw) => {
+      const message = RunnerToHostMessageSchema.parse(JSON.parse(raw.toString("utf8")));
+      if (message.type === "runner.enroll" || message.type === "runner.authenticate") {
+        hellos.push(message.descriptor.modules.agents?.harnessDrivers);
+        socket.send(
+          JSON.stringify({
+            allowedModules: ["agents"],
+            bootId: message.descriptor.bootId,
+            connectionGeneration: generation,
+            connectionId: RunnerConnectionIdSchema.parse(`rcn_${randomUUID()}`),
+            connectionLeaseExpiresAt: new Date(Date.now() + 120_000).toISOString(),
+            connectionLeaseId: RunnerConnectionLeaseIdSchema.parse(`rls_${randomUUID()}`),
+            environmentIds: runnerEnvironmentIds(message.descriptor),
+            heartbeatIntervalMs: 1_000,
+            runnerId: message.descriptor.runnerId,
+            serverTime: new Date().toISOString(),
+            type: "host.welcome",
+          }),
+        );
+      } else if (message.type === "runner.executions.attach") {
+        attaches.push(message.executions);
+      } else if (message.type === "runner.heartbeat") {
+        heartbeats.set(generation, (heartbeats.get(generation) ?? 0) + 1);
+      }
+      observed();
+    });
+  });
+  return {
+    attaches,
+    heartbeats: (generation: number) => heartbeats.get(generation) ?? 0,
+    hellos,
+    /** Resolves once `check` holds after a frame, or fails naming what never happened. */
+    until: (check: () => boolean, what: string): Promise<void> => {
+      if (check()) return Promise.resolve();
+      const reached = Promise.withResolvers<void>();
+      waiters.add({ check, resolve: reached.resolve });
+      return withTimeout(reached.promise, 2_000, {
+        timeoutError: () => new Error(`${what} never happened`),
+      });
+    },
+    url: new URL(`http://127.0.0.1:${address.port}`),
+    close: async () => {
+      for (const client of webSockets.clients) client.terminate();
+      await new Promise<void>((resolve) => webSockets.close(() => resolve()));
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    },
+  };
+}
 
 function controlCommand(
   type: "request.resolve" | "run.interrupt" | "run.steer",

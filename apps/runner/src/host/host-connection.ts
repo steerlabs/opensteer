@@ -64,6 +64,7 @@ import { BoundedRunnerInbox } from "../runtime/bounded-inbox.js";
 import {
   RunnerRuntime,
   errorCatalog,
+  type HarnessDriverAvailability,
   type RefreshedRunCredentials,
   type RunnerMessageSink,
 } from "../runtime/runtime.js";
@@ -332,6 +333,10 @@ export class ReconnectingHostConnection {
   /** Set after the Host rejects this Runner's persisted key; see `#proof`. */
   #reenroll = false;
   #socket: WebSocket | undefined;
+  /** The engines the current socket's hello advertised; see `recheckEngines`. */
+  #advertisedEngines: { readonly signature: string; readonly socket: WebSocket } | undefined;
+  /** This Runner hung up itself to say hello again, which is not a failure. */
+  #reconnectForEngines = false;
 
   constructor(options: ReconnectingHostConnectionOptions) {
     this.#fence = new RunnerConnectionFenceLedger(
@@ -398,28 +403,35 @@ export class ReconnectingHostConnection {
           await this.#onRevoked?.();
           return;
         }
-        failures += 1;
-        // Without a credential no amount of retrying can succeed, so say once
-        // what would fix it rather than repeating the same failure every few
-        // seconds until someone reads the whole scrollback.
-        if (this.#unenrollable()) {
-          if (!reportedUnenrollable) {
-            reportedUnenrollable = true;
-            this.#logger.error(
-              this.#identity.lastConnectionGeneration > 0
-                ? "This Host does not recognize this Runner's saved identity. Supply a new enrollment token, or remove the Runner data directory to enroll as a new Runner."
-                : "This Runner is not enrolled. Supply an enrollment token before it can connect.",
-              { dataDirectory: this.#config.dataDirectory, runnerId: this.#identity.runnerId },
-            );
+        if (!this.#reconnectForEngines) {
+          failures += 1;
+          // Without a credential no amount of retrying can succeed, so say once
+          // what would fix it rather than repeating the same failure every few
+          // seconds until someone reads the whole scrollback.
+          if (this.#unenrollable()) {
+            if (!reportedUnenrollable) {
+              reportedUnenrollable = true;
+              this.#logger.error(
+                this.#identity.lastConnectionGeneration > 0
+                  ? "This Host does not recognize this Runner's saved identity. Supply a new enrollment token, or remove the Runner data directory to enroll as a new Runner."
+                  : "This Runner is not enrolled. Supply an enrollment token before it can connect.",
+                { dataDirectory: this.#config.dataDirectory, runnerId: this.#identity.runnerId },
+              );
+            }
+          } else {
+            this.#logger.error("Runner connection closed", {
+              attempt: failures,
+              error: safeErrorMessage(error),
+            });
           }
-        } else {
-          this.#logger.error("Runner connection closed", {
-            attempt: failures,
-            error: safeErrorMessage(error),
-          });
         }
       }
       if (signal.aborted) break;
+      if (this.#reconnectForEngines) {
+        this.#reconnectForEngines = false;
+        failures = 0;
+        continue;
+      }
       const ceiling = this.#unenrollable()
         ? unenrollableReconnectDelayMs
         : Math.min(
@@ -441,6 +453,24 @@ export class ReconnectingHostConnection {
   close(): void {
     const socket = this.#socket;
     if (socket && socket.readyState < WebSocket.CLOSING) socket.close(1001, "Runner shutting down");
+  }
+
+  /**
+   * The Host learns this computer's engines only from a hello, so when a CLI
+   * has appeared or gone since this socket's, the Runner reconnects to say
+   * hello again. Runs survive that; trigger programs do not, so it waits while
+   * one is running and the next heartbeat looks again.
+   */
+  recheckEngines(): void {
+    const advertised = this.#advertisedEngines;
+    const runtime = this.#agents?.runtime;
+    if (!advertised || !runtime || advertised.socket !== this.#socket) return;
+    if (advertised.socket.readyState !== WebSocket.OPEN) return;
+    if (engineSignature(runtime.harnessDriverAvailability()) === advertised.signature) return;
+    if (runtime.activeTriggerOccurrenceIds().length > 0) return;
+    this.#reconnectForEngines = true;
+    this.#logger.info("This computer's AI engines changed; reconnecting to tell the Host");
+    advertised.socket.close(1000, "Runner engines changed");
   }
 
   async #connectOnce(signal: AbortSignal): Promise<void> {
@@ -565,6 +595,7 @@ export class ReconnectingHostConnection {
       socket.off("error", onError);
       socket.off("error", absorbSocketError);
       if (this.#socket === socket) this.#socket = undefined;
+      if (this.#advertisedEngines?.socket === socket) this.#advertisedEngines = undefined;
       if (sink) {
         await this.#onDisconnected?.();
         await this.#agents?.runtime.connectionLost(sink);
@@ -649,6 +680,10 @@ export class ReconnectingHostConnection {
     });
     this.#enrollmentCredential = undefined;
     this.#reenroll = false;
+    const advertisedDrivers = descriptor.modules.agents?.harnessDrivers;
+    this.#advertisedEngines = advertisedDrivers
+      ? { signature: engineSignature(advertisedDrivers), socket }
+      : undefined;
     this.#logger.info("Runner connected to Host", {
       connectionGeneration: response.connectionGeneration,
       environmentId: this.#identity.environmentId,
@@ -1112,6 +1147,8 @@ export class ReconnectingHostConnection {
         .catch(() => socket.close(1011, "Heartbeat failed"));
     };
     const heartbeat = setInterval(() => {
+      this.recheckEngines();
+      if (socket.readyState !== WebSocket.OPEN) return;
       sendHeartbeat();
       for (const module of modules.values()) void this.#moduleHeartbeat(module);
     }, welcome.heartbeatIntervalMs);
@@ -2384,6 +2421,17 @@ export async function waitForRunnerReconnect(
     };
     signal.addEventListener("abort", aborted, { once: true });
   });
+}
+
+/** What the Host would see change in a driver advertisement when a CLI appears or goes. */
+function engineSignature(drivers: readonly HarnessDriverAvailability[]): string {
+  return JSON.stringify(
+    drivers.map(({ driverKind, readiness, sources }) => [
+      driverKind,
+      readiness,
+      (sources ?? []).map(({ sourceId, stateKinds }) => [sourceId, [...stateKinds]]),
+    ]),
+  );
 }
 
 function safeErrorMessage(error: unknown): string {
