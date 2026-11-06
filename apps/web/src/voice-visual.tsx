@@ -8,10 +8,10 @@ import {
   VoiceClock,
   VoiceDock,
   VoiceIsland,
-  VoiceMark,
   type VoiceControls,
 } from "./components/voice.js";
 import { useVoiceCursor } from "./components/voice-cursor.js";
+import { Icon } from "./components/icon.js";
 import "@fontsource-variable/inter/wght.css";
 import "@fontsource-variable/fraunces/wght.css";
 import "./styles/index.css";
@@ -166,7 +166,7 @@ function Rows() {
     <aside className="voice-visual__sidebar">
       <div data-voice-row="chat">Chat</div>
       <div>
-        <VoiceMark /> Voice <VoiceClock />
+        <Icon className="voice-thread-mark" name="waveform" /> Voice <VoiceClock />
       </div>
       <h2>Tasks</h2>
       <div data-voice-row="nopa">Nopa reservation</div>

@@ -25,6 +25,7 @@ import {
 } from "@opensteer/client/voice";
 import { observeResize } from "@opensteer/shared/resizeObserver";
 import { createBrowserVoiceMediaPort } from "../voice/media-port.js";
+import { FoldRow, FoldToFit } from "./fold-to-fit.js";
 import { Icon } from "./icon.js";
 import { useOptionalWorkspace } from "./workspace/workspace-context.js";
 
@@ -199,7 +200,7 @@ export function VoiceStart({
     <div className="input-surface voice-slot">
       <VoiceDock hidden={dockHidden} />
       {idle ? (
-        <div className="voice-start">
+        <FoldToFit className="voice-start">
           <button
             className="voice-start__talk"
             disabled={!controller || !available}
@@ -209,14 +210,14 @@ export function VoiceStart({
             <Icon name="waveform" />
             Talk to Opensteer
           </button>
-          {controls}
-        </div>
+          <FoldRow className="voice-start__settings">{controls}</FoldRow>
+        </FoldToFit>
       ) : null}
     </div>
   );
 }
 
-/** The cursor's arrow, Voice's one mark: on the pill, on its rows and on the move. */
+/** The cursor's arrow: the call's mark on the pill and on the move. */
 export function VoiceMark({ className }: { readonly className?: string }) {
   return (
     <svg
