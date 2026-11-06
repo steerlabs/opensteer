@@ -162,7 +162,7 @@ describe("what agents can use on a computer", () => {
         accessLabels: { read: "Read only", readWrite: "Read and send" },
         accessLevels: ["read", "read-write"],
         accessSummaries: { read: "Reads.", readWrite: "Reads and sends." },
-        operations: [{ effect: "read", name: "list_conversations" }],
+        operations: [{ effect: "read", name: "query_messages" }],
         platforms: ["darwin"],
       },
       id: "apple-messages",

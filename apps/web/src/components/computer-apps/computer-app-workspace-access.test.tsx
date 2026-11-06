@@ -200,7 +200,7 @@ const presentation: ComputerAppPresentation = {
   accessLevels: ["read", "read-write"],
   accessSummaries: { read: "Can read.", readWrite: "Can read and send." },
   operations: [
-    { effect: "read", name: "list_conversations" },
+    { effect: "read", name: "query_messages" },
     { effect: "write", name: "send_message" },
   ],
   platforms: ["darwin"],

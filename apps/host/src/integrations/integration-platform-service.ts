@@ -76,7 +76,10 @@ import {
   type IntegrationToolMaterial,
   type LocalMcpLaunch,
 } from "@opensteer/integration-core";
-import type { ComputerAppDefinition } from "@opensteer/integration-core/computer-app";
+import type {
+  ComputerAppDefinition,
+  ComputerAppOperation,
+} from "@opensteer/integration-core/computer-app";
 import {
   computerAppOperationContract,
   computerAppTools,
@@ -151,7 +154,15 @@ import {
   type McpOAuthService,
   type RedactingOAuthClientProvider,
 } from "./mcp-oauth-service.js";
-import { ComputerMcpSessionError, type ComputerAppHub } from "../computer-apps/computer-app-hub.js";
+import {
+  ComputerMcpSessionError,
+  type ComputerAppHub,
+  type ComputerAppInvokeInput,
+  type ComputerAppInvokeSend,
+} from "../computer-apps/computer-app-hub.js";
+import type { RunFileRelay } from "./run-file-relay.js";
+import type { RunnerRunFileResult } from "@opensteer/protocol";
+import type { RunnerRegistry } from "@opensteer/orchestration";
 import { ComputerMcpTransport } from "./computer-mcp-transport.js";
 import { LocalMcpSecrets } from "./local-mcp-secrets.js";
 import {
@@ -198,6 +209,28 @@ export interface RunToolContext {
 export interface ToolCaller {
   readonly run: RunCapabilityClaims<string> | null;
   readonly threadId: ThreadId;
+}
+
+/** What moving a file between a Run and a computer app needs from the Host. */
+export interface RunFilePort {
+  /** Whether this Runner's apps can move files for an operation. */
+  appFiles(runnerId: RunnerId): boolean;
+  readonly relay: RunFileRelay;
+  request: RunnerRegistry["requestRunFile"];
+  /** Whether this Runner can give a Run files and take them from it. */
+  runFiles(runnerId: RunnerId): boolean;
+}
+
+type ComputerPlacement = NonNullable<
+  Awaited<ReturnType<IntegrationPlatformStore["getComputerConnectionForCall"]>>
+>;
+type JsonObject = Readonly<Record<string, unknown>>;
+
+interface RunFileRoute {
+  close(failure?: Error): void;
+  readonly files: NonNullable<ComputerAppInvokeInput["files"]>;
+  /** The Run's side, when it is on another Runner. */
+  readonly peer?: Promise<RunnerRunFileResult>;
 }
 
 /**
@@ -341,6 +374,7 @@ export class IntegrationPlatformService {
     context: RunCapabilityClaims<string>,
   ) => boolean | Promise<boolean>;
   readonly #computerUseVersion: (runnerId: RunnerId) => number | undefined;
+  readonly #runFiles: RunFilePort | undefined;
   readonly #mcpImageContent: (context: EngineCapabilityQuery) => Promise<boolean>;
   /** Who may use which app on which Mac; this service only dispatches the calls. */
   readonly computerAppApprovals: ComputerAppApprovalService;
@@ -381,6 +415,7 @@ export class IntegrationPlatformService {
       context: RunCapabilityClaims<string>,
     ) => boolean | Promise<boolean>;
     readonly computerUseVersion?: (runnerId: RunnerId) => number | undefined;
+    readonly runFiles?: RunFilePort;
     readonly computerReplTime?: Pick<
       ConstructorParameters<typeof ComputerReplService>[0],
       "clock" | "wait"
@@ -438,6 +473,7 @@ export class IntegrationPlatformService {
     this.#store = options.store;
     this.#computerToolEnabled = options.computerToolEnabled ?? (() => false);
     this.#computerUseVersion = options.computerUseVersion ?? (() => undefined);
+    this.#runFiles = options.runFiles;
     this.computerRepl = new ComputerReplService({
       ...options.computerReplTime,
       invoke: async () => {
@@ -2591,19 +2627,132 @@ export class IntegrationPlatformService {
         code: "bad_request",
         message: `Invalid ${operation.title} arguments at ${issue.path}: ${issue.message}`,
       });
-    const sent = await admit(async (connection, access) =>
-      this.#computerApps.send({
-        access,
-        arguments: HostIntegrationsInvokeSchema.shape.arguments.parse(args),
-        contract: computerAppOperationContract(operation),
-        definitionId: definition.id,
-        effect: operation.effect,
-        operation: operation.name,
-        runnerId: connection.runnerId,
-        ...(signal ? { signal } : {}),
-      }),
+    const route = this.#runFileRoute(operation, args, caller, placement, signal);
+    if (typeof route === "string")
+      return { content: [{ type: "text", text: route }], isError: true };
+    try {
+      return await this.#finishComputerTool(
+        await admit(async (connection, access) =>
+          this.#computerApps.send({
+            access,
+            arguments: HostIntegrationsInvokeSchema.shape.arguments.parse(args),
+            contract: computerAppOperationContract(operation),
+            definitionId: definition.id,
+            effect: operation.effect,
+            ...(route ? { files: route.files } : {}),
+            operation: operation.name,
+            runnerId: connection.runnerId,
+            ...(signal ? { signal } : {}),
+          }),
+        ),
+        route,
+        callable,
+        operation,
+        placement,
+      );
+    } finally {
+      route?.close();
+    }
+  }
+
+  /**
+   * How this call's files reach its Run, a sentence saying why they cannot, or
+   * undefined when none move. The Run's own Runner keeps them on that computer;
+   * only a Run elsewhere sends bytes through the Host.
+   */
+  #runFileRoute(
+    operation: ComputerAppOperation,
+    args: Readonly<Record<string, unknown>>,
+    caller: ToolCaller,
+    placement: { readonly runnerId: RunnerId; readonly runnerName: string },
+    signal: AbortSignal | undefined,
+  ): RunFileRoute | string | undefined {
+    const paths =
+      operation.files === "send" && Array.isArray(args.files) ? args.files.map(String) : [];
+    if (!operation.files || (operation.files === "send" && paths.length === 0)) return undefined;
+    const run = caller.run;
+    if (!run) return "Files move only inside a task. Delegate a task to do this.";
+    const port = this.#runFiles;
+    if (!port?.appFiles(placement.runnerId))
+      return `Update Opensteer on ${placement.runnerName} to use ${operation.title}.`;
+    if (!port.runFiles(run.runnerId))
+      return "Update Opensteer on the computer running this task to move files.";
+    const execution = { bindingGeneration: run.bindingGeneration, runId: run.runId };
+    if (run.runnerId === placement.runnerId)
+      return { close: () => undefined, files: { run: execution } };
+    const relays = (operation.files === "send" ? paths : [""]).map(() => port.relay.open());
+    const close = (failure?: Error) => relays.forEach((relay) => relay.close(failure));
+    const stop = new AbortController();
+    const onAbort = () => stop.abort();
+    signal?.addEventListener("abort", onAbort, { once: true });
+    const peer = port.request(
+      run.runnerId,
+      operation.files === "send"
+        ? {
+            execution,
+            files: paths.map((path, index) => ({ path, transfer: relays[index]!.upload })),
+            type: "host.run-file.send",
+          }
+        : {
+            execution,
+            transfers: relays.map(({ download }) => download),
+            type: "host.run-file.receive",
+          },
+      stop.signal,
     );
-    const outcome = await sent.outcome;
+    // A refused path ends the Source Runner's wait at once, before anything is sent.
+    const settled = peer.then(
+      (result) => {
+        if (!result.ok) close(new Error(result.message));
+        return result;
+      },
+      (error: unknown) => {
+        close(error instanceof Error ? error : undefined);
+        throw error;
+      },
+    );
+    settled.catch(() => undefined);
+    return {
+      close: (failure) => {
+        close(failure);
+        signal?.removeEventListener("abort", onAbort);
+        stop.abort();
+      },
+      files: {
+        transfers: relays.map((relay) =>
+          operation.files === "send" ? relay.download : relay.upload,
+        ),
+      },
+      peer: settled,
+    };
+  }
+
+  async #finishComputerTool(
+    sent: ComputerAppInvokeSend,
+    route: RunFileRoute | undefined,
+    callable: CallableIntegrationTool,
+    operation: ComputerAppOperation,
+    placement: ComputerPlacement,
+  ): Promise<Awaited<ReturnType<Client["callTool"]>>> {
+    const answer = await sent.outcome;
+    if (answer.kind !== "ok") route?.close();
+    const peer = route?.peer ? await route.peer.catch(() => null) : undefined;
+    // A send keeps the app's answer unless the app definitely never sent: a transfer error
+    // must never hide a send that may have happened.
+    const peerDecides =
+      operation.files === "export" || (answer.kind !== "ok" && answer.code !== "outcome-unknown");
+    if (peerDecides && peer?.ok === false && peer.message)
+      return { content: [{ type: "text", text: peer.message }], isError: true };
+    const delivered = peer?.paths?.[0];
+    if (answer.kind === "ok" && operation.files === "export" && peer !== undefined && !delivered)
+      return {
+        content: [{ type: "text", text: "The file did not reach this task. Try again." }],
+        isError: true,
+      };
+    const outcome =
+      answer.kind === "ok" && delivered
+        ? { ...answer, value: { ...(answer.value as JsonObject), path: delivered } }
+        : answer;
     if (outcome.kind === "ok")
       return sanitizeToolResult(
         {

@@ -14,6 +14,7 @@ import type { IntegrationAccess, IntegrationToolMaterial } from "./models.js";
 export function computerAppOperationContract(operation: ComputerAppOperation): string {
   return integrationSchemaDigest({
     effect: operation.effect,
+    ...(operation.files ? { files: operation.files } : {}),
     inputSchema: operation.inputSchema,
     name: operation.name,
     outputSchema: operation.outputSchema,

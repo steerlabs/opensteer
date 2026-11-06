@@ -79,8 +79,8 @@ describe("an app the helper serves", () => {
       port({ automation: "requestable", "full-disk-access": "granted" }),
     );
     expect(await provider.inspect()).toEqual([
-      { detail: "Ready to read", operation: "list_conversations", remedy: null, state: "ready" },
-      { detail: "Ready to read", operation: "read_messages", remedy: null, state: "ready" },
+      { detail: "Ready to read", operation: "query_messages", remedy: null, state: "ready" },
+      { detail: "Ready to read", operation: "export_attachment", remedy: null, state: "ready" },
       {
         detail: "Sending in Messages needs macOS Automation permission for Opensteer Computer Use.",
         operation: "send_message",
@@ -94,7 +94,7 @@ describe("an app the helper serves", () => {
     );
     expect((await unread.inspect())[0]).toEqual({
       detail: "Reading Messages needs macOS Full Disk Access for Opensteer Computer Use.",
-      operation: "list_conversations",
+      operation: "query_messages",
       remedy: "full-disk-access",
       state: "permission-required",
     });
@@ -105,7 +105,7 @@ describe("an app the helper serves", () => {
       const helper = port({ contacts });
       const provider = createHelperAppProvider("apple-messages", helper);
       expect((await provider.inspect()).slice(0, 2)).toEqual(
-        ["list_conversations", "read_messages"].map((operation) => ({
+        ["query_messages", "export_attachment"].map((operation) => ({
           detail: "Reading Contacts needs macOS access to Contacts for Opensteer Computer Use.",
           operation,
           remedy: "contacts",
@@ -116,7 +116,7 @@ describe("an app the helper serves", () => {
         new ComputerUseBridgeError("permission-required", "Contacts denied"),
       );
       await expect(
-        provider.invoke("list_conversations", {}, new AbortController().signal, invocation),
+        provider.invoke("query_messages", {}, new AbortController().signal, invocation),
       ).rejects.toEqual(
         new ComputerAppError(
           "permission-required",
@@ -144,7 +144,7 @@ describe("an app the helper serves", () => {
     );
     await expect(
       createHelperAppProvider("apple-messages", helper).invoke(
-        "list_conversations",
+        "query_messages",
         {},
         new AbortController().signal,
         invocation,
@@ -160,7 +160,9 @@ describe("an app the helper serves", () => {
   it("reads a grant macOS cannot report yet as ready, since the helper settles it before acting", async () => {
     // Automation is reported only while Messages runs; a send checks it first.
     const provider = createHelperAppProvider("apple-messages", port({ automation: "unknown" }));
-    expect((await provider.inspect())[2]).toEqual({
+    expect(
+      (await provider.inspect()).find((operation) => operation.operation === "send_message"),
+    ).toEqual({
       detail: "Ready",
       operation: "send_message",
       remedy: null,

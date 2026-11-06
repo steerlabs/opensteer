@@ -11,6 +11,7 @@ export * from "./runtime/native-fs-helper.js";
 export * from "./agent/program-executor.js";
 export * from "./runtime/runtime.js";
 export * from "./attachments/attachment-cache.js";
+export { RunFiles } from "./attachments/run-files.js";
 export * from "./skills/skill-plan.js";
 export * from "./skills/workspace-skills.js";
 export * from "./browser/browser-cdp-relay.js";

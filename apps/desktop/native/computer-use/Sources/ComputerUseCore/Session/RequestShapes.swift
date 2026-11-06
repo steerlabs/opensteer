@@ -213,6 +213,7 @@ enum Wire {
   }
 
   struct DataInvokeParams: Codable, Sendable, Equatable {
+    var scratchDirectory: String? = nil
     let access: DataAccess
     let arguments: [String: JSONValue]
     let contract: String

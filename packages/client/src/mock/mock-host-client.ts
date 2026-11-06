@@ -1549,12 +1549,12 @@ const mockMachines: readonly MachineSummary[] = [
         definitionId: "apple-messages",
         operations: [
           {
-            operation: "list_conversations",
+            operation: "query_messages",
             detail: "Ready to read",
             remedy: null,
             state: "ready",
           },
-          { operation: "read_messages", detail: "Ready to read", remedy: null, state: "ready" },
+          { operation: "export_attachment", detail: "Ready to read", remedy: null, state: "ready" },
           { operation: "send_message", detail: "Ready to read", remedy: null, state: "ready" },
         ],
       },
@@ -1617,13 +1617,13 @@ const mockMachines: readonly MachineSummary[] = [
         definitionId: "apple-messages",
         operations: [
           {
-            operation: "list_conversations",
+            operation: "query_messages",
             detail: "Reading Messages requires macOS Full Disk Access.",
             remedy: "full-disk-access",
             state: "permission-required",
           },
           {
-            operation: "read_messages",
+            operation: "export_attachment",
             detail: "Reading Messages requires macOS Full Disk Access.",
             remedy: "full-disk-access",
             state: "permission-required",

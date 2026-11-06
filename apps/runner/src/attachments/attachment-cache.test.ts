@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -32,6 +32,28 @@ const attachment = {
 };
 
 describe("Runner attachment delivery", () => {
+  it("keeps exports during inventory refresh and preserves the Thread inode when cleared", async () => {
+    const root = await mkdtemp(join(tmpdir(), "opensteer-exports-"));
+    roots.push(root);
+    const cache = new AttachmentCache({
+      root,
+      transport,
+      fetch: async () => Response.json({ attachments: [], nextCursor: null }),
+    });
+    const directory = await cache.directory(attachment.threadId);
+    const before = await stat(directory);
+    await mkdir(join(directory, "exports"));
+    await writeFile(join(directory, "exports", "photo"), "bytes");
+    await cache.prepare({
+      threadId: attachment.threadId,
+      plan: { token: "secret" },
+      signal: new AbortController().signal,
+    });
+    expect(await readFile(join(directory, "exports", "photo"), "utf8")).toBe("bytes");
+    await cache.clear(attachment.threadId);
+    expect((await stat(directory)).ino).toBe(before.ino);
+    expect(await readdir(directory)).toEqual([]);
+  });
   it("keeps an empty Thread directory ready for the first file in an active steer", async () => {
     const root = await mkdtemp(join(tmpdir(), "opensteer-attachment-e2e-"));
     roots.push(root);

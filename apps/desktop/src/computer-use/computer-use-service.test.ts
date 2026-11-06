@@ -272,13 +272,13 @@ describe.skipIf(!onMac)("an app the helper serves, from the Host to the Mac and 
     expect(appStatus(harness.hostStream, "apple-messages")).toEqual([
       {
         detail: "Reading Messages needs macOS Full Disk Access for Opensteer Computer Use.",
-        operation: "list_conversations",
+        operation: "query_messages",
         remedy: "full-disk-access",
         state: "permission-required",
       },
       {
         detail: "Reading Messages needs macOS Full Disk Access for Opensteer Computer Use.",
-        operation: "read_messages",
+        operation: "export_attachment",
         remedy: "full-disk-access",
         state: "permission-required",
       },
@@ -294,7 +294,7 @@ describe.skipIf(!onMac)("an app the helper serves, from the Host to the Mac and 
       () =>
         expect(
           appStatus(harness.hostStream, "apple-messages")?.find(
-            ({ operation }) => operation === "read_messages",
+            ({ operation }) => operation === "export_attachment",
           ),
         ).toMatchObject({ remedy: "full-disk-access", state: "permission-required" }),
       waitLong,
@@ -313,7 +313,7 @@ describe.skipIf(!onMac)("an app the helper serves, from the Host to the Mac and 
       () =>
         expect(
           appStatus(harness.hostStream, "apple-messages")?.find(
-            ({ operation }) => operation === "read_messages",
+            ({ operation }) => operation === "export_attachment",
           ),
         ).toMatchObject({ remedy: "contacts", state: "permission-required" }),
       { interval: 10, timeout: 2_000 },
@@ -325,7 +325,7 @@ describe.skipIf(!onMac)("an app the helper serves, from the Host to the Mac and 
       () =>
         expect(
           appStatus(harness.hostStream, "apple-messages")?.find(
-            ({ operation }) => operation === "read_messages",
+            ({ operation }) => operation === "export_attachment",
           ),
         ).toMatchObject({ remedy: null, state: "ready" }),
       { interval: 10, timeout: 2_000 },

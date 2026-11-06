@@ -2476,8 +2476,8 @@ function computerRequest(): LoadedAccessRequest {
       accessLabels: { read: "Read only", readWrite: "Read and send" },
       accessLevels: ["read", "read-write"],
       operations: [
-        { name: "list_conversations", effect: "read" },
-        { name: "read_messages", effect: "read" },
+        { name: "query_messages", effect: "read" },
+        { name: "export_attachment", effect: "read" },
         { name: "send_message", effect: "write" },
       ],
       accessSummaries: {
@@ -2525,7 +2525,7 @@ function computerRequest(): LoadedAccessRequest {
             {
               annotations: { readOnlyHint: true },
               connectionId: connection.id,
-              id: "itl_read_messages",
+              id: "itl_export_attachment",
               serverId: "isv_messages",
               status: "active",
             },

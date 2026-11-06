@@ -22,3 +22,4 @@ Read only the reference needed for the work:
 - [Requests](references/requests.md) when connecting, installing or requesting access.
 - [Proposals](references/proposals.md) when the catalog has no fitting integration.
 - [Boundaries](references/boundaries.md) when handling credentials, computer-hosted services or Trigger access.
+- [Apple Messages](references/apple-messages.md) before querying, exporting or sending in Messages.

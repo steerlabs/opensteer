@@ -1,3 +1,4 @@
+import { RunFiles } from "../attachments/run-files.js";
 import { MacWindowVideoRelay, type MacVideoEvent } from "./mac-window-video-relay.js";
 import type { RunnerTransportPolicy } from "@opensteer/runner-client";
 import type { RunnerIntegrationsComputerViewResult } from "@opensteer/protocol";
@@ -46,6 +47,7 @@ import {
 export const computerAppStatusIntervalMs = 30_000;
 
 export interface ComputerAppModuleHandlerOptions {
+  readonly files?: RunFiles;
   /**
    * This Mac's computer use, present only when the desktop app offers it. The
    * handler never constructs one: without a bridge every computer-use frame is
@@ -126,6 +128,7 @@ const computerUseMessageMaxLength = 1_000;
 
 /** Owns one attached `integrations` stream and every app call running on it. */
 export class ComputerAppModuleHandler {
+  readonly #files: RunFiles | undefined;
   readonly #computerUse: ComputerUseHandler | undefined;
   readonly #videoTransport: RunnerTransportPolicy | undefined;
   #video: MacWindowVideoRelay | undefined;
@@ -159,6 +162,7 @@ export class ComputerAppModuleHandler {
   #stream: RunnerModuleStream | undefined;
 
   constructor(options: ComputerAppModuleHandlerOptions) {
+    this.#files = options.files;
     this.#computerUse = options.computerUse;
     this.#videoTransport = options.videoTransport;
     this.#localMcp = options.localMcp;
@@ -506,12 +510,29 @@ export class ComputerAppModuleHandler {
     const releaseSlot = (): void => {
       this.#executing -= 1;
     };
-    const work = invokeProvider(provider, message, abort.signal, {
+    const invocation: ComputerAppInvocation = {
       access: message.access,
       contract: message.contract,
       deadline: Date.now() + message.timeoutMs,
       effect: operation.effect,
-    });
+    };
+    const invoke = (
+      args: HostIntegrationsInvoke["arguments"],
+      signal: AbortSignal,
+      invocation: ComputerAppInvocation,
+    ) => provider.invoke(message.operation, args, signal, invocation);
+    const movesFiles =
+      operation.files &&
+      (operation.files === "export" ||
+        message.files !== undefined ||
+        (Array.isArray(message.arguments.files) && message.arguments.files.length > 0));
+    const work = movesFiles
+      ? this.#files
+        ? this.#files.invoke(message, operation.files!, invocation, abort.signal, invoke)
+        : Promise.reject(
+            new ComputerAppError("unsupported", "File movement needs an updated Runner."),
+          )
+      : invokeProvider(provider, message, abort.signal, invocation);
     void work.then(releaseSlot, releaseSlot);
     let result: Result;
     try {

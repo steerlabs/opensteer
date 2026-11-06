@@ -141,7 +141,7 @@ function ready(definitionId: string): MachineAppStatus {
     operations: [
       {
         detail: null,
-        operation: "list_conversations",
+        operation: "query_messages",
         remedy: null,
         state: "ready",
       },
@@ -191,7 +191,7 @@ describe("ComputerAppHub", () => {
       contract,
       definitionId: messages,
       effect: "read",
-      operation: "list_conversations",
+      operation: "query_messages",
       runnerId,
       ...overrides,
     };
@@ -273,7 +273,7 @@ describe("ComputerAppHub", () => {
             definitionId: messages,
             operations: [
               {
-                operation: "list_conversations",
+                operation: "query_messages",
                 state: "permission-required",
                 remedy: null,
                 detail: "Allow access on this device.",
@@ -313,7 +313,7 @@ describe("ComputerAppHub", () => {
             operations: [
               {
                 detail: "Messages needs Full access.",
-                operation: "list_conversations",
+                operation: "query_messages",
                 remedy: "full-disk-access",
                 state: "permission-required",
               },
@@ -473,7 +473,7 @@ describe("ComputerAppHub", () => {
         contract,
         definitionId: messages,
         module: "integrations",
-        operation: "list_conversations",
+        operation: "query_messages",
         timeoutMs: 60_000,
         type: "host.integrations.invoke",
       });

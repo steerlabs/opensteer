@@ -57,7 +57,7 @@ export async function connectComputerAppMachine(
       readonly enrollmentToken: string;
     };
     /** The desktop's side of this Mac, as the Runner prepares it with a bridge. */
-    readonly desktop?: Pick<ComputerAppModuleHandlerOptions, "computerUse" | "localMcp">;
+    readonly desktop?: Pick<ComputerAppModuleHandlerOptions, "computerUse" | "files" | "localMcp">;
     readonly messaging?: RunnerMessagingModule;
     readonly integrations?: RunnerIntegrationsModule;
     readonly statusIntervalMs?: number;

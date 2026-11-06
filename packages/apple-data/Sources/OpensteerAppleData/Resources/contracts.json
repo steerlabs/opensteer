@@ -47,16 +47,16 @@
       }
     },
     "apple-messages": {
-      "list_conversations": {
-        "contract": "DZQfXGN1OVVuwsQvUIs57ELYtEUocKMJ9YV8A5baU-Y",
+      "query_messages": {
+        "contract": "xbrO_lyJIS8Td9aZ7P9XH9u84UgHdgXTw9FVCdpz7jo",
         "effect": "read"
       },
-      "read_messages": {
-        "contract": "00ne9olh8CdjDZclOrQbBXcJQ36Y3oybGzWf1Mxi6H0",
+      "export_attachment": {
+        "contract": "hz6GMk2GYuNh_85q_0335wVz-23oLvpsZrGT3tkAX78",
         "effect": "read"
       },
       "send_message": {
-        "contract": "6DllRKp2ve1qELJ7htQj6Dk3w4wwUUHZgbjAVCTWh2A",
+        "contract": "sy93-Lr-HtSmslvBNP8vaQagIAGXJ_a0iUxGhZovA24",
         "effect": "write"
       }
     },

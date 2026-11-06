@@ -1461,7 +1461,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
             description: "Read messages",
             effect: "read",
             inputSchema: { type: "object" },
-            name: "read_messages",
+            name: "query_messages",
             outputSchema: { type: "object" },
             title: "Read messages",
           },
@@ -2059,7 +2059,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
         .orderBy("name", "asc")
         .execute(),
     ).toEqual([
-      { id: readTool.id, name: "read_messages" },
+      { id: readTool.id, name: "query_messages" },
       expect.objectContaining({ name: "send_message" }),
     ]);
 
@@ -2078,7 +2078,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
         .select(["id", "name"])
         .where("connectionId", "=", created.connection.id)
         .execute(),
-    ).resolves.toEqual([{ id: readTool.id, name: "read_messages" }]);
+    ).resolves.toEqual([{ id: readTool.id, name: "query_messages" }]);
 
     const generation = await database
       .selectFrom("integrationServers")
@@ -2128,7 +2128,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
         .select(["id", "name"])
         .where("connectionId", "=", created.connection.id)
         .execute(),
-    ).resolves.toEqual([{ id: readTool.id, name: "read_messages" }]);
+    ).resolves.toEqual([{ id: readTool.id, name: "query_messages" }]);
   });
 
   it("returns the locked computer name when an offline app has no connection to update", async ({
@@ -4211,7 +4211,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       threadId: run.threadId,
       workspaceId: run.workspaceId,
     });
-    expect(callable.map(({ tool }) => tool.name)).toEqual(["read_messages"]);
+    expect(callable.map(({ tool }) => tool.name)).toEqual(["query_messages"]);
     expect(callable[0]?.grant).toMatchObject({
       access: "read",
       connectionId: connected.connection.id,
@@ -4276,8 +4276,8 @@ integration.sequential("PostgreSQL computer app connections", () => {
         })
       ).flatMap(({ accounts }) => accounts);
 
-    await expect(callable(run.threadId)).resolves.toEqual([["read_messages", "main-inherited"]]);
-    await expect(callable(homeChild)).resolves.toEqual([["read_messages", "main-inherited"]]);
+    await expect(callable(run.threadId)).resolves.toEqual([["query_messages", "main-inherited"]]);
+    await expect(callable(homeChild)).resolves.toEqual([["query_messages", "main-inherited"]]);
     await expect(callable(channelRoot)).resolves.toEqual([]);
     await expect(callable(channelChild)).resolves.toEqual([]);
     await expect(accounts(run.threadId)).resolves.not.toEqual([]);

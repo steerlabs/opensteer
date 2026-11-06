@@ -50,6 +50,8 @@ export function computerAppIdentitiesEqual(
 export const ComputerAppOperationSchema = z.strictObject({
   description: z.string().min(1).max(16_384),
   effect: z.enum(["read", "write"]),
+  /** Bytes move with this call: `export` hands the Run a file, `send` takes `arguments.files` from it. */
+  files: z.enum(["export", "send"]).optional(),
   inputSchema: JsonObjectSchema,
   name: McpIdentifierSchema,
   outputSchema: JsonObjectSchema.nullable(),

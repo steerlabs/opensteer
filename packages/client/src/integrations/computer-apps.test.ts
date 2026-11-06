@@ -84,13 +84,13 @@ describe("computerAppRows", () => {
             definitionId: "apple-messages",
             operations: [
               {
-                operation: "list_conversations",
+                operation: "query_messages",
                 detail: "Messages needs Full access.",
                 remedy: "full-disk-access",
                 state: "permission-required",
               },
               {
-                operation: "read_messages",
+                operation: "export_attachment",
                 detail: "Messages needs Full access.",
                 remedy: "full-disk-access",
                 state: "permission-required",
@@ -115,13 +115,13 @@ describe("computerAppRows", () => {
             definitionId: "apple-messages",
             operations: [
               {
-                operation: "list_conversations",
+                operation: "query_messages",
                 detail: null,
                 remedy: "full-disk-access",
                 state: "permission-required",
               },
               {
-                operation: "read_messages",
+                operation: "export_attachment",
                 detail: null,
                 remedy: "full-disk-access",
                 state: "permission-required",
@@ -146,13 +146,13 @@ describe("computerAppRows", () => {
             definitionId: "apple-messages",
             operations: [
               {
-                operation: "list_conversations",
+                operation: "query_messages",
                 detail: null,
                 remedy: null,
                 state: "permission-required",
               },
               {
-                operation: "read_messages",
+                operation: "export_attachment",
                 detail: null,
                 remedy: null,
                 state: "permission-required",
@@ -205,13 +205,13 @@ describe("computerAppRows", () => {
             definitionId: "apple-messages",
             operations: [
               {
-                operation: "list_conversations",
+                operation: "query_messages",
                 detail: "Messages is not set up.",
                 remedy: null,
                 state: "unavailable",
               },
               {
-                operation: "read_messages",
+                operation: "export_attachment",
                 detail: "Messages is not set up.",
                 remedy: null,
                 state: "unavailable",
@@ -499,8 +499,8 @@ function messages(): IntegrationDefinitionSummary {
       accessLabels: { read: "Read only", readWrite: "Read and send" },
       accessLevels: ["read", "read-write"],
       operations: [
-        { name: "list_conversations", effect: "read" },
-        { name: "read_messages", effect: "read" },
+        { name: "query_messages", effect: "read" },
+        { name: "export_attachment", effect: "read" },
         { name: "send_message", effect: "write" },
       ],
       accessSummaries: {
@@ -520,8 +520,8 @@ function appStatus(): NonNullable<MachineSummary["apps"]>[number] {
   return {
     definitionId: "apple-messages",
     operations: [
-      { operation: "list_conversations", detail: null, remedy: null, state: "ready" },
-      { operation: "read_messages", detail: null, remedy: null, state: "ready" },
+      { operation: "query_messages", detail: null, remedy: null, state: "ready" },
+      { operation: "export_attachment", detail: null, remedy: null, state: "ready" },
       { operation: "send_message", detail: null, remedy: null, state: "ready" },
     ],
   };

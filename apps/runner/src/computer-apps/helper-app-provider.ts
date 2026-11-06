@@ -103,6 +103,9 @@ export function createHelperAppProvider(
       try {
         return await helper.dataInvoke(
           {
+            ...(invocation.scratchDirectory
+              ? { scratchDirectory: invocation.scratchDirectory }
+              : {}),
             access: invocation.access,
             // The Host validated these against the operation's schema, and the
             // frame they arrived in carries JSON only.

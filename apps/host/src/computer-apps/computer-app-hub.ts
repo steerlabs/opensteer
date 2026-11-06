@@ -147,6 +147,7 @@ export interface ComputerAppInvokeInput {
   /** The Host's `computerAppOperationContract`, which the Runner must match. */
   readonly contract: HostIntegrationsInvoke["contract"];
   readonly definitionId: HostIntegrationsInvoke["definitionId"];
+  readonly files?: HostIntegrationsInvoke["files"];
   /** What the operation does, which decides what losing the answer means. */
   readonly effect: IntegrationToolEffect;
   readonly operation: HostIntegrationsInvoke["operation"];
@@ -1181,6 +1182,7 @@ export class ComputerAppHub {
       arguments: input.arguments,
       contract: input.contract,
       definitionId: input.definitionId,
+      ...(input.files ? { files: input.files } : {}),
       operation: input.operation,
       requestId,
       timeoutMs,

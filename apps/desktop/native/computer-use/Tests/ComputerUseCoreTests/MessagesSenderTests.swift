@@ -194,6 +194,23 @@ final class MessagesSenderTests: XCTestCase {
     XCTAssertTrue(recorder.requests.isEmpty)
   }
 
+  func testFileOnlySendsKeepChatAndParticipantValuesOutOfSource() throws {
+    let file = "/private/task/a \"quoted\" photo.heic"
+    for recipient in [
+      MessagesSender.Arguments.Recipient(address: nil, conversationId: "iMessage;+;chat123"),
+      .init(address: "friend@example.com", conversationId: nil),
+      .init(address: "+15551234567", conversationId: nil, service: "sms"),
+    ] {
+      let requests = try MessagesSender.requests(.init(text: nil, to: recipient), staged: [file])
+      XCTAssertEqual(requests.count, 1)
+      XCTAssertEqual(requests[0].arguments[1], file)
+      XCTAssertFalse(requests[0].script.joined().contains(file))
+      XCTAssertTrue(requests[0].script.joined().contains("POSIX file (item 2 of argv)"))
+      XCTAssertTrue(requests[0].script.joined().contains(recipient.conversationId == nil
+        ? "send theFile to participant theAddress" : "send theFile to chat id theChatId"))
+    }
+  }
+
   // MARK: - How a run ends
 
   func testARefusedAutomationPromptBecomesTheSentenceThatFixesIt() {

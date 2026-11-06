@@ -29,6 +29,7 @@ import {
   PasswordSignInAuthorityResultSchema,
 } from "./password-sign-in.js";
 import { androidPhoneDefinitionId } from "./android-phone.js";
+import { RunFileExecutionSchema, RunFileTransferSchema, runFileMaxPerCall } from "./run-files.js";
 import {
   ComputerAppIdentitySchema,
   ComputerUseErrorCodeSchema,
@@ -151,12 +152,24 @@ export type RunnerIntegrationsPasswordSignInEvent = z.infer<
   typeof RunnerIntegrationsPasswordSignInEventSchema
 >;
 
+/**
+ * How an operation that moves files reaches its Run. `run`: the Run is on this
+ * Runner, so bytes never leave the computer. `transfers`: it is elsewhere, and
+ * they go through the Host, one per file, in `arguments.files` order on a send.
+ */
+export const ComputerAppFilesSchema = z.union([
+  z.strictObject({ run: RunFileExecutionSchema }),
+  z.strictObject({ transfers: z.array(RunFileTransferSchema).min(1).max(runFileMaxPerCall) }),
+]);
+export type ComputerAppFiles = z.infer<typeof ComputerAppFilesSchema>;
+
 export const HostIntegrationsInvokeSchema = z.strictObject({
   ...integrationsFrameBase,
   access: IntegrationAccessSchema,
   arguments: JsonObjectSchema,
   contract: contractSchema,
   definitionId: IntegrationDefinitionIdSchema,
+  files: ComputerAppFilesSchema.optional(),
   operation: McpIdentifierSchema,
   requestId: RunnerAuxiliaryRequestIdSchema,
   timeoutMs: z.number().int().positive().max(computerAppMaxTimeoutMs),

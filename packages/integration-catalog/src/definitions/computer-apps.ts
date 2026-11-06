@@ -1,86 +1,6 @@
 import { IntegrationDefinitionSchema } from "@opensteer/integration-core";
 import { iphoneAppIntegrations } from "./iphone-apps.js";
 
-const conversationSchema = {
-  additionalProperties: false,
-  properties: {
-    conversationId: { type: "string" },
-    displayName: { type: ["string", "null"] },
-    isGroup: { type: "boolean" },
-    lastMessageAt: { type: ["string", "null"] },
-    participants: {
-      items: {
-        additionalProperties: false,
-        properties: {
-          handle: { type: "string" },
-          name: {
-            description:
-              "The person's name from this Mac's Contacts; null when no single contact matches.",
-            type: ["string", "null"],
-          },
-        },
-        required: ["handle", "name"],
-        type: "object",
-      },
-      type: "array",
-    },
-    service: { type: "string" },
-  },
-  required: [
-    "conversationId",
-    "displayName",
-    "participants",
-    "isGroup",
-    "service",
-    "lastMessageAt",
-  ],
-  type: "object",
-} as const;
-
-const messageSchema = {
-  additionalProperties: false,
-  properties: {
-    conversationId: { type: "string" },
-    hasAttachments: { type: "boolean" },
-    id: { type: "string" },
-    isFromMe: { type: "boolean" },
-    sender: {
-      description: 'The literal "me" for outgoing messages, otherwise the sender handle.',
-      type: "string",
-    },
-    senderName: {
-      description:
-        "The sender's name from this Mac's Contacts; null for messages from me or with no matching contact.",
-      type: ["string", "null"],
-    },
-    sentAt: { type: "string" },
-    service: { type: "string" },
-    text: { type: ["string", "null"] },
-    truncated: {
-      description: "True when text was cut at 16 KiB; the rest of the body is not returned.",
-      type: "boolean",
-    },
-    undecoded: {
-      description: "The body could not be decoded; text is null and the message is still returned.",
-      type: "boolean",
-    },
-  },
-  required: [
-    "id",
-    "conversationId",
-    "sender",
-    "senderName",
-    "isFromMe",
-    "text",
-    "truncated",
-    "undecoded",
-    "sentAt",
-    "service",
-    "hasAttachments",
-  ],
-  type: "object",
-} as const;
-
 /**
  * One action, field for field with `ComputerUseActionSchema` in
  * `@opensteer/protocol`. The two are written to agree: the Host validates
@@ -570,101 +490,92 @@ export const computerAppIntegrations = [
     config: {
       accessLabels: { read: "Read only", readWrite: "Read and send" },
       accessSummaries: {
-        read: "Allows searching and reading conversations with names from Contacts; reading also needs Contacts access. Sending is off.",
+        read: "Allows searching and reading conversations and their attachments, with names from Contacts; reading also needs Contacts access. Sending is off.",
         // Readiness is established for reading; macOS decides a send when it
         // happens, so the summary says so rather than implying it is settled.
         readWrite:
-          "Allows searching and reading conversations with names from Contacts, and sending messages as you. Reading also needs Contacts access. Sending may ask for macOS Automation permission on this Mac.",
+          "Allows searching and reading conversations and their attachments with names from Contacts, and sending messages and files as you. Reading also needs Contacts access. Sending may ask for macOS Automation permission on this Mac.",
       },
       operations: [
         {
           description:
-            "List Messages conversations, most recently active first. query matches conversation names, participant handles or names from Contacts, case- and accent-insensitively; phone numbers match however formatted. For message text use read_messages. Keep calling with the returned nextCursor until it is null; a cursor is valid only for the same operation and arguments.",
+            "Run one read-only SQLite SELECT on this Mac's Messages database (chat.db): messages, chats, handles, attachments, reactions, edits, anything it holds. Read the Apple Messages reference in opensteer:integrations for the schema and examples. Helpers: message_text(text, attributedBody) gives a message's text, contact_name(handle) a name from Contacts, message_time(date) an ISO time. Returns columns, rows, and truncated: true when more rows matched than fit, so narrow the query or page on ROWID. Integers past 2^53 arrive as strings and blobs as a size note; use hex() or substr() to see one.",
           effect: "read",
           inputSchema: {
             additionalProperties: false,
             properties: {
-              cursor: { description: "Opaque cursor returned by an earlier call.", type: "string" },
-              limit: {
-                description: "Maximum conversations to return; defaults to 25.",
-                maximum: 100,
-                minimum: 1,
-                type: "integer",
-              },
-              query: {
-                description:
-                  "Match conversation names, participant handles or names from Contacts, case- and accent-insensitively; phone numbers match however formatted. Never message text (use read_messages).",
+              sql: {
+                description: "One SELECT, WITH or read-only schema statement.",
+                maxLength: 16_384,
+                minLength: 1,
                 type: "string",
               },
             },
+            required: ["sql"],
             type: "object",
           },
-          name: "list_conversations",
+          name: "query_messages",
           outputSchema: {
             additionalProperties: false,
             properties: {
-              conversations: { items: conversationSchema, type: "array" },
-              nextCursor: { type: ["string", "null"] },
+              columns: { items: { type: "string" }, type: "array" },
+              rows: { items: { type: "array" }, type: "array" },
+              truncated: { type: "boolean" },
             },
-            required: ["conversations", "nextCursor"],
+            required: ["columns", "rows", "truncated"],
             type: "object",
           },
-          title: "List conversations",
+          title: "Query messages",
         },
         {
           description:
-            "Read Messages, newest first. query matches decoded message text. Keep calling with the returned nextCursor until it is null; a cursor is valid only for the same operation and arguments. With query, a page may hold few or no messages and still return a nextCursor, because each call searches a bounded slice of the history: that means keep going, not no matches.",
+            "Copy one attachment's original file to a path this task can read: photo, document, voice note, video, any type. Find attachmentId as attachment.guid with query_messages. The file is unchanged, so inspect or convert it yourself with your own tools and scripts (on a Mac, sips converts HEIC). The copy lasts until this task's turn ends; copy anything you keep into the Workspace.",
           effect: "read",
+          files: "export",
           inputSchema: {
             additionalProperties: false,
             properties: {
-              conversationId: {
-                description: "Conversation to read, from list_conversations or read_messages.",
-                type: "string",
-              },
-              cursor: { description: "Opaque cursor returned by an earlier call.", type: "string" },
-              limit: {
-                description: "Maximum messages to return; defaults to 50.",
-                maximum: 200,
-                minimum: 1,
-                type: "integer",
-              },
-              query: {
-                description: "Text to find in decoded message text.",
-                type: "string",
-              },
-              since: {
-                description: "Return messages sent at or after this ISO timestamp.",
-                type: "string",
-              },
-              until: {
-                description: "Return messages sent at or before this ISO timestamp.",
+              attachmentId: {
+                description: "attachment.guid from query_messages.",
+                maxLength: 256,
+                minLength: 1,
                 type: "string",
               },
             },
+            required: ["attachmentId"],
             type: "object",
           },
-          name: "read_messages",
+          name: "export_attachment",
           outputSchema: {
             additionalProperties: false,
             properties: {
-              messages: { items: messageSchema, type: "array" },
-              nextCursor: { type: ["string", "null"] },
+              mediaType: { type: ["string", "null"] },
+              name: { type: "string" },
+              path: { type: "string" },
+              sizeBytes: { type: "number" },
             },
-            required: ["messages", "nextCursor"],
+            required: ["path", "name", "mediaType", "sizeBytes"],
             type: "object",
           },
-          title: "Read messages",
+          title: "Export attachment",
         },
         {
           description:
-            "Ask Messages to send text to one named conversation or iMessage address. A group is reachable only by conversationId. {accepted: true} means Messages accepted the send, not that it was delivered.",
+            "Ask Messages to send text, files or both to one named conversation or address. A group is reachable only by conversationId. Text goes first, then each file in order. files are paths in this task's Workspace or its exported attachments; copy a file there first if it is elsewhere. {accepted: true} means Messages accepted the send, not that it was delivered.",
           effect: "write",
+          files: "send",
           inputSchema: {
             additionalProperties: false,
             properties: {
+              files: {
+                description: "Paths of images or other files to send.",
+                items: { maxLength: 4_096, minLength: 1, type: "string" },
+                maxItems: 20,
+                minItems: 1,
+                type: "array",
+              },
               text: {
-                description: "The message body; must not be empty.",
+                description: "The message body.",
                 maxLength: 4_000,
                 minLength: 1,
                 type: "string",
@@ -675,8 +586,7 @@ export const computerAppIntegrations = [
                     additionalProperties: false,
                     properties: {
                       conversationId: {
-                        description:
-                          "Conversation to send to, from list_conversations or read_messages.",
+                        description: "Conversation to send to, from query_messages (chat.guid).",
                         type: "string",
                       },
                     },
@@ -687,7 +597,12 @@ export const computerAppIntegrations = [
                     additionalProperties: false,
                     properties: {
                       address: {
-                        description: "Phone number or email address reached over iMessage.",
+                        description: "Phone number or email address.",
+                        type: "string",
+                      },
+                      service: {
+                        description: "How to reach the address; defaults to iMessage.",
+                        enum: ["imessage", "sms"],
                         type: "string",
                       },
                     },
@@ -697,7 +612,8 @@ export const computerAppIntegrations = [
                 ],
               },
             },
-            required: ["to", "text"],
+            anyOf: [{ required: ["text"] }, { required: ["files"] }],
+            required: ["to"],
             type: "object",
           },
           name: "send_message",

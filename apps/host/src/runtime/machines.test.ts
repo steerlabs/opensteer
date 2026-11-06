@@ -389,8 +389,8 @@ describe("Machines projection", () => {
       {
         definitionId: "apple-messages",
         operations: [
-          { operation: "list_conversations", detail: null, remedy: null, state: "ready" as const },
-          { operation: "read_messages", detail: null, remedy: null, state: "ready" as const },
+          { operation: "query_messages", detail: null, remedy: null, state: "ready" as const },
+          { operation: "export_attachment", detail: null, remedy: null, state: "ready" as const },
           { operation: "send_message", detail: null, remedy: null, state: "ready" as const },
         ],
       },

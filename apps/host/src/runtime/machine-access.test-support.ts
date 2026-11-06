@@ -1068,6 +1068,7 @@ export async function connectCallerMachine(
      */
     readonly rendersImages?: boolean;
     readonly computerTool?: 1;
+    readonly runFiles?: boolean;
     readonly runnerKind?: "local" | "main";
   } & (
     | { readonly token: string; readonly previous?: undefined }
@@ -1107,6 +1108,7 @@ export async function connectCallerMachine(
       ...(input.browser ? { browser: input.browser } : {}),
       agents: {
         ...(input.computerTool ? { computerTool: input.computerTool } : {}),
+        ...(input.runFiles ? { runFiles: 1 } : {}),
         ...(input.loginFill ? { loginFill: 1 } : {}),
         environmentIds: [environmentId],
         harnessDrivers: [

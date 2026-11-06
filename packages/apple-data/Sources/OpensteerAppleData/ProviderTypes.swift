@@ -37,7 +37,14 @@ public struct DataAppGrants: Codable, Sendable, Equatable {
 }
 
 public protocol DataProvider: Sendable {
+  func invoke(operation: String, arguments: [String: JSONValue], scratchDirectory: String?, budget: WorkBudget) async throws -> JSONValue
   func invoke(operation: String, arguments: [String: JSONValue], budget: WorkBudget) async throws -> JSONValue
+}
+
+public extension DataProvider {
+  func invoke(operation: String, arguments: [String: JSONValue], scratchDirectory: String?, budget: WorkBudget) async throws -> JSONValue {
+    try await invoke(operation: operation, arguments: arguments, budget: budget)
+  }
 }
 
 public struct WorkBudget: Sendable, Equatable {
