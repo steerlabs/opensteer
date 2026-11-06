@@ -1744,17 +1744,15 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     const size = image.getSize();
     const plan = { output: size, source: { x: 0, y: 0, ...size } };
     // nativeImage has no WebP encoder; the page's own does.
-    return z
-      .string()
-      .parse(
-        await this.#inFrameWorld(
-          cdp,
-          viewportImageScript(data, plan, {
-            format,
-            ...(quality === undefined ? {} : { quality }),
-          }),
-        ),
-      );
+    return z.string().parse(
+      await this.#inFrameWorld(
+        cdp,
+        viewportImageScript(data, plan, {
+          format,
+          ...(quality === undefined ? {} : { quality }),
+        }),
+      ),
+    );
   }
 
   loadInitialUrl(url: string): Promise<void> {
