@@ -88,7 +88,7 @@ const computerReadTool: EffectiveGrantTool = {
   ...providerTool,
   connectionId,
   connectionRequirement: { definitionId: "apple-messages", kind: "computer" },
-  name: "read_messages",
+  name: "query_messages",
   title: "Read messages",
 };
 const computerWriteTool: EffectiveGrantTool = {
@@ -216,7 +216,7 @@ describe("resolveEffectiveGrants", () => {
       }),
     );
 
-    expect(result.tools.map(({ tool }) => tool.name)).toEqual(["read_messages"]);
+    expect(result.tools.map(({ tool }) => tool.name)).toEqual(["query_messages"]);
     expect(result.tools[0]?.grant.access).toBe("read");
   });
 

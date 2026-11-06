@@ -51,7 +51,7 @@ describe("ComputerAppPicker", () => {
               operations: [
                 {
                   detail: "Full Disk Access is required.",
-                  operation: "list_conversations",
+                  operation: "query_messages",
                   remedy: "full-disk-access",
                   state: "permission-required",
                 },
@@ -203,7 +203,7 @@ function messages(): IntegrationDefinitionSummary {
         readWrite: "Agents can search and read your conversations, and send messages as you.",
       },
       operations: [
-        { effect: "read", name: "list_conversations" },
+        { effect: "read", name: "query_messages" },
         { effect: "write", name: "send_message" },
       ],
       platforms: ["darwin"],
@@ -247,7 +247,7 @@ function machine(id: string, name: string): MachineSummary {
         operations: [
           {
             detail: "Ready to read",
-            operation: "list_conversations",
+            operation: "query_messages",
             remedy: null,
             state: "ready",
           },

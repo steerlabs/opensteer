@@ -13,7 +13,7 @@ const baseDigests = {
   "apple-calendar": "Scd8aWIGu4M4WNeYlBfY2VmmKu3BDlEmtsubztyO78E",
   "apple-contacts": "S3UUcFG_nYQxmmuZ7V_KB3ksmR3zVEKsTBRy-FajfTY",
   "apple-reminders": "UziktIs5w2hTEcjUM-8FQLBL1PCmz7qMDZP4jJ5XAx4",
-  "apple-messages": "0VTNGaBL4wT6t03zxz3MWtnQYdJyQS3YXT7oCe67Q-4",
+  "apple-messages": "_0o8Mz3P1mWZ2PjQDCGMwn6A0QL7zUJSmHyj2-jXo7Q",
 };
 const newIds = ["iphone-location", "iphone-photos"] as const;
 
@@ -43,7 +43,7 @@ describe("iPhone-only provider contracts", () => {
     );
     expect(shared).toEqual(checkedIn);
     expect(createHash("sha256").update(shared).digest("hex")).toBe(
-      "6393060169224c980e25694596bf251f0538d35d42f80621a9c4276f25bcafd6",
+      "0a9fa73670c77cc79beaea3825df6e80653dd3e2d506e885f638a20958509ff4",
     );
     const iphone = await readFile(
       new URL(

@@ -1051,10 +1051,8 @@ describe("runnerWebSocketUrl", () => {
   it("keeps computer-app provider concurrency across a primary reconnect", async () => {
     const definition = getIntegrationDefinition("apple-messages");
     if (!definition || !isComputerAppDefinition(definition)) throw new Error("Messages is missing");
-    const operation = definition.config.operations.find(
-      ({ name }) => name === "list_conversations",
-    );
-    if (!operation) throw new Error("Messages list_conversations is missing");
+    const operation = definition.config.operations.find(({ name }) => name === "query_messages");
+    if (!operation) throw new Error("Messages query_messages is missing");
 
     const runnerId = createId("runner");
     const environmentId = createId("environment");
@@ -1073,7 +1071,7 @@ describe("runnerWebSocketUrl", () => {
     const invoke = (auxiliaryStreamId: string, requestId: string) => ({
       ...fence,
       access: "read" as const,
-      arguments: {},
+      arguments: { sql: "SELECT 1" },
       auxiliaryStreamId,
       contract: computerAppOperationContract(operation),
       definitionId: definition.id,

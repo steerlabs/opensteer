@@ -1026,7 +1026,7 @@ function dataInvoke(definitionId: string, access: "read" | "read-write"): unknow
     contract: "c".repeat(43),
     definitionId,
     effect: "read",
-    operation: "list_conversations",
+    operation: "query_messages",
   };
 }
 

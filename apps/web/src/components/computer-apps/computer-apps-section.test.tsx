@@ -282,7 +282,7 @@ describe("ComputerAppsSection", () => {
   it("shows unavailable setup without claiming the app is ready", async () => {
     const unavailable = appStatus({
       detail: "Messages is unavailable.",
-      operation: "list_conversations",
+      operation: "query_messages",
       remedy: null,
       state: "unavailable",
     });
@@ -775,7 +775,7 @@ function messages(): IntegrationDefinitionSummary {
         readWrite: "Agents can read Messages and send messages as you.",
       },
       operations: [
-        { effect: "read", name: "list_conversations" },
+        { effect: "read", name: "query_messages" },
         { effect: "write", name: "send_message" },
       ],
       platforms: ["darwin"],
@@ -815,7 +815,7 @@ function ready(): NonNullable<MachineSummary["apps"]>[number] {
 function readPermissionRequired(): NonNullable<MachineSummary["apps"]>[number] {
   return appStatus({
     detail: "Messages needs Full Disk Access.",
-    operation: "list_conversations",
+    operation: "query_messages",
     remedy: "full-disk-access",
     state: "permission-required",
   });
@@ -836,7 +836,7 @@ function appStatus(
   return { definitionId: "apple-messages", operations };
 }
 
-function readyOperation(operation = "list_conversations") {
+function readyOperation(operation = "query_messages") {
   return { detail: null, operation, remedy: null, state: "ready" as const };
 }
 

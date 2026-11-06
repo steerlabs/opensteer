@@ -1,86 +1,6 @@
 import { IntegrationDefinitionSchema } from "@opensteer/integration-core";
 import { iphoneAppIntegrations } from "./iphone-apps.js";
 
-const conversationSchema = {
-  additionalProperties: false,
-  properties: {
-    conversationId: { type: "string" },
-    displayName: { type: ["string", "null"] },
-    isGroup: { type: "boolean" },
-    lastMessageAt: { type: ["string", "null"] },
-    participants: {
-      items: {
-        additionalProperties: false,
-        properties: {
-          handle: { type: "string" },
-          name: {
-            description:
-              "The person's name from this Mac's Contacts; null when no single contact matches.",
-            type: ["string", "null"],
-          },
-        },
-        required: ["handle", "name"],
-        type: "object",
-      },
-      type: "array",
-    },
-    service: { type: "string" },
-  },
-  required: [
-    "conversationId",
-    "displayName",
-    "participants",
-    "isGroup",
-    "service",
-    "lastMessageAt",
-  ],
-  type: "object",
-} as const;
-
-const messageSchema = {
-  additionalProperties: false,
-  properties: {
-    conversationId: { type: "string" },
-    hasAttachments: { type: "boolean" },
-    id: { type: "string" },
-    isFromMe: { type: "boolean" },
-    sender: {
-      description: 'The literal "me" for outgoing messages, otherwise the sender handle.',
-      type: "string",
-    },
-    senderName: {
-      description:
-        "The sender's name from this Mac's Contacts; null for messages from me or with no matching contact.",
-      type: ["string", "null"],
-    },
-    sentAt: { type: "string" },
-    service: { type: "string" },
-    text: { type: ["string", "null"] },
-    truncated: {
-      description: "True when text was cut at 16 KiB; the rest of the body is not returned.",
-      type: "boolean",
-    },
-    undecoded: {
-      description: "The body could not be decoded; text is null and the message is still returned.",
-      type: "boolean",
-    },
-  },
-  required: [
-    "id",
-    "conversationId",
-    "sender",
-    "senderName",
-    "isFromMe",
-    "text",
-    "truncated",
-    "undecoded",
-    "sentAt",
-    "service",
-    "hasAttachments",
-  ],
-  type: "object",
-} as const;
-
 /**
  * One action, field for field with `ComputerUseActionSchema` in
  * `@opensteer/protocol`. The two are written to agree: the Host validates
@@ -641,85 +561,6 @@ export const computerAppIntegrations = [
         },
         {
           description:
-            "List Messages conversations, most recently active first. query matches conversation names, participant handles or names from Contacts, case- and accent-insensitively; phone numbers match however formatted. For message text use read_messages. Keep calling with the returned nextCursor until it is null; a cursor is valid only for the same operation and arguments.",
-          effect: "read",
-          inputSchema: {
-            additionalProperties: false,
-            properties: {
-              cursor: { description: "Opaque cursor returned by an earlier call.", type: "string" },
-              limit: {
-                description: "Maximum conversations to return; defaults to 25.",
-                maximum: 100,
-                minimum: 1,
-                type: "integer",
-              },
-              query: {
-                description:
-                  "Match conversation names, participant handles or names from Contacts, case- and accent-insensitively; phone numbers match however formatted. Never message text (use read_messages).",
-                type: "string",
-              },
-            },
-            type: "object",
-          },
-          name: "list_conversations",
-          outputSchema: {
-            additionalProperties: false,
-            properties: {
-              conversations: { items: conversationSchema, type: "array" },
-              nextCursor: { type: ["string", "null"] },
-            },
-            required: ["conversations", "nextCursor"],
-            type: "object",
-          },
-          title: "List conversations",
-        },
-        {
-          description:
-            "Read Messages, newest first. query matches decoded message text. Keep calling with the returned nextCursor until it is null; a cursor is valid only for the same operation and arguments. With query, a page may hold few or no messages and still return a nextCursor, because each call searches a bounded slice of the history: that means keep going, not no matches.",
-          effect: "read",
-          inputSchema: {
-            additionalProperties: false,
-            properties: {
-              conversationId: {
-                description: "Conversation to read, from list_conversations or read_messages.",
-                type: "string",
-              },
-              cursor: { description: "Opaque cursor returned by an earlier call.", type: "string" },
-              limit: {
-                description: "Maximum messages to return; defaults to 50.",
-                maximum: 200,
-                minimum: 1,
-                type: "integer",
-              },
-              query: {
-                description: "Text to find in decoded message text.",
-                type: "string",
-              },
-              since: {
-                description: "Return messages sent at or after this ISO timestamp.",
-                type: "string",
-              },
-              until: {
-                description: "Return messages sent at or before this ISO timestamp.",
-                type: "string",
-              },
-            },
-            type: "object",
-          },
-          name: "read_messages",
-          outputSchema: {
-            additionalProperties: false,
-            properties: {
-              messages: { items: messageSchema, type: "array" },
-              nextCursor: { type: ["string", "null"] },
-            },
-            required: ["messages", "nextCursor"],
-            type: "object",
-          },
-          title: "Read messages",
-        },
-        {
-          description:
             "Ask Messages to send text, files or both to one named conversation or address. A group is reachable only by conversationId. Text goes first, then each file in order. files are paths in this task's Workspace or its exported attachments; copy a file there first if it is elsewhere. {accepted: true} means Messages accepted the send, not that it was delivered.",
           effect: "write",
           files: "send",
@@ -745,8 +586,7 @@ export const computerAppIntegrations = [
                     additionalProperties: false,
                     properties: {
                       conversationId: {
-                        description:
-                          "Conversation to send to, from list_conversations or read_messages.",
+                        description: "Conversation to send to, from query_messages (chat.guid).",
                         type: "string",
                       },
                     },

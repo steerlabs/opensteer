@@ -324,16 +324,19 @@ integration("computer apps", () => {
     );
     await expect(held.result).resolves.toMatchObject({ status: "fulfilled" });
     const readSearch = await gateway.call("integration_search", { query: "Messages" });
-    const readOperation = operation(readSearch, "list_conversations");
+    const readOperation = operation(readSearch, "query_messages");
     expect(readOperation).toMatchObject({
       account: "Studio Mac",
       connectionId: enabled.connection.id,
     });
-    expect(toolReadiness(readSearch, "list_conversations").code).toBe("READY");
+    expect(toolReadiness(readSearch, "query_messages").code).toBe("READY");
     expect(operations(readSearch).some(({ name }) => name === "send_message")).toBe(false);
     await expect(
-      gateway.call("integration_call", { arguments: {}, ...readOperation.address }),
-    ).resolves.toMatchObject({ conversations: [{ conversationId: "chat-1" }] });
+      gateway.call("integration_call", {
+        arguments: { sql: "SELECT 1" },
+        ...readOperation.address,
+      }),
+    ).resolves.toMatchObject({ columns: ["guid"], rows: [["chat-1"]], truncated: false });
 
     const writeSetup = await requestComputerAppSetup(
       host,
@@ -431,14 +434,14 @@ integration("computer apps", () => {
     );
 
     const offline = await gateway.call("integration_search", { query: "Messages" });
-    expect(toolReadiness(offline, "list_conversations")).toMatchObject({
+    expect(toolReadiness(offline, "query_messages")).toMatchObject({
       code: "INTEGRATION_UNAVAILABLE",
       detail: "Opensteer's integrations service is unavailable on Studio Mac.",
     });
     await computer.reconnectModule();
     await waitForCondition(async () => {
       const searched = await gateway.call("integration_search", { query: "Messages" });
-      return toolReadiness(searched, "list_conversations").code === "READY";
+      return toolReadiness(searched, "query_messages").code === "READY";
     });
 
     await testRpcData(
@@ -742,12 +745,12 @@ integration("computer apps", () => {
     );
     await expect(held.result).resolves.toMatchObject({ status: "fulfilled" });
     const searched = await gateway.call("integration_search", { query: "Messages" });
-    const list = operation(searched, "list_conversations");
+    const list = operation(searched, "query_messages");
     expect(list).toMatchObject({ account: "Studio Mac", connectionId: enabled.connection.id });
-    expect(toolReadiness(searched, "list_conversations").code).toBe("READY");
+    expect(toolReadiness(searched, "query_messages").code).toBe("READY");
     await expect(
-      gateway.call("integration_call", { arguments: {}, ...list.address }),
-    ).resolves.toMatchObject({ conversations: [{ conversationId: "chat-1" }] });
+      gateway.call("integration_call", { arguments: { sql: "SELECT 1" }, ...list.address }),
+    ).resolves.toMatchObject({ columns: ["guid"], rows: [["chat-1"]], truncated: false });
   }, 180_000);
   /**
    * Calendar and Reminders served by the signed helper, end to end on real
@@ -998,24 +1001,16 @@ function fakeMessagesProvider() {
     },
     async inspect() {
       return [
-        { detail: null, operation: "list_conversations", remedy: null, state: "ready" },
+        { detail: null, operation: "query_messages", remedy: null, state: "ready" },
         { detail: null, operation: "send_message", remedy: null, state: "ready" },
       ] as const;
     },
     async invoke(operationName, args, signal) {
-      if (operationName === "list_conversations") {
+      if (operationName === "query_messages") {
         return {
-          conversations: [
-            {
-              conversationId: "chat-1",
-              displayName: "Friend",
-              isGroup: false,
-              lastMessageAt: null,
-              participants: [{ handle: "friend@example.test", name: "Friend" }],
-              service: "iMessage",
-            },
-          ],
-          nextCursor: null,
+          columns: ["guid"],
+          rows: [["chat-1"]],
+          truncated: false,
         };
       }
       if (operationName !== "send_message") throw new Error("Unexpected operation");

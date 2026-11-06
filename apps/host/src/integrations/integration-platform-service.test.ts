@@ -564,9 +564,7 @@ describe("IntegrationPlatformService definition reconciliation", () => {
     ]);
     const connectionId = createIntegrationId("connection");
     expect(material.computerConnectionTools?.(connectionId, "read")).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ connectionId, name: "list_conversations" }),
-      ]),
+      expect.arrayContaining([expect.objectContaining({ connectionId, name: "query_messages" })]),
     );
     expect(material.computerConnectionTools?.(connectionId, "read")).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ name: "send_message" })]),
@@ -1710,7 +1708,7 @@ describe("IntegrationPlatformService computer discovery", () => {
     const service = platform({
       adapters: [],
       computerApps: {
-        appStatus: vi.fn(() => computerStatus(undefined, ["list_conversations", "read_messages"])),
+        appStatus: vi.fn(() => computerStatus(undefined, ["query_messages", "export_attachment"])),
         attached: vi.fn(() => true),
         send: vi.fn(),
         withRunnerAdmission: vi.fn(),

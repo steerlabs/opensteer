@@ -249,8 +249,8 @@ export const mockMessagesDefinition = IntegrationDefinitionSummarySchema.parse({
     accessLabels: { read: "Read only", readWrite: "Read and send" },
     accessLevels: ["read", "read-write"],
     operations: [
-      { name: "list_conversations", effect: "read" },
-      { name: "read_messages", effect: "read" },
+      { name: "query_messages", effect: "read" },
+      { name: "export_attachment", effect: "read" },
       { name: "send_message", effect: "write" },
     ],
     accessSummaries: {
@@ -1002,17 +1002,16 @@ export const mockIntegrationDefinitions: readonly IntegrationDefinitionSummary[]
 /** The operations the preview materialises per connection, by effect. */
 const mockMessagesOperations: readonly (MockToolSeed & { readonly effect: "read" | "write" })[] = [
   {
-    description:
-      "List recent Messages conversations by conversation name, participant handle or name from Contacts.",
+    description: "Query Messages history with read-only SQL.",
     effect: "read",
-    name: "list_conversations",
-    title: "List conversations",
+    name: "query_messages",
+    title: "Query messages",
   },
   {
-    description: "Read Messages in a conversation or search decoded message text.",
+    description: "Copy an attachment original file to a path this task can read.",
     effect: "read",
-    name: "read_messages",
-    title: "Read messages",
+    name: "export_attachment",
+    title: "Export attachment",
   },
   {
     description: "Ask Messages to send text to one named conversation or iMessage address.",
