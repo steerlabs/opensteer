@@ -91,3 +91,34 @@
 +  fun logRemoteMessage(caller: String, message: RemoteMessage) = Unit
 +  fun logNotification(caller: String, notification: Notification) = Unit
  }
+--- a/ios/ExpoNotifications/Permissions/ExpoNotificationsPermissionsRequester.swift
++++ b/ios/ExpoNotifications/Permissions/ExpoNotificationsPermissionsRequester.swift
+@@ -18,14 +18,27 @@
+     // semaphore.wait() blocks the current thread, we want to be sure not to block main
+     dispatchPrecondition(condition: .notOnQueue(.main))
+     let semaphore = DispatchSemaphore(value: 0)
++    let lock = NSLock()
+     var result: [AnyHashable: Any] = [:]
++    var finished = false
+ 
+     UNUserNotificationCenter.current().getNotificationSettings { settings in
++      lock.lock()
++      defer { lock.unlock() }
++      guard !finished else { return }
+       result = self.makePermissionsResult(from: settings)
+       semaphore.signal()
+     }
+ 
+-    semaphore.wait()
++    // Notification services can stall; do not hold Expo's shared async queue indefinitely.
++    let outcome = semaphore.wait(timeout: .now() + .milliseconds(250))
++    lock.lock()
++    defer { lock.unlock() }
++    finished = true
++    // Undetermined would allow the app's after-send flow to prompt for permission.
++    guard outcome == .success else {
++      return ["status": EXPermissionStatusDenied.rawValue]
++    }
+     return result
+   }
+ 
