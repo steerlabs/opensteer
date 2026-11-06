@@ -82,9 +82,11 @@ function AgentAuthorization(props: { readonly host: HostClient; readonly request
       consent,
       approve ? { kind: "approve", label, accessMode: mode, reach } : { kind: "deny" },
     )
-      // The browser finishes the redirect back to the agent.
-      .then((completion) => Linking.openURL(completion))
-      .then(() => {
+      // The browser finishes the redirect back to the agent, unless another
+      // request has replaced this one meanwhile: that answer is not on screen.
+      .then(async (completion) => {
+        if (!mounted.current) return;
+        await Linking.openURL(completion);
         if (mounted.current) close();
       })
       .catch((failure: unknown) => {

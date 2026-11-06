@@ -64,7 +64,7 @@ export function ExternalAgentsSettingsController(): ReactNode {
             detail: connectionDetail(connection, workspaces),
             removing: agents.pending === connection.id,
           }))}
-          error={agents.error ?? (reach.kind === "unavailable" ? reach.detail : null)}
+          error={agents.error}
           footnote={personal ? externalAgentsFootnote : null}
           guides={externalAgentGuides}
           notice={
@@ -74,7 +74,9 @@ export function ExternalAgentsSettingsController(): ReactNode {
                   detail: externalAgentsNeedsRemote,
                   action: { label: "Open Remote access", onPress: openRemoteAccess },
                 }
-              : null
+              : reach.kind === "unavailable"
+                ? { title: "Remote access couldn’t be checked", detail: reach.detail, action: null }
+                : null
           }
           onAdd={(next) => {
             setBaseline(

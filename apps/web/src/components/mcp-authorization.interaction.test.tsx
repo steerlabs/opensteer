@@ -127,10 +127,12 @@ describe("signed-in MCP connection consent", () => {
     expect(links[0]!.getAttribute("href")).toContain(`deploymentId=${deploymentId}`);
     expect(links[0]!.getAttribute("href")).not.toMatch(/token|code|verifier/);
     expect(container.querySelector("input")).toBeNull();
-    // A phone browser hands the same request to the mobile app instead.
+    // A phone or tablet hands the same request to the mobile app instead,
+    // including iPad Safari, which presents itself as a Mac.
     vi.spyOn(navigator, "userAgent", "get").mockReturnValue(
-      "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)",
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Safari/605.1.15",
     );
+    vi.spyOn(navigator, "maxTouchPoints", "get").mockReturnValue(5);
     await act(async () =>
       root!.render(
         <McpAuthorizationLaunch requestId={"s".repeat(43)} deploymentId={deploymentId} />,

@@ -192,9 +192,14 @@ export function McpAuthorization({
   );
 }
 
-/** A phone hands the request to the mobile app; anything else to the desktop app. */
+/**
+ * A phone or tablet hands the request to the mobile app; anything else to the
+ * desktop app. iPad Safari presents itself as a Mac, so touch tells them apart.
+ */
 function installedClient() {
-  return /Android|iPhone|iPad|iPod/u.test(navigator.userAgent)
+  const agent = navigator.userAgent;
+  return /Android|iPhone|iPad|iPod/u.test(agent) ||
+    (/Macintosh/u.test(agent) && navigator.maxTouchPoints > 1)
     ? { client: opensteerMobileClient, device: "phone" }
     : { client: opensteerDesktopClient, device: "computer" };
 }
