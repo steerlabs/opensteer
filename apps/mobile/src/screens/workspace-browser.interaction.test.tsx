@@ -1827,6 +1827,19 @@ describe("an app open as a tab", () => {
     ]);
   });
 
+  it("forgets the app's Thread when the agent shows a browser tab in its place", () => {
+    const { render, route } = openApp();
+    route.params = {
+      deploymentId: "deployment-a",
+      scope: "workspace",
+      sessionId: "browser-child",
+      tabId: "page-1",
+    };
+    state.snapshot = withAgents([occupied("browser-child", [])]);
+    render();
+    expect(element(header(), "Ask")?.dataset["menuTitle"]).not.toBeUndefined();
+  });
+
   it("asks in the Thread that made it, going back when that Thread is under the page", () => {
     const { container } = openApp();
     expect(element(header(), "Ask")!.dataset["menuTitle"]).toBeUndefined();
@@ -2225,6 +2238,14 @@ describe("a page beside its agent's thread", () => {
       showTab("page-2");
       expect(container.querySelector('[data-testid="follow-band"]')).toBeNull();
       expect(state.conversationMounts).toBe(1);
+
+      // The tab sheet marks the tab shown when it opened, so following stops under it.
+      state.setParams.mockClear();
+      press(container, "Tabs, 2");
+      state.snapshot = agentOn("page-1");
+      render();
+      act(() => vi.advanceTimersByTime(5000));
+      expect(state.setParams).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }

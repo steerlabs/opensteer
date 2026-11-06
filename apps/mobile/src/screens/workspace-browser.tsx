@@ -286,6 +286,8 @@ function Focused(props: {
   // A closed app keeps its name and its Thread: the bar still says what ended,
   // and Ask still reaches whoever made it.
   const lastApp = useRef<PlaceItem | null>(null);
+  // Only for the app this route still names: an agent's show swaps the route in place.
+  if (lastApp.current !== null && !samePlace(lastApp.current, destination)) lastApp.current = null;
   if (place?.opensteerApp !== undefined) lastApp.current = place;
   const appThreadId = lastApp.current?.opensteerApp?.threadId ?? null;
   const occupied = useMemo(
@@ -490,16 +492,18 @@ function Focused(props: {
     [navigation, route],
   );
   const onShowTabs = useCallback(() => {
-    if (destination.kind === "browser")
-      navigation.dispatch(
-        StackActions.push("BrowserTabs", {
-          deploymentId,
-          sessionId: destination.sessionId,
-          tabId: destination.tabId,
-          ...(besideId === null ? {} : { threadId: besideId }),
-        }),
-      );
-  }, [besideId, deploymentId, destination, navigation]);
+    if (destination.kind !== "browser") return;
+    // The sheet marks the tab shown when it opened; following must not move it underneath.
+    pause();
+    navigation.dispatch(
+      StackActions.push("BrowserTabs", {
+        deploymentId,
+        sessionId: destination.sessionId,
+        tabId: destination.tabId,
+        ...(besideId === null ? {} : { threadId: besideId }),
+      }),
+    );
+  }, [besideId, deploymentId, destination, navigation, pause]);
   const [paired, setPaired] = useState(false);
   const selectPlaces = useCallback(
     (current: HostSnapshot): readonly PlaceEntry[] => {
