@@ -1,5 +1,6 @@
 import { placeIdentityKey } from "@opensteer/protocol";
 import { runPlaceDestination } from "@opensteer/client/host";
+import { sharedDisplayStreams } from "@opensteer/client/integrations";
 // @vitest-environment happy-dom
 import { act } from "react";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -743,10 +744,14 @@ describe("the v7 web review's findings", () => {
     });
     await settle(60);
     expect(runPlaceDestination(client.runPlace(runId)!, client.getSnapshot())).toEqual(destination);
-    expect(element(".place .computer-watch")).toBeTruthy();
+    // The tab in front opens another, so it never falls back to needing a press.
+    expect(element(".place .owner-view")).toBeTruthy();
+    expect(
+      ownerViews().find((candidate) => candidate.target.kind === "phone")?.generation,
+    ).toBeGreaterThan(view.generation);
   });
 
-  it("a phone's tab outlives its task, waits for Open, and closes only when the person closes it", async () => {
+  it("a phone's tab stays live through its task's end, without waking it, until the person closes it", async () => {
     const threadId = "thr_00000000-0000-4000-8000-000000000903";
     await mount(`/threads/${threadId}`);
     await settle(200);
@@ -754,37 +759,38 @@ describe("the v7 web review's findings", () => {
     const held = phone()!;
     if (held.destination.kind !== "phone" || !held.task) throw new Error("No held phone");
     const { machineId } = held.destination;
+    const open = vi.spyOn(client, "openComputerView");
+    const wake = vi.spyOn(sharedDisplayStreams(client), "armAutoWake");
     await act(async () => goTo!({ pathname: "/", search: `?panel=browser&phone=${machineId}` }));
     await settle(120);
-    expect(element(".place .computer-watch")).toBeTruthy();
+    expect(open).toHaveBeenCalledExactlyOnceWith(
+      machineId,
+      { kind: "phone", display: "main" },
+      { wake: false },
+    );
+    expect(element(".place .owner-view")).toBeTruthy();
     const address = history.at(-1);
-    const open = vi.spyOn(client, "openComputerView");
+    const shown = phone()?.ownerView;
+    expect(shown).toBeTruthy();
 
     await act(async () => {
       await client.rpc["integration.computer.session.stop"]({ sessionId: held.task!.sessionId });
     });
     await settle(120);
-    // Nothing navigated and nothing opened: only the person's press may wake the phone.
+    // The agent stopping is not an event for the tab: same address, same view, no new open.
     expect(history.at(-1)).toEqual(address);
-    expect(document.querySelector(".place .computer-watch")).toBeNull();
-    expect(element(".place").textContent).toContain("Open Pixel 7 to see it and use it.");
-    expect(open).not.toHaveBeenCalled();
-
-    await click(
-      [...document.querySelectorAll<HTMLButtonElement>(".place button")].find(
-        (button) => button.textContent === "Open",
-      )!,
-    );
-    await settle(120);
-    expect(open).toHaveBeenCalledOnce();
-    expect(history.at(-1)?.search).toBe(address?.search);
+    expect(phone()?.task).toBeNull();
+    expect(phone()?.ownerView?.viewId).toBe(shown?.viewId);
+    expect(phone()?.ownerView?.generation).toBe(shown?.generation);
     expect(element(".place .owner-view")).toBeTruthy();
-    expect(phone()?.ownerView?.target.kind).toBe("phone");
+    expect(open).toHaveBeenCalledOnce();
+    expect(wake).not.toHaveBeenCalled();
 
     await act(async () => client.closePhoneTab(machineId));
     await settle(120);
     expect(phone()).toBeUndefined();
     expect(ownerViews().some((view) => view.target.kind === "phone")).toBe(false);
+    expect(open).toHaveBeenCalledOnce();
     expect(history.at(-1)?.search).not.toBe(address?.search);
   });
 

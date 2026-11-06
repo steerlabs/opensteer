@@ -3891,7 +3891,7 @@ export class MockHostClient implements HostClient {
     this.openComputerView = async (...args) => {
       const view = await views.openComputerView(...args);
       if (view.target.kind === "phone") this.#state.openPhoneTab(view.machineId);
-      if (view.target.kind === "phone" && view.state === "ready")
+      if (view.target.kind === "phone" && view.state === "ready" && args[2]?.wake !== false)
         sharedDisplayStreams(this).armAutoWake({
           kind: "owner-view",
           viewId: view.viewId,

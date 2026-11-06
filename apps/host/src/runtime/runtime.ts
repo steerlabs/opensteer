@@ -1013,7 +1013,10 @@ export async function createHostRuntime(
       onPhoneView: (status) => {
         app.log.info(status, "Phone owner view command");
         if (status.operation === "computer.view.open" && status.viewId !== null)
-          phoneTabs?.opened(status.machineId);
+          phoneTabs?.opened(
+            status.machineId,
+            () => computerViews?.holdsPhoneView(status.machineId) ?? false,
+          );
       },
       hub: computerApps,
       connections: (ownerId) => integrationStore.listConnections(ownerId),

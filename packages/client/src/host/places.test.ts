@@ -165,6 +165,14 @@ describe("place catalog", () => {
       expect(held.ownerView).toBeNull();
       expect(held.task).not.toBeNull();
       expect(held.ownerClose).toEqual({ generation: 1, viewId: "cvw_dead" });
+
+      const live = withPhone({
+        ...phone,
+        computerUse: { ...phone.computerUse!, ownerViews: [{ ...view, state: "ready" }] },
+      });
+      const shown = placeList(live).find((place) => place.kind === "phone")!;
+      expect(shown.ownerView?.viewId).toBe("cvw_dead");
+      expect(shown.ownerClose).toBeNull();
     } finally {
       client.dispose();
     }
