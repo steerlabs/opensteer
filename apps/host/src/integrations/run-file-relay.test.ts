@@ -1,7 +1,11 @@
 import { Readable } from "node:stream";
 import { createId } from "@opensteer/core";
 import { generateKeyPairSync } from "node:crypto";
-import { runFileNameHeader, runFileTransferContentType, runFileTransferPath } from "@opensteer/protocol";
+import {
+  runFileNameHeader,
+  runFileTransferContentType,
+  runFileTransferPath,
+} from "@opensteer/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import { signHostDiscovery } from "../identity/host-keys.js";
 import { createHostServer } from "../server.js";

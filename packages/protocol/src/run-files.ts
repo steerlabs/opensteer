@@ -46,7 +46,9 @@ export const HostRunFileRequestSchema = z.discriminatedUnion("type", [
     ...base,
     execution: RunFileExecutionSchema,
     files: z
-      .array(z.strictObject({ path: z.string().min(1).max(4_096), transfer: RunFileTransferSchema }))
+      .array(
+        z.strictObject({ path: z.string().min(1).max(4_096), transfer: RunFileTransferSchema }),
+      )
       .min(1)
       .max(runFileMaxPerCall),
     type: z.literal("host.run-file.send"),

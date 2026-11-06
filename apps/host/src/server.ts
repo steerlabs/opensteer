@@ -2640,20 +2640,27 @@ export async function createHostServer(
       .send(Buffer.from(content.bytes));
   });
 
-  app.put("/v1/runner/file-transfers/:id", { bodyLimit: runFileMaxBytes }, async (request, reply) => {
-    const token = requireBearerToken(request);
-    const { id } = z.strictObject({ id: z.uuid() }).parse(request.params);
-    const sizeBytes = Number(request.headers["content-length"]);
-    const name = request.headers[runFileNameHeader];
-    if (!Number.isSafeInteger(sizeBytes) || typeof name !== "string")
-      throw new OpensteerError({ code: "bad_request", message: "This file has no size or name." });
-    await dependencies.runFiles.upload(id, token, {
-      name: decodeURIComponent(name),
-      sizeBytes,
-      stream: request.body as Readable,
-    });
-    return reply.code(204).send();
-  });
+  app.put(
+    "/v1/runner/file-transfers/:id",
+    { bodyLimit: runFileMaxBytes },
+    async (request, reply) => {
+      const token = requireBearerToken(request);
+      const { id } = z.strictObject({ id: z.uuid() }).parse(request.params);
+      const sizeBytes = Number(request.headers["content-length"]);
+      const name = request.headers[runFileNameHeader];
+      if (!Number.isSafeInteger(sizeBytes) || typeof name !== "string")
+        throw new OpensteerError({
+          code: "bad_request",
+          message: "This file has no size or name.",
+        });
+      await dependencies.runFiles.upload(id, token, {
+        name: decodeURIComponent(name),
+        sizeBytes,
+        stream: request.body as Readable,
+      });
+      return reply.code(204).send();
+    },
+  );
 
   app.get("/v1/runner/file-transfers/:id", async (request, reply) => {
     const token = requireBearerToken(request);

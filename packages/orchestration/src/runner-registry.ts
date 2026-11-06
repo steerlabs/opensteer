@@ -1513,8 +1513,14 @@ export class RunnerRegistry {
   async requestRunFile(
     runnerId: RunnerId,
     request:
-      | Pick<Extract<HostRunFileRequest, { type: "host.run-file.receive" }>, "execution" | "transfers" | "type">
-      | Pick<Extract<HostRunFileRequest, { type: "host.run-file.send" }>, "execution" | "files" | "type">,
+      | Pick<
+          Extract<HostRunFileRequest, { type: "host.run-file.receive" }>,
+          "execution" | "transfers" | "type"
+        >
+      | Pick<
+          Extract<HostRunFileRequest, { type: "host.run-file.send" }>,
+          "execution" | "files" | "type"
+        >,
     signal: AbortSignal,
   ): Promise<RunnerRunFileResult> {
     const connection = this.#byRunner.get(runnerId);

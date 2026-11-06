@@ -2628,7 +2628,8 @@ export class IntegrationPlatformService {
         message: `Invalid ${operation.title} arguments at ${issue.path}: ${issue.message}`,
       });
     const route = this.#runFileRoute(operation, args, caller, placement, signal);
-    if (typeof route === "string") return { content: [{ type: "text", text: route }], isError: true };
+    if (typeof route === "string")
+      return { content: [{ type: "text", text: route }], isError: true };
     try {
       return await this.#finishComputerTool(
         await admit(async (connection, access) =>
@@ -2718,7 +2719,9 @@ export class IntegrationPlatformService {
         stop.abort();
       },
       files: {
-        transfers: relays.map((relay) => (operation.files === "send" ? relay.download : relay.upload)),
+        transfers: relays.map((relay) =>
+          operation.files === "send" ? relay.download : relay.upload,
+        ),
       },
       peer: settled,
     };

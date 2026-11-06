@@ -42,7 +42,12 @@ async function deployment() {
       helperBinary: process.execPath,
       transport: { hostOrigin: new URL(origin), mode: "development" },
     });
-  return { exports: join(root, "exports"), relay, source: runner("source"), target: runner("target") };
+  return {
+    exports: join(root, "exports"),
+    relay,
+    source: runner("source"),
+    target: runner("target"),
+  };
 }
 
 it("moves a file larger than any frame between two Runners through the Host, byte for byte", async () => {
