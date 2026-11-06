@@ -29,6 +29,7 @@ export class DesktopMainProcess {
   #stopPromise: Promise<void> | undefined;
   #serviceStartPromise: Promise<void> | undefined;
   #window: DesktopWindowHandle | null = null;
+  #windowHidden = false;
   #windowOpening: Promise<void> | undefined;
 
   constructor(options: {
@@ -83,7 +84,9 @@ export class DesktopMainProcess {
     window.focus();
   }
 
+  /** Lasts until `stop`, so a window still loading is hidden when it arrives. */
   hideWindow(): void {
+    this.#windowHidden = true;
     const window = this.#window;
     if (window && !window.isDestroyed()) window.hide();
   }
@@ -132,6 +135,7 @@ export class DesktopMainProcess {
         return;
       }
       this.#window = created;
+      if (this.#windowHidden) created.hide();
     })();
     this.#windowOpening = opening;
     try {

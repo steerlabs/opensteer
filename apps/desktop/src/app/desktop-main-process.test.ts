@@ -33,6 +33,26 @@ describe("DesktopMainProcess", () => {
     expect(window.isDestroyed()).toBe(true);
   });
 
+  it("hides a window that finishes loading after shutdown hid the app", async () => {
+    const calls: string[] = [];
+    let finishLoading!: (window: DesktopWindowHandle) => void;
+    const loaded = new Promise<DesktopWindowHandle>((resolve) => {
+      finishLoading = resolve;
+    });
+    const main = new DesktopMainProcess({
+      services: { start: async () => undefined, stop: async () => undefined },
+      windows: { create: () => loaded },
+    });
+
+    const starting = main.start();
+    main.hideWindow();
+    finishLoading(new TestWindow(calls));
+    await starting;
+
+    expect(calls).toEqual(["window.hide"]);
+    await main.stop();
+  });
+
   it("opens the shell before optional services, recreates a closed window, and stops once", async () => {
     const calls: string[] = [];
     const onWindowClosed = vi.fn();
