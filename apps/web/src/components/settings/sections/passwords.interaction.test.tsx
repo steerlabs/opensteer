@@ -12,7 +12,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Outlet, Route, Routes } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ShellContext } from "../../app-shell.js";
+import { ShellContext } from "../../app-shell.js";
 import { SettingsSectionRoute, SettingsShell } from "../settings-shell.js";
 
 /*
@@ -359,7 +359,13 @@ function page(
   return (
     <MemoryRouter initialEntries={["/settings/passwords"]}>
       <Routes>
-        <Route element={<Outlet context={context} />}>
+        <Route
+          element={
+            <ShellContext value={context}>
+              <Outlet />
+            </ShellContext>
+          }
+        >
           <Route element={<SettingsShell />} path="settings">
             <Route element={<SettingsSectionRoute section="passwords" />} path="passwords" />
           </Route>

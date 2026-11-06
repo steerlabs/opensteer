@@ -20,7 +20,7 @@ import { MemoryRouter, Outlet, Route, Routes } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
 import { fullAccessElsewhere } from "@opensteer/client/host";
-import type { ShellContext } from "./app-shell.js";
+import { ShellContext } from "./app-shell.js";
 import {
   computerAppIdFromHash,
   computerAppRoute,
@@ -955,7 +955,13 @@ function pageElement(input: PageInput) {
   return (
     <MemoryRouter initialEntries={[input.path ?? "/settings/devices/computers"]}>
       <Routes>
-        <Route element={<Outlet context={context} />}>
+        <Route
+          element={
+            <ShellContext value={context}>
+              <Outlet />
+            </ShellContext>
+          }
+        >
           <Route element={<ComputersPage />} path="settings/devices/computers" />
           <Route element={<ComputerDetailPage />} path="settings/devices/computers/:computerId" />
         </Route>

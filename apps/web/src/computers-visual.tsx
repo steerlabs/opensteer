@@ -16,7 +16,7 @@ import {
 } from "@opensteer/protocol/desktop";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter, Outlet, Route, Routes } from "react-router";
-import type { ShellContext } from "./components/app-shell.js";
+import { ShellContext } from "./components/app-shell.js";
 import { ComputerDetailPage, ComputersPage } from "./components/computers-page.js";
 import { SettingsShell, SettingsSectionRoute } from "./components/settings/settings-shell.js";
 import { ToastProvider } from "./components/toast.js";
@@ -575,7 +575,13 @@ createRoot(container).render(
       <div className="app-shell">
         <main className="app-shell__main">
           <Routes>
-            <Route element={<Outlet context={context} />}>
+            <Route
+              element={
+                <ShellContext value={context}>
+                  <Outlet />
+                </ShellContext>
+              }
+            >
               <Route element={<SettingsShell />} path="settings">
                 <Route element={<ComputersPage />} path="computers" />
                 <Route element={<ComputerDetailPage />} path="computers/:computerId" />

@@ -11,7 +11,7 @@ import { MemoryRouter, Outlet, Route, Routes } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
 import { fullAccessRequestBody } from "@opensteer/client/host";
-import type { ShellContext } from "./app-shell.js";
+import { ShellContext } from "./app-shell.js";
 import { ThreadFullDiskAccessAction } from "./thread-full-disk-access-action.js";
 
 const noOp = () => undefined;
@@ -140,7 +140,13 @@ async function mount(input: {
     root.render(
       <MemoryRouter initialEntries={["/"]}>
         <Routes>
-          <Route element={<Outlet context={context} />}>
+          <Route
+            element={
+              <ShellContext value={context}>
+                <Outlet />
+              </ShellContext>
+            }
+          >
             <Route
               element={
                 <ThreadFullDiskAccessAction

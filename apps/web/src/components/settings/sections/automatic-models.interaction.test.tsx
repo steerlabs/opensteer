@@ -5,7 +5,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Outlet, Route, Routes } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ShellContext } from "../../app-shell.js";
+import { ShellContext } from "../../app-shell.js";
 import { AutomaticModelsSection } from "./automatic-models.js";
 
 const roots: Root[] = [];
@@ -100,7 +100,13 @@ async function mount(options: { readonly automaticModelsAvailable?: boolean } = 
     root.render(
       <MemoryRouter initialEntries={["/settings/ai"]}>
         <Routes>
-          <Route element={<Outlet context={context} />}>
+          <Route
+            element={
+              <ShellContext value={context}>
+                <Outlet />
+              </ShellContext>
+            }
+          >
             <Route element={<AutomaticModelsSection />} path="settings/ai" />
           </Route>
         </Routes>

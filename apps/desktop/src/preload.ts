@@ -108,6 +108,7 @@ import type {
 import {
   DisplayClientDiagnosticSchema,
   RealtimeFrameDiagnosticSchema,
+  RendererFailureDiagnosticSchema,
   DesktopWorkspaceTabCommandSchema,
   DeploymentAccessSnapshotSchema,
   DesktopChooseUsbDeviceInputSchema,
@@ -354,6 +355,12 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
     await invoke(
       desktopBridgeChannels.reportRealtimeDiagnostic,
       RealtimeFrameDiagnosticSchema.parse(record),
+    );
+  },
+  reportRendererFailure: async (record: z.input<typeof RendererFailureDiagnosticSchema>) => {
+    await invoke(
+      desktopBridgeChannels.reportRendererFailure,
+      RendererFailureDiagnosticSchema.parse(record),
     );
   },
   getLocalVisibility: async () =>
