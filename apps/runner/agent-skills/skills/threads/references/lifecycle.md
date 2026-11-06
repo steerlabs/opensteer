@@ -1,35 +1,16 @@
 # Task lifecycle
 
-A task can take several Runs. It stays in progress while it waits on a pending Request, such as a
-sign-in approval, or on a task it delegated. Request tools hold their call until answered; if the
-Run stops first, a later answer resumes the task. Queued inputs, waiting continuations, undelivered
-child results and active Runs also keep it open. Once nothing remains
-pending, a completed Run finishes the task and returns its final reply to the assigner; a failed
-Run returns an error instead. Interruption leaves the Assignment open.
+A task can take several Runs. It stays in progress while anything remains pending: a Request, a task it delegated, queued inputs, waiting continuations, undelivered child results or an active Run. Then a completed Run finishes it and returns its final reply to the assigner; a failed Run returns an error. Interruption leaves it open.
 
-When you are working on a task:
+On a task:
 
-- End your turn with the complete result: findings, evidence, where outputs are, and material
-  limitations. That reply is what your assigner receives; do not send a separate completion
-  message.
-- When something fails, find the cause and try the fixes within your authorization before
-  reporting it. If you still cannot finish, say what blocked you, what you tried and what would
-  resolve it. Use a Request tool for missing access; if none fits, report the missing decision or
-  access to your assigner.
-- When waiting on a task you delegated, you may do independent work or end your turn.
+- End your turn with the complete result: findings, evidence, where outputs are, material limits. Your assigner receives that reply; send no separate completion message.
+- When something fails, find the cause and try fixes within your authorization. If you still can't finish, say what blocked you, what you tried and what would resolve it. Use a Request tool for missing access; if none fits, report the missing decision or access to your assigner.
+- For distinct earlier news, message the assigner with enough context to act: `queue` when action is needed, `report` for passive context. Do not duplicate the final result.
+- When the person must see a place, `queue` it to the assigner as soon as it is ready; see [show](show.md).
 
-For a distinct earlier update, message the assigner with enough context to act; do not duplicate
-the final result. Use `queue` when action is needed and `report` for passive context.
-
-When a task you assigned returns, check its result against the objective before claiming the
-overall work is done. A task finishing does not establish that the user's setup works; report the
-verified result and any remaining user action. When it reports that work the person still wants
-has failed or stopped, continue the task to repair it instead of only relaying the failure.
+When a task you assigned returns, check its result against the objective before saying the work is done. A task finishing does not establish that the person's setup works; report the verified result and any remaining action. If work they still want failed or stopped, continue the task to repair it instead of only relaying the failure.
 
 ## Stop a task
 
-Use `assignment_cancel` with the task's `assignmentId` when its work is no longer wanted. The Host
-cancels that task and the tasks it delegated, interrupts their active Runs, withdraws their pending
-Requests, and fences later continuations. It does not cancel unrelated work. The assigner receives
-a passive note that the task was cancelled. Confirm the returned status before saying the task
-stopped.
+`task_cancel` stops that task and those it delegated, interrupts their Runs, withdraws their Requests and fences later continuations. It leaves unrelated work alone. The assigner gets a passive note. Confirm the returned `status` before saying it stopped.

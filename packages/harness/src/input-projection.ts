@@ -359,7 +359,7 @@ export function harnessReportsPrompt(
           `${reports.omittedCount} additional report(s) in this snapshot were omitted by the context bound.`,
           reports.throughSequence === null
             ? "Use thread_read to inspect the Thread and compare Report-IDs; the omitted reports are not necessarily one contiguous slice."
-            : `The snapshot ends at Thread sequence ${reports.throughSequence}. Use thread_read for this Thread, pass window.nextBefore as before for earlier messages, and compare Report-IDs; the omitted reports are not necessarily one contiguous slice.`,
+            : `The snapshot ends at Thread sequence ${reports.throughSequence}. Use thread_read for this Thread, pass nextBefore as before for earlier messages, and compare Report-IDs; the omitted reports are not necessarily one contiguous slice.`,
         ]
       : []),
   ].join("\n");

@@ -111,11 +111,13 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
     thread_list: async () => unavailable(),
     thread_delegate: async () => unavailable(),
     thread_message: async () => unavailable(),
-    thread_write: async () => unavailable(),
+    thread_interrupt: async () => unavailable(),
+    thread_update: async () => unavailable(),
     thread_wait: async () => unavailable(),
     thread_configure: async () => unavailable(),
     thread_queue: async () => unavailable(),
-    assignment_cancel: async () => unavailable(),
+    task_status: async () => unavailable(),
+    task_cancel: async () => unavailable(),
     person_message: async () => unavailable(),
     person_show: async () => unavailable(),
     request_list: async () => unavailable(),
@@ -426,7 +428,7 @@ function defaultResult(name: string): unknown {
     case "project_list":
       return { projects: [], window: { hasMore: false } };
     case "thread_list":
-      return { threads: [], nextCursor: null };
+      return { threads: [], hasMore: false, nextBefore: null };
     case "request_list":
       return { requests: [] };
     case "browser_profile_list":

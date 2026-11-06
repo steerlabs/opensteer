@@ -18,9 +18,10 @@ and resumes by itself, so tell the person the reason rather than pausing or resu
 1. Replace only the contents under `## Memory`, keeping its heading and everything outside that
    section byte-for-byte (including standing instructions), with
    `Memory: off at the person's request; deleting memory once both passes stop.`
-2. Pause both Triggers, then call `thread_write` action `done` with each worker's `threadId`. Done
+2. Pause both Triggers, then call `thread_update` action `done` with each worker's `threadId`. Done
    cancels queued wakes and asks a running pass to stop.
-3. Call `thread_read` on each worker. Once neither status is `running` or `waiting`, delete
+3. Call `thread_read` with `limit: 1` on each worker. Once neither `thread.status` is `running` or
+   `waiting`, delete
    `memory/` and `skills/light-pass/`, then shorten the line to
    `Memory: off at the person's request.`
 
@@ -55,5 +56,5 @@ follow-up until creation succeeds.
 ## Turn back on
 
 Finish any pending deletion first. Clear only the contents under `## Memory`, preserving
-everything outside it byte-for-byte; reopen each worker marked Done with `thread_write` action `reopen`, then resume both
+everything outside it byte-for-byte; reopen each worker marked Done with `thread_update` action `reopen`, then resume both
 Triggers. Preserve both worker and Trigger identities.
