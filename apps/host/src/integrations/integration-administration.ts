@@ -1,4 +1,3 @@
-import { assertPluginDataId } from "@opensteer/shared/privateFiles";
 import type { AdministrationCommandIdentity } from "@opensteer/database";
 import { OpensteerError, type UserId } from "@opensteer/core";
 import type { HostApiCommand, HostApiCommandOutput } from "@opensteer/protocol";
@@ -70,8 +69,7 @@ export async function executeIntegrationAdministration(
       });
       return { type: command.type };
     case "plugin.remove": {
-      assertPluginDataId(command.pluginId);
-      assertAdministrator(actor);
+      await options.platform.store.plugins.assertCanRemove(command.pluginId, actor);
       await options.platform.store.specialists.retirePlugin(command.pluginId);
       for (const installation of await options.platform.store.listInstallations()) {
         if (installation.pluginId === command.pluginId)

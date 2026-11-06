@@ -3,7 +3,7 @@ import {
   type AdministrationCommandIdentity,
 } from "./administration-command.js";
 import { randomUUID } from "node:crypto";
-import { type Kysely, type Transaction } from "kysely";
+import { sql, type Kysely, type Transaction } from "kysely";
 import {
   SpecialistManifestSchema,
   type SpecialistManifest,
@@ -11,14 +11,58 @@ import {
   type UserId,
   type RunnerId,
   type WorkspaceId,
+  type ThreadId,
 } from "@opensteer/core";
 import type { DatabaseSchema } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
+
+export function canRemovePlugin(
+  plugin: { scope: string; installedBy: UserId | null },
+  actor: { userId: UserId; isAdministrator: boolean },
+): boolean {
+  return (
+    actor.isAdministrator || (plugin.scope === "workspace" && plugin.installedBy === actor.userId)
+  );
+}
 
 export class PluginStore {
   private readonly database: Kysely<DatabaseSchema>;
   constructor(database: Kysely<DatabaseSchema>) {
     this.database = database;
+  }
+
+  async assertCanRemove(pluginId: string, actor: { userId: UserId; isAdministrator: boolean }) {
+    const plugin = await this.database
+      .selectFrom("plugins")
+      .select(["scope", "installedBy"])
+      .where("id", "=", pluginId)
+      .executeTakeFirst();
+    if (!plugin || !canRemovePlugin(plugin, actor))
+      throw new OpensteerError({ code: "forbidden", message: "Plugin removal is unavailable" });
+  }
+
+  async setupThread(threadId: ThreadId): Promise<ThreadId | null> {
+    const result = await sql<{ threadId: ThreadId }>`
+      with recursive lineage as (
+        select t.id, t.parent_thread_id, t.workspace_id, t.listed, 0 as depth, array[t.id::text] as path
+        from threads t where t.id = ${threadId}
+        union all
+        select t.id, t.parent_thread_id, t.workspace_id, t.listed, l.depth + 1, l.path || t.id::text
+        from lineage l join threads t on t.id = l.parent_thread_id
+        where l.depth < 64 and not t.id::text = any(l.path)
+      )
+      select l.id as thread_id from lineage l join workspaces w on w.id = l.workspace_id
+      where l.listed or w.home_thread_id = l.id order by l.depth limit 1
+    `.execute(this.database);
+    return result.rows[0]?.threadId ?? null;
+  }
+
+  async recordSetupThread(pluginId: string, setupThreadId: ThreadId | null) {
+    await this.database
+      .updateTable("plugins")
+      .set({ setupThreadId })
+      .where("id", "=", pluginId)
+      .execute();
   }
 
   async list(workspaceId?: WorkspaceId) {
@@ -159,6 +203,7 @@ export class PluginStore {
       specialistManifest?: SpecialistManifest | null;
       digest: string;
       manifest: Readonly<Record<string, unknown>>;
+      setupThreadId?: ThreadId | null;
     },
     transaction?: Transaction<DatabaseSchema>,
   ) {
@@ -179,6 +224,7 @@ export class PluginStore {
           workspaceId: input.workspaceId ?? null,
           source: jsonValue(input.source),
           installedBy: input.actorUserId,
+          setupThreadId: input.setupThreadId ?? null,
           currentVersionId: null,
           createdAt: now,
           updatedAt: now,
@@ -216,6 +262,7 @@ export class PluginStore {
       specialistManifest?: SpecialistManifest | null;
       digest: string;
       manifest: Readonly<Record<string, unknown>>;
+      setupThreadId?: ThreadId | null;
     },
     transaction?: Transaction<DatabaseSchema>,
   ) {
@@ -257,6 +304,7 @@ export class PluginStore {
         .updateTable("plugins")
         .set({
           currentVersionId: id,
+          ...(input.setupThreadId !== undefined ? { setupThreadId: input.setupThreadId } : {}),
           updatedAt: new Date(),
           ...(input.source ? { source: jsonValue(input.source) } : {}),
         })

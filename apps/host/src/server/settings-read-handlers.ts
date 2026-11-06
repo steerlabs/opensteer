@@ -5,10 +5,16 @@ import {
   type DurableWindow,
   type HostApiHandlers,
   type PluginsDirectoryView,
+  type MachineSummary,
+  type OtherDevice,
 } from "@opensteer/protocol";
 import { requireSession } from "../integrations/integration-rpc-context.js";
 
 export function createSettingsReadHandlers(options: {
+  readonly otherDevices: (
+    owner: UserId,
+    machines: readonly MachineSummary[],
+  ) => Promise<readonly OtherDevice[]>;
   readonly catalog: () => Promise<PluginsDirectoryView["catalog"]>;
   readonly requests: (
     owner: UserId,
@@ -37,11 +43,14 @@ export function createSettingsReadHandlers(options: {
       );
     },
     "devices.overview.get": async (_input, context) => {
-      requireSession(context);
+      const owner = requireSession(context).user.id;
       const result = await options.machines({}, context);
       if (!result.ok) return result;
       return rpcSuccess(
-        hostApi["devices.overview.get"].success.parse({ devices: result.data.machines }),
+        hostApi["devices.overview.get"].success.parse({
+          devices: result.data.machines,
+          otherDevices: await options.otherDevices(owner, result.data.machines),
+        }),
       );
     },
   };

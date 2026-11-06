@@ -13,7 +13,7 @@ import type {
   ComputerAppIdentity,
   IntegrationConnectionSummary,
 } from "@opensteer/integration-core";
-import { computerAppIdentityKey } from "@opensteer/integration-core";
+import { pluginDeviceFromManifest, computerAppIdentityKey } from "@opensteer/integration-core";
 import { safeMessage } from "@opensteer/shared/safeMessage";
 import { localMcpLaunchSecrets } from "@opensteer/integration-core";
 import {
@@ -1049,6 +1049,7 @@ export class IntegrationPlatformService {
     readonly administration?: AdministrationCommandIdentity | undefined;
     readonly actorUserId: UserId;
     readonly directory: string;
+    readonly threadId?: import("@opensteer/core").ThreadId;
     readonly workspaceDirectory?: string;
     readonly workspaceId?: import("@opensteer/core").WorkspaceId;
     readonly pluginId?: string;
@@ -1097,6 +1098,9 @@ export class IntegrationPlatformService {
           message: "Agent-made plugins update when an agent installs their folder again.",
         });
     }
+    const setupThreadId = input.threadId
+      ? await this.#store.plugins.setupThread(input.threadId)
+      : undefined;
     const updating = pluginId !== undefined;
     pluginId ??= createIntegrationId("installation");
     const previous = updating
@@ -1128,12 +1132,18 @@ export class IntegrationPlatformService {
       previousServers
         .filter((s) => plugin.servers.some((next) => next.name === s.name))
         .every((s) => s.runnerId === runnerId && s.status !== "disabled")
-    )
+    ) {
+      if (setupThreadId !== undefined) {
+        await this.#store.plugins.recordSetupThread(pluginId, setupThreadId);
+        await this.requestLocalServerApprovals();
+        await this.#onSettingsChanged({ installationId: previous.id });
+      }
       return {
         installation: previous,
         issues: plugin.issues,
         specialist: plugin.specialistManifest !== null,
       };
+    }
     const installationId = createIntegrationId("installation");
     const servers = await Promise.all(
       plugin.servers.map((server) =>
@@ -1143,6 +1153,7 @@ export class IntegrationPlatformService {
       ),
     );
     const version = {
+      ...(setupThreadId !== undefined ? { setupThreadId } : {}),
       specialistManifest: plugin.specialistManifest,
       digest: basename(plugin.root),
       manifest: {
@@ -1217,7 +1228,7 @@ export class IntegrationPlatformService {
           )
             ? "active"
             : "needs-attention",
-        title: plugin.manifest.name,
+        title: pluginDeviceFromManifest(plugin.manifest)?.name ?? plugin.manifest.name,
         trust: "administrator-approved",
         version: plugin.manifest.version ?? null,
       },
@@ -1313,7 +1324,8 @@ export class IntegrationPlatformService {
    * approved as they now launch, and sends each one its approvals again.
    */
   async requestLocalServerApprovals(): Promise<void> {
-    await this.#store.localMcp.requestApprovals();
+    const changed = await this.#store.localMcp.requestApprovals();
+    if (changed.length > 0) this.#onConnectionsChanged();
   }
 
   async deliverPluginDataRemovals(runnerId?: RunnerId): Promise<void> {

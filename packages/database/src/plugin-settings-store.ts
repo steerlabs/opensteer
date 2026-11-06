@@ -1,7 +1,8 @@
+import { pluginDeviceFromManifest } from "@opensteer/integration-core";
 import { lockPluginOwnerConsent } from "./plugin-settings-locks.js";
 import { SpecialistStore } from "./specialist-store.js";
 import { listWorkspaceSkillInventory } from "./workspace-skill-inventory-store.js";
-import { PluginStore } from "./plugin-store.js";
+import { PluginStore, canRemovePlugin } from "./plugin-store.js";
 import {
   writeIntegrationGrantInTransaction,
   validateIntegrationGrantInTransaction,
@@ -215,6 +216,7 @@ export class PluginSettingsStore {
           "plugins.scope",
           "plugins.workspaceId",
           "plugins.installedBy",
+          "plugins.setupThreadId",
           "plugins.source",
           "pluginVersions.manifest",
           "pluginVersions.specialistManifest",
@@ -358,7 +360,8 @@ export class PluginSettingsStore {
       const skills = Array.isArray(plugin.manifest.skills) ? plugin.manifest.skills.length : 0;
       rows.push({
         target,
-        title: plugin.name.slice(0, 120),
+        device: pluginDeviceFromManifest(plugin.manifest),
+        title: (pluginDeviceFromManifest(plugin.manifest)?.name ?? plugin.name).slice(0, 120),
         description:
           typeof plugin.manifest.description === "string"
             ? plugin.manifest.description.slice(0, 320)
@@ -384,7 +387,10 @@ export class PluginSettingsStore {
         permissions: {
           canEnable: true,
           canPlace: manage,
-          canRemove: manage,
+          canRemove: canRemovePlugin(plugin, {
+            userId: owner,
+            isAdministrator: viewer.instanceRole === "administrator",
+          }),
           // Agent-made plugins update when an agent installs their folder again.
           canUpdate:
             manage && plugin.scope === "deployment" && typeof plugin.source.directory === "string",
@@ -778,6 +784,80 @@ export class PluginSettingsStore {
     });
   }
 
+  private async visibleSetupThread(
+    owner: UserId,
+    threadId: import("@opensteer/core").ThreadId | null,
+  ) {
+    if (!threadId) return null;
+    const thread = await this.database
+      .selectFrom("threads")
+      .innerJoin("workspaceMemberships", "workspaceMemberships.workspaceId", "threads.workspaceId")
+      .select("threads.id")
+      .where("threads.id", "=", threadId)
+      .where("workspaceMemberships.userId", "=", owner)
+      .where("workspaceMemberships.state", "=", "active")
+      .executeTakeFirst();
+    return thread?.id ?? null;
+  }
+
+  async otherDevices(
+    owner: UserId,
+    machines: readonly {
+      id: string;
+      name: string;
+      status: import("@opensteer/protocol").MachineSummary["status"];
+    }[],
+  ) {
+    const snapshot = await this.snapshot(
+      owner,
+      new Set(machines.filter((m) => m.status === "online").map((m) => m.id)),
+    );
+    const devices = snapshot.packages.filter((p) => pluginDeviceFromManifest(p.manifest));
+    if (!devices.length) return [];
+    const servers = await this.database
+      .selectFrom("integrationServers")
+      .innerJoin(
+        "integrationInstallations",
+        "integrationInstallations.id",
+        "integrationServers.installationId",
+      )
+      .select([
+        "integrationInstallations.pluginId",
+        "integrationServers.transport",
+        "integrationServers.status",
+        "integrationServers.statusDetail",
+      ])
+      .where(
+        "integrationInstallations.pluginId",
+        "in",
+        devices.map((p) => p.id),
+      )
+      .orderBy("integrationServers.id")
+      .execute();
+    return Promise.all(
+      devices.map(async (plugin) => {
+        const device = pluginDeviceFromManifest(plugin.manifest)!;
+        const ownServers = servers.filter((s) => s.pluginId === plugin.id);
+        const runner = ownServers.find((s) => s.transport.type === "runner")?.transport.runnerId;
+        const machine = machines.find((m) => m.id === runner);
+        return {
+          pluginId: plugin.id,
+          ...device,
+          computer: machine
+            ? {
+                id: RunnerIdSchema.parse(machine.id),
+                name: machine.name.slice(0, 120),
+                status: machine.status,
+              }
+            : null,
+          issue:
+            ownServers.find((s) => s.status !== "active")?.statusDetail?.slice(0, 1000) ?? null,
+          setupThreadId: await this.visibleSetupThread(owner, plugin.setupThreadId),
+        };
+      }),
+    );
+  }
+
   async overview(owner: UserId, availableRunnerIds?: ReadonlySet<string>) {
     return PluginsOverviewViewSchema.parse({
       rows: (await this.snapshot(owner, availableRunnerIds)).rows,
@@ -994,6 +1074,7 @@ export class PluginSettingsStore {
         })),
       ],
       contents: target.kind === "skill" ? [{ name: target.fullName, kind: "skill" }] : contents,
+      setupThreadId: plugin ? await this.visibleSetupThread(owner, plugin.setupThreadId) : null,
       sourceFolder:
         plugin?.installedBy === owner &&
         plugin.scope === "deployment" &&

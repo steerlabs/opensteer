@@ -224,7 +224,7 @@ export class AdministrationService {
     if (administration) {
       if (command.type.startsWith("harness.") && "environmentId" in command)
         await this.admitHarnessManagement(actor, command.environmentId);
-      if (["plugin.remove", "plugin.update", "integration.uninstall"].includes(command.type))
+      if (["plugin.update", "integration.uninstall"].includes(command.type))
         assertAdministrator(actor);
       const replay = await this.dependencies.store.replayAdministrationCommand(administration);
       if (replay?.output) return hostApi["commands.dispatch"].success.parse(replay.output);

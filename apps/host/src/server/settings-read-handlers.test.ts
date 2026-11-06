@@ -26,7 +26,12 @@ function fixture() {
     catalog,
     requests,
     machines,
-    handlers: createSettingsReadHandlers({ catalog, requests, machines }),
+    handlers: createSettingsReadHandlers({
+      catalog,
+      requests,
+      machines,
+      otherDevices: async () => [],
+    }),
   };
 }
 
@@ -77,6 +82,7 @@ describe("Settings read projections", () => {
     const response = await f.handlers["devices.overview.get"]({}, testHostApiContext(f.owner));
     expect(response).toEqual(
       rpcSuccess({
+        otherDevices: [],
         devices: [
           {
             id: machine.id,
