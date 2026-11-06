@@ -1,3 +1,5 @@
+import type { RunFileExecution } from "@opensteer/protocol";
+import { RunFileError, type RunFileAccess } from "../attachments/run-files.js";
 import { AppServerManager } from "../apps/app-server-manager.js";
 import { VoiceCalls } from "../voice/voice-calls.js";
 
@@ -285,6 +287,8 @@ interface ActiveRun {
   voiceCall?: import("@opensteer/harness").HarnessVoiceCall;
   session?: HarnessSession;
   settling?: boolean;
+  readonly fileTasks: Set<Promise<unknown>>;
+  readonly fileAbort: AbortController;
   readonly steerTasks: Set<Promise<CommandDecision>>;
   task?: Promise<void>;
   readonly workspaceIds: Set<WorkspaceId>;
@@ -693,6 +697,55 @@ export class RunnerRuntime {
         // The next connection replays every invalidation not confirmed sent.
       }
     }
+  }
+
+  withRunFiles<T>(
+    execution: RunFileExecution,
+    signal: AbortSignal,
+    work: (access: RunFileAccess) => Promise<T>,
+  ): Promise<T> {
+    const active = this.#runs.get(execution.runId);
+    if (
+      !active ||
+      active.settling ||
+      active.abort.signal.aborted ||
+      active.command.context.bindingGeneration !== execution.bindingGeneration ||
+      !active.primaryWorkspace
+    )
+      return Promise.reject(
+        new RunFileError("This task execution has ended; retry from the current task."),
+      );
+    const context = active.command.context;
+    if (!this.#canDeliverMessageAttachments(context.harness.driverKind) || !this.#attachmentCache)
+      return Promise.reject(new RunFileError("This engine or machine cannot receive files."));
+    const cache = this.#attachmentCache;
+    const workspacePath = active.primaryWorkspace.path;
+    const roots = this.#workspaceManager.writableRoots({
+      plan: context.workspaceAccess,
+      requestedBy: context.requestedBy,
+      workspaceKind: context.workspaceKind,
+      workspacePath,
+    });
+    const lifetime = new AbortController();
+    const linked = AbortSignal.any([
+      signal,
+      active.abort.signal,
+      active.fileAbort.signal,
+      lifetime.signal,
+    ]);
+    const task = (async () => {
+      const directory = await cache.directory(context.threadId);
+      linked.throwIfAborted();
+      return await work({ roots: [workspacePath, ...roots, directory], directory, signal: linked });
+    })();
+    active.fileTasks.add(task);
+    void task
+      .finally(() => {
+        lifetime.abort();
+        active.fileTasks.delete(task);
+      })
+      .catch(() => undefined);
+    return task;
   }
 
   #canDeliverMessageAttachments(driverKind: HarnessId): boolean {
@@ -2182,6 +2235,8 @@ export class RunnerRuntime {
       nextOrdinal: firstOrdinal,
       pendingRequestIds: new Set(),
       saturatedToolDeltaCallIds: new Set(),
+      fileTasks: new Set(),
+      fileAbort: new AbortController(),
       steerTasks: new Set(),
       toolDeltaBytes: new Map(),
       workspaceIds: new Set([context.workspaceId]),
@@ -2416,7 +2471,10 @@ export class RunnerRuntime {
         context.harness.driverKind,
         active.abort.signal,
       );
-      const attachmentRoot = context.attachments ? this.#attachmentCache?.root : undefined;
+      const attachmentRoot = this.#canDeliverMessageAttachments(context.harness.driverKind)
+        ? this.#attachmentCache?.root
+        : undefined;
+      if (attachmentRoot) await this.#attachmentCache?.directory(context.threadId);
       const attachmentDirectory = attachmentRoot
         ? join(attachmentRoot, context.threadId)
         : undefined;
@@ -2895,6 +2953,8 @@ export class RunnerRuntime {
       const machineAccessRelay = active.machineAccessRelay;
       delete active.machineAccessRelay;
       await withinStopGrace(machineAccessRelay?.suspend());
+      active.fileAbort.abort();
+      await withinStopGrace(Promise.allSettled(active.fileTasks));
       await withinStopGrace(Promise.allSettled(active.steerTasks));
       // A refresh still on its way changes nothing once the execution is over.
       active.credentialLifetime.abort();

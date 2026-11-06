@@ -220,6 +220,7 @@ async function startAgentsRunner(input: {
     : undefined;
   const integrationsModule = config.modules.includes("integrations")
     ? prepareIntegrationsModule({
+        helperBinary: applicationConfig.nativeFsHelperBinary,
         ...(config.computerUseBridge ? { computerUseBridge: config.computerUseBridge } : {}),
         dataDirectory: config.dataDirectory,
         platform: process.platform,
@@ -388,6 +389,10 @@ async function startAgentsRunner(input: {
           }
         : {}),
       runtime,
+      runFileOptions: {
+        dataDirectory: config.dataDirectory,
+        helperBinary: applicationConfig.nativeFsHelperBinary,
+      },
       workspaceBackings: advertisedBackings,
     },
     close: async () => {
@@ -428,6 +433,7 @@ async function startReachOnlyRunner(input: {
     : undefined;
   const integrationsModule = input.config.modules.includes("integrations")
     ? prepareIntegrationsModule({
+        helperBinary: input.applicationConfig.nativeFsHelperBinary,
         ...(input.config.computerUseBridge
           ? { computerUseBridge: input.config.computerUseBridge }
           : {}),

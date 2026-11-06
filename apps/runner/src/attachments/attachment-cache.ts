@@ -1,8 +1,7 @@
+import { runnerFileRequest } from "./host-http.js";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open, readdir, rename, rm } from "node:fs/promises";
-import { request as httpRequest, type IncomingMessage } from "node:http";
-import { request as httpsRequest } from "node:https";
 import { extname, join, resolve } from "node:path";
 import { AttachmentPageSchema, ThreadIdSchema, type ReadyAttachment } from "@opensteer/core";
 import { runnerHttpTransport, type RunnerTransportPolicy } from "@opensteer/runner-client";
@@ -60,7 +59,17 @@ export class AttachmentCache {
     ThreadIdSchema.parse(threadId);
     const prior = this.#preparations.get(threadId) ?? Promise.resolve();
     await prior;
-    await rm(join(this.#root, threadId), { force: true, recursive: true });
+    const directory = await this.directory(threadId);
+    for (const entry of await readdir(directory))
+      await rm(join(directory, entry), { force: true, recursive: true });
+  }
+
+  async directory(threadId: string): Promise<string> {
+    ThreadIdSchema.parse(threadId);
+    await ensurePrivateDirectory(this.#root);
+    const directory = join(this.#root, threadId);
+    await ensurePrivateDirectory(directory);
+    return directory;
   }
 
   async prepare(input: {
@@ -122,7 +131,8 @@ export class AttachmentCache {
       if (cursor) cursors.add(cursor);
     } while (cursor);
     for (const entry of await readdir(directory)) {
-      if (!inventory.has(entry)) await rm(join(directory, entry), { force: true, recursive: true });
+      if (entry !== "exports" && !inventory.has(entry))
+        await rm(join(directory, entry), { force: true, recursive: true });
     }
     const result = new Map<string, ResolvedRunnerAttachment>();
     for (const attachment of inventory.values()) {
@@ -192,21 +202,18 @@ export class AttachmentCache {
     token: string,
     signal: AbortSignal,
   ): Promise<{ readonly status: number; readonly body: AsyncIterable<Uint8Array> }> {
-    const { url, ca } = await runnerHttpTransport(this.#transport, path);
     const headers = { authorization: `Bearer ${token}` };
     if (this.#fetch) {
-      const response = await this.#fetch(url, { headers, redirect: "error", signal });
+      const { url } = await runnerHttpTransport(this.#transport, path);
+      const response = await this.#fetch(url, {
+        headers,
+        redirect: "error",
+        signal,
+      });
       if (!response.body) throw new Error("Host returned an empty attachment response");
       return { status: response.status, body: response.body };
     }
-    const body = await new Promise<IncomingMessage>((resolveResponse, reject) => {
-      const request =
-        url.protocol === "https:"
-          ? httpsRequest(url, { ca, headers, signal }, resolveResponse)
-          : httpRequest(url, { headers, signal }, resolveResponse);
-      request.once("error", reject);
-      request.end();
-    });
+    const body = await runnerFileRequest(this.#transport, path, headers, signal);
     return { status: body.statusCode ?? 0, body };
   }
 }
@@ -225,7 +232,7 @@ async function verifiedFile(path: string, attachment: ReadyRunnerAttachment): Pr
 }
 
 /** The user's file name as one path segment of at most 255 bytes, extension kept. */
-function attachmentFileName(name: string): string {
+export function attachmentFileName(name: string): string {
   const cleaned = name.replace(/[/\\\p{Cc}]/gu, "_").trim();
   const safe = cleaned === "" || cleaned === "." || cleaned === ".." ? "attachment" : cleaned;
   if (Buffer.byteLength(safe, "utf8") <= 255) return safe;

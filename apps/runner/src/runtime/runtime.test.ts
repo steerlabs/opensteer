@@ -1,3 +1,4 @@
+import { AttachmentCache } from "../attachments/attachment-cache.js";
 import { agentTools } from "@opensteer/agent-tools";
 import { createId as createStorageFixtureId } from "@opensteer/core";
 import { processSupervisorExecutableVariable } from "@opensteer/shared/processControl";
@@ -6038,6 +6039,7 @@ function runtimeWithLeaseGrants(
 }
 
 function configuredRuntime(input: {
+  readonly attachmentCache?: AttachmentCache;
   readonly containment?: ConstructorParameters<typeof RunnerRuntime>[0]["containment"];
   readonly manualLeaseGrants?: boolean;
   readonly harnessSandbox?: HarnessProcessSandbox;
@@ -6056,6 +6058,7 @@ function configuredRuntime(input: {
 }): RunnerRuntime {
   return runtimeWithLeaseGrants(
     {
+      ...(input.attachmentCache ? { attachmentCache: input.attachmentCache } : {}),
       nodeExecutable: process.execPath,
       agentSkills: testAgentSkills,
       plugins: noPlugins,
@@ -6214,4 +6217,66 @@ it("stops app servers on primary connection loss and Runner shutdown", async () 
     await runtime.close();
   }
   expect(stopAll).toHaveBeenCalledTimes(2);
+});
+
+it("creates the attachment directory before launch and drains file work before Run cleanup", async () => {
+  const root = await mkdtemp(join(tmpdir(), "runtime-files-"));
+  const cache = new AttachmentCache({
+    root: join(root, "cache"),
+    transport: { mode: "development", hostOrigin: new URL("http://localhost") },
+  });
+  const registry = new HarnessRegistry();
+  const session = new HeldHarnessSession();
+  const driver = new FakeHarnessDriver("test-driver", () => session);
+  Object.defineProperty(driver, "capabilities", {
+    value: {
+      ...fakeHarnessCapabilities,
+      messageAttachments: { darwinIsolatedServiceSandbox: true },
+    },
+  });
+  registry.registerDriver(driver);
+  const environmentId = createId("environment");
+  const command = executeCommand(environmentId);
+  const runtime = configuredRuntime({ environmentId, registry, attachmentCache: cache });
+  await reconcile(registry, command);
+  try {
+    await runtime.handleCommand(command, { send: async () => undefined });
+    await vi.waitFor(() => expect(driver.context).toBeDefined(), { timeout: 2_000 });
+    const directory = driver.context!.attachmentDirectory!;
+    expect((await stat(directory)).isDirectory()).toBe(true);
+    const execution = {
+      runId: command.context.runId,
+      bindingGeneration: command.context.bindingGeneration,
+    };
+    await expect(
+      runtime.withRunFiles(
+        { ...execution, bindingGeneration: execution.bindingGeneration + 1 },
+        new AbortController().signal,
+        async () => undefined,
+      ),
+    ).rejects.toThrow("execution has ended");
+    const entered = deferred<void>();
+    const transfer = runtime.withRunFiles(
+      execution,
+      new AbortController().signal,
+      async (access) => {
+        entered.resolve();
+        await new Promise<void>((resolve) =>
+          access.signal.addEventListener("abort", () => resolve(), { once: true }),
+        );
+        access.signal.throwIfAborted();
+      },
+    );
+    const rejected = expect(transfer).rejects.toThrow();
+    await entered.promise;
+    await runtime.close();
+    await rejected;
+    expect((await stat(directory)).isDirectory()).toBe(true);
+    await expect(
+      runtime.withRunFiles(execution, new AbortController().signal, async () => undefined),
+    ).rejects.toThrow("execution has ended");
+  } finally {
+    await runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
 });

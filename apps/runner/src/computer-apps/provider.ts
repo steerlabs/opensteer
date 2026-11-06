@@ -60,6 +60,7 @@ export interface ComputerAppOperationInspection {
  * refuse the same things itself.
  */
 export interface ComputerAppInvocation {
+  readonly scratchDirectory?: string;
   readonly access: "read" | "read-write";
   readonly contract: string;
   /** When the call must be answered by, in this process's clock. */
