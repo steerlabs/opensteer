@@ -69,9 +69,10 @@ public struct DataPlane: Sendable {
     if let missing {
       throw HelperError(.permissionRequired, Self.permissionSentence(missing))
     }
+    if let scratch = params.scratchDirectory { _ = try MessagesFiles.directory(scratch) }
     do {
       return try await provider.invoke(
-        operation: params.operation, arguments: params.arguments, budget: budget)
+        operation: params.operation, arguments: params.arguments, scratchDirectory: params.scratchDirectory, budget: budget)
     } catch let error as HelperError {
       throw error
     } catch {

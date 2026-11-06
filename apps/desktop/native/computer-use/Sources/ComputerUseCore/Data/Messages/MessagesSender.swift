@@ -29,13 +29,17 @@ public struct OsascriptOutcome: Sendable, Equatable {
 public actor MessagesOutbox {
   static let shared = MessagesOutbox(run: { await MessagesSender.runOsascript($0) })
 
-  private let runner: OsascriptRunner
+  private let runner: @Sendable (OsascriptRequest, WorkBudget) async throws -> OsascriptOutcome
   /// The run most recently queued; each waits for the one before it, since
   /// an actor alone would let a second start while the first is suspended.
   private var last: Task<Void, Never> = Task {}
 
   init(run: @escaping OsascriptRunner) {
-    runner = run
+    runner = { request, _ in await run(request) }
+  }
+
+  init(runWithBudget: @escaping @Sendable (OsascriptRequest, WorkBudget) async throws -> OsascriptOutcome) {
+    runner = runWithBudget
   }
 
   /// Runs one script once every script asked before it has finished. The
@@ -48,10 +52,34 @@ public actor MessagesOutbox {
     let queued = Task { () throws -> OsascriptOutcome in
       await previous.value
       try budget.startWrite()
-      return await runner(
-        OsascriptRequest(
-          script: request.script, arguments: request.arguments,
-          timeout: min(request.timeout, max(1, budget.remaining() - 1))))
+      return try await runner(OsascriptRequest(script: request.script, arguments: request.arguments,
+        timeout: min(request.timeout, max(1, budget.remaining() - 1))), budget)
+    }
+    last = Task { _ = try? await queued.value }
+    return try await queued.value
+  }
+
+  func run(_ requests: [OsascriptRequest], budget: WorkBudget) async throws -> [OsascriptOutcome] {
+    let previous = last
+    let runner = self.runner
+    let queued = Task { () throws -> [OsascriptOutcome] in
+      await previous.value
+      var outcomes: [OsascriptOutcome] = []
+      do {
+        for request in requests {
+          try budget.startWrite()
+          let outcome = try await runner(OsascriptRequest(script: request.script, arguments: request.arguments,
+            timeout: min(request.timeout, max(1, budget.remaining() - 1))), budget)
+          try MessagesSender.check(outcome)
+          outcomes.append(outcome)
+        }
+      } catch {
+        if !outcomes.isEmpty {
+          throw HelperError(.outcomeUnknown, "Messages may already have sent part of this message. Check Messages before sending again.")
+        }
+        throw error
+      }
+      return outcomes
     }
     last = Task { _ = try? await queued.value }
     return try await queued.value
@@ -91,24 +119,50 @@ enum MessagesSender {
     "end run",
   ]
 
+  static let smsScript = addressScript.map { $0.replacingOccurrences(of: "service type = iMessage", with: "service type = SMS") }
+
+  static func requests(_ arguments: Arguments, staged: [String]) throws -> [OsascriptRequest] {
+    guard arguments.text != nil || !staged.isEmpty else {
+      throw HelperError(.failed, "Provide text or at least one file.")
+    }
+    let base = try request(Arguments(text: arguments.text ?? "file", to: arguments.to))
+    var requests = arguments.text == nil ? [] : [base]
+    for file in staged {
+      let script = base.script.map {
+        $0.replacingOccurrences(of: "set theText to item 2 of argv", with: "set theFile to POSIX file (item 2 of argv)")
+          .replacingOccurrences(of: "send theText", with: "send theFile")
+      }
+      requests.append(OsascriptRequest(script: script, arguments: [base.arguments[0], file], timeout: timeout))
+    }
+    return requests
+  }
+
   struct Arguments: Decodable {
     struct Recipient: Decodable {
       let address: String?
       let conversationId: String?
+      var service: String? = nil
     }
 
-    let text: String
+    let text: String?
     let to: Recipient
+    var files: [String]? = nil
   }
 
   /// The run a send makes, or why it makes none: every refusal here is
   /// before anything was sent.
   static func request(_ arguments: Arguments) throws -> OsascriptRequest {
-    let text = arguments.text
+    let text = arguments.text ?? ""
     guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
       text.count <= textMaxLength
     else {
       throw HelperError(.failed, "text must be between 1 and \(textMaxLength) characters.")
+    }
+    guard arguments.to.service == nil || ["imessage", "sms"].contains(arguments.to.service!) else {
+      throw HelperError(.failed, "to.service must be imessage or sms.")
+    }
+    if arguments.to.conversationId != nil && arguments.to.service != nil {
+      throw HelperError(.failed, "to.service applies only to an address.")
     }
     switch (arguments.to.conversationId, arguments.to.address) {
     case (let conversationId?, nil):
@@ -122,7 +176,7 @@ enum MessagesSender {
       guard let address = sendable(address) else {
         throw HelperError(.failed, "to.address must be a phone number or an email address.")
       }
-      return OsascriptRequest(script: addressScript, arguments: [address, text], timeout: timeout)
+      return OsascriptRequest(script: arguments.to.service == "sms" ? smsScript : addressScript, arguments: [address, text], timeout: timeout)
     case (.some, .some):
       throw HelperError(.failed, "to must name either a conversation or an address, not both.")
     case (nil, nil):

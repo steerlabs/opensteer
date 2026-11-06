@@ -19,7 +19,7 @@ final class MessagesDatabase {
     func blob(_ index: Int) -> [UInt8]? { values[index] as? [UInt8] }
   }
 
-  private let handle: OpaquePointer
+  let handle: OpaquePointer
 
   private init(handle: OpaquePointer) {
     self.handle = handle
