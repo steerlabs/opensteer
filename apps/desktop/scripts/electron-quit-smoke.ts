@@ -67,7 +67,14 @@ const log = (event: string, fields: Readonly<Record<string, string | number | bo
 dialog.showErrorBox = (title, content) => {
   log("test.modal", { title, content });
 };
-const shutdown = new DesktopShutdown({ application: app, power: powerMonitor, log });
+const shutdown = new DesktopShutdown({
+  application: app,
+  power: powerMonitor,
+  log,
+  hideWindow: () => {
+    for (const window of BrowserWindow.getAllWindows()) window.hide();
+  },
+});
 const watchdog = setTimeout(() => {
   log("test.watchdog");
   shutdown.request("test-timeout");

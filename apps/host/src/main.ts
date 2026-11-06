@@ -1,5 +1,6 @@
 import { pathToFileURL } from "node:url";
 import { parseHostConfig } from "@opensteer/config";
+import { stopHost } from "./runtime/host-stop.js";
 import { createHostRuntime } from "./runtime/runtime.js";
 
 export async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void> {
@@ -39,19 +40,7 @@ export async function main(environment: NodeJS.ProcessEnv = process.env): Promis
   const close = async (signal: string) => {
     if (closing) return;
     closing = true;
-    runtime.app.log.info({ signal }, "Opensteer Host shutting down");
-    // A shutdown that hangs names the step it is waiting on.
-    const slow = setInterval(
-      () =>
-        runtime.app.log.warn({ step: runtime.closingStep() }, "Opensteer Host still shutting down"),
-      10_000,
-    );
-    slow.unref();
-    try {
-      await runtime.close();
-    } finally {
-      clearInterval(slow);
-    }
+    await stopHost(runtime, signal);
   };
   process.once("SIGINT", () => void close("SIGINT"));
   process.once("SIGBREAK", () => void close("SIGBREAK"));

@@ -33,6 +33,28 @@ describe("DesktopMainProcess", () => {
     expect(window.isDestroyed()).toBe(true);
   });
 
+  it("stays hidden after shutdown, even for a window still loading or a pending link", async () => {
+    const calls: string[] = [];
+    let finishLoading!: (window: DesktopWindowHandle) => void;
+    const loaded = new Promise<DesktopWindowHandle>((resolve) => {
+      finishLoading = resolve;
+    });
+    const main = new DesktopMainProcess({
+      services: { start: async () => undefined, stop: async () => undefined },
+      windows: { create: () => loaded },
+    });
+
+    const starting = main.start();
+    main.hideWindow();
+    finishLoading(new TestWindow(calls));
+    await starting;
+    main.focus();
+    await main.activate();
+
+    expect(calls).toEqual(["window.hide"]);
+    await main.stop();
+  });
+
   it("opens the shell before optional services, recreates a closed window, and stops once", async () => {
     const calls: string[] = [];
     const onWindowClosed = vi.fn();
@@ -163,6 +185,10 @@ class TestWindow implements DesktopWindowHandle {
 
   focus(): void {
     this.#calls.push("window.focus");
+  }
+
+  hide(): void {
+    this.#calls.push("window.hide");
   }
 
   isDestroyed(): boolean {
