@@ -13,6 +13,28 @@ import { aroundLabel, type AroundGlance } from "./around-model.js";
 export const conversationBarGround = Platform.OS === "android" ? color.surface : color.background;
 
 /**
+ * What keeps a transparent bar's words apart from what scrolls under it — a
+ * transcript, or an app. The route table paints every header with the
+ * product's ground, so each answer says its own.
+ */
+export function barOverContentOptions(glass: boolean): NativeStackNavigationOptions {
+  if (glass)
+    return {
+      headerStyle: { backgroundColor: "transparent" },
+      // iOS 26's own answer, and it must not be combined with a blur: the two
+      // effects stack and the bar doubles its own haze. The bottom edge is the
+      // composer's or the content's own, so the system draws none there.
+      scrollEdgeEffects: { bottom: "hidden", left: "automatic", right: "automatic", top: "soft" },
+    };
+  return Platform.OS === "ios"
+    ? {
+        headerBlurEffect: "systemChromeMaterialDark",
+        headerStyle: { backgroundColor: "transparent" },
+      }
+    : { headerStyle: { backgroundColor: conversationBarGround } };
+}
+
+/**
  * A conversation's one trailing bar control: what is around it, in symbols,
  * marks and counts.
  *

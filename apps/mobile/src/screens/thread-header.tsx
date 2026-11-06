@@ -3,12 +3,11 @@ import type { HostClient } from "@opensteer/client/host";
 import { StackActions, useNavigation } from "@react-navigation/native";
 import { useCallback, useLayoutEffect, useMemo, useState, type ReactNode } from "react";
 import { Platform, StyleSheet, View } from "react-native";
-import type { NativeStackNavigationOptions } from "@react-navigation/native-stack";
 import { headerFontScaleLimit, space } from "../theme.js";
 import {
   AroundButton,
   aroundHeaderOptions,
-  conversationBarGround,
+  barOverContentOptions,
 } from "../thread/around-button.js";
 import { aroundGlanceSelector, sameAroundGlance } from "../thread/around-model.js";
 import { sameThreadHeader, type ThreadHeaderState } from "../thread/thread-pane.js";
@@ -109,7 +108,7 @@ export function useThreadHeader(props: {
     const attached = hostClient !== null && threadId !== null;
     navigation.setOptions({
       ...(attached && header !== null && !savedSubtitle ? {} : aroundHeaderOptions(null)),
-      ...conversationBarGroundOptions(glass),
+      ...barOverContentOptions(glass),
       headerTransparent: true,
       // Both keys are always written: the navigator merges options, so a title
       // left out would keep whatever an earlier header put there.
@@ -158,27 +157,6 @@ export function useThreadHeader(props: {
             }),
     });
   }, [deploymentId, fallbackTitle, glass, header, hostClient, navigation, threadId, savedSubtitle]);
-}
-
-/**
- * What keeps a bar's words apart from the transcript under it. The route table
- * paints every header with the product's ground, so each answer says its own.
- */
-function conversationBarGroundOptions(glass: boolean): NativeStackNavigationOptions {
-  if (glass)
-    return {
-      headerStyle: { backgroundColor: "transparent" },
-      // iOS 26's own answer, and it must not be combined with a blur: the two
-      // effects stack and the bar doubles its own haze. The bottom edge is the
-      // composer's, so the system draws none there.
-      scrollEdgeEffects: { bottom: "hidden", left: "automatic", right: "automatic", top: "soft" },
-    };
-  return Platform.OS === "ios"
-    ? {
-        headerBlurEffect: "systemChromeMaterialDark",
-        headerStyle: { backgroundColor: "transparent" },
-      }
-    : { headerStyle: { backgroundColor: conversationBarGround } };
 }
 
 /** The standalone screen's title: the pill, and Around beside it in the bar. */

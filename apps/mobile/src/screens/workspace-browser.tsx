@@ -47,6 +47,7 @@ import {
   useRef,
   useState,
   type ReactNode,
+  type RefObject,
 } from "react";
 import {
   ActivityIndicator,
@@ -66,9 +67,15 @@ import {
   type ReservedRegion,
 } from "react-native-reserved-regions";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { opensteerAppGlyph } from "../browser/agent-surface.js";
 import { BrowserPage, type PageFollow, type PagePairChrome } from "../browser/browser-page.js";
-import { askChoices, usePageHeader, type AskTarget } from "../browser/page-header.js";
+import {
+  AppPill,
+  appMenuSections,
+  askChoices,
+  usePageHeader,
+  type AppMenu,
+  type AskTarget,
+} from "../browser/page-header.js";
 import { CompanionCapsule } from "../browser/pair-chrome.js";
 import { Toolbar, ToolbarButton, ToolbarCapsule, ToolbarMenu } from "../browser/toolbar.js";
 import {
@@ -101,7 +108,6 @@ import { InsetView, Pane, useContentInsets } from "../ui/pane.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import { AppText, Notice, SecondaryButton } from "../ui/primitives.js";
 import { Screen } from "../ui/screen.js";
-import { Symbol } from "../ui/symbol.js";
 import { useAppForeground } from "../ui/foreground.js";
 import { NewTaskPane } from "./new-task.js";
 import { ThreadTitlePill } from "./thread-header.js";
@@ -534,8 +540,46 @@ function Focused(props: {
     lastApp.current?.title ??
     shownPage?.title ??
     (destination.kind === "browser" ? "Tab" : "");
+  // The app open as this tab, and what its menu can do now.
+  const appId = destination.kind === "opensteer-app" ? destination.appId : null;
+  const appClose = useAppClose(hostClient, appId, onClosed);
+  const appReload = useRef<(() => void) | null>(null);
+  const appOpen = appId !== null && place !== null;
+  const openAppThread = useCallback(() => {
+    const { appThreadId: origin } = latest.current;
+    if (origin !== null) openThread(origin);
+  }, [openThread]);
+  const reloadApp = useCallback(() => appReload.current?.(), []);
+  const reportApp = useCallback(() => {
+    if (appId !== null) contactSupport({ kind: "app", id: appId });
+  }, [appId]);
+  const appMenu = useMemo(
+    (): AppMenu | null =>
+      appId === null
+        ? null
+        : {
+            closable: props.connected && appOpen && !appClose.closing,
+            live: appOpen && !appClose.closing,
+            onClose: appClose.close,
+            onOpenThread: appThreadId === null ? null : openAppThread,
+            onReload: reloadApp,
+            onReport: reportApp,
+          },
+    [
+      appClose.close,
+      appClose.closing,
+      appId,
+      appOpen,
+      appThreadId,
+      openAppThread,
+      props.connected,
+      reloadApp,
+      reportApp,
+    ],
+  );
   usePageHeader({
     agents,
+    app: appMenu,
     asksThread: appThreadId !== null,
     beside: paired ? besideId : null,
     chat: homeThreadId !== null,
@@ -549,11 +593,31 @@ function Focused(props: {
     companion !== null && (companion.kind === "thread" || mainWorkspaceId !== null);
   // Beside a Thread, a page's own bar takes the native bar's place, and Back.
   const pairedChrome = paired && companionShown && destination.kind === "browser";
+  const appPaired = paired && companionShown && appId !== null;
+  const barAway = pairedChrome || appPaired;
   useLayoutEffect(() => {
-    if (!pairedChrome) return;
+    if (!barAway) return;
     navigation.setOptions({ headerShown: false });
     return () => navigation.setOptions({ headerShown: true });
-  }, [navigation, pairedChrome]);
+  }, [barAway, navigation]);
+  const goBack = useCallback(() => navigation.goBack(), [navigation]);
+  const appPair = useMemo(
+    (): AppPairChrome | null =>
+      appPaired && appMenu !== null
+        ? {
+            onBack: goBack,
+            sections: appMenuSections(
+              appMenu,
+              askChoices({
+                asksThread: appThreadId !== null,
+                chat: homeThreadId !== null,
+                onAsk: askBeside,
+              }),
+            ),
+          }
+        : null,
+    [appMenu, appPaired, appThreadId, askBeside, goBack, homeThreadId],
+  );
   const others = agents.agents.some(({ threadId }) => threadId !== besideId);
   const pairMenu: NativeMenuSection[] = [
     askChoices({ asksThread: appThreadId !== null, chat: homeThreadId !== null, onAsk: askBeside }),
@@ -611,11 +675,14 @@ function Focused(props: {
     destination.kind === "opensteer-app" ? (
       <AppTab
         appId={destination.appId}
-        connected={props.connected}
+        closeFailure={appClose.failure}
+        closing={appClose.closing}
         hostClient={hostClient}
         key={destination.appId}
-        onClosed={onClosed}
+        onRetryClose={appClose.close}
         onTyping={setTyping}
+        pair={appPair}
+        reloadRef={appReload}
         title={title}
       />
     ) : destination.kind !== "browser" ? (
@@ -727,9 +794,11 @@ function Focused(props: {
           };
   return (
     <PagePairSurface
+      bleed={appId !== null}
       body={body}
       companion={second}
-      keyboardVerticalOffset={headerHeight}
+      // On iOS an app runs under a transparent bar, from the screen's top.
+      keyboardVerticalOffset={appId !== null && Platform.OS === "ios" ? 0 : headerHeight}
       notices={props.notices}
       onPaired={setPaired}
       typing={typing}
@@ -1130,7 +1199,6 @@ function CloseBar(props: {
   readonly children: ReactNode;
   readonly closeDisabled: boolean;
   readonly onClose: () => void;
-  readonly onReport?: () => void;
 }): ReactNode {
   return (
     <Toolbar edge="bottom" testID="page-toolbar">
@@ -1139,9 +1207,6 @@ function CloseBar(props: {
         label="More"
         sections={[
           [
-            ...(props.onReport
-              ? [{ id: "report", label: "Report…", onPress: props.onReport }]
-              : []),
             {
               destructive: true,
               disabled: props.closeDisabled,
@@ -1158,23 +1223,66 @@ function CloseBar(props: {
   );
 }
 
+/** Back and an app's menu, in its pane's own top row while a Thread is beside it. */
+interface AppPairChrome {
+  readonly onBack: () => void;
+  readonly sections: readonly NativeMenuSection[];
+}
+
 /**
- * An Opensteer App open as a tab, with the bar every place has. It reads only
- * whether it has ended, so a streamed token never reaches its WebView, which
- * goes the moment Close is pressed: the card under this page comes back at
- * once, and two copies never run.
+ * Closing the app open as this tab. Its copy goes the moment Close is
+ * pressed, so the card under this page comes back at once and two copies
+ * never run; a refusal brings the app back with why.
+ */
+function useAppClose(
+  hostClient: HostClient,
+  appId: string | null,
+  onClosed: () => void,
+): { readonly close: () => void; readonly closing: boolean; readonly failure: string | null } {
+  const navigation = useNavigation();
+  const [closing, setClosing] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+  const latestClosed = useRef(onClosed);
+  latestClosed.current = onClosed;
+  const close = useCallback(() => {
+    if (appId === null) return;
+    setClosing(true);
+    setFailure(null);
+    void hostClient.closeAppTab(appId).then(
+      () => {
+        if (navigation.isFocused()) latestClosed.current();
+        else setClosing(false);
+      },
+      (error: unknown) => {
+        setClosing(false);
+        setFailure(error instanceof Error ? error.message : "Try again in a moment.");
+      },
+    );
+  }, [appId, hostClient, navigation]);
+  return { close, closing, failure };
+}
+
+/**
+ * An Opensteer App open as a tab, edge to edge. Its name and menu are the
+ * native bar's title, or beside a Thread a row of its pane's own; on iOS the
+ * app scrolls under either, and elsewhere it starts below. It reads only
+ * whether it has ended, so a streamed token never reaches its WebView.
  */
 const AppTab = memo(function AppTab(props: {
   readonly appId: string;
-  readonly connected: boolean;
+  readonly closeFailure: string | null;
+  readonly closing: boolean;
   readonly hostClient: HostClient;
-  readonly onClosed: () => void;
+  readonly onRetryClose: () => void;
   readonly onTyping: (typing: boolean) => void;
+  readonly pair: AppPairChrome | null;
+  readonly reloadRef: RefObject<(() => void) | null>;
   readonly title: string;
 }): ReactNode {
-  const { appId, hostClient, onClosed, onTyping } = props;
-  const navigation = useNavigation();
+  const { appId, hostClient, onTyping, pair } = props;
   const focused = useIsFocused();
+  const insets = useContentInsets();
+  const headerHeight = useHeaderHeight();
   const ended = useHostSelector(
     hostClient,
     useCallback(
@@ -1183,22 +1291,24 @@ const AppTab = memo(function AppTab(props: {
     ),
   );
   const known = useHostSelector(hostClient, (snapshot) => snapshot.deploymentShape !== null);
-  const [closing, setClosing] = useState(false);
-  const [closeFailure, setCloseFailure] = useState<string | null>(null);
-  const close = () => {
-    setClosing(true);
-    setCloseFailure(null);
-    void hostClient.closeAppTab(appId).then(
-      () => {
-        if (navigation.isFocused()) onClosed();
-        else setClosing(false);
-      },
-      (error: unknown) => {
-        setClosing(false);
-        setCloseFailure(error instanceof Error ? error.message : "Try again in a moment.");
-      },
-    );
-  };
+  // What the pane's own row covers, its top inset included, as last measured.
+  const [row, setRow] = useState<number | null>(null);
+  const onRowLayout = useCallback((event: LayoutChangeEvent) => {
+    const { height } = event.nativeEvent.layout;
+    if (height > 0) setRow(height);
+  }, []);
+  const top =
+    pair !== null
+      ? (row ?? insets.top + space[4] + touchTarget + space[8])
+      : // Under a transparent bar, the pane's safe area is the bar's height.
+        Platform.OS === "ios"
+        ? Math.max(insets.top, headerHeight)
+        : insets.top;
+  const chrome = useMemo(
+    () => ({ bottom: insets.bottom, left: insets.left, right: insets.right, top }),
+    [insets.bottom, insets.left, insets.right, top],
+  );
+  const tab = useMemo(() => ({ chrome, reloadRef: props.reloadRef }), [chrome, props.reloadRef]);
   // A composer beside the app can hold the keyboard too; only a field in the
   // app leaves no native input focused.
   const typing = useKeyboardVisible() && TextInput.State.currentlyFocusedInput() === null;
@@ -1208,30 +1318,75 @@ const AppTab = memo(function AppTab(props: {
   }, [onTyping, typing]);
   // A covered page could run a second copy; locking the phone must not lose the app's state.
   if (!focused) return null;
-  if (!known) return <TabStatus title="Loading app…" waiting />;
-  if (closing) return <TabStatus title="Closing…" waiting />;
-  if (ended) return <BrowserEnded detail={null} failed={false} />;
+  const clear = {
+    paddingBottom: chrome.bottom,
+    paddingLeft: chrome.left,
+    paddingRight: chrome.right,
+    paddingTop: chrome.top,
+  };
   return (
     <View style={styles.fill}>
-      {closeFailure === null ? null : (
-        <Notice
-          action={{ label: "Try again", onPress: close }}
-          detail={closeFailure}
-          title="This tab could not be closed"
-        />
+      {!known ? (
+        <View style={[styles.fill, clear]}>
+          <TabStatus title="Loading app…" waiting />
+        </View>
+      ) : props.closing ? (
+        <View style={[styles.fill, clear]}>
+          <TabStatus title="Closing…" waiting />
+        </View>
+      ) : ended ? (
+        <View style={[styles.fill, clear]}>
+          <BrowserEnded detail={null} failed={false} />
+        </View>
+      ) : (
+        <AppFrame appId={appId} client={hostClient} tab={tab} />
       )}
-      <AppFrame appId={appId} client={hostClient} fill />
-      {typing ? null : (
-        <CloseBar
-          closeDisabled={!props.connected}
-          onClose={close}
-          onReport={() => contactSupport({ kind: "app", id: appId })}
+      {props.closeFailure === null ? null : (
+        <View
+          pointerEvents="box-none"
+          style={[
+            styles.overApp,
+            { paddingLeft: chrome.left, paddingRight: chrome.right, top: chrome.top },
+          ]}
         >
-          <Symbol name={opensteerAppGlyph} size={15} tint={color.muted} />
-          <AppText numberOfLines={1} role="secondaryMedium" style={styles.appName}>
-            {props.title}
-          </AppText>
-        </CloseBar>
+          <Notice
+            action={{ label: "Try again", onPress: props.onRetryClose }}
+            detail={props.closeFailure}
+            title="This tab could not be closed"
+          />
+        </View>
+      )}
+      {pair === null ? null : (
+        <View
+          onLayout={onRowLayout}
+          pointerEvents="box-none"
+          style={[
+            styles.appRow,
+            {
+              paddingLeft: space[12] + insets.left,
+              paddingRight: space[12] + insets.right,
+              paddingTop: insets.top + space[4],
+            },
+          ]}
+          testID="app-pane-bar"
+        >
+          <ToolbarButton
+            accessibilityHint="Returns to the previous screen"
+            label="Back"
+            onPress={pair.onBack}
+            symbol="chevron.left"
+          />
+          <View pointerEvents="box-none" style={styles.appRowTitle}>
+            <AppPill
+              floating
+              maxWidth={companionPillWidth}
+              sections={pair.sections}
+              title={props.title}
+            />
+          </View>
+          {/* Balances Back, so the name is centred over the pane as a bar's title is. */}
+          <View style={styles.appRowBalance} />
+        </View>
       )}
     </View>
   );
@@ -1284,6 +1439,8 @@ interface PairCompanion {
  * half rather than leave the composer no room.
  */
 function PagePairSurface(props: {
+  /** The page places itself in its insets, running under its chrome, as an app does. */
+  readonly bleed: boolean;
   readonly body: ReactNode;
   readonly companion: PairCompanion | null;
   readonly keyboardVerticalOffset: number;
@@ -1397,12 +1554,19 @@ function PagePair(
         testID="page-slot"
       >
         <Pane clearance={pageClearance} geometry={`${geometry}:page`} style={styles.fill}>
-          {/* The page's own controls and picture keep to the pane's insets: its
-              address, its dialogs and the remote picture a tap is mapped into. */}
-          <InsetView style={styles.fill} testID="page-content">
-            {props.notices}
-            {props.body}
-          </InsetView>
+          {props.bleed ? (
+            <View style={styles.fill} testID="page-content">
+              {props.body}
+              <NoticesOver>{props.notices}</NoticesOver>
+            </View>
+          ) : (
+            // The page's own controls and picture keep to the pane's insets: its
+            // address, its dialogs and the remote picture a tap is mapped into.
+            <InsetView style={styles.fill} testID="page-content">
+              {props.notices}
+              {props.body}
+            </InsetView>
+          )}
         </Pane>
       </KeyboardAvoidingView>
       {companion === null || !kept.current ? null : (
@@ -1446,6 +1610,22 @@ function PagePair(
           </KeyboardAvoidingView>
         </>
       )}
+    </View>
+  );
+}
+
+/** Notices over a page that runs under its chrome: at the foot, where it has none. */
+function NoticesOver(props: { readonly children: ReactNode }): ReactNode {
+  const insets = useContentInsets();
+  return (
+    <View
+      pointerEvents="box-none"
+      style={[
+        styles.overApp,
+        { bottom: insets.bottom, paddingLeft: insets.left, paddingRight: insets.right },
+      ]}
+    >
+      {props.children}
     </View>
   );
 }
@@ -1561,7 +1741,18 @@ function BrowserEnded(props: {
 }
 
 const styles = StyleSheet.create({
-  appName: { flex: 1, marginStart: space[10] },
+  // Over the app, which scrolls under it; Back and a balancing slot keep the name centred.
+  appRow: {
+    alignItems: "center",
+    end: 0,
+    flexDirection: "row",
+    paddingBottom: space[8],
+    position: "absolute",
+    start: 0,
+    top: 0,
+  },
+  appRowBalance: { width: touchTarget },
+  appRowTitle: { alignItems: "center", flex: 1, minWidth: 0, paddingHorizontal: space[8] },
   // Beside the page, the second pane is a column of its own, edged by one hairline.
   besidePage: {
     backgroundColor: color.background,
@@ -1580,6 +1771,7 @@ const styles = StyleSheet.create({
   },
   fill: { flex: 1 },
   floatingPill: { end: 0, position: "absolute", start: 0, top: 0 },
+  overApp: { end: 0, position: "absolute", start: 0 },
   // Laid out, so its native views and scroll position stay, but not drawn.
   outOfView: { left: 0, opacity: 0, position: "absolute", top: 0 },
   // Alone, the page and its bar have the whole surface. It has no

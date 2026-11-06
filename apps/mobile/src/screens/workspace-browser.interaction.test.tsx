@@ -371,20 +371,21 @@ vi.mock("../ui/screen.js", () => ({
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
 vi.mock("../ui/chat-orb.js", () => ({ ChatOrb: () => null }));
 vi.mock("../ui/task-mark.js", () => ({ TaskMark: () => null }));
+interface MenuOption {
+  readonly disabled?: boolean;
+  readonly selected?: boolean;
+  readonly id: string;
+  readonly label: string;
+  readonly onPress: () => void;
+}
 vi.mock("../thread/composer-menu.js", () => ({
   NativeMenu: (props: {
     readonly accessibilityLabel: string;
     readonly title?: string;
-    readonly options: readonly {
-      readonly disabled?: boolean;
-      readonly selected?: boolean;
-      readonly id: string;
-      readonly label: string;
-      readonly onPress: () => void;
-    }[];
+    readonly options: readonly (MenuOption | readonly MenuOption[])[];
   }) => (
     <div aria-label={props.accessibilityLabel} data-menu-title={props.title}>
-      {props.options.map((option) => (
+      {props.options.flat().map((option) => (
         <button
           aria-pressed={option.selected}
           disabled={option.disabled}
@@ -1786,12 +1787,27 @@ describe("an app open as a tab", () => {
     const ask = element(header(), "Ask")!;
     act(() => ask.click());
   };
+  /** The app's menu, behind its name in the native bar. */
+  const appMenu = () => {
+    const pill = element(header(), "Budget. Actions");
+    if (pill === null) throw new Error("The bar has no app menu.");
+    return pill;
+  };
 
-  it("fills the page under the bar with the app's title, whatever height it reports", () => {
+  it("fills the page under its name in the native bar, with no bar of its own", () => {
     openApp();
-    expect(state.setOptions).toHaveBeenLastCalledWith(expect.objectContaining({ title: "Budget" }));
+    expect(state.setOptions).toHaveBeenLastCalledWith(
+      expect.objectContaining({ headerTransparent: true, title: "Budget" }),
+    );
     expect(JSON.parse(webView()!.getAttribute("data-style")!)).toMatchObject({ flex: 1 });
-    expect(document.querySelector("[data-testid='page-toolbar']")?.textContent).toContain("Budget");
+    expect(document.querySelector("[data-testid='page-toolbar']")).toBeNull();
+    expect([...appMenu().querySelectorAll("button")].map((item) => item.textContent)).toEqual([
+      "Ask about this app",
+      "Open its conversation",
+      "Reload",
+      "Report a problem",
+      "Close tab",
+    ]);
   });
 
   it("asks in the Thread that made it, going back when that Thread is under the page", () => {
@@ -1824,6 +1840,19 @@ describe("an app open as a tab", () => {
     expect(webView()).toBe(app);
   });
 
+  it("puts the native bar away beside its Thread, with Back and the app's menu in its own row", () => {
+    state.pair = { height: 760, width: 1100 };
+    const { container, closeAppTab } = openApp();
+    const row = () => container.querySelector<HTMLElement>("[data-testid='app-pane-bar']");
+    expect(row()).toBeNull();
+    pressAsk();
+    expect(headerShown()).toBe(false);
+    press(row()!, "Back");
+    expect(state.goBack).toHaveBeenCalledOnce();
+    press(element(row()!, "Budget. Actions")!, "Close tab");
+    expect(closeAppTab).toHaveBeenCalledWith(appId);
+  });
+
   it("takes an earlier page off the Thread's draft, which it does not stand for", async () => {
     openApp();
     const earlier = BrowserPageContentPartSchema.parse({
@@ -1849,7 +1878,7 @@ describe("an app open as a tab", () => {
       { name: "WorkspaceBrowser", params: { appId: appId.replace("1111-4", "2222-4") } },
       { name: "WorkspaceBrowser", params: { appId } },
     ];
-    press(container, "Close tab");
+    press(appMenu(), "Close tab");
     expect(closeAppTab).toHaveBeenCalledWith(appId);
     // The card under this page comes back at once, so this copy has already gone.
     expect(webView()).toBeNull();
@@ -1863,7 +1892,7 @@ describe("an app open as a tab", () => {
   it("stays and explains a failed close, with the app back and a way to retry", async () => {
     const { container, closeAppTab } = openApp();
     closeAppTab.mockRejectedValueOnce(new Error("The Host refused."));
-    await pressAsync(container, "Close tab");
+    await pressAsync(appMenu(), "Close tab");
     expect(container.textContent).toContain("The Host refused.");
     expect(webView()).not.toBeNull();
     expect(state.dispatch).not.toHaveBeenCalled();
@@ -1873,9 +1902,9 @@ describe("an app open as a tab", () => {
   });
 
   it("does not move a person who left before the close finished", async () => {
-    const { container } = openApp();
+    openApp();
     state.navigationFocused = false;
-    await pressAsync(container, "Close tab");
+    await pressAsync(appMenu(), "Close tab");
     expect(state.dispatch).not.toHaveBeenCalled();
   });
 
@@ -1932,14 +1961,13 @@ describe("an app open as a tab", () => {
     expect(webView()).toBeNull();
   });
 
-  it("lifts for a field in the app and gives its bar up, but not for a composer beside it", () => {
+  it("lifts for a field in the app, but not for a composer beside it", () => {
     state.pair = { height: 760, width: 1100 };
     const { render } = openApp();
     const slot = () => document.querySelector("[data-testid='page-slot']")!;
     state.keyboard = true;
     render();
     expect(slot().getAttribute("data-avoids")).toBe("true");
-    expect(document.querySelector("[data-testid='page-toolbar']")).toBeNull();
     state.focusedInput = {};
     state.keyboard = false;
     render();
