@@ -33,7 +33,7 @@ export function useComputerAppApproval(hostClient: HostClient) {
   const dialog =
     content === null ? null : (
       <Sheet onClose={close} open title="Allow agent access?">
-        {content}
+        <View style={styles.dialog}>{content}</View>
       </Sheet>
     );
   return { ask, close, content, dialog };
@@ -128,5 +128,6 @@ export function ComputerSetupApprovals(props: {
 }
 
 const styles = StyleSheet.create({
+  dialog: { paddingHorizontal: space[16], paddingTop: space[8] },
   review: { gap: space[12] },
 });
