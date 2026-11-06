@@ -29,6 +29,7 @@ export type SFSymbolName =
   | "bubble.left"
   | "bubble.left.and.bubble.right"
   | "calendar"
+  | "camera"
   | "checklist"
   | "circle"
   | "checkmark"
@@ -53,6 +54,7 @@ export type SFSymbolName =
   | "gearshape"
   | "globe"
   | "hand.raised"
+  | "hifispeaker"
   | "house"
   | "key"
   | "keyboard"
@@ -95,6 +97,7 @@ export type SFSymbolName =
   | "terminal"
   | "text.append"
   | "trash"
+  | "tv"
   | "waveform"
   | "xmark";
 
@@ -192,6 +195,7 @@ const glyph: Record<SFSymbolName, string> = {
   "bubble.left": "✉\uFE0E",
   "bubble.left.and.bubble.right": "◌",
   calendar: "▦",
+  camera: "◙",
   checklist: "☑︎",
   circle: "○",
   checkmark: "✓",
@@ -216,6 +220,7 @@ const glyph: Record<SFSymbolName, string> = {
   gearshape: "⚙",
   globe: "◍",
   "hand.raised": "✋\uFE0E",
+  hifispeaker: "♫",
   house: "⌂",
   key: "⚷",
   keyboard: "⌨",
@@ -258,6 +263,7 @@ const glyph: Record<SFSymbolName, string> = {
   terminal: "›",
   "text.append": "≡",
   trash: "⌫",
+  tv: "⊡",
   waveform: "⦀",
   xmark: "✕",
 };

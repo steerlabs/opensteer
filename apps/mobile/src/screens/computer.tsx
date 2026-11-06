@@ -20,19 +20,11 @@ import {
 import { computerUseView, isIphone, phoneUseView } from "@opensteer/client/integrations";
 import { useHostSelector } from "@opensteer/client/react";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
-import {
-  useCallback,
-  useLayoutEffect,
-  useMemo,
-  useState,
-  useRef,
-  useEffect,
-  type ReactNode,
-} from "react";
+import { useLayoutEffect, useMemo, useState, useRef, useEffect, type ReactNode } from "react";
 import { StyleSheet } from "react-native";
 import { workspaceRoute } from "../browser/surface-route.js";
 import { operationDetail } from "../client/mobile-client.js";
-import { threadReturn } from "../navigation-state.js";
+import { useLeaveSheets } from "./leave-sheets.js";
 
 import { openPhoneOwnerView } from "../computers/open-owner-view.js";
 import { useComputerUseData } from "../computers/use-computer-use-data.js";
@@ -187,28 +179,7 @@ function ComputerDetail(props: {
     if (machine !== null) navigation.setOptions({ title: machine.name });
   }, [machine, navigation]);
 
-  const openThread = useCallback(
-    (threadId: string) => {
-      const destination = { deploymentId: props.deploymentId, threadId };
-      // Chat is the root under every sheet, and only ever shown there.
-      if (props.hostClient.getSnapshot().homeThreadId === threadId) {
-        navigation.dispatch(StackActions.popTo("Home", { deploymentId: props.deploymentId }));
-        return;
-      }
-      const routes = navigation.getState()?.routes ?? [];
-      if (threadReturn(routes, destination) === "pop-to") {
-        navigation.dispatch(StackActions.popTo("Thread", destination));
-        return;
-      }
-      // Back to the screen the sheets were opened over, then forward to the
-      // task: its Back returns there, and no Thread is pushed over a sheet.
-      const beneath = routes.findLastIndex(({ name }) => screenRoutes.has(name));
-      const above = routes.length - 1 - Math.max(beneath, 0);
-      if (above > 0) navigation.dispatch(StackActions.pop(above));
-      navigation.dispatch(StackActions.push("Thread", destination));
-    },
-    [navigation, props.deploymentId, props.hostClient],
-  );
+  const { openThread } = useLeaveSheets(props.deploymentId, props.hostClient);
 
   return (
     <Screen edgeToEdge>
@@ -343,18 +314,6 @@ function ComputerSummary(props: {
     </View>
   );
 }
-
-/** The full screens of a Deployment's stack, as opposed to the sheets over them. */
-const screenRoutes: ReadonlySet<string> = new Set([
-  "Home",
-  "NewTask",
-  "Project",
-  "Projects",
-  "Tabs",
-  "TaskSearch",
-  "Thread",
-  "WorkspaceBrowser",
-]);
 
 const selectMachines = (snapshot: HostSnapshot) => snapshot.machines;
 const selectMachineRevision = (snapshot: HostSnapshot) => snapshot.machineRevision;

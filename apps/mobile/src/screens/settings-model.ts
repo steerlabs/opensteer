@@ -18,8 +18,9 @@ import {
   passwordsSettingsSubtitle,
 } from "@opensteer/client/host";
 import { computerUseMachineLine, isAndroidPhone } from "@opensteer/client/integrations";
+import { otherDeviceLine, type OtherDeviceLine } from "@opensteer/client/settings";
 import { maximumNotificationDevicesPerAccount } from "@opensteer/core";
-import type { HarnessInstallation, MachineSummary } from "@opensteer/protocol";
+import type { HarnessInstallation, MachineSummary, OtherDevice } from "@opensteer/protocol";
 import type { DesktopAccountAuthState } from "@opensteer/protocol/desktop";
 import { deploymentStatusLabel, type DeploymentRow } from "../client/deployment-rows.js";
 import type {
@@ -491,6 +492,45 @@ export function computersSettingsRows(input: {
     });
   }
   return rows;
+}
+
+/** One row of Settings → Devices → Other devices: a device a plugin's server reaches. */
+export interface OtherDeviceSettingsRow {
+  readonly detail: string;
+  readonly key: string;
+  readonly name: string;
+  readonly opens: OtherDeviceLine["opens"];
+  readonly symbol: OtherDeviceSymbol;
+}
+
+export type OtherDeviceSymbol = "camera" | "hifispeaker" | "lightbulb" | "powerplug" | "tv";
+
+const otherDeviceSymbols: Readonly<Record<OtherDevice["kind"], OtherDeviceSymbol>> = {
+  camera: "camera",
+  light: "lightbulb",
+  other: "powerplug",
+  speaker: "hifispeaker",
+  tv: "tv",
+};
+
+/** `waiting` holds the Threads with a pending Request; a setup task there needs the person. */
+export function otherDevicesSettingsRows(
+  devices: readonly OtherDevice[],
+  waiting: ReadonlySet<string>,
+): readonly OtherDeviceSettingsRow[] {
+  return devices.map((device) => {
+    const line = otherDeviceLine(
+      device,
+      device.setupThreadId !== null && waiting.has(device.setupThreadId),
+    );
+    return {
+      detail: line.detail,
+      key: device.pluginId,
+      name: device.name,
+      opens: line.opens,
+      symbol: otherDeviceSymbols[device.kind],
+    };
+  });
 }
 
 /** What a computer does for agents and whether it is there, in the Computers page's words. */
