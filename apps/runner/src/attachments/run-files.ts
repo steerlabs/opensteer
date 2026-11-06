@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { mkdtemp, open, rename, rm } from "node:fs/promises";
-import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { z } from "zod";
 import { NativeFsHelper } from "@opensteer/workspace-local";
 import {
@@ -81,7 +81,8 @@ export class RunFiles {
     try {
       return await work(directory);
     } finally {
-      await rm(directory, { force: true, recursive: true });
+      // Never let cleanup replace the call's own answer; startup clears what this leaves.
+      await rm(directory, { force: true, recursive: true }).catch(() => undefined);
     }
   }
   async source(path: string, access: RunFileAccess) {
@@ -213,6 +214,7 @@ export class RunFiles {
       invocation: ComputerAppInvocation,
     ) => Promise<ComputerAppValue>,
   ): Promise<ComputerAppValue> {
+    let dispatched = false;
     const work = async (access?: RunFileAccess): Promise<ComputerAppValue> =>
       this.scratch(async (directory) => {
         const linked = access?.signal ?? signal;
@@ -227,7 +229,7 @@ export class RunFiles {
             for (const transfer of message.files.transfers) {
               const file = await this.download(transfer, linked);
               const path = await this.install(file, directory, linked, false);
-              const name = attachmentFileName(`${randomUUID()}-${file.name}`);
+              const name = stagedFileName(file.name, names);
               await rename(path, join(directory, name));
               names.push(name);
             }
@@ -236,16 +238,17 @@ export class RunFiles {
             for (const path of paths) {
               const file = await this.source(path, access);
               const installed = await this.install(file, directory, linked, false);
-              const name = attachmentFileName(`${randomUUID()}-${file.name}`);
+              const name = stagedFileName(file.name, names);
               await rename(installed, join(directory, name));
               names.push(name);
             }
           }
           args = { ...args, files: names };
         }
+        dispatched = mode === "send";
         const result = await provider(args, linked, { ...invocation, scratchDirectory: directory });
-        linked.throwIfAborted();
         if (mode === "send") return result;
+        linked.throwIfAborted();
         const info = exported.parse(result);
         if (
           info.file !== basename(info.file) ||
@@ -296,6 +299,11 @@ export class RunFiles {
       return await work();
     } catch (error) {
       if (error instanceof ComputerAppError) throw error;
+      if (dispatched)
+        throw new ComputerAppError(
+          "outcome-unknown",
+          "The send may already have happened. Check the conversation before trying again.",
+        );
       if (error instanceof RunFileError) throw new ComputerAppError("failed", error.message);
       throw new ComputerAppError(
         "failed",
@@ -304,6 +312,21 @@ export class RunFiles {
     }
   }
 }
+/** The name the recipient sees, made unique within one send and short enough for the helper. */
+export function stagedFileName(name: string, taken: readonly string[]): string {
+  const safe = attachmentFileName(name);
+  const extension = extname(safe).slice(0, 16);
+  const stem = safe.slice(0, safe.length - extension.length);
+  for (let copy = 1; ; copy += 1) {
+    const suffix = copy === 1 ? "" : ` ${copy}`;
+    let base = stem;
+    while (base && Buffer.byteLength(base + suffix + extension, "utf8") > stagedNameMaxBytes)
+      base = base.slice(0, -1);
+    const candidate = `${base || "file"}${suffix}${extension}`;
+    if (!taken.includes(candidate)) return candidate;
+  }
+}
+const stagedNameMaxBytes = 200;
 async function* bounded(body: AsyncIterable<Uint8Array>, size: number, signal: AbortSignal) {
   if (size > runFileMaxBytes) throw new RunFileError("Choose a file smaller than 2 GiB.");
   let total = 0;

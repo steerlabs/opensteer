@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 import { Readable } from "node:stream";
 import { afterEach, expect, it } from "vitest";
 import { runFileMaxBytes } from "@opensteer/protocol";
-import { RunFiles } from "./run-files.js";
+import { RunFiles, stagedFileName } from "./run-files.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 
 const roots: string[] = [];
@@ -178,6 +178,51 @@ it("stages same-Runner sends and exports through private scratch and removes it 
   expect(output.path).toContain(join(access.directory, "exports"));
   expect(await readFile(output.path, "utf8")).toBe("photo");
   expect(await readdir(files.scratchRoot)).toEqual([]);
+});
+
+it("keeps an accepted send accepted when the Run ends while Messages sends", async () => {
+  const { files: base, workspace, access } = await fixture();
+  let run = new AbortController();
+  const files = new RunFiles({
+    ...base.options,
+    port: {
+      withRunFiles: async (_execution, _signal, work) =>
+        await work({ ...access, signal: run.signal }),
+    },
+  });
+  const invocation = {
+    access: "read-write" as const,
+    effect: "write" as const,
+    contract: "contract",
+    deadline: Date.now() + 30_000,
+  };
+  const message = {
+    arguments: { files: ["chart.png"] },
+    files: { run: { runId: "run", bindingGeneration: 1 } },
+  } as unknown as import("@opensteer/protocol").HostIntegrationsInvoke;
+  await writeFile(join(workspace, "chart.png"), "png");
+  const send = (outcome: () => Promise<{ accepted: true }>) =>
+    files.invoke(message, "send", invocation, new AbortController().signal, outcome);
+  await expect(
+    send(async () => {
+      run.abort();
+      return { accepted: true };
+    }),
+  ).resolves.toEqual({ accepted: true });
+  run = new AbortController();
+  await expect(
+    send(async () => {
+      throw new Error("Messages stopped answering");
+    }),
+  ).rejects.toMatchObject({ code: "outcome-unknown" });
+});
+
+it("keeps a long file name under the helper's limit and the person's extension", () => {
+  const long = `${"a".repeat(204)}.png`;
+  const first = stagedFileName(long, []);
+  expect(Buffer.byteLength(first)).toBeLessThanOrEqual(200);
+  expect(first.endsWith(".png")).toBe(true);
+  expect(stagedFileName("chart.png", ["chart.png"])).toBe("chart 2.png");
 });
 
 it("removes stale helper scratch at integration startup", async () => {

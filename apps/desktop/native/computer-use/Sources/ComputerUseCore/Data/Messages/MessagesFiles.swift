@@ -139,9 +139,12 @@ struct MessagesFiles {
     guard mkdirat(root.value, unique, 0o700) == 0 else { throw Self.ioFailure }
     let destination = try Descriptor(openat(root.value, unique, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC))
     return try sources.enumerated().map { index, source in
-      let name = "\(index)-\(names[index])"
-      _ = try Self.copy(source, name: name, to: destination, budget: budget)
-      return stagingRoot.appendingPathComponent(unique).appendingPathComponent(name).path
+      let folder = String(index)
+      guard mkdirat(destination.value, folder, 0o700) == 0 else { throw Self.ioFailure }
+      let into = try Descriptor(openat(destination.value, folder, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC))
+      _ = try Self.copy(source, name: names[index], to: into, budget: budget)
+      return stagingRoot.appendingPathComponent(unique).appendingPathComponent(folder)
+        .appendingPathComponent(names[index]).path
     }
   }
 
@@ -156,17 +159,32 @@ struct MessagesFiles {
       var info = stat()
       guard fstatat(root.value, name, &info, AT_SYMLINK_NOFOLLOW) == 0,
         info.st_mode & S_IFMT == S_IFDIR, Date().timeIntervalSince1970 - Double(info.st_mtimespec.tv_sec) > 86_400 else { continue }
-      let child = try Descriptor(openat(root.value, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC))
-      guard let files = fdopendir(dup(child.value)) else { throw ioFailure }
-      while let file = readdir(files) {
-        let leaf = withUnsafePointer(to: &file.pointee.d_name) {
-          $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXNAMLEN) + 1) { String(cString: $0) }
-        }
-        if leaf != "." && leaf != ".." { unlinkat(child.value, leaf, 0) }
-      }
-      closedir(files)
-      unlinkat(root.value, name, AT_REMOVEDIR)
+      try removeTree(name, in: root, depth: 2)
     }
+  }
+
+  /// A staged send is `<uuid>/<index>/<file>`, so nothing deeper is ever followed.
+  private static func removeTree(_ name: String, in parent: Descriptor, depth: Int) throws {
+    let child = try Descriptor(openat(parent.value, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC))
+    guard let entries = fdopendir(dup(child.value)) else { throw ioFailure }
+    var leaves: [String] = []
+    while let entry = readdir(entries) {
+      let leaf = withUnsafePointer(to: &entry.pointee.d_name) {
+        $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXNAMLEN) + 1) { String(cString: $0) }
+      }
+      if leaf != "." && leaf != ".." { leaves.append(leaf) }
+    }
+    closedir(entries)
+    for leaf in leaves {
+      var info = stat()
+      guard fstatat(child.value, leaf, &info, AT_SYMLINK_NOFOLLOW) == 0 else { continue }
+      if info.st_mode & S_IFMT == S_IFDIR {
+        if depth > 1 { try removeTree(leaf, in: child, depth: depth - 1) }
+      } else {
+        unlinkat(child.value, leaf, 0)
+      }
+    }
+    unlinkat(parent.value, name, AT_REMOVEDIR)
   }
 
   private var missing: HelperError { HelperError(.failed, "That attachment is not on this Mac. Download it in Messages and try again.") }

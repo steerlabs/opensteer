@@ -89,7 +89,9 @@ final class MessagesFilesTests: XCTestCase {
     XCTAssertEqual(staged.count, 2)
     XCTAssertNotEqual(staged[0], staged[1])
     XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: staged[0])), Data("one".utf8))
-    let old = URL(fileURLWithPath: staged[0]).deletingLastPathComponent()
+    // The recipient sees the person's own file name.
+    XCTAssertEqual(staged.map { URL(fileURLWithPath: $0).lastPathComponent }, ["one", "one"])
+    let old = URL(fileURLWithPath: staged[0]).deletingLastPathComponent().deletingLastPathComponent()
     try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-90_000)], ofItemAtPath: old.path)
     let new = try fixture.files.stage(["one"], scratch: fixture.scratch.path)
     XCTAssertFalse(FileManager.default.fileExists(atPath: old.path))

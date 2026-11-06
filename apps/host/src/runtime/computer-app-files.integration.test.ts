@@ -8,7 +8,7 @@ import {
   type HostRunFileRequest,
   type HostToRunnerMessage,
 } from "@opensteer/protocol";
-import { RunFiles, type ComputerAppProvider } from "@opensteer/runner";
+import { ComputerAppError, RunFiles, type ComputerAppProvider } from "@opensteer/runner";
 import type WebSocket from "ws";
 import { startHeldRequest } from "../integrations/held-request.test-support.js";
 import { testRpcData } from "../server/test-host-api-request.js";
@@ -60,6 +60,8 @@ function messagesProvider(received: Buffer[]): ComputerAppProvider {
       }
       const [file] = args.files as readonly string[];
       received.push(await readFile(join(directory, file!)));
+      if ((args.to as { conversationId?: string }).conversationId === "uncertain")
+        throw new ComputerAppError("outcome-unknown", "Messages did not confirm the send.");
       return { accepted: true };
     },
     platforms: ["darwin"],
@@ -158,17 +160,20 @@ integration("files between a Run and an app on another computer", () => {
   function answerRunFiles(
     socket: WebSocket,
     fence: object,
-    answer: (request: HostRunFileRequest) => Promise<{ readonly paths: readonly string[] }>,
+    answer: (
+      request: HostRunFileRequest,
+    ) => Promise<{ readonly paths: readonly string[] } | { readonly message: string }>,
   ) {
     socket.on("message", (raw: WebSocket.RawData) => {
       const message = JSON.parse(raw.toString()) as HostToRunnerMessage;
       if (message.type !== "host.run-file.receive" && message.type !== "host.run-file.send") return;
-      void answer(message).then(({ paths }) =>
+      void answer(message).then((result) =>
         socket.send(
           JSON.stringify({
             ...fence,
-            ok: true,
-            paths,
+            ...("message" in result
+              ? { message: result.message, ok: false }
+              : { ok: true, ...result }),
             requestId: message.requestId,
             type: "runner.run-file.result",
           }),
@@ -218,6 +223,26 @@ integration("files between a Run and an app on another computer", () => {
       }),
     ).resolves.toEqual({ accepted: true });
     expect(sent).toEqual([photo]);
+  });
+
+  it("never lets a transfer error hide a send that may have happened", async () => {
+    const { caller, gateway, search, target } = await connected(true);
+    const signal = new AbortController().signal;
+    answerRunFiles(caller.primary.socket, caller.primary.fence, async (request) => {
+      if (request.type !== "host.run-file.send") throw new Error("Expected a send");
+      await target.upload(
+        request.files[0]!.transfer,
+        { body: Readable.from([photo]), name: "chart.png", size: photo.byteLength },
+        signal,
+      );
+      return { message: "The upload's answer was lost." };
+    });
+    await expect(
+      gateway.call("integration_call", {
+        arguments: { files: ["chart.png"], to: { conversationId: "uncertain" } },
+        ...operation(search, "send_message").address,
+      }),
+    ).rejects.toThrow("Check whether it happened before trying again.");
   });
 
   it("tells the agent to update a computer that cannot move files", async () => {

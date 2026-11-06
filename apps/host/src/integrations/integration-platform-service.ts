@@ -2737,8 +2737,10 @@ export class IntegrationPlatformService {
     const answer = await sent.outcome;
     if (answer.kind !== "ok") route?.close();
     const peer = route?.peer ? await route.peer.catch(() => null) : undefined;
-    // A send the app accepted already has its bytes; only an export still needs the Run's side.
-    const peerDecides = answer.kind !== "ok" || operation.files === "export";
+    // A send keeps the app's answer unless the app definitely never sent: a transfer error
+    // must never hide a send that may have happened.
+    const peerDecides =
+      operation.files === "export" || (answer.kind !== "ok" && answer.code !== "outcome-unknown");
     if (peerDecides && peer?.ok === false && peer.message)
       return { content: [{ type: "text", text: peer.message }], isError: true };
     const delivered = peer?.paths?.[0];
