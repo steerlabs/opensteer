@@ -1,12 +1,14 @@
 import { Button, HStack, Section, Spacer } from "@expo/ui/swift-ui";
 import { accessibilityLabel, contentShape, shapes } from "@expo/ui/swift-ui/modifiers";
 import type { ReactNode } from "react";
-import { Chevron, Footer, Lines, Tile } from "./settings-form-primitives.ios.js";
+import { Chevron, Footer, Lines, LinkRow, Tile } from "./settings-form-primitives.ios.js";
 import type { SettingsFormProps } from "./settings-form.types.js";
-import { computersSettingsFooter } from "./settings-model.js";
+import { computersSettingsFooter, type OtherDeviceSettingsRow } from "./settings-model.js";
 export function DevicesSettingsForm(
   props: Pick<SettingsFormProps, "page" | "computers" | "onComputerAction"> & {
     readonly onAddDevice?: () => void;
+    readonly onOtherDevice?: (opens: OtherDeviceSettingsRow["opens"]) => void;
+    readonly otherDevices?: readonly OtherDeviceSettingsRow[];
   },
 ): ReactNode {
   return (
@@ -47,6 +49,19 @@ export function DevicesSettingsForm(
               </Button>
             );
           })}
+        </Section>
+      )}
+      {!props.otherDevices?.length ? null : (
+        <Section title="Other devices">
+          {props.otherDevices.map((device) => (
+            <LinkRow
+              detail={device.detail}
+              key={device.key}
+              onPress={() => props.onOtherDevice?.(device.opens)}
+              symbol={device.symbol}
+              title={device.name}
+            />
+          ))}
         </Section>
       )}
     </>

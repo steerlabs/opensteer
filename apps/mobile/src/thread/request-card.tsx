@@ -690,6 +690,11 @@ export function RequestCard(props: {
               text={presentation.detail}
             />
           )}
+          {request.payload.kind === "integration.input" ? (
+            <AppText role="secondary" tone="muted">
+              Only this plugin receives what you enter. The agent never sees it.
+            </AppText>
+          ) : null}
           <RequestBody
             answers={answers}
             browserAccess={{

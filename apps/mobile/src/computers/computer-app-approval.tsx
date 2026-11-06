@@ -1,4 +1,4 @@
-import { Modal, ScrollView, View } from "react-native";
+import { Modal, ScrollView, StyleSheet, View } from "react-native";
 import { AppText, SecondaryButton } from "../ui/primitives.js";
 import { useComputerAppApproval as useOwnerComputerAppApproval } from "@opensteer/client/react";
 import {
@@ -10,8 +10,9 @@ import {
 import type { HostClient } from "@opensteer/client/host";
 import { useState } from "react";
 
-import { color, space } from "../theme.js";
+import { color, material, radius, space } from "../theme.js";
 import { LocalMcpSecretFields } from "./local-mcp-secret-fields.js";
+import { useThreadServerApprovals } from "./thread-server-approvals.js";
 
 export function useComputerAppApproval(hostClient: HostClient) {
   const { ask, review, error, busy, close, answer } = useOwnerComputerAppApproval(hostClient);
@@ -125,3 +126,34 @@ export function ComputerSetupApprovals(props: {
     </View>
   );
 }
+
+/** Plugin servers an agent in this Thread installed, waiting for the owner to allow them to start. */
+export function ThreadServerApprovals(props: {
+  readonly hostClient: HostClient;
+  readonly threadId: string;
+}) {
+  const { requests, reload } = useThreadServerApprovals(props.hostClient, props.threadId);
+  if (requests.length === 0) return null;
+  return (
+    <View style={styles.threadCard}>
+      <AppText role="caption" tone="ember">
+        Needs you
+      </AppText>
+      <ComputerSetupApprovals
+        hostClient={props.hostClient}
+        onChanged={reload}
+        requests={requests}
+      />
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  threadCard: {
+    ...material.attention,
+    borderRadius: radius.lg,
+    gap: space[6],
+    paddingHorizontal: space[12],
+    paddingVertical: space[10],
+  },
+});
