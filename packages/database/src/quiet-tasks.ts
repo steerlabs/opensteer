@@ -30,7 +30,7 @@ function quietTask(now: Date): RawBuilder<boolean> {
         and status in (${sql.join(nonTerminalRunStatuses.map((status) => sql`${status}`))}))
     and not exists (
       select 1 from thread_inputs where thread_id = thread.id
-        and state in ('pending', 'claimed') and policy <> 'report')
+        and state in ('pending', 'claimed', 'unknown') and policy <> 'report')
     and not exists (
       select 1 from delegations where status = 'open'
         and (child_thread_id = thread.id or parent_thread_id = thread.id))

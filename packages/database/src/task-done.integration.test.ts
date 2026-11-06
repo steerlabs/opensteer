@@ -656,6 +656,38 @@ integration.sequential("Shared task Done", () => {
     expect(await quiet()).toEqual([]);
   });
 
+  it("leaves a task whose last message's delivery is unknown where it is", async () => {
+    const f = await fixture("quiet-unknown");
+    await running(f, "quiet-unknown");
+    const sent = await store.enqueueThreadInput({
+      content: [{ type: "text", text: "A steer the Run may not have seen" }],
+      idempotencyKey: "quiet-unknown-steer",
+      policy: "steer",
+      requestedBy: f.userId,
+      source: { kind: "human" },
+      threadId: f.thread.id,
+    });
+    await database
+      .updateTable("runs")
+      .set({ status: "interrupted", completedAt: new Date() })
+      .where("threadId", "=", f.thread.id)
+      .execute();
+    await database
+      .updateTable("threadInputs")
+      .set({ state: "unknown" })
+      .where("messageId", "=", sent.input.messageId)
+      .execute();
+    await touched(f, 4);
+    const quiet = () => store.listQuietTasks({ now: new Date(), limit: 100 });
+    expect(await quiet()).toEqual([]);
+    await database
+      .updateTable("threadInputs")
+      .set({ state: "delivered", deliveredAt: new Date() })
+      .where("messageId", "=", sent.input.messageId)
+      .execute();
+    expect(await quiet()).toEqual([expect.objectContaining({ threadId: f.thread.id })]);
+  });
+
   it("reopens a Done task its writer may reopen, and refuses another member's message", async () => {
     const f = await fixture("write-reopens");
     await setDone(f, true, "write-reopens-done");

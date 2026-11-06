@@ -6,6 +6,7 @@ import {
   doneTime,
   filterThreads,
   groupTasksByProject,
+  mainDoneTasks,
   sameTaskListSource,
   taskAttention,
   taskList,
@@ -135,7 +136,10 @@ export function TasksPane(props: {
   const matches = searching
     ? new Set(
         filterThreads(
-          (read?.entries ?? []).map(({ thread }) => thread),
+          [
+            ...(read?.entries ?? []),
+            ...(snapshot.doneTasks[listWorkspace ?? mainDoneTasks]?.entries ?? []),
+          ].map(({ thread }) => thread),
           snapshot.workspaces,
           query,
           taskAttention(snapshot),

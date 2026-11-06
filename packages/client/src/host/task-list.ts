@@ -139,7 +139,9 @@ export interface TaskListOptions {
 
 /** The reader's tasks across every Workspace, with their Chat apart. */
 export function taskList(snapshot: TaskListSource, options: TaskListOptions = {}): TaskList {
-  return arrange(snapshot, snapshot.tasks, snapshot.activeTasks, options);
+  return arrange(snapshot, snapshot.tasks, snapshot.activeTasks, options, [
+    ...Object.values(snapshot.doneTasks).flatMap(({ entries }) => entries),
+  ]);
 }
 
 /**
@@ -156,6 +158,7 @@ export function workspaceTaskList(
     snapshot.workspaceTasks[workspaceId] ?? null,
     snapshot.activeTasks.filter(({ thread }) => thread.workspaceId === workspaceId),
     options,
+    snapshot.doneTasks[workspaceId]?.entries ?? [],
   );
   return list;
 }
@@ -252,8 +255,13 @@ function arrange(
   tasks: TaskListState | null,
   activeTasks: readonly TaskEntry[],
   options: TaskListOptions,
+  doneEntries: readonly TaskEntry[] = [],
 ): TaskList {
-  const entries = mergeTaskEntries(tasks?.entries ?? [], activeTasks).filter(
+  // An unread Done task waits in Ready, though only a Done list may hold it.
+  const unreadDone = doneEntries.filter(({ thread }) =>
+    isThreadUnread(snapshot.threadReadStates[thread.id]),
+  );
+  const entries = mergeTaskEntries(tasks?.entries ?? [], activeTasks, unreadDone).filter(
     ({ thread }) => thread.listed || thread.id === snapshot.homeThreadId,
   );
   const asks = attributedRequests(snapshot, entries);
@@ -600,7 +608,13 @@ export function doneTaskList(snapshot: TaskListSource, workspaceId?: string): Do
   const rows = list.entries
     .filter(({ thread }) => thread.listed && thread.doneAt !== null)
     .map((entry) => rowOf(snapshot, entry, []))
-    .filter((row) => row.done && !row.unread);
+    .filter((row) => row.done && !row.unread)
+    // Pages merge in asked order; Done reads newest Done first.
+    .sort(
+      (left, right) =>
+        (right.doneAt ?? "").localeCompare(left.doneAt ?? "") ||
+        right.threadId.localeCompare(left.threadId),
+    );
   return { rows, total: list.window.totalItems, hasMore: list.window.hasMore };
 }
 

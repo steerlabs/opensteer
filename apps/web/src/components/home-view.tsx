@@ -632,7 +632,7 @@ function ProjectTasks({ workspaceId }: { readonly workspaceId: string }) {
     { done: false, id: "project-working", rows: list.working, title: "Working" },
     { done: false, id: "project-ready", rows: list.ready, title: "Ready" },
     { done: true, id: "project-done", rows: doneList?.rows ?? list.done, title: "Done" },
-  ].filter((group) => group.rows.length > 0);
+  ].filter((group) => group.rows.length > 0 || (group.done && doneList?.hasMore === true));
   const [loadingDone, setLoadingDone] = useState(false);
   const motionList = useRef<HTMLElement | null>(null);
   return (

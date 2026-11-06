@@ -441,7 +441,7 @@ export function Sidebar({
   const loadEarlier = () => {
     if (loadingEarlier) return;
     setLoadingEarlier(true);
-    void (doneView ? hostClient.loadEarlierDoneTasks() : onLoadEarlierTasks())
+    void (doneView && quietTasks ? hostClient.loadEarlierDoneTasks() : onLoadEarlierTasks())
       .catch(() => undefined)
       .finally(() => setLoadingEarlier(false));
   };
