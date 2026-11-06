@@ -10,6 +10,8 @@ import {
   pageViewport,
   normalizeElectronCursor,
   siteCookieReplacementBatch,
+  viewportCapturePlan,
+  viewportImageScript,
   type BrowserContext,
   type BrowserLauncher,
   type BrowserLaunchRequest,
@@ -23,6 +25,8 @@ import {
   type PageCapture,
   type PageGeometry,
   type Viewport,
+  type ViewportCapture,
+  type ViewportCaptureRequest,
 } from "@opensteer/browser-runtime-core";
 import {
   browserPageDisabledBlinkFeatures,
@@ -37,6 +41,7 @@ import {
   WebContentsView,
   type BrowserWindowConstructorOptions,
   type Debugger,
+  type NativeImage,
   type Session,
   type WebContents,
   type WebPreferences,
@@ -907,6 +912,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
   #targetIdPromise: Promise<string> | null = null;
   readonly #passkeyInput = new Set<() => void>();
   readonly #humanInput = new Set<(observation: HumanInputObservation) => void>();
+  #frameWorld: number | null = null;
   readonly #restingHost: BaseWindow;
   #requestedRestingSize: { width: number; height: number };
   readonly #paintWaiters = new Set<{
@@ -1620,6 +1626,135 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     } else if (this.#restingHost.isVisible()) this.#restingHost.hide();
   }
 
+  /**
+   * Copies the surface: unlike `Page.captureScreenshot`, this never resizes the
+   * view, whatever its emulation. The bitmap is view DIPs at the display's
+   * scale, whatever device scale factor a page emulates, cropped from the
+   * top left when the view is smaller than the page.
+   */
+  async captureViewport({
+    clip,
+    format,
+    layout,
+    pageScale,
+    quality,
+  }: ViewportCaptureRequest): Promise<ViewportCapture> {
+    const cdp = await this.cdp();
+    const release = cdp.retainRendering?.();
+    try {
+      await this.#drawnFrame(cdp);
+      const image = await this.#surfaceImage();
+      const bounds = this.view.getBounds();
+      const visible = {
+        height: Math.round(bounds.height / pageScale),
+        width: Math.round(bounds.width / pageScale),
+      };
+      const plan = viewportCapturePlan(image.getSize(), visible, clip);
+      const { crop } = this.#desiredPlacement;
+      const size = image.getSize();
+      const x = Math.min(size.width - 1, Math.round(plan.source.x));
+      const y = Math.min(size.height - 1, Math.round(plan.source.y));
+      const picture = image
+        .crop({
+          x,
+          y,
+          width: Math.max(1, Math.min(size.width - x, Math.round(plan.source.width))),
+          height: Math.max(1, Math.min(size.height - y, Math.round(plan.source.height))),
+        })
+        .resize({ ...plan.output, quality: "better" });
+      return {
+        data: await this.#encode(cdp, picture, format, quality),
+        ...(crop.right || crop.bottom
+          ? {
+              cropped: {
+                page: {
+                  height: Math.round(layout.height / pageScale),
+                  width: Math.round(layout.width / pageScale),
+                },
+                visible,
+              },
+            }
+          : {}),
+      };
+    } finally {
+      release?.();
+    }
+  }
+
+  /** A world page scripts and agents never reach. */
+  async #inFrameWorld(cdp: CdpSession, expression: string): Promise<unknown> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        this.#frameWorld ??= z.object({ executionContextId: z.number().int() }).parse(
+          await cdp.send("Page.createIsolatedWorld", {
+            frameId: await this.targetId(),
+            worldName: "opensteer-frame",
+          }),
+        ).executionContextId;
+        const { exceptionDetails, result } = z
+          .object({
+            exceptionDetails: z.unknown().optional(),
+            result: z.object({ value: z.unknown().optional() }),
+          })
+          .parse(
+            await cdp.send("Runtime.evaluate", {
+              awaitPromise: true,
+              contextId: this.#frameWorld,
+              expression,
+              returnByValue: true,
+            }),
+          );
+        if (exceptionDetails) throw new Error("The page could not run a capture step.");
+        return result.value;
+      } catch (error) {
+        // A navigation takes the world with it.
+        this.#frameWorld = null;
+        if (attempt > 0) throw error;
+      }
+    }
+  }
+
+  /** `capturePage` copies the last frame drawn, which can predate the page's latest change. */
+  async #drawnFrame(cdp: CdpSession): Promise<void> {
+    const frames =
+      "new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))";
+    // A page that draws nothing has nothing newer to show.
+    await withTimeout(this.#inFrameWorld(cdp, frames), 1_000, {
+      timeoutError: () => new Error("No frame."),
+    }).catch(() => undefined);
+  }
+
+  async #surfaceImage(): Promise<NativeImage> {
+    const copy = () => this.#webContents.capturePage(undefined, { stayHidden: true });
+    // Chromium fails one copy while a navigation swaps the surface.
+    const image = await copy().catch(copy);
+    if (image.isEmpty()) throw new Error("The page has no picture yet.");
+    return image;
+  }
+
+  async #encode(
+    cdp: CdpSession,
+    image: NativeImage,
+    format: ViewportCaptureRequest["format"],
+    quality: number | undefined,
+  ): Promise<string> {
+    if (format === "jpeg") return image.toJPEG(quality ?? 80).toString("base64");
+    const data = image.toPNG().toString("base64");
+    if (format === "png") return data;
+    const size = image.getSize();
+    const plan = { output: size, source: { x: 0, y: 0, ...size } };
+    // nativeImage has no WebP encoder; the page's own does.
+    return z.string().parse(
+      await this.#inFrameWorld(
+        cdp,
+        viewportImageScript(data, plan, {
+          format,
+          ...(quality === undefined ? {} : { quality }),
+        }),
+      ),
+    );
+  }
+
   loadInitialUrl(url: string): Promise<void> {
     if (!isAllowedBrowserNavigation(url)) {
       return Promise.reject(new Error("Electron browser navigation scheme is not allowed."));
@@ -2013,10 +2148,6 @@ class ElectronDebuggerHub {
     // A first-document dialog can hold Runtime.enable or Page.enable. Its
     // answer releases those waits, so it must reach the browser ahead of them.
     if (method === "Page.handleJavaScriptDialog") return this.#dispatch(method, parameters);
-    if (method === "Page.captureScreenshot") {
-      const release = this.retainRendering(channel);
-      return this.#command(method, parameters).finally(release);
-    }
     if (
       method === "Emulation.setDeviceMetricsOverride" &&
       typeof parameters?.deviceScaleFactor === "number" &&
