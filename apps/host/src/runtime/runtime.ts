@@ -1330,7 +1330,9 @@ export async function createHostRuntime(
       }
       return threadStateDrain;
     };
+    let observeIntegrationInput: ((event: AgentEvent) => void) | undefined;
     const publishWorkspaceEvent = (event: AgentEvent): void => {
+      observeIntegrationInput?.(event);
       if (event.type === "thread.listed" || event.type === "assignment.updated")
         browser.invalidatePlaceAuthority(
           event.workspaceId,
@@ -1367,7 +1369,23 @@ export async function createHostRuntime(
     };
     await browser.initialize();
     await passwordSignIns.sweepAfterRestart();
+    const longRequestHold = async (runId: RunId): Promise<boolean> => {
+      const run = await database
+        .selectFrom("runs")
+        .innerJoin("harnessInstances", "harnessInstances.id", "runs.harnessInstanceId")
+        .select(["runs.environmentId", "harnessInstances.driverKind"])
+        .where("runs.id", "=", runId)
+        .executeTakeFirst();
+      return (
+        !!run &&
+        requiredService(runnerRegistry, "Runner registry").supportsLongRequestHold(
+          run.environmentId,
+          run.driverKind,
+        )
+      );
+    };
     const integrationPlatform = new IntegrationPlatformService({
+      longRequestHold: (run) => longRequestHold(run.runId),
       personal: config.workspace.shape.kind === "personal",
       adapters: integrationAdapters,
       secretVault: integrationVault,
@@ -1451,6 +1469,8 @@ export async function createHostRuntime(
       ...(options.integrationFetch ? { publicFetch: options.integrationFetch } : {}),
       store: integrationPlatformStore,
     });
+    observeIntegrationInput = (event) => integrationPlatform.inputRequests.observe(event);
+    await integrationPlatform.inputRequests.recover();
     for (const event of await integrationPlatformStore.computerOperations.finalize())
       publishWorkspaceEvent(event);
     const integrationDashboard = new IntegrationDashboardService({
@@ -2365,21 +2385,7 @@ export async function createHostRuntime(
         },
         onError: (error) => app.log.error({ err: error }, "A Request hold could not read"),
       }),
-      longRequestHold: async (caller) => {
-        const run = await database
-          .selectFrom("runs")
-          .innerJoin("harnessInstances", "harnessInstances.id", "runs.harnessInstanceId")
-          .select(["runs.environmentId", "harnessInstances.driverKind"])
-          .where("runs.id", "=", caller.claims.runId)
-          .executeTakeFirst();
-        return (
-          !!run &&
-          requiredService(runnerRegistry, "Runner registry").supportsLongRequestHold(
-            run.environmentId,
-            run.driverKind,
-          )
-        );
-      },
+      longRequestHold: (caller) => longRequestHold(caller.claims.runId),
       publicUrl: config.runtimeOrigin,
       realtime,
       onToolError: (error, tool) => app.log.error({ err: error, tool }, "Agent tool failed"),

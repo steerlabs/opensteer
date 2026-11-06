@@ -167,6 +167,7 @@ import type { RunnerRunFileResult } from "@opensteer/protocol";
 import type { RunnerRegistry } from "@opensteer/orchestration";
 import { ComputerMcpTransport } from "./computer-mcp-transport.js";
 import { LocalMcpSecrets } from "./local-mcp-secrets.js";
+import { IntegrationInput, integrationInputTimeoutMs } from "./integration-input.js";
 import {
   ComputerUseError,
   computerUseDefinitionId,
@@ -385,6 +386,7 @@ export class IntegrationPlatformService {
   readonly #mcpImageContent: (context: EngineCapabilityQuery) => Promise<boolean>;
   /** Who may use which app on which Mac; this service only dispatches the calls. */
   readonly computerAppApprovals: ComputerAppApprovalService;
+  readonly inputRequests: IntegrationInput;
 
   constructor(options: {
     readonly personal?: boolean;
@@ -429,6 +431,7 @@ export class IntegrationPlatformService {
       "clock" | "wait"
     >;
     readonly mcpImageContent?: (context: EngineCapabilityQuery) => Promise<boolean>;
+    readonly longRequestHold?: (run: RunCapabilityClaims<string>) => Promise<boolean>;
     readonly definitions?: readonly IntegrationDefinition[];
     readonly mcpOauth: Pick<McpOAuthService, "providerFor">;
     readonly onWorkspaceEvent: (event: AgentEvent) => void;
@@ -479,6 +482,11 @@ export class IntegrationPlatformService {
     // Runner's unstated `steering` is treated as unsupported.
     this.#mcpImageContent = options.mcpImageContent ?? (async () => false);
     this.#store = options.store;
+    this.inputRequests = new IntegrationInput({
+      requests: options.store.requests,
+      longRequestHold: options.longRequestHold ?? (async () => false),
+      publish: (events) => this.#publishRequestEvents(events),
+    });
     this.#computerToolEnabled = options.computerToolEnabled ?? (() => false);
     this.#computerUseVersion = options.computerUseVersion ?? (() => undefined);
     this.#runFiles = options.runFiles;
@@ -2377,7 +2385,7 @@ export class IntegrationPlatformService {
       >;
     }
     if (callable.server.transport.type === "runner") {
-      return this.#callComputerServerTool(callable, args, signal);
+      return this.#callComputerServerTool(callable, args, caller, signal);
     }
     let upstream: UpstreamClient | undefined;
     try {
@@ -2458,39 +2466,47 @@ export class IntegrationPlatformService {
   async #callComputerServerTool(
     callable: CallableIntegrationTool,
     args: Readonly<Record<string, unknown>>,
+    caller: ToolCaller,
     signal?: AbortSignal,
   ): Promise<Awaited<ReturnType<Client["callTool"]>>> {
     const server = await this.#store.localMcp.get(callable.server.id);
+    let responseRedactor = createCredentialResponseRedactor([]);
     const refusal = (text: string) =>
-      sanitizeToolResult({ content: [{ text, type: "text" as const }], isError: true }, null);
+      sanitizeToolResult(
+        { content: [{ text, type: "text" as const }], isError: true },
+        responseRedactor,
+      );
     let upstream: UpstreamClient;
     try {
       upstream = await this.#client(callable);
     } catch (error) {
       return refusal(await this.#computerServerRefusal(callable, server, error));
     }
+    const call = this.inputRequests.start(upstream.client, callable, caller, signal);
     try {
       const result = await upstream.client.callTool(
         { arguments: { ...args }, name: callable.tool.name },
         undefined,
         {
-          maxTotalTimeout: toolCallTimeoutMs,
-          ...(signal ? { signal } : {}),
-          timeout: toolCallTimeoutMs,
+          maxTotalTimeout: integrationInputTimeoutMs,
+          signal: call.signal,
+          timeout: integrationInputTimeoutMs,
         },
       );
-      return sanitizeToolResult(result, null);
+      return sanitizeToolResult(result, call.redactor());
     } catch (error) {
+      responseRedactor = call.redactor();
       if (answeredMcpError(error)) {
         // The server answered, with an error: nothing about it is uncertain.
         return refusal(
-          `${callable.installation.title} could not complete ${callable.tool.title}: ${error.message}`.slice(
-            0,
-            2_000,
-          ),
+          responseRedactor
+            .redactText(
+              `${callable.installation.title} could not complete ${callable.tool.title}: ${error.message}`,
+            )
+            .slice(0, 2_000),
         );
       }
-      if (!signal?.aborted) upstream.letGo();
+      if (call.timedOut || !call.signal.aborted) upstream.letGo();
       const computer = server?.runnerName ?? "Its computer";
       const closed = upstream.computer?.closeError ?? null;
       if (integrationToolEffect(callable.tool.annotations) === "write") {
@@ -2505,6 +2521,8 @@ export class IntegrationPlatformService {
           ? `${callable.installation.title}'s answer was too large to carry from ${computer}; ask for less.`
           : `${computer} did not answer. Try again.`,
       );
+    } finally {
+      await this.inputRequests.finish(upstream.client, call);
     }
   }
 
@@ -3223,6 +3241,7 @@ export class IntegrationPlatformService {
   }
 
   async endComputerRun(runId: RunId): Promise<void> {
+    this.inputRequests.endRun(runId);
     for (const [key, caller] of this.#replCallers)
       if (caller.run?.runId === runId) {
         this.#replCallers.delete(key);
@@ -3245,6 +3264,7 @@ export class IntegrationPlatformService {
   }
 
   endComputerGeneration(runId: RunId, generation: number): void {
+    this.inputRequests.endRun(runId, generation);
     this.#replCallers.delete(`${runId}:${generation}`);
     this.#replTargets.delete(`${runId}:${generation}`);
     this.computerRepl.endGeneration(runId, generation);
@@ -3459,6 +3479,7 @@ export class IntegrationPlatformService {
   }
 
   async close(): Promise<void> {
+    await this.inputRequests.close();
     await this.computerRepl.close();
     await Promise.allSettled(
       [...this.#computerOperationSettlements.values()].map((record) => record.done),
@@ -3645,7 +3666,11 @@ export class IntegrationPlatformService {
     signal?: AbortSignal,
   ): Promise<Client> {
     const { transport } = server;
-    const client = new Client({ name: "opensteer-integration-host", version: "1.0.0" });
+    const client = new Client(
+      { name: "opensteer-integration-host", version: "1.0.0" },
+      transport.type === "runner" ? { capabilities: { elicitation: { form: {} } } } : {},
+    );
+    if (transport.type === "runner") this.inputRequests.register(client);
     let sdkTransport: Transport;
     let computer: ComputerMcpTransport | null = null;
     if (transport.type === "adapter") {
@@ -3924,7 +3949,42 @@ function sanitizeToolResult<T>(result: T, responseRedactor: CredentialResponseRe
   if (Buffer.byteLength(serialized, "utf8") > maximumToolResultBytes) {
     throw refused("conflict", `Integration result exceeds ${maximumToolResultBytes} bytes`);
   }
-  return responseRedactor ? (JSON.parse(responseRedactor.redactText(serialized)) as T) : result;
+  if (!responseRedactor) return result;
+  // Secret numbers and booleans can be JSON scalars; preserve the MCP envelope.
+  const redact = (value: unknown, protocol = false): unknown => {
+    if (typeof value === "string") return responseRedactor.redactText(value);
+    if (typeof value === "number" || typeof value === "boolean") {
+      const text = String(value);
+      const redacted = responseRedactor.redactText(text);
+      return redacted === text ? value : redacted;
+    }
+    if (Array.isArray(value)) return value.map((entry) => redact(entry));
+    if (value && typeof value === "object")
+      return Object.fromEntries(
+        Object.entries(value).map(([key, entry]) => [
+          protocol &&
+          [
+            "content",
+            "structuredContent",
+            "isError",
+            "type",
+            "text",
+            "data",
+            "mimeType",
+            "_meta",
+          ].includes(key)
+            ? key
+            : responseRedactor.redactText(key),
+          protocol && (key === "type" || key === "isError")
+            ? entry
+            : protocol && key === "content" && Array.isArray(entry)
+              ? entry.map((block) => redact(block, true))
+              : redact(entry),
+        ]),
+      );
+    return value;
+  };
+  return redact(JSON.parse(serialized), true) as T;
 }
 
 function sanitizeAdapterError(
