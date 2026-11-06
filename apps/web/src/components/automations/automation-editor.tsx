@@ -18,7 +18,6 @@ import { LoadingRows } from "../loading-rows.js";
 import { PageHeader, PageTopbar } from "../page-header.js";
 import { actionErrorMessage, automationPath } from "../../ui-utils.js";
 import { describeRepeating } from "@opensteer/client/host";
-import type { CreatedWebhook } from "./automation-detail.js";
 import { AreaLink, useAreaNavigate } from "../workspace/area-link.js";
 
 interface Draft {
@@ -35,18 +34,16 @@ interface Draft {
 }
 
 /**
- * Routed page for writing an automation's program by hand: a new one at
- * `/automations/new`, an existing one at `/automations/:triggerId/edit`.
- * Most people never come here; they ask in Chat.
+ * Routed page for changing an automation's program by hand, at
+ * `/automations/:triggerId/edit`. Most people never come here; they ask in Chat.
  */
 export function AutomationEditorPage() {
-  const { triggerId } = useParams();
+  const { triggerId = "" } = useParams();
   const { hostClient, openMobileNavigation } = useShell();
   const [editing, setEditing] = useState<TriggerDetail | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!triggerId) return;
     let current = true;
     void hostClient.rpc["triggers.get"]({ triggerId })
       .then((result) => {
@@ -60,40 +57,24 @@ export function AutomationEditorPage() {
     };
   }, [hostClient, triggerId]);
 
-  const back = triggerId ? (
+  const back = (
     <AreaLink className="page__back" to={automationPath(triggerId)}>
       <Icon name="arrow-left" />
       {editing?.trigger.name ?? "Automation"}
     </AreaLink>
-  ) : (
-    <AreaLink className="page__back" to="/automations">
-      <Icon name="arrow-left" />
-      Automations
-    </AreaLink>
   );
   return (
     <div className="page">
-      <PageTopbar
-        onOpenNavigation={openMobileNavigation}
-        title={triggerId ? "Edit code" : "New automation"}
-      />
+      <PageTopbar onOpenNavigation={openMobileNavigation} title="Edit code" />
       <div className="page__inner">
-        <PageHeader
-          back={back}
-          description={
-            triggerId
-              ? "Changes apply from its next run."
-              : "Choose when it runs and the conversation it works in, then write the program it runs."
-          }
-          title={triggerId ? "Edit code" : "New automation"}
-        />
+        <PageHeader back={back} description="Changes apply from its next run." title="Edit code" />
         {loadError ? (
           <p aria-live="assertive" className="notice notice--error" role="alert">
             <Icon name="alert-circle" />
             <span>{loadError}</span>
           </p>
         ) : null}
-        {triggerId && !editing && !loadError ? (
+        {!editing && !loadError ? (
           <div className="automations-list">
             <LoadingRows label="Loading automation" />
           </div>
@@ -107,21 +88,18 @@ export function AutomationEditorPage() {
         {editing?.trigger.status === "archived" ? (
           <p className="card__empty">This automation was deleted, so it can’t be changed.</p>
         ) : null}
-        {!triggerId ||
-        (editing && editing.trigger.systemRole == null && editing.trigger.status !== "archived") ? (
-          <EditorForm editing={editing} key={editing?.revision.id ?? "new"} />
+        {editing && editing.trigger.systemRole == null && editing.trigger.status !== "archived" ? (
+          <EditorForm editing={editing} key={editing.revision.id} />
         ) : null}
       </div>
     </div>
   );
 }
 
-function EditorForm({ editing }: { readonly editing: TriggerDetail | null }) {
+function EditorForm({ editing }: { readonly editing: TriggerDetail }) {
   const { hostClient, snapshot } = useShell();
   const navigate = useAreaNavigate();
-  const [draft, setDraft] = useState<Draft>(() =>
-    editing ? draftFrom(editing) : newDraft(snapshot.homeThreadId ?? snapshot.threads[0]?.id ?? ""),
-  );
+  const [draft, setDraft] = useState<Draft>(() => draftFrom(editing));
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const set = <Key extends keyof Draft>(key: Key, value: Draft[Key]) =>
@@ -137,41 +115,25 @@ function EditorForm({ editing }: { readonly editing: TriggerDetail | null }) {
         source: draft.source,
         toolContractVersion: draft.toolContractVersion,
       };
-      const source = sourceFrom(draft, editing);
-      if (editing) {
-        await hostClient.dispatch({
-          idempotencyKey: mutationIdempotencyKey(`trigger-update:${editing.trigger.id}`),
-          input: {
-            expectedRevisionId: editing.revision.id,
-            name: draft.name.trim(),
-            program,
-            source,
-          },
-          triggerId: editing.trigger.id,
-          type: "trigger.update",
-        });
-        void navigate(automationPath(editing.trigger.id));
-        return;
-      }
-      const created = await hostClient.dispatch({
-        idempotencyKey: mutationIdempotencyKey("trigger-create"),
-        input: { anchorThreadId: draft.anchorThreadId, name: draft.name.trim(), program, source },
-        type: "trigger.create",
+      await hostClient.dispatch({
+        idempotencyKey: mutationIdempotencyKey(`trigger-update:${editing.trigger.id}`),
+        input: {
+          expectedRevisionId: editing.revision.id,
+          name: draft.name.trim(),
+          program,
+          source: sourceFrom(draft, editing),
+        },
+        triggerId: editing.trigger.id,
+        type: "trigger.update",
       });
-      if (created.type !== "trigger.create") throw new Error("Automation command mismatch.");
-      const webhook: CreatedWebhook | undefined = created.webhook
-        ? { ...created.webhook, triggerId: created.trigger.id }
-        : undefined;
-      void navigate(automationPath(created.trigger.id), webhook ? { state: { webhook } } : {});
+      void navigate(automationPath(editing.trigger.id));
     } catch (reason) {
       setError(actionErrorMessage(reason));
       setPending(false);
     }
   };
 
-  const conversations = editing
-    ? snapshot.threads.filter(({ id }) => id === editing.trigger.anchorThreadId)
-    : snapshot.threads;
+  const conversations = snapshot.threads.filter(({ id }) => id === editing.trigger.anchorThreadId);
   return (
     <form className="section" onSubmit={(event) => void save(event)}>
       <div className="card">
@@ -189,14 +151,8 @@ function EditorForm({ editing }: { readonly editing: TriggerDetail | null }) {
           </label>
           <label className="field">
             <span className="field__label">Conversation</span>
-            <select
-              className="select-input"
-              disabled={Boolean(editing)}
-              onChange={(event) => set("anchorThreadId", event.target.value)}
-              required
-              value={draft.anchorThreadId}
-            >
-              {editing && conversations.length === 0 ? (
+            <select className="select-input" disabled value={draft.anchorThreadId}>
+              {conversations.length === 0 ? (
                 <option value={editing.trigger.anchorThreadId}>{editing.anchorThreadTitle}</option>
               ) : null}
               {conversations.map((thread) => (
@@ -211,12 +167,7 @@ function EditorForm({ editing }: { readonly editing: TriggerDetail | null }) {
           </label>
           <label className="field">
             <span className="field__label">Runs</span>
-            <select
-              className="select-input"
-              disabled={Boolean(editing)}
-              onChange={(event) => set("kind", event.target.value as Draft["kind"])}
-              value={draft.kind}
-            >
+            <select className="select-input" disabled value={draft.kind}>
               <option value="schedule">On a schedule</option>
               <option value="webhook">When its webhook is called</option>
               <option value="watch">Continuously, watching for changes</option>
@@ -224,11 +175,7 @@ function EditorForm({ editing }: { readonly editing: TriggerDetail | null }) {
           </label>
           {draft.kind === "schedule" ? (
             <ScheduleFields draft={draft} set={set} />
-          ) : draft.kind === "webhook" ? (
-            <p className="field__hint">
-              Its address and secret are shown once, when you create it.
-            </p>
-          ) : (
+          ) : draft.kind === "webhook" ? null : (
             <p className="field__hint">
               The program keeps running on the conversation’s computer and must not return.
             </p>
@@ -267,18 +214,11 @@ function EditorForm({ editing }: { readonly editing: TriggerDetail | null }) {
         </p>
       ) : null}
       <div className="form-actions">
-        <AreaLink
-          className="btn"
-          to={editing ? automationPath(editing.trigger.id) : "/automations"}
-        >
+        <AreaLink className="btn" to={automationPath(editing.trigger.id)}>
           Cancel
         </AreaLink>
-        <button
-          className="btn btn--primary"
-          disabled={pending || draft.anchorThreadId === ""}
-          type="submit"
-        >
-          {pending ? "Saving…" : editing ? "Save changes" : "Create automation"}
+        <button className="btn btn--primary" disabled={pending} type="submit">
+          {pending ? "Saving…" : "Save changes"}
         </button>
       </div>
     </form>
@@ -367,12 +307,12 @@ function conversationLabel(
   return workspace ? `${name} (${workspace})` : name;
 }
 
-function sourceFrom(draft: Draft, editing: TriggerDetail | null): TriggerSource {
+function sourceFrom(draft: Draft, editing: TriggerDetail): TriggerSource {
   if (draft.kind === "webhook") return { kind: "webhook" };
   if (draft.kind === "watch") return { kind: "watch" };
   // A schedule's payload is not editable here; editing keeps what it carried.
   const previous =
-    editing?.revision.source.kind === "schedule" ? editing.revision.source.schedule : null;
+    editing.revision.source.kind === "schedule" ? editing.revision.source.schedule : null;
   const payload = previous?.payload === undefined ? {} : { payload: previous.payload };
   if (draft.scheduleKind === "at") {
     return {
@@ -405,27 +345,6 @@ function draftFrom(detail: TriggerDetail): Draft {
     source: detail.revision.program.source,
     timezone: schedule?.kind === "cron" ? schedule.timezone : browserTimeZone(),
     toolContractVersion: detail.revision.program.toolContractVersion,
-  };
-}
-
-function newDraft(anchorThreadId: string): Draft {
-  return {
-    anchorThreadId,
-    at: defaultAt(),
-    expression: "0 9 * * *",
-    kind: "schedule",
-    language: "typescript",
-    name: "",
-    scheduleKind: "at",
-    source: `export default async function ({ event, opensteer }) {
-  await opensteer.callTool("thread_message", {
-    delivery: "queue",
-    message: "It's time.",
-    threadId: event.trigger.anchorThreadId,
-  });
-}`,
-    timezone: browserTimeZone(),
-    toolContractVersion: 3,
   };
 }
 

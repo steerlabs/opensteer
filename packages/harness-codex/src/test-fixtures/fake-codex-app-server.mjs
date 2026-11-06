@@ -697,6 +697,11 @@ function handleClientMethod(message) {
       send({ id: message.id, result: {} });
       if (scenario !== "voice-no-answer") {
         send({ method: "thread/realtime/sdp", params: { threadId, sdp: "fake-answer" } });
+        for (const role of ["user", "assistant"])
+          send({
+            method: "thread/realtime/transcript/done",
+            params: { threadId, role, text: ` ${role} words ` },
+          });
         if (scenario === "voice-run") {
           for (const [id, text, status] of [
             ["v1", "first answer", "completed"],

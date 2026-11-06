@@ -1,7 +1,9 @@
 // @vitest-environment happy-dom
 import {
+  automationName,
   HostClientRequestError,
   scheduleList,
+  sectionAutomations,
   unwrapRpcResult,
   type HostClient,
   type HostSnapshot,
@@ -112,6 +114,7 @@ vi.mock("react-native", () => {
 vi.mock("@react-navigation/native", () => ({
   StackActions: {
     popTo: (name: string, params: object) => ({ payload: { name, params }, type: "POP_TO" }),
+    popToTop: () => ({ type: "POP_TO_TOP" }),
     push: (name: string, params: object) => ({ payload: { name, params }, type: "PUSH" }),
   },
   useIsFocused: () => harness.focused,
@@ -122,7 +125,10 @@ vi.mock("@react-navigation/native", () => ({
   }),
 }));
 vi.mock("../ui/foreground.js", () => ({ useAppForeground: () => harness.foreground }));
-vi.mock("../navigation-header.js", () => ({ useSidebarMenu: () => undefined }));
+vi.mock("../navigation-header.js", () => ({
+  headerActions: (actions: object) => actions,
+  useSidebarMenu: () => undefined,
+}));
 vi.mock("./deployment-gate.js", () => ({
   DeploymentGate: () => <p>No Host</p>,
   useAttachedHost: () => harness.host,
@@ -276,27 +282,32 @@ function holdNextDispatch(f: ReturnType<typeof host>): () => void {
 }
 
 describe("Schedules", () => {
-  it("lists what runs next in the Host's order, then what is paused and why", async () => {
+  it("groups the list as the web does, each group in its own order", async () => {
     const f = host();
     const screen = listScreen();
-    await shown(screen, "Next up", "the list never loaded");
+    await shown(screen, "Morning email summary", "the list never loaded");
+    const expected = sectionAutomations(
+      scheduleList(await f.summaries(), f.snapshot()),
+      Date.now(),
+    );
     const sections = [...screen.querySelectorAll("section")];
-    expect(sections.map((section) => section.dataset["section"])).toEqual(["Next up", "Paused"]);
-    const names = (section: Element) =>
-      [...section.querySelectorAll("button")].map(
-        (row) => row.getAttribute("aria-label")!.split(". ")[0],
-      );
-    const expected = scheduleList(await f.summaries(), f.snapshot());
-    expect(names(sections[0]!)).toEqual(
-      expected.filter(({ status }) => status === "active").map(({ name }) => name),
+    expect(sections.map((section) => section.dataset["section"])).toEqual(
+      expected.map(({ title }) => title),
     );
-    expect(names(sections[1]!)).toEqual(
-      expected.filter(({ status }) => status === "paused").map(({ name }) => name),
+    expect(expected.map(({ id }) => id)).toContain("attention");
+    sections.forEach((section, index) =>
+      expect(
+        [...section.querySelectorAll("button")].map(
+          (row) => row.getAttribute("aria-label")!.split(". ")[0],
+        ),
+      ).toEqual(expected[index]!.items.map(({ item }) => automationName(item))),
     );
-    // A schedule Opensteer paused says why, where the next run would be.
-    const watcher = expected.find(({ name }) => name === "Inbox watcher")!;
+    // A schedule Opensteer paused says why, in place of its next run.
+    const watcher = expected
+      .flatMap(({ items }) => items)
+      .find(({ item }) => item.name === "Inbox watcher")!;
     expect(button(screen, /^Inbox watcher\./).getAttribute("aria-label")).toContain(
-      watcher.pauseReason!,
+      watcher.item.pauseReason!,
     );
     expect(button(screen, /^Morning email summary\./).getAttribute("aria-label")).toMatch(/Next /);
   });
@@ -315,7 +326,7 @@ describe("Schedules", () => {
       },
     });
     const screen = listScreen();
-    await shown(screen, "Showing the first 100 schedules.", "the cap warning was missing");
+    await shown(screen, "Showing the first 100 automations.", "the cap warning was missing");
   });
 
   it("opens the schedule a row names", async () => {
@@ -333,7 +344,7 @@ describe("Schedules", () => {
     const f = host();
     f.list.mockResolvedValue({ data: { triggers: [] }, ok: true });
     const screen = listScreen();
-    await shown(screen, "No schedules yet", "the empty list was never told");
+    await shown(screen, "No automations yet", "the empty list was never told");
   });
 
   it("tells an old Host apart from an empty list", async () => {
@@ -345,11 +356,11 @@ describe("Schedules", () => {
     await vi.waitFor(
       () =>
         expect(
-          screen.querySelector('[aria-label="Schedules aren’t available here"]'),
+          screen.querySelector('[aria-label="Automations aren’t available here"]'),
         ).not.toBeNull(),
       { timeout: 2000 },
     );
-    expect(screen.textContent).not.toContain("No schedules yet");
+    expect(screen.textContent).not.toContain("No automations yet");
     expect(screen.textContent).not.toContain("Try again");
   });
 
@@ -358,7 +369,7 @@ describe("Schedules", () => {
     f.list.mockRejectedValueOnce(new Error("The Host stopped answering."));
     const screen = listScreen();
     await shown(screen, "The Host stopped answering.", "the failure was never shown");
-    expect(screen.textContent).not.toContain("No schedules yet");
+    expect(screen.textContent).not.toContain("No automations yet");
     press(button(screen, "Try again"));
     await shown(screen, "Morning email summary", "Try again never read the list again");
     expect(f.list).toHaveBeenCalledTimes(2);
@@ -397,7 +408,7 @@ describe("Schedules", () => {
     f.emit({ user: { ...f.snapshot().user!, id: createId("user") } });
     expect(screen.textContent).not.toContain("Morning email summary");
     await act(async () => finish({ ok: true, data: { triggers: [] } }));
-    await shown(screen, "No schedules yet", "second reader's empty list never appeared");
+    await shown(screen, "No automations yet", "second reader's empty list never appeared");
   });
 
   it("reads nothing while another screen covers it", async () => {
@@ -407,7 +418,7 @@ describe("Schedules", () => {
     const screen = listScreen();
     detailScreen(summary.id);
     expect(f.list).not.toHaveBeenCalled();
-    expect(screen.textContent).not.toContain("No schedules yet");
+    expect(screen.textContent).not.toContain("No automations yet");
     expect(f.get).not.toHaveBeenCalled();
   });
 });
@@ -606,7 +617,8 @@ describe("One schedule", () => {
     press(button(screen, "Resume"));
     expect(button(screen, "Resume").getAttribute("aria-busy")).toBe("true");
     release();
-    await vi.waitFor(() => expect(button(screen, "Pause"), "never resumed").toBeDefined(), {
+    // Pause shows before the resume settles; Run now is enabled only once it has.
+    await vi.waitFor(() => expect(button(screen, "Pause").disabled, "never resumed").toBe(false), {
       timeout: 2000,
     });
 

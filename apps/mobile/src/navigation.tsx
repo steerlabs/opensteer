@@ -155,7 +155,7 @@ const RootStack = createNativeStackNavigator({
     // Everything set to run on its own, from the sidebar like Tabs.
     Schedules: {
       screen: SchedulesScreen,
-      options: { ...destinationOptions(), title: "Schedules" },
+      options: { ...destinationOptions(), title: "Automations" },
     },
     // One schedule, from Schedules or a thread's Around sheet. Its name is
     // the large title, set once it loads.

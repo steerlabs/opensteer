@@ -37,7 +37,14 @@ import { AsyncMutex } from "../async.js";
 import { BrowserRuntimeError, toBrowserRuntimeError } from "../errors.js";
 import type { HostRelayAuthenticator } from "../passkeys/host-relay.js";
 import { LatestFrameStream, type BrowserFrameSink } from "../stream/latest-frame-stream.js";
-import type { CdpSession, EngineClipboard } from "./backend.js";
+import {
+  pageViewport,
+  type BrowserPage,
+  type CdpSession,
+  type EngineClipboard,
+  type PageGeometry,
+} from "./backend.js";
+import type { ViewportCapture } from "./viewport-capture.js";
 import {
   ClipboardParts,
   engineClipboardCoordinator,
@@ -54,7 +61,7 @@ import { PageEditingObserver } from "./editing-observer.js";
 import type { HostSignIns } from "./host-sign-ins.js";
 import { BrowserInputLane } from "./input-lane.js";
 import { keyEventParameters } from "./key-codes.js";
-import { layoutMetricsSchema, screenshotDensity, visualViewportSchema } from "./layout-metrics.js";
+import { visualViewportMetricsSchema } from "./layout-metrics.js";
 import { ScreencastController } from "./screencast-controller.js";
 import type { ScriptTarget } from "./script-targets.js";
 import { stageFileMethod, type SessionFiles } from "./session-files.js";
@@ -154,13 +161,21 @@ const PointSchema = z.object({ x: z.number(), y: z.number() });
 
 /** How long closing waits for one step that Chrome may never answer. */
 const closeGraceMs = 2_000;
+/** A capture holds the page's geometry lock, so a renderer that stops answering must not keep it. */
+const screenshotTimeoutMs = 5_000;
 
-const screenshotClip = z.object({
-  x: z.number().finite(),
-  y: z.number().finite(),
-  width: z.number().positive(),
-  height: z.number().positive(),
-  scale: z.number().positive().default(1),
+const screenshotParameters = z.object({
+  clip: z
+    .object({
+      x: z.number().finite(),
+      y: z.number().finite(),
+      width: z.number().positive(),
+      height: z.number().positive(),
+      scale: z.number().positive(),
+    })
+    .optional(),
+  format: z.enum(["jpeg", "png", "webp"]).default("png"),
+  quality: z.number().int().min(0).max(100).optional(),
 });
 
 /**
@@ -2597,9 +2612,7 @@ export class BrowserController {
             ? await this.answerAgentDialog(command, pageSurfaceId, () =>
                 agentActivity(pageTargetId),
               )
-            : pageSurfaceId &&
-                command.method === "Page.captureScreenshot" &&
-                command.parameters?.captureBeyondViewport !== true
+            : pageTargetId && command.method === "Page.captureScreenshot"
               ? await this.captureAgentViewport(command, pageSurfaceId)
               : await this.cdpRouter.send(
                   this.claims.sessionId,
@@ -2744,30 +2757,90 @@ export class BrowserController {
     return run;
   }
 
-  private captureAgentViewport(command: CdpCommand, surfaceId: BrowserSurfaceId): Promise<unknown> {
-    this.cdpRouter.admitPageCommand(this.claims.sessionId, command);
-    return this.ledger.withGeometry(surfaceId, async (cdp, geometry) => {
-      const metrics = layoutMetricsSchema.parse(await cdp.send("Page.getLayoutMetrics"));
-      const dpr = screenshotDensity(metrics, geometry?.agent);
-      const viewport = visualViewportSchema.parse(metrics.cssVisualViewport);
-      const clip = screenshotClip.parse(
-        command.parameters?.clip ?? {
-          x: Math.round(viewport.pageX),
-          y: Math.round(viewport.pageY),
-          width: Math.max(1, Math.round(viewport.clientWidth)),
-          height: Math.max(1, Math.round(viewport.clientHeight)),
-          scale: 1,
-        },
+  private captureAgentViewport(
+    command: CdpCommand,
+    surfaceId: BrowserSurfaceId | undefined,
+  ): Promise<unknown> {
+    const { captureBeyondViewport, fromSurface, ...parameters } = command.parameters ?? {};
+    if (captureBeyondViewport !== undefined && captureBeyondViewport !== false)
+      throw new BrowserRuntimeError(
+        "bad_message",
+        "Full-page capture would resize the page a person is watching. Scroll and capture each part, or read the page as text.",
       );
-      return this.cdpRouter.send(this.claims.sessionId, {
-        ...command,
-        parameters: {
-          ...command.parameters,
-          captureBeyondViewport: false,
-          clip: { ...clip, scale: clip.scale / dpr },
+    if (fromSurface !== undefined && fromSurface !== true)
+      throw new BrowserRuntimeError("bad_message", "A screenshot always comes from the surface.");
+    const admitted = { ...command, parameters };
+    const detached = this.cdpRouter.admitPageCommand(this.claims.sessionId, admitted);
+    if (!surfaceId) throw new BrowserRuntimeError("not_found", "The browser page closed.");
+    // Chromium's renderer answers neither metrics nor a capture under a dialog.
+    if (this.ledger.dialogOpen(surfaceId))
+      throw new BrowserRuntimeError(
+        "conflict",
+        "A JavaScript dialog is open on this page. Answer it with Page.handleJavaScriptDialog, then capture.",
+      );
+    const request = screenshotParameters.parse(parameters);
+    const page = this.ledger.binding(surfaceId)?.page;
+    if (!page) throw new BrowserRuntimeError("not_found", "The browser page closed.");
+    const stop = new AbortController();
+    const closed = () =>
+      stop.abort(new BrowserRuntimeError("not_found", "The browser page closed."));
+    page.onClose(closed);
+    const ended = AbortSignal.any([stop.signal, detached]);
+    // Bounded both queued and running: a capture holds the geometry lock, and a
+    // resize ahead of it can wait on a stopped renderer.
+    const bounded = <T>(work: Promise<T>) =>
+      withTimeout(work, screenshotTimeoutMs, {
+        signal: ended,
+        timeoutError: () => {
+          const late = new BrowserRuntimeError(
+            "conflict",
+            "The page did not answer a screenshot in time. It may be navigating or showing a dialog.",
+            { retryable: true },
+          );
+          stop.abort(late);
+          return late;
         },
       });
+    return bounded(
+      this.ledger.withGeometry(surfaceId, (cdp, geometry) => {
+        ended.throwIfAborted();
+        // Access may have changed while this waited, as `send` would recheck.
+        this.cdpRouter.admitPageCommand(this.claims.sessionId, admitted);
+        return bounded(this.lookAt(page, cdp, geometry, request));
+      }),
+    ).finally(() => page.offClose(closed));
+  }
+
+  private async lookAt(
+    page: BrowserPage,
+    cdp: CdpSession,
+    geometry: PageGeometry | null,
+    { clip, format, quality }: z.infer<typeof screenshotParameters>,
+  ): Promise<ViewportCapture> {
+    if (!geometry)
+      throw new BrowserRuntimeError("conflict", "The page has no size yet.", { retryable: true });
+    const viewport = async () => {
+      const { cssVisualViewport } = visualViewportMetricsSchema.parse(
+        await cdp.send("Page.getLayoutMetrics"),
+      );
+      return { ...cssVisualViewport, pageScale: cssVisualViewport.scale * cssVisualViewport.zoom };
+    };
+    const { pageScale, pageX, pageY } = await viewport();
+    const capture = await page.captureViewport({
+      format,
+      layout: pageViewport(geometry),
+      pageScale,
+      ...(quality === undefined ? {} : { quality }),
+      // CDP's clip is in document coordinates.
+      ...(clip ? { clip: { ...clip, x: clip.x - pageX, y: clip.y - pageY } } : {}),
     });
+    // Pixels from a document with another scale would put every click in the wrong place.
+    if ((await viewport()).pageScale !== pageScale)
+      throw new BrowserRuntimeError("conflict", "The page changed during the screenshot.", {
+        retryable: true,
+      });
+    this.cdpRouter.admitPageResult(capture);
+    return capture;
   }
 
   private async dispatchHostRead(

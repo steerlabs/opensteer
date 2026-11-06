@@ -7,6 +7,7 @@ import type {
   LocalProfileBinding,
 } from "@opensteer/protocol/browser";
 import type { PageSize } from "./surface-ledger.js";
+import type { ViewportCapture, ViewportCaptureRequest } from "./viewport-capture.js";
 
 export interface CdpSession extends CdpChannel {
   /** Keeps native compositing demanded across an atomic screencast restart. */
@@ -68,6 +69,15 @@ export interface BrowserPage {
    * apply the person's size as device emulation.
    */
   applyGeometry?(geometry: PageGeometry): Promise<void>;
+  /**
+   * One look at the page: an image whose pixel (x, y) is where an input at
+   * (x, y) lands. Looking never changes the page. An engine may demand
+   * rendering and transform the returned pixels, but must leave native bounds,
+   * layout, emulation, scroll, focus and selection alone. That rules out
+   * `Page.captureScreenshot` with a clip, or on a channel holding emulation:
+   * Chromium then resizes the view for the capture and a person watches it shrink.
+   */
+  captureViewport(request: ViewportCaptureRequest): Promise<ViewportCapture>;
   /** Native bounds share the ledger's serialization and held-input release barrier. */
   bindGeometry?(
     serialize: (operation: () => Promise<void>) => Promise<void>,

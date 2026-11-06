@@ -71,6 +71,7 @@ interface AttachedChannel {
   readonly contexts: ExecutionContextInventory;
   /** Rejects once the router ends the session, answering every command still waiting on it. */
   readonly ending: PromiseWithResolvers<never>;
+  readonly ended: AbortController;
   /** Settles once the router's own Runtime.enable has reported every context. */
   inventoried: Promise<void>;
   readonly physicalTargetId: string;
@@ -286,13 +287,24 @@ export class SessionCdpRouter {
   /**
    * Refuses exactly what `send` would refuse of an agent's command to one of
    * its attached pages, without sending it, for a command the caller applies
-   * to that page through a session of its own.
+   * to that page through a session of its own. The signal aborts when the
+   * agent's session ends, as `send` would then answer.
    */
-  admitPageCommand(sessionId: string, command: CdpCommand): void {
+  admitPageCommand(sessionId: string, command: CdpCommand): AbortSignal {
     this.#assertOpen();
     const state = this.#requireSession(sessionId);
     validateCommand(command, this.#limits.maxCommandBytes);
-    this.#admitAttachedCommand(state, command);
+    return this.#admitAttachedCommand(state, command).ended.signal;
+  }
+
+  /** Refuses exactly what `send` would refuse of a result the caller produced itself. */
+  admitPageResult(result: unknown): void {
+    if (serializedBytes(result) > this.#limits.maxResultBytes) {
+      throw new SessionCdpRouterError(
+        "too_large",
+        "CDP result exceeds the bounded agent transport. Query a narrower result in the page.",
+      );
+    }
   }
 
   /**
@@ -333,12 +345,7 @@ export class SessionCdpRouter {
       : command.sessionId
         ? await this.#sendAttachedCommand(state, command, beforeActivity)
         : await this.#backend.send(command.method, command.parameters);
-    if (serializedBytes(result) > this.#limits.maxResultBytes) {
-      throw new SessionCdpRouterError(
-        "too_large",
-        "CDP result exceeds the bounded agent transport. Query a narrower result in the page.",
-      );
-    }
+    this.admitPageResult(result);
     return result;
   }
 
@@ -438,6 +445,7 @@ export class SessionCdpRouter {
       channel,
       contexts: new ExecutionContextInventory(),
       ending: Promise.withResolvers<never>(),
+      ended: new AbortController(),
       inventoried: Promise.resolve(),
       physicalTargetId: targetId,
       removeListener: () => undefined,
@@ -680,9 +688,12 @@ export class SessionCdpRouter {
       state.channels.delete(attached.virtualSessionId);
     }
     attached.removeListener();
-    attached.ending.reject(
-      new SessionCdpRouterError("not_found", "The CDP session ended before the page answered."),
+    const ended = new SessionCdpRouterError(
+      "not_found",
+      "The CDP session ended before the page answered.",
     );
+    attached.ending.reject(ended);
+    attached.ended.abort(ended);
     void attached.channel.close().catch(() => undefined);
   }
 

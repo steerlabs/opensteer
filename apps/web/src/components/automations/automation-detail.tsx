@@ -6,7 +6,7 @@ import {
   useSyncExternalStore,
   type FormEvent,
 } from "react";
-import { useLocation, useParams } from "react-router";
+import { useParams } from "react-router";
 import {
   conversationName,
   mutationIdempotencyKey,
@@ -43,13 +43,6 @@ import {
 import { machineOf } from "./automations-page.js";
 import { AreaLink, useAreaNavigate } from "../workspace/area-link.js";
 
-/** What the editor hands the page after creating a webhook: shown once, never again. */
-export interface CreatedWebhook {
-  readonly secret: string;
-  readonly triggerId: string;
-  readonly url: string;
-}
-
 /** Routed page for one automation: what it does, when, how it has gone, and its controls. */
 export function AutomationDetailPage() {
   const { triggerId = "" } = useParams();
@@ -58,7 +51,6 @@ export function AutomationDetailPage() {
 
 function AutomationDetail({ triggerId }: { readonly triggerId: string }) {
   const { hostClient, openMobileNavigation, snapshot } = useShell();
-  const location = useLocation();
   const now = useMinuteClock();
   const resource = useMemo(
     () => schedulesClient(hostClient).detail(triggerId),
@@ -68,9 +60,6 @@ function AutomationDetail({ triggerId }: { readonly triggerId: string }) {
   const detail = state.data?.definition ?? null;
   const error = state.error;
   const missing = state.status === "error" && state.errorCode === "not_found";
-
-  const webhookState = location.state as { readonly webhook?: CreatedWebhook } | null;
-  const webhook = webhookState?.webhook?.triggerId === triggerId ? webhookState.webhook : null;
 
   return (
     <div className="page">
@@ -116,7 +105,6 @@ function AutomationDetail({ triggerId }: { readonly triggerId: string }) {
             homeThreadId={snapshot.homeThreadId}
             machine={machineOf(snapshot, detail.trigger.anchorThreadId)}
             now={now}
-            webhook={webhook}
           />
         ) : null}
       </div>
@@ -162,14 +150,12 @@ function AutomationView({
   homeThreadId,
   machine,
   now,
-  webhook,
 }: {
   readonly client: HostClient;
   readonly detail: TriggerDetail;
   readonly homeThreadId: string | null;
   readonly machine: string | null;
   readonly now: number;
-  readonly webhook: CreatedWebhook | null;
 }) {
   const navigate = useAreaNavigate();
   const toast = useToast();
@@ -312,7 +298,6 @@ function AutomationView({
           {trigger.status === "paused" ? trigger.pauseReason : trigger.waitingReason}
         </p>
       ) : null}
-      {webhook ? <WebhookReady webhook={webhook} /> : null}
 
       {problem && (!managed || worker || homeThreadId) ? (
         <ProblemNotice
@@ -929,47 +914,5 @@ function Advanced({
         ) : null}
       </div>
     </details>
-  );
-}
-
-function WebhookReady({ webhook }: { readonly webhook: CreatedWebhook }) {
-  return (
-    <section aria-labelledby="automation-webhook" className="automations-group">
-      <h2 className="automations-group__title" id="automation-webhook">
-        Webhook ready
-      </h2>
-      <div className="automations-list automation-webhook">
-        <p className="automations-list__empty">
-          Copy both now: the secret isn’t shown again. Send it as a Bearer token with each request.
-        </p>
-        <CopyRow label="Address" value={webhook.url} />
-        <CopyRow label="Secret" value={webhook.secret} />
-      </div>
-    </section>
-  );
-}
-
-function CopyRow({ label, value }: { readonly label: string; readonly value: string }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <div className="automation-copy">
-      <span className="automation-copy__label">{label}</span>
-      <div className="copy-row">
-        <code>{value}</code>
-        <button
-          aria-label={`Copy ${label}`}
-          className="icon-btn"
-          onClick={() => {
-            void navigator.clipboard.writeText(value).then(() => {
-              setCopied(true);
-              window.setTimeout(() => setCopied(false), 1_500);
-            });
-          }}
-          type="button"
-        >
-          <Icon name={copied ? "check" : "copy"} />
-        </button>
-      </div>
-    </div>
   );
 }

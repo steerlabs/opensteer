@@ -997,6 +997,7 @@ export function Composer({
       )}
       {/* Voice and dictation share the microphone: each steps aside for the other. */}
       {view.phase === "idle" ? voice : null}
+      {view.phase === "idle" ? microphone : null}
       {showStop ? (
         <StopButton
           disabled={stopping || disabled || readOnly}
@@ -1005,7 +1006,6 @@ export function Composer({
           returnFocusTo={textareaRef}
         />
       ) : null}
-      {view.phase === "idle" ? microphone : null}
       {showSend ? (
         <button
           aria-label={queues ? "Queue message" : sendLabel}

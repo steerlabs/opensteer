@@ -732,7 +732,7 @@ describe("agent CDP boundary", () => {
       ["Page.navigateToHistoryEntry", { entryId: 1 }],
       ["Page.getFrameTree"],
       ["Page.getLayoutMetrics"],
-      ["Page.captureScreenshot", { captureBeyondViewport: true, format: "png" }],
+      ["Page.captureScreenshot", { format: "png" }],
       ["Page.printToPDF", { printBackground: true }],
       ["Page.printToPDF", { transferMode: "ReturnAsBase64" }],
       ["Page.handleJavaScriptDialog", { accept: true }],
@@ -1858,7 +1858,7 @@ describe("agent CDP boundary", () => {
       ["Input.dispatchKeyEvent", { ...key, text: "a", type: "char" }],
       ["Input.dispatchKeyEvent", { ...key, type: "keyUp" }],
       ["Input.dispatchMouseEvent", { deltaX: 0, deltaY: -300, type: "mouseWheel", x: 1, y: 1 }],
-      ["Page.captureScreenshot", { captureBeyondViewport: false, format: "png" }],
+      ["Page.captureScreenshot", { format: "jpeg", quality: 60 }],
       [
         "Runtime.callFunctionOn",
         {

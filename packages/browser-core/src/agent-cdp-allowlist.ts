@@ -123,11 +123,10 @@ const methods: Readonly<Record<string, AgentCdpFields>> = {
   "Page.navigateToHistoryEntry": { entryId: integer },
   "Page.getFrameTree": {},
   "Page.getLayoutMetrics": {},
+  // Full-page and off-surface capture resize the page; the controller says why.
   "Page.captureScreenshot": {
-    captureBeyondViewport: optional(boolean),
     clip: optional(viewport),
     format: optional(oneOf("jpeg", "png", "webp")),
-    fromSurface: optional(boolean),
     optimizeForSpeed: optional(boolean),
     quality: optional(integer),
   },

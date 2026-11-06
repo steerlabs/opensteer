@@ -29,7 +29,7 @@ vi.mock("expo-haptics", () => ({
 }));
 vi.mock("react-native", () => ({
   Modal: ({ children, visible }: { children?: ReactNode; visible?: boolean }) =>
-    visible ? <div>{children}</div> : null,
+    visible ? <div data-modal="">{children}</div> : null,
   ScrollView: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   Platform: { OS: "ios", Version: "26" },
   AccessibilityInfo: { announceForAccessibility: vi.fn(async () => undefined) },
@@ -128,8 +128,21 @@ vi.mock("../ui/primitives.js", () => ({
   monoFontFamily: "monospace",
 }));
 vi.mock("../ui/sheet.js", () => ({
-  Sheet: ({ children, open }: { children?: ReactNode; open: boolean }) =>
-    open ? <div>{children}</div> : null,
+  Sheet: ({
+    children,
+    onClose,
+    open,
+  }: {
+    children?: ReactNode;
+    onClose: () => void;
+    open: boolean;
+  }) =>
+    open ? (
+      <div data-modal="">
+        <button onClick={onClose}>Close sheet</button>
+        {children}
+      </div>
+    ) : null,
 }));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
 vi.mock("./integration-connect-sheet.js", () => ({
@@ -165,26 +178,17 @@ describe("RequestCard computer owner approvals", () => {
       if (request.payload.kind !== "computer.app.access") throw new Error("Expected app request");
       request.payload.definitionId = definitionId;
       const dispatch = vi.fn(async (command: { type: string }) => ({ type: command.type }));
-      const review = vi.fn(async () => ({
-        ok: true,
-        data: {
-          request: {
-            id:
-              request.payload.kind === "computer.app.access" ? request.payload.setupRequestId : "",
-            definitionId,
-            kind: "app",
-            access: "read-write",
-            app: null,
-          },
-          app: null,
-        },
-      }));
+      const review = computerAppReview(request);
       await render(surface(request), dispatch, { review });
       expect(review).not.toHaveBeenCalled();
       await click("Review request");
       await click("Allow");
       if (definitionId === "macos-app") {
         expect(review).toHaveBeenCalledOnce();
+        // iOS shows one modal at a time, so the review must be in the open sheet.
+        const modals = document.querySelectorAll("[data-modal]");
+        expect(modals).toHaveLength(1);
+        expect(modals[0]?.textContent).toContain("Don't allow");
         await click("Allow");
         expect(dispatch).toHaveBeenCalledWith(
           expect.objectContaining({
@@ -201,9 +205,99 @@ describe("RequestCard computer owner approvals", () => {
           expect.objectContaining({ type: "integration.computer.setup.set" }),
         );
       }
+      expect(document.querySelector("[data-modal]")).toBeNull();
     },
   );
+
+  it("ends a Mac app review when its sheet closes, so Allow works again", async () => {
+    const request = computerAppRequest();
+    const dispatch = vi.fn(async (command: { type: string }) => ({ type: command.type }));
+    const review = computerAppReview(request);
+    await render(surface(request), dispatch, { review });
+    await click("Review request");
+    await click("Allow");
+    await click("Close sheet");
+    expect(document.querySelector("[data-modal]")).toBeNull();
+    await click("Review request");
+    await click("Allow");
+    expect(review).toHaveBeenCalledTimes(2);
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it("lets a review closed mid-answer reopen without sending a second answer", async () => {
+    const request = computerAppRequest();
+    let fail: ((error: Error) => void) | undefined;
+    const dispatch = vi.fn(
+      () =>
+        new Promise((_, reject) => {
+          fail = reject;
+        }),
+    );
+    const review = computerAppReview(request);
+    await render(surface(request), dispatch, { review });
+    await click("Review request");
+    await click("Allow");
+    await click("Allow");
+    await click("Close sheet");
+    await click("Review request");
+    await click("Allow");
+    expect(review).toHaveBeenCalledTimes(2);
+    expect(button("Allow").disabled).toBe(true);
+    await act(async () => fail?.(new Error("offline")));
+    await click("Allow");
+    expect(dispatch).toHaveBeenCalledTimes(2);
+  });
+
+  it("settles a reopened review when the answer sent before closing lands", async () => {
+    const request = computerAppRequest();
+    let land: ((value: { type: string }) => void) | undefined;
+    const dispatch = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          land = resolve;
+        }),
+    );
+    await render(surface(request), dispatch, { review: computerAppReview(request) });
+    await click("Review request");
+    await click("Allow");
+    await click("Allow");
+    await click("Close sheet");
+    await click("Review request");
+    await click("Allow");
+    await act(async () => land?.({ type: "integration.computer.setup.respond" }));
+    expect(document.querySelector("[data-modal]")).toBeNull();
+    expect(dispatch).toHaveBeenCalledOnce();
+  });
+
+  it("closes quietly while the review is still loading", async () => {
+    const request = computerAppRequest();
+    const review = vi.fn(
+      (_input: unknown, call?: { signal?: AbortSignal }) =>
+        new Promise((_, reject) => {
+          call?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+        }),
+    );
+    await render(surface(request), vi.fn(), { review });
+    await click("Review request");
+    await click("Allow");
+    await click("Close sheet");
+    expect(text()).not.toContain("Could not confirm your answer was sent.");
+    await click("Review request");
+    expect(button("Allow").disabled).toBe(false);
+  });
 });
+
+function computerAppReview(request: Request): ReturnType<typeof vi.fn> {
+  if (request.payload.kind !== "computer.app.access") throw new Error("Expected app request");
+  const { definitionId, setupRequestId } = request.payload;
+  return vi.fn(async () => ({
+    ok: true,
+    data: {
+      request: { id: setupRequestId, definitionId, kind: "app", access: "read-write", app: null },
+      app: null,
+    },
+  }));
+}
 
 describe("saved card consent", () => {
   it.each(["allow", "cancel", "settled"] as const)(

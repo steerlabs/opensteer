@@ -555,7 +555,6 @@ export function App({
               element={<SettingsRedirect from="/triggers" to="/automations" />}
             />
             <Route path="automations" element={<AutomationsPage />} />
-            <Route path="automations/new" element={<AutomationEditorPage />} />
             <Route path="automations/:triggerId" element={<AutomationDetailPage />} />
             <Route path="automations/:triggerId/edit" element={<AutomationEditorPage />} />
             <Route path="settings" element={<SettingsShell />}>

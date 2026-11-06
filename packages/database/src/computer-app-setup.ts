@@ -202,7 +202,7 @@ export function computerAppAccessPresentation(input: {
     };
   }
   return {
-    detail: `${input.reason} ${input.app.displayName} on ${input.runnerName} — ${allowed}. Approve it on that Mac; decline from anywhere.`,
+    detail: `${input.reason} ${input.app.displayName} on ${input.runnerName} — ${allowed}. Allow or decline from any Opensteer app.`,
     kind: "external",
     subject,
     title: `Wants to use ${input.app.displayName} on ${input.runnerName}`,

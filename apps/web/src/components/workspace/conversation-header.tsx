@@ -7,7 +7,6 @@ import {
   threadInDirectory,
 } from "@opensteer/client/host";
 import { TaskIconEditor } from "../task-icon-editor.js";
-import { VoiceMark } from "../voice.js";
 import { WorkspaceOrb } from "../workspace-orb.js";
 import { ThreadTitleEditor } from "../thread-title-editor.js";
 import { useHostSelector } from "@opensteer/client/react";
@@ -125,7 +124,7 @@ export function ConversationHeader({
           {home ? (
             <ChatOrb size={20} />
           ) : voice ? (
-            <VoiceMark />
+            <Icon className="voice-thread-mark" name="waveform" />
           ) : projectOrb ? (
             <WorkspaceOrb
               icon={project.icon}

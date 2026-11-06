@@ -165,6 +165,11 @@ describe("Codex app-server harness", () => {
         await vi.waitFor(() => expect(answer.promise).resolves.toBe("fake-answer"), {
           timeout: 2000,
         });
+        await vi.waitFor(() =>
+          expect(
+            events.flatMap((event) => (event.type === "voice.heard" ? [event.data.text] : [])),
+          ).toEqual(["user words"]),
+        );
         // A failed turn is spoken as such and leaves the call up.
         await vi.waitFor(
           () =>

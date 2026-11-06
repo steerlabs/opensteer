@@ -713,7 +713,9 @@ function assertTree(root: string, target: string): string[] {
       let resolved: string;
       try {
         resolved = realpathSync(filename);
-      } catch {
+      } catch (error) {
+        // An exported guest artifact keeps links to guest paths; removal only unlinks them.
+        if (isNodeError(error) && error.code === "ENOENT") continue;
         throw new Error(`unknown symlink target: ${filename}`);
       }
       if (!resolved.startsWith(path.resolve(root) + path.sep))

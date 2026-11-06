@@ -838,28 +838,28 @@ label.action-row input {
   height: 15px;
 }
 
-/* Stop is the one control that must read at a glance mid-run: the page's own
-   ink on a light disc, the inverse of everything around it. */
+/* Stop is Send's disc in the destructive red, as on mobile. The icon's square
+   is 11/24 of its box, so a 24px box draws it at mobile's 11px. */
 .composer__stop {
   --face-sheen: var(--sheen-accent);
-  --face-fill: var(--text);
-  --face-rim: color-mix(in srgb, var(--text), var(--bg) 22%);
+  --face-fill: var(--red);
+  --face-rim: color-mix(in srgb, var(--red), var(--ink-on-ember) 24%);
   --face-edge: var(--edge-accent);
-  color: var(--bg);
+  color: var(--ink-on-ember);
 }
 
 .composer__stop:hover:not(:disabled) {
-  --face-fill: var(--text-on-color);
+  --face-fill: color-mix(in srgb, var(--red), white 10%);
   transform: scale(1.05);
 }
 
 .composer__stop:disabled {
-  opacity: 0.45;
+  opacity: 0.4;
 }
 
 .composer__stop svg {
-  width: 13px;
-  height: 13px;
+  width: 24px;
+  height: 24px;
   fill: currentColor;
   stroke: none;
 }
@@ -887,11 +887,12 @@ label.action-row input {
   min-width: 0;
 }
 
-/* In the composer's row they neither wrap nor shrink: FoldToFit folds their
-   words instead, and it measures overflow at the row's edge. */
-.composer__settings .exec-controls {
+/* In a row that fits itself they neither wrap nor shrink: FoldToFit folds
+   their words instead, and it measures overflow at the row's edge. */
+[data-fold-row] > .exec-controls {
   flex: none;
   flex-wrap: nowrap;
+  margin-left: auto;
 }
 
 /* A pill keeps its whole width: a squeezed pill is how names became "G…".
@@ -2243,9 +2244,6 @@ fieldset.action-panel {
 }
 .composer__settings {
   justify-content: flex-start;
-}
-.composer__settings .exec-controls {
-  margin-left: auto;
 }
 
 .execution-menu [aria-label="Models"] .picker__detail {

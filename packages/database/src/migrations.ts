@@ -4717,7 +4717,8 @@ export function migrationProvider() {
         "0163_phone_tabs": phoneTabsMigration,
         "0164_specialists_adopt_access": specialistsAdoptAccessMigration,
         "0165_request_tool_delivery": requestToolDeliveryMigration,
-        "0166_devices": devicesMigration,
+        "0166_memory_pass_activity": memoryPassActivityMigration,
+        "0167_devices": devicesMigration,
       };
     },
   };
@@ -7586,6 +7587,17 @@ const phoneTabsMigration: Migration = {
   },
   async down(database) {
     await sql`alter table runners drop column tab_opened_at`.execute(database);
+  },
+};
+
+const memoryPassActivityMigration: Migration = {
+  async up(database) {
+    await sql`create index messages_created_at on messages (created_at);
+      create index thread_inputs_updated_at on thread_inputs (updated_at);`.execute(database);
+  },
+  async down(database) {
+    await sql`drop index messages_created_at;
+      drop index thread_inputs_updated_at;`.execute(database);
   },
 };
 

@@ -4,7 +4,7 @@ import { Platform } from "react-native";
 import Svg, { Line, Path, Rect } from "react-native-svg";
 import { Symbol } from "../ui/symbol.js";
 
-/** Voice's one mark, wherever Voice has a name: the pill, the sidebar row, the Thread's header. */
+/** The call's mark on the pill, whose tint says who is talking. */
 export function VoiceCursor(props: { readonly size: number; readonly tint: string }): ReactNode {
   return (
     <Svg height={props.size} viewBox="0 0 16 18" width={(props.size * 16) / 18}>

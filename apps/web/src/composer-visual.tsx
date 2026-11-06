@@ -24,6 +24,9 @@ import { ExecutionControls } from "./components/execution-controls.js";
 import { UsageNoticeLine } from "./components/usage-notice.js";
 import { Icon } from "./components/icon.js";
 import { ToastProvider } from "./components/toast.js";
+import { VoiceStart } from "./components/voice.js";
+import { VoiceContext } from "@opensteer/client/react";
+import { idleVoiceSnapshot, type VoiceControls } from "@opensteer/client/voice";
 const client = new MockHostClient({ latencyMs: 0 });
 const dictation = new DictationController({
   port: {
@@ -117,11 +120,36 @@ const fixturePlacements = new URLSearchParams(location.search).has("usage")
     )
   : placements;
 const query = new URLSearchParams(location.search);
+/** `?voice-start`: the Voice Thread's bar, which stands where its composer would. */
+const voiceIdle = { ...idleVoiceSnapshot, available: true };
+const voice = {
+  getSnapshot: () => voiceIdle,
+  subscribe: () => () => {},
+  start: async () => {},
+} as unknown as VoiceControls;
 function App() {
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const variant = query.get("variant") === "conversation" ? "conversation" : "work";
   const [selection, setSelection] = useState(select(codex, gpt, { effort: "xhigh" }));
   const [mode, setMode] = useState<ThreadAccessMode>("full-access");
+  if (query.has("voice-start"))
+    return (
+      <main style={{ position: "fixed", insetInline: 0, bottom: 0 }}>
+        <VoiceContext value={voice}>
+          <VoiceStart
+            dockHidden
+            controls={
+              <ExecutionControls
+                placements={[codex]}
+                preferences={emptyExecutionPreferences}
+                selection={select(codex, gpt, { effort: "low", fast: true })}
+                onApply={() => {}}
+              />
+            }
+          />
+        </VoiceContext>
+      </main>
+    );
   return (
     <main
       style={{

@@ -13,6 +13,8 @@ Journey names are in [journey-command.sh](../../../../apps/desktop/scripts/journ
 none named, all defaults run (`mac-owner` only when named). Cached jobs still pay boot, staging and
 export, so select related flows in one invocation. Set `OPENSTEER_CHROME_R0_REPEAT=5` after a typing
 or input change; host `PersonKeyOrderTests` stay the deterministic guard.
+`OPENSTEER_VM_DISPLAY=1600x1100pt` gives the guest a 2x display on a Retina host; `native-browser`
+then runs at 2x, which is the density its capture steps need to show a page shrinking.
 `--inputs /absolute/directory`, before `--revision`, adds a read-only share at
 `/Volumes/My Shared Files/inputs`; it must be a real path without symlinks or `:`, and files are
 copied to guest APFS before modification.

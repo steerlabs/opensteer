@@ -12861,7 +12861,7 @@ function createInitialSnapshot(): HostSnapshot {
             workspaceId: "wsp_00000000-0000-4000-8000-000000000001",
           },
           presentation: {
-            detail: `${mockComputerUseReason} Numbers on Mac mini — can see and control. Approve on that Mac.`,
+            detail: `${mockComputerUseReason} Numbers on Mac mini — can see and control. Allow or decline from any Opensteer app.`,
             kind: "external",
             subject: { id: mockComputerUseSetupRequestId, kind: "computer-app-setup" },
             title: "Wants to use Numbers on Mac mini",
