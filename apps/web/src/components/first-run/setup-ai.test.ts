@@ -44,18 +44,30 @@ const available = (driverKind: string, ...sourceIds: string[]) => ({
   readiness: "configured",
   sources: sourceIds.map((id) => source(id)),
 });
-const missing = (driverKind: string) => ({ driverKind, readiness: "unavailable", reason: "missing" });
+const missing = (driverKind: string) => ({
+  driverKind,
+  readiness: "unavailable",
+  reason: "missing",
+});
 
 describe("setup AI rows", () => {
   it("lists what already runs first, named for the plan, and never repeats it as a plan", () => {
     const { rows } = setupAiRows(
-      [placement({}), placement({ accountName: "Ollama", driverKind: "pi", harnessInstanceId: "hin_ollama", source: { kind: "compatible-endpoint" } as never, sourceId: "compatible" })],
+      [
+        placement({}),
+        placement({
+          accountName: "Ollama",
+          driverKind: "pi",
+          harnessInstanceId: "hin_ollama",
+          source: { kind: "compatible-endpoint" } as never,
+          sourceId: "compatible",
+        }),
+      ],
       [environment([available("claude", "anthropic"), available("pi", "compatible")])],
     );
-    expect(rows.map((row) => (row.kind === "ready" ? `${row.name}:${row.detail}` : row.kind))).toEqual([
-      "Claude:Signed in",
-      "Ollama:Running on this computer",
-    ]);
+    expect(
+      rows.map((row) => (row.kind === "ready" ? `${row.name}:${row.detail}` : row.kind)),
+    ).toEqual(["Claude:Signed in", "Ollama:Running on this computer"]);
   });
 
   it("offers each featured plan by what it needs: sign in, add, or get", () => {
@@ -113,12 +125,13 @@ describe("setup AI rows", () => {
   });
 
   it("keeps the other plans for More AI", () => {
-    const { more } = setupAiRows([], [environment([available("pi", "github-copilot", "kimi-coding"), missing("cursor")])]);
-    expect(more.map((row) => (row.kind === "plan" ? `${row.plan.id}:${row.action.kind}` : row.kind))).toEqual([
-      "cursor:get",
-      "copilot:add",
-      "kimi:add",
-    ]);
+    const { more } = setupAiRows(
+      [],
+      [environment([available("pi", "github-copilot", "kimi-coding"), missing("cursor")])],
+    );
+    expect(
+      more.map((row) => (row.kind === "plan" ? `${row.plan.id}:${row.action.kind}` : row.kind)),
+    ).toEqual(["cursor:get", "copilot:add", "kimi:add"]);
   });
 
   it("offers nothing new while this computer is away", () => {

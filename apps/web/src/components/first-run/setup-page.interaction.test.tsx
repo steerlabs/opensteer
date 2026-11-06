@@ -31,7 +31,13 @@ function placement(overrides: Partial<ThreadPlacementOption>): ThreadPlacementOp
     harnessAuthenticationAllowed: true,
     harnessInstanceId: "hin_claude",
     models: [
-      { displayName: "Model", isDefault: true, modelId: "model", options: [], providerId: "anthropic" },
+      {
+        displayName: "Model",
+        isDefault: true,
+        modelId: "model",
+        options: [],
+        providerId: "anthropic",
+      },
     ],
     modelSelection,
     observedConnections: [],
@@ -74,7 +80,15 @@ function driver(driverKind: string, sourceId: string) {
     accessModes: [],
     driverKind,
     readiness: "configured",
-    sources: [{ fields: [], kind: "first-party", label: sourceId, sourceId, stateKinds: ["ambient", "isolated"] }],
+    sources: [
+      {
+        fields: [],
+        kind: "first-party",
+        label: sourceId,
+        sourceId,
+        stateKinds: ["ambient", "isolated"],
+      },
+    ],
   };
 }
 

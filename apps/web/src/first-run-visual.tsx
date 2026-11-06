@@ -192,7 +192,10 @@ if (scenario.kind !== "setup") {
     personalAccountLink: { status: scenario.link },
   } as unknown as DeploymentAccessSnapshot;
   const bridge = {
-    computerUsePermissionsGet: async () => ({ accessibility: "granted", screenRecording: "denied" }),
+    computerUsePermissionsGet: async () => ({
+      accessibility: "granted",
+      screenRecording: "denied",
+    }),
     getDeploymentAccessSnapshot: async () => access,
     linkPersonal: async () => undefined,
     onDeploymentAccessSnapshotChanged: () => noOp,

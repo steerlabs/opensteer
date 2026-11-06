@@ -95,9 +95,22 @@ already-shipped desktop without this contract needs one local update first. The 
 quit can apply it; only a new desktop process incarnation reconciles the installed version.
 Failed install handoff relaunches the desktop to restore the Personal stack and reconcile the journal.
 
-First-run setup's Phone row composes these steps and adds no authority. Its QR code is
-`<portal>/open#d=<DeploymentId>`: a destination, never a pairing code, Host origin or grant. The
+First-run setup's phone step composes these steps and adds no authority. With Connect its QR code
+is `<portal>/open#d=<DeploymentId>`: a destination, never a pairing code, Host origin or grant. The
 phone signs in to its own Account and opens that ID only from its authenticated directory.
+
+Tailscale and an own address are the existing Private mode. For Tailscale, desktop main serves the
+Host's loopback port with `tailscale serve` (tailnet only, never Funnel); Tailscale keeps `Host`
+and sends `X-Forwarded-Proto: https`, which the session exchange needs to see the signed route.
+Main records exactly the handler it created and removes or re-points only that one, whenever the
+Host route stops being that origin or its port moves, from any device's mode change; a handler it
+did not create is never touched. Private mode's QR is the [pairing link](../packages/core/src/deep-links.ts):
+it carries the origin and a ten-minute one-time code, so the phone fills them in and pairs only
+after the person confirms. Issuing a code deletes the session's previous one, so setup issues a
+new code only after the shown one expires and the person asks.
+
+A phone paired privately gets push only if the computer is also Account-linked and the phone is
+signed in to that Account; push is published through the Account.
 
 ## Durable stream and live progress
 

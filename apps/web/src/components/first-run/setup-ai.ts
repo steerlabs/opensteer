@@ -55,7 +55,11 @@ function plan(
 
 /** What one plan row offers right now, read from live state. */
 export type SetupPlanAction =
-  | { readonly kind: "sign-in"; readonly methodId: string | null; readonly placement: ThreadPlacementOption }
+  | {
+      readonly kind: "sign-in";
+      readonly methodId: string | null;
+      readonly placement: ThreadPlacementOption;
+    }
   | { readonly kind: "add"; readonly environmentId: string }
   | { readonly kind: "get"; readonly installUrl: string }
   | { readonly kind: "working" };
@@ -137,7 +141,11 @@ function planAction(
   main: EnvironmentSummary | null,
 ): SetupPlanAction | null {
   const accounts = local.filter((placement) => matches(candidate, placement));
-  if (accounts.some(({ availability }) => availability === "preparing" || availability === "runtime-check")) {
+  if (
+    accounts.some(
+      ({ availability }) => availability === "preparing" || availability === "runtime-check",
+    )
+  ) {
     return { kind: "working" };
   }
   const signIn = accounts.find(

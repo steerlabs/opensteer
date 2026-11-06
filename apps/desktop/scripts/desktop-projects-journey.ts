@@ -66,10 +66,7 @@ try {
         .locator(".setup-frame__foot button:not(:disabled)")
         .filter({ hasText: /^Skip( for now)?$/ })
         .first();
-      await Promise.race([
-        skip.waitFor({ timeout: 90_000 }),
-        message.waitFor({ timeout: 90_000 }),
-      ]);
+      await Promise.race([skip.waitFor({ timeout: 90_000 }), message.waitFor({ timeout: 90_000 })]);
       if (await message.isVisible()) break;
       await skip.click();
     }

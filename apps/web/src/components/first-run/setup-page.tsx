@@ -55,7 +55,12 @@ export function SetupPage() {
 
   if (current === "permissions" && desktopBridge) {
     return (
-      <SetupPermissionsStep bridge={desktopBridge} onBack={back} onNext={next} progress={progress} />
+      <SetupPermissionsStep
+        bridge={desktopBridge}
+        onBack={back}
+        onNext={next}
+        progress={progress}
+      />
     );
   }
   if (current === "phone" && desktopBridge) {

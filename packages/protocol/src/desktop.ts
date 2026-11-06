@@ -484,7 +484,10 @@ export const DesktopTailscaleStatusSchema = z.discriminatedUnion("state", [
   z.strictObject({ state: z.literal("not-running") }),
   z.strictObject({
     dnsName: z.string().trim().min(1).max(255),
-    sharedOrigin: z.url({ protocol: /^https$/u }).max(512).nullable(),
+    sharedOrigin: z
+      .url({ protocol: /^https$/u })
+      .max(512)
+      .nullable(),
     state: z.literal("ready"),
   }),
 ]);

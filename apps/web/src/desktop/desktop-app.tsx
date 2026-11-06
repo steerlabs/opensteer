@@ -440,9 +440,7 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
       );
     }
 
-    const opening = settingUpHere ? (
-      <SetupOpening />
-    ) : null;
+    const opening = settingUpHere ? <SetupOpening /> : null;
     if (selectedConnection?.status !== "connected" || !hostClient) {
       if (opening && !operationError) return opening;
       return (

@@ -280,7 +280,8 @@
   height: 15px;
   border-radius: var(--radius-full);
   border: 1.5px solid var(--rim-control);
-  transition: border-width var(--duration-fast) var(--ease-out),
+  transition:
+    border-width var(--duration-fast) var(--ease-out),
     border-color var(--duration-fast) var(--ease-out);
 }
 

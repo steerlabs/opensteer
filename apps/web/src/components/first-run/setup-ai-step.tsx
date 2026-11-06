@@ -134,13 +134,17 @@ export function SetupAiStep({
   const rowView = (row: SetupAiRow) => (
     <AiRow
       adding={row.kind === "plan" && plans.adding === row.plan.id}
-      error={row.kind === "plan" && plans.error?.planId === row.plan.id ? plans.error.message : null}
+      error={
+        row.kind === "plan" && plans.error?.planId === row.plan.id ? plans.error.message : null
+      }
       installing={row.kind === "plan" && installing.includes(row.plan.id)}
       key={row.key}
       onAct={() => act(row)}
       onChoose={(placement) => setChosen(executionSelectionForPlacement(placement))}
       row={row}
-      selected={row.kind === "ready" && selected?.harnessInstanceId === row.placement.harnessInstanceId}
+      selected={
+        row.kind === "ready" && selected?.harnessInstanceId === row.placement.harnessInstanceId
+      }
     />
   );
 
@@ -320,7 +324,9 @@ function SkeletonRow() {
     <SetupRow
       detail={<span aria-hidden className="skeleton setup-row__skeleton" />}
       icon={<span aria-hidden className="skeleton setup-row__skeleton-icon" />}
-      title={<span aria-hidden className="skeleton setup-row__skeleton setup-row__skeleton--title" />}
+      title={
+        <span aria-hidden className="skeleton setup-row__skeleton setup-row__skeleton--title" />
+      }
       tone="missing"
     />
   );

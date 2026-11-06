@@ -23,8 +23,7 @@ export function usePlanAccount(input: {
   readonly client: HostClient;
   readonly harnesses: readonly HarnessSummary[];
   readonly onAuthenticate:
-    | ((placement: ThreadPlacementOption, options?: HarnessAuthenticationOptions) => void)
-    | null;
+    ((placement: ThreadPlacementOption, options?: HarnessAuthenticationOptions) => void) | null;
   readonly placements: readonly ThreadPlacementOption[];
 }) {
   const { client, harnesses, onAuthenticate, placements } = input;
@@ -36,7 +35,9 @@ export function usePlanAccount(input: {
     null,
   );
   // A retry sends the exact original request, so a lost answer never makes a second account.
-  const attempts = useRef(new Map<string, Extract<HostApiCommandInput, { type: "harness.create" }>>());
+  const attempts = useRef(
+    new Map<string, Extract<HostApiCommandInput, { type: "harness.create" }>>(),
+  );
   const live = useRef(true);
   useEffect(
     () => () => {

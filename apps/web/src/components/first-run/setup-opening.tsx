@@ -38,7 +38,9 @@ function WaitingRow() {
     <SetupRow
       detail={<span aria-hidden className="skeleton setup-row__skeleton" />}
       icon={<span aria-hidden className="skeleton setup-row__skeleton-icon" />}
-      title={<span aria-hidden className="skeleton setup-row__skeleton setup-row__skeleton--title" />}
+      title={
+        <span aria-hidden className="skeleton setup-row__skeleton setup-row__skeleton--title" />
+      }
       tone="missing"
     />
   );

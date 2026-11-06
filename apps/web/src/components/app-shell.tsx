@@ -190,8 +190,7 @@ export interface ShellContext {
    */
   performLocalExecutionAction: (action: LocalExecutionAction) => Promise<void>;
   openHarnessAuthentication:
-    | ((placement: ThreadPlacementOption, options?: HarnessAuthenticationOptions) => void)
-    | null;
+    ((placement: ThreadPlacementOption, options?: HarnessAuthenticationOptions) => void) | null;
   refreshHarnessCatalog: (placement: ThreadPlacementOption) => Promise<void>;
   openSharing: (workspaceId: string) => void;
   placements: ThreadPlacementOption[];

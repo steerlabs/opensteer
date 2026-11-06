@@ -17,21 +17,35 @@ describe("the phone step's starting choice", () => {
   it("opens on what is on now, recognising the tailnet address Opensteer shared", () => {
     const tailnet = "https://studio.tail2f9.ts.net";
     expect(
-      initialPhoneMode({ connectAvailable: true, status: status("private", `${tailnet}/`), tailscaleOrigin: tailnet }),
+      initialPhoneMode({
+        connectAvailable: true,
+        status: status("private", `${tailnet}/`),
+        tailscaleOrigin: tailnet,
+      }),
     ).toBe("tailscale");
     expect(
-      initialPhoneMode({ connectAvailable: true, status: status("private", "https://mac.example.com"), tailscaleOrigin: tailnet }),
+      initialPhoneMode({
+        connectAvailable: true,
+        status: status("private", "https://mac.example.com"),
+        tailscaleOrigin: tailnet,
+      }),
     ).toBe("address");
-    expect(initialPhoneMode({ connectAvailable: true, status: status("connect"), tailscaleOrigin: null })).toBe(
-      "connect",
-    );
+    expect(
+      initialPhoneMode({
+        connectAvailable: true,
+        status: status("connect"),
+        tailscaleOrigin: null,
+      }),
+    ).toBe("connect");
   });
 
   it("suggests Connect when nothing is on, and Tailscale in a build without it", () => {
-    expect(initialPhoneMode({ connectAvailable: true, status: status("off"), tailscaleOrigin: null })).toBe("connect");
-    expect(initialPhoneMode({ connectAvailable: false, status: status("off"), tailscaleOrigin: null })).toBe(
-      "tailscale",
-    );
+    expect(
+      initialPhoneMode({ connectAvailable: true, status: status("off"), tailscaleOrigin: null }),
+    ).toBe("connect");
+    expect(
+      initialPhoneMode({ connectAvailable: false, status: status("off"), tailscaleOrigin: null }),
+    ).toBe("tailscale");
   });
 
   it("reads the private address only while private access is on", () => {

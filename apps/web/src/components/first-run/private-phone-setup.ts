@@ -10,7 +10,9 @@ import { actionErrorMessage } from "../../ui-utils.js";
 export type PhoneConnectionMode = "address" | "connect" | "tailscale";
 
 /** The private address remote access answers on now, or null. */
-export function privateRouteOrigin(status: PersonalRemoteAdministrationStatus | null): string | null {
+export function privateRouteOrigin(
+  status: PersonalRemoteAdministrationStatus | null,
+): string | null {
   const access = status?.access;
   if (access?.mode !== "private" || !access.route) return null;
   return sameOrigin(access.route.document.route.origin);

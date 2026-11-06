@@ -216,7 +216,9 @@ export function DesktopPersonalSetup({
               <span
                 aria-hidden
                 className="setup-meter"
-                style={{ "--setup-meter": `${(stepIndex + 1) / personalSteps.length}` } as CSSProperties}
+                style={
+                  { "--setup-meter": `${(stepIndex + 1) / personalSteps.length}` } as CSSProperties
+                }
               />
             )
           }

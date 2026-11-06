@@ -250,7 +250,9 @@ function ScanPanel({
   return (
     <Panel>
       <div className="setup-scan">
-        <div className={expired ? "setup-scan__code setup-scan__code--expired" : "setup-scan__code"}>
+        <div
+          className={expired ? "setup-scan__code setup-scan__code--expired" : "setup-scan__code"}
+        >
           <QrCode label={label} value={value} />
         </div>
         <div className="setup-scan__side">
@@ -431,7 +433,9 @@ function TailscalePanel({
   }
   if (status?.state === "not-running") {
     return (
-      <ActionPanel>Open Tailscale on this computer and sign in. This updates on its own.</ActionPanel>
+      <ActionPanel>
+        Open Tailscale on this computer and sign in. This updates on its own.
+      </ActionPanel>
     );
   }
   return (
@@ -443,7 +447,9 @@ function TailscalePanel({
       }
     >
       Share Opensteer on your tailnet as{" "}
-      <span className="setup-mono">{status?.state === "ready" ? status.dnsName : "this computer"}</span>
+      <span className="setup-mono">
+        {status?.state === "ready" ? status.dnsName : "this computer"}
+      </span>
       . Only your own devices can reach it.
     </ActionPanel>
   );
@@ -477,7 +483,11 @@ function AddressPanel({
         />
         <p className="setup-frame__note">
           Phones connect at <span className="setup-mono">{origin}</span>.{" "}
-          <button className="btn btn--small btn--ghost" onClick={() => setEditing(true)} type="button">
+          <button
+            className="btn btn--small btn--ghost"
+            onClick={() => setEditing(true)}
+            type="button"
+          >
             Change
           </button>
         </p>
@@ -516,7 +526,9 @@ function AddressPanel({
       </form>
       <p
         className={
-          phase.kind === "failed" ? "setup-panel__hint setup-panel__hint--attention" : "setup-panel__hint"
+          phase.kind === "failed"
+            ? "setup-panel__hint setup-panel__hint--attention"
+            : "setup-panel__hint"
         }
         role={phase.kind === "failed" ? "alert" : undefined}
       >
