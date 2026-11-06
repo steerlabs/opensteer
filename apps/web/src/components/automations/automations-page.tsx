@@ -1,25 +1,31 @@
 import { useEffect, useState } from "react";
-import { conversationName, unwrapRpcResult, type HostSnapshot } from "@opensteer/client/host";
+import {
+  automationGlyph,
+  automationName,
+  automationShape,
+  conversationName,
+  describeCadence,
+  formatFullMoment,
+  formatMoment,
+  formatNextRun,
+  latestRun,
+  sectionAutomations,
+  taskMark,
+  threadInDirectory,
+  threadMark,
+  unwrapRpcResult,
+  watchState,
+  type HostSnapshot,
+  type Tone,
+} from "@opensteer/client/host";
 import type { TriggerSummary } from "@opensteer/triggers";
 import { useShell } from "../app-shell.js";
 import { Icon } from "../icon.js";
 import { LoadingRows } from "../loading-rows.js";
-import { PageHeader, PageTopbar } from "../page-header.js";
+import { PageTopbar } from "../page-header.js";
 import { actionErrorMessage, automationPath, useMinuteClock } from "../../ui-utils.js";
-import {
-  automationGlyph,
-  automationShape,
-  describeEvent,
-  describeRepeating,
-  formatCountdown,
-  formatFullMoment,
-  formatMoment,
-  latestRun,
-  sectionAutomations,
-  watchState,
-  type Tone,
-} from "@opensteer/client/host";
 import { AreaLink } from "../workspace/area-link.js";
+import { ChatOrb, TaskMark } from "../workspace/task-mark.js";
 
 /** Requests a first-time reader can send as written, to see what an automation is. */
 const examples = [
@@ -56,25 +62,18 @@ export function AutomationsPage() {
   return (
     <div className="page">
       <PageTopbar onOpenNavigation={openMobileNavigation} title="Automations" />
-      <div className="page__inner">
-        <div className="automations-head">
-          <PageHeader
-            description="Reminders and routines Opensteer runs on its own. Ask Opensteer to add or change one."
-            title="Automations"
-          />
-          <div className="automations-head__actions">
-            <AreaLink className="btn btn--ghost btn--small" to="/automations/new">
-              <Icon name="code" /> Write code
-            </AreaLink>
-            <button
-              className="btn btn--primary btn--small"
-              onClick={() => writeInChat("")}
-              type="button"
-            >
-              <Icon name="message" /> Ask Opensteer
-            </button>
-          </div>
-        </div>
+      <div className="page__inner automations-page">
+        <header className="automations-head">
+          <h1 className="page__title">Automations</h1>
+          <button
+            className="btn btn--primary btn--small"
+            onClick={() => writeInChat("")}
+            title="Ask Opensteer in Chat for something to happen on its own"
+            type="button"
+          >
+            <Icon name="plus" /> New
+          </button>
+        </header>
 
         {error ? (
           <p aria-live="assertive" className="notice notice--error" role="alert">
@@ -102,19 +101,24 @@ export function AutomationsPage() {
           const titleId = `automations-${section.id}`;
           return (
             <section aria-labelledby={titleId} className="automations-group" key={section.id}>
-              <h2 className="automations-group__title" id={titleId}>
+              <h2
+                className={`automations-group__title${section.id === "attention" ? " automations-group__title--attention" : ""}`}
+                id={titleId}
+              >
                 {section.title}
                 <span className="automations-group__count">{section.items.length}</span>
               </h2>
-              <div className="automations-list">
-                {section.items.map(({ problem, summary }) => (
+              <div
+                className={`automations-list${section.id === "attention" ? " automations-list--attention" : ""}${section.id === "system" ? " automations-list--quiet" : ""}`}
+              >
+                {section.items.map(({ item, problem }) => (
                   <AutomationRow
-                    homeThreadId={snapshot.homeThreadId}
-                    key={summary.id}
-                    machine={machineOf(snapshot, summary.anchorThreadId)}
+                    key={item.id}
+                    machine={machineOf(snapshot, item.anchorThreadId)}
                     now={now}
                     problem={problem}
-                    summary={summary}
+                    snapshot={snapshot}
+                    summary={item}
                   />
                 ))}
               </div>
@@ -122,6 +126,10 @@ export function AutomationsPage() {
                 <p className="automations-group__hint">
                   Once a one-time automation has run, it leaves this list. What it said stays in its
                   conversation.
+                </p>
+              ) : section.id === "system" ? (
+                <p className="automations-group__hint">
+                  Opensteer’s own upkeep. What it learns reaches you in Chat.
                 </p>
               ) : null}
             </section>
@@ -164,47 +172,57 @@ function FirstAutomation({ onWrite }: { readonly onWrite: (text: string) => void
 }
 
 /**
- * One automation, read left to right: what kind it is, its name, where it
- * talks to you and how it last went, and when it runs next. Paused ones fade
- * rather than gaining another label; trouble shows as what went wrong.
+ * One automation in two lines: its name, then how often it runs and where it
+ * talks to you. The right column says when it runs next. A healthy run says
+ * nothing; trouble shows as what went wrong, and paused ones fade.
  */
 function AutomationRow({
-  homeThreadId,
   machine,
   now,
   problem,
+  snapshot,
   summary,
 }: {
-  readonly homeThreadId: string | null;
   readonly machine: string | null;
   readonly now: number;
   readonly problem: string | null;
+  readonly snapshot: HostSnapshot;
   readonly summary: TriggerSummary;
 }) {
   const shape = automationShape(summary.source);
   const paused = summary.status === "paused" && !problem;
+  const system = summary.systemRole != null;
   const run = latestRun(summary.latestOccurrence, now);
   const detail = problem
     ? (summary.watch?.lastError ?? summary.latestOccurrence?.error ?? null)
     : null;
+  const glyph = problem
+    ? " automation-row__glyph--attention"
+    : system
+      ? " automation-row__glyph--system"
+      : shape === "once" && !paused
+        ? " automation-row__glyph--once"
+        : "";
   return (
     <AreaLink
       className={`automation-row${problem ? " automation-row--attention" : ""}${paused ? " automation-row--paused" : ""}`}
       to={automationPath(summary.id)}
     >
-      <span
-        className={`automation-row__glyph${shape === "once" && !problem && !paused ? " automation-row__glyph--once" : ""}`}
-      >
-        <Icon name={problem ? "alert-circle" : automationGlyph[shape]} />
+      <span className={`automation-row__glyph${glyph}`}>
+        <Icon
+          name={
+            problem
+              ? "alert-circle"
+              : summary.systemRole === "memory-nightly"
+                ? "moon"
+                : system
+                  ? "sparkles"
+                  : automationGlyph[shape]
+          }
+        />
       </span>
       <span className="automation-row__body">
-        <span className="automation-row__name">
-          {summary.systemRole === "memory-light"
-            ? "Light memory pass"
-            : summary.systemRole === "memory-nightly"
-              ? "Nightly memory pass"
-              : summary.name}
-        </span>
+        <span className="automation-row__name">{automationName(summary)}</span>
         <span className="automation-row__line">
           {problem ? (
             <span className="automation-row__problem">
@@ -213,41 +231,56 @@ function AutomationRow({
             </span>
           ) : (
             <>
-              {summary.source.kind === "schedule" && summary.source.schedule.kind === "cron" ? (
-                <span>{describeRepeating(summary.source.schedule)}</span>
-              ) : null}
-              {shape === "webhook" || shape === "watch" ? (
-                <span>{describeEvent(shape, machine)}</span>
-              ) : null}
-              {paused &&
-              summary.source.kind === "schedule" &&
-              summary.source.schedule.kind === "at" ? (
-                <span>Set for {formatMoment(summary.source.schedule.at, now, true)}</span>
-              ) : null}
-              <span className="automation-row__where">
-                <Icon name="message" />
-                {summary.systemRole
-                  ? "Findings through Chat"
-                  : conversationName(
-                      summary.anchorThreadId,
-                      summary.anchorThreadTitle,
-                      homeThreadId,
-                    )}
+              <span>
+                {paused &&
+                summary.source.kind === "schedule" &&
+                summary.source.schedule.kind === "at"
+                  ? `Set for ${formatMoment(summary.source.schedule.at, now, true)}`
+                  : describeCadence(summary.source, machine)}
               </span>
-              {run && !paused && shape !== "once" ? (
+              {system ? null : <Where snapshot={snapshot} summary={summary} />}
+              {run && !paused && (run.tone === "bad" || run.tone === "warn") ? (
                 <State text={run.text} tone={run.tone} />
               ) : null}
             </>
           )}
         </span>
       </span>
-      <AutomationWhen now={now} paused={paused || problem !== null} summary={summary} />
-      <Icon className="automation-row__chevron" name="chevron-right" />
+      {problem ? (
+        <span className="automation-row__fix">Fix</span>
+      ) : (
+        <AutomationWhen now={now} paused={paused} summary={summary} />
+      )}
     </AreaLink>
   );
 }
 
-/** The right-hand column: the next time it runs, or what it is doing now. */
+/** Where it talks to you, by the mark the sidebar gives that conversation. */
+function Where({
+  snapshot,
+  summary,
+}: {
+  readonly snapshot: HostSnapshot;
+  readonly summary: TriggerSummary;
+}) {
+  const home = summary.anchorThreadId === snapshot.homeThreadId;
+  const thread = threadInDirectory(summary.anchorThreadId, snapshot);
+  return (
+    <span className="automation-row__where">
+      {home ? (
+        <ChatOrb size={16} />
+      ) : (
+        <TaskMark
+          mark={thread ? taskMark(thread) : threadMark(summary.anchorThreadId, snapshot)}
+          size={16}
+        />
+      )}
+      {conversationName(summary.anchorThreadId, summary.anchorThreadTitle, snapshot.homeThreadId)}
+    </span>
+  );
+}
+
+/** The right-hand column: when it runs next, or what it is doing now. */
 function AutomationWhen({
   now,
   paused,
@@ -257,41 +290,42 @@ function AutomationWhen({
   readonly paused: boolean;
   readonly summary: TriggerSummary;
 }) {
-  if (paused) return <span />;
+  if (paused) {
+    return (
+      <span className="automation-when">
+        <span className="automation-when__caption">Paused</span>
+      </span>
+    );
+  }
   if (summary.watch && summary.kind === "watch") {
     const state = watchState(summary.watch.observed);
     return (
       <span className="automation-when">
-        <State text={state.text} tone={state.tone} />
+        <State text={state.text} tone={state.tone === "ok" ? "accent" : state.tone} />
       </span>
     );
   }
   const latest = summary.latestOccurrence;
-  const active = latest?.status === "running" || latest?.status === "pending";
-  if (summary.nextFireAt) {
-    const countdown = formatCountdown(summary.nextFireAt, now);
-    const once = summary.source.kind === "schedule" && summary.source.schedule.kind === "at";
-    return (
-      <span className="automation-when">
-        <time
-          className="automation-when__time"
-          dateTime={summary.nextFireAt}
-          title={formatFullMoment(summary.nextFireAt)}
-        >
-          {formatMoment(summary.nextFireAt, now)}
-        </time>
-        <span className="automation-when__caption">
-          {once ? (countdown ?? "") : active ? "Running now" : "Next run"}
-        </span>
-      </span>
-    );
-  }
-  if (active) {
+  if (latest?.status === "running" || latest?.status === "pending") {
     const run = latestRun(latest, now);
     return (
       <span className="automation-when">
-        <span className="automation-when__time">Now</span>
-        {run ? <span className="automation-when__caption">{run.text}</span> : null}
+        {run ? <State text={run.text} tone={run.tone} /> : null}
+      </span>
+    );
+  }
+  if (summary.nextFireAt) {
+    const next = formatNextRun(summary.nextFireAt, now);
+    const soon = Date.parse(summary.nextFireAt) - now < 60 * 60_000;
+    return (
+      <span className="automation-when" title={formatFullMoment(summary.nextFireAt)}>
+        <time
+          className={`automation-when__time${soon ? " automation-when__time--soon" : ""}`}
+          dateTime={summary.nextFireAt}
+        >
+          {next.day}
+        </time>
+        <span className="automation-when__caption">{next.time}</span>
       </span>
     );
   }

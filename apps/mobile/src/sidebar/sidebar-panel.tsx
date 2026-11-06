@@ -553,7 +553,7 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
           <DestinationRow
             current={destination === "Schedules"}
             icon="clock"
-            label="Schedules"
+            label="Automations"
             onPress={actions.onSchedules}
           />
         </View>

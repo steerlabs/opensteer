@@ -1,40 +1,48 @@
 /* Automations: what Opensteer does on its own. One list, grouped by what each
-   automation needs from its owner; each row reads left to right as what it is,
-   where it talks to you, and when it runs next. */
+   automation needs from its owner; each row is its name, then how often it
+   runs and where it talks to you, with when it runs next on the right. */
+
+/* The page's own width decides its layout, not the window's. */
+.automations-page {
+  container: automations / inline-size;
+}
 
 .automations-head {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
-  gap: var(--space-16);
-}
-
-.automations-head .page__header {
-  flex: 1;
+  gap: var(--space-12);
   min-width: 0;
 }
 
-.automations-head__actions {
-  display: flex;
+.automations-head .page__title {
+  min-width: 0;
+  margin: 0;
+  white-space: nowrap;
+}
+
+.automations-head .btn {
   flex: none;
-  gap: var(--space-8);
-  padding-bottom: var(--space-2);
 }
 
 .automations-group {
   display: flex;
   flex-direction: column;
-  gap: var(--space-10);
+  gap: var(--space-8);
 }
 
 .automations-group__title {
   display: flex;
   align-items: baseline;
   gap: var(--space-8);
-  margin: 0 0 0 var(--space-2);
+  margin: 0 0 0 var(--space-4);
   color: var(--text-soft);
   font-size: var(--text-lg);
   font-weight: var(--weight-bold);
+}
+
+.automations-group__title--attention {
+  color: var(--red-text);
 }
 
 .automations-group__count {
@@ -44,9 +52,10 @@
 }
 
 .automations-group__hint {
-  margin: 0 0 0 var(--space-2);
+  margin: var(--space-2) 0 0 var(--space-4);
   color: var(--muted);
   font-size: var(--text-sm);
+  line-height: 1.45;
 }
 
 .automations-list {
@@ -55,6 +64,17 @@
   background: var(--sheen) var(--fill-plate);
   overflow: hidden;
   box-shadow: var(--edge-plate);
+}
+
+.automations-list--attention {
+  border-color: var(--red-line);
+  background: var(--sheen) var(--red-wash);
+}
+
+/* Opensteer's own upkeep sits on the page rather than on a plate. */
+.automations-list--quiet {
+  background: none;
+  box-shadow: none;
 }
 
 .automations-list > * + * {
@@ -73,13 +93,13 @@
 
 .automation-row {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
-  grid-template-areas: "glyph body when chevron";
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: var(--space-14);
+  gap: var(--space-12);
   width: 100%;
   min-width: 0;
-  padding: var(--space-12) var(--space-16);
+  min-height: 64px;
+  padding: var(--space-12) var(--space-14);
   border: 0;
   background: none;
   color: inherit;
@@ -101,11 +121,10 @@
 }
 
 .automation-row__glyph {
-  grid-area: glyph;
   display: grid;
   place-items: center;
-  width: 36px;
-  height: 36px;
+  width: 34px;
+  height: 34px;
   border: 1px solid var(--rim-plate);
   border-radius: var(--radius-sm);
   background: var(--sheen) var(--fill-plate);
@@ -114,46 +133,77 @@
 }
 
 .automation-row__glyph .icon {
-  width: 18px;
-  height: 18px;
+  width: 17px;
+  height: 17px;
+}
+
+/* A one-time automation is a moment; its glyph carries the accent. */
+.automation-row__glyph--once {
+  border-color: var(--ember-line);
+  background: var(--ember-wash);
+  color: var(--ember);
+}
+
+.automation-row__glyph--attention {
+  border-color: var(--red-line);
+  background: var(--red-wash);
+  color: var(--red);
+}
+
+.automation-row__glyph--system {
+  border-style: dashed;
+  background: none;
+  box-shadow: none;
+  color: var(--muted);
 }
 
 .automation-row__body {
-  grid-area: body;
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-2);
 }
 
 .automation-row__name {
-  font-size: var(--text-lg);
-  font-weight: var(--weight-strong);
+  display: -webkit-box;
+  overflow: hidden;
   color: var(--text);
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-strong);
+  line-height: 1.3;
   overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .automation-row__line {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-2) var(--space-12);
+  gap: var(--space-2) var(--space-6);
   min-width: 0;
   color: var(--muted);
   font-size: var(--text-md);
+  line-height: 1.35;
+}
+
+/* A separator trails its part, so a wrapped line never starts with one. */
+.automation-row__line > :not(:last-child)::after {
+  content: "·";
+  margin-left: var(--space-6);
+  color: var(--muted-dim);
 }
 
 .automation-row__where {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-4);
+  min-width: 0;
+  white-space: nowrap;
   color: var(--text-soft);
 }
 
-.automation-row__where .icon {
-  width: 13px;
-  height: 13px;
-  color: var(--muted);
+.automation-row__where > .chat-orb,
+.automation-row__where > .task-mark {
+  margin-right: var(--space-4);
+  vertical-align: -3px;
 }
 
 .automation-row__problem {
@@ -173,15 +223,18 @@
   white-space: nowrap;
 }
 
-.automation-row__chevron {
-  grid-area: chevron;
-  color: var(--muted-dim);
-}
-
-.automation-row--attention .automation-row__glyph {
-  border-color: var(--red-line);
-  background: var(--red-wash);
-  color: var(--red);
+.automation-row__fix {
+  display: inline-flex;
+  align-items: center;
+  height: var(--control-height);
+  padding: 0 var(--space-12);
+  border: 1px solid var(--red-line);
+  border-radius: var(--radius-sm);
+  background: var(--sheen) var(--red-wash);
+  box-shadow: var(--edge-tint);
+  color: var(--text);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-strong);
 }
 
 /* A paused automation fades rather than gaining another label. */
@@ -190,20 +243,11 @@
   opacity: 0.55;
 }
 
-/* A one-time automation is a moment; its glyph carries the accent. */
-.automation-row__glyph--once {
-  border-color: var(--ember-line);
-  background: var(--ember-wash);
-  color: var(--ember);
-}
-
 .automation-row--example {
   grid-template-columns: auto minmax(0, 1fr) auto;
-  grid-template-areas: "glyph body hint";
 }
 
 .automation-row--example .automation-row__name {
-  grid-area: body;
   font-weight: var(--weight-medium);
 }
 
@@ -215,7 +259,6 @@
 }
 
 .automation-row__hint {
-  grid-area: hint;
   color: var(--muted);
   font-size: var(--text-sm);
 }
@@ -225,30 +268,29 @@
 }
 
 .automation-when {
-  grid-area: when;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
   gap: var(--space-2);
   text-align: right;
+  white-space: nowrap;
 }
 
 .automation-when__time {
   color: var(--text);
-  font-size: var(--text-lg);
+  font-size: var(--text-xl);
   font-weight: var(--weight-strong);
   font-variant-numeric: tabular-nums;
-  white-space: nowrap;
+}
+
+.automation-when__time--soon {
+  color: var(--ember);
 }
 
 .automation-when__caption {
   color: var(--muted);
   font-size: var(--text-sm);
-  white-space: nowrap;
-}
-
-.automation-row:not(.automation-row--paused) .automation-when__caption:not(:empty) {
-  min-height: 1em;
+  font-variant-numeric: tabular-nums;
 }
 
 /* A state is a dot and a word. Fine is quiet — only its dot is green — so
@@ -288,6 +330,7 @@
 
 .automation-state--accent {
   color: var(--ember);
+  font-weight: var(--weight-strong);
 }
 
 .automation-state--accent .automation-state__dot {
@@ -673,58 +716,7 @@
   font-size: var(--text-md);
 }
 
-.automation-webhook {
-  display: flex;
-  flex-direction: column;
-}
-
-.automation-copy {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-6);
-  padding: var(--space-12) var(--space-16);
-}
-
-.automation-copy__label {
-  color: var(--text-soft);
-  font-size: var(--text-md);
-  font-weight: var(--weight-bold);
-}
-
 @media (max-width: 680px) {
-  .automations-head {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .automation-row {
-    grid-template-columns: auto minmax(0, 1fr) auto;
-    grid-template-areas:
-      "glyph body chevron"
-      "glyph when chevron";
-    row-gap: var(--space-6);
-  }
-
-  .automation-when {
-    flex-direction: row;
-    align-items: baseline;
-    gap: var(--space-8);
-    text-align: left;
-  }
-
-  .automation-when:empty {
-    display: none;
-  }
-
-  .automation-row--example {
-    grid-template-columns: auto minmax(0, 1fr);
-    grid-template-areas: "glyph body";
-  }
-
-  .automation-row--example .automation-row__hint {
-    display: none;
-  }
-
   .automation-actions .btn {
     min-height: var(--touch-target);
   }
@@ -740,5 +732,21 @@
 
   .automation-run {
     grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+}
+
+/* The list answers to its own pane, which may be narrow in a wide window. */
+@container automations (max-width: 420px) {
+  .automation-row {
+    gap: var(--space-10);
+    padding-inline: var(--space-12);
+  }
+
+  .automation-row--example {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .automation-row--example .automation-row__hint {
+    display: none;
   }
 }
