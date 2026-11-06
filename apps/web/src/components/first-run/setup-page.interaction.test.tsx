@@ -328,7 +328,7 @@ it("offers to get a plan's app when it is not installed, and looks again on retu
   expect(bridge.openExternalUrl).toHaveBeenCalledWith({
     url: "https://code.claude.com/docs/en/setup",
   });
-  expect(container.textContent).toContain("Install it, then come back here");
+  expect(container.textContent).toContain("Install it. It shows up here on its own.");
   await act(async () => window.dispatchEvent(new Event("focus")));
   expect(bridge.recheckLocalEngines).toHaveBeenCalled();
 });

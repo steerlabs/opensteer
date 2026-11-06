@@ -289,7 +289,7 @@ function AiRow({
   if (action.kind === "get") {
     return (
       <SetupRow
-        detail={installing ? "Install it, then come back here" : "Not on this computer"}
+        detail={installing ? "Install it. It shows up here on its own." : "Not on this computer"}
         icon={icon}
         title={plan.name}
         tone="missing"
