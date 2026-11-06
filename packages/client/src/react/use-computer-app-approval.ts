@@ -15,10 +15,9 @@ export function useComputerAppApproval(hostClient: HostClient) {
   const generation = useRef(0);
   const submitting = useRef(false);
   const abort = useRef<AbortController | null>(null);
-  /** Also closes mid-answer: a sent answer still lands, a failed one leaves its Request open. */
+  /** Also closes mid-answer: that answer is not cancelled, and blocks another until it settles. */
   function clear() {
     generation.current += 1;
-    submitting.current = false;
     abort.current?.abort();
     setReview(null);
     setBusy(false);
@@ -41,7 +40,6 @@ export function useComputerAppApproval(hostClient: HostClient) {
     };
   }, [hostClient]);
   async function ask(setupRequestId: string): Promise<boolean> {
-    if (submitting.current) return false;
     clear();
     const current = generation.current;
     const signal = new AbortController();
@@ -50,6 +48,7 @@ export function useComputerAppApproval(hostClient: HostClient) {
     if (current !== generation.current) return false;
     setError(null);
     setReview(value);
+    setBusy(submitting.current);
     return new Promise<boolean>((resolve) => {
       pending.current = resolve;
     });
@@ -72,10 +71,8 @@ export function useComputerAppApproval(hostClient: HostClient) {
       if (current === generation.current)
         setError(reason instanceof Error ? reason.message : "Couldn't record this answer.");
     } finally {
-      if (current === generation.current) {
-        submitting.current = false;
-        setBusy(false);
-      }
+      submitting.current = false;
+      setBusy(false);
     }
   }
   return { ask, review, error, busy, close: clear, answer };

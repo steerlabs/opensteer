@@ -224,7 +224,7 @@ describe("RequestCard computer owner approvals", () => {
     expect(dispatch).not.toHaveBeenCalled();
   });
 
-  it("frees the Request when its sheet closes while an answer fails", async () => {
+  it("lets a review closed mid-answer reopen without sending a second answer", async () => {
     const request = computerAppRequest();
     let fail: ((error: Error) => void) | undefined;
     const dispatch = vi.fn(
@@ -238,12 +238,14 @@ describe("RequestCard computer owner approvals", () => {
     await click("Review request");
     await click("Allow");
     await click("Allow");
-    expect(dispatch).toHaveBeenCalledOnce();
     await click("Close sheet");
-    await act(async () => fail?.(new Error("offline")));
     await click("Review request");
     await click("Allow");
     expect(review).toHaveBeenCalledTimes(2);
+    expect(button("Allow").disabled).toBe(true);
+    await act(async () => fail?.(new Error("offline")));
+    await click("Allow");
+    expect(dispatch).toHaveBeenCalledTimes(2);
   });
 });
 
