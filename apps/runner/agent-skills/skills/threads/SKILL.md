@@ -7,7 +7,7 @@ description: Find, read, delegate, continue, configure, queue, interrupt or canc
 
 A Thread holds durable history; a Run is one execution; a task is work one Thread assigned to another. Use native workers for Run-local work, `thread_delegate` for independent work or durable continuation.
 
-- New work: `thread_delegate` with `workspaceId` or a ready `specialist`. Finished task: `thread_delegate` with `threadId`. Active task: `thread_message`.
+- New work: `thread_delegate`; omit `workspaceId` for this Workspace, or pass a ready `specialist`. Finished task: `thread_delegate` with `threadId`. Active task: `thread_message`.
 - Your tasks: `thread_list({parentThreadId: "self"})`. What one did and where: `thread_read`, with `view: "activity"` for its tools. One task's state: `task_status`.
 - Pause work: `thread_interrupt`, resumable with `thread_queue`. Stop it for good: `task_cancel`.
 - Engine or model: `thread_configure`. Waiting inputs: `thread_queue`. Rename, done or reopen: `thread_update`.

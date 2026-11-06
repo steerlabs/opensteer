@@ -578,6 +578,18 @@ describeStore("shaped agent Thread tools", (it) => {
       operationKey: randomUUID(),
     });
     expect(queue).toEqual({ paused: false, items: [] });
+    expect((await s.read({ threadId: "self" })).thread.id).toBe(f.thread.id);
+    const here = await s.product.thread_delegate({
+      caller: s.caller,
+      input: thread_delegate.input.parse({
+        environmentId: f.environmentId,
+        harnessInstanceId: f.harnessInstance.id,
+        model: { ...testModelSelection, options: {} },
+        task: "Work here",
+      }),
+      operationKey: randomUUID(),
+    });
+    expect(here.workspaceId).toBe(f.thread.workspaceId);
     const connection: AgentCaller = {
       kind: "connection",
       key: "connection:test",
@@ -600,6 +612,7 @@ describeStore("shaped agent Thread tools", (it) => {
         operationKey: randomUUID(),
       }),
     ).rejects.toThrow("must name threadId");
+    await expect(s.read({ threadId: "self" }, connection)).rejects.toThrow("must name threadId");
     await expect(
       s.product.thread_list({
         caller: connection,

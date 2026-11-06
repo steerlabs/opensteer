@@ -506,7 +506,9 @@ export class ProductToolHandlers {
     const threadId =
       input.threadId === "home"
         ? (await this.#store.findMainWorkspaceForOwner(caller.userId))?.homeThreadId
-        : input.threadId;
+        : input.threadId === "self"
+          ? this.#targetThreadId(caller)
+          : input.threadId;
     if (!threadId) throw conflict("Chat has not been started yet");
     const thread = await this.#store.getThreadForOwner(threadId, claims.requestedBy);
     if (!thread) throw forbidden("Thread is unavailable to this user");
@@ -901,14 +903,7 @@ export class ProductToolHandlers {
       }
     }
     const targetWorkspaceId =
-      existingThread?.workspaceId ??
-      input.workspaceId ??
-      (input.specialist ? currentThread.workspaceId : undefined);
-    if (!targetWorkspaceId)
-      throw badRequest(
-        "Choose a target Workspace or work Thread",
-        "Pass workspaceId or threadId, from project_list or thread_list.",
-      );
+      existingThread?.workspaceId ?? input.workspaceId ?? currentThread.workspaceId;
     const workspace = await this.#store.getWorkspaceForOwner(targetWorkspaceId, claims.requestedBy);
     if (!workspace) throw forbidden("Target Workspace is unavailable to this user");
     if (caller.reach.kind !== "user" && workspace.id !== currentThread.workspaceId) {

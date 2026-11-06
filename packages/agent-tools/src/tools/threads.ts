@@ -33,10 +33,10 @@ export const thread_read = defineAgentTool({
   targetFields: ["threadId"],
   title: "Read a Thread",
   description:
-    "Read a reachable Thread; `home` means Chat. `messages` (default): published messages, newest first. `activity`: also its tools, places, apps and Requests. `recentRuns` and `recentPlaces` always come back; a place is recent, never proof it is still open, and its `runId` goes to `person_show`. Keep reads small: low `limit` and `maxCharsPerItem`. Page with `before=nextBefore`. Cut-off text: `itemId` with `textOffset=nextTextOffset`. Tool text is clipped unless you name its `itemId`; sign-in, card and `computer` calls show status only.",
+    "Read a reachable Thread; `home` means Chat, `self` this Thread. `messages` (default): published messages, newest first. `activity`: also its tools, places, apps and Requests. `recentRuns` and `recentPlaces` always come back; a place is recent, never proof it is still open, and its `runId` goes to `person_show`. Keep reads small: low `limit` and `maxCharsPerItem`. Page with `before=nextBefore`. Cut-off text: `itemId` with `textOffset=nextTextOffset`. Tool text is clipped unless you name its `itemId`; sign-in, card and `computer` calls show status only.",
   input: z
     .strictObject({
-      threadId: z.union([ThreadIdSchema, z.literal("home")]),
+      threadId: z.union([ThreadIdSchema, z.literal("home"), z.literal("self")]),
       view: z.enum(["messages", "activity"]).default("messages"),
       limit: z.number().int().min(1).max(100).default(50).describe("Max items."),
       runLimit: z.number().int().min(1).max(50).default(10).describe("Max recent Runs."),
@@ -96,7 +96,7 @@ export const thread_delegate = defineAgentTool({
   targetFields: ["threadId"],
   title: "Start or continue a task",
   description:
-    "Start one task in `workspaceId`, from `project_list`, or with `specialist`, or give a finished one more work with `threadId`, which keeps its engine and model. It gets only `task` and `places`, no history. No secrets in `task`. Returns the task; keep `assignmentId` for `task_status` and `task_cancel`. Runs and programs get its result automatically: do other work or end your turn. A task that ends with no reply returns nothing. Connections get no Assignment: use `thread_wait`. Change active work with `thread_message`.",
+    "Start one task, or give a finished one more work with `threadId`, which keeps its engine and model. Omit `workspaceId` for this Workspace; connections must name it. It gets only `task` and `places`, no history. No secrets in `task`. Returns the task; keep `assignmentId` for `task_status` and `task_cancel`. Runs and programs get its result automatically: do other work or end your turn. A task that ends with no reply returns nothing. Connections get no Assignment: use `thread_wait`. Change active work with `thread_message`.",
   input: z
     .strictObject({
       environmentId: EnvironmentIdSchema.optional().describe("New task computer; omit to inherit."),
@@ -145,9 +145,7 @@ export const thread_delegate = defineAgentTool({
       ),
     })
     .superRefine((input, context) => {
-      if (
-        input.threadId ? input.workspaceId !== undefined : !input.workspaceId && !input.specialist
-      ) {
+      if (input.threadId && input.workspaceId) {
         context.addIssue({
           code: "custom",
           message: "Choose workspaceId for a new task or threadId to reuse a task",
