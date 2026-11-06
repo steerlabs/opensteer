@@ -6,7 +6,7 @@ vi.mock("react-native", () => ({
   Alert: { alert: vi.fn() },
   Linking: {},
   Platform: { OS: "ios", select: () => undefined },
-  StyleSheet: { create: <T,>(styles: T) => styles },
+  StyleSheet: { create: <T>(styles: T) => styles },
   View: "View",
 }));
 vi.mock("./primitives.js", () => ({}));
