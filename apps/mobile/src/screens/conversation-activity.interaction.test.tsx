@@ -83,6 +83,8 @@ vi.mock("@react-navigation/native", () => ({
     setOptions: harness.setOptions,
   }),
 }));
+vi.mock("expo-application", () => ({ nativeApplicationVersion: "1.0.0" }));
+vi.mock("../ui/ai-sharing.js", () => import("../../test-support/ai-sharing.js"));
 vi.mock("expo-clipboard", () => ({ setStringAsync: vi.fn(async () => true) }));
 vi.mock("expo-haptics", () => ({ selectionAsync: vi.fn(async () => undefined) }));
 vi.mock("../client/mobile-client.js", () => ({

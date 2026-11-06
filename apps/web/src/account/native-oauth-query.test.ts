@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { consumeNativeOAuthQuery } from "./native-oauth-query.js";
+import { consumeNativeOAuthQuery, withoutNativeOAuthQuery } from "./native-oauth-query.js";
 
 const signedQuery = new URLSearchParams([
   ["response_type", "code"],
@@ -55,4 +55,11 @@ describe("consumeNativeOAuthQuery", () => {
       expect(replace).not.toHaveBeenCalled();
     }
   });
+});
+
+it("forgets an answered request and keeps the rest of the history entry", () => {
+  expect(withoutNativeOAuthQuery({ nativeOAuthQuery: "signed", route: "home" })).toEqual({
+    route: "home",
+  });
+  expect(withoutNativeOAuthQuery(null)).toBeNull();
 });

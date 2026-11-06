@@ -32,3 +32,10 @@ export function consumeNativeOAuthQuery(
     replace(`${location.pathname}${location.hash}`, { ...entry, nativeOAuthQuery: raw });
   return raw;
 }
+
+/** The same history entry once its request is answered, so returning to it is ordinary web use. */
+export function withoutNativeOAuthQuery(historyState: unknown): unknown {
+  if (typeof historyState !== "object" || historyState === null) return historyState;
+  const { nativeOAuthQuery: _answered, ...entry } = historyState as Record<string, unknown>;
+  return entry;
+}
