@@ -118,6 +118,10 @@ export class OpensteerMcpService {
       sendJsonRpcError(response, 403, safeMessage(error, safeMessageOptions));
       return;
     }
+    // Before anything waits: a close missed here would leave this response open forever.
+    const disconnected = new AbortController();
+    response.once("close", () => disconnected.abort(new Error("MCP client disconnected")));
+    const ended = responseEnded(response);
     let authorization: AgentCaller;
     try {
       authorization =
@@ -138,10 +142,7 @@ export class OpensteerMcpService {
       return;
     }
     await this.#sweep();
-    const disconnected = new AbortController();
-    const onClose = () => disconnected.abort(new Error("MCP client disconnected"));
-    response.once("close", onClose);
-    const ended = responseEnded(response);
+    if (disconnected.signal.aborted) return;
     // The SDK hands this to each tool call as its `authInfo`.
     (request as IncomingMessage & { auth?: AuthInfo }).auth = {
       clientId: authorization.key,
@@ -378,6 +379,10 @@ export class OpensteerMcpService {
       });
       server.registerTool(tool.name, registration, async (args, extra) => {
         const admittedAt = Date.now();
+        const signal =
+          extra.authInfo?.extra?.disconnected instanceof AbortSignal
+            ? AbortSignal.any([extra.signal, extra.authInfo.extra.disconnected])
+            : extra.signal;
         try {
           const token = extra.authInfo?.token;
           if (!token) throw new Error("MCP authorization is missing");
@@ -391,10 +396,6 @@ export class OpensteerMcpService {
                   steersAtAdmission: await this.options.requestHold.admit(currentCaller),
                 }
               : null;
-          const signal =
-            extra.authInfo?.extra?.disconnected instanceof AbortSignal
-              ? AbortSignal.any([extra.signal, extra.authInfo.extra.disconnected])
-              : extra.signal;
           const result = await this.callTool(token, tool.name, args, {
             ...(resolvedCaller ? { caller: resolvedCaller } : {}),
             operationKey: mcpToolCallId(
@@ -442,7 +443,7 @@ export class OpensteerMcpService {
           return agentToolRecordResult(result, pendingRequest ? requestPendingGuidance : undefined);
         } catch (error) {
           const failure = agentToolFailure(error, tool.access);
-          if (failure.code === internalToolFailureCode && !extra.signal.aborted)
+          if (failure.code === internalToolFailureCode && !signal.aborted)
             this.options.onToolError?.(error, tool.name);
           return agentToolFailureResult(failure);
         }

@@ -449,6 +449,48 @@ describe("Opensteer MCP spine", () => {
     },
   );
 
+  it("makes no session for a response that ended during authentication", async () => {
+    const f = await httpFixture();
+    const authenticated = Promise.withResolvers<void>();
+    const { authenticate } = f.options.callers;
+    const real = authenticate.getMockImplementation()!;
+    authenticate.mockImplementationOnce(async (token) => {
+      await authenticated.promise;
+      return real(token);
+    });
+    const handle = vi.spyOn(f.service, "handle");
+    const client = new AbortController();
+    const call = fetch(f.url, {
+      method: "POST",
+      signal: client.signal,
+      headers: {
+        authorization: "Bearer run",
+        accept: "application/json, text/event-stream",
+        "content-type": "application/json",
+        "mcp-protocol-version": "2025-11-25",
+        "mcp-session-id": "held-by-an-earlier-host",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    }).catch(() => undefined);
+    try {
+      await vi.waitFor(() => expect(authenticate).toHaveBeenCalled());
+      const response = handle.mock.calls[0]![1];
+      const closed = new Promise((resolve) => response.once("close", resolve));
+      client.abort();
+      await withTimeout(closed, 1000, {
+        timeoutError: () => new Error("The disconnect never reached the Host"),
+      });
+      authenticated.resolve();
+      await withTimeout(handle.mock.results[0]!.value as Promise<void>, 1000, {
+        timeoutError: () => new Error("The Host kept waiting on a response that had ended"),
+      });
+      await call;
+      expect(f.options.longRequestHold).not.toHaveBeenCalled();
+    } finally {
+      await f.service.close();
+    }
+  });
+
   it("counts handler work against the absolute short hold deadline", async () => {
     const f = await httpFixture();
     const request = {
@@ -1138,7 +1180,7 @@ describe("Opensteer MCP spine", () => {
       [{ host: "127.0.0.1", origin: "https://evil.test" }, 403],
       [{ host: "127.0.0.1" }, 401],
     ] as const) {
-      const response = { statusCode: 0, setHeader: vi.fn(), end: vi.fn() };
+      const response = { once: vi.fn(), statusCode: 0, setHeader: vi.fn(), end: vi.fn() };
       await f.service.handle(
         { headers, method: "POST" } as never,
         response as never,
@@ -1171,7 +1213,7 @@ describe("Opensteer MCP spine", () => {
       ["run", "connect.example", route, 403],
       ["expired", "connect.example", route, 401],
     ] as const) {
-      const response = { statusCode: 0, setHeader: vi.fn(), end: vi.fn() };
+      const response = { once: vi.fn(), statusCode: 0, setHeader: vi.fn(), end: vi.fn() };
       await f.service.handle(
         { headers: { host }, method: "POST" } as never,
         response as never,

@@ -240,22 +240,42 @@ describe("engine qualification", () => {
             value: { decision: "fulfilled", createProfile: { name: "Chosen Receipts" } },
           },
         });
-        const answered = await vi.waitFor(
-          async () => {
-            const run = await database
-              .selectFrom("runs")
-              .select(["id", "status"])
-              .where("threadId", "=", threadId)
-              .$if(long, (query) => query.where("id", "=", firstRunId))
-              .$if(!long, (query) => query.where("id", "!=", firstRunId))
-              .orderBy("runOrdinal", "desc")
-              .executeTakeFirst();
-            expect(run, "The answer did not reach a Run").toBeDefined();
-            expect(run!.status, "The answered Run did not complete").toBe("completed");
-            return run!;
-          },
-          { timeout: 180_000, interval: 100 },
-        );
+        const stalled = async (error: unknown) => {
+          const evidence = process.env.OPENSTEER_ENGINE_E2E_OUTPUT;
+          if (evidence) {
+            await mkdir(evidence, { recursive: true });
+            await writeFile(
+              join(evidence, `${engine.label.replaceAll(" ", "-")}-${hold}-stalled.json`),
+              JSON.stringify(
+                await database
+                  .selectFrom("workspaceEvents")
+                  .select(["sequence", "type", "createdAt", "data"])
+                  .where("threadId", "=", threadId)
+                  .orderBy("sequence", "asc")
+                  .execute(),
+              ),
+            );
+          }
+          throw error;
+        };
+        const answered = await vi
+          .waitFor(
+            async () => {
+              const run = await database
+                .selectFrom("runs")
+                .select(["id", "status"])
+                .where("threadId", "=", threadId)
+                .$if(long, (query) => query.where("id", "=", firstRunId))
+                .$if(!long, (query) => query.where("id", "!=", firstRunId))
+                .orderBy("runOrdinal", "desc")
+                .executeTakeFirst();
+              expect(run, "The answer did not reach a Run").toBeDefined();
+              expect(run!.status, "The answered Run did not complete").toBe("completed");
+              return run!;
+            },
+            { timeout: 180_000, interval: 100 },
+          )
+          .catch(stalled);
         const delivery = await database
           .selectFrom("requestContinuations")
           .select("status")
