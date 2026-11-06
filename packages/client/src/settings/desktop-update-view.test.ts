@@ -243,15 +243,13 @@ describe("when the computer can't be updated from here", () => {
     expect(view({ failure: "forbidden" }).hidden).toBe(true);
   });
 
-  it("leaves server updates with its operator", () => {
-    const shown = view({ status: status({ supported: false, state: null }) });
-    expect(shown.detail).toBe("Updates for Studio Mac are managed by its operator.");
-    expect(shown.action).toBeNull();
+  it("hides on a server Deployment, which has nothing to offer here", () => {
+    expect(view({ status: status({ supported: false, state: null }) }).hidden).toBe(true);
   });
 
-  it("does not infer an outdated Host from an unsupported endpoint", () => {
+  it("asks for one local update on a Host that predates the contract", () => {
     const shown = view({ status: null, failure: "unsupported" });
-    expect(shown.headline).toBe("Remote updates unavailable");
+    expect(shown.detail).toContain("needs one update on that computer");
     expect(shown.action).toBeNull();
   });
 

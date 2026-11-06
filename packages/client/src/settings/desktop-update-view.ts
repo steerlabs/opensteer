@@ -300,18 +300,13 @@ function settledOrActiveView(input: DesktopUpdateViewInput): DesktopUpdateView {
       headline: "Updating",
       progress: { text: "Starting…", percent: null },
     };
-  if (input.status?.supported === false)
-    return {
-      ...base,
-      headline: "Managed separately",
-      detail: `Updates for ${name} are managed by its operator.`,
-    };
+  if (input.status?.supported === false) return { ...base, hidden: true };
   switch (input.failure) {
     case "unsupported":
       return {
         ...base,
-        headline: "Remote updates unavailable",
-        detail: `${name} doesn't provide remote updates. Ask its operator about updates.`,
+        headline: "Update on that computer first",
+        detail: `${name} needs one update on that computer. After that, you can update it from here.`,
       };
     case "unauthorized":
       return {

@@ -38,7 +38,7 @@ export class DesktopUpdatesError extends Error {
   constructor(reason: DesktopUpdatesFailure) {
     super(
       {
-        unsupported: "This deployment does not provide remote updates.",
+        unsupported: "Update Opensteer locally once to enable remote updates.",
         unauthorized: "Sign in to update this computer.",
         forbidden: "Only this computer's owner can update it.",
         conflict: "A desktop update is already in progress.",
