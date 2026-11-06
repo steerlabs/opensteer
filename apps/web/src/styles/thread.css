@@ -1551,28 +1551,6 @@ fieldset.action-panel {
   justify-content: flex-end;
 }
 
-/* Where this reader stopped last time. A position, not an alarm. */
-.unread-divider {
-  display: flex;
-  align-items: center;
-  gap: var(--space-8);
-  margin: var(--space-12) 0;
-  color: var(--muted);
-  font-size: var(--text-sm);
-}
-
-.unread-divider::before,
-.unread-divider::after {
-  content: "";
-  flex: 1;
-  height: 1px;
-  background: var(--line);
-}
-
-.unread-divider__label {
-  flex-shrink: 0;
-}
-
 /* Offered, never taken: arriving work does not move a reader who is elsewhere. */
 .transcript__jump {
   position: absolute;

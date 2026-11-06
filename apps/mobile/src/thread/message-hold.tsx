@@ -74,6 +74,7 @@ export function MessageHold(
   props: MessageOptions & {
     readonly children: ReactNode;
     readonly previewRadius: number;
+    readonly previewBottomEndRadius?: number | undefined;
     readonly style?: StyleProp<ViewStyle>;
   },
 ): ReactNode {
@@ -83,6 +84,7 @@ export function MessageHold(
       <HoldMenu
         actions={actions}
         onAction={act}
+        previewBottomEndRadius={props.previewBottomEndRadius}
         previewRadius={props.previewRadius}
         style={props.style}
       >

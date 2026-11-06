@@ -604,23 +604,10 @@ function ThreadView({
     }
   };
 
-  /* ---- Reading position: unread divider, read marking, exact jumps ---- */
+  /* ---- Reading position: read marking, exact jumps ---- */
 
   const readState = snapshot.threadReadStates?.[thread.id] ?? null;
-  // Work transcripts keep the arriving read position while somebody catches
-  // up. Conversations have no divider, but still wait for this reader's state
-  // before marking anything read.
-  const boundaryRef = useRef<{ readonly threadId: string; readonly readSequence: string | null }>({
-    readSequence: null,
-    threadId: "",
-  });
-  if (readState && boundaryRef.current.threadId !== thread.id) {
-    boundaryRef.current = { readSequence: readState.readSequence, threadId: thread.id };
-  }
-  // Never read is not the same as read up to nothing: a conversation nobody has
-  // opened has no boundary to draw inside it, only a beginning.
-  const boundaryKnown = boundaryRef.current.threadId === thread.id;
-  const unreadBoundarySequence = boundaryKnown ? boundaryRef.current.readSequence : null;
+  const readKnown = readState !== null;
 
   // What this reader has actually seen published here: the furthest sequence
   // the loaded conversation carries. The Host's `unreadSequence` is not it —
@@ -633,26 +620,15 @@ function ThreadView({
     if (foreground) handleScroll();
   }, [foreground]);
   useEffect(() => {
-    // Nothing is marked before the arriving read position is known: marking
-    // first would move the boundary this visit is about to be drawn from, and
-    // the history the reader has not seen would lose its divider.
-    if (!boundaryKnown || historical || !atTail || !foreground) return;
+    // Until this reader's position arrives, a mark could only repeat it.
+    if (!readKnown || historical || !atTail || !foreground) return;
     if (observed === null) return;
     if (markedSequence !== null && BigInt(markedSequence) >= BigInt(observed)) return;
     void hostClient.markThreadRead(thread.id, observed).catch(() => {
       // A read marker that did not land is retried by the next observation;
       // it is not worth interrupting the reader for.
     });
-  }, [
-    atTail,
-    boundaryKnown,
-    foreground,
-    historical,
-    hostClient,
-    markedSequence,
-    observed,
-    thread.id,
-  ]);
+  }, [atTail, foreground, historical, hostClient, markedSequence, observed, readKnown, thread.id]);
 
   // What a notification has to know before it decides to interrupt: one about
   // the conversation on screen, at its tail, in front of the reader, is
@@ -1067,7 +1043,6 @@ function ThreadView({
                 requestShown={dockedRequests.length > 0}
                 startHold={startHold}
                 threadId={thread.id}
-                unreadBoundarySequence={unreadBoundarySequence}
                 viewerUserId={snapshot.user?.id ?? null}
                 workspaces={snapshot.workspaces}
               />
