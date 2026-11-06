@@ -10,6 +10,7 @@ export interface BrowserAgentFollowState extends BrowserAgentFollowInput {
   readonly following: boolean;
   readonly waitingForMatch: boolean;
   readonly deadline: number | null;
+  readonly lastSwitch: number | null;
 }
 
 export type BrowserAgentFollowEvent =
@@ -29,6 +30,7 @@ export function initialBrowserAgentFollowState(): BrowserAgentFollowState {
     following: false,
     waitingForMatch: true,
     deadline: null,
+    lastSwitch: null,
   };
 }
 
@@ -48,7 +50,7 @@ export function transitionBrowserAgentFollow(
     state = { ...(changedThread ? initialBrowserAgentFollowState() : previous), ...event.input };
     if (state.threadId === null) state = initialBrowserAgentFollowState();
     else if (state.agentTab === null && state.following)
-      state = { ...state, following: false, waitingForMatch: false, deadline: null };
+      state = { ...state, following: false, waitingForMatch: true, deadline: null };
     else if (state.waitingForMatch && sameTab(state.shownTab, state.agentTab))
       state = { ...state, following: true, waitingForMatch: false };
   } else if (event.type === "pause") {
@@ -58,21 +60,19 @@ export function transitionBrowserAgentFollow(
     state = {
       ...state,
       following: follow !== null,
-      waitingForMatch: false,
+      waitingForMatch: follow === null,
+      lastSwitch: follow === null ? state.lastSwitch : now,
       shownTab: follow ?? state.shownTab,
       deadline: null,
     };
-  } else if (state.deadline !== null && now >= state.deadline && state.following) {
-    follow = sameTab(state.shownTab, state.agentTab) ? null : state.agentTab;
-    state = { ...state, shownTab: follow ?? state.shownTab, deadline: null };
   }
-  state = {
-    ...state,
-    deadline:
-      state.following && state.agentTab !== null
-        ? (state.deadline ?? (!sameTab(state.shownTab, state.agentTab) ? now + 1000 : null))
-        : null,
-  };
+  if (state.following && state.agentTab !== null && !sameTab(state.shownTab, state.agentTab)) {
+    const deadline = state.lastSwitch === null ? now : state.lastSwitch + 1000;
+    if (now >= deadline) {
+      follow = state.agentTab;
+      state = { ...state, shownTab: follow, lastSwitch: now, deadline: null };
+    } else state = { ...state, deadline };
+  } else state = { ...state, deadline: null };
   return { state, follow };
 }
 

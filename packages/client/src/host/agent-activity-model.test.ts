@@ -2473,6 +2473,8 @@ it("marks an addressed message read beyond the active Run's intermediate message
 });
 
 describe("page stops", () => {
+  const browser = (text: string, overrides: Partial<ToolEntry> = {}) =>
+    command(`"$OPENSTEER_BROWSER_HARNESS" --session "$SESSION_ID" ${text}`, overrides);
   const stop = (id: string, tab = "A"): PlaceEntry => ({
     kind: "place",
     id,
@@ -2491,10 +2493,10 @@ describe("page stops", () => {
       b = stop("second", "B"),
       again = stop("third"),
       last = stop("fourth", "B");
-    const first = command("one"),
-      second = command("two"),
-      third = command("three"),
-      fourth = command("four");
+    const first = browser("one"),
+      second = browser("two"),
+      third = browser("three"),
+      fourth = browser("four");
     const entries = [a, first, b, second, again, third, last, fourth];
     expect(workRows(entries)).toMatchObject([
       {
@@ -2511,9 +2513,14 @@ describe("page stops", () => {
     expect(turnWords(turn)).toEqual([]);
   });
   it("keeps trailing places until a step absorbs them without changing the row key", () => {
-    const first = command("one"),
+    const first = browser("one", {
+        arguments: {
+          command:
+            '"$OPENSTEER_BROWSER_HARNESS" --session bsn_00000000-0000-4000-8000-000000000001 one',
+        },
+      }),
       a = stop("tail"),
-      second = command("two");
+      second = browser("two");
     expect(workRows([first, a])).toMatchObject([
       { key: `row:${first.id}` },
       { kind: "place", entry: a },
@@ -2530,12 +2537,12 @@ describe("page stops", () => {
   it("uses site labels, live hints and preserves errors across place markers", () => {
     const a = { ...stop("a"), site: "https://www.sofi.com/banking" };
     const b = { ...stop("b", "B"), site: "https://bilt.com/transactions" };
-    const first = command("one", { isError: true, state: "failed" });
-    const live = command("two", { state: "running" });
+    const first = browser("one", { isError: true, state: "failed" });
+    const live = browser("two", { state: "running" });
     expect(workRows([a, first, b, live])[0]).toMatchObject({
-      head: { label: "Using sofi.com and bilt.com", detail: "two", errors: 1 },
+      head: { label: "Using sofi.com and bilt.com", detail: "2 steps", errors: 1 },
     });
-    expect(workRows([a, first, b, command("three")])[0]).toMatchObject({
+    expect(workRows([a, first, b, browser("three")])[0]).toMatchObject({
       head: { label: "Used sofi.com and bilt.com", detail: "2 steps", errors: 1 },
     });
   });
@@ -2564,7 +2571,8 @@ describe("page stops", () => {
       },
     ]);
     expect(workRows([first, marker, failed])).toMatchObject([
-      { entries: [first, marker, failed], places: [marker], head: { errors: 1 } },
+      { entries: [first, failed], places: [], head: { label: "Get message", errors: 1 } },
+      { kind: "place", entry: marker },
     ]);
     const stableAccount = call({
       arguments: { operation: "gmail.usersMessagesGet@account-1", account: "account-1" },
@@ -2578,10 +2586,10 @@ describe("page stops", () => {
         operation: { ...subject.operation, title: "Read mail" },
       },
     });
-    expect(workRows([stableAccount, renamed])).toHaveLength(1);
+    expect(workRows([stableAccount, renamed])).toHaveLength(2);
     expect(
       workRows([first, call({ arguments: { operation: "gmail.usersMessagesGet@account-2" } })]),
-    ).toHaveLength(2);
+    ).toHaveLength(1);
     const otherAccount = call({ integration: { ...subject, account: "Personal" } });
     const otherOperation = call({
       integration: {
@@ -2601,6 +2609,108 @@ describe("page stops", () => {
       head: { label: "Get message", tone: "running" },
     });
   });
+  it("folds a synthetic bills run by subject without turning mail into browser work", () => {
+    const subject: IntegrationCallSubject = {
+      account: "Example",
+      computerApp: null,
+      effect: "read",
+      integration: "Gmail",
+      operation: { name: "gmail.messages.get", title: "Get message" },
+    };
+    const call = (overrides: Partial<ToolEntry> = {}) =>
+      tool({
+        tool: { name: "integration_call", namespace: "opensteer" },
+        integration: subject,
+        ...overrides,
+      });
+    const work: Turn["work"][number][] = [];
+    const expectedBrowser: Turn["work"][number][][] = [];
+    for (const [block, count] of [12, 7, 25].entries()) {
+      const steps: Turn["work"][number][] = [];
+      for (let i = 0; i < 30; i++) {
+        const site = ["bilt.com", "sofi.com", "chase.com"][i % 3]!;
+        steps.push(
+          { ...stop(`visit-${block}-${i}`, site), site: `https://${site}` },
+          browser(`page-${i}`),
+        );
+      }
+      work.push(...steps);
+      expectedBrowser.push(steps);
+      for (let i = 0; i < count; i++) {
+        if (i === 3) work.push(stop(`mail-place-${block}`, "bilt.com"));
+        work.push(call(block === 2 && i === 10 ? { state: "failed", isError: true } : {}));
+      }
+      if (block === 0)
+        work.push(
+          call({
+            integration: {
+              ...subject,
+              effect: "write",
+              operation: { name: "gmail.messages.send", title: "Send message" },
+            },
+          }),
+        );
+      if (block === 1) work.push(message());
+    }
+    work.push(browser("last"));
+    const rows = workRows(work);
+    const mail = rows.filter((row) => row.kind === "steps" && row.group === "integration-call");
+    expect(mail.map((row) => (row.kind === "steps" ? row.entries.length : 0))).toEqual([
+      12, 1, 7, 25,
+    ]);
+    expect(mail.at(-1)).toMatchObject({ head: { errors: 1, label: "Get message" }, places: [] });
+    for (const row of mail) {
+      if (row.kind === "steps") expect(row.head.label).not.toContain("Used");
+    }
+    const browsers = rows.filter((row) => row.kind === "steps" && row.group === "browser");
+    expect(browsers).toHaveLength(4);
+    for (const [index, steps] of expectedBrowser.entries()) {
+      const row = browsers[index];
+      expect(row).toMatchObject({ head: { label: "Used bilt.com, sofi.com and 1 more" } });
+      if (row?.kind === "steps") expect(row.entries.slice(-steps.length)).toEqual(steps);
+    }
+    for (const row of rows) {
+      if (row.kind !== "steps") continue;
+      const ids = new Set(row.entries.map((entry) => entry.id));
+      expect(row.entries).toEqual(work.filter((entry) => ids.has(entry.id)));
+    }
+    const collapsedEntries = rows.flatMap<Turn["work"][number]>((row) =>
+      row.kind === "steps" ? [...row.entries] : [row.entry],
+    );
+    expect(collapsedEntries.map((entry) => entry.id).sort()).toEqual(
+      work.map((entry) => entry.id).sort(),
+    );
+  });
+  it("keeps browser sessions separate and recognizes PowerShell harness commands", () => {
+    const first = command('"$OPENSTEER_BROWSER_HARNESS" --session session-a evaluate');
+    const second = command('& $env:OPENSTEER_BROWSER_HARNESS --session "session-b" evaluate');
+    expect(workRows([first, second, first])).toHaveLength(3);
+    const marker = stop("other-session");
+    expect(workRows([marker, first])).toMatchObject([
+      { group: "browser", places: [], head: { label: "Used the browser" } },
+      { kind: "place", entry: marker },
+    ]);
+    expect(toolPresentation(second)).toMatchObject({ kind: "browser", hint: "Browser page work" });
+    expect(workRows([stop("pending"), command("echo hello")])).toMatchObject([
+      { group: "command", places: [], head: { label: "Ran a command" } },
+      { kind: "place" },
+    ]);
+  });
+  it("keeps run work and reasoning boundaries separate", () => {
+    const grouped = turns([
+      run(),
+      browser("first"),
+      run({ id: "run-b" }),
+      browser("second", { runId: "run-b" }),
+    ]);
+    expect(grouped).toHaveLength(2);
+    expect(grouped.map((turn) => workRows(turn.work).length)).toEqual([1, 1]);
+    expect(
+      workRows([browser("first"), stop("pending"), reasoning(), browser("second")]).map(
+        (row) => row.kind,
+      ),
+    ).toEqual(["steps", "place", "reasoning", "steps"]);
+  });
   it("counts stops in the trace window and keeps an explicitly revealed stop", () => {
     const rows = workRows(Array.from({ length: 35 }, (_, i) => stop(`stop-${i}`)));
     expect(traceWindow(rows, { showAll: false, keep: null })).toEqual({
@@ -2614,7 +2724,7 @@ describe("page stops", () => {
     expect(traceWindow(rows, { showAll: true, keep: null })).toEqual({ hidden: 0, rows });
     const grouped = workRows([
       stop("grouped"),
-      command("one"),
+      browser("one"),
       ...Array.from({ length: 35 }, () => message()),
     ]);
     expect(traceWindow(grouped, { showAll: false, keep: "grouped" })).toEqual({
@@ -2642,15 +2752,15 @@ describe("page stops", () => {
     const place = stop("child-stop");
     const turn: Turn = {
       ...parent,
-      subagentWork: { child: [command("one"), place, command("two")] },
+      subagentWork: { child: [place, browser("one"), browser("two")] },
     };
     expect(workRows(turn.work)).toMatchObject([{ kind: "subagent", entry: node }]);
     expect(workRows(turn.subagentWork.child!)).toMatchObject([
       {
         kind: "steps",
         entries: [
-          expect.objectContaining({ kind: "tool" }),
           place,
+          expect.objectContaining({ kind: "tool" }),
           expect.objectContaining({ kind: "tool" }),
         ],
       },
