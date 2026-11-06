@@ -352,6 +352,7 @@ describe("RunnerRuntime", () => {
     const driver = new FakeHarnessDriver("test-driver", () => new ScriptedHarnessSession([]));
     const create = driver.create.bind(driver);
     let started = false;
+    let finished = false;
     vi.spyOn(driver, "create").mockImplementation(async (input) => ({
       ...(await create(input)),
       generateText: async ({ signal }) => {
@@ -359,13 +360,23 @@ describe("RunnerRuntime", () => {
         await new Promise<void>((resolve) =>
           signal.addEventListener("abort", () => resolve(), { once: true }),
         );
+        finished = true;
         return { ok: false, failure: "timeout" };
       },
     }));
     registry.registerDriver(driver);
     const environmentId = createId("environment");
     const command = executeCommand(environmentId);
-    const runtime = configuredRuntime({ environmentId, registry });
+    const runtime = configuredRuntime({
+      environmentId,
+      registry,
+      // This in-memory harness has no processes; native inventory is covered by containment tests.
+      containment: new ExecutionContainment({
+        bootId: "boot-control-test",
+        dataDirectory: testPrivateStateRoot,
+        listProcesses: async () => [],
+      }),
+    });
     await reconcile(registry, command);
     const generation = runtime.generateBackgroundText(
       HostBackgroundTextSchema.parse({
@@ -384,6 +395,7 @@ describe("RunnerRuntime", () => {
       await vi.waitFor(() => expect(started).toBe(true), { timeout: 2_000 });
       await runtime.handleCommand(command, { send: async () => undefined });
       await vi.waitFor(() => expect(runtime.activeRunIds()).toEqual([]), { timeout: 2_000 });
+      expect(finished).toBe(false);
     } finally {
       await runtime.close();
       await generation;
