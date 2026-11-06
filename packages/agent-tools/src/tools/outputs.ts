@@ -432,6 +432,7 @@ export const ThreadWaitOutputSchema = z.object({
   pendingRequest: z.object({ id: z.string(), kind: z.string() }).optional(),
   run: z.object({ id: RunSchema.shape.id, status: RunSchema.shape.status }).optional(),
   items: z.array(ThreadItemSchema).max(100),
+  hasMore: z.boolean(),
 });
 export const ThreadConfigureOutputSchema = z.object({
   threadId: ThreadIdSchema,

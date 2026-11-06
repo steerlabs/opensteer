@@ -66,7 +66,7 @@ describeStore("agent Thread history", (it) => {
       threadId: f.thread.id,
       limit: 100,
     });
-    const messages = visible!.items.filter((item) => item.type === "message");
+    const messages = visible!.items.flatMap((item) => (item.type === "message" ? [item] : []));
     expect(messages.filter((item) => item.message.id === queued.message.id)).toHaveLength(1);
     expect(messages[0]).toMatchObject({
       sequence: last.sequence,

@@ -38,7 +38,7 @@ export const thread_read = defineAgentTool({
     .strictObject({
       threadId: z.union([ThreadIdSchema, z.literal("home"), z.literal("self")]),
       view: z.enum(["messages", "activity"]).default("messages"),
-      limit: z.number().int().min(1).max(100).default(50).describe("Max items."),
+      limit: z.number().int().min(1).max(100).default(20).describe("Max items."),
       runLimit: z.number().int().min(1).max(50).default(10).describe("Max recent Runs."),
       maxCharsPerItem: z
         .number()
@@ -96,7 +96,7 @@ export const thread_delegate = defineAgentTool({
   targetFields: ["threadId"],
   title: "Start or continue a task",
   description:
-    "Start one task, or give a finished one more work with `threadId`, which keeps its engine and model. Omit `workspaceId` for this Workspace; connections must name it. It gets only `task` and `places`, no history. No secrets in `task`. Returns the task; keep `assignmentId` for `task_status` and `task_cancel`. Runs and programs get its result automatically: do other work or end your turn. A task that ends with no reply returns nothing. Connections get no Assignment: use `thread_wait`. Change active work with `thread_message`.",
+    "Start one task, or give a finished one more work with `threadId`, which keeps its engine and model. Omit `workspaceId` for this Workspace; connections must name it. It gets only `task` and `places`, no history. No secrets in `task`. Returns the task; keep `assignmentId` for `task_status` and `task_cancel`. Runs and programs get its result automatically: do other work or end your turn. A task that ends with no reply returns nothing, so ask conditional checks to end that way when nothing merits passing on. Connections get no Assignment: use `thread_wait`. Change active work with `thread_message`.",
   input: z
     .strictObject({
       environmentId: EnvironmentIdSchema.optional().describe("New task computer; omit to inherit."),
@@ -168,7 +168,7 @@ export const task_status = defineAgentTool({
   name: "task_status",
   title: "Read a task",
   description:
-    "Read one task. Results of tasks you delegated reach you automatically, so do not poll. Check once when someone asks or you need its state now.",
+    "Read one task. In a Run or program, results of tasks you delegated reach you automatically, so do not poll. Check once when someone asks or you need its state now.",
   input: z.strictObject({ assignmentId: AssignmentIdSchema }),
   output: TaskSchema,
   access: "read",
@@ -223,7 +223,7 @@ export const thread_interrupt = defineAgentTool({
   targetFields: ["threadId"],
   title: "Interrupt a Thread",
   description:
-    "Stop a Thread's current Run and pause its queue; waiting inputs stay. Omit `threadId` for this Thread. No effect when idle. Resume with `thread_queue`. For a task no longer wanted: `task_cancel`.",
+    "Stop a Thread's current Run and pause a task's queue; waiting inputs stay. Omit `threadId` for this Thread. No effect when idle. Resume with `thread_queue`. For a task no longer wanted: `task_cancel`.",
   input: z
     .strictObject({ threadId: ThreadIdSchema.optional() })
     .safeExtend({ operationKey: OperationKeySchema.optional() }),
@@ -301,6 +301,7 @@ export const thread_configure = defineAgentTool({
     }),
   output: ThreadConfigureOutputSchema,
   access: "write",
+  readsOnly: (input) => !input.harnessInstanceId && !input.modelSelection,
   callers: ["run", "program", "connection"] as const,
 });
 export const thread_queue = defineAgentTool({
@@ -331,6 +332,7 @@ export const thread_queue = defineAgentTool({
     }),
   output: ThreadQueueOutputSchema,
   access: "write",
+  readsOnly: (input) => input.action === "list",
   callers: ["run", "program", "connection"] as const,
   destructive: true,
 });

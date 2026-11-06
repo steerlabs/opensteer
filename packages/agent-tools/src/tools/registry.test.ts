@@ -47,6 +47,7 @@ describe("Opensteer tool registry", () => {
   it("strips wait metadata and refuses access-mode changes through configure", () => {
     expect(
       thread_wait.output.parse({
+        hasMore: false,
         status: "running",
         items: [],
         token: "secret",
@@ -57,6 +58,7 @@ describe("Opensteer tool registry", () => {
         },
       }),
     ).toEqual({
+      hasMore: false,
       status: "running",
       items: [],
       run: { id: "run_11111111-1111-4111-8111-111111111111", status: "running" },

@@ -2,7 +2,9 @@ import {
   MessageIdSchema,
   OpensteerError,
   SequenceSchema,
+  compareSequence,
   type MessageId,
+  type RunId,
   type AgentEvent,
   type Message,
   type Sequence,
@@ -17,7 +19,7 @@ import { messageFromRow } from "./thread-row-mappers.js";
 import { publishedMessagePredicate } from "./message-visibility.js";
 import { databaseOperationOptions } from "./operation-budget.js";
 
-type MessageMarker = "message.created" | "message.placed" | "assistant.message";
+type MessageMarker = "message.created" | "message.placed";
 type ActivityEvent = Extract<
   AgentEvent,
   {
@@ -41,11 +43,8 @@ export type AgentThreadActivityItem =
       readonly message: Message;
     };
 const maximumEventSequence = 9_223_372_036_854_775_807n;
-const markers: readonly MessageMarker[] = [
-  "message.created",
-  "message.placed",
-  "assistant.message",
-];
+// Every message has a `message.created`, assistant replies included.
+const markers: readonly MessageMarker[] = ["message.created", "message.placed"];
 const types = [
   ...markers,
   "tool.started",
@@ -58,6 +57,15 @@ const types = [
   "node.started",
   "node.completed",
 ] as const;
+
+const emptyActivity = {
+  items: [],
+  starts: [],
+  requesters: new Map<RunId, UserId>(),
+  nodeTitles: new Map<string, string>(),
+  hasMore: false,
+  nextBefore: null,
+};
 
 async function canRead(
   transaction: Transaction<DatabaseSchema>,
@@ -163,7 +171,7 @@ export async function readAgentThreadActivity(
       if (!(await canRead(tx, input.threadId, input.ownerId))) return null;
       const messageId = input.itemId ? MessageIdSchema.safeParse(input.itemId) : null;
       const sequence = input.itemId ? SequenceSchema.safeParse(input.itemId) : null;
-      const markerId = sql<MessageId>`coalesce(e.data->>'messageId', e.data->'message'->>'id')`;
+      const markerId = sql<MessageId>`e.data->'message'->>'id'`;
       let candidates = tx
         .selectFrom("workspaceEvents as e")
         .where("e.threadId", "=", input.threadId)
@@ -171,30 +179,15 @@ export async function readAgentThreadActivity(
         .where((eb) =>
           eb.or([
             eb("e.type", "not in", markers),
-            eb.and([
-              eb.exists(
-                eb
-                  .selectFrom("messages as m")
-                  .leftJoin("threadInputs as i", "i.messageId", "m.id")
-                  .select("m.id")
-                  .where("m.threadId", "=", input.threadId)
-                  .where("m.id", "=", markerId)
-                  .where(publishedMessagePredicate("i")),
-              ),
-              eb.not(
-                eb.exists(
-                  eb
-                    .selectFrom("workspaceEvents as newer")
-                    .select("newer.sequence")
-                    .where("newer.threadId", "=", input.threadId)
-                    .where("newer.type", "in", markers)
-                    .whereRef("newer.sequence", ">", "e.sequence")
-                    .where(
-                      sql<boolean>`coalesce(newer.data->>'messageId',newer.data->'message'->>'id') = ${markerId}`,
-                    ),
-                ),
-              ),
-            ]),
+            eb.exists(
+              eb
+                .selectFrom("messages as m")
+                .leftJoin("threadInputs as i", "i.messageId", "m.id")
+                .select("m.id")
+                .where("m.threadId", "=", input.threadId)
+                .where("m.id", "=", markerId)
+                .where(publishedMessagePredicate("i")),
+            ),
           ]),
         );
       if (before?.success) candidates = candidates.where("e.sequence", "<", before.data);
@@ -205,17 +198,17 @@ export async function readAgentThreadActivity(
             .where(markerId, "=", messageId.data);
         else if (sequence?.success && BigInt(sequence.data) <= maximumEventSequence)
           candidates = candidates.where("e.sequence", "=", sequence.data);
-        else return { items: [], starts: [], hasMore: false, nextBefore: null };
+        else return emptyActivity;
       }
       // Message markers carry copies of content; only the published message row is read.
       const projected = sql<unknown>`case
-      when e.type in ('message.created','message.placed','assistant.message') then jsonb_build_object('messageId',${markerId})
+      when e.type in ('message.created','message.placed') then jsonb_build_object('messageId',${markerId})
       when e.type = 'tool.started' and ${!input.itemId} then e.data - 'arguments' || '{"arguments":null}'::jsonb
       else e.data end`;
       const metadata = await candidates
         .select([
           "e.sequence",
-          sql<number>`octet_length((${projected})::text) + case when e.type in ('message.created','message.placed','assistant.message') then coalesce((select octet_length(m.content::text) from messages m where m.id = ${markerId} and m.thread_id = ${input.threadId}),0) else 0 end`.as(
+          sql<number>`octet_length((${projected})::text) + case when e.type in ('message.created','message.placed') then coalesce((select octet_length(m.content::text) from messages m where m.id = ${markerId} and m.thread_id = ${input.threadId}),0) else 0 end`.as(
             "bytes",
           ),
         ])
@@ -229,7 +222,7 @@ export async function readAgentThreadActivity(
         selected.push(row.sequence);
         bytes += Number(row.bytes) + 512;
       }
-      if (!selected.length) return { items: [], starts: [], hasMore: false, nextBefore: null };
+      if (!selected.length) return emptyActivity;
       const rows = await tx
         .selectFrom("workspaceEvents as e")
         .selectAll("e")
@@ -253,17 +246,46 @@ export async function readAgentThreadActivity(
             .execute()
         : [];
       const byId = new Map(messages.map((r) => [r.id, messageFromRow(r)]));
+      // A queued message is placed again later, and sits where it was last placed.
+      const placed = ids.length
+        ? await tx
+            .selectFrom("workspaceEvents as e")
+            .select([markerId.as("id"), sql<Sequence>`max(e.sequence)`.as("sequence")])
+            .where("e.threadId", "=", input.threadId)
+            .where("e.type", "=", "message.placed")
+            .where(markerId, "in", ids)
+            .groupBy(markerId)
+            .execute()
+        : [];
+      const lastPlaced = new Map(placed.map((row) => [row.id, row.sequence]));
       const items: AgentThreadActivityItem[] = rows.flatMap<AgentThreadActivityItem>((row) => {
         if (markers.includes(row.type as MessageMarker)) {
-          const message = byId.get(
-            MessageIdSchema.parse((row.data as { messageId: unknown }).messageId),
-          );
-          return message
-            ? [{ type: "message" as const, sequence: SequenceSchema.parse(row.sequence), message }]
+          const id = MessageIdSchema.parse((row.data as { messageId: unknown }).messageId);
+          const message = byId.get(id);
+          const sequence = SequenceSchema.parse(row.sequence);
+          const moved = lastPlaced.get(id);
+          return message && (!moved || compareSequence(moved, sequence) <= 0)
+            ? [{ type: "message" as const, sequence, message }]
             : [];
         }
         return [eventFromRow(row) as ActivityEvent];
       });
+      const runIds = [...new Set(rows.flatMap((r) => (r.runId ? [r.runId] : [])))];
+      const nodeIds = items.flatMap((item) =>
+        item.type === "node.completed" ? [item.data.nodeId] : [],
+      );
+      const [requesters, nodes] = await Promise.all([
+        runIds.length
+          ? tx.selectFrom("runs").select(["id", "requestedBy"]).where("id", "in", runIds).execute()
+          : [],
+        nodeIds.length
+          ? tx
+              .selectFrom("executionNodes")
+              .select(["id", "title"])
+              .where("id", "in", nodeIds)
+              .execute()
+          : [],
+      ]);
       const completions = rows.filter((r) => r.type === "tool.completed").map((r) => r.sequence);
       const starts = completions.length
         ? (
@@ -285,6 +307,8 @@ export async function readAgentThreadActivity(
       return {
         items,
         starts,
+        requesters: new Map(requesters.map((run) => [run.id, run.requestedBy])),
+        nodeTitles: new Map(nodes.map((node) => [node.id, node.title])),
         hasMore: metadata.length > selected.length,
         nextBefore: metadata.length > selected.length ? selected.at(-1)! : null,
       };

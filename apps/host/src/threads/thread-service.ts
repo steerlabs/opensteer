@@ -64,7 +64,6 @@ export class ThreadService {
     selection: {
       readonly specialistId?: string;
       readonly expectedHarnessRevision?: number;
-      readonly icon?: import("@opensteer/core").WorkspaceIconName;
     } = {},
   ) {
     if (

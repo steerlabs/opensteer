@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { boundedThreadItems, itemText } from "./thread-items.js";
+import { boundedThreadItems, itemText, withheldTool } from "./thread-items.js";
 
 it("keeps the newest item past the byte bound, so paging always advances", () => {
   const large = "\u0001".repeat(50_000);
@@ -19,4 +19,21 @@ it("cuts text that escapes past the item bound and still pages to its end", () =
 it("pages text by code point without splitting a surrogate pair", () => {
   expect(itemText("a😀b", 2)).toEqual({ text: "a😀", textTruncated: true, nextTextOffset: 2 });
   expect(itemText("a😀b", 2, 2)).toEqual({ text: "b", textTruncated: false, nextTextOffset: null });
+});
+
+it.each([
+  "sign_in",
+  "use_card",
+  "trigger_write",
+  "computer",
+  "computer.type",
+  "mcp__opensteer__computer",
+  "opensteer_sign_in",
+  "computer (opensteer MCP Server)",
+])("withholds %s however an engine spells it", (name) => {
+  expect(withheldTool(name)).toBe(true);
+});
+
+it.each(["shell", "integration_call", "thread_read", "computers_list"])("keeps %s", (name) => {
+  expect(withheldTool(name)).toBe(false);
 });

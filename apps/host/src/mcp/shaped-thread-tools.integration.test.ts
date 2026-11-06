@@ -276,6 +276,20 @@ describeStore("shaped agent Thread tools", (it) => {
     await expect(s.read({}, { ...actor, userId: outsider })).rejects.toMatchObject({
       code: "forbidden",
     });
+    const part = {
+      type: "computer-app",
+      machineId: nativeRunner,
+      app: { bundleId: "com.apple.Notes", teamId: null, displayName: "Notes" },
+      name: "Private Notes",
+    };
+    await storeFixture.database
+      .updateTable("messages")
+      .set({ content: sql`${JSON.stringify([{ type: "text", text: "Look" }, part])}::jsonb` })
+      .where("threadId", "=", f.thread.id)
+      .execute();
+    const [seen] = (await s.read({}, actor)).items;
+    expect(seen).toMatchObject({ text: "Look\n[Place unavailable]" });
+    expect(seen!.places).toBeUndefined();
   });
 
   it("bounds recent places to the newest 25 Runs, deduplicates them, and returns the newest ten", async ({
@@ -398,6 +412,13 @@ describeStore("shaped agent Thread tools", (it) => {
       operation: { name: "observe", title: "Observe" },
     };
     const reader = await share(storeFixture, f);
+    const member = { ...s.caller, userId: reader };
+    for (const event of [safe.started, safe.completed])
+      expect(
+        (await s.read({ view: "activity", itemId: event.sequence }, member)).items[0],
+      ).toMatchObject({ title: "shell", text: null });
+    expect((await s.read({ view: "activity", limit: 1 }, member)).items[0]!.text).toBeNull();
+    expect((await s.read({ itemId: safe.completed.sequence })).items[0]!.text).not.toBeNull();
     for (const native of [
       subject,
       { ...subject, computerApp: null, phone: { runnerId: nativeRunner, computer: "Phone" } },
@@ -578,6 +599,29 @@ describeStore("shaped agent Thread tools", (it) => {
       operationKey: randomUUID(),
     });
     expect(queue).toEqual({ paused: false, items: [] });
+    await storeFixture.database
+      .updateTable("threads")
+      .set({ accessMode: "full-access" })
+      .where("id", "=", f.thread.id)
+      .execute();
+    const lower = { ...s.caller, accessMode: "approval-required" as const };
+    const listing = thread_queue.input.parse({ action: "list" });
+    expect(thread_queue.readsOnly?.(listing)).toBe(true);
+    expect(
+      await s.product.thread_queue({ caller: lower, input: listing, operationKey: randomUUID() }),
+    ).toEqual({ paused: false, items: [] });
+    await expect(
+      s.product.thread_queue({
+        caller: lower,
+        input: thread_queue.input.parse({ action: "resume" }),
+        operationKey: randomUUID(),
+      }),
+    ).rejects.toThrow("stronger access mode");
+    await storeFixture.database
+      .updateTable("threads")
+      .set({ accessMode: f.thread.accessMode })
+      .where("id", "=", f.thread.id)
+      .execute();
     expect((await s.read({ threadId: "self" })).thread.id).toBe(f.thread.id);
     const here = await s.product.thread_delegate({
       caller: s.caller,
@@ -837,7 +881,9 @@ describeStore("shaped agent Thread tools", (it) => {
       idempotencyKey: "show-task",
     });
     const target = { ...f, run: delegated.run, thread: delegated.thread };
-    await expect(s.show({ runId: delegated.run.id })).rejects.toThrow("thread_read");
+    await expect(s.show({ runId: delegated.run.id })).rejects.toMatchObject({
+      next: "Read recentPlaces with thread_read.",
+    });
     const sessionId = createBrowserSessionId();
     const tabId = BrowserSurfaceIdSchema.parse("guest-task");
     await storeFixture.store.createBrowserSession({
