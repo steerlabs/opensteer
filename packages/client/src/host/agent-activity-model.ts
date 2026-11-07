@@ -1206,15 +1206,27 @@ export function workRows(work: readonly WorkEntry[]): WorkRow[] {
   // A tab is entered while a command runs, so it joins the browser row still
   // open (reasoning doesn't close it), else its session's next command. Only a
   // tab with no row of its session before the next message, Request or subagent
-  // stands alone.
+  // stands alone. A row whose command named its session through a variable is
+  // on the session of the first tab it meets.
   let open: Steps | null = null;
   const sessionRows = new Map<string, Steps>();
+  const unknownSession = JSON.stringify(["browser", null]);
+  const ownerOf = (row: Steps | null | undefined, key: string): Steps | null => {
+    if (!row || (row.joinKey !== key && row.joinKey !== unknownSession)) return null;
+    if (row.joinKey === unknownSession) {
+      sessionRows.delete(unknownSession);
+      row.joinKey = key;
+      sessionRows.set(key, row);
+    }
+    return row;
+  };
   const flushPlaces = () => {
     for (const entry of pending) {
-      const owner =
-        entry.place.kind === "browser"
-          ? sessionRows.get(JSON.stringify(["browser", entry.place.sessionId]))
-          : undefined;
+      const key = JSON.stringify([
+        "browser",
+        entry.place.kind === "browser" ? entry.place.sessionId : null,
+      ]);
+      const owner = ownerOf(sessionRows.get(key) ?? sessionRows.get(unknownSession), key);
       if (owner) owner.entries.push(entry);
       else result.push({ entry, key: `place:${entry.id}`, kind: "place" });
     }
@@ -1230,7 +1242,8 @@ export function workRows(work: readonly WorkEntry[]): WorkRow[] {
         continue;
       }
       session = entry.place.sessionId;
-      if (open?.joinKey === JSON.stringify(["browser", session])) open.entries.push(entry);
+      const owner = ownerOf(open, JSON.stringify(["browser", session]));
+      if (owner) owner.entries.push(entry);
       else pending.push(entry);
       continue;
     }

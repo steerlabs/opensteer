@@ -2551,7 +2551,19 @@ describe("page stops", () => {
       { key: `row:${first.id}`, entries: [first, a] },
       { kind: "reasoning" },
     ]);
+    const named = browser("named"),
+      next = browser("next");
+    expect(workRows([named, a, b, said])).toMatchObject([
+      { key: `row:${named.id}`, entries: [named, a, b], places: [a, b] },
+      { kind: "note" },
+    ]);
+    expect(workRows([named, a, next])).toMatchObject([{ entries: [named, a, next] }]);
     const echo = command("echo done");
+    expect(workRows([named, echo, a, said])).toMatchObject([
+      { entries: [named, a] },
+      { entries: [echo] },
+      { kind: "note" },
+    ]);
     expect(workRows([first, echo, a, said])).toMatchObject([
       { key: `row:${first.id}`, entries: [first, a] },
       { entries: [echo] },
