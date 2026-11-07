@@ -107,6 +107,25 @@ Servers run with the MCP SDK's minimal inherited environment plus the launch's, 
 group; ending a session, stream or Runner kills the whole tree, including descendants of launchers
 such as `npx`. A malformed or stalled transport ends that session, not the integrations stream.
 
+A server may ask the person for values during one tool call with MCP elicitation, in form mode only,
+such as a code a TV shows while pairing. The Host matches it to the single in-flight call from a Run
+on that client and declines otherwise, and declines on engines that can't hold a call for minutes.
+The answer goes only to that call: the `integration.input` Request, its command and events keep it
+redacted, it never reaches the engine, and a pending one has no waiter after a restart, so startup
+cancels it ([integration-input.ts](../apps/host/src/integrations/integration-input.ts)).
+
+## Devices that run no Opensteer
+
+A TV, speaker or light is reached by an agent-made plugin whose server runs on a computer on its
+network. `extensions["com.opensteer"].device` lists the plugin under Devices instead of Plugins and
+names its installation; the agent writes it, so it grants and proves nothing. The plugin records the
+nearest listed task whose agent last installed it, from the Run's claims, and shows it only to members
+of that task's Workspace. Removing a plugin is for administrators or the person who installed it in a
+Workspace. It deletes the plugin's data, such as a pairing, on the Host and on every computer that ran
+its servers. A computer that was offline or predates `pluginDataRemoval` keeps a pending deletion until
+it reconnects and confirms. Removal can't unpair the device itself or stop a same-user shell from
+reaching it.
+
 ## macOS Full Disk Access
 
 macOS attributes filesystem access to the app that launches the Runner tree: the desktop or the

@@ -69,7 +69,7 @@ export async function executeIntegrationAdministration(
       });
       return { type: command.type };
     case "plugin.remove": {
-      assertAdministrator(actor);
+      await options.platform.store.plugins.assertCanRemove(command.pluginId, actor);
       await options.platform.store.specialists.retirePlugin(command.pluginId);
       for (const installation of await options.platform.store.listInstallations()) {
         if (installation.pluginId === command.pluginId)
@@ -80,6 +80,7 @@ export async function executeIntegrationAdministration(
           });
       }
       await options.platform.store.plugins.remove(command.pluginId, administration);
+      await options.platform.removePluginData(command.pluginId);
       return { type: command.type };
     }
     case "plugin.update":

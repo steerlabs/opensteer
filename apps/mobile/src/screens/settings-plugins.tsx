@@ -23,6 +23,8 @@ import {
   pluginTargetKey,
   pluginPlacementLabel,
   pluginAccountRows,
+  pluginsPageRows,
+  fixDeviceDraftText,
 } from "@opensteer/client/settings";
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
@@ -40,6 +42,7 @@ import { NativeSettingsPage } from "./native-settings-page.js";
 import type { NativeSettingsRow, NativeSettingsSection } from "./native-settings-page.types.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 import { useSettingsRead, useSettingsLease, type SettingsRpcData } from "./use-settings-read.js";
+import { useLeaveSheets } from "./leave-sheets.js";
 export function SettingsPluginsScreen({
   route,
 }: StaticScreenProps<{ readonly deploymentId: string; readonly target?: PluginTarget }>) {
@@ -67,6 +70,7 @@ function Plugins({
   const aiSharing = useAiSharing();
   const isCurrent = useSettingsLease(host);
   const navigation = useNavigation();
+  const leave = useLeaveSheets(deploymentId, host);
   const overview = useSettingsRead(host, async () =>
     unwrapRpcResult(await host.rpc["plugins.overview.get"]({})),
   );
@@ -242,8 +246,10 @@ function Plugins({
   });
   const remove = (current: PluginDetailView) =>
     Alert.alert(
-      `Remove ${current.row.title}?`,
-      "This removes its access. Saved credentials may be removed.",
+      `Remove ${current.row.device?.name ?? current.row.title}?`,
+      current.row.device
+        ? "Agents can no longer control it. What it saved on its computer, such as a pairing, is deleted."
+        : "This removes its access. Saved credentials may be removed.",
       [
         { text: "Cancel", style: "cancel" },
         {
@@ -266,7 +272,10 @@ function Plugins({
                     idempotencyKey: mutationIdempotencyKey("plugin-remove"),
                   });
                 }
-              if (isCurrent()) setDetailTarget(undefined);
+              if (!isCurrent()) return;
+              // A device's page was opened from Devices, where it is now gone.
+              if (current.row.device && target) navigation.goBack();
+              else setDetailTarget(undefined);
             }),
         },
       ],
@@ -337,14 +346,48 @@ function Plugins({
     });
   if (detail) {
     const row = detail.row;
+    const device = row.device ?? null;
     sections.push({
       key: "hero",
-      title: row.title,
+      title: device?.name ?? row.title,
       rows: [
-        text("source", `${row.source.kind}${row.source.version ? ` · ${row.source.version}` : ""}`),
+        ...(device
+          ? []
+          : [
+              text(
+                "source",
+                `${row.source.kind}${row.source.version ? ` · ${row.source.version}` : ""}`,
+              ),
+            ]),
         toggle(row),
       ],
     });
+    if (device && row.target.kind === "plugin") {
+      const pluginId = row.target.pluginId;
+      const setupThreadId = detail.setupThreadId ?? null;
+      const setupTitle =
+        setupThreadId === null
+          ? null
+          : (host.getSnapshot().threads.find(({ id }) => id === setupThreadId)?.title ?? "");
+      sections.push({
+        key: "device",
+        title: "Device",
+        rows: [
+          ...(setupThreadId === null
+            ? []
+            : [
+                button("setup", setupTitle ? `Set up in ${setupTitle}` : "Set up in a task", () =>
+                  leave.openThread(setupThreadId),
+                ),
+              ]),
+          button(
+            "fix",
+            "Fix",
+            () => void leave.openNewTask(fixDeviceDraftText({ name: device.name, pluginId })),
+          ),
+        ],
+      });
+    }
     const servers =
       secrets.data?.filter((server) => detail.installationIds.includes(server.installationId)) ??
       [];
@@ -550,7 +593,7 @@ function Plugins({
       ],
     });
   } else {
-    const groups = pluginGroups(overview.data?.rows ?? [], search);
+    const groups = pluginGroups(pluginsPageRows(overview.data?.rows ?? []), search);
     for (const group of ["Needs you", "On", "Turned off"] as const) {
       const items: NativeSettingsRow[] = [];
       for (const row of groups[group]) {

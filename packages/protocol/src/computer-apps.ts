@@ -341,6 +341,7 @@ export const HostIntegrationsMcpCloseSchema = z.strictObject({
 export type HostIntegrationsMcpClose = z.infer<typeof HostIntegrationsMcpCloseSchema>;
 
 export type HostIntegrationsOperation =
+  | HostIntegrationsPluginDataRemove
   | HostIntegrationsPasswordSignIn
   | z.infer<typeof HostIntegrationsDisplayResolveSchema>
   | HostIntegrationsComputerAppWindows
@@ -457,6 +458,27 @@ export const RunnerIntegrationsMcpClosedSchema = z.strictObject({
   type: z.literal("runner.integrations.mcp.closed"),
 });
 export type RunnerIntegrationsMcpClosed = z.infer<typeof RunnerIntegrationsMcpClosedSchema>;
+
+const PluginDataIdSchema = z.string().regex(/^[a-zA-Z0-9_-]{1,120}$/u);
+/**
+ * A plugin was removed: end its sessions here and delete what its servers kept
+ * on this computer, such as a device's pairing. Sent only to a Runner that
+ * advertises `pluginDataRemoval`, and again until it confirms.
+ */
+export const HostIntegrationsPluginDataRemoveSchema = z.strictObject({
+  ...integrationsFrameBase,
+  pluginId: PluginDataIdSchema,
+  type: z.literal("host.integrations.plugin-data.remove"),
+});
+export type HostIntegrationsPluginDataRemove = z.infer<
+  typeof HostIntegrationsPluginDataRemoveSchema
+>;
+/** The removed plugin's data is gone from this computer, or was never here. */
+export const RunnerIntegrationsPluginDataRemovedSchema = z.strictObject({
+  ...integrationsFrameBase,
+  pluginId: PluginDataIdSchema,
+  type: z.literal("runner.integrations.plugin-data.removed"),
+});
 
 /** Independent owner authority, bound to this authenticated auxiliary connection; never a Run. */
 export const HostIntegrationsComputerViewSchema = z
@@ -767,6 +789,7 @@ export const HostToIntegrationsModuleMessageSchema = z
     HostIntegrationsMcpOpenSchema,
     HostIntegrationsMcpMessageSchema,
     HostIntegrationsMcpCloseSchema,
+    HostIntegrationsPluginDataRemoveSchema,
   ])
   .refine(frameFits, `Computer app frame exceeds ${computerAppMaxFrameBytes} bytes`);
 export type HostToIntegrationsModuleMessage = z.infer<typeof HostToIntegrationsModuleMessageSchema>;
@@ -793,6 +816,7 @@ export const IntegrationsModuleEventSchema = z
     RunnerIntegrationsMcpOpenedSchema,
     RunnerIntegrationsMcpMessageSchema,
     RunnerIntegrationsMcpClosedSchema,
+    RunnerIntegrationsPluginDataRemovedSchema,
   ])
   .refine(frameFits, `Computer app frame exceeds ${computerAppMaxFrameBytes} bytes`);
 export type IntegrationsModuleEvent = z.infer<typeof IntegrationsModuleEventSchema>;

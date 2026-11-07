@@ -88,6 +88,7 @@ import {
   type TaskOutcome,
 } from "./task-status.js";
 import { WaitingQuestions } from "./waiting-questions.js";
+import { ThreadServerApprovals } from "../computers/computer-app-approval.js";
 import { waitingQuestion } from "./docked-requests.js";
 import {
   TranscriptAppTabsContext,
@@ -1362,6 +1363,9 @@ function ThreadPaneForUser(
               onOpen={openSurface}
               runId={stopTarget.id}
             />
+          )}
+          {voiceThread && onCall ? null : (
+            <ThreadServerApprovals hostClient={hostClient} threadId={thread.id} />
           )}
           {voiceThread && onCall ? null : (
             <WaitingQuestions

@@ -1,4 +1,6 @@
-import { mkdir } from "node:fs/promises";
+import { isNodeError } from "@opensteer/shared/nodeError";
+import { assertPluginDataId, removePluginData } from "@opensteer/shared/privateFiles";
+import { mkdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { fetchPluginPackage, retainPluginPackages } from "../skills/plugin-cache.js";
 import { readBoundedResponse } from "@opensteer/shared/boundedJson";
@@ -25,6 +27,7 @@ import {
 } from "@opensteer/protocol";
 
 export type LocalMcpFrame =
+  | { readonly type: "runner.integrations.plugin-data.removed"; readonly pluginId: string }
   | Pick<RunnerIntegrationsMcpOpened, "sessionId" | "type">
   | Pick<RunnerIntegrationsMcpMessage, "message" | "sessionId" | "type">
   | Pick<RunnerIntegrationsMcpClosed, "error" | "sessionId" | "type">;
@@ -46,6 +49,7 @@ const tooLargeSentence =
 const notReadingSentence = "The MCP server stopped taking what it was sent, so its session ended.";
 
 interface Session {
+  readonly pluginId: string | undefined;
   readonly releasePackage?: (() => Promise<void>) | undefined;
   closing: boolean;
   error: Error | undefined;
@@ -67,6 +71,7 @@ interface Session {
 export class LocalMcpServers {
   readonly #stateDirectory: string | undefined;
   readonly #sessions = new Map<string, Session>();
+  readonly #closing = new Map<Session, Promise<void>>();
   /** Bumped by every attach and detach; work begun under another one stops. */
   #generation = 0;
   #send: ((frame: LocalMcpFrame) => Promise<void>) | undefined;
@@ -86,17 +91,7 @@ export class LocalMcpServers {
     for (const [sessionId, session] of this.#sessions) {
       this.#sessions.delete(sessionId);
       session.closing = true;
-      void session.transport
-        .close()
-        .then(
-          async () => {
-            await session.releasePackage?.();
-          },
-          async () => {
-            await session.releasePackage?.();
-          },
-        )
-        .catch(() => undefined);
+      void this.#closeSession(session).catch(() => undefined);
     }
   }
 
@@ -155,6 +150,7 @@ export class LocalMcpServers {
     }
     const transport = launchTransport(launch);
     const session: Session = {
+      pluginId: frame.launch.pluginId,
       releasePackage,
       closing: false,
       error: undefined,
@@ -176,17 +172,7 @@ export class LocalMcpServers {
       if (session.closing) return;
       // The program exited on its own; anything it started goes with it.
       session.closing = true;
-      void transport
-        .close()
-        .then(
-          async () => {
-            await session.releasePackage?.();
-          },
-          async () => {
-            await session.releasePackage?.();
-          },
-        )
-        .catch(() => undefined);
+      void this.#closeSession(session).catch(() => undefined);
       void this.#closed(frame.sessionId, "failed", stoppedSentence(session));
     };
     try {
@@ -228,13 +214,48 @@ export class LocalMcpServers {
     );
   }
 
-  async close(frame: HostIntegrationsMcpClose): Promise<void> {
+  async close(frame: Pick<HostIntegrationsMcpClose, "sessionId">): Promise<void> {
     const session = this.#sessions.get(frame.sessionId);
     if (!session) return;
     this.#sessions.delete(frame.sessionId);
     session.closing = true;
-    await session.transport.close().catch(() => undefined);
-    await session.releasePackage?.();
+    await this.#closeSession(session);
+  }
+
+  async removePluginData(pluginId: string): Promise<void> {
+    if (!this.#stateDirectory) throw new Error("Plugin data is unavailable");
+    assertPluginDataId(pluginId);
+    for (const [sessionId, session] of this.#sessions) {
+      if (session.pluginId === pluginId) await this.close({ sessionId });
+    }
+    await Promise.all(
+      [...this.#closing]
+        .filter(([session]) => session.pluginId === pluginId)
+        .map(([, closing]) => closing),
+    );
+    let stateDirectory: string | undefined;
+    try {
+      stateDirectory = await realpath(this.#stateDirectory);
+    } catch (error) {
+      if (!isNodeError(error) || error.code !== "ENOENT") throw error;
+    }
+    if (stateDirectory) await removePluginData(path.join(stateDirectory, "plugin-data"), pluginId);
+    await this.#emit({ type: "runner.integrations.plugin-data.removed", pluginId });
+  }
+
+  #closeSession(session: Session): Promise<void> {
+    const pending = this.#closing.get(session);
+    if (pending) return pending;
+    const closing = (async () => {
+      try {
+        await session.transport.close().catch(() => undefined);
+        await session.releasePackage?.();
+      } finally {
+        this.#closing.delete(session);
+      }
+    })();
+    this.#closing.set(session, closing);
+    return closing;
   }
 
   #relay(sessionId: string, session: Session, message: JSONRPCMessage): void {
@@ -264,8 +285,7 @@ export class LocalMcpServers {
     this.#sessions.delete(sessionId);
     session.closing = true;
     const generation = this.#generation;
-    await session.transport.close().catch(() => undefined);
-    await session.releasePackage?.();
+    await this.#closeSession(session);
     if (generation === this.#generation) await this.#closed(sessionId, code, message);
   }
 

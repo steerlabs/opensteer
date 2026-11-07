@@ -36,6 +36,7 @@ export const RequestKindSchema = z.enum([
   "integration.install",
   "machine.full-disk-access",
   "computer.app.access",
+  "integration.input",
 ]);
 type RequestKind = z.infer<typeof RequestKindSchema>;
 
@@ -420,6 +421,16 @@ const requestPayloadVariants = [
         });
       }
     }),
+  /**
+   * A computer-run MCP server asked the person for values during a tool call,
+   * such as the code a TV shows while pairing. The answer goes only to that
+   * server's waiting call: never to the agent, the Request row or an event.
+   */
+  z.strictObject({
+    installationId: IntegrationIdentifierSchema,
+    kind: z.literal("integration.input"),
+    serverId: IntegrationIdentifierSchema,
+  }),
 ] as const;
 export const RequestPayloadSchema = z.discriminatedUnion("kind", requestPayloadVariants);
 const RequestPayloadViewSchema = z.discriminatedUnion("kind", [
@@ -445,6 +456,7 @@ const RequestPayloadViewSchema = z.discriminatedUnion("kind", [
     ...requestPayloadVariants[10].shape,
     app: z.object(computerAppIdentityShape).nullable(),
   }),
+  z.object(requestPayloadVariants[11].shape),
 ]);
 export type RequestPayload = z.infer<typeof RequestPayloadSchema>;
 

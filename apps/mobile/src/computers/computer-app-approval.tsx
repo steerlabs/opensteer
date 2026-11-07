@@ -1,7 +1,10 @@
 import { StyleSheet, View } from "react-native";
 import { AppText, SecondaryButton } from "../ui/primitives.js";
 import { Sheet } from "../ui/sheet.js";
-import { useComputerAppApproval as useOwnerComputerAppApproval } from "@opensteer/client/react";
+import {
+  useComputerAppApproval as useOwnerComputerAppApproval,
+  useThreadServerApprovals,
+} from "@opensteer/client/react";
 import {
   computerAppApprovalDetails,
   computerAppApprovalSecretFields,
@@ -11,7 +14,7 @@ import {
 import type { HostClient } from "@opensteer/client/host";
 import { useState } from "react";
 
-import { space } from "../theme.js";
+import { material, radius, space } from "../theme.js";
 import { LocalMcpSecretFields } from "./local-mcp-secret-fields.js";
 
 /**
@@ -127,7 +130,35 @@ export function ComputerSetupApprovals(props: {
   );
 }
 
+/** Plugin servers an agent in this Thread installed, waiting for the owner to allow them to start. */
+export function ThreadServerApprovals(props: {
+  readonly hostClient: HostClient;
+  readonly threadId: string;
+}) {
+  const { requests, reload } = useThreadServerApprovals(props.hostClient, props.threadId);
+  if (requests.length === 0) return null;
+  return (
+    <View style={styles.threadCard}>
+      <AppText role="caption" tone="ember">
+        Needs you
+      </AppText>
+      <ComputerSetupApprovals
+        hostClient={props.hostClient}
+        onChanged={reload}
+        requests={requests}
+      />
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   dialog: { paddingHorizontal: space[16], paddingTop: space[8] },
   review: { gap: space[12] },
+  threadCard: {
+    ...material.attention,
+    borderRadius: radius.lg,
+    gap: space[6],
+    paddingHorizontal: space[12],
+    paddingVertical: space[10],
+  },
 });

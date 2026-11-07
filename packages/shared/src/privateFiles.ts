@@ -1,7 +1,8 @@
 /** Private-file identity, permissions, and bounded I/O. */
 
 import { chmodSync, constants, lstatSync, mkdirSync, type Stats } from "node:fs";
-import { chmod, lstat, mkdir, open, type FileHandle } from "node:fs/promises";
+import path from "node:path";
+import { chmod, lstat, mkdir, open, rm, type FileHandle } from "node:fs/promises";
 import { isNodeError } from "./nodeError.js";
 
 export function noFollowFlag(): number {
@@ -134,4 +135,36 @@ export async function readBoundedRegularFile(
 
 function assertRealDirectory(metadata: Stats, message: string): void {
   if (metadata.isSymbolicLink() || !metadata.isDirectory()) throw new Error(message);
+}
+
+/** Remove one plugin's state without traversing a symlink in its parent path. */
+export async function removePluginData(directory: string, pluginId: string): Promise<void> {
+  assertPluginDataId(pluginId);
+  const root = path.resolve(directory);
+  const target = path.resolve(root, pluginId);
+  if (path.dirname(target) !== root) throw new Error("Invalid plugin data path");
+  let parent = root;
+  const parents: string[] = [];
+  while (true) {
+    parents.push(parent);
+    const next = path.dirname(parent);
+    if (next === parent) break;
+    parent = next;
+  }
+  for (const ancestor of parents.reverse()) {
+    try {
+      const metadata = await lstat(ancestor);
+      if (metadata.isSymbolicLink() || !metadata.isDirectory())
+        throw new Error("Plugin data parent must be a real directory");
+    } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") return;
+      throw error;
+    }
+  }
+  // rm unlinks symlinks, including the target itself, without following them.
+  await rm(target, { recursive: true, force: true });
+}
+
+export function assertPluginDataId(pluginId: string): void {
+  if (!/^[a-zA-Z0-9_-]{1,120}$/.test(pluginId)) throw new Error("Invalid plugin id");
 }

@@ -188,6 +188,8 @@ export function createHostApiHandlers(
       return rpcSuccess(hostApi["plugins.detail.get"].success.parse(detail));
     },
     ...createSettingsReadHandlers({
+      otherDevices: (owner, machines) =>
+        integrationPlatform.platform.store.settings.otherDevices(owner, machines),
       catalog: () => integrationPlatform.platform.settingsCatalog(),
       requests: (owner) =>
         integrationPlatform.platform.store.requests.waitingOnUserPage({

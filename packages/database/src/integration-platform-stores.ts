@@ -859,6 +859,27 @@ export async function uninstallIntegrationInTransaction(
       .forUpdate()
       .execute()
   ).map(({ id }) => id);
+  const pluginId = installation.pluginId;
+  if (pluginId && serverIds.length > 0) {
+    const servers = await transaction
+      .selectFrom("integrationServers")
+      .select("transport")
+      .where("id", "in", serverIds)
+      .execute();
+    const runnerIds = [
+      ...new Set(
+        servers.flatMap(({ transport }) =>
+          typeof transport.runnerId === "string" ? [transport.runnerId as RunnerId] : [],
+        ),
+      ),
+    ];
+    if (runnerIds.length > 0)
+      await transaction
+        .insertInto("runnerPluginDataRemovals")
+        .values(runnerIds.map((runnerId) => ({ runnerId, pluginId })))
+        .onConflict((oc) => oc.columns(["runnerId", "pluginId"]).doNothing())
+        .execute();
+  }
   const uninstallIds = await uninstallConnectionIds(transaction, installation, serverIds);
   const revokedComputerConnections = await revokeComputerConnectionsInTransaction(transaction, {
     installationId: installation.id,
@@ -1222,6 +1243,17 @@ export async function installIntegrationInTransaction(
   for (const discovered of input.servers) {
     const existing = serverByName.get(discovered.name);
     const retained = existing ? retainedUpdates.get(existing.id) : undefined;
+    const previousRunner = existing ? runnerOf(existing.transport) : null;
+    if (
+      installation.pluginId &&
+      previousRunner &&
+      previousRunner !== runnerOf(discovered.transport)
+    )
+      await transaction
+        .insertInto("runnerPluginDataRemovals")
+        .values({ runnerId: previousRunner as RunnerId, pluginId: installation.pluginId })
+        .onConflict((oc) => oc.columns(["runnerId", "pluginId"]).doNothing())
+        .execute();
     const server = existing
       ? await transaction
           .updateTable("integrationServers")
@@ -1271,13 +1303,13 @@ export async function installIntegrationInTransaction(
   if (retainedServerIds.length === 0) {
     await transaction
       .updateTable("integrationServers")
-      .set({ status: "disabled", updatedAt: now })
+      .set({ status: "disabled", statusDetail: null, updatedAt: now })
       .where("installationId", "=", installation.id)
       .execute();
   } else {
     await transaction
       .updateTable("integrationServers")
-      .set({ status: "disabled", updatedAt: now })
+      .set({ status: "disabled", statusDetail: null, updatedAt: now })
       .where("installationId", "=", installation.id)
       .where("id", "not in", retainedServerIds)
       .execute();

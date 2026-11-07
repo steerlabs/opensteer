@@ -1,13 +1,17 @@
 import { SettingsComputerEnrollment } from "./settings-computer-enrollment.js";
 import { Sheet } from "../ui/sheet.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
+import { unwrapRpcResult, type HostSnapshot } from "@opensteer/client/host";
+import { useHostRead } from "@opensteer/client/react";
+import { connectDeviceDraftText } from "@opensteer/client/settings";
 import { useNavigation } from "@react-navigation/native";
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useComputerUseData } from "../computers/use-computer-use-data.js";
 import { useIphoneApps, useIphoneAppsState } from "../iphone-apps/context.js";
-import { useMobileState } from "../ui/mobile-client-context.js";
+import { useHostValue, useMobileState } from "../ui/mobile-client-context.js";
+import { useLeaveSheets } from "./leave-sheets.js";
 import { DevicesSettingsForm } from "./settings-devices-form.js";
-import { computersSettingsRows } from "./settings-model.js";
+import { computersSettingsRows, otherDevicesSettingsRows } from "./settings-model.js";
 import { SettingsPageLayout } from "./settings-page-layout.js";
 import { useSettingsHost } from "./use-settings-host.js";
 export function DevicesSettingsController(): ReactNode {
@@ -22,6 +26,30 @@ export function DevicesSettingsController(): ReactNode {
   );
   const selectedRow = rows.find((row) => row.deploymentId === selection.deploymentId) ?? null;
   const iphoneApps = useIphoneAppsState(useIphoneApps());
+  const leave = useLeaveSheets(selection.deploymentId, selection.hostClient);
+  const host = selection.hostClient;
+  const overview = useHostRead(
+    host === null ? null : () => host.rpc["devices.overview.get"]({}).then(unwrapRpcResult),
+    "devices-overview",
+  );
+  const reloadOverview = overview.reload;
+  const revision = snapshot?.machineRevision ?? 0;
+  const readRevision = useRef(revision);
+  useEffect(() => {
+    if (readRevision.current === revision) return;
+    readRevision.current = revision;
+    reloadOverview();
+  }, [reloadOverview, revision]);
+  useEffect(() => host?.subscribePluginsChanged(reloadOverview), [host, reloadOverview]);
+  const waiting = useHostValue(host, selectWaitingThreads, "");
+  const otherDevices = useMemo(
+    () =>
+      otherDevicesSettingsRows(
+        overview.data?.otherDevices ?? [],
+        new Set(waiting.split(" ").filter(Boolean)),
+      ),
+    [overview.data, waiting],
+  );
   const computers = useMemo(() => {
     if (snapshot === null) return [];
     const deploymentName =
@@ -90,6 +118,18 @@ export function DevicesSettingsController(): ReactNode {
               machineId: destination.machineId,
             });
           }}
+          otherDevices={otherDevices}
+          onOtherDevice={(opens) => {
+            if (opens.kind === "task") {
+              leave.openThread(opens.threadId);
+              return;
+            }
+            if (selection.deploymentId === null) return;
+            navigation.navigate("SettingsPluginDetail", {
+              deploymentId: selection.deploymentId,
+              target: { kind: "plugin", pluginId: opens.pluginId },
+            });
+          }}
         />
       </SettingsPageLayout>
       <Sheet open={adding} title="Add device" onClose={() => setAdding(false)}>
@@ -145,9 +185,37 @@ export function DevicesSettingsController(): ReactNode {
                   },
                 ]
               : []),
+            {
+              key: "other",
+              title: "Something else",
+              rows: [
+                {
+                  key: "instructions",
+                  kind: "text",
+                  label:
+                    "A TV, speaker, light or anything else on your network. An agent sets it up in a new task.",
+                },
+                {
+                  key: "connect",
+                  kind: "button",
+                  label: "Connect something else",
+                  onPress: () => {
+                    setAdding(false);
+                    void leave.openNewTask(connectDeviceDraftText);
+                  },
+                },
+              ],
+            },
           ]}
         />
       </Sheet>
     </>
   );
 }
+
+/** The Threads with a pending Request, as one string so a change elsewhere re-renders nothing. */
+const selectWaitingThreads = (snapshot: HostSnapshot): string =>
+  snapshot.threads
+    .filter((thread) => thread.pendingRequests > 0)
+    .map((thread) => thread.id)
+    .join(" ");

@@ -37,8 +37,12 @@ import {
   pluginTargetFromPath,
   pluginPlacementLabel,
   pluginAccountRows,
+  pluginsPageRows,
+  fixDeviceDraftText,
   type PluginCatalogProduct,
 } from "@opensteer/client/settings";
+import { otherDeviceIcon } from "./agent-devices.js";
+import { useStartTask, useThreadPath } from "../../start-task.js";
 import { mutationIdempotencyKey, unwrapRpcResult } from "@opensteer/client/host";
 import { IntegrationIcon } from "../../integrations/integration-icon.js";
 import { Dialog } from "../../dialog.js";
@@ -143,7 +147,7 @@ function PluginOverview({
     }
   });
   const rows = overview.data?.rows;
-  const groups = pluginGroups(rows ?? [], search);
+  const groups = pluginGroups(pluginsPageRows(rows ?? []), search);
   const toAdd = useMemo(
     () =>
       directory.data && rows
@@ -543,9 +547,12 @@ function PluginDetail({
     pluginPath(target),
   );
   const data = detail.data;
+  const device = data?.row.device ?? null;
   return (
     <>
-      {target.kind !== "service" && target.kind !== "device-app" ? (
+      {device ? (
+        <Link to="/settings/devices">All devices</Link>
+      ) : target.kind !== "service" && target.kind !== "device-app" ? (
         <Link to="/settings/plugins">All plugins</Link>
       ) : null}
       <SettingsError message={detail.error ? actionErrorMessage(detail.error) : null} />
@@ -557,10 +564,17 @@ function PluginDetail({
                 <PluginIcon row={data.row} />
                 <SectionHeader
                   action={<EnableSwitch row={data.row} reload={detail.reload} />}
-                  title={data.row.title}
-                  lead={[data.row.source.kind, data.row.source.version].filter(Boolean).join(" · ")}
+                  title={device?.name ?? data.row.title}
+                  {...(device
+                    ? {}
+                    : {
+                        lead: [data.row.source.kind, data.row.source.version]
+                          .filter(Boolean)
+                          .join(" · "),
+                      })}
                 />
               </div>
+              {device ? <DeviceSetup detail={data} name={device.name} /> : null}
             </>
           ) : null}
           {target.kind === "service" || target.kind === "device-app" ? (
@@ -1155,6 +1169,47 @@ function DirectoryRequests() {
   );
 }
 
+/** Where a device's plugin came from, and a way to have an agent fix it. */
+function DeviceSetup({ detail, name }: { detail: PluginDetailView; name: string }) {
+  const { snapshot } = useShell();
+  const threadPath = useThreadPath();
+  const startTask = useStartTask();
+  const target = detail.row.target;
+  if (target.kind !== "plugin") return null;
+  const threadId = detail.setupThreadId ?? null;
+  return (
+    <section className="settings-group">
+      <div className="card">
+        {threadId ? (
+          <SettingsRow
+            icon="message"
+            title="Set up in"
+            detail={
+              <Link to={threadPath(threadId)}>
+                {snapshot.threads.find((thread) => thread.id === threadId)?.title ?? "Open task"}
+              </Link>
+            }
+          />
+        ) : null}
+        <SettingsRow
+          icon="help-circle"
+          title="Not working?"
+          detail="An agent can look into it."
+          action={
+            <button
+              className="btn btn--small"
+              type="button"
+              onClick={() => startTask(fixDeviceDraftText({ name, pluginId: target.pluginId }))}
+            >
+              Fix
+            </button>
+          }
+        />
+      </div>
+    </section>
+  );
+}
+
 function PackageActions({ detail, reload }: { detail: PluginDetailView; reload: () => void }) {
   const { hostClient } = useShell();
   const navigate = useNavigate();
@@ -1184,7 +1239,7 @@ function PackageActions({ detail, reload }: { detail: PluginDetailView; reload: 
             },
       )
       .then(() => {
-        if (remove) void navigate("/settings/plugins");
+        if (remove) void navigate(detail.row.device ? "/settings/devices" : "/settings/plugins");
         else reload();
       })
       .catch((reason: unknown) => setError(actionErrorMessage(reason)))
@@ -1216,12 +1271,19 @@ function PackageActions({ detail, reload }: { detail: PluginDetailView; reload: 
       {removing ? (
         <Dialog
           labelledBy="remove-plugin-title"
-          title={`Remove ${detail.row.title}?`}
+          title={`Remove ${detail.row.device?.name ?? detail.row.title}?`}
           onClose={() => {
             if (!pending) setRemoving(false);
           }}
         >
-          <p>Its skills, tools and specialist leave your agents. The folder stays on disk.</p>
+          {detail.row.device ? (
+            <p>
+              Agents can no longer control {detail.row.device.name}. What it saved on its computer,
+              such as a pairing, is deleted.
+            </p>
+          ) : (
+            <p>Its skills, tools and specialist leave your agents. The folder stays on disk.</p>
+          )}
           <button
             className="btn"
             type="button"
@@ -1248,6 +1310,12 @@ function PackageActions({ detail, reload }: { detail: PluginDetailView; reload: 
 function PluginIcon({ row }: { row: PluginRow }) {
   if (row.target.kind === "service" || row.target.kind === "device-app")
     return <IntegrationIcon id={row.target.definitionId} name={row.title} />;
+  if (row.device)
+    return (
+      <span className="card__row-glyph">
+        <Icon name={otherDeviceIcon[row.device.kind]} />
+      </span>
+    );
   return (
     <span className="card__row-glyph">
       <Icon

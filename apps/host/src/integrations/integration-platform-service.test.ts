@@ -4804,6 +4804,7 @@ function platform(input: {
     adapters: input.adapters,
     authorizationSource: { providerAuthorizations: vi.fn(async () => ({})) },
     computerApps: {
+      removePluginData: async () => {},
       reportsApp: () => "offline",
       compatibilityReason: () => null,
       machinesFor: () => [],

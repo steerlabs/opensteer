@@ -76,6 +76,7 @@ vi.mock("react-native", () => ({
     },
   },
   Linking: { openSettings: harness.openSettings },
+  Platform: { OS: "ios", Version: "26" },
   Pressable: ({
     accessibilityLabel,
     accessibilityRole,
@@ -113,7 +114,9 @@ vi.mock("react-native", () => ({
     children?: ReactNode;
   }) => <div aria-label={accessibilityLabel}>{children}</div>,
 }));
-vi.mock("../theme.js", () => ({ color: {}, radius: {}, space: {}, touchTarget: 44 }));
+vi.mock("../theme.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../theme.js")>()),
+}));
 vi.mock("expo-haptics", () => ({
   NotificationFeedbackType: { Success: "success" },
   notificationAsync: vi.fn(async () => undefined),
