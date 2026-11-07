@@ -44,17 +44,17 @@ import { OpenComputer } from "./screens/open-computer.js";
 import { MobileClient, operationDetail } from "./client/mobile-client.js";
 import { mockDeploymentConnections } from "./client/mock-mode.js";
 import { readMobileConfiguration } from "./config.js";
-import { resolveThreadLink, routeComputerLink } from "./links.js";
+import { resolveApplicationLink, routeComputerLink } from "./links.js";
 import { Navigation, navigationTheme } from "./navigation.js";
-import { navigationRef, resetToThread } from "./navigation-ref.js";
+import { navigationRef } from "./navigation-ref.js";
 import {
+  agentAuthorizationRoot,
   deploymentRoot,
   deploymentsRoot,
   linkedSelectionFailureIsCurrent,
   selectionMayReconcileLinkedRoot,
   selectionRootTransition,
   threadRoot,
-  type ThreadDestination,
 } from "./navigation-state.js";
 import { MobileNotifications } from "./notifications/mobile-notifications.js";
 import {
@@ -295,12 +295,12 @@ export function App(): ReactNode {
    * waits for storage; after it is validated, one destination waits for the
    * navigator. Neither can make the catalog flash as an intermediate root.
    */
-  const waiting = useRef<ThreadDestination | null>(null);
+  const waiting = useRef<InitialState | null>(null);
   const waitingUrl = useRef<string | null>(null);
   const initialized = useRef(false);
   const observedRootSelection = useRef<string | null | undefined>(undefined);
   const deferredRootSelection = useRef<string | null | undefined>(undefined);
-  // A Thread link owns the visible stack until its named Deployment becomes
+  // A Thread or agent link owns the visible stack until its named Deployment becomes
   // the client's published local selection. A remembered selection may still
   // be visible briefly while MobileClient serializes an earlier attachment;
   // letting that stale value reconcile would erase the linked Thread route.
@@ -368,7 +368,7 @@ export function App(): ReactNode {
     const destination = waiting.current;
     if (destination !== null) {
       waiting.current = null;
-      resetToThread(destination);
+      navigationRef.resetRoot(destination);
       return;
     }
     observeRootSelection();
@@ -384,8 +384,8 @@ export function App(): ReactNode {
     /**
      * One reader for everything the scheme delivers. The broker accepts only
      * this build's two token callbacks; the integration reader requires an
-     * attempt this app started before it can use a return proof; `resolveThreadLink` accepts only a
-     * Thread link naming a Deployment this phone already holds. Anything else
+     * attempt this app started before it can use a return proof; `resolveApplicationLink` accepts
+     * only a Thread or agent-connection link naming a Deployment this phone already holds. Anything else
      * is dropped, because a link is a destination, never an authority.
      */
     let applicationLinkGeneration = 0;
@@ -428,7 +428,7 @@ export function App(): ReactNode {
       }
       const catalog = await client.catalog.load();
       if (generation !== applicationLinkGeneration) return;
-      const outcome = resolveThreadLink(
+      const outcome = resolveApplicationLink(
         url,
         catalog.deployments.map(({ authority }) => authority.document.deploymentId),
       );
@@ -439,16 +439,19 @@ export function App(): ReactNode {
         setLinkFailure(outcome.detail);
         return;
       }
-      if (outcome.kind !== "open") return;
+      if (outcome.kind === "ignore") return;
       setLinkFailure(null);
-      const destination: ThreadDestination = {
-        deploymentId: outcome.deploymentId,
-        threadId: outcome.threadId,
-        // A link that names the exact update opens at it, rather than at
-        // whatever happens to be newest by the time the app gets there.
-        ...(outcome.messageId === undefined ? {} : { messageId: outcome.messageId }),
-        ...(outcome.requestId === null ? {} : { requestId: outcome.requestId }),
-      };
+      const destination =
+        outcome.kind === "authorize-agent"
+          ? agentAuthorizationRoot(outcome.deploymentId, outcome.requestId)
+          : threadRoot({
+              deploymentId: outcome.deploymentId,
+              threadId: outcome.threadId,
+              // A link that names the exact update opens at it, rather than at
+              // whatever happens to be newest by the time the app gets there.
+              ...(outcome.messageId === undefined ? {} : { messageId: outcome.messageId }),
+              ...(outcome.requestId === null ? {} : { requestId: outcome.requestId }),
+            });
       linkedDeployment.current = outcome.deploymentId;
       const selectionAttempt = linkedSelectionAttempt.current + 1;
       linkedSelectionAttempt.current = selectionAttempt;
@@ -474,7 +477,7 @@ export function App(): ReactNode {
         );
         observeRootSelection();
       });
-      if (navigationRef.isReady()) resetToThread(destination);
+      if (navigationRef.isReady()) navigationRef.resetRoot(destination);
       else waiting.current = destination;
     };
 
@@ -540,7 +543,7 @@ export function App(): ReactNode {
         const selected = client.getSnapshot().selection.deploymentId;
         setInitialNavigationState(
           destination !== null
-            ? threadRoot(destination)
+            ? destination
             : selected === null
               ? deploymentsRoot()
               : deploymentRoot(selected),

@@ -106,6 +106,17 @@ export function threadRoot(destination: ThreadDestination): InitialState {
   };
 }
 
+/** An agent's connection request, reviewed over Chat so closing it lands somewhere useful. */
+export function agentAuthorizationRoot(deploymentId: string, requestId: string): InitialState {
+  return {
+    index: 1,
+    routes: [
+      { name: "Home", params: { deploymentId } },
+      { name: "AgentAuthorization", params: { deploymentId, requestId } },
+    ],
+  };
+}
+
 /** The catalog is the root only until this phone has a selected Deployment. */
 export function deploymentsRoot(): InitialState {
   return { index: 0, routes: [{ name: "Deployments" }] };

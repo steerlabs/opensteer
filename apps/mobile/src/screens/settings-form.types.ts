@@ -85,7 +85,8 @@ export interface RemoteAdministrationSettings {
   readonly onRefresh: () => void;
 }
 
-export type SettingsPage = "general" | "account" | "devices" | "ai" | "sign-ins";
+export type SettingsPage =
+  "general" | "account" | "devices" | "ai" | "sign-ins" | "external-agents";
 
 /** After how long quiet tasks move to Done, on a Host that moves them. */
 export interface QuietTasksSetting {

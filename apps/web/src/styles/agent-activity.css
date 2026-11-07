@@ -51,6 +51,7 @@
   max-width: 84%;
   padding: var(--bubble-padding);
   border-radius: var(--bubble-radius);
+  border-end-end-radius: var(--radius-xs);
   background: var(--fill-accent);
   color: var(--ink-on-ember);
   font-size: var(--text-2xl);
@@ -64,9 +65,14 @@
   color: var(--ember-bright);
 }
 
-/* The last of a run of bubbles hooks under its corner, as in Messages: a bar in
-   the bubble's own fill, with the ground cutting the pinch beside it. */
-.msg--user::before,
+/* In Chat, the last of a run of bubbles hooks under its corner, as in Messages:
+   a bar in the bubble's own fill, with the ground cutting the pinch beside it.
+   A task keeps the bubble's corner instead. */
+.transcript--conversation .msg--user {
+  border-end-end-radius: var(--bubble-radius);
+}
+
+.transcript--conversation .msg--user::before,
 .reply__bubble--tail::before {
   position: absolute;
   bottom: -3.4px;
@@ -76,7 +82,7 @@
   content: "";
 }
 
-.msg--user::after,
+.transcript--conversation .msg--user::after,
 .reply__bubble--tail::after {
   position: absolute;
   bottom: -5.3px;
@@ -87,13 +93,13 @@
   content: "";
 }
 
-.msg--user::before {
+.transcript--conversation .msg--user::before {
   right: 4.8px;
   border-bottom-right-radius: 1.3px;
   transform: rotate(32deg);
 }
 
-.msg--user::after {
+.transcript--conversation .msg--user::after {
   right: -0.9px;
 }
 

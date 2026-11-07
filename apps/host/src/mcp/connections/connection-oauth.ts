@@ -5,7 +5,7 @@ import {
   type DeploymentId,
 } from "@opensteer/core";
 import type { AgentConnectionStore } from "@opensteer/database";
-import type { HostApiCommand } from "@opensteer/protocol";
+import { agentConnectionMcpPath, type HostApiCommand } from "@opensteer/protocol";
 import { randomBytes, sign, verify, timingSafeEqual, type KeyObject } from "node:crypto";
 import { z } from "zod";
 import {
@@ -14,9 +14,9 @@ import {
   ConnectionAuthenticator,
 } from "./connection-authenticator.js";
 
-export const mcpResourcePath = "/internal/v1/mcp";
+export const mcpResourcePath = agentConnectionMcpPath;
 export const mcpIssuerPath = "/oauth/mcp";
-export const mcpResourceMetadataPath = "/.well-known/oauth-protected-resource/internal/v1/mcp";
+export const mcpResourceMetadataPath = `/.well-known/oauth-protected-resource${agentConnectionMcpPath}`;
 export const mcpServerMetadataPath = "/.well-known/oauth-authorization-server/oauth/mcp";
 const consentTtl = 10 * 60_000;
 const codeTtl = 60_000;

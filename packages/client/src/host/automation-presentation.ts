@@ -19,7 +19,8 @@ export const automationGlyph = {
   watch: "eye",
 } as const satisfies Record<AutomationShape, string>;
 
-export type AutomationGroup = "attention" | "upcoming" | "repeating" | "events" | "paused";
+export type AutomationGroup =
+  "attention" | "upcoming" | "repeating" | "events" | "paused" | "system";
 
 /** The page's sections, in the order a person reads them. */
 export const automationGroups: readonly { readonly id: AutomationGroup; readonly title: string }[] =
@@ -29,7 +30,17 @@ export const automationGroups: readonly { readonly id: AutomationGroup; readonly
     { id: "repeating", title: "Repeating" },
     { id: "events", title: "When something happens" },
     { id: "paused", title: "Paused" },
+    { id: "system", title: "Built in" },
   ];
+
+/** What placing an automation reads, so the web's summaries and the phone's items share it. */
+export type PlaceableAutomation = Pick<
+  TriggerSummary,
+  "latestOccurrence" | "name" | "nextFireAt" | "pauseReason" | "source" | "status" | "updatedAt"
+> & {
+  readonly systemRole?: TriggerSummary["systemRole"];
+  readonly waitingReason?: string | null | undefined;
+};
 
 export interface AutomationPlacement {
   readonly group: AutomationGroup;
@@ -41,18 +52,20 @@ export interface AutomationPlacement {
  * Where one automation belongs. Something needs its owner when Opensteer
  * paused it, or when a one-time automation's moment came and went without a
  * successful run — a successful one finishes it and it leaves the list.
+ * Opensteer's own memory passes sit apart unless they need attention.
  */
-export function placeAutomation(summary: TriggerSummary, now: number): AutomationPlacement {
+export function placeAutomation(summary: PlaceableAutomation, now: number): AutomationPlacement {
   const shape = automationShape(summary.source);
   if (summary.status === "paused") {
     if (summary.pauseReason) return attention(summary.pauseReason);
     if (shape === "once" && onceAt(summary.source) <= now) {
       return attention("Its time passed while it was paused.");
     }
-    return { group: "paused", problem: null };
+    return { group: summary.systemRole ? "system" : "paused", problem: null };
   }
   // A memory pass waiting for a usable model is active, not paused.
   if (summary.waitingReason) return attention(summary.waitingReason);
+  if (summary.systemRole) return { group: "system", problem: null };
   if (shape === "repeating") return { group: "repeating", problem: null };
   if (shape === "webhook" || shape === "watch") return { group: "events", problem: null };
   if (summary.nextFireAt) return { group: "upcoming", problem: null };
@@ -80,32 +93,36 @@ function onceAt(source: TriggerSource): number {
     : Number.POSITIVE_INFINITY;
 }
 
-export interface AutomationSection {
+export interface AutomationSection<Item extends PlaceableAutomation = TriggerSummary> {
   readonly id: AutomationGroup;
-  readonly items: readonly { readonly problem: string | null; readonly summary: TriggerSummary }[];
+  readonly items: readonly { readonly item: Item; readonly problem: string | null }[];
   readonly title: string;
 }
 
 /** The non-empty sections, each ordered the way a person scans it. */
-export function sectionAutomations(
-  summaries: readonly TriggerSummary[],
+export function sectionAutomations<Item extends PlaceableAutomation>(
+  items: readonly Item[],
   now: number,
-): readonly AutomationSection[] {
-  const placed = summaries.map((summary) => ({ ...placeAutomation(summary, now), summary }));
+): readonly AutomationSection<Item>[] {
+  const placed = items.map((item) => ({ ...placeAutomation(item, now), item }));
   return automationGroups.flatMap(({ id, title }) => {
-    const items = placed
+    const members = placed
       .filter(({ group }) => group === id)
-      .sort((left, right) => compareWithin(id, left.summary, right.summary))
-      .map(({ problem, summary }) => ({ problem, summary }));
-    return items.length > 0 ? [{ id, items, title }] : [];
+      .sort((left, right) => compareWithin(id, left.item, right.item))
+      .map(({ item, problem }) => ({ item, problem }));
+    return members.length > 0 ? [{ id, items: members, title }] : [];
   });
 }
 
-function compareWithin(group: AutomationGroup, left: TriggerSummary, right: TriggerSummary) {
-  if (group === "upcoming" || group === "repeating") {
+function compareWithin(
+  group: AutomationGroup,
+  left: PlaceableAutomation,
+  right: PlaceableAutomation,
+): number {
+  if (group === "upcoming" || group === "repeating" || group === "system") {
     // What is happening now comes first, then the soonest.
-    const when = (summary: TriggerSummary) =>
-      summary.nextFireAt ? Date.parse(summary.nextFireAt) : Number.NEGATIVE_INFINITY;
+    const when = (item: PlaceableAutomation) =>
+      item.nextFireAt ? Date.parse(item.nextFireAt) : Number.NEGATIVE_INFINITY;
     return when(left) - when(right) || left.name.localeCompare(right.name);
   }
   if (group === "attention") return right.updatedAt.localeCompare(left.updatedAt);
@@ -172,6 +189,44 @@ export function formatCountdown(iso: string, now: number): string | null {
   const hours = Math.floor(minutes / 60);
   const rest = minutes % 60;
   return rest === 0 ? `in ${hours} h` : `in ${hours} h ${rest} min`;
+}
+
+/**
+ * When it runs next, for a list's narrow right-hand column: the countdown
+ * while it is today ("in 4 min" over "4:35 PM"), then the day over the time.
+ */
+export function formatNextRun(
+  iso: string,
+  now: number,
+): { readonly day: string; readonly time: string } {
+  const time = Date.parse(iso);
+  const at = clock.format(time);
+  const days = Math.round((startOfDay(time) - startOfDay(now)) / dayMilliseconds);
+  if (days <= 0) return { day: formatCountdown(iso, now) ?? "Today", time: at };
+  if (days === 1) return { day: "Tomorrow", time: at };
+  if (days < 7) return { day: weekday.format(time), time: at };
+  return {
+    day:
+      new Date(time).getFullYear() === new Date(now).getFullYear()
+        ? monthDay.format(time)
+        : monthDayYear.format(time),
+    time: at,
+  };
+}
+
+/** How often or on what it runs, as a row's second line says it. */
+export function describeCadence(source: TriggerSource, machine: string | null): string {
+  if (source.kind !== "schedule") return describeEvent(source.kind, machine);
+  return source.schedule.kind === "cron" ? describeRepeating(source.schedule) : "Once";
+}
+
+/** The automation's name; Opensteer's memory passes are named for what they are. */
+export function automationName(item: Pick<PlaceableAutomation, "name" | "systemRole">): string {
+  return item.systemRole === "memory-light"
+    ? "Light memory pass"
+    : item.systemRole === "memory-nightly"
+      ? "Nightly memory pass"
+      : item.name;
 }
 
 const viewerTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;

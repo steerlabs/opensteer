@@ -10,6 +10,7 @@ export interface HoldMenuProps {
   readonly onAction: (id: string) => void;
   /** The corner the lifted view is cut to, on a platform that lifts it. */
   readonly previewRadius: number;
+  readonly previewBottomEndRadius?: number | undefined;
   readonly style?: StyleProp<ViewStyle>;
 }
 
