@@ -801,3 +801,64 @@ it.each(["Finish", "Back", "choice", "generation"])(
     );
   },
 );
+
+it.each(["fails", "succeeds"])(
+  "follows a switch from Connect through Connect turning off until it %s",
+  async (outcome) => {
+    const origin = "https://mac.example.com";
+    const operationId = "8f0b6c6e-2a4b-4f6d-9e1a-666666666666";
+    const { access, bridge } = desktopBridge();
+    onThisMac(bridge, access);
+    remoteStatus = {
+      ...remoteStatus,
+      access: {
+        ...(remoteStatus.access as object),
+        accountLink: { state: "active" },
+        mode: "connect",
+        route: {},
+      },
+    };
+    localStorage.setItem(`opensteer.setup.v1:${shell.snapshot.deploymentId}`, "phone");
+    shell.hostClient.dispatch.mockImplementation(async (command: { type: string }) =>
+      command.type === "personal.remoteAccess.request"
+        ? { operation: { id: operationId, state: "pending" }, type: command.type }
+        : pairingCreated(),
+    );
+    Object.defineProperty(window, "confirm", { configurable: true, value: vi.fn(() => true) });
+    await mount();
+    await act(async () => radio("Your own address").click());
+    type(container.querySelector('input[aria-label="Your HTTPS address"]')!, origin);
+    await act(async () => button("Turn on").click());
+    // The desktop turns Connect off first; that step is this request's own.
+    await remoteChanged({
+      ...remoteStatus,
+      access: { ...(remoteStatus.access as object), generation: 2, mode: "off", route: null },
+      operation: { detail: null, id: operationId, state: "running" },
+      revision: 2,
+    });
+    expect(button("Turning on…").disabled).toBe(true);
+    if (outcome === "fails") {
+      await remoteChanged({
+        ...remoteStatus,
+        operation: { detail: "The address didn’t answer.", id: operationId, state: "failed" },
+        revision: 3,
+      });
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+        "The address didn’t answer.",
+      );
+      return;
+    }
+    await remoteChanged({
+      ...remoteStatus,
+      access: {
+        ...(remoteStatus.access as object),
+        generation: 3,
+        mode: "private",
+        route: { document: { route: { origin } } },
+      },
+      operation: { detail: null, id: operationId, state: "succeeded" },
+      revision: 3,
+    });
+    expect(container.querySelector(".setup-manual")?.textContent).toContain(origin);
+  },
+);

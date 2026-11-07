@@ -77,13 +77,22 @@ export function usePrivatePhoneSetup(input: {
   const attempt = useRef(0);
   const activeOrigin = privateRouteOrigin(remote.status);
   const generation = remote.status?.access.generation ?? null;
-  const mode = remote.status?.access.mode ?? null;
+  // Closing setup, or reaching a different Host, ends any attempt in flight.
   useEffect(() => {
     setPhase({ kind: "idle" });
     return () => {
       attempt.current += 1;
     };
-  }, [activeOrigin, generation, hostClient, mode]);
+  }, [hostClient]);
+  // Access as this page last saw it. A share that finishes after access
+  // changed elsewhere is not applied. A request that was sent is followed
+  // through its own steps instead, such as Connect turning off before the new
+  // address turns on.
+  const access = `${remote.status?.access.mode ?? ""} ${generation ?? ""} ${activeOrigin ?? ""}`;
+  const latestAccess = useRef(access);
+  useEffect(() => {
+    latestAccess.current = access;
+  }, [access]);
 
   const turnOn = useCallback(
     async (origin: string) => {
@@ -121,10 +130,16 @@ export function usePrivatePhoneSetup(input: {
   const turnOnTailscale = useCallback(() => {
     attempt.current += 1;
     const current = attempt.current;
+    const accessBefore = latestAccess.current;
+    const superseded = () => {
+      if (latestAccess.current === accessBefore) return false;
+      setPhase({ kind: "idle" });
+      return true;
+    };
     setPhase({ kind: "sharing" });
     void share().then(
       (result) => {
-        if (attempt.current !== current) return;
+        if (attempt.current !== current || superseded()) return;
         if (!result.ok) {
           setPhase({ kind: "failed", message: result.message });
           return;
@@ -133,7 +148,7 @@ export function usePrivatePhoneSetup(input: {
         void turnOn(result.origin);
       },
       (reason: unknown) => {
-        if (attempt.current !== current) return;
+        if (attempt.current !== current || superseded()) return;
         setPhase({ kind: "failed", message: actionErrorMessage(reason) });
       },
     );
