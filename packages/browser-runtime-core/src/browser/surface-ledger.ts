@@ -1274,6 +1274,7 @@ export class SurfaceLedger {
       // The record and listeners exist first, so that dialog can be answered.
       const initialized = record.sizeLock.run(async () => {
         await acquiredCdp.send("Page.enable");
+        await this.initializeDocument(record);
         await this.refreshNavigation(record);
         if (this.closed || this.records.get(id) !== record || page.isClosed()) return;
         if (record.dialog) {
@@ -1602,6 +1603,49 @@ export class SurfaceLedger {
     if (!loading) void this.refreshNavigation(record).catch(() => undefined);
     if (record.announced && this.records.get(record.id) === record)
       this.emit({ change: "updated", surface: this.toSurface(record), type: "changed" });
+  }
+
+  private async initializeDocument(record: SurfaceRecord): Promise<void> {
+    const documentId = record.documentId;
+    const committedUrl = record.committedUrl;
+    // Page.enable does not replay a commit that raced renderer initialization.
+    const snapshot = await record.cdp.send("Page.getFrameTree");
+    if (
+      this.closed ||
+      this.records.get(record.id) !== record ||
+      record.page.isClosed() ||
+      record.documentId !== documentId ||
+      record.committedUrl !== committedUrl
+    )
+      return;
+    const frame = z
+      .object({
+        frameTree: z.object({
+          frame: z.object({
+            id: z.string(),
+            loaderId: z.string(),
+            url: z.string(),
+            urlFragment: z.string().optional(),
+            unreachableUrl: z.string().optional(),
+            parentId: z.string().optional(),
+          }),
+        }),
+      })
+      .parse(snapshot).frameTree.frame;
+    if (frame.id !== record.targetId || frame.parentId)
+      throw new BrowserRuntimeError(
+        "conflict",
+        "Initial browser document does not belong to the registered root target.",
+      );
+    delete frame.parentId;
+    const url = frame.url + (frame.urlFragment?.startsWith("#") ? frame.urlFragment : "");
+    if (
+      url !== record.committedUrl ||
+      (record.loaderId !== null && frame.loaderId !== record.loaderId) ||
+      attemptedAddress(frame.unreachableUrl ?? "") !== record.unreachableUrl
+    )
+      record.onFrameNavigated({ frame });
+    else record.loaderId ??= frame.loaderId;
   }
 
   private async refreshNavigation(record: SurfaceRecord): Promise<void> {

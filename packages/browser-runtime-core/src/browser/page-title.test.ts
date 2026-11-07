@@ -181,7 +181,9 @@ describe("page titles", () => {
 
   it("reads only the new document's world when it commits while the page says which document it shows", async () => {
     const page = new FakePage({ targetId: "page", title: "A", url: "https://site.test/a" });
-    const trees = holdAnswers(page, "Page.getFrameTree");
+    const trees = holdAnswers(page, "Page.getFrameTree", () =>
+      page.cdpSession.sent.some((command) => command.method === "Runtime.enable"),
+    );
     const ledger = new SurfaceLedger(new FakeContext([page]));
     const seen = titledSurfaces(ledger);
     await ledger.start();
