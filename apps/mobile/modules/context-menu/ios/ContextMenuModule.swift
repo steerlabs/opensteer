@@ -16,6 +16,9 @@ public final class ContextMenuModule: Module {
       Prop("previewRadius") { (view: ContextMenuView, radius: Double) in
         view.previewRadius = CGFloat(radius)
       }
+      Prop("previewBottomEndRadius") { (view: ContextMenuView, radius: Double?) in
+        view.previewBottomEndRadius = radius.map { CGFloat($0) }
+      }
     }
   }
 }
@@ -33,6 +36,7 @@ final class ContextMenuView: ExpoView, UIContextMenuInteractionDelegate {
   let onAction = EventDispatcher()
   var actions: [ContextMenuAction] = []
   var previewRadius: CGFloat = 0
+  var previewBottomEndRadius: CGFloat?
 
   private var chosen: String?
   private var dismissing = false
@@ -146,7 +150,34 @@ final class ContextMenuView: ExpoView, UIContextMenuInteractionDelegate {
     guard window != nil else { return nil }
     let parameters = UIPreviewParameters()
     parameters.backgroundColor = .clear
-    parameters.visiblePath = UIBezierPath(roundedRect: bounds, cornerRadius: previewRadius)
+    parameters.visiblePath = previewPath()
     return UITargetedPreview(view: self, parameters: parameters)
+  }
+
+  private func previewPath() -> UIBezierPath {
+    let radius = previewRadius
+    guard let end = previewBottomEndRadius, end != radius else {
+      return UIBezierPath(roundedRect: bounds, cornerRadius: radius)
+    }
+    let rightToLeft = effectiveUserInterfaceLayoutDirection == .rightToLeft
+    let bottomLeft = rightToLeft ? end : radius
+    let bottomRight = rightToLeft ? radius : end
+    let box = bounds
+    let path = UIBezierPath()
+    path.move(to: CGPoint(x: box.minX + radius, y: box.minY))
+    path.addArc(
+      withCenter: CGPoint(x: box.maxX - radius, y: box.minY + radius), radius: radius,
+      startAngle: -.pi / 2, endAngle: 0, clockwise: true)
+    path.addArc(
+      withCenter: CGPoint(x: box.maxX - bottomRight, y: box.maxY - bottomRight), radius: bottomRight,
+      startAngle: 0, endAngle: .pi / 2, clockwise: true)
+    path.addArc(
+      withCenter: CGPoint(x: box.minX + bottomLeft, y: box.maxY - bottomLeft), radius: bottomLeft,
+      startAngle: .pi / 2, endAngle: .pi, clockwise: true)
+    path.addArc(
+      withCenter: CGPoint(x: box.minX + radius, y: box.minY + radius), radius: radius,
+      startAngle: .pi, endAngle: 3 * .pi / 2, clockwise: true)
+    path.close()
+    return path
   }
 }

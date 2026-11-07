@@ -2869,21 +2869,26 @@ export class BrowserService {
     agentBindingId: string,
   ): Promise<readonly BrowserSessionId[]> {
     this.#forgetAgentBinding(agentBindingId);
-    if (agentBindingId.startsWith("run:")) {
-      const runId = agentBindingId.slice(4);
-      await this.#runPlaces.drain(runId);
-      this.#runPlaces.forget(runId);
-    }
-    const records = await this.#repository.listActiveBrowserSessionsForAgentBinding(agentBindingId);
-    const detached = await this.#repository.detachBrowserSessionAttachments(agentBindingId);
-    for (const workspaceId of new Set(records.map((record) => record.workspaceId))) {
-      this.#onSessionsChanged(
-        workspaceId,
-        records.filter((record) => record.workspaceId === workspaceId).map((record) => record.id),
-        "browser.detach",
-      );
-    }
-    return detached;
+    // A later Host startup fails surviving sessions and deletes their attachments.
+    if (this.#closed) return [];
+    return this.#serializeKey(`detach:${agentBindingId}`, async () => {
+      if (agentBindingId.startsWith("run:")) {
+        const runId = agentBindingId.slice(4);
+        await this.#runPlaces.drain(runId);
+        this.#runPlaces.forget(runId);
+      }
+      const records =
+        await this.#repository.listActiveBrowserSessionsForAgentBinding(agentBindingId);
+      const detached = await this.#repository.detachBrowserSessionAttachments(agentBindingId);
+      for (const workspaceId of new Set(records.map((record) => record.workspaceId))) {
+        this.#onSessionsChanged(
+          workspaceId,
+          records.filter((record) => record.workspaceId === workspaceId).map((record) => record.id),
+          "browser.detach",
+        );
+      }
+      return detached;
+    });
   }
 
   closeTriggerSessionsForBinding(agentBindingId: string): Promise<readonly BrowserSessionId[]> {

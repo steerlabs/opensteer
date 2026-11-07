@@ -3350,6 +3350,52 @@ describe("BrowserService", () => {
     }
   });
 
+  it("joins binding detachment before closing and admits no detach after close", async () => {
+    const repository = new MemoryBrowserRepository(createId("user"), createId("workspace"));
+    const service = freshService({
+      keys: generateKeyPairSync("ed25519"),
+      repository,
+      runtime: { url: new URL("http://127.0.0.1:1") },
+    });
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const lookup = vi
+      .spyOn(repository, "listActiveBrowserSessionsForAgentBinding")
+      .mockImplementation(async () => {
+        entered.resolve();
+        await release.promise;
+        return [];
+      });
+    const detaching = service.detachAgentSessionsForBinding("run:ending");
+    let closed = false;
+    let closing: Promise<void> | undefined;
+    try {
+      await withTimeout(entered.promise, 1_000, {
+        timeoutError: () => new Error("Binding detachment never reached its session lookup"),
+      });
+      vi.useFakeTimers();
+      closing = service.close().then(() => {
+        closed = true;
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(closed).toBe(false);
+      await expect(service.detachAgentSessionsForBinding("run:late")).resolves.toEqual([]);
+      expect(lookup).toHaveBeenCalledTimes(1);
+      release.resolve();
+      vi.useRealTimers();
+      await withTimeout(Promise.all([detaching, closing]), 1_000, {
+        timeoutError: () => new Error("Browser close did not join released detachment"),
+      });
+      expect(closed).toBe(true);
+    } finally {
+      release.resolve();
+      vi.useRealTimers();
+      await withTimeout(Promise.all([detaching, closing, service.close()]), 1_000, {
+        timeoutError: () => new Error("Browser detachment cleanup did not settle"),
+      });
+    }
+  });
+
   it("answers a command already handed to the browser after its Run ends", async () => {
     // Admission fences end at the hand-off; what the browser already has, it answers.
     const f = await actorAdmissionFixture({ holdAnswers: true });

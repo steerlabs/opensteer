@@ -15,6 +15,8 @@ interface ContextMenuProps {
   readonly children: ReactNode;
   readonly onAction: (event: NativeSyntheticEvent<{ readonly id: string }>) => void;
   readonly previewRadius: number;
+  /** The bottom corner on the reading side's end, where it differs from the rest. */
+  readonly previewBottomEndRadius?: number | undefined;
   readonly style?: StyleProp<ViewStyle>;
 }
 
