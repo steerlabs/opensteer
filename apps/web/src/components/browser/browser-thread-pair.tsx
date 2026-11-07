@@ -149,7 +149,7 @@ export function BrowserTaskTabs({
   const chips = pair.taskTabs.slice(0, shownChips);
   const rest = pair.taskTabs.slice(shownChips);
   const others = pair.allTabs.length > pair.taskTabs.length + 1;
-  if (chips.length === 0) return null;
+  if (chips.length === 0 && !others) return null;
   const choose = (tabId: string) => {
     setOpen(false);
     pair.showTab(tabId);

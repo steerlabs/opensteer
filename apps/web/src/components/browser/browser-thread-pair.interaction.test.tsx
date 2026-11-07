@@ -96,3 +96,27 @@ it("pauses following before opening the task tab menu", async () => {
   expect(following()).toBeNull();
   expect(band()?.textContent).toContain(reading.title);
 });
+
+it("keeps the browser's other tabs reachable when the shown tab is the task's only one", async () => {
+  await mount(() => {
+    const { session, threadId, acting } = taskBrowser();
+    return `/threads/${threadId}?panel=browser&browser=${session.id}&browserTab=${acting.id}`;
+  });
+  const { session, confirm, reading } = taskBrowser();
+  const catalog = session.tabCatalog!;
+  await act(async () => {
+    await client.closeBrowserTab(session.id, confirm.id, {
+      generation: catalog.generation,
+      revision: catalog.revision,
+    });
+  });
+  expect(document.querySelector(`button[aria-label="Show ${confirm.title}"]`)).toBeNull();
+  await click(element('button[aria-label="All tabs in this browser"]'));
+  expect(following()).toBeNull();
+  const row = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find((item) =>
+    item.textContent?.includes(reading.title),
+  );
+  if (row === undefined) throw new Error(`The menu never listed ${reading.title}`);
+  await click(row);
+  expect(shownTab()).toBe(reading.id);
+});
