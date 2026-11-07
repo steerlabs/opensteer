@@ -56,6 +56,7 @@ const workspaces: WorkspaceSummary[] = [
 const threads: ThreadSummary[] = [
   {
     doneAt: null,
+    doneReason: null,
     icon: null,
     color: null,
     accessMode: "full-access",
@@ -83,6 +84,7 @@ const threads: ThreadSummary[] = [
   },
   {
     doneAt: null,
+    doneReason: null,
     icon: null,
     color: null,
     accessMode: "full-access",
@@ -110,6 +112,7 @@ const threads: ThreadSummary[] = [
   },
   {
     doneAt: null,
+    doneReason: null,
     icon: null,
     color: null,
     accessMode: "full-access",

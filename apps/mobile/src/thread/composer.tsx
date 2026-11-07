@@ -279,13 +279,16 @@ export function Composer(props: {
     ),
   );
 
-  const done = useHostSelector(
-    hostClient,
-    (snapshot) =>
-      snapshot.sharedTaskDoneAvailable === true &&
-      snapshot.threads.find((thread) => thread.id === threadId)?.doneAt != null,
+  // A Host with quiet-tasks-v1 reopens a Done task when it is written to.
+  const done = useHostSelector(hostClient, (snapshot) =>
+    snapshot.sharedTaskDoneAvailable === true &&
+    snapshot.threads.find((thread) => thread.id === threadId)?.doneAt != null
+      ? snapshot.quietTasksAvailable === true
+        ? "reopens"
+        : "closed"
+      : null,
   );
-  const readOnly = done || (props.readOnly ?? false);
+  const readOnly = done === "closed" || (props.readOnly ?? false);
   const disabled = props.disabledReason !== null || !props.canRespond || readOnly;
   const textHidden = surface !== null && surface.textRole === "hidden";
   // Which control the bar shows, and whether its settings row is open, is
@@ -723,7 +726,7 @@ export function Composer(props: {
   ];
 
   const pageInBar = view.readOnly ? null : includedPage;
-  if (done)
+  if (done === "closed")
     return (
       <View style={styles.dock}>
         <View style={styles.done}>
@@ -847,6 +850,17 @@ export function Composer(props: {
           onRetry={staged.retry}
         />
       )}
+      {done === "reopens" ? (
+        <AppText
+          maxFontSizeMultiplier={controlFontScaleLimit}
+          numberOfLines={1}
+          role="caption"
+          style={styles.doneHint}
+          tone="muted"
+        >
+          Done · Sending reopens it
+        </AppText>
+      ) : null}
       <DictationStatus controller={dictation} snapshot={dictationState} owner={owner} />
       <VoiceDock />
       <ComposerBar
@@ -1186,6 +1200,7 @@ const styles = StyleSheet.create({
   },
   quoteText: { flex: 1, gap: space[2] },
   done: { alignItems: "center", flexDirection: "row", paddingHorizontal: space[16] },
+  doneHint: { paddingHorizontal: space[16] },
   reopen: { minHeight: touchTarget, justifyContent: "center", paddingHorizontal: space[8] },
   archived: {
     flex: 1,

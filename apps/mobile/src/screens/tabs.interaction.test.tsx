@@ -1005,7 +1005,7 @@ async function world(
   const row = { deploymentId, signIn: null, status: "connected", name: "Mock" };
   const state = { rows: [row], selection: { deploymentId, hostClient: host } };
   const mobile = {
-    doneShelf: { read: async () => false, write: async () => undefined },
+    quietSeen: { getSnapshot: () => null, see: () => undefined, subscribe: () => () => undefined },
     drafts,
     getSnapshot: () => state,
     openDeployment: async () => undefined,

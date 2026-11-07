@@ -295,6 +295,13 @@ export const HostCapabilitySchema = z.enum([
   "place-events-v1",
   "person-show-v1",
   "shared-task-done-v1",
+  /**
+   * The Host moves quiet tasks to Done (`Thread.doneReason`), lists Done
+   * tasks newest Done first (`tasks.list` `done`), keeps each person's
+   * `viewer.quietTasks.update` choice, and reopens a Done task its writer may
+   * reopen rather than refusing their message.
+   */
+  "quiet-tasks-v1",
   /** A native-user Runner can inspect and update a person's installed engine CLI. */
   "harness-update-v1",
   /** A person can rename and delete their browser profiles. */

@@ -3,15 +3,19 @@ import { move } from "../ui/motion.js";
 import { SavedTasks } from "./saved-tasks.js";
 import { CHAT_THREAD_TITLE } from "@opensteer/core";
 import {
+  doneTaskList,
   folderSignalWords,
   groupTasksByProject,
   listedRowThreadId,
   mainWorkspace,
   projectStatusLabel,
+  quietlyMoved,
+  quietSeenScope,
   sameTaskListSource,
   taskList,
   taskRowLabel,
   taskTime,
+  type DoneTaskList,
   type HostClient,
   type HostSnapshot,
   type PlaceItem,
@@ -111,6 +115,10 @@ export interface SidebarActions {
   readonly onNewTask: (deploymentId: string, workspaceId: string) => void;
   /** Exactly this unfinished new task, with everything it held. */
   readonly onOpenDraft: (deploymentId: string, workspaceId: string, draftId: string) => void;
+  /** The Done page: every task put in Done outside Projects. */
+  readonly onOpenDone: (deploymentId: string) => void;
+  /** The sheet naming the tasks just moved to Done for the reader. */
+  readonly onOpenQuietlyMoved: (deploymentId: string) => void;
   /** A Project's own page: its chat, tasks and settings. */
   readonly onOpenProject: (deploymentId: string, workspaceId: string) => void;
   /** Shows exactly this tab, app or phone, alone. */
@@ -128,11 +136,14 @@ export interface SidebarActions {
  * where a task started here would run.
  */
 interface SidebarModel {
+  /** Main's Done list newest Done first, once read from a Host that keeps one. */
+  readonly done: DoneTaskList | null;
   /** Main's tasks, then one folder per Project, from the grouping web shares. */
   readonly grouping: ProjectGrouping;
   readonly list: TaskList;
   /** The Host has sent its first page of tasks. */
   readonly loaded: boolean;
+  readonly quietScope: string | null;
   /** Main, while it can hold a new task; a task started here runs there. */
   readonly taskWorkspaceId: string | null;
   readonly voice: VoiceRowMark;
@@ -150,9 +161,11 @@ function sidebarModel(
     previous,
   });
   return {
+    done: doneTaskList(snapshot),
     grouping: groupTasksByProject(snapshot, list),
     list,
     loaded: snapshot.tasks !== null,
+    quietScope: quietSeenScope(snapshot),
     taskWorkspaceId: main?.status === "ready" ? main.id : null,
     voice: voiceRowMark(snapshot),
     voiceThreadId: snapshot.voiceThreadId,
@@ -204,7 +217,8 @@ function useSidebarModel(
       current.openThreadId === openThreadId &&
       sameTaskListSource(current.snapshot, snapshot) &&
       current.snapshot.workspaces === snapshot.workspaces &&
-      current.snapshot.homeWorkspaceId === snapshot.homeWorkspaceId
+      current.snapshot.homeWorkspaceId === snapshot.homeWorkspaceId &&
+      current.snapshot.user === snapshot.user
     ) {
       return current.model;
     }
@@ -261,27 +275,24 @@ function useDeploymentIdentity(deploymentId: string | null): DeploymentIdentity 
   return useSyncExternalStore(client.subscribe, read, read);
 }
 
-/** Whether Done is open, as this phone last left it. */
-function useDoneShelf(): readonly [boolean, () => void] {
-  const client = useMobileClient();
-  const [open, setOpen] = useState(false);
-  const touched = useRef(false);
+/**
+ * Reads Main's Done list once a Host that keeps one is signed in; the Host
+ * client keeps it current from then on.
+ */
+function useDoneList(hostClient: HostClient | null): void {
   useEffect(() => {
-    let live = true;
-    void client.doneShelf.read().then((stored) => {
-      if (live && !touched.current) setOpen(stored);
-    });
-    return () => {
-      live = false;
+    if (hostClient === null) return;
+    let asked = false;
+    const ask = (): void => {
+      const snapshot = hostClient.getSnapshot();
+      if (asked || snapshot.quietTasksAvailable !== true || snapshot.session !== "authenticated")
+        return;
+      asked = true;
+      void hostClient.loadDoneTasks().catch(() => undefined);
     };
-  }, [client]);
-  const toggle = useCallback(() => {
-    touched.current = true;
-    setOpen(!open);
-    // A preference that did not save costs one tap next launch.
-    void client.doneShelf.write(!open).catch(() => undefined);
-  }, [client, open]);
-  return [open, toggle];
+    ask();
+    return hostClient.subscribe(ask);
+  }, [hostClient]);
 }
 
 /**
@@ -342,7 +353,12 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
   const client = useMobileClient();
   const userId = useHostUserId(hostClient);
   const drafts = useDraftSummary(visible ? deploymentId : null, userId, props.openDraftId);
-  const [doneOpen, toggleDone] = useDoneShelf();
+  const seen = useSyncExternalStore(
+    client.quietSeen.subscribe,
+    client.quietSeen.getSnapshot,
+    client.quietSeen.getSnapshot,
+  );
+  useDoneList(hostClient);
   const [closedProjects, setClosedProjects] = useState(props.shelves.closedProjects);
   const shelves = props.shelves;
   const toggleProject = useCallback(
@@ -449,6 +465,11 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
     threadId != null && threadId !== selectedRow.threadId && drafts.threadIds.has(threadId);
   // Times are read as the list draws, so a row that has not changed still ages.
   const now = Date.now();
+  const doneCount = model?.done?.total ?? main?.done.length ?? 0;
+  const moved =
+    model === null || seen === null || model.quietScope === null
+      ? []
+      : quietlyMoved(model.done, seen[model.quietScope] ?? null, now);
   const taskRows = (tasks: readonly TaskRow[], shelf: TaskShelf, nested = false) =>
     tasks.map((task) => (
       <Animated.View key={task.threadId} layout={move} style={nested && styles.nested}>
@@ -553,7 +574,7 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
           <DestinationRow
             current={destination === "Schedules"}
             icon="clock"
-            label="Schedules"
+            label="Automations"
             onPress={actions.onSchedules}
           />
         </View>
@@ -586,7 +607,7 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
           </View>
         ) : main.working.length === 0 &&
           main.ready.length === 0 &&
-          main.done.length === 0 &&
+          doneCount === 0 &&
           !model.list.hasMore &&
           folders.length === 0 ? (
           <View style={styles.welcome}>
@@ -620,46 +641,24 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
             ),
             main.working.length === 0 &&
             main.ready.length === 0 &&
-            (main.done.length > 0 || model.list.hasMore) ? (
+            (doneCount > 0 || model.list.hasMore) ? (
               <AppText key="caught-up" role="caption" style={styles.empty} tone="muted">
                 You’re all caught up.
               </AppText>
             ) : null,
-            main.done.length === 0 ? null : (
-              <Pressable
-                accessibilityLabel={`Done, ${main.done.length} ${
-                  main.done.length === 1 ? "task" : "tasks"
-                }`}
-                accessibilityRole="button"
-                accessibilityState={{ expanded: doneOpen }}
+            doneCount === 0 ? null : (
+              <DoneLine
+                count={doneCount}
                 key="done-shelf"
-                onPress={toggleDone}
-                style={({ pressed }) => [styles.shelf, pressed && styles.pressed]}
-              >
-                <View style={styles.shelfMark}>
-                  <Symbol
-                    name={doneOpen ? "chevron.down" : "chevron.right"}
-                    size={12}
-                    tint={color.muted}
-                  />
-                </View>
-                <AppText
-                  maxFontSizeMultiplier={controlFontScaleLimit}
-                  role="secondary"
-                  tone="muted"
-                >
-                  Done
-                </AppText>
-                <AppText
-                  maxFontSizeMultiplier={controlFontScaleLimit}
-                  role="caption"
-                  style={styles.count}
-                >
-                  {String(main.done.length)}
-                </AppText>
-              </Pressable>
+                moved={moved.length}
+                onOpen={() => {
+                  if (deploymentId !== null) actions.onOpenDone(deploymentId);
+                }}
+                onOpenMoved={() => {
+                  if (deploymentId !== null) actions.onOpenQuietlyMoved(deploymentId);
+                }}
+              />
             ),
-            ...(doneOpen ? taskRows(main.done, "done") : []),
             !model.list.hasMore ? null : (
               <Pressable
                 accessibilityRole="button"
@@ -808,6 +807,70 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
     </View>
   );
 });
+
+/**
+ * Done, as one quiet line at the end of Tasks: it opens the Done page. Tasks
+ * the Host just moved there for the reader add a "+N" that names them.
+ */
+function DoneLine(props: {
+  readonly count: number;
+  readonly moved: number;
+  readonly onOpen: () => void;
+  readonly onOpenMoved: () => void;
+}): ReactNode {
+  const [pressed, setPressed] = useState(false);
+  const press = {
+    onPress: props.onOpen,
+    onPressIn: () => setPressed(true),
+    onPressOut: () => setPressed(false),
+  };
+  return (
+    <View style={[styles.shelf, pressed && styles.pressed]}>
+      <Pressable
+        accessibilityLabel={`Done, ${props.count} ${props.count === 1 ? "task" : "tasks"}`}
+        accessibilityRole="button"
+        style={styles.shelfOpen}
+        {...press}
+      >
+        <View style={styles.shelfMark}>
+          <Symbol name="checkmark.circle" size={15} tint={color.muted} />
+        </View>
+        <AppText maxFontSizeMultiplier={controlFontScaleLimit} role="secondary" tone="muted">
+          Done
+        </AppText>
+      </Pressable>
+      {props.moved === 0 ? null : (
+        <Pressable
+          accessibilityLabel={`${props.moved} ${
+            props.moved === 1 ? "task" : "tasks"
+          } moved to Done for you`}
+          accessibilityRole="button"
+          hitSlop={{ bottom: space[12], left: space[8], right: space[4], top: space[12] }}
+          onPress={props.onOpenMoved}
+          style={({ pressed: chipPressed }) => [styles.moved, chipPressed && styles.movedPressed]}
+        >
+          <AppText
+            maxFontSizeMultiplier={controlFontScaleLimit}
+            role="caption"
+            style={styles.movedText}
+          >
+            {`+${props.moved}`}
+          </AppText>
+        </Pressable>
+      )}
+      <Pressable
+        accessibilityElementsHidden
+        importantForAccessibility="no-hide-descendants"
+        style={styles.shelfCount}
+        {...press}
+      >
+        <AppText maxFontSizeMultiplier={controlFontScaleLimit} role="caption" style={styles.count}>
+          {String(props.count)}
+        </AppText>
+      </Pressable>
+    </View>
+  );
+}
 
 /**
  * The tabs listed before All tabs: enough to switch between the ones in use
@@ -1409,18 +1472,39 @@ const styles = StyleSheet.create({
   docked: { backgroundColor: color.background, borderRadius: 0, borderRightWidth: 0 },
   pressed: { ...material.quiet },
   scroll: { flex: 1 },
+  moved: {
+    backgroundColor: color.emberWash,
+    borderRadius: radius.full,
+    paddingHorizontal: space[6],
+    paddingVertical: 1,
+  },
+  movedPressed: { backgroundColor: color.emberLine },
+  movedText: { color: color.ember, fontVariant: ["tabular-nums"], fontWeight: "600" },
   shelf: {
     ...material.plate,
-    cursor: "pointer",
     alignItems: "center",
     borderRadius: radius.md,
     flexDirection: "row",
-    gap: space[12],
+    gap: space[8],
     marginTop: space[8],
-    minHeight: touchTarget,
-    paddingHorizontal: space[12] - 1,
+    minHeight: Platform.OS === "android" ? 48 : touchTarget,
+  },
+  shelfCount: {
+    alignSelf: "stretch",
+    cursor: "pointer",
+    justifyContent: "center",
+    paddingRight: space[12] - 1,
   },
   shelfMark: { alignItems: "center", width: taskTextInset - space[12] * 2 },
+  shelfOpen: {
+    alignItems: "center",
+    alignSelf: "stretch",
+    cursor: "pointer",
+    flex: 1,
+    flexDirection: "row",
+    gap: space[12],
+    paddingLeft: space[12] - 1,
+  },
   statusLine: { alignItems: "center", flexDirection: "row", gap: space[6] },
   welcome: {
     backgroundColor: color.surfaceRaised,

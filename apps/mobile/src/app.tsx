@@ -32,7 +32,7 @@ import * as SecureStore from "expo-secure-store";
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
 import * as WebBrowser from "expo-web-browser";
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AppState, Platform, StyleSheet, View } from "react-native";
 import { NavigationContainerRefContext, type InitialState } from "@react-navigation/native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
@@ -44,19 +44,23 @@ import { OpenComputer } from "./screens/open-computer.js";
 import { MobileClient, operationDetail } from "./client/mobile-client.js";
 import { mockDeploymentConnections } from "./client/mock-mode.js";
 import { readMobileConfiguration } from "./config.js";
-import { resolveThreadLink, routeComputerLink } from "./links.js";
+import { resolveApplicationLink, routeComputerLink, routePairingLink } from "./links.js";
 import { Navigation, navigationTheme } from "./navigation.js";
-import { navigationRef, resetToThread } from "./navigation-ref.js";
+import { navigationRef } from "./navigation-ref.js";
 import {
-  deploymentRoot,
-  deploymentsRoot,
+  agentAuthorizationRoot,
   linkedSelectionFailureIsCurrent,
   selectionMayReconcileLinkedRoot,
   selectionRootTransition,
+  startupRoot,
   threadRoot,
-  type ThreadDestination,
+  type PairingOffer,
 } from "./navigation-state.js";
 import { MobileNotifications } from "./notifications/mobile-notifications.js";
+import {
+  createNotificationsIntroFile,
+  NotificationsIntro,
+} from "./notifications/notifications-intro.js";
 import {
   createExpoNotificationPort,
   createExpoPushPermissions,
@@ -80,6 +84,7 @@ import { createFakeIphoneApps, type FakeIphoneApps } from "./iphone-apps/fake-br
 import { iphoneNotTold, opensteerOn } from "./iphone-apps/model.js";
 import { createShownApprovalsFile } from "./iphone-apps/shown-approvals-file.js";
 import { iphoneApps } from "./platform/iphone-apps.js";
+import { AppLinksProvider, type AppLinks } from "./ui/app-links-context.js";
 import { MobileClientProvider, useMobileState } from "./ui/mobile-client-context.js";
 import { MobileNotificationsProvider } from "./ui/notifications-context.js";
 import { AppText, Notice } from "./ui/primitives.js";
@@ -193,22 +198,30 @@ function mobileClient(): MobileRoot {
         }),
         signedInSubject: async () => (await client.oauth.state()).account.identity?.subject ?? null,
       });
+  const registration = new PushRegistration({
+    // A build with no Account service has nobody to register with, and mock
+    // mode's Account is the port's own: both are settled answers, not
+    // failures, and the Notifications settings says which.
+    accountConfigured: configuration.mock || configuration.accountOrigin !== null,
+    filePath: `${root}${storeName}/notifications.json`,
+    permissions: port.permissions,
+    platform,
+    privateFiles,
+    randomBytes: (size) => getRandomValues(new Uint8Array(size)),
+    registry: port.registry,
+    signedInSubject: port.signedInSubject,
+    tokens: port.tokens,
+  });
   const notifications = new MobileNotifications({
-    port,
-    registration: new PushRegistration({
-      // A build with no Account service has nobody to register with, and mock
-      // mode's Account is the port's own: both are settled answers, not
-      // failures, and the Notifications settings says which.
-      accountConfigured: configuration.mock || configuration.accountOrigin !== null,
-      filePath: `${root}${storeName}/notifications.json`,
-      permissions: port.permissions,
-      platform,
-      privateFiles,
-      randomBytes: (size) => getRandomValues(new Uint8Array(size)),
-      registry: port.registry,
-      signedInSubject: port.signedInSubject,
-      tokens: port.tokens,
+    intro: new NotificationsIntro({
+      file: createNotificationsIntroFile({
+        filePath: `${root}${storeName}/notifications-intro.json`,
+        privateFiles,
+      }),
+      registration,
     }),
+    port,
+    registration,
   });
   const previews = configuration.mock
     ? null
@@ -224,7 +237,7 @@ function mobileClient(): MobileRoot {
     portalOrigin: configuration.portalOrigin,
     accountOrigin: configuration.accountOrigin,
     catalogFilePath: `${root}${storeName}/deployments.json`,
-    doneShelfFilePath: `${root}${storeName}/done-shelf.json`,
+    quietSeenFilePath: `${root}${storeName}/quiet-seen.json`,
     draftsFilePath: `${root}${storeName}/drafts-v3.json`,
     usageNoticesFilePath: `${root}${storeName}/usage-notices.json`,
     fetch: (input, init) => globalThis.fetch(input as RequestInfo, init),
@@ -295,12 +308,14 @@ export function App(): ReactNode {
    * waits for storage; after it is validated, one destination waits for the
    * navigator. Neither can make the catalog flash as an intermediate root.
    */
-  const waiting = useRef<ThreadDestination | null>(null);
+  const waiting = useRef<InitialState | null>(null);
   const waitingUrl = useRef<string | null>(null);
+  /** A pairing link that arrived before the navigator; it opens over the first stack. */
+  const waitingPairing = useRef<PairingOffer | null>(null);
   const initialized = useRef(false);
   const observedRootSelection = useRef<string | null | undefined>(undefined);
   const deferredRootSelection = useRef<string | null | undefined>(undefined);
-  // A Thread link owns the visible stack until its named Deployment becomes
+  // A Thread or agent link owns the visible stack until its named Deployment becomes
   // the client's published local selection. A remembered selection may still
   // be visible briefly while MobileClient serializes an earlier attachment;
   // letting that stale value reconcile would erase the linked Thread route.
@@ -364,15 +379,57 @@ export function App(): ReactNode {
     if (applyRootSelection(deploymentId)) deferredRootSelection.current = undefined;
   }, [applyRootSelection]);
 
+  /**
+   * The one way into a computer from its Connect code, for an operating-system
+   * link and a scanned code alike. It supersedes every link still waiting, so
+   * an older Thread link cannot take the stack back from it.
+   */
+  const openComputer = useCallback(
+    (id: string): void => {
+      waitingUrl.current = null;
+      waiting.current = null;
+      waitingPairing.current = null;
+      linkedDeployment.current = null;
+      linkedSelectionAttempt.current += 1;
+      deferredRootSelection.current = undefined;
+      observedRootSelection.current = undefined;
+      setLinkFailure(null);
+      client.openComputer(id);
+    },
+    [client],
+  );
+
+  /** A pairing link only ever fills in the pairing form; the person confirms it. */
+  const offerPairing = useCallback(
+    (offer: PairingOffer): void => {
+      if (client.getSnapshot().pendingComputer !== null) client.cancelOpenComputer();
+      setLinkFailure(null);
+      if (!navigationRef.isReady()) {
+        waitingPairing.current = offer;
+        return;
+      }
+      waitingPairing.current = null;
+      navigationRef.navigate("AddPersonal", { code: offer.code, origin: offer.origin });
+    },
+    [client],
+  );
+
+  const appLinks = useMemo<AppLinks>(
+    () => ({ offerPairing, openComputer }),
+    [offerPairing, openComputer],
+  );
+
   const handleNavigatorReady = (): void => {
     const destination = waiting.current;
     if (destination !== null) {
       waiting.current = null;
-      resetToThread(destination);
-      return;
+      navigationRef.resetRoot(destination);
+    } else {
+      observeRootSelection();
+      syncDeferredRootSelection();
     }
-    observeRootSelection();
-    syncDeferredRootSelection();
+    const pairing = waitingPairing.current;
+    if (pairing !== null) offerPairing(pairing);
   };
 
   useEffect(() => {
@@ -384,21 +441,11 @@ export function App(): ReactNode {
     /**
      * One reader for everything the scheme delivers. The broker accepts only
      * this build's two token callbacks; the integration reader requires an
-     * attempt this app started before it can use a return proof; `resolveThreadLink` accepts only a
-     * Thread link naming a Deployment this phone already holds. Anything else
+     * attempt this app started before it can use a return proof; `resolveApplicationLink` accepts
+     * only a Thread or agent-connection link naming a Deployment this phone already holds. Anything else
      * is dropped, because a link is a destination, never an authority.
      */
     let applicationLinkGeneration = 0;
-    const openComputer = (id: string): void => {
-      waitingUrl.current = null;
-      waiting.current = null;
-      linkedDeployment.current = null;
-      linkedSelectionAttempt.current += 1;
-      deferredRootSelection.current = undefined;
-      observedRootSelection.current = undefined;
-      setLinkFailure(null);
-      client.openComputer(id);
-    };
     const openApplicationLink = async (url: string): Promise<void> => {
       const generation = applicationLinkGeneration;
       if (routeComputerLink(url, openComputer)) {
@@ -428,7 +475,7 @@ export function App(): ReactNode {
       }
       const catalog = await client.catalog.load();
       if (generation !== applicationLinkGeneration) return;
-      const outcome = resolveThreadLink(
+      const outcome = resolveApplicationLink(
         url,
         catalog.deployments.map(({ authority }) => authority.document.deploymentId),
       );
@@ -439,16 +486,19 @@ export function App(): ReactNode {
         setLinkFailure(outcome.detail);
         return;
       }
-      if (outcome.kind !== "open") return;
+      if (outcome.kind === "ignore") return;
       setLinkFailure(null);
-      const destination: ThreadDestination = {
-        deploymentId: outcome.deploymentId,
-        threadId: outcome.threadId,
-        // A link that names the exact update opens at it, rather than at
-        // whatever happens to be newest by the time the app gets there.
-        ...(outcome.messageId === undefined ? {} : { messageId: outcome.messageId }),
-        ...(outcome.requestId === null ? {} : { requestId: outcome.requestId }),
-      };
+      const destination =
+        outcome.kind === "authorize-agent"
+          ? agentAuthorizationRoot(outcome.deploymentId, outcome.requestId)
+          : threadRoot({
+              deploymentId: outcome.deploymentId,
+              threadId: outcome.threadId,
+              // A link that names the exact update opens at it, rather than at
+              // whatever happens to be newest by the time the app gets there.
+              ...(outcome.messageId === undefined ? {} : { messageId: outcome.messageId }),
+              ...(outcome.requestId === null ? {} : { requestId: outcome.requestId }),
+            });
       linkedDeployment.current = outcome.deploymentId;
       const selectionAttempt = linkedSelectionAttempt.current + 1;
       linkedSelectionAttempt.current = selectionAttempt;
@@ -474,7 +524,7 @@ export function App(): ReactNode {
         );
         observeRootSelection();
       });
-      if (navigationRef.isReady()) resetToThread(destination);
+      if (navigationRef.isReady()) navigationRef.resetRoot(destination);
       else waiting.current = destination;
     };
 
@@ -486,7 +536,7 @@ export function App(): ReactNode {
       // Thread routing waits because an unloaded catalog cannot say whether the
       // link names a Deployment this phone holds.
       broker.accept(url);
-      if (routeComputerLink(url, openComputer)) {
+      if (routeComputerLink(url, openComputer) || routePairingLink(url, offerPairing)) {
         return;
       }
       if (!initialized.current) {
@@ -521,7 +571,10 @@ export function App(): ReactNode {
       .then(async (initialUrl) => {
         // Register intent before startup can take its singleton shortcut.
         if (!receivedUrl && initialUrl !== null) {
-          if (!routeComputerLink(initialUrl, openComputer)) {
+          if (
+            !routeComputerLink(initialUrl, openComputer) &&
+            !routePairingLink(initialUrl, offerPairing)
+          ) {
             waitingUrl.current = initialUrl;
             waitingNeedsBroker = true;
           }
@@ -536,18 +589,17 @@ export function App(): ReactNode {
           await openApplicationLink(url);
         }
 
-        const destination = waiting.current;
-        const selected = client.getSnapshot().selection.deploymentId;
         setInitialNavigationState(
-          destination !== null
-            ? threadRoot(destination)
-            : selected === null
-              ? deploymentsRoot()
-              : deploymentRoot(selected),
+          startupRoot({
+            destination: waiting.current,
+            pairing: waitingPairing.current,
+            selectedDeploymentId: client.getSnapshot().selection.deploymentId,
+          }),
         );
-        // The initial state already contains this destination. A later URL can
-        // fill the ref again before onReady and will then replace this stack.
+        // The initial state already contains these. A later URL can fill the
+        // refs again before onReady and is then applied over this stack.
         waiting.current = null;
+        waitingPairing.current = null;
         await notifications.start();
       })
       .catch((error: unknown) => {
@@ -563,7 +615,7 @@ export function App(): ReactNode {
       detachBroker();
       notifications.stop();
     };
-  }, [broker, client, notifications, observeRootSelection]);
+  }, [broker, client, notifications, observeRootSelection, offerPairing, openComputer]);
 
   useEffect(() => {
     /**
@@ -674,13 +726,15 @@ export function App(): ReactNode {
                         title={integrationNotice.title}
                       />
                     )}
-                    <Navigation
-                      initialState={initialNavigationState}
-                      onReady={handleNavigatorReady}
-                      onStateChange={syncDeferredRootSelection}
-                      ref={navigationRef}
-                      theme={navigationTheme}
-                    />
+                    <AppLinksProvider value={appLinks}>
+                      <Navigation
+                        initialState={initialNavigationState}
+                        onReady={handleNavigatorReady}
+                        onStateChange={syncDeferredRootSelection}
+                        ref={navigationRef}
+                        theme={navigationTheme}
+                      />
+                    </AppLinksProvider>
                     <ConnectionPill />
                     <OpenComputer />
                     {/* Outside the navigator: a Request card on the bar still navigates. */}

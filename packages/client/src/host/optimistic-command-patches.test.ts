@@ -257,6 +257,8 @@ function withQueue(
 
 function baseSnapshot(): HostSnapshot {
   return {
+    doneTasks: {},
+    quietTaskDays: null,
     threadRenameAvailable: true,
     taskMarksAvailable: true,
     iphoneAppsAvailable: true,

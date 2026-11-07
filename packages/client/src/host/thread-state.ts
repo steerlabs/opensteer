@@ -4,13 +4,14 @@ import type { ThreadSummary } from "./client.js";
 const unloadedThreadLimit = 4096;
 
 export type ThreadName = Pick<ThreadSummary, "title" | "icon"> &
-  Partial<Pick<ThreadSummary, "doneAt">>;
+  Partial<Pick<ThreadSummary, "doneAt" | "doneReason">>;
 
 type ThreadState = Pick<
   ThreadSummary,
   "status" | "inputQueuePaused" | "pendingRequests" | "updatedAt" | "workspaceId"
 > & {
   readonly doneAt?: ThreadSummary["doneAt"] | undefined;
+  readonly doneReason?: ThreadSummary["doneReason"] | undefined;
   readonly title?: string | undefined;
   readonly icon?: ThreadSummary["icon"] | undefined;
   readonly stateSequence: Sequence;
@@ -64,6 +65,7 @@ export class ThreadStateProjection {
     const state = {
       ...accepted,
       doneAt: accepted.doneAt === undefined ? summary.doneAt : accepted.doneAt,
+      doneReason: accepted.doneAt === undefined ? summary.doneReason : accepted.doneReason,
       title: accepted.title ?? summary.title,
       icon: accepted.icon === undefined ? summary.icon : accepted.icon,
     };
@@ -76,6 +78,7 @@ export class ThreadStateProjection {
     return {
       ...summary,
       doneAt: state.doneAt,
+      doneReason: state.doneReason ?? null,
       title: state.title,
       icon: state.icon,
       status: state.status,
@@ -89,6 +92,7 @@ export class ThreadStateProjection {
     const state = this.#loaded.get(thread.id) ?? this.#unloaded.get(thread.id);
     return {
       doneAt: state?.doneAt === undefined ? thread.doneAt : state.doneAt,
+      doneReason: state?.doneAt === undefined ? thread.doneReason : (state.doneReason ?? null),
       title: state?.title ?? thread.title,
       icon: state?.icon === undefined ? thread.icon : state.icon,
     };
@@ -118,6 +122,9 @@ export class ThreadStateProjection {
       return previous;
     const state = {
       doneAt: incoming.doneAt === undefined ? previous?.doneAt : incoming.doneAt,
+      // Events that predate reasons carry Done alone, which then reads as a person's.
+      doneReason:
+        incoming.doneAt === undefined ? previous?.doneReason : (incoming.doneReason ?? null),
       title: incoming.title ?? previous?.title,
       icon: incoming.icon === undefined ? previous?.icon : incoming.icon,
       status: incoming.status,

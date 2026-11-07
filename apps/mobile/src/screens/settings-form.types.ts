@@ -85,7 +85,15 @@ export interface RemoteAdministrationSettings {
   readonly onRefresh: () => void;
 }
 
-export type SettingsPage = "general" | "account" | "devices" | "ai" | "sign-ins";
+export type SettingsPage =
+  "general" | "account" | "devices" | "ai" | "sign-ins" | "external-agents";
+
+/** After how long quiet tasks move to Done, on a Host that moves them. */
+export interface QuietTasksSetting {
+  readonly days: import("@opensteer/core").QuietTaskDays;
+  readonly error: string | null;
+  readonly onChange: (days: import("@opensteer/core").QuietTaskDays) => void;
+}
 
 export interface SettingsFormProps extends SettingsFormActionHandlers {
   readonly page?: SettingsPage;
@@ -108,6 +116,8 @@ export interface SettingsFormProps extends SettingsFormActionHandlers {
   readonly notifications: NotificationSettingsModel | null;
   /** Where saved passwords are kept; null while no Deployment is open. */
   readonly passwords: PasswordsSettingsModel | null;
+  /** Null while the open Host does not move quiet tasks to Done. */
+  readonly quietTasks?: QuietTasksSetting | null | undefined;
   /** Null while no Deployment is open. */
   readonly signIns: SignInsSettingsActions | null;
   readonly storageError: string | null;

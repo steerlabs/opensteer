@@ -350,10 +350,11 @@ export async function finalizeRunTransaction(
       const doneAt = input.completedAt;
       await transaction
         .updateTable("threads")
-        .set({ doneAt, inputQueuePaused: false, inputQueuePausedBy: null })
+        .set({ doneAt, doneReason: null, inputQueuePaused: false, inputQueuePausedBy: null })
         .where("id", "=", run.threadId)
         .execute();
       thread.doneAt = doneAt;
+      thread.doneReason = null;
       thread.inputQueuePaused = false;
       events.push(await appendDoneState(transaction, run.threadId));
     }

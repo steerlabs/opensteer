@@ -24,6 +24,7 @@ import { OwnerViewRecords } from "./owner-view-records.js";
 import { ViewerScope, viewerScopeOf } from "./viewer-scope.js";
 import {
   RunnerIdSchema,
+  type QuietTaskDays,
   AgentEventViewSchema,
   BrowserSurfaceIdSchema,
   CHAT_THREAD_TITLE,
@@ -125,7 +126,7 @@ import type {
   WorkspaceFilePreview,
   WorkspaceSummary,
 } from "./client.js";
-import { HostClientRequestError, isHostRefusal } from "./client.js";
+import { HostClientRequestError, isHostRefusal, mainDoneTasks } from "./client.js";
 import type { ExecutionChoice, ExecutionSelection } from "./execution-preferences.js";
 import { createHttpHostApiClient } from "./host-api-client.js";
 import { threadInDirectory } from "./host-snapshot-selectors.js";
@@ -1087,6 +1088,7 @@ export class HttpHostClient {
     { readonly generation: number; readonly promise: Promise<void> }
   >();
   /** The Workspaces whose own task list a screen asked for, kept current from then on. */
+  // Workspace ids, and `done:` keys of Done lists (see `doneTaskScope`).
   readonly #workspaceTaskScopes = new Set<string>();
   #disposed = false;
   #refreshTimer: Timer | null = null;
@@ -1192,6 +1194,7 @@ export class HttpHostClient {
       integrationAppReturnPortAvailable:
         this.#capabilities?.includes("integration-app-return-port-v1") === true,
       sharedTaskDoneAvailable: this.#capabilities?.includes("shared-task-done-v1") === true,
+      quietTasksAvailable: this.#capabilities?.includes("quiet-tasks-v1") === true,
       harnessUpdateAvailable: this.#capabilities?.includes("harness-update-v1") === true,
       workspaceTabReopenAvailable: this.#capabilities?.includes("workspace-tab-reopen-v1") === true,
       browserProfileManageAvailable:
@@ -3809,6 +3812,32 @@ export class HttpHostClient {
     return this.#readFirstTaskPage(workspaceId, "asked");
   }
 
+  loadDoneTasks(workspaceId?: string): Promise<void> {
+    if (
+      this.#disposed ||
+      this.#snapshot.session !== "authenticated" ||
+      !this.#snapshot.quietTasksAvailable
+    )
+      return Promise.resolve();
+    const scope = doneTaskScope(workspaceId);
+    this.#workspaceTaskScopes.add(scope);
+    return this.#readFirstTaskPage(scope, "asked");
+  }
+
+  loadEarlierDoneTasks(workspaceId?: string): Promise<void> {
+    return this.#loadEarlier(doneTaskScope(workspaceId));
+  }
+
+  async setQuietTaskDays(days: QuietTaskDays): Promise<void> {
+    const result = await this.#dispatch({
+      idempotencyKey: mutationIdempotencyKey("quiet-tasks"),
+      quietTaskDays: days,
+      type: "viewer.quietTasks.update",
+    });
+    if (result.type === "viewer.quietTasks.update")
+      this.#update({ ...this.#snapshot, quietTaskDays: result.quietTaskDays });
+  }
+
   /**
    * One list's loaded prefix, one refresh at a time. A change told during a read
    * earns exactly one more, so the last read never started before the change;
@@ -3848,7 +3877,10 @@ export class HttpHostClient {
   }
 
   loadEarlierTasks(workspaceId?: string): Promise<void> {
-    const scope = workspaceId ?? null;
+    return this.#loadEarlier(workspaceId ?? null);
+  }
+
+  #loadEarlier(scope: string | null): Promise<void> {
     const generation = this.#viewerGeneration;
     const pending = this.#taskPageLoads.get(scope);
     if (pending?.generation === generation) return pending.promise;
@@ -3870,7 +3902,11 @@ export class HttpHostClient {
   }
 
   #heldTasks(scope: string | null): TaskListState | null {
-    return scope === null ? this.#snapshot.tasks : (this.#snapshot.workspaceTasks[scope] ?? null);
+    if (scope === null) return this.#snapshot.tasks;
+    const done = doneListKey(scope);
+    return done === null
+      ? (this.#snapshot.workspaceTasks[scope] ?? null)
+      : (this.#snapshot.doneTasks[done] ?? null);
   }
 
   /** Replaces a loaded prefix atomically, or appends one page after its cursor. */
@@ -3881,6 +3917,9 @@ export class HttpHostClient {
   ): Promise<void> {
     const generation = this.#viewerGeneration;
     const userId = this.#snapshot.user?.id;
+    const done = scope === null ? null : doneListKey(scope);
+    const workspaceId =
+      scope === null ? null : done === null ? scope : done === mainDoneTasks ? null : done;
     const markers = new Map<string, Sequence>();
     this.#readStateLoads.add(markers);
     try {
@@ -3893,8 +3932,9 @@ export class HttpHostClient {
             await this.rpc["tasks.list"]({
               ...(active ? { active: true } : {}),
               ...(before ? { before } : {}),
+              ...(done === null ? {} : { done: true }),
               limit: threadPageMaxItems,
-              ...(scope === null ? {} : { workspaceId: scope }),
+              ...(workspaceId === null ? {} : { workspaceId }),
             }),
           );
           if (!this.#viewerStillCurrent(generation, userId)) return null;
@@ -3942,10 +3982,12 @@ export class HttpHostClient {
       this.#update(
         scope === null
           ? { ...this.#snapshot, tasks: merged, ...(active ? { activeTasks: active.entries } : {}) }
-          : {
-              ...this.#snapshot,
-              workspaceTasks: { ...this.#snapshot.workspaceTasks, [scope]: merged },
-            },
+          : done !== null
+            ? { ...this.#snapshot, doneTasks: { ...this.#snapshot.doneTasks, [done]: merged } }
+            : {
+                ...this.#snapshot,
+                workspaceTasks: { ...this.#snapshot.workspaceTasks, [scope]: merged },
+              },
       );
       this.#applyReadStates(readStates, markers);
       if (
@@ -3958,12 +4000,12 @@ export class HttpHostClient {
       }
     } catch (error) {
       if (
-        scope !== null &&
+        workspaceId !== null &&
         this.#viewerStillCurrent(generation, userId) &&
         error instanceof HostClientRequestError &&
         (error.code === "forbidden" || error.code === "not_found")
       ) {
-        this.#refuseWorkspace(scope);
+        this.#refuseWorkspace(workspaceId);
       }
       throw error;
     } finally {
@@ -4016,6 +4058,7 @@ export class HttpHostClient {
       integrationAppFinishAvailable: capabilities.includes("integration-app-finish-v1"),
       integrationAppReturnPortAvailable: capabilities.includes("integration-app-return-port-v1"),
       sharedTaskDoneAvailable: capabilities.includes("shared-task-done-v1"),
+      quietTasksAvailable: capabilities.includes("quiet-tasks-v1"),
       harnessUpdateAvailable: capabilities.includes("harness-update-v1"),
       workspaceTabReopenAvailable: capabilities.includes("workspace-tab-reopen-v1"),
       browserProfileManageAvailable: capabilities.includes("browser-profile-manage-v1"),
@@ -4287,6 +4330,7 @@ export class HttpHostClient {
       // Absence is the older Host saying nothing is remembered, not a gap to
       // fill in: the protocol made the field optional, never defaulted.
       executionPreferences: payload.executionPreferences ?? emptyExecutionPreferences,
+      quietTaskDays: payload.quietTaskDays ?? null,
       harnesses,
       homeWorkspaceId: homeWorkspace?.id ?? null,
       homeThreadId: homeWorkspace?.homeThreadId ?? null,
@@ -6263,6 +6307,7 @@ export class HttpHostClient {
     this.#targetedWatch.reconcile(undefined, authorized);
     this.#notificationPreferences.delete(workspaceId);
     this.#workspaceTaskScopes.delete(workspaceId);
+    this.#workspaceTaskScopes.delete(doneTaskScope(workspaceId));
     for (const [threadId, ownerWorkspaceId] of this.#threadWorkspace) {
       if (ownerWorkspaceId !== workspaceId) continue;
       this.#historicalThreads.delete(threadId);
@@ -6458,7 +6503,11 @@ export class HttpHostClient {
     for (const thread of snapshot.threads) this.#threadWorkspace.set(thread.id, thread.workspaceId);
     for (const { thread } of snapshot.activeTasks)
       this.#threadWorkspace.set(thread.id, thread.workspaceId);
-    for (const list of [snapshot.tasks, ...Object.values(snapshot.workspaceTasks)])
+    for (const list of [
+      snapshot.tasks,
+      ...Object.values(snapshot.workspaceTasks),
+      ...Object.values(snapshot.doneTasks),
+    ])
       for (const { thread } of list?.entries ?? [])
         this.#threadWorkspace.set(thread.id, thread.workspaceId);
     const hiddenAssignments = new Set(this.#deniedAssignments);
@@ -6509,6 +6558,17 @@ export class HttpHostClient {
           Object.entries(snapshot.workspaceTasks).filter(
             ([workspaceId]) => !this.#forbiddenWorkspaces.has(workspaceId),
           ),
+        ),
+        doneTasks: Object.fromEntries(
+          Object.entries(snapshot.doneTasks)
+            .filter(([key]) => !this.#forbiddenWorkspaces.has(key))
+            .map(([key, list]) => [
+              key,
+              {
+                ...list,
+                entries: list.entries.filter(({ thread }) => !deniedThreads.has(thread.id)),
+              },
+            ]),
         ),
         threadLookups: Object.fromEntries([
           ...Object.entries(snapshot.threadLookups).map(([threadId, state]) => [
@@ -6561,6 +6621,7 @@ export class HttpHostClient {
       integrationAppReturnPortAvailable:
         this.#capabilities?.includes("integration-app-return-port-v1") === true,
       sharedTaskDoneAvailable: this.#capabilities?.includes("shared-task-done-v1") === true,
+      quietTasksAvailable: this.#capabilities?.includes("quiet-tasks-v1") === true,
       harnessUpdateAvailable: this.#capabilities?.includes("harness-update-v1") === true,
       workspaceTabReopenAvailable: this.#capabilities?.includes("workspace-tab-reopen-v1") === true,
       browserProfileManageAvailable:
@@ -6951,11 +7012,20 @@ function knownPendingRequestCount(snapshot: HostSnapshot, threadId: string): num
     .length;
 }
 
+function doneTaskScope(workspaceId?: string): string {
+  return `done:${workspaceId ?? mainDoneTasks}`;
+}
+
+function doneListKey(scope: string): string | null {
+  return scope.startsWith("done:") ? scope.slice("done:".length) : null;
+}
+
 function emptySnapshot(): HostSnapshot {
   return {
     threadRenameAvailable: false,
     taskMarksAvailable: false,
     sharedTaskDoneAvailable: false,
+    quietTasksAvailable: false,
     harnessUpdateAvailable: false,
     iphoneAppsAvailable: false,
     assignments: {},
@@ -6985,6 +7055,8 @@ function emptySnapshot(): HostSnapshot {
     tasks: null,
     activeTasks: [],
     workspaceTasks: {},
+    doneTasks: {},
+    quietTaskDays: null,
     identityConfig: null,
     inputQueues: {},
     machines: [],
@@ -7237,6 +7309,7 @@ function toThreadSummary(
   const harness = harnesses.find((item) => item.id === thread.harnessInstanceId);
   return {
     doneAt: thread.doneAt,
+    doneReason: thread.doneReason,
     accessMode: thread.accessMode,
     continuationIdentity: thread.continuationIdentity,
     providerSessionId: thread.providerSessionId,

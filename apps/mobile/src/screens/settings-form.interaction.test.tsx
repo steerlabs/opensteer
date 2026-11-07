@@ -42,7 +42,13 @@ vi.mock("react-native", () => ({
     children?: ReactNode;
   }) => <div aria-label={accessibilityLabel}>{children}</div>,
 }));
-vi.mock("../theme.js", () => ({ color: {}, radius: {}, space: {}, touchTarget: 44 }));
+vi.mock("../theme.js", () => ({
+  color: {},
+  material: { control: {} },
+  radius: {},
+  space: {},
+  touchTarget: 44,
+}));
 vi.mock("../threads/deployment-mark.js", () => ({ DeploymentMarkView: () => null }));
 vi.mock("../ui/screen.js", () => ({
   Screen: ({ children }: { children?: ReactNode }) => <main>{children}</main>,

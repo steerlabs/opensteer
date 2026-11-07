@@ -111,6 +111,7 @@ import type {
   ThreadInputSource,
 } from "./store.js";
 import { appendHostWorkspaceEvent } from "./workspace-events.js";
+import { appendDoneState, requireThreadWriteAuthority } from "./task-done.js";
 import {
   revokeRunGrants,
   runHasActiveGrant,
@@ -1982,7 +1983,13 @@ async function lockThreadInputPreconditions(
       .executeTakeFirst();
   }
   const isPlatformCompletion = input.source.kind === "platform";
-  if (input.source.kind !== "trigger" && thread.doneAt && input.policy !== "report") {
+  // A person's own message may reopen it; admission decides once the input is known.
+  if (
+    input.source.kind !== "trigger" &&
+    input.source.kind !== "human" &&
+    thread.doneAt &&
+    input.policy !== "report"
+  ) {
     throw new OpensteerError({ code: "conflict", message: "This task is Done. Reopen it first." });
   }
   if (
@@ -2234,10 +2241,36 @@ export async function enqueueThreadInputInTransaction(
     source: request.source,
     targetThread: thread,
   });
-  if (thread.doneAt && request.policy !== "report") {
-    throw new OpensteerError({ code: "conflict", message: "This task is Done. Reopen it first." });
-  }
   const passEvents: AgentEvent[] = [];
+  if (thread.doneAt && request.policy !== "report") {
+    // Writing to a Done task reopens it for whoever could reopen it by hand.
+    const reopens =
+      request.source.kind === "human" &&
+      (await requireThreadWriteAuthority(
+        transaction,
+        thread,
+        { requestedBy: request.requestedBy },
+        "reopen",
+      ).then(
+        () => true,
+        (error: unknown) => {
+          if (error instanceof OpensteerError && error.code === "forbidden") return false;
+          throw error;
+        },
+      ));
+    if (!reopens)
+      throw new OpensteerError({
+        code: "conflict",
+        message: "This task is Done. Reopen it first.",
+      });
+    await transaction
+      .updateTable("threads")
+      .set({ doneAt: null, doneReason: null })
+      .where("id", "=", thread.id)
+      .execute();
+    thread = { ...thread, doneAt: null, doneReason: null };
+    passEvents.push(await appendDoneState(transaction, thread.id));
+  }
   if (facts.memoryPass) {
     if (policy !== "queue" || !request.memoryPass)
       throw new OpensteerError({ code: "conflict", message: MANAGED_MEMORY_WAKE_SKIPPED });

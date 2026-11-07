@@ -158,6 +158,7 @@ import {
 } from "./snapshot-store.js";
 import { threadPathLinks, type ChannelLinks } from "./store-primitives.js";
 import * as taskDone from "./task-done.js";
+import * as quietTasks from "./quiet-tasks.js";
 import { type ThreadHistoryQuery } from "./thread-history.js";
 import { latestRunStoppedByPerson, type AssignmentReturnDrain } from "./thread-inbox.js";
 import { executionNodeFromRow, runAttemptFromRow } from "./thread-row-mappers.js";
@@ -1582,6 +1583,10 @@ export class OpensteerStore {
     return taskDone.doneScopeThreadIds(this.#database, threadId);
   }
 
+  listQuietTasks(input: Parameters<typeof quietTasks.listQuietTasks>[1]) {
+    return quietTasks.listQuietTasks(this.#database, input);
+  }
+
   async setThreadDone(input: Parameters<typeof taskDone.setThreadDone>[2]) {
     return this.#announceRevokedGrants(
       await taskDone.setThreadDone(this.#database, this.#links, input),
@@ -2061,6 +2066,7 @@ export class OpensteerStore {
   async taskPageForUser(input: {
     readonly active?: boolean;
     readonly before?: string;
+    readonly done?: boolean;
     readonly maxBytes?: number;
     readonly maxItems?: number;
     readonly userId: UserId;

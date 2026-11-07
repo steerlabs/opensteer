@@ -20,8 +20,15 @@ const modalWorkRoutes: ReadonlySet<string> = new Set([
   "AddPersonal",
   "AddServer",
   "DeploymentSwitcher",
+  "NotificationsIntro",
   "Settings",
 ]);
+
+/** A computer's address and one-time code, waiting for the person to confirm them. */
+export interface PairingOffer {
+  readonly code: string;
+  readonly origin: string;
+}
 
 /**
  * A linked Thread is already the intended root while its Deployment selection
@@ -106,9 +113,44 @@ export function threadRoot(destination: ThreadDestination): InitialState {
   };
 }
 
+/** An agent's connection request, reviewed over Chat so closing it lands somewhere useful. */
+export function agentAuthorizationRoot(deploymentId: string, requestId: string): InitialState {
+  return {
+    index: 1,
+    routes: [
+      { name: "Home", params: { deploymentId } },
+      { name: "AgentAuthorization", params: { deploymentId, requestId } },
+    ],
+  };
+}
+
 /** The catalog is the root only until this phone has a selected Deployment. */
 export function deploymentsRoot(): InitialState {
   return { index: 0, routes: [{ name: "Deployments" }] };
+}
+
+/**
+ * The first stack after storage hydrates. A pairing link opens its form over
+ * whatever would have been shown, including a single computer startup opened
+ * on its own, so the link is answered before anything else is.
+ */
+export function startupRoot(input: {
+  /** A Thread or agent link's stack, which replaces the remembered one. */
+  readonly destination: InitialState | null;
+  readonly pairing: PairingOffer | null;
+  readonly selectedDeploymentId: string | null;
+}): InitialState {
+  const base =
+    input.destination ??
+    (input.selectedDeploymentId === null
+      ? deploymentsRoot()
+      : deploymentRoot(input.selectedDeploymentId));
+  if (input.pairing === null) return base;
+  const routes = [
+    ...base.routes,
+    { name: "AddPersonal", params: { code: input.pairing.code, origin: input.pairing.origin } },
+  ];
+  return { index: routes.length - 1, routes };
 }
 
 /**

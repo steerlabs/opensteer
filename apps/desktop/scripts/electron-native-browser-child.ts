@@ -1388,8 +1388,11 @@ function bridgeOptions(
       status: unavailable,
       subscribe,
     },
+    notifications: { openSettings: unavailable },
+    tailscale: { share: unavailable, status: unavailable },
     portal: { openExternal: unavailable, pickFolder: unavailable },
     runner: {
+      recheckEngines: unavailable,
       remove: unavailable,
       start: unavailable,
       status: unavailable,

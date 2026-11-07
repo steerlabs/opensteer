@@ -115,6 +115,13 @@
   margin: 0 auto;
 }
 
+.input-surface__done {
+  margin: 0 0 var(--space-6);
+  padding-inline: var(--space-12);
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
 .input-surface--action {
   /* What the agent is asking is read, so the card is opaque; it floats at
      the foot of the transcript with the ember catching its top edge. */
@@ -1549,28 +1556,6 @@ fieldset.action-panel {
   flex-wrap: wrap;
   gap: var(--space-8);
   justify-content: flex-end;
-}
-
-/* Where this reader stopped last time. A position, not an alarm. */
-.unread-divider {
-  display: flex;
-  align-items: center;
-  gap: var(--space-8);
-  margin: var(--space-12) 0;
-  color: var(--muted);
-  font-size: var(--text-sm);
-}
-
-.unread-divider::before,
-.unread-divider::after {
-  content: "";
-  flex: 1;
-  height: 1px;
-  background: var(--line);
-}
-
-.unread-divider__label {
-  flex-shrink: 0;
 }
 
 /* Offered, never taken: arriving work does not move a reader who is elsewhere. */

@@ -99,6 +99,7 @@ import {
   ThreadTitleSchema,
   ThreadViewSchema,
   TimeZoneSchema,
+  QuietTaskDaysSchema,
   TriggerIdSchema,
   TriggerOccurrenceIdSchema,
   UserIdSchema,
@@ -594,6 +595,12 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     type: z.literal("viewer.timeZone.update"),
     idempotencyKey: idempotencyKeySchema,
     timeZone: TimeZoneSchema,
+  }),
+  // How many untouched days move the reader's tasks to Done. Needs `quiet-tasks-v1`.
+  z.strictObject({
+    type: z.literal("viewer.quietTasks.update"),
+    idempotencyKey: idempotencyKeySchema,
+    quietTaskDays: QuietTaskDaysSchema,
   }),
   z.strictObject({
     continuation: z
@@ -1306,6 +1313,7 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     registered: z.literal(true),
   }),
   z.object({ timeZone: TimeZoneSchema, type: z.literal("viewer.timeZone.update") }),
+  z.object({ quietTaskDays: QuietTaskDaysSchema, type: z.literal("viewer.quietTasks.update") }),
   z.object({
     asOfSequence: SequenceSchema,
     thread: ThreadViewSchema,
@@ -1928,14 +1936,20 @@ export const hostApi = defineRpc({
   /**
    * The signed-in person's tasks across every Workspace they belong to, or in
    * the one named, newest asked first (see `Thread.askedAt`), with their read
-   * state. The active filter keeps only running or waiting work. It is reread
-   * whenever `host.tasks-changed` arrives.
+   * state. The active filter keeps only running or waiting work. `done` (needs
+   * `quiet-tasks-v1`) keeps only Done tasks, newest Done first, and without a
+   * Workspace leaves out Projects. It is reread whenever `host.tasks-changed` arrives.
    */
   "tasks.list": declaration(
     "GET",
     z
-      .strictObject({ active: z.boolean().optional(), workspaceId: WorkspaceIdSchema.optional() })
-      .extend(durablePageInputSchema.shape),
+      .strictObject({
+        active: z.boolean().optional(),
+        done: z.boolean().optional(),
+        workspaceId: WorkspaceIdSchema.optional(),
+      })
+      .extend(durablePageInputSchema.shape)
+      .refine((input) => !(input.active && input.done), "Active work is never Done"),
     TaskPageSchema,
   ),
   /**

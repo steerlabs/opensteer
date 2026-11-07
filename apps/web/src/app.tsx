@@ -416,7 +416,7 @@ export function App({
 
   if (snapshot.session === "checking") {
     if (continuingSetup && !loadError) {
-      return <SetupOpening computerName={desktopDeployment?.name ?? "This computer"} />;
+      return <SetupOpening />;
     }
     return (
       <Splash detail={loadError ?? "Connecting to your deployment…"}>
@@ -503,7 +503,7 @@ export function App({
   // show. This is a brief moment on a first run and none at all afterwards.
   if (snapshot.workspaces.length === 0) {
     if (continuingSetup && !loadError) {
-      return <SetupOpening computerName={desktopDeployment?.name ?? "This computer"} />;
+      return <SetupOpening />;
     }
     return (
       <Splash detail={loadError ?? "Preparing your Workspace…"}>
@@ -555,20 +555,27 @@ export function App({
               element={<SettingsRedirect from="/triggers" to="/automations" />}
             />
             <Route path="automations" element={<AutomationsPage />} />
-            <Route path="automations/new" element={<AutomationEditorPage />} />
             <Route path="automations/:triggerId" element={<AutomationDetailPage />} />
             <Route path="automations/:triggerId/edit" element={<AutomationEditorPage />} />
             <Route path="settings" element={<SettingsShell />}>
               <Route index element={<SettingsRedirect from="/settings" to="/settings/general" />} />
-              {(["general", "account", "messaging", "ai", "plugins", "sign-ins"] as const).map(
-                (section) => (
-                  <Route
-                    key={section}
-                    path={`${section}/*`}
-                    element={<SettingsSectionRoute section={section} />}
-                  />
-                ),
-              )}
+              {(
+                [
+                  "general",
+                  "account",
+                  "messaging",
+                  "external-agents",
+                  "ai",
+                  "plugins",
+                  "sign-ins",
+                ] as const
+              ).map((section) => (
+                <Route
+                  key={section}
+                  path={`${section}/*`}
+                  element={<SettingsSectionRoute section={section} />}
+                />
+              ))}
               <Route path="devices" element={<SettingsSectionRoute section="devices" />} />
               <Route path="devices/computers" element={<ComputersPage />} />
               <Route path="devices/computers/:computerId" element={<ComputerDetailPage />} />

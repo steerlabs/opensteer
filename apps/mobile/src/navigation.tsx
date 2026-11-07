@@ -32,9 +32,11 @@ import { ChromeScreen, type ChromeDestination } from "./screens/chrome.js";
 import { ComputerScreen } from "./screens/computer.js";
 import { ConversationActivityScreen } from "./screens/conversation-activity.js";
 import { DeploymentsScreen } from "./screens/deployments.js";
+import { DoneTasksScreen } from "./screens/done-tasks.js";
 import { HomeScreen } from "./screens/home.js";
 import { NewProjectScreen } from "./screens/new-project.js";
 import { NewTaskScreen } from "./screens/new-task.js";
+import { NotificationsIntroScreen } from "./screens/notifications-intro.js";
 import { OpenAppScreen } from "./screens/open-app.js";
 import { ProjectSettingsScreen } from "./screens/project-settings.js";
 import { ProjectScreen } from "./screens/project.js";
@@ -50,8 +52,10 @@ import {
   SettingsGeneralScreen,
   SettingsScreen,
   SettingsSignInsScreen,
+  SettingsExternalAgentsScreen,
 } from "./screens/settings-home.js";
 import { SettingsMessagingScreen } from "./screens/settings-messaging.js";
+import { AgentAuthorizationScreen } from "./screens/agent-authorization.js";
 import { SettingsPluginsScreen } from "./screens/settings-plugins.js";
 import { TabsScreen } from "./screens/tabs.js";
 import { TaskSearchScreen } from "./screens/task-search.js";
@@ -63,6 +67,7 @@ import { WorkspaceBrowserScreen } from "./screens/workspace-browser.js";
 import { SidebarShell } from "./sidebar/sidebar-shell.js";
 import { color } from "./theme.js";
 import { AroundScreen } from "./thread/around-sheet.js";
+import { QuietlyMovedScreen } from "./threads/quietly-moved-sheet.js";
 import { Pane } from "./ui/pane.js";
 
 /**
@@ -156,7 +161,7 @@ const RootStack = createNativeStackNavigator({
     // Everything set to run on its own, from the sidebar like Tabs.
     Schedules: {
       screen: SchedulesScreen,
-      options: { ...destinationOptions(), title: "Schedules" },
+      options: { ...destinationOptions(), title: "Automations" },
     },
     // One schedule, from Schedules or a thread's Around sheet. Its name is
     // the large title, set once it loads.
@@ -185,6 +190,19 @@ const RootStack = createNativeStackNavigator({
     // Every task on the Deployment, narrowed by the search field in its bar,
     // from the sidebar's magnifying glass.
     TaskSearch: { screen: TaskSearchScreen, options: { title: "Search" } },
+    // Every task put in Done outside Projects, from the last line of Tasks.
+    DoneTasks: { screen: DoneTasksScreen, options: { headerLargeTitle: true, title: "Done" } },
+    // The tasks just moved to Done for the reader, from "+N" on that line.
+    QuietlyMoved: {
+      screen: QuietlyMovedScreen,
+      options: {
+        headerShown: false,
+        presentation: "formSheet",
+        sheetAllowedDetents: [0.6, 0.95],
+        sheetGrabberVisible: true,
+        title: "Moved to Done for you",
+      },
+    },
     // A conversation's tabs and Mac apps, pushed over it: the grid, or one
     // tab or app, which a tile pushes over the grid; or one tab, app or phone
     // alone, from Tabs or the sidebar. The native
@@ -324,6 +342,10 @@ const RootStack = createNativeStackNavigator({
     },
     SettingsDevices: { screen: SettingsDevicesScreen, options: { title: "Devices" } },
     SettingsMessaging: { screen: SettingsMessagingScreen, options: { title: "Messaging" } },
+    SettingsExternalAgents: {
+      screen: SettingsExternalAgentsScreen,
+      options: { title: "External agents" },
+    },
     SettingsAI: { screen: SettingsAIScreen, options: { title: "AI" } },
     SettingsPlugins: {
       screen: SettingsPluginsScreen,
@@ -405,6 +427,16 @@ const RootStack = createNativeStackNavigator({
         title: "Computer",
       }),
     },
+    // An agent's connection request, from the link its sign-in page opens on
+    // this phone. Leaving it answers nothing; the request expires on its own.
+    AgentAuthorization: {
+      screen: AgentAuthorizationScreen,
+      options: ({ navigation }) => ({
+        ...headerActions({ left: { label: "Cancel", onPress: () => navigation.goBack() } }),
+        presentation: "modal",
+        title: "Connect an agent",
+      }),
+    },
     AddIphone: {
       screen: AddIphoneScreen,
       options: ({ navigation }) => ({
@@ -414,6 +446,18 @@ const RootStack = createNativeStackNavigator({
         sheetGrabberVisible: true,
         title: "Add this iPhone",
       }),
+    },
+    // Asked once, over Chat, the first time this phone reaches a computer. It
+    // sizes to its content and is dismissed like any sheet.
+    NotificationsIntro: {
+      screen: NotificationsIntroScreen,
+      options: {
+        headerShown: false,
+        presentation: "formSheet",
+        sheetAllowedDetents: "fitToContents",
+        sheetGrabberVisible: true,
+        title: "Notifications",
+      },
     },
     DeploymentSwitcher: {
       screen: DeploymentsScreen,
@@ -454,10 +498,12 @@ const RootStack = createNativeStackNavigator({
             title: "Server",
           }),
         },
+        // Opened from the first run, an address, a scanned code or a pairing
+        // link, and often as the only sheet: its way out is Cancel, not Back.
         AddPersonal: {
           screen: AddPersonalScreen,
           options: ({ navigation }) => ({
-            ...headerActions({ left: { label: "Back", onPress: () => navigation.goBack() } }),
+            ...headerActions({ left: { label: "Cancel", onPress: () => navigation.goBack() } }),
             title: "Computer",
           }),
         },
@@ -484,7 +530,14 @@ function destinationOptions(): NativeStackNavigationOptions {
 type OpensteerRootParamList = {
   readonly AddDeployment: undefined;
   readonly AddIphone: { readonly deploymentId: string };
-  readonly AddPersonal: undefined;
+  readonly AgentAuthorization: { readonly deploymentId: string; readonly requestId: string };
+  /** A pairing link or scanned code fills the form; the person still confirms it. */
+  readonly AddPersonal:
+    | {
+        readonly code?: string | undefined;
+        readonly origin?: string | undefined;
+      }
+    | undefined;
   readonly AddServer: undefined;
   readonly Chrome: ChromeDestination;
   readonly BrowserProfiles: BrowserProfilesDestination;
@@ -511,6 +564,7 @@ type OpensteerRootParamList = {
     readonly requestId?: string | undefined;
   };
   readonly NewProject: { readonly deploymentId: string };
+  readonly NotificationsIntro: undefined;
   readonly NewTask: {
     readonly deploymentId: string;
     readonly draftId: string;
@@ -533,6 +587,7 @@ type OpensteerRootParamList = {
   readonly SettingsSessionDetail: { readonly deploymentId: string; readonly sessionId: string };
   readonly SettingsDevices: { readonly deploymentId: string };
   readonly SettingsMessaging: { readonly deploymentId: string };
+  readonly SettingsExternalAgents: { readonly deploymentId: string };
   readonly SettingsAI: { readonly deploymentId: string };
   readonly SettingsPlugins: { readonly deploymentId: string };
   readonly SettingsPluginDetail: {
@@ -548,6 +603,8 @@ type OpensteerRootParamList = {
   readonly Projects: { readonly deploymentId: string };
   readonly Tabs: { readonly deploymentId: string };
   readonly TaskSearch: { readonly deploymentId: string };
+  readonly DoneTasks: { readonly deploymentId: string };
+  readonly QuietlyMoved: { readonly deploymentId: string };
   readonly Thread: {
     readonly deploymentId: string;
     /**

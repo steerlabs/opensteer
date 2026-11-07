@@ -352,6 +352,7 @@ describe("RunnerRuntime", () => {
     const driver = new FakeHarnessDriver("test-driver", () => new ScriptedHarnessSession([]));
     const create = driver.create.bind(driver);
     let started = false;
+    let finished = false;
     vi.spyOn(driver, "create").mockImplementation(async (input) => ({
       ...(await create(input)),
       generateText: async ({ signal }) => {
@@ -359,6 +360,7 @@ describe("RunnerRuntime", () => {
         await new Promise<void>((resolve) =>
           signal.addEventListener("abort", () => resolve(), { once: true }),
         );
+        finished = true;
         return { ok: false, failure: "timeout" };
       },
     }));
@@ -384,6 +386,7 @@ describe("RunnerRuntime", () => {
       await vi.waitFor(() => expect(started).toBe(true), { timeout: 2_000 });
       await runtime.handleCommand(command, { send: async () => undefined });
       await vi.waitFor(() => expect(runtime.activeRunIds()).toEqual([]), { timeout: 2_000 });
+      expect(finished).toBe(false);
     } finally {
       await runtime.close();
       await generation;
@@ -6026,7 +6029,17 @@ function runtimeWithLeaseGrants(
   options: ConstructorParameters<typeof RunnerRuntime>[0],
   grantLeases = true,
 ): RunnerRuntime {
-  const runtime = new RunnerRuntime(options);
+  const runtime = new RunnerRuntime({
+    ...options,
+    // These harness sessions and program executors run in memory; native inventory has its own tests.
+    containment:
+      options.containment ??
+      new ExecutionContainment({
+        bootId: options.bootId,
+        dataDirectory: options.dataDirectory,
+        listProcesses: async () => [],
+      }),
+  });
   const handleCommand = runtime.handleCommand.bind(runtime);
   runtime.handleCommand = async (command, sink) => {
     const decision = await handleCommand(command, sink);

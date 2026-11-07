@@ -1,3 +1,4 @@
+import type { CSSProperties } from "react";
 import type {
   DesktopDeploymentSummary,
   DesktopPersonalDeploymentStatus,
@@ -5,7 +6,7 @@ import type {
 } from "@opensteer/protocol/desktop";
 import { thisComputerLabel } from "../desktop/places.js";
 import { Icon } from "./icon.js";
-import { SetupAiPlaceholder, SetupPhonePlaceholder } from "./first-run/setup-placeholders.js";
+import { SetupFooter, SetupFrame } from "./first-run/setup-frame.js";
 import { SetupList, SetupRow, SetupStatus } from "./first-run/setup-list.js";
 import { ErrorNotice, OnboardingCard } from "./onboarding-card.js";
 import { OptionRow } from "./option-row.js";
@@ -172,62 +173,67 @@ export function DesktopPersonalSetup({
       ? "Opensteer needs an update"
       : status.state === "stopping"
         ? "Stopping this computer"
-        : "Set up Opensteer";
+        : "Setting up Opensteer";
   return (
-    <OnboardingCard bare live title={title}>
-      <div className="setup">
-        <SetupList label="Setup">
-          <SetupRow
-            detail={
-              failed ? (
-                <span role="alert">{error ?? "Local setup could not be completed."}</span>
-              ) : stopped ? null : (
-                (personalSteps[stepIndex]?.label ?? null)
-              )
+    <SetupFrame
+      description={
+        failed || stopped ? null : (
+          <span className="setup-frame__progress-step">
+            {personalSteps[stepIndex]?.label ?? "Getting ready"}…
+          </span>
+        )
+      }
+      footer={
+        failed ? (
+          <SetupFooter
+            action={
+              canRetry ? (
+                <button className="btn btn--primary" onClick={onRetry} type="button">
+                  Try again
+                </button>
+              ) : null
             }
-            icon={<Icon name="laptop" />}
-            title={computerName}
-            tone={failed ? "attention" : "idle"}
-            trailing={
-              failed ? (
-                canRetry ? (
-                  <button className="btn btn--small" onClick={onRetry} type="button">
-                    Try again
-                  </button>
-                ) : null
-              ) : stopped ? null : (
-                <SetupStatus label="Setting up" state="working" />
-              )
+            onBack={onBack}
+          />
+        ) : stopped ? (
+          <SetupFooter
+            action={
+              <button className="btn btn--primary" onClick={onRetry} type="button">
+                Set up {thisComputerLabel().replace(/^This /u, "this ")}
+              </button>
             }
           />
-          <SetupAiPlaceholder />
-          <SetupPhonePlaceholder />
-        </SetupList>
-        <div className="setup__actions">
-          {failed ? (
-            <>
-              {!canRetry ? (
-                <p className="onboarding__note">
-                  Update or repair Opensteer, then reopen the app to continue this setup safely.
-                </p>
-              ) : null}
-              <button className="btn btn--ghost" onClick={onBack} type="button">
-                Back
-              </button>
-            </>
-          ) : stopped ? (
-            <button className="btn btn--primary" onClick={onRetry} type="button">
-              Set up {thisComputerLabel().replace(/^This /u, "this ")}
-              <Icon name="arrow-right" />
-            </button>
-          ) : (
-            <button className="btn btn--primary" disabled type="button">
-              Start
-            </button>
-          )}
-        </div>
-      </div>
-    </OnboardingCard>
+        ) : null
+      }
+      title={title}
+    >
+      <SetupList label="This computer">
+        <SetupRow
+          detail={
+            failed ? (
+              <span role="alert">{error ?? "Local setup could not be completed."}</span>
+            ) : stopped ? null : (
+              <span
+                aria-hidden
+                className="setup-meter"
+                style={
+                  { "--setup-meter": `${(stepIndex + 1) / personalSteps.length}` } as CSSProperties
+                }
+              />
+            )
+          }
+          icon={<Icon name="laptop" />}
+          title={computerName}
+          tone={failed ? "attention" : "idle"}
+          trailing={failed || stopped ? null : <SetupStatus label="Setting up" state="working" />}
+        />
+      </SetupList>
+      {failed && !canRetry ? (
+        <p className="setup-frame__note">
+          Update or repair Opensteer, then reopen the app to continue this setup safely.
+        </p>
+      ) : null}
+    </SetupFrame>
   );
 }
 

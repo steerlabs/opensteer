@@ -1,7 +1,10 @@
 import { safeMessage } from "@opensteer/shared/safeMessage";
 import { runRunnerDaemon } from "@opensteer/runner";
 import { refuseInspectorSignal } from "./supervisor/inspector-signal.js";
-import { RunnerWorkerSecretsMessageSchema } from "./supervisor/runner-worker-secrets.js";
+import {
+  RunnerWorkerEnginesRecheckMessageSchema,
+  RunnerWorkerSecretsMessageSchema,
+} from "./supervisor/runner-worker-secrets.js";
 
 // Before the Runner holds any credential in memory.
 refuseInspectorSignal(process);
@@ -19,11 +22,19 @@ const delivered = new Promise<Readonly<Record<string, string>> | null>((resolveP
   deliverSecrets = resolvePromise;
 });
 
+// Before the daemon's first connection there is nothing to recheck: its hello
+// reads the engines fresh.
+let recheckEngines: () => void = () => undefined;
+
 parent.on("message", (event) => {
   const value = event.data as { type?: unknown };
   if (value?.type === "runner.worker.stop") {
     shutdown.abort(new Error("The Opensteer desktop app is stopping local execution."));
     deliverSecrets(null);
+    return;
+  }
+  if (RunnerWorkerEnginesRecheckMessageSchema.safeParse(event.data).success) {
+    recheckEngines();
     return;
   }
   const secrets = RunnerWorkerSecretsMessageSchema.safeParse(event.data);
@@ -34,6 +45,9 @@ void delivered
   .then(async (secrets) => {
     if (secrets === null) return;
     await runRunnerDaemon(process.env, shutdown.signal, {
+      control: (control) => {
+        recheckEngines = control.recheckEngines;
+      },
       onConnected: ({ environmentId, runnerId }) => {
         parent.postMessage({ environmentId, runnerId, type: "runner.worker.connected" });
       },

@@ -23,54 +23,92 @@ vi.mock("react-native", () => ({
       {children}
     </button>
   ),
+  ScrollView: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   View: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
 }));
+vi.mock("@react-navigation/elements", () => ({ useHeaderHeight: () => 0 }));
 vi.mock("../ui/primitives.js", () => ({
   AppText: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
   Notice: ({ detail }: { detail: string }) => <span>{detail}</span>,
+  PrimaryButton: ({ label, onPress }: { label: string; onPress: () => void }) => (
+    <button onClick={onPress}>{label}</button>
+  ),
+  RowGroup: ({ children }: { children: readonly ReactNode[] }) => <div>{children}</div>,
+  SectionLabel: ({ children }: { children: string }) => <span>{children}</span>,
 }));
+vi.mock("../ui/screen.js", () => ({
+  Screen: ({ children }: { children?: ReactNode }) => <main>{children}</main>,
+  useReadingColumn: () => ({}),
+}));
+vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
+
+const signedOut = {
+  available: true,
+  detail: null,
+  identity: null,
+  origin: "https://accounts.example.com",
+  status: "signed-out" as const,
+};
 
 describe("first-run welcome", () => {
-  it("reveals alternate connections and shares the configured Mac URL", async () => {
+  it("offers the Account and an address beside the scan, and shares the Mac download", async () => {
     const container = document.createElement("div");
     const root = createRoot(container);
     const signIn = vi.fn();
-    const account = {
-      available: true,
-      detail: null,
-      identity: null,
-      origin: "https://accounts.example.com",
-      status: "signed-out" as const,
-    };
-    const render = (portalOrigin: string | null) => (
+    const scan = vi.fn();
+    const render = (props: {
+      readonly account?:
+        | typeof signedOut
+        | (Omit<typeof signedOut, "available" | "detail"> & {
+            readonly available: false;
+            readonly detail: string;
+          });
+      readonly portalOrigin: string | null;
+      readonly signingIn?: boolean;
+    }) => (
       <Welcome
-        account={account}
+        account={props.account ?? signedOut}
         failure={null}
         onAccount={signIn}
-        onPersonal={() => undefined}
-        onServer={() => undefined}
-        portalOrigin={portalOrigin}
-        signingIn={false}
+        onAddress={() => undefined}
+        onScan={scan}
+        portalOrigin={props.portalOrigin}
+        signingIn={props.signingIn ?? false}
       />
     );
+    const button = (text: string) =>
+      [...container.querySelectorAll("button")].find((item) => item.textContent === text);
     const click = async (text: string) => {
-      const button = [...container.querySelectorAll("button")].find(
-        (item) => item.textContent === text,
-      );
-      expect(button, `Missing ${text}`).toBeDefined();
-      await act(async () => button!.click());
+      expect(button(text), `Missing ${text}`).toBeDefined();
+      await act(async () => button(text)!.click());
     };
     try {
-      await act(async () => root.render(render(null)));
-      expect(container.textContent).toContain("Opensteer runs on your computer");
+      await act(async () => root.render(render({ portalOrigin: null })));
+      expect(container.textContent).toContain("Connect your computer");
+      expect(container.textContent).toContain("Enter address");
       expect(container.textContent).not.toContain("Get Opensteer for Mac");
-      expect(container.textContent).not.toContain("Add a server by address");
+      await click("Scan QR Code");
+      expect(scan).toHaveBeenCalledOnce();
       await click("Sign in");
       expect(signIn).toHaveBeenCalledOnce();
-      await click("Other ways to connect");
-      expect(container.textContent).toContain("Pair a computer");
-      expect(container.textContent).toContain("Add a server by address");
-      await act(async () => root.render(render("https://portal.example.com")));
+
+      // While the browser is open, the Account row says so and cannot start a second sign-in.
+      await act(async () => root.render(render({ portalOrigin: null, signingIn: true })));
+      expect(button("Finish signing in in your browserLoading")?.disabled).toBe(true);
+
+      // A build with no Account offers only the address.
+      await act(async () =>
+        root.render(
+          render({
+            account: { ...signedOut, available: false, detail: "No Account service." },
+            portalOrigin: null,
+          }),
+        ),
+      );
+      expect(button("Sign in")).toBeUndefined();
+      expect(container.textContent).toContain("Enter address");
+
+      await act(async () => root.render(render({ portalOrigin: "https://portal.example.com" })));
       await click("Get Opensteer for Mac");
       expect(share).toHaveBeenCalledWith({
         message: "https://portal.example.com/mac",

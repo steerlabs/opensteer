@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildMobilePairingDeepLink,
   buildMobileThreadDeepLink,
-  parseMobileThreadDeepLink,
   parseMobileOpenDeepLink,
+  parseMobilePairingDeepLink,
+  parseMobileSetupCode,
+  parseMobileThreadDeepLink,
 } from "./deep-links.js";
 import { createId } from "./ids.js";
 
@@ -81,4 +84,53 @@ describe("mobile computer links", () => {
     "com.opensteer.mobile:/open",
     `https://example.com/open?d=${deploymentId}`,
   ])("rejects %s", (url) => expect(parseMobileOpenDeepLink(url)).toBeNull());
+});
+
+describe("mobile pairing links", () => {
+  const code = `osp_${"a".repeat(43)}`;
+  const origin = "https://mac.tail2f9.ts.net";
+
+  it("round-trips an address and a one-time code", () => {
+    const link = buildMobilePairingDeepLink({ code, origin: `${origin}/` });
+
+    expect(parseMobilePairingDeepLink(link)).toEqual({ code, origin });
+    expect(parseMobileSetupCode(link, null)).toEqual({ code, kind: "pair", origin });
+  });
+
+  it.each([
+    ["plain HTTP", { code, origin: "http://mac.tail2f9.ts.net" }],
+    ["a path", { code, origin: `${origin}/app` }],
+    ["a malformed code", { code: "osp_short", origin }],
+  ])("refuses to build one with %s", (_label, link) => {
+    expect(() => buildMobilePairingDeepLink(link)).toThrow(TypeError);
+  });
+
+  it.each([
+    `com.opensteer.mobile:/pair?o=${encodeURIComponent(origin)}`,
+    `com.opensteer.mobile:/pair?o=${encodeURIComponent(origin)}&c=${code}#x`,
+    `com.opensteer.mobile:/pair?o=${encodeURIComponent(origin)}&c=${code}&d=extra`,
+    `com.opensteer.mobile:/pair?o=${encodeURIComponent("http://mac.local")}&c=${code}`,
+    `com.opensteer.mobile://host/pair?o=${encodeURIComponent(origin)}&c=${code}`,
+  ])("rejects %s", (url) => expect(parseMobilePairingDeepLink(url)).toBeNull());
+});
+
+describe("codes scanned from a computer", () => {
+  const portal = "https://opensteer.example";
+
+  it("reads the Connect code only from the trusted portal", () => {
+    const scanned = `${portal}/open#d=${encodeURIComponent(deploymentId)}`;
+
+    expect(parseMobileSetupCode(scanned, portal)).toEqual({ deploymentId, kind: "open" });
+    expect(parseMobileSetupCode(scanned, "https://other.example")).toBeNull();
+    expect(parseMobileSetupCode(scanned, null)).toBeNull();
+  });
+
+  it.each([
+    `https://opensteer.example/open?d=${deploymentId}`,
+    `https://opensteer.example/elsewhere#d=${deploymentId}`,
+    "https://opensteer.example/open#d=invalid",
+    "a grocery list",
+  ])("is not an Opensteer code: %s", (value) => {
+    expect(parseMobileSetupCode(value, portal)).toBeNull();
+  });
 });

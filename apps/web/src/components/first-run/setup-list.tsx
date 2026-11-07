@@ -25,33 +25,65 @@ export function SetupList({
 export type SetupRowTone = "attention" | "idle" | "missing" | "ready" | "waiting";
 
 export function SetupRow({
+  as = "div",
+  checked,
   children,
   detail,
   icon,
+  onClick,
+  role,
   title,
   tone = "idle",
   trailing,
 }: {
+  /** A row that is itself the action — a choice, or a door to more — is a button. */
+  readonly as?: "button" | "div";
+  /** For a choice: whether it is the chosen one. */
+  readonly checked?: boolean;
   /** Content the row opens to show: choices, a code to scan. */
   readonly children?: ReactNode;
   readonly detail?: ReactNode;
-  readonly icon: ReactNode;
+  /** Absent for a row with no mark, such as a choice of how to connect. */
+  readonly icon?: ReactNode;
+  readonly onClick?: () => void;
+  readonly role?: "radio";
   readonly title: ReactNode;
   readonly tone?: SetupRowTone;
   readonly trailing?: ReactNode;
 }) {
-  return (
-    <li className={`setup-row setup-row--${tone}${children ? " setup-row--open" : ""}`}>
-      <div className="setup-row__main">
+  const content = (
+    <>
+      {icon ? (
         <span aria-hidden className="setup-row__icon">
           {icon}
         </span>
-        <span className="setup-row__text">
-          <span className="setup-row__title">{title}</span>
-          {detail ? <span className="setup-row__detail">{detail}</span> : null}
-        </span>
-        {trailing ? <span className="setup-row__trailing">{trailing}</span> : null}
-      </div>
+      ) : null}
+      <span className="setup-row__text">
+        <span className="setup-row__title">{title}</span>
+        {detail ? <span className="setup-row__detail">{detail}</span> : null}
+      </span>
+      {trailing ? <span className="setup-row__trailing">{trailing}</span> : null}
+    </>
+  );
+  return (
+    <li
+      className={`setup-row setup-row--${tone}${children ? " setup-row--open" : ""}${
+        checked ? " setup-row--checked" : ""
+      }`}
+    >
+      {as === "button" ? (
+        <button
+          aria-checked={role === "radio" ? checked === true : undefined}
+          className="setup-row__main setup-row__main--button"
+          onClick={onClick}
+          role={role}
+          type="button"
+        >
+          {content}
+        </button>
+      ) : (
+        <div className="setup-row__main">{content}</div>
+      )}
       {children ? <div className="setup-row__more">{children}</div> : null}
     </li>
   );

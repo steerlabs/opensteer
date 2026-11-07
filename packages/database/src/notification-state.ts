@@ -5,7 +5,10 @@ import {
 } from "./administration-command.js";
 import { withDatabaseTransaction } from "./connection.js";
 import {
+  defaultQuietTaskDays,
   OpensteerError,
+  QuietTaskDaysSchema,
+  type QuietTaskDays,
   SequenceSchema,
   type Sequence,
   TimeZoneSchema,
@@ -34,7 +37,7 @@ interface ReadRow {
 const visibleMessage = sql<boolean>`message.kind in ('input', 'assistant', 'run-result')
   and ${publishedMessagePredicate("inbox")}`;
 
-/** Durable per-person viewer state: read positions, alert mutes and time zone. */
+/** Durable per-person viewer state: read positions, alert mutes, time zone and quiet tasks. */
 export class NotificationStateStore {
   readonly #database: Kysely<DatabaseSchema>;
 
@@ -394,5 +397,36 @@ export class NotificationStateStore {
     if (!row?.timeZone) return null;
     const parsed = TimeZoneSchema.safeParse(row.timeZone);
     return parsed.success ? parsed.data : null;
+  }
+
+  async setQuietTaskDays(input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
+    readonly quietTaskDays: QuietTaskDays;
+    readonly userId: UserId;
+  }): Promise<QuietTaskDays> {
+    return withDatabaseTransaction(this.#database, (transaction) =>
+      administrationCommand(transaction, input.administration, async () => {
+        const quietTaskDays = QuietTaskDaysSchema.parse(input.quietTaskDays);
+        const updated = await transaction
+          .updateTable("users")
+          .set({ quietTaskDays, updatedAt: new Date() })
+          .where("id", "=", input.userId)
+          .where("disabledAt", "is", null)
+          .executeTakeFirst();
+        if (updated.numUpdatedRows !== 1n) {
+          throw new OpensteerError({ code: "not_found", message: "User not found" });
+        }
+        return quietTaskDays;
+      }),
+    );
+  }
+
+  async quietTaskDaysFor(userId: UserId): Promise<QuietTaskDays> {
+    const row = await this.#database
+      .selectFrom("users")
+      .select("quietTaskDays")
+      .where("id", "=", userId)
+      .executeTakeFirst();
+    return QuietTaskDaysSchema.catch(defaultQuietTaskDays).parse(row?.quietTaskDays);
   }
 }

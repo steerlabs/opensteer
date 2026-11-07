@@ -62,7 +62,12 @@ export const desktopBridgeChannels = {
   notificationActivated: "opensteer.desktop.notification.activated",
   getNotificationSupport: "opensteer.desktop.notification.support",
   showNotification: "opensteer.desktop.notification.show",
+  testNotification: "opensteer.desktop.notification.test",
+  openNotificationSettings: "opensteer.desktop.notification.settings.open",
   setBadgeCount: "opensteer.desktop.badge.set",
+  recheckLocalEngines: "opensteer.desktop.local-execution.engines.recheck",
+  tailscaleStatus: "opensteer.desktop.tailscale.status",
+  tailscaleShare: "opensteer.desktop.tailscale.share",
 
   getComputerUsePermissions: "opensteer.desktop.computer-use.permissions.get",
   requestComputerUsePermissions: "opensteer.desktop.computer-use.permissions.request",

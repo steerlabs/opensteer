@@ -224,8 +224,10 @@ async function run(): Promise<void> {
       sendWebSocket: unused,
     },
     ipcMain,
+    notifications: { openSettings: unused },
+    tailscale: { share: unused, status: unused },
     portal: { openExternal: unused, pickFolder: unused },
-    runner: { remove: unused, start: unused, status: unused, subscribe },
+    runner: { recheckEngines: unused, remove: unused, start: unused, status: unused, subscribe },
   });
   const screenshots = path.join(
     process.env.OPENSTEER_JOURNEY_OUT ?? tmpdir(),

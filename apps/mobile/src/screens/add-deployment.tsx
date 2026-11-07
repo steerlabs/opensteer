@@ -17,6 +17,7 @@ import {
   eligibleSingletonDeployment,
 } from "./account-door.js";
 import { deploymentInitial } from "./deployment-row.js";
+import { useSetupScanner } from "./setup-scanner.js";
 
 export function AccountIdentityRow(props: {
   readonly email: string;
@@ -150,6 +151,7 @@ export function AddDeploymentScreen(): ReactNode {
     setStartingSignIn(false);
     navigation.navigate("AddServer");
   }, [navigation]);
+  const scan = useSetupScanner(openPersonal);
 
   const identity = account.account.identity;
   const signingIn = startingSignIn || account.account.status === "authorizing";
@@ -165,6 +167,7 @@ export function AddDeploymentScreen(): ReactNode {
             account={account.account}
             onAccount={signIn}
             onPersonal={openPersonal}
+            onScan={scan}
             onServer={openServer}
             signingIn={signingIn}
           />
@@ -186,7 +189,7 @@ export function AddDeploymentScreen(): ReactNode {
                 onPress={() => void refreshAndClose()}
               />
             </View>
-            <ManualDeploymentDoors onPersonal={openPersonal} onServer={openServer} />
+            <ManualDeploymentDoors onPersonal={openPersonal} onScan={scan} onServer={openServer} />
           </>
         )}
       </ScrollView>
@@ -203,6 +206,7 @@ export function AddDeploymentDoors(props: {
   readonly account: DesktopAccountAuthState["account"];
   readonly onAccount: () => void;
   readonly onPersonal: () => void;
+  readonly onScan: () => void;
   readonly onServer: () => void;
   readonly signingIn?: boolean;
 }): ReactNode {
@@ -228,29 +232,39 @@ export function AddDeploymentDoors(props: {
 
 export function ManualDeploymentDoors(props: {
   readonly onPersonal: () => void;
+  readonly onScan: () => void;
   readonly onServer: () => void;
 }): ReactNode {
   return <RowGroup>{manualDeploymentDoorRows(props)}</RowGroup>;
 }
 
+/** Scanning first, as on the first screen: it works for every way a computer connects. */
 function manualDeploymentDoorRows(props: {
   readonly onPersonal: () => void;
+  readonly onScan: () => void;
   readonly onServer: () => void;
 }): readonly ReactNode[] {
   return [
+    <DeploymentDoorRow
+      description="Scan the code Opensteer shows on your computer."
+      key="scan"
+      onPress={props.onScan}
+      symbol="scan"
+      title="Scan a code"
+    />,
+    <DeploymentDoorRow
+      description="For Tailscale or an address your computer already has."
+      key="personal"
+      onPress={props.onPersonal}
+      symbol="computer"
+      title="Connect by address"
+    />,
     <DeploymentDoorRow
       description="You know the address of a deployment someone runs."
       key="server"
       onPress={props.onServer}
       symbol="server"
       title="Add a server by address"
-    />,
-    <DeploymentDoorRow
-      description="You have a pairing code from the computer that hosts it."
-      key="personal"
-      onPress={props.onPersonal}
-      symbol="computer"
-      title="Pair a computer"
     />,
   ];
 }
@@ -288,7 +302,7 @@ function DeploymentDoorRow(props: {
   );
 }
 
-export type DeploymentDoorSymbolKind = "account" | "computer" | "server";
+export type DeploymentDoorSymbolKind = "account" | "computer" | "scan" | "server";
 
 export function DeploymentDoorSymbol(props: {
   readonly kind: DeploymentDoorSymbolKind;
@@ -297,6 +311,9 @@ export function DeploymentDoorSymbol(props: {
   const size = props.size ?? 20;
   if (props.kind === "account") {
     return <Symbol name="person.crop.circle" size={size} tint={color.ember} />;
+  }
+  if (props.kind === "scan") {
+    return <Symbol name="qrcode.viewfinder" size={size} tint={color.ember} />;
   }
   const names: readonly [primary: SFSymbol, fallback: SFSymbol] =
     props.kind === "server" ? ["server.rack", "network"] : ["laptopcomputer", "desktopcomputer"];

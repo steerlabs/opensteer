@@ -32,6 +32,7 @@ const modelSelection = ModelSelectionSchema.parse({
 function thread(overrides: Partial<ThreadSummary> = {}): ThreadSummary {
   return {
     doneAt: null,
+    doneReason: null,
     icon: null,
     color: null,
     accessMode: "auto",

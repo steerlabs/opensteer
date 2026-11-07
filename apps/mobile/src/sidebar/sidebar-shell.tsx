@@ -389,6 +389,24 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
         leave();
         go("NewTask", { deploymentId: targetDeploymentId, draftId, workspaceId }, false);
       },
+      onOpenDone: (targetDeploymentId) => {
+        leave();
+        const state = latest.current;
+        const current = state.routes[state.index];
+        if (
+          current?.name === "DoneTasks" &&
+          isRecord(current.params) &&
+          current.params["deploymentId"] === targetDeploymentId
+        )
+          return;
+        go("DoneTasks", { deploymentId: targetDeploymentId }, false);
+      },
+      onOpenQuietlyMoved: (targetDeploymentId) => {
+        leave();
+        navigation.dispatch(
+          StackActions.push("QuietlyMoved", { deploymentId: targetDeploymentId }),
+        );
+      },
       onOpenProject: (targetDeploymentId, workspaceId) => {
         leave();
         const state = latest.current;

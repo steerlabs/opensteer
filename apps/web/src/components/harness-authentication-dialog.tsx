@@ -359,20 +359,30 @@ function CopyValueButton({ value }: { readonly value: string }) {
   );
 }
 
+/** A caller that already knows the way in, such as a plan's own sign-in, skips the choice. */
+export interface HarnessAuthenticationOptions {
+  readonly methodId?: string;
+}
+
 export function HarnessAuthenticationDialog({
   client,
+  initialMethodId = null,
   onClose,
   onReady,
   placement,
 }: {
   readonly client: HostClient;
+  readonly initialMethodId?: string | null;
   readonly onClose: () => void;
   readonly onReady: () => void;
   readonly placement: ThreadPlacementOption;
 }) {
   const interactiveMethods = placement.setupMethods;
   const [selectedMethodId, setSelectedMethodId] = useState<string | null>(
-    interactiveMethods.length === 1 ? interactiveMethods[0]!.methodId : null,
+    interactiveMethods.length === 1
+      ? interactiveMethods[0]!.methodId
+      : (interactiveMethods.find((method) => method.methodId === initialMethodId)?.methodId ??
+          null),
   );
   const selectedMethod = interactiveMethods.find((method) => method.methodId === selectedMethodId);
   const [attempt, setAttempt] = useState(0);

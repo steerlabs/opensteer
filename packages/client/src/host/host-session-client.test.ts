@@ -15236,6 +15236,7 @@ function makeThread(workspaceId: Thread["workspaceId"]): Thread {
   const id = createId("thread");
   return {
     doneAt: null,
+    doneReason: null,
     accessMode: "full-access",
     inheritsMain: true,
     continuationIdentity: null,

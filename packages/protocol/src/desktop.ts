@@ -465,6 +465,44 @@ export const DesktopNotificationResultSchema = z.strictObject({
 });
 export type DesktopNotificationResult = z.infer<typeof DesktopNotificationResultSchema>;
 /**
+ * One real notification, sent so the person sees what notifications look like
+ * and macOS asks its question the first time. It is not a permission read:
+ * `sent` means the system accepted it for delivery, which a person who turned
+ * notifications off still gets, so nothing may show it as "allowed".
+ */
+export const DesktopNotificationTestResultSchema = z.strictObject({
+  outcome: z.enum(["sent", "failed", "unsupported"]),
+});
+export type DesktopNotificationTestResult = z.infer<typeof DesktopNotificationTestResultSchema>;
+/**
+ * Tailscale on this computer, as its own command line reports it. `dnsName` is
+ * this computer's MagicDNS name; `sharedOrigin` is the HTTPS address Opensteer
+ * itself set up on the tailnet, when it did.
+ */
+export const DesktopTailscaleStatusSchema = z.discriminatedUnion("state", [
+  z.strictObject({ state: z.literal("not-installed") }),
+  z.strictObject({ state: z.literal("not-running") }),
+  z.strictObject({
+    dnsName: z.string().trim().min(1).max(255),
+    sharedOrigin: z
+      .url({ protocol: /^https$/u })
+      .max(512)
+      .nullable(),
+    state: z.literal("ready"),
+  }),
+]);
+export type DesktopTailscaleStatus = z.infer<typeof DesktopTailscaleStatusSchema>;
+/** Sharing this computer's Opensteer on the tailnet, or the one thing in the way. */
+export const DesktopTailscaleShareResultSchema = z.discriminatedUnion("ok", [
+  z.strictObject({ ok: z.literal(true), origin: z.url({ protocol: /^https$/u }).max(512) }),
+  z.strictObject({
+    message: z.string().trim().min(1).max(500),
+    ok: z.literal(false),
+    reason: z.enum(["not-installed", "not-running", "https-disabled", "ports-busy", "failed"]),
+  }),
+]);
+export type DesktopTailscaleShareResult = z.infer<typeof DesktopTailscaleShareResultSchema>;
+/**
  * The count on the app's icon: the questions waiting on the person in the
  * Deployment on screen. Zero clears it.
  */
@@ -1720,6 +1758,18 @@ export interface OpensteerDesktopBridge {
   onNotificationActivated(listener: (target: DesktopNotificationTarget) => void): () => void;
   getNotificationSupport(): Promise<DesktopNotificationSupport>;
   showNotification(input: DesktopNotificationTarget): Promise<DesktopNotificationResult>;
+  /** Shows one real notification and reports whether the system let it through. */
+  testNotification(): Promise<DesktopNotificationTestResult>;
+  /** Opens this app's page in the system's notification settings. */
+  openNotificationSettings(): Promise<void>;
+  /**
+   * Asks this computer's Runner to look for AI engines again — one the person
+   * just installed — and to tell the Host when what it can run has changed.
+   */
+  recheckLocalEngines(): Promise<void>;
+  tailscaleStatus(): Promise<DesktopTailscaleStatus>;
+  /** Serves this computer's Opensteer over HTTPS on its tailnet, never beyond it. */
+  tailscaleShare(): Promise<DesktopTailscaleShareResult>;
   setBadgeCount(input: DesktopBadgeCountInput): Promise<void>;
   openExternalUrl(input: DesktopOpenExternalUrlInput): Promise<DesktopOpenExternalUrlResult>;
   /** Called before `begin`, because the Account seals the port into the attempt. */

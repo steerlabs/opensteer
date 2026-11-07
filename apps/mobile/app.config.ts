@@ -18,8 +18,9 @@ import { z } from "zod";
 const applicationId = "com.opensteer.mobile";
 const photosPermission =
   "Agents you allow can read photo and album details while Opensteer is open. They cannot view, change or delete your photos. Photos you choose to attach are shared separately.";
-const cameraPermission =
-  "Opensteer does not access your camera. Camera APIs are included by its photo picker and audio calling libraries.";
+// One sentence for every library that links camera APIs. Scanning the code a
+// computer shows is the only thing that opens the camera.
+const cameraPermission = "Opensteer uses the camera to scan the code shown on your computer.";
 const motionPermission =
   "Opensteer does not collect motion or fitness data. Its animation library includes motion APIs.";
 
@@ -111,7 +112,6 @@ const config: ExpoConfig = {
     supportsTablet: true,
     // Resizing shares one navigation history and draft owner across device poses.
     infoPlist: {
-      // Linked camera APIs require this key even though capture is currently audio-only.
       NSCameraUsageDescription: cameraPermission,
       NSLocalNetworkUsageDescription:
         "Opensteer uses the local network to connect to your computer.",
@@ -149,6 +149,8 @@ const config: ExpoConfig = {
     package: applicationId,
     // WebRTC's plugin requests video/overlay/Bluetooth permissions indiscriminately.
     // Audio uses OS media routing and never discovers or selects Bluetooth devices.
+    // Codes are scanned by Google's code scanner in Play services, which needs no
+    // camera permission of this app's, so expo-camera's CAMERA is removed too.
     blockedPermissions: [
       "android.permission.CAMERA",
       "android.permission.BLUETOOTH",
@@ -174,6 +176,9 @@ const config: ExpoConfig = {
       { faceIDPermission: "Opensteer uses Face ID to confirm saved-login approvals." },
     ],
     ["@config-plugins/react-native-webrtc", { cameraPermission }],
+    // Listed so prebuild does not apply it with defaults. The microphone is
+    // WebRTC's to declare; the camera is only the system code scanner's.
+    ["expo-camera", { cameraPermission, recordAudioAndroid: false }],
     "./plugins/with-apple-data.cjs",
     "./plugins/with-dictation.cjs",
     "./plugins/with-notification-preview.cjs",

@@ -14,6 +14,7 @@ import {
   resolveModelCandidates,
   type AutomaticModelConfig,
   type AutomaticModelRole,
+  type QuietTaskDays,
 } from "@opensteer/core";
 import {
   automaticModelCatalogView,
@@ -225,7 +226,7 @@ import type {
   UpdateThreadExecutionInput,
   WorkspaceSummary,
 } from "../host/client.js";
-import { HostClientRequestError } from "../host/client.js";
+import { HostClientRequestError, mainDoneTasks } from "../host/client.js";
 import { computerViewMethods } from "../host/computer-views.js";
 import type { ExecutionChoice, ExecutionSelection } from "../host/execution-preferences.js";
 import { createInMemoryHostApiClient } from "../host/host-api-client.js";
@@ -1808,6 +1809,7 @@ export interface MockHostClientOptions {
   agentPlugins?: { id: string; name: string }[];
   readonly browserPreferencesStorage?: BrowserPreferencesStorage;
   readonly sharedTaskDoneAvailable?: boolean;
+  readonly quietTasksAvailable?: boolean;
   /** The platform's lifecycle, reported to display sockets as the real client reports it. */
   readonly lifecycle?: ClientLifecycle;
   /** Automations covering every state the Automations page shows; seeded by default. */
@@ -2238,11 +2240,18 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
           }),
         );
       }
+      const projects = new Set(
+        snapshot.workspaces.filter(({ kind }) => kind === "project").map(({ id }) => id),
+      );
       const entries = (snapshot.tasks?.entries ?? []).filter(
         ({ thread }) =>
-          (!input.workspaceId || thread.workspaceId === input.workspaceId) &&
-          (!input.active || thread.status === "running" || thread.status === "waiting"),
+          (input.workspaceId
+            ? thread.workspaceId === input.workspaceId
+            : !input.done || !projects.has(thread.workspaceId)) &&
+          (!input.active || thread.status === "running" || thread.status === "waiting") &&
+          (!input.done || thread.doneAt !== null),
       );
+      if (input.done) entries.sort(newestDone);
       const start = input.before ? Number(input.before) : 0;
       if (!Number.isInteger(start) || start < 0 || start > entries.length) {
         return mockRefusal(
@@ -2745,6 +2754,9 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
     // The preview's agents have no clock of the person's to keep.
     case "viewer.timeZone.update":
       return rpcSuccess({ timeZone: command.timeZone, type: command.type });
+    case "viewer.quietTasks.update":
+      client.setQuietTaskDays(command.quietTaskDays);
+      return rpcSuccess({ quietTaskDays: command.quietTaskDays, type: command.type });
     case "thread.access.update": {
       const thread = await client.updateThreadAccessMode(command);
       return rpcSuccess({
@@ -3481,6 +3493,7 @@ function mockThread(thread: ThreadSummary): Thread {
   return ThreadSchema.parse({
     providerSessionId: thread.providerSessionId,
     doneAt: thread.doneAt,
+    doneReason: thread.doneReason,
     accessMode: thread.accessMode,
     inheritsMain: false,
     continuationIdentity: thread.continuationIdentity,
@@ -3504,6 +3517,10 @@ function mockThread(thread: ThreadSummary): Thread {
     updatedAt: thread.updatedAt,
     workspaceId: thread.workspaceId,
   });
+}
+
+function newestDone(left: TaskEntry, right: TaskEntry): number {
+  return (right.thread.doneAt ?? "").localeCompare(left.thread.doneAt ?? "");
 }
 
 function mockWindow(itemCount: number) {
@@ -4622,6 +4639,28 @@ export class MockHostClient implements HostClient {
   /** The preview's task lists always hold every task, so there is no earlier page. */
   async loadEarlierTasks(_workspaceId?: string): Promise<void> {}
 
+  async loadDoneTasks(workspaceId?: string): Promise<void> {
+    if (this.getSnapshot().quietTasksAvailable) this.#state.loadDoneTasks(workspaceId);
+  }
+
+  async loadEarlierDoneTasks(_workspaceId?: string): Promise<void> {}
+
+  /** Moves a task to Done as the Host's quiet pass would, so the preview can show it. */
+  moveQuietly(threadId: string): void {
+    this.#state.moveQuietly(threadId);
+  }
+
+  async setQuietTaskDays(days: QuietTaskDays): Promise<void> {
+    const result = unwrapRpcResult(
+      await this.rpc["commands.dispatch"]({
+        idempotencyKey: crypto.randomUUID(),
+        quietTaskDays: days,
+        type: "viewer.quietTasks.update",
+      }),
+    );
+    if (result.type !== "viewer.quietTasks.update") throw new Error("Setting command mismatch.");
+  }
+
   async setWorkspaceNotificationMute(workspaceId: string, muted: boolean): Promise<void> {
     await this.dispatch({
       type: "workspace.notifications.update",
@@ -5611,6 +5650,16 @@ class MockHostState {
     return state;
   }
 
+  /** The preview's stand-in for the Host's hourly pass over quiet tasks. */
+  moveQuietly(threadId: string): void {
+    const thread = this.snapshot.threads.find(({ id }) => id === threadId);
+    if (!thread || thread.doneAt !== null || !this.snapshot.quietTasksAvailable) return;
+    this.publishThreadName(
+      { ...thread, doneAt: this.now().toISOString(), doneReason: "quiet" },
+      {},
+    );
+  }
+
   async setTaskDone(threadId: string, done: boolean): Promise<ThreadSummary> {
     if (!this.snapshot.sharedTaskDoneAvailable)
       throw new Error("This Host does not support shared task Done.");
@@ -5675,6 +5724,7 @@ class MockHostState {
         {
           ...stopped,
           doneAt: done ? this.now().toISOString() : null,
+          doneReason: null,
           inputQueuePaused: false,
           ...(done ? { status: "idle", pendingRequests: 0 } : {}),
         },
@@ -6078,6 +6128,7 @@ class MockHostState {
       ...seedMockTaskMarks(createInitialSnapshot()),
       browserTabGroups: this.tabGroups,
       sharedTaskDoneAvailable: options.sharedTaskDoneAvailable ?? true,
+      quietTasksAvailable: options.quietTasksAvailable ?? true,
     };
     const firstRun = options.world === "first-run";
     this.snapshot = firstRun
@@ -6115,6 +6166,7 @@ class MockHostState {
           status: "idle",
           pendingRequests: 0,
           doneAt: null,
+          doneReason: null,
           inputQueuePaused: false,
         };
         this.snapshot = { ...this.snapshot, threads: [...this.snapshot.threads, worker] };
@@ -9810,6 +9862,7 @@ class MockHostState {
         title: name.title ?? thread.title,
         icon: name.icon ?? thread.icon,
         doneAt: thread.doneAt,
+        doneReason: thread.doneReason,
         status: thread.status,
         inputQueuePaused: thread.inputQueuePaused,
         pendingRequests: thread.pendingRequests,
@@ -9925,6 +9978,7 @@ class MockHostState {
       role: input.home ? "conversation" : "work",
       runnerLabel: placement.whereLabel,
       doneAt: null,
+      doneReason: null,
       status: "idle",
       title: input.home ? "Chat" : input.title?.trim() || "Untitled thread",
       icon: null,
@@ -10106,10 +10160,15 @@ class MockHostState {
     if (!body && !input.content?.some((part) => part.type !== "text"))
       throw new Error("Message body is required.");
 
-    const thread = this.snapshot.threads.find((item) => item.id === input.threadId);
+    let thread = this.snapshot.threads.find((item) => item.id === input.threadId);
     if (!thread) throw new Error("Thread not found.");
 
-    if (thread.doneAt !== null) throw mockConflict("This task is Done. Reopen it first.");
+    // As the Host does, a person's message reopens a Done task.
+    if (thread.doneAt !== null) {
+      if (!this.snapshot.quietTasksAvailable)
+        throw mockConflict("This task is Done. Reopen it first.");
+      thread = await this.setTaskDone(thread.id, false);
+    }
 
     const quoted = input.quotedMessageId
       ? this.snapshot.threads
@@ -11878,6 +11937,7 @@ class MockHostState {
       activeTasks: this.activeTaskEntries(tasks),
       waitingRequests: this.waitingRequests(),
       workspaceTasks: this.workspaceTaskLists(tasks, this.snapshot.workspaceTasks),
+      doneTasks: this.doneTaskLists(tasks, this.snapshot.doneTasks),
     };
     if (
       this.snapshot.connection === "connected" &&
@@ -11921,6 +11981,51 @@ class MockHostState {
 
   /** The Workspaces whose own task list a screen asked for. */
   private readonly workspaceTaskScopes = new Set<string>();
+  /** The Done lists a screen asked for, by `doneTasks` key. */
+  private readonly doneTaskScopes = new Set<string>();
+
+  loadDoneTasks(workspaceId?: string): void {
+    this.doneTaskScopes.add(workspaceId ?? mainDoneTasks);
+    this.update(this.snapshot);
+  }
+
+  setQuietTaskDays(days: QuietTaskDays): void {
+    this.update({ ...this.snapshot, quietTaskDays: days });
+  }
+
+  /** Each asked-for Done list: the reader's Done tasks, newest Done first. */
+  private doneTaskLists(
+    tasks: TaskListState | null,
+    held: Record<string, TaskListState>,
+  ): Record<string, TaskListState> {
+    if (!tasks) {
+      this.doneTaskScopes.clear();
+      return {};
+    }
+    const projects = new Set(
+      this.snapshot.workspaces.filter(({ kind }) => kind === "project").map(({ id }) => id),
+    );
+    let changed = Object.keys(held).length !== this.doneTaskScopes.size;
+    const lists: Record<string, TaskListState> = {};
+    for (const key of this.doneTaskScopes) {
+      const entries = tasks.entries
+        .filter(
+          ({ thread }) =>
+            thread.doneAt !== null &&
+            (key === mainDoneTasks
+              ? !projects.has(thread.workspaceId)
+              : thread.workspaceId === key),
+        )
+        .sort(newestDone);
+      const previous = held[key];
+      const same =
+        previous?.entries.length === entries.length &&
+        previous.entries.every((entry, index) => entry === entries[index]);
+      lists[key] = same && previous ? previous : { entries, window: mockWindow(entries.length) };
+      changed ||= lists[key] !== previous;
+    }
+    return changed ? lists : held;
+  }
 
   loadWorkspaceTasks(workspaceId: string): void {
     if (!this.snapshot.workspaces.some((workspace) => workspace.id === workspaceId))
@@ -12362,14 +12467,16 @@ function withoutInitialHome(snapshot: HostSnapshot): HostSnapshot {
 }
 
 function withMockThreadMarks(
-  threads: readonly (Omit<ThreadSummary, "icon" | "color" | "doneAt" | "askedAt"> & {
+  threads: readonly (Omit<ThreadSummary, "icon" | "color" | "doneAt" | "doneReason" | "askedAt"> & {
     readonly doneAt?: string | null;
+    readonly doneReason?: ThreadSummary["doneReason"];
   })[],
 ): ThreadSummary[] {
   return threads.map((thread, index) => ({
     ...thread,
     askedAt: thread.createdAt,
     doneAt: thread.doneAt ?? null,
+    doneReason: thread.doneReason ?? null,
     icon: thread.role === "conversation" ? null : mockGeneratedTaskIcon(thread.title),
     color: markColorAllocationOrder[index % markColorAllocationOrder.length]!,
   }));
@@ -13152,6 +13259,8 @@ function createInitialSnapshot(): HostSnapshot {
     tasks: null,
     activeTasks: [],
     workspaceTasks: {},
+    doneTasks: {},
+    quietTaskDays: 3,
     // The mock stands in for a Personal Deployment on the computer running it:
     // its only identity is the implicit machine owner, so nothing about this
     // fixture names a person.

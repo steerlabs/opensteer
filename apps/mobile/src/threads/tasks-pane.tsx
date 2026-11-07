@@ -1,7 +1,12 @@
 import Animated from "react-native-reanimated";
 import { move } from "../ui/motion.js";
 import {
+  doneDays,
+  doneTaskList,
+  doneTime,
   filterThreads,
+  groupTasksByProject,
+  mainDoneTasks,
   sameTaskListSource,
   taskAttention,
   taskList,
@@ -34,7 +39,8 @@ import { setTaskDone, TaskRowView, taskTextInset, type TaskShelf } from "./task-
  * alone. The rows and groups are the sidebar's, read from the same shared
  * model — Working, Ready, then Done — and a search narrows each to what
  * matches. Chat is not a task and is never listed: it is the screen
- * underneath, at the top of the sidebar.
+ * underneath, at the top of the sidebar. With `done` it is the Done page:
+ * Done alone, by the day each task was put there.
  */
 
 type TasksRow =
@@ -58,6 +64,8 @@ type TasksRow =
 
 export function TasksPane(props: {
   readonly deploymentId: string;
+  /** Done alone, newest Done first. */
+  readonly done?: boolean;
   /** Content above the list, scrolling with it: a project's own heading. */
   readonly header?: ReactNode;
   readonly hostClient: HostClient;
@@ -70,6 +78,7 @@ export function TasksPane(props: {
   readonly workspaceId: string | null;
 }): ReactNode {
   const { hostClient, query, workspaceId } = props;
+  const doneOnly = props.done === true;
   const insets = useListContentInsets(space[32]);
   const { loadError, snapshot } = useHostSnapshot(hostClient, samePaneSource);
   const [refreshing, setRefreshing] = useState(false);
@@ -79,6 +88,10 @@ export function TasksPane(props: {
 
   const refused = snapshot.session === "authentication-required";
   const authenticated = snapshot.session === "authenticated";
+  // A Host that keeps Done newest Done first lists it apart; an older one
+  // leaves it in the asked-ordered list.
+  const keepsDone = snapshot.quietTasksAvailable === true && (doneOnly || workspaceId !== null);
+  const listWorkspace = workspaceId ?? undefined;
 
   // A project's own list is read when its page opens, and kept current by
   // the Host client from then on.
@@ -93,16 +106,40 @@ export function TasksPane(props: {
     };
   }, [authenticated, hostClient, workspaceId]);
 
+  useEffect(() => {
+    if (!keepsDone || !authenticated) return;
+    let live = true;
+    void hostClient.loadDoneTasks(listWorkspace).catch((error: unknown) => {
+      if (live) setFailure(operationDetail(error, "Done tasks could not be loaded."));
+    });
+    return () => {
+      live = false;
+    };
+  }, [authenticated, listWorkspace, hostClient, keepsDone]);
+
   const now = Date.now();
   const read =
     workspaceId === null ? snapshot.tasks : (snapshot.workspaceTasks[workspaceId] ?? null);
   const list = workspaceId === null ? taskList(snapshot) : workspaceTaskList(snapshot, workspaceId);
+  const doneList = keepsDone ? doneTaskList(snapshot, listWorkspace) : null;
+  const doneAlone = doneOnly && keepsDone;
+  const loaded = doneAlone ? doneList !== null : read !== null;
+  const doneRows = keepsDone
+    ? (doneList?.rows ?? [])
+    : doneOnly && workspaceId === null
+      ? groupTasksByProject(snapshot, list).main.done
+      : list.done;
+  const moreAsked = !doneAlone && list.hasMore;
+  const moreDone = doneList?.hasMore === true;
   const searching = query.trim() !== "";
   // The shared matcher decides what a query finds; the list decides the order.
   const matches = searching
     ? new Set(
         filterThreads(
-          (read?.entries ?? []).map(({ thread }) => thread),
+          [
+            ...(read?.entries ?? []),
+            ...(snapshot.doneTasks[listWorkspace ?? mainDoneTasks]?.entries ?? []),
+          ].map(({ thread }) => thread),
           snapshot.workspaces,
           query,
           taskAttention(snapshot),
@@ -110,11 +147,39 @@ export function TasksPane(props: {
       )
     : null;
   const shown = (row: TaskRow): boolean => matches === null || matches.has(row.threadId);
-  const groups = [
-    { rows: list.working.filter(shown), shelf: "open", title: "Working" },
-    { rows: list.ready.filter(shown), shelf: "open", title: "Ready" },
-    { rows: list.done.filter(shown), shelf: "done", title: "Done" },
-  ] as const;
+  const byDay = (title: (day: string) => string) =>
+    doneDays(doneRows.filter(shown), now).map((day) => ({
+      rows: day.rows,
+      shelf: "done" as const,
+      time: doneTime,
+      title: title(day.title),
+    }));
+  const groups: readonly {
+    readonly rows: readonly TaskRow[];
+    readonly shelf: TaskShelf;
+    readonly time: (row: TaskRow, now: number) => string | null;
+    readonly title: string;
+  }[] = doneOnly
+    ? byDay((day) => day)
+    : [
+        {
+          rows: list.working.filter(shown),
+          shelf: "open" as const,
+          time: taskTime,
+          title: "Working",
+        },
+        { rows: list.ready.filter(shown), shelf: "open" as const, time: taskTime, title: "Ready" },
+        ...(keepsDone
+          ? byDay((day) => `Done ${day.toLocaleLowerCase()}`)
+          : [
+              {
+                rows: list.done.filter(shown),
+                shelf: "done" as const,
+                time: taskTime,
+                title: "Done",
+              },
+            ]),
+      ];
 
   const rows: TasksRow[] = [];
   if (groups.every((group) => group.rows.length === 0)) {
@@ -129,14 +194,16 @@ export function TasksPane(props: {
         signIn: true,
         title: "Needs sign-in",
       });
-    } else if (read === null) {
+    } else if (!loaded) {
       // A read that failed says so above the list instead.
       if (failure === null) rows.push({ key: "loading", kind: "loading" });
+    } else if (doneOnly) {
+      rows.push({ key: "empty", kind: "empty", text: "Nothing in Done yet." });
     } else if (searching) {
       rows.push({
         key: "empty",
         kind: "empty",
-        text: list.hasMore
+        text: moreAsked
           ? `No matches in loaded tasks for “${query.trim()}”. Show more to search older tasks.`
           : `No tasks match “${query.trim()}”.`,
       });
@@ -162,7 +229,7 @@ export function TasksPane(props: {
         kind: "task",
         row,
         shelf: group.shelf,
-        time: taskTime(row, now),
+        time: group.time(row, now),
       });
     }
   }
@@ -172,11 +239,10 @@ export function TasksPane(props: {
     loadingEarlierRef.current = true;
     setLoadingEarlier(true);
     setFailure(null);
-    void (
-      workspaceId === null
-        ? hostClient.loadEarlierTasks()
-        : hostClient.loadEarlierTasks(workspaceId)
-    )
+    void Promise.all([
+      ...(moreAsked ? [hostClient.loadEarlierTasks(listWorkspace)] : []),
+      ...(moreDone ? [hostClient.loadEarlierDoneTasks(listWorkspace)] : []),
+    ])
       .catch((error: unknown) => {
         setFailure(operationDetail(error, "Earlier tasks could not be loaded."));
       })
@@ -267,7 +333,7 @@ export function TasksPane(props: {
       keyboardShouldPersistTaps="handled"
       keyExtractor={keyOfRow}
       ListFooterComponent={
-        list.hasMore && !refused ? (
+        (moreAsked || moreDone) && !refused ? (
           <Pressable
             accessibilityRole="button"
             accessibilityState={{ busy: loadingEarlier }}

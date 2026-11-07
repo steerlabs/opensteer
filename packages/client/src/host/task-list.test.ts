@@ -9,8 +9,15 @@ import {
   type WaitingRequest,
 } from "@opensteer/core";
 import { MockHostClient } from "../mock/mock-host-client.js";
-import type { BrowserSessionSummary, HostSnapshot, TaskEntry } from "./client.js";
 import {
+  mainDoneTasks,
+  type BrowserSessionSummary,
+  type HostSnapshot,
+  type TaskEntry,
+} from "./client.js";
+import {
+  doneTaskList,
+  heldThread,
   listedRowThreadId,
   sameTaskRow,
   taskCanBeDone,
@@ -107,6 +114,19 @@ function snapshot(
 const titles = (rows: readonly { readonly title: string }[]) => rows.map((row) => row.title);
 
 describe("taskList", () => {
+  it.each([mainDoneTasks, template.workspaceId])(
+    "finds a task loaded only in the Done list %s for actions",
+    (key) => {
+      const completed = entry(1, "Done only", "idle", 4, 3);
+      const source = {
+        ...snapshot([]),
+        doneTasks: {
+          [key]: { entries: [completed], window: base.workspaceWindow },
+        },
+      };
+      expect(heldThread(source, completed.thread.id)).toEqual(completed.thread);
+    },
+  );
   it.each([false, true])(
     "rolls an unlisted worker's question to its nearest listed ancestor (Chat: %s)",
     (chat) => {
@@ -565,4 +585,34 @@ it("shows a managed unassigned worker's Request on Chat without loading its hidd
   };
   const list = taskList(snapshot([chat], { chat: 1, waiting: [waiting] }));
   expect(list.chat).toMatchObject({ tone: "needs-you", line: "Allow memory access" });
+});
+
+describe("doneTaskList", () => {
+  it("reads newest Done first, and an unread Done task only a Done list holds waits in Ready", () => {
+    const done = (index: number, title: string, asked: number, doneHours: number): TaskEntry => {
+      const held = entry(index, title, "idle", asked, asked);
+      return {
+        ...held,
+        thread: { ...held.thread, doneAt: hoursAgo(doneHours), doneReason: "quiet" },
+      };
+    };
+    // Pages merge in asked order, as the client holds them.
+    const entries = mergeTaskEntries([
+      done(1, "Asked long ago, Done just now", 200, 1),
+      done(2, "Asked lately, Done earlier", 5, 4),
+      done(3, "Reported after Done", 300, 2),
+    ]);
+    const held = snapshot(entries, { unread: [3] });
+    const state: HostSnapshot = {
+      ...held,
+      quietTasksAvailable: true,
+      tasks: { entries: [], window: base.workspaceWindow },
+      doneTasks: { [mainDoneTasks]: { entries, window: base.workspaceWindow } },
+    };
+    expect(titles(doneTaskList(state)!.rows)).toEqual([
+      "Asked long ago, Done just now",
+      "Asked lately, Done earlier",
+    ]);
+    expect(titles(taskList(state).ready)).toEqual(["Reported after Done"]);
+  });
 });

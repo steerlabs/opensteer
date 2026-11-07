@@ -57,6 +57,7 @@ export type SFSymbolName =
   | "key"
   | "keyboard"
   | "laptopcomputer"
+  | "laptopcomputer.and.iphone"
   | "lightbulb"
   | "line.3.horizontal"
   | "line.3.horizontal.decrease"
@@ -66,6 +67,7 @@ export type SFSymbolName =
   | "lock.open"
   | "mic"
   | "mic.slash"
+  | "moon"
   | "macmini"
   | "magnifyingglass"
   | "pause"
@@ -77,6 +79,7 @@ export type SFSymbolName =
   | "plus"
   | "powerplug"
   | "puzzlepiece.extension"
+  | "qrcode.viewfinder"
   | "rectangle.on.rectangle"
   | "repeat"
   | "safari"
@@ -220,6 +223,7 @@ const glyph: Record<SFSymbolName, string> = {
   key: "⚷",
   keyboard: "⌨",
   laptopcomputer: "⌨",
+  "laptopcomputer.and.iphone": "⌨",
   lightbulb: "✱",
   "line.3.horizontal": "☰",
   "line.3.horizontal.decrease": "≡",
@@ -229,6 +233,7 @@ const glyph: Record<SFSymbolName, string> = {
   "lock.open": "🔓\uFE0E",
   mic: "♩",
   "mic.slash": "⊘",
+  moon: "☾",
   macmini: "▬",
   magnifyingglass: "⌕",
   pause: "⏸\uFE0E",
@@ -240,6 +245,7 @@ const glyph: Record<SFSymbolName, string> = {
   plus: "+",
   powerplug: "⌁",
   "puzzlepiece.extension": "⧉",
+  "qrcode.viewfinder": "⌗",
   "rectangle.on.rectangle": "❐",
   repeat: "↻",
   safari: "◉",

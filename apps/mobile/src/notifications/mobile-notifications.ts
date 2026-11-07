@@ -4,6 +4,7 @@ import {
   type NotificationDestination,
   type VisibleThread,
 } from "./notification-routing.js";
+import type { NotificationsIntro } from "./notifications-intro.js";
 import type { PushRegistration } from "./push-registration.js";
 
 /**
@@ -16,6 +17,8 @@ import type { PushRegistration } from "./push-registration.js";
  * the Thread screen reports its own comings and goings.
  */
 export class MobileNotifications {
+  /** The one-time ask, where this build offers it. */
+  readonly intro: NotificationsIntro | null;
   readonly registration: PushRegistration;
 
   readonly #port: MobileNotificationPort;
@@ -24,10 +27,12 @@ export class MobileNotifications {
   #atLatest = false;
 
   constructor(options: {
+    readonly intro?: NotificationsIntro;
     readonly port: MobileNotificationPort;
     readonly registration: PushRegistration;
   }) {
     this.#port = options.port;
+    this.intro = options.intro ?? null;
     this.registration = options.registration;
     // Installed here rather than in `start`, because a notification that
     // arrives before the handler exists is discarded by the platform, not

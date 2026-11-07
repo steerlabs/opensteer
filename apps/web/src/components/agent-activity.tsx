@@ -68,7 +68,6 @@ import {
   type ThreadActivity,
   type ToolEntry,
   type TranscriptEntry,
-  type TranscriptGroup,
   type Turn,
   type WorkEntry,
   type WorkRow,
@@ -218,7 +217,6 @@ export function AgentTranscript({
   revealMessage = null,
   startHold = null,
   threadId = null,
-  unreadBoundarySequence = null,
   inputQueuePaused = false,
   queued = null,
   renderPasswordsSuggestion,
@@ -265,12 +263,6 @@ export function AgentTranscript({
   startHold?: string | null;
   /** The Thread this transcript is, whose mark its own replies wear. */
   threadId?: string | null;
-  /**
-   * How far the reader had read when they arrived, as the Host recorded it.
-   * The divider stands before the first message published past it. Null for a
-   * conversation this reader has never opened, which has no inside boundary.
-   */
-  unreadBoundarySequence?: string | null;
   inputQueuePaused?: boolean;
   /**
    * What waits behind the current turn, drawn at the conversation's foot
@@ -285,10 +277,6 @@ export function AgentTranscript({
   const groups = useMemo(
     () => groupTranscriptEntries(entries, { inputQueuePaused, startHold, assignments }),
     [entries, inputQueuePaused, startHold, assignments],
-  );
-  const unreadBoundaryKey = useMemo(
-    () => firstUnreadGroupKey(groups, conversation ? null : unreadBoundarySequence),
-    [conversation, groups, unreadBoundarySequence],
   );
   const activities = useMemo(() => {
     const byTurn = new Map<string, ReplyActivity>();
@@ -361,7 +349,6 @@ export function AgentTranscript({
                               <Speakers value={speakers}>
                                 {rows.map(({ group, key }, index) => (
                                   <Fragment key={key}>
-                                    {group.key === unreadBoundaryKey ? <UnreadDivider /> : null}
                                     {places?.[index]?.time ? (
                                       <p className="transcript__time">{places[index].time}</p>
                                     ) : null}
@@ -2051,35 +2038,6 @@ function MessagePlaces({
           }}
         />
       ))}
-    </div>
-  );
-}
-
-/** Where this reader stopped last time: a position, not an alarm. */
-/**
- * The group the divider stands before: the first one holding a message past the
- * reader's saved position. Compared by sequence, because a count of rows points
- * at the wrong one once own or withdrawn messages are in the window.
- */
-export function firstUnreadGroupKey(
-  groups: readonly TranscriptGroup[],
-  boundarySequence: string | null,
-): string | null {
-  if (boundarySequence === null) return null;
-  const boundary = BigInt(boundarySequence);
-  const unread = (entry: { kind: string; sequence?: string | undefined }): boolean =>
-    entry.kind === "message" && entry.sequence !== undefined && BigInt(entry.sequence) > boundary;
-  for (const group of groups) {
-    const found = group.kind === "turn" ? group.turn.work.some(unread) : unread(group.entry);
-    if (found) return group.key;
-  }
-  return null;
-}
-
-function UnreadDivider() {
-  return (
-    <div aria-label="New since you were last here" className="unread-divider" role="separator">
-      <span className="unread-divider__label">New</span>
     </div>
   );
 }
