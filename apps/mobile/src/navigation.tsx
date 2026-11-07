@@ -31,6 +31,7 @@ import { ChromeScreen, type ChromeDestination } from "./screens/chrome.js";
 import { ComputerScreen } from "./screens/computer.js";
 import { ConversationActivityScreen } from "./screens/conversation-activity.js";
 import { DeploymentsScreen } from "./screens/deployments.js";
+import { DoneTasksScreen } from "./screens/done-tasks.js";
 import { HomeScreen } from "./screens/home.js";
 import { NewProjectScreen } from "./screens/new-project.js";
 import { NewTaskScreen } from "./screens/new-task.js";
@@ -64,6 +65,7 @@ import { WorkspaceBrowserScreen } from "./screens/workspace-browser.js";
 import { SidebarShell } from "./sidebar/sidebar-shell.js";
 import { color } from "./theme.js";
 import { AroundScreen } from "./thread/around-sheet.js";
+import { QuietlyMovedScreen } from "./threads/quietly-moved-sheet.js";
 import { Pane } from "./ui/pane.js";
 
 /**
@@ -186,6 +188,19 @@ const RootStack = createNativeStackNavigator({
     // Every task on the Deployment, narrowed by the search field in its bar,
     // from the sidebar's magnifying glass.
     TaskSearch: { screen: TaskSearchScreen, options: { title: "Search" } },
+    // Every task put in Done outside Projects, from the last line of Tasks.
+    DoneTasks: { screen: DoneTasksScreen, options: { headerLargeTitle: true, title: "Done" } },
+    // The tasks just moved to Done for the reader, from "+N" on that line.
+    QuietlyMoved: {
+      screen: QuietlyMovedScreen,
+      options: {
+        headerShown: false,
+        presentation: "formSheet",
+        sheetAllowedDetents: [0.6, 0.95],
+        sheetGrabberVisible: true,
+        title: "Moved to Done for you",
+      },
+    },
     // A conversation's tabs and Mac apps, pushed over it: the grid, or one
     // tab or app, which a tile pushes over the grid; or one tab, app or phone
     // alone, from Tabs or the sidebar. The native
@@ -565,6 +580,8 @@ type OpensteerRootParamList = {
   readonly Projects: { readonly deploymentId: string };
   readonly Tabs: { readonly deploymentId: string };
   readonly TaskSearch: { readonly deploymentId: string };
+  readonly DoneTasks: { readonly deploymentId: string };
+  readonly QuietlyMoved: { readonly deploymentId: string };
   readonly Thread: {
     readonly deploymentId: string;
     /**

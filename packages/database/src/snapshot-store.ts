@@ -454,6 +454,10 @@ const taskLineSourceCharacters = 2_048;
  * one named: listed, unarchived Threads, ordered by when a person last asked
  * each task, newest first, with what it last said, why its latest Run failed
  * when it did, and the reader's read state. A cursor continues only the list it came from.
+ *
+ * `done` lists only Done tasks, newest Done first, and without a Workspace
+ * leaves out Projects, whose Done work lives on their own page. A task moved
+ * to Done long after it was last asked would otherwise sit pages deep.
  */
 export async function taskPageForUser(
   database: Kysely<DatabaseSchema>,
@@ -461,6 +465,7 @@ export async function taskPageForUser(
   input: {
     readonly active?: boolean;
     readonly before?: string;
+    readonly done?: boolean;
     readonly maxBytes?: number;
     readonly maxItems?: number;
     readonly userId: UserId;
@@ -471,12 +476,15 @@ export async function taskPageForUser(
   const maxBytes = boundedWindowBytes(input.maxBytes, 256 * 1_024);
   const readerScope = input.workspaceId ? `${input.userId}:${input.workspaceId}` : input.userId;
   const scope = input.active ? `${readerScope}:active` : readerScope;
-  const anchor = input.before ? decodeWindowCursor(input.before, "task-asked", scope) : null;
+  const cursorKind = input.done ? "task-done" : "task-asked";
+  const anchor = input.before ? decodeWindowCursor(input.before, cursorKind, scope) : null;
   if (anchor && !ThreadIdSchema.safeParse(anchor.id).success) throw invalidWindowCursor();
-  // A Thread view carries its asked time to the millisecond, so the list is
+  // A Thread view carries its times to the millisecond, so the list is
   // ordered at that precision: a cursor then names exactly the place the
   // reader stopped, even between Threads asked within one millisecond.
-  const askedAt = sql<Date>`date_trunc('milliseconds', threads.asked_at)`;
+  const orderedAt = sql<Date>`date_trunc('milliseconds', ${sql.ref(
+    input.done ? "threads.done_at" : "threads.asked_at",
+  )})`;
   return withDatabaseTransaction(
     database,
     async (transaction) => {
@@ -496,6 +504,10 @@ export async function taskPageForUser(
         .where("threads.listed", "=", true)
         .where("threads.status", "!=", "archived");
       if (input.active) tasks = tasks.where("threads.status", "in", ["running", "waiting"]);
+      if (input.done) {
+        tasks = tasks.where("threads.doneAt", "is not", null);
+        if (!input.workspaceId) tasks = tasks.where("workspaces.kind", "!=", "project");
+      }
       if (input.workspaceId) {
         const member = await transaction
           .selectFrom("workspaceMemberships")
@@ -521,12 +533,12 @@ export async function taskPageForUser(
         ]);
       if (anchor) {
         page = page.where(
-          sql<boolean>`(${askedAt}, threads.id) < (${anchor.timestamp}::timestamptz, ${anchor.id}::text)`,
+          sql<boolean>`(${orderedAt}, threads.id) < (${anchor.timestamp}::timestamptz, ${anchor.id}::text)`,
         );
       }
       const [rows, countRow] = await Promise.all([
         page
-          .orderBy(askedAt, "desc")
+          .orderBy(orderedAt, "desc")
           .orderBy("threads.id", "desc")
           .limit(maxItems + 1)
           .execute(),
@@ -563,7 +575,12 @@ export async function taskPageForUser(
           itemCount: window.items.length,
           nextBefore:
             hasMore && oldest
-              ? encodeWindowCursor("task-asked", scope, oldest.askedAt!, oldest.id)
+              ? encodeWindowCursor(
+                  cursorKind,
+                  scope,
+                  (input.done ? oldest.doneAt : oldest.askedAt)!,
+                  oldest.id,
+                )
               : null,
           totalItems: safeCount(countRow.count),
         },

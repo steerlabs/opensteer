@@ -69,7 +69,7 @@ describe("mobile retained attachment over HTTP and WebSocket", () => {
       const client = new MobileClient({
         accountOrigin: null,
         catalogFilePath: "/private/catalog.json",
-        doneShelfFilePath: "/private/done.json",
+        quietSeenFilePath: "/private/quiet-seen.json",
         draftsFilePath: "/private/drafts.json",
         usageNoticesFilePath: "/private/usage-notices.json",
         selectionFilePath: "/private/selection.json",

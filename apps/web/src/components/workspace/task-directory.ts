@@ -57,6 +57,8 @@ export function useTaskDirectory(
       snapshot.tasks,
       snapshot.activeTasks,
       snapshot.workspaceTasks,
+      snapshot.doneTasks,
+      snapshot.quietTasksAvailable,
       snapshot.workspaces,
       snapshot.taskMarksAvailable,
     ]);

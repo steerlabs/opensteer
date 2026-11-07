@@ -135,10 +135,11 @@ export function InputSurface({
   const dock = useRequestDock(threadId, requests ?? noRequests);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const docked = requests !== undefined;
-  if (
-    snapshot.sharedTaskDoneAvailable &&
-    snapshot.threads.find((thread) => thread.id === threadId)?.doneAt != null
-  ) {
+  const done =
+    snapshot.sharedTaskDoneAvailable === true &&
+    snapshot.threads.find((thread) => thread.id === threadId)?.doneAt != null;
+  // A Host that reopens a Done task for its writer keeps the composer; an older one asks first.
+  if (done && !snapshot.quietTasksAvailable) {
     return (
       <div className="input-surface">
         <p>
@@ -157,6 +158,7 @@ export function InputSurface({
   }
   return (
     <div className="input-surface" ref={rootRef}>
+      {done ? <p className="input-surface__done">Done · Sending reopens it</p> : null}
       {docked ? (
         <RequestStack
           disabled={disabled || readOnly}

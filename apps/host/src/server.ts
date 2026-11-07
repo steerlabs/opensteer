@@ -1180,6 +1180,7 @@ export async function createHostServer(
         identityConfig,
         executionPreferences,
         automaticModels,
+        quietTaskDays,
       ] = await Promise.all([
         dependencies.store.workspacePageForOwner({ ownerId }),
         dependencies.store.listHarnessInstances({
@@ -1189,6 +1190,7 @@ export async function createHostServer(
         dependencies.authenticator.identity.configuration(),
         dependencies.store.getExecutionPreferences(ownerId),
         dependencies.store.getAutomaticModelConfig(ownerId),
+        dependencies.store.notificationState.quietTaskDaysFor(ownerId),
       ]);
       const storedCatalogs = await dependencies.store.listHarnessCatalogs(
         environments.map((environment) => environment.id),
@@ -1238,6 +1240,7 @@ export async function createHostServer(
           deploymentShape: dependencies.discovery.document.deploymentShape,
           environments: environmentSummaries,
           executionPreferences,
+          quietTaskDays,
           harnesses: visibleHarnesses.map((harness) => ({
             ...harnessView(harness),
             automaticEligible:
@@ -1595,6 +1598,7 @@ export async function createHostServer(
           await dependencies.store.taskPageForUser({
             ...(input.active === undefined ? {} : { active: input.active }),
             ...(input.before ? { before: input.before } : {}),
+            ...(input.done ? { done: true } : {}),
             maxItems: Math.min(input.limit ?? threadPageMaxItems, threadPageMaxItems),
             userId: requireRpcSession(context).user.id,
             ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
@@ -2972,6 +2976,7 @@ export function advertisedCapabilities(
     "place-events-v1",
     "person-show-v1",
     "shared-task-done-v1",
+    "quiet-tasks-v1",
     "harness-update-v1",
     "iphone-apps-v1",
     "ownerViewWindows",

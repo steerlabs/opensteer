@@ -18,6 +18,8 @@ interface SettingsHost {
   readonly machineRevision: number;
   readonly machines: HostSnapshot["machines"];
   readonly notificationMutes: HostSnapshot["notificationMutes"];
+  /** Null while the Host does not move quiet tasks to Done, or has not said after how long. */
+  readonly quietTaskDays: HostSnapshot["quietTaskDays"];
   readonly workspaces: HostSnapshot["workspaces"];
 }
 
@@ -66,6 +68,7 @@ export function useSettingsHost(hostClient: HostClient | null): SettingsHost | n
       machineRevision: snapshot.machineRevision,
       machines: snapshot.machines,
       notificationMutes: snapshot.notificationMutes,
+      quietTaskDays: snapshot.quietTasksAvailable === true ? snapshot.quietTaskDays : null,
       workspaces: snapshot.workspaces,
     };
     if (

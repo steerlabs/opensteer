@@ -104,7 +104,7 @@ vi.mock("../threads/task-row.js", () => ({
 vi.mock("../ui/mobile-client-context.js", () => ({
   useHostUserId: () => "user-a",
   useMobileClient: () => ({
-    doneShelf: { read: async () => false, write: async () => undefined },
+    quietSeen: { getSnapshot: () => null, see: () => undefined, subscribe: () => () => undefined },
     drafts: harness.drafts,
     getSnapshot: () => ({ rows: [] }),
     subscribe: () => () => undefined,
@@ -182,7 +182,9 @@ async function mount(
     onNewTask: vi.fn(),
     onOpenDraft: vi.fn(),
     onOpenPlace: vi.fn(),
+    onOpenDone: vi.fn(),
     onOpenProject: vi.fn(),
+    onOpenQuietlyMoved: vi.fn(),
     onOpenTask: vi.fn(),
     onProjects: vi.fn(),
     onSchedules: vi.fn(),

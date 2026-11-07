@@ -37,6 +37,7 @@ import {
   ThreadInputViewSchema,
   ThreadSchema,
   ThreadStatusSchema,
+  ThreadDoneReasonSchema,
   ThreadViewSchema,
 } from "./models.js";
 import {
@@ -252,6 +253,7 @@ const eventDataSchemas = {
    * it. Absent on events written before titles could change. `icon` is its
    * symbol then, carried the same way; absent before symbols existed. `doneAt`
    * is when it was marked Done, or null while open; absent before Done existed.
+   * `doneReason` says the Host moved it there; absent before it could.
    */
   "thread.state-changed": z.strictObject({
     status: ThreadStatusSchema,
@@ -260,6 +262,7 @@ const eventDataSchemas = {
     title: ThreadTitleSchema.optional(),
     icon: WorkspaceIconNameSchema.nullable().optional(),
     doneAt: IsoDateTimeSchema.nullable().optional(),
+    doneReason: ThreadDoneReasonSchema.nullable().optional(),
   }),
   "thread.continuation-established": z.strictObject({
     continuationIdentity: ProviderContinuationIdentitySchema,
@@ -481,7 +484,11 @@ const eventDataViewSchemas = {
   "thread.listed": z.object({ thread: ThreadViewSchema }),
   "thread-input.updated": z.object({ input: ThreadInputViewSchema }),
   "thread.input-queue-updated": z.object(eventDataSchemas["thread.input-queue-updated"].shape),
-  "thread.state-changed": z.object(eventDataSchemas["thread.state-changed"].shape),
+  "thread.state-changed": z.object({
+    ...eventDataSchemas["thread.state-changed"].shape,
+    // A reason a newer Host added reads as a person's Done rather than failing the event.
+    doneReason: ThreadDoneReasonSchema.nullable().optional().catch(null),
+  }),
   "thread.continuation-established": z.object({
     continuationIdentity: ProviderContinuationIdentityViewSchema,
   }),

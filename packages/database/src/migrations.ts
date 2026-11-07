@@ -4718,7 +4718,8 @@ export function migrationProvider() {
         "0164_specialists_adopt_access": specialistsAdoptAccessMigration,
         "0165_request_tool_delivery": requestToolDeliveryMigration,
         "0166_memory_pass_activity": memoryPassActivityMigration,
-        "0167_devices": devicesMigration,
+        "0167_quiet_tasks": quietTasksMigration,
+        "0168_devices": devicesMigration,
       };
     },
   };
@@ -7612,6 +7613,22 @@ export const requestToolDeliveryMigration: Migration = {
         (status in ('queued', 'delivered') and attempted_at is not null and reason is null) or
         (status = 'undeliverable' and attempted_at is not null and reason is not null)
       )`.execute(database);
+  },
+};
+
+/**
+ * A person's tasks move to Done once nothing has touched them for this many
+ * days (0 never); a task the Host moved there says so until it is reopened.
+ */
+export const quietTasksMigration: Migration = {
+  async up(database) {
+    await sql`alter table users add column quiet_task_days smallint not null default 3
+        constraint users_quiet_task_days_check check (quiet_task_days in (0, 1, 3, 7));
+      alter table threads add column done_reason text,
+        add constraint threads_done_reason_check
+          check (done_reason is null or (done_reason = 'quiet' and done_at is not null));
+      create index threads_quiet_candidates on threads (updated_at)
+        where role = 'work' and done_at is null and listed and status = 'idle';`.execute(database);
   },
 };
 

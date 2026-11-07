@@ -336,6 +336,19 @@ export const chromeSettingsRow = {
   detail: "Your Chrome and the sites agents can sign in to",
   title: "Chrome",
 } as const;
+/** After how long a person's quiet tasks move to Done, as the Host accepts it. */
+export const quietTaskChoices = [
+  { days: 0, label: "Off" },
+  { days: 1, label: "1 day" },
+  { days: 3, label: "3 days" },
+  { days: 7, label: "1 week" },
+] as const;
+
+export const quietTasksTitle = "Move quiet tasks to Done";
+
+export const quietTasksFooter =
+  "Finished tasks you’ve read, with nothing waiting on you, move to Done after this long.";
+
 /** Under the projects' switches: what muting one silences, and what it never does. */
 export const projectNotificationsFooter =
   "Turning one off silences its replies and updates. Approvals and questions still notify you, and its work keeps running.";

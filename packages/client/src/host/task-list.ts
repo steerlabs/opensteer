@@ -6,7 +6,14 @@ import {
   type MarkColor,
   type WaitingRequest,
 } from "@opensteer/core";
-import type { HostSnapshot, TaskEntry, TaskListState, ThreadSummary } from "./client.js";
+import {
+  mainDoneTasks,
+  type HostSnapshot,
+  type TaskEntry,
+  type TaskListState,
+  type ThreadSummary,
+} from "./client.js";
+import { startOfDay } from "./automation-presentation.js";
 import { threadStartHold } from "./thread-activity.js";
 import { compareTaskOrder, mergeTaskEntries } from "./task-entries.js";
 import { conversationSurfaces, type SurfaceItem } from "./surfaces.js";
@@ -57,6 +64,10 @@ export interface TaskRow {
    */
   readonly stopped: boolean;
   readonly done: boolean;
+  /** When it was put in Done, while it is there. */
+  readonly doneAt: string | null;
+  /** The Host put it in Done because nothing touched it. */
+  readonly quietlyDone: boolean;
   readonly canBeDone: boolean;
   readonly askedAt: string;
 }
@@ -85,6 +96,8 @@ export interface TaskList extends WorkspaceTaskList {
 /** Everything a task list is drawn from, and nothing else. */
 const taskListSourceKeys = [
   "sharedTaskDoneAvailable",
+  "quietTasksAvailable",
+  "doneTasks",
   "activeTasks",
   "assignments",
   "browserSessions",
@@ -126,7 +139,13 @@ export interface TaskListOptions {
 
 /** The reader's tasks across every Workspace, with their Chat apart. */
 export function taskList(snapshot: TaskListSource, options: TaskListOptions = {}): TaskList {
-  return arrange(snapshot, snapshot.tasks, snapshot.activeTasks, options);
+  return arrange(
+    snapshot,
+    snapshot.tasks,
+    snapshot.activeTasks,
+    options,
+    Object.values(snapshot.doneTasks).flatMap(({ entries }) => entries),
+  );
 }
 
 /**
@@ -143,6 +162,7 @@ export function workspaceTaskList(
     snapshot.workspaceTasks[workspaceId] ?? null,
     snapshot.activeTasks.filter(({ thread }) => thread.workspaceId === workspaceId),
     options,
+    snapshot.doneTasks[workspaceId]?.entries ?? [],
   );
   return list;
 }
@@ -157,6 +177,7 @@ export function heldThread(snapshot: TaskListSource, threadId: string): ThreadSu
     snapshot.threads.find(({ id }) => id === threadId) ??
     [
       ...snapshot.activeTasks,
+      ...Object.values(snapshot.doneTasks).flatMap(({ entries }) => entries),
       ...(snapshot.tasks?.entries ?? []),
       ...Object.values(snapshot.workspaceTasks).flatMap(({ entries }) => entries),
     ].find(({ thread }) => thread.id === threadId)?.thread ??
@@ -239,8 +260,13 @@ function arrange(
   tasks: TaskListState | null,
   activeTasks: readonly TaskEntry[],
   options: TaskListOptions,
+  doneEntries: readonly TaskEntry[] = [],
 ): TaskList {
-  const entries = mergeTaskEntries(tasks?.entries ?? [], activeTasks).filter(
+  // An unread Done task waits in Ready, though only a Done list may hold it.
+  const unreadDone = doneEntries.filter(({ thread }) =>
+    isThreadUnread(snapshot.threadReadStates[thread.id]),
+  );
+  const entries = mergeTaskEntries(tasks?.entries ?? [], activeTasks, unreadDone).filter(
     ({ thread }) => thread.listed || thread.id === snapshot.homeThreadId,
   );
   const asks = attributedRequests(snapshot, entries);
@@ -337,6 +363,8 @@ function rowOf(
         : taskLine(entry, tone, asks, chat, surface),
     place: surface === null ? null : placeName(surface),
     done: snapshot.sharedTaskDoneAvailable === true && thread.doneAt !== null,
+    doneAt: thread.doneAt,
+    quietlyDone: thread.doneAt !== null && thread.doneReason === "quiet",
     // The Host also refuses an active channel conversation, which a client cannot tell apart.
     canBeDone: !chat && snapshot.sharedTaskDoneAvailable === true && thread.role === "work",
     unread: isThreadUnread(snapshot.threadReadStates[thread.id]),
@@ -465,6 +493,8 @@ export function sameTaskRow(left: TaskRow, right: TaskRow): boolean {
     left.unread === right.unread &&
     left.stopped === right.stopped &&
     left.done === right.done &&
+    left.doneAt === right.doneAt &&
+    left.quietlyDone === right.quietlyDone &&
     left.canBeDone === right.canBeDone &&
     left.askedAt === right.askedAt
   );
@@ -560,4 +590,99 @@ export function taskWaitingReason(
   if (environment && !environment.connected)
     return { kind: "computer-offline", label: `${environment.name} is offline` };
   return null;
+}
+
+export interface DoneTaskList {
+  /** Newest Done first. A Done task with something unread waits in Ready instead. */
+  readonly rows: readonly TaskRow[];
+  /** Every Done task the Host holds for this list, read or not. */
+  readonly total: number;
+  readonly hasMore: boolean;
+}
+
+/**
+ * One Done list as the Host keeps it, newest Done first: one Workspace's, or
+ * without one the reader's outside Projects. Null until `loadDoneTasks` reads
+ * it, and always on a Host without `quiet-tasks-v1`, whose Done work arrives
+ * in the asked-ordered list instead (`TaskList.done`).
+ */
+export function doneTaskList(snapshot: TaskListSource, workspaceId?: string): DoneTaskList | null {
+  if (!snapshot.quietTasksAvailable) return null;
+  const list = snapshot.doneTasks[workspaceId ?? mainDoneTasks];
+  if (!list) return null;
+  const rows = list.entries
+    .filter(({ thread }) => thread.listed && thread.doneAt !== null)
+    .map((entry) => rowOf(snapshot, entry, []))
+    .filter((row) => row.done && !row.unread)
+    // Pages merge in asked order; Done reads newest Done first.
+    .sort(
+      (left, right) =>
+        (right.doneAt ?? "").localeCompare(left.doneAt ?? "") ||
+        right.threadId.localeCompare(left.threadId),
+    );
+  return { rows, total: list.window.totalItems, hasMore: list.window.hasMore };
+}
+
+export interface DoneDay {
+  readonly id: "today" | "week" | "earlier";
+  readonly title: string;
+  readonly rows: readonly TaskRow[];
+}
+
+/** Done rows by the day they were put there, in the reader's own days: Today, This week, Earlier. */
+export function doneDays(rows: readonly TaskRow[], now: number): readonly DoneDay[] {
+  const today = startOfDay(now);
+  const week = today - 6 * 24 * 60 * 60 * 1_000;
+  const days: Record<DoneDay["id"], TaskRow[]> = { today: [], week: [], earlier: [] };
+  for (const row of rows) {
+    const doneAt = row.doneAt ? Date.parse(row.doneAt) : Number.NaN;
+    days[doneAt >= today ? "today" : doneAt >= week ? "week" : "earlier"].push(row);
+  }
+  const titles = { today: "Today", week: "This week", earlier: "Earlier" } as const;
+  return (["today", "week", "earlier"] as const)
+    .filter((id) => days[id].length > 0)
+    .map((id) => ({ id, title: titles[id], rows: days[id] }));
+}
+
+/** How long ago a Done row was put in Done, as its list reads it while drawing. */
+export function doneTime(row: TaskRow, now: number): string | null {
+  return row.doneAt ? formatRelativeTime(row.doneAt, new Date(now)) : null;
+}
+
+/** How far back a device that has shown nothing yet still tells of quiet moves. */
+const unseenQuietWindowMs = 7 * 24 * 60 * 60 * 1_000;
+
+/**
+ * The tasks the Host moved to Done quietly since this device last showed
+ * them: newer than `seenThrough`, the newest such Done time it has shown, or
+ * than a week ago before it has shown any. Read from the Done list, so it
+ * counts as far as that list has been read.
+ */
+export function quietlyMoved(
+  list: DoneTaskList | null,
+  seenThrough: string | null,
+  now: number,
+): readonly TaskRow[] {
+  if (!list) return [];
+  const since = seenThrough ? Date.parse(seenThrough) : now - unseenQuietWindowMs;
+  return list.rows.filter(
+    (row) => row.quietlyDone && row.doneAt !== null && Date.parse(row.doneAt) > since,
+  );
+}
+
+/** The newest Done time among rows a device just showed, to remember as seen. */
+export function seenThroughOf(rows: readonly TaskRow[], previous: string | null): string | null {
+  return rows.reduce<string | null>(
+    (latest, { doneAt }) => (doneAt && (!latest || doneAt > latest) ? doneAt : latest),
+    previous,
+  );
+}
+
+/** Where a device keeps what it has shown of quiet moves: per Deployment and person. */
+export function quietSeenScope(
+  snapshot: Pick<HostSnapshot, "deploymentId" | "user">,
+): string | null {
+  return snapshot.deploymentId && snapshot.user
+    ? `${snapshot.deploymentId}:${snapshot.user.id}`
+    : null;
 }

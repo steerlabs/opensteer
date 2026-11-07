@@ -15,6 +15,8 @@ import {
   relocationPaths,
   threadPlacementOptions,
   unwrapRpcResult,
+  doneTaskList,
+  doneTime,
   taskTime,
   workspaceTaskList,
   type EnvironmentSummary,
@@ -613,20 +615,25 @@ function ProjectTasks({ workspaceId }: { readonly workspaceId: string }) {
   const [attempt, setAttempt] = useState(0);
   const [failed, setFailed] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  const quietTasks = snapshot.quietTasksAvailable === true;
   useEffect(() => {
     setFailed(false);
     void hostClient.loadWorkspaceTasks(workspaceId).catch((error: unknown) => {
       setFailed(true);
       reportActionError(error);
     });
-  }, [attempt, hostClient, reportActionError, workspaceId]);
+    if (quietTasks) void hostClient.loadDoneTasks(workspaceId).catch(() => undefined);
+  }, [attempt, hostClient, quietTasks, reportActionError, workspaceId]);
   const list = useMemo(() => workspaceTaskList(snapshot, workspaceId), [snapshot, workspaceId]);
+  // Done newest Done first, as the Host keeps it, where it does.
+  const doneList = useMemo(() => doneTaskList(snapshot, workspaceId), [snapshot, workspaceId]);
   const loaded = snapshot.workspaceTasks[workspaceId] !== undefined;
   const groups = [
     { done: false, id: "project-working", rows: list.working, title: "Working" },
     { done: false, id: "project-ready", rows: list.ready, title: "Ready" },
-    { done: true, id: "project-done", rows: list.done, title: "Done" },
-  ].filter((group) => group.rows.length > 0);
+    { done: true, id: "project-done", rows: doneList?.rows ?? list.done, title: "Done" },
+  ].filter((group) => group.rows.length > 0 || (group.done && doneList?.hasMore === true));
+  const [loadingDone, setLoadingDone] = useState(false);
   const motionList = useRef<HTMLElement | null>(null);
   return (
     <RowMotion
@@ -656,10 +663,28 @@ function ProjectTasks({ workspaceId }: { readonly workspaceId: string }) {
                       done={group.done}
                       onSetDone={setTaskDone}
                       row={row}
-                      time={taskTime(row, now)}
+                      time={group.done ? doneTime(row, now) : taskTime(row, now)}
                     />
                   </li>
                 ))}
+                {group.done && doneList?.hasMore ? (
+                  <li data-motion-key="project-done-more">
+                    <button
+                      className="btn btn--ghost btn--small project-tasks__more"
+                      disabled={loadingDone}
+                      onClick={() => {
+                        setLoadingDone(true);
+                        void hostClient
+                          .loadEarlierDoneTasks(workspaceId)
+                          .catch(reportActionError)
+                          .finally(() => setLoadingDone(false));
+                      }}
+                      type="button"
+                    >
+                      {loadingDone ? "Loading…" : "Show more"}
+                    </button>
+                  </li>
+                ) : null}
               </TaskGroup>
             ))
           )

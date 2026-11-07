@@ -2554,6 +2554,7 @@ integration("Host vertical slice", () => {
           title: idleThread.title,
           icon: idleThread.icon,
           doneAt: null,
+          doneReason: null,
         },
       },
       {
@@ -2564,6 +2565,7 @@ integration("Host vertical slice", () => {
           title: idleThread.title,
           icon: idleThread.icon,
           doneAt: null,
+          doneReason: null,
         },
       },
     ]);

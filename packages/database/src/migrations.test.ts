@@ -174,7 +174,8 @@ const releasedMigrationNames = [
   "0164_specialists_adopt_access",
   "0165_request_tool_delivery",
   "0166_memory_pass_activity",
-  "0167_devices",
+  "0167_quiet_tasks",
+  "0168_devices",
 ];
 
 describe("migration names", () => {

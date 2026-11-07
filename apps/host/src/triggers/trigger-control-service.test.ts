@@ -438,6 +438,7 @@ function thread(): Thread {
     inheritsMain: true,
     continuationIdentity: null,
     doneAt: null,
+    doneReason: null,
     icon: null,
     role: "work",
     createdAt: now,
