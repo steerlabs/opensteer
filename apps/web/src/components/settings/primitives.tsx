@@ -1,6 +1,6 @@
 import { Dialog } from "../dialog.js";
 import { SurfaceMenu } from "../surface-menu.js";
-import { useState, type ReactNode } from "react";
+import { useState, type ReactElement, type ReactNode } from "react";
 import type { DeploymentDisplayKind } from "@opensteer/core";
 import {
   deploymentStatusLabel,
@@ -123,13 +123,14 @@ export function SettingsRow({
   readonly action?: ReactNode;
   readonly className?: string;
   readonly detail?: ReactNode;
-  readonly icon: IconName;
+  /** A product glyph, or a mark of its own such as a provider's logo. */
+  readonly icon: IconName | ReactElement;
   readonly title: ReactNode;
 }) {
   return (
     <div className={className ? `card__row ${className}` : "card__row"}>
       <span className="card__row-glyph">
-        <Icon name={icon} />
+        {typeof icon === "string" ? <Icon name={icon} /> : icon}
       </span>
       <span className="card__row-body">
         <span className="card__row-title">{title}</span>

@@ -22,6 +22,7 @@ export const settingsPages = [
   "account",
   "devices",
   "messaging",
+  "external-agents",
   "ai",
   "plugins",
   "sign-ins",

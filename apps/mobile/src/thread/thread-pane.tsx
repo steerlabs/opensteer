@@ -118,7 +118,6 @@ import { settingsDisabledReason } from "./settings/settings-controller.js";
 import {
   TranscriptGroupRow,
   WorkingIndicator,
-  firstUnreadGroupKey,
   replyActivityKeys,
   transcriptSpacing,
 } from "./transcript.js";
@@ -150,8 +149,6 @@ type TranscriptItem =
       readonly spacingTop: number;
       /** When this row was said, where a pause has passed in a conversation. */
       readonly time: string | null;
-      /** True for the row the "New" divider stands above. */
-      readonly unreadBoundary: boolean;
     }
   | { readonly indicator: ThreadActivityIndicator; readonly key: string; readonly kind: "working" };
 
@@ -540,20 +537,6 @@ function ThreadPaneForUser(
     [computers, conversational, groups, live, snapshot.waitingRequests],
   );
   const canLoadEarlier = snapshot.window?.hasMore ?? false;
-
-  // Where the divider goes is decided from the read marker as it stood on
-  // arrival. Letting it follow the marker would move it out from under a
-  // reader who is still reading. Null — never opened — has no inside boundary.
-  const boundary = useRef<{ readonly sequence: string | null; readonly threadId: string }>({
-    sequence: null,
-    threadId: "",
-  });
-  const arrivalReadState = snapshot.readState ?? null;
-  if (arrivalReadState !== null && boundary.current.threadId !== threadId) {
-    boundary.current = { sequence: arrivalReadState.readSequence, threadId };
-  }
-  const boundaryKnown = boundary.current.threadId === threadId;
-  const unreadBoundarySequence = boundaryKnown ? boundary.current.sequence : null;
 
   // A link may name the Request it is about. A Request still pending is docked
   // in the composer, which is already on screen; one already answered left its
@@ -953,7 +936,6 @@ function ThreadPaneForUser(
               onOpenThread={openSource}
               spacingTop={item.spacingTop}
               time={item.time}
-              unreadBoundary={item.unreadBoundary}
               homeThreadId={snapshot.homeThreadId}
               viewerUserId={viewerUserId}
               voiceThread={voiceThread}
@@ -1009,7 +991,6 @@ function ThreadPaneForUser(
           Date.now(),
         )
       : null;
-    const boundaryKey = firstUnreadGroupKey(groups, conversational ? null : unreadBoundarySequence);
     const activityKeys = conversational ? replyActivityKeys(groups) : null;
     // A task's ending goes under the last stretch of the Run it ended with,
     // inside that row, so rows stay one to one with the groups links count.
@@ -1043,12 +1024,11 @@ function ThreadPaneForUser(
         outcome: endings.get(index) ?? null,
         spacingTop,
         time: place?.time ?? null,
-        unreadBoundary: group.key === boundaryKey,
       };
     });
     if (indicator !== null) rows.push({ indicator, key: "working", kind: "working" });
     return rows;
-  }, [conversational, drawn, groups, indicator, outcomes, unreadBoundarySequence, viewerUserId]);
+  }, [conversational, drawn, groups, indicator, outcomes, viewerUserId]);
 
   const queueCanRespond = canRespond && thread?.status !== "archived";
   const queueFooter = useMemo(
@@ -1096,6 +1076,7 @@ function ThreadPaneForUser(
   // `unreadSequence` is not that: it names content no page may have rendered,
   // so marking it would swallow history nobody saw.
   const markedSequence = readState?.readSequence ?? null;
+  const readKnown = readState !== null;
   const [appActive, setAppActive] = useState(() => AppState.currentState === "active");
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) => {
@@ -1104,10 +1085,8 @@ function ThreadPaneForUser(
     return () => subscription.remove();
   }, []);
   useEffect(() => {
-    // Nothing is marked before the arriving read position is known: marking
-    // first would move the boundary this visit's divider is drawn from, and
-    // history the reader has not seen would lose it.
-    if (!boundaryKnown || !focused || !atTail || !appActive || historical) return;
+    // Until this reader's position arrives, a mark could only repeat it.
+    if (!readKnown || !focused || !atTail || !appActive || historical) return;
     if (observed === null) return;
     if (markedSequence !== null && BigInt(markedSequence) >= BigInt(observed)) return;
     void hostClient.markThreadRead(threadId, observed).catch(() => {
@@ -1117,12 +1096,12 @@ function ThreadPaneForUser(
   }, [
     appActive,
     atTail,
-    boundaryKnown,
     focused,
     historical,
     hostClient,
     markedSequence,
     observed,
+    readKnown,
     threadId,
   ]);
 

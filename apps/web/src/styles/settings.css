@@ -1347,3 +1347,57 @@ button.card__row > .card__row-body {
     flex: none;
   }
 }
+
+/* Agent consent: where access goes, then the four access modes as one card of choices. */
+.agent-consent fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.agent-consent legend {
+  padding: 0;
+  margin-bottom: var(--space-8);
+}
+.agent-consent__where {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-8);
+  margin: 0;
+  color: var(--text-soft);
+  font-size: var(--text-lg);
+}
+.agent-consent__where svg {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  color: var(--muted);
+}
+.agent-consent__mode {
+  cursor: pointer;
+}
+.agent-consent__mode input {
+  flex: none;
+  margin: 0;
+  accent-color: var(--ember);
+}
+
+/* External agent setup: the address under its step, and the one live line under the steps. */
+.external-agent-setup__address {
+  margin-top: var(--space-8);
+}
+.external-agent-setup__status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  min-height: 20px;
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-md);
+}
+.external-agent-setup__status svg {
+  width: 16px;
+  height: 16px;
+  color: var(--green);
+}
