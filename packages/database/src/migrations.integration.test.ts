@@ -5568,9 +5568,14 @@ integration.sequential("computer app identity migration", () => {
     expect(kind?.definition).toContain("'browser.profile.import'::text");
     expect(kind?.definition).toContain("'integration.install'::text");
     expect(mode?.definition).toContain("'computer.app.access'::text");
-    expect(mode?.definition).toMatch(
-      /'computer\.app\.access'::text\]\)\) AND \(mode = 'durable'::text\)/u,
-    );
+    // Later durable kinds, such as `integration.input`, follow it in the same list.
+    for (const durable of ["computer\\.app\\.access", "integration\\.input"])
+      expect(mode?.definition).toMatch(
+        new RegExp(
+          `'${durable}'::text(?:, '[a-z.-]+'::text)*\\]\\)\\) AND \\(mode = 'durable'::text\\)`,
+          "u",
+        ),
+      );
   });
 });
 

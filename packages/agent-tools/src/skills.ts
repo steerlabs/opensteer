@@ -9,6 +9,7 @@ export const OpensteerAgentSkillNameSchema = z.enum([
   "opensteer:triggers",
   "opensteer:browser",
   "opensteer:computers",
+  "opensteer:devices",
   "opensteer:skills",
   "opensteer:memory",
 ]);

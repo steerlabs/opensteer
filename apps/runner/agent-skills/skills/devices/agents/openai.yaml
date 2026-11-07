@@ -1,0 +1,4 @@
+interface:
+  display_name: "Opensteer Devices"
+  short_description: "Connect and control devices on the person's network"
+  default_prompt: "Use $opensteer:devices to connect the person's Apple TV."

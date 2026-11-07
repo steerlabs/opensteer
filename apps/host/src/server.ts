@@ -1979,6 +1979,9 @@ export async function createHostServer(
           };
           await (async (): Promise<void> => {
             switch (pending.kind) {
+              case "integration.input":
+                await dependencies.integrations.platform.inputRequests.respond(input);
+                return;
               // A sign-in is answered by `browser.sign-in.respond`, which can
               // deliver it; a saved-password sign-in is approved only on its
               // Mac and declined with its own command; a copy Request can no

@@ -13,6 +13,7 @@ import {
 } from "@opensteer/core";
 import {
   LocalMcpSecretSchema,
+  PluginDeviceSchema,
   localMcpMaxSecrets,
   type LocalMcpSecret,
 } from "@opensteer/integration-core";
@@ -75,10 +76,12 @@ export async function readAgentPluginName(directory: string): Promise<string | n
  * Opensteer's own manifest data (Agent Plugins §8). `secrets` names, per
  * stdio server, the environment variables its computer's owner enters when
  * approving it, because Agent Plugins leaves credentials to the client and
- * forbids them in `env`.
+ * forbids them in `env`. `device` names the physical thing the plugin
+ * controls, which lists it under Devices instead of Plugins.
  */
 export const opensteerExtensionNamespace = "com.opensteer";
 const OpensteerExtensionSchema = z.strictObject({
+  device: PluginDeviceSchema.optional(),
   secrets: z
     .record(
       z.string().min(1).max(128),

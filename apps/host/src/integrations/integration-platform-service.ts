@@ -1,3 +1,6 @@
+import { isNodeError } from "@opensteer/shared/nodeError";
+import { readdir, realpath } from "node:fs/promises";
+import { assertPluginDataId, removePluginData } from "@opensteer/shared/privateFiles";
 import type { AdministrationCommandIdentity } from "@opensteer/database";
 import { z } from "zod";
 import {
@@ -11,7 +14,7 @@ import type {
   ComputerAppIdentity,
   IntegrationConnectionSummary,
 } from "@opensteer/integration-core";
-import { computerAppIdentityKey } from "@opensteer/integration-core";
+import { pluginDeviceFromManifest, computerAppIdentityKey } from "@opensteer/integration-core";
 import { safeMessage } from "@opensteer/shared/safeMessage";
 import { localMcpLaunchSecrets } from "@opensteer/integration-core";
 import {
@@ -165,6 +168,7 @@ import type { RunnerRunFileResult } from "@opensteer/protocol";
 import type { RunnerRegistry } from "@opensteer/orchestration";
 import { ComputerMcpTransport } from "./computer-mcp-transport.js";
 import { LocalMcpSecrets } from "./local-mcp-secrets.js";
+import { IntegrationInput, integrationInputTimeoutMs } from "./integration-input.js";
 import {
   ComputerUseError,
   computerUseDefinitionId,
@@ -350,7 +354,12 @@ export class IntegrationPlatformService {
   readonly #credentialMaterializer: IntegrationAdapterCredentialMaterializer;
   readonly #computerApps: Pick<
     ComputerAppHub,
-    "appStatus" | "attached" | "openMcpSession" | "send" | "withRunnerAdmission"
+    | "appStatus"
+    | "attached"
+    | "openMcpSession"
+    | "send"
+    | "withRunnerAdmission"
+    | "removePluginData"
   >;
   readonly #dataDirectory: string;
   readonly #definitions: readonly IntegrationDefinition[];
@@ -378,6 +387,7 @@ export class IntegrationPlatformService {
   readonly #mcpImageContent: (context: EngineCapabilityQuery) => Promise<boolean>;
   /** Who may use which app on which Mac; this service only dispatches the calls. */
   readonly computerAppApprovals: ComputerAppApprovalService;
+  readonly inputRequests: IntegrationInput;
 
   constructor(options: {
     readonly personal?: boolean;
@@ -398,6 +408,7 @@ export class IntegrationPlatformService {
       | "openMcpSession"
       | "send"
       | "withRunnerAdmission"
+      | "removePluginData"
     >;
     /**
      * Sessions for the one definition whose connections name an app's whole
@@ -421,6 +432,7 @@ export class IntegrationPlatformService {
       "clock" | "wait"
     >;
     readonly mcpImageContent?: (context: EngineCapabilityQuery) => Promise<boolean>;
+    readonly longRequestHold?: (run: RunCapabilityClaims<string>) => Promise<boolean>;
     readonly definitions?: readonly IntegrationDefinition[];
     readonly mcpOauth: Pick<McpOAuthService, "providerFor">;
     readonly onWorkspaceEvent: (event: AgentEvent) => void;
@@ -471,6 +483,11 @@ export class IntegrationPlatformService {
     // Runner's unstated `steering` is treated as unsupported.
     this.#mcpImageContent = options.mcpImageContent ?? (async () => false);
     this.#store = options.store;
+    this.inputRequests = new IntegrationInput({
+      requests: options.store.requests,
+      longRequestHold: options.longRequestHold ?? (async () => false),
+      publish: (events) => this.#publishRequestEvents(events),
+    });
     this.#computerToolEnabled = options.computerToolEnabled ?? (() => false);
     this.#computerUseVersion = options.computerUseVersion ?? (() => undefined);
     this.#runFiles = options.runFiles;
@@ -1041,6 +1058,7 @@ export class IntegrationPlatformService {
     readonly administration?: AdministrationCommandIdentity | undefined;
     readonly actorUserId: UserId;
     readonly directory: string;
+    readonly threadId?: import("@opensteer/core").ThreadId;
     readonly workspaceDirectory?: string;
     readonly workspaceId?: import("@opensteer/core").WorkspaceId;
     readonly pluginId?: string;
@@ -1089,6 +1107,9 @@ export class IntegrationPlatformService {
           message: "Agent-made plugins update when an agent installs their folder again.",
         });
     }
+    const setupThreadId = input.threadId
+      ? await this.#store.plugins.setupThread(input.threadId)
+      : undefined;
     const updating = pluginId !== undefined;
     pluginId ??= createIntegrationId("installation");
     const previous = updating
@@ -1120,12 +1141,18 @@ export class IntegrationPlatformService {
       previousServers
         .filter((s) => plugin.servers.some((next) => next.name === s.name))
         .every((s) => s.runnerId === runnerId && s.status !== "disabled")
-    )
+    ) {
+      if (setupThreadId !== undefined) {
+        await this.#store.plugins.recordSetupThread(pluginId, setupThreadId);
+        await this.requestLocalServerApprovals();
+        await this.#onSettingsChanged({ installationId: previous.id });
+      }
       return {
         installation: previous,
         issues: plugin.issues,
         specialist: plugin.specialistManifest !== null,
       };
+    }
     const installationId = createIntegrationId("installation");
     const servers = await Promise.all(
       plugin.servers.map((server) =>
@@ -1135,6 +1162,7 @@ export class IntegrationPlatformService {
       ),
     );
     const version = {
+      ...(setupThreadId !== undefined ? { setupThreadId } : {}),
       specialistManifest: plugin.specialistManifest,
       digest: basename(plugin.root),
       manifest: {
@@ -1209,7 +1237,7 @@ export class IntegrationPlatformService {
           )
             ? "active"
             : "needs-attention",
-        title: plugin.manifest.name,
+        title: pluginDeviceFromManifest(plugin.manifest)?.name ?? plugin.manifest.name,
         trust: "administrator-approved",
         version: plugin.manifest.version ?? null,
       },
@@ -1305,7 +1333,44 @@ export class IntegrationPlatformService {
    * approved as they now launch, and sends each one its approvals again.
    */
   async requestLocalServerApprovals(): Promise<void> {
-    await this.#store.localMcp.requestApprovals();
+    const changed = await this.#store.localMcp.requestApprovals();
+    if (changed.length > 0) this.#onConnectionsChanged();
+  }
+
+  async deliverPluginDataRemovals(runnerId?: RunnerId): Promise<void> {
+    for (const pending of await this.#store.plugins.pendingDataRemovals(runnerId))
+      await this.#computerApps.removePluginData(pending.runnerId, pending.pluginId);
+  }
+
+  async recoverPluginData(): Promise<void> {
+    const directory = `${await realpath(this.#dataDirectory)}/plugins/data`;
+    const plugins = await this.#store.plugins.list();
+    const retained = new Set(plugins.map((plugin) => plugin.id));
+    // Package snapshots and pre-migration name-based data are not orphan plugin state.
+    retained.add("packages");
+    for (const installation of await this.#store.listInstallations())
+      if (installation.id === installation.pluginId) retained.add(installation.name);
+    let entries: string[];
+    try {
+      entries = await readdir(directory);
+    } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") return;
+      throw error;
+    }
+    for (const id of entries) {
+      if (retained.has(id)) continue;
+      try {
+        assertPluginDataId(id);
+      } catch {
+        continue;
+      }
+      await removePluginData(directory, id);
+    }
+  }
+
+  async removePluginData(pluginId: string): Promise<void> {
+    await removePluginData(`${await realpath(this.#dataDirectory)}/plugins/data`, pluginId);
+    await this.deliverPluginDataRemovals();
   }
 
   /**
@@ -1313,6 +1378,9 @@ export class IntegrationPlatformService {
    * yet — approved while it was offline, or whose start failed — start now.
    */
   computerRunnerAttached(runnerId: RunnerId): void {
+    void this.deliverPluginDataRemovals(runnerId).catch((error: unknown) =>
+      console.warn("Plugin data removal could not be delivered", error),
+    );
     this.#startApprovedServers((server) => server.runnerId === runnerId);
   }
 
@@ -2343,7 +2411,7 @@ export class IntegrationPlatformService {
       >;
     }
     if (callable.server.transport.type === "runner") {
-      return this.#callComputerServerTool(callable, args, signal);
+      return this.#callComputerServerTool(callable, args, caller, signal);
     }
     let upstream: UpstreamClient | undefined;
     try {
@@ -2424,39 +2492,53 @@ export class IntegrationPlatformService {
   async #callComputerServerTool(
     callable: CallableIntegrationTool,
     args: Readonly<Record<string, unknown>>,
+    caller: ToolCaller,
     signal?: AbortSignal,
   ): Promise<Awaited<ReturnType<Client["callTool"]>>> {
     const server = await this.#store.localMcp.get(callable.server.id);
+    let responseRedactor = createCredentialResponseRedactor([]);
     const refusal = (text: string) =>
-      sanitizeToolResult({ content: [{ text, type: "text" as const }], isError: true }, null);
+      sanitizeToolResult(
+        { content: [{ text, type: "text" as const }], isError: true },
+        responseRedactor,
+      );
     let upstream: UpstreamClient;
     try {
       upstream = await this.#client(callable);
     } catch (error) {
       return refusal(await this.#computerServerRefusal(callable, server, error));
     }
+    const call = this.inputRequests.start(
+      upstream.client,
+      callable,
+      caller,
+      signal,
+      server?.runnerName ?? "its computer",
+    );
     try {
       const result = await upstream.client.callTool(
         { arguments: { ...args }, name: callable.tool.name },
         undefined,
         {
-          maxTotalTimeout: toolCallTimeoutMs,
-          ...(signal ? { signal } : {}),
-          timeout: toolCallTimeoutMs,
+          maxTotalTimeout: integrationInputTimeoutMs,
+          signal: call.signal,
+          timeout: integrationInputTimeoutMs,
         },
       );
-      return sanitizeToolResult(result, null);
+      return sanitizeToolResult(result, call.redactor());
     } catch (error) {
+      responseRedactor = call.redactor();
       if (answeredMcpError(error)) {
         // The server answered, with an error: nothing about it is uncertain.
         return refusal(
-          `${callable.installation.title} could not complete ${callable.tool.title}: ${error.message}`.slice(
-            0,
-            2_000,
-          ),
+          responseRedactor
+            .redactText(
+              `${callable.installation.title} could not complete ${callable.tool.title}: ${error.message}`,
+            )
+            .slice(0, 2_000),
         );
       }
-      if (!signal?.aborted) upstream.letGo();
+      if (call.timedOut || !call.signal.aborted) upstream.letGo();
       const computer = server?.runnerName ?? "Its computer";
       const closed = upstream.computer?.closeError ?? null;
       if (integrationToolEffect(callable.tool.annotations) === "write") {
@@ -2471,6 +2553,8 @@ export class IntegrationPlatformService {
           ? `${callable.installation.title}'s answer was too large to carry from ${computer}; ask for less.`
           : `${computer} did not answer. Try again.`,
       );
+    } finally {
+      await this.inputRequests.finish(upstream.client, call);
     }
   }
 
@@ -3189,6 +3273,7 @@ export class IntegrationPlatformService {
   }
 
   async endComputerRun(runId: RunId): Promise<void> {
+    this.inputRequests.endRun(runId);
     for (const [key, caller] of this.#replCallers)
       if (caller.run?.runId === runId) {
         this.#replCallers.delete(key);
@@ -3211,6 +3296,7 @@ export class IntegrationPlatformService {
   }
 
   endComputerGeneration(runId: RunId, generation: number): void {
+    this.inputRequests.endRun(runId, generation);
     this.#replCallers.delete(`${runId}:${generation}`);
     this.#replTargets.delete(`${runId}:${generation}`);
     this.computerRepl.endGeneration(runId, generation);
@@ -3425,6 +3511,7 @@ export class IntegrationPlatformService {
   }
 
   async close(): Promise<void> {
+    await this.inputRequests.close();
     await this.computerRepl.close();
     await Promise.allSettled(
       [...this.#computerOperationSettlements.values()].map((record) => record.done),
@@ -3578,6 +3665,7 @@ export class IntegrationPlatformService {
           // A session that ended — a computer gone offline, a server that
           // stopped — leaves a client that can only fail, so it is not kept.
           value.client.onclose = () => {
+            this.inputRequests.forget(value.client);
             if (this.#clients.get(key) === open) this.#clients.delete(key);
           };
           return { ...value, letGo: () => this.#letGo(key, open) };
@@ -3611,7 +3699,11 @@ export class IntegrationPlatformService {
     signal?: AbortSignal,
   ): Promise<Client> {
     const { transport } = server;
-    const client = new Client({ name: "opensteer-integration-host", version: "1.0.0" });
+    const client = new Client(
+      { name: "opensteer-integration-host", version: "1.0.0" },
+      transport.type === "runner" ? { capabilities: { elicitation: { form: {} } } } : {},
+    );
+    if (transport.type === "runner") this.inputRequests.register(client);
     let sdkTransport: Transport;
     let computer: ComputerMcpTransport | null = null;
     if (transport.type === "adapter") {
@@ -3675,6 +3767,7 @@ export class IntegrationPlatformService {
       return client;
     } catch (error) {
       await client.close().catch(() => undefined);
+      this.inputRequests.forget(client);
       // The computer's own reason says more than the SDK's "Connection closed".
       throw computer?.closeError ?? error;
     } finally {
@@ -3890,7 +3983,42 @@ function sanitizeToolResult<T>(result: T, responseRedactor: CredentialResponseRe
   if (Buffer.byteLength(serialized, "utf8") > maximumToolResultBytes) {
     throw refused("conflict", `Integration result exceeds ${maximumToolResultBytes} bytes`);
   }
-  return responseRedactor ? (JSON.parse(responseRedactor.redactText(serialized)) as T) : result;
+  if (!responseRedactor) return result;
+  // Secret numbers and booleans can be JSON scalars; preserve the MCP envelope.
+  const redact = (value: unknown, protocol = false): unknown => {
+    if (typeof value === "string") return responseRedactor.redactText(value);
+    if (typeof value === "number" || typeof value === "boolean") {
+      const text = String(value);
+      const redacted = responseRedactor.redactText(text);
+      return redacted === text ? value : redacted;
+    }
+    if (Array.isArray(value)) return value.map((entry) => redact(entry));
+    if (value && typeof value === "object")
+      return Object.fromEntries(
+        Object.entries(value).map(([key, entry]) => [
+          protocol &&
+          [
+            "content",
+            "structuredContent",
+            "isError",
+            "type",
+            "text",
+            "data",
+            "mimeType",
+            "_meta",
+          ].includes(key)
+            ? key
+            : responseRedactor.redactText(key),
+          protocol && (key === "type" || key === "isError")
+            ? entry
+            : protocol && key === "content" && Array.isArray(entry)
+              ? entry.map((block) => redact(block, true))
+              : redact(entry),
+        ]),
+      );
+    return value;
+  };
+  return redact(JSON.parse(serialized), true) as T;
 }
 
 function sanitizeAdapterError(

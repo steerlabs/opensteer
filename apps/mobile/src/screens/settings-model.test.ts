@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import type { PushRegistrationState } from "../notifications/push-registration.js";
-import type { MachineSummary } from "@opensteer/protocol";
+import type { MachineSummary, OtherDevice } from "@opensteer/protocol";
 import {
   accountSettingsModel,
   computersSettingsRows,
   engineInstallationUpdateModel,
   notificationSettingsModel,
+  otherDevicesSettingsRows,
   passwordsSettingsModel,
   signOutAccountInOrder,
 } from "./settings-model.js";
@@ -170,6 +171,30 @@ describe("computers in settings", () => {
         symbol: "laptopcomputer",
       },
     ]);
+  });
+
+  it("sends a device to its setup task only while that task waits on the person", () => {
+    const device = {
+      computer: { id: macMini, name: "Mac mini", status: "online" },
+      issue: null,
+      kind: "tv",
+      name: "Living room TV",
+      pluginId: "living-room-tv",
+      setupThreadId: "thr_setup",
+    } as OtherDevice;
+    expect(otherDevicesSettingsRows([device], new Set(["thr_setup"]))).toEqual([
+      {
+        detail: "Needs you",
+        key: "living-room-tv",
+        name: "Living room TV",
+        opens: { kind: "task", threadId: "thr_setup" },
+        symbol: "tv",
+      },
+    ]);
+    expect(otherDevicesSettingsRows([device], new Set(["thr_other"]))[0]).toMatchObject({
+      detail: "via Mac mini",
+      opens: { kind: "plugin", pluginId: "living-room-tv" },
+    });
   });
 });
 

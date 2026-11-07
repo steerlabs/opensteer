@@ -1,6 +1,7 @@
 import { HostClientRequestError } from "../host/client.js";
 export * from "./plugin-add-consent.js";
 export * from "./catalog.js";
+export * from "./other-devices.js";
 export * from "./desktop-update-controller.js";
 export * from "./desktop-update-view.js";
 export {

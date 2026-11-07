@@ -307,6 +307,13 @@ export function Composer({
   }, []);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const microphoneRef = useRef<HTMLButtonElement | null>(null);
+  // A saved draft is opened to be finished, so writing continues where it ends.
+  const continuesDraft = useRef(autoFocus === true);
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current;
+    if (continuesDraft.current && textarea)
+      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+  }, []);
   useLayoutEffect(() => {
     const mic = microphoneRef.current;
     if (mic?.disabled && document.activeElement === mic) textareaRef.current?.focus();

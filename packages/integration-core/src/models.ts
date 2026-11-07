@@ -659,6 +659,31 @@ export const IntegrationInstallationSchema = z.strictObject({
 export const IntegrationInstallationViewSchema = z.object(IntegrationInstallationSchema.shape);
 export type IntegrationInstallation = z.infer<typeof IntegrationInstallationSchema>;
 
+export const PluginDeviceKindSchema = z.enum(["tv", "speaker", "light", "camera", "other"]);
+export type PluginDeviceKind = z.infer<typeof PluginDeviceKindSchema>;
+/**
+ * The physical thing an agent-built plugin controls, such as a TV its server
+ * reaches over the home network. The plugin's author writes it, so it only
+ * decides where the plugin is listed; it never grants or proves anything.
+ */
+export const PluginDeviceSchema = z.strictObject({
+  kind: PluginDeviceKindSchema,
+  name: z.string().trim().min(1).max(80),
+});
+export type PluginDevice = z.infer<typeof PluginDeviceSchema>;
+export const PluginDeviceViewSchema = z.object(PluginDeviceSchema.shape);
+
+/** The device a stored plugin manifest declares, or null when it declares none. */
+export function pluginDeviceFromManifest(manifest: unknown): PluginDevice | null {
+  if (typeof manifest !== "object" || manifest === null) return null;
+  const extensions = (manifest as { extensions?: unknown }).extensions;
+  if (typeof extensions !== "object" || extensions === null) return null;
+  const opensteer = (extensions as Record<string, unknown>)["com.opensteer"];
+  if (typeof opensteer !== "object" || opensteer === null) return null;
+  const parsed = PluginDeviceSchema.safeParse((opensteer as { device?: unknown }).device);
+  return parsed.success ? parsed.data : null;
+}
+
 /** The most secrets one server may ask its computer's owner for. */
 export const localMcpMaxSecrets = 16;
 export const LocalMcpSecretNameSchema = z

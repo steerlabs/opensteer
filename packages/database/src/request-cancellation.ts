@@ -36,7 +36,9 @@ export async function cancelPending(
     pending = pending.where("id", "in", [...input.requestIds]);
   }
   if (input.runId)
-    pending = pending.where("originatingRunId", "=", input.runId).where("mode", "=", "live");
+    pending = pending
+      .where("originatingRunId", "=", input.runId)
+      .where((eb) => eb.or([eb("mode", "=", "live"), eb("kind", "=", "integration.input")]));
   if (input.originatingThreadId) {
     pending = pending.where("originatingThreadId", "=", input.originatingThreadId);
   }
@@ -95,7 +97,7 @@ export async function cancelPending(
   );
   if (input.reason === "resource-deleted" || input.reason === "authority-revoked") {
     for (const row of rows) {
-      if (row.mode !== "durable") continue;
+      if (row.mode !== "durable" || row.kind === "integration.input") continue;
       await transaction
         .insertInto("requestContinuations")
         .values({

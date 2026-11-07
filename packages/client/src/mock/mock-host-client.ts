@@ -1,5 +1,12 @@
 import { AppTabSchema } from "@opensteer/protocol";
 import {
+  mockDevicePlugins,
+  mockDeviceTasks,
+  mockLightsServerSetup,
+  mockTvPairingRequest,
+  type MockDevicePlugin,
+} from "./mock-devices.js";
+import {
   matchModelSelection,
   storedModelSelection as coreStoredModelSelection,
 } from "@opensteer/core";
@@ -1807,6 +1814,8 @@ export interface MockHostClientOptions {
   specialistPlugins?: { id: string; name: string; manifest: SpecialistManifest }[];
   /** Plugins an agent made in Main, from a folder in that Workspace. */
   agentPlugins?: { id: string; name: string }[];
+  /** `seeded`: devices reached through agent-made plugins, with their setup tasks. */
+  devices?: "seeded" | "absent";
   readonly browserPreferencesStorage?: BrowserPreferencesStorage;
   readonly sharedTaskDoneAvailable?: boolean;
   readonly quietTasksAvailable?: boolean;
@@ -2082,7 +2091,9 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
     "plugins.overview.get": async () => {
       const workspaceId = WorkspaceIdSchema.parse(client.getSnapshot().workspaces[0]!.id);
       client.settings.syncServices(workspaceId, await client.loadIntegrationPlatform());
-      client.settings.syncPackages(workspaceId, await client.listPlugins(workspaceId));
+      client.settings.syncPackages(workspaceId, await client.listPlugins(workspaceId), (id) =>
+        client.pluginDevice(id),
+      );
       const overview = client.settings.overview(workspaceId);
       return rpcSuccess({ ...overview, rows: overview.rows.map(listedMockRow) });
     },
@@ -2095,6 +2106,7 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
         client.settings.syncPackages(
           WorkspaceIdSchema.parse(client.getSnapshot().workspaces[0]!.id),
           await client.listPlugins(),
+          (id) => client.pluginDevice(id),
         );
         const detail = client.settings.detail(
           WorkspaceIdSchema.parse(client.getSnapshot().workspaces[0]!.id),
@@ -2145,7 +2157,15 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
           })),
       });
     },
-    "devices.overview.get": async () => rpcSuccess(client.settings.devices),
+    "devices.overview.get": async () => {
+      const otherDevices = client.otherDevices();
+      return rpcSuccess(
+        hostApi["devices.overview.get"].success.parse({
+          ...client.settings.devices,
+          ...(otherDevices.length ? { otherDevices } : {}),
+        }),
+      );
+    },
     "commands.dispatch": (command) =>
       client
         .executeCommandOnce(command)
@@ -5196,6 +5216,29 @@ class MockHostState {
       ),
   );
   private readonly plugins: MockPlugin[] = [];
+  private readonly devicePlugins: MockDevicePlugin[] = [];
+  /** A device plugin's declaration and setup task, as the Host derives them from its records. */
+  pluginDevice(pluginId: string) {
+    const device = this.devicePlugins.find(({ id }) => id === pluginId);
+    return device
+      ? { device: { kind: device.kind, name: device.name }, setupThreadId: device.setupThreadId }
+      : null;
+  }
+  otherDevices() {
+    return this.devicePlugins
+      .filter((device) => this.plugins.some(({ id }) => id === device.id))
+      .map((device) => {
+        const machine = this.snapshot.machines.find(({ id }) => id === device.runnerId);
+        return {
+          pluginId: device.id,
+          name: device.name,
+          kind: device.kind,
+          computer: machine ? { id: machine.id, name: machine.name, status: machine.status } : null,
+          issue: device.issue,
+          setupThreadId: device.setupThreadId,
+        };
+      });
+  }
   private readonly specialists: {
     id: string;
     workspaceId: string;
@@ -6233,9 +6276,13 @@ class MockHostState {
         workspaceId: WorkspaceIdSchema.parse("wsp_00000000-0000-4000-8000-000000000001"),
         workspaceName: "Main",
       });
+    const pendingRequests = [...(options.pendingRequests ?? [])];
+    if (options.devices === "seeded" && !firstRun) {
+      pendingRequests.push(...this.seedDevices());
+    }
     // A task's computer access Request always stands on its setup request,
     // which the computer — a Mac or a phone — is the one to answer.
-    for (const request of options.pendingRequests ?? []) {
+    for (const request of pendingRequests) {
       const { payload } = request;
       if (payload.kind !== "computer.app.access") continue;
       if (this.computerAppSetupRequests.has(payload.setupRequestId)) continue;
@@ -6260,9 +6307,9 @@ class MockHostState {
         workspaceName: null,
       });
     }
-    if (options.pendingRequests?.length) {
+    if (pendingRequests.length) {
       const additions = new Map<string, Request[]>();
-      for (const request of options.pendingRequests) {
+      for (const request of pendingRequests) {
         const pending = additions.get(request.originatingThreadId) ?? [];
         pending.push(request);
         additions.set(request.originatingThreadId, pending);
@@ -7888,7 +7935,15 @@ class MockHostState {
       this.cancelComputerAppSetup(setupRequestId);
       return;
     }
-    if (request.kind === "server") throw new Error("This mock has no local MCP executor.");
+    if (request.kind === "server") {
+      const device = this.devicePlugins.find(({ id }) => id === request.server?.launch.pluginId);
+      if (!device) throw new Error("This mock has no local MCP executor.");
+      // A device's server is only pretended to run: allowing it is all it waited for.
+      this.computerAppSetupRequests.delete(setupRequestId);
+      device.issue = null;
+      this.update({ ...this.snapshot, machines: [...this.snapshot.machines] });
+      return;
+    }
     if (
       request.kind === "app" &&
       !this.integrations.installations.some(({ servers }) =>
@@ -7924,6 +7979,98 @@ class MockHostState {
           },
     );
     this.update({ ...this.snapshot, machines: [...this.snapshot.machines] });
+  }
+
+  /** Seeds the device plugins, their setup tasks and what those tasks wait on; returns the tasks' Requests. */
+  private seedDevices(): Request[] {
+    const at = new Date(0).toISOString();
+    for (const device of mockDevicePlugins()) {
+      this.devicePlugins.push(device);
+      const id = crypto.randomUUID();
+      this.plugins.push({
+        id: device.id,
+        name: device.id,
+        scope: "workspace",
+        workspaceId: mockMainWorkspaceId,
+        source: { workspaceDirectory: `plugins/${device.id}` },
+        currentVersionId: id,
+        versions: [{ id, digest: id, manifest: { name: device.id, skills: [] } }],
+        activations: [{ workspaceId: mockMainWorkspaceId }],
+        createdAt: at,
+        updatedAt: at,
+      });
+    }
+    const template = this.snapshot.threads.find(({ role }) => role === "work");
+    if (!template) return [];
+    for (const task of mockDeviceTasks) {
+      this.#provisionalIcons.add(task.threadId);
+      this.snapshot = {
+        ...this.snapshot,
+        threads: [
+          ...this.snapshot.threads,
+          {
+            ...template,
+            createdAt: task.at,
+            icon: null,
+            id: task.threadId,
+            parentThreadId: null,
+            pendingRequests: 0,
+            status: "waiting",
+            title: task.title,
+            unread: false,
+            updatedAt: task.at,
+            workspaceId: mockMainWorkspaceId,
+          },
+        ],
+        runQueue: [
+          ...this.snapshot.runQueue,
+          {
+            createdAt: task.at,
+            id: task.runId,
+            runOrdinal: 0,
+            status: "waiting",
+            threadId: task.threadId,
+          },
+        ],
+        transcriptWindows: {
+          ...this.snapshot.transcriptWindows,
+          [task.threadId]: {
+            byteCount: 2,
+            hasMore: false,
+            itemCount: 1,
+            nextBefore: null,
+            threadId: task.threadId,
+            totalItems: 1,
+          },
+        },
+        transcripts: {
+          ...this.snapshot.transcripts,
+          [task.threadId]: [
+            {
+              author: mockHumanAuthor(),
+              body: task.body,
+              createdAt: task.at,
+              id: task.messageId,
+              kind: "message",
+              messageKind: "input",
+              runId: null,
+            },
+            {
+              createdAt: task.at,
+              error: null,
+              id: `run:${task.runId}`,
+              kind: "run",
+              replyMessageId: null,
+              runId: task.runId,
+              status: "waiting",
+            },
+          ],
+        },
+      };
+    }
+    const setup = mockLightsServerSetup(mockUserId, this.now());
+    this.computerAppSetupRequests.set(setup.id, setup);
+    return [mockTvPairingRequest(mockUserId)];
   }
 
   listComputerAppSetupRequests(): ComputerAppSetupRequest[] {

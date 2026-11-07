@@ -293,6 +293,8 @@ export async function continuationMessage(
     throw new Error("The Request continuation outbox contains an ineligible Request");
   }
   switch (request.kind) {
+    case "integration.input":
+      throw new Error("Device input returns inside its tool call and cannot have a continuation");
     case "machine.full-disk-access": {
       if (request.payload.kind !== "machine.full-disk-access")
         throw new Error("macOS Full Disk Access Request payload is invalid");

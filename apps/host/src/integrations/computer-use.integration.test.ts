@@ -134,6 +134,7 @@ integration.sequential("Host computer-use approval transactions", () => {
         new StaticEncryptionKeyProvider(new Map([[1, randomBytes(32)]]), 1),
       ),
       computerApps: {
+        removePluginData: async () => {},
         compatibilityReason: () => null,
         reportsApp: () => "reported",
         appStatus: () => ({

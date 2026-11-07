@@ -141,6 +141,7 @@ it("records a successful Codex command with large inline arguments without faili
         "opensteer:browser": skillPath("browser"),
         "opensteer:computer-use": skillPath("computer-use"),
         "opensteer:computers": skillPath("computers"),
+        "opensteer:devices": skillPath("devices"),
         "opensteer:threads": skillPath("threads"),
         "opensteer:triggers": skillPath("triggers"),
         "opensteer:projects": skillPath("projects"),

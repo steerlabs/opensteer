@@ -2,10 +2,12 @@ import type { ReactNode } from "react";
 import { RowGroup, SecondaryButton } from "../ui/primitives.js";
 import { LinkRow, Section, Tile } from "./settings-form-primitives.js";
 import type { SettingsFormProps } from "./settings-form.types.js";
-import { computersSettingsFooter } from "./settings-model.js";
+import { computersSettingsFooter, type OtherDeviceSettingsRow } from "./settings-model.js";
 export function DevicesSettingsForm(
   props: Pick<SettingsFormProps, "page" | "computers" | "onComputerAction"> & {
     readonly onAddDevice?: () => void;
+    readonly onOtherDevice?: (opens: OtherDeviceSettingsRow["opens"]) => void;
+    readonly otherDevices?: readonly OtherDeviceSettingsRow[];
   },
 ): ReactNode {
   return (
@@ -28,6 +30,21 @@ export function DevicesSettingsForm(
                 />
               );
             })}
+          </RowGroup>
+        </Section>
+      )}
+      {!props.otherDevices?.length ? null : (
+        <Section label="Other devices">
+          <RowGroup>
+            {props.otherDevices.map((device) => (
+              <LinkRow
+                detail={device.detail}
+                key={device.key}
+                lead={<Tile symbol={device.symbol} />}
+                onPress={() => props.onOtherDevice?.(device.opens)}
+                title={device.name}
+              />
+            ))}
           </RowGroup>
         </Section>
       )}

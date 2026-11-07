@@ -1320,6 +1320,120 @@ export class RequestStore {
     return row ? requestFromRow(row) : null;
   }
 
+  async settleIntegrationInput(input: {
+    readonly caller: Parameters<typeof assertActiveGrant>[1];
+    readonly requestId: RequestId;
+    readonly resolvedBy: UserId;
+    readonly settlementSessionId?: string;
+    readonly action: "accept" | "decline" | "cancel";
+  }): Promise<RequestMutation> {
+    return withRequestWorkspaceLocks(
+      this.#database,
+      (transaction) => discoverRequestWorkspaces(transaction, { requestId: input.requestId }),
+      async (transaction) => {
+        const observed = await transaction
+          .selectFrom("requests")
+          .selectAll()
+          .where("id", "=", input.requestId)
+          .executeTakeFirst();
+        if (
+          !observed ||
+          observed.kind !== "integration.input" ||
+          observed.status !== "pending" ||
+          observed.originatingRunId !== input.caller.runId ||
+          observed.requestedBy !== input.resolvedBy
+        )
+          throw new OpensteerError({
+            code: "conflict",
+            message: "Device input is no longer pending",
+          });
+        const pending = requestFromRow(observed);
+        await lockActiveDurableRequestAuthority(transaction, pending);
+        await assertActiveGrant(transaction, input.caller, this.#executionNow);
+        if (
+          pending.presentation.kind !== "form" ||
+          pending.presentation.fields.some((field) => !field.secret)
+        )
+          throw new Error("Device input requires secret form fields");
+        const response: RequestResponse =
+          input.action === "accept"
+            ? {
+                kind: "form",
+                answers: Object.fromEntries(
+                  pending.presentation.fields.map((field) => [field.id, []]),
+                ),
+              }
+            : { kind: "external", value: { decision: input.action } };
+        const row = await transaction
+          .updateTable("requests")
+          .set({
+            status: input.action === "accept" ? "fulfilled" : "declined",
+            resolvedAt: new Date(),
+            resolvedBy: input.resolvedBy,
+            response: jsonValue(response),
+            settlementProvenance: await readRequestSettlementProvenance(
+              transaction,
+              input.resolvedBy,
+              input.settlementSessionId,
+            ),
+          })
+          .where("id", "=", input.requestId)
+          .where("status", "=", "pending")
+          .returningAll()
+          .executeTakeFirst();
+        if (!row)
+          throw new OpensteerError({
+            code: "conflict",
+            message: "Device input is no longer pending",
+          });
+        await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
+        const request = requestFromRow(row);
+        return { request, events: await terminalEvents(transaction, request), replayed: false };
+      },
+      async (transaction) => {
+        const request = await transaction
+          .selectFrom("requests")
+          .selectAll()
+          .where("id", "=", input.requestId)
+          .executeTakeFirst();
+        if (request) {
+          const origin = await lockRequestOrigin(transaction, request);
+          if (!origin?.running)
+            throw new OpensteerError({ code: "conflict", message: "The calling Run has ended" });
+        }
+      },
+    );
+  }
+
+  async cancelIntegrationInputs(
+    reason: RequestCancellationReason,
+    requestId?: RequestId,
+  ): Promise<readonly AgentEvent[]> {
+    return withRequestWorkspaceLocks(
+      this.#database,
+      (transaction) =>
+        discoverRequestWorkspaces(transaction, {
+          ...(requestId ? { requestId } : {}),
+          kinds: ["integration.input"],
+          pending: true,
+        }),
+      async (transaction) => {
+        const rows = await transaction
+          .selectFrom("requests")
+          .select("id")
+          .where("kind", "=", "integration.input")
+          .where("status", "=", "pending")
+          .$if(requestId !== undefined, (query) => query.where("id", "=", requestId!))
+          .execute();
+        return cancelPending(transaction, {
+          reason,
+          resolvedAt: new Date(),
+          requestIds: rows.map(({ id }) => id),
+        });
+      },
+    );
+  }
+
   async listPendingIntegrationAccessRequests(
     requestedBy: UserId,
   ): Promise<readonly PendingIntegrationAccessRequest[]> {
@@ -3328,7 +3442,7 @@ async function createRequestInTransaction(
       });
     }
   }
-  if (input.kind.startsWith("integration.")) {
+  if (input.kind === "integration.access" || input.kind === "integration.install") {
     await validateIntegrationRequestDetail(transaction, input);
   }
   const integrationDetail = input.integrationDetail;
@@ -4289,6 +4403,7 @@ async function enqueueContinuation(
   createdAt: Date,
 ): Promise<void> {
   if (
+    request.kind === "integration.input" ||
     request.mode !== "durable" ||
     (request.status !== "fulfilled" && request.status !== "declined")
   ) {

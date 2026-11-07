@@ -4,7 +4,15 @@ import { AddPhoneDialog } from "../../computers/add-phone-dialog.js";
 import { useState } from "react";
 import { AddComputerDialog } from "../../computers/add-computer-dialog.js";
 import { localJoinOffer } from "../../../desktop/desktop-bridge.js";
-import { settingsDeviceRows } from "@opensteer/client/settings";
+import {
+  connectDeviceDraftText,
+  otherDeviceLine,
+  pluginPath,
+  settingsDeviceRows,
+} from "@opensteer/client/settings";
+import type { OtherDevice } from "@opensteer/protocol";
+import type { IconName } from "../../icon.js";
+import { useStartTask, useThreadPath } from "../../start-task.js";
 import { Link } from "react-router";
 import { unwrapRpcResult } from "@opensteer/client/host";
 import { useShell } from "../../app-shell.js";
@@ -16,6 +24,7 @@ export function AgentDevicesSection() {
   const shell = useShell();
   const { hostClient, snapshot, desktopBridge, desktopDeployment, localExecutionStatus } = shell;
   const [adding, setAdding] = useState<"choose" | "computer" | "phone" | null>(null);
+  const startTask = useStartTask();
   const devices = useSettingsRead(
     () => hostClient.rpc["devices.overview.get"]({}).then(unwrapRpcResult),
     `settings-devices:${snapshot.machineRevision}`,
@@ -69,6 +78,19 @@ export function AgentDevicesSection() {
           </button>
           <button className="card card__row" type="button" onClick={() => setAdding("phone")}>
             Android Agent Phone
+          </button>
+          <button
+            className="card card__row"
+            type="button"
+            onClick={() => {
+              setAdding(null);
+              startTask(connectDeviceDraftText);
+            }}
+          >
+            <span className="card__row-body">
+              <span>Something else</span>
+              <span className="card__row-detail">Tell an agent what to connect</span>
+            </span>
           </button>
           <p>To share iPhone apps, open Devices in Opensteer on that iPhone.</p>
         </Dialog>
@@ -133,6 +155,59 @@ export function AgentDevicesSection() {
       ) : devices.data.devices.length === 0 ? (
         <p>No devices added.</p>
       ) : null}
+      {devices.data?.otherDevices?.length ? (
+        <OtherDevices devices={devices.data.otherDevices} />
+      ) : null}
     </>
+  );
+}
+
+export const otherDeviceIcon: Record<OtherDevice["kind"], IconName> = {
+  camera: "camera",
+  light: "lightbulb",
+  other: "plug",
+  speaker: "speaker",
+  tv: "tv",
+};
+
+/** Things that run no Opensteer, reached through a plugin's server on one of these computers. */
+function OtherDevices({ devices }: { readonly devices: readonly OtherDevice[] }) {
+  const { snapshot } = useShell();
+  const threadPath = useThreadPath();
+  return (
+    <section aria-labelledby="other-devices-title" className="settings-group">
+      <h2 className="settings-group__title" id="other-devices-title">
+        Other devices
+      </h2>
+      <ul className="card settings-device-list">
+        {devices.map((device) => {
+          const task = snapshot.threads.find((thread) => thread.id === device.setupThreadId);
+          const line = otherDeviceLine(device, (task?.pendingRequests ?? 0) > 0);
+          return (
+            <li key={device.pluginId} className="card__row">
+              <span className="card__row-glyph">
+                <Icon name={otherDeviceIcon[device.kind]} />
+              </span>
+              <Link
+                className="card__row-body"
+                to={
+                  line.opens.kind === "task"
+                    ? threadPath(line.opens.threadId)
+                    : pluginPath({ kind: "plugin", pluginId: line.opens.pluginId })
+                }
+              >
+                <span className="card__row-title">{device.name}</span>
+                <span className="card__row-detail">{line.detail}</span>
+              </Link>
+              <span
+                className={`status-dot status-dot--${line.tone === "attention" ? "warn" : line.tone}`}
+                aria-hidden
+              />
+              <Icon name="chevron-right" />
+            </li>
+          );
+        })}
+      </ul>
+    </section>
   );
 }

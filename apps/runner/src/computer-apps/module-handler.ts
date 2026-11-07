@@ -270,6 +270,9 @@ export class ComputerAppModuleHandler {
       case "host.integrations.mcp.message":
         this.#localMcp?.message(message);
         return;
+      case "host.integrations.plugin-data.remove":
+        await this.#localMcp?.removePluginData(message.pluginId);
+        return;
       case "host.integrations.mcp.close":
         await this.#localMcp?.close(message);
         return;

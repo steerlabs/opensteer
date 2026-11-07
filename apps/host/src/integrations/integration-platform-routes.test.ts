@@ -1,4 +1,6 @@
 import Fastify from "fastify";
+import { IntegrationPlatformStore, type DatabaseSchema } from "@opensteer/database";
+import type { Kysely } from "kysely";
 import { createId } from "@opensteer/core";
 import { createIntegrationId } from "@opensteer/integration-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -29,6 +31,19 @@ describe("integration platform OAuth routes", () => {
     const uninstallIntegration = vi.fn(async () => {
       order.push("uninstall");
     });
+    const pluginQuery = {
+      select: () => pluginQuery,
+      where: () => pluginQuery,
+      executeTakeFirst: async () => ({
+        scope: "deployment",
+        installedBy: null,
+        isActiveWorkspaceMember: false,
+      }),
+    };
+    const store = new IntegrationPlatformStore({
+      selectFrom: () => pluginQuery,
+    } as unknown as Kysely<DatabaseSchema>);
+    vi.spyOn(store.plugins, "remove").mockImplementation(remove);
     const options = {
       authenticator: {} as HostAuthenticator,
       dashboard: {} as never,
@@ -36,9 +51,12 @@ describe("integration platform OAuth routes", () => {
       platform: {
         store: {
           specialists: { retirePlugin },
-          plugins: { remove },
+          plugins: store.plugins,
           listInstallations: async () => [{ id: "installation", pluginId: "plugin" }],
         },
+        removePluginData: vi.fn(async () => {
+          order.push("data");
+        }),
         uninstallIntegration,
       } as never,
     };
@@ -60,7 +78,7 @@ describe("integration platform OAuth routes", () => {
       type: "plugin.remove",
     });
     expect(retirePlugin).toHaveBeenCalledWith("plugin");
-    expect(order).toEqual(["retire", "uninstall", "remove"]);
+    expect(order).toEqual(["retire", "uninstall", "remove", "data"]);
   });
 
   it("addresses invalidation to affected viewers only after a committed shared mutation", async () => {
