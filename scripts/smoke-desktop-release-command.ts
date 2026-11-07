@@ -12,21 +12,24 @@ export type Log = (file: string, text: string) => void;
 export function bestEffortLog(
   options: {
     readonly write?: (file: string, text: string) => void;
-    readonly fallback?: (text: string) => void;
+    readonly fallback?: (bytes: Uint8Array) => void;
     readonly fallbackBytes?: number;
   } = {},
 ): Log {
   const write = options.write ?? appendFileSync;
-  const fallback = options.fallback ?? ((text: string) => writeSync(2, text));
+  const fallback = options.fallback ?? ((bytes: Uint8Array) => writeSync(2, bytes));
   let budget = options.fallbackBytes ?? 64 * 1024;
   return (file, text) => {
     try {
       write(file, text);
     } catch (error) {
-      const note = `${file} write failed: ${String(error)}\n${text}`.slice(0, budget);
-      budget -= note.length;
+      const note = Buffer.from(`${file} write failed: ${String(error)}\n${text}`);
+      let end = Math.min(note.length, budget);
+      // Cut at a character boundary, never inside a UTF-8 sequence.
+      while (end > 0 && end < note.length && (note[end]! & 0xc0) === 0x80) end--;
+      budget -= end;
       try {
-        if (note) fallback(note);
+        if (end > 0) fallback(note.subarray(0, end));
       } catch {
         // Nothing is left to report to.
       }

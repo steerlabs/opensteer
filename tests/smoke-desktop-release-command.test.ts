@@ -28,16 +28,21 @@ it("settles and releases the child when trace and fallback writes both fail", as
   await expect(command(process.execPath, ["-e", ""], 2000, roots, trace)).resolves.toBe("");
 });
 
-it("bounds the stderr fallback for failed diagnostic writes", () => {
-  const fallback: string[] = [];
+it("bounds the stderr fallback in emitted UTF-8 bytes, at character boundaries", () => {
+  const emitted: Uint8Array[] = [];
   const log = bestEffortLog({
     write: full,
-    fallback: (text) => fallback.push(text),
-    fallbackBytes: 80,
+    fallback: (bytes) => emitted.push(Uint8Array.from(bytes)),
+    // The 58-byte prefix leaves 24 bytes, which ends inside the next 4-byte emoji.
+    fallbackBytes: 82,
   });
-  for (let index = 0; index < 10; index++) log("observer.log", `${"x".repeat(30)}\n`);
-  expect(fallback.join("")).toMatch(/^observer\.log write failed: Error: no space left on device/);
-  expect(fallback.join("").length).toBe(80);
+  for (let index = 0; index < 10; index++) log("observer.log", `${"é日🙂".repeat(10)}\n`);
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  const chunks = emitted.map((bytes) => decoder.decode(bytes));
+  expect(chunks[0]).toBe(
+    "observer.log write failed: Error: no space left on device\né日🙂é日🙂é日",
+  );
+  expect(emitted.reduce((total, bytes) => total + bytes.length, 0)).toBe(82);
 });
 
 it("keeps stopping captured PIDs when one cannot be stopped or logged", () => {
