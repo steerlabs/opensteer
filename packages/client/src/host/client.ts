@@ -39,6 +39,8 @@ import type {
   RunUsage,
   Thread,
   ThreadAccessMode,
+  ThreadDoneReason,
+  QuietTaskDays,
   ThreadInputPolicy,
   ThreadInputQueue,
   ThreadReadState,
@@ -257,6 +259,8 @@ export interface ThreadSummary {
   /** When a person last asked for work; task lists order by this time. */
   askedAt: string;
   doneAt: string | null;
+  /** "quiet" when the Host moved it to Done because nothing touched it. */
+  doneReason: ThreadDoneReason | null;
   icon: WorkspaceIconName | null;
   color: MarkColor | null;
   providerSessionId: string | null;
@@ -305,6 +309,9 @@ export interface TaskEntry {
   readonly lastReply: string | null;
   readonly thread: ThreadSummary;
 }
+
+/** The key a Done list is held under in `doneTasks` without a Workspace: the reader's outside Projects. */
+export const mainDoneTasks = "*";
 
 /** The reader's tasks across every Workspace, as far as they have been read. */
 export interface TaskListState {
@@ -867,6 +874,14 @@ export interface HostSnapshot {
    * for with `loadWorkspaceTasks`; reread with `tasks` whenever they change.
    */
   workspaceTasks: Record<string, TaskListState>;
+  /**
+   * Done tasks newest Done first, for each Done list a screen asked for with
+   * `loadDoneTasks`: one Workspace's, or under `mainDoneTasks` the reader's
+   * outside Projects. Reread with `tasks` whenever they change.
+   */
+  doneTasks: Record<string, TaskListState>;
+  /** Days untouched before the reader's tasks move to Done; null until the Host says. */
+  quietTaskDays: QuietTaskDays | null;
   identityConfig: IdentityConfig | null;
   /**
    * The Host's durable pending-input queue, per Thread, for the Threads this
@@ -901,6 +916,11 @@ export interface HostSnapshot {
   /** The Host accepts a desktop app's return port on integration sign-in. */
   integrationAppReturnPortAvailable?: boolean;
   sharedTaskDoneAvailable?: boolean;
+  /**
+   * The Host serves `quiet-tasks-v1`: it moves quiet tasks to Done, lists Done
+   * newest Done first, and reopens a Done task when its writer may reopen it.
+   */
+  quietTasksAvailable?: boolean;
   /** The Host accepts installed-engine update commands. */
   harnessUpdateAvailable?: boolean;
   workspaceTabReopenAvailable?: boolean;
@@ -1198,6 +1218,13 @@ export interface HostClient {
   loadWorkspaceTasks(workspaceId: string): Promise<void>;
   /** Reads the next page of the reader's task list, or of one Workspace's. */
   loadEarlierTasks(workspaceId?: string): Promise<void>;
+  /**
+   * Reads the first page of one Workspace's Done tasks, or of the reader's
+   * outside Projects, and keeps it current. Needs `quietTasksAvailable`.
+   */
+  loadDoneTasks(workspaceId?: string): Promise<void>;
+  loadEarlierDoneTasks(workspaceId?: string): Promise<void>;
+  setQuietTaskDays(days: QuietTaskDays): Promise<void>;
   setWorkspaceNotificationMute(workspaceId: string, muted: boolean): Promise<void>;
   /**
    * Domain mutations, including `thread.icon.set` and `workspace.color.set`.

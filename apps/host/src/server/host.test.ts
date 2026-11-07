@@ -356,6 +356,7 @@ describe("Host signing keys", () => {
           "place-events-v1",
           "person-show-v1",
           "shared-task-done-v1",
+          "quiet-tasks-v1",
           "harness-update-v1",
           "iphone-apps-v1",
           "ownerViewWindows",
@@ -496,6 +497,7 @@ describe("Host signing keys", () => {
           "place-events-v1",
           "person-show-v1",
           "shared-task-done-v1",
+          "quiet-tasks-v1",
           "harness-update-v1",
           "iphone-apps-v1",
           "ownerViewWindows",
@@ -2167,6 +2169,7 @@ describe("Personal sharing boundary", () => {
         getExecutionPreferences: async () => emptyExecutionPreferences,
         getAutomaticModelConfig: async () => emptyAutomaticModelConfig,
         notificationState: {
+          quietTaskDaysFor: async () => 3,
           listWorkspacePreferences: async () => [
             { workspaceId: workspace.id, muted: false, revision: "0" },
           ],
@@ -2999,6 +3002,7 @@ describe("durable harness catalogs", () => {
       }),
       getWorkspaceForOwner: async () => workspace,
       notificationState: {
+        quietTaskDaysFor: async () => 3,
         listWorkspacePreferences: async () => [
           { workspaceId: workspace.id, muted: false, revision: "0" },
         ],
@@ -3457,6 +3461,7 @@ describe("durable harness catalogs", () => {
       const bootstrap = await injectRpcRequest(app, "bootstrap.get", {});
       expect(bootstrap.statusCode).toBe(200);
       expect(rpcData(bootstrap)).toMatchObject({
+        quietTaskDays: 3,
         environments: [
           {
             connected: false,

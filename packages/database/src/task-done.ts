@@ -48,6 +48,7 @@ import {
 import { lockThreadChannelAuthorities } from "./channel-execution.js";
 import { projectThreadState } from "./thread-status.js";
 import { admitRunToolCallInTransaction, type RunToolAdmissionInput } from "./run-tool-admission.js";
+import { threadIsQuiet } from "./quiet-tasks.js";
 
 export interface ThreadWriteActor {
   readonly authority?: ThreadCallerAuthority;
@@ -119,6 +120,12 @@ export interface SetThreadDoneInput extends ThreadWriteActor {
   readonly idempotencyKey: string;
   readonly threadId: ThreadId;
   readonly admission?: RunToolAdmissionInput;
+  /**
+   * The Host moving a quiet task to Done for its creator: it happens only if
+   * the task is still quiet once every lock is held, and otherwise changes and
+   * records nothing, so a later pass may try again.
+   */
+  readonly quiet?: true;
 }
 
 /** The open Assignments a task serves or handed out, and every open one beneath them. */
@@ -218,6 +225,7 @@ export async function setThreadDone(
         threadId: input.threadId,
         done: input.done,
         ...(input.actorRunId ? { actorRunId: input.actorRunId } : {}),
+        ...(input.quiet ? { quiet: true } : {}),
       };
       const existing = await transaction
         .selectFrom("commands")
@@ -355,7 +363,15 @@ export async function setThreadDone(
       const interruptCommands = [];
       let doneWhenRunEnds = false;
       const now = new Date();
-      if (!existing) {
+      const stillQuiet =
+        !input.quiet ||
+        (input.done && !input.actorRunId && (await threadIsQuiet(transaction, thread.id, now)));
+      const authoritySource = jsonValue(
+        input.quiet
+          ? { kind: "quiet-tasks", userId: input.requestedBy }
+          : { kind: "user-session", userId: input.requestedBy },
+      );
+      if (!existing && stillQuiet) {
         const self =
           input.done &&
           runs.find((run) => run.id === input.actorRunId && run.threadId === input.threadId);
@@ -386,6 +402,7 @@ export async function setThreadDone(
                 .updateTable("threads")
                 .set({
                   doneAt: row.doneAt ?? now,
+                  doneReason: row.doneAt ? row.doneReason : input.quiet ? "quiet" : null,
                   inputQueuePaused: false,
                   inputQueuePausedBy: null,
                 })
@@ -394,7 +411,7 @@ export async function setThreadDone(
             } else
               await transaction
                 .updateTable("threads")
-                .set({ doneAt: null })
+                .set({ doneAt: null, doneReason: null })
                 .where("id", "=", row.id)
                 .execute();
           }
@@ -467,7 +484,7 @@ export async function setThreadDone(
                   await persistRunnerControlCommand(transaction, {
                     id: createId("command"),
                     actorPrincipalId: await principalIdForUser(transaction, input.requestedBy),
-                    authoritySource: jsonValue({ kind: "user-session", userId: input.requestedBy }),
+                    authoritySource,
                     dispatcherId: null,
                     environmentId: run.environmentId,
                     idempotencyKey: `task-done:${input.idempotencyKey}:${run.id}`,
@@ -497,7 +514,7 @@ export async function setThreadDone(
           .values({
             id: createId("command"),
             actorPrincipalId: await principalIdForUser(transaction, input.requestedBy),
-            authoritySource: jsonValue({ kind: "user-session", userId: input.requestedBy }),
+            authoritySource,
             dispatcherId: null,
             environmentId: thread.environmentId,
             idempotencyKey: input.idempotencyKey,
@@ -513,7 +530,7 @@ export async function setThreadDone(
       } else
         doneWhenRunEnds = runs.some((run) => run.id === input.actorRunId && run.doneWhenFinished);
       const revokedGrants =
-        !existing && input.done && !doneWhenRunEnds
+        !existing && stillQuiet && input.done && !doneWhenRunEnds
           ? await revokeRunGrants(
               transaction,
               runs.filter((run) => scope.threadIds.includes(run.threadId)).map(({ id }) => id),
@@ -565,6 +582,7 @@ export async function appendDoneState(
       title: thread.title,
       icon: thread.icon,
       doneAt: thread.doneAt?.toISOString() ?? null,
+      doneReason: thread.doneReason,
       inputQueuePaused: thread.inputQueuePaused,
       pendingRequests: thread.pendingRequestCount,
     },

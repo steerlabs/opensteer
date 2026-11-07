@@ -61,6 +61,8 @@ import type {
   SecurityAuditId,
   SecurityEffectId,
   ThreadAccessMode,
+  ThreadDoneReason,
+  QuietTaskDays,
   ThreadIconSource,
   ThreadId,
   ThreadInputPolicy,
@@ -147,6 +149,8 @@ export interface UserTable {
   disabledAt: NullableTimestamp;
   /** The IANA zone this person's clients last reported; null until one does. */
   timeZone: Generated<string | null>;
+  /** Days untouched before this person's tasks move to Done; 0 never. */
+  quietTaskDays: Generated<QuietTaskDays>;
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }
@@ -781,6 +785,8 @@ interface SecurityEffectTable {
 export interface ThreadTable {
   askedAt: Timestamp;
   doneAt: Generated<Date | null>;
+  /** Set only while Done, when the Host moved the task there because nothing touched it. */
+  doneReason: Generated<ThreadDoneReason | null>;
   pendingRequestCount: Generated<number>;
   projectedInputQueuePaused: Generated<boolean>;
   inputQueuePaused: Generated<boolean>;

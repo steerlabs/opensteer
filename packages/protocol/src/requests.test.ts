@@ -48,6 +48,7 @@ describe("Request protocol", () => {
       createdAt: now,
       createdBy: request.requestedBy,
       doneAt: null,
+      doneReason: null,
       environmentId: createId("environment"),
       harnessInstanceId: createId("harnessInstance"),
       icon: null,

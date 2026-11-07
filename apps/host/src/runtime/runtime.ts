@@ -1,5 +1,6 @@
 import { RequestHold } from "../mcp/request-hold.js";
 import { ThreadNaming } from "../agents/thread-naming.js";
+import { QuietTasks } from "../threads/quiet-tasks.js";
 import { AdministrationService } from "../administration/administration-service.js";
 import { AdministrationToolHandlers } from "../mcp/handlers/administration.js";
 import { HarnessCatalogReconciliationOwner } from "../agents/harness-catalogs.js";
@@ -2095,6 +2096,11 @@ export async function createHostRuntime(
       store: new AutomationFailureStore(database),
     });
     notifyAutomationFailures = () => automationFailures.notify();
+    const quietTasks = new QuietTasks({
+      store,
+      commands,
+      onError: (error) => console.error("Moving quiet tasks to Done failed", error),
+    });
     let reportIntegrationConnectionError: (error: unknown, connectionId: string) => void = () =>
       undefined;
     integrationConnectionConnected = integrationConnectionReaction({
@@ -2664,6 +2670,7 @@ export async function createHostRuntime(
     coordinator.start();
     continuations.start();
     automationFailures.start();
+    quietTasks.start();
     let closed = false;
     let closingStep: string | undefined;
     hostAuthorityPublisher?.start();
@@ -2825,6 +2832,7 @@ export async function createHostRuntime(
         await step("shell hub", () => shellHub?.close());
         await step("runners", () => runners.close());
         await step("thread naming", () => naming!.stop());
+        await step("quiet tasks", () => quietTasks.stop());
         await step("coordinator", () => coordinator.stop());
         await step("security effects", () => securityEffects.close());
         files.close();

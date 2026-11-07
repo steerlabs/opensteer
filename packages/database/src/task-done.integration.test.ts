@@ -124,10 +124,6 @@ integration.sequential("Shared task Done", () => {
             .where("id", "=", request.id)
             .executeTakeFirst(),
         ).toMatchObject({ status: "cancelled", cancellationReason: "thread-archived" });
-      await expect(send(f, "refused")).rejects.toMatchObject({
-        code: "conflict",
-        message: "This task is Done. Reopen it first.",
-      });
       expect((await setDone(f, true, "done")).wasDuplicate).toBe(true);
       expect((await setDone(f, false, "reopen")).thread.doneAt).toBeNull();
       const next = await send(f, "after-reopen");
@@ -601,6 +597,230 @@ integration.sequential("Shared task Done", () => {
     });
   }
 
+  it("moves a quiet task to Done for its creator, and only while it stays quiet", async () => {
+    const f = await fixture("quiet");
+    const now = new Date();
+    const quiet = () => store.listQuietTasks({ now, limit: 100 });
+    await touched(f, 2);
+    expect(await quiet()).toEqual([]);
+    await touched(f, 4);
+    expect(await quiet()).toEqual([
+      expect.objectContaining({ threadId: f.thread.id, createdBy: f.userId }),
+    ]);
+    // Reading it is touching it.
+    await database
+      .insertInto("threadReadMarkers")
+      .values({ threadId: f.thread.id, userId: f.userId, sequence: "0", updatedAt: new Date() })
+      .execute();
+    expect(await quiet()).toEqual([]);
+    await database
+      .updateTable("threadReadMarkers")
+      .set({ updatedAt: daysAgo(4) })
+      .where("threadId", "=", f.thread.id)
+      .execute();
+    await database
+      .updateTable("users")
+      .set({ quietTaskDays: 0 })
+      .where("id", "=", f.userId)
+      .execute();
+    expect(await quiet()).toEqual([]);
+    await database
+      .updateTable("users")
+      .set({ quietTaskDays: 3 })
+      .where("id", "=", f.userId)
+      .execute();
+    const trigger = await new TriggerStore(database).create({
+      actorThreadId: null,
+      anchorThreadId: f.thread.id,
+      createdBy: f.userId,
+      idempotencyKey: "quiet-trigger",
+      name: "Quiet schedule",
+      program: {
+        toolContractVersion: 2,
+        language: "typescript",
+        source: "export default async () => null;",
+      },
+      source: {
+        kind: "schedule",
+        schedule: { kind: "at", at: new Date(Date.now() + 60_000).toISOString(), payload: null },
+      },
+    });
+    await touched(f, 4);
+    expect(await quiet()).toEqual([]);
+    await database
+      .updateTable("triggers")
+      .set({ status: "paused" })
+      .where("id", "=", trigger.trigger.id)
+      .execute();
+    expect(await quiet()).toEqual([]);
+    await database
+      .updateTable("triggers")
+      .set({ status: "archived", nextFireAt: null })
+      .where("id", "=", trigger.trigger.id)
+      .execute();
+    expect(await quiet()).toEqual([expect.objectContaining({ threadId: f.thread.id })]);
+    const [candidate] = await quiet();
+
+    // Touched between the scan and its turn: nothing changes and nothing is recorded.
+    await touched(f, 0);
+    const skipped = await moveQuietly(f, candidate!.updatedAt);
+    expect(skipped.thread).toMatchObject({ doneAt: null, doneReason: null });
+    expect(skipped.events).toEqual([]);
+    expect(await quietCommands(f)).toEqual([]);
+    await touched(f, 4);
+
+    const moved = await moveQuietly(f, candidate!.updatedAt);
+    expect(moved.thread).toMatchObject({ doneReason: "quiet", doneAt: expect.any(String) });
+    expect(moved.events).toContainEqual(
+      expect.objectContaining({
+        type: "thread.state-changed",
+        data: expect.objectContaining({ doneReason: "quiet" }),
+      }),
+    );
+    expect(await quietCommands(f)).toEqual([
+      { authoritySource: { kind: "quiet-tasks", userId: f.userId } },
+    ]);
+    // Reopening forgets why, and restarts the quiet clock.
+    const reopened = await setDone(f, false, "quiet-reopen");
+    expect(reopened.thread).toMatchObject({ doneAt: null, doneReason: null });
+    expect(await quiet()).toEqual([]);
+  });
+
+  it("leaves a task whose last message's delivery is unknown where it is", async () => {
+    const f = await fixture("quiet-unknown");
+    await running(f, "quiet-unknown");
+    const sent = await store.enqueueThreadInput({
+      content: [{ type: "text", text: "A steer the Run may not have seen" }],
+      idempotencyKey: "quiet-unknown-steer",
+      policy: "steer",
+      requestedBy: f.userId,
+      source: { kind: "human" },
+      threadId: f.thread.id,
+    });
+    await database
+      .updateTable("runs")
+      .set({ status: "interrupted", completedAt: new Date() })
+      .where("threadId", "=", f.thread.id)
+      .execute();
+    await database
+      .updateTable("threadInputs")
+      .set({ state: "unknown" })
+      .where("messageId", "=", sent.input.messageId)
+      .execute();
+    await touched(f, 4);
+    const quiet = () => store.listQuietTasks({ now: new Date(), limit: 100 });
+    expect(await quiet()).toEqual([]);
+    await database
+      .updateTable("threadInputs")
+      .set({ state: "delivered", deliveredAt: new Date() })
+      .where("messageId", "=", sent.input.messageId)
+      .execute();
+    expect(await quiet()).toEqual([expect.objectContaining({ threadId: f.thread.id })]);
+  });
+
+  it("reopens a Done task its writer may reopen, and refuses another member's message", async () => {
+    const f = await fixture("write-reopens");
+    await setDone(f, true, "write-reopens-done");
+    const sent = await send(f, "write-reopens-message");
+    expect(sent.input.state).toBe("pending");
+    expect(sent.events).toContainEqual(
+      expect.objectContaining({
+        type: "thread.state-changed",
+        data: expect.objectContaining({ doneAt: null, doneReason: null }),
+      }),
+    );
+    expect(await store.getThreadForOwner(f.thread.id, f.userId)).toMatchObject({ doneAt: null });
+
+    const { thread: theirs } = await store.createThread({
+      createdBy: f.userId,
+      environmentId: f.environmentId,
+      harnessInstanceId: f.harness.id,
+      idempotencyKey: "thread-write-reopens-theirs",
+      modelSelection,
+      title: "Not the member's",
+      workspaceId: f.workspace.id,
+    });
+    await setDone({ ...f, thread: theirs }, true, "write-reopens-theirs-done");
+    const member = await store.createUser("Member");
+    const joined = new Date();
+    await database
+      .insertInto("workspaceMemberships")
+      .values({
+        id: createId("workspaceMembership"),
+        workspaceId: f.workspace.id,
+        userId: member,
+        role: "collaborator",
+        state: "active",
+        generation: "1",
+        invitedBy: f.userId,
+        joinedAt: joined,
+        revokedAt: null,
+        revokedBy: null,
+        updatedAt: joined,
+      })
+      .execute();
+    await expect(
+      store.enqueueThreadInput({
+        content: [{ type: "text", text: "From a member" }],
+        idempotencyKey: "member-message",
+        policy: "queue",
+        requestedBy: member,
+        source: { kind: "human" },
+        threadId: theirs.id,
+      }),
+    ).rejects.toMatchObject({ code: "conflict", message: "This task is Done. Reopen it first." });
+  });
+
+  it("lists Done tasks newest Done first, apart from when they were asked", async () => {
+    const f = await fixture("done-order");
+    const { thread: later } = await store.createThread({
+      createdBy: f.userId,
+      environmentId: f.environmentId,
+      harnessInstanceId: f.harness.id,
+      idempotencyKey: "thread-done-order-later",
+      modelSelection,
+      title: "Asked later",
+      workspaceId: f.workspace.id,
+    });
+    await setDone({ ...f, thread: later }, true, "done-order-later");
+    await setDone(f, true, "done-order-first");
+    const page = await store.taskPageForUser({ done: true, maxItems: 1, userId: f.userId });
+    expect(page.tasks.map(({ thread }) => thread.id)).toEqual([f.thread.id]);
+    expect(page.window).toMatchObject({ hasMore: true, totalItems: 2 });
+    const next = await store.taskPageForUser({
+      before: page.window.nextBefore!,
+      done: true,
+      maxItems: 1,
+      userId: f.userId,
+    });
+    expect(next.tasks.map(({ thread }) => thread.id)).toEqual([later.id]);
+  });
+
+  async function touched(f: Fixture, days: number) {
+    await database
+      .updateTable("threads")
+      .set({ updatedAt: daysAgo(days), status: "idle" })
+      .where("id", "=", f.thread.id)
+      .execute();
+  }
+  function moveQuietly(f: Fixture, updatedAt: Date) {
+    return store.setThreadDone({
+      done: true,
+      quiet: true,
+      threadId: f.thread.id,
+      requestedBy: f.userId,
+      idempotencyKey: `quiet-done:${f.thread.id}:${updatedAt.toISOString()}`,
+    });
+  }
+  async function quietCommands(f: Fixture) {
+    return database
+      .selectFrom("commands")
+      .select("authoritySource")
+      .where("threadId", "=", f.thread.id)
+      .where("idempotencyKey", "like", "quiet-done:%")
+      .execute();
+  }
+
   it("refuses Chat", async () => {
     const f = await fixture("chat");
     await database
@@ -883,6 +1103,10 @@ integration.sequential("Shared task Done", () => {
     });
   }
 });
+
+function daysAgo(days: number): Date {
+  return new Date(Date.now() - days * 24 * 60 * 60 * 1_000);
+}
 
 function pendingEvent<T extends PendingAgentEvent>(input: Omit<T, "emittedAt">): T {
   return { ...input, emittedAt: new Date().toISOString() } as T;

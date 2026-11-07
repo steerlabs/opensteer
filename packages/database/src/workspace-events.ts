@@ -50,6 +50,7 @@ type HostWorkspaceEventInput =
         readonly title: string;
         readonly icon: Thread["icon"];
         readonly doneAt?: Thread["doneAt"];
+        readonly doneReason?: Thread["doneReason"];
         readonly inputQueuePaused: boolean;
         readonly pendingRequests: number;
       };

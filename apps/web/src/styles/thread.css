@@ -115,6 +115,13 @@
   margin: 0 auto;
 }
 
+.input-surface__done {
+  margin: 0 0 var(--space-6);
+  padding-inline: var(--space-12);
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
 .input-surface--action {
   /* What the agent is asking is read, so the card is opaque; it floats at
      the foot of the transcript with the ember catching its top edge. */

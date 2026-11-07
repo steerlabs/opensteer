@@ -173,7 +173,12 @@ Pending Requests are scoped to who may answer; a question docked in another conv
 through its own Thread's authority. Done is shared and needs active membership plus the task's
 creator or a Workspace owner; Chat and active channel conversations cannot be Done. Done stops the
 open Assignment subtree, withdraws actionable inputs and Requests, pauses anchored Triggers and
-revokes grants; Reopen starts nothing. A task moves in lists only when a person asks it for
+revokes grants; Reopen starts nothing. A person's own message reopens a Done task they could reopen
+by hand, in the same transaction; other writers are still refused. The Host itself moves its
+creator's finished, read, idle tasks to Done (`doneReason: "quiet"`) after the days they chose,
+through the same Done command re-checked under its locks
+([quiet-tasks.ts](../packages/database/src/quiet-tasks.ts)); a Host change to the task or its
+creator reading it restarts that clock. A task moves in lists only when a person asks it for
 something (`askedAt`). Clients never link to Workspaces the reader cannot open.
 
 Giving a finished task more work is a separate `thread_delegate`, never an effect of

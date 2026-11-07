@@ -1074,26 +1074,35 @@ it("models iPhone capability, pairing, pending enrollment, owner-session approva
 });
 
 describe("shared task Done", () => {
-  it("stops work, freezes messages, and reopens without resuming", async () => {
-    const client = createClient();
-    try {
-      const task = await client.createThread(
-        threadInput(client, client.getSnapshot().workspaces[0]!.id),
-      );
-      const done = await client.setTaskDone(task.id, true);
-      expect(done.doneAt).toBe(fixedNow.toISOString());
-      expect(done.inputQueuePaused).toBe(false);
-      await expect(sendMessage(client, task.id, "More work")).rejects.toThrow(
-        "This task is Done. Reopen it first.",
-      );
-      const reopened = await client.setTaskDone(task.id, false);
-      expect(reopened.doneAt).toBeNull();
-      expect(reopened.status).toBe("idle");
-      await expect(sendMessage(client, task.id, "More work")).resolves.toBeDefined();
-    } finally {
-      client.dispose();
-    }
-  });
+  it.each([true, false])(
+    "stops work, and a person's message reopens it only where the Host does so: %s",
+    async (quietTasksAvailable) => {
+      const client = new MockHostClient({ latencyMs: 0, now: () => fixedNow, quietTasksAvailable });
+      try {
+        const task = await client.createThread(
+          threadInput(client, client.getSnapshot().workspaces[0]!.id),
+        );
+        const done = await client.setTaskDone(task.id, true);
+        expect(done.doneAt).toBe(fixedNow.toISOString());
+        expect(done.inputQueuePaused).toBe(false);
+        const held = () => client.getSnapshot().threads.find(({ id }) => id === task.id)!;
+        if (quietTasksAvailable) {
+          await expect(sendMessage(client, task.id, "More work")).resolves.toBeDefined();
+          expect(held()).toMatchObject({ doneAt: null, doneReason: null });
+          return;
+        }
+        await expect(sendMessage(client, task.id, "More work")).rejects.toThrow(
+          "This task is Done. Reopen it first.",
+        );
+        const reopened = await client.setTaskDone(task.id, false);
+        expect(reopened.doneAt).toBeNull();
+        expect(reopened.status).toBe("idle");
+        await expect(sendMessage(client, task.id, "More work")).resolves.toBeDefined();
+      } finally {
+        client.dispose();
+      }
+    },
+  );
 
   it("a second client receives absolute Done state and then Reopen", () => {
     const second = createClient();

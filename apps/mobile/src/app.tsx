@@ -224,7 +224,7 @@ function mobileClient(): MobileRoot {
     portalOrigin: configuration.portalOrigin,
     accountOrigin: configuration.accountOrigin,
     catalogFilePath: `${root}${storeName}/deployments.json`,
-    doneShelfFilePath: `${root}${storeName}/done-shelf.json`,
+    quietSeenFilePath: `${root}${storeName}/quiet-seen.json`,
     draftsFilePath: `${root}${storeName}/drafts-v3.json`,
     usageNoticesFilePath: `${root}${storeName}/usage-notices.json`,
     fetch: (input, init) => globalThis.fetch(input as RequestInfo, init),

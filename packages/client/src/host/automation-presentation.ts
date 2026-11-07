@@ -131,7 +131,7 @@ function compareWithin(
 
 const dayMilliseconds = 86_400_000;
 
-function startOfDay(time: number): number {
+export function startOfDay(time: number): number {
   const day = new Date(time);
   day.setHours(0, 0, 0, 0);
   return day.getTime();

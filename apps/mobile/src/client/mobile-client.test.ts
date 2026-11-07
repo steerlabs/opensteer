@@ -468,7 +468,7 @@ function open(
     ...(options.notificationPreviews ? { notificationPreviews: options.notificationPreviews } : {}),
     accountOrigin: options.accountOrigin ?? null,
     catalogFilePath: "/private/deployments.json",
-    doneShelfFilePath: "/private/done-shelf.json",
+    quietSeenFilePath: "/private/quiet-seen.json",
     draftsFilePath: "/private/drafts.json",
     usageNoticesFilePath: "/private/usage-notices.json",
     fetch: options.fetch ?? testFetch,

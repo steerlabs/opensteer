@@ -503,7 +503,7 @@ describe("stopping a task and finishing it: one Stop", () => {
     expect(document.querySelector(".conv-header__menu")).toBeNull();
   });
 
-  it("confirms shared Done on running work, freezes sending and reopens the composer", async () => {
+  it("confirms shared Done on running work and keeps the composer to reopen it", async () => {
     const own = await startOwnTask("Compare two coworking passes");
     const setDone = vi.spyOn(client, "setTaskDone");
     await openMenu();
@@ -518,21 +518,13 @@ describe("stopping a task and finishing it: one Stop", () => {
     expect(setDone).toHaveBeenCalledExactlyOnceWith(own, true);
     expect(thread(own).doneAt).not.toBeNull();
     expect(sidebarRow(own)).toBeNull();
-    expect(document.body.textContent).toContain("This task is Done");
-    expect(document.querySelector("[data-composer-input]")).toBeNull();
-    expect(document.querySelector(".composer__send")).toBeNull();
-    await expect(
-      client.dispatch({
-        type: "thread.sendMessage",
-        threadId: own,
-        content: [{ type: "text", text: "Do more" }],
-        idempotencyKey: "done-refuses-message",
-      }),
-    ).rejects.toThrow("This task is Done. Reopen it first.");
-    await click(button("Reopen")!);
+    expect(element(".input-surface__done").textContent).toBe("Done · Sending reopens it");
+    expect(document.querySelector("[data-composer-input]")).not.toBeNull();
+    await openMenu();
+    await click(menuRow("Reopen")!);
     await settle(100);
     expect(thread(own).doneAt).toBeNull();
-    expect(document.querySelector("[data-composer-input]")).not.toBeNull();
+    expect(document.querySelector(".input-surface__done")).toBeNull();
     expect(sidebarRow(own)).not.toBeNull();
   });
 
