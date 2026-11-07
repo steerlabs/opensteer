@@ -67,6 +67,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import WebSocket from "ws";
+import { vi } from "vitest";
 import { testRpcData } from "../server/test-host-api-request.js";
 import { attachLocalWorkspaceDisk } from "../workspace/runner-local-workspace.test-support.js";
 import { createHostRuntime, type HostRuntime } from "./runtime.js";
@@ -1171,6 +1172,8 @@ export async function connectCallerMachine(
     if (message.type !== "host.inspect-harnesses" && message.type !== "host.reconcile-harnesses") {
       return;
     }
+    // A reconnect still lists the previous boot's catalog until registration replaces it,
+    // so each report names its boot and readiness waits for this one's.
     primary.socket.send(
       JSON.stringify({
         ...primary.fence,
@@ -1180,6 +1183,7 @@ export async function connectCallerMachine(
               continuationKey: "runner:v1:8tErnQuB1d-nw979Rab9a4JN0RE_tKRvI_Rtmy45Bbo",
               driverKind: harness.driverKind,
             },
+            detail: descriptor.bootId,
             driverKind: harness.driverKind,
             harnessInstanceId: harness.id,
             models: [
@@ -1211,17 +1215,36 @@ export async function connectCallerMachine(
       }),
     );
   });
-  const harnessInstanceId = await waitForValue(async () => {
-    const bootstrap = await testRpcData(
-      host.origin,
-      "bootstrap.get",
-      {},
-      { headers: host.ownerHeaders },
-    );
-    return bootstrap.harnesses.find(
-      (harness) => harness.driverKind === "codex" && harness.environmentId === environmentId,
-    )?.id;
-  });
+  const harnessInstanceId = await vi.waitFor(
+    async () => {
+      const bootstrap = await testRpcData(
+        host.origin,
+        "bootstrap.get",
+        {},
+        { headers: host.ownerHeaders },
+      );
+      const harness = bootstrap.harnesses.find(
+        (harness) => harness.driverKind === "codex" && harness.environmentId === environmentId,
+      );
+      const catalog = bootstrap.environments
+        .find((environment) => environment.id === environmentId)
+        ?.harnessCatalogs.find((catalog) => catalog.harnessInstanceId === harness?.id);
+      if (
+        !harness ||
+        catalog?.status !== "ready" ||
+        catalog.detail !== descriptor.bootId ||
+        !catalog.models.some(
+          (model) => model.modelId === "gpt-5.6-sol" && model.providerId === "openai",
+        )
+      ) {
+        throw new Error(
+          `Caller ${input.name} never committed this connection's GPT-5.6 Sol model report`,
+        );
+      }
+      return harness.id;
+    },
+    { timeout: 15_000 },
+  );
   return {
     close: async () => {
       primary.socket.close();
