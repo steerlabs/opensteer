@@ -1187,9 +1187,8 @@ export function traceWindow(
 }
 
 /**
- * Rows are only ever appended to or grown at the end, so a row's key — its
- * first step — is stable while the turn streams, and a row a reader opened
- * stays open.
+ * Rows are only ever appended or grown, so a row's key — its first step — is
+ * stable while the turn streams, and a row a reader opened stays open.
  */
 export function workRows(work: readonly WorkEntry[]): WorkRow[] {
   type Steps = {
@@ -1204,9 +1203,24 @@ export function workRows(work: readonly WorkEntry[]): WorkRow[] {
 
   let pending: PlaceEntry[] = [];
   let session: string | null = null;
+  // A tab is entered while a command runs, so it joins the browser row still
+  // open (reasoning doesn't close it), else its session's next command. Only a
+  // tab with no row of its session before the next message, Request or subagent
+  // stands alone.
+  let open: Steps | null = null;
+  const sessionRows = new Map<string, Steps>();
   const flushPlaces = () => {
-    for (const entry of pending) result.push({ entry, key: `place:${entry.id}`, kind: "place" });
+    for (const entry of pending) {
+      const owner =
+        entry.place.kind === "browser"
+          ? sessionRows.get(JSON.stringify(["browser", entry.place.sessionId]))
+          : undefined;
+      if (owner) owner.entries.push(entry);
+      else result.push({ entry, key: `place:${entry.id}`, kind: "place" });
+    }
     pending = [];
+    open = null;
+    sessionRows.clear();
   };
   for (const entry of work) {
     if (entry.kind === "place") {
@@ -1216,15 +1230,11 @@ export function workRows(work: readonly WorkEntry[]): WorkRow[] {
         continue;
       }
       session = entry.place.sessionId;
-      pending.push(entry);
+      if (open?.joinKey === JSON.stringify(["browser", session])) open.entries.push(entry);
+      else pending.push(entry);
       continue;
     }
-    if (
-      entry.kind === "message" ||
-      entry.kind === "reasoning" ||
-      entry.kind === "node" ||
-      entry.kind === "request"
-    )
+    if (entry.kind === "message" || entry.kind === "node" || entry.kind === "request")
       flushPlaces();
     const last = result.at(-1);
     if (entry.kind === "message") {
@@ -1257,18 +1267,16 @@ export function workRows(work: readonly WorkEntry[]): WorkRow[] {
           )
         : [];
     if (group === "browser") pending = pending.filter((place) => !places.includes(place));
+    let row: Steps;
     if (last?.kind === "steps" && joinKey !== null && last.joinKey === joinKey) {
-      last.entries.push(...places, entry);
-      continue;
+      row = last;
+      row.entries.push(...places, entry);
+    } else {
+      row = { entries: [...places, entry], group, joinKey, key: `row:${entry.id}`, kind: "steps" };
+      result.push(row);
     }
-    const row = {
-      entries: [...places, entry],
-      group,
-      joinKey,
-      key: `row:${entry.id}`,
-      kind: "steps" as const,
-    };
-    result.push(row);
+    open = group === "browser" ? row : null;
+    if (open && joinKey !== null) sessionRows.set(joinKey, open);
   }
   flushPlaces();
 
