@@ -44,6 +44,7 @@ catalog:
 patchedDependencies:
   expo-notifications@58.1.6: patches/expo-notifications@58.1.6.patch
   playwright-core@1.62.1: patches/playwright-core@1.62.1.patch
+  react-native-screens@4.30.0: patches/react-native-screens@4.30.0.patch
   react-native-webrtc@155.0.1: patches/react-native-webrtc@155.0.1.patch
 
 overrides:
