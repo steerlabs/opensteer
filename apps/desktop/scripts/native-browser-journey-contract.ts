@@ -2,6 +2,9 @@ import { z } from "zod";
 export const journeySteps: Record<string, string> = {
   mount: "Mount, switch tabs and paint",
   geometry: "Resize, crop and native hit test",
+  capture: "Looking at a shown page leaves it in place, in click coordinates",
+  captureGeometry: "Screenshots of cropped, emulated, zoomed and scrolled pages",
+  captureStates: "Screenshots of hidden pages, dialogs, races and closing",
   focus: "Agent CDP preserves another app's focus",
   clipboard: "Agent paste and menu chords cannot reach the Mac",
   editing: "Person AppKit editing chords",

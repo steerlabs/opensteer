@@ -233,6 +233,7 @@ async function startFollowSession(options: { readonly path?: string } = {}) {
         sessionId,
       ),
     claims,
+    closeBrowser: () => browser.close(),
     /** Every command the platform sent the page, in order. */
     commands: (surfaceId: BrowserSurfaceId) => {
       const targetId = targetOf(surfaceId);
@@ -703,6 +704,7 @@ function observeContext(
     if (existing) return existing;
     const observed: BrowserPage = {
       agentCdp: () => page.agentCdp(),
+      captureViewport: (request) => page.captureViewport(request),
       cdp: async () => {
         const targetId = await page.targetId();
         let tap = taps.get(targetId);

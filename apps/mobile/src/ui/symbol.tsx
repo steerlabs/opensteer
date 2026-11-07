@@ -67,6 +67,7 @@ export type SFSymbolName =
   | "lock.open"
   | "mic"
   | "mic.slash"
+  | "moon"
   | "macmini"
   | "magnifyingglass"
   | "pause"
@@ -232,6 +233,7 @@ const glyph: Record<SFSymbolName, string> = {
   "lock.open": "🔓\uFE0E",
   mic: "♩",
   "mic.slash": "⊘",
+  moon: "☾",
   macmini: "▬",
   magnifyingglass: "⌕",
   pause: "⏸\uFE0E",

@@ -85,8 +85,11 @@ describe("Device settings placement", () => {
     expect(session).not.toContain("connected agents");
     const landing = renderSettings(context, "/settings/account");
     expect(landing).not.toContain("Connection options");
-    // Connected agents load with the Account page, after Where you’re signed in.
-    expect(landing).toContain("Loading connected agents…");
+    // External agents have their own page and load only when it opens.
+    expect(landing).not.toContain("external agents");
+    expect(renderSettings(context, "/settings/external-agents")).toContain(
+      "Loading external agents…",
+    );
   });
   it("shows remote access administration on a remote Personal device", () => {
     const html = renderSettings(placementFixtures()["personal-remote"], "/settings/account");
@@ -252,6 +255,10 @@ function renderSettings(overrides: Partial<ShellContext>, path: string): string 
             <Route element={<SettingsSectionRoute section="account" />} path="account/*" />
             <Route element={<SettingsSectionRoute section="devices" />} path="devices" />
             <Route element={<SettingsSectionRoute section="general" />} path="general" />
+            <Route
+              element={<SettingsSectionRoute section="external-agents" />}
+              path="external-agents"
+            />
             <Route element={<p>Connected apps route</p>} path="apps/*" />
             <Route element={<p>Computers route</p>} path="computers/*" />
             <Route element={<ShellProbe />} path="shell-probe" />

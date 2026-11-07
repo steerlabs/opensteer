@@ -189,8 +189,8 @@ describe("a pairing link at startup", () => {
       startupRoot({ destination: null, pairing: null, selectedDeploymentId: "dep_one" }),
     ).toEqual(deploymentRoot("dep_one"));
     const destination = { deploymentId: "dep_one", threadId: "thr_one" };
-    expect(startupRoot({ destination, pairing: null, selectedDeploymentId: null })).toEqual(
-      threadRoot(destination),
-    );
+    expect(
+      startupRoot({ destination: threadRoot(destination), pairing: null, selectedDeploymentId: null }),
+    ).toEqual(threadRoot(destination));
   });
 });

@@ -217,6 +217,8 @@ export function RequestCard(props: {
     );
   }, [request.id, request.presentation]);
 
+  const computerApproval = useComputerAppApproval(props.hostClient);
+
   const present = (): void => {
     props.onPresent();
     openRef.current = true;
@@ -224,6 +226,7 @@ export function RequestCard(props: {
   };
 
   const dismiss = (): void => {
+    computerApproval.close();
     if (!openRef.current) return;
     openRef.current = false;
     setOpen(false);
@@ -336,7 +339,6 @@ export function RequestCard(props: {
     }
   };
 
-  const computerApproval = useComputerAppApproval(props.hostClient);
   const allowComputerApp = async (): Promise<void> => {
     if (
       request.payload.kind !== "computer.app.access" ||
@@ -359,6 +361,7 @@ export function RequestCard(props: {
       if (request.payload.kind !== "computer.app.access") return;
       if (definitionId !== "android-phone") {
         await computerApproval.ask(request.payload.setupRequestId);
+        if (mounted.current) dismiss();
         return;
       }
       const result = await props.hostClient.dispatch({
@@ -586,7 +589,6 @@ export function RequestCard(props: {
     );
   return (
     <View style={[styles.card, props.highlighted && styles.cardHighlighted]}>
-      {computerApproval.dialog}
       <View style={styles.body}>
         <Pressable
           accessibilityLabel={`${review} request: ${requestTitleLine(request)}`}
@@ -690,62 +692,64 @@ export function RequestCard(props: {
               text={presentation.detail}
             />
           )}
-          <RequestBody
-            answers={answers}
-            browserAccess={{
-              hostClient: props.hostClient,
-              name: browserName,
-              onChangeName: setBrowserName,
-              onRespond: (selection, name) =>
+          {computerApproval.content ?? (
+            <RequestBody
+              answers={answers}
+              browserAccess={{
+                hostClient: props.hostClient,
+                name: browserName,
+                onChangeName: setBrowserName,
+                onRespond: (selection, name) =>
+                  void submit(
+                    browserAccessResponse(selection, name),
+                    selection === null ? browserAccessDeclineId : browserAccessGrantId,
+                  ),
+                onSelect: setBrowserSelection,
+                selection: browserSelection,
+              }}
+              canRespond={props.canRespond}
+              failure={failure}
+              onAnswersChange={setAnswers}
+              onChoose={(optionId) => void submit({ kind: "choice", optionId }, optionId)}
+              onDeclineComputerApp={() =>
                 void submit(
-                  browserAccessResponse(selection, name),
-                  selection === null ? browserAccessDeclineId : browserAccessGrantId,
-                ),
-              onSelect: setBrowserSelection,
-              selection: browserSelection,
-            }}
-            canRespond={props.canRespond}
-            failure={failure}
-            onAnswersChange={setAnswers}
-            onChoose={(optionId) => void submit({ kind: "choice", optionId }, optionId)}
-            onDeclineComputerApp={() =>
-              void submit(
-                { kind: "external", value: { decision: "declined" } },
-                computerAppDeclineId,
-              )
-            }
-            onAllowComputerApp={() => void allowComputerApp()}
-            onDeclineFullDiskAccess={() =>
-              void submit(
-                { kind: "external", value: { decision: "declined" } },
-                fullDiskAccessDeclineId,
-              )
-            }
-            onDeclinePasswordSignIn={() => void declinePasswordSignIn()}
-            passwordCard={passwordCard}
-            onApprovePasswordSignIn={(account, remember) =>
-              void declinePasswordSignIn({ account, remember })
-            }
-            signIn={{
-              allowed,
-              chosenSourceId,
-              error: live.error,
-              inspection: live.inspection,
-              onAllow: (sourceId) =>
-                void respondSignIn({ decision: "allow", sourceId }, signInAllowId),
-              onChoose: setChosenSourceId,
-              onDecline: () => void respondSignIn({ decision: "decline" }, signInDeclineId),
-              workspaceName:
-                props.hostClient
-                  .getSnapshot()
-                  .workspaces.find((workspace) => workspace.id === request.targetWorkspaceId)
-                  ?.name ?? "this Workspace",
-            }}
-            machines={props.machines}
-            pendingId={pendingId}
-            reason={reason}
-            surface={props.surface}
-          />
+                  { kind: "external", value: { decision: "declined" } },
+                  computerAppDeclineId,
+                )
+              }
+              onAllowComputerApp={() => void allowComputerApp()}
+              onDeclineFullDiskAccess={() =>
+                void submit(
+                  { kind: "external", value: { decision: "declined" } },
+                  fullDiskAccessDeclineId,
+                )
+              }
+              onDeclinePasswordSignIn={() => void declinePasswordSignIn()}
+              passwordCard={passwordCard}
+              onApprovePasswordSignIn={(account, remember) =>
+                void declinePasswordSignIn({ account, remember })
+              }
+              signIn={{
+                allowed,
+                chosenSourceId,
+                error: live.error,
+                inspection: live.inspection,
+                onAllow: (sourceId) =>
+                  void respondSignIn({ decision: "allow", sourceId }, signInAllowId),
+                onChoose: setChosenSourceId,
+                onDecline: () => void respondSignIn({ decision: "decline" }, signInDeclineId),
+                workspaceName:
+                  props.hostClient
+                    .getSnapshot()
+                    .workspaces.find((workspace) => workspace.id === request.targetWorkspaceId)
+                    ?.name ?? "this Workspace",
+              }}
+              machines={props.machines}
+              pendingId={pendingId}
+              reason={reason}
+              surface={props.surface}
+            />
+          )}
         </View>
       </Sheet>
     </View>
@@ -1553,7 +1557,7 @@ function PasswordSignInResolved(props: { readonly request: Request }): ReactNode
 
 /**
  * An agent asked to use an app on a Mac, or the whole screen of an agent
- * phone. Mac approval happens there; phone access can be allowed here.
+ * phone. Its owner can allow either from here.
  */
 function ComputerAppAccessBody(props: {
   readonly access: "read" | "read-write";

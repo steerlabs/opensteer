@@ -95,7 +95,6 @@ import { AppText, StatusDot } from "../ui/primitives.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
 import { WorkspaceMark } from "../ui/workspace-mark.js";
 import { CallTimer } from "../voice/call-timer.js";
-import { VoiceCursor } from "../voice/cursor-mark.js";
 import { useVoiceAvailable, useVoiceOn } from "../voice/use-voice-value.js";
 import { DraftRow } from "./draft-row.js";
 import { sidebarFolders, type SidebarFolder } from "./project-folders.js";
@@ -554,7 +553,7 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
           <DestinationRow
             current={destination === "Schedules"}
             icon="clock"
-            label="Schedules"
+            label="Automations"
             onPress={actions.onSchedules}
           />
         </View>
@@ -966,7 +965,6 @@ function VoiceRow(props: {
       drafted={props.drafted}
       icon="waveform"
       label="Voice"
-      mark={<VoiceCursor size={18} tint={props.current ? color.ember : color.muted} />}
       onPress={open}
     />
   );

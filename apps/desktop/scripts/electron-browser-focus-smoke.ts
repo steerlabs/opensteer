@@ -263,10 +263,12 @@ async function run(): Promise<void> {
     }
     await assertBackground("agent pointer input");
 
-    const screenshot = await active.cdp.send<{ data?: unknown }>("Page.captureScreenshot", {
+    const screenshot = await active.page.captureViewport({
       format: "png",
+      layout: { height: 1, width: 1 },
+      pageScale: 1,
     });
-    if (typeof screenshot.data !== "string" || screenshot.data.length === 0) {
+    if (screenshot.data.length === 0) {
       throw new Error("Electron focus smoke did not capture a screenshot.");
     }
     await assertBackground("screenshot capture");

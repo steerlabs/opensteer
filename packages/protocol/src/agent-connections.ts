@@ -6,6 +6,8 @@ import {
   DeploymentIdSchema,
 } from "@opensteer/core";
 
+/** The Host's one MCP resource; an agent adds the Host's origin plus this path. */
+export const agentConnectionMcpPath = "/internal/v1/mcp";
 export const AgentConnectionIdSchema = z.string().regex(/^mcn_[0-9a-f-]{36}$/);
 export const AgentConnectionReachSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("user") }),

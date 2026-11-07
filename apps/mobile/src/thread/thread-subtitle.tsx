@@ -4,8 +4,8 @@ import { color, headerFontScaleLimit, space, touchTarget } from "../theme.js";
 import { AppText } from "../ui/primitives.js";
 import { WorkspaceMark } from "../ui/workspace-mark.js";
 import { ChatOrb } from "../ui/chat-orb.js";
+import { Symbol } from "../ui/symbol.js";
 import { TaskMark } from "../ui/task-mark.js";
-import { VoiceCursor } from "../voice/cursor-mark.js";
 import { TaskStatus, type TaskHeading } from "./task-status.js";
 
 /** A Thread's subject and name in both the native bar and the split pane. */
@@ -23,7 +23,7 @@ export function ThreadName(props: {
       {props.isHome ? (
         <ChatOrb size={22} />
       ) : props.isVoice === true ? (
-        <VoiceCursor size={20} tint={color.ember} />
+        <Symbol name="waveform" size={20} tint={color.ember} weight="semibold" />
       ) : (
         <TaskMark mark={taskMark(props)} size={22} />
       )}

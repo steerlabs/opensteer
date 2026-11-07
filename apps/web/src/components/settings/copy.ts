@@ -76,6 +76,7 @@ export type SettingsSectionId =
   | "chrome"
   | "computers"
   | "devices"
+  | "external-agents"
   | "general"
   | "passwords"
   | "plugins";
@@ -157,6 +158,12 @@ export const settingsItems: Readonly<Record<SettingsSectionId, SettingsRailItem>
     id: "devices",
     label: "Devices",
     description: "The browsers and apps you are signed in to this Opensteer from",
+  },
+  "external-agents": {
+    icon: "sparkles",
+    id: "external-agents",
+    label: "External agents",
+    description: "ChatGPT, Claude and other agents you let use Opensteer",
   },
   account: {
     icon: "user",

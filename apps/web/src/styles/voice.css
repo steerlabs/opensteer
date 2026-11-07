@@ -80,8 +80,13 @@
   background: var(--sheen) var(--surface-elevated);
   box-shadow: var(--edge-plate), var(--lift-float);
 }
-.voice-start > .exec-controls {
-  margin-left: auto;
+/* The model's controls fold their words before they would run off the bar
+   (see FoldToFit); the way to talk always shows whole. */
+.voice-start__settings {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  min-width: 0;
 }
 .voice-start__talk {
   display: inline-flex;
@@ -119,6 +124,15 @@
   stroke-width: 1.2;
   stroke-linejoin: round;
   overflow: visible;
+}
+/* The Voice Thread's own mark, on its row and its header. The cursor is the
+   call's, so it stays on the pill. */
+svg.voice-thread-mark {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  color: var(--ember);
+  stroke-width: 2.2;
 }
 .voice-clock {
   flex: none;

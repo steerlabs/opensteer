@@ -58,6 +58,10 @@ vi.mock("../client/mobile-client.js", () => ({
 vi.mock("../ui/symbol.js", () => ({
   Symbol: ({ name }: { name: string }) => <i data-symbol={name} />,
 }));
+vi.mock("../ui/sheet.js", () => ({
+  Sheet: ({ children, open }: { children?: ReactNode; open: boolean }) =>
+    open ? <div>{children}</div> : null,
+}));
 vi.mock("../ui/primitives.js", () => ({
   AppText: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
   Notice: ({ detail, title }: { detail: string; title: string }) => (

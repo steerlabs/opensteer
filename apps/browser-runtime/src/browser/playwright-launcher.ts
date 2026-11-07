@@ -10,6 +10,11 @@ import {
   type CdpSession,
   type LaunchedBrowser,
   type LocalProfileEngine,
+  readImageDimensions,
+  viewportCapturePlan,
+  viewportImageScript,
+  type ViewportCapture,
+  type ViewportCaptureRequest,
 } from "@opensteer/browser-runtime-core";
 import {
   browserPageDisabledBlinkFeatures,
@@ -832,6 +837,8 @@ class PlaywrightContextHandle implements BrowserContext {
 }
 
 class PlaywrightPageHandle implements BrowserPage {
+  private captureSession: Promise<PlaywrightCdpSession> | undefined;
+  private captureWorld: number | undefined;
   private cdpPromise: Promise<CdpSession> | null = null;
   private targetIdPromise: Promise<string> | null = null;
   private readonly context: PlaywrightBrowserContext;
@@ -857,6 +864,70 @@ class PlaywrightPageHandle implements BrowserPage {
     this.contextHandle = contextHandle;
     this.context = context;
     this.page = page;
+  }
+
+  async captureViewport({
+    clip,
+    format,
+    layout,
+    pageScale,
+    quality,
+  }: ViewportCaptureRequest): Promise<ViewportCapture> {
+    // This session must never enable emulation: an unclipped capture would then resize the page too.
+    const session = await (this.captureSession ??= this.context
+      .newCDPSession(this.page)
+      .catch((error: unknown) => {
+        this.captureSession = undefined;
+        throw error;
+      }));
+    const encoding = { format, ...(quality === undefined ? {} : { quality }) };
+    const direct = format === "jpeg" && !clip ? "jpeg" : "png";
+    const { data } = await session.send(
+      "Page.captureScreenshot",
+      direct === format ? encoding : { format: direct },
+    );
+    const bitmap = readImageDimensions(Buffer.from(data, "base64"), direct);
+    if (!bitmap) throw new Error("Chromium returned an unreadable screenshot.");
+    const visible = {
+      height: Math.round(layout.height / pageScale),
+      width: Math.round(layout.width / pageScale),
+    };
+    if (
+      !clip &&
+      direct === format &&
+      bitmap.width === visible.width &&
+      bitmap.height === visible.height
+    )
+      return { data };
+    const plan = viewportCapturePlan(bitmap, visible, clip);
+    return { data: await this.inCaptureWorld(session, viewportImageScript(data, plan, encoding)) };
+  }
+
+  /** A world page scripts and agents never reach, lending the page's own image codecs. */
+  private async inCaptureWorld(session: PlaywrightCdpSession, expression: string): Promise<string> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const { frameTree } = await session.send("Page.getFrameTree");
+        this.captureWorld ??= (
+          await session.send("Page.createIsolatedWorld", {
+            frameId: frameTree.frame.id,
+            worldName: "opensteer-capture",
+          })
+        ).executionContextId;
+        const { exceptionDetails, result } = await session.send("Runtime.evaluate", {
+          awaitPromise: true,
+          contextId: this.captureWorld,
+          expression,
+          returnByValue: true,
+        });
+        if (exceptionDetails) throw new Error("The page could not encode the screenshot.");
+        return z.string().parse(result.value);
+      } catch (error) {
+        // A navigation takes the world with it.
+        this.captureWorld = undefined;
+        if (attempt > 0) throw error;
+      }
+    }
   }
 
   agentCdp(): Promise<CdpSession> {

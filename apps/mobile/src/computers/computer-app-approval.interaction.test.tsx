@@ -12,6 +12,10 @@ vi.mock("react-native", () => ({
   StyleSheet: { create: (styles: object) => styles, hairlineWidth: 1 },
   View: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
 }));
+vi.mock("../ui/sheet.js", () => ({
+  Sheet: ({ children, open }: { children?: ReactNode; open: boolean }) =>
+    open ? <div>{children}</div> : null,
+}));
 vi.mock("../ui/primitives.js", () => ({
   AppText: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
   Field: (props: {

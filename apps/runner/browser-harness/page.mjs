@@ -1057,8 +1057,8 @@ export function createPage(environment) {
       waitForTimeout: (milliseconds) =>
         new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(milliseconds)))),
       screenshot: (options = {}) => {
-        optionsFor(options, ["path", "fullPage"]);
-        return environment.screenshot(options.path, { full: options.fullPage });
+        optionsFor(options, ["path"]);
+        return environment.screenshot(options.path);
       },
       ariaSnapshot: () => page.locator("body").ariaSnapshot(),
     },

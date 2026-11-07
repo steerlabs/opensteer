@@ -1,5 +1,9 @@
 import { MANAGED_MEMORY_WAKE_SKIPPED } from "@opensteer/triggers";
-import { startMemoryPassInTransaction } from "./memory-pass-store.js";
+import {
+  isMemoryPassWake,
+  memoryPassWakeContext,
+  startMemoryPassInTransaction,
+} from "./memory-pass-store.js";
 import { assertLineageCompatibleReuse } from "./resource-access.js";
 import { recordPersonWaited } from "./run-visibility.js";
 import { z } from "zod";
@@ -1318,7 +1322,10 @@ export async function claimRunInputBatch(
     readonly omittedCount: number;
     readonly throughSequence: string | null;
   } | null = null;
-  if (run.providerSessionId) {
+  if (
+    run.providerSessionId &&
+    !(await isMemoryPassWake(transaction, run.threadId, seed.authoritySource))
+  ) {
     const priorAccepted = await transaction
       .selectFrom("runs")
       .select("id")
@@ -2162,7 +2169,7 @@ export async function enqueueThreadInputInTransaction(
   transaction: Transaction<DatabaseSchema>,
   request: EnqueueThreadInputRequest,
 ): Promise<EnqueuedThreadInput> {
-  const content = ContentPartSchema.array().min(1).parse(request.content);
+  let content = ContentPartSchema.array().min(1).parse(request.content);
   if (
     (request.source.kind === "agent" || request.source.kind === "connection") &&
     !request.forwardedPlaces &&
@@ -2234,6 +2241,11 @@ export async function enqueueThreadInputInTransaction(
   if (facts.memoryPass) {
     if (policy !== "queue" || !request.memoryPass)
       throw new OpensteerError({ code: "conflict", message: MANAGED_MEMORY_WAKE_SKIPPED });
+    // After the fingerprint and receipt replay, so a retry replays what this wake froze.
+    content = [
+      ...content,
+      { type: "text", text: await memoryPassWakeContext(transaction, thread) },
+    ];
     const started = await startMemoryPassInTransaction(transaction, thread, request.memoryPass);
     thread = started.worker;
     passEvents.push(started.event);

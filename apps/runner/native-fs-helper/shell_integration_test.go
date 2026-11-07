@@ -1388,9 +1388,9 @@ func TestOpenSSHForwardingPolicyAndGlobalRequestRefusal(t *testing.T) {
 	}
 	_ = forward.Process.Kill()
 	_ = forward.Wait()
-	if !recordsContain(allowed.records(t), "forward") {
-		t.Fatal("allowed direct-tcpip did not emit forward audit")
-	}
+	allowed.waitForRecord(t, "allowed direct-tcpip forward", func(record map[string]any) bool {
+		return record["kind"] == "forward"
+	})
 
 	denied := newShellSSHFixture(t, shellPolicy{Reach: "deployment", Forwarding: false})
 	deniedProbe, err := net.Listen("tcp", "127.0.0.1:0")
@@ -1421,30 +1421,18 @@ func TestOpenSSHForwardingPolicyAndGlobalRequestRefusal(t *testing.T) {
 	}
 	_ = forward.Process.Kill()
 	_ = forward.Wait()
-	foundDeniedForward := false
-	for _, record := range denied.records(t) {
-		if record["kind"] == "denied" && record["what"] == "forward" {
-			foundDeniedForward = true
-		}
-	}
-	if !foundDeniedForward {
-		t.Fatalf("missing denied forward audit; output=%s", forwardOutput.String())
-	}
+	denied.waitForRecord(t, fmt.Sprintf("denied forward (ssh output=%s)", forwardOutput.String()), func(record map[string]any) bool {
+		return record["kind"] == "denied" && record["what"] == "forward"
+	})
 
 	reverse := exec.CommandContext(ctx, "ssh", "-F", allowed.config, "-N", "-o", "ExitOnForwardFailure=yes", "-R", "0:127.0.0.1:1", "test")
 	reverse.Env = allowed.environment()
 	if output, err := reverse.CombinedOutput(); err == nil {
 		t.Fatalf("reverse forwarding unexpectedly succeeded: %s", output)
 	}
-	foundGlobal := false
-	for _, record := range allowed.records(t) {
-		if record["kind"] == "denied" && record["what"] == "global-request" {
-			foundGlobal = true
-		}
-	}
-	if !foundGlobal {
-		t.Fatal("missing denied tcpip-forward global-request audit")
-	}
+	allowed.waitForRecord(t, "denied tcpip-forward global-request", func(record map[string]any) bool {
+		return record["kind"] == "denied" && record["what"] == "global-request"
+	})
 }
 
 func TestShellForwardCleanupClosesTargetThatKeepsWriteSideOpen(t *testing.T) {

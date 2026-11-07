@@ -100,8 +100,6 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
   readonly spacingTop: number;
   /** When this row was said, where a pause has passed in a conversation. */
   readonly time?: string | null;
-  /** True for the first row holding something published since the reader's last visit. */
-  readonly unreadBoundary?: boolean;
   /** The reader's own Home, which its messages name as Home rather than as whose it is. */
   readonly homeThreadId: string | null;
   readonly viewerUserId: string | null;
@@ -112,7 +110,6 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
   const { group } = props;
   return (
     <View style={{ marginTop: props.spacingTop }}>
-      {props.unreadBoundary === true && props.conversation !== true ? <UnreadDivider /> : null}
       {props.time ? (
         <AppText role="caption" style={styles.time} tone="muted">
           {props.time}
@@ -1007,23 +1004,6 @@ function AssistantMessage(props: {
   );
 }
 
-/**
- * Where the reader's last visit ended. Its position comes from the sequence the
- * Host recorded, not a count of rows, which lands on the wrong row as soon as
- * own messages or a mid-conversation window are in play.
- */
-function UnreadDivider(): ReactNode {
-  return (
-    <View accessibilityRole="text" style={styles.unread}>
-      <View style={styles.unreadRule} />
-      <AppText role="caption" tone="ember">
-        New
-      </AppText>
-      <View style={styles.unreadRule} />
-    </View>
-  );
-}
-
 /** Where a call began on the Voice Thread. It marks time; there is nothing here to read. */
 function CallDivider(props: { readonly createdAt: string }): ReactNode {
   const time = formatClockTime(props.createdAt);
@@ -1041,22 +1021,6 @@ function CallDivider(props: { readonly createdAt: string }): ReactNode {
       <View style={styles.callRule} />
     </View>
   );
-}
-
-/** The first group holding a message published past the reader's saved position. */
-export function firstUnreadGroupKey(
-  groups: readonly TranscriptGroup[],
-  boundarySequence: string | null,
-): string | null {
-  if (boundarySequence === null) return null;
-  const boundary = BigInt(boundarySequence);
-  const unread = (entry: { kind: string; sequence?: string | undefined }): boolean =>
-    entry.kind === "message" && entry.sequence !== undefined && BigInt(entry.sequence) > boundary;
-  for (const group of groups) {
-    const found = group.kind === "turn" ? group.turn.work.some(unread) : unread(group.entry);
-    if (found) return group.key;
-  }
-  return null;
 }
 
 export function Message(props: {
@@ -1168,12 +1132,18 @@ export function Message(props: {
       <MessagePages pages={message.pages ?? []} />
       <MessageAttachments attachments={message.attachments ?? []} />
       {!message.body ? null : mine && !props.queued ? (
-        <MessageHold previewRadius={bubble.radius} text={message.body}>
+        <MessageHold
+          previewBottomEndRadius={props.conversation ? undefined : radius.xs}
+          previewRadius={bubble.radius}
+          text={message.body}
+        >
           <Bubble
             fill={color.bubble}
             fit={message.body}
             side="mine"
-            tail={props.continued !== true}
+            // Messages' tail is Chat's; a task keeps the bubble's corner instead.
+            style={props.conversation ? undefined : styles.bubbleCorner}
+            tail={props.conversation && props.continued !== true}
           >
             {fold}
           </Bubble>
@@ -1497,14 +1467,6 @@ const styles = StyleSheet.create({
     paddingVertical: space[8],
   },
   callRule: { backgroundColor: color.line, flex: 1, height: 1 },
-  unread: {
-    alignItems: "center",
-    flexDirection: "row",
-    gap: space[8],
-    paddingBottom: space[8],
-    paddingTop: space[4],
-  },
-  unreadRule: { backgroundColor: color.emberLine, flex: 1, height: 1 },
   assistant: { gap: space[2] },
   /** Under a task's words, level with them: a thumb's reach, no ground of their own. */
   marks: { alignItems: "center", flexDirection: "row", marginBottom: -space[8] },
@@ -1562,6 +1524,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: space[16] - 1,
     paddingVertical: space[12] - 1,
   },
+  bubbleCorner: { borderBottomEndRadius: radius.xs },
   bubbleQueued: { backgroundColor: "transparent", borderWidth: 1.5, borderStyle: "dashed" },
   bubbleQueuedMine: { borderColor: color.emberLine },
   bubbleQueuedOther: { borderColor: color.lineStrong },

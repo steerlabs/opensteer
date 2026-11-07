@@ -45,7 +45,7 @@ import {
   useVoiceValue,
 } from "@opensteer/client/react";
 import type { VoiceSnapshot } from "@opensteer/client/voice";
-import { VoiceClock, VoiceMark } from "./voice.js";
+import { VoiceClock } from "./voice.js";
 import { voiceRowKey } from "./voice-cursor.js";
 import { deploymentNameFrom } from "./deployment-name.js";
 import { selectedDeploymentFrom } from "../desktop/desktop-deployment-selection.js";
@@ -1064,7 +1064,7 @@ function VoiceRow({
         onClick={() => void go()}
         type="button"
       >
-        <VoiceMark />
+        <Icon className="voice-thread-mark" name="waveform" />
         <span className="side-home__title">Voice</span>
         {since !== null ? (
           <VoiceClock />
