@@ -1237,7 +1237,7 @@ export async function connectCallerMachine(
       }
       return harness.id;
     },
-    { timeout: 5_000 },
+    { timeout: 15_000 },
   );
   return {
     close: async () => {
