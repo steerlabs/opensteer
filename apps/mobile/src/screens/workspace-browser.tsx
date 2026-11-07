@@ -1711,7 +1711,12 @@ function CompanionPane(props: { readonly companion: PairCompanion }): ReactNode 
       style={[
         styles.pill,
         companion.floating ? styles.floatingPill : null,
-        { paddingTop: insets.top + space[8] },
+        // A vertical bar or a notch stands at one side of the pane, as at its top.
+        {
+          paddingLeft: insets.left + space[12],
+          paddingRight: insets.right + space[12],
+          paddingTop: insets.top + space[8],
+        },
       ]}
       testID="conversation-name"
     >
@@ -1794,7 +1799,7 @@ const styles = StyleSheet.create({
   // page's own address field under the keyboard.
   pageAlone: { flex: 1, minHeight: 0 },
   // Centred over the pane, clear of its edges.
-  pill: { alignItems: "center", paddingBottom: space[4], paddingHorizontal: space[12] },
+  pill: { alignItems: "center", paddingBottom: space[4] },
   // The resting page's address, standing where the live page's will be.
   restingAddress: { flex: 1, justifyContent: "center", minWidth: 0, paddingHorizontal: space[16] },
   row: { flexDirection: "row" },

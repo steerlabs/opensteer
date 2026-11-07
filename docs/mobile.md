@@ -126,6 +126,13 @@ as a capsule beside the bar's other capsules. Material's app bars are full width
 toolbars hold actions, so Android keeps a title and status line, as does earlier iOS, and paints the
 bar solid because it has no blur to separate it from text scrolling beneath.
 
+A custom title stays in the bar's row even where iPhone Duo moves bar items into its vertical bar.
+iOS draws it in a slot react-native-screens sizes from the bar's margins, and a title wider than its
+slot spills past both sides. Our [patch](../patches/react-native-screens@4.30.0.patch) counts a side's
+safe area once and leaves out a Back button the vertical bar holds; unpatched, the slot is about 130
+points narrower than the room [bar-title.ts](../apps/mobile/src/ui/bar-title.ts) gives a title, and in
+Split View the title runs under the status bar.
+
 Every title opens a menu, so a capsule is never a button that does nothing. Android's menu has no
 header slot, which is why its status line can't move into the menu as Liquid Glass's does. Beside a
 page there is no title menu, so the composer's menu carries Find and Copy thread link there.

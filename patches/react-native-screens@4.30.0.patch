@@ -1,0 +1,40 @@
+diff --git a/ios/RNSScreenStackHeaderConfig.mm b/ios/RNSScreenStackHeaderConfig.mm
+index e217b2411d20c85db3ec84bb87765c1e9407fd3b..4dc60669c04dd549bf9c9d9252642ff2588fb970 100644
+--- a/ios/RNSScreenStackHeaderConfig.mm
++++ b/ios/RNSScreenStackHeaderConfig.mm
+@@ -240,16 +240,32 @@ RNS_IGNORE_SUPER_CALL_END
+   NSDirectionalEdgeInsets navBarMargins = [navigationBar directionalLayoutMargins];
+   NSDirectionalEdgeInsets navBarContentMargins = [navigationBar.rnscreens_findContentView directionalLayoutMargins];
+ 
++  // Both margins include the bar's safe area (a notch in landscape, a vertical bar), so a side's
++  // safe area is counted once.
++  UIEdgeInsets safeArea = navigationBar.safeAreaInsets;
++  BOOL isRTL = navigationBar.effectiveUserInterfaceLayoutDirection == UIUserInterfaceLayoutDirectionRightToLeft;
++  CGFloat safeLeading = isRTL ? safeArea.right : safeArea.left;
++  CGFloat safeTrailing = isRTL ? safeArea.left : safeArea.right;
++
+   BOOL isDisplayingBackButton = [self shouldBackButtonBeVisibleInNavigationBar:navigationBar];
+ 
+   // 44.0 is just "closed eyes default". It is so on device I've tested with, nothing more.
+   UIView *barButtonView = isDisplayingBackButton ? navigationBar.rnscreens_findBackButtonWrapperView : nil;
+   CGFloat platformBackButtonWidth = barButtonView != nil ? barButtonView.frame.size.width : 44.0f;
++#if RNS_IPHONE_OS_VERSION_AVAILABLE(27_1) && !TARGET_OS_TV && !TARGET_OS_VISION
++  if (@available(iOS 27.1, *)) {
++    // Where the system has a vertical bar, the back button stands in it, not in the bar's row.
++    if (barButtonView == nil && navigationBar.traitCollection.verticalBarEdge != UIVerticalBarEdgeUnspecified) {
++      platformBackButtonWidth = 0;
++    }
++  }
++#endif
+ 
+   const auto edgeInsets = NSDirectionalEdgeInsets{
+-      .leading =
+-          navBarMargins.leading + navBarContentMargins.leading + (isDisplayingBackButton ? platformBackButtonWidth : 0),
+-      .trailing = navBarMargins.trailing + navBarContentMargins.trailing,
++      .leading = navBarMargins.leading + navBarContentMargins.leading -
++          MIN(navBarContentMargins.leading, safeLeading) + (isDisplayingBackButton ? platformBackButtonWidth : 0),
++      .trailing =
++          navBarMargins.trailing + navBarContentMargins.trailing - MIN(navBarContentMargins.trailing, safeTrailing),
+   };
+ 
+   return edgeInsets;
