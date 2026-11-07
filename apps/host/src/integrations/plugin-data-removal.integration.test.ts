@@ -61,7 +61,10 @@ it("queues plugin cleanup atomically, gates old Runners, acknowledges and replay
       }),
     );
     const dispatch = (
-      input: Extract<HostApiCommand, { type: "plugin.install" | "plugin.remove" }>,
+      input: Extract<
+        HostApiCommand,
+        { type: "plugin.install" | "plugin.remove" | "integration.uninstall" }
+      >,
     ) =>
       testRpcData(
         host.origin,
@@ -104,6 +107,36 @@ it("queues plugin cleanup atomically, gates old Runners, acknowledges and replay
     const hostData = join(host.config.dataDirectory, "plugins", "data", installed.id);
     await mkdir(hostData, { recursive: true });
     await writeFile(join(hostData, "pairing"), "host-secret");
+    await dispatch({
+      idempotencyKey: globalThis.crypto.randomUUID(),
+      type: "integration.uninstall",
+      installationId: server.installationId,
+    });
+    expect(
+      await host.store.database
+        .selectFrom("integrationInstallations")
+        .select("id")
+        .where("id", "=", server.installationId)
+        .execute(),
+    ).toEqual([]);
+    expect(
+      await host.store.database
+        .selectFrom("integrationServers")
+        .select("id")
+        .where("installationId", "=", server.installationId)
+        .execute(),
+    ).toEqual([]);
+    expect(
+      await host.store.database
+        .selectFrom("runnerPluginDataRemovals")
+        .select("runnerId")
+        .where("pluginId", "=", installed.id)
+        .execute(),
+    ).toEqual(expect.arrayContaining([{ runnerId: capable.runnerId }, { runnerId: old.runnerId }]));
+    expect(
+      await new IntegrationPlatformStore(host.store.database).plugins.pendingDataRemovals(),
+    ).toEqual([]);
+    expect(remove).not.toHaveBeenCalled();
     await dispatch({
       idempotencyKey: globalThis.crypto.randomUUID(),
       type: "plugin.remove",

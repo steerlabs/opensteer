@@ -506,7 +506,6 @@ export interface InstallIntegrationMutation {
 }
 
 export interface UninstallIntegrationInput {
-  readonly removePluginData?: boolean;
   readonly administration?: AdministrationCommandIdentity | undefined;
   readonly actorUserId: UserId;
   readonly installationId: IntegrationInstallationId;
@@ -861,7 +860,7 @@ export async function uninstallIntegrationInTransaction(
       .execute()
   ).map(({ id }) => id);
   const pluginId = installation.pluginId;
-  if (input.removePluginData && pluginId && serverIds.length > 0) {
+  if (pluginId && serverIds.length > 0) {
     const servers = await transaction
       .selectFrom("integrationServers")
       .select("transport")

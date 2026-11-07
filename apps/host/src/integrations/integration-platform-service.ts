@@ -1687,7 +1687,6 @@ export class IntegrationPlatformService {
    * command, which an administrator runs deliberately.
    */
   async uninstallIntegration(input: {
-    readonly removePluginData?: boolean;
     readonly administration?: AdministrationCommandIdentity | undefined;
     readonly actorUserId: UserId;
     readonly installationId: IntegrationInstallationId;

@@ -75,7 +75,6 @@ export async function executeIntegrationAdministration(
         if (installation.pluginId === command.pluginId)
           await options.platform.uninstallIntegration({
             installationId: installation.id,
-            removePluginData: true,
             actorUserId: actor.userId,
             requestId,
           });
