@@ -1,5 +1,7 @@
+import { pageSiteLabel } from "./surfaces.js";
 import {
   isIntegrationGatewayTool,
+  placeIdentityKey,
   type AssignmentSummary,
   type BrowserTabWriteInput,
   type WaitingRequest,
@@ -1131,7 +1133,9 @@ function countNoun(count: number, noun: string): string {
  */
 export type WorkRow =
   | {
-      readonly entries: readonly (RequestReceiptEntry | ToolEntry)[];
+      readonly entries: readonly (RequestReceiptEntry | ToolEntry | PlaceEntry)[];
+      readonly places: readonly PlaceEntry[];
+      readonly currentPlace: PlaceEntry | null;
       /** What the row's steps share, so a renderer can lay a Computer use row out as a timeline. */
       readonly group: StepGroup | null;
       readonly head: ActivityStepHead;
@@ -1150,7 +1154,15 @@ export type WorkRow =
   | { readonly entry: PlaceEntry; readonly key: string; readonly kind: "place" }
   | { readonly entry: ReasoningEntry; readonly key: string; readonly kind: "reasoning" };
 
-export type StepGroup = "command" | "computer" | "edit" | "explore" | "integrations" | "web";
+export type StepGroup =
+  | "browser"
+  | "command"
+  | "computer"
+  | "edit"
+  | "explore"
+  | "integrations"
+  | "integration-call"
+  | "web";
 
 // Bounds what a long turn mounts and redraws on each streamed step on a phone.
 export const traceWindowRows = 30;
@@ -1176,21 +1188,44 @@ export function traceWindow(
 
 /**
  * Rows are only ever appended to or grown at the end, so a row's key — its
- * first entry — is stable while the turn streams, and a row a reader opened
+ * first step — is stable while the turn streams, and a row a reader opened
  * stays open.
  */
 export function workRows(work: readonly WorkEntry[]): WorkRow[] {
   type Steps = {
-    entries: (RequestReceiptEntry | ToolEntry)[];
+    entries: (RequestReceiptEntry | ToolEntry | PlaceEntry)[];
     group: StepGroup | null;
-    /** Steps join a row only when they share this: the group, and for Computer use the app and Runner. */
+    /** Steps share a group and, for targeted calls, the same resource identity. */
     joinKey: string | null;
     key: string;
     kind: "steps";
   };
   const result: (Exclude<WorkRow, { kind: "steps" }> | Steps)[] = [];
 
+  let pending: PlaceEntry[] = [];
+  let session: string | null = null;
+  const flushPlaces = () => {
+    for (const entry of pending) result.push({ entry, key: `place:${entry.id}`, kind: "place" });
+    pending = [];
+  };
   for (const entry of work) {
+    if (entry.kind === "place") {
+      if (entry.place.kind !== "browser") {
+        flushPlaces();
+        result.push({ entry, key: `place:${entry.id}`, kind: "place" });
+        continue;
+      }
+      session = entry.place.sessionId;
+      pending.push(entry);
+      continue;
+    }
+    if (
+      entry.kind === "message" ||
+      entry.kind === "reasoning" ||
+      entry.kind === "node" ||
+      entry.kind === "request"
+    )
+      flushPlaces();
     const last = result.at(-1);
     if (entry.kind === "message") {
       result.push({ entry, key: `note:${entry.id}`, kind: "note" });
@@ -1204,18 +1239,30 @@ export function workRows(work: readonly WorkEntry[]): WorkRow[] {
       result.push({ entry, head: nodeHead(entry), key: `subagent:${entry.id}`, kind: "subagent" });
       continue;
     }
-    if (entry.kind === "place") {
-      result.push({ entry, key: `place:${entry.id}`, kind: "place" });
-      continue;
-    }
-    const group = entry.kind === "tool" ? stepGroup(toolPresentation(entry).kind) : null;
-    const joinKey = entry.kind === "tool" && group !== null ? groupJoinKey(entry, group) : null;
+    const presentation = entry.kind === "tool" ? toolPresentation(entry) : null;
+    const group =
+      presentation?.kind === "browser" && presentation.command === null
+        ? null
+        : presentation
+          ? stepGroup(presentation.kind)
+          : null;
+    const joinKey =
+      entry.kind === "tool" && group !== null ? groupJoinKey(entry, group, session) : null;
+    const places =
+      group === "browser"
+        ? pending.filter(
+            (place) =>
+              place.place.kind === "browser" &&
+              JSON.stringify([group, place.place.sessionId]) === joinKey,
+          )
+        : [];
+    if (group === "browser") pending = pending.filter((place) => !places.includes(place));
     if (last?.kind === "steps" && joinKey !== null && last.joinKey === joinKey) {
-      last.entries.push(entry);
+      last.entries.push(...places, entry);
       continue;
     }
     const row = {
-      entries: [entry],
+      entries: [...places, entry],
       group,
       joinKey,
       key: `row:${entry.id}`,
@@ -1223,6 +1270,7 @@ export function workRows(work: readonly WorkEntry[]): WorkRow[] {
     };
     result.push(row);
   }
+  flushPlaces();
 
   return result.map((row) =>
     row.kind !== "steps"
@@ -1230,7 +1278,9 @@ export function workRows(work: readonly WorkEntry[]): WorkRow[] {
       : {
           entries: row.entries,
           group: row.group,
-          head: rowHead(row.entries, row.group),
+          head: browserRowHead(row.entries, row.group),
+          places: rowPlaces(row.entries),
+          currentPlace: row.entries.findLast((entry) => entry.kind === "place") ?? null,
           key: row.key,
           kind: "steps",
         },
@@ -1241,7 +1291,17 @@ export function workRows(work: readonly WorkEntry[]): WorkRow[] {
  * Computer use folds steps on one app or phone. Runner ids keep computers
  * apart even when they share a display name.
  */
-function groupJoinKey(tool: ToolEntry, group: StepGroup): string {
+function groupJoinKey(tool: ToolEntry, group: StepGroup, session: string | null): string | null {
+  if (group === "browser") {
+    const command = commandFrom(effectiveArguments(tool)) ?? "";
+    const literal = /--session(?:=|\s+)(?:"([^"$]+)"|'([^'$]+)'|([^\s"'$`]+))/.exec(command);
+    return JSON.stringify([group, literal?.[1] ?? literal?.[2] ?? literal?.[3] ?? session]);
+  }
+  if (group === "integration-call") {
+    const subject = tool.integration;
+    if (!subject || subject.effect !== "read") return null;
+    return JSON.stringify([group, subject.integration, subject.account, subject.operation.name]);
+  }
   if (group !== "computer") return group;
   const place = computerPlace(tool);
   return place
@@ -1253,6 +1313,8 @@ function groupJoinKey(tool: ToolEntry, group: StepGroup): string {
 
 function stepGroup(kind: StepKind): StepGroup | null {
   switch (kind) {
+    case "browser":
+      return "browser";
     case "command":
       return "command";
     case "list":
@@ -1263,6 +1325,8 @@ function stepGroup(kind: StepKind): StepGroup | null {
       return "edit";
     case "computer":
       return "computer";
+    case "integration-call":
+      return "integration-call";
     case "integration-lookup":
       return "integrations";
     case "web-page":
@@ -1271,6 +1335,44 @@ function stepGroup(kind: StepKind): StepGroup | null {
     default:
       return null;
   }
+}
+
+function rowPlaces(
+  entries: readonly (RequestReceiptEntry | ToolEntry | PlaceEntry)[],
+): PlaceEntry[] {
+  const places = new Map<string, PlaceEntry>();
+  for (const entry of entries) {
+    if (entry.kind !== "place") continue;
+    const key = placeIdentityKey(entry.place);
+    if (!places.has(key)) places.set(key, entry);
+  }
+  return [...places.values()];
+}
+
+function browserRowHead(
+  entries: readonly (RequestReceiptEntry | ToolEntry | PlaceEntry)[],
+  group: StepGroup | null,
+): ActivityStepHead {
+  const steps = entries.filter((entry) => entry.kind !== "place");
+  const head = rowHead(steps, group);
+  const places = rowPlaces(entries);
+  if (group !== "browser") return head;
+  const labels = places.map(
+    (entry) => (entry.site ? pageSiteLabel(entry.site) : null) || entry.title || "Page",
+  );
+  const names =
+    labels.length > 2
+      ? `${labels.slice(0, 2).join(", ")} and ${labels.length - 2} more`
+      : labels.join(" and ");
+  const tools = steps.filter((entry) => entry.kind === "tool");
+  const running = tools.findLast((entry) => entry.state === "running");
+  return {
+    ...head,
+    label: `${running ? "Using" : "Used"} ${names || "the browser"}`,
+    detail: countNoun(tools.length, "step"),
+    detailKind: "prose",
+    icon: "browser",
+  };
 }
 
 function rowHead(
@@ -1297,6 +1399,16 @@ function rowHead(
   const presentations = tools.map(toolPresentation);
 
   switch (group) {
+    case "browser":
+      return {
+        detail: countNoun(tools.length, "step"),
+        detailKind: "prose",
+        duration: null,
+        errors,
+        icon: "browser",
+        label: running ? "Using the browser" : "Used the browser",
+        tone,
+      };
     case "command":
       return {
         detail: liveDetail ?? "",
@@ -1333,6 +1445,20 @@ function rowHead(
     }
     case "computer":
       throw new Error("A Computer use row has its own head");
+    case "integration-call": {
+      const latest = tools.at(-1);
+      if (!latest) throw new Error("An integration group must contain a call");
+      const presentation = toolPresentation(running ?? latest);
+      return {
+        detail: `${presentation.hint} · ${countNoun(tools.length, "call")}`,
+        detailKind: "prose",
+        duration: null,
+        errors,
+        icon: "puzzle",
+        label: (running ?? latest).integration?.operation.title ?? presentation.label,
+        tone,
+      };
+    }
     case "integrations": {
       // Every search here was a Mac listing its apps, or some were integration lookups.
       const listingApps = tools.every(listsAppsOnMac);
@@ -2234,6 +2360,16 @@ const toolKinds = new Map<string, StepKind>(
 
 function commandPresentation(args: unknown): ToolPresentation {
   const command = commandFrom(args);
+  if (command?.includes("OPENSTEER_BROWSER_HARNESS"))
+    return step({
+      activeLabel: "Using the browser",
+      command,
+      hint: "Browser page work",
+      hintKind: "prose",
+      icon: "browser",
+      kind: "browser",
+      label: "Used the browser",
+    });
   const shown = command === null ? "" : withoutWorkingDirectory(command);
   const description = stringField(args, "description");
   if (description) {

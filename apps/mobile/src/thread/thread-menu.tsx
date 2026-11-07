@@ -22,6 +22,8 @@ interface ThreadMenuProps {
   readonly children: ReactNode;
   readonly connectionLabel?: string | null;
   readonly deploymentId: string;
+  /** What the place drawing the title adds, after everything the conversation offers. */
+  readonly extraActions?: readonly NativeMenuOption[];
   readonly hostClient: HostClient;
   /** Chat's name says nothing the menu needs to repeat. */
   readonly isHome?: boolean;
@@ -176,6 +178,7 @@ function Menu(
             threadId,
           }),
           stopAction,
+          props.extraActions ?? [],
         ]}
         {...(props.isHome === true ? {} : { title: menuHeading(props) })}
         triggerRef={trigger}

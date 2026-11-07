@@ -452,6 +452,19 @@ describe("the sidebar as the window changes shape", () => {
     expect(sidebarColumn()).toBeNull();
     expect(main(container).dataset["docked"]).toBe("false");
     expect(stackStyle(container)).toMatchObject(whole);
+    await render([home, threadA, fromThread, { key: "sheet", name: "BrowserTabs" }]);
+    expect(lastPanel().docked).toBe(false);
+    expect(sidebarColumn()).toBeNull();
+    expect(stackStyle(container)).toMatchObject(whole);
+    await render([
+      home,
+      threadA,
+      fromThread,
+      { key: "sheet", name: "BrowserTabs" },
+      { key: "modal", name: "Settings" },
+    ]);
+    expect(lastPanel().docked).toBe(false);
+    expect(stackStyle(container)).toMatchObject(whole);
     await render([home, { key: "tab-key", name: "WorkspaceBrowser", params: tabBRoute }]);
     expect(lastPanel().docked).toBe(false);
     expect(stackStyle(container)).toMatchObject(whole);

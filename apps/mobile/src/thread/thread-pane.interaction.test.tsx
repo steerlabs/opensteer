@@ -105,6 +105,11 @@ const harness = vi.hoisted(() => ({
   handles: new Map<number, HTMLElement>(),
   /** The pane's own insets: its safe area and anything reserved over it. */
   insets: { bottom: 0, left: 0, right: 0, top: 0 },
+  /** Each named view's layout callback, to hand it a measured size. */
+  layouts: new Map<
+    string,
+    (event: { nativeEvent: { layout: { height: number; width: number } } }) => void
+  >(),
   /** The notices this reader put away, one store value as a snapshot must be. */
   dismissed: new Set<string>(),
   /** Where the screen's bar options go, as the native stack would take them. */
@@ -271,21 +276,28 @@ vi.mock("react-native", async () => {
     View: (
       props: Children & {
         readonly accessibilityLabel?: string;
+        readonly onLayout?: (event: {
+          nativeEvent: { layout: { height: number; width: number } };
+        }) => void;
         readonly style?: unknown;
         readonly ref?: Ref<HTMLDivElement>;
         readonly testID?: string;
       },
-    ) => (
-      <div
-        ref={props.ref}
-        aria-label={props.accessibilityLabel}
-        data-margin-top={marginTopOf(props.style)}
-        data-style={props.testID === undefined ? undefined : JSON.stringify(flatten(props.style))}
-        data-testid={props.testID}
-      >
-        {props.children}
-      </div>
-    ),
+    ) => {
+      if (props.testID !== undefined && props.onLayout !== undefined)
+        harness.layouts.set(props.testID, props.onLayout);
+      return (
+        <div
+          ref={props.ref}
+          aria-label={props.accessibilityLabel}
+          data-margin-top={marginTopOf(props.style)}
+          data-style={props.testID === undefined ? undefined : JSON.stringify(flatten(props.style))}
+          data-testid={props.testID}
+        >
+          {props.children}
+        </div>
+      );
+    },
   };
 });
 /** Style arrays as React Native merges them, so a test can read the result. */
@@ -729,6 +741,7 @@ afterEach(() => {
   harness.scrollToIndex.mockReset();
   harness.scrollToOffset.mockReset();
   harness.insets = { bottom: 0, left: 0, right: 0, top: 0 };
+  harness.layouts.clear();
   harness.list = null;
   harness.setOptions = null;
 });
@@ -1285,6 +1298,11 @@ describe("a conversation with a page", () => {
       title: "Research page",
       url: "https://example.com",
     });
+  // The page the composer includes: at rest a chip naming its site, open its title above the words.
+  const pageChip = (container: HTMLElement) =>
+    container.querySelector(
+      '[aria-label="Research page. This page is included with your message"]',
+    );
 
   // Failure: the person is left on a page for a tab the Host never made.
   it("pushes an app's own route at once, and takes that page back if the Host refuses the tab", async () => {
@@ -1344,8 +1362,10 @@ describe("a conversation with a page", () => {
     expect(container.querySelector('[aria-label="Docked request"]')?.textContent).toBe(
       "Review this approval",
     );
-    expect(text(container)).toContain("Research page");
+    expect(pageChip(container)?.textContent).toBe("example.com");
+    expect(text(container)).not.toContain("Research page");
     await type(container, "Message", "Explain this");
+    expect(pageChip(container)?.textContent).toBe("Research page");
     await press(container, "Send message");
     expect(host.dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1392,7 +1412,7 @@ describe("a conversation with a page", () => {
     const { container, drafts, root } = await mount(host, chatId, { draftPage: included });
     harness.activeHost = host.client;
     await act(async () => root.render(<HomeScreen route={{ params: { deploymentId } }} />));
-    expect(text(container)).toContain("Research page");
+    expect(pageChip(container)).not.toBeNull();
     await type(container, "Message", "Explain this page");
     expect(host.dispatch).not.toHaveBeenCalled();
     await press(container, "Send message");
@@ -1405,6 +1425,7 @@ describe("a conversation with a page", () => {
     expect(drafts.readPending(deploymentId, userId, chatId)).toBeNull();
     expect(drafts.readDraft(deploymentId, userId, chatId)).toBeNull();
     expect(text(container)).not.toContain("Research page");
+    expect(pageChip(container)).toBeNull();
   });
 
   it("kept out of view beside a page, claims nothing, marks nothing read, and keeps its draft and choices", async () => {
@@ -1503,12 +1524,12 @@ describe("a conversation with a page", () => {
     const files = new MemoryPrivateFilesystem();
     const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
     const first = await mount(host, workId, { draftPage: included, files });
-    expect(text(first.container)).toContain("Research page");
+    expect(pageChip(first.container)).not.toBeNull();
     await press(first.container, "Remove page");
-    expect(text(first.container)).not.toContain("Research page");
+    expect(pageChip(first.container)).toBeNull();
     await act(async () => first.root.render(<div />));
     const { container } = await mount(host, workId, { files });
-    expect(text(container)).not.toContain("Research page");
+    expect(pageChip(container)).toBeNull();
     await type(container, "Message", "Nothing attached");
     await press(container, "Send message");
     expect(host.dispatch).toHaveBeenCalledWith(
@@ -3403,15 +3424,23 @@ describe("a conversation in a pane that changes shape", () => {
     harness.insets = { bottom: 20, left: 44, right: 30, top: 0 };
     const host = fakeHost(snapshotFor({ entries: [], machines: [], run: null, threadId: chatId }));
     const { container } = await mount(host, chatId);
-    expect(flatten(harness.list?.contentContainerStyle)).toMatchObject({
-      paddingLeft: 16 + 44,
-      paddingRight: 16 + 30,
-    });
     const dock = container.querySelector<HTMLElement>('[data-testid="composer-dock"]');
     expect(JSON.parse(dock?.dataset["style"] ?? "{}")).toMatchObject({
-      paddingBottom: 20 + 8,
+      paddingBottom: 20,
       paddingLeft: 8 + 44,
       paddingRight: 8 + 30,
+    });
+    // The dock floats over the transcript's foot, so the transcript ends clear
+    // of all of it: what is docked, and the inset under it.
+    act(() =>
+      harness.layouts.get("composer-dock-stack")?.({
+        nativeEvent: { layout: { height: 180, width: 316 } },
+      }),
+    );
+    expect(flatten(harness.list?.contentContainerStyle)).toMatchObject({
+      paddingBottom: 180 + 20 + 16,
+      paddingLeft: 16 + 44,
+      paddingRight: 16 + 30,
     });
   });
 

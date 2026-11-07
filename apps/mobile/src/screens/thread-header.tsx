@@ -3,16 +3,16 @@ import type { HostClient } from "@opensteer/client/host";
 import { StackActions, useNavigation } from "@react-navigation/native";
 import { useCallback, useLayoutEffect, useMemo, useState, type ReactNode } from "react";
 import { Platform, StyleSheet, View } from "react-native";
-import type { NativeStackNavigationOptions } from "@react-navigation/native-stack";
 import { headerFontScaleLimit, space } from "../theme.js";
 import {
   AroundButton,
   aroundHeaderOptions,
-  conversationBarGround,
+  barOverContentOptions,
 } from "../thread/around-button.js";
 import { aroundGlanceSelector, sameAroundGlance } from "../thread/around-model.js";
 import { sameThreadHeader, type ThreadHeaderState } from "../thread/thread-pane.js";
 import { TaskStateIndicator } from "../thread/task-status.js";
+import type { NativeMenuOption } from "../thread/composer-menu.js";
 import { ThreadMenu } from "../thread/thread-menu.js";
 import { ThreadName, ThreadSubtitle } from "../thread/thread-subtitle.js";
 import { AppText } from "../ui/primitives.js";
@@ -108,7 +108,7 @@ export function useThreadHeader(props: {
     const attached = hostClient !== null && threadId !== null;
     navigation.setOptions({
       ...(attached && header !== null && !savedSubtitle ? {} : aroundHeaderOptions(null)),
-      ...conversationBarGroundOptions(glass),
+      ...barOverContentOptions(glass),
       headerTransparent: true,
       // Both keys are always written: the navigator merges options, so a title
       // left out would keep whatever an earlier header put there.
@@ -159,34 +159,7 @@ export function useThreadHeader(props: {
   }, [deploymentId, fallbackTitle, glass, header, hostClient, navigation, threadId, savedSubtitle]);
 }
 
-/**
- * What keeps a bar's words apart from the transcript under it. The route table
- * paints every header with the product's ground, so each answer says its own.
- */
-function conversationBarGroundOptions(glass: boolean): NativeStackNavigationOptions {
-  if (glass)
-    return {
-      headerStyle: { backgroundColor: "transparent" },
-      // iOS 26's own answer, and it must not be combined with a blur: the two
-      // effects stack and the bar doubles its own haze. The bottom edge is the
-      // composer's, so the system draws none there.
-      scrollEdgeEffects: { bottom: "hidden", left: "automatic", right: "automatic", top: "soft" },
-    };
-  return Platform.OS === "ios"
-    ? {
-        headerBlurEffect: "systemChromeMaterialDark",
-        headerStyle: { backgroundColor: "transparent" },
-      }
-    : { headerStyle: { backgroundColor: conversationBarGround } };
-}
-
-/**
- * The conversation's mark and name, where it stands, and its menu.
- *
- * Liquid Glass draws them as one capsule beside the bar's others: the state
- * shrinks to its mark, and its word and project move to the menu's heading.
- * Elsewhere the two lines stay, and Android's menu has no heading to move to.
- */
+/** The standalone screen's title: the pill, and Around beside it in the bar. */
 function ThreadTitle(
   props: ThreadHeaderState & {
     readonly deploymentId: string;
@@ -196,7 +169,6 @@ function ThreadTitle(
   },
 ): ReactNode {
   const navigation = useNavigation();
-  const glass = useLiquidGlass();
   const selectAround = useMemo(() => aroundGlanceSelector(props.threadId), [props.threadId]);
   const glance = useHostSelector(props.hostClient, selectAround, sameAroundGlance);
   const { deploymentId, threadId } = props;
@@ -212,6 +184,39 @@ function ThreadTitle(
       ),
     );
   }, [deploymentId, glance, navigation, threadId]);
+  return (
+    <ThreadTitlePill
+      {...props}
+      onFind={() => navigation.navigate("ThreadFind", { deploymentId, threadId })}
+    />
+  );
+}
+
+/**
+ * The conversation's mark and name, where it stands, and its menu.
+ *
+ * Liquid Glass draws them as one capsule beside the bar's others: the state
+ * shrinks to its mark, and its word and project move to the menu's heading.
+ * Elsewhere the two lines stay, and Android's menu has no heading to move to.
+ * A pill floating over a transcript with no bar under it, as beside a page,
+ * is always the capsule: where there is no glass, it wears the opaque float.
+ */
+export function ThreadTitlePill(
+  props: ThreadHeaderState & {
+    readonly deploymentId: string;
+    /** More the menu offers where the pill is drawn, after the conversation's own. */
+    readonly extraActions?: readonly NativeMenuOption[];
+    readonly floating?: boolean;
+    readonly hostClient: HostClient;
+    readonly maxWidth?: number;
+    readonly onFind: () => void;
+    readonly onOpenThread: (threadId: string) => void;
+    readonly threadId: string;
+  },
+): ReactNode {
+  const glass = useLiquidGlass();
+  const { deploymentId, threadId } = props;
+  const width = props.maxWidth ?? titleWidth;
   const name = (
     <ThreadName
       maxFontSizeMultiplier={headerFontScaleLimit}
@@ -227,10 +232,11 @@ function ThreadTitle(
     <ThreadMenu
       connectionLabel={props.connectionLabel}
       deploymentId={deploymentId}
+      extraActions={props.extraActions ?? []}
       hostClient={props.hostClient}
       isHome={props.isHome}
       maxWidth={maxWidth}
-      onFind={() => navigation.navigate("ThreadFind", { deploymentId, threadId })}
+      onFind={props.onFind}
       onOpenThread={props.onOpenThread}
       projectName={props.workspaceName}
       task={props.task}
@@ -240,9 +246,9 @@ function ThreadTitle(
       {children}
     </ThreadMenu>
   );
-  if (glass)
+  if (glass || props.floating === true)
     return (
-      <GlassSurface interactive shape="capsule" style={styles.capsule}>
+      <GlassSurface interactive shape="capsule" style={[styles.capsule, { maxWidth: width }]}>
         {menu(
           <>
             <View style={styles.words}>
@@ -262,12 +268,12 @@ function ThreadTitle(
               <TaskStateIndicator moving={props.task.moving} tone={props.task.tone} />
             )}
           </>,
-          titleWidth - 2 * capsuleInset,
+          width - 2 * capsuleInset,
         )}
       </GlassSurface>
     );
   return (
-    <View style={styles.title}>
+    <View style={[styles.title, { maxWidth: width }]}>
       {menu(
         <View style={styles.words}>
           {name}
@@ -282,7 +288,7 @@ function ThreadTitle(
             task={Platform.OS === "ios" && props.task?.tone === "completed" ? null : props.task}
           />
         </View>,
-        titleWidth,
+        width,
       )}
     </View>
   );
@@ -294,8 +300,8 @@ const titleWidth = 260;
 const capsuleInset = space[12];
 
 const styles = StyleSheet.create({
-  capsule: { maxWidth: titleWidth, paddingHorizontal: capsuleInset },
-  title: { alignItems: "center", flexDirection: "row", maxWidth: titleWidth, gap: space[4] },
+  capsule: { paddingHorizontal: capsuleInset },
+  title: { alignItems: "center", flexDirection: "row", gap: space[4] },
   // Material's title leads; iOS centres it in the bar.
   words: { alignItems: Platform.OS === "android" ? "flex-start" : "center", flexShrink: 1 },
 });

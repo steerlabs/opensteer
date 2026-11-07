@@ -1397,3 +1397,120 @@ button.browser-download__file:hover {
   transform-origin: calc(0px - var(--browser-frame-left, 0px))
     calc(0px - var(--browser-frame-top, 0px));
 }
+
+/* A docked conversation beside the page. Following its agent rings the
+   address in green with the task's mark: the one sign that this is what the
+   agent sees. */
+.browser-address--following,
+.browser-address--following:focus-within {
+  border-color: var(--green);
+  box-shadow:
+    var(--edge-plate),
+    0 0 0 0.5px var(--green);
+}
+
+.browser-address__following {
+  display: grid;
+  flex: none;
+  place-items: center;
+  margin-right: var(--space-4);
+}
+
+.browser-task-tabs {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.browser-task-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-6);
+  max-width: 132px;
+  height: var(--control-height-sm);
+  padding: 0 var(--space-8);
+  border: 1px solid var(--rim-plate);
+  border-radius: var(--radius-full);
+  color: var(--text-soft);
+  background: var(--sheen) var(--fill-plate);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  transition:
+    color var(--duration-fast) linear,
+    background-color var(--duration-fast) linear;
+}
+
+.browser-task-tab:hover {
+  color: var(--text);
+  background-color: var(--fill-plate-hover);
+}
+
+.browser-task-tab__title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser-task-tab > svg {
+  width: 12px;
+  height: 12px;
+}
+
+@container browser-view (max-width: 760px) {
+  .browser-task-tab__title {
+    display: none;
+  }
+}
+
+/* Where the agent went while the person looked elsewhere: a band under the
+   chrome, so the page below keeps all of its picture. */
+.browser-follow-band {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-8);
+  height: 32px;
+  padding: 0 var(--space-10) 0 var(--space-12);
+  border-bottom: 1px solid var(--line);
+  color: var(--text-soft);
+  background: var(--surface-elevated);
+  font-size: var(--text-sm);
+}
+
+.browser-follow-band__mark {
+  display: grid;
+  flex: none;
+  place-items: center;
+}
+
+.browser-follow-band__text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser-follow-band__text strong {
+  color: var(--text);
+  font-weight: var(--weight-medium);
+}
+
+.browser-follow-band__follow {
+  flex: none;
+  height: 22px;
+  padding: 0 var(--space-10);
+  border: 1px solid var(--green-line);
+  border-radius: var(--radius-full);
+  color: var(--green);
+  background: var(--green-wash);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+}
+
+.browser-follow-band__follow:hover {
+  background: color-mix(in srgb, var(--green) 16%, transparent);
+}

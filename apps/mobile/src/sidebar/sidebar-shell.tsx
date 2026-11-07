@@ -1,3 +1,4 @@
+import { layoutRoute } from "../navigation-presentations.js";
 import type { WorkspaceSurfaceDestination } from "@opensteer/client/host";
 import { CommonActions, StackActions, type NavigationAction } from "@react-navigation/native";
 import { isRecord } from "@opensteer/shared/isRecord";
@@ -171,7 +172,7 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
     typeof base.params["deploymentId"] === "string"
       ? base.params["deploymentId"]
       : null;
-  const focused = props.state.routes[props.state.index];
+  const focused = layoutRoute(props.state);
   const destination =
     deploymentId !== null && focused !== undefined && destinations.has(focused.name)
       ? (focused.name as SidebarDestination)

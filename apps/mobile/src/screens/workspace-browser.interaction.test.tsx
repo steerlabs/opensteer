@@ -42,6 +42,7 @@ const state = vi.hoisted(() => ({
   /** Whether this page is still the screen in front, as the stack says when an answer arrives. */
   navigationFocused: true,
   refresh: vi.fn(async () => {}),
+  realAppView: false,
   hostClient: {} as Record<string, unknown>,
   dispatch: vi.fn(),
   goBack: vi.fn(),
@@ -96,38 +97,49 @@ vi.mock("../client/mobile-client.js", () => ({
   operationDetail: (_error: unknown, fallback: string) => fallback,
 }));
 vi.mock("react-native-webview", () => ({
-  WebView: (props: { source: { uri: string }; style: unknown }) => (
+  WebView: (props: { source: { uri: string }; style: unknown; onError?: () => void }) => (
     <div
       data-style={JSON.stringify(flatten(props.style))}
       data-testid="app-webview"
       data-uri={props.source.uri}
-    />
+    >
+      <button onClick={props.onError}>Fail app load</button>
+    </div>
   ),
 }));
-vi.mock("@opensteer/client/react", async () => ({
-  useActionReview: (
-    await vi.importActual<typeof import("@opensteer/client/react")>("@opensteer/client/react")
-  ).useActionReview,
-  useAppView: (_client: unknown, appId: string) => ({
-    failed: false,
-    retry: () => undefined,
-    view: { app: { title: "Budget" }, url: `https://host.test/v1/apps/${appId}/dark/token/` },
-  }),
-  useBrowserPopupFollow: (
-    _client: unknown,
-    tab: { sessionId: string; tabId: string } | null,
-    follow: (tabId: string) => void,
-  ) => {
-    state.popupFollow = { tab, follow };
-  },
-  useHostSelector: (_client: unknown, selector: (snapshot: HostSnapshot) => unknown) =>
-    selector(state.snapshot!),
-  useHostSnapshot: () => ({ snapshot: state.snapshot, loadError: null, reload: state.refresh }),
-  usePlaceList: () => {
-    if (state.snapshot === null) throw new Error("Missing snapshot fixture");
-    return placeList(state.snapshot);
-  },
-}));
+vi.mock("@opensteer/client/react", async () => {
+  const actual =
+    await vi.importActual<typeof import("@opensteer/client/react")>("@opensteer/client/react");
+  return {
+    useActionReview: actual.useActionReview,
+    useBrowserAgentFollow: actual.useBrowserAgentFollow,
+    useAppView: (...args: Parameters<typeof actual.useAppView>) =>
+      state.realAppView
+        ? actual.useAppView(...args)
+        : {
+            failed: false,
+            retry: () => undefined,
+            view: {
+              app: { title: "Budget" },
+              url: `https://host.test/v1/apps/${args[1]}/dark/token/`,
+            },
+          },
+    useBrowserPopupFollow: (
+      _client: unknown,
+      tab: { sessionId: string; tabId: string } | null,
+      follow: (tabId: string) => void,
+    ) => {
+      state.popupFollow = { tab, follow };
+    },
+    useHostSelector: (_client: unknown, selector: (snapshot: HostSnapshot) => unknown) =>
+      selector(state.snapshot!),
+    useHostSnapshot: () => ({ snapshot: state.snapshot, loadError: null, reload: state.refresh }),
+    usePlaceList: () => {
+      if (state.snapshot === null) throw new Error("Missing snapshot fixture");
+      return placeList(state.snapshot);
+    },
+  };
+});
 vi.mock("../ui/mobile-client-context.js", () => ({
   useMobileClient: () => ({ drafts: state.drafts }),
   useMobileState: () => ({
@@ -368,20 +380,21 @@ vi.mock("../ui/screen.js", () => ({
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
 vi.mock("../ui/chat-orb.js", () => ({ ChatOrb: () => null }));
 vi.mock("../ui/task-mark.js", () => ({ TaskMark: () => null }));
+interface MenuOption {
+  readonly disabled?: boolean;
+  readonly selected?: boolean;
+  readonly id: string;
+  readonly label: string;
+  readonly onPress: () => void;
+}
 vi.mock("../thread/composer-menu.js", () => ({
   NativeMenu: (props: {
     readonly accessibilityLabel: string;
     readonly title?: string;
-    readonly options: readonly {
-      readonly disabled?: boolean;
-      readonly selected?: boolean;
-      readonly id: string;
-      readonly label: string;
-      readonly onPress: () => void;
-    }[];
+    readonly options: readonly (MenuOption | readonly MenuOption[])[];
   }) => (
     <div aria-label={props.accessibilityLabel} data-menu-title={props.title}>
-      {props.options.map((option) => (
+      {props.options.flat().map((option) => (
         <button
           aria-pressed={option.selected}
           disabled={option.disabled}
@@ -491,6 +504,24 @@ vi.mock("../thread/thread-pane.js", async () => {
     },
   };
 });
+vi.mock("./thread-header.js", () => ({
+  ThreadTitlePill: (props: {
+    readonly extraActions?: readonly {
+      readonly id: string;
+      readonly label: string;
+      readonly onPress: () => void;
+    }[];
+    readonly title: string;
+  }) => (
+    <div aria-label={`${props.title}. Actions`}>
+      {props.extraActions?.map((action) => (
+        <button key={action.id} onClick={action.onPress}>
+          {action.label}
+        </button>
+      ))}
+    </div>
+  ),
+}));
 vi.mock("./new-task.js", () => ({
   NewTaskPane: (props: { draftId: string; onStarted: (threadId: string) => boolean }) => (
     <section data-draft={props.draftId}>
@@ -524,6 +555,7 @@ function flatten(style: unknown): Record<string, unknown> {
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const roots: Root[] = [];
 afterEach(() => {
+  state.realAppView = false;
   for (const root of roots.splice(0)) act(() => root.unmount());
   document.body.replaceChildren();
   state.snapshot = null;
@@ -607,6 +639,7 @@ function snapshot(sessions: BrowserSessionSummary[]): HostSnapshot {
     session: "authenticated",
     tasks: null,
     threads: [],
+    transcripts: {},
     user: { id: "user-a" },
     workspaces: [source, child, unrelated],
     workspaceTasks: {},
@@ -769,6 +802,21 @@ function withAgents(sessions: BrowserSessionSummary[]): HostSnapshot {
 
 function element(container: HTMLElement, label: string): HTMLElement | null {
   return container.querySelector<HTMLElement>(`[aria-label="${label}"]`);
+}
+
+/** Whether the native bar is shown, as the screen last set it. */
+function headerShown(): boolean {
+  const set = state.setOptions.mock.calls
+    .map(([value]) => value as { headerShown?: boolean })
+    .findLast((value) => value.headerShown !== undefined);
+  return set?.headerShown ?? true;
+}
+
+/** Close, from the menu of the pill over the Thread beside the page. */
+function closeBeside(container: HTMLElement, title: string) {
+  const pill = element(container, `${title}. Actions`);
+  if (pill === null) throw new Error(`No pill for ${title}.`);
+  press(pill, "Close");
 }
 
 describe("mobile pages", () => {
@@ -1543,8 +1591,9 @@ describe("the page's bar", () => {
     });
   });
 
-  it("updates the menu by identity when acting moves, and removes a departing agent", () => {
-    const { render } = openPage([
+  it("updates live occupants while keeping the companion after its agent departs", () => {
+    state.pair = { height: 1000, width: 744 };
+    const { container, render } = openPage([
       { acting: true, threadId: "thread-trip" },
       { threadId: "thread-agent" },
     ]);
@@ -1559,17 +1608,36 @@ describe("the page's bar", () => {
     render();
     pill = element(header(), "2 agents, 1 working")!;
     expect(pill.querySelector("button")?.textContent).toContain("Compare hotels");
-    press(pill, "Tokyo trip · Idle");
-    expect(state.dispatch).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        params: { deploymentId: "deployment-a", threadId: "thread-trip" },
-      }),
+    expect(container.querySelector('[data-testid="conversation-slot"]')?.textContent).toContain(
+      "Thread thread-trip beside",
     );
     state.snapshot = withAgents([occupied(sessionId, [])]);
     render();
     expect(element(header(), "Tokyo trip, idle")).toBeNull();
     expect(element(header(), "2 agents, 1 working")).toBeNull();
     expect(element(header(), "Ask")).not.toBeNull();
+    expect(container.querySelector('[data-testid="conversation-slot"]')?.textContent).toContain(
+      "Thread thread-trip beside",
+    );
+    press(container, "Tabs, 1");
+    expect(state.dispatch).toHaveBeenLastCalledWith({
+      name: "BrowserTabs",
+      params: {
+        deploymentId: "deployment-a",
+        sessionId,
+        tabId: "page-1",
+        threadId: "thread-trip",
+      },
+      type: "PUSH",
+    });
+    closeBeside(container, "thread-trip");
+    expect(container.querySelector('[data-testid="conversation-slot"]')).toBeNull();
+    press(container, "Tabs, 1");
+    expect(state.dispatch).toHaveBeenLastCalledWith({
+      name: "BrowserTabs",
+      params: { deploymentId: "deployment-a", sessionId, tabId: "page-1" },
+      type: "PUSH",
+    });
   });
 
   it("pushes an agent deeper in the stack and renders an old grid route without choosing a tab", () => {
@@ -1732,26 +1800,58 @@ describe("an app open as a tab", () => {
   };
   function openApp(params: Partial<SurfacesRoute> = { appId } as Partial<SurfacesRoute>) {
     const closeAppTab = vi.fn(async (): Promise<void> => undefined);
-    state.hostClient = { closeAppTab };
+    const viewApp = vi.fn(async () => ({
+      app: { title: "Budget" },
+      url: `https://host.test/v1/apps/${appId}/dark/token/`,
+    }));
+    state.hostClient = { closeAppTab, viewApp };
     const opened = setup(params);
     state.snapshot = {
       ...withAgents([]),
       appTabs: [openTab] as unknown as NonNullable<HostSnapshot["appTabs"]>,
     };
     opened.render();
-    return { ...opened, closeAppTab };
+    return { ...opened, closeAppTab, viewApp };
   }
   const webView = () => document.querySelector("[data-testid='app-webview']");
   const pressAsk = () => {
     const ask = element(header(), "Ask")!;
     act(() => ask.click());
   };
+  /** The app's menu, behind its name in the native bar. */
+  const appMenu = () => {
+    const pill = element(header(), "Budget. Actions");
+    if (pill === null) throw new Error("The bar has no app menu.");
+    return pill;
+  };
 
-  it("fills the page under the bar with the app's title, whatever height it reports", () => {
+  it("fills the page under its name in the native bar, with no bar of its own", () => {
     openApp();
-    expect(state.setOptions).toHaveBeenLastCalledWith(expect.objectContaining({ title: "Budget" }));
+    expect(state.setOptions).toHaveBeenLastCalledWith(
+      expect.objectContaining({ headerTransparent: true, title: "Budget" }),
+    );
     expect(JSON.parse(webView()!.getAttribute("data-style")!)).toMatchObject({ flex: 1 });
-    expect(document.querySelector("[data-testid='page-toolbar']")?.textContent).toContain("Budget");
+    expect(document.querySelector("[data-testid='page-toolbar']")).toBeNull();
+    expect([...appMenu().querySelectorAll("button")].map((item) => item.textContent)).toEqual([
+      "Ask about this app",
+      "Open its conversation",
+      "Reload",
+      "Report a problem",
+      "Close tab",
+    ]);
+  });
+
+  it("forgets the app's Thread when the agent shows a browser tab in its place", () => {
+    const { render, route } = openApp();
+    route.params = {
+      deploymentId: "deployment-a",
+      scope: "workspace",
+      sessionId: "browser-child",
+      tabId: "page-1",
+    };
+    state.snapshot = withAgents([occupied("browser-child", [])]);
+    render();
+    expect(element(header(), "Ask")?.dataset["menuTitle"]).not.toBeUndefined();
   });
 
   it("asks in the Thread that made it, going back when that Thread is under the page", () => {
@@ -1784,6 +1884,19 @@ describe("an app open as a tab", () => {
     expect(webView()).toBe(app);
   });
 
+  it("puts the native bar away beside its Thread, with Back and the app's menu in its own row", () => {
+    state.pair = { height: 760, width: 1100 };
+    const { container, closeAppTab } = openApp();
+    const row = () => container.querySelector<HTMLElement>("[data-testid='app-pane-bar']");
+    expect(row()).toBeNull();
+    pressAsk();
+    expect(headerShown()).toBe(false);
+    press(row()!, "Back");
+    expect(state.goBack).toHaveBeenCalledOnce();
+    press(element(row()!, "Budget. Actions")!, "Close tab");
+    expect(closeAppTab).toHaveBeenCalledWith(appId);
+  });
+
   it("takes an earlier page off the Thread's draft, which it does not stand for", async () => {
     openApp();
     const earlier = BrowserPageContentPartSchema.parse({
@@ -1809,7 +1922,7 @@ describe("an app open as a tab", () => {
       { name: "WorkspaceBrowser", params: { appId: appId.replace("1111-4", "2222-4") } },
       { name: "WorkspaceBrowser", params: { appId } },
     ];
-    press(container, "Close tab");
+    press(appMenu(), "Close tab");
     expect(closeAppTab).toHaveBeenCalledWith(appId);
     // The card under this page comes back at once, so this copy has already gone.
     expect(webView()).toBeNull();
@@ -1823,7 +1936,7 @@ describe("an app open as a tab", () => {
   it("stays and explains a failed close, with the app back and a way to retry", async () => {
     const { container, closeAppTab } = openApp();
     closeAppTab.mockRejectedValueOnce(new Error("The Host refused."));
-    await pressAsync(container, "Close tab");
+    await pressAsync(appMenu(), "Close tab");
     expect(container.textContent).toContain("The Host refused.");
     expect(webView()).not.toBeNull();
     expect(state.dispatch).not.toHaveBeenCalled();
@@ -1832,10 +1945,110 @@ describe("an app open as a tab", () => {
     expect(state.dispatch).toHaveBeenCalledWith({ count: 1, type: "POP" });
   });
 
+  it("forgets a failed close when another app replaces the route", async () => {
+    const { container, closeAppTab, route, render } = openApp();
+    closeAppTab.mockRejectedValueOnce(new Error("A refused."));
+    await pressAsync(appMenu(), "Close tab");
+    expect(container.textContent).toContain("A refused.");
+    const nextId = appId.replace("1111-4", "2222-4");
+    state.snapshot = {
+      ...state.snapshot!,
+      appTabs: [{ ...openTab, appId: nextId }] as unknown as NonNullable<HostSnapshot["appTabs"]>,
+    };
+    route.params = { deploymentId: "deployment-a", scope: "workspace", appId: nextId };
+    render();
+    expect(container.textContent).not.toContain("A refused.");
+    expect(element(container, "Try again")).toBeNull();
+    expect(webView()?.getAttribute("data-uri")).toContain(nextId);
+    closeAppTab.mockRejectedValueOnce(new Error("B refused."));
+    await pressAsync(appMenu(), "Close tab");
+    expect(container.textContent).toContain("B refused.");
+    await pressAsync(container, "Try again");
+    expect(closeAppTab.mock.calls).toEqual([[appId], [nextId], [nextId]]);
+  });
+
+  it.each(["resolve", "reject"] as const)(
+    "ignores a stale close's %s after the route changes",
+    async (outcome) => {
+      const { container, closeAppTab, route, render } = openApp();
+      const answer = Promise.withResolvers<void>();
+      closeAppTab.mockReturnValue(answer.promise);
+      press(appMenu(), "Close tab");
+      const nextId = appId.replace("1111-4", "2222-4");
+      state.snapshot = {
+        ...state.snapshot!,
+        appTabs: [{ ...openTab, appId: nextId }] as unknown as NonNullable<HostSnapshot["appTabs"]>,
+      };
+      route.params = { deploymentId: "deployment-a", scope: "workspace", appId: nextId };
+      render();
+      expect(container.textContent).not.toContain("Closing…");
+      expect(webView()?.getAttribute("data-uri")).toContain(nextId);
+      await act(async () =>
+        outcome === "resolve" ? answer.resolve() : answer.reject(new Error("A refused.")),
+      );
+      expect(container.textContent).not.toContain("A refused.");
+      expect(state.dispatch).not.toHaveBeenCalled();
+      expect(state.goBack).not.toHaveBeenCalled();
+    },
+  );
+
+  it("ignores a superseded close attempt for the same app", async () => {
+    const { closeAppTab, container, route, render } = openApp();
+    const first = Promise.withResolvers<void>();
+    const second = Promise.withResolvers<void>();
+    closeAppTab.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    press(appMenu(), "Close tab");
+    const nextId = appId.replace("1111-4", "2222-4");
+    state.snapshot = {
+      ...state.snapshot!,
+      appTabs: [openTab, { ...openTab, appId: nextId }] as unknown as NonNullable<
+        HostSnapshot["appTabs"]
+      >,
+    };
+    route.params = { deploymentId: "deployment-a", scope: "workspace", appId: nextId };
+    render();
+    route.params = { deploymentId: "deployment-a", scope: "workspace", appId };
+    render();
+    press(appMenu(), "Close tab");
+    expect(closeAppTab).toHaveBeenCalledTimes(2);
+    await act(async () => first.resolve());
+    expect(state.dispatch).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Closing…");
+    await act(async () => second.resolve());
+    expect(state.dispatch).toHaveBeenCalledOnce();
+  });
+
+  it("ignores a close completion after unmount", async () => {
+    const { closeAppTab } = openApp();
+    const answer = Promise.withResolvers<void>();
+    closeAppTab.mockReturnValue(answer.promise);
+    press(appMenu(), "Close tab");
+    const root = roots.shift()!;
+    act(() => root.unmount());
+    await act(async () => answer.resolve());
+    expect(state.dispatch).not.toHaveBeenCalled();
+    expect(state.goBack).not.toHaveBeenCalled();
+  });
+
+  it("retries a failed app load from the tab's Reload menu", async () => {
+    state.realAppView = true;
+    const { container, viewApp } = openApp();
+    await act(async () => {});
+    const first = webView();
+    expect(first).not.toBeNull();
+    await pressAsync(container, "Fail app load");
+    expect(webView()).toBeNull();
+    expect(container.textContent).toContain("Could not load this app");
+    await pressAsync(appMenu(), "Reload");
+    expect(viewApp).toHaveBeenCalledTimes(2);
+    expect(webView()).not.toBeNull();
+    expect(webView()).not.toBe(first);
+  });
+
   it("does not move a person who left before the close finished", async () => {
-    const { container } = openApp();
+    openApp();
     state.navigationFocused = false;
-    await pressAsync(container, "Close tab");
+    await pressAsync(appMenu(), "Close tab");
     expect(state.dispatch).not.toHaveBeenCalled();
   });
 
@@ -1892,14 +2105,13 @@ describe("an app open as a tab", () => {
     expect(webView()).toBeNull();
   });
 
-  it("lifts for a field in the app and gives its bar up, but not for a composer beside it", () => {
+  it("lifts for a field in the app, but not for a composer beside it", () => {
     state.pair = { height: 760, width: 1100 };
     const { render } = openApp();
     const slot = () => document.querySelector("[data-testid='page-slot']")!;
     state.keyboard = true;
     render();
     expect(slot().getAttribute("data-avoids")).toBe("true");
-    expect(document.querySelector("[data-testid='page-toolbar']")).toBeNull();
     state.focusedInput = {};
     state.keyboard = false;
     render();
@@ -2013,7 +2225,7 @@ describe("a page beside its agent's thread", () => {
     expect(state.pageMounts).toBe(1);
   });
 
-  it("chooses whose thread is beside the page from the pill's menu", () => {
+  it("chooses whose thread is beside the page from the page's own menu", () => {
     state.pair = { height: 1000, width: 744 };
     const { container } = openPage(false, [
       { lastActiveAt: "2026-10-13T00:05:00.000Z", threadId: "thread-trip" },
@@ -2021,20 +2233,167 @@ describe("a page beside its agent's thread", () => {
     ]);
     // The acting agent by default; nobody is pushed.
     expect(second(container)).toContain("Thread thread-agent beside");
-    const pill = element(header(), "2 agents, 1 working")!;
-    expect(pill.dataset["menuTitle"]).toBe("Show beside the page");
-    expect(pill.querySelector('button[aria-pressed="true"]')?.textContent).toBe(
+    expect(menu().querySelector('button[aria-pressed="true"]')?.textContent).toBe(
       "Compare hotels · Working here",
     );
-    press(pill, "Tokyo trip · Idle");
+    press(menu(), "Tokyo trip · Idle");
     expect(second(container)).toContain("Thread thread-trip beside");
     expect(state.dispatch).not.toHaveBeenCalled();
-    // Chosen by the person, it can be put away, back to the acting agent.
-    expect(container.querySelector('[data-testid="conversation-name"]')?.textContent).toBe(
-      "thread-trip",
-    );
-    press(container, "Close thread-trip");
+    // Closing keeps the companion away even while an agent is still present,
+    // and gives the native bar back.
+    closeBeside(container, "thread-trip");
+    expect(second(container)).toBeNull();
+    expect(headerShown()).toBe(true);
+  });
+
+  it("puts the native bar away only while a thread is beside the page, with Back in the page's own row", () => {
+    const { container, render } = openPage();
+    // A phone keeps its native bar and the page's own Back.
+    expect(headerShown()).toBe(true);
+    press(container, "Back");
+    expect(state.goBack).not.toHaveBeenCalled();
+
+    state.pair = { height: 1000, width: 744 };
+    render();
+    expect(headerShown()).toBe(false);
+    // Ask moved into More with the native bar.
+    expect(menu().textContent).toContain("Ask in Chat");
+    press(container, "Back");
+    expect(state.goBack).toHaveBeenCalledOnce();
+    press(menu(), "Go Back");
+    expect(state.goBack).toHaveBeenCalledOnce();
+
+    state.pair = { height: 760, width: 390 };
+    render();
+    expect(headerShown()).toBe(true);
+  });
+
+  it("follows the agent to its tab in place, and pauses when the person moves the page", () => {
+    vi.useFakeTimers();
+    try {
+      state.pair = { height: 1000, width: 744 };
+      const { container, render, route } = openPage();
+      const agentOn = (tabId: string) =>
+        withAgents([
+          {
+            ...occupied("browser-child", []),
+            tabCatalog: {
+              generation: 1,
+              revision: 1,
+              tabs: ["page-1", "page-2"].map((id, order) => ({
+                availability: "ready",
+                documentId: null,
+                iconRef: null,
+                id,
+                occupants:
+                  id === tabId
+                    ? [
+                        {
+                          acting: true,
+                          holding: true,
+                          home: false,
+                          lastActiveAt: agentAt,
+                          threadId: "thread-agent",
+                        },
+                      ]
+                    : [],
+                openerId: null,
+                order,
+                site: "https://example.com",
+                title: id === "page-1" ? "Page" : "Flights",
+              })),
+            },
+          } as unknown as BrowserSessionSummary,
+        ]);
+      const showTab = (tabId: string) => {
+        route.params = {
+          deploymentId: "deployment-a",
+          sessionId: "browser-child",
+          tabId,
+          threadId: "thread-parent",
+        };
+        render();
+      };
+      state.snapshot = agentOn("page-1");
+      render();
+      expect(element(container, "Address, example.com. Following the agent")).not.toBeNull();
+      expect(container.querySelector('[data-testid="follow-band"]')).toBeNull();
+
+      // The agent moves on; the page keeps up in place.
+      state.snapshot = agentOn("page-2");
+      render();
+      act(() => vi.advanceTimersByTime(1000));
+      expect(state.setParams).toHaveBeenCalledExactlyOnceWith({
+        editAddress: false,
+        popup: false,
+        sessionId: "browser-child",
+        tabId: "page-2",
+      });
+      showTab("page-2");
+      expect(element(container, "Address, example.com. Following the agent")).not.toBeNull();
+
+      // The person goes back to the first tab: following stops and says where the agent is.
+      state.setParams.mockClear();
+      showTab("page-1");
+      expect(element(container, "Address, example.com")).not.toBeNull();
+      expect(container.querySelector('[data-testid="follow-band"]')?.textContent).toContain(
+        "Agent is on Flights",
+      );
+      act(() => vi.advanceTimersByTime(5000));
+      expect(state.setParams).not.toHaveBeenCalled();
+
+      press(container, "Follow");
+      expect(state.setParams).toHaveBeenCalledExactlyOnceWith({
+        editAddress: false,
+        popup: false,
+        sessionId: "browser-child",
+        tabId: "page-2",
+      });
+      showTab("page-2");
+      expect(container.querySelector('[data-testid="follow-band"]')).toBeNull();
+      expect(state.conversationMounts).toBe(1);
+
+      // The tab sheet marks the tab shown when it opened, so following stops under it.
+      state.setParams.mockClear();
+      press(container, "Tabs, 2");
+      state.snapshot = agentOn("page-1");
+      render();
+      act(() => vi.advanceTimersByTime(5000));
+      expect(state.setParams).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the automatic companion across in-place tab changes and departure, until closed", () => {
+    state.pair = { height: 1000, width: 744 };
+    const { container, render, route } = openPage();
+    const mounts = state.conversationMounts;
+    route.params = {
+      deploymentId: "deployment-a",
+      threadId: "thread-parent",
+      sessionId: "other-browser",
+      tabId: "page-1",
+    };
+    state.snapshot = withAgents([
+      occupied("other-browser", [{ acting: true, threadId: "thread-trip" }]),
+    ]);
+    render();
     expect(second(container)).toContain("Thread thread-agent beside");
+    expect(state.conversationMounts).toBe(mounts);
+    expect(element(header(), "Tokyo trip, working here")).not.toBeNull();
+    state.snapshot = withAgents([occupied("other-browser", [])]);
+    render();
+    expect(second(container)).toContain("Thread thread-agent beside");
+    closeBeside(container, "thread-agent");
+    expect(second(container)).toBeNull();
+    state.snapshot = withAgents([
+      occupied("other-browser", [{ acting: true, threadId: "thread-trip" }]),
+    ]);
+    render();
+    expect(second(container)).toBeNull();
+    press(header(), "Tokyo trip, working here");
+    expect(second(container)).toContain("Thread thread-trip beside");
   });
 
   it("gives the page the whole surface with no agent, until Ask opens Chat or a new task beside it", () => {
@@ -2072,7 +2431,7 @@ describe("a page beside its agent's thread", () => {
     press(container, "Start the task");
     expect(second(container)).toContain("Thread thread-started beside with Page");
     expect(state.dispatch).not.toHaveBeenCalled();
-    press(container, "Close thread-started");
+    closeBeside(container, "thread-started");
     expect(second(container)).toBeNull();
   });
 

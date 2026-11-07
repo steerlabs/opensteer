@@ -482,8 +482,8 @@ describe("a Computer use row", () => {
       (row) => row.querySelector(".trace-step__head")?.textContent,
     );
     expect(heads).toEqual([
-      'Listed apps on a Macfor "Computer use" and "Slack"1 error',
-      "Used Slack9 steps on Alex's MacBook Pro1 error",
+      'Listed apps on a Macfor "Computer use" and "Slack"· 1 failed',
+      "Used Slack9 steps on Alex's MacBook Pro· 1 failed",
     ]);
     for (const reference of mockComputerUseToolRefs) {
       expect(container.innerHTML).not.toContain(reference);

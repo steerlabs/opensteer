@@ -1,3 +1,4 @@
+import { getBrowserLastPicture, rememberBrowserLastPicture } from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema } from "@opensteer/protocol/browser";
 import { createBrowserTouchGesture } from "@opensteer/shared/browserTouch";
 import { useBrowserPresentationWait } from "@opensteer/client/react";
@@ -84,8 +85,10 @@ export interface BrowserStreamProps {
   /** The person scrolled the page. */
   readonly onScroll?: () => void;
   readonly session: Pick<BrowserSessionSummary, "id" | "state">;
-  /** Passive Run preview: retain displayed pixels across feed gaps and same-tab rebinding. */
+  /** Passive Run preview: retain the last presented picture of each recently visited tab. */
   readonly preserveLastFrame?: boolean;
+  /** Original Run session identity when its tab is rebound to a replacement session. */
+  readonly previewSessionId?: string;
   readonly style?: StyleProp<ViewStyle>;
   /**
    * How far this phone has pinched the picture in. A drag is measured on the
@@ -127,7 +130,19 @@ const emptySlots: FrameSlots = { decoding: null, displayed: null };
  * the caller's to show, and a picture arriving is not news. Words appear only
  * while there is no picture to show.
  */
-export function BrowserStream({
+export function BrowserStream(props: BrowserStreamProps) {
+  const reader = useRef({ client: props.hostClient, epoch: 0 });
+  if (reader.current.client !== props.hostClient)
+    reader.current = { client: props.hostClient, epoch: reader.current.epoch + 1 };
+  return (
+    <BrowserStreamView
+      key={`${reader.current.epoch}:${props.preserveLastFrame && !props.interactive ? (props.previewSessionId ?? props.session.id) : props.session.id}`}
+      {...props}
+    />
+  );
+}
+
+function BrowserStreamView({
   active: requestedActive,
   hostClient,
   label,
@@ -348,9 +363,19 @@ export function BrowserStream({
     slots.displayed.frames === frames
       ? slots.displayed
       : null;
-  const displayed: { readonly source: BrowserFrameView } | null = native
+  const liveDisplayed: { readonly source: BrowserFrameView } | null = native
     ? picture.drawn && { source: picture.drawn }
     : displayedSlot;
+  const cached =
+    preserve && active && ready ? getBrowserLastPicture(frames, session.id, tabId) : null;
+  const restored = liveDisplayed === null ? cached : null;
+  const displayed = liveDisplayed ?? (restored ? { source: restored.frame } : null);
+  const cacheInvalidation = useRef(invalidation);
+  useEffect(() => {
+    if (preserve && liveDisplayed && cacheInvalidation.current === invalidation)
+      rememberBrowserLastPicture(frames, session.id, tabId, liveDisplayed.source);
+    cacheInvalidation.current = invalidation;
+  }, [preserve, liveDisplayed?.source, frames, invalidation, session.id, tabId]);
   const decoding =
     visible &&
     !native &&
@@ -692,10 +717,10 @@ export function BrowserStream({
           style={[styles.image, { opacity: picture.drawn ? 1 : 0 }]}
         >
           <Picture
-            accessibilityElementsHidden={displayed === null}
+            accessibilityElementsHidden={liveDisplayed === null}
             accessibilityIgnoresInvertColors
-            accessibilityLabel={displayed === null ? undefined : label}
-            importantForAccessibility={displayed === null ? "no-hide-descendants" : "auto"}
+            accessibilityLabel={liveDisplayed === null ? undefined : label}
+            importantForAccessibility={liveDisplayed === null ? "no-hide-descendants" : "auto"}
             onCleared={picture.cleared}
             ref={picture.view}
             style={styles.image}
@@ -710,6 +735,21 @@ export function BrowserStream({
           ) : null}
         </View>
       )}
+      {restored ? (
+        <View
+          pointerEvents="none"
+          style={[styles.frame, framePlacement(stageSize, restored.frame.header)]}
+        >
+          <Image
+            accessibilityLabel={label}
+            fadeDuration={0}
+            resizeMode="stretch"
+            source={{ uri: restored.uri }}
+            style={styles.image}
+          />
+          <CropCues header={restored.frame.header} />
+        </View>
+      ) : null}
       {/* One list, so the picture that finishes decoding stays mounted as it is shown. */}
       {[displayedSlot, decoding].map((slot) => {
         if (!slot) return null;

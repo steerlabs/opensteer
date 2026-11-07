@@ -1,6 +1,10 @@
 import { PendingBrowserTabView } from "./pending-browser-tab.js";
-import { browserPlaceUnavailableReason, threadMark } from "@opensteer/client/host";
-import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  browserPlaceUnavailableReason,
+  browserThreadAgentTab,
+  threadMark,
+} from "@opensteer/client/host";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "react-router";
 import type { ReactNode } from "react";
 import type { HostClient, PlaceItem, WorkspaceSurfaceDestination } from "@opensteer/client/host";
@@ -8,6 +12,7 @@ import { BrowserSurfaceIdSchema, CHAT_THREAD_TITLE } from "@opensteer/core";
 import { useHostSelector, usePhoneTabView, usePlaceList } from "@opensteer/client/react";
 import { usePageVisible } from "../../ui-utils.js";
 import { PlaceBrowserView, type BrowserChromeSignIn } from "../browser/browser-view.js";
+import { BrowserFollowBand, useBrowserThreadPair } from "../browser/browser-thread-pair.js";
 import { ComputerWatchView } from "../computer-watch.js";
 import { Icon } from "../icon.js";
 import { useToastToolbar } from "../toast.js";
@@ -125,7 +130,8 @@ function SelectedPlace({
   readonly onReportError: (error: unknown) => void;
   readonly trailing: ReactNode;
 }) {
-  const { nav, phone, selection } = useWorkspace();
+  const { dock, nav, phone, selection } = useWorkspace();
+  const { pathname } = useLocation();
   const toolbarRef = useToastToolbar();
   const places = usePlaceList(hostClient);
   const presentations = useBrowserPresentations(places);
@@ -136,6 +142,51 @@ function SelectedPlace({
     selection.kind === "place" && selection.destination.kind === "browser"
       ? selection.destination.tabId
       : null;
+  const shownBrowser =
+    selection.kind === "place" && selection.destination.kind === "browser" && selectedTab
+      ? { sessionId: selection.destination.sessionId, tabId: selectedTab }
+      : null;
+  const dockedThread =
+    !phone && dock.open ? conversationAt(pathname, directory.homeThreadId) : null;
+  const showBrowserTab = useCallback(
+    (
+      destination: { readonly sessionId: string; readonly tabId: string },
+      options: { replace: boolean },
+    ) => nav.showPlace({ kind: "browser", ...destination }, options),
+    [nav],
+  );
+  const pair = useBrowserThreadPair({
+    hostClient,
+    mark: dockedThread ? (
+      dockedThread === directory.homeThreadId ? (
+        <ChatOrb size={16} />
+      ) : (
+        <TaskMark mark={threadMark(dockedThread, directory.snapshot)} size={16} />
+      )
+    ) : null,
+    onShow: showBrowserTab,
+    shown: shownBrowser,
+    threadId: shownBrowser ? dockedThread : null,
+  });
+  const browserSessions = useHostSelector(hostClient, (snapshot) => snapshot.browserSessions);
+  const launcherAgentTab = useMemo(
+    () => (dockedThread ? browserThreadAgentTab(browserSessions, dockedThread) : null),
+    [browserSessions, dockedThread],
+  );
+  const launcherBand = launcherAgentTab ? (
+    <BrowserFollowBand
+      pair={{
+        elsewhere: launcherAgentTab,
+        mark:
+          dockedThread === directory.homeThreadId ? (
+            <ChatOrb size={16} />
+          ) : dockedThread ? (
+            <TaskMark mark={threadMark(dockedThread, directory.snapshot)} size={16} />
+          ) : null,
+        resume: () => showBrowserTab(launcherAgentTab, { replace: false }),
+      }}
+    />
+  ) : null;
   const live = placeKey
     ? (places.find(
         (item) =>
@@ -264,7 +315,12 @@ function SelectedPlace({
   if (selection.kind === "launcher") {
     return (
       <section aria-label="New tab" className="place place--launcher">
-        <StartPageSlot hostClient={hostClient} leading={leading} trailing={trailing} />
+        <StartPageSlot
+          band={launcherBand}
+          hostClient={hostClient}
+          leading={leading}
+          trailing={trailing}
+        />
       </section>
     );
   }
@@ -299,6 +355,7 @@ function SelectedPlace({
             lastingReason={lastingReason}
             onRetry={() => setRetry((value) => value + 1)}
             compact={phone}
+            pair={pair}
             marks={marks}
             hostClient={hostClient}
             leading={leading}
@@ -448,6 +505,7 @@ function PhoneTab({
 }
 
 function StartPageSlot({
+  band,
   hostClient,
   leading,
   trailing,
@@ -455,6 +513,7 @@ function StartPageSlot({
   readonly hostClient: HostClient;
   readonly leading: ReactNode;
   readonly trailing: ReactNode;
+  readonly band: ReactNode;
 }) {
   const { state } = useLocation();
   const opening = useRef<{
@@ -467,6 +526,7 @@ function StartPageSlot({
     opening.current = { id, from: startPageOrigin(state), link: startPageLink(state) };
   return (
     <StartPage
+      band={band}
       link={opening.current.link}
       from={opening.current.from}
       hostClient={hostClient}

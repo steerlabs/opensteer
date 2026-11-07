@@ -17,5 +17,6 @@ export * from "./use-personal-remote-access.js";
 export * from "./use-app-view.js";
 export * from "./use-connected-agents.js";
 export { useVoice, useVoiceOn, useVoiceValue, VoiceContext } from "./use-voice.js";
+export * from "./use-browser-agent-follow.js";
 
 export * from "./use-thread-server-approvals.js";

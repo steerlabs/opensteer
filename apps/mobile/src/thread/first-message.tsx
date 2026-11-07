@@ -21,8 +21,6 @@ import { useHeaderHeight } from "@react-navigation/elements";
 import { useIsFocused } from "@react-navigation/native";
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import {
-  KeyboardAvoidingView,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -44,7 +42,6 @@ import {
 } from "../platform/attachment-draft-files.js";
 import { color, controlFontScaleLimit, radius, space, touchTarget, type } from "../theme.js";
 import { ComposerAction } from "../ui/composer-action.js";
-import { useKeyboardVisible } from "../ui/keyboard.js";
 import { AppText, SecondaryButton } from "../ui/primitives.js";
 import { useContentInsets, usePaneInView } from "../ui/pane.js";
 import { useGutter, useReadingColumn } from "../ui/screen.js";
@@ -53,6 +50,7 @@ import { ComposerPills } from "./composer-pills.js";
 import { UsageNotice } from "./usage-notice.js";
 import { AttachmentStrip } from "./attachment-views.js";
 import { ComposerBar, ComposerGlyph, composerLaneHeight } from "./composer-bar.js";
+import { ComposerDockLayout } from "./composer-dock.js";
 import { NativeMenu, type NativeMenuOption } from "./composer-menu.js";
 import {
   attachmentKey,
@@ -416,7 +414,11 @@ export function FirstMessageComposer(props: {
   readonly sending: boolean;
   readonly staged: DraftAttachments;
   readonly text: string;
-  /** Set where a transparent navigation bar lies over the top of the screen. */
+  /**
+   * Set where a transparent navigation bar lies over the top of the screen.
+   * Without one it is drawn beside a page, whose surface already keeps it
+   * clear of the keyboard.
+   */
   readonly underHeader: boolean;
   /** Chat's first message: voice can say it, and it creates Chat. */
   readonly voice?: boolean;
@@ -428,7 +430,6 @@ export function FirstMessageComposer(props: {
   const headerHeight = useHeaderHeight();
   const insets = useContentInsets();
   const { fontScale } = useWindowDimensions();
-  const keyboardVisible = useKeyboardVisible();
   const { blocker, held, sending, staged } = props;
   const selection = props.execution.selection ?? props.execution.blocked;
   const placement =
@@ -585,184 +586,182 @@ export function FirstMessageComposer(props: {
     type.body.lineHeight * 6 * Math.min(fontScale, controlFontScaleLimit) + space[8] * 2;
 
   return (
-    <KeyboardAvoidingView
-      behavior={Platform.OS === "ios" ? "padding" : "height"}
-      style={styles.fill}
-    >
-      <ScrollView
-        contentContainerStyle={[
-          styles.content,
-          column,
-          {
-            paddingLeft: gutter + insets.left,
-            paddingRight: gutter + insets.right,
-            paddingTop: (props.underHeader ? headerHeight : 0) + space[24],
-          },
-        ]}
-        keyboardDismissMode="interactive"
-        keyboardShouldPersistTaps="handled"
-      >
-        {props.children}
-      </ScrollView>
-
-      <View
-        style={[
-          styles.dock,
-          column,
-          {
-            paddingBottom: (keyboardVisible ? 0 : insets.bottom) + space[8],
-            paddingLeft: space[8] + insets.left,
-            paddingRight: space[8] + insets.right,
-          },
-        ]}
-      >
-        {page === null ? null : (
-          <View
-            accessibilityLabel={`${page.part.title || "This page"}. This page is included with your message`}
-            style={styles.quote}
-          >
-            <Symbol name="globe" size={14} tint={color.muted} />
-            <AppText numberOfLines={1} role="secondaryMedium" style={styles.grow}>
-              {page.part.title || "This page"}
-            </AppText>
-            <Pressable
-              accessibilityLabel="Remove page"
-              accessibilityRole="button"
-              disabled={held}
-              hitSlop={space[8]}
-              onPress={page.onRemove}
-              style={styles.quoteRemove}
+    <ComposerDockLayout
+      avoidKeyboard={props.underHeader}
+      dock={
+        <>
+          {page === null ? null : (
+            <View
+              accessibilityLabel={`${page.part.title || "This page"}. This page is included with your message`}
+              style={styles.quote}
             >
-              <AppText role="secondaryMedium" tone="muted">
-                Remove
+              <Symbol name="globe" size={14} tint={color.muted} />
+              <AppText numberOfLines={1} role="secondaryMedium" style={styles.grow}>
+                {page.part.title || "This page"}
               </AppText>
-            </Pressable>
-          </View>
-        )}
-        {props.quote === null ? null : (
-          <View accessibilityLabel="Quoted update" style={styles.quote}>
-            <View style={styles.grow}>
-              <AppText numberOfLines={1} role="secondaryMedium">
-                {props.quote.attribution}
-              </AppText>
-              <AppText numberOfLines={2} role="secondary" tone="muted">
-                {props.quote.excerpt}
-              </AppText>
+              <Pressable
+                accessibilityLabel="Remove page"
+                accessibilityRole="button"
+                disabled={held}
+                hitSlop={space[8]}
+                onPress={page.onRemove}
+                style={styles.quoteRemove}
+              >
+                <AppText role="secondaryMedium" tone="muted">
+                  Remove
+                </AppText>
+              </Pressable>
             </View>
-            <Pressable
-              accessibilityLabel="Remove quote"
-              accessibilityRole="button"
-              hitSlop={space[8]}
-              onPress={props.onRemoveQuote}
-              style={styles.quoteRemove}
-            >
-              <AppText role="secondaryMedium" tone="muted">
-                Remove
-              </AppText>
-            </Pressable>
-          </View>
-        )}
-        <AttachmentStrip
-          disabled={held}
-          items={staged.items}
-          notice={staged.notice}
-          onRemove={staged.remove}
-          onRetry={staged.retry}
-        />
-        {blocker === null ? null : (
-          <AppText role="caption" style={styles.reason} tone="muted">
-            {blocker.reason}
-          </AppText>
-        )}
-        <VoiceDock />
-        <ComposerBar
-          accessory={
-            <ComposerPills
-              accessMode={props.execution.accessMode}
-              accessModes={placement?.accessModes ?? null}
-              disabledReason={held || sending ? "Wait for the current change to finish." : null}
-              blockedReason={
-                props.execution.accessReason ??
-                (props.execution.blocked === null ? null : props.blocker?.reason)
-              }
-              driverKind={placement?.driverKind}
-              engineName={
-                placement?.engineName ??
-                (selection === null ? "Choose engine" : "Unavailable engine")
-              }
-              model={model}
-              modelLabel={props.selectionLabel}
-              modelOptions={selection?.modelSelection.options ?? {}}
-              onOpenModel={chooseManually}
-              onPresent={noop}
-            />
-          }
-          action={
-            // With nothing typed the circle is voice where it exists, as in a
-            // thread's own bar, rather than a Send that cannot be pressed.
-            voiceReady && !written ? (
-              <VoiceMic disabled={held} face="disc" />
-            ) : (
-              <ComposerAction
-                busy={sending}
-                disabled={!actionable}
-                kind="send"
-                label={
-                  sending ? "Sending" : blocker?.choose === true ? "Choose an AI" : "Send message"
+          )}
+          {props.quote === null ? null : (
+            <View accessibilityLabel="Quoted update" style={styles.quote}>
+              <View style={styles.grow}>
+                <AppText numberOfLines={1} role="secondaryMedium">
+                  {props.quote.attribution}
+                </AppText>
+                <AppText numberOfLines={2} role="secondary" tone="muted">
+                  {props.quote.excerpt}
+                </AppText>
+              </View>
+              <Pressable
+                accessibilityLabel="Remove quote"
+                accessibilityRole="button"
+                hitSlop={space[8]}
+                onPress={props.onRemoveQuote}
+                style={styles.quoteRemove}
+              >
+                <AppText role="secondaryMedium" tone="muted">
+                  Remove
+                </AppText>
+              </Pressable>
+            </View>
+          )}
+          <AttachmentStrip
+            disabled={held}
+            items={staged.items}
+            notice={staged.notice}
+            onRemove={staged.remove}
+            onRetry={staged.retry}
+          />
+          {blocker === null ? null : (
+            <AppText role="caption" style={styles.reason} tone="muted">
+              {blocker.reason}
+            </AppText>
+          )}
+          <VoiceDock />
+          <ComposerBar
+            accessory={
+              <ComposerPills
+                accessMode={props.execution.accessMode}
+                accessModes={placement?.accessModes ?? null}
+                disabledReason={held || sending ? "Wait for the current change to finish." : null}
+                blockedReason={
+                  props.execution.accessReason ??
+                  (props.execution.blocked === null ? null : props.blocker?.reason)
                 }
-                onPress={() => {
-                  if (blocker?.choose === true) chooseThenSend();
-                  else props.onSend(null);
-                }}
+                driverKind={placement?.driverKind}
+                engineName={
+                  placement?.engineName ??
+                  (selection === null ? "Choose engine" : "Unavailable engine")
+                }
+                model={model}
+                modelLabel={props.selectionLabel}
+                modelOptions={selection?.modelSelection.options ?? {}}
+                onOpenModel={chooseManually}
+                onPresent={noop}
               />
-            )
-          }
-          field={
-            <Pressable
-              accessible={false}
-              onPress={() => props.inputRef.current?.focus()}
-              style={styles.lane}
-            >
-              <TextInput
-                accessibilityLabel="Message"
-                autoFocus={props.autoFocus}
-                cursorColor={color.ember}
-                editable={!held}
-                maxFontSizeMultiplier={controlFontScaleLimit}
-                multiline
-                onChangeText={changeText}
-                placeholder={page === null ? props.placeholder : "Ask about this page…"}
-                placeholderTextColor={color.muted}
-                ref={props.inputRef}
-                selectionColor={color.ember}
-                style={[styles.input, { maxHeight: fieldMaxHeight }]}
-                value={props.text}
-              />
-            </Pressable>
-          }
-          leading={
-            <NativeMenu
-              accessibilityHint="Attach files or choose which AI this starts on"
-              accessibilityLabel="Message actions"
-              onPresent={noop}
-              onSettle={noop}
-              options={menuOptions}
-            >
-              <ComposerGlyph icon="plus" />
-            </NativeMenu>
-          }
-          shape="rounded"
-        />
-        <UsageNotice
-          notice={usageLimitNotice({
-            placements: props.execution.placements,
-            scope: props.usageScope,
-            selection: props.execution.selection,
-          })}
-          onOpen={chooseManually}
-        />
-      </View>
-    </KeyboardAvoidingView>
+            }
+            action={
+              // With nothing typed the circle is voice where it exists, as in a
+              // thread's own bar, rather than a Send that cannot be pressed.
+              voiceReady && !written ? (
+                <VoiceMic disabled={held} face="disc" />
+              ) : (
+                <ComposerAction
+                  busy={sending}
+                  disabled={!actionable}
+                  kind="send"
+                  label={
+                    sending ? "Sending" : blocker?.choose === true ? "Choose an AI" : "Send message"
+                  }
+                  onPress={() => {
+                    if (blocker?.choose === true) chooseThenSend();
+                    else props.onSend(null);
+                  }}
+                />
+              )
+            }
+            field={
+              <Pressable
+                accessible={false}
+                onPress={() => props.inputRef.current?.focus()}
+                style={styles.lane}
+              >
+                <TextInput
+                  accessibilityLabel="Message"
+                  autoFocus={props.autoFocus}
+                  cursorColor={color.ember}
+                  editable={!held}
+                  maxFontSizeMultiplier={controlFontScaleLimit}
+                  multiline
+                  onChangeText={changeText}
+                  placeholder={page === null ? props.placeholder : "Ask about this page…"}
+                  placeholderTextColor={color.muted}
+                  ref={props.inputRef}
+                  selectionColor={color.ember}
+                  style={[styles.input, { maxHeight: fieldMaxHeight }]}
+                  value={props.text}
+                />
+              </Pressable>
+            }
+            leading={
+              <NativeMenu
+                accessibilityHint="Attach files or choose which AI this starts on"
+                accessibilityLabel="Message actions"
+                onPresent={noop}
+                onSettle={noop}
+                options={menuOptions}
+              >
+                <ComposerGlyph icon="plus" />
+              </NativeMenu>
+            }
+            shape="rounded"
+          />
+          <UsageNotice
+            notice={usageLimitNotice({
+              placements: props.execution.placements,
+              scope: props.usageScope,
+              selection: props.execution.selection,
+            })}
+            onOpen={chooseManually}
+          />
+        </>
+      }
+    >
+      {(clearance) => (
+        <ScrollView
+          automaticallyAdjustsScrollIndicatorInsets={false}
+          contentContainerStyle={[
+            styles.content,
+            column,
+            {
+              paddingBottom: clearance + space[24],
+              paddingLeft: gutter + insets.left,
+              paddingRight: gutter + insets.right,
+              paddingTop: (props.underHeader ? headerHeight : 0) + space[24],
+            },
+          ]}
+          keyboardDismissMode="interactive"
+          keyboardShouldPersistTaps="handled"
+          scrollIndicatorInsets={{
+            bottom: clearance,
+            top: props.underHeader ? headerHeight : 0,
+          }}
+        >
+          {props.children}
+        </ScrollView>
+      )}
+    </ComposerDockLayout>
   );
 }
 
@@ -843,8 +842,7 @@ export function FirstMessageHeld(props: {
 }
 
 const styles = StyleSheet.create({
-  content: { flexGrow: 1, gap: space[16], paddingBottom: space[24] },
-  dock: { gap: space[8], paddingTop: space[8] },
+  content: { flexGrow: 1, gap: space[16] },
   example: {
     alignItems: "center",
     backgroundColor: color.surface,
@@ -856,7 +854,6 @@ const styles = StyleSheet.create({
     paddingVertical: space[12],
   },
   examples: { gap: space[10] },
-  fill: { flex: 1 },
   grow: { flex: 1 },
   held: {
     backgroundColor: color.surface,

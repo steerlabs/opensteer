@@ -6,16 +6,43 @@ import type { HostSnapshot } from "@opensteer/client/host";
 import { BrowserTabsScreen } from "./browser-tabs.js";
 
 const state = vi.hoisted(() => ({ dispatch: vi.fn(), goBack: vi.fn() }));
+const occupant = (acting: boolean) => ({
+  acting,
+  holding: true,
+  home: false,
+  lastActiveAt: "2026-11-01T10:00:00.000Z",
+  threadId: "thread-trip",
+});
 const snapshot = {
+  activeTasks: [],
+  homeThreadId: "home",
+  tasks: null,
+  threads: [{ id: "thread-trip", title: "Tokyo trip", icon: null, color: null }],
+  transcripts: {
+    "thread-trip": [
+      {
+        id: "visited",
+        kind: "place",
+        place: { kind: "browser", sessionId: "browser", surfaceId: "first" },
+      },
+    ],
+  },
+  workspaceTasks: {},
   browserSessions: [
     {
       id: "browser",
       tabs: [],
       tabCatalog: {
         tabs: [
-          { id: "last", order: 2, title: "Last", site: "https://last.example" },
-          { id: "current", order: 1, title: "Current", site: "https://current.example" },
-          { id: "first", order: 0, title: "First", site: "https://first.example" },
+          { id: "last", order: 2, title: "Last", site: "https://last.example", occupants: [] },
+          {
+            id: "current",
+            order: 1,
+            title: "Current",
+            site: "https://current.example",
+            occupants: [occupant(true)],
+          },
+          { id: "first", order: 0, title: "First", site: "https://first.example", occupants: [] },
         ],
       },
     },
@@ -23,7 +50,12 @@ const snapshot = {
 } as unknown as HostSnapshot;
 vi.mock("@opensteer/client/react", () => ({
   useHostSelector: (_: unknown, select: (value: HostSnapshot) => unknown) => select(snapshot),
-  usePlaceList: () => [],
+  usePlaceList: () => [
+    {
+      destination: { kind: "browser", sessionId: "browser", tabId: "current" },
+      occupants: [occupant(true)],
+    },
+  ],
 }));
 vi.mock("@react-navigation/native", () => ({
   CommonActions: { setParams: (params: object) => ({ type: "SET_PARAMS", payload: { params } }) },
@@ -48,6 +80,12 @@ vi.mock("../ui/primitives.js", () => ({
 }));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
 vi.mock("../browser/agent-marks.js", () => ({ AgentMarks: () => null }));
+vi.mock("../ui/task-mark.js", () => ({ TaskMark: () => null }));
+vi.mock("../ui/chat-orb.js", () => ({ ChatOrb: () => null }));
+vi.mock("../ui/motion.js", () => ({ enter: {}, exit: {} }));
+vi.mock("react-native-reanimated", () => ({
+  default: { View: ({ children }: { children?: ReactNode }) => <div>{children}</div> },
+}));
 vi.mock("react-native", () => ({
   Platform: { OS: "ios" },
   StyleSheet: { create: (value: object) => value, hairlineWidth: 1 },
@@ -56,12 +94,12 @@ vi.mock("react-native", () => ({
   Pressable: (props: {
     children?: ReactNode;
     accessibilityLabel?: string;
-    accessibilityState?: { selected: boolean };
+    accessibilityState?: { expanded?: boolean };
     onPress: () => void;
   }) => (
     <button
+      aria-expanded={props.accessibilityState?.expanded}
       aria-label={props.accessibilityLabel}
-      aria-selected={props.accessibilityState?.selected}
       onClick={props.onPress}
     >
       {props.children}
@@ -87,7 +125,7 @@ afterEach(() => {
   document.body.replaceChildren();
   vi.clearAllMocks();
 });
-function open() {
+function open(params: { tabId?: string; threadId?: string } = {}) {
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -95,10 +133,15 @@ function open() {
     root.render(
       <BrowserTabsScreen
         route={{
-          params: { deploymentId: "deployment", sessionId: "browser", tabId: "current" },
+          params: { deploymentId: "deployment", sessionId: "browser", tabId: "current", ...params },
         }}
       />,
     ),
+  );
+}
+function labels() {
+  return [...container.querySelectorAll("button")].map((button) =>
+    button.getAttribute("aria-label"),
   );
 }
 function press(label: string) {
@@ -106,14 +149,49 @@ function press(label: string) {
   if (!button) throw new Error(`Missing ${label}`);
   act(() => button.click());
 }
-it("lists the browser's catalog order and marks the current tab", () => {
+it("lists every tab in the browser's catalog order and says which is shown and who is in it", () => {
   open();
-  expect(
-    [...container.querySelectorAll("button")].map((button) => button.getAttribute("aria-label")),
-  ).toEqual(["All tabs", "First, first.example", "Current, current.example", "Last, last.example"]);
-  expect(container.querySelector('[aria-selected="true"]')?.getAttribute("aria-label")).toBe(
-    "Current, current.example",
+  expect(labels()).toEqual([
+    "All tabs",
+    "First, first.example",
+    "Current, current.example, Shown, Tokyo trip, working here",
+    "Last, last.example",
+  ]);
+  expect(container.textContent).not.toContain("All tabs in this browser");
+});
+it("lists only a task's tabs and folds the browser's others under one row", () => {
+  open({ threadId: "thread-trip" });
+  expect(container.textContent).toContain("Tokyo trip");
+  expect(container.textContent).toContain("2 tabs");
+  // Visited earlier by the transcript, and occupied now by its agent.
+  expect(labels()).toEqual([
+    "All tabs",
+    "First, first.example",
+    "Current, current.example, Shown, Agent is here",
+    "All tabs in this browser, 1",
+  ]);
+  expect(container.textContent).not.toContain("Other tabs");
+  press("All tabs in this browser, 1");
+  expect(container.textContent).toContain("Other tabs");
+  expect(labels().at(-1)).toBe("Last, last.example");
+  press("All tabs in this browser, 1");
+  expect(labels()).not.toContain("Last, last.example");
+});
+it("labels the agent's tab in words, not only by its mark", () => {
+  open({ threadId: "thread-trip" });
+  const agentTab = container.querySelector<HTMLButtonElement>(
+    'button[aria-label="Current, current.example, Shown, Agent is here"]',
   );
+  expect(agentTab?.textContent).toContain("Agent");
+  const other = container.querySelector<HTMLButtonElement>(
+    'button[aria-label="First, first.example"]',
+  );
+  expect(other?.textContent).not.toContain("Agent");
+});
+it("opens unfolded when the shown tab is not the task's", () => {
+  open({ tabId: "last", threadId: "thread-trip" });
+  expect(container.textContent).toContain("Other tabs");
+  expect(labels()).toContain("Last, last.example, Shown");
 });
 it("sets the tab on the page route by key and dismisses the sheet", () => {
   open();
@@ -127,7 +205,7 @@ it("sets the tab on the page route by key and dismisses the sheet", () => {
 });
 it("only dismisses when choosing the current tab", () => {
   open();
-  press("Current, current.example");
+  press("Current, current.example, Shown, Tokyo trip, working here");
   expect(state.dispatch).not.toHaveBeenCalled();
   expect(state.goBack).toHaveBeenCalledOnce();
 });

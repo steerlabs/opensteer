@@ -89,6 +89,11 @@ vi.mock(
   "react-native-reanimated",
   async () => (await import("../../../test-support/native-chrome.js")).reanimated,
 );
+vi.mock("../../../src/browser/pair-chrome.js", () => ({
+  FollowBand: () => null,
+  TaskTabChips: () => null,
+}));
+vi.mock("../../../src/browser/agent-marks.js", () => ({ AgentMarks: () => null }));
 vi.mock("../../../src/ui/motion.js", () => ({
   appear: undefined,
   duration: { enter: 0, exit: 0 },

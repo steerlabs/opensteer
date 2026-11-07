@@ -189,15 +189,24 @@ function RunSurfaces(props: {
  */
 export function TracePlace(props: {
   readonly entry: PlaceEntry;
+  readonly markOnly?: boolean;
   readonly latest: boolean;
 }): ReactNode {
   const surfaces = useContext(TranscriptSurfacesContext);
   if (surfaces === null) return null;
-  return <PlaceStop entry={props.entry} latest={props.latest} surfaces={surfaces} />;
+  return (
+    <PlaceStop
+      entry={props.entry}
+      latest={props.latest}
+      markOnly={props.markOnly === true}
+      surfaces={surfaces}
+    />
+  );
 }
 
 function PlaceStop(props: {
   readonly entry: PlaceEntry;
+  readonly markOnly?: boolean;
   readonly latest: boolean;
   readonly surfaces: TranscriptSurfaces;
 }): ReactNode {
@@ -209,6 +218,21 @@ function PlaceStop(props: {
   );
   if (page === null) return null;
   const acting = props.latest && page.acting && !page.ended;
+  if (props.markOnly)
+    return (
+      <View style={{ flexDirection: "row" }}>
+        {page.favicon !== null ? (
+          <Image
+            accessibilityIgnoresInvertColors
+            source={{ uri: page.favicon }}
+            style={styles.favicon}
+          />
+        ) : (
+          <Symbol name="globe" size={12} tint={color.muted} />
+        )}
+        {acting ? <ActingDot grouped /> : null}
+      </View>
+    );
   const site = page.site;
   return (
     <Pressable

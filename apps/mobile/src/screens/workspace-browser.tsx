@@ -2,19 +2,28 @@ import { contactSupport } from "../report-mail.js";
 import { PendingBrowserTabView, showPendingBrowserTab } from "../browser/pending-browser-tab.js";
 import {
   browserPlaceUnavailableReason,
+  browserThreadAgentTab,
+  browserThreadTabs,
   canRespondToRequests,
   describeHostConnection,
   mainWorkspace,
   placeAgents,
+  placeAgentState,
   placeDestinationEnded,
   samePlaceAgents,
+  transcriptPlaces,
+  type BrowserTabDestination,
   type BrowserTabOpenHandle,
+  type BrowserThreadTab,
+  type BrowserThreadTabs,
   type HostClient,
   type HostSnapshot,
+  type PlaceEntry,
   type PlaceItem,
   type WorkspaceSurfaceDestination,
 } from "@opensteer/client/host";
 import {
+  useBrowserAgentFollow,
   useBrowserPopupFollow,
   useHostSelector,
   useHostSnapshot,
@@ -38,13 +47,13 @@ import {
   useRef,
   useState,
   type ReactNode,
+  type RefObject,
 } from "react";
 import {
   ActivityIndicator,
   I18nManager,
   KeyboardAvoidingView,
   Platform,
-  Pressable,
   StyleSheet,
   TextInput,
   useWindowDimensions,
@@ -58,11 +67,19 @@ import {
   type ReservedRegion,
 } from "react-native-reserved-regions";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { opensteerAppGlyph } from "../browser/agent-surface.js";
-import { BrowserPage } from "../browser/browser-page.js";
-import { usePageHeader, type AskTarget } from "../browser/page-header.js";
-import { Toolbar, ToolbarCapsule, ToolbarMenu } from "../browser/toolbar.js";
+import { BrowserPage, type PageFollow, type PagePairChrome } from "../browser/browser-page.js";
 import {
+  AppPill,
+  appMenuSections,
+  askChoices,
+  usePageHeader,
+  type AppMenu,
+  type AskTarget,
+} from "../browser/page-header.js";
+import { CompanionCapsule } from "../browser/pair-chrome.js";
+import { Toolbar, ToolbarButton, ToolbarCapsule, ToolbarMenu } from "../browser/toolbar.js";
+import {
+  pageSite,
   paramsDestination,
   routeDestination,
   sameDestination,
@@ -71,7 +88,7 @@ import {
 import { tabSiteLabel } from "../browser/site-label.js";
 import { newTaskDraftBlank, newTaskDraftId, newTaskDraftKey } from "../client/thread-drafts.js";
 import { MacAppView } from "../computers/mac-app-view.js";
-import { color, headerFontScaleLimit, space, touchTarget } from "../theme.js";
+import { color, space, touchTarget } from "../theme.js";
 import {
   derivePagePair,
   edgesAround,
@@ -84,15 +101,16 @@ import {
   type Size,
 } from "../layout.js";
 import { AppFrame } from "../thread/app-frame.js";
+import type { NativeMenuOption, NativeMenuSection } from "../thread/composer-menu.js";
 import { ThreadPane, type ThreadHeaderState } from "../thread/thread-pane.js";
 import { useKeyboardVisible } from "../ui/keyboard.js";
-import { InsetView, Pane } from "../ui/pane.js";
+import { InsetView, Pane, useContentInsets } from "../ui/pane.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import { AppText, Notice, SecondaryButton } from "../ui/primitives.js";
 import { Screen } from "../ui/screen.js";
-import { Symbol } from "../ui/symbol.js";
 import { useAppForeground } from "../ui/foreground.js";
 import { NewTaskPane } from "./new-task.js";
+import { ThreadTitlePill } from "./thread-header.js";
 
 /**
  * Exactly one tab, Mac app, phone or Opensteer App, as the route names it: the
@@ -251,11 +269,12 @@ function Focused(props: {
   const drafts = useMobileClient().drafts;
   const [page, setPage] = useState<BrowserPageContentPart | null>(null);
   const [typing, setTyping] = useState(false);
-  // The beside Thread's name as its own bar would say it, kept with whose it
+  // The beside Thread's header as its own bar would say it, kept with whose it
   // is so another Thread never wears it while its own is on the way.
-  const [named, setNamed] = useState<{ readonly threadId: string; readonly title: string } | null>(
-    null,
-  );
+  const [named, setNamed] = useState<{
+    readonly header: ThreadHeaderState;
+    readonly threadId: string;
+  } | null>(null);
 
   // Who is here, from this place's occupants alone. A saved tab is found by
   // its own id, wherever its lineage lives now.
@@ -267,6 +286,8 @@ function Focused(props: {
   // A closed app keeps its name and its Thread: the bar still says what ended,
   // and Ask still reaches whoever made it.
   const lastApp = useRef<PlaceItem | null>(null);
+  // Only for the app this route still names: an agent's show swaps the route in place.
+  if (lastApp.current !== null && !samePlace(lastApp.current, destination)) lastApp.current = null;
   if (place?.opensteerApp !== undefined) lastApp.current = place;
   const appThreadId = lastApp.current?.opensteerApp?.threadId ?? null;
   const occupied = useMemo(
@@ -280,17 +301,18 @@ function Focused(props: {
   const agents = useHostSelector(hostClient, selectAgents, samePlaceAgents);
   const homeThreadId = useHostSelector(hostClient, selectHomeThreadId);
 
-  // Chosen from the pill's menu or by Ask, and kept until the person closes
-  // it; otherwise the acting agent, else the most recent one.
   const [chosen, setChosen] = useState<Companion | null>(null);
+  const [remembered, setRemembered] = useState<string | null | undefined>(undefined);
   const firstAgent = agents.agents[0]?.threadId ?? null;
+  if (remembered === undefined && firstAgent !== null) setRemembered(firstAgent);
+  const automatic = remembered === undefined ? firstAgent : remembered;
   const companion: Companion | null =
-    chosen ?? (firstAgent === null ? null : { kind: "thread", threadId: firstAgent });
+    chosen ?? (automatic === null ? null : { kind: "thread", threadId: automatic });
 
   const besideId = companion?.kind === "thread" ? companion.threadId : null;
   const onHeader = useCallback(
     (header: ThreadHeaderState) => {
-      if (besideId !== null) setNamed({ threadId: besideId, title: header.title });
+      if (besideId !== null) setNamed({ header, threadId: besideId });
     },
     [besideId],
   );
@@ -390,7 +412,10 @@ function Focused(props: {
     },
     [chosen, deploymentId, drafts, hostClient, putPageOnDraft],
   );
-  const closeCompanion = useCallback(() => setChosen(null), []);
+  const closeCompanion = useCallback(() => {
+    setChosen(null);
+    setRemembered(null);
+  }, []);
   const onStarted = useCallback(
     (threadId: string) => {
       setChosen({ kind: "thread", threadId });
@@ -433,32 +458,120 @@ function Focused(props: {
     (tabId: string) => navigation.setParams({ editAddress: false, popup: false, tabId }),
     [navigation],
   );
+  /**
+   * Keeping up with the beside Thread's agent: the route moves in place to
+   * whichever tab it is on, until the person moves the page themselves.
+   */
+  const selectAgentTab = useCallback(
+    (current: HostSnapshot) =>
+      besideId === null ? null : browserThreadAgentTab(current.browserSessions, besideId),
+    [besideId],
+  );
+  const agentTab = useHostSelector(hostClient, selectAgentTab, sameAgentTab);
+  const shownTab = destination.kind === "browser" ? destination : null;
+  const onFollow = useCallback(
+    (tab: BrowserTabDestination) => {
+      navigation.setParams({
+        editAddress: false,
+        popup: false,
+        sessionId: tab.sessionId,
+        tabId: tab.tabId,
+      });
+    },
+    [navigation],
+  );
+  const follow = useBrowserAgentFollow({ agentTab, onFollow, shownTab, threadId: besideId });
+  const { pause } = follow;
   // Over the page that opened it, so Back and its ending both return there.
   const onPopup = useCallback(
-    (tabId: string) =>
+    (tabId: string) => {
       navigation.dispatch(
         StackActions.push("WorkspaceBrowser", { ...route, editAddress: false, popup: true, tabId }),
-      ),
+      );
+    },
     [navigation, route],
   );
   const onShowTabs = useCallback(() => {
-    if (destination.kind === "browser")
-      navigation.dispatch(
-        StackActions.push("BrowserTabs", {
-          deploymentId,
-          sessionId: destination.sessionId,
-          tabId: destination.tabId,
-        }),
-      );
-  }, [deploymentId, destination, navigation]);
+    if (destination.kind !== "browser") return;
+    // The sheet marks the tab shown when it opened; following must not move it underneath.
+    pause();
+    navigation.dispatch(
+      StackActions.push("BrowserTabs", {
+        deploymentId,
+        sessionId: destination.sessionId,
+        tabId: destination.tabId,
+        ...(besideId === null ? {} : { threadId: besideId }),
+      }),
+    );
+  }, [besideId, deploymentId, destination, navigation, pause]);
   const [paired, setPaired] = useState(false);
+  const selectPlaces = useCallback(
+    (current: HostSnapshot): readonly PlaceEntry[] => {
+      const entries = besideId === null ? undefined : current.transcripts[besideId];
+      return entries === undefined ? noPlaces : transcriptPlaces(entries);
+    },
+    [besideId],
+  );
+  const besidePlaces = useHostSelector(hostClient, selectPlaces);
+  const shownSession =
+    shownTab === null
+      ? undefined
+      : snapshot.browserSessions.find(({ id }) => id === shownTab.sessionId);
+  // Kept from one render to the next, so a tab the task used stays its own
+  // through a moment no occupant says so.
+  const previousTabs = useRef<BrowserThreadTabs | undefined>(undefined);
+  const threadTabs =
+    besideId === null || shownSession === undefined
+      ? null
+      : browserThreadTabs(shownSession, besideId, besidePlaces, previousTabs.current);
+  useEffect(() => {
+    if (threadTabs !== null) previousTabs.current = threadTabs;
+  });
   const title =
     place?.title ??
     lastApp.current?.title ??
     shownPage?.title ??
     (destination.kind === "browser" ? "Tab" : "");
+  // The app open as this tab, and what its menu can do now.
+  const appId = destination.kind === "opensteer-app" ? destination.appId : null;
+  const appClose = useAppClose(hostClient, appId, onClosed);
+  const appReload = useRef<(() => void) | null>(null);
+  const appOpen = appId !== null && place !== null;
+  const openAppThread = useCallback(() => {
+    const { appThreadId: origin } = latest.current;
+    if (origin !== null) openThread(origin);
+  }, [openThread]);
+  const reloadApp = useCallback(() => appReload.current?.(), []);
+  const reportApp = useCallback(() => {
+    if (appId !== null) contactSupport({ kind: "app", id: appId });
+  }, [appId]);
+  const appMenu = useMemo(
+    (): AppMenu | null =>
+      appId === null
+        ? null
+        : {
+            closable: props.connected && appOpen && !appClose.closing,
+            live: appOpen && !appClose.closing,
+            onClose: appClose.close,
+            onOpenThread: appThreadId === null ? null : openAppThread,
+            onReload: reloadApp,
+            onReport: reportApp,
+          },
+    [
+      appClose.close,
+      appClose.closing,
+      appId,
+      appOpen,
+      appThreadId,
+      openAppThread,
+      props.connected,
+      reloadApp,
+      reportApp,
+    ],
+  );
   usePageHeader({
     agents,
+    app: appMenu,
     asksThread: appThreadId !== null,
     beside: paired ? besideId : null,
     chat: homeThreadId !== null,
@@ -467,15 +580,101 @@ function Focused(props: {
     onOpenAgent: paired ? showBeside : openThread,
     title,
   });
+  const mainWorkspaceId = mainWorkspace(snapshot)?.id ?? null;
+  const companionShown =
+    companion !== null && (companion.kind === "thread" || mainWorkspaceId !== null);
+  // Beside a Thread, a page's own bar takes the native bar's place, and Back.
+  const pairedChrome = paired && companionShown && destination.kind === "browser";
+  const appPaired = paired && companionShown && appId !== null;
+  const barAway = pairedChrome || appPaired;
+  useLayoutEffect(() => {
+    if (!barAway) return;
+    navigation.setOptions({ headerShown: false });
+    return () => navigation.setOptions({ headerShown: true });
+  }, [barAway, navigation]);
+  const goBack = useCallback(() => navigation.goBack(), [navigation]);
+  const appPair = useMemo(
+    (): AppPairChrome | null =>
+      appPaired && appMenu !== null
+        ? {
+            onBack: goBack,
+            sections: appMenuSections(
+              appMenu,
+              askChoices({
+                asksThread: appThreadId !== null,
+                chat: homeThreadId !== null,
+                onAsk: askBeside,
+              }),
+            ),
+          }
+        : null,
+    [appMenu, appPaired, appThreadId, askBeside, goBack, homeThreadId],
+  );
+  const others = agents.agents.some(({ threadId }) => threadId !== besideId);
+  const pairMenu: NativeMenuSection[] = [
+    askChoices({ asksThread: appThreadId !== null, chat: homeThreadId !== null, onAsk: askBeside }),
+    others
+      ? agents.agents.map((agent) => ({
+          id: `beside:${agent.threadId}`,
+          label: `${agent.title} · ${placeAgentState(agent)}`,
+          onPress: () => showBeside(agent.threadId),
+          selected: agent.threadId === besideId,
+        }))
+      : [],
+  ];
+  const pair: PagePairChrome | null = pairedChrome
+    ? {
+        menu: pairMenu,
+        onBack: () => navigation.goBack(),
+        taskTabIds: threadTabs?.taskTabs.map(({ id }) => id) ?? [],
+      }
+    : null;
+  const agentAway =
+    besideId === null ||
+    agentTab === null ||
+    follow.following ||
+    (shownTab !== null &&
+      agentTab.tabId === shownTab.tabId &&
+      agentTab.sessionId === shownTab.sessionId)
+      ? null
+      : agentTab;
+  const followAgent =
+    besideId === null || agentTab === null
+      ? null
+      : (placeAgents(
+          {
+            destination: { kind: "browser", sessionId: agentTab.sessionId, tabId: agentTab.tabId },
+            occupants: agentTab.tab.occupants.filter(({ threadId }) => threadId === besideId),
+          },
+          snapshot,
+        ).agents[0] ?? null);
+  const pageFollow: PageFollow | null =
+    besideId === null
+      ? null
+      : {
+          agent: followAgent,
+          away:
+            agentAway === null
+              ? null
+              : {
+                  title:
+                    agentAway.tab.title.trim() || pageSite(agentAway.tab.site) || "another tab",
+                },
+          following: follow.following,
+          onResume: () => void follow.resume(),
+        };
   const body =
     destination.kind === "opensteer-app" ? (
       <AppTab
         appId={destination.appId}
-        connected={props.connected}
+        closeFailure={appClose.failure}
+        closing={appClose.closing}
         hostClient={hostClient}
         key={destination.appId}
-        onClosed={onClosed}
+        onRetryClose={appClose.close}
         onTyping={setTyping}
+        pair={appPair}
+        reloadRef={appReload}
         title={title}
       />
     ) : destination.kind !== "browser" ? (
@@ -492,14 +691,17 @@ function Focused(props: {
         active={props.active}
         connected={props.connected}
         editAddress={route.editAddress === true}
+        follow={pageFollow}
         hostClient={hostClient}
         onClosed={onClosed}
         onOpenTab={onOpenTab}
         onPopup={onPopup}
         onShowTabs={onShowTabs}
+        onSteer={pause}
         onSwitchTab={onSwitchTab}
         onTyping={setTyping}
         onViewing={setPage}
+        pair={pair}
         place={place}
         popup={route.popup === true}
         sessionId={destination.sessionId}
@@ -507,59 +709,110 @@ function Focused(props: {
         tabId={destination.tabId}
       />
     );
-  const mainWorkspaceId = mainWorkspace(snapshot)?.id ?? null;
-  const second =
-    companion === null ? null : companion.kind === "task" ? (
-      mainWorkspaceId === null ? null : (
-        <NewTaskPane
-          autoFocus
-          deploymentId={deploymentId}
-          draftId={companion.draftId}
-          hostClient={hostClient}
-          key={companion.draftId}
-          onStarted={onStarted}
-          underHeader={false}
-          workspaceId={mainWorkspaceId}
-        />
-      )
-    ) : (
-      <ThreadPane
-        deploymentId={deploymentId}
-        hostClient={hostClient}
-        // Another Thread is another conversation: its draft, stream and scroll
-        // are its own.
-        key={companion.threadId}
-        onHeader={onHeader}
-        onOpenThread={(id) =>
-          navigation.dispatch(StackActions.push("Thread", { deploymentId, threadId: id }))
-        }
-        requestId={null}
-        withPage={{ page: shownPage }}
-        threadId={companion.threadId}
-      />
-    );
+  const companionActions = (threadId: string): readonly NativeMenuOption[] => [
+    { id: "open", label: "Open as its own screen", onPress: () => openThread(threadId) },
+    { icon: "xmark.circle", id: "close", label: "Close", onPress: closeCompanion },
+  ];
+  const closeOnly: readonly NativeMenuOption[] = [
+    { icon: "xmark.circle", id: "close", label: "Close", onPress: closeCompanion },
+  ];
+  const second: PairCompanion | null =
+    companion === null || !companionShown
+      ? null
+      : companion.kind === "task"
+        ? {
+            content: () =>
+              mainWorkspaceId === null ? null : (
+                <NewTaskPane
+                  autoFocus
+                  deploymentId={deploymentId}
+                  draftId={companion.draftId}
+                  hostClient={hostClient}
+                  key={companion.draftId}
+                  onStarted={onStarted}
+                  underHeader={false}
+                  workspaceId={mainWorkspaceId}
+                />
+              ),
+            floating: false,
+            pill: <CompanionCapsule actions={closeOnly} title="New task" />,
+          }
+        : {
+            content: (headerClearance) => (
+              <ThreadPane
+                deploymentId={deploymentId}
+                headerClearance={headerClearance}
+                hostClient={hostClient}
+                // Another Thread is another conversation: its draft, stream and
+                // scroll are its own.
+                key={companion.threadId}
+                onHeader={onHeader}
+                onOpenThread={(id) =>
+                  navigation.dispatch(StackActions.push("Thread", { deploymentId, threadId: id }))
+                }
+                requestId={null}
+                withPage={{ page: shownPage }}
+                threadId={companion.threadId}
+              />
+            ),
+            floating: true,
+            pill:
+              named?.threadId === companion.threadId ? (
+                <ThreadTitlePill
+                  {...named.header}
+                  deploymentId={deploymentId}
+                  extraActions={companionActions(companion.threadId)}
+                  floating
+                  hostClient={hostClient}
+                  maxWidth={companionPillWidth}
+                  onFind={() =>
+                    navigation.navigate("ThreadFind", {
+                      deploymentId,
+                      threadId: companion.threadId,
+                    })
+                  }
+                  onOpenThread={openThread}
+                  threadId={companion.threadId}
+                />
+              ) : (
+                <CompanionCapsule
+                  actions={companionActions(companion.threadId)}
+                  title={
+                    agents.agents.find(({ threadId }) => threadId === companion.threadId)?.title ??
+                    ""
+                  }
+                />
+              ),
+          };
   return (
     <PagePairSurface
+      bleed={appId !== null}
       body={body}
-      companion={
-        second === null
-          ? null
-          : {
-              content: second,
-              onClose: chosen === null ? null : closeCompanion,
-              title:
-                companion?.kind === "task"
-                  ? "New task"
-                  : named?.threadId === besideId
-                    ? named.title
-                    : null,
-            }
-      }
-      keyboardVerticalOffset={headerHeight}
+      companion={second}
+      // On iOS an app runs under a transparent bar, from the screen's top.
+      keyboardVerticalOffset={appId !== null && Platform.OS === "ios" ? 0 : headerHeight}
       notices={props.notices}
       onPaired={setPaired}
       typing={typing}
     />
+  );
+}
+
+const noPlaces: readonly PlaceEntry[] = [];
+/** Wide enough for a task's name, never wider than a pane beside a page leaves it. */
+const companionPillWidth = 320;
+
+/** The agent's tab is the same one, under the same name: nothing to follow or redraw. */
+function sameAgentTab(left: BrowserThreadTab | null, right: BrowserThreadTab | null): boolean {
+  return (
+    left === right ||
+    (left !== null &&
+      right !== null &&
+      left.sessionId === right.sessionId &&
+      left.tabId === right.tabId &&
+      left.tab.title === right.tab.title &&
+      left.tab.site === right.tab.site &&
+      left.tab.occupants === right.tab.occupants)
   );
 }
 
@@ -598,14 +851,18 @@ function BrowserTab(props: {
   readonly active: boolean;
   readonly connected: boolean;
   readonly editAddress: boolean;
+  readonly follow: PageFollow | null;
   readonly hostClient: HostClient;
   readonly onClosed: () => void;
   readonly onOpenTab: (opening: BrowserTabOpenHandle) => void;
   readonly onPopup: (tabId: string) => void;
   readonly onShowTabs: () => void;
+  readonly onSteer: () => void;
   readonly onSwitchTab: (tabId: string) => void;
   readonly onTyping: (typing: boolean) => void;
   readonly onViewing: (page: BrowserPageContentPart | null) => void;
+  /** The page's bar in place of the native one, while a Thread is beside it. */
+  readonly pair: PagePairChrome | null;
   /** This tab in the place list, found by its own id; null while it is not listed. */
   readonly place: PlaceItem | null;
   readonly popup: boolean;
@@ -639,6 +896,17 @@ function BrowserTab(props: {
 
   const session = snapshot.browserSessions.find(({ id }) => id === sessionId) ?? null;
   const live = session !== null && browserShowsPage(snapshot, sessionId, tabId);
+  // Which way the page came from the tab before it, by the browser's own order.
+  const shown = useRef<{ readonly arrival: -1 | 0 | 1; readonly tabId: string }>({
+    arrival: 0,
+    tabId,
+  });
+  if (shown.current.tabId !== tabId) {
+    const order = session === null ? [] : tabOrder(session);
+    const from = order.indexOf(shown.current.tabId);
+    const to = order.indexOf(tabId);
+    shown.current = { arrival: from >= 0 && to >= 0 && to < from ? -1 : 1, tabId };
+  }
   const restorable = saved !== undefined && saved.state !== "live";
   const unknown =
     !live &&
@@ -667,14 +935,18 @@ function BrowserTab(props: {
     return (
       <BrowserPage
         active={props.active}
+        arrival={shown.current.arrival}
         connected={props.connected}
+        follow={props.follow}
         hostClient={hostClient}
         key={pageKey}
         editAddress={props.editAddress}
         onClosed={onClosed}
         onOpenTab={props.onOpenTab}
         onShowTabs={props.onShowTabs}
+        onSteer={props.onSteer}
         onSwitchTab={props.onSwitchTab}
+        pair={props.pair}
         onTyping={props.onTyping}
         onViewing={props.onViewing}
         session={session}
@@ -684,37 +956,66 @@ function BrowserTab(props: {
         }
       />
     );
-  if (restorable && place !== null)
-    return (
-      <SavedTab
-        connected={props.connected}
-        hostClient={hostClient}
-        key={tabId}
-        onClosed={onClosed}
-        place={place}
-        snapshot={snapshot}
-        tabId={tabId}
-      />
-    );
-  if (unknown && lookup.closed !== true)
-    return (
-      <TabStatus
-        {...(lookup.error === null
-          ? {}
-          : { action: { label: "Try again", onPress: lookup.retry } })}
-        title={
-          lookup.error ??
-          (lookup.closed === null ? "Looking for this tab…" : "This tab isn’t available here")
-        }
-        waiting={lookup.error === null && lookup.closed === null}
-      />
-    );
   return (
-    <BrowserEnded
-      detail={session?.state === "failed" ? session.error : null}
-      failed={session?.state === "failed"}
-    />
+    <WithBack onBack={props.pair?.onBack ?? null}>
+      {restorable && place !== null ? (
+        <SavedTab
+          connected={props.connected}
+          hostClient={hostClient}
+          key={tabId}
+          onClosed={onClosed}
+          place={place}
+          snapshot={snapshot}
+          tabId={tabId}
+        />
+      ) : unknown && lookup.closed !== true ? (
+        <TabStatus
+          {...(lookup.error === null
+            ? {}
+            : { action: { label: "Try again", onPress: lookup.retry } })}
+          title={
+            lookup.error ??
+            (lookup.closed === null ? "Looking for this tab…" : "This tab isn’t available here")
+          }
+          waiting={lookup.error === null && lookup.closed === null}
+        />
+      ) : (
+        <BrowserEnded
+          detail={session?.state === "failed" ? session.error : null}
+          failed={session?.state === "failed"}
+        />
+      )}
+    </WithBack>
   );
+}
+
+/** A tab with no page to drive, under the one control the put-away native bar took: Back. */
+function WithBack(props: {
+  readonly children: ReactNode;
+  readonly onBack: (() => void) | null;
+}): ReactNode {
+  if (props.onBack === null) return props.children;
+  return (
+    <View style={styles.fill}>
+      <Toolbar edge="top" testID="page-toolbar">
+        <ToolbarButton
+          accessibilityHint="Returns to the previous screen"
+          label="Back"
+          onPress={props.onBack}
+          symbol="chevron.left"
+        />
+      </Toolbar>
+      {props.children}
+    </View>
+  );
+}
+
+/** A browser's tab ids in its own order, as its tab strip shows them. */
+function tabOrder(session: HostSnapshot["browserSessions"][number]): readonly string[] {
+  const catalog = session.tabCatalog?.tabs;
+  return catalog === undefined
+    ? session.tabs.map(({ id }) => id)
+    : [...catalog].sort((a, b) => a.order - b.order).map(({ id }) => id);
 }
 
 /**
@@ -890,7 +1191,6 @@ function CloseBar(props: {
   readonly children: ReactNode;
   readonly closeDisabled: boolean;
   readonly onClose: () => void;
-  readonly onReport?: () => void;
 }): ReactNode {
   return (
     <Toolbar edge="bottom" testID="page-toolbar">
@@ -899,9 +1199,6 @@ function CloseBar(props: {
         label="More"
         sections={[
           [
-            ...(props.onReport
-              ? [{ id: "report", label: "Report…", onPress: props.onReport }]
-              : []),
             {
               destructive: true,
               disabled: props.closeDisabled,
@@ -918,23 +1215,89 @@ function CloseBar(props: {
   );
 }
 
+/** Back and an app's menu, in its pane's own top row while a Thread is beside it. */
+interface AppPairChrome {
+  readonly onBack: () => void;
+  readonly sections: readonly NativeMenuSection[];
+}
+
 /**
- * An Opensteer App open as a tab, with the bar every place has. It reads only
- * whether it has ended, so a streamed token never reaches its WebView, which
- * goes the moment Close is pressed: the card under this page comes back at
- * once, and two copies never run.
+ * Closing the app open as this tab. Its copy goes the moment Close is
+ * pressed, so the card under this page comes back at once and two copies
+ * never run; a refusal brings the app back with why.
+ */
+function useAppClose(
+  hostClient: HostClient,
+  appId: string | null,
+  onClosed: () => void,
+): { readonly close: () => void; readonly closing: boolean; readonly failure: string | null } {
+  const navigation = useNavigation();
+  const identity = useMemo(() => ({ appId, hostClient }), [appId, hostClient]);
+  const [state, setState] = useState<{
+    readonly identity: typeof identity;
+    readonly closing: boolean;
+    readonly failure: string | null;
+  }>({ identity, closing: false, failure: null });
+  const latestIdentity = useRef(identity);
+  latestIdentity.current = identity;
+  const latestAttempt = useRef<{ readonly identity: typeof identity } | null>(null);
+  useEffect(
+    () => () => {
+      if (latestAttempt.current?.identity === identity) latestAttempt.current = null;
+    },
+    [identity],
+  );
+  const latestClosed = useRef(onClosed);
+  latestClosed.current = onClosed;
+  const close = useCallback(() => {
+    if (appId === null) return;
+    const attempt = { identity };
+    latestAttempt.current = attempt;
+    setState({ identity, closing: true, failure: null });
+    void hostClient.closeAppTab(appId).then(
+      () => {
+        if (latestIdentity.current !== identity || latestAttempt.current !== attempt) return;
+        if (navigation.isFocused()) latestClosed.current();
+        else setState({ identity, closing: false, failure: null });
+      },
+      (error: unknown) => {
+        if (latestIdentity.current !== identity || latestAttempt.current !== attempt) return;
+        setState({
+          identity,
+          closing: false,
+          failure: error instanceof Error ? error.message : "Try again in a moment.",
+        });
+      },
+    );
+  }, [appId, hostClient, identity, navigation]);
+  return {
+    close,
+    closing: state.identity === identity && state.closing,
+    failure: state.identity === identity ? state.failure : null,
+  };
+}
+
+/**
+ * An Opensteer App open as a tab, edge to edge. Its name and menu are the
+ * native bar's title, or beside a Thread a row of its pane's own; on iOS the
+ * app scrolls under either, and elsewhere it starts below. It reads only
+ * whether it has ended, so a streamed token never reaches its WebView.
  */
 const AppTab = memo(function AppTab(props: {
   readonly appId: string;
-  readonly connected: boolean;
+  readonly closeFailure: string | null;
+  readonly closing: boolean;
   readonly hostClient: HostClient;
-  readonly onClosed: () => void;
+  readonly onRetryClose: () => void;
   readonly onTyping: (typing: boolean) => void;
+  readonly pair: AppPairChrome | null;
+  readonly reloadRef: RefObject<(() => void) | null>;
   readonly title: string;
 }): ReactNode {
-  const { appId, hostClient, onClosed, onTyping } = props;
-  const navigation = useNavigation();
+  const { appId, hostClient, onTyping, pair } = props;
   const focused = useIsFocused();
+  const insets = useContentInsets();
+  const headerHeight = useHeaderHeight();
   const ended = useHostSelector(
     hostClient,
     useCallback(
@@ -943,22 +1306,24 @@ const AppTab = memo(function AppTab(props: {
     ),
   );
   const known = useHostSelector(hostClient, (snapshot) => snapshot.deploymentShape !== null);
-  const [closing, setClosing] = useState(false);
-  const [closeFailure, setCloseFailure] = useState<string | null>(null);
-  const close = () => {
-    setClosing(true);
-    setCloseFailure(null);
-    void hostClient.closeAppTab(appId).then(
-      () => {
-        if (navigation.isFocused()) onClosed();
-        else setClosing(false);
-      },
-      (error: unknown) => {
-        setClosing(false);
-        setCloseFailure(error instanceof Error ? error.message : "Try again in a moment.");
-      },
-    );
-  };
+  // What the pane's own row covers, its top inset included, as last measured.
+  const [row, setRow] = useState<number | null>(null);
+  const onRowLayout = useCallback((event: LayoutChangeEvent) => {
+    const { height } = event.nativeEvent.layout;
+    if (height > 0) setRow(height);
+  }, []);
+  const top =
+    pair !== null
+      ? (row ?? insets.top + space[4] + touchTarget + space[8])
+      : // Under a transparent bar, the pane's safe area is the bar's height.
+        Platform.OS === "ios"
+        ? Math.max(insets.top, headerHeight)
+        : insets.top;
+  const chrome = useMemo(
+    () => ({ bottom: insets.bottom, left: insets.left, right: insets.right, top }),
+    [insets.bottom, insets.left, insets.right, top],
+  );
+  const tab = useMemo(() => ({ chrome, reloadRef: props.reloadRef }), [chrome, props.reloadRef]);
   // A composer beside the app can hold the keyboard too; only a field in the
   // app leaves no native input focused.
   const typing = useKeyboardVisible() && TextInput.State.currentlyFocusedInput() === null;
@@ -968,30 +1333,75 @@ const AppTab = memo(function AppTab(props: {
   }, [onTyping, typing]);
   // A covered page could run a second copy; locking the phone must not lose the app's state.
   if (!focused) return null;
-  if (!known) return <TabStatus title="Loading app…" waiting />;
-  if (closing) return <TabStatus title="Closing…" waiting />;
-  if (ended) return <BrowserEnded detail={null} failed={false} />;
+  const clear = {
+    paddingBottom: chrome.bottom,
+    paddingLeft: chrome.left,
+    paddingRight: chrome.right,
+    paddingTop: chrome.top,
+  };
   return (
     <View style={styles.fill}>
-      {closeFailure === null ? null : (
-        <Notice
-          action={{ label: "Try again", onPress: close }}
-          detail={closeFailure}
-          title="This tab could not be closed"
-        />
+      {!known ? (
+        <View style={[styles.fill, clear]}>
+          <TabStatus title="Loading app…" waiting />
+        </View>
+      ) : props.closing ? (
+        <View style={[styles.fill, clear]}>
+          <TabStatus title="Closing…" waiting />
+        </View>
+      ) : ended ? (
+        <View style={[styles.fill, clear]}>
+          <BrowserEnded detail={null} failed={false} />
+        </View>
+      ) : (
+        <AppFrame appId={appId} client={hostClient} tab={tab} />
       )}
-      <AppFrame appId={appId} client={hostClient} fill />
-      {typing ? null : (
-        <CloseBar
-          closeDisabled={!props.connected}
-          onClose={close}
-          onReport={() => contactSupport({ kind: "app", id: appId })}
+      {props.closeFailure === null ? null : (
+        <View
+          pointerEvents="box-none"
+          style={[
+            styles.overApp,
+            { paddingLeft: chrome.left, paddingRight: chrome.right, top: chrome.top },
+          ]}
         >
-          <Symbol name={opensteerAppGlyph} size={15} tint={color.muted} />
-          <AppText numberOfLines={1} role="secondaryMedium" style={styles.appName}>
-            {props.title}
-          </AppText>
-        </CloseBar>
+          <Notice
+            action={{ label: "Try again", onPress: props.onRetryClose }}
+            detail={props.closeFailure}
+            title="This tab could not be closed"
+          />
+        </View>
+      )}
+      {pair === null ? null : (
+        <View
+          onLayout={onRowLayout}
+          pointerEvents="box-none"
+          style={[
+            styles.appRow,
+            {
+              paddingLeft: space[12] + insets.left,
+              paddingRight: space[12] + insets.right,
+              paddingTop: insets.top + space[4],
+            },
+          ]}
+          testID="app-pane-bar"
+        >
+          <ToolbarButton
+            accessibilityHint="Returns to the previous screen"
+            label="Back"
+            onPress={pair.onBack}
+            symbol="chevron.left"
+          />
+          <View pointerEvents="box-none" style={styles.appRowTitle}>
+            <AppPill
+              floating
+              maxWidth={companionPillWidth}
+              sections={pair.sections}
+              title={props.title}
+            />
+          </View>
+          {/* Balances Back, so the name is centred over the pane as a bar's title is. */}
+          <View style={styles.appRowBalance} />
+        </View>
       )}
     </View>
   );
@@ -1016,13 +1426,13 @@ function TabStatus(props: {
   );
 }
 
-/** The second pane beside a page, and how it is closed when the person opened it. */
+/** The second pane beside a page, under the pill that names it and puts it away. */
 interface PairCompanion {
-  readonly content: ReactNode;
-  /** Given when the person chose what is shown; null for the agent shown by default. */
-  readonly onClose: (() => void) | null;
-  /** Whom the pane talks to, in its own words, once it has said. */
-  readonly title: string | null;
+  /** Given how far down the floating pill covers the pane. */
+  readonly content: (headerClearance: number) => ReactNode;
+  /** The pill floats over content that scrolls under it, rather than standing above it. */
+  readonly floating: boolean;
+  readonly pill: ReactNode;
 }
 
 /**
@@ -1044,6 +1454,8 @@ interface PairCompanion {
  * half rather than leave the composer no room.
  */
 function PagePairSurface(props: {
+  /** The page places itself in its insets, running under its chrome, as an app does. */
+  readonly bleed: boolean;
   readonly body: ReactNode;
   readonly companion: PairCompanion | null;
   readonly keyboardVerticalOffset: number;
@@ -1157,12 +1569,19 @@ function PagePair(
         testID="page-slot"
       >
         <Pane clearance={pageClearance} geometry={`${geometry}:page`} style={styles.fill}>
-          {/* The page's own controls and picture keep to the pane's insets: its
-              address, its dialogs and the remote picture a tap is mapped into. */}
-          <InsetView style={styles.fill} testID="page-content">
-            {props.notices}
-            {props.body}
-          </InsetView>
+          {props.bleed ? (
+            <View style={styles.fill} testID="page-content">
+              {props.body}
+              <NoticesOver>{props.notices}</NoticesOver>
+            </View>
+          ) : (
+            // The page's own controls and picture keep to the pane's insets: its
+            // address, its dialogs and the remote picture a tap is mapped into.
+            <InsetView style={styles.fill} testID="page-content">
+              {props.notices}
+              {props.body}
+            </InsetView>
+          )}
         </Pane>
       </KeyboardAvoidingView>
       {companion === null || !kept.current ? null : (
@@ -1201,12 +1620,27 @@ function PagePair(
               hidden={!beside}
               style={styles.fill}
             >
-              <CompanionName onClose={companion.onClose} title={companion.title} />
-              {companion.content}
+              <CompanionPane companion={companion} />
             </Pane>
           </KeyboardAvoidingView>
         </>
       )}
+    </View>
+  );
+}
+
+/** Notices over a page that runs under its chrome: at the foot, where it has none. */
+function NoticesOver(props: { readonly children: ReactNode }): ReactNode {
+  const insets = useContentInsets();
+  return (
+    <View
+      pointerEvents="box-none"
+      style={[
+        styles.overApp,
+        { bottom: insets.bottom, paddingLeft: insets.left, paddingRight: insets.right },
+      ]}
+    >
+      {props.children}
     </View>
   );
 }
@@ -1257,37 +1691,45 @@ function pairClearances(
 }
 
 /**
- * Whom the pane beside a page talks to, in its own name — the bar above names
- * the page — and, when the person chose it, the way to put it away.
+ * The pane beside a page under its pill: the pill in the pane's own top safe
+ * area, and a transcript that starts below it and scrolls beneath it, as the
+ * standalone Thread's does under its bar.
  */
-function CompanionName(props: {
-  readonly onClose: (() => void) | null;
-  readonly title: string | null;
-}): ReactNode {
-  if (props.title === null && props.onClose === null) return null;
-  return (
-    <View style={styles.companionName} testID="conversation-name">
-      <AppText
-        maxFontSizeMultiplier={headerFontScaleLimit}
-        numberOfLines={1}
-        role="caption"
-        style={styles.companionTitle}
-        tone="muted"
-      >
-        {props.title ?? ""}
-      </AppText>
-      {props.onClose === null ? null : (
-        <Pressable
-          accessibilityLabel={props.title === null ? "Close" : `Close ${props.title}`}
-          accessibilityRole="button"
-          hitSlop={space[8]}
-          onPress={props.onClose}
-          style={styles.close}
-        >
-          <Symbol name="xmark" size={12} tint={color.muted} />
-        </Pressable>
-      )}
+function CompanionPane(props: { readonly companion: PairCompanion }): ReactNode {
+  const { companion } = props;
+  const insets = useContentInsets();
+  // What the pill covers, top inset and gaps included, as last measured.
+  const [covered, setCovered] = useState<number | null>(null);
+  const onPillLayout = useCallback((event: LayoutChangeEvent) => {
+    const { height } = event.nativeEvent.layout;
+    if (height > 0) setCovered(height);
+  }, []);
+  const pill = (
+    <View
+      onLayout={onPillLayout}
+      pointerEvents="box-none"
+      style={[
+        styles.pill,
+        companion.floating ? styles.floatingPill : null,
+        { paddingTop: insets.top + space[8] },
+      ]}
+      testID="conversation-name"
+    >
+      {companion.pill}
     </View>
+  );
+  if (!companion.floating)
+    return (
+      <>
+        {pill}
+        {companion.content(0)}
+      </>
+    );
+  return (
+    <>
+      {companion.content(covered ?? insets.top + space[8] + touchTarget + space[4])}
+      {pill}
+    </>
   );
 }
 
@@ -1314,7 +1756,18 @@ function BrowserEnded(props: {
 }
 
 const styles = StyleSheet.create({
-  appName: { flex: 1, marginStart: space[10] },
+  // Over the app, which scrolls under it; Back and a balancing slot keep the name centred.
+  appRow: {
+    alignItems: "center",
+    end: 0,
+    flexDirection: "row",
+    paddingBottom: space[8],
+    position: "absolute",
+    start: 0,
+    top: 0,
+  },
+  appRowBalance: { width: touchTarget },
+  appRowTitle: { alignItems: "center", flex: 1, minWidth: 0, paddingHorizontal: space[8] },
   // Beside the page, the second pane is a column of its own, edged by one hairline.
   besidePage: {
     backgroundColor: color.background,
@@ -1324,19 +1777,6 @@ const styles = StyleSheet.create({
   },
   belowFold: { backgroundColor: color.background, flex: 1 },
   centred: { textAlign: "center" },
-  close: {
-    alignItems: "center",
-    justifyContent: "center",
-    minHeight: touchTarget,
-    minWidth: touchTarget,
-  },
-  companionName: {
-    alignItems: "center",
-    flexDirection: "row",
-    minHeight: touchTarget,
-    paddingHorizontal: space[16],
-  },
-  companionTitle: { flex: 1, textAlign: "center" },
   ended: {
     alignItems: "center",
     flex: 1,
@@ -1345,12 +1785,16 @@ const styles = StyleSheet.create({
     padding: space[24],
   },
   fill: { flex: 1 },
+  floatingPill: { end: 0, position: "absolute", start: 0, top: 0 },
+  overApp: { end: 0, position: "absolute", start: 0 },
   // Laid out, so its native views and scroll position stay, but not drawn.
   outOfView: { left: 0, opacity: 0, position: "absolute", top: 0 },
   // Alone, the page and its bar have the whole surface. It has no
   // floor: with the keyboard up on a short screen, a floor is what pushes the
   // page's own address field under the keyboard.
   pageAlone: { flex: 1, minHeight: 0 },
+  // Centred over the pane, clear of its edges.
+  pill: { alignItems: "center", paddingBottom: space[4], paddingHorizontal: space[12] },
   // The resting page's address, standing where the live page's will be.
   restingAddress: { flex: 1, justifyContent: "center", minWidth: 0, paddingHorizontal: space[16] },
   row: { flexDirection: "row" },
