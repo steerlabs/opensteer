@@ -67,6 +67,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import WebSocket from "ws";
+import { vi } from "vitest";
 import { testRpcData } from "../server/test-host-api-request.js";
 import { attachLocalWorkspaceDisk } from "../workspace/runner-local-workspace.test-support.js";
 import { createHostRuntime, type HostRuntime } from "./runtime.js";
@@ -1211,17 +1212,33 @@ export async function connectCallerMachine(
       }),
     );
   });
-  const harnessInstanceId = await waitForValue(async () => {
-    const bootstrap = await testRpcData(
-      host.origin,
-      "bootstrap.get",
-      {},
-      { headers: host.ownerHeaders },
-    );
-    return bootstrap.harnesses.find(
-      (harness) => harness.driverKind === "codex" && harness.environmentId === environmentId,
-    )?.id;
-  });
+  const harnessInstanceId = await vi.waitFor(
+    async () => {
+      const bootstrap = await testRpcData(
+        host.origin,
+        "bootstrap.get",
+        {},
+        { headers: host.ownerHeaders },
+      );
+      const harness = bootstrap.harnesses.find(
+        (harness) => harness.driverKind === "codex" && harness.environmentId === environmentId,
+      );
+      const catalog = bootstrap.environments
+        .find((environment) => environment.id === environmentId)
+        ?.harnessCatalogs.find((catalog) => catalog.harnessInstanceId === harness?.id);
+      if (
+        !harness ||
+        catalog?.status !== "ready" ||
+        !catalog.models.some(
+          (model) => model.modelId === "gpt-5.6-sol" && model.providerId === "openai",
+        )
+      ) {
+        throw new Error(`Caller ${input.name} never committed its GPT-5.6 Sol model report`);
+      }
+      return harness.id;
+    },
+    { timeout: 5_000 },
+  );
   return {
     close: async () => {
       primary.socket.close();
