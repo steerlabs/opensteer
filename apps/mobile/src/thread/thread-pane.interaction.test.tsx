@@ -350,6 +350,7 @@ vi.mock("react-native-reanimated", () => {
 vi.mock("react-native-safe-area-context", () => ({
   SafeAreaProvider: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   SafeAreaView: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  useSafeAreaFrame: () => ({ height: 844, width: 390, x: 0, y: 0 }),
   useSafeAreaInsets: () => ({ bottom: 0, left: 0, right: 0, top: 0 }),
 }));
 vi.mock("@react-navigation/elements", () => ({

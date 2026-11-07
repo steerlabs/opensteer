@@ -167,6 +167,11 @@ vi.mock("../navigation-header.js", () => ({
   browserHeaderActions: () => ({}),
   headerActions: () => ({}),
 }));
+vi.mock("../ui/bar-title.js", () => ({
+  barGlassInset: 8,
+  barItemWidth: 44,
+  useBarTitleWidth: () => 260,
+}));
 vi.mock("../ui/glass.js", () => ({
   GlassSurface: ({ children }: { readonly children?: ReactNode }) => <>{children}</>,
   useLiquidGlass: () => harness.liquidGlass,
