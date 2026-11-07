@@ -139,9 +139,13 @@ export interface TaskListOptions {
 
 /** The reader's tasks across every Workspace, with their Chat apart. */
 export function taskList(snapshot: TaskListSource, options: TaskListOptions = {}): TaskList {
-  return arrange(snapshot, snapshot.tasks, snapshot.activeTasks, options, [
-    ...Object.values(snapshot.doneTasks).flatMap(({ entries }) => entries),
-  ]);
+  return arrange(
+    snapshot,
+    snapshot.tasks,
+    snapshot.activeTasks,
+    options,
+    Object.values(snapshot.doneTasks).flatMap(({ entries }) => entries),
+  );
 }
 
 /**
