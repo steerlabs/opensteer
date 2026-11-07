@@ -573,14 +573,15 @@ function editingObserverSource(binding: string): string {
       whiteSpace: element.tagName === "TEXTAREA" ? "pre-wrap" : "pre",
       overflow: "hidden",
     });
-    mirrorPrefix.data = element.value.slice(0, position);
-    mirrorSuffix.data = element.value.slice(position);
+    const prefix = element.value.slice(0, position), suffix = element.value.slice(position);
+    if (mirrorPrefix.data !== prefix) mirrorPrefix.data = prefix;
+    if (mirrorSuffix.data !== suffix) mirrorSuffix.data = suffix;
     if (!mirror.isConnected) document.documentElement.append(mirror);
     mirror.scrollLeft = element.scrollLeft;
     mirror.scrollTop = element.scrollTop;
     const result = mirrorMarker.getBoundingClientRect();
-    mirrorPrefix.data = "";
-    mirrorSuffix.data = "";
+    if (mirrorPrefix.data) mirrorPrefix.data = "";
+    if (mirrorSuffix.data) mirrorSuffix.data = "";
     return result;
   };
   const publish = () => {
