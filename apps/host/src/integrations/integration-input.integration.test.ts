@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Request, RequestResponse } from "@opensteer/core";
+import type { EventId, Request, RequestResponse } from "@opensteer/core";
 import { IntegrationPlatformStore } from "@opensteer/database";
 import { LocalMcpServers } from "@opensteer/runner";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -90,15 +90,16 @@ integration("input from a computer's MCP server", () => {
       }),
     ).rejects.toThrow("stale or invalid binding");
     await expect(
-      respond(s.host, request, { kind: "form", answers: { code: ["7319"], count: ["1.5"] } }),
+      respond(s.host, request, { kind: "form", answers: { code: ["Q!Z?"], count: ["1.5"] } }),
     ).rejects.toThrow("does not match");
+    // Non-hex code, >12-digit integer and negative decimal cannot occur in IDs/timestamps.
     await respond(s.host, request, {
       kind: "form",
       answers: {
-        code: ["7319"],
-        count: ["6723"],
+        code: ["Q!Z?"],
+        count: ["6723672367236723"],
         enabled: ["true"],
-        ratio: ["13.75"],
+        ratio: ["-13.75"],
         room: ["Living room"],
       },
     });
@@ -109,13 +110,13 @@ integration("input from a computer's MCP server", () => {
       matched: "yes",
       received: {
         code: "****",
-        count: "****",
+        count: "****************",
         enabled: "****",
-        ratio: "*****",
+        ratio: "******",
         room: "***********",
       },
     });
-    for (const secret of ["7319", "6723", "13.75", "Living room"])
+    for (const secret of ["Q!Z?", "6723672367236723", "-13.75", "Living room"])
       expect(JSON.stringify(result)).not.toContain(secret);
     const saved = await s.host.store.requests.get(request.id);
     expect(saved).toMatchObject({
@@ -125,7 +126,7 @@ integration("input from a computer's MCP server", () => {
         answers: { code: [], count: [], enabled: [], ratio: [], room: [] },
       },
     });
-    await assertNoAnswers(s.host, request, ["7319", "6723", "13.75"]);
+    await assertNoAnswers(s.host, request, ["Q!Z?", "6723672367236723", "-13.75"]);
   }, 60_000);
 
   it("redacts accepted values from later presentations, results and errors on the reused client", async () => {
@@ -137,10 +138,10 @@ integration("input from a computer's MCP server", () => {
     await respond(s.host, await pendingInput(s.host), {
       kind: "form",
       answers: {
-        code: ["7319"],
-        count: ["6723"],
+        code: ["Q!Z?"],
+        count: ["6723672367236723"],
         enabled: ["true"],
-        ratio: ["13.75"],
+        ratio: ["-13.75"],
         room: ["Living room"],
       },
     });
@@ -151,14 +152,14 @@ integration("input from a computer's MCP server", () => {
         "Later call did not finish",
       );
       expect(JSON.stringify(result)).toContain("****");
-      expect(JSON.stringify(result)).not.toContain("7319");
+      expect(JSON.stringify(result)).not.toContain("Q!Z?");
     }
     const later = bounded(
       s.platform.callTool(s.callable, { mode: "repeat" }, s.caller),
       "Later input did not finish",
     );
     const request = await pendingInput(s.host);
-    expect(JSON.stringify(request.presentation)).not.toContain("7319");
+    expect(JSON.stringify(request.presentation)).not.toContain("Q!Z?");
     await respond(s.host, request, { kind: "choice", optionId: "decline" });
     await later;
     const events = await s.host.store.database
@@ -166,7 +167,7 @@ integration("input from a computer's MCP server", () => {
       .selectAll()
       .where("threadId", "=", s.run.threadId)
       .execute();
-    expect(JSON.stringify(events)).not.toContain("7319");
+    expect(JSON.stringify(events)).not.toContain("Q!Z?");
   }, 60_000);
 
   it.each(["decline", "cancel"] as const)(
@@ -230,9 +231,21 @@ integration("input from a computer's MCP server", () => {
       cancellationReason: "source-closed",
     });
     await expect(
-      respond(s.host, request, { kind: "form", answers: { code: ["7319"] } }),
+      respond(s.host, request, { kind: "form", answers: { code: ["Q!Z?"] } }),
     ).rejects.toThrow("no longer pending");
-    await assertNoAnswers(s.host, request, ["7319"]);
+    // Keep old marker collisions in the full scan of unrelated IDs and timestamps.
+    await s.host.store.database
+      .updateTable("workspaceEvents")
+      .set({
+        eventId: "evt_f1867319-d42f-4d69-b727-5a8d77c76723" as EventId,
+        createdAt: new Date("2026-11-07T14:32:13.750Z"),
+      })
+      .where("threadId", "=", s.run.threadId)
+      .where("type", "=", "request.opened")
+      .returning("eventId")
+      .executeTakeFirstOrThrow();
+    expect((await s.host.store.requests.get(request.id))?.response).toBeNull();
+    await assertNoAnswers(s.host, request, ["Q!Z?", "6723672367236723", "-13.75"]);
   }, 60_000);
 
   it("keeps the upstream call open beyond its original deadline while input is pending", async () => {
@@ -581,7 +594,7 @@ server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
     : await server.elicitInput(input, options);
   if (result.action !== "accept") return { content: [{ type: "text", text: result.action + (result._meta ? " " + JSON.stringify(result._meta) : "") }] };
   acceptedCode = result.content.code;
-  const matched = JSON.stringify(result.content) === JSON.stringify({ code: "7319", count: 6723, enabled: true, ratio: 13.75, room: "Living room" });
+  const matched = JSON.stringify(result.content) === JSON.stringify({ code: "Q!Z?", count: 6723672367236723, enabled: true, ratio: -13.75, room: "Living room" });
   return { content: [{ type: "text", text: "accepted " + JSON.stringify(result.content) }], structuredContent: { [result.content.code]: "paired", matched: matched ? "yes" : "no", received: result.content } };
 });
 server.connect(new StdioServerTransport());
