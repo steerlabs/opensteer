@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { expect, it } from "vitest";
+import { realBrowserTests } from "../.github/scripts/ci-test-files.mjs";
 import plugin, {
   assertBaselineShrinks,
   fingerprint,
@@ -289,4 +290,31 @@ it("rejects baseline growth, replacement fingerprints and moved allowances", () 
     { "a.test.ts": { "rule:hash": 0 } },
   ])
     expect(() => assertBaselineShrinks(changed, ceiling)).toThrow("Baseline may only shrink");
+});
+
+it("exempts exactly the listed real-browser paths from the unit timeout rule", () => {
+  const rule = plugin.rules["no-unit-test-timeout"];
+  for (const file of realBrowserTests) {
+    for (const [candidate, exempt] of [
+      [file, true],
+      [`unlisted/${file}`, false],
+    ] as const) {
+      const reports: unknown[] = [];
+      const handlers = rule.create({
+        filename: resolve(candidate),
+        sourceCode: { getText: () => "it", getScope: () => null },
+        report: (diagnostic: unknown) => reports.push(diagnostic),
+      });
+      handlers.CallExpression?.({
+        type: "CallExpression",
+        callee: { type: "Identifier", name: "it" },
+        arguments: [
+          { type: "Literal", value: "journey" },
+          { type: "ArrowFunctionExpression" },
+          { type: "Literal", value: 60_000 },
+        ],
+      });
+      expect(reports.length, candidate).toBe(exempt ? 0 : 1);
+    }
+  }
 });

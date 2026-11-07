@@ -105,6 +105,5 @@ it.each(["person", "unknown"] as const)(
       for (const controller of controllers.values()) controller.abort();
     }
   },
-  // oxlint-disable-next-line opensteer/no-unit-test-timeout -- Real Chromium WebAuthn journey has a 30s scenario deadline plus bounded popup/navigation waits.
   60_000,
 );

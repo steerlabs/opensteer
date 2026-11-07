@@ -1,3 +1,4 @@
+import { realBrowserTests } from "./ci-test-files.mjs";
 import { decide } from "./ci-changes.mjs";
 /**
  * The changed-file slice of CI. A global or unknown input still makes CI run
@@ -44,11 +45,16 @@ export function localPlan(files, graph, present, baseGraph = graph) {
   // Root test files belong to no workspace package; only typecheck:tests covers them.
   else if (files.some((p) => /^tests\/.*\.test\.tsx?$/.test(p))) commands.push(["typecheck:tests"]);
   const ordinary = tests.filter(
-    (p) => !/\.(integration|gui|engine|device|soak)\.test\./.test(p) && !/\.test\.[cm]js$/.test(p),
+    (p) =>
+      !realBrowserTests.includes(p) &&
+      !/\.(integration|gui|engine|device|soak)\.test\./.test(p) &&
+      !/\.test\.[cm]js$/.test(p),
   );
+  const browser = tests.filter((p) => realBrowserTests.includes(p));
   const integration = tests.filter((p) => /\.integration\.test\./.test(p));
   const gui = tests.filter((p) => /\.gui\.test\./.test(p));
   if (ordinary.length) commands.push(["pretest"], ["exec", "vitest", "run", ...ordinary]);
+  if (browser.length) commands.push(["test:browser", "--", ...browser]);
   if (integration.length) commands.push(["test:integration", "--", ...integration]);
   if (gui.length) commands.push(["test:vm", "--", "pnpm", "test:gui", "--", ...gui]);
   if (files.some((p) => p.startsWith("apps/agent-phone/")))

@@ -569,3 +569,38 @@ test("notification preview native suites select their existing lanes", () => {
   assert.equal(fixture.lanes.android, true);
   assert.equal(fixture.lanes.tests, true);
 });
+
+test("real-browser owners, dependencies, root files and deletions select browser journeys", async () => {
+  const { realBrowserTests } = await import("./ci-test-files.mjs");
+  for (const file of realBrowserTests)
+    assert.equal(decide([file], realGraph).lanes["browser-journeys"], true, file);
+  const owners = realGraph.filter((owner) =>
+    realBrowserTests.some((file) => file.startsWith(owner.dir + "/")),
+  );
+  for (const owner of owners) {
+    assert.ok(owner.coverage.includes("browser-journeys"), owner.name);
+    const pending = [owner.name];
+    const seen = new Set();
+    while (pending.length) {
+      const name = pending.pop();
+      if (seen.has(name)) continue;
+      seen.add(name);
+      const dependency = realGraph.find((entry) => entry.name === name);
+      assert.ok(dependency);
+      assert.equal(
+        decide([`${dependency.dir}/src/change.ts`], realGraph).lanes["browser-journeys"],
+        true,
+        name,
+      );
+      pending.push(...dependency.deps);
+    }
+    const head = realGraph.map((entry) =>
+      entry.name === owner.name ? { ...entry, coverage: [] } : entry,
+    );
+    assert.equal(
+      decide([`${owner.dir}/removed.ts`], head, realGraph).lanes["browser-journeys"],
+      true,
+    );
+  }
+  assert.equal(decide(["vitest.browser.config.ts"], realGraph).lanes["browser-journeys"], true);
+});

@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
+import { realBrowserTests } from "../.github/scripts/ci-test-files.mjs";
 import { localPlan } from "../.github/scripts/local-check.mjs";
 import { changedPlan, checkablePaths } from "../scripts/check-changed.js";
 it("selects sibling tests and reverse workspace consumers", () => {
@@ -40,4 +41,14 @@ it("leaves symbolic links and missing paths out of the checked files", () => {
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+it("keeps listed browser tests out of ordinary changed-file execution", () => {
+  const selected = realBrowserTests.flatMap((file) => [file.replace(/\.test\.tsx?$/, ".ts"), file]);
+  const plan = localPlan(realBrowserTests, [], selected);
+  expect(plan.commands.filter((command: string[]) => command[0] === "test:browser")).toEqual([
+    ["test:browser", "--", ...realBrowserTests],
+  ]);
+  expect(plan.commands.some((command: string[]) => command.includes("vitest"))).toBe(false);
+  expect(plan.lanes["browser-journeys"]).toBe(true);
 });

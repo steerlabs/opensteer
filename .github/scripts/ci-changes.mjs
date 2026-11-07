@@ -4,6 +4,7 @@ import {
   defaultTestInclude,
   defaultTestExclude,
   integrationTestInclude,
+  realBrowserTests,
 } from "./ci-test-files.mjs";
 import { matchesGlob, basename, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -57,8 +58,16 @@ export function readGraph(root, ref) {
     const owned = paths.filter((p) => p.startsWith(dir + "/"));
     const matches = (file, globs) => globs.some((glob) => matchesGlob(file, glob));
     const coverage = [];
+    if (owned.some((p) => realBrowserTests.includes(p))) coverage.push("browser-journeys");
     if (owned.some((p) => matches(p, integrationTestInclude))) coverage.push("integration");
-    if (owned.some((p) => matches(p, defaultTestInclude) && !matches(p, defaultTestExclude)))
+    if (
+      owned.some(
+        (p) =>
+          matches(p, defaultTestInclude) &&
+          !matches(p, defaultTestExclude) &&
+          !realBrowserTests.includes(p),
+      )
+    )
       coverage.push("tests");
     // Swift packages are built/tested on macOS; include their manifest dependency
     // closure below because the native lane also exercises their TS wire consumers.
@@ -176,13 +185,14 @@ export function decide(files, graph, baseGraph = graph, full = false, { fullMac 
     });
   }
   let all = full;
-  const rootTests = { any: false, integration: false };
+  const rootTests = { any: false, integration: false, browser: false };
   let androidSource = false;
   if (full) reasons.push("main/manual full run");
   for (const file of files) {
     if (docs(file) || guidance(file)) continue;
     if (rootTest(file)) {
       rootTests.any = true;
+      if (realBrowserTests.includes(file)) rootTests.browser = true;
       if (/\.integration\.test\./.test(file)) rootTests.integration = true;
       continue;
     }
@@ -259,7 +269,12 @@ export function decide(files, graph, baseGraph = graph, full = false, { fullMac 
       integration: all || reaches("integration") || rootTests.integration,
       "native-mac": macTasks.length > 0,
       android: all || androidSource || reaches("android"),
-      "browser-journeys": all || reaches("browser-journeys"),
+      // Root browser tests have no manifest and import across workspaces, like root unit guards.
+      "browser-journeys":
+        all ||
+        reaches("browser-journeys") ||
+        rootTests.browser ||
+        (affected.size > 0 && realBrowserTests.some((file) => file.startsWith("tests/"))),
     },
   };
 }
