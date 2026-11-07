@@ -1,3 +1,4 @@
+import { parseCaptureJsonl } from "@opensteer/shared/test-support/captureJsonl";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -326,11 +327,9 @@ integration("Background work", () => {
       await active.restartRunner();
       await settled(active, runId);
       // The turn that started after the stop was interrupted by its own id.
-      const interrupted = (await readFile(captureFile, "utf8"))
-        .split("\n")
-        .filter(Boolean)
-        .map((line) => JSON.parse(line) as { rootInterrupted?: string | null })
-        .flatMap((line) => (line.rootInterrupted === undefined ? [] : [line.rootInterrupted]));
+      const interrupted = parseCaptureJsonl<{ rootInterrupted?: string | null }>(
+        await readFile(captureFile, "utf8"),
+      ).flatMap((line) => (line.rootInterrupted === undefined ? [] : [line.rootInterrupted]));
       expect(interrupted).toEqual(["codex-turn-2"]);
       const journey = await record("Runner stop while a turn starts", active, runId);
       expect(journey.run).not.toMatchObject({ status: "completed" });

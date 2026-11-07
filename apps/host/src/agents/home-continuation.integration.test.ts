@@ -1,3 +1,4 @@
+import { parseCaptureJsonl } from "@opensteer/shared/test-support/captureJsonl";
 import { readToolRecords } from "../mcp/product-tools.test-support.js";
 import { ProductToolsTestClient } from "../mcp/product-tools.test-support.js";
 import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
@@ -352,10 +353,9 @@ integration("durable Thread changes native continuation", () => {
     expect(muteState.data.notificationPreferences).toEqual(
       expect.arrayContaining([expect.objectContaining({ workspaceId, muted: true })]),
     );
-    const capture = (await readFile(capturePath, "utf8"))
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line) as { method?: string; params?: { input?: unknown } });
+    const capture = parseCaptureJsonl<{ method?: string; params?: { input?: unknown } }>(
+      await readFile(capturePath, "utf8"),
+    );
     const starts = capture.filter((entry) => entry.method === "turn/start");
     expect(starts).toHaveLength(4);
     const historicalContext = starts.map((entry) =>
@@ -491,11 +491,9 @@ integration("durable Thread changes native continuation", () => {
       omittedCount: 1,
       messageIds: [previous[1]?.id],
     });
-    const starts = (await readFile(capturePath, "utf8"))
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line) as { method?: string; params?: { input?: unknown } })
-      .filter((entry) => entry.method === "turn/start");
+    const starts = parseCaptureJsonl<{ method?: string; params?: { input?: unknown } }>(
+      await readFile(capturePath, "utf8"),
+    ).filter((entry) => entry.method === "turn/start");
     expect(starts).toHaveLength(2);
     const secondInput = JSON.stringify(starts[1]?.params?.input);
     expect(secondInput).toContain("[Opensteer earlier conversation]");

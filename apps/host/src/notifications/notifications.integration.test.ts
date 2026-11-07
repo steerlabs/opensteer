@@ -1,3 +1,4 @@
+import { parseCaptureJsonl } from "@opensteer/shared/test-support/captureJsonl";
 import { ManualClock } from "@opensteer/shared/test-support/clock";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
@@ -890,13 +891,11 @@ async function waitForNotification(
 }
 
 async function capturedTurns(path: string): Promise<readonly string[]> {
-  return (await readFile(path, "utf8"))
-    .split("\n")
-    .filter((line) => line.trim() !== "")
-    .flatMap((line) => {
-      const entry = JSON.parse(line) as { readonly notificationsTurn?: { readonly text: string } };
-      return entry.notificationsTurn ? [entry.notificationsTurn.text] : [];
-    });
+  return parseCaptureJsonl<{ readonly notificationsTurn?: { readonly text: string } }>(
+    await readFile(path, "utf8"),
+  ).flatMap((entry) => {
+    return entry.notificationsTurn ? [entry.notificationsTurn.text] : [];
+  });
 }
 
 async function waitFor<Value>(

@@ -1,3 +1,4 @@
+import { parseCaptureJsonl } from "@opensteer/shared/test-support/captureJsonl";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -96,10 +97,7 @@ integration("Task naming through the Runner", () => {
     });
     const active = stack;
     const captured = async (): Promise<Captured[]> =>
-      (await readFile(captureFile, "utf8").catch(() => ""))
-        .split("\n")
-        .filter(Boolean)
-        .map((line) => JSON.parse(line) as Captured);
+      parseCaptureJsonl<Captured>(await readFile(captureFile, "utf8").catch(() => ""));
     return {
       active,
       captured,
