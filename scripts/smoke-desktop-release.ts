@@ -1,4 +1,4 @@
-import { execFile, execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { appendFileSync, closeSync, openSync, watch } from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
@@ -6,6 +6,7 @@ import { tmpdir, homedir } from "node:os";
 import { guestAllowed } from "../apps/desktop/scripts/journey-isolation.js";
 import path from "node:path";
 import { parseArgs } from "node:util";
+import { bounded as runBounded, command as runCommand } from "./smoke-desktop-release-command.js";
 import { descendantPids } from "./smoke-desktop-release-processes.js";
 import {
   assertEphemeralRunner,
@@ -71,42 +72,18 @@ const hardDeadline = setTimeout(() => {
   killCaptured();
   process.exit(1);
 }, 180_000);
-async function bounded<T>(
-  name: string,
-  milliseconds: number,
-  work: (signal: AbortSignal) => Promise<T>,
-): Promise<T> {
-  step = name;
-  const timeout = AbortSignal.timeout(milliseconds);
-  const signal = AbortSignal.any([timeout, failure.signal]);
-  signal.throwIfAborted();
-  let stop: (() => void) | undefined;
-  try {
-    return await Promise.race([
-      work(signal),
-      new Promise<never>((_, reject) => {
-        stop = () => reject(Error(`${name}: ${String(signal.reason)}`));
-        signal.addEventListener("abort", stop, { once: true });
-      }),
-    ]);
-  } finally {
-    if (stop) signal.removeEventListener("abort", stop);
-  }
+function trace(event: Record<string, unknown>) {
+  appendFileSync(
+    path.join(artifacts, "observer.log"),
+    JSON.stringify({ at: new Date().toISOString(), ...event }) + "\n",
+  );
 }
-function command(program: string, args: string[], timeout = 10_000): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = execFile(
-      program,
-      args,
-      { timeout, killSignal: "SIGKILL", maxBuffer: 2 * 1024 * 1024 },
-      (error, stdout, stderr) => {
-        if (child.pid) roots.delete(child.pid);
-        if (error) reject(Error(`${program}: ${stderr || error.message}`));
-        else resolve(stdout);
-      },
-    );
-    if (child.pid) roots.add(child.pid);
-  });
+function bounded<T>(name: string, milliseconds: number, work: (signal: AbortSignal) => Promise<T>) {
+  step = name;
+  return runBounded(name, milliseconds, work, failure, trace);
+}
+function command(program: string, args: string[], timeout = 10_000) {
+  return runCommand(program, args, timeout, roots, trace);
 }
 async function ports(): Promise<[number, number]> {
   const servers = [net.createServer(), net.createServer()];
@@ -234,6 +211,7 @@ try {
     closeSync(stderr);
   }
   const child = app;
+  trace({ event: "app.launched", pid: child.pid });
   if (child.pid) roots.add(child.pid);
   exit = new Promise((resolve) => {
     child.once("error", (error) => failure.abort(error));
@@ -280,7 +258,7 @@ try {
   );
   passed = true;
 } catch (error) {
-  const message = `${step}: ${String(error)}`;
+  const message = `${step}: ${String(error)}\nPhase and child output trace: ${path.join(artifacts, "observer.log")}`;
   console.error(message);
   await writeFile(path.join(artifacts, "failure.txt"), message + "\n");
   if (ciInstall)
