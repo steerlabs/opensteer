@@ -7,6 +7,28 @@ export const integrationTestInclude = [
   "packages/**/*.integration.test.ts",
   "tests/**/*.integration.test.ts",
 ];
+export const realBrowserTests = [
+  "apps/browser-runtime/src/browser/agent-cursor.test.ts",
+  "apps/browser-runtime/src/browser/browser-test-lifecycle.test.ts",
+  "apps/browser-runtime/src/browser/chromium-clipboard.test.ts",
+  "apps/browser-runtime/src/browser/chromium-follow-view.test.ts",
+  "apps/browser-runtime/src/browser/chromium-popup-follow.test.ts",
+  "apps/browser-runtime/src/browser/chromium-runtime.test.ts",
+  "apps/browser-runtime/src/browser/chromium-teardown.test.ts",
+  "apps/browser-runtime/src/browser/drag-cancel.test.ts",
+  "apps/browser-runtime/src/browser/editing.test.ts",
+  "apps/browser-runtime/src/browser/favicon.test.ts",
+  "apps/browser-runtime/src/browser/harness-actions-deadlines.test.ts",
+  "apps/browser-runtime/src/browser/harness-actions-input-lifecycle.test.ts",
+  "apps/browser-runtime/src/browser/harness-actions.test.ts",
+  "apps/browser-runtime/src/browser/navigation.test.ts",
+  "apps/browser-runtime/src/browser/passkey-provider.test.ts",
+  "apps/browser-runtime/src/browser/session-files.test.ts",
+  "apps/web/src/components/apps/app-isolation.test.ts",
+  "apps/web/src/components/workspace/workspace-tabs-chromium.interaction.test.tsx",
+  "tests/passkey-relay-provider.test.ts",
+  "tests/passkey-routing.test.ts",
+];
 export const defaultTestInclude = [
   "apps/**/*.test.ts",
   "apps/**/*.test.tsx",

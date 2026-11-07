@@ -419,6 +419,18 @@ jobs:
           } >> "$GITHUB_ENV"
         shell: bash
       - uses: ./.github/actions/ci-browser
+      - name: Test real Chromium suites
+        shell: bash
+        env:
+          CI_LANE: browser
+          CI_SHARD: 1
+          CI_SHARDS: 1
+          CI_DISCOVERY_PATH: ${{ runner.temp }}/evidence/browser-1.discovered.json
+          CI_INVENTORY_PATH: ${{ runner.temp }}/evidence/browser-1.inventory.json
+        run: |
+          set -o pipefail
+          pnpm exec vitest list --config vitest.browser.config.ts --filesOnly --json "$CI_DISCOVERY_PATH"
+          pnpm test:browser --reporter=default --reporter=junit --reporter=json --reporter=./scripts/ci-inventory-reporter.ts --outputFile.junit="$RUNNER_TEMP/evidence/browser-1.xml" --outputFile.json="$RUNNER_TEMP/evidence/browser-1.results.json" 2>&1 | tee "$RUNNER_TEMP/evidence/browser-1.log"
       - shell: bash
         run: |
           set -o pipefail
@@ -428,13 +440,21 @@ jobs:
             pnpm --filter @opensteer/web test:transcript-links
             pnpm --filter @opensteer/web test:start-page-computers
           } 2>&1 | tee "$RUNNER_TEMP/evidence/browser-journeys.log"
+      - name: Collect browser journey evidence
+        if: always()
+        shell: bash
+        run: |
+          shopt -s nullglob
+          for directory in /tmp/opensteer-*-e2e; do
+            if [[ -d "$directory" ]]; then
+              cp -R "$directory" "$RUNNER_TEMP/evidence/"
+            fi
+          done
       - if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: browser-journeys-${{ github.sha }}
-          path: |
-            ${{ runner.temp }}/evidence
-            /tmp/opensteer-*-e2e
+          path: ${{ runner.temp }}/evidence
           if-no-files-found: error
   Check:
     timeout-minutes: 3

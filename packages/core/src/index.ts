@@ -1,5 +1,6 @@
 export * from "./collections.js";
 export * from "./computer-app.js";
+export * from "./tool-identity.js";
 export * from "./attachments.js";
 export * from "./apps.js";
 export * from "./browser-sources.js";

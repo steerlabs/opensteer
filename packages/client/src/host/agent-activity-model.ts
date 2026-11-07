@@ -1,9 +1,10 @@
-import type {
-  AssignmentSummary,
-  BrowserTabWriteInput,
-  WaitingRequest,
-  MessageAuthor,
-  IntegrationCallSubject,
+import {
+  isIntegrationGatewayTool,
+  type AssignmentSummary,
+  type BrowserTabWriteInput,
+  type WaitingRequest,
+  type MessageAuthor,
+  type IntegrationCallSubject,
 } from "@opensteer/core";
 import type { TriggerWriteInput } from "@opensteer/triggers";
 import { readComputerUseResultHeadline, readComputerStepHeadline } from "@opensteer/protocol";
@@ -1735,22 +1736,7 @@ export interface ToolPresentation {
 }
 
 function isIntegrationGateway(tool: ToolEntry): boolean {
-  const identity = tool.tool;
-  return (
-    identity !== null &&
-    identity !== undefined &&
-    (identity.namespace === "opensteer.integrations" ||
-      identity.namespace === "mcp:opensteer_integrations" ||
-      (identity.namespace === "opensteer" &&
-        (identity.name === "computer" ||
-          [
-            "integration_search",
-            "integration_describe",
-            "integration_call",
-            "integration_request",
-            "integration_propose",
-          ].includes(identity.name))))
-  );
+  return tool.tool != null && isIntegrationGatewayTool(tool.tool);
 }
 
 /**
@@ -2351,10 +2337,9 @@ function webSearchPresentation(args: unknown): ToolPresentation {
 }
 
 /**
- * The integration gateway, read by what each call addressed. A call's
- * arguments name its target only by an opaque reference, so the words come
- * from the subject the Host resolved when it recorded the call; a call with
- * none addressed nothing the Host could name, and says only what it was.
+ * The integration gateway, read by what each call addressed: the subject the
+ * Host resolved when it recorded the call. A call without one still names the
+ * operation it asked for; only a call recorded by opaque reference says no more.
  */
 function integrationPresentation(
   tool: ToolEntry,
@@ -2363,6 +2348,8 @@ function integrationPresentation(
 ): ToolPresentation | null {
   const subject = tool.integration;
   const place = computerPlace(tool);
+  // An address is `name@digest`; the digest only pins the schema.
+  const asked = stringField(args, "operation")?.replace(/@[^@]*$/u, "") || null;
   switch (name) {
     case "integration_call":
       if (subject && place) return computerPresentation(tool, subject, place);
@@ -2375,20 +2362,26 @@ function integrationPresentation(
         });
       }
       return gatewayStep({
-        activeLabel: "Calling an integration",
+        activeLabel: asked ? `Calling ${asked}` : "Calling an integration",
         hint: "",
         kind: "integration-call",
-        label: "Called an integration",
+        label: asked ? `Called ${asked}` : "Called an integration",
       });
     case "integration_describe":
       return gatewayStep({
         activeLabel: subject
           ? `Looking up ${subject.operation.title}`
-          : "Looking up an integration",
+          : asked
+            ? `Looking up ${asked}`
+            : "Looking up an integration",
         hint: place?.kind === "phone" ? place.computer : (subject?.integration ?? ""),
         // Reading how to use an app is part of using it, so it stays in that app's row.
         kind: place ? "computer" : "integration-lookup",
-        label: subject ? `Looked up ${subject.operation.title}` : "Looked up an integration",
+        label: subject
+          ? `Looked up ${subject.operation.title}`
+          : asked
+            ? `Looked up ${asked}`
+            : "Looked up an integration",
       });
     case "integration_search": {
       const onMac = stringField(args, "runnerId") !== null;

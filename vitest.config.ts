@@ -2,6 +2,7 @@ import CiSequencer from "./scripts/ci-sequencer.js";
 import "./apps/desktop/vitest.config.js";
 import {
   darwinOnlyTests,
+  realBrowserTests,
   defaultTestInclude,
   defaultTestExclude,
 } from "./.github/scripts/ci-test-files.mjs";
@@ -27,12 +28,11 @@ export default defineConfig({
     exclude: [
       ...configDefaults.exclude,
       ...defaultTestExclude,
+      ...realBrowserTests,
       ...(process.platform === "darwin" ? [] : darwinOnlyTests),
     ],
     include: defaultTestInclude,
-    // Browser and engine journeys spawn children beyond the Vitest fork itself, and
-    // other work and the agents themselves run beside them: a third of the cores keeps
-    // the heaviest tests inside their budgets on a loaded machine.
+    // Other work and agents run beside these workers; leave cores for them.
     maxWorkers: Math.max(2, Math.floor(availableParallelism() / 3)),
     sequence: { sequencer: CiSequencer },
     pool: "forks",

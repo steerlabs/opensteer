@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { darwinTask } from "../.github/scripts/ci-changes.mjs";
 import { validateResults } from "../.github/scripts/ci-check.mjs";
 import { checkInventories } from "../.github/scripts/ci-inventories.mjs";
-import { darwinOnlyTests } from "../.github/scripts/ci-test-files.mjs";
+import { darwinOnlyTests, realBrowserTests } from "../.github/scripts/ci-test-files.mjs";
 import { mergeLockGraphs } from "./ci-lock-merge.js";
 const directory = process.argv[2]!;
 const read = (name: string) => JSON.parse(readFileSync(join(directory, name), "utf8"));
@@ -27,6 +27,15 @@ for (const [lane, count] of [
     count,
     lane,
   );
+}
+if (plan.lanes["browser-journeys"]) {
+  const inventory = read("browser-1.inventory.json");
+  checkInventories([inventory], 1, "browser");
+  if (
+    JSON.stringify([...inventory.discovered].sort()) !==
+    JSON.stringify([...realBrowserTests].sort())
+  )
+    throw new Error("Browser discovery differs from the required files");
 }
 // One task runs the Darwin-only files; Swift-only tasks upload no inventory.
 if (plan.nativeMac?.includes(darwinTask)) {

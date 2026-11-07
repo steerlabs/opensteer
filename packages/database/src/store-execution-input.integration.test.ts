@@ -1743,7 +1743,7 @@ describeStore("PostgreSQL store", (it) => {
     const reported = {
       arguments: { arguments: { actions: [] }, toolRef: "igr_x.itl_y.digest" },
       callId: "call-act",
-      tool: { name: "integration_call", namespace: "opensteer.integrations" },
+      tool: { name: "integration_call", namespace: "opensteer" },
     };
     // A Runner cannot name the subject itself; its copy is dropped at the
     // boundary and the Host's stands.
@@ -1825,6 +1825,26 @@ describeStore("PostgreSQL store", (it) => {
         runnerId: fixture.runnerId,
       }),
     ).rejects.toThrow("Only a tool.started event names an integration call's subject");
+
+    // After a restart the Host rebuilds the Thread's last app from its named calls.
+    await store.commitRunnerEvent({
+      environmentId: fixture.environmentId,
+      event: pendingEvent({
+        ...base,
+        data: { callId: "call-act", isError: false, output: { text: "done" } },
+        ordinal: 3,
+        type: "tool.completed",
+      }),
+      runnerBootId,
+      runnerId: fixture.runnerId,
+    });
+    await expect(store.latestNativePlaces(fixture.userId)).resolves.toEqual([
+      expect.objectContaining({
+        place: { appKey: "com.tinyspeck.slackmacgap", kind: "app", machineId: fixture.runnerId },
+        runId: work.run.id,
+        threadId: fixture.thread.id,
+      }),
+    ]);
   });
 
   it("names a Run's requester only for its own Thread and Workspace", async ({ storeFixture }) => {
