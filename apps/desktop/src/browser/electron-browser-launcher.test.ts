@@ -85,9 +85,15 @@ vi.mock("electron", () => {
           Promise.resolve(
             method === "Target.getTargetInfo"
               ? { targetInfo: { targetId: "target-1" } }
-              : method === "Network.getAllCookies"
-                ? { cookies: [] }
-                : {},
+              : method === "Page.getFrameTree"
+                ? {
+                    frameTree: {
+                      frame: { id: "target-1", loaderId: "loader-1", url: this.getURL() },
+                    },
+                  }
+                : method === "Network.getAllCookies"
+                  ? { cookies: [] }
+                  : {},
           )
         );
       }),
@@ -377,7 +383,9 @@ describe("Electron title reads at teardown", () => {
     const send = contents.debugger.sendCommand.getMockImplementation()!;
     contents.debugger.sendCommand.mockImplementation((method: string, ...rest: unknown[]) => {
       if (method === "Page.getFrameTree")
-        return Promise.resolve({ frameTree: { frame: { id: "target-1", loaderId: "loader-1" } } });
+        return Promise.resolve({
+          frameTree: { frame: { id: "target-1", loaderId: "loader-1", url: contents.getURL() } },
+        });
       // The page's own document never answers its title read.
       if (method === "Runtime.evaluate") return held.promise;
       return (send as (method: string, ...rest: unknown[]) => Promise<unknown>)(method, ...rest);

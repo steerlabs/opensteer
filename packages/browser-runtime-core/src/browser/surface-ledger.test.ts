@@ -1,3 +1,4 @@
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { browserWorkspaceTabUrlMaxLength } from "@opensteer/protocol/browser";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -30,6 +31,77 @@ const scriptTargetSetup = [
 ];
 
 describe("SurfaceLedger", () => {
+  it("initializes a popup from its committed document when enable misses the first commit", async () => {
+    const page = new FakePage({ url: "about:blank" });
+    const deliver = page.cdpSession.emit.bind(page.cdpSession);
+    let enabled = false;
+    vi.spyOn(page.cdpSession, "emit").mockImplementation((method, parameters) => {
+      if (method !== "Page.frameNavigated" || enabled) deliver(method, parameters);
+    });
+    page.cdpSession.responses.set("Page.enable", () => {
+      page.navigate("https://middle.test/destination", "Middle destination");
+      enabled = true;
+      return {};
+    });
+    const ledger = new SurfaceLedger(new FakeContext([page]));
+    try {
+      await ledger.start();
+      await vi.waitFor(
+        () =>
+          expect(ledger.snapshot()[0]).toMatchObject({
+            url: "https://middle.test/destination",
+            title: "Middle destination",
+          }),
+        { timeout: 1000 },
+      );
+    } finally {
+      await ledger.close();
+    }
+  });
+
+  it.each(["document", "same-document"])(
+    "does not overwrite a newer %s navigation with the initial frame snapshot",
+    async (kind) => {
+      const page = new FakePage({ url: "https://old.test/" });
+      const old = {
+        frameTree: {
+          frame: { id: await page.targetId(), loaderId: page.loaderId, url: page.url() },
+        },
+      };
+      const snapshot = Promise.withResolvers<typeof old>();
+      const requested = Promise.withResolvers<void>();
+      const answer = page.cdpSession.responses.get("Page.getFrameTree");
+      let first = true;
+      page.cdpSession.responses.set("Page.getFrameTree", (parameters?: Record<string, unknown>) => {
+        if (first) {
+          first = false;
+          requested.resolve();
+          return snapshot.promise;
+        }
+        return typeof answer === "function" ? answer(parameters) : answer;
+      });
+      const ledger = new SurfaceLedger(new FakeContext([page]));
+      const starting = ledger.start();
+      try {
+        await withTimeout(requested.promise, 1000, {
+          timeoutError: () => new Error("Initial frame snapshot never started"),
+        });
+        const url = kind === "document" ? "https://new.test/" : "https://old.test/#new";
+        if (kind === "document") page.navigate(url, "New document");
+        else page.setMetadata("New document", url);
+        snapshot.resolve(old);
+        await starting;
+        await vi.waitFor(
+          () => expect(ledger.snapshot()[0]).toMatchObject({ url, title: "New document" }),
+          { timeout: 1000 },
+        );
+      } finally {
+        snapshot.resolve(old);
+        await ledger.close();
+      }
+    },
+  );
+
   it.each(["reply-first", "commit-first", "push-state", "redirect"] as const)(
     "emits the frozen main-frame commit exactly once (%s)",
     async (ordering) => {
@@ -694,6 +766,7 @@ describe("SurfaceLedger", () => {
     // The popup's starting size is in flight.
     expect(popup.cdpSession.sent.map((command) => command.method)).toEqual([
       "Page.enable",
+      "Page.getFrameTree",
       "Emulation.setDeviceMetricsOverride",
     ]);
 
