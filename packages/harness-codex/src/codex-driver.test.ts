@@ -1,3 +1,4 @@
+import { parseCaptureJsonl } from "@opensteer/shared/test-support/captureJsonl";
 import { agentTools, requestToolNames } from "@opensteer/agent-tools";
 import { collisionSkills } from "@opensteer/shared/test-support/agentSkills";
 import {
@@ -805,10 +806,9 @@ describe("Codex app-server harness", () => {
     ]);
     // A model with no tiers offers no speed choice at all.
     expect(inspected.models[0]?.options.map((option) => option.id)).toEqual(["effort"]);
-    const listRequests = (await readFile(capturePath, "utf8"))
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line) as { method?: string; params?: unknown })
+    const listRequests = parseCaptureJsonl<{ method?: string; params?: unknown }>(
+      await readFile(capturePath, "utf8"),
+    )
       .filter((message) => message.method === "model/list")
       .map((message) => message.params);
     expect(listRequests).toEqual([{ limit: 256 }, { cursor: "page-2", limit: 256 }]);
@@ -929,10 +929,7 @@ describe("Codex app-server harness", () => {
     });
 
     expect(inspected?.status).toBe("ready");
-    const captured = (await readFile(capturePath, "utf8"))
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => JSON.parse(line) as JsonRecord);
+    const captured = parseCaptureJsonl<JsonRecord>(await readFile(capturePath, "utf8"));
     const processBoundary = captured.find((message) => message.fakeCodexProcess)
       ?.fakeCodexProcess as JsonRecord | undefined;
     const deploymentShape = (processBoundary?.argv as unknown[] | undefined)?.find(
@@ -1056,10 +1053,7 @@ describe("Codex app-server harness", () => {
         workingDirectory: directory,
       });
       expect(inspected?.status).toBe("ready");
-      const messages = (await readFile(capturePath, "utf8"))
-        .split("\n")
-        .filter(Boolean)
-        .map((line) => JSON.parse(line) as JsonRecord);
+      const messages = parseCaptureJsonl<JsonRecord>(await readFile(capturePath, "utf8"));
       return (
         messages.find((message) => message.fakeCodexProcess)?.fakeCodexProcess as
           JsonRecord | undefined
@@ -3150,10 +3144,7 @@ async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixt
         if (error.code === "ENOENT") return "";
         throw error;
       });
-      return text
-        .split("\n")
-        .filter(Boolean)
-        .map((line) => JSON.parse(line) as JsonRecord);
+      return parseCaptureJsonl<JsonRecord>(text);
     },
     turn(text) {
       return {

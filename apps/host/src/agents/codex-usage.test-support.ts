@@ -1,3 +1,4 @@
+import { parseCaptureJsonl } from "@opensteer/shared/test-support/captureJsonl";
 import { readFile } from "node:fs/promises";
 import type { RunId, RunUsage, ThreadId } from "@opensteer/core";
 import { expect } from "vitest";
@@ -72,17 +73,16 @@ export async function codexUsageFrames(captureFile: string): Promise<CodexUsageF
   let turnStarts = 0;
   const namingThreads = new Set<string>();
   const frames: CodexUsageFrame[] = [];
-  for (const line of text.split("\n").filter(Boolean)) {
-    const captured = JSON.parse(line) as {
-      readonly fakeTurn?: unknown;
-      readonly fakeTitleTurn?: { readonly threadId: string };
-      readonly usageFrame?: {
-        readonly label: string;
-        readonly threadId: string;
-        readonly tokenUsage: { readonly last: CodexTokens; readonly total: CodexTokens };
-        readonly turnId: string;
-      };
+  for (const captured of parseCaptureJsonl<{
+    readonly fakeTurn?: unknown;
+    readonly fakeTitleTurn?: { readonly threadId: string };
+    readonly usageFrame?: {
+      readonly label: string;
+      readonly threadId: string;
+      readonly tokenUsage: { readonly last: CodexTokens; readonly total: CodexTokens };
+      readonly turnId: string;
     };
+  }>(text)) {
     if (captured.fakeTurn) turnStarts += 1;
     if (captured.fakeTitleTurn) namingThreads.add(captured.fakeTitleTurn.threadId);
     const frame = captured.usageFrame;

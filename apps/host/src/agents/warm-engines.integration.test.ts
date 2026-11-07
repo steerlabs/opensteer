@@ -1,3 +1,4 @@
+import { parseCaptureJsonl } from "@opensteer/shared/test-support/captureJsonl";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -884,10 +885,7 @@ function turnServers(capture: readonly Captured[]): number {
 
 async function captured(file: string): Promise<Captured[]> {
   const text = await readFile(file, "utf8").catch(() => "");
-  return text
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => JSON.parse(line) as Captured);
+  return parseCaptureJsonl<Captured>(text);
 }
 
 /** A release file that already exists, so a background child finishes as soon as it starts. */
