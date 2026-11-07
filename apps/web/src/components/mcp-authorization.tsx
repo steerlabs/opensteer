@@ -2,14 +2,20 @@ import {
   AgentConnectionAuthorizationTargetSchema,
   agentConnectionDeepLink,
 } from "@opensteer/protocol";
-import { opensteerDesktopClient } from "@opensteer/core";
+import {
+  opensteerDesktopClient,
+  opensteerMobileClient,
+  type ThreadAccessMode,
+} from "@opensteer/core";
 import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
 import { useEffect, useRef, useState } from "react";
 import type { AgentConnectionConsent } from "@opensteer/protocol";
-import { ThreadAccessModeSchema, type ThreadAccessMode } from "@opensteer/core";
+import { Icon } from "./icon.js";
+import { SectionHeader } from "./settings/primitives.js";
 import {
-  connectionAccessLabel,
-  mutationIdempotencyKey,
+  accessModeOptions,
+  answerAgentConnection,
+  connectionDestination,
   unwrapRpcResult,
   type HostClient,
 } from "@opensteer/client/host";
@@ -68,33 +74,16 @@ export function McpAuthorization({
     setBusy(true);
     setError(null);
     try {
-      const result = await client.dispatch({
-        type: "connection.authorize",
-        requestId: consent.requestId,
-        idempotencyKey: mutationIdempotencyKey("connection-consent"),
-        decision: approve
-          ? {
-              kind: "approve",
-              label,
-              accessMode: mode,
-              reach:
-                reach === "user"
-                  ? { kind: "user" }
-                  : {
-                      kind: "workspace",
-                      workspaceId: consent.workspaces.find((w) => w.id === reach)!.id,
-                    },
-            }
-          : { kind: "deny" },
-      });
+      const completion = await answerAgentConnection(
+        client,
+        consent,
+        approve ? { kind: "approve", label, accessMode: mode, reach } : { kind: "deny" },
+      );
       if (currentRevision !== revision.current) return;
-      if (result.type !== "connection.authorize") throw new Error();
       if (desktopBridge) {
-        await desktopBridge.openExternalUrl({
-          url: new URL(result.completionPath, consent.resource).href,
-        });
+        await desktopBridge.openExternalUrl({ url: completion });
         if (currentRevision === revision.current) onClose?.();
-      } else window.location.assign(result.completionPath);
+      } else window.location.assign(completion);
     } catch {
       if (currentRevision !== revision.current) return;
       setError("The connection could not be approved. Refresh and try again.");
@@ -102,46 +91,43 @@ export function McpAuthorization({
     }
   }
   return (
-    <main className="page settings">
+    <main className="page settings settings-layout">
       <div className="settings-content">
-        <div className="settings-content__inner">
-          <h1>Connect an agent</h1>
+        <div className="settings-content__inner agent-consent">
           {consent ? (
             <>
-              <p>
-                <strong>{consent.clientName}</strong> wants to act for you in Opensteer. App names
-                are supplied by the app and are not verified.
+              <SectionHeader
+                title={`Allow ${consent.clientName} to use Opensteer?`}
+                lead="App names come from the app and are not verified. Only allow an agent you just added."
+              />
+              <p className="agent-consent__where">
+                <Icon name="globe" />
+                <span>{connectionDestination(consent.redirectUri)}</span>
               </p>
-              <p>
-                Returns to <strong>{new URL(consent.redirectUri).origin}</strong>. Connect only an
-                agent you recognize.
-              </p>
-              <label>
-                Connection name{" "}
-                <input
-                  value={label}
-                  maxLength={120}
-                  disabled={busy}
-                  onChange={(event) => setLabel(event.target.value)}
-                />
-              </label>
-              <label>
-                Access ceiling{" "}
-                <select
-                  value={mode}
-                  disabled={busy}
-                  onChange={(event) => setMode(ThreadAccessModeSchema.parse(event.target.value))}
-                >
-                  {ThreadAccessModeSchema.options.map((value) => (
-                    <option key={value} value={value}>
-                      {connectionAccessLabel(value)}
-                    </option>
+              <fieldset className="settings-group" disabled={busy}>
+                <legend className="settings-group__title">What it can change</legend>
+                <div className="card">
+                  {accessModeOptions.map((option) => (
+                    <label className="card__row agent-consent__mode" key={option.mode}>
+                      <input
+                        checked={mode === option.mode}
+                        name="agent-consent-mode"
+                        onChange={() => setMode(option.mode)}
+                        type="radio"
+                        value={option.mode}
+                      />
+                      <span className="card__row-body">
+                        <span className="card__row-title">{option.label}</span>
+                        <span className="card__row-detail">{option.description}</span>
+                      </span>
+                    </label>
                   ))}
-                </select>
-              </label>
-              <label>
-                Reach{" "}
+                </div>
+              </fieldset>
+              <label className="field">
+                <span className="field__label">Where</span>
                 <select
+                  className="text-input"
                   value={reach}
                   disabled={busy}
                   onChange={(event) => setReach(event.target.value)}
@@ -154,32 +140,47 @@ export function McpAuthorization({
                   <option value="user">Everything I can access</option>
                 </select>
               </label>
-              <p>
-                The agent cannot approve consent, reveal credentials, sign in, or grant access. This
-                connection expires in 30 days. You can revoke it in Settings → Devices → Connected
-                agents.
+              <label className="field">
+                <span className="field__label">Name</span>
+                <input
+                  className="text-input"
+                  value={label}
+                  maxLength={120}
+                  disabled={busy}
+                  onChange={(event) => setLabel(event.target.value)}
+                />
+              </label>
+              <p className="settings-footnote">
+                It can't approve requests, see passwords or give anyone access. This lasts 30 days,
+                and you can remove it any time in Settings → External agents.
               </p>
-              <button
-                className="btn"
-                disabled={busy || !label.trim()}
-                type="button"
-                onClick={() => void decide(true)}
-              >
-                Allow connection
-              </button>
-              <button
-                className="btn"
-                disabled={busy}
-                type="button"
-                onClick={() => void decide(false)}
-              >
-                Deny
-              </button>
+              <div className="form-actions">
+                <button
+                  className="btn"
+                  disabled={busy}
+                  type="button"
+                  onClick={() => void decide(false)}
+                >
+                  Deny
+                </button>
+                <button
+                  className="btn btn--primary"
+                  disabled={busy || !label.trim()}
+                  type="button"
+                  onClick={() => void decide(true)}
+                >
+                  Allow
+                </button>
+              </div>
             </>
           ) : !error ? (
             <p role="status">Loading connection request…</p>
           ) : null}
-          {error ? <p role="alert">{error}</p> : null}
+          {error ? (
+            <p className="notice notice--error" role="alert">
+              {error}
+            </p>
+          ) : null}
           {onClose ? (
             <button className="btn" type="button" onClick={onClose}>
               Back to Opensteer
@@ -191,6 +192,18 @@ export function McpAuthorization({
   );
 }
 
+/**
+ * A phone or tablet hands the request to the mobile app; anything else to the
+ * desktop app. iPad Safari presents itself as a Mac, so touch tells them apart.
+ */
+function installedClient() {
+  const agent = navigator.userAgent;
+  return /Android|iPhone|iPad|iPod/u.test(agent) ||
+    (/Macintosh/u.test(agent) && navigator.maxTouchPoints > 1)
+    ? { client: opensteerMobileClient, device: "phone" }
+    : { client: opensteerDesktopClient, device: "computer" };
+}
+
 export function McpAuthorizationLaunch({
   requestId,
   deploymentId,
@@ -199,24 +212,26 @@ export function McpAuthorizationLaunch({
   readonly deploymentId: string | null;
 }) {
   const target = AgentConnectionAuthorizationTargetSchema.safeParse({ requestId, deploymentId });
+  const { client, device } = installedClient();
   return (
-    <main className="page settings">
+    <main className="page settings settings-layout">
       <div className="settings-content">
         <div className="settings-content__inner">
-          <h1>Review the agent connection in Opensteer</h1>
-          <p>
-            Your Opensteer app is already signed in on this computer. Open it to review the agent’s
-            permissions. This link carries no login credential and approves nothing.
-          </p>
+          <SectionHeader
+            title="Review the agent in Opensteer"
+            lead={`Open the Opensteer app on this ${device} to choose what the agent can do. This link carries no sign-in and approves nothing.`}
+          />
           {target.success ? (
             <a
-              className="btn"
-              href={agentConnectionDeepLink(opensteerDesktopClient.applicationId, target.data)}
+              className="btn btn--primary"
+              href={agentConnectionDeepLink(client.applicationId, target.data)}
             >
-              Open {opensteerDesktopClient.name}
+              Open Opensteer
             </a>
           ) : (
-            <p role="alert">This connection request is invalid. Start again from the agent.</p>
+            <p className="notice notice--error" role="alert">
+              This connection request is invalid. Start again from the agent.
+            </p>
           )}
         </div>
       </div>

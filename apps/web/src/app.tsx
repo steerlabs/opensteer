@@ -559,15 +559,23 @@ export function App({
             <Route path="automations/:triggerId/edit" element={<AutomationEditorPage />} />
             <Route path="settings" element={<SettingsShell />}>
               <Route index element={<SettingsRedirect from="/settings" to="/settings/general" />} />
-              {(["general", "account", "messaging", "ai", "plugins", "sign-ins"] as const).map(
-                (section) => (
-                  <Route
-                    key={section}
-                    path={`${section}/*`}
-                    element={<SettingsSectionRoute section={section} />}
-                  />
-                ),
-              )}
+              {(
+                [
+                  "general",
+                  "account",
+                  "messaging",
+                  "external-agents",
+                  "ai",
+                  "plugins",
+                  "sign-ins",
+                ] as const
+              ).map((section) => (
+                <Route
+                  key={section}
+                  path={`${section}/*`}
+                  element={<SettingsSectionRoute section={section} />}
+                />
+              ))}
               <Route path="devices" element={<SettingsSectionRoute section="devices" />} />
               <Route path="devices/computers" element={<ComputersPage />} />
               <Route path="devices/computers/:computerId" element={<ComputerDetailPage />} />

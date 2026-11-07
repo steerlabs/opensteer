@@ -32,11 +32,22 @@ export function EngineMark(props: {
         π
       </Text>
     );
-  const path = provider === undefined ? undefined : paths[provider];
+  return <ProviderMark providerId={provider ?? null} tint={tint} />;
+}
+
+/** A provider's mark by brand id, or the generic sparkle for one without artwork. */
+export function ProviderMark(props: {
+  readonly providerId: string | null;
+  readonly size?: number;
+  readonly tint?: string;
+}): ReactNode {
+  const tint = props.tint ?? color.textSoft;
+  const size = props.size ?? 14;
+  const path = props.providerId === null ? undefined : paths[props.providerId];
   return path === undefined ? (
-    <Symbol name="sparkles" size={12} tint={tint} />
+    <Symbol name="sparkles" size={size - 2} tint={tint} />
   ) : (
-    <Svg accessible={false} height={14} width={14} viewBox="0 0 24 24">
+    <Svg accessible={false} height={size} width={size} viewBox="0 0 24 24">
       <Path d={path} fill={tint} />
     </Svg>
   );

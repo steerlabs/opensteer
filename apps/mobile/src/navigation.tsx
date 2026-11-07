@@ -49,8 +49,10 @@ import {
   SettingsGeneralScreen,
   SettingsScreen,
   SettingsSignInsScreen,
+  SettingsExternalAgentsScreen,
 } from "./screens/settings-home.js";
 import { SettingsMessagingScreen } from "./screens/settings-messaging.js";
+import { AgentAuthorizationScreen } from "./screens/agent-authorization.js";
 import { SettingsPluginsScreen } from "./screens/settings-plugins.js";
 import { TabsScreen } from "./screens/tabs.js";
 import { TaskSearchScreen } from "./screens/task-search.js";
@@ -323,6 +325,10 @@ const RootStack = createNativeStackNavigator({
     },
     SettingsDevices: { screen: SettingsDevicesScreen, options: { title: "Devices" } },
     SettingsMessaging: { screen: SettingsMessagingScreen, options: { title: "Messaging" } },
+    SettingsExternalAgents: {
+      screen: SettingsExternalAgentsScreen,
+      options: { title: "External agents" },
+    },
     SettingsAI: { screen: SettingsAIScreen, options: { title: "AI" } },
     SettingsPlugins: {
       screen: SettingsPluginsScreen,
@@ -404,6 +410,16 @@ const RootStack = createNativeStackNavigator({
         title: "Computer",
       }),
     },
+    // An agent's connection request, from the link its sign-in page opens on
+    // this phone. Leaving it answers nothing; the request expires on its own.
+    AgentAuthorization: {
+      screen: AgentAuthorizationScreen,
+      options: ({ navigation }) => ({
+        ...headerActions({ left: { label: "Cancel", onPress: () => navigation.goBack() } }),
+        presentation: "modal",
+        title: "Connect an agent",
+      }),
+    },
     AddIphone: {
       screen: AddIphoneScreen,
       options: ({ navigation }) => ({
@@ -483,6 +499,7 @@ function destinationOptions(): NativeStackNavigationOptions {
 type OpensteerRootParamList = {
   readonly AddDeployment: undefined;
   readonly AddIphone: { readonly deploymentId: string };
+  readonly AgentAuthorization: { readonly deploymentId: string; readonly requestId: string };
   readonly AddPersonal: undefined;
   readonly AddServer: undefined;
   readonly Chrome: ChromeDestination;
@@ -532,6 +549,7 @@ type OpensteerRootParamList = {
   readonly SettingsSessionDetail: { readonly deploymentId: string; readonly sessionId: string };
   readonly SettingsDevices: { readonly deploymentId: string };
   readonly SettingsMessaging: { readonly deploymentId: string };
+  readonly SettingsExternalAgents: { readonly deploymentId: string };
   readonly SettingsAI: { readonly deploymentId: string };
   readonly SettingsPlugins: { readonly deploymentId: string };
   readonly SettingsPluginDetail: {
