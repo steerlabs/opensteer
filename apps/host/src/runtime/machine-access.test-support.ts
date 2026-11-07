@@ -1172,6 +1172,8 @@ export async function connectCallerMachine(
     if (message.type !== "host.inspect-harnesses" && message.type !== "host.reconcile-harnesses") {
       return;
     }
+    // A reconnect still lists the previous boot's catalog until registration replaces it,
+    // so each report names its boot and readiness waits for this one's.
     primary.socket.send(
       JSON.stringify({
         ...primary.fence,
@@ -1181,6 +1183,7 @@ export async function connectCallerMachine(
               continuationKey: "runner:v1:8tErnQuB1d-nw979Rab9a4JN0RE_tKRvI_Rtmy45Bbo",
               driverKind: harness.driverKind,
             },
+            detail: descriptor.bootId,
             driverKind: harness.driverKind,
             harnessInstanceId: harness.id,
             models: [
@@ -1229,11 +1232,14 @@ export async function connectCallerMachine(
       if (
         !harness ||
         catalog?.status !== "ready" ||
+        catalog.detail !== descriptor.bootId ||
         !catalog.models.some(
           (model) => model.modelId === "gpt-5.6-sol" && model.providerId === "openai",
         )
       ) {
-        throw new Error(`Caller ${input.name} never committed its GPT-5.6 Sol model report`);
+        throw new Error(
+          `Caller ${input.name} never committed this connection's GPT-5.6 Sol model report`,
+        );
       }
       return harness.id;
     },
