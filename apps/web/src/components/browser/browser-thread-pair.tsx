@@ -109,7 +109,11 @@ function catalogTabTitle(tab: BrowserTabSummary): string {
 }
 
 /** Under the chrome, never over the page: where the agent went while the person looked away. */
-export function BrowserFollowBand({ pair }: { readonly pair: BrowserThreadPair }) {
+export function BrowserFollowBand({
+  pair,
+}: {
+  readonly pair: Pick<BrowserThreadPair, "elsewhere" | "mark" | "resume">;
+}) {
   if (!pair.elsewhere) return null;
   const title = catalogTabTitle(pair.elsewhere.tab);
   return (
@@ -182,7 +186,10 @@ export function BrowserTaskTabs({
           aria-haspopup="menu"
           aria-label={menuLabel}
           className="browser-task-tab browser-task-tab--more"
-          onClick={() => setOpen(!open)}
+          onClick={() => {
+            if (!open) pair.pause();
+            setOpen(!open);
+          }}
           ref={setMenuAnchor}
           title={menuLabel}
           type="button"

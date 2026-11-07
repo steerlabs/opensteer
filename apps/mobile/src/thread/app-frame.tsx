@@ -247,14 +247,17 @@ function TabDocument(props: {
   readonly retry: () => void;
   readonly url: string;
 }): ReactNode {
-  const { chrome, onGround, onReady, reloadRef } = props;
+  const { chrome, onGround, onReady, reloadRef, retry } = props;
   const webView = useRef<WebView<object>>(null);
   useEffect(() => {
-    reloadRef.current = () => webView.current?.reload();
+    reloadRef.current = () => {
+      if (webView.current) webView.current.reload();
+      else retry();
+    };
     return () => {
       reloadRef.current = null;
     };
-  }, [reloadRef]);
+  }, [reloadRef, retry]);
   // `withTiming` honours Reduce Motion, which shows the app at once.
   const opacity = useSharedValue(0);
   const reveal = useAnimatedStyle(() => ({ opacity: opacity.value }));

@@ -82,3 +82,17 @@ it("leaves the stage alone with the conversation put away", async () => {
   await act(async () => client.actInPlace(threadId, placeKey(reading.id)));
   expect(band()).toBeNull();
 });
+
+it("pauses following before opening the task tab menu", async () => {
+  await mount(() => {
+    const { session, threadId, acting } = taskBrowser();
+    return `/threads/${threadId}?panel=browser&browser=${session.id}&browserTab=${acting.id}`;
+  });
+  const { threadId, acting, reading, placeKey } = taskBrowser();
+  expect(following()).not.toBeNull();
+  await click(element('button[aria-label="All tabs in this browser"]'));
+  await act(async () => client.actInPlace(threadId, placeKey(reading.id)));
+  expect(shownTab()).toBe(acting.id);
+  expect(following()).toBeNull();
+  expect(band()?.textContent).toContain(reading.title);
+});

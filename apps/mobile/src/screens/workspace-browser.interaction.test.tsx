@@ -42,6 +42,7 @@ const state = vi.hoisted(() => ({
   /** Whether this page is still the screen in front, as the stack says when an answer arrives. */
   navigationFocused: true,
   refresh: vi.fn(async () => {}),
+  realAppView: false,
   hostClient: {} as Record<string, unknown>,
   dispatch: vi.fn(),
   goBack: vi.fn(),
@@ -96,12 +97,14 @@ vi.mock("../client/mobile-client.js", () => ({
   operationDetail: (_error: unknown, fallback: string) => fallback,
 }));
 vi.mock("react-native-webview", () => ({
-  WebView: (props: { source: { uri: string }; style: unknown }) => (
+  WebView: (props: { source: { uri: string }; style: unknown; onError?: () => void }) => (
     <div
       data-style={JSON.stringify(flatten(props.style))}
       data-testid="app-webview"
       data-uri={props.source.uri}
-    />
+    >
+      <button onClick={props.onError}>Fail app load</button>
+    </div>
   ),
 }));
 vi.mock("@opensteer/client/react", async () => {
@@ -110,11 +113,17 @@ vi.mock("@opensteer/client/react", async () => {
   return {
     useActionReview: actual.useActionReview,
     useBrowserAgentFollow: actual.useBrowserAgentFollow,
-    useAppView: (_client: unknown, appId: string) => ({
-      failed: false,
-      retry: () => undefined,
-      view: { app: { title: "Budget" }, url: `https://host.test/v1/apps/${appId}/dark/token/` },
-    }),
+    useAppView: (...args: Parameters<typeof actual.useAppView>) =>
+      state.realAppView
+        ? actual.useAppView(...args)
+        : {
+            failed: false,
+            retry: () => undefined,
+            view: {
+              app: { title: "Budget" },
+              url: `https://host.test/v1/apps/${args[1]}/dark/token/`,
+            },
+          },
     useBrowserPopupFollow: (
       _client: unknown,
       tab: { sessionId: string; tabId: string } | null,
@@ -546,6 +555,7 @@ function flatten(style: unknown): Record<string, unknown> {
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const roots: Root[] = [];
 afterEach(() => {
+  state.realAppView = false;
   for (const root of roots.splice(0)) act(() => root.unmount());
   document.body.replaceChildren();
   state.snapshot = null;
@@ -1790,14 +1800,18 @@ describe("an app open as a tab", () => {
   };
   function openApp(params: Partial<SurfacesRoute> = { appId } as Partial<SurfacesRoute>) {
     const closeAppTab = vi.fn(async (): Promise<void> => undefined);
-    state.hostClient = { closeAppTab };
+    const viewApp = vi.fn(async () => ({
+      app: { title: "Budget" },
+      url: `https://host.test/v1/apps/${appId}/dark/token/`,
+    }));
+    state.hostClient = { closeAppTab, viewApp };
     const opened = setup(params);
     state.snapshot = {
       ...withAgents([]),
       appTabs: [openTab] as unknown as NonNullable<HostSnapshot["appTabs"]>,
     };
     opened.render();
-    return { ...opened, closeAppTab };
+    return { ...opened, closeAppTab, viewApp };
   }
   const webView = () => document.querySelector("[data-testid='app-webview']");
   const pressAsk = () => {
@@ -1929,6 +1943,106 @@ describe("an app open as a tab", () => {
     await pressAsync(container, "Try again");
     expect(closeAppTab).toHaveBeenCalledTimes(2);
     expect(state.dispatch).toHaveBeenCalledWith({ count: 1, type: "POP" });
+  });
+
+  it("forgets a failed close when another app replaces the route", async () => {
+    const { container, closeAppTab, route, render } = openApp();
+    closeAppTab.mockRejectedValueOnce(new Error("A refused."));
+    await pressAsync(appMenu(), "Close tab");
+    expect(container.textContent).toContain("A refused.");
+    const nextId = appId.replace("1111-4", "2222-4");
+    state.snapshot = {
+      ...state.snapshot!,
+      appTabs: [{ ...openTab, appId: nextId }] as unknown as NonNullable<HostSnapshot["appTabs"]>,
+    };
+    route.params = { deploymentId: "deployment-a", scope: "workspace", appId: nextId };
+    render();
+    expect(container.textContent).not.toContain("A refused.");
+    expect(element(container, "Try again")).toBeNull();
+    expect(webView()?.getAttribute("data-uri")).toContain(nextId);
+    closeAppTab.mockRejectedValueOnce(new Error("B refused."));
+    await pressAsync(appMenu(), "Close tab");
+    expect(container.textContent).toContain("B refused.");
+    await pressAsync(container, "Try again");
+    expect(closeAppTab.mock.calls).toEqual([[appId], [nextId], [nextId]]);
+  });
+
+  it.each(["resolve", "reject"] as const)(
+    "ignores a stale close's %s after the route changes",
+    async (outcome) => {
+      const { container, closeAppTab, route, render } = openApp();
+      const answer = Promise.withResolvers<void>();
+      closeAppTab.mockReturnValue(answer.promise);
+      press(appMenu(), "Close tab");
+      const nextId = appId.replace("1111-4", "2222-4");
+      state.snapshot = {
+        ...state.snapshot!,
+        appTabs: [{ ...openTab, appId: nextId }] as unknown as NonNullable<HostSnapshot["appTabs"]>,
+      };
+      route.params = { deploymentId: "deployment-a", scope: "workspace", appId: nextId };
+      render();
+      expect(container.textContent).not.toContain("Closing…");
+      expect(webView()?.getAttribute("data-uri")).toContain(nextId);
+      await act(async () =>
+        outcome === "resolve" ? answer.resolve() : answer.reject(new Error("A refused.")),
+      );
+      expect(container.textContent).not.toContain("A refused.");
+      expect(state.dispatch).not.toHaveBeenCalled();
+      expect(state.goBack).not.toHaveBeenCalled();
+    },
+  );
+
+  it("ignores a superseded close attempt for the same app", async () => {
+    const { closeAppTab, container, route, render } = openApp();
+    const first = Promise.withResolvers<void>();
+    const second = Promise.withResolvers<void>();
+    closeAppTab.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    press(appMenu(), "Close tab");
+    const nextId = appId.replace("1111-4", "2222-4");
+    state.snapshot = {
+      ...state.snapshot!,
+      appTabs: [openTab, { ...openTab, appId: nextId }] as unknown as NonNullable<
+        HostSnapshot["appTabs"]
+      >,
+    };
+    route.params = { deploymentId: "deployment-a", scope: "workspace", appId: nextId };
+    render();
+    route.params = { deploymentId: "deployment-a", scope: "workspace", appId };
+    render();
+    press(appMenu(), "Close tab");
+    expect(closeAppTab).toHaveBeenCalledTimes(2);
+    await act(async () => first.resolve());
+    expect(state.dispatch).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Closing…");
+    await act(async () => second.resolve());
+    expect(state.dispatch).toHaveBeenCalledOnce();
+  });
+
+  it("ignores a close completion after unmount", async () => {
+    const { closeAppTab } = openApp();
+    const answer = Promise.withResolvers<void>();
+    closeAppTab.mockReturnValue(answer.promise);
+    press(appMenu(), "Close tab");
+    const root = roots.shift()!;
+    act(() => root.unmount());
+    await act(async () => answer.resolve());
+    expect(state.dispatch).not.toHaveBeenCalled();
+    expect(state.goBack).not.toHaveBeenCalled();
+  });
+
+  it("retries a failed app load from the tab's Reload menu", async () => {
+    state.realAppView = true;
+    const { container, viewApp } = openApp();
+    await act(async () => {});
+    const first = webView();
+    expect(first).not.toBeNull();
+    await pressAsync(container, "Fail app load");
+    expect(webView()).toBeNull();
+    expect(container.textContent).toContain("Could not load this app");
+    await pressAsync(appMenu(), "Reload");
+    expect(viewApp).toHaveBeenCalledTimes(2);
+    expect(webView()).not.toBeNull();
+    expect(webView()).not.toBe(first);
   });
 
   it("does not move a person who left before the close finished", async () => {

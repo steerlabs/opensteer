@@ -1232,26 +1232,49 @@ function useAppClose(
   onClosed: () => void,
 ): { readonly close: () => void; readonly closing: boolean; readonly failure: string | null } {
   const navigation = useNavigation();
-  const [closing, setClosing] = useState(false);
-  const [failure, setFailure] = useState<string | null>(null);
+  const identity = useMemo(() => ({ appId, hostClient }), [appId, hostClient]);
+  const [state, setState] = useState<{
+    readonly identity: typeof identity;
+    readonly closing: boolean;
+    readonly failure: string | null;
+  }>({ identity, closing: false, failure: null });
+  const latestIdentity = useRef(identity);
+  latestIdentity.current = identity;
+  const latestAttempt = useRef<{ readonly identity: typeof identity } | null>(null);
+  useEffect(
+    () => () => {
+      if (latestAttempt.current?.identity === identity) latestAttempt.current = null;
+    },
+    [identity],
+  );
   const latestClosed = useRef(onClosed);
   latestClosed.current = onClosed;
   const close = useCallback(() => {
     if (appId === null) return;
-    setClosing(true);
-    setFailure(null);
+    const attempt = { identity };
+    latestAttempt.current = attempt;
+    setState({ identity, closing: true, failure: null });
     void hostClient.closeAppTab(appId).then(
       () => {
+        if (latestIdentity.current !== identity || latestAttempt.current !== attempt) return;
         if (navigation.isFocused()) latestClosed.current();
-        else setClosing(false);
+        else setState({ identity, closing: false, failure: null });
       },
       (error: unknown) => {
-        setClosing(false);
-        setFailure(error instanceof Error ? error.message : "Try again in a moment.");
+        if (latestIdentity.current !== identity || latestAttempt.current !== attempt) return;
+        setState({
+          identity,
+          closing: false,
+          failure: error instanceof Error ? error.message : "Try again in a moment.",
+        });
       },
     );
-  }, [appId, hostClient, navigation]);
-  return { close, closing, failure };
+  }, [appId, hostClient, identity, navigation]);
+  return {
+    close,
+    closing: state.identity === identity && state.closing,
+    failure: state.identity === identity ? state.failure : null,
+  };
 }
 
 /**
