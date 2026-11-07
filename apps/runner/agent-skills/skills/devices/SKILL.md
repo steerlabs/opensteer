@@ -1,6 +1,6 @@
 ---
 name: devices
-description: Connect, use, fix or remove a device on the person's network that can't run Opensteer, such as a TV, speaker, light or camera.
+description: Connect, use, fix or remove devices on the person's network that can't run Opensteer (TVs, speakers, lights, cameras).
 ---
 
 # Opensteer Devices
