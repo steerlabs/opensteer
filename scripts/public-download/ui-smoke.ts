@@ -47,18 +47,17 @@ const state = dump();
 writeFileSync(path.join(out, "ui-before.json"), state);
 if (state.includes("Set up this ")) {
   click("Set up this ");
-  // Setup ends on Start once an AI is ready; a fresh machine without one
-  // leaves through "Set up later". Either way the workspace opens next.
-  await wait("setup finished", () => {
+  // Setup is up to three steps; each leaves through Skip, the last through
+  // "Skip for now". A fresh machine may have no AI, so nothing waits on one.
+  for (let step = 0; step < 3; step += 1) {
+    await wait("setup step", () => {
+      const setup = dump();
+      return /Skip( for now)?/u.test(setup) || /Places and menu/u.test(setup);
+    });
     const setup = dump();
-    if (setup.includes("Set up later")) return true;
-    return (
-      setup.includes("Start") &&
-      !setup.includes("Setting up") &&
-      !setup.includes("Opening Opensteer")
-    );
-  });
-  click(dump().includes("Set up later") ? "Set up later" : "Start");
+    if (/Places and menu/u.test(setup)) break;
+    click(setup.includes("Skip for now") ? "Skip for now" : "Skip");
+  }
 }
 await wait("local workspace", () => /Connected\. Places and menu/u.test(dump()));
 capture("personal-ready");

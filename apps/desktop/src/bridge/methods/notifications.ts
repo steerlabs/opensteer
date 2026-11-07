@@ -5,6 +5,8 @@ import {
   DesktopNotificationResultSchema,
   DesktopNotificationSupportSchema,
   DesktopNotificationTargetSchema,
+  DesktopNotificationTestResultSchema,
+  type DesktopNotificationTestResult,
 } from "@opensteer/protocol/desktop";
 import { desktopBridgeChannels } from "../desktop-bridge-channels.js";
 import {
@@ -93,6 +95,52 @@ export const handleShowNotification =
       }
     }
     return DesktopNotificationResultSchema.parse({ status: "shown" });
+  };
+
+/** Test notifications not yet settled, held so Electron cannot collect one before it answers. */
+const pendingTests = new Set<Notification>();
+const testSettleTimeoutMs = 15_000;
+
+/**
+ * One real notification. `sent` means the system took it for delivery, which
+ * it also does for a person who turned notifications off, so it says nothing
+ * about permission; `failed` is the system refusing it outright, as macOS does
+ * for an app it will not schedule notifications for.
+ */
+export const handleTestNotification =
+  (context: DesktopBridgeContext): DesktopBridgeHandler =>
+  (event, envelope) => {
+    assertAuthorizedRenderer(context, event, envelope);
+    if (!Notification.isSupported()) {
+      return DesktopNotificationTestResultSchema.parse({ outcome: "unsupported" });
+    }
+    const notification = new Notification({
+      body: "You'll hear from your agents like this.",
+      title: "Notifications are on",
+    });
+    pendingTests.add(notification);
+    return new Promise<DesktopNotificationTestResult>((resolvePromise) => {
+      const settle = (outcome: DesktopNotificationTestResult["outcome"]) => {
+        if (!pendingTests.delete(notification)) return;
+        clearTimeout(timeout);
+        resolvePromise(DesktopNotificationTestResultSchema.parse({ outcome }));
+      };
+      const timeout = setTimeout(() => settle("failed"), testSettleTimeoutMs);
+      notification.once("show", () => settle("sent"));
+      notification.once("failed", () => settle("failed"));
+      try {
+        notification.show();
+      } catch {
+        settle("failed");
+      }
+    });
+  };
+
+export const handleOpenNotificationSettings =
+  (context: DesktopBridgeContext): DesktopBridgeHandler =>
+  async (event, envelope) => {
+    assertAuthorizedRenderer(context, event, envelope);
+    await context.options.notifications.openSettings();
   };
 
 /** The dock count on macOS, and the launcher count where a Linux desktop draws one. */

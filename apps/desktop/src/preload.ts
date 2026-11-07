@@ -100,9 +100,12 @@ import type {
   DesktopNotificationResult,
   DesktopNotificationSupport,
   DesktopNotificationTarget,
+  DesktopNotificationTestResult,
   DesktopPasswordsStatus,
   DesktopSelectDeploymentInput,
   DesktopStartLocalRunnerInput,
+  DesktopTailscaleShareResult,
+  DesktopTailscaleStatus,
   OpensteerDesktopBridge,
 } from "@opensteer/protocol/desktop";
 import {
@@ -154,9 +157,12 @@ import {
   DesktopNotificationResultSchema,
   DesktopNotificationSupportSchema,
   DesktopNotificationTargetSchema,
+  DesktopNotificationTestResultSchema,
   DesktopPasswordsStatusSchema,
   DesktopSelectDeploymentInputSchema,
   DesktopStartLocalRunnerInputSchema,
+  DesktopTailscaleShareResultSchema,
+  DesktopTailscaleStatusSchema,
 } from "@opensteer/protocol/desktop";
 import {
   DictationAvailabilitySchema,
@@ -713,6 +719,20 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
         desktopBridgeChannels.showNotification,
         DesktopNotificationTargetSchema.parse(input),
       ),
+    ),
+  testNotification: async () =>
+    DesktopNotificationTestResultSchema.parse(
+      await invoke<DesktopNotificationTestResult>(desktopBridgeChannels.testNotification),
+    ),
+  openNotificationSettings: () => invoke<void>(desktopBridgeChannels.openNotificationSettings),
+  recheckLocalEngines: () => invoke<void>(desktopBridgeChannels.recheckLocalEngines),
+  tailscaleStatus: async () =>
+    DesktopTailscaleStatusSchema.parse(
+      await invoke<DesktopTailscaleStatus>(desktopBridgeChannels.tailscaleStatus),
+    ),
+  tailscaleShare: async () =>
+    DesktopTailscaleShareResultSchema.parse(
+      await invoke<DesktopTailscaleShareResult>(desktopBridgeChannels.tailscaleShare),
     ),
   setBadgeCount: (input: DesktopBadgeCountInput) =>
     invoke<void>(desktopBridgeChannels.setBadgeCount, DesktopBadgeCountInputSchema.parse(input)),

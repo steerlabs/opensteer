@@ -5,6 +5,7 @@ import {
   linkedSelectionFailureIsCurrent,
   selectionMayReconcileLinkedRoot,
   selectionRootTransition,
+  startupRoot,
   threadReturn,
   threadRoot,
 } from "./navigation-state.js";
@@ -149,5 +150,51 @@ describe("mobile root navigation", () => {
         deploymentId: null,
       }),
     ).toEqual(deploymentsRoot());
+  });
+});
+
+describe("a pairing link at startup", () => {
+  const pairing = { code: `osp_${"a".repeat(43)}`, origin: "https://mac.tailnet.ts.net" };
+
+  it("opens the pairing form over the computer startup selected on its own", () => {
+    expect(startupRoot({ destination: null, pairing, selectedDeploymentId: "dep_one" })).toEqual({
+      index: 1,
+      routes: [
+        { name: "Home", params: { deploymentId: "dep_one" } },
+        { name: "AddPersonal", params: pairing },
+      ],
+    });
+  });
+
+  it("opens the pairing form over the first run when nothing is selected", () => {
+    expect(startupRoot({ destination: null, pairing, selectedDeploymentId: null })).toEqual({
+      index: 1,
+      routes: [{ name: "Deployments" }, { name: "AddPersonal", params: pairing }],
+    });
+  });
+
+  it("keeps the pairing form in front while a startup selection catches up", () => {
+    expect(
+      selectionRootTransition({
+        activeRouteName: "AddPersonal",
+        baseDeploymentId: null,
+        baseRouteName: "Deployments",
+        deploymentId: "dep_one",
+      }),
+    ).toBe("defer");
+  });
+
+  it("starts where the selection or link says when there is no pairing link", () => {
+    expect(
+      startupRoot({ destination: null, pairing: null, selectedDeploymentId: "dep_one" }),
+    ).toEqual(deploymentRoot("dep_one"));
+    const destination = { deploymentId: "dep_one", threadId: "thr_one" };
+    expect(
+      startupRoot({
+        destination: threadRoot(destination),
+        pairing: null,
+        selectedDeploymentId: null,
+      }),
+    ).toEqual(threadRoot(destination));
   });
 });

@@ -118,7 +118,10 @@ import {
   type PaneSizeRange,
 } from "./pane-resize-handle.js";
 import { WorkspaceSharingDialog } from "./workspace-sharing-dialog.js";
-import { HarnessAuthenticationDialog } from "./harness-authentication-dialog.js";
+import {
+  HarnessAuthenticationDialog,
+  type HarnessAuthenticationOptions,
+} from "./harness-authentication-dialog.js";
 import { useToast } from "./toast.js";
 
 export interface ShellContext {
@@ -186,7 +189,8 @@ export interface ShellContext {
    * ignore the rejection and let the page render that error.
    */
   performLocalExecutionAction: (action: LocalExecutionAction) => Promise<void>;
-  openHarnessAuthentication: ((placement: ThreadPlacementOption) => void) | null;
+  openHarnessAuthentication:
+    ((placement: ThreadPlacementOption, options?: HarnessAuthenticationOptions) => void) | null;
   refreshHarnessCatalog: (placement: ThreadPlacementOption) => Promise<void>;
   openSharing: (workspaceId: string) => void;
   placements: ThreadPlacementOption[];
@@ -452,9 +456,10 @@ export function AppShell({
   const [newWorkspaceOpen, setNewWorkspaceOpen] = useState(false);
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
   const [newWorkspaceError, setNewWorkspaceError] = useState<string | null>(null);
-  const [harnessAuthentication, setHarnessAuthentication] = useState<ThreadPlacementOption | null>(
-    null,
-  );
+  const [harnessAuthentication, setHarnessAuthentication] = useState<{
+    readonly methodId: string | null;
+    readonly placement: ThreadPlacementOption;
+  } | null>(null);
   const [localExecutionStatus, setLocalExecutionStatus] =
     useState<DesktopLocalExecutionStatus | null>(null);
   const [localExecutionAction, setLocalExecutionAction] = useState<LocalExecutionAction | null>(
@@ -656,7 +661,7 @@ export function AppShell({
   // A sign-in that cannot start says so. Dropping the request silently left the
   // reader clicking a control that appeared to do nothing.
   const openHarnessAuthentication = useCallback(
-    (placement: ThreadPlacementOption) => {
+    (placement: ThreadPlacementOption, options?: HarnessAuthenticationOptions) => {
       if (!harnessAuthenticationEnvironmentIds.has(placement.environmentId)) {
         toast.error(`${placement.whereLabel} does not allow signing AI engines in from here.`);
         return;
@@ -667,7 +672,7 @@ export function AppShell({
         );
         return;
       }
-      setHarnessAuthentication(placement);
+      setHarnessAuthentication({ methodId: options?.methodId ?? null, placement });
     },
     [harnessAuthenticationEnvironmentIds, toast],
   );
@@ -1178,7 +1183,8 @@ export function AppShell({
               {harnessAuthentication ? (
                 <HarnessAuthenticationDialog
                   client={hostClient}
-                  placement={harnessAuthentication}
+                  initialMethodId={harnessAuthentication.methodId}
+                  placement={harnessAuthentication.placement}
                   onClose={closeHarnessAuthentication}
                   onReady={closeHarnessAuthentication}
                 />

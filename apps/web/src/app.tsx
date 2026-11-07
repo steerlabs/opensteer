@@ -416,7 +416,7 @@ export function App({
 
   if (snapshot.session === "checking") {
     if (continuingSetup && !loadError) {
-      return <SetupOpening computerName={desktopDeployment?.name ?? "This computer"} />;
+      return <SetupOpening />;
     }
     return (
       <Splash detail={loadError ?? "Connecting to your deployment…"}>
@@ -503,7 +503,7 @@ export function App({
   // show. This is a brief moment on a first run and none at all afterwards.
   if (snapshot.workspaces.length === 0) {
     if (continuingSetup && !loadError) {
-      return <SetupOpening computerName={desktopDeployment?.name ?? "This computer"} />;
+      return <SetupOpening />;
     }
     return (
       <Splash detail={loadError ?? "Preparing your Workspace…"}>

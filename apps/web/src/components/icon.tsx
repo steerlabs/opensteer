@@ -15,6 +15,12 @@ const paths = {
     </>
   ),
   waveform: <path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4" />,
+  bell: (
+    <>
+      <path d="M6.5 16.5V11a5.5 5.5 0 0 1 11 0v5.5l1.6 1.9H4.9l1.6-1.9Z" />
+      <path d="M10 21a2.2 2.2 0 0 0 4 0" />
+    </>
+  ),
   activity: <path d="M22 12h-4l-3 8L9 4l-3 8H2" />,
   "alert-circle": (
     <>

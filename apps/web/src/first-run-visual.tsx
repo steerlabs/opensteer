@@ -26,8 +26,7 @@ import { ToastProvider } from "./components/toast.js";
 /**
  * Visual QA for first-run setup: every state a person meets between opening
  * the app and Chat, rendered from fixtures so each can be looked at and
- * screenshotted the same way every time. `?scenario=` picks one; the phone
- * scenarios start with Add pressed on the Phone row.
+ * screenshotted the same way every time. `?scenario=` picks one.
  */
 type Scenario =
   | { readonly kind: "booting" | "failed" | "opening" }
@@ -36,6 +35,7 @@ type Scenario =
       readonly link: "linked" | "unlinked";
       readonly phones?: readonly AuthSessionSummary[];
       readonly pick: (placements: readonly ThreadPlacementOption[]) => ThreadPlacementOption[];
+      readonly step?: "ai" | "permissions" | "phone";
     };
 
 const mobileSession = (label: string): AuthSessionSummary => ({
@@ -73,12 +73,25 @@ const scenarios: Readonly<Record<string, Scenario>> = {
       })),
     ],
   },
-  phone: { kind: "setup", link: "linked", pick: (all) => firstOf("claude", all) },
+  permissions: {
+    kind: "setup",
+    link: "unlinked",
+    pick: (all) => firstOf("claude", all),
+    step: "permissions",
+  },
+  phone: { kind: "setup", link: "linked", pick: (all) => firstOf("claude", all), step: "phone" },
+  "phone-off": {
+    kind: "setup",
+    link: "unlinked",
+    pick: (all) => firstOf("claude", all),
+    step: "phone",
+  },
   "phone-signed-in": {
     kind: "setup",
     link: "linked",
     phones: [mobileSession("Opensteer on iPhone")],
     pick: (all) => firstOf("claude", all),
+    step: "phone",
   },
 };
 
@@ -143,7 +156,7 @@ if (scenario.kind !== "setup") {
       />,
     );
   } else if (scenario.kind === "opening") {
-    render(<SetupOpening computerName="Studio Mac" />);
+    render(<SetupOpening />);
   }
 } else {
   const client = new MockHostClient({
@@ -179,11 +192,38 @@ if (scenario.kind !== "setup") {
     personalAccountLink: { status: scenario.link },
   } as unknown as DeploymentAccessSnapshot;
   const bridge = {
+    computerUsePermissionsGet: async () => ({
+      accessibility: "granted",
+      screenRecording: "denied",
+    }),
     getDeploymentAccessSnapshot: async () => access,
     linkPersonal: async () => undefined,
     onDeploymentAccessSnapshotChanged: () => noOp,
+    onPasswordsStatusChanged: () => noOp,
+    openComputerUsePermissionsPanel: async () => ({ opened: true }),
+    openExternalUrl: async () => ({ opened: true }),
+    openNotificationSettings: async () => undefined,
+    passwordsOpen: async () => undefined,
+    passwordsStatus: async () => ({
+      availability: "available",
+      broker: { agentSignIns: "off", vault: "not-set-up" },
+      development: false,
+    }),
+    recheckLocalEngines: async () => undefined,
+    tailscaleShare: async () => ({ ok: true, origin: "https://studio.tail2f9.ts.net" }),
+    tailscaleStatus: async () => ({
+      dnsName: "studio.tail2f9.ts.net",
+      sharedOrigin: null,
+      state: "ready",
+    }),
+    testNotification: async () => ({ outcome: "sent" }),
     unlinkPersonal: async () => undefined,
   } as unknown as OpensteerDesktopBridge;
+  if (scenario.step) {
+    localStorage.setItem(`opensteer.setup.v1:${base.deploymentId}`, scenario.step);
+  } else {
+    localStorage.removeItem(`opensteer.setup.v1:${base.deploymentId}`);
+  }
   const snapshot: ShellContext["snapshot"] = {
     ...base,
     connection: "connected",

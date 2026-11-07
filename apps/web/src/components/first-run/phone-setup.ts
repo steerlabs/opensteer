@@ -10,7 +10,7 @@ import {
   unwrapRpcResult,
   type HostClient,
 } from "@opensteer/client/host";
-import { usePersonalRemoteAccess } from "@opensteer/client/react";
+import type { usePersonalRemoteAccess } from "@opensteer/client/react";
 import type { PersonalAccountLinkController } from "../../account/use-personal-account-link.js";
 import { actionErrorMessage } from "../../ui-utils.js";
 
@@ -94,6 +94,8 @@ const connectSettleMilliseconds = 2 * 60_000;
 export type PhoneSetupPhase =
   | { readonly kind: "idle" }
   | { readonly kind: "linking" }
+  /** The link answered; waiting for the state this hook reads to say so too. */
+  | { readonly kind: "linked" }
   | { readonly kind: "connecting"; readonly operationId: string | null }
   | { readonly kind: "failed"; readonly message: string };
 
@@ -118,9 +120,10 @@ export function usePhoneSetup(input: {
   readonly hostClient: HostClient;
   readonly link: PersonalAccountLinkController;
   readonly portalOrigin: string | null;
+  /** The caller's own observation, so one screen reads remote access once. */
+  readonly remote: ReturnType<typeof usePersonalRemoteAccess>;
 }): PhoneSetup {
-  const { deploymentAccess, deploymentId, hostClient, link, portalOrigin } = input;
-  const remote = usePersonalRemoteAccess(hostClient);
+  const { deploymentAccess, deploymentId, hostClient, link, portalOrigin, remote } = input;
   const reach = useMemo(
     () =>
       phoneReach({
@@ -167,8 +170,10 @@ export function usePhoneSetup(input: {
       void link.link().then(
         (outcome) => {
           if (attempt.current !== current) return;
+          // The link's own answer can arrive before the snapshot this hook
+          // reads catches up; linking again then would open a second sign-in.
           setPhase(
-            outcome.succeeded ? { kind: "idle" } : { kind: "failed", message: outcome.message },
+            outcome.succeeded ? { kind: "linked" } : { kind: "failed", message: outcome.message },
           );
         },
         (reason: unknown) => {
@@ -178,7 +183,9 @@ export function usePhoneSetup(input: {
       );
       return;
     }
-    if (reach.kind === "needs-connect") {
+    // A private network in use is replaced only because the person chose
+    // Connect and confirmed it; starting is that choice.
+    if (reach.kind === "needs-connect" || reach.kind === "private-network") {
       setPhase({ kind: "connecting", operationId: null });
       void requestPersonalRemoteAccess(hostClient, {
         action: "configure",
@@ -197,10 +204,23 @@ export function usePhoneSetup(input: {
     }
   }, [hostClient, link, phase.kind, reach.kind, started]);
 
+  // Reaching Connect ends the attempt. A mode changed after that, from any
+  // device, is that device's choice: it is never undone from here without the
+  // person asking again.
+  useEffect(() => {
+    if (!started || reach.kind !== "reachable") return;
+    attempt.current += 1;
+    setStarted(false);
+    setPhase({ kind: "idle" });
+  }, [reach.kind, started]);
+
   // A Connect request settles when the Host reports its operation finished
   // and the route it publishes is in place.
   const operationId = phase.kind === "connecting" ? phase.operationId : null;
   const operation = remote.status?.operation ?? null;
+  useEffect(() => {
+    if (phase.kind === "linked" && reach.kind !== "needs-link") setPhase({ kind: "idle" });
+  }, [phase.kind, reach.kind]);
   useEffect(() => {
     if (phase.kind !== "connecting") return;
     if (reach.kind === "reachable") {
@@ -215,7 +235,7 @@ export function usePhoneSetup(input: {
     }
   }, [operation, operationId, phase.kind, reach.kind]);
   useEffect(() => {
-    if (phase.kind !== "connecting") return;
+    if (phase.kind !== "connecting" && phase.kind !== "linked") return;
     const current = attempt.current;
     const timer = setTimeout(() => {
       if (attempt.current !== current) return;
@@ -291,4 +311,28 @@ export function newestNewPhoneSession(
       )
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0] ?? null
   );
+}
+
+/** What the Connect panel is doing, while it is doing it. */
+export function phoneStepDetail(
+  phone: Pick<PhoneSetup, "phase" | "reach">,
+  account: string | null,
+): string {
+  if (
+    phone.phase.kind === "linking" ||
+    phone.phase.kind === "linked" ||
+    phone.reach.kind === "needs-link"
+  ) {
+    return account === "authorizing"
+      ? "Finish signing in in your browser"
+      : "Adding this computer to your account…";
+  }
+  if (
+    phone.phase.kind === "connecting" ||
+    phone.reach.kind === "needs-connect" ||
+    phone.reach.kind === "publishing"
+  ) {
+    return "Turning on Opensteer Connect…";
+  }
+  return "Checking…";
 }

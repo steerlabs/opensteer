@@ -107,10 +107,8 @@ it("carries setup from creating this computer straight into the app it opens", a
       }),
     ),
   );
-  await vi.waitFor(() => expect(container.textContent).toContain("Set up Opensteer"));
+  await vi.waitFor(() => expect(container.textContent).toContain("Setting up Opensteer"));
   expect(container.textContent).toContain("Starting Opensteer");
-  expect(container.textContent).toContain("AI");
-  expect(container.textContent).toContain("Phone");
 
   // Ready, and the app is still attaching: the same setup screen stays up
   // rather than a separate loading screen.
@@ -134,8 +132,7 @@ it("carries setup from creating this computer straight into the app it opens", a
       }),
     ),
   );
-  await vi.waitFor(() => expect(container.textContent).toContain("Studio Mac"));
-  expect(container.textContent).toContain("Set up Opensteer");
+  await vi.waitFor(() => expect(container.textContent).toContain("Your AI"));
   expect(container.textContent).not.toContain("Opening Opensteer…");
 
   await act(async () => root.unmount());

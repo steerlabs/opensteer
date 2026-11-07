@@ -19,7 +19,7 @@ function installedClaude(): string {
   const executable = resolveClaudeExecutable(process.env.OPENSTEER_CLAUDE_EXECUTABLE ?? "claude");
   if (!executable)
     throw new Error(
-      "Install Claude Code from https://code.claude.com/docs/en/setup, then restart Opensteer.",
+      "Install Claude Code from https://code.claude.com/docs/en/setup. Opensteer finds it within a minute; if it doesn't, restart Opensteer.",
     );
   return executable;
 }

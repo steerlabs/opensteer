@@ -462,8 +462,10 @@ vi.mock("../ui/mobile-client-context.js", () => ({
 vi.mock("../ui/notifications-context.js", () => ({
   useMobileNotifications: () => ({
     enterThread: () => () => undefined,
+    intro: null,
     readingLatest: () => undefined,
   }),
+  usePushRegistration: () => ({ status: "signed-out" }),
 }));
 vi.mock("../ui/keyboard.js", () => ({ useKeyboardVisible: () => false }));
 vi.mock("../screens/deployment-gate.js", () => ({

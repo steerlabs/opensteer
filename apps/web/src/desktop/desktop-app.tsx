@@ -17,6 +17,7 @@ import {
 import { DesktopPlaceChooser, DesktopWelcome } from "../components/places/place-chooser.js";
 import { DesktopPlacesProvider, type DesktopPlaces } from "./places-context.js";
 import { thisComputerLabel } from "./places.js";
+import { pendingSetupStep } from "../components/first-run/setup-memory.js";
 import { SetupOpening } from "../components/first-run/setup-opening.js";
 import { StartupFailure } from "../components/onboarding-card.js";
 import {
@@ -113,7 +114,8 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
   const [formError, setFormError] = useState<string | null>(null);
   const [connectingPrivate, setConnectingPrivate] = useState(false);
   // This window set this computer up, so setup carries on into the app it
-  // opens. A later launch opens the app as it is; setup stays one menu away.
+  // opens. A later launch resumes only a setup left unfinished; after that,
+  // setup stays one menu away.
   const [settingUpHere, setSettingUpHere] = useState(false);
   // The notification that was clicked. It names one Deployment, which this
   // window may not be showing, so it waits here — through the selection and any
@@ -438,9 +440,7 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
       );
     }
 
-    const opening = settingUpHere ? (
-      <SetupOpening computerName={selected?.name ?? thisComputerLabel()} />
-    ) : null;
+    const opening = settingUpHere ? <SetupOpening /> : null;
     if (selectedConnection?.status !== "connected" || !hostClient) {
       if (opening && !operationError) return opening;
       return (
@@ -478,7 +478,13 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
             notificationTarget?.deploymentId === selected.id ? notificationTarget : null
           }
           onSetupOpened={() => setSettingUpHere(false)}
-          openSetup={settingUpHere && selected.kind === "personal" && selected.onThisComputer}
+          // Right after this computer is set up, and on every later launch
+          // until the person finishes the setup they started.
+          openSetup={
+            (settingUpHere || pendingSetupStep(selected.id) !== null) &&
+            selected.kind === "personal" &&
+            selected.onThisComputer
+          }
         />
       </Suspense>
     );

@@ -252,7 +252,7 @@ describe("App setup continuation", () => {
       );
     };
     snapshot = { ...snapshot, session: "checking" };
-    expect(render()).toContain("Set up Opensteer");
+    expect(render()).toContain("Your AI");
     expect(vi.mocked(window.history.replaceState)).toHaveBeenCalledWith(
       undefined,
       "",
@@ -262,7 +262,7 @@ describe("App setup continuation", () => {
     // Still loading: setup must not hand back, or the window flips to a spinner.
     expect(onSetupOpened).not.toHaveBeenCalled();
     snapshot = { ...snapshot, session: "authenticated", workspaces: [] };
-    expect(render()).toContain("Set up Opensteer");
+    expect(render()).toContain("Your AI");
     await runEffectsTwice();
     expect(onSetupOpened).not.toHaveBeenCalled();
     snapshot = { ...snapshot, workspaces: client.getSnapshot().workspaces };
