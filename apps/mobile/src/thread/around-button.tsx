@@ -55,6 +55,8 @@ export function aroundHeaderOptions(control: ReactElement | null): NativeStackNa
 export const AroundButton = memo(function AroundButton(props: {
   readonly glance: AroundGlance;
   readonly onPress: () => void;
+  /** Its width, which the bar's title gives way to. */
+  readonly onWidth?: (width: number) => void;
 }): ReactNode {
   const { family, from } = props.glance;
   const earlierOnly = family !== null && family.running === 0 && family.earlier > 0;
@@ -64,6 +66,7 @@ export const AroundButton = memo(function AroundButton(props: {
       accessibilityHint="Shows the places, tasks and schedules around this conversation"
       accessibilityLabel={label}
       accessibilityRole="button"
+      onLayout={(event) => props.onWidth?.(event.nativeEvent.layout.width)}
       onPress={props.onPress}
       style={({ pressed }) => [styles.button, pressed && styles.pressed]}
     >

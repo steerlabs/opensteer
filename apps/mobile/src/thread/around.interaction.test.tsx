@@ -146,6 +146,11 @@ vi.mock("../client/mobile-client.js", () => ({
   operationDetail: (error: unknown, fallback: string) =>
     error instanceof Error ? error.message : fallback,
 }));
+vi.mock("../ui/bar-title.js", () => ({
+  barGlassInset: 8,
+  barItemWidth: 44,
+  useBarTitleWidth: () => 260,
+}));
 vi.mock("../ui/glass.js", () => ({
   GlassSurface: ({ children }: { readonly children?: ReactNode }) => <>{children}</>,
   useLiquidGlass: () => true,

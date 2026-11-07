@@ -10,6 +10,7 @@ import {
   type NativeMenuOption,
   type NativeMenuSection,
 } from "../thread/composer-menu.js";
+import { barItemWidth, useBarTitleWidth } from "../ui/bar-title.js";
 import { ChatOrb } from "../ui/chat-orb.js";
 import { GlassSurface, useLiquidGlass } from "../ui/glass.js";
 import { AppText } from "../ui/primitives.js";
@@ -86,6 +87,10 @@ export function usePageHeader(props: {
   const appClosable = props.app?.closable === true;
   const appLive = props.app?.live === true;
   const appOpensThread = props.app?.onOpenThread != null;
+  // Android's app bar holds More beside Ask.
+  const titleWidth = useBarTitleWidth(
+    isApp && Platform.OS === "android" ? 2 * barItemWidth : barItemWidth,
+  );
 
   useLayoutEffect(() => {
     const ask = (target: AskTarget) => latest.current.onAsk(target);
@@ -156,7 +161,14 @@ export function usePageHeader(props: {
             title={title}
           />
         ) : (
-          <PageTitle agents={agents} beside={beside} intent={intent} onOpen={open} title={title} />
+          <PageTitle
+            agents={agents}
+            beside={beside}
+            intent={intent}
+            maxWidth={titleWidth}
+            onOpen={open}
+            title={title}
+          />
         ),
       title,
       unstable_headerRightItems: () => [
@@ -202,6 +214,7 @@ export function usePageHeader(props: {
     isApp,
     navigation,
     title,
+    titleWidth,
   ]);
 }
 
@@ -346,11 +359,12 @@ function PageTitle(props: {
   readonly agents: PlaceAgents;
   readonly beside: string | null;
   readonly intent: "open" | "beside";
+  readonly maxWidth: number;
   readonly onOpen: (threadId: string) => void;
   readonly title: string;
 }): ReactNode {
   return (
-    <View style={styles.title}>
+    <View style={[styles.title, { maxWidth: props.maxWidth }]}>
       {placeAgentsWords(props.agents) === null ? (
         <AppText
           maxFontSizeMultiplier={headerFontScaleLimit}
@@ -370,10 +384,6 @@ function PageTitle(props: {
     </View>
   );
 }
-
-// Wide enough for a task's name, never reaching the bar's own controls: the
-// native title slot is centred between them.
-const titleWidth = 260;
 
 const styles = StyleSheet.create({
   actions: { alignItems: "center", flexDirection: "row" },
@@ -396,7 +406,6 @@ const styles = StyleSheet.create({
   title: {
     alignItems: "center",
     justifyContent: "center",
-    maxWidth: titleWidth,
     minHeight: touchTarget,
   },
 });

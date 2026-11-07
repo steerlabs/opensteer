@@ -16,6 +16,7 @@ import type { NativeMenuOption } from "../thread/composer-menu.js";
 import { ThreadMenu } from "../thread/thread-menu.js";
 import { ThreadName, ThreadSubtitle } from "../thread/thread-subtitle.js";
 import { AppText } from "../ui/primitives.js";
+import { barGlassInset, useBarTitleWidth } from "../ui/bar-title.js";
 import { GlassSurface, useLiquidGlass } from "../ui/glass.js";
 import { useHostUserId } from "../ui/mobile-client-context.js";
 
@@ -171,6 +172,12 @@ function ThreadTitle(
   const navigation = useNavigation();
   const selectAround = useMemo(() => aroundGlanceSelector(props.threadId), [props.threadId]);
   const glance = useHostSelector(props.hostClient, selectAround, sameAroundGlance);
+  // Around grows with what it counts, and the title takes only what it leaves.
+  const glass = useLiquidGlass();
+  const [aroundWidth, setAroundWidth] = useState(0);
+  const maxWidth = useBarTitleWidth(
+    glance === null ? 0 : aroundWidth + (glass ? 2 * barGlassInset : 0),
+  );
   const { deploymentId, threadId } = props;
   useLayoutEffect(() => {
     navigation.setOptions(
@@ -179,6 +186,7 @@ function ThreadTitle(
           <AroundButton
             glance={glance}
             onPress={() => navigation.navigate("ThreadAround", { deploymentId, threadId })}
+            onWidth={setAroundWidth}
           />
         ),
       ),
@@ -187,6 +195,7 @@ function ThreadTitle(
   return (
     <ThreadTitlePill
       {...props}
+      maxWidth={maxWidth}
       onFind={() => navigation.navigate("ThreadFind", { deploymentId, threadId })}
     />
   );
@@ -208,7 +217,7 @@ export function ThreadTitlePill(
     readonly extraActions?: readonly NativeMenuOption[];
     readonly floating?: boolean;
     readonly hostClient: HostClient;
-    readonly maxWidth?: number;
+    readonly maxWidth: number;
     readonly onFind: () => void;
     readonly onOpenThread: (threadId: string) => void;
     readonly threadId: string;
@@ -216,7 +225,7 @@ export function ThreadTitlePill(
 ): ReactNode {
   const glass = useLiquidGlass();
   const { deploymentId, threadId } = props;
-  const width = props.maxWidth ?? titleWidth;
+  const width = props.maxWidth;
   const name = (
     <ThreadName
       maxFontSizeMultiplier={headerFontScaleLimit}
@@ -294,9 +303,6 @@ export function ThreadTitlePill(
   );
 }
 
-// Wide enough for a real thread title, narrow enough never to reach the bar's
-// own controls: the native title slot is centred between them.
-const titleWidth = 260;
 const capsuleInset = space[12];
 
 const styles = StyleSheet.create({
