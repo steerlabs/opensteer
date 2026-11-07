@@ -398,6 +398,14 @@ test("real-browser command fails its existing job and Check and uploads inventor
   assert.ok(
     job.steps.some((entry) => entry.if === "always()" && entry.with?.path.includes("evidence")),
   );
+  for (const lane of ["browser-journeys", "tests", "integration", "native-mac"]) {
+    const uploads = workflow.jobs[lane].steps.filter((entry) =>
+      entry.uses?.startsWith("actions/upload-artifact@"),
+    );
+    assert.equal(uploads.length, 1, lane);
+    assert.equal(uploads[0].if, "always()", lane);
+    assert.equal(uploads[0].with.path.trim(), "${{ runner.temp }}/evidence", lane);
+  }
   const aggregate = readFileSync("scripts/ci-check.ts", "utf8");
   assert.match(aggregate, /read\("browser-1.inventory.json"\)/);
   assert.match(aggregate, /checkInventories\(\[inventory\], 1, "browser"\)/);
