@@ -440,13 +440,21 @@ jobs:
             pnpm --filter @opensteer/web test:transcript-links
             pnpm --filter @opensteer/web test:start-page-computers
           } 2>&1 | tee "$RUNNER_TEMP/evidence/browser-journeys.log"
+      - name: Collect browser journey evidence
+        if: always()
+        shell: bash
+        run: |
+          shopt -s nullglob
+          for directory in /tmp/opensteer-*-e2e; do
+            if [[ -d "$directory" ]]; then
+              cp -R "$directory" "$RUNNER_TEMP/evidence/"
+            fi
+          done
       - if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: browser-journeys-${{ github.sha }}
-          path: |
-            ${{ runner.temp }}/evidence
-            /tmp/opensteer-*-e2e
+          path: ${{ runner.temp }}/evidence
           if-no-files-found: error
   Check:
     timeout-minutes: 3
