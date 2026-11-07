@@ -2512,22 +2512,64 @@ describe("page stops", () => {
     expect(turnOpen(turn, null)).toBe(false);
     expect(turnWords(turn)).toEqual([]);
   });
-  it("keeps trailing places until a step absorbs them without changing the row key", () => {
-    const first = browser("one", {
+  it("gives tabs entered during a command to its row, across reasoning, until the agent speaks", () => {
+    const literal = (text: string) =>
+      browser(text, {
         arguments: {
-          command:
-            '"$OPENSTEER_BROWSER_HARNESS" --session bsn_00000000-0000-4000-8000-000000000001 one',
+          command: `"$OPENSTEER_BROWSER_HARNESS" --session bsn_00000000-0000-4000-8000-000000000001 ${text}`,
         },
-      }),
+      });
+    const first = literal("one"),
       a = stop("tail"),
-      second = browser("two");
-    expect(workRows([first, a])).toMatchObject([
-      { key: `row:${first.id}` },
-      { kind: "place", entry: a },
+      b = stop("tail-b", "B"),
+      again = stop("tail-again"),
+      second = literal("two"),
+      thought = reasoning(),
+      third = literal("three"),
+      late = stop("late", "B"),
+      said = message();
+    expect(workRows([first, a])).toMatchObject([{ key: `row:${first.id}`, entries: [first, a] }]);
+    expect(workRows([first, a, b, again, said])).toMatchObject([
+      {
+        key: `row:${first.id}`,
+        entries: [first, a, b, again],
+        places: [a, b],
+        currentPlace: again,
+      },
+      { kind: "note", entry: said },
     ]);
     expect(workRows([first, a, second])).toMatchObject([
       { key: `row:${first.id}`, entries: [first, a, second] },
     ]);
+    expect(workRows([first, a, thought, third, late, said])).toMatchObject([
+      { key: `row:${first.id}`, entries: [first, a] },
+      { kind: "reasoning", entry: thought },
+      { key: `row:${third.id}`, entries: [third, late] },
+      { kind: "note", entry: said },
+    ]);
+    expect(workRows([first, thought, a])).toMatchObject([
+      { key: `row:${first.id}`, entries: [first, a] },
+      { kind: "reasoning" },
+    ]);
+    const named = browser("named"),
+      next = browser("next");
+    expect(workRows([named, a, b, said])).toMatchObject([
+      { key: `row:${named.id}`, entries: [named, a, b], places: [a, b] },
+      { kind: "note" },
+    ]);
+    expect(workRows([named, a, next])).toMatchObject([{ entries: [named, a, next] }]);
+    const echo = command("echo done");
+    expect(workRows([named, echo, a, said])).toMatchObject([
+      { entries: [named, a] },
+      { entries: [echo] },
+      { kind: "note" },
+    ]);
+    expect(workRows([first, echo, a, said])).toMatchObject([
+      { key: `row:${first.id}`, entries: [first, a] },
+      { entries: [echo] },
+      { kind: "note" },
+    ]);
+    expect(workRows([first, said, a]).map((row) => row.kind)).toEqual(["steps", "note", "place"]);
     expect(workRows([a])).toMatchObject([{ kind: "place", entry: a }]);
     expect(workRows([a, second])).toMatchObject([
       { key: `row:${second.id}`, entries: [a, second] },
@@ -2667,8 +2709,10 @@ describe("page stops", () => {
     for (const [index, steps] of expectedBrowser.entries()) {
       const row = browsers[index];
       expect(row).toMatchObject({ head: { label: "Used bilt.com, sofi.com and 1 more" } });
-      if (row?.kind === "steps") expect(row.entries.slice(-steps.length)).toEqual(steps);
+      if (row?.kind === "steps")
+        expect(row.entries.filter((entry) => !entry.id.startsWith("mail-place-"))).toEqual(steps);
     }
+    expect(rows.filter((row) => row.kind === "place")).toEqual([]);
     for (const row of rows) {
       if (row.kind !== "steps") continue;
       const ids = new Set(row.entries.map((entry) => entry.id));
@@ -2709,7 +2753,7 @@ describe("page stops", () => {
       workRows([browser("first"), stop("pending"), reasoning(), browser("second")]).map(
         (row) => row.kind,
       ),
-    ).toEqual(["steps", "place", "reasoning", "steps"]);
+    ).toEqual(["steps", "reasoning", "steps"]);
   });
   it("counts stops in the trace window and keeps an explicitly revealed stop", () => {
     const rows = workRows(Array.from({ length: 35 }, (_, i) => stop(`stop-${i}`)));
