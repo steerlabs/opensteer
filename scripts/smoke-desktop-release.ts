@@ -1,11 +1,18 @@
-import { execFile, execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { appendFileSync, closeSync, openSync, watch } from "node:fs";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { closeSync, openSync, watch } from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import { tmpdir, homedir } from "node:os";
 import { guestAllowed } from "../apps/desktop/scripts/journey-isolation.js";
 import path from "node:path";
 import { parseArgs } from "node:util";
+import {
+  bestEffortLog,
+  bounded as runBounded,
+  command as runCommand,
+  fileTrace,
+  stopCaptured,
+} from "./smoke-desktop-release-command.js";
 import { descendantPids } from "./smoke-desktop-release-processes.js";
 import {
   assertEphemeralRunner,
@@ -44,6 +51,7 @@ let installed: string | undefined;
 let ownedWorkspace: string | undefined;
 let step = "preparing the isolated packaged app";
 const failure = new AbortController();
+const log = bestEffortLog();
 function capture() {
   const table = execFileSync("ps", ["-axo", "pid=,ppid="], { encoding: "utf8", timeout: 2_000 });
   for (const root of roots) for (const pid of descendantPids(table, root)) children.add(pid);
@@ -54,59 +62,22 @@ function killCaptured() {
   } catch {
     /* Retain already captured identities if ps fails. */
   }
-  for (const pid of [...children].reverse().concat([...roots])) {
-    try {
-      process.kill(pid, "SIGKILL");
-    } catch (error) {
-      if (!(error instanceof Error && "code" in error && error.code === "ESRCH"))
-        appendFileSync(
-          path.join(artifacts, "cleanup.log"),
-          `Could not stop captured PID ${pid}: ${String(error)}\n`,
-        );
-    }
-  }
+  stopCaptured([...children].reverse().concat([...roots]), (text) =>
+    log(path.join(artifacts, "cleanup.log"), text),
+  );
 }
 const hardDeadline = setTimeout(() => {
-  appendFileSync(path.join(artifacts, "failure.txt"), `180-second deadline: ${step}\n`);
+  log(path.join(artifacts, "failure.txt"), `180-second deadline: ${step}\n`);
   killCaptured();
   process.exit(1);
 }, 180_000);
-async function bounded<T>(
-  name: string,
-  milliseconds: number,
-  work: (signal: AbortSignal) => Promise<T>,
-): Promise<T> {
+const trace = fileTrace(path.join(artifacts, "observer.log"), log);
+function bounded<T>(name: string, milliseconds: number, work: (signal: AbortSignal) => Promise<T>) {
   step = name;
-  const timeout = AbortSignal.timeout(milliseconds);
-  const signal = AbortSignal.any([timeout, failure.signal]);
-  signal.throwIfAborted();
-  let stop: (() => void) | undefined;
-  try {
-    return await Promise.race([
-      work(signal),
-      new Promise<never>((_, reject) => {
-        stop = () => reject(Error(`${name}: ${String(signal.reason)}`));
-        signal.addEventListener("abort", stop, { once: true });
-      }),
-    ]);
-  } finally {
-    if (stop) signal.removeEventListener("abort", stop);
-  }
+  return runBounded(name, milliseconds, work, failure, trace);
 }
-function command(program: string, args: string[], timeout = 10_000): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = execFile(
-      program,
-      args,
-      { timeout, killSignal: "SIGKILL", maxBuffer: 2 * 1024 * 1024 },
-      (error, stdout, stderr) => {
-        if (child.pid) roots.delete(child.pid);
-        if (error) reject(Error(`${program}: ${stderr || error.message}`));
-        else resolve(stdout);
-      },
-    );
-    if (child.pid) roots.add(child.pid);
-  });
+function command(program: string, args: string[], timeout = 10_000) {
+  return runCommand(program, args, timeout, roots, trace);
 }
 async function ports(): Promise<[number, number]> {
   const servers = [net.createServer(), net.createServer()];
@@ -235,6 +206,7 @@ try {
   }
   const child = app;
   if (child.pid) roots.add(child.pid);
+  trace({ event: "app.launched", pid: child.pid });
   exit = new Promise((resolve) => {
     child.once("error", (error) => failure.abort(error));
     child.once("exit", (code, signal) => {
@@ -280,7 +252,7 @@ try {
   );
   passed = true;
 } catch (error) {
-  const message = `${step}: ${String(error)}`;
+  const message = `${step}: ${String(error)}\nPhase and child output trace: ${path.join(artifacts, "observer.log")}`;
   console.error(message);
   await writeFile(path.join(artifacts, "failure.txt"), message + "\n");
   if (ciInstall)
