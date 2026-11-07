@@ -50,15 +50,23 @@ def has_visible_window(pid, deadline=None):
     if not windows:
         raise RuntimeError('WindowServer did not return window metadata')
     try:
-        for index in range(cf.CFArrayGetCount(windows)):
+        count = cf.CFArrayGetCount(windows)
+        # Stdout is bounded, so other processes' windows are summarized once per poll.
+        visible = set()
+        for index in range(count):
             window = cf.CFArrayGetValueAtIndex(windows, index)
             owner = number(window, 'kCGWindowOwnerPID', 4, c.c_longlong)
             layer = number(window, 'kCGWindowLayer', 4, c.c_longlong)
             alpha = number(window, 'kCGWindowAlpha', 6, c.c_double)
-            trace('window.candidate', deadline, pid=pid, owner=owner, layer=layer, alpha=alpha)
+            if layer == 0 and (alpha or 0) > 0 and owner is not None:
+                visible.add(owner)
+            if owner == pid:
+                trace('window.candidate', deadline, pid=pid, owner=owner, layer=layer, alpha=alpha)
             if owner == pid and layer == 0 and (alpha or 0) > 0:
                 trace('window.matched', deadline, pid=pid)
                 return True
+        trace('window.none', deadline, pid=pid, windows=count,
+              visible_owners=','.join(str(owner) for owner in sorted(visible)))
     finally:
         cf.CFRelease(windows)
     return False

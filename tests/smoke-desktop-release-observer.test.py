@@ -55,9 +55,18 @@ class ObserverTest(unittest.TestCase):
         trace = output.getvalue()
         for phase in ['interpreter.start', 'import.start', 'import.end', 'dlopen.start',
                       'dlopen.end', 'query.start', 'query.end', 'remaining=',
-                      'owner=9 layer=0 alpha=1', 'owner=42 layer=1 alpha=1',
-                      'owner=42 layer=0 alpha=0', 'owner=42 layer=0 alpha=1']:
+                      'owner=42 layer=1 alpha=1', 'owner=42 layer=0 alpha=0',
+                      'owner=42 layer=0 alpha=1', 'window.matched']:
             self.assertIn(phase, trace)
+        self.assertNotIn('owner=9 ', trace)
+
+    def test_unmatched_poll_names_other_visible_owners(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            observer = self.load(lambda *_: [(9, 0, 1), (7, 0, 1), (42, 1, 1), (8, 3, 1)])
+            self.assertFalse(observer['has_visible_window'](42))
+        self.assertIn('window.none', output.getvalue())
+        self.assertIn('windows=4 visible_owners=7,9', output.getvalue())
 
     def test_keeps_exact_owner_layer_and_alpha_gate(self):
         for window in [(9, 0, 1), (42, 1, 1), (42, 0, 0)]:
