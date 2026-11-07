@@ -12,16 +12,19 @@ interface Entry {
   readonly unsubscribe: () => void;
 }
 
-const caches = new WeakMap<BrowserFrameStore, { sessionId: string; entries: Map<string, Entry> }>();
+const caches = new WeakMap<BrowserFrameStore, Map<string, Entry>>();
 
-function cacheFor(frames: BrowserFrameStore, sessionId: string) {
+function cacheFor(frames: BrowserFrameStore) {
   let cache = caches.get(frames);
-  if (cache?.sessionId !== sessionId) {
-    if (cache) for (const entry of cache.entries.values()) entry.unsubscribe();
-    cache = { sessionId, entries: new Map() };
+  if (!cache) {
+    cache = new Map();
     caches.set(frames, cache);
   }
   return cache;
+}
+
+function pictureKey(sessionId: string, tabId: string): string {
+  return JSON.stringify([sessionId, tabId]);
 }
 
 /** A device-local picture already presented, scoped to the reader's frame store and session. */
@@ -30,16 +33,17 @@ export function getBrowserLastPicture(
   sessionId: string,
   tabId: string,
 ): BrowserLastPicture | null {
-  const cache = cacheFor(frames, sessionId);
-  const entry = cache.entries.get(tabId);
+  const cache = cacheFor(frames);
+  const key = pictureKey(sessionId, tabId);
+  const entry = cache.get(key);
   if (!entry) return null;
   if (entry.invalidation !== frames.invalidationKey?.(sessionId, tabId)) {
     entry.unsubscribe();
-    cache.entries.delete(tabId);
+    cache.delete(key);
     return null;
   }
-  cache.entries.delete(tabId);
-  cache.entries.set(tabId, entry);
+  cache.delete(key);
+  cache.set(key, entry);
   return entry.picture;
 }
 
@@ -50,9 +54,10 @@ export function rememberBrowserLastPicture(
   frame: BrowserFrameView,
 ): void {
   if (!frames.invalidationKey || frame.header.surfaceId !== tabId) return;
-  const cache = cacheFor(frames, sessionId);
-  if (cache.entries.get(tabId)?.picture.frame === frame) return;
-  cache.entries.get(tabId)?.unsubscribe();
+  const cache = cacheFor(frames);
+  const key = pictureKey(sessionId, tabId);
+  if (cache.get(key)?.picture.frame === frame) return;
+  cache.get(key)?.unsubscribe();
   const invalidation = frames.invalidationKey?.(sessionId, tabId);
   let uri: string | undefined;
   const picture: BrowserLastPicture = {
@@ -72,17 +77,17 @@ export function rememberBrowserLastPicture(
     sessionId,
     () => {
       if (frames.invalidationKey?.(sessionId, tabId) === invalidation) return;
-      cache.entries.get(tabId)?.unsubscribe();
-      cache.entries.delete(tabId);
+      cache.get(key)?.unsubscribe();
+      cache.delete(key);
     },
     tabId,
   );
-  cache.entries.delete(tabId);
-  cache.entries.set(tabId, { picture, unsubscribe, invalidation });
-  while (cache.entries.size > 4) {
-    const oldest = cache.entries.keys().next().value;
+  cache.delete(key);
+  cache.set(key, { picture, unsubscribe, invalidation });
+  while (cache.size > 4) {
+    const oldest = cache.keys().next().value;
     if (oldest === undefined) break;
-    cache.entries.get(oldest)?.unsubscribe();
-    cache.entries.delete(oldest);
+    cache.get(oldest)?.unsubscribe();
+    cache.delete(oldest);
   }
 }
