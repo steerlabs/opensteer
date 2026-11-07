@@ -2869,6 +2869,7 @@ export class BrowserService {
     agentBindingId: string,
   ): Promise<readonly BrowserSessionId[]> {
     this.#forgetAgentBinding(agentBindingId);
+    // A later Host startup fails surviving sessions and deletes their attachments.
     if (this.#closed) return [];
     return this.#serializeKey(`detach:${agentBindingId}`, async () => {
       if (agentBindingId.startsWith("run:")) {
