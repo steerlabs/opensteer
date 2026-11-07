@@ -24,7 +24,8 @@ function quietTask(now: Date): RawBuilder<boolean> {
     and not exists (select 1 from workspaces where home_thread_id = thread.id)
     and not exists (
       select 1 from channel_conversation_contexts where active_thread_id = thread.id)
-    and not exists (select 1 from triggers where anchor_thread_id = thread.id)
+    and not exists (
+      select 1 from triggers where anchor_thread_id = thread.id and status in ('active', 'paused'))
     and not exists (
       select 1 from runs where thread_id = thread.id
         and status in (${sql.join(nonTerminalRunStatuses.map((status) => sql`${status}`))}))

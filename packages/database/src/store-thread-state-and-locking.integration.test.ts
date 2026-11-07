@@ -560,6 +560,7 @@ describeStore("PostgreSQL store", (it) => {
               title: fixture.thread.title,
               icon: fixture.thread.icon,
               doneAt: null,
+              doneReason: null,
             },
           }),
         ]),
@@ -808,6 +809,7 @@ describeStore("PostgreSQL store", (it) => {
           title: fixture.thread.title,
           icon: fixture.thread.icon,
           doneAt: null,
+          doneReason: null,
         },
         {
           status: "idle",
@@ -816,6 +818,7 @@ describeStore("PostgreSQL store", (it) => {
           title: fixture.thread.title,
           icon: fixture.thread.icon,
           doneAt: null,
+          doneReason: null,
         },
         {
           status: "running",
@@ -824,6 +827,7 @@ describeStore("PostgreSQL store", (it) => {
           title: fixture.thread.title,
           icon: fixture.thread.icon,
           doneAt: null,
+          doneReason: null,
         },
       ]);
       expect(stored.map(({ eventId }) => eventId)).toEqual(

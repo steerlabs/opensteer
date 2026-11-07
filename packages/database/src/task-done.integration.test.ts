@@ -629,6 +629,36 @@ integration.sequential("Shared task Done", () => {
       .set({ quietTaskDays: 3 })
       .where("id", "=", f.userId)
       .execute();
+    const trigger = await new TriggerStore(database).create({
+      actorThreadId: null,
+      anchorThreadId: f.thread.id,
+      createdBy: f.userId,
+      idempotencyKey: "quiet-trigger",
+      name: "Quiet schedule",
+      program: {
+        toolContractVersion: 2,
+        language: "typescript",
+        source: "export default async () => null;",
+      },
+      source: {
+        kind: "schedule",
+        schedule: { kind: "at", at: new Date(Date.now() + 60_000).toISOString(), payload: null },
+      },
+    });
+    await touched(f, 4);
+    expect(await quiet()).toEqual([]);
+    await database
+      .updateTable("triggers")
+      .set({ status: "paused" })
+      .where("id", "=", trigger.trigger.id)
+      .execute();
+    expect(await quiet()).toEqual([]);
+    await database
+      .updateTable("triggers")
+      .set({ status: "archived", nextFireAt: null })
+      .where("id", "=", trigger.trigger.id)
+      .execute();
+    expect(await quiet()).toEqual([expect.objectContaining({ threadId: f.thread.id })]);
     const [candidate] = await quiet();
 
     // Touched between the scan and its turn: nothing changes and nothing is recorded.

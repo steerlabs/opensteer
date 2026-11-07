@@ -17,6 +17,7 @@ import {
 } from "./client.js";
 import {
   doneTaskList,
+  heldThread,
   listedRowThreadId,
   sameTaskRow,
   taskCanBeDone,
@@ -113,6 +114,19 @@ function snapshot(
 const titles = (rows: readonly { readonly title: string }[]) => rows.map((row) => row.title);
 
 describe("taskList", () => {
+  it.each([mainDoneTasks, template.workspaceId])(
+    "finds a task loaded only in the Done list %s for actions",
+    (key) => {
+      const completed = entry(1, "Done only", "idle", 4, 3);
+      const source = {
+        ...snapshot([]),
+        doneTasks: {
+          [key]: { entries: [completed], window: base.workspaceWindow },
+        },
+      };
+      expect(heldThread(source, completed.thread.id)).toEqual(completed.thread);
+    },
+  );
   it.each([false, true])(
     "rolls an unlisted worker's question to its nearest listed ancestor (Chat: %s)",
     (chat) => {

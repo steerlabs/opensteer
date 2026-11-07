@@ -177,6 +177,7 @@ export function heldThread(snapshot: TaskListSource, threadId: string): ThreadSu
     snapshot.threads.find(({ id }) => id === threadId) ??
     [
       ...snapshot.activeTasks,
+      ...Object.values(snapshot.doneTasks).flatMap(({ entries }) => entries),
       ...(snapshot.tasks?.entries ?? []),
       ...Object.values(snapshot.workspaceTasks).flatMap(({ entries }) => entries),
     ].find(({ thread }) => thread.id === threadId)?.thread ??

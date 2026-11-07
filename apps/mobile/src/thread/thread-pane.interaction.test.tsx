@@ -3458,29 +3458,40 @@ describe("a conversation in a pane that changes shape", () => {
   });
 });
 
-it("a shared Done update freezes the phone composer and Reopen restores it", async () => {
-  const initial = snapshotFor({ entries: [], run: null, threadId: workId });
-  const host = fakeHost(initial);
-  const reopen = vi.fn(async () => undefined);
-  Object.assign(host.client, { setTaskDone: reopen });
-  const { container } = await mount(host, workId);
-  const completed = {
-    ...initial,
-    threads: initial.threads.map((thread) =>
-      thread.id === workId ? { ...thread, doneAt: at } : thread,
-    ),
-  };
-  host.move(completed);
-  await settle();
-  expect(text(container)).toContain("This task is Done");
-  expect(container.querySelector("textarea, input")).toBeNull();
-  await press(container, "Reopen");
-  expect(reopen).toHaveBeenCalledExactlyOnceWith(workId, false);
-  host.move(initial);
-  await settle();
-  expect(text(container)).not.toContain("This task is Done");
-  expect(container.querySelector("textarea, input")).not.toBeNull();
-});
+it.each([false, true])(
+  "a shared Done update respects quiet-task capability %s",
+  async (quietTasksAvailable) => {
+    const initial = {
+      ...snapshotFor({ entries: [], run: null, threadId: workId }),
+      quietTasksAvailable,
+    };
+    const host = fakeHost(initial);
+    const reopen = vi.fn(async () => undefined);
+    Object.assign(host.client, { setTaskDone: reopen });
+    const { container } = await mount(host, workId);
+    const completed = {
+      ...initial,
+      threads: initial.threads.map((thread) =>
+        thread.id === workId ? { ...thread, doneAt: at } : thread,
+      ),
+    };
+    host.move(completed);
+    await settle();
+    if (quietTasksAvailable) {
+      expect(text(container)).toContain("Done · Sending reopens it");
+      expect(container.querySelector("textarea, input")).not.toBeNull();
+      return;
+    }
+    expect(text(container)).toContain("This task is Done");
+    expect(container.querySelector("textarea, input")).toBeNull();
+    await press(container, "Reopen");
+    expect(reopen).toHaveBeenCalledExactlyOnceWith(workId, false);
+    host.move(initial);
+    await settle();
+    expect(text(container)).not.toContain("This task is Done");
+    expect(container.querySelector("textarea, input")).not.toBeNull();
+  },
+);
 
 // Ways a task's page can fail on a phone: it gives no way back to the
 // conversation it works for, names the reader's Chat by its Thread title, or

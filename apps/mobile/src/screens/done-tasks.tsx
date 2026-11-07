@@ -6,7 +6,7 @@ import {
   type HostSnapshot,
 } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
-import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { useIsFocused, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { useCallback, useEffect, type ReactNode } from "react";
 import { StyleSheet, View } from "react-native";
@@ -53,12 +53,13 @@ const newestShown = (snapshot: HostSnapshot): string | null =>
 
 /** What the Done page shows of quiet moves is seen, so "+N" stops counting it. */
 function SeeQuietMoves(props: { readonly hostClient: HostClient }): null {
+  const focused = useIsFocused();
   const { quietSeen } = useMobileClient();
   const scope = useHostSelector(props.hostClient, quietSeenScope);
   const through = useHostSelector(props.hostClient, newestShown);
   useEffect(() => {
-    if (scope !== null && through !== null) quietSeen.see(scope, through);
-  }, [quietSeen, scope, through]);
+    if (focused && scope !== null && through !== null) quietSeen.see(scope, through);
+  }, [focused, quietSeen, scope, through]);
   return null;
 }
 
