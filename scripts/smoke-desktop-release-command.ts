@@ -1,6 +1,66 @@
 import { execFile } from "node:child_process";
+import { appendFileSync, writeSync } from "node:fs";
 
 type Trace = (event: Record<string, unknown>) => void;
+export type Log = (file: string, text: string) => void;
+
+/**
+ * Diagnostics run in child callbacks and during cleanup, outside the launch's
+ * try/finally, so they never throw. A failed write falls back to a bounded,
+ * synchronous stderr write that emits no stream events.
+ */
+export function bestEffortLog(
+  options: {
+    readonly write?: (file: string, text: string) => void;
+    readonly fallback?: (text: string) => void;
+    readonly fallbackBytes?: number;
+  } = {},
+): Log {
+  const write = options.write ?? appendFileSync;
+  const fallback = options.fallback ?? ((text: string) => writeSync(2, text));
+  let budget = options.fallbackBytes ?? 64 * 1024;
+  return (file, text) => {
+    try {
+      write(file, text);
+    } catch (error) {
+      const note = `${file} write failed: ${String(error)}\n${text}`.slice(0, budget);
+      budget -= note.length;
+      try {
+        if (note) fallback(note);
+      } catch {
+        // Nothing is left to report to.
+      }
+    }
+  };
+}
+
+export function fileTrace(file: string, log: Log): Trace {
+  return (event) => {
+    let line: string;
+    try {
+      line = JSON.stringify({ at: new Date().toISOString(), ...event });
+    } catch {
+      line = JSON.stringify({ at: new Date().toISOString(), event: "trace.unserializable" });
+    }
+    log(file, `${line}\n`);
+  };
+}
+
+/** SIGKILLs every captured PID; a failure to log one never stops the rest. */
+export function stopCaptured(
+  pids: readonly number[],
+  note: (text: string) => void,
+  kill: (pid: number, signal: NodeJS.Signals) => void = (pid, signal) => process.kill(pid, signal),
+) {
+  for (const pid of pids) {
+    try {
+      kill(pid, "SIGKILL");
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ESRCH"))
+        note(`Could not stop captured PID ${pid}: ${String(error)}\n`);
+    }
+  }
+}
 
 export async function bounded<T>(
   name: string,

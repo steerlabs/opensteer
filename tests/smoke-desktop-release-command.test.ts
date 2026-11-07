@@ -1,6 +1,55 @@
 import { execFileSync } from "node:child_process";
 import { expect, it, vi } from "vitest";
-import { bounded, command } from "../scripts/smoke-desktop-release-command.js";
+import {
+  bestEffortLog,
+  bounded,
+  command,
+  fileTrace,
+  stopCaptured,
+} from "../scripts/smoke-desktop-release-command.js";
+
+const full = () => {
+  throw Object.assign(new Error("no space left on device"), { code: "ENOSPC" });
+};
+
+it("settles and releases the child when trace and fallback writes both fail", async () => {
+  const roots = new Set<number>();
+  const trace = fileTrace("observer.log", bestEffortLog({ write: full, fallback: full }));
+  await expect(
+    command(
+      process.execPath,
+      ["-e", 'console.log("query.start"); console.error("detail"); process.exit(3)'],
+      2000,
+      roots,
+      trace,
+    ),
+  ).rejects.toThrow(/"code":3.*query\.start.*detail/s);
+  expect(roots.size).toBe(0);
+  await expect(command(process.execPath, ["-e", ""], 2000, roots, trace)).resolves.toBe("");
+});
+
+it("bounds the stderr fallback for failed diagnostic writes", () => {
+  const fallback: string[] = [];
+  const log = bestEffortLog({
+    write: full,
+    fallback: (text) => fallback.push(text),
+    fallbackBytes: 80,
+  });
+  for (let index = 0; index < 10; index++) log("observer.log", `${"x".repeat(30)}\n`);
+  expect(fallback.join("")).toMatch(/^observer\.log write failed: Error: no space left on device/);
+  expect(fallback.join("").length).toBe(80);
+});
+
+it("keeps stopping captured PIDs when one cannot be stopped or logged", () => {
+  const killed: number[] = [];
+  const note = (text: string) =>
+    bestEffortLog({ write: full, fallback: full })("cleanup.log", text);
+  stopCaptured([11, 12, 13], note, (pid) => {
+    killed.push(pid);
+    if (pid === 11) throw Object.assign(new Error("not permitted"), { code: "EPERM" });
+  });
+  expect(killed).toEqual([11, 12, 13]);
+});
 
 it("retains both streams and process status on abnormal exit", async () => {
   const events: Record<string, unknown>[] = [];
