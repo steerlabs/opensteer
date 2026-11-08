@@ -116,6 +116,7 @@ export function ComputerDisplay({
   readonly onPageSize?: ((size: { width: number; height: number }) => void) | undefined;
 }) {
   useNativeBarAway(bar !== undefined);
+  const [viewerWidth, setViewerWidth] = useState<number | null>(null);
   const unavailable = !phone && !macWindowVideoSupported();
   const kind = reference.kind;
   const sessionId = reference.kind === "task-session" ? reference.sessionId : "";
@@ -526,21 +527,33 @@ export function ComputerDisplay({
     </View>
   );
   if (bar === undefined) return stage;
+  const startTyping = () => controls.current?.startTyping();
+  const keyboardInMore =
+    interactive && phone && viewerWidth !== null && viewerWidth < phoneBarWithKeyboard;
   const menu: NativeMenuSection[] = [
-    interactive && phone && power === "live"
-      ? [
-          {
-            icon: "lock",
-            id: "lock",
-            label: "Lock phone",
-            onPress: () => inputLease?.power("lock"),
-          },
-        ]
-      : [],
+    [
+      ...(keyboardInMore
+        ? [{ disabled: !canType, id: "keyboard", label: "Keyboard", onPress: startTyping }]
+        : []),
+      ...(interactive && phone && power === "live"
+        ? [
+            {
+              icon: "lock" as const,
+              id: "lock",
+              label: "Lock phone",
+              onPress: () => inputLease?.power("lock"),
+            },
+          ]
+        : []),
+    ],
     bar.menu,
   ];
   return (
-    <View style={styles.viewer}>
+    <View
+      onLayout={(event) => setViewerWidth(event.nativeEvent.layout.width)}
+      style={styles.viewer}
+      testID="display-viewer"
+    >
       {stage}
       <Toolbar edge="bottom" testID="display-toolbar">
         <ToolbarLeave />
@@ -598,12 +611,12 @@ export function ComputerDisplay({
             </View>
           </ToolbarCapsule>
         )}
-        {interactive ? (
+        {interactive && !keyboardInMore ? (
           <ToolbarButton
             accessibilityHint={`Types into the ${phone ? "phone" : "app"}`}
             disabled={!canType}
             label="Keyboard"
-            onPress={() => controls.current?.startTyping()}
+            onPress={startTyping}
             symbol="keyboard"
           />
         ) : null}
@@ -615,6 +628,13 @@ export function ComputerDisplay({
     </View>
   );
 }
+/**
+ * What a phone's bar needs for Back, its three keys, Keyboard, Ask and More,
+ * with the gaps and padding between them. Narrower, Keyboard waits in More, so
+ * More itself stays on the screen.
+ */
+const phoneBarWithKeyboard = 370;
+
 export function ComputerTaskView(props: {
   readonly appKey: string | null;
   readonly active: boolean;

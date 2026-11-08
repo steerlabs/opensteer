@@ -48,6 +48,7 @@ import {
   usePinchGesture,
   useSimultaneousGestures,
 } from "react-native-gesture-handler";
+import { scheduleOnRN } from "react-native-worklets";
 import Animated, {
   Easing,
   useAnimatedStyle,
@@ -448,8 +449,6 @@ export function BrowserPage(props: {
     picture.height > 0 &&
     Math.abs(picture.width - room.width) <= 2 &&
     Math.abs(picture.height - room.height) <= 2;
-  const offer = ready && tab !== undefined && !lifted ? fitOffer(room, picture) : null;
-
   const navigationKey = `${inputEpoch}:${catalogTab?.documentId ?? ""}:${tab?.url ?? ""}:${loading}`;
   useEffect(() => {
     setDragSelect(false);
@@ -708,6 +707,8 @@ export function BrowserPage(props: {
     slide.value = withTiming(slideTo, { duration: duration.enter });
   }, [slide, slideTo]);
   const zoom = usePageZoom(picture, keyboardOpen || addressOpen);
+  const offer =
+    ready && tab !== undefined && !lifted && !zoom.zoomed ? fitOffer(room, picture) : null;
   const placed = useAnimatedStyle(() => ({
     transform: [
       { translateX: zoom.x.value },
@@ -976,8 +977,11 @@ function usePageZoom(
   readonly scale: SharedValue<number>;
   readonly x: SharedValue<number>;
   readonly y: SharedValue<number>;
+  /** Pinched past its own size, so it may reach into the room around its place. */
+  readonly zoomed: boolean;
 } {
   const { height, left, width } = picture;
+  const [zoomed, setZoomed] = useState(false);
   const scale = useSharedValue(1);
   const x = useSharedValue(0);
   const y = useSharedValue(0);
@@ -991,12 +995,14 @@ function usePageZoom(
     scale.value = withSpring(1, settle);
     x.value = withSpring(0, settle);
     y.value = withSpring(0, settle);
+    setZoomed(false);
   }, [height, held, scale, width, x, y]);
   const pinch = usePinchGesture({
     enabled: !held && width > 0,
     onActivate: (event) => {
       "worklet";
       pinching.value = true;
+      scheduleOnRN(setZoomed, true);
       pinchStart.value = {
         focalX: event.focalX - left,
         focalY: event.focalY,
@@ -1024,6 +1030,7 @@ function usePageZoom(
         scale.value = withSpring(1, settle);
         x.value = withSpring(0, settle);
         y.value = withSpring(0, settle);
+        scheduleOnRN(setZoomed, false);
       }
     },
   });
@@ -1046,7 +1053,7 @@ function usePageZoom(
     },
   });
   const gesture = useSimultaneousGestures(pinch, pan);
-  return { gesture, scale, x, y };
+  return { gesture, scale, x, y, zoomed };
 }
 
 const settle = { damping: 24, stiffness: 240 } as const;

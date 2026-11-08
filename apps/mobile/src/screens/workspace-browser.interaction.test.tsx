@@ -46,6 +46,11 @@ const state = vi.hoisted(() => ({
   hostClient: {} as Record<string, unknown>,
   dispatch: vi.fn(),
   goBack: vi.fn(),
+  pinch: null as null | {
+    readonly onActivate: (event: { focalX: number; focalY: number }) => void;
+    readonly onDeactivate: () => void;
+    readonly onUpdate: (event: { focalX: number; focalY: number; scale: number }) => void;
+  },
   safeArea: { bottom: 0, left: 0, right: 0, top: 0 },
   setOptions: vi.fn(),
   setParams: vi.fn(),
@@ -320,10 +325,13 @@ vi.mock(
   async () => (await import("../../test-support/native-chrome.js")).toolbar,
 );
 vi.mock("../ui/glass.js", async () => (await import("../../test-support/native-chrome.js")).glass);
-vi.mock(
-  "react-native-gesture-handler",
-  async () => (await import("../../test-support/native-chrome.js")).gestureHandler,
-);
+vi.mock("react-native-gesture-handler", async () => ({
+  ...(await import("../../test-support/native-chrome.js")).gestureHandler,
+  usePinchGesture: (config: typeof state.pinch) => {
+    state.pinch = config;
+    return {};
+  },
+}));
 vi.mock(
   "react-native-worklets",
   async () => (await import("../../test-support/native-chrome.js")).worklets,
@@ -2988,6 +2996,23 @@ describe("native page layout and controls", () => {
     state.layout = { width: 400, height: 225 };
     render();
     expect(element(container, "Fit to screen")).toBeNull();
+  });
+
+  it("takes Fit away while a pinched page may reach into the room it stands in", () => {
+    state.layout = { width: 400, height: 800 };
+    const { container } = open();
+    expect(element(container, "Fit to screen")).not.toBeNull();
+    const at = { focalX: 100, focalY: 100 };
+    act(() => state.pinch!.onActivate(at));
+    expect(element(container, "Fit to screen")).toBeNull();
+    act(() => state.pinch!.onUpdate({ ...at, scale: 2 }));
+    act(() => state.pinch!.onDeactivate());
+    expect(element(container, "Fit to screen")).toBeNull();
+    // Pinched back to its own size, the room is free again.
+    act(() => state.pinch!.onActivate(at));
+    act(() => state.pinch!.onUpdate({ ...at, scale: 0.5 }));
+    act(() => state.pinch!.onDeactivate());
+    expect(element(container, "Fit to screen")).not.toBeNull();
   });
 
   it("asks before fitting an agent-sized page, cancels without sending, and applies on Fit", () => {

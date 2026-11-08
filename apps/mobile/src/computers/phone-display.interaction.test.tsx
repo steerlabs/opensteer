@@ -34,6 +34,8 @@ const state = vi.hoisted(() => ({
   >,
   layout: null as
     null | ((event: { nativeEvent: { layout: { width: number; height: number } } }) => void),
+  viewerLayout: null as
+    null | ((event: { nativeEvent: { layout: { width: number; height: number } } }) => void),
   proxy: null as null | { onEvent(event: EditingProxyEvent): unknown; context: unknown },
   copy: vi.fn(async () => true),
   appState: null as null | ((value: string) => void),
@@ -72,6 +74,7 @@ vi.mock("react-native", () => ({
       state.touch = props as typeof state.touch;
       state.layout = props.onLayout ?? null;
     }
+    if (props.testID === "display-viewer") state.viewerLayout = props.onLayout ?? null;
     return <div>{props.children}</div>;
   },
   Pressable: ({
@@ -1373,3 +1376,20 @@ it.each(["before-release", "after-release", "before-session-removal"])(
     expect(state.resets.at(-1)).toEqual({ epoch: state.epoch, keepPicture: false });
   },
 );
+
+it("moves a phone's Keyboard into More where the bar would run off the screen", async () => {
+  const { setDisplay } = await setup(true, "android", true, true, "owner");
+  await act(async () => setDisplay({ input: "available", power: "available" }));
+  const inBar = () => container.querySelector('button[aria-label="Keyboard"]');
+  const more = () => container.querySelector('[aria-label="More"]')?.textContent ?? "";
+  const width = (value: number) =>
+    act(async () =>
+      state.viewerLayout?.({ nativeEvent: { layout: { height: 800, width: value } } }),
+    );
+  await width(400);
+  expect(inBar()).not.toBeNull();
+  expect(more()).not.toContain("Keyboard");
+  await width(360);
+  expect(inBar()).toBeNull();
+  expect(more()).toContain("Keyboard");
+});

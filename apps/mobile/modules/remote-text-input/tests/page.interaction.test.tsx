@@ -43,6 +43,12 @@ vi.mock("react-native", () => ({
     </button>
   ),
 }));
+vi.mock("react-native-safe-area-context", () => ({
+  useSafeAreaInsets: () => ({ bottom: 0, left: 0, right: 0, top: 0 }),
+}));
+vi.mock("@react-navigation/native", () => ({
+  useNavigation: () => ({ goBack: () => undefined, setOptions: () => undefined }),
+}));
 vi.mock("../src/remote-text-input.js", () => ({
   RemoteTextInput: (props: {
     onEvent: (event: import("@opensteer/client/editing").EditingProxyEvent) => void;
