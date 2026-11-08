@@ -313,6 +313,8 @@ function useDoneList(hostClient: HostClient | null): void {
  */
 export const SidebarPanel = memo(function SidebarPanel(props: {
   readonly actions: SidebarActions;
+  /** How far an obstruction over this panel reaches in from its bottom edge. */
+  readonly clearanceBottom: number;
   /** How far down an obstruction over this panel reaches, measured where it is drawn. */
   readonly clearanceTop: number;
   readonly deploymentId: string | null;
@@ -764,7 +766,13 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
       <View
         style={[
           styles.footer,
-          { paddingBottom: sidebarBottom(insets.bottom, Platform.OS === "ios") },
+          {
+            paddingBottom: sidebarBottom(
+              insets.bottom,
+              props.clearanceBottom,
+              Platform.OS === "ios",
+            ),
+          },
         ]}
       >
         {identity === null || row === undefined ? (

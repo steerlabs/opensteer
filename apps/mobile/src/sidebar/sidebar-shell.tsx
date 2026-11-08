@@ -496,6 +496,7 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
               docked ? null : (
                 <SidebarPanel
                   actions={actions}
+                  clearanceBottom={drawerClearance.bottom}
                   clearanceTop={drawerClearance.top}
                   deploymentId={deploymentId}
                   destination={destination}
@@ -535,6 +536,7 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
                   >
                     <SidebarPanel
                       actions={actions}
+                      clearanceBottom={shell.sidebarClearance.bottom}
                       clearanceTop={shell.sidebarClearance.top}
                       deploymentId={deploymentId}
                       destination={destination}

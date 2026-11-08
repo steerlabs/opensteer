@@ -307,11 +307,15 @@ describe("the sidebar's ends", () => {
   });
 
   it("gives back only the empty part of iOS's indicator zone, and none of Android's bar", () => {
-    expect(sidebarBottom(34, true)).toBe(20);
-    expect(sidebarBottom(20, true)).toBe(20);
-    expect(sidebarBottom(0, true)).toBe(8);
-    expect(sidebarBottom(48, false)).toBe(48);
-    expect(sidebarBottom(0, false)).toBe(8);
+    expect(sidebarBottom(34, 0, true)).toBe(20);
+    expect(sidebarBottom(20, 0, true)).toBe(20);
+    expect(sidebarBottom(0, 0, true)).toBe(8);
+    expect(sidebarBottom(48, 0, false)).toBe(48);
+    expect(sidebarBottom(0, 0, false)).toBe(8);
+  });
+
+  it("never gives back room a reported obstruction needs", () => {
+    expect(sidebarBottom(40, 40, true)).toBe(40);
   });
 });
 

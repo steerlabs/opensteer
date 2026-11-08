@@ -267,8 +267,8 @@ export function sidebarTop(inset: number, clearance: number, ios: boolean): numb
  * empty around a thin indicator; Android's holds whatever its navigation bar
  * draws, so all of it stays.
  */
-export function sidebarBottom(inset: number, ios: boolean): number {
-  return Math.max(ios ? Math.min(inset, homeIndicatorClearance) : inset, space[8]);
+export function sidebarBottom(inset: number, clearance: number, ios: boolean): number {
+  return Math.max(ios ? Math.min(inset, homeIndicatorClearance) : inset, clearance, space[8]);
 }
 
 export type SidebarArrangement =

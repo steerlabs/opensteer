@@ -217,6 +217,7 @@ async function mount(
         <VoiceContext value={controller}>
           <SidebarPanel
             actions={actions}
+            clearanceBottom={0}
             clearanceTop={0}
             deploymentId="deployment-a"
             destination={shown.destination === undefined ? "Home" : shown.destination}
