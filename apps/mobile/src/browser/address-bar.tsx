@@ -110,8 +110,9 @@ export const AddressCapsule = memo(function AddressCapsule(props: {
               {...(props.arriving === true && !reduceMotion ? { entering: arrive } : {})}
               style={[styles.site, moved]}
             >
-              {following?.agent ? <AgentMarks agents={[following.agent]} size={16} /> : null}
-              {props.favicon !== null ? (
+              {following?.agent ? (
+                <AgentMarks agents={[following.agent]} size={16} />
+              ) : props.favicon !== null ? (
                 <Image
                   accessibilityIgnoresInvertColors
                   source={{ uri: props.favicon }}
@@ -157,6 +158,7 @@ function PageHistoryButton(props: {
       accessibilityRole="button"
       accessibilityState={{ disabled: !props.enabled }}
       disabled={!props.enabled}
+      hitSlop={{ left: space[8] }}
       onPress={props.onPress}
       style={({ pressed }) => [styles.history, pressed && styles.pressed]}
     >
@@ -339,7 +341,7 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "center",
     minWidth: 0,
-    paddingEnd: space[14],
+    paddingEnd: space[8],
   },
   cancel: { justifyContent: "center", minHeight: touchTarget, paddingHorizontal: space[4] },
   editRow: { alignItems: "center", flexDirection: "row", gap: space[8] },
@@ -355,7 +357,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     height: touchTarget,
     justifyContent: "center",
-    width: touchTarget - space[4],
+    width: touchTarget - space[12],
   },
   input: {
     alignSelf: "stretch",
