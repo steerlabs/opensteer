@@ -24,28 +24,30 @@ import { ToolbarCapsule } from "./toolbar.js";
 const switchDistance = 56;
 
 /**
- * The page's address, as Safari's bar shows it: the site alone, centred, with
- * its icon. Tapping it edits the address; dragging it sideways moves to the
- * browser's next or previous tab, as Safari's does. A line along its bottom
- * edge says what is happening in the page: the page loading, or an agent
- * acting in it.
+ * The page itself, in the bar: the way back through its history, then its
+ * address as Safari's bar shows it, the site alone with its icon. Tapping the
+ * site edits the address; dragging it sideways moves to the browser's next or
+ * previous tab, as Safari's does. A line along its bottom edge says what is
+ * happening in the page: the page loading, or an agent acting in it.
  *
  * While the page keeps up with an agent's tab, a green ring and the agent's
  * mark say so: the one sign that this is what the agent sees.
  */
 export const AddressCapsule = memo(function AddressCapsule(props: {
   readonly acting: boolean;
+  readonly canGoBack: boolean;
   /** Arrived here from another tab, so the address fades in as the page does. */
   readonly arriving?: boolean;
   /** Keeping up with this agent's tab; null for an agent the reader cannot name. */
   readonly following?: { readonly agent: PlaceAgent | null } | null;
   readonly favicon: string | null;
+  /** Given where Forward has room beside Back; otherwise it is in the page's menu. */
+  readonly forward: { readonly enabled: boolean; readonly onPress: () => void } | null;
   readonly loading: boolean;
+  readonly onBack: () => void;
   readonly onEdit: () => void;
-  readonly onReload: () => void;
   /** Given while there is a tab that way to move to. */
   readonly onSwitch: ((direction: -1 | 1) => void) | null;
-  readonly reloadable: boolean;
   readonly secure: boolean;
   readonly site: string | null;
 }): ReactNode {
@@ -79,6 +81,20 @@ export const AddressCapsule = memo(function AddressCapsule(props: {
     <GestureDetector gesture={swipe}>
       <View style={styles.slot}>
         <ToolbarCapsule>
+          <PageHistoryButton
+            enabled={props.canGoBack}
+            label="Previous page"
+            onPress={props.onBack}
+            symbol="chevron.left"
+          />
+          {props.forward === null ? null : (
+            <PageHistoryButton
+              enabled={props.forward.enabled}
+              label="Next page"
+              onPress={props.forward.onPress}
+              symbol="chevron.right"
+            />
+          )}
           <Pressable
             accessibilityHint={
               canSwitch
@@ -115,22 +131,6 @@ export const AddressCapsule = memo(function AddressCapsule(props: {
               </AppText>
             </Animated.View>
           </Pressable>
-          <Pressable
-            accessibilityLabel="Reload"
-            accessibilityRole="button"
-            accessibilityState={{ disabled: !props.reloadable }}
-            disabled={!props.reloadable}
-            hitSlop={space[4]}
-            onPress={props.onReload}
-            style={({ pressed }) => [styles.reload, pressed && styles.pressed]}
-          >
-            <Symbol
-              name="arrow.clockwise"
-              size={16}
-              tint={props.reloadable ? color.textSoft : color.mutedDim}
-              weight="medium"
-            />
-          </Pressable>
           {following === null ? null : <View pointerEvents="none" style={styles.ring} />}
           {props.loading ? (
             <ActivityLine tone="loading" />
@@ -144,6 +144,31 @@ export const AddressCapsule = memo(function AddressCapsule(props: {
 });
 
 const arrive = FadeIn.duration(180);
+
+function PageHistoryButton(props: {
+  readonly enabled: boolean;
+  readonly label: string;
+  readonly onPress: () => void;
+  readonly symbol: "chevron.left" | "chevron.right";
+}): ReactNode {
+  return (
+    <Pressable
+      accessibilityLabel={props.label}
+      accessibilityRole="button"
+      accessibilityState={{ disabled: !props.enabled }}
+      disabled={!props.enabled}
+      onPress={props.onPress}
+      style={({ pressed }) => [styles.history, pressed && styles.pressed]}
+    >
+      <Symbol
+        name={props.symbol}
+        size={16}
+        tint={props.enabled ? color.text : color.mutedDim}
+        weight="semibold"
+      />
+    </Pressable>
+  );
+}
 
 /**
  * A short light running along the capsule's bottom edge: blue while the page
@@ -314,8 +339,7 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "center",
     minWidth: 0,
-    // As wide as Reload on the other side, so the site sits in the middle.
-    paddingStart: touchTarget - space[4],
+    paddingEnd: space[14],
   },
   cancel: { justifyContent: "center", minHeight: touchTarget, paddingHorizontal: space[4] },
   editRow: { alignItems: "center", flexDirection: "row", gap: space[8] },
@@ -327,6 +351,12 @@ const styles = StyleSheet.create({
   },
   favicon: { borderRadius: 3, height: 15, width: 15 },
   grow: { flex: 1, minWidth: 0 },
+  history: {
+    alignItems: "center",
+    height: touchTarget,
+    justifyContent: "center",
+    width: touchTarget - space[4],
+  },
   input: {
     alignSelf: "stretch",
     color: color.text,
@@ -342,12 +372,6 @@ const styles = StyleSheet.create({
     borderColor: color.green,
     borderRadius: radius.full,
     borderWidth: 1.5,
-  },
-  reload: {
-    alignItems: "center",
-    height: touchTarget,
-    justifyContent: "center",
-    width: touchTarget - space[4],
   },
   searchGlyph: { paddingEnd: space[8], paddingStart: space[14] },
   site: { alignItems: "center", flexDirection: "row", gap: space[6], maxWidth: "100%" },

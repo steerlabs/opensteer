@@ -1977,7 +1977,7 @@ describe("J7: a task's page from Tabs, beside its occupant's thread only where t
       control(screen.querySelector<HTMLElement>('[data-testid="conversation-name"]')!, "Close"),
     );
     expect(screen.querySelector('[data-testid="conversation-slot"]')).toBeNull();
-    await press(control(screen, "Switch Slack to Opensteer, working here"));
+    await press(control(screen, "Switch Slack to Opensteer · Working here"));
     expect(draftShown(companion())).toBe("Keep the occupant’s question");
     const mounted = [
       `${occupant}:companion`,

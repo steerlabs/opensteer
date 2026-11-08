@@ -151,8 +151,16 @@ vi.mock("../../modules/remote-text-input/src/remote-text-input.js", () => ({
     return <div />;
   },
 }));
+vi.mock("react-native-safe-area-context", () => ({
+  useSafeAreaInsets: () => ({ bottom: 0, left: 0, right: 0, top: 0 }),
+}));
 vi.mock("@react-navigation/native", () => ({
-  useNavigation: () => ({ isFocused: () => true, dispatch: state.dispatch }),
+  useNavigation: () => ({
+    dispatch: state.dispatch,
+    goBack: () => undefined,
+    isFocused: () => true,
+    setOptions: () => undefined,
+  }),
   useNavigationState: (select: (state: object) => unknown) =>
     select({ index: 0, routes: [{ name: "Thread" }] }),
   StackActions: { replace: (name: string, params: unknown) => ({ name, params }) },
@@ -1014,7 +1022,7 @@ it.each(["android", "ios"])(
   async (os) => {
     const { setDisplay, power } = await setup(true, os, true, true, "owner");
     expect(container.textContent).toContain("View only");
-    for (const label of ["Back", "Home", "Recent apps"]) {
+    for (const label of ["Phone back", "Home", "Recent apps"]) {
       expect(
         container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)?.disabled,
       ).toBe(true);
@@ -1023,9 +1031,9 @@ it.each(["android", "ios"])(
     expect(input()).toEqual([]);
     await act(async () => setDisplay({ input: "available", power: "available" }));
     expect(container.textContent).not.toContain("View only");
-    expect(container.querySelector('button[aria-label="Back"]')).not.toBeNull();
+    expect(container.querySelector('button[aria-label="Phone back"]')).not.toBeNull();
     for (const [label, to] of [
-      ["Back", "back"],
+      ["Phone back", "back"],
       ["Home", "home"],
       ["Recent apps", "recents"],
     ]) {

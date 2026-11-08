@@ -7,10 +7,12 @@ import { AppText } from "../ui/primitives.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
 
 /**
- * The bar a page, Mac app or phone is used through, as Safari's and Chrome's
- * are: separate glass controls in one row, the widest of them the place's own
- * capsule. On a phone it sits under the page, where a thumb reaches it; where
- * the page has a regular width it sits over it, as Safari's does on iPad.
+ * The one bar a page, Mac app or phone is used through, as Safari's and
+ * Chrome's are: separate glass controls in one row, the widest of them the
+ * place's own capsule. What is about the place is in that capsule; what is about
+ * the app stands outside it. On a phone it sits under the page, where a thumb
+ * reaches it; where the page has a regular width it sits over it, as Safari's
+ * does on iPad.
  *
  * It never floats over the page. A streamed page cannot leave room for chrome
  * it does not know about, so anything drawn over it would hide the page's own
@@ -83,9 +85,11 @@ export const ToolbarButton = memo(function ToolbarButton(props: {
 /** A round glass control whose choices the system draws as a menu. */
 export function ToolbarMenu(props: {
   readonly accessibilityHint?: string;
+  /** What the control shows, where a symbol does not say enough. */
+  readonly face?: ReactNode;
   readonly label: string;
   readonly sections: readonly NativeMenuSection[];
-  readonly symbol: SFSymbolName;
+  readonly symbol?: SFSymbolName;
   readonly title?: string;
 }): ReactNode {
   return (
@@ -101,7 +105,10 @@ export function ToolbarMenu(props: {
       {...(props.title === undefined ? {} : { title: props.title })}
     >
       <ToolbarRound>
-        <Symbol name={props.symbol} size={19} tint={color.text} weight="medium" />
+        {props.face}
+        {props.symbol === undefined ? null : (
+          <Symbol name={props.symbol} size={19} tint={color.text} weight="medium" />
+        )}
       </ToolbarRound>
     </NativeMenu>
   );

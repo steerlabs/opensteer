@@ -38,6 +38,7 @@ import { StackActions, useNavigation } from "@react-navigation/native";
 import { workspaceRoute } from "../browser/surface-route.js";
 import { MacAppIcon } from "./app-mark.js";
 import { openAppOwnerView, openPhoneOwnerView } from "./open-owner-view.js";
+import { ToolbarAsk, ToolbarLeave, useNativeBarAway } from "../browser/place-bar.js";
 import { Toolbar, ToolbarButton, ToolbarCapsule, ToolbarMenu } from "../browser/toolbar.js";
 import { color, controlFontScaleLimit, radius, space } from "../theme.js";
 import type { NativeMenuOption, NativeMenuSection } from "../thread/composer-menu.js";
@@ -114,6 +115,7 @@ export function ComputerDisplay({
   readonly machineId?: string;
   readonly onPageSize?: ((size: { width: number; height: number }) => void) | undefined;
 }) {
+  useNativeBarAway(bar !== undefined);
   const unavailable = !phone && !macWindowVideoSupported();
   const kind = reference.kind;
   const sessionId = reference.kind === "task-session" ? reference.sessionId : "";
@@ -541,11 +543,14 @@ export function ComputerDisplay({
     <View style={styles.viewer}>
       {stage}
       <Toolbar edge="bottom" testID="display-toolbar">
+        <ToolbarLeave />
         {interactive && phone ? (
           <GlassSurface interactive shape="capsule" style={styles.keys}>
             {(["back", "home", "recents"] as const).map((to) => (
               <Pressable
-                accessibilityLabel={to === "back" ? "Back" : to === "home" ? "Home" : "Recent apps"}
+                accessibilityLabel={
+                  to === "back" ? "Phone back" : to === "home" ? "Home" : "Recent apps"
+                }
                 accessibilityRole="button"
                 accessibilityState={{ disabled: !navigable }}
                 disabled={!navigable}
@@ -563,32 +568,36 @@ export function ComputerDisplay({
             ))}
           </GlassSurface>
         ) : null}
-        <ToolbarCapsule style={styles.name}>
-          {bar.app !== undefined && machineId !== undefined ? (
-            <MacAppIcon app={bar.app} hostClient={hostClient} machineId={machineId} size={22} />
-          ) : (
-            <Symbol name={phone ? "smartphone" : "laptopcomputer"} size={15} tint={color.muted} />
-          )}
-          <View style={styles.nameWords}>
-            <AppText
-              maxFontSizeMultiplier={controlFontScaleLimit}
-              numberOfLines={1}
-              role="secondaryMedium"
-            >
-              {bar.title}
-            </AppText>
-            {bar.detail === null ? null : (
+        {interactive && phone ? (
+          <View style={styles.nameWords} />
+        ) : (
+          <ToolbarCapsule style={styles.name}>
+            {bar.app !== undefined && machineId !== undefined ? (
+              <MacAppIcon app={bar.app} hostClient={hostClient} machineId={machineId} size={22} />
+            ) : (
+              <Symbol name={phone ? "smartphone" : "laptopcomputer"} size={15} tint={color.muted} />
+            )}
+            <View style={styles.nameWords}>
               <AppText
                 maxFontSizeMultiplier={controlFontScaleLimit}
                 numberOfLines={1}
-                role="caption"
-                tone="muted"
+                role="secondaryMedium"
               >
-                {bar.detail}
+                {bar.title}
               </AppText>
-            )}
-          </View>
-        </ToolbarCapsule>
+              {bar.detail === null ? null : (
+                <AppText
+                  maxFontSizeMultiplier={controlFontScaleLimit}
+                  numberOfLines={1}
+                  role="caption"
+                  tone="muted"
+                >
+                  {bar.detail}
+                </AppText>
+              )}
+            </View>
+          </ToolbarCapsule>
+        )}
         {interactive ? (
           <ToolbarButton
             accessibilityHint={`Types into the ${phone ? "phone" : "app"}`}
@@ -598,6 +607,7 @@ export function ComputerDisplay({
             symbol="keyboard"
           />
         ) : null}
+        <ToolbarAsk />
         {menu.some((section) => section.length > 0) ? (
           <ToolbarMenu label="More" sections={menu} symbol="ellipsis" title={bar.title} />
         ) : null}

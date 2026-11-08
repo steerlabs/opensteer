@@ -72,11 +72,19 @@ import {
   AppPill,
   appMenuSections,
   askChoices,
+  PageAsk,
   usePageHeader,
   type AppMenu,
   type AskTarget,
 } from "../browser/page-header.js";
 import { CompanionCapsule } from "../browser/pair-chrome.js";
+import {
+  PlaceBarProvider,
+  ToolbarAsk,
+  ToolbarLeave,
+  useNativeBarAway,
+  useVerticalBar,
+} from "../browser/place-bar.js";
 import { Toolbar, ToolbarButton, ToolbarCapsule, ToolbarMenu } from "../browser/toolbar.js";
 import {
   pageSite,
@@ -114,9 +122,8 @@ import { ThreadTitlePill } from "./thread-header.js";
 
 /**
  * Exactly one tab, Mac app, phone or Opensteer App, as the route names it: the
- * native bar with who is here and Ask, and the place itself with the bar it is
- * used through. The route is the selection, so nothing here chooses or swaps
- * what is shown.
+ * place itself with the one bar it is used through. The route is the selection,
+ * so nothing here chooses or swaps what is shown.
  *
  * How the page was reached — from a conversation, from Tabs, from the sidebar
  * — changes only where Back goes, which is the stack's own business. Who is in
@@ -569,29 +576,42 @@ function Focused(props: {
       reportApp,
     ],
   );
+  const onAsk = paired ? askBeside : askAway;
+  const onOpenAgent = paired ? showBeside : openThread;
+  const verticalBar = useVerticalBar();
+  const mainWorkspaceId = mainWorkspace(snapshot)?.id ?? null;
+  const companionShown =
+    companion !== null && (companion.kind === "thread" || mainWorkspaceId !== null);
+  const pairedChrome = paired && companionShown && destination.kind === "browser";
   usePageHeader({
     agents,
     app: appMenu,
     asksThread: appThreadId !== null,
-    beside: paired ? besideId : null,
     chat: homeThreadId !== null,
-    intent: paired ? "beside" : "open",
-    onAsk: paired ? askBeside : askAway,
-    onOpenAgent: paired ? showBeside : openThread,
+    noAsk: pairedChrome,
+    onAsk,
+    onOpenAgent,
     title,
+    verticalBar,
   });
-  const mainWorkspaceId = mainWorkspace(snapshot)?.id ?? null;
-  const companionShown =
-    companion !== null && (companion.kind === "thread" || mainWorkspaceId !== null);
-  // Beside a Thread, a page's own bar takes the native bar's place, and Back.
-  const pairedChrome = paired && companionShown && destination.kind === "browser";
+  const ask = useMemo(
+    () => (
+      <PageAsk
+        agents={agents}
+        chat={homeThreadId !== null}
+        onAsk={onAsk}
+        onOpenAgent={onOpenAgent}
+      />
+    ),
+    [agents, homeThreadId, onAsk, onOpenAgent],
+  );
   const appPaired = paired && companionShown && appId !== null;
-  const barAway = pairedChrome || appPaired;
+  // Beside its Thread an app has its own row, with Back, wherever the screen is.
   useLayoutEffect(() => {
-    if (!barAway) return;
+    if (!appPaired) return;
     navigation.setOptions({ headerShown: false });
     return () => navigation.setOptions({ headerShown: true });
-  }, [barAway, navigation]);
+  }, [appPaired, navigation]);
   const goBack = useCallback(() => navigation.goBack(), [navigation]);
   const appPair = useMemo(
     (): AppPairChrome | null =>
@@ -625,7 +645,6 @@ function Focused(props: {
   const pair: PagePairChrome | null = pairedChrome
     ? {
         menu: pairMenu,
-        onBack: () => navigation.goBack(),
         taskTabIds: threadTabs?.taskTabs.map(({ id }) => id) ?? [],
       }
     : null;
@@ -785,16 +804,19 @@ function Focused(props: {
               ),
           };
   return (
-    <PagePairSurface
-      bleed={appId !== null}
-      body={body}
-      companion={second}
-      // On iOS an app runs under a transparent bar, from the screen's top.
-      keyboardVerticalOffset={appId !== null && Platform.OS === "ios" ? 0 : headerHeight}
-      notices={props.notices}
-      onPaired={setPaired}
-      typing={typing}
-    />
+    <PlaceBarProvider ask={ask} verticalBar={verticalBar}>
+      <PagePairSurface
+        bleed={appId !== null}
+        body={body}
+        companion={second}
+        // Only Android's app bar is in the room's way: on iOS an app runs under a
+        // transparent bar, from the screen's top, and every other place has its own bar.
+        keyboardVerticalOffset={appId !== null && Platform.OS !== "ios" ? headerHeight : 0}
+        notices={props.notices}
+        onPaired={setPaired}
+        typing={typing}
+      />
+    </PlaceBarProvider>
   );
 }
 
@@ -861,7 +883,7 @@ function BrowserTab(props: {
   readonly onSwitchTab: (tabId: string) => void;
   readonly onTyping: (typing: boolean) => void;
   readonly onViewing: (page: BrowserPageContentPart | null) => void;
-  /** The page's bar in place of the native one, while a Thread is beside it. */
+  /** What the page's bar adds while a Thread is beside it. */
   readonly pair: PagePairChrome | null;
   /** This tab in the place list, found by its own id; null while it is not listed. */
   readonly place: PlaceItem | null;
@@ -957,7 +979,7 @@ function BrowserTab(props: {
       />
     );
   return (
-    <WithBack onBack={props.pair?.onBack ?? null}>
+    <>
       {restorable && place !== null ? (
         <SavedTab
           connected={props.connected}
@@ -985,28 +1007,7 @@ function BrowserTab(props: {
           failed={session?.state === "failed"}
         />
       )}
-    </WithBack>
-  );
-}
-
-/** A tab with no page to drive, under the one control the put-away native bar took: Back. */
-function WithBack(props: {
-  readonly children: ReactNode;
-  readonly onBack: (() => void) | null;
-}): ReactNode {
-  if (props.onBack === null) return props.children;
-  return (
-    <View style={styles.fill}>
-      <Toolbar edge="top" testID="page-toolbar">
-        <ToolbarButton
-          accessibilityHint="Returns to the previous screen"
-          label="Back"
-          onPress={props.onBack}
-          symbol="chevron.left"
-        />
-      </Toolbar>
-      {props.children}
-    </View>
+    </>
   );
 }
 
@@ -1186,15 +1187,18 @@ function SavedTab(props: {
   );
 }
 
-/** The bar of a place with nothing else to drive: its name, and Close. */
+/** The bar of a place with nothing else to drive: the way out, its name, Ask and Close. */
 function CloseBar(props: {
   readonly children: ReactNode;
   readonly closeDisabled: boolean;
   readonly onClose: () => void;
 }): ReactNode {
+  useNativeBarAway();
   return (
     <Toolbar edge="bottom" testID="page-toolbar">
+      <ToolbarLeave />
       <ToolbarCapsule style={styles.restingAddress}>{props.children}</ToolbarCapsule>
+      <ToolbarAsk />
       <ToolbarMenu
         label="More"
         sections={[

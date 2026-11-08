@@ -12,7 +12,7 @@ import {
 } from "@opensteer/client/host";
 import { Alert } from "react-native";
 import * as Clipboard from "expo-clipboard";
-import { pictureBox, pinched, slideFor } from "../browser/browser-page.js";
+import { fitOffer, pictureBox, pinched, slideFor } from "../browser/browser-page.js";
 import { BrowserPageContentPartSchema } from "@opensteer/core";
 import { BrowserSurfaceIdSchema, type MachineSummary } from "@opensteer/protocol";
 import { MemoryPrivateFilesystem } from "@opensteer/client/test-support";
@@ -46,6 +46,7 @@ const state = vi.hoisted(() => ({
   hostClient: {} as Record<string, unknown>,
   dispatch: vi.fn(),
   goBack: vi.fn(),
+  safeArea: { bottom: 0, left: 0, right: 0, top: 0 },
   setOptions: vi.fn(),
   setParams: vi.fn(),
   routes: [] as { name: string; params?: object }[],
@@ -310,7 +311,7 @@ vi.mock("react-native-safe-area-context", () => ({
     <div data-pane-style={JSON.stringify(flatten(style))}>{children}</div>
   ),
   useSafeAreaFrame: () => ({ height: 844, width: 390, x: 0, y: 0 }),
-  useSafeAreaInsets: () => ({ bottom: 0, left: 0, right: 0, top: 0 }),
+  useSafeAreaInsets: () => state.safeArea,
 }));
 vi.mock("../ui/keyboard.js", () => ({ useKeyboardVisible: () => state.keyboard }));
 vi.mock("../ui/foreground.js", () => ({ useAppForeground: () => state.foreground }));
@@ -465,10 +466,19 @@ vi.mock("../browser/browser-stream.js", async (importOriginal) => ({
     );
   },
 }));
-vi.mock("../computers/mac-app-view.js", () => ({
-  MacAppPreview: () => null,
-  MacAppView: () => <div>Mac app</div>,
-}));
+vi.mock("../computers/mac-app-view.js", async () => {
+  const { ToolbarAsk } =
+    await vi.importActual<typeof import("../browser/place-bar.js")>("../browser/place-bar.js");
+  return {
+    MacAppPreview: () => null,
+    MacAppView: () => (
+      <div>
+        Mac app
+        <ToolbarAsk />
+      </div>
+    ),
+  };
+});
 vi.mock("../thread/thread-pane.js", async () => {
   const React = await vi.importActual<typeof import("react")>("react");
   const { useContentInsets, usePaneInView } =
@@ -567,6 +577,7 @@ afterEach(() => {
   state.dispatch.mockReset();
   state.goBack.mockReset();
   state.setOptions.mockReset();
+  state.safeArea = { bottom: 0, left: 0, right: 0, top: 0 };
   state.setParams.mockReset();
   state.routes = [];
   state.pair = { height: 760, width: 390 };
@@ -697,7 +708,14 @@ function menu(): HTMLElement {
   return more;
 }
 
-/** The native bar over the page as the screen last set it: who is here, and Ask. */
+/** Ask and who is here, on the place's own bar. */
+function askMenu(): HTMLElement {
+  const ask = document.querySelector<HTMLElement>('[aria-label="Ask"], [aria-label$=". Ask"]');
+  if (ask === null) throw new Error("The place's bar has no Ask.");
+  return ask;
+}
+
+/** The native bar as the screen last set it: a place with no bar of its own. */
 function header(): HTMLElement {
   const options = state.setOptions.mock.calls
     .map(([value]) => value as { headerRight?: () => ReactNode; headerTitle?: () => ReactNode })
@@ -1540,7 +1558,7 @@ describe("the page's bar", () => {
   it("opens the one agent's Thread, and goes back to it when it is the screen under the page", () => {
     const { container } = openPage([{ acting: true, threadId: "thread-trip" }]);
     expect(container.querySelector('[data-testid="conversation-slot"]')).toBeNull();
-    press(header(), "Tokyo trip, working here");
+    press(askMenu(), "Tokyo trip · Working here");
     expect(state.dispatch).toHaveBeenCalledExactlyOnceWith({
       name: "Thread",
       params: { deploymentId: "deployment-a", threadId: "thread-trip" },
@@ -1552,7 +1570,7 @@ describe("the page's bar", () => {
       { name: "Thread", params: { deploymentId: "deployment-a", threadId: "thread-trip" } },
       { name: "WorkspaceBrowser", params: { sessionId, tabId: "page-1" } },
     ];
-    press(header(), "Tokyo trip, working here");
+    press(askMenu(), "Tokyo trip · Working here");
     expect(state.goBack).toHaveBeenCalledOnce();
     expect(state.dispatch).not.toHaveBeenCalled();
   });
@@ -1564,7 +1582,7 @@ describe("the page's bar", () => {
       { name: "Thread", params: { deploymentId: "deployment-a", threadId: "thread-trip" } },
       { name: "WorkspaceBrowser", params: { sessionId, tabId: "page-1" } },
     ];
-    press(header(), "Chat, idle");
+    press(askMenu(), "Chat · Idle");
     expect(state.dispatch).toHaveBeenCalledExactlyOnceWith({
       name: "Home",
       params: { deploymentId: "deployment-a" },
@@ -1577,13 +1595,15 @@ describe("the page's bar", () => {
       { lastActiveAt: "2026-10-13T00:05:00.000Z", threadId: "thread-trip" },
       { acting: true, lastActiveAt: "2026-10-13T00:01:00.000Z", threadId: "thread-agent" },
     ]);
-    const pill = element(header(), "2 agents, 1 working");
-    expect(pill?.dataset["menuTitle"]).toBe("Open a thread");
-    expect([...pill!.querySelectorAll("button")].map((button) => button.textContent)).toEqual([
+    const ask = askMenu();
+    expect(ask.getAttribute("aria-label")).toBe("2 agents, 1 working. Ask");
+    expect([...ask.querySelectorAll("button")].map((button) => button.textContent)).toEqual([
       "Compare hotels · Working here",
       "Tokyo trip · Idle",
+      "Ask in Chat",
+      "New task",
     ]);
-    press(pill!, "Tokyo trip · Idle");
+    press(ask, "Tokyo trip · Idle");
     expect(state.dispatch).toHaveBeenCalledExactlyOnceWith({
       name: "Thread",
       params: { deploymentId: "deployment-a", threadId: "thread-trip" },
@@ -1597,8 +1617,11 @@ describe("the page's bar", () => {
       { acting: true, threadId: "thread-trip" },
       { threadId: "thread-agent" },
     ]);
-    let pill = element(header(), "2 agents, 1 working")!;
-    expect(pill.querySelector("button")?.textContent).toContain("Tokyo trip");
+    const agentRows = () =>
+      [...menu().querySelectorAll("button")]
+        .map((button) => button.textContent)
+        .filter((words) => words?.includes(" · "));
+    expect(agentRows()[0]).toContain("Tokyo trip");
     state.snapshot = withAgents([
       occupied(sessionId, [
         { threadId: "thread-trip" },
@@ -1606,16 +1629,14 @@ describe("the page's bar", () => {
       ]),
     ]);
     render();
-    pill = element(header(), "2 agents, 1 working")!;
-    expect(pill.querySelector("button")?.textContent).toContain("Compare hotels");
+    expect(agentRows()[0]).toContain("Compare hotels");
     expect(container.querySelector('[data-testid="conversation-slot"]')?.textContent).toContain(
       "Thread thread-trip beside",
     );
     state.snapshot = withAgents([occupied(sessionId, [])]);
     render();
-    expect(element(header(), "Tokyo trip, idle")).toBeNull();
-    expect(element(header(), "2 agents, 1 working")).toBeNull();
-    expect(element(header(), "Ask")).not.toBeNull();
+    expect(agentRows()).toEqual([]);
+    expect(menu().textContent).toContain("Ask in Chat");
     expect(container.querySelector('[data-testid="conversation-slot"]')?.textContent).toContain(
       "Thread thread-trip beside",
     );
@@ -1647,7 +1668,7 @@ describe("the page's bar", () => {
       { name: "Thread", params: { threadId: "thread-agent" } },
       { name: "WorkspaceBrowser" },
     ];
-    press(header(), "Tokyo trip, idle");
+    press(askMenu(), "Tokyo trip · Idle");
     expect(state.goBack).not.toHaveBeenCalled();
     expect(state.dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: "PUSH" }));
     const legacy = setup({ threadId: "thread-trip" });
@@ -1659,7 +1680,7 @@ describe("the page's bar", () => {
     const { render } = openPage([]);
     state.snapshot = { ...state.snapshot!, homeThreadId: null, network: "offline" };
     render();
-    const ask = element(header(), "Ask")!;
+    const ask = askMenu();
     expect(ask.textContent).not.toContain("Ask in Chat");
     press(ask, "New task");
     expect(state.dispatch).toHaveBeenCalledWith(expect.objectContaining({ name: "NewTask" }));
@@ -1668,11 +1689,12 @@ describe("the page's bar", () => {
   it("names nobody in an empty tab, and leaves Ask", () => {
     const { container } = openPage([]);
     expect(container.querySelector('[data-testid="page-toolbar"]')).not.toBeNull();
-    expect(element(header(), "Ask")).not.toBeNull();
-    const bar = header();
-    expect(bar.textContent).not.toContain("agent");
-    expect(bar.textContent).not.toContain("Agent working");
-    expect(bar.textContent).toContain("Page");
+    const ask = askMenu();
+    expect(ask.getAttribute("aria-label")).toBe("Ask");
+    expect([...ask.querySelectorAll("button")].map((button) => button.textContent)).toEqual([
+      "Ask in Chat",
+      "New task",
+    ]);
   });
 
   it("says an older Host's agent is working without naming or offering anyone", () => {
@@ -1680,15 +1702,17 @@ describe("the page's bar", () => {
     // The browser says it is acting, and its one tab names no occupant.
     state.snapshot = withAgents([{ ...occupied(sessionId, []), acting: true }]);
     render();
-    const said = element(header(), "Agent working");
-    expect(said).not.toBeNull();
-    expect(said?.tagName).not.toBe("BUTTON");
-    expect(header().querySelector('button[aria-label="Agent working"]')).toBeNull();
+    const ask = askMenu();
+    expect(ask.getAttribute("aria-label")).toBe("Agent working. Ask");
+    expect([...ask.querySelectorAll("button")].map((button) => button.textContent)).toEqual([
+      "Ask in Chat",
+      "New task",
+    ]);
   });
 
   it("asks in Chat or a new task with the page on that draft, this reader's alone, never in the route", () => {
     openPage([]);
-    const ask = element(header(), "Ask")!;
+    const ask = askMenu();
     expect(ask.dataset["menuTitle"]).toBe("Ask about this page");
     const page = {
       sessionId,
@@ -1743,7 +1767,7 @@ describe("the page's bar", () => {
       });
       await act(() => state.drafts!.writeDraftPage("deployment-a", "user-a", draftKey, earlier));
       expect(state.drafts!.readDraft("deployment-a", "user-a", draftKey)?.page).toEqual(earlier);
-      press(element(header(), "Ask")!, "New task");
+      press(askMenu(), "New task");
       const { draftId } = askedFor();
       expect(state.dispatch).toHaveBeenCalledWith({
         name: "NewTask",
@@ -1760,17 +1784,15 @@ describe("the page's bar", () => {
   it("shows the same page whichever way it was reached", () => {
     const occupants = [{ acting: true, threadId: "thread-trip" }];
     const fromTask = openPage(occupants, { threadId: "thread-agent" });
-    const taskHeader = header().innerHTML;
     const fromTabs = openPage(occupants, {
       scope: "workspace",
       // A previous release's route from Tabs still named a conversation.
       threadId: "thread-agent",
     } as unknown as Partial<SurfacesRoute>);
     expect(fromTabs.container.innerHTML).toBe(fromTask.container.innerHTML);
-    expect(header().innerHTML).toBe(taskHeader);
     // Who is here is the page's occupant, never the conversation the route names.
-    expect(element(header(), "Tokyo trip, working here")).not.toBeNull();
-    expect(header().textContent).not.toContain("Compare hotels");
+    expect(element(fromTabs.container, "Tokyo trip, working here. Ask")).not.toBeNull();
+    expect(fromTabs.container.textContent).not.toContain("Compare hotels");
   });
 });
 
@@ -2239,33 +2261,72 @@ describe("a page beside its agent's thread", () => {
     press(menu(), "Tokyo trip · Idle");
     expect(second(container)).toContain("Thread thread-trip beside");
     expect(state.dispatch).not.toHaveBeenCalled();
-    // Closing keeps the companion away even while an agent is still present,
-    // and gives the native bar back.
+    // Closing keeps the companion away even while an agent is still present.
     closeBeside(container, "thread-trip");
     expect(second(container)).toBeNull();
-    expect(headerShown()).toBe(true);
   });
 
-  it("puts the native bar away only while a thread is beside the page, with Back in the page's own row", () => {
+  it("draws one bar with the way out, on a phone and beside a thread", () => {
     const { container, render } = openPage();
-    // A phone keeps its native bar and the page's own Back.
-    expect(headerShown()).toBe(true);
-    press(container, "Back");
+    expect(headerShown()).toBe(false);
+    // Ask stands in a phone's bar; leaving and the page's own history are two controls.
+    expect(askMenu().textContent).toContain("Ask in Chat");
+    expect(menu().textContent).not.toContain("Ask in Chat");
+    press(container, "Previous page");
     expect(state.goBack).not.toHaveBeenCalled();
+    press(container, "Back");
+    expect(state.goBack).toHaveBeenCalledOnce();
 
     state.pair = { height: 1000, width: 744 };
     render();
     expect(headerShown()).toBe(false);
-    // Ask moved into More with the native bar.
+    // Beside a Thread, Ask is in More, and the row keeps the page's address room.
+    expect(document.querySelector('[aria-label$=". Ask"]')).toBeNull();
     expect(menu().textContent).toContain("Ask in Chat");
     press(container, "Back");
-    expect(state.goBack).toHaveBeenCalledOnce();
-    press(menu(), "Go Back");
-    expect(state.goBack).toHaveBeenCalledOnce();
+    expect(state.goBack).toHaveBeenCalledTimes(2);
+  });
 
-    state.pair = { height: 760, width: 390 };
-    render();
+  it("leaves Back and Ask to the vertical bar, with no row over the page, and only there", () => {
+    const lastOptions = () =>
+      Object.assign({}, ...state.setOptions.mock.calls.map(([value]) => value as object)) as {
+        readonly headerTitle: () => ReactNode;
+        readonly headerTransparent: boolean;
+        readonly unstable_headerRightItems: () => readonly { readonly label: string }[];
+      };
+    state.safeArea = { bottom: 34, left: 0, right: 84, top: 0 };
+    const { container, render } = openPage();
     expect(headerShown()).toBe(true);
+    expect(lastOptions().headerTransparent).toBe(true);
+    expect(lastOptions().headerTitle()).toBeNull();
+    expect(
+      lastOptions()
+        .unstable_headerRightItems()
+        .map(({ label }) => label),
+    ).toEqual(["Ask"]);
+    // Back here is the vertical bar's; the page's own bar keeps the page's history.
+    expect(element(container, "Back")).toBeNull();
+    expect(document.querySelector('[aria-label="Ask"], [aria-label$=". Ask"]')).toBeNull();
+    expect(element(container, "Previous page")).not.toBeNull();
+
+    // A notch insets both sides, and the page's own bar carries them again.
+    state.safeArea = { bottom: 21, left: 59, right: 59, top: 0 };
+    render();
+    expect(headerShown()).toBe(false);
+    expect(lastOptions().headerTransparent).toBe(false);
+    expect(element(container, "Back")).not.toBeNull();
+    expect(askMenu()).not.toBeNull();
+  });
+
+  it("gives the native bar back when a tab has no page to draw, so it can still be left", () => {
+    const { container, render } = openPage();
+    expect(headerShown()).toBe(false);
+    state.snapshot = snapshot([]);
+    render();
+    expect(container.textContent).toContain("This tab was closed");
+    expect(container.querySelector('[data-testid="page-toolbar"]')).toBeNull();
+    expect(headerShown()).toBe(true);
+    expect(header().textContent).toContain("Tab");
   });
 
   it("follows the agent to its tab in place, and pauses when the person moves the page", () => {
@@ -2381,7 +2442,7 @@ describe("a page beside its agent's thread", () => {
     render();
     expect(second(container)).toContain("Thread thread-agent beside");
     expect(state.conversationMounts).toBe(mounts);
-    expect(element(header(), "Tokyo trip, working here")).not.toBeNull();
+    expect(menu().textContent).toContain("Tokyo trip · Working here");
     state.snapshot = withAgents([occupied("other-browser", [])]);
     render();
     expect(second(container)).toContain("Thread thread-agent beside");
@@ -2392,7 +2453,7 @@ describe("a page beside its agent's thread", () => {
     ]);
     render();
     expect(second(container)).toBeNull();
-    press(header(), "Tokyo trip, working here");
+    press(askMenu(), "Tokyo trip · Working here");
     expect(second(container)).toContain("Thread thread-trip beside");
   });
 
@@ -2409,12 +2470,13 @@ describe("a page beside its agent's thread", () => {
     expect(second(container)).toBeNull();
     expect(slot(container, "page").style).toMatchObject({ flex: 1, minHeight: 0 });
 
-    press(element(header(), "Ask")!, "Ask in Chat");
+    press(askMenu(), "Ask in Chat");
     expect(second(container)).toContain("Thread thread-home beside with Page");
     expect(state.drafts!.readDraft("deployment-a", "user-a", "thread-home")?.page?.title).toBe(
       "Page",
     );
-    press(element(header(), "Ask")!, "New task");
+    // With a pane beside the page, Ask is in the page's More.
+    press(menu(), "New task");
     expect(second(container)).toContain("New task beside");
     const besideDraft = () =>
       container.querySelector<HTMLElement>("[data-draft]")!.dataset["draft"]!;
@@ -2423,7 +2485,7 @@ describe("a page beside its agent's thread", () => {
       state.drafts!.readDraft("deployment-a", "user-a", newTaskDraftKey(asked))?.page?.title,
     ).toBe("Page");
     // A draft with something on it waits in the sidebar; Ask starts another.
-    press(element(header(), "Ask")!, "New task");
+    press(menu(), "New task");
     expect(besideDraft()).not.toBe(asked);
     expect(
       state.drafts!.readDraft("deployment-a", "user-a", newTaskDraftKey(asked))?.page?.title,
@@ -2758,8 +2820,8 @@ describe("saved tabs, global scope and native authority (hand-built snapshots)",
       },
     );
     expect(container.textContent).toContain("Mac app");
-    expect(element(header(), "Tokyo trip, working here")).not.toBeNull();
-    expect(header().textContent).not.toContain("Compare hotels");
+    expect(element(container, "Tokyo trip, working here. Ask")).not.toBeNull();
+    expect(container.textContent).not.toContain("Compare hotels");
   });
 });
 
@@ -2774,6 +2836,28 @@ describe("native page layout and controls", () => {
       width: 200,
       height: 800,
       left: 100,
+    });
+  });
+
+  it("offers Fit in the room a page leaves under or beside it, and never over the page", () => {
+    const room = { height: 560, width: 870 };
+    // A page fitted by its height, with real gutters: the words fit beside it.
+    expect(fitOffer(room, { height: 560, left: 165, width: 540 })).toEqual({
+      place: "side",
+      words: true,
+    });
+    // A narrower gutter holds only the glyph, and one too narrow for it offers nothing.
+    expect(fitOffer(room, { height: 560, left: 80, width: 710 })).toEqual({
+      place: "side",
+      words: false,
+    });
+    expect(fitOffer({ height: 300, width: 300 }, { height: 300, left: 40, width: 220 })).toBeNull();
+    // A sliver either way is not worth resizing a page for.
+    expect(fitOffer(room, { height: 560, left: 20, width: 830 })).toBeNull();
+    expect(fitOffer(room, { height: 520, left: 0, width: 870 })).toBeNull();
+    expect(fitOffer(room, { height: 300, left: 0, width: 870 })).toEqual({
+      place: "below",
+      words: true,
     });
   });
 
@@ -2945,26 +3029,26 @@ describe("native page layout and controls", () => {
       },
     ]);
     render();
-    expect(container.querySelector<HTMLButtonElement>('button[aria-label="Back"]')?.disabled).toBe(
-      true,
-    );
+    expect(
+      container.querySelector<HTMLButtonElement>('button[aria-label="Previous page"]')?.disabled,
+    ).toBe(true);
     expect(
       [...menu().querySelectorAll("button")].find((button) => button.textContent === "Forward")
         ?.disabled,
     ).toBe(true);
-    press(container, "Back");
+    press(container, "Previous page");
     press(menu(), "Forward");
     expect(send).not.toHaveBeenCalled();
     state.snapshot = snapshot([chosen]);
     render();
-    expect(container.querySelector<HTMLButtonElement>('button[aria-label="Back"]')?.disabled).toBe(
-      false,
-    );
+    expect(
+      container.querySelector<HTMLButtonElement>('button[aria-label="Previous page"]')?.disabled,
+    ).toBe(false);
     expect(
       [...menu().querySelectorAll("button")].find((button) => button.textContent === "Forward")
         ?.disabled,
     ).toBe(false);
-    press(container, "Back");
+    press(container, "Previous page");
     press(menu(), "Forward");
     expect(send.mock.calls).toEqual([
       [chosen.id, { type: "navigation.back", surfaceId: chosen.tabs[0]!.id }],

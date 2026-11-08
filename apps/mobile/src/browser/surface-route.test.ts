@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { WorkspaceSurfaceDestination } from "@opensteer/client/host";
 import {
+  pageSite,
   paramsDestination,
   routeDestination,
   sameDestination,
@@ -10,6 +11,14 @@ import {
 } from "./surface-route.js";
 
 const source = { kind: "owner-view", viewId: "view", generation: 2 } as const;
+describe("pageSite", () => {
+  it("names a site as a person says it, without its www", () => {
+    expect(pageSite("https://www.google.com/search?q=a")).toBe("google.com");
+    expect(pageSite("https://mail.example.com/inbox")).toBe("mail.example.com");
+    expect(pageSite("about:blank")).toBeNull();
+  });
+});
+
 describe("viewedPage", () => {
   const session = { id: "bsn_00000000-0000-4000-8000-000000000001" };
   const tab = { active: true, id: "page-1", title: "Example", url: "https://example.com/" };

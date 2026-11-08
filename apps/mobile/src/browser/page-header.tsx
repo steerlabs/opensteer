@@ -1,7 +1,7 @@
-import { placeAgentsWords, type PlaceAgents } from "@opensteer/client/host";
+import { placeAgentState, placeAgentsWords, type PlaceAgents } from "@opensteer/client/host";
 import { useNavigation } from "@react-navigation/native";
 import type { NativeStackHeaderItemMenuAction } from "@react-navigation/native-stack";
-import { useLayoutEffect, useRef, type ReactNode } from "react";
+import { memo, useLayoutEffect, useRef, type ReactNode } from "react";
 import { Platform, Pressable, StyleSheet, View } from "react-native";
 import { color, headerFontScaleLimit, space, touchTarget } from "../theme.js";
 import { barOverContentOptions } from "../thread/around-button.js";
@@ -15,8 +15,10 @@ import { ChatOrb } from "../ui/chat-orb.js";
 import { GlassSurface, useLiquidGlass } from "../ui/glass.js";
 import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
-import { AgentPill } from "./agent-marks.js";
+import { ActingDot } from "./acting-dot.js";
+import { AgentMarks } from "./agent-marks.js";
 import { opensteerAppGlyph } from "./agent-surface.js";
+import { ToolbarMenu } from "./toolbar.js";
 
 /** Where Ask starts work about the page. */
 export type AskTarget = "chat" | "task" | "thread";
@@ -44,19 +46,16 @@ export interface AppMenu {
 }
 
 /**
- * The bar over a tab, Mac app or phone, the same however it was reached: the
- * native Back, who is here as the title, and Ask.
+ * The native bar, for a place with no bar of its own to stand in for it: a tab
+ * with no page to drive, under its name, and an Opensteer App. Where iOS has a
+ * vertical bar it is also every other place's Back and Ask, with no row and no
+ * title: UIKit stands the items in the vertical bar, clear of the page.
  *
- * Who is here is the title because they are what the place is about once it
- * is open — the page names itself in its own bar below. With nobody here the
- * title is the place's own name. Ask is the bar's one action, a native menu:
- * Ask in Chat, once Chat exists, and New task. A place a Thread made is asked
- * about in that Thread, so there Ask is one button rather than a menu.
- *
- * An Opensteer App has no bar of its own below, so its name is the title and
- * carries the app's menu; on iOS the app runs under the bar, as a
- * conversation does. Android keeps Material's opaque bar, the menu behind its
- * overflow button.
+ * An app's name is the title and carries the app's menu; on iOS the app runs
+ * under the bar, as a conversation does. Android keeps Material's opaque bar,
+ * the menu behind its overflow button. Ask is the bar's one action, a native
+ * menu: Ask in Chat, once Chat exists, and New task. A place a Thread made is
+ * asked about in that Thread, so there Ask is one button rather than a menu.
  *
  * The bar is set again only when what it shows changes; its handlers are
  * read when they are used, so a page that re-renders on every picture never
@@ -68,21 +67,22 @@ export function usePageHeader(props: {
   readonly app: AppMenu | null;
   /** Ask goes to the Thread that made this place, with no choice to offer. */
   readonly asksThread: boolean;
-  /** The Thread drawn beside the page, when one is. */
-  readonly beside: string | null;
   /** Chat exists to ask in; before its first message, only a task can be started. */
   readonly chat: boolean;
-  readonly intent: "open" | "beside";
+  /** The page's own bar has Ask in its More, beside a Thread, so the native bar offers none. */
+  readonly noAsk: boolean;
   readonly onAsk: (target: AskTarget) => void;
   readonly onOpenAgent: (threadId: string) => void;
-  /** The place's own name, the title when nobody is here. */
+  /** The place's own name. */
   readonly title: string;
+  /** The screen has iOS's vertical bar. */
+  readonly verticalBar: boolean;
 }): void {
   const navigation = useNavigation();
   const glass = useLiquidGlass();
   const latest = useRef(props);
   latest.current = props;
-  const { agents, asksThread, beside, chat, intent, title } = props;
+  const { agents, asksThread, chat, noAsk, title, verticalBar } = props;
   const isApp = props.app !== null;
   const appClosable = props.app?.closable === true;
   const appLive = props.app?.live === true;
@@ -96,6 +96,9 @@ export function usePageHeader(props: {
     const ask = (target: AskTarget) => latest.current.onAsk(target);
     const open = (threadId: string) => latest.current.onOpenAgent(threadId);
     const choices = askChoices({ asksThread: false, chat, onAsk: ask });
+    const here = isApp ? [] : agentChoices(agents, open);
+    // Over nothing, in the vertical bar: no row, so no title and no ground over the page.
+    const noRow = verticalBar && !isApp;
     const appSections = isApp
       ? appMenuSections(
           {
@@ -125,7 +128,7 @@ export function usePageHeader(props: {
         accessibilityLabel="Ask"
         onPresent={noop}
         onSettle={noop}
-        options={choices}
+        options={[here, choices]}
         style={styles.ask}
         title="Ask about this page"
       >
@@ -134,7 +137,7 @@ export function usePageHeader(props: {
     );
     navigation.setOptions({
       ...(isApp && Platform.OS === "ios" ? barOverContentOptions(glass) : {}),
-      headerTransparent: isApp && Platform.OS === "ios",
+      headerTransparent: noRow || (isApp && Platform.OS === "ios"),
       headerRight: () =>
         appSections !== null && Platform.OS === "android" ? (
           <View style={styles.actions}>
@@ -154,52 +157,56 @@ export function usePageHeader(props: {
           askControl
         ),
       headerTitle: () =>
-        appSections !== null ? (
+        noRow ? null : appSections !== null ? (
           <AppPill
             maxWidth={titleWidth}
             sections={Platform.OS === "android" ? null : appSections}
             title={title}
           />
         ) : (
-          <PageTitle
-            agents={agents}
-            beside={beside}
-            intent={intent}
-            maxWidth={titleWidth}
-            onOpen={open}
-            title={title}
-          />
+          <PageTitle maxWidth={titleWidth} title={title} />
         ),
-      title,
-      unstable_headerRightItems: () => [
-        asksThread
-          ? {
-              accessibilityHint: threadHint,
-              accessibilityLabel: "Ask",
-              icon: { source: askOrb, tinted: false, type: "image" },
-              label: "Ask",
-              onPress: () => ask("thread"),
-              type: "button",
-            }
-          : {
-              accessibilityHint: "Starts work about this page in Chat or a new task",
-              accessibilityLabel: "Ask",
-              icon: { source: askOrb, tinted: false, type: "image" },
-              label: "Ask",
-              menu: {
-                items: choices.map(({ icon, label, onPress }): NativeStackHeaderItemMenuAction => ({
-                  ...(icon === undefined
-                    ? {}
-                    : { icon: { name: icon, type: "sfSymbol" as const } }),
-                  label,
-                  onPress,
-                  type: "action",
-                })),
-                title: "Ask about this page",
-              },
-              type: "menu",
-            },
-      ],
+      title: noRow ? "" : title,
+      unstable_headerRightItems: () =>
+        noRow && noAsk
+          ? []
+          : [
+              asksThread
+                ? {
+                    accessibilityHint: threadHint,
+                    accessibilityLabel: "Ask",
+                    icon: { source: askOrb, tinted: false, type: "image" },
+                    label: "Ask",
+                    onPress: () => ask("thread"),
+                    type: "button",
+                  }
+                : {
+                    accessibilityHint: "Starts work about this page in Chat or a new task",
+                    accessibilityLabel: "Ask",
+                    // Marks can't stand in a native item, so a working agent is the green glint.
+                    ...(agents.unnamedActing || agents.agents.some(({ acting }) => acting)
+                      ? {
+                          icon: { name: "sparkles" as const, type: "sfSymbol" as const },
+                          tintColor: color.green,
+                        }
+                      : { icon: { source: askOrb, tinted: false, type: "image" as const } }),
+                    label: "Ask",
+                    menu: {
+                      items: [...here, ...choices].map(
+                        ({ icon, label, onPress }): NativeStackHeaderItemMenuAction => ({
+                          ...(icon === undefined
+                            ? {}
+                            : { icon: { name: icon, type: "sfSymbol" as const } }),
+                          label,
+                          onPress,
+                          type: "action",
+                        }),
+                      ),
+                      title: "Ask about this page",
+                    },
+                    type: "menu",
+                  },
+            ],
     });
   }, [
     agents,
@@ -207,14 +214,14 @@ export function usePageHeader(props: {
     appLive,
     appOpensThread,
     asksThread,
-    beside,
     chat,
     glass,
-    intent,
     isApp,
     navigation,
+    noAsk,
     title,
     titleWidth,
+    verticalBar,
   ]);
 }
 
@@ -245,6 +252,19 @@ export function askChoices(props: {
         newTask,
       ]
     : [newTask];
+}
+
+/** Who is here, as menu rows that open their Threads. */
+function agentChoices(
+  agents: PlaceAgents,
+  onOpenAgent: (threadId: string) => void,
+): readonly NativeMenuOption[] {
+  return agents.agents.map((agent) => ({
+    id: `agent:${agent.threadId}`,
+    // Android's menu has no second line, so the state is in the words.
+    label: `${agent.title} · ${placeAgentState(agent)}`,
+    onPress: () => onOpenAgent(agent.threadId),
+  }));
 }
 
 /** An app's menu: Ask first, then what the app itself offers, and Close last. */
@@ -355,35 +375,55 @@ export function AppPill(props: {
 
 function noop(): void {}
 
-function PageTitle(props: {
-  readonly agents: PlaceAgents;
-  readonly beside: string | null;
-  readonly intent: "open" | "beside";
-  readonly maxWidth: number;
-  readonly onOpen: (threadId: string) => void;
-  readonly title: string;
-}): ReactNode {
+function PageTitle(props: { readonly maxWidth: number; readonly title: string }): ReactNode {
   return (
     <View style={[styles.title, { maxWidth: props.maxWidth }]}>
-      {placeAgentsWords(props.agents) === null ? (
-        <AppText
-          maxFontSizeMultiplier={headerFontScaleLimit}
-          numberOfLines={1}
-          role="secondaryMedium"
-        >
-          {props.title}
-        </AppText>
-      ) : (
-        <AgentPill
-          agents={props.agents}
-          beside={props.beside}
-          intent={props.intent}
-          onOpen={props.onOpen}
-        />
-      )}
+      <AppText
+        maxFontSizeMultiplier={headerFontScaleLimit}
+        numberOfLines={1}
+        role="secondaryMedium"
+      >
+        {props.title}
+      </AppText>
     </View>
   );
 }
+
+/** At most this many marks fit the round control, overlapping. */
+const askMarks = 2;
+
+/**
+ * Ask, and who is here, in one round control on the place's own bar. Its face
+ * is the product's orb, or the marks of whoever is here, with the green ring on
+ * whoever is acting; its menu opens their Threads and starts work about the page.
+ */
+export const PageAsk = memo(function PageAsk(props: {
+  readonly agents: PlaceAgents;
+  /** Chat exists to ask in; before its first message, only a task can be started. */
+  readonly chat: boolean;
+  readonly onAsk: (target: AskTarget) => void;
+  readonly onOpenAgent: (threadId: string) => void;
+}): ReactNode {
+  const { agents, chat, onAsk, onOpenAgent } = props;
+  const words = placeAgentsWords(agents);
+  return (
+    <ToolbarMenu
+      accessibilityHint="Opens who is here, or starts work about this page in Chat or a new task"
+      face={
+        agents.agents.length > 0 ? (
+          <AgentMarks agents={agents.agents.slice(0, askMarks)} />
+        ) : agents.unnamedActing ? (
+          <ActingDot grouped size={8} />
+        ) : (
+          <ChatOrb size={22} />
+        )
+      }
+      label={words === null ? "Ask" : `${words.label}. Ask`}
+      sections={[agentChoices(agents, onOpenAgent), askChoices({ asksThread: false, chat, onAsk })]}
+      title="Ask about this page"
+    />
+  );
+});
 
 const styles = StyleSheet.create({
   actions: { alignItems: "center", flexDirection: "row" },
