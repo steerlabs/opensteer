@@ -7,6 +7,8 @@ import {
   deriveShell,
   noInsets,
   occlusionClearance,
+  sidebarBottom,
+  sidebarTop,
   type PagePair,
   type PairInput,
   type ShellInput,
@@ -284,6 +286,36 @@ describe("occlusion clearance", () => {
       right: 40,
       top: 0,
     });
+  });
+});
+
+describe("the sidebar's ends", () => {
+  it("stays under any status bar, and rises only into iPhone Duo's band", () => {
+    // iPhone 17 Pro and iPhone Air: the clock stands over the sidebar.
+    expect(sidebarTop(62, 0, true)).toBe(62);
+    expect(sidebarTop(68, 0, true)).toBe(68);
+    // iPhone Duo's inner screen, level with the Menu button.
+    expect(sidebarTop(82, 0, true)).toBe(26);
+    // Its cover, whose status bar stands aside: only the screen's corner is left.
+    expect(sidebarTop(0, 0, true)).toBe(8);
+    // An Android status bar is always over the sidebar, however tall its cutout.
+    expect(sidebarTop(82, 0, false)).toBe(82);
+  });
+
+  it("drops below a reported obstruction wherever the head would rise to", () => {
+    expect(sidebarTop(82, 60, true)).toBe(60);
+  });
+
+  it("gives back only the empty part of iOS's indicator zone, and none of Android's bar", () => {
+    expect(sidebarBottom(34, 0, true)).toBe(20);
+    expect(sidebarBottom(20, 0, true)).toBe(20);
+    expect(sidebarBottom(0, 0, true)).toBe(8);
+    expect(sidebarBottom(48, 0, false)).toBe(48);
+    expect(sidebarBottom(0, 0, false)).toBe(8);
+  });
+
+  it("never gives back room a reported obstruction needs", () => {
+    expect(sidebarBottom(40, 40, true)).toBe(40);
   });
 });
 

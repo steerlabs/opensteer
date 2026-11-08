@@ -20,6 +20,7 @@ import {
 // in Main, or the folder and its + going nowhere.
 
 const harness = vi.hoisted(() => ({
+  deploymentStatus: "connected",
   client: null as HostClient | null,
   drafts: null as ThreadDraftStore | null,
   rowDraws: 0,
@@ -73,6 +74,7 @@ vi.mock("../client/mobile-client.js", () => ({
   operationDetail: (_error: unknown, fallback: string) => fallback,
 }));
 vi.mock("../screens/deployment-row.js", () => ({
+  deploymentInitial: () => "M",
   deploymentTone: () => "ember",
   statusTone: () => "green",
 }));
@@ -106,11 +108,11 @@ vi.mock("../ui/mobile-client-context.js", () => ({
   useMobileClient: () => ({
     quietSeen: { getSnapshot: () => null, see: () => undefined, subscribe: () => () => undefined },
     drafts: harness.drafts,
-    getSnapshot: () => ({ rows: [] }),
+    getSnapshot: () => ({ rows: deploymentRows() }),
     subscribe: () => () => undefined,
   }),
   useMobileState: () => ({
-    rows: [{ deploymentId: "deployment-a", name: "Mac", signIn: null, status: "connected" }],
+    rows: deploymentRows(),
     selection: { deploymentId: "deployment-a", hostClient: harness.client },
   }),
   useSavedSurface: () => ({ source: "live" }),
@@ -138,6 +140,17 @@ afterEach(() => {
   document.body.replaceChildren();
   harness.client = null;
 });
+
+function deploymentRows() {
+  return [
+    {
+      deploymentId: "deployment-a",
+      name: "Mac",
+      signIn: null,
+      status: harness.deploymentStatus,
+    },
+  ];
+}
 
 function voice(patch: Partial<VoiceSnapshot>, openThread: VoiceControls["openThread"]) {
   const snapshot = { ...idleVoiceSnapshot, ...patch };
@@ -204,6 +217,8 @@ async function mount(
         <VoiceContext value={controller}>
           <SidebarPanel
             actions={actions}
+            clearanceBottom={0}
+            clearanceTop={0}
             deploymentId="deployment-a"
             destination={shown.destination === undefined ? "Home" : shown.destination}
             docked
@@ -230,6 +245,24 @@ function button(container: HTMLElement, label: string): HTMLButtonElement {
   if (!found) throw new Error(`No button ${label}`);
   return found;
 }
+
+describe("the sidebar's foot", () => {
+  it("says a Deployment's state only when something is wrong, and always to a screen reader", async () => {
+    harness.deploymentStatus = "reconnecting";
+    const reconnecting = await mount();
+    expect(reconnecting.container.textContent).toContain("Reconnecting");
+    expect(
+      reconnecting.container.querySelector('[aria-label="Settings. Mac, Reconnecting"]'),
+    ).not.toBeNull();
+
+    harness.deploymentStatus = "connected";
+    const connected = await mount();
+    expect(connected.container.textContent).not.toContain("Connected");
+    expect(
+      connected.container.querySelector('[aria-label="Settings. Mac, Connected"]'),
+    ).not.toBeNull();
+  });
+});
 
 describe("the sidebar's drafts", () => {
   const scope = ["deployment-a", "user-a"] as const;

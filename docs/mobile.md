@@ -159,6 +159,19 @@ The page's history stands inside the address capsule and the way out stands outs
 identical chevrons in one row read as one control. Fit never happens by itself: a page's size is
 shared with agents and other screens, so a tab keeps its shape until the person chooses Fit.
 
+## The sidebar's ends
+
+A safe area says an edge is reserved, not that something stands over all of it. iPhone Duo's inner
+screen reserves 82 points across its top with its status items at the far end, so the drawer's head
+[rises into that band](../apps/mobile/src/layout.ts), level with Menu, rather than leaving it empty.
+The band is told from a status bar by height: an iPhone Air's 68 points have the clock over the
+drawer, and reserved regions report a camera or a bar but never a clock. The regions they do report
+still push the head down, because the simulator can't unfold from the command line to prove this
+screen's camera clear.
+
+At the bottom, iOS's 34 points are mostly empty around a thin indicator, so the foot keeps 20 of them.
+Android's inset can hold its navigation buttons, so it keeps all of it.
+
 ## Messages
 
 Chat takes its shapes from Messages: bubbles with nothing on them, held to act on. A task doesn't,

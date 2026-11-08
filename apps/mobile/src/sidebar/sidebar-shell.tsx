@@ -40,7 +40,14 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { paramsDestination, workspaceRoute } from "../browser/surface-route.js";
 import { newTaskDraftBlank, newTaskDraftId } from "../client/thread-drafts.js";
-import { deriveShell, edgesAround, type SidebarArrangement, type Size } from "../layout.js";
+import {
+  deriveShell,
+  edgesAround,
+  occlusionClearance,
+  surfaceRegions,
+  type SidebarArrangement,
+  type Size,
+} from "../layout.js";
 import { color } from "../theme.js";
 import {
   useHostUserId,
@@ -239,6 +246,26 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
   const docked = column !== null;
   const dockedRef = useRef(docked);
   dockedRef.current = docked;
+
+  const drawerWidth = Math.max(
+    0,
+    Math.min(
+      (measured ? props.bounds.width : window.width) - 56,
+      340,
+      // Opened from the leading edge, the drawer stops at a fold
+      // rather than lying across it, unless that leaves no list at all.
+      measured && shell.leadingRoom >= sidebarMinimumWidth ? shell.leadingRoom : 340,
+    ),
+  );
+  const drawerClearance = occlusionClearance(
+    {
+      height: props.bounds.height,
+      width: drawerWidth,
+      x: rtl ? props.bounds.width - drawerWidth : 0,
+      y: 0,
+    },
+    surfaceRegions(props.bounds, regions).occlusions,
+  );
 
   const close = useCallback(() => drawer.current?.closeDrawer(), []);
   const open = useCallback((from?: HostInstance | null) => {
@@ -459,16 +486,7 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
             }
             drawerPosition={DrawerPosition.LEFT}
             drawerType={sidebarMotion.type}
-            drawerWidth={Math.max(
-              0,
-              Math.min(
-                (measured ? props.bounds.width : window.width) - 56,
-                340,
-                // Opened from the leading edge, the drawer stops at a fold
-                // rather than lying across it, unless that leaves no list at all.
-                measured && shell.leadingRoom >= sidebarMinimumWidth ? shell.leadingRoom : 340,
-              ),
-            )}
+            drawerWidth={drawerWidth}
             edgeWidth={28}
             keyboardDismissMode={DrawerKeyboardDismissMode.ON_DRAG}
             onDrawerStateChanged={onDrawerStateChanged}
@@ -478,6 +496,8 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
               docked ? null : (
                 <SidebarPanel
                   actions={actions}
+                  clearanceBottom={drawerClearance.bottom}
+                  clearanceTop={drawerClearance.top}
                   deploymentId={deploymentId}
                   destination={destination}
                   docked={false}
@@ -516,6 +536,8 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
                   >
                     <SidebarPanel
                       actions={actions}
+                      clearanceBottom={shell.sidebarClearance.bottom}
+                      clearanceTop={shell.sidebarClearance.top}
                       deploymentId={deploymentId}
                       destination={destination}
                       docked
