@@ -829,7 +829,7 @@ describe("Cursor approvals", () => {
     const first = await observer.waitFor("request.opened");
     expect(first.data.request).toMatchObject({
       kind: "harness.approval",
-      presentation: { detail: "echo hi", kind: "choice", title: "Approve command" },
+      presentation: { detail: "echo hi", kind: "choice", title: "Run this command?" },
     });
     await session.resolveRequest(first.data.request.id, { kind: "choice", optionId: "allow-once" });
 
@@ -858,7 +858,7 @@ describe("Cursor approvals", () => {
     const gatedObserver = observe(gatedSession.events);
     const gatedTurn = gatedSession.execute(gated.turn("Write a file"));
     const request = await gatedObserver.waitFor("request.opened");
-    expect(request.data.request.presentation).toMatchObject({ title: "Approve file change" });
+    expect(request.data.request.presentation).toMatchObject({ title: "Change this file?" });
     await gatedSession.resolveRequest(request.data.request.id, {
       kind: "choice",
       optionId: "reject",
@@ -894,7 +894,7 @@ describe("Cursor approvals", () => {
     const request = await observer.waitFor("request.opened");
     expect(request.data.request.presentation).toMatchObject({
       detail: "plugin-probe-other · probe",
-      title: "Approve MCP tool",
+      title: "Use this tool?",
     });
     await session.resolveRequest(request.data.request.id, { kind: "choice", optionId: "reject" });
     await turn;
@@ -998,7 +998,7 @@ describe("Cursor approvals", () => {
       expect(request.data.request.presentation).toMatchObject({
         kind: "choice",
         risk: "high",
-        title: "Approve a tool Opensteer does not recognise",
+        title: "Use a tool Opensteer doesn’t recognise?",
       });
       const detail = String(
         (request.data.request.presentation as { detail?: string }).detail ?? "",

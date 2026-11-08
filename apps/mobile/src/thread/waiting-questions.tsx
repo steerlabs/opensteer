@@ -7,7 +7,6 @@ import {
   type SurfaceModel,
 } from "@opensteer/client/host";
 import type { AuthenticatedUser, WaitingRequest } from "@opensteer/core";
-import type { MachineSummary } from "@opensteer/protocol";
 import { useMemo, type ReactNode } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import Animated from "react-native-reanimated";
@@ -33,7 +32,6 @@ export function WaitingQuestions(props: {
   readonly deploymentId: string;
   readonly drafts: ThreadDraftStore;
   readonly hostClient: HostClient;
-  readonly machines: readonly MachineSummary[];
   readonly onOpenTask: (threadId: string) => void;
   /** No composer stands here to dock what this Thread itself asks, so this does. */
   readonly ownQuestions?: boolean;
@@ -80,7 +78,6 @@ export function WaitingQuestions(props: {
         drafts={props.drafts}
         hostClient={props.hostClient}
         key={surface.request.id}
-        machines={props.machines}
         subagentTitle={focused?.subagent?.title ?? null}
         surface={surface}
         userId={props.user.id}
@@ -95,7 +92,8 @@ export function QuestionCard(props: {
   readonly deploymentId: string;
   readonly drafts: ThreadDraftStore;
   readonly hostClient: HostClient;
-  readonly machines: readonly MachineSummary[];
+  /** Off where voice says what else is waiting in its own words. */
+  readonly showQueue?: boolean;
   readonly subagentTitle: string | null;
   readonly surface: SurfaceModel;
   readonly userId: string;
@@ -116,11 +114,12 @@ export function QuestionCard(props: {
         }
         disabledReason={null}
         highlighted={false}
+        deploymentId={props.deploymentId}
         hostClient={props.hostClient}
-        machines={props.machines}
         mutationGate={gate}
         onPresent={() => undefined}
         onSettle={() => undefined}
+        {...(props.showQueue === undefined ? {} : { showQueue: props.showQueue })}
         subagentTitle={props.subagentTitle}
         surface={props.surface}
       />

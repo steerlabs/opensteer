@@ -1229,7 +1229,7 @@ class MuseHarnessSession implements HarnessSession {
               label: choice.label,
             })),
             risk: "medium",
-            title: `Approve ${request.toolName}`,
+            title: `Allow ${request.toolName}?`,
           },
           nodeId,
         ),

@@ -1373,7 +1373,6 @@ function ThreadPaneForUser(
               deploymentId={props.deploymentId}
               drafts={client.drafts}
               hostClient={props.hostClient}
-              machines={snapshot.machines}
               onOpenTask={taskScope.onViewWork}
               ownQuestions={voiceThread}
               threadId={thread.id}
@@ -1427,7 +1426,6 @@ function ThreadPaneForUser(
                 usageNotice={usageNotice}
                 highlightRequestId={props.requestId}
                 hostClient={props.hostClient}
-                machines={snapshot.machines}
                 // A thread with no model chosen yet says so on the pill, rather
                 // than naming a blank.
                 modelLabel={thread.modelLabel.trim() === "" ? "Choose model" : thread.modelLabel}

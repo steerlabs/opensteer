@@ -19,7 +19,6 @@ import { useVoiceAskedRequest, useVoiceValue } from "./use-voice-value.js";
 
 interface AskedState {
   readonly canRespond: boolean;
-  readonly machines: HostSnapshot["machines"];
   readonly user: HostSnapshot["user"];
   readonly waiting: HostSnapshot["waitingRequests"][number] | null;
 }
@@ -56,13 +55,12 @@ function AskedRequest(props: {
     () =>
       (snapshot: HostSnapshot): AskedState => ({
         canRespond: canRespondToRequests(snapshot),
-        machines: snapshot.machines,
         user: snapshot.user,
         waiting: snapshot.waitingRequests.find(({ request }) => request.id === requestId) ?? null,
       }),
     [requestId],
   );
-  const { canRespond, machines, user, waiting } = useHostSelector(hostClient, select, sameAsk);
+  const { canRespond, user, waiting } = useHostSelector(hostClient, select, sameAsk);
   const surface = useMemo(
     () => (waiting === null ? null : deriveSurface([waiting.request], user)),
     [user, waiting],
@@ -77,7 +75,7 @@ function AskedRequest(props: {
         drafts={client.drafts}
         hostClient={hostClient}
         key={surface.request.id}
-        machines={machines}
+        showQueue={false}
         subagentTitle={waiting?.subagent?.title ?? null}
         surface={surface}
         userId={user.id}
@@ -96,7 +94,6 @@ function AskedRequest(props: {
 function sameAsk(left: AskedState, right: AskedState): boolean {
   return (
     left.canRespond === right.canRespond &&
-    left.machines === right.machines &&
     left.user === right.user &&
     left.waiting === right.waiting
   );

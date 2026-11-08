@@ -679,6 +679,12 @@ vi.mock("./request-card.js", () => ({
   ),
 }));
 
+vi.mock("./answer-bar.js", () => ({
+  AnswerBar: (props: { readonly question: string }) => (
+    <section aria-label="Answer bar">{props.question}</section>
+  ),
+}));
+
 const { ThreadPane } = await import("./thread-pane.js");
 const { useScopedThreadHeader, useThreadHeader } = await import("../screens/thread-header.js");
 const { stackScreenOptions } = await import("../navigation-header.js");
@@ -1343,6 +1349,42 @@ describe("a conversation with a page", () => {
     await act(async () => answer.reject(new Error("This Host cannot open app tabs.")));
     expect(harness.dispatch).toHaveBeenLastCalledWith({ count: 1, type: "POP" });
     expect(text(container)).toContain("This Host cannot open app tabs.");
+  });
+
+  it("takes one open question in the bar, and leaves a durable one to its card", async () => {
+    const runId = createId("run");
+    const question = (mode: "durable" | "live"): Request =>
+      ({
+        ...approval(runId, "More information needed"),
+        kind: "harness.input",
+        mode,
+        originatingThreadId: workId,
+        payload: { kind: "harness.input" },
+        presentation: {
+          fields: [{ id: "q", multiSelect: false, prompt: "Which branch?", secret: false }],
+          kind: "form",
+          title: "More information needed",
+        },
+      }) as Request;
+    const asking = (request: Request) =>
+      fakeHost(
+        snapshotFor({
+          entries: [],
+          requests: [request],
+          run: { id: runId, status: "waiting" },
+          threadId: workId,
+        }),
+      );
+    const live = await mount(asking(question("live")), workId);
+    expect(live.container.querySelector('[aria-label="Answer bar"]')?.textContent).toBe(
+      "Which branch?",
+    );
+    expect(live.container.querySelector('[aria-label="Docked request"]')).toBeNull();
+    const durable = await mount(asking(question("durable")), workId);
+    expect(durable.container.querySelector('[aria-label="Answer bar"]')).toBeNull();
+    expect(durable.container.querySelector('[aria-label="Docked request"]')?.textContent).toBe(
+      "More information needed",
+    );
   });
 
   it("shows all of itself beside the page, with its approval, and includes the page", async () => {

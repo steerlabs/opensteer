@@ -764,7 +764,7 @@ class AcpHarnessSession implements HarnessSession {
           kind: "choice",
           options: choices.map(requestChoice),
           risk: "medium",
-          title: request.toolCall.title ?? request.toolCall.name ?? "Approve action",
+          title: request.toolCall.title ?? request.toolCall.name ?? "Allow this action?",
         }),
       },
       type: "request.opened",

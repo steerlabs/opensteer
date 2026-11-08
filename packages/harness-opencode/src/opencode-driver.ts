@@ -2445,7 +2445,7 @@ function opencodeApprovalDescriptor(request: z.infer<typeof OpencodePermissionRe
   const metadata = request.metadata;
   const command = typeof metadata.command === "string" ? metadata.command : undefined;
   if (request.permission === "bash" && command) {
-    return { detail: command, risk: "medium", title: "Approve command" };
+    return { detail: command, risk: "medium", title: "Run this command?" };
   }
   const diff = typeof metadata.diff === "string" ? metadata.diff : undefined;
   const filepath = typeof metadata.filepath === "string" ? metadata.filepath : undefined;
@@ -2453,7 +2453,7 @@ function opencodeApprovalDescriptor(request: z.infer<typeof OpencodePermissionRe
     return {
       detail: diff ? `${filepath ?? ""}\n\n${diff}`.trim() : `Allow changes to ${filepath ?? ""}`,
       risk: "medium",
-      title: "Approve file changes",
+      title: "Change these files?",
     };
   }
   return {
@@ -2462,7 +2462,7 @@ function opencodeApprovalDescriptor(request: z.infer<typeof OpencodePermissionRe
         ? `${request.permission}: ${request.patterns.join(", ")}`
         : `Allow ${request.permission}`,
     risk: request.permission === "external_directory" ? "high" : "medium",
-    title: `Approve ${request.permission}`,
+    title: `Allow ${request.permission}?`,
   };
 }
 

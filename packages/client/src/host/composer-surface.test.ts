@@ -41,6 +41,13 @@ function pendingRequest(
 }
 
 describe("deriveSurface", () => {
+  it("shows the Request a person asked to see, and ignores one no longer waiting", () => {
+    const first = pendingRequest({ mode: "live" });
+    const second = pendingRequest({ mode: "durable" });
+    expect(deriveSurface([first, second], viewer, second.id)?.request.id).toBe(second.id);
+    expect(deriveSurface([first, second], viewer, createId("request"))?.request.id).toBe(first.id);
+  });
+
   // Typing beside a blocking approval must never answer it: the approval's own
   // buttons do that, and the words are an ordinary message.
   it("keeps the textarea an ordinary message beside a live approval", () => {

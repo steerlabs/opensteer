@@ -1054,7 +1054,7 @@ describe("OpenCode approvals", () => {
           { hint: "allow-once", id: "allow-once", label: "Allow once" },
           { hint: "reject-once", id: "reject", label: "Reject" },
         ],
-        title: "Approve command",
+        title: "Run this command?",
       },
     });
     await session.resolveRequest(opened.data.request.id, {
@@ -1107,7 +1107,7 @@ describe("OpenCode approvals", () => {
     const observer = observe(session.events);
     const run = session.execute(fixture.turn("Write the file"));
     const opened = await observer.waitFor("request.opened");
-    expect(opened.data.request.presentation).toMatchObject({ title: "Approve file changes" });
+    expect(opened.data.request.presentation).toMatchObject({ title: "Change these files?" });
     expect(JSON.stringify(opened.data.request.presentation)).toContain("+HELLO");
     await session.resolveRequest(opened.data.request.id, {
       kind: "choice",

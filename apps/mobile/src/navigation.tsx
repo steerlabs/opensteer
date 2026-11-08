@@ -60,6 +60,7 @@ import { SettingsPluginsScreen } from "./screens/settings-plugins.js";
 import { TabsScreen } from "./screens/tabs.js";
 import { TaskSearchScreen } from "./screens/task-search.js";
 import { ThreadFindScreen } from "./screens/thread-find.js";
+import { RequestSheetScreen } from "./thread/request-sheet.js";
 import { NewThreadScreen, ThreadSettingsScreen } from "./screens/thread-settings.js";
 import { ThreadStepScreen } from "./screens/thread-step.js";
 import { ThreadScreen } from "./screens/thread.js";
@@ -279,6 +280,20 @@ const RootStack = createNativeStackNavigator({
         sheetGrabberVisible: true,
         title: "New project",
       },
+    },
+    // What a Request asks, when it's too much for its card. It opens part-way so
+    // the Thread it belongs to stays in view; a long approval pins its answers
+    // under its list, and only a single height keeps a pin where it was put.
+    RequestSheet: {
+      screen: RequestSheetScreen,
+      options: ({ route }) => ({
+        headerShown: false,
+        presentation: screenPresentations.RequestSheet,
+        sheetAllowedDetents:
+          isRecord(route.params) && route.params["full"] === true ? [0.95] : [0.6, 0.95],
+        sheetGrabberVisible: true,
+        title: "Request",
+      }),
     },
     // One step of an agent's work. Its own content names it, so the sheet has
     // no bar; it opens part-way so the transcript it came from stays in view.
@@ -619,6 +634,13 @@ type OpensteerRootParamList = {
     readonly threadId: string;
   };
   readonly ThreadAround: { readonly deploymentId: string; readonly threadId: string };
+  readonly RequestSheet: {
+    readonly deploymentId: string;
+    readonly full?: boolean;
+    readonly reason?: boolean;
+    readonly requestId: string;
+    readonly threadId: string;
+  };
   readonly ThreadFind: { readonly deploymentId: string; readonly threadId: string };
   readonly ThreadSettings: { readonly deploymentId: string; readonly threadId: string };
   readonly ThreadStep: {

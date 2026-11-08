@@ -1673,7 +1673,7 @@ function piApprovalPresentation(
       { hint: "reject-once", id: "reject", label: "Reject" },
     ],
     risk: "medium",
-    title: request.kind === "command" ? "Approve command" : "Approve file changes",
+    title: request.kind === "command" ? "Run this command?" : "Change these files?",
   };
 }
 

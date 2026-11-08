@@ -1095,7 +1095,7 @@ class CursorHarnessSession implements HarnessSession {
           kind: "choice",
           options: [...options],
           risk: "medium",
-          title: "Approve command",
+          title: "Run this command?",
         },
         subject: "command",
       };
@@ -1114,7 +1114,7 @@ class CursorHarnessSession implements HarnessSession {
           kind: "choice",
           options: [...options],
           risk: "medium",
-          title: "Approve MCP tool",
+          title: "Use this tool?",
         },
         subject: "MCP tool call",
       };
@@ -1139,7 +1139,7 @@ class CursorHarnessSession implements HarnessSession {
           kind: "choice",
           options: [...options],
           risk: "medium",
-          title: "Approve file change",
+          title: "Change this file?",
         },
         subject: "file change",
       };
@@ -1154,7 +1154,7 @@ class CursorHarnessSession implements HarnessSession {
         kind: "choice",
         options: [...options],
         risk: "high",
-        title: "Approve a tool Opensteer does not recognise",
+        title: "Use a tool Opensteer doesn’t recognise?",
       },
       subject: `${tool || "unrecognised"} tool call`,
     };

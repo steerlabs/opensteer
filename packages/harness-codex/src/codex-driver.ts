@@ -4034,7 +4034,7 @@ function approvalDescriptor(
     return {
       detail: reason ? `${reason}\n\n${command}` : command,
       risk: params.networkApprovalContext ? "high" : "medium",
-      title: params.networkApprovalContext ? "Approve network access" : "Approve command",
+      title: params.networkApprovalContext ? "Connect to the internet?" : "Run this command?",
     };
   }
   if (kind === "file") {
@@ -4045,13 +4045,13 @@ function approvalDescriptor(
           ? `Allow file changes under ${String(params.grantRoot)}`
           : "Allow the proposed file changes"),
       risk: "medium",
-      title: "Approve file changes",
+      title: "Change these files?",
     };
   }
   return {
     detail: optionalString(params.reason) ?? "Allow the requested additional permissions",
     risk: "high",
-    title: "Approve additional permissions",
+    title: "Allow more permissions?",
   };
 }
 
