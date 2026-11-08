@@ -284,7 +284,7 @@ export function RequestSheetContent(props: {
   const blocked = session.pendingId === null ? props.disabledReason : null;
   // "Say why" comes from the card's menu by route, or from this sheet's own.
   const [askingWhy, setAskingWhy] = useState(props.reason);
-  const [reasonText, setReasonText] = useState("");
+  const reasonText = session.reason;
   const decline = answers.kind === "approve" ? answers.decline : null;
 
   useEffect(() => {
@@ -388,7 +388,7 @@ export function RequestSheetContent(props: {
               maxFontSizeMultiplier={controlFontScaleLimit}
               maxLength={requestAnswerMaxLength}
               multiline
-              onChangeText={setReasonText}
+              onChangeText={(reason) => updateRequestSession(session, { reason })}
               placeholder="What should it do instead?"
               placeholderTextColor={color.muted}
               selectionColor={color.ember}

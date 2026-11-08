@@ -27,6 +27,8 @@ export function AnswerBar(props: {
   readonly hostClient: HostClient;
   /** Null when no Run is holding this question open to stop. */
   readonly onStop: (() => void) | null;
+  /** What else the Request's title says, beside the question itself. */
+  readonly context: string | null;
   readonly question: string;
   readonly stopBusy: boolean;
   readonly stopLabel: string;
@@ -73,6 +75,11 @@ export function AnswerBar(props: {
       caption={
         <View style={styles.caption}>
           <AppText role="secondaryMedium">{props.question}</AppText>
+          {props.context === null ? null : (
+            <AppText role="caption" tone="soft">
+              {props.context}
+            </AppText>
+          )}
           {session.failure === null ? null : (
             <AppText role="caption" tone="danger">
               {session.failure}
@@ -83,7 +90,9 @@ export function AnswerBar(props: {
       field={
         <View style={styles.lane}>
           <TextInput
-            accessibilityLabel={props.question}
+            accessibilityLabel={
+              props.context === null ? props.question : `${props.question} ${props.context}`
+            }
             cursorColor={color.ember}
             maxFontSizeMultiplier={controlFontScaleLimit}
             maxLength={requestAnswerMaxLength}

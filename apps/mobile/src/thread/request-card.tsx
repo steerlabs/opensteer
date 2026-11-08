@@ -32,7 +32,7 @@ import {
   approvalMenuOptions,
   confirmHighRisk,
   requestCardAnswers,
-  requestCardQuestion,
+  requestCardHeading,
   requestOptionLabel,
   threadTakesDenialReason,
   type CardChoice,
@@ -144,7 +144,7 @@ function AnswerCard(props: RequestCardProps): ReactNode {
   const { session } = responder;
   const answers = requestCardAnswers(request, surface.denied !== null);
   const title = requestTitle(request);
-  const question = requestCardQuestion(request, title);
+  const { context, question } = requestCardHeading(request, title);
   const proposed = presentation.agentProposed === true;
   const risky = answers.kind === "approve" && answers.highRisk;
 
@@ -232,6 +232,11 @@ function AnswerCard(props: RequestCardProps): ReactNode {
               />
             )}
           </View>
+          {context === null ? null : (
+            <AppText role="caption" tone="soft">
+              {context}
+            </AppText>
+          )}
           {proposed ? (
             <AppText role="caption" tone="muted">
               {requestAgentProposedLabel}

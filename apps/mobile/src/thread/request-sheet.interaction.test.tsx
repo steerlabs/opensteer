@@ -828,6 +828,7 @@ async function render(
     readonly inspect?: ReturnType<typeof vi.fn>;
     readonly machines?: readonly MachineSummary[];
     readonly passwordRead?: ReturnType<typeof vi.fn>;
+    readonly reason?: boolean;
     readonly review?: ReturnType<typeof vi.fn>;
     readonly snapshot?: object;
   } = {},
@@ -871,7 +872,7 @@ async function render(
         onClose={() => {
           root.render(null);
         }}
-        reason={false}
+        reason={options.reason ?? false}
         subagentTitle={null}
         surface={model}
       />,
@@ -974,6 +975,33 @@ describe("RequestSheetContent answers", () => {
     await click("Allow for this Run");
     expect(dispatch).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ response: { kind: "choice", optionId: "run" } }),
+    );
+  });
+
+  it("keeps a reason through closing the sheet to read the Thread", async () => {
+    const approval = {
+      ...requestBase(),
+      kind: "harness.approval",
+      payload: { kind: "harness.approval" },
+      presentation: {
+        kind: "choice",
+        options: [
+          { hint: "allow-once", id: "allow", label: "Allow once" },
+          { hint: "reject-once", id: "reject", label: "Reject" },
+        ],
+        title: "Run this command?",
+      },
+    } as Request;
+    const dispatch = vi.fn(async () => ({ type: "request.respond" }));
+    await render(surface(approval), dispatch, { reason: true });
+    await typeAnswer("Run it once");
+    await closeAndReopen();
+    expect(document.querySelector("input")?.value).toBe("Run it once");
+    await click("Send");
+    expect(dispatch).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        response: { kind: "choice", optionId: "reject", text: "Run it once" },
+      }),
     );
   });
 

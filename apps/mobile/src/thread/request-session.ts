@@ -25,6 +25,8 @@ export interface RequestSession {
   heldSignIn: { readonly key: string; readonly signature: string } | null;
   passwordCard: PasswordSignInCard | null;
   pendingId: string | null;
+  /** "Say why", typed and not yet sent. */
+  reason: string;
   /** The answer in flight, from whichever surface sent it. */
   responding: boolean;
   /** The sheet is up, so the card under it stops asking Chrome as well. */
@@ -47,6 +49,7 @@ function createSession(): RequestSession {
     listeners: new Set(),
     passwordCard: null,
     pendingId: null,
+    reason: "",
     responding: false,
     sheetOpen: false,
     version: 0,

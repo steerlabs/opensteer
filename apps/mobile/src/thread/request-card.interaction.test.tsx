@@ -384,6 +384,21 @@ describe("RequestCard", () => {
     );
   });
 
+  it("keeps a title that explains the question in view", async () => {
+    const request = approval({
+      kind: "harness.input",
+      payload: { kind: "harness.input" },
+      presentation: {
+        fields: [{ id: "q", multiSelect: false, prompt: "Which branch?", secret: false }],
+        kind: "form",
+        title: "Choose where to deploy",
+      },
+    });
+    await render(surfaceOf(request));
+    expect(text()).toContain("Choose where to deploy");
+    expect(text()).toContain("Which branch?");
+  });
+
   it("opens the sheet for an open question no composer is there to take", async () => {
     const request = approval({
       kind: "harness.input",

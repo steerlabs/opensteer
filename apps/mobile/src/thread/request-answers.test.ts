@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("react-native", () => ({ Alert: { alert: vi.fn() } }));
 
-const { requestCardAnswers, requestCardQuestion, requestOptionLabel } =
+const { requestCardAnswers, requestCardHeading, requestOptionLabel } =
   await import("./request-answers.js");
 
 const allow = { hint: "allow-once", id: "allow", label: "Allow once" } as const;
@@ -130,6 +130,17 @@ describe("requestCardAnswers", () => {
     ).toEqual(sheet);
   });
 
+  it("doesn't put a question in the composer that needs more than the composer holds", () => {
+    const withContext = (presentation: object): Request =>
+      form([text], {
+        presentation: { fields: [text], kind: "form", title: "A question", ...presentation },
+      });
+    const sheet = { kind: "sheet", label: "Answer" };
+    expect(requestCardAnswers(withContext({ detail: "Why it asks" }), false)).toEqual(sheet);
+    expect(requestCardAnswers(withContext({ agentProposed: true }), false)).toEqual(sheet);
+    expect(requestCardAnswers(withContext({ title: "x".repeat(200) }), false)).toEqual(sheet);
+  });
+
   it("reviews what this client can answer, and leaves the rest to a computer", () => {
     const external = (kind: string): Request =>
       request({
@@ -160,10 +171,26 @@ describe("requestOptionLabel", () => {
   });
 });
 
-describe("requestCardQuestion", () => {
-  it("asks a lone field's own question rather than the form's title", () => {
-    expect(requestCardQuestion(form([text]), "A question")).toBe("Which branch?");
-    expect(requestCardQuestion(form([{ ...text, prompt: "" }]), "A question")).toBe("A question");
-    expect(requestCardQuestion(form([text, text]), "A question")).toBe("A question");
+describe("requestCardHeading", () => {
+  it("asks a lone field's own question when the title adds nothing", () => {
+    expect(requestCardHeading(form([text]), "More information needed")).toEqual({
+      context: null,
+      question: "Which branch?",
+    });
+    expect(requestCardHeading(form([{ ...text, prompt: "" }]), "A question")).toEqual({
+      context: null,
+      question: "A question",
+    });
+    expect(requestCardHeading(form([text, text]), "A question")).toEqual({
+      context: null,
+      question: "A question",
+    });
+  });
+
+  it("keeps a title that carries the explanation, as ACP's does", () => {
+    expect(requestCardHeading(form([text]), "Choose where to deploy")).toEqual({
+      context: "Which branch?",
+      question: "Choose where to deploy",
+    });
   });
 });

@@ -82,7 +82,7 @@ import {
 } from "./draft-attachments.js";
 import { AnswerBar } from "./answer-bar.js";
 import { RequestCard } from "./request-card.js";
-import { requestCardAnswers, requestCardQuestion } from "./request-answers.js";
+import { requestCardAnswers, requestCardHeading } from "./request-answers.js";
 import { requestTitle } from "./docked-requests.js";
 import { beginPendingDelivery, sendPendingMessage } from "./send-pending-message.js";
 import type { ThreadMutationClaim, ThreadMutationGate } from "./thread-mutation-gate.js";
@@ -295,7 +295,13 @@ export function Composer(props: {
   // One open question the Run is holding on is answered in this bar. A durable
   // Request leaves the field to messages, as it always has, and answers in its sheet.
   const typedField =
-    surface === null || readOnly || surface.denied !== null || surface.request.mode !== "live"
+    surface === null ||
+    readOnly ||
+    surface.denied !== null ||
+    surface.request.mode !== "live" ||
+    // The card is what says which subagent is asking.
+    (surface.request.originatingNodeId !== undefined &&
+      props.subagentTitles.has(surface.request.originatingNodeId))
       ? null
       : (() => {
           const answers = requestCardAnswers(surface.request, false);
@@ -883,7 +889,7 @@ export function Composer(props: {
           hostClient={hostClient}
           key={surface.request.id}
           onStop={props.running ? () => void stop() : null}
-          question={requestCardQuestion(surface.request, requestTitle(surface.request))}
+          {...requestCardHeading(surface.request, requestTitle(surface.request))}
           stopBusy={stopping || props.runStopping}
           stopLabel={props.stopLabel ?? "Stop this run"}
           surface={surface}

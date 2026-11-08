@@ -64,7 +64,14 @@ export function requestCardAnswers(request: Request, denied: boolean): RequestCa
       return { kind: "sheet", label: "Answer" };
     }
     const mode = requestFieldMode(field);
-    if (mode === "text" && !field.secret && field.prompt.length <= composerQuestionLength) {
+    // The composer holds a question and nothing else, so anything more needs the card.
+    if (
+      mode === "text" &&
+      !field.secret &&
+      (presentation.detail ?? "") === "" &&
+      presentation.agentProposed !== true &&
+      presentation.title.length + field.prompt.length <= composerQuestionLength
+    ) {
       return { kind: "type", field };
     }
     if (mode === "one" && (field.choices?.length ?? 0) <= cardAnswerLimit) {
@@ -134,12 +141,27 @@ export function requestOptionLabel(request: Request, option: RequestOption): str
   return option.label;
 }
 
-/** The question a Request asks: a lone field's own words, where it has them. */
-export function requestCardQuestion(request: Request, title: string): string {
+/** What engines title a form that has no words of its own; its questions say it all. */
+const untitledForm = "More information needed";
+
+/**
+ * What a Request asks, and anything else its title says. A lone field's prompt
+ * is the question when the title adds nothing, but a title can carry the whole
+ * explanation, as ACP's does, and that stays in view.
+ */
+export function requestCardHeading(
+  request: Request,
+  title: string,
+): { readonly context: string | null; readonly question: string } {
   const { presentation } = request;
-  if (presentation.kind !== "form" || presentation.fields.length !== 1) return title;
-  const prompt = presentation.fields[0]?.prompt.trim();
-  return prompt === undefined || prompt === "" ? title : prompt;
+  const prompt =
+    presentation.kind === "form" && presentation.fields.length === 1
+      ? (presentation.fields[0]?.prompt.trim() ?? "")
+      : "";
+  if (prompt === "" || prompt === title) return { context: null, question: title };
+  return title === untitledForm
+    ? { context: null, question: prompt }
+    : { context: prompt, question: title };
 }
 
 /**

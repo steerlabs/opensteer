@@ -114,6 +114,7 @@ async function render(options: {
           } as never
         }
         onStop={options.onStop}
+        context={null}
         question="Subject line?"
         stopBusy={false}
         stopLabel="Stop this run"

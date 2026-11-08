@@ -1355,7 +1355,7 @@ describe("a conversation with a page", () => {
     const runId = createId("run");
     const question = (mode: "durable" | "live"): Request =>
       ({
-        ...approval(runId, "A question"),
+        ...approval(runId, "More information needed"),
         kind: "harness.input",
         mode,
         originatingThreadId: workId,
@@ -1363,7 +1363,7 @@ describe("a conversation with a page", () => {
         presentation: {
           fields: [{ id: "q", multiSelect: false, prompt: "Which branch?", secret: false }],
           kind: "form",
-          title: "A question",
+          title: "More information needed",
         },
       }) as Request;
     const asking = (request: Request) =>
@@ -1383,7 +1383,7 @@ describe("a conversation with a page", () => {
     const durable = await mount(asking(question("durable")), workId);
     expect(durable.container.querySelector('[aria-label="Answer bar"]')).toBeNull();
     expect(durable.container.querySelector('[aria-label="Docked request"]')?.textContent).toBe(
-      "A question",
+      "More information needed",
     );
   });
 
