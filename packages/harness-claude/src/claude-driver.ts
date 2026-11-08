@@ -2183,7 +2183,7 @@ class ClaudeHarnessSession implements HarnessSession {
               kind: "choice",
               options: requestOptions,
               risk: classifyToolRisk(toolName),
-              title: options.displayName ?? options.title ?? `Approve ${toolName}`,
+              title: options.displayName ?? options.title ?? `Allow ${toolName}?`,
             },
             nodeId,
           ),

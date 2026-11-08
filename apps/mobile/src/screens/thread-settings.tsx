@@ -61,7 +61,7 @@ import {
 } from "../thread/settings/settings-controller.js";
 import { useThreadMutation } from "../thread/thread-mutation-registry.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
-import { GlassSurface, useLiquidGlass } from "../ui/glass.js";
+import { SheetBarButton } from "../ui/sheet-bar.js";
 import { AppText, Notice, PrimaryButton, SecondaryButton, SwitchRow } from "../ui/primitives.js";
 import { useListContentInsets, useReadingColumn } from "../ui/screen.js";
 import { EngineMark } from "../thread/settings/engine-mark.js";
@@ -1477,7 +1477,7 @@ function SheetBar(props: {
       {props.onBack === null ? (
         <View style={styles.barButtonSpace} />
       ) : (
-        <BarButton icon="chevron.left" label="Back" onPress={props.onBack} />
+        <SheetBarButton icon="chevron.left" label="Back" onPress={props.onBack} />
       )}
       <View accessibilityRole="header" style={styles.barTitle}>
         <AppText role="title">{props.title}</AppText>
@@ -1488,40 +1488,10 @@ function SheetBar(props: {
         )}
       </View>
       {props.onSearch ? (
-        <BarButton icon="magnifyingglass" label="Search all AIs" onPress={props.onSearch} />
+        <SheetBarButton icon="magnifyingglass" label="Search all AIs" onPress={props.onSearch} />
       ) : null}
-      <BarButton icon="xmark" label="Close model picker" onPress={props.onClose} />
+      <SheetBarButton icon="xmark" label="Close model picker" onPress={props.onClose} />
     </View>
-  );
-}
-
-function BarButton(props: {
-  readonly icon: "chevron.left" | "xmark" | "magnifyingglass";
-  readonly label: string;
-  readonly onPress: () => void;
-}): ReactNode {
-  const glass = useLiquidGlass();
-  return (
-    <Pressable
-      accessibilityLabel={props.label}
-      accessibilityRole="button"
-      hitSlop={space[4]}
-      onPress={props.onPress}
-      style={styles.barButtonHit}
-    >
-      {({ pressed }) => {
-        const icon = <Symbol name={props.icon} size={17} weight="semibold" />;
-        // The system's own sheet buttons: glass where it draws glass, a quiet
-        // disc everywhere else.
-        return glass ? (
-          <GlassSurface interactive shape="capsule" style={styles.barButtonGlass}>
-            {icon}
-          </GlassSurface>
-        ) : (
-          <View style={[styles.barButton, pressed && styles.barButtonPressed]}>{icon}</View>
-        );
-      }}
-    </Pressable>
   );
 }
 
@@ -1709,22 +1679,6 @@ const styles = StyleSheet.create({
     gap: space[8],
     minHeight: touchTarget,
   },
-  barButton: {
-    ...material.quiet,
-    alignItems: "center",
-    borderRadius: radius.full,
-    height: 36,
-    justifyContent: "center",
-    width: 36,
-  },
-  barButtonGlass: { alignItems: "center", height: 36, justifyContent: "center", width: 36 },
-  barButtonHit: {
-    alignItems: "center",
-    height: touchTarget,
-    justifyContent: "center",
-    width: touchTarget,
-  },
-  barButtonPressed: { backgroundColor: material.selected.backgroundColor },
   barButtonSpace: { width: touchTarget },
   barTitle: { alignItems: "center", flex: 1, minWidth: 0, paddingHorizontal: space[4] },
   // The sheet owns the grabber; the list owns its clearance on every subpage.

@@ -156,11 +156,31 @@ Markdown comes from web's parser, through [markdownParser.ts](../packages/shared
 so a reply reads the same on every client. Parsing is the dear part of drawing a row on Hermes, so
 finished blocks stay cached across the rows a list unmounts.
 
+## Requests
+
+A person only approves what they can see. Allow stands on the card only while the whole request
+fits; past that the card clips and its answer is Review. A card that has just arrived ignores taps
+for a moment, because it appears above the composer under a thumb on its way somewhere else, and an
+approval can't be taken back. High risk always goes through the system's own confirmation.
+
+The card keeps the composer's corner, margins and control sizes, so they read as one family. Answers
+are pills drawn inside full touch targets rather than larger slabs.
+
+The sheet is a route because it uses the same native detents as the Model picker, so the card and
+the sheet can't share React state: [request-session.ts](../apps/mobile/src/thread/request-session.ts)
+holds what's been answered and the idempotency keys across them. A form with a secret field keeps
+none of that, so a secret goes when its sheet closes. The form's Send is in a sticky bar because a
+pinned footer needs a single detent, and only a long approval pins its answers.
+
+One open question a live Run is holding on is typed in the composer, whose words never join the
+Thread's draft. A durable Request leaves the field to messages. "Say why" is offered only for engines
+that pass a denial note on: ACP has no field for one, so the words would be dropped without saying.
+
 ## The call bar
 
 The bar floats at the app's root, so an iOS sheet covers it while open. `FullWindowOverlay` would
-keep it on top, but a window-level view has no view controller, so the Request card's sheet can't
-present from it and the person couldn't approve. Android moves the bar with `Keyboard` events
+keep it on top, but a window-level view has no view controller, so a sheet opened from it, such as
+an integration's review, couldn't present and the person couldn't approve. Android moves the bar with `Keyboard` events
 rather than `useAnimatedKeyboard`, which clears the decor insets listener on exit and leaves form
 sheets without keyboard handling.
 

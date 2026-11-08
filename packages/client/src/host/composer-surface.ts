@@ -26,6 +26,8 @@ export interface SurfaceModel {
 export function deriveSurface(
   requests: readonly Request[],
   user: Pick<AuthenticatedUser, "id" | "instanceRole"> | null,
+  /** The Request a person asked to see, when it is still waiting. */
+  focusRequestId: string | null = null,
 ): SurfaceModel | null {
   const pending = requests
     .filter((request) => request.status === "pending")
@@ -33,7 +35,10 @@ export function deriveSurface(
       (left, right) =>
         left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
     );
-  const request = pending.find((candidate) => candidate.mode === "live") ?? pending[0];
+  const request =
+    pending.find(({ id }) => id === focusRequestId) ??
+    pending.find((candidate) => candidate.mode === "live") ??
+    pending[0];
   if (!request) return null;
 
   const administratorMayInstall =

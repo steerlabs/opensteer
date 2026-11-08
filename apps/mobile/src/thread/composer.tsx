@@ -25,7 +25,7 @@ import {
   type ModelSelection,
   type ThreadAccessMode,
 } from "@opensteer/core";
-import type { HarnessModelDescriptor, MachineSummary } from "@opensteer/protocol";
+import type { HarnessModelDescriptor } from "@opensteer/protocol";
 import * as Haptics from "expo-haptics";
 import {
   useCallback,
@@ -80,7 +80,10 @@ import {
   forgetDraftFiles,
   useDraftAttachments,
 } from "./draft-attachments.js";
+import { AnswerBar } from "./answer-bar.js";
 import { RequestCard } from "./request-card.js";
+import { requestCardAnswers, requestCardQuestion } from "./request-answers.js";
+import { requestTitle } from "./docked-requests.js";
 import { beginPendingDelivery, sendPendingMessage } from "./send-pending-message.js";
 import type { ThreadMutationClaim, ThreadMutationGate } from "./thread-mutation-gate.js";
 import { UsageNotice } from "./usage-notice.js";
@@ -120,8 +123,6 @@ export function Composer(props: {
   readonly executionBlockedReason?: string | null;
   readonly highlightRequestId: string | null;
   readonly hostClient: HostClient;
-  /** The Deployment's computers, so a Request about one can name it. */
-  readonly machines: readonly MachineSummary[];
   /** What the next message will run on, in the words the settings sheet uses. */
   readonly modelLabel: string;
   readonly model: HarnessModelDescriptor | null;
@@ -168,8 +169,8 @@ export function Composer(props: {
 }): ReactNode {
   const aiSharing = useAiSharing();
   const surface = useMemo(
-    () => deriveSurface(props.requests, props.user),
-    [props.requests, props.user],
+    () => deriveSurface(props.requests, props.user, props.highlightRequestId),
+    [props.highlightRequestId, props.requests, props.user],
   );
   const notifications = useMobileNotifications();
   const { deploymentId, drafts, hostClient, threadId } = props;
@@ -291,6 +292,15 @@ export function Composer(props: {
   const readOnly = done === "closed" || (props.readOnly ?? false);
   const disabled = props.disabledReason !== null || !props.canRespond || readOnly;
   const textHidden = surface !== null && surface.textRole === "hidden";
+  // One open question the Run is holding on is answered in this bar. A durable
+  // Request leaves the field to messages, as it always has, and answers in its sheet.
+  const typedField =
+    surface === null || readOnly || surface.denied !== null || surface.request.mode !== "live"
+      ? null
+      : (() => {
+          const answers = requestCardAnswers(surface.request, false);
+          return answers.kind === "type" ? answers.field : null;
+        })();
   // Which control the bar shows, and whether its settings row is open, is
   // arithmetic over the state above — including the rule that keeps one message
   // in flight at a time, because a second claim would be a second key for a
@@ -682,6 +692,13 @@ export function Composer(props: {
     }
   };
 
+  const canStartRequestResponse = (): boolean =>
+    props.canRespond &&
+    !readOnly &&
+    props.disabledReason === null &&
+    !inFlight.current &&
+    drafts.readPending(deploymentId, userId, threadId) === null;
+
   const hold = useCallback(() => setPresenting(true), []);
   const settle = useCallback(() => setPresenting(false), []);
 
@@ -754,20 +771,15 @@ export function Composer(props: {
     );
   return (
     <View style={styles.dock}>
-      {surface === null ? null : (
+      {surface === null || typedField !== null ? null : (
         <Animated.View entering={appear}>
           <RequestCard
             canRespond={props.canRespond && !requestBlocked}
+            deploymentId={deploymentId}
             highlighted={surface.request.id === props.highlightRequestId}
             onPresent={hold}
             onSettle={settle}
-            canStartResponse={() =>
-              props.canRespond &&
-              !readOnly &&
-              props.disabledReason === null &&
-              !inFlight.current &&
-              drafts.readPending(deploymentId, userId, threadId) === null
-            }
+            canStartResponse={canStartRequestResponse}
             disabledReason={
               readOnly
                 ? "This thread is archived."
@@ -779,7 +791,6 @@ export function Composer(props: {
             }
             hostClient={props.hostClient}
             key={surface.request.id}
-            machines={props.machines}
             mutationGate={props.mutationGate}
             subagentTitle={
               surface.request.originatingNodeId === undefined
@@ -863,168 +874,184 @@ export function Composer(props: {
       ) : null}
       <DictationStatus controller={dictation} snapshot={dictationState} owner={owner} />
       <VoiceDock />
-      <ComposerBar
-        shape={view.shape}
-        // Open, the page stands above the words; at rest it is a chip beside
-        // the `+`, so an empty bar keeps the capsule's height.
-        {...(pageInBar === null || view.shape !== "rounded"
-          ? {}
-          : {
-              caption: <IncludedPage onRemove={removePage} page={pageInBar} />,
-            })}
-        {...(view.readOnly
-          ? {}
-          : {
-              leading: (
-                <View style={styles.leading}>
-                  <NativeMenu
-                    accessibilityHint="Change the model, and what else can be done here"
-                    accessibilityLabel="Thread actions"
-                    onPresent={hold}
-                    onSettle={settle}
-                    options={menuOptions}
-                  >
-                    <ComposerGlyph icon="plus" />
-                  </NativeMenu>
-                  {pageInBar === null || view.shape === "rounded" ? null : (
-                    <Animated.View entering={appear} exiting={exit}>
-                      <PageChip favicon={pageFavicon} onRemove={removePage} page={pageInBar} />
-                    </Animated.View>
-                  )}
-                </View>
-              ),
-            })}
-        field={
-          view.readOnly ? (
-            // An archived thread keeps its bar so the screen does not change
-            // shape when it is opened, and keeps nothing else: there is no
-            // draft to save and no setting left that would take effect.
-            <View style={styles.archived}>
-              <AppText numberOfLines={2} role="secondary" tone="muted">
-                {props.disabledReason ?? "This thread is archived."}
-              </AppText>
-            </View>
-          ) : view.showField ? (
-            // The lane, not the field, is what is centred against the controls:
-            // a single line of any Dynamic Type size sits level with them, and
-            // a tap in the lane's margin still reaches the field.
-            <Pressable
-              accessible={false}
-              onPress={() => input.current?.focus()}
-              style={styles.lane}
-            >
-              <TextInput
-                accessibilityLabel="Message"
-                cursorColor={color.ember}
-                maxFontSizeMultiplier={controlFontScaleLimit}
-                multiline
-                onBlur={() => setFocused(false)}
-                onChangeText={editText}
-                onSelectionChange={(event) => {
-                  selection.current = event.nativeEvent.selection;
-                }}
-                onFocus={() => {
-                  setFocused(true);
-                  settle();
-                }}
-                // A touch that reaches the field is proof no menu is over it any
-                // more: iOS gives no dismissal event for a native menu, and this
-                // is the moment the bar can stop holding its shape for one.
-                onTouchStart={settle}
-                placeholder={
-                  pageInBar === null
-                    ? props.placeholder
-                    : view.shape === "rounded"
-                      ? "Ask about this page…"
-                      : "Ask…"
-                }
-                placeholderTextColor={color.muted}
-                ref={input}
-                selectionColor={color.ember}
-                style={[styles.input, { maxHeight: fieldMaxHeight }]}
-                value={displayedText}
-              />
-            </Pressable>
-          ) : (
-            // The open Request is answered by choosing, so the bar holds only
-            // its controls — and still holds the line they sit on.
-            <View style={styles.spacer} />
-          )
-        }
-        {...(view.action === null
-          ? {}
-          : {
-              action: (
-                <View style={{ flexDirection: "row" }}>
-                  {!dictating && !voiceOn ? (
-                    <DictationMic
-                      controller={dictation}
-                      snapshot={dictationState}
-                      owner={owner}
-                      disabled={readOnly || textHidden}
-                      onStart={startDictation}
-                    />
-                  ) : null}
-                  {!dictating ? (
-                    <View>
-                      {view.action === "voice" ? (
-                        <VoiceMic disabled={readOnly || textHidden} face="disc" />
-                      ) : view.action === "stop" ? (
-                        <ComposerAction
-                          busy={stopping || props.runStopping}
-                          disabled={stopping || props.runStopping || !props.canRespond}
-                          kind="stop"
-                          label={props.stopLabel ?? "Stop this run"}
-                          onPress={() => void stop()}
-                        />
-                      ) : (
-                        <ComposerAction
-                          busy={sending}
-                          disabled={!canSend}
-                          kind="send"
-                          label={sending ? "Sending" : "Send message"}
-                          onPress={() => void send()}
-                        />
-                      )}
-                    </View>
-                  ) : null}
-                </View>
-              ),
-            })}
-        {...(dictating
-          ? {
-              accessory: (
-                <DictationBar
-                  canSend={canSend}
-                  controller={dictation}
-                  onSend={() => void send()}
-                  owner={owner}
-                  snapshot={dictationState}
-                />
-              ),
-            }
-          : view.showPills
-            ? {
-                accessory: (
-                  <View>
-                    <ComposerPills
-                      accessMode={props.accessMode}
-                      accessModes={props.accessModes}
-                      disabledReason={props.settingsDisabledReason}
-                      blockedReason={props.executionBlockedReason}
-                      driverKind={props.driverKind}
-                      engineName={props.engineName}
-                      modelLabel={props.modelLabel}
-                      model={props.model}
-                      modelOptions={props.modelOptions}
-                      onOpenModel={() => props.onChangeModel()}
+      {surface !== null && typedField !== null ? (
+        <AnswerBar
+          canRespond={props.canRespond && !requestBlocked}
+          canStartResponse={canStartRequestResponse}
+          fieldId={typedField.id}
+          gate={props.mutationGate}
+          hostClient={hostClient}
+          key={surface.request.id}
+          onStop={props.running ? () => void stop() : null}
+          question={requestCardQuestion(surface.request, requestTitle(surface.request))}
+          stopBusy={stopping || props.runStopping}
+          stopLabel={props.stopLabel ?? "Stop this run"}
+          surface={surface}
+        />
+      ) : (
+        <ComposerBar
+          shape={view.shape}
+          // Open, the page stands above the words; at rest it is a chip beside
+          // the `+`, so an empty bar keeps the capsule's height.
+          {...(pageInBar === null || view.shape !== "rounded"
+            ? {}
+            : {
+                caption: <IncludedPage onRemove={removePage} page={pageInBar} />,
+              })}
+          {...(view.readOnly
+            ? {}
+            : {
+                leading: (
+                  <View style={styles.leading}>
+                    <NativeMenu
+                      accessibilityHint="Change the model, and what else can be done here"
+                      accessibilityLabel="Thread actions"
                       onPresent={hold}
-                    />
+                      onSettle={settle}
+                      options={menuOptions}
+                    >
+                      <ComposerGlyph icon="plus" />
+                    </NativeMenu>
+                    {pageInBar === null || view.shape === "rounded" ? null : (
+                      <Animated.View entering={appear} exiting={exit}>
+                        <PageChip favicon={pageFavicon} onRemove={removePage} page={pageInBar} />
+                      </Animated.View>
+                    )}
                   </View>
                 ),
+              })}
+          field={
+            view.readOnly ? (
+              // An archived thread keeps its bar so the screen does not change
+              // shape when it is opened, and keeps nothing else: there is no
+              // draft to save and no setting left that would take effect.
+              <View style={styles.archived}>
+                <AppText numberOfLines={2} role="secondary" tone="muted">
+                  {props.disabledReason ?? "This thread is archived."}
+                </AppText>
+              </View>
+            ) : view.showField ? (
+              // The lane, not the field, is what is centred against the controls:
+              // a single line of any Dynamic Type size sits level with them, and
+              // a tap in the lane's margin still reaches the field.
+              <Pressable
+                accessible={false}
+                onPress={() => input.current?.focus()}
+                style={styles.lane}
+              >
+                <TextInput
+                  accessibilityLabel="Message"
+                  cursorColor={color.ember}
+                  maxFontSizeMultiplier={controlFontScaleLimit}
+                  multiline
+                  onBlur={() => setFocused(false)}
+                  onChangeText={editText}
+                  onSelectionChange={(event) => {
+                    selection.current = event.nativeEvent.selection;
+                  }}
+                  onFocus={() => {
+                    setFocused(true);
+                    settle();
+                  }}
+                  // A touch that reaches the field is proof no menu is over it any
+                  // more: iOS gives no dismissal event for a native menu, and this
+                  // is the moment the bar can stop holding its shape for one.
+                  onTouchStart={settle}
+                  placeholder={
+                    pageInBar === null
+                      ? props.placeholder
+                      : view.shape === "rounded"
+                        ? "Ask about this page…"
+                        : "Ask…"
+                  }
+                  placeholderTextColor={color.muted}
+                  ref={input}
+                  selectionColor={color.ember}
+                  style={[styles.input, { maxHeight: fieldMaxHeight }]}
+                  value={displayedText}
+                />
+              </Pressable>
+            ) : (
+              // The open Request is answered by choosing, so the bar holds only
+              // its controls — and still holds the line they sit on.
+              <View style={styles.spacer} />
+            )
+          }
+          {...(view.action === null
+            ? {}
+            : {
+                action: (
+                  <View style={{ flexDirection: "row" }}>
+                    {!dictating && !voiceOn ? (
+                      <DictationMic
+                        controller={dictation}
+                        snapshot={dictationState}
+                        owner={owner}
+                        disabled={readOnly || textHidden}
+                        onStart={startDictation}
+                      />
+                    ) : null}
+                    {!dictating ? (
+                      <View>
+                        {view.action === "voice" ? (
+                          <VoiceMic disabled={readOnly || textHidden} face="disc" />
+                        ) : view.action === "stop" ? (
+                          <ComposerAction
+                            busy={stopping || props.runStopping}
+                            disabled={stopping || props.runStopping || !props.canRespond}
+                            kind="stop"
+                            label={props.stopLabel ?? "Stop this run"}
+                            onPress={() => void stop()}
+                          />
+                        ) : (
+                          <ComposerAction
+                            busy={sending}
+                            disabled={!canSend}
+                            kind="send"
+                            label={sending ? "Sending" : "Send message"}
+                            onPress={() => void send()}
+                          />
+                        )}
+                      </View>
+                    ) : null}
+                  </View>
+                ),
+              })}
+          {...(dictating
+            ? {
+                accessory: (
+                  <DictationBar
+                    canSend={canSend}
+                    controller={dictation}
+                    onSend={() => void send()}
+                    owner={owner}
+                    snapshot={dictationState}
+                  />
+                ),
               }
-            : {})}
-      />
+            : view.showPills
+              ? {
+                  accessory: (
+                    <View>
+                      <ComposerPills
+                        accessMode={props.accessMode}
+                        accessModes={props.accessModes}
+                        disabledReason={props.settingsDisabledReason}
+                        blockedReason={props.executionBlockedReason}
+                        driverKind={props.driverKind}
+                        engineName={props.engineName}
+                        modelLabel={props.modelLabel}
+                        model={props.model}
+                        modelOptions={props.modelOptions}
+                        onOpenModel={() => props.onChangeModel()}
+                        onPresent={hold}
+                      />
+                    </View>
+                  ),
+                }
+              : {})}
+        />
+      )}
       {view.readOnly ? null : (
         <UsageNotice notice={props.usageNotice ?? null} onOpen={props.onChangeModel} />
       )}

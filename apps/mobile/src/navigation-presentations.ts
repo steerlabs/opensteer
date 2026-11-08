@@ -8,6 +8,7 @@ export const screenPresentations = {
   NewThread: "formSheet",
   NewProject: "formSheet",
   ThreadStep: "formSheet",
+  RequestSheet: "formSheet",
   ConversationActivity: "formSheet",
   ThreadAround: "formSheet",
   Settings: "modal",

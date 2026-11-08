@@ -783,7 +783,7 @@ describe("Pi sessions", () => {
     expect(opened.data.request.presentation).toMatchObject({
       detail: "rm -rf /tmp/scratch",
       kind: "choice",
-      title: "Approve command",
+      title: "Run this command?",
     });
     await session.resolveRequest(opened.data.request.id, {
       kind: "choice",
@@ -810,7 +810,7 @@ describe("Pi sessions", () => {
     const opened = await observer.waitFor("request.opened");
     expect(opened.data.request.presentation).toMatchObject({
       detail: expect.stringContaining("/w/app.ts"),
-      title: "Approve file changes",
+      title: "Change these files?",
     });
     await session.resolveRequest(opened.data.request.id, {
       kind: "choice",

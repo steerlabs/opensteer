@@ -1473,7 +1473,7 @@ describe("Codex app-server harness", () => {
         detail: expect.stringContaining("pnpm test"),
         kind: "choice",
         risk: "medium",
-        title: "Approve command",
+        title: "Run this command?",
       },
     });
     await session.resolveRequest(approval.data.request.id, {
@@ -1750,7 +1750,7 @@ describe("Codex app-server harness", () => {
     const fileApproval = await observer.waitFor("request.opened");
     expect(fileApproval.data.request.presentation).toMatchObject({
       risk: "medium",
-      title: "Approve file changes",
+      title: "Change these files?",
     });
     await session.resolveRequest(fileApproval.data.request.id, {
       kind: "choice",
@@ -1759,7 +1759,7 @@ describe("Codex app-server harness", () => {
     const permissionApproval = await waitForOccurrence(observer, "request.opened", 2);
     expect(permissionApproval.data.request.presentation).toMatchObject({
       risk: "high",
-      title: "Approve additional permissions",
+      title: "Allow more permissions?",
     });
     await session.resolveRequest(permissionApproval.data.request.id, {
       kind: "choice",
@@ -1950,7 +1950,7 @@ describe("Codex app-server harness", () => {
         { hint: "allow-once", id: "allow-once", label: "Allow once" },
         { hint: "reject-once", id: "reject", label: "Reject" },
       ],
-      title: "Approve command",
+      title: "Run this command?",
     });
     await execSession.resolveRequest(execApproval.data.request.id, {
       kind: "choice",
@@ -1978,7 +1978,7 @@ describe("Codex app-server harness", () => {
         { hint: "reject-once", id: "reject", label: "Reject" },
       ],
       risk: "high",
-      title: "Approve network access",
+      title: "Connect to the internet?",
     });
     await networkSession.resolveRequest(networkApproval.data.request.id, {
       kind: "choice",
