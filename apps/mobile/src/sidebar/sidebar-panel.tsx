@@ -59,6 +59,7 @@ import {
   type DraftSummary,
   type NewTaskDraftSummary,
 } from "../client/thread-drafts.js";
+import { sidebarBottom, sidebarTop } from "../layout.js";
 import { statusTone } from "../screens/deployment-row.js";
 import {
   color,
@@ -312,6 +313,8 @@ function useDoneList(hostClient: HostClient | null): void {
  */
 export const SidebarPanel = memo(function SidebarPanel(props: {
   readonly actions: SidebarActions;
+  /** How far down an obstruction over this panel reaches, measured where it is drawn. */
+  readonly clearanceTop: number;
   readonly deploymentId: string | null;
   readonly destination: SidebarDestination | null;
   /**
@@ -496,7 +499,7 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
         {
           paddingLeft: insets.left,
           paddingRight: docked ? insets.right : 0,
-          paddingTop: insets.top + space[8],
+          paddingTop: sidebarTop(insets.top, props.clearanceTop, Platform.OS === "ios"),
         },
       ]}
     >
@@ -758,7 +761,12 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
         </View>
       </ScrollView>
 
-      <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, space[8]) }]}>
+      <View
+        style={[
+          styles.footer,
+          { paddingBottom: sidebarBottom(insets.bottom, Platform.OS === "ios") },
+        ]}
+      >
         {identity === null || row === undefined ? (
           <DestinationRow
             current={false}
@@ -777,19 +785,21 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
             style={({ pressed }) => [styles.deployment, pressed && styles.pressed]}
           >
             <DeploymentMarkView mark={identity.mark} />
-            <View style={styles.grow}>
+            <View style={styles.statusLine}>
               <AppText
                 maxFontSizeMultiplier={controlFontScaleLimit}
                 numberOfLines={1}
                 role="secondaryMedium"
+                style={styles.deploymentName}
               >
                 {identity.name}
               </AppText>
-              <View style={styles.statusLine}>
-                <StatusDot
-                  live={row.status === "connecting" || row.status === "reconnecting"}
-                  tone={statusTone(row.status)}
-                />
+              <StatusDot
+                live={row.status === "connecting" || row.status === "reconnecting"}
+                tone={statusTone(row.status)}
+              />
+              {/* Colour alone never carries a problem, so only being connected goes unsaid. */}
+              {row.status === "connected" ? null : (
                 <AppText
                   maxFontSizeMultiplier={controlFontScaleLimit}
                   numberOfLines={1}
@@ -798,7 +808,7 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
                 >
                   {identity.status}
                 </AppText>
-              </View>
+              )}
             </View>
             <Symbol name="gearshape" size={17} tint={color.muted} />
           </Pressable>
@@ -1335,10 +1345,10 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     flexDirection: "row",
     gap: space[12],
-    minHeight: 56,
+    minHeight: touchTarget,
     paddingHorizontal: space[12] - 1,
-    paddingVertical: space[8] - 1,
   },
+  deploymentName: { flexShrink: 1 },
   destination: {
     borderColor: "transparent",
     borderWidth: 1,
@@ -1362,9 +1372,8 @@ const styles = StyleSheet.create({
     borderTopWidth: StyleSheet.hairlineWidth,
     gap: space[2],
     paddingHorizontal: space[8],
-    paddingTop: space[8],
+    paddingTop: space[6],
   },
-  grow: { flex: 1, minWidth: 0 },
   groupHead: {
     alignItems: "center",
     flexDirection: "row",
@@ -1505,7 +1514,7 @@ const styles = StyleSheet.create({
     gap: space[12],
     paddingLeft: space[12] - 1,
   },
-  statusLine: { alignItems: "center", flexDirection: "row", gap: space[6] },
+  statusLine: { alignItems: "center", flex: 1, flexDirection: "row", gap: space[6], minWidth: 0 },
   welcome: {
     backgroundColor: color.surfaceRaised,
     borderColor: color.line,

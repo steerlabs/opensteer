@@ -241,6 +241,36 @@ export function occlusionClearance(pane: Rect, occlusions: readonly Rect[]): Edg
     : { bottom, left, right, top };
 }
 
+/**
+ * An iPhone's status bar ends within this inset (iPhone Air's is 68), with its
+ * clock over the sidebar. Past it the inset is iPhone Duo's band across the top
+ * of its inner screen, 82 points, whose status items stand at the far end.
+ */
+const tallestStatusBar = 72;
+/** Where UIKit stands the Menu button in that band: the sidebar's head lines up with it. */
+const bandRowTop = 26;
+/** How much of the home indicator's zone a row must stay out of to take a tap. */
+const homeIndicatorClearance = 20;
+
+/**
+ * Where the sidebar's head starts. Its heading clears a status bar, or the
+ * screen's corner where there is none; in iPhone Duo's band nothing stands over
+ * the sidebar unless the platform reports it.
+ */
+export function sidebarTop(inset: number, clearance: number, ios: boolean): number {
+  const top = ios && inset > tallestStatusBar ? bandRowTop : Math.max(inset, space[8]);
+  return Math.max(top, clearance);
+}
+
+/**
+ * How far the sidebar's foot stays off the bottom edge. iOS's inset is mostly
+ * empty around a thin indicator; Android's holds whatever its navigation bar
+ * draws, so all of it stays.
+ */
+export function sidebarBottom(inset: number, ios: boolean): number {
+  return Math.max(ios ? Math.min(inset, homeIndicatorClearance) : inset, space[8]);
+}
+
 export type SidebarArrangement =
   | { readonly mode: "drawer" }
   | {
