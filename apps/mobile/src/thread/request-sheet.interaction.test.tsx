@@ -168,6 +168,19 @@ vi.mock("@react-navigation/native", () => ({ useNavigation: vi.fn() }));
 vi.mock("./integration-connect-sheet.js", () => ({
   IntegrationConnectCard: () => <span>Inline Connect card</span>,
 }));
+vi.mock("./composer-menu.js", () => ({
+  NativeMenu: (props: {
+    options: readonly { id: string; label: string; onPress: () => void }[];
+  }) => (
+    <div>
+      {props.options.map((option) => (
+        <button key={option.id} onClick={option.onPress}>
+          {option.label}
+        </button>
+      ))}
+    </div>
+  ),
+}));
 
 const { RequestSheetContent } = await import("./request-sheet.js");
 const { resetRequestSessionsForTests } = await import("./request-session.js");
@@ -826,7 +839,9 @@ async function render(
   // The sheet is a route: closing it unmounts it, and opening it is a new mount.
   latest = () => render(model, dispatch, { ...options, root });
   const snapshot = {
+    harnesses: [],
     identityConfig: { deployment: { name: "Alex’s Opensteer" } },
+    threads: [],
     workspaces: [{ id: workspaceId, name: "Research" }],
     ...options.snapshot,
   };
@@ -928,6 +943,38 @@ describe("RequestSheetContent answers", () => {
     await typeAnswer("the staging one");
     await closeAndReopen();
     expect(document.querySelector("input")?.value).toBe("the staging one");
+  });
+
+  it("keeps an unsent answer with the person who typed it", async () => {
+    await render(surface(question(false)), vi.fn(), { snapshot: { user: { id: "usr_a" } } });
+    await typeAnswer("mine");
+    await render(surface(question(false)), vi.fn(), { snapshot: { user: { id: "usr_b" } } });
+    const inputs = [...document.querySelectorAll("input")];
+    expect(inputs.map(({ value }) => value)).toEqual(["mine", ""]);
+  });
+
+  it("offers an approval's other answers while it's being reviewed", async () => {
+    const dispatch = vi.fn(async () => ({ type: "request.respond" }));
+    const approval = {
+      ...requestBase(),
+      kind: "harness.approval",
+      payload: { kind: "harness.approval" },
+      presentation: {
+        detail: "pnpm test",
+        kind: "choice",
+        options: [
+          { hint: "allow-once", id: "allow", label: "Allow once" },
+          { hint: "allow-for-run", id: "run", label: "Allow for this Run" },
+          { hint: "reject-once", id: "reject", label: "Reject" },
+        ],
+        title: "Run this command?",
+      },
+    } as Request;
+    await render(surface(approval), dispatch);
+    await click("Allow for this Run");
+    expect(dispatch).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ response: { kind: "choice", optionId: "run" } }),
+    );
   });
 
   it("lets a secret go with the sheet it was typed into", async () => {

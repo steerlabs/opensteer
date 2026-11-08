@@ -29,6 +29,7 @@ import { NativeMenu, type NativeMenuOption } from "./composer-menu.js";
 import { requestTitle } from "./docked-requests.js";
 import { IntegrationConnectCard } from "./integration-connect-sheet.js";
 import {
+  approvalMenuOptions,
   confirmHighRisk,
   requestCardAnswers,
   requestCardQuestion,
@@ -333,18 +334,16 @@ function CardAnswers(props: {
     );
   }
   if (answers.kind === "approve") {
-    const more: NativeMenuOption[] = answers.more.map((option) => ({
-      id: option.id,
-      label: requestOptionLabel(request, option),
-      onPress: () => onSend(option),
-    }));
-    if (props.takesReason) {
-      more.push({
-        id: "say-why",
-        label: `${requestOptionLabel(request, answers.decline)} and say why…`,
-        onPress: () => onReview({ reason: true }),
-      });
-    }
+    const more = approvalMenuOptions({
+      answers,
+      detail: request.presentation.detail ?? null,
+      onAnswer: onSend,
+      onSayWhy: () => onReview({ reason: true }),
+      readable: props.fits,
+      request,
+      takesReason: props.takesReason,
+      title: requestTitle(request),
+    });
     const allowLabel = requestOptionLabel(request, answers.allow);
     return (
       <View style={styles.answers}>

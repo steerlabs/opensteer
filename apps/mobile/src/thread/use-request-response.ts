@@ -71,7 +71,7 @@ export function useRequestResponse(input: {
 }): RequestResponder {
   const { canRespond, canStartResponse, gate, hostClient, onAdmitted, surface } = input;
   const { request } = surface;
-  const session = useRequestSession(request);
+  const session = useRequestSession(request, hostClient.getSnapshot().user?.id ?? null);
   const aiSharing = useAiSharing();
   const mounted = useRef(true);
   useEffect(() => {

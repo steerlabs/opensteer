@@ -57,11 +57,11 @@ function createSession(): RequestSession {
 const sessionLimit = 32;
 const sessions = new Map<string, RequestSession>();
 
-function sharedSession(requestId: string): RequestSession {
-  const existing = sessions.get(requestId);
+function sharedSession(key: string): RequestSession {
+  const existing = sessions.get(key);
   if (existing !== undefined) return existing;
   const created = createSession();
-  sessions.set(requestId, created);
+  sessions.set(key, created);
   if (sessions.size > sessionLimit) {
     for (const [id, session] of sessions) {
       if (!session.responding && session.listeners.size === 0) {
@@ -75,11 +75,14 @@ function sharedSession(requestId: string): RequestSession {
 
 /**
  * A secret stays with the one surface it was typed into and goes when that
- * closes, because this store outlives every screen and every signed-in person.
+ * closes, because this store outlives every screen.
  */
-export function useRequestSession(request: Request): RequestSession {
+export function useRequestSession(request: Request, userId: string | null): RequestSession {
+  // A shared Thread's Request reaches everyone in it, and an unsent answer is one person's.
   const [session] = useState(() =>
-    hasSecretRequestFields(request) ? createSession() : sharedSession(request.id),
+    hasSecretRequestFields(request)
+      ? createSession()
+      : sharedSession(`${userId ?? "signed-out"}|${request.id}`),
   );
   useSyncExternalStore(
     (listener) => {

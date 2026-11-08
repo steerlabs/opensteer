@@ -294,6 +294,24 @@ describe("RequestCard", () => {
     );
   });
 
+  it("doesn't let a menu's answer around reading or being asked again", async () => {
+    const run = { hint: "allow-for-run", id: "run", label: "Allow for this Run" } as const;
+    native.bodyHeight = 400;
+    const clipped = await render(surfaceOf(approval({}, { options: [allow, run, reject] })));
+    expect(document.body.textContent).not.toContain("Allow for this Run");
+    expect(clipped).not.toHaveBeenCalled();
+    for (const root of roots.splice(0)) act(() => root.unmount());
+    resetRequestSessionsForTests();
+    native.bodyHeight = 60;
+    const risky = await render(
+      surfaceOf(approval({}, { options: [allow, run, reject], risk: "high" })),
+    );
+    settleArrival();
+    await press("Allow for this Run");
+    expect(risky).not.toHaveBeenCalled();
+    expect(native.alert).toHaveBeenCalledOnce();
+  });
+
   it("takes a reason only from an engine that passes it on", async () => {
     await render(surfaceOf(approval()), { driverKind: "codex" });
     await press("Don’t Allow and say why…");

@@ -6,6 +6,7 @@ import {
   type RequestOption,
 } from "@opensteer/core";
 import { Alert } from "react-native";
+import type { NativeMenuOption } from "./composer-menu.js";
 import { requestFieldMode } from "./request-form-model.js";
 
 /** The most answers a card holds before the choice belongs in a sheet. */
@@ -170,4 +171,42 @@ export function confirmHighRisk(title: string, detail: string | null, onAllow: (
     { style: "cancel", text: "Cancel" },
     { onPress: onAllow, style: "destructive", text: "Allow" },
   ]);
+}
+
+/**
+ * The answers behind an approval's menu. Each that grants follows Allow's own
+ * rules: it isn't offered over a request that doesn't fit, and high risk is
+ * asked again. "Say why" is a refusal, so nothing has to be read first.
+ */
+export function approvalMenuOptions(input: {
+  readonly answers: Extract<RequestCardAnswers, { kind: "approve" }>;
+  readonly detail: string | null;
+  /** The whole request is on screen. */
+  readonly readable: boolean;
+  readonly request: Request;
+  readonly takesReason: boolean;
+  readonly title: string;
+  readonly onAnswer: (option: RequestOption) => void;
+  readonly onSayWhy: () => void;
+}): NativeMenuOption[] {
+  const { answers, onAnswer, request } = input;
+  const options: NativeMenuOption[] = answers.more
+    .filter((option) => input.readable || requestOptionDeclines(option))
+    .map((option) => ({
+      id: option.id,
+      label: requestOptionLabel(request, option),
+      onPress: () => {
+        if (answers.highRisk && !requestOptionDeclines(option)) {
+          confirmHighRisk(input.title, input.detail, () => onAnswer(option));
+        } else onAnswer(option);
+      },
+    }));
+  if (input.takesReason) {
+    options.push({
+      id: "say-why",
+      label: `${requestOptionLabel(request, answers.decline)} and say why…`,
+      onPress: input.onSayWhy,
+    });
+  }
+  return options;
 }

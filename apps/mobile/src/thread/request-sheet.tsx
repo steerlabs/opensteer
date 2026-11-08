@@ -73,7 +73,14 @@ import { Symbol } from "../ui/symbol.js";
 import { AnswerPill, AnswerRow } from "./answer-pill.js";
 import { requestTitle } from "./docked-requests.js";
 import { InstallReview } from "./integration-install-review.js";
-import { confirmHighRisk, requestCardAnswers, requestOptionLabel } from "./request-answers.js";
+import {
+  approvalMenuOptions,
+  confirmHighRisk,
+  requestCardAnswers,
+  requestOptionLabel,
+  threadTakesDenialReason,
+} from "./request-answers.js";
+import { NativeMenu } from "./composer-menu.js";
 import {
   requestAnswerMaxLength,
   requestDraftValues,
@@ -275,6 +282,8 @@ export function RequestSheetContent(props: {
       : presentation.detail;
   // While an answer is in flight the busy control already says so, and where.
   const blocked = session.pendingId === null ? props.disabledReason : null;
+  // "Say why" comes from the card's menu by route, or from this sheet's own.
+  const [askingWhy, setAskingWhy] = useState(props.reason);
   const [reasonText, setReasonText] = useState("");
   const decline = answers.kind === "approve" ? answers.decline : null;
 
@@ -302,7 +311,7 @@ export function RequestSheetContent(props: {
     void responder.submit({ kind: "choice", optionId: decline.id, text: reasonText }, "reason");
   };
 
-  const send = props.reason ? (
+  const send = askingWhy ? (
     <AnswerPill
       busy={session.pendingId === "reason"}
       disabled={!canSend || reasonText.trim() === ""}
@@ -325,7 +334,7 @@ export function RequestSheetContent(props: {
       automaticallyAdjustKeyboardInsets
       contentContainerStyle={[
         styles.content,
-        !props.reason && answers.kind === "approve"
+        !askingWhy && answers.kind === "approve"
           ? null
           : { paddingBottom: insets.bottom + space[16] },
       ]}
@@ -338,7 +347,7 @@ export function RequestSheetContent(props: {
         <SheetBarButton icon="xmark" label={`Close ${title}`} onPress={close} />
         <View accessibilityRole="header" style={styles.barTitle}>
           <AppText maxFontSizeMultiplier={controlFontScaleLimit} numberOfLines={1} role="title">
-            {props.reason ? "Tell the agent why" : title}
+            {askingWhy ? "Tell the agent why" : title}
           </AppText>
         </View>
         {send ?? <View style={styles.barSpace} />}
@@ -346,7 +355,7 @@ export function RequestSheetContent(props: {
       <View style={styles.body}>
         {presentation.kind === "choice" && presentation.risk === "high" ? <HighRisk /> : null}
         {/* The bar holds one line of a title that may run to several. */}
-        {!props.reason && title.length > barTitleLength ? (
+        {!askingWhy && title.length > barTitleLength ? (
           <AppText role="bodyMedium" selectable>
             {title}
           </AppText>
@@ -369,7 +378,7 @@ export function RequestSheetContent(props: {
             Only this plugin receives what you enter. The agent never sees it.
           </AppText>
         ) : null}
-        {props.reason ? (
+        {askingWhy ? (
           <>
             <ResponseStatus failure={session.failure} reason={blocked} />
             <TextInput
@@ -404,14 +413,36 @@ export function RequestSheetContent(props: {
       </View>
     </ScrollView>
   );
-  if (props.reason || answers.kind !== "approve") return list;
+  if (askingWhy || answers.kind !== "approve") return list;
   // A long approval: the same answers as its card, always in reach under it.
+  const more = approvalMenuOptions({
+    answers,
+    detail,
+    onAnswer: (option) => void responder.submit({ kind: "choice", optionId: option.id }, option.id),
+    onSayWhy: () => setAskingWhy(true),
+    readable: true,
+    request,
+    takesReason:
+      answers.takesReason &&
+      threadTakesDenialReason(props.hostClient.getSnapshot(), request.originatingThreadId),
+    title,
+  });
   return (
     <View style={styles.sheet}>
       {list}
       <View style={[styles.pinned, { paddingBottom: insets.bottom + space[6] }]}>
-        <ApprovalStatus failure={session.failure} reason={blocked} />
-        <AnswerRow>
+        <ResponseStatus failure={session.failure} reason={blocked} />
+        <AnswerRow
+          leading={
+            more.length === 0 ? undefined : (
+              <NativeMenu accessibilityLabel="More answers" options={more}>
+                <View style={styles.moreGlyph}>
+                  <Symbol name="ellipsis" size={17} tint={color.textSoft} />
+                </View>
+              </NativeMenu>
+            )
+          }
+        >
           <AnswerPill
             busy={session.pendingId === answers.decline.id}
             disabled={!props.canRespond || session.pendingId !== null}
@@ -505,8 +536,6 @@ function ResponseStatus(props: {
     </View>
   );
 }
-
-const ApprovalStatus = ResponseStatus;
 
 function RequestBody(props: {
   readonly answers: ReturnType<typeof requestCardAnswers>;
@@ -1474,6 +1503,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: space[14],
     paddingVertical: space[10],
     textAlignVertical: "top",
+  },
+  moreGlyph: {
+    alignItems: "center",
+    height: touchTarget,
+    justifyContent: "center",
+    width: touchTarget,
   },
   monoDetail: {
     backgroundColor: color.surfaceCode,
