@@ -1,5 +1,5 @@
 import { browserAddressParts } from "@opensteer/client/host";
-import { memo, useLayoutEffect } from "react";
+import { memo } from "react";
 import { ActivityIndicator, StyleSheet, View } from "react-native";
 import {
   StackActions,
@@ -13,6 +13,7 @@ import { isRecord } from "@opensteer/shared/isRecord";
 import { space } from "../theme.js";
 import { AppText, Notice, SecondaryButton } from "../ui/primitives.js";
 import type { SurfacesRoute } from "./surface-route.js";
+import { ToolbarLeave, useNativeBarAway } from "./place-bar.js";
 import { Toolbar, ToolbarCapsule, ToolbarMenu } from "./toolbar.js";
 
 export function showPendingBrowserTab(
@@ -86,14 +87,7 @@ export const PendingBrowserTabView = memo(function PendingBrowserTabView({
         : pending
           ? "Opening…"
           : "This opening is no longer available";
-  useLayoutEffect(() => {
-    navigation.setOptions({
-      headerRight: () => null,
-      headerTitle: undefined,
-      title: "New tab",
-      unstable_headerRightItems: () => [],
-    });
-  }, [navigation]);
+  useNativeBarAway();
   const retry = (target?: BrowserTabOpenInput) => {
     if (!pending || pending.state === "opening") return;
     const opening = hostClient.beginBrowserTabOpen(target ?? pending.target, {
@@ -156,6 +150,7 @@ export const PendingBrowserTabView = memo(function PendingBrowserTabView({
           : null}
       </View>
       <Toolbar edge="bottom" testID="page-toolbar">
+        <ToolbarLeave />
         <ToolbarCapsule style={styles.address}>
           <AppText numberOfLines={1} role="secondaryMedium" tone="muted">
             {parts?.host ?? "New tab"}

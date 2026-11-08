@@ -217,10 +217,10 @@ function routeDestinationKey(
   ];
 }
 
-/** The page's host, or null for a page with no address worth naming. */
+/** The page's host as a person says it, or null for a page with no address worth naming. */
 export function pageSite(url: string): string | null {
   if (!/^https?:\/\//iu.test(url)) return null;
-  return browserSiteLabel(url) || null;
+  return browserSiteLabel(url).replace(/^www\./iu, "") || null;
 }
 
 /**

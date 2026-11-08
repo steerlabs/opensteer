@@ -137,6 +137,28 @@ Every title opens a menu, so a capsule is never a button that does nothing. Andr
 header slot, which is why its status line can't move into the menu as Liquid Glass's does. Beside a
 page there is no title menu, so the composer's menu carries Find and Copy thread link there.
 
+## The page bar
+
+A tab, Mac app or phone has one bar, its own, and no native bar above it. The conversation bar's
+argument doesn't carry over: a transcript scrolls under a transparent bar, but a streamed page can't
+leave room for chrome it doesn't know about, so a native bar's row always costs a page its height,
+and its title only repeated the address. [The bar](../apps/mobile/src/browser/toolbar.tsx) never
+floats over a page either, for the same reason.
+
+The native bar is put away only by a view that draws its own, so a state with none, such as an ended
+tab, keeps the native Back and can always be left. An Opensteer App keeps the native bar: it has no
+bar of its own, and it can run under one.
+
+iPhone Duo's vertical bar is already paid for, so Back and Ask stand in it as native items and leave
+the page's bar room for the address. Hiding the native bar would lose them; a transparent bar with no
+title keeps them, and costs the page 24 points at its top where hiding costs none. The screen finds
+the vertical bar by its one-sided safe area, a notch's being two-sided, measured above the panes
+because a pane beside another has one-sided insets of its own.
+
+The page's history stands inside the address capsule and the way out stands outside it, because two
+identical chevrons in one row read as one control. Fit never happens by itself: a page's size is
+shared with agents and other screens, so a tab keeps its shape until the person chooses Fit.
+
 ## Messages
 
 Chat takes its shapes from Messages: bubbles with nothing on them, held to act on. A task doesn't,

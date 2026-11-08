@@ -48,6 +48,7 @@ import {
   usePinchGesture,
   useSimultaneousGestures,
 } from "react-native-gesture-handler";
+import { scheduleOnRN } from "react-native-worklets";
 import Animated, {
   Easing,
   useAnimatedStyle,
@@ -79,6 +80,7 @@ import { BrowserStream, submitBrowserCommand, useBrowserFeedState } from "./brow
 import { ChromeSignInAction } from "./chrome-sign-in-action.js";
 import { FollowBand, TaskTabChips } from "./pair-chrome.js";
 import { pageSite, viewedPage } from "./surface-route.js";
+import { ToolbarAsk, ToolbarLeave, useNativeBarAway } from "./place-bar.js";
 import { Toolbar, ToolbarButton, ToolbarCapsule, ToolbarMenu } from "./toolbar.js";
 
 /** The shape a page takes before its first picture says otherwise. */
@@ -95,14 +97,12 @@ const regularWidth = 600;
 const pairedBarFixed = 2 * space[12] + 3 * touchTarget + 4 * space[8] + 160;
 
 /**
- * The page's bar while a Thread is beside it and the native bar is put away:
- * Back to the screen under this one, the address as the tab in front, the
- * task's other tabs, and More, which also carries what the native bar did.
+ * What the page's bar adds while a Thread is beside it: the task's other tabs,
+ * and in More, Ask and whose Thread that is.
  */
 export interface PagePairChrome {
   /** Ask, and whose Thread is beside the page, as More's own sections. */
   readonly menu: readonly NativeMenuSection[];
-  readonly onBack: () => void;
   /** This task's tabs in this browser; the one in front is left out of the chips. */
   readonly taskTabIds: readonly string[];
 }
@@ -116,21 +116,24 @@ export interface PageFollow {
   readonly following: boolean;
   readonly onResume: () => void;
 }
-/** Room left under a page narrower than its place that is worth offering Fit for. */
+/** Room left beside or under a page that is worth offering Fit for, as a share of its place. */
 const fitBand = 0.15;
+/** A gutter this wide holds Fit's words; a narrower one holds only its glyph. */
+const fitWordsWidth = 160;
 /** How far a page can be pinched in: enough to read a desktop page's small print. */
 const maxZoom = 4;
 
 /**
  * One browser page, used as Safari is used on a phone: the page as large as
- * its place allows, and under it one bar with Back, the address, the tabs and
- * ⋯. Where the page has a regular width the bar sits over it instead and
- * Forward joins Back, as Safari on iPad has it.
+ * its place allows, with one bar and nothing else around it: the way out, the
+ * page's history and address, the tabs, Ask and ⋯. It sits under the page; where
+ * the page has a regular width it sits over it instead and Forward joins the
+ * history, as Safari on iPad has it.
  *
  * The page is drawn at its own shape, as wide as its place and pinned to the
  * top; a page taller than the room fits by its height. It is never resized by
- * being looked at — only Fit resizes it, to exactly its place — and a page a
- * desktop left wide offers Fit in the room under it.
+ * being looked at — only Fit resizes it, to exactly its place — and a page that
+ * leaves real room beside or under it offers Fit there.
  *
  * Tapping a field the page reports opens the keyboard at once, and the page
  * slides up so the caret stays in view over it rather than shrinking. The
@@ -166,6 +169,7 @@ export function BrowserPage(props: {
 }): ReactNode {
   const { hostClient, onSwitchTab, onTyping, onViewing, session, tabId } = props;
   const surfaceId = BrowserSurfaceIdSchema.parse(tabId);
+  useNativeBarAway();
   const dialog = session.dialog?.surfaceId === tabId ? session.dialog : null;
   const [prompt, setPrompt] = useState<{ readonly id: string; readonly text: string } | null>(null);
   const promptText = prompt?.id === dialog?.id ? (prompt?.text ?? "") : "";
@@ -445,14 +449,6 @@ export function BrowserPage(props: {
     picture.height > 0 &&
     Math.abs(picture.width - room.width) <= 2 &&
     Math.abs(picture.height - room.height) <= 2;
-  const bandBelow = room.height - picture.height;
-  const offerFit =
-    ready &&
-    tab !== undefined &&
-    !lifted &&
-    picture.height > 0 &&
-    bandBelow > room.height * fitBand;
-
   const navigationKey = `${inputEpoch}:${catalogTab?.documentId ?? ""}:${tab?.url ?? ""}:${loading}`;
   useEffect(() => {
     setDragSelect(false);
@@ -525,25 +521,18 @@ export function BrowserPage(props: {
   const { fontScale } = useWindowDimensions();
   const reduceMotion = useReducedMotion();
   const arrival = props.arrival ?? 0;
-  const history: NativeMenuOption[] =
-    pair !== null
-      ? [
-          {
-            disabled: !ready || !canGoBack,
-            icon: "arrow.uturn.backward",
-            id: "back",
-            label: "Go Back",
-            onPress: () => void send({ type: "navigation.back" }),
-          },
-          {
-            disabled: !ready || !canGoForward,
-            icon: "chevron.forward",
-            id: "forward",
-            label: "Go Forward",
-            onPress: () => void send({ type: "navigation.forward" }),
-          },
-        ]
-      : regular
+  // A phone's bar has room for what it is used for most; Drag/select waits in More.
+  const dragButtonFits = regular && pair === null;
+  const menu: NativeMenuSection[] = [
+    [
+      {
+        disabled: !ready,
+        icon: "arrow.clockwise",
+        id: "reload",
+        label: "Reload",
+        onPress: () => void send({ type: "navigation.reload" }),
+      },
+      ...(regular
         ? []
         : [
             {
@@ -552,11 +541,8 @@ export function BrowserPage(props: {
               id: "forward",
               label: "Forward",
               onPress: () => void send({ type: "navigation.forward" }),
-            },
-          ];
-  const menu: NativeMenuSection[] = [
-    [
-      ...history,
+            } satisfies NativeMenuOption,
+          ]),
       {
         disabled: !channelReady,
         icon: "plus.square.on.square",
@@ -575,7 +561,7 @@ export function BrowserPage(props: {
               onPress: fit,
             } satisfies NativeMenuOption,
           ]),
-      ...(pair === null
+      ...(dragButtonFits
         ? []
         : [
             {
@@ -635,13 +621,21 @@ export function BrowserPage(props: {
     <AddressCapsule
       acting={acting}
       arriving={arrival !== 0}
+      canGoBack={ready && canGoBack}
       favicon={liveTab?.favicon ?? null}
       following={follow?.following === true ? { agent: follow.agent } : null}
+      forward={
+        regular
+          ? {
+              enabled: ready && canGoForward,
+              onPress: () => void send({ type: "navigation.forward" }),
+            }
+          : null
+      }
       loading={loading}
+      onBack={() => void send({ type: "navigation.back" })}
       onEdit={() => setAddressOpen(true)}
-      onReload={() => void send({ type: "navigation.reload" })}
       onSwitch={canSwitch ? switchBy : null}
-      reloadable={ready}
       secure={tab?.url.startsWith("https://") === true}
       site={site}
     />
@@ -655,43 +649,21 @@ export function BrowserPage(props: {
     />
   );
   const more = <ToolbarMenu label="More" sections={menu} symbol="ellipsis" title={title} />;
-  const bar =
-    pair !== null ? (
-      <Toolbar edge="top" testID="page-toolbar">
-        <ToolbarButton
-          accessibilityHint="Returns to the previous screen"
-          label="Back"
-          onPress={pair.onBack}
-          symbol="chevron.left"
-        />
-        {address}
+  const bar = (
+    <Toolbar edge={top ? "top" : "bottom"} testID="page-toolbar">
+      <ToolbarLeave />
+      {address}
+      {pair === null ? null : (
         <TaskTabChips
           fontScale={fontScale}
           onSelect={onSwitchTab}
           room={width - pairedBarFixed}
           tabs={tabs.filter(({ id }) => id !== tabId && pair.taskTabIds.includes(id))}
         />
-        {tabsButton}
-        {more}
-      </Toolbar>
-    ) : (
-      <Toolbar edge={regular ? "top" : "bottom"} testID="page-toolbar">
-        <ToolbarButton
-          disabled={!ready || !canGoBack}
-          label="Back"
-          onPress={() => void send({ type: "navigation.back" })}
-          symbol="chevron.left"
-        />
-        {regular ? (
-          <ToolbarButton
-            disabled={!ready || !canGoForward}
-            label="Forward"
-            onPress={() => void send({ type: "navigation.forward" })}
-            symbol="chevron.right"
-          />
-        ) : null}
-        {address}
-        {tabsButton}
+      )}
+      {tabsButton}
+      {pair === null ? <ToolbarAsk /> : null}
+      {dragButtonFits ? (
         <ToolbarButton
           disabled={!ready}
           label={dragSelect ? "Done selecting" : "Drag/select"}
@@ -699,9 +671,10 @@ export function BrowserPage(props: {
           symbol="cursorarrow"
           onPress={() => setDragSelect((value) => !value)}
         />
-        {more}
-      </Toolbar>
-    );
+      ) : null}
+      {more}
+    </Toolbar>
+  );
   const band =
     follow?.away == null || addressOpen ? null : (
       <FollowBand agent={follow.agent} onFollow={follow.onResume} title={follow.away.title} />
@@ -734,6 +707,8 @@ export function BrowserPage(props: {
     slide.value = withTiming(slideTo, { duration: duration.enter });
   }, [slide, slideTo]);
   const zoom = usePageZoom(picture, keyboardOpen || addressOpen);
+  const offer =
+    ready && tab !== undefined && !lifted && !zoom.zoomed ? fitOffer(room, picture) : null;
   const placed = useAnimatedStyle(() => ({
     transform: [
       { translateX: zoom.x.value },
@@ -822,12 +797,17 @@ export function BrowserPage(props: {
               />
             </Animated.View>
           </Animated.View>
-          {offerFit ? (
+          {offer !== null ? (
             <Animated.View
               entering={appear}
               exiting={exit}
               pointerEvents="box-none"
-              style={[styles.fitBand, { height: bandBelow, top: picture.height }]}
+              style={[
+                styles.fitBand,
+                offer.place === "below"
+                  ? { bottom: 0, height: room.height - picture.height, left: 0, right: 0 }
+                  : { bottom: 0, right: 0, top: 0, width: picture.left },
+              ]}
             >
               <Pressable
                 accessibilityHint="Resizes the page to fill your screen"
@@ -836,14 +816,18 @@ export function BrowserPage(props: {
                 onPress={fit}
                 style={({ pressed }) => pressed && styles.pressed}
               >
-                <GlassSurface interactive shape="capsule" style={styles.fitChip}>
+                <GlassSurface
+                  interactive
+                  shape="capsule"
+                  style={offer.words ? styles.fitChip : styles.fitGlyph}
+                >
                   <Symbol
                     name="arrow.up.left.and.arrow.down.right"
                     size={14}
                     tint={color.ember}
                     weight="semibold"
                   />
-                  <AppText role="secondaryMedium">Fit to screen</AppText>
+                  {offer.words ? <AppText role="secondaryMedium">Fit to screen</AppText> : null}
                 </GlassSurface>
               </Pressable>
             </Animated.View>
@@ -993,8 +977,11 @@ function usePageZoom(
   readonly scale: SharedValue<number>;
   readonly x: SharedValue<number>;
   readonly y: SharedValue<number>;
+  /** Pinched past its own size, so it may reach into the room around its place. */
+  readonly zoomed: boolean;
 } {
   const { height, left, width } = picture;
+  const [zoomed, setZoomed] = useState(false);
   const scale = useSharedValue(1);
   const x = useSharedValue(0);
   const y = useSharedValue(0);
@@ -1008,12 +995,14 @@ function usePageZoom(
     scale.value = withSpring(1, settle);
     x.value = withSpring(0, settle);
     y.value = withSpring(0, settle);
+    setZoomed(false);
   }, [height, held, scale, width, x, y]);
   const pinch = usePinchGesture({
     enabled: !held && width > 0,
     onActivate: (event) => {
       "worklet";
       pinching.value = true;
+      scheduleOnRN(setZoomed, true);
       pinchStart.value = {
         focalX: event.focalX - left,
         focalY: event.focalY,
@@ -1041,6 +1030,7 @@ function usePageZoom(
         scale.value = withSpring(1, settle);
         x.value = withSpring(0, settle);
         y.value = withSpring(0, settle);
+        scheduleOnRN(setZoomed, false);
       }
     },
   });
@@ -1063,7 +1053,7 @@ function usePageZoom(
     },
   });
   const gesture = useSimultaneousGestures(pinch, pan);
-  return { gesture, scale, x, y };
+  return { gesture, scale, x, y, zoomed };
 }
 
 const settle = { damping: 24, stiffness: 240 } as const;
@@ -1134,6 +1124,22 @@ export function pictureBox(
   if (byWidth <= room.height) return { height: byWidth, left: 0, width: room.width };
   const width = room.height * aspect;
   return { height: room.height, left: (room.width - width) / 2, width };
+}
+
+/**
+ * Where to offer Fit: in the room a page leaves under it, or, for a page fitted
+ * by its height, in the gutter trailing it. Nothing goes over the page, so a
+ * gutter with no room for the control offers nothing; Fit stays in More.
+ */
+export function fitOffer(
+  room: { readonly height: number; readonly width: number },
+  picture: { readonly height: number; readonly left: number; readonly width: number },
+): { readonly place: "below" | "side"; readonly words: boolean } | null {
+  if (picture.height <= 0) return null;
+  if (room.height - picture.height > room.height * fitBand) return { place: "below", words: true };
+  const gutter = picture.left;
+  if (gutter * 2 <= room.width * fitBand || gutter < touchTarget + space[8]) return null;
+  return { place: "side", words: gutter >= fitWordsWidth };
 }
 
 /**
@@ -1343,19 +1349,19 @@ const styles = StyleSheet.create({
     padding: space[24],
   },
   dim: { ...StyleSheet.absoluteFill, backgroundColor: "rgba(0, 0, 0, 0.5)" },
-  fitBand: {
-    alignItems: "center",
-    justifyContent: "center",
-    left: 0,
-    position: "absolute",
-    right: 0,
-  },
+  fitBand: { alignItems: "center", justifyContent: "center", position: "absolute" },
   fitChip: {
     alignItems: "center",
     flexDirection: "row",
     gap: space[8],
     height: 40,
     paddingHorizontal: space[16],
+  },
+  fitGlyph: {
+    alignItems: "center",
+    height: touchTarget,
+    justifyContent: "center",
+    width: touchTarget,
   },
   grow: { flex: 1, minWidth: 0 },
   iconButton: {

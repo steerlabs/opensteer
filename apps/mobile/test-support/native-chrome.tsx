@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useRef, type ReactNode } from "react";
 
 /*
  * The native chrome a place's bar is built from, as the DOM tests see it: a
@@ -86,7 +86,8 @@ export const reanimated = {
   LinearTransition: transition,
   useAnimatedStyle: () => ({}),
   useReducedMotion: () => true,
-  useSharedValue: <T,>(value: T) => ({ value }),
+  // One object for a component's life, as Reanimated's is: effects may depend on it.
+  useSharedValue: <T,>(value: T) => useRef({ value }).current,
   withRepeat: <T,>(value: T) => value,
   withSpring: <T,>(value: T) => value,
   withTiming: <T,>(value: T) => value,
