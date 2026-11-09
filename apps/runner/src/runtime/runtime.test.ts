@@ -74,6 +74,7 @@ import { createHarnessRegistry } from "../harness/harness-registry.js";
 import type { HarnessProcessSandbox, HarnessSandboxRunPlan } from "../sandbox/harness-sandbox.js";
 import { ExecutionContainment, executionScopeVariable } from "./execution-containment.js";
 import { RunnerRuntime, warmEngineKey, type RunnerMessageSink } from "./runtime.js";
+import { WarmEnginePool } from "./warm-engine-pool.js";
 import { providerContinuationIdentityProjector } from "@opensteer/runner-client";
 
 const testAgentSkills = {
@@ -786,7 +787,7 @@ describe("RunnerRuntime", () => {
         managedRuntime.handleHarnessAuthentication({ ...start, methodId: "default" }),
       ).resolves.toMatchObject({
         harnessInstanceId,
-        state: { status: "not-started" },
+        state: { challenge: { userCode: "OPEN-STEER" }, status: "pending" },
       });
       await vi.waitFor(async () => {
         await expect(
@@ -2758,7 +2759,7 @@ describe("RunnerRuntime", () => {
     vi.useFakeTimers();
     try {
       await expect(runtime.handleHarnessAuthentication(start)).resolves.toMatchObject({
-        state: { status: "not-started" },
+        state: { status: "pending" },
       });
       await runtime.handleHarnessAuthentication(start);
       await vi.waitFor(() => expect(starts).toBe(1));
@@ -2766,7 +2767,7 @@ describe("RunnerRuntime", () => {
       // An attempt that outlived the Host's bounded lifetime is not replayed.
       vi.setSystemTime(Date.now() + 15 * 60_000 + 1);
       await expect(runtime.handleHarnessAuthentication(start)).resolves.toMatchObject({
-        state: { status: "not-started" },
+        state: { status: "pending" },
       });
       await vi.waitFor(() => expect(starts).toBe(2));
       expect(cancel).toHaveBeenCalledTimes(1);
@@ -2791,7 +2792,7 @@ describe("RunnerRuntime", () => {
       // Re-authenticating a connected profile runs the provider's setup again.
       outcome = "ready";
       await expect(runtime.handleHarnessAuthentication(start)).resolves.toMatchObject({
-        state: { status: "not-started" },
+        state: { status: "ready" },
       });
       await vi.waitFor(async () => {
         await expect(
@@ -2803,7 +2804,7 @@ describe("RunnerRuntime", () => {
         ).resolves.toMatchObject({ state: { status: "ready" } });
       });
       await expect(runtime.handleHarnessAuthentication(start)).resolves.toMatchObject({
-        state: { status: "not-started" },
+        state: { status: "ready" },
       });
       await vi.waitFor(() => expect(starts).toBe(4));
     } finally {
@@ -2897,6 +2898,192 @@ describe("RunnerRuntime", () => {
       await rm(temporaryRoot, { force: true, recursive: true });
     }
   });
+
+  it.each([false, true])("waits briefly for a sign-in challenge (slow: %s)", async (slow) => {
+    const temporaryRoot = await mkdtemp(join(tmpdir(), "opensteer-authentication-wait-"));
+    const registry = new HarnessRegistry();
+    const driverKind = HarnessIdSchema.parse("authentication-wait-test");
+    const startup = deferred<HarnessAuthenticationStart>();
+    let entered = false;
+    registry.registerDriver({
+      ...catalogDriver(driverKind),
+      authenticate: async () => {
+        entered = true;
+        return startup.promise;
+      },
+    });
+    const runtime = configuredRuntime({
+      environmentId: createId("environment"),
+      privateStateDirectory: join(temporaryRoot, "private"),
+      registry,
+    });
+    const harness = harnessDefinition(driverKind, "Deferred sign-in", 1);
+    const pending = {
+      cancel: async () => undefined,
+      challenge: {
+        kind: "device-code" as const,
+        userCode: "SIGN-IN",
+        verificationUrl: "https://example.test/device",
+      },
+      result: new Promise<never>(() => undefined),
+      status: "pending" as const,
+    };
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      let answered = false;
+      const response = runtime
+        .handleHarnessAuthentication({ action: "start", harness, methodId: "device-code" })
+        .then((value) => {
+          answered = true;
+          return value;
+        });
+      await vi.waitFor(() => expect(entered).toBe(true));
+      expect(answered).toBe(false);
+      if (slow) {
+        await vi.advanceTimersByTimeAsync(2_000);
+        await expect(response).resolves.toMatchObject({ state: { status: "not-started" } });
+      }
+      startup.resolve(pending);
+      if (!slow) {
+        await expect(response).resolves.toMatchObject({
+          state: { challenge: pending.challenge, status: "pending" },
+        });
+        expect(vi.getTimerCount()).toBe(0);
+      }
+      await vi.waitFor(async () => {
+        await expect(
+          runtime.handleHarnessAuthentication({
+            action: "read",
+            driverKind,
+            harnessInstanceId: harness.id,
+          }),
+        ).resolves.toMatchObject({ state: { challenge: pending.challenge, status: "pending" } });
+      });
+    } finally {
+      startup.resolve({ status: "ready" });
+      vi.useRealTimers();
+      await runtime.close();
+      await rm(temporaryRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("returns a failed sign-in startup in the start answer", async () => {
+    const registry = new HarnessRegistry();
+    const driverKind = HarnessIdSchema.parse("authentication-start-failure-test");
+    registry.registerDriver({
+      ...catalogDriver(driverKind),
+      authenticate: async () => {
+        throw new Error("Provider startup failed");
+      },
+    });
+    const runtime = configuredRuntime({ environmentId: createId("environment"), registry });
+    try {
+      await expect(
+        runtime.handleHarnessAuthentication({
+          action: "start",
+          harness: harnessDefinition(driverKind, "Failed sign-in", 1),
+          methodId: "device-code",
+        }),
+      ).resolves.toMatchObject({
+        state: { detail: "Provider startup failed", status: "failed" },
+      });
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it.each(["unchanged", "revision", "removed", "pending-signin", "immediate-signin", "logout"])(
+    "keeps unrelated warm engines through account changes (%s)",
+    async (change) => {
+      const registry = new HarnessRegistry();
+      const environmentId = createId("environment");
+      const sessions: FakeHarnessSession[] = [];
+      const driver = new FakeHarnessDriver("warm-accounts-test", () => {
+        const session = Object.assign(new FakeHarnessSession(), {
+          releaseForReuse: async () => true,
+        });
+        sessions.push(session);
+        vi.spyOn(session, "stop");
+        return session;
+      });
+      const signedIn = deferred<{ status: "ready" }>();
+      registry.registerDriver({
+        ...catalogDriver(driver.kind),
+        create: async (context) => ({
+          ...(await driver.create(context)),
+          capabilities: { ...driver.capabilities, warmReuse: true },
+        }),
+        authenticate: async () =>
+          change === "immediate-signin"
+            ? { status: "ready" }
+            : {
+                cancel: async () => undefined,
+                challenge: {
+                  kind: "device-code",
+                  userCode: "WARM",
+                  verificationUrl: "https://example.test/device",
+                },
+                result: signedIn.promise,
+                status: "pending",
+              },
+        logout: async () => undefined,
+      });
+      const containment = new ExecutionContainment({
+        bootId: "warm-accounts-test",
+        dataDirectory: testPrivateStateRoot,
+        listProcesses: async () => [],
+      });
+      vi.spyOn(containment, "isSingleTree").mockResolvedValue(true);
+      const put = vi.spyOn(WarmEnginePool.prototype, "put");
+      const runtime = configuredRuntime({ environmentId, registry, containment });
+      const first = executeCommand(environmentId, driver.kind);
+      const second = executeCommand(environmentId, driver.kind);
+      const definitions = [first, second].map(({ context }) => ({
+        ...context.harness,
+        id: context.harnessInstanceId,
+      }));
+      const account = definitions[0]!;
+      try {
+        await runtime.reconcileHarnesses(definitions);
+        await runtime.handleCommand(first, { send: async () => undefined });
+        await vi.waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+        await runtime.handleCommand(second, { send: async () => undefined });
+        await vi.waitFor(() => expect(put).toHaveBeenCalledTimes(2));
+        expect(sessions).toHaveLength(2);
+        if (change.endsWith("signin")) {
+          await runtime.handleHarnessAuthentication({
+            action: "start",
+            harness: account,
+            methodId: "device-code",
+          });
+          if (change === "pending-signin") {
+            expect(sessions[0]!.stop).not.toHaveBeenCalled();
+            signedIn.resolve({ status: "ready" });
+          }
+          await vi.waitFor(() => expect(sessions[0]!.stop).toHaveBeenCalledTimes(1));
+        } else if (change === "logout") {
+          await runtime.handleHarnessAuthentication({ action: "logout", harness: account });
+          expect(sessions[0]!.stop).toHaveBeenCalledTimes(1);
+        } else {
+          await runtime.reconcileHarnesses(
+            change === "removed"
+              ? definitions.slice(1)
+              : definitions.map((definition) =>
+                  definition.id === account.id && change === "revision"
+                    ? { ...definition, runtimeRevision: 2 }
+                    : definition,
+                ),
+          );
+          expect(sessions[0]!.stop).toHaveBeenCalledTimes(change === "unchanged" ? 0 : 1);
+        }
+        expect(sessions[1]!.stop).not.toHaveBeenCalled();
+      } finally {
+        signedIn.resolve({ status: "ready" });
+        await runtime.close();
+        put.mockRestore();
+      }
+    },
+  );
 
   it("cancels provider initialization before a sign-in challenge exists", async () => {
     const temporaryRoot = await mkdtemp(join(tmpdir(), "opensteer-authentication-startup-"));
@@ -3004,9 +3191,13 @@ describe("RunnerRuntime", () => {
     const providerStartup = new Promise<HarnessAuthenticationStart>((resolve) => {
       finishStartup = resolve;
     });
+    let entered = false;
     registry.registerDriver({
       ...catalogDriver(driverKind),
-      authenticate: async () => await providerStartup,
+      authenticate: async () => {
+        entered = true;
+        return providerStartup;
+      },
     });
     const runtime = configuredRuntime({
       environmentId: createId("environment"),
@@ -3015,12 +3206,16 @@ describe("RunnerRuntime", () => {
     });
     const harness = harnessDefinition(driverKind, "Disconnected startup", 1);
     const connection = new AbortController();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
-      await runtime.handleHarnessAuthentication(
+      const starting = runtime.handleHarnessAuthentication(
         { action: "start", harness, methodId: "device-code" },
         connection.signal,
       );
+      await vi.waitFor(() => expect(entered).toBe(true));
       connection.abort(new Error("Host connection ended"));
+      await expect(starting).resolves.toMatchObject({ state: { status: "not-started" } });
+      expect(vi.getTimerCount()).toBe(0);
       finishStartup({ status: "ready" });
       await vi.waitFor(async () => {
         await expect(
@@ -3033,6 +3228,7 @@ describe("RunnerRuntime", () => {
       });
     } finally {
       finishStartup({ status: "ready" });
+      vi.useRealTimers();
       await runtime.close();
       await rm(temporaryRoot, { force: true, recursive: true });
     }

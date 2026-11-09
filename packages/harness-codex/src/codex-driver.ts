@@ -360,6 +360,13 @@ export class CodexHarnessDriver implements HarnessDriver {
       context.environment,
       context.providerState,
       undefined,
+      {
+        config: CodexHarnessConfigSchema.parse({}),
+        launch: this.#dependencies.launch,
+        runtimeBoundary: context.runtimeBoundary,
+        signal: new AbortController().signal,
+        workingDirectory: context.workspacePath,
+      },
     );
     const boundary = codexProcessBoundaryArgs(
       await codexFeatureBoundary(this.#dependencies.launch),
@@ -412,46 +419,18 @@ export class CodexHarnessDriver implements HarnessDriver {
       context.environment,
       context.providerState,
       source,
+      { ...context, config, launch: this.#dependencies.launch },
     );
     // A foreign endpoint is reached over HTTP, never through the app-server's
     // own indexing handshake, so preparation ends at the configured home.
     if (source.sourceId === codexCompatibleSourceId) return;
-    const client = await CodexStdioClient.start({
-      appServerArgs: codexProcessBoundaryArgs(
-        await codexFeatureBoundary(this.#dependencies.launch),
-        context.runtimeBoundary,
-        context.providerState,
-        environment,
-        [context.workingDirectory],
-      ),
+    // Existing homes and new Codex database versions may still need indexing;
+    // the registry owns this cancellable handshake, not a catalog deadline.
+    await initializeCodexHome(context.providerState, environment, {
+      ...context,
       config,
-      cwd: context.workingDirectory,
-      environment,
       launch: this.#dependencies.launch,
-      onFailure: () => undefined,
-      onMethodMessage: () => undefined,
-      signal: context.signal,
     });
-    try {
-      // Codex indexes the native transcript store before answering initialize.
-      // The registry owns this cancellable preparation, not a catalog request's
-      // deadline: killing the indexer leaves a lease that blocks later starts.
-      const initialized = requireObject(
-        await client.request(
-          "initialize",
-          {
-            capabilities: { experimentalApi: true },
-            clientInfo: { name: "opensteer", title: "Opensteer", version: "0.0.0" },
-          },
-          null,
-        ),
-        "initialize result",
-      );
-      assertSupportedVersion(requireString(initialized.userAgent, "initialize result.userAgent"));
-      await client.notify("initialized", {});
-    } finally {
-      await client.close();
-    }
   }
 
   async authenticate(
@@ -506,6 +485,7 @@ export class CodexHarnessDriver implements HarnessDriver {
             context.environment,
             context.providerState,
             codexSourceSelection(config, context.sourceId),
+            { ...context, config, launch: this.#dependencies.launch },
           )),
         },
         executable: this.#dependencies.launch.executable,
@@ -590,7 +570,7 @@ async function authenticateCodexCompatibleEndpoint(
     inputLabel: "API key",
     requiredMessage: "API key is required",
     store: async (key) => {
-      await materializeCodexProviderHome(context.providerState, source);
+      await materializeCodexProviderHome(context.providerState, source, undefined);
       await codexSourceApiKey(context.providerState).write(key);
     },
     storeFailedDetail: "The endpoint API key could not be stored",
@@ -619,6 +599,7 @@ async function authenticateCodexApiKey(
     context.environment,
     context.providerState,
     codexSourceSelection(config, context.sourceId),
+    { ...context, config, launch: dependencies.launch },
   );
   const lifetime = new AbortController();
   const process = (dependencies.spawnAuthenticationProcess ?? spawnSupervised)({
@@ -753,6 +734,7 @@ async function authenticateCodexHarness(
       context.environment,
       context.providerState,
       codexSourceSelection(config, context.sourceId),
+      { ...context, config, launch },
     );
     client = await CodexStdioClient.start({
       appServerArgs: codexProcessBoundaryArgs(
@@ -860,6 +842,13 @@ class CodexHarnessAdapter implements HarnessAdapter {
             context.environment,
             context.providerState,
             this.#source,
+            {
+              ...context,
+              config: this.#config,
+              launch: this.#launch,
+              signal,
+              workingDirectory: directory,
+            },
           )),
         };
         // 0.162.0 normalizes unified_exec back on unless managed policy pins
@@ -1517,6 +1506,12 @@ class CodexHarnessSession implements HarnessSession {
         this.#context.environment,
         this.#context.providerState,
         this.#source,
+        {
+          ...this.#context,
+          config: this.#config,
+          launch: this.#launch,
+          workingDirectory: this.#context.workspacePath,
+        },
       )),
       [agentToolsTokenEnvironmentVariable]: this.#context.agentTools.token,
     };
@@ -2589,6 +2584,7 @@ async function inspectCodexHarness(
       context.environment,
       context.providerState,
       codexSourceSelection(config, context.sourceId),
+      { ...context, config, launch },
     );
     client = await CodexStdioClient.start({
       appServerArgs: codexProcessBoundaryArgs(
@@ -2806,6 +2802,7 @@ async function inspectCodexCompatibleEndpoint(
   await materializeCodexProviderHome(
     context.providerState,
     codexSourceSelection(config, context.sourceId),
+    undefined,
   );
   const apiKey = await codexSourceApiKey(context.providerState).read();
   if (apiKey === undefined) {
@@ -3136,10 +3133,9 @@ function codexCredentialStoreArgs(providerState: Pick<HarnessProviderState, "kin
 const codexStoreLinkedEntries = ["sessions", "archived_sessions"] as const;
 
 /**
- * Where one Codex process keeps its conversation index. Each profile indexes
- * the shared rollout tree on its own: Codex resumes strictly through the path
- * an index recorded, and a process records the path through its own home, so a
- * shared index would break every other profile the moment one home is removed.
+ * Each profile keeps a private index because its recorded rollout paths reach
+ * through its own home. Fresh homes skip bulk backfill; resume by id finds the
+ * rollout in the shared tree and indexes it on demand.
  */
 function codexSqliteHome(providerHome: string): string {
   return join(providerHome, "sqlite");
@@ -3152,6 +3148,55 @@ function isolatedCodexProviderHome(providerState: HarnessProviderState): string 
 }
 
 const providerHomeMaterializations = new Map<string, Promise<void>>();
+const providerHomesAwaitingSeed = new Set<string>();
+
+type CodexHomePreparation = Pick<
+  HarnessInspectionContext,
+  "runtimeBoundary" | "signal" | "workingDirectory"
+> & {
+  readonly config: CodexHarnessConfig;
+  readonly launch: CodexLaunch;
+};
+
+async function initializeCodexHome(
+  providerState: HarnessProviderState,
+  environment: Readonly<Record<string, string>>,
+  preparation: CodexHomePreparation,
+): Promise<void> {
+  const client = await CodexStdioClient.start({
+    appServerArgs: codexProcessBoundaryArgs(
+      await codexFeatureBoundary(preparation.launch),
+      preparation.runtimeBoundary,
+      providerState,
+      environment,
+      [preparation.workingDirectory],
+    ),
+    config: preparation.config,
+    cwd: preparation.workingDirectory,
+    environment,
+    launch: preparation.launch,
+    onFailure: () => undefined,
+    onMethodMessage: () => undefined,
+    signal: preparation.signal,
+  });
+  try {
+    const initialized = requireObject(
+      await client.request(
+        "initialize",
+        {
+          capabilities: { experimentalApi: true },
+          clientInfo: { name: "opensteer", title: "Opensteer", version: "0.0.0" },
+        },
+        null,
+      ),
+      "initialize result",
+    );
+    assertSupportedVersion(requireString(initialized.userAgent, "initialize result.userAgent"));
+    await client.notify("initialized", {});
+  } finally {
+    await client.close();
+  }
+}
 
 /**
  * Points an isolated profile's Codex home at the environment's shared session
@@ -3162,12 +3207,18 @@ const providerHomeMaterializations = new Map<string, Promise<void>>();
 async function materializeCodexProviderHome(
   providerState: HarnessProviderState,
   source: CodexSourceSelection | undefined,
+  seed:
+    | {
+        readonly environment: Readonly<Record<string, string>>;
+        readonly preparation: CodexHomePreparation;
+      }
+    | undefined,
 ): Promise<void> {
   const providerHome = isolatedCodexProviderHome(providerState);
   const previous = providerHomeMaterializations.get(providerHome) ?? Promise.resolve();
   const current = previous
     .catch(() => undefined)
-    .then(() => materializeOnce(providerState, source));
+    .then(() => materializeOnce(providerState, source, seed));
   providerHomeMaterializations.set(providerHome, current);
   try {
     await current;
@@ -3181,6 +3232,12 @@ async function materializeCodexProviderHome(
 async function materializeOnce(
   providerState: HarnessProviderState,
   source: CodexSourceSelection | undefined,
+  seed:
+    | {
+        readonly environment: Readonly<Record<string, string>>;
+        readonly preparation: CodexHomePreparation;
+      }
+    | undefined,
 ): Promise<void> {
   const providerHome = isolatedCodexProviderHome(providerState);
   await mkdir(providerHome, { mode: 0o700, recursive: true });
@@ -3195,6 +3252,23 @@ async function materializeOnce(
   // A profile whose own home is the store has nothing to overlay; linking an
   // entry to itself would destroy it.
   if (store === providerHome) return;
+  if (source?.sourceId !== codexCompatibleSourceId) {
+    const sessions = await lstat(join(providerHome, "sessions")).catch((error: unknown) => {
+      if (nodeErrorCode(error) === "ENOENT") return undefined;
+      throw error;
+    });
+    const databases = await readdir(codexSqliteHome(providerHome));
+    if (
+      !sessions &&
+      (providerHomesAwaitingSeed.has(providerHome) ||
+        !databases.some((name) => /^state_.*\.sqlite$/.test(name)))
+    ) {
+      if (!seed) throw new Error("Codex home initialization context is required");
+      providerHomesAwaitingSeed.add(providerHome);
+      await initializeCodexHome(providerState, seed.environment, seed.preparation);
+      providerHomesAwaitingSeed.delete(providerHome);
+    }
+  }
   for (const entry of codexStoreLinkedEntries) {
     const target = join(store, entry);
     await mkdir(target, { mode: 0o700, recursive: true });
@@ -3402,10 +3476,19 @@ async function codexProcessEnvironment(
   environment: Readonly<Record<string, string>>,
   providerState: HarnessProviderState,
   source: CodexSourceSelection | undefined,
+  preparation: CodexHomePreparation,
 ): Promise<Readonly<Record<string, string>>> {
   if (providerState.kind === "ambient") return environment;
-  await materializeCodexProviderHome(providerState, source);
   const providerHome = isolatedCodexProviderHome(providerState);
+  const processEnvironment = {
+    ...environment,
+    CODEX_HOME: providerHome,
+    CODEX_SQLITE_HOME: codexSqliteHome(providerHome),
+  };
+  await materializeCodexProviderHome(providerState, source, {
+    environment: processEnvironment,
+    preparation,
+  });
   // Every Codex process this profile launches — inspection and Runs alike —
   // carries the endpoint's key, because the home's config.toml names the
   // variable rather than the secret.
@@ -3414,9 +3497,7 @@ async function codexProcessEnvironment(
       ? await codexSourceApiKey(providerState).read()
       : undefined;
   return {
-    ...environment,
-    CODEX_HOME: providerHome,
-    CODEX_SQLITE_HOME: codexSqliteHome(providerHome),
+    ...processEnvironment,
     ...(apiKey === undefined ? {} : { [codexSourceApiKeyEnvironmentVariable]: apiKey }),
   };
 }
