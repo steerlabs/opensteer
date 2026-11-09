@@ -4941,7 +4941,14 @@ function respondToHarnessInspections(
       socket.send(
         JSON.stringify({
           ...runnerFence(message),
-          catalogs: message.harnesses.map(catalogFor),
+          catalogs: message.harnesses
+            .filter(
+              (harness) =>
+                message.type !== "host.reconcile-harnesses" ||
+                message.inspect === undefined ||
+                message.inspect.includes(harness.id),
+            )
+            .map(catalogFor),
           requestId: message.requestId,
           type: "runner.harness-catalog",
         }),

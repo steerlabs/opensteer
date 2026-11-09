@@ -62,6 +62,7 @@ import type { RunToolTokenService } from "./run-tool-tokens.js";
 import {
   harnessInspectionDefinition,
   inspectAndRecordHarnessCatalogs,
+  type HarnessCatalogRecorder,
 } from "./harness-catalogs.js";
 import {
   matchModelSelection,
@@ -137,6 +138,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
   readonly #executionLeaseMs: number;
   readonly #executionNow: () => number;
   readonly #store: OpensteerStore;
+  readonly #catalogs: HarnessCatalogRecorder;
   readonly #triggerControlTokens: TriggerControlTokenService;
   readonly #triggers: TriggerStore;
   readonly #workspaces: Pick<WorkspaceService, "ensureExecutionReady">;
@@ -169,6 +171,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     readonly runnerRegistrationPending?: (environmentId: EnvironmentId) => boolean;
     readonly onRunAdmitted?: (threadId: ThreadId) => void;
     readonly store: OpensteerStore;
+    readonly catalogs?: HarnessCatalogRecorder;
     readonly triggerControlTokens: TriggerControlTokenService;
     readonly triggers: TriggerStore;
     readonly workspaces: Pick<WorkspaceService, "ensureExecutionReady">;
@@ -195,6 +198,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     this.#executionLeaseMs = options.executionLeaseMs;
     this.#executionNow = options.executionClock?.now ?? (() => Date.now());
     this.#store = options.store;
+    this.#catalogs = options.catalogs ?? options.store;
     this.#triggerControlTokens = options.triggerControlTokens;
     this.#triggers = options.triggers;
     this.#workspaces = options.workspaces;
@@ -328,7 +332,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     let catalog: HarnessInstanceCatalog | undefined;
     try {
       [catalog] = await inspectAndRecordHarnessCatalogs({
-        catalogs: this.#store,
+        catalogs: this.#catalogs,
         environmentId: command.environmentId,
         harnesses: [harnessInspectionDefinition(harness)],
         runners: this.#runners,

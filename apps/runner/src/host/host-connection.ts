@@ -781,6 +781,7 @@ export class ReconnectingHostConnection {
     return {
       environmentIds: [environmentId],
       harnessDrivers: [...harnessDrivers],
+      reconcileHarnessInspection: 1,
       localStorage: (await agents.localWorkspaces?.inventory()) ?? null,
       loginFill: 1,
       computerTool: 1,
@@ -1492,7 +1493,11 @@ class AgentsWorkSession implements RunnerWorkSession {
       throw new Error("Runner has too many pending harness catalog requests");
     }
     const runtime = this.#options.agents.runtime;
-    const fingerprint = JSON.stringify(message.harnesses);
+    const inspected =
+      message.type === "host.reconcile-harnesses" && message.inspect !== undefined
+        ? message.harnesses.filter((harness) => message.inspect?.includes(harness.id))
+        : message.harnesses;
+    const fingerprint = JSON.stringify([message.harnesses, inspected]);
     const key = `${message.type}:${fingerprint}`;
     let attempt =
       this.#catalogAttempts.get(key) ??
@@ -1502,12 +1507,11 @@ class AgentsWorkSession implements RunnerWorkSession {
     if (!attempt) {
       // The Host reconciles on every connect, so an escaping failure here
       // must become per-profile error catalogs instead of a reconnect loop.
-      const failed = (error: unknown) =>
-        message.harnesses.map((harness) => errorCatalog(harness, error));
+      const failed = (error: unknown) => inspected.map((harness) => errorCatalog(harness, error));
       if (message.type === "host.reconcile-harnesses") {
         const reconciled = this.#inOrder(() => runtime.reconcileHarnesses(message.harnesses));
         attempt = reconciled.then(
-          () => runtime.inspectHarnesses(message.harnesses, this.#signal).catch(failed),
+          () => runtime.inspectHarnesses(inspected, this.#signal).catch(failed),
           failed,
         );
       } else {
@@ -1900,9 +1904,14 @@ function reachOnlyWorkSession(sink: CausallyOrderedRunnerSink): RunnerWorkSessio
         case "host.reconcile-harnesses":
         case "host.inspect-harnesses":
           await sink.send({
-            catalogs: message.harnesses.map((harness) =>
-              errorCatalog(harness, new Error(notRunningAgents)),
-            ),
+            catalogs: message.harnesses
+              .filter(
+                (harness) =>
+                  message.type !== "host.reconcile-harnesses" ||
+                  message.inspect === undefined ||
+                  message.inspect.includes(harness.id),
+              )
+              .map((harness) => errorCatalog(harness, new Error(notRunningAgents))),
             requestId: message.requestId,
             type: "runner.harness-catalog",
           });

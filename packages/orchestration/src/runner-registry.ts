@@ -1124,6 +1124,7 @@ export class RunnerRegistry {
     environmentId: EnvironmentId,
     harnesses: HarnessCatalogRequestDefinitions,
     signal: AbortSignal,
+    inspect?: readonly HarnessInstanceId[],
   ): Promise<readonly HarnessInstanceCatalog[]> {
     const connection = this.#byEnvironment.get(environmentId);
     if (!connection) return [];
@@ -1144,7 +1145,13 @@ export class RunnerRegistry {
     try {
       // Deliberately never served from the cache: a reconciliation is an
       // instruction to the Runner, not a question, so it must reach the wire.
-      return await this.#requestCatalogs(connection, harnesses, "host.reconcile-harnesses", signal);
+      return await this.#requestCatalogs(
+        connection,
+        harnesses,
+        "host.reconcile-harnesses",
+        signal,
+        connection.identity.modules.agents?.reconcileHarnessInspection === 1 ? inspect : undefined,
+      );
     } finally {
       gate.resolve();
     }
@@ -1186,6 +1193,7 @@ export class RunnerRegistry {
   ): HarnessInstanceCatalog | undefined {
     const cached = connection.catalogCache.get(harness.id);
     return cached &&
+      cached.catalog.status !== "preparing" &&
       // A clock cannot sign an account in. Keep that answer until an explicit
       // refresh, profile revision, authentication action or Runner invalidation.
       (cached.catalog.status === "authentication-required" || cached.expiresAt > Date.now()) &&
@@ -1204,8 +1212,19 @@ export class RunnerRegistry {
     harnesses: HarnessCatalogRequestDefinitions,
     type: "host.inspect-harnesses" | "host.reconcile-harnesses",
     signal: AbortSignal,
+    inspect?: readonly HarnessInstanceId[],
   ): Promise<readonly HarnessInstanceCatalog[]> {
-    const fingerprint = catalogFingerprint(harnesses);
+    if (inspect?.some((id) => !harnesses.some((harness) => harness.id === id))) {
+      throw new Error("Inspected harnesses must belong to the desired set");
+    }
+    const inspected =
+      inspect === undefined
+        ? harnesses
+        : harnesses.filter((harness) => inspect.includes(harness.id));
+    const fingerprint = JSON.stringify([
+      catalogFingerprint(harnesses),
+      catalogFingerprint(inspected),
+    ]);
     const definitionFingerprints = new Map(
       harnesses.map((harness) => [harness.id, catalogFingerprint([harness])]),
     );
@@ -1217,7 +1236,7 @@ export class RunnerRegistry {
     const requestId = CorrelationIdSchema.parse(`catalog:${randomUUID()}`);
     const pending = deferred<readonly HarnessInstanceCatalog[]>();
     connection.pendingCatalogs.set(requestId, {
-      expected: new Map(harnesses.map((harness) => [harness.id, harness.driverKind])),
+      expected: new Map(inspected.map((harness) => [harness.id, harness.driverKind])),
       reject: pending.reject,
       resolve: pending.resolve,
     });
@@ -1226,6 +1245,7 @@ export class RunnerRegistry {
         await connection.peer.send({
           ...connection.identity.fence,
           harnesses: [...harnesses],
+          ...(inspect === undefined ? {} : { inspect: [...inspect] }),
           requestId,
           type,
         });
@@ -1254,17 +1274,17 @@ export class RunnerRegistry {
           connection.preparingHarnesses.add(catalog.harnessInstanceId);
         } else {
           connection.preparingHarnesses.delete(catalog.harnessInstanceId);
-          const definitionFingerprint = definitionFingerprints.get(catalog.harnessInstanceId);
-          if (!definitionFingerprint) {
-            throw new Error("Runner returned a catalog for an unrequested AI account");
-          }
-          connection.catalogCache.set(catalog.harnessInstanceId, {
-            catalog,
-            expiresAt,
-            fingerprint: definitionFingerprint,
-            revision,
-          });
         }
+        const definitionFingerprint = definitionFingerprints.get(catalog.harnessInstanceId);
+        if (!definitionFingerprint) {
+          throw new Error("Runner returned a catalog for an unrequested AI account");
+        }
+        connection.catalogCache.set(catalog.harnessInstanceId, {
+          catalog,
+          expiresAt,
+          fingerprint: definitionFingerprint,
+          revision,
+        });
         return catalog;
       });
     });

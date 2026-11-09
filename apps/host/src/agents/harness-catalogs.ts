@@ -7,6 +7,8 @@ import {
 } from "@opensteer/core";
 import type { HarnessInstanceRecord } from "@opensteer/database";
 import type { HarnessInstanceCatalog, HostToRunnerMessage } from "@opensteer/protocol";
+import type { RealtimeHub } from "@opensteer/orchestration";
+import { notifyMachinesChanged } from "../shell/machine-access-events.js";
 
 export type HarnessInspectionDefinitions = Extract<
   HostToRunnerMessage,
@@ -33,6 +35,7 @@ interface HarnessCatalogReconciler {
     environmentId: EnvironmentId,
     harnesses: HarnessInspectionDefinitions,
     signal: AbortSignal,
+    inspect?: readonly HarnessInstanceId[],
   ): Promise<readonly HarnessInstanceCatalog[]>;
 }
 
@@ -46,6 +49,19 @@ export interface HarnessCatalogRecorder {
     readonly environmentId: EnvironmentId;
     readonly expectedRevisions: ReadonlyMap<HarnessInstanceId, number>;
   }): Promise<readonly HarnessInstanceCatalog[]>;
+}
+
+export function notifyingHarnessCatalogRecorder(
+  catalogs: HarnessCatalogRecorder,
+  realtime: Pick<RealtimeHub, "broadcast">,
+): HarnessCatalogRecorder {
+  return {
+    recordHarnessCatalogs: async (input) => {
+      const recorded = await catalogs.recordHarnessCatalogs(input);
+      if (recorded.length > 0) notifyMachinesChanged(realtime, "harness.catalog");
+      return recorded;
+    },
+  };
 }
 
 interface HarnessCatalogReader {
@@ -175,7 +191,7 @@ export async function reconcileAndRecordHarnessCatalogs(options: {
  */
 export class HarnessCatalogReconciliationOwner {
   readonly #catalogs: HarnessCatalogInventoryStore;
-  readonly #dirty = new Set<EnvironmentId>();
+  readonly #dirty = new Map<EnvironmentId, "all" | ReadonlySet<HarnessInstanceId>>();
   readonly #lifetime = new AbortController();
   readonly #onError: (environmentId: EnvironmentId, error: unknown) => void;
   readonly #operations = new Map<EnvironmentId, Promise<void>>();
@@ -191,9 +207,16 @@ export class HarnessCatalogReconciliationOwner {
     this.#runners = options.runners;
   }
 
-  schedule(environmentId: EnvironmentId): void {
+  schedule(
+    environmentId: EnvironmentId,
+    inspect: "all" | readonly HarnessInstanceId[] = "all",
+  ): void {
     if (this.#lifetime.signal.aborted) return;
-    this.#dirty.add(environmentId);
+    const pending = this.#dirty.get(environmentId);
+    this.#dirty.set(
+      environmentId,
+      pending === "all" || inspect === "all" ? "all" : new Set([...(pending ?? []), ...inspect]),
+    );
     if (!this.#operations.has(environmentId)) this.#start(environmentId);
   }
 
@@ -224,7 +247,9 @@ export class HarnessCatalogReconciliationOwner {
   }
 
   async #drain(environmentId: EnvironmentId): Promise<void> {
-    while (this.#dirty.delete(environmentId)) {
+    while (this.#dirty.has(environmentId)) {
+      const inspect = this.#dirty.get(environmentId)!;
+      this.#dirty.delete(environmentId);
       if (!this.#runners.isAvailable(environmentId)) continue;
       const desired = await this.#desired(environmentId);
       if (this.#lifetime.signal.aborted) return;
@@ -232,12 +257,15 @@ export class HarnessCatalogReconciliationOwner {
         environmentId,
         desired,
         this.#lifetime.signal,
+        ...(inspect === "all"
+          ? []
+          : [desired.filter((harness) => inspect.has(harness.id)).map((harness) => harness.id)]),
       );
       if (this.#lifetime.signal.aborted) return;
       const current = await this.#desired(environmentId);
       if (this.#lifetime.signal.aborted) return;
       if (!sameHarnessDefinitions(desired, current)) {
-        this.#dirty.add(environmentId);
+        this.schedule(environmentId, inspect === "all" ? "all" : [...inspect]);
         continue;
       }
       await this.#catalogs.recordHarnessCatalogs({

@@ -212,6 +212,32 @@ describe("wire protocol", () => {
       );
     }
 
+    const reconciliation = {
+      ...wireFence,
+      harnesses,
+      requestId: "targeted-reconcile",
+      type: "host.reconcile-harnesses",
+    } as const;
+    for (const inspect of [[], [harnesses[0].id]]) {
+      expect(HostToRunnerMessageSchema.parse({ ...reconciliation, inspect })).toEqual({
+        ...reconciliation,
+        inspect,
+      });
+    }
+    expect(
+      HostToRunnerMessageSchema.safeParse({
+        ...reconciliation,
+        inspect: [createId("harnessInstance")],
+      }).success,
+    ).toBe(false);
+    expect(
+      HostToRunnerMessageSchema.safeParse({
+        ...reconciliation,
+        type: "host.inspect-harnesses",
+        inspect: [],
+      }).success,
+    ).toBe(false);
+
     const tooManyHarnesses = Array.from(
       { length: maxHarnessInstancesPerEnvironment + 1 },
       (_, index) => ({
@@ -306,6 +332,15 @@ describe("wire protocol", () => {
     expect(RunnerDescriptorSchema.parse(descriptor)).toMatchObject({
       modules: { agents: { environmentIds: agents.environmentIds } },
     });
+    for (const reconcileHarnessInspection of [undefined, 1, 2]) {
+      const parsed = RunnerDescriptorSchema.parse({
+        ...descriptor,
+        modules: { agents: { ...agents, reconcileHarnessInspection } },
+      });
+      expect(parsed.modules.agents?.reconcileHarnessInspection).toBe(
+        reconcileHarnessInspection === 1 ? 1 : undefined,
+      );
+    }
     // A Runner holds one unscoped harness registry, so a second environment is
     // a shape the reconciler could never honor.
     for (const environmentIds of [[], [createId("environment"), createId("environment")]]) {
