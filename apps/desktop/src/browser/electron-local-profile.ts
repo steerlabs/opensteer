@@ -135,6 +135,13 @@ export function isNetworkService(details: { type: string; serviceName?: string }
   return details.type === "Utility" && details.serviceName === "network.mojom.NetworkService";
 }
 
+export function electronProfileRootReleaseState(root: string): "released" | "retained-until-exit" {
+  const prefix = path.resolve(root) + path.sep;
+  return [...retainedDirectories].some((directory) => directory.startsWith(prefix))
+    ? "retained-until-exit"
+    : "released";
+}
+
 export async function releaseElectronLocalProfile(
   directory: string,
 ): Promise<"released" | "retained-until-exit"> {

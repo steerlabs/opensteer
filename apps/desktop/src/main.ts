@@ -1,3 +1,5 @@
+import { DesktopBrowserProfileErasure } from "./supervisor/browser-profile-erasure.js";
+import { electronProfileRootReleaseState } from "./browser/electron-local-profile.js";
 import { DesktopSupervisor } from "./connections/desktop-supervisor.js";
 import { DesktopUpdateExecutor } from "./connections/desktop-update-executor.js";
 import { DesktopIntegrationAuthorizations } from "./app/integration-authorizations.js";
@@ -282,6 +284,11 @@ async function runDesktop(
 ): Promise<void> {
   await app.whenReady();
   shutdown.signal.throwIfAborted();
+  const profileErasure = new DesktopBrowserProfileErasure(
+    loaded.config.dataDirectory,
+    electronProfileRootReleaseState,
+  );
+  await profileErasure.finishPending();
   registerDesktopOAuthProtocolClient({
     application: app,
     defaultApp: process.defaultApp,
@@ -628,6 +635,7 @@ async function runDesktop(
     hostTransport.closeAllSockets(),
   );
   const localRunner = new LocalRunnerService(loaded.config, {
+    profileErasure,
     log: reportEvent,
     browser: (input) =>
       startLocalBrowserRuntime({
