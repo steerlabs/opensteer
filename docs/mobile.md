@@ -155,9 +155,19 @@ title keeps them, and costs the page 24 points at its top where hiding costs non
 the vertical bar by its one-sided safe area, a notch's being two-sided, measured above the panes
 because a pane beside another has one-sided insets of its own.
 
-The page's history stands inside the address capsule and the way out stands outside it, because two
-identical chevrons in one row read as one control. Fit never happens by itself: a page's size is
-shared with agents and other screens, so a tab keeps its shape until the person chooses Fit.
+On a phone the bar's one chevron is the way out, and the page's Back sits in More beside Forward:
+two identical chevrons in one row read as one control, and the address needs the room. A cut-off
+site name is the worst thing the bar can show, so the capsule holds only the site and, when the tab
+runs on another device than this one (`deviceElsewhere`), that device's shape, whose name is a tap
+away. Where the page is wide, Back and Forward stand in the capsule, as Safari's do on iPad. Fit
+never happens by itself: a page's size is shared with agents and other screens, so a tab keeps its
+shape until the person chooses Fit.
+
+A place opened from a conversation says at its foot what that conversation is doing, with its
+Stop, or that it needs the person, with Answer, which goes back to the conversation's own dock.
+It speaks for that conversation only, not for whoever ranks first in the place, and not at all
+where the conversation is already beside the page. The page eases into the room the row leaves
+rather than running under it, and a call's bar docks over the place's bar for the same reason.
 
 ## The sidebar's ends
 

@@ -66,6 +66,8 @@ const state = vi.hoisted(() => ({
   focusedInput: null as object | null,
   fontScale: 1,
   foreground: true,
+  /** This phone's own device in the Deployment, when it is one. */
+  hereId: null as string | null,
   conversationMounts: 0,
   pageMounts: 0,
   /** Every claim of the active Thread a pane beside the page made. */
@@ -96,6 +98,8 @@ vi.mock("@react-navigation/native", () => ({
 }));
 vi.mock("@react-navigation/elements", () => ({ useHeaderHeight: () => 88 }));
 vi.mock("expo-haptics", () => ({
+  ImpactFeedbackStyle: { Heavy: "heavy" },
+  impactAsync: vi.fn(async () => undefined),
   NotificationFeedbackType: { Success: "success", Warning: "warning" },
   notificationAsync: vi.fn(async () => undefined),
 }));
@@ -386,6 +390,9 @@ vi.mock("../ui/primitives.js", () => ({
 vi.mock("../ui/screen.js", () => ({
   Screen: ({ children }: { children?: ReactNode }) => <main>{children}</main>,
 }));
+vi.mock("../voice/controls.js", () => ({ VoiceDock: () => null }));
+vi.mock("../voice/use-voice-value.js", () => ({ useVoiceValue: () => false }));
+vi.mock("../computers/here-device.js", () => ({ useHereDeviceId: () => state.hereId }));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
 vi.mock("../ui/chat-orb.js", () => ({ ChatOrb: () => null }));
 vi.mock("../ui/task-mark.js", () => ({ TaskMark: () => null }));
@@ -594,6 +601,7 @@ afterEach(() => {
   state.regionsReady = true;
   state.keyboard = false;
   state.foreground = true;
+  state.hereId = null;
   state.focusedInput = null;
   state.fontScale = 1;
   state.conversationMounts = 0;
@@ -655,11 +663,13 @@ function snapshot(sessions: BrowserSessionSummary[]): HostSnapshot {
     voiceThreadId: null,
     machines: [],
     network: "online",
+    runQueue: [],
     session: "authenticated",
     tasks: null,
     threads: [],
     transcripts: {},
     user: { id: "user-a" },
+    waitingRequests: [],
     workspaces: [source, child, unrelated],
     workspaceTasks: {},
   } as unknown as HostSnapshot;
@@ -2277,10 +2287,11 @@ describe("a page beside its agent's thread", () => {
   it("draws one bar with the way out, on a phone and beside a thread", () => {
     const { container, render } = openPage();
     expect(headerShown()).toBe(false);
-    // Ask stands in a phone's bar; leaving and the page's own history are two controls.
+    // Ask stands in a phone's bar; the way out is its one chevron, the page's history is in More.
     expect(askMenu().textContent).toContain("Ask in Chat");
     expect(menu().textContent).not.toContain("Ask in Chat");
-    press(container, "Previous page");
+    expect(element(container, "Previous page")).toBeNull();
+    press(menu(), "Back");
     expect(state.goBack).not.toHaveBeenCalled();
     press(container, "Back");
     expect(state.goBack).toHaveBeenCalledOnce();
@@ -2312,10 +2323,10 @@ describe("a page beside its agent's thread", () => {
         .unstable_headerRightItems()
         .map(({ label }) => label),
     ).toEqual(["Ask"]);
-    // Back here is the vertical bar's; the page's own bar keeps the page's history.
+    // Back here is the vertical bar's; the page's history stays in its own More.
     expect(element(container, "Back")).toBeNull();
     expect(document.querySelector('[aria-label="Ask"], [aria-label$=". Ask"]')).toBeNull();
-    expect(element(container, "Previous page")).not.toBeNull();
+    expect(menu().textContent).toContain("Back");
 
     // A notch insets both sides, and the page's own bar carries them again.
     state.safeArea = { bottom: 21, left: 59, right: 59, top: 0 };
@@ -2582,6 +2593,103 @@ describe("a page beside its agent's thread", () => {
     expect(slot(container, "page").style).toMatchObject({ height: 420 });
     expect(state.conversationMounts).toBe(1);
     expect(state.pageMounts).toBe(1);
+  });
+});
+
+/*
+ * The status row under a page opened from a conversation. What can go wrong:
+ * it speaks for whichever agent ranks first in the tab rather than the
+ * conversation the page was opened from; its Stop reaches another Run; it
+ * shows on a page opened from Tabs, or with nothing to say; it repeats a
+ * conversation already on screen beside the page; Answer answers anything
+ * itself rather than returning to the conversation.
+ */
+describe("the status row", () => {
+  const sessionId = "browser-child";
+
+  /** The page, opened from `thread-agent`, with both agents in it and these at work. */
+  function openWatched(
+    working: readonly string[],
+    params: Partial<SurfacesRoute> = { threadId: "thread-agent" },
+    waiting: readonly string[] = [],
+  ) {
+    state.hostClient.stopRun = vi.fn(async () => undefined);
+    const opened = setup({ sessionId, tabId: "page-1", ...params } as Partial<SurfacesRoute>);
+    const base = withAgents([
+      occupied(sessionId, [
+        { acting: true, lastActiveAt: "2026-10-13T00:00:02.000Z", threadId: "thread-trip" },
+        { threadId: "thread-agent" },
+      ]),
+    ]);
+    state.snapshot = {
+      ...base,
+      runQueue: working.map((threadId) => ({
+        createdAt: agentAt,
+        id: `run-${threadId}`,
+        runOrdinal: 1,
+        status: "running",
+        threadId,
+      })),
+      threads: base.threads.map((thread) => ({
+        ...thread,
+        role: "work",
+        status: working.includes(thread.id) ? "running" : "idle",
+      })),
+      waitingRequests: waiting.map((threadId) => ({
+        assignments: [],
+        request: { id: `request-${threadId}`, originatingThreadId: threadId },
+      })),
+    } as unknown as HostSnapshot;
+    opened.render();
+    return opened;
+  }
+
+  const row = (container: HTMLElement) =>
+    container.querySelector<HTMLElement>('[data-testid="place-status"]');
+
+  it("speaks only for the conversation it was opened from, and stops that conversation's Run", () => {
+    const { container } = openWatched(["thread-agent", "thread-trip"]);
+    // Tokyo trip is acting and ranks first in the tab; the row is still Compare hotels'.
+    expect(row(container)?.querySelector('[aria-label="Compare hotels: Working"]')).not.toBeNull();
+    press(row(container)!, "Stop this run");
+    expect(state.hostClient.stopRun).toHaveBeenCalledExactlyOnceWith("thread-agent");
+  });
+
+  it("says nothing on a page opened from Tabs, or while its conversation has nothing to say", () => {
+    const fromTabs = openWatched(["thread-agent"], { scope: "workspace" });
+    expect(row(fromTabs.container)).toBeNull();
+    for (const root of roots.splice(0)) act(() => root.unmount());
+    // Another agent at work in the tab is not this conversation at work.
+    const idle = openWatched(["thread-trip"]);
+    expect(row(idle.container)).toBeNull();
+  });
+
+  it("says when the conversation needs the person, and Answer returns to it to answer there", () => {
+    const { container } = openWatched([], { threadId: "thread-agent" }, ["thread-agent"]);
+    expect(row(container)?.textContent).toContain("Needs you");
+    expect(element(row(container)!, "Stop this run")).toBeNull();
+    state.routes = [
+      { name: "Home" },
+      { name: "Thread", params: { deploymentId: "deployment-a", threadId: "thread-agent" } },
+      { name: "WorkspaceBrowser", params: { sessionId, tabId: "page-1" } },
+    ];
+    press(row(container)!, "Answer");
+    expect(state.goBack).toHaveBeenCalledOnce();
+    expect(state.dispatch).not.toHaveBeenCalled();
+  });
+
+  it("leaves the row out while its conversation is beside the page, and only then", () => {
+    state.pair = { height: 1000, width: 744 };
+    const { container } = openWatched(["thread-agent"], { threadId: "thread-trip" });
+    // Tokyo trip, first in the tab, is the conversation beside the page.
+    expect(container.querySelector('[data-testid="beside-thread"]')?.textContent).toContain(
+      "thread-trip",
+    );
+    expect(row(container)).toBeNull();
+    for (const root of roots.splice(0)) act(() => root.unmount());
+    // Opened from Compare hotels, whose conversation is not the one beside the page.
+    const other = openWatched(["thread-agent"]);
+    expect(row(other.container)).not.toBeNull();
   });
 });
 
@@ -3042,6 +3150,8 @@ describe("native page layout and controls", () => {
   it("disables catalog-refused history and admits history from older Hosts", () => {
     const { container, chosen, send, render } = open();
     const catalog = occupied(chosen.id, []).tabCatalog!;
+    const item = (label: string) =>
+      [...menu().querySelectorAll("button")].find((button) => button.textContent === label);
     state.snapshot = snapshot([
       {
         ...chosen,
@@ -3054,31 +3164,32 @@ describe("native page layout and controls", () => {
       },
     ]);
     render();
-    expect(
-      container.querySelector<HTMLButtonElement>('button[aria-label="Previous page"]')?.disabled,
-    ).toBe(true);
-    expect(
-      [...menu().querySelectorAll("button")].find((button) => button.textContent === "Forward")
-        ?.disabled,
-    ).toBe(true);
-    press(container, "Previous page");
+    // A phone's address keeps its room: the page's history is in More, beside Forward.
+    expect(element(container, "Previous page")).toBeNull();
+    expect(item("Back")?.disabled).toBe(true);
+    expect(item("Forward")?.disabled).toBe(true);
+    press(menu(), "Back");
     press(menu(), "Forward");
     expect(send).not.toHaveBeenCalled();
     state.snapshot = snapshot([chosen]);
     render();
-    expect(
-      container.querySelector<HTMLButtonElement>('button[aria-label="Previous page"]')?.disabled,
-    ).toBe(false);
-    expect(
-      [...menu().querySelectorAll("button")].find((button) => button.textContent === "Forward")
-        ?.disabled,
-    ).toBe(false);
-    press(container, "Previous page");
+    expect(item("Back")?.disabled).toBe(false);
+    expect(item("Forward")?.disabled).toBe(false);
+    press(menu(), "Back");
     press(menu(), "Forward");
     expect(send.mock.calls).toEqual([
       [chosen.id, { type: "navigation.back", surfaceId: chosen.tabs[0]!.id }],
       [chosen.id, { type: "navigation.forward", surfaceId: chosen.tabs[0]!.id }],
     ]);
+
+    // Where the page is wide, Back and Forward stand beside the address, as Safari's do on iPad.
+    state.layout = { height: 900, width: 700 };
+    render();
+    expect(item("Back")).toBeUndefined();
+    expect(item("Forward")).toBeUndefined();
+    press(container, "Previous page");
+    press(container, "Next page");
+    expect(send).toHaveBeenCalledTimes(4);
   });
 
   it("keeps page hardware focus without a field and hands focus to app controls", async () => {

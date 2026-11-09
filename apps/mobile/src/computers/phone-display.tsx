@@ -35,10 +35,12 @@ import {
   View,
 } from "react-native";
 import { StackActions, useNavigation } from "@react-navigation/native";
+import Animated, { useAnimatedStyle } from "react-native-reanimated";
 import { workspaceRoute } from "../browser/surface-route.js";
 import { MacAppIcon } from "./app-mark.js";
 import { openAppOwnerView, openPhoneOwnerView } from "./open-owner-view.js";
 import { ToolbarAsk, ToolbarLeave, useNativeBarAway } from "../browser/place-bar.js";
+import { PlaceVoiceDock, usePlaceStatus } from "../browser/place-foot.js";
 import { Toolbar, ToolbarButton, ToolbarCapsule, ToolbarMenu } from "../browser/toolbar.js";
 import { color, controlFontScaleLimit, radius, space } from "../theme.js";
 import type { NativeMenuOption, NativeMenuSection } from "../thread/composer-menu.js";
@@ -116,6 +118,11 @@ export function ComputerDisplay({
   readonly onPageSize?: ((size: { width: number; height: number }) => void) | undefined;
 }) {
   useNativeBarAway(bar !== undefined);
+  // The picture and its touch layer ease into the room the status row leaves;
+  // the stage keeps its size, so the picture it asks for does not change.
+  const status = usePlaceStatus(false);
+  const { reserve } = status;
+  const lift = useAnimatedStyle(() => ({ bottom: reserve.value }));
   const [viewerWidth, setViewerWidth] = useState<number | null>(null);
   const unavailable = !phone && !macWindowVideoSupported();
   const kind = reference.kind;
@@ -456,74 +463,77 @@ export function ComputerDisplay({
         viewportChanged.current?.(viewport.current);
       }}
     >
-      <NativeDisplay
-        ref={decoder}
-        style={StyleSheet.absoluteFill}
-        onNeedsKeyframe={({ nativeEvent }) => {
-          if (nativeEvent.epoch !== String(epoch.current)) return;
-          if (nativeEvent.pictureGone) {
-            controls.current?.resetInput();
-            setPicture(null);
-            setShown(false);
-          }
-          requestKeyframe.current?.();
-        }}
-        onReady={({ nativeEvent }) => {
-          if (nativeEvent.epoch !== String(epoch.current) || !active || !foreground || !scope)
-            return;
-          setShown(true);
-          setPicture(decodingPicture.current);
-          onPageSize?.({ width: nativeEvent.width, height: nativeEvent.height });
-        }}
-      />
-      {interactive && inputLease && !unavailable ? (
-        <DisplayControls
-          key={scope}
-          ref={controls}
-          lease={inputLease}
-          onCanType={setCanType}
-          {...(bar === undefined ? {} : { onTyping: bar.onTyping })}
-          picture={picture}
-          phone={phone}
-          visible={active && foreground && shown && !words}
+      <Animated.View style={[StyleSheet.absoluteFill, lift]}>
+        <NativeDisplay
+          ref={decoder}
+          style={StyleSheet.absoluteFill}
+          onNeedsKeyframe={({ nativeEvent }) => {
+            if (nativeEvent.epoch !== String(epoch.current)) return;
+            if (nativeEvent.pictureGone) {
+              controls.current?.resetInput();
+              setPicture(null);
+              setShown(false);
+            }
+            requestKeyframe.current?.();
+          }}
+          onReady={({ nativeEvent }) => {
+            if (nativeEvent.epoch !== String(epoch.current) || !active || !foreground || !scope)
+              return;
+            setShown(true);
+            setPicture(decodingPicture.current);
+            onPageSize?.({ width: nativeEvent.width, height: nativeEvent.height });
+          }}
         />
-      ) : null}
-      {interactive && phone && active && foreground && displayState?.input !== "available" ? (
-        <GlassSurface shape="capsule" style={styles.badge}>
-          <Symbol name="eye" size={13} tint={color.textSoft} />
-          <AppText maxFontSizeMultiplier={controlFontScaleLimit} role="caption" tone="soft">
-            View only
-          </AppText>
-        </GlassSurface>
-      ) : null}
-      {unavailable || !shown || (!preserve && (words || updateName !== null)) ? (
-        <View style={styles.status}>
-          {!unavailable && !words && updateName === null ? (
-            <ActivityIndicator color={color.muted} />
-          ) : null}
-          <AppText role="secondary" style={styles.statusText} tone="soft">
-            {unavailable
-              ? "Mac window video is unavailable on iOS in this release."
-              : updateName !== null
-                ? updateName
-                : (words ??
-                  (phone
-                    ? `Connecting to ${label}…`
-                    : startingSlow
-                      ? "macOS is taking longer to start sharing this window."
-                      : "Starting window sharing…"))}
-          </AppText>
-          {interactive && phone && power === "screen-off" ? (
-            <SecondaryButton label="Wake phone" onPress={() => inputLease?.power("wake")} />
-          ) : null}
-          {terminal && (!phone || onReopen) && !unavailable ? (
-            <SecondaryButton
-              label={phone ? "Reopen" : "Open again"}
-              onPress={() => (onReopen ? onReopen() : reopen.current?.())}
-            />
-          ) : null}
-        </View>
-      ) : null}
+        {interactive && inputLease && !unavailable ? (
+          <DisplayControls
+            key={scope}
+            ref={controls}
+            lease={inputLease}
+            onCanType={setCanType}
+            {...(bar === undefined ? {} : { onTyping: bar.onTyping })}
+            picture={picture}
+            phone={phone}
+            visible={active && foreground && shown && !words}
+          />
+        ) : null}
+        {interactive && phone && active && foreground && displayState?.input !== "available" ? (
+          <GlassSurface shape="capsule" style={styles.badge}>
+            <Symbol name="eye" size={13} tint={color.textSoft} />
+            <AppText maxFontSizeMultiplier={controlFontScaleLimit} role="caption" tone="soft">
+              View only
+            </AppText>
+          </GlassSurface>
+        ) : null}
+        {unavailable || !shown || (!preserve && (words || updateName !== null)) ? (
+          <View style={styles.status}>
+            {!unavailable && !words && updateName === null ? (
+              <ActivityIndicator color={color.muted} />
+            ) : null}
+            <AppText role="secondary" style={styles.statusText} tone="soft">
+              {unavailable
+                ? "Mac window video is unavailable on iOS in this release."
+                : updateName !== null
+                  ? updateName
+                  : (words ??
+                    (phone
+                      ? `Connecting to ${label}…`
+                      : startingSlow
+                        ? "macOS is taking longer to start sharing this window."
+                        : "Starting window sharing…"))}
+            </AppText>
+            {interactive && phone && power === "screen-off" ? (
+              <SecondaryButton label="Wake phone" onPress={() => inputLease?.power("wake")} />
+            ) : null}
+            {terminal && (!phone || onReopen) && !unavailable ? (
+              <SecondaryButton
+                label={phone ? "Reopen" : "Open again"}
+                onPress={() => (onReopen ? onReopen() : reopen.current?.())}
+              />
+            ) : null}
+          </View>
+        ) : null}
+      </Animated.View>
+      {status.row}
     </View>
   );
   if (bar === undefined) return stage;
@@ -555,6 +565,7 @@ export function ComputerDisplay({
       testID="display-viewer"
     >
       {stage}
+      <PlaceVoiceDock />
       <Toolbar edge="bottom" testID="display-toolbar">
         <ToolbarLeave />
         {interactive && phone ? (

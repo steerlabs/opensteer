@@ -29,6 +29,7 @@ import {
   useHostSnapshot,
   usePlaceList,
 } from "@opensteer/client/react";
+import { deviceElsewhere } from "@opensteer/client/computers";
 import type { BrowserPageContentPart } from "@opensteer/core";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { useHeaderHeight } from "@react-navigation/elements";
@@ -78,6 +79,8 @@ import {
   type AskTarget,
 } from "../browser/page-header.js";
 import { CompanionCapsule } from "../browser/pair-chrome.js";
+import { usePlaceStatusRow } from "../browser/place-status.js";
+import type { PageDevice } from "../browser/address-bar.js";
 import {
   PlaceBarProvider,
   ToolbarAsk,
@@ -95,7 +98,9 @@ import {
 } from "../browser/surface-route.js";
 import { tabSiteLabel } from "../browser/site-label.js";
 import { newTaskDraftBlank, newTaskDraftId, newTaskDraftKey } from "../client/thread-drafts.js";
+import { useHereDeviceId } from "../computers/here-device.js";
 import { MacAppView } from "../computers/mac-app-view.js";
+import { computerSymbols } from "./settings-model.js";
 import { color, space, touchTarget } from "../theme.js";
 import {
   derivePagePair,
@@ -594,6 +599,20 @@ function Focused(props: {
     title,
     verticalBar,
   });
+  // The conversation the page was opened from, unless it is already beside the page.
+  const watchedId =
+    route.threadId === undefined ||
+    appId !== null ||
+    (paired && companionShown && besideId === route.threadId)
+      ? null
+      : route.threadId;
+  const status = usePlaceStatusRow({
+    agents,
+    hostClient,
+    onAnswer: openThread,
+    threadId: watchedId,
+  });
+  const hereId = useHereDeviceId(deploymentId);
   const ask = useMemo(
     () => (
       <PageAsk
@@ -709,6 +728,8 @@ function Focused(props: {
       <BrowserTab
         active={props.active}
         connected={props.connected}
+        deploymentId={deploymentId}
+        hereId={hereId}
         editAddress={route.editAddress === true}
         follow={pageFollow}
         hostClient={hostClient}
@@ -804,7 +825,7 @@ function Focused(props: {
               ),
           };
   return (
-    <PlaceBarProvider ask={ask} verticalBar={verticalBar}>
+    <PlaceBarProvider ask={ask} status={status} verticalBar={verticalBar}>
       <PagePairSurface
         bleed={appId !== null}
         body={body}
@@ -872,6 +893,9 @@ function tabListed(session: HostSnapshot["browserSessions"][number], tabId: stri
 function BrowserTab(props: {
   readonly active: boolean;
   readonly connected: boolean;
+  readonly deploymentId: string;
+  /** This phone's own device in the Deployment, which needs no name beside a page. */
+  readonly hereId: string | null;
   readonly editAddress: boolean;
   readonly follow: PageFollow | null;
   readonly hostClient: HostClient;
@@ -918,6 +942,23 @@ function BrowserTab(props: {
 
   const session = snapshot.browserSessions.find(({ id }) => id === sessionId) ?? null;
   const live = session !== null && browserShowsPage(snapshot, sessionId, tabId);
+  const elsewhere =
+    session === null
+      ? null
+      : deviceElsewhere(snapshot.machines, session.placement.runnerId, props.hereId);
+  const { deploymentId } = props;
+  const device: PageDevice | null =
+    elsewhere === null
+      ? null
+      : {
+          glyph: computerSymbols[elsewhere.glyph],
+          name: elsewhere.name,
+          online: elsewhere.online,
+          onOpen: () =>
+            navigation.dispatch(
+              StackActions.push("Computer", { deploymentId, machineId: elsewhere.id }),
+            ),
+        };
   // Which way the page came from the tab before it, by the browser's own order.
   const shown = useRef<{ readonly arrival: -1 | 0 | 1; readonly tabId: string }>({
     arrival: 0,
@@ -959,6 +1000,7 @@ function BrowserTab(props: {
         active={props.active}
         arrival={shown.current.arrival}
         connected={props.connected}
+        device={device}
         follow={props.follow}
         hostClient={hostClient}
         key={pageKey}

@@ -75,12 +75,18 @@ import { GlassSurface } from "../ui/glass.js";
 import { appear, duration, exit } from "../ui/motion.js";
 import { AppText, Notice } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
-import { AddressCapsule, AddressEditor, type OpenTabSuggestion } from "./address-bar.js";
+import {
+  AddressCapsule,
+  AddressEditor,
+  type OpenTabSuggestion,
+  type PageDevice,
+} from "./address-bar.js";
 import { BrowserStream, submitBrowserCommand, useBrowserFeedState } from "./browser-stream.js";
 import { ChromeSignInAction } from "./chrome-sign-in-action.js";
 import { FollowBand, TaskTabChips } from "./pair-chrome.js";
 import { pageSite, viewedPage } from "./surface-route.js";
 import { ToolbarAsk, ToolbarLeave, useNativeBarAway } from "./place-bar.js";
+import { PlaceVoiceDock, usePlaceStatus } from "./place-foot.js";
 import { Toolbar, ToolbarButton, ToolbarCapsule, ToolbarMenu } from "./toolbar.js";
 
 /** The shape a page takes before its first picture says otherwise. */
@@ -126,9 +132,10 @@ const maxZoom = 4;
 /**
  * One browser page, used as Safari is used on a phone: the page as large as
  * its place allows, with one bar and nothing else around it: the way out, the
- * page's history and address, the tabs, Ask and ⋯. It sits under the page; where
- * the page has a regular width it sits over it instead and Forward joins the
- * history, as Safari on iPad has it.
+ * page's address, the tabs, Ask and ⋯, which holds its history. It sits under
+ * the page; where the page has a regular width it sits over it instead, with
+ * Back and Forward beside the address, as Safari on iPad has it. Opened from a
+ * conversation, the page's foot says what that conversation is doing.
  *
  * The page is drawn at its own shape, as wide as its place and pinned to the
  * top; a page taller than the room fits by its height. It is never resized by
@@ -162,6 +169,8 @@ export function BrowserPage(props: {
   readonly workspaceName: string;
   /** Which way the page came from another tab, by tab order; 0 when it opened here. */
   readonly arrival?: -1 | 0 | 1;
+  /** The device the page runs on, where that is not this one. */
+  readonly device?: PageDevice | null;
   readonly follow?: PageFollow | null;
   readonly pair?: PagePairChrome | null;
   /** The person moved this page themselves: back, forward, an address, a new tab. */
@@ -317,7 +326,13 @@ export function BrowserPage(props: {
         : { height, width: stageWidth },
     );
   };
-  const picture = pictureBox(room, aspect);
+  const status = usePlaceStatus(lifted);
+  // Where the page rests: its place, less the status row's room at its foot.
+  const rested = useMemo(
+    () => ({ height: Math.max(0, room.height - status.height), width: room.width }),
+    [room.height, room.width, status.height],
+  );
+  const picture = pictureBox(rested, aspect);
 
   // A refusal belongs to the feed admission it met; the next admission has recovered.
   const [refusedAdmission, setRefusedAdmission] = useState<string | null>(null);
@@ -341,7 +356,7 @@ export function BrowserPage(props: {
   };
   latestSend.current = send;
   const viewport = () => {
-    const size = { height: Math.round(room.height), width: Math.round(room.width) };
+    const size = { height: Math.round(rested.height), width: Math.round(rested.width) };
     return size.width > 0 && size.height > 0 && browserViewportFits(size.width, size.height)
       ? size
       : null;
@@ -447,8 +462,8 @@ export function BrowserPage(props: {
     position >= 0 && (tabs[position - 1] !== undefined || tabs[position + 1] !== undefined);
   const fitted =
     picture.height > 0 &&
-    Math.abs(picture.width - room.width) <= 2 &&
-    Math.abs(picture.height - room.height) <= 2;
+    Math.abs(picture.width - rested.width) <= 2 &&
+    Math.abs(picture.height - rested.height) <= 2;
   const navigationKey = `${inputEpoch}:${catalogTab?.documentId ?? ""}:${tab?.url ?? ""}:${loading}`;
   useEffect(() => {
     setDragSelect(false);
@@ -536,6 +551,13 @@ export function BrowserPage(props: {
         ? []
         : [
             {
+              disabled: !ready || !canGoBack,
+              icon: "chevron.backward",
+              id: "back",
+              label: "Back",
+              onPress: () => void send({ type: "navigation.back" }),
+            } satisfies NativeMenuOption,
+            {
               disabled: !ready || !canGoForward,
               icon: "chevron.forward",
               id: "forward",
@@ -621,7 +643,12 @@ export function BrowserPage(props: {
     <AddressCapsule
       acting={acting}
       arriving={arrival !== 0}
-      canGoBack={ready && canGoBack}
+      back={
+        regular
+          ? { enabled: ready && canGoBack, onPress: () => void send({ type: "navigation.back" }) }
+          : null
+      }
+      device={props.device ?? null}
       favicon={liveTab?.favicon ?? null}
       following={follow?.following === true ? { agent: follow.agent } : null}
       forward={
@@ -633,7 +660,6 @@ export function BrowserPage(props: {
           : null
       }
       loading={loading}
-      onBack={() => void send({ type: "navigation.back" })}
       onEdit={() => setAddressOpen(true)}
       onSwitch={canSwitch ? switchBy : null}
       secure={tab?.url.startsWith("https://") === true}
@@ -708,7 +734,16 @@ export function BrowserPage(props: {
   }, [slide, slideTo]);
   const zoom = usePageZoom(picture, keyboardOpen || addressOpen);
   const offer =
-    ready && tab !== undefined && !lifted && !zoom.zoomed ? fitOffer(room, picture) : null;
+    ready && tab !== undefined && !lifted && !zoom.zoomed ? fitOffer(rested, picture) : null;
+  // The page's box follows the status row's room on the UI thread, so the
+  // page eases into the room it leaves rather than jumping when it comes or goes.
+  const { reserve } = status;
+  const roomHeight = room.height;
+  const roomWidth = room.width;
+  const box = useAnimatedStyle(() => {
+    const next = pictureBox({ height: roomHeight - reserve.value, width: roomWidth }, aspect);
+    return { height: next.height, left: next.left, width: next.width };
+  });
   const placed = useAnimatedStyle(() => ({
     transform: [
       { translateX: zoom.x.value },
@@ -756,13 +791,7 @@ export function BrowserPage(props: {
             pointerEvents="box-none"
             style={styles.arrival}
           >
-            <Animated.View
-              style={[
-                styles.picture,
-                { height: picture.height, left: picture.left, width: picture.width },
-                placed,
-              ]}
-            >
+            <Animated.View style={[styles.picture, box, placed]}>
               <BrowserStream
                 active={props.active}
                 tabId={tabId}
@@ -805,8 +834,13 @@ export function BrowserPage(props: {
               style={[
                 styles.fitBand,
                 offer.place === "below"
-                  ? { bottom: 0, height: room.height - picture.height, left: 0, right: 0 }
-                  : { bottom: 0, right: 0, top: 0, width: picture.left },
+                  ? {
+                      bottom: status.height,
+                      height: rested.height - picture.height,
+                      left: 0,
+                      right: 0,
+                    }
+                  : { bottom: status.height, right: 0, top: 0, width: picture.left },
               ]}
             >
               <Pressable
@@ -884,7 +918,7 @@ export function BrowserPage(props: {
             />
           )}
           {signingIn && signInSite !== null && tab !== undefined ? (
-            <View style={[styles.card, styles.bottom]}>
+            <View style={[styles.card, styles.bottom, { bottom: space[12] + status.height }]}>
               <View style={styles.row}>
                 <View style={styles.grow}>
                   <ChromeSignInAction
@@ -910,7 +944,11 @@ export function BrowserPage(props: {
               </View>
             </View>
           ) : !keyboardOpen && mayType && ready && editable && !editingState.negotiated ? (
-            <Animated.View entering={appear} exiting={exit} style={styles.keyboard}>
+            <Animated.View
+              entering={appear}
+              exiting={exit}
+              style={[styles.keyboard, { bottom: space[12] + status.height }]}
+            >
               <Pressable
                 accessibilityHint="Types into the page"
                 accessibilityLabel="Keyboard"
@@ -927,6 +965,7 @@ export function BrowserPage(props: {
               </Pressable>
             </Animated.View>
           ) : null}
+          {status.row}
         </View>
       </GestureDetector>
       {ready && tab !== undefined && !addressOpen && !dialog && !signingIn ? (
@@ -954,9 +993,11 @@ export function BrowserPage(props: {
       ) : (
         <>
           {band}
+          <PlaceVoiceDock />
           {bar}
         </>
       )}
+      {top && !keyboardOpen ? <PlaceVoiceDock /> : null}
     </View>
   );
 }
@@ -1119,6 +1160,7 @@ export function pictureBox(
   room: { readonly height: number; readonly width: number },
   aspect: number,
 ): { readonly height: number; readonly left: number; readonly width: number } {
+  "worklet";
   if (room.width <= 0 || room.height <= 0 || !(aspect > 0)) return { height: 0, left: 0, width: 0 };
   const byWidth = room.width / aspect;
   if (byWidth <= room.height) return { height: byWidth, left: 0, width: room.width };

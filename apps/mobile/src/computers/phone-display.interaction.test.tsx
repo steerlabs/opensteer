@@ -182,6 +182,8 @@ vi.mock(
   async () => (await import("../../test-support/native-chrome.js")).worklets,
 );
 
+vi.mock("../voice/controls.js", () => ({ VoiceDock: () => null }));
+vi.mock("../voice/use-voice-value.js", () => ({ useVoiceValue: () => false }));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
 vi.mock(
   "react-native-reanimated",
