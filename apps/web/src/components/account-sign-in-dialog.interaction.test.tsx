@@ -81,6 +81,7 @@ describe("the one-time code", () => {
     vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
     await mount(deviceCode);
     expect(primary().getAttribute("href")).toBe("https://auth.example.test/device");
+    document.addEventListener("click", (event) => event.preventDefault(), { once: true });
     await act(async () => primary().click());
     expect(writeText).toHaveBeenCalledWith("7K2M-QX84T");
     expect(document.body.textContent).toContain("Waiting for you to finish in your browser");
