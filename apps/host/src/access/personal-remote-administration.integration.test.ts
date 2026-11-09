@@ -1023,16 +1023,18 @@ describe("Personal remote administration intents", () => {
           }),
         );
         await helloAck;
+        // The failure is committed before its notification, so wait for both.
         await vi.waitFor(
-          async () =>
+          async () => {
             expect((await administration.status(session)).operation).toMatchObject({
               id: first.id,
               state: "failed",
               detail: expect.stringMatching(/Recover.*unlink/i),
-            }),
+            });
+            expect(changed).toHaveBeenCalledTimes(2); // Executor attachment and durable failure.
+          },
           { timeout: 1000 },
         );
-        expect(changed).toHaveBeenCalledTimes(2); // Executor attachment and durable failure.
         expect(
           await database
             .selectFrom("personalRemoteAccountLink")
