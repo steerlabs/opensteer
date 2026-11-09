@@ -1,3 +1,4 @@
+import type { BrowserEngine } from "@opensteer/protocol";
 import type { AdministrationCommandIdentity } from "@opensteer/database";
 import type { ResourceAccessInput } from "@opensteer/database";
 import { RunPlaceRecorder } from "../agents/run-place-recorder.js";
@@ -179,6 +180,7 @@ const consumerMessageTypes: ReadonlySet<BrowserClientMessage["type"]> = new Set(
 ] satisfies readonly BrowserClientMessage["type"][]);
 
 export interface BrowserProfileRecord {
+  readonly homeRunnerId?: RunnerId | null;
   readonly id: BrowserProfileId;
   readonly name: string;
   readonly ownerId: UserId;
@@ -456,7 +458,7 @@ export interface BrowserRuntimeTarget {
   readonly placementKey: string;
   readonly runtimeId: string;
   readonly main?: boolean;
-  readonly localProfileStorage?: { storageInstanceId: string; engine: "electron" | "chromium" };
+  readonly localProfileStorage?: { storageInstanceId: string; engine: BrowserEngine };
   /** The Runtime accepts `state.import`; one that predates it is never sent the frame. */
   readonly stateImport?: boolean;
   /** The Runtime stages page-bound files; one that predates it cannot receive any. */
@@ -6563,7 +6565,7 @@ function watchFrameEnvelope(
 }
 
 function publicProfile(record: BrowserProfileRecord): BrowserProfile {
-  return { homeRunnerId: null, id: record.id, name: record.name };
+  return { homeRunnerId: record.homeRunnerId ?? null, id: record.id, name: record.name };
 }
 
 function publicSession(record: BrowserSessionRecord): HostedBrowserSession {

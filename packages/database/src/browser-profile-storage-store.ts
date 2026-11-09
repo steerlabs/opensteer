@@ -1,3 +1,4 @@
+import { lockBrowserHomeRunner } from "./browser-home-store.js";
 import { OpensteerError, type BrowserProfileId, type RunnerId, type UserId } from "@opensteer/core";
 import {
   BrowserProfileStorageSchema,
@@ -79,26 +80,13 @@ async function validateBindingOwner(
   binding: LocalProfileBinding,
   ownerId: UserId,
 ) {
-  const runner = await transaction
-    .selectFrom("runners")
-    .select(["ownerKind", "ownerUserId", "allowedModules", "revokedAt"])
-    .where("id", "=", binding.runnerId)
-    .executeTakeFirst(databaseOperationOptions());
+  await lockBrowserHomeRunner(transaction, ownerId, binding.runnerId);
   const deployment = await transaction
     .selectFrom("deployments")
     .select("id")
     .where("id", "=", binding.deploymentId)
     .executeTakeFirst(databaseOperationOptions());
-  if (
-    !deployment ||
-    !runner ||
-    runner.revokedAt ||
-    !runner.allowedModules.includes("browser") ||
-    (runner.ownerKind === "user" && runner.ownerUserId !== ownerId)
-  )
-    conflict(
-      "Browser profile inventory requires the original computer ownership and browser grant.",
-    );
+  if (!deployment) conflict("Browser profile binding names another Deployment.");
 }
 
 export async function getBrowserProfileStorage(
@@ -129,7 +117,7 @@ export function deletionBinding(row: Selectable<BrowserProfileDeletionTable>): L
 export function publicProfileDeletion(
   row: Selectable<BrowserProfileDeletionTable>,
 ): PendingBrowserProfileDeletion | undefined {
-  return row.state === "deleted"
+  return row.state === "deleted" || row.state === "unconfirmed"
     ? undefined
     : { profileId: row.profileId, computerId: row.runnerId, state: row.state };
 }
@@ -174,13 +162,19 @@ export async function listBrowserProfileErasureJobs(
     .selectFrom("browserProfileDeletions")
     .selectAll()
     .where("runnerId", "=", runnerId)
-    .where("state", "!=", "deleted")
+    .where("state", "in", ["pending-computer", "pending-restart"])
     .execute(databaseOperationOptions());
-  return rows.map((row) => ({
-    binding: deletionBinding(row),
-    deletionId: row.deletionId,
-    state: row.state,
-  }));
+  return rows.flatMap((row) =>
+    row.state === "pending-computer" || row.state === "pending-restart"
+      ? [
+          {
+            binding: deletionBinding(row),
+            deletionId: row.deletionId,
+            state: row.state,
+          },
+        ]
+      : [],
+  );
 }
 export async function listPendingBrowserProfileDeletions(
   database: Kysely<DatabaseSchema>,
@@ -191,9 +185,11 @@ export async function listPendingBrowserProfileDeletions(
     .innerJoin("browserProfiles as profile", "profile.id", "deletion.profileId")
     .select(["deletion.profileId", "deletion.runnerId as computerId", "deletion.state"])
     .where("profile.ownerId", "=", ownerId)
-    .where("deletion.state", "!=", "deleted")
+    .where("deletion.state", "in", ["pending-computer", "pending-restart"])
     .execute(databaseOperationOptions());
-  return rows.flatMap((row) => (row.state === "deleted" ? [] : [{ ...row, state: row.state }]));
+  return rows.flatMap((row) =>
+    row.state === "deleted" || row.state === "unconfirmed" ? [] : [{ ...row, state: row.state }],
+  );
 }
 export async function acknowledgeBrowserProfileDeletion(
   database: Kysely<DatabaseSchema>,
@@ -212,7 +208,7 @@ export async function acknowledgeBrowserProfileDeletion(
       !sameProfileBinding(deletionBinding(row), input.binding)
     )
       conflict("Browser profile erasure binding does not match.");
-    if (row.state === "deleted") return;
+    if (row.state === "deleted" || row.state === "unconfirmed") return;
     await transaction
       .updateTable("browserProfileDeletions")
       .set({
@@ -301,6 +297,17 @@ export async function bindBrowserProfile(
     if (!row || row.archivedAt)
       throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
     await validateBindingOwner(transaction, binding, row.ownerId);
+    if (row.homeRunnerId === null) {
+      const deployment = await transaction
+        .selectFrom("deployments")
+        .select("deploymentShape")
+        .where("id", "=", binding.deploymentId)
+        .executeTakeFirst(databaseOperationOptions());
+      if (deployment?.deploymentShape.kind === "personal")
+        conflict("This browser profile is waiting for its main computer to enroll.");
+    }
+    if (row.homeRunnerId !== null && row.homeRunnerId !== binding.runnerId)
+      conflict("Open this browser profile on its home computer.");
     const storage = profileStorage(row);
     if (storage.kind === "local") {
       if (
@@ -315,6 +322,7 @@ export async function bindBrowserProfile(
       .updateTable("browserProfiles")
       .set({
         ...bindingColumns(binding),
+        homeRunnerId: binding.runnerId,
         storageState: "local",
         initialized: false,
         updatedAt: new Date(),

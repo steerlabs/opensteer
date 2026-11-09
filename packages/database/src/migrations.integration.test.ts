@@ -27,6 +27,7 @@ import {
   betterAuth17Migration,
   agentPhoneOwnerAccessMigration,
   browserSourcesMigration,
+  nativeBrowserProfilesMigration,
   browserSourcesRetirementMigration,
   channelDurableAccessMigration,
   channelDeadConceptsMigration,
@@ -1466,6 +1467,10 @@ integration("one machine identity migration", () => {
   });
 
   it("bumps the connection generation when a Runner is revoked", async () => {
+    await nativeBrowserProfilesMigration.up(database);
+    await sql`alter table browser_profiles add column home_runner_id text references runners(id)`.execute(
+      database,
+    );
     await computerAppSetupRequestsMigration.up(database);
     // Revocation reads a computer connection's app, so the fixture has to carry
     // the columns that name one.

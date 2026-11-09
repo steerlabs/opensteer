@@ -1,5 +1,5 @@
 import type { MacWindowTarget } from "@opensteer/protocol";
-import { computerRunnerGrant } from "./runner-enrollment-grant.js";
+import { computerRunnerGrant, serviceRunnerGrant } from "./runner-enrollment-grant.js";
 import {
   createHash,
   createPublicKey,
@@ -154,8 +154,8 @@ export class RunnerAuthenticator {
 
   /**
    * A phone's one-use enrollment, owned by the person minting it.
-   * Its fixed integrations grant covers Android's screen or the iPhone's data
-   * apps, without the computer reach preset. The issuance purpose isolates
+   * Its browser and integrations grant covers Android's screen or the iPhone's
+   * data apps, without the computer reach preset. The issuance purpose isolates
    * iPhone mint retries from Android's existing transcript.
    */
   async createPhoneEnrollment(input: {
@@ -171,7 +171,8 @@ export class RunnerAuthenticator {
   }> {
     return this.#createEnrollment({
       ...input,
-      allowedModules: phoneRunnerGrant,
+      // Keep the signed issuance intent stable for enrollments minted before browser support.
+      allowedModules: ["integrations"],
       purpose: input.profile === "iphone" ? "iphone" : "phone",
       runnerKind: "local",
     });
@@ -217,7 +218,7 @@ export class RunnerAuthenticator {
   }): Promise<void> {
     this.#assertConfiguredToken(input);
     await this.#store.createRunnerEnrollment({
-      allowedModules: computerRunnerGrant(input.allowedModules),
+      allowedModules: serviceRunnerGrant(input.allowedModules),
       createdBy: null,
       expiresAt: new Date(this.#now() + input.lifetimeSeconds * 1_000),
       id: `ren_${randomUUID()}`,
@@ -308,6 +309,10 @@ export class RunnerAuthenticator {
     const token = sign(null, issuanceTranscript, this.#issuancePrivateKey).toString("base64url");
     const expiresAt = new Date(this.#now() + input.lifetimeSeconds * 1_000);
     const enrollment = await this.#store.createRunnerEnrollment({
+      issuanceModules:
+        input.purpose === "phone" || input.purpose === "iphone"
+          ? ["integrations"]
+          : serviceRunnerGrant(input.allowedModules),
       allowedModules:
         input.purpose === "phone" || input.purpose === "iphone"
           ? phoneRunnerGrant

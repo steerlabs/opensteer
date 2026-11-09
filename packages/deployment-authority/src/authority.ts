@@ -248,6 +248,7 @@ export const hostApiVersion = 51;
  * advertise capabilities an older client has never heard of.
  */
 export const HostCapabilitySchema = z.enum([
+  "browser-profile-home-v1",
   "automatic-models-v1",
   "notification-preview-v1",
   "workspace-tab-reopen-v1",

@@ -1,3 +1,9 @@
+import { lockBrowserProfile } from "./browser-profile-storage-store.js";
+import {
+  archiveRunnerBrowserProfiles,
+  finishRunnerBrowserProfileRemoval,
+  lockRunnerBrowserProfileRemoval,
+} from "./browser-runner-removal-store.js";
 import {
   administrationCommand,
   withAdministrationTransaction,
@@ -7,6 +13,7 @@ import {
 import { type IntegrationConnectionId } from "@opensteer/channel-core";
 import {
   type AgentEvent,
+  type BrowserProfileId,
   type EnvironmentId,
   type RequestId,
   type RunId,
@@ -372,6 +379,7 @@ async function failRunsForRevokedRunner(
   transaction: Transaction<DatabaseSchema>,
   runnerId: RunnerId,
   links: ChannelLinks,
+  profileIds: readonly BrowserProfileId[],
 ): Promise<readonly AgentEvent[]> {
   const affected = await transaction
     .selectFrom("runs")
@@ -406,6 +414,7 @@ async function failRunsForRevokedRunner(
     runIds: affected.map(({ id }) => id),
     threadIds: affected.map(({ threadId }) => threadId),
   });
+  if (affected.length) await lockRunnerBrowserProfileRemoval(transaction, runnerId, profileIds);
   const events: AgentEvent[] = [];
   for (const run of affected) {
     events.push(
@@ -471,16 +480,8 @@ async function requireRunnerIsRevocable(
   }
 }
 
-/**
- * The fixed grant for Android's screen or an iPhone's data apps, through
- * `integrations`, and nothing else ever.
- *
- * A phone
- * lending its whole screen to agents is a different computer from a laptop
- * lent for reach, and a grant that also allowed `shell` would let a future
- * build of the phone app open a terminal nobody was asked about.
- */
-export const phoneRunnerGrant: readonly RunnerModuleName[] = ["integrations"];
+/** Phones lend browsers and apps, without shell or agent execution authority. */
+export const phoneRunnerGrant: readonly RunnerModuleName[] = ["browser", "integrations"];
 
 /**
  * Whether what a connecting computer says about its execution environment is
@@ -504,12 +505,13 @@ export function runnerAdvertisesItsEnvironmentBinding(
   return sameStringSet(bound, advertised);
 }
 
-/**
- * The only grant a Personal Deployment issues to a computer that is not the one
- * hosting it. A Personal Deployment runs its agents on its own Mac, so every
- * other computer it knows is there to be reached, never to execute.
- */
-const personalReachableGrant: readonly RunnerModuleName[] = ["integrations", "messaging", "shell"];
+/** Other computers lend browsers and reach modules; Personal agents stay on Main. */
+export const personalReachableGrant: readonly RunnerModuleName[] = [
+  "browser",
+  "integrations",
+  "messaging",
+  "shell",
+];
 
 /**
  * The Personal stack's messaging service is a Deployment-owned managed
@@ -606,8 +608,7 @@ async function assertPersonalRunnerAdmission(
   ) {
     return null;
   }
-  // A phone lends its screen and nothing else, so it is reachable in exactly
-  // the sense the rule asks: nothing of the Deployment's executes on it.
+  // Phones lend browsers and apps without executing the Deployment's agents.
   if (
     !sameStringSet(input.allowedModules, personalReachableGrant) &&
     !sameStringSet(input.allowedModules, phoneRunnerGrant)
@@ -975,6 +976,10 @@ export async function revokeRunner(
     readonly allowOtherOwners?: boolean;
   } = {},
 ): Promise<{
+  readonly deletedBrowserProfiles: readonly {
+    readonly id: BrowserProfileId;
+    readonly ownerId: UserId;
+  }[];
   readonly cancelledRequestIds: readonly RequestId[];
   readonly closedBrowserSessions: readonly BrowserSessionId[];
   readonly events: readonly AgentEvent[];
@@ -989,12 +994,34 @@ export async function revokeRunner(
       .select(["runs.id", "threads.workspaceId"])
       .where("executionEnvironments.runnerId", "=", runnerId)
       .where("runs.status", "in", nonTerminalRunStatuses);
+  const homes = (transaction: Transaction<DatabaseSchema>) =>
+    transaction
+      .selectFrom("browserProfiles")
+      .select(["id", "ownerId"])
+      .where("homeRunnerId", "=", runnerId);
+  let profileIds: BrowserProfileId[] = [];
   const sessions = (transaction: Transaction<DatabaseSchema>) =>
     transaction
       .selectFrom("browserSessions")
       .select("id")
-      .where("runnerId", "=", runnerId)
-      .where("state", "in", ["starting", "ready", "closing"]);
+      .where((eb) =>
+        eb.or([
+          eb("runnerId", "=", runnerId),
+          ...(profileIds.length
+            ? [
+                eb("profileId", "in", profileIds),
+                eb(
+                  "id",
+                  "in",
+                  transaction
+                    .selectFrom("browserSessions")
+                    .select("tabGroupId")
+                    .where("profileId", "in", profileIds),
+                ),
+              ]
+            : []),
+        ]),
+      );
   let runIds = new Set<RunId>();
   let sessionIds = new Set<BrowserSessionId>();
   const recheck = async (transaction: Transaction<DatabaseSchema>) => {
@@ -1017,6 +1044,46 @@ export async function revokeRunner(
     async (transaction) =>
       administrationCommand(transaction, options.administration, async () => {
         const revokedAt = new Date();
+        const groups = profileIds.length
+          ? await transaction
+              .selectFrom("browserSessions as session")
+              .select("session.tabGroupId")
+              .where("session.profileId", "in", profileIds)
+              .where(({ not, exists, selectFrom }) =>
+                not(
+                  exists(
+                    selectFrom("browserSessions as newer")
+                      .select("newer.id")
+                      .whereRef("newer.tabGroupId", "=", "session.tabGroupId")
+                      .where(
+                        sql<boolean>`(newer.created_at,newer.id) > (session.created_at,session.id)`,
+                      ),
+                  ),
+                ),
+              )
+              .execute(databaseOperationOptions())
+          : [];
+        const groupIds = [...new Set(groups.map((row) => row.tabGroupId))];
+        if (groupIds.length) {
+          await transaction
+            .selectFrom("workspaceTabs")
+            .select("id")
+            .where("groupId", "in", groupIds)
+            .orderBy("id")
+            .forNoKeyUpdate()
+            .execute(databaseOperationOptions());
+          await transaction
+            .updateTable("workspaceTabs")
+            .set({ closedAt: revokedAt })
+            .where("groupId", "in", groupIds)
+            .where("closedAt", "is", null)
+            .execute(databaseOperationOptions());
+          await transaction
+            .updateTable("browserSessions")
+            .set((eb) => ({ tabRevision: eb("tabRevision", "+", 1) }))
+            .where("id", "in", groupIds)
+            .execute(databaseOperationOptions());
+        }
         await requireRunnerIsRevocable(transaction, runnerId);
         const result = await transaction
           .updateTable("runners")
@@ -1043,10 +1110,21 @@ export async function revokeRunner(
         if (result.numUpdatedRows !== 1n) {
           throw new OpensteerError({ code: "not_found", message: "Active Runner not found" });
         }
+        if (
+          (await homes(transaction).execute(databaseOperationOptions())).some(
+            (row) => !profileIds.includes(row.id),
+          )
+        )
+          throw new RequestLockSetChanged();
+        const deletedBrowserProfiles = await archiveRunnerBrowserProfiles(
+          transaction,
+          profileIds,
+          revokedAt,
+        );
         // Runs first: every path that ends a Run locks it before its Workspace,
         // and the steps below lock Workspaces when they cancel Requests.
         await recheck(transaction);
-        const runEvents = await failRunsForRevokedRunner(transaction, runnerId, links);
+        const runEvents = await failRunsForRevokedRunner(transaction, runnerId, links, profileIds);
         await transaction
           .updateTable("triggerWatchActivations")
           .set({
@@ -1122,7 +1200,17 @@ export async function revokeRunner(
           .where("status", "=", "leased")
           .execute(databaseOperationOptions());
 
+        await finishRunnerBrowserProfileRemoval(
+          transaction,
+          runnerId,
+          deletedBrowserProfiles,
+          revokedAt,
+        );
         return {
+          deletedBrowserProfiles: deletedBrowserProfiles.map(({ id, ownerId }) => ({
+            id,
+            ownerId,
+          })),
           cancelledRequestIds: revokedComputerConnections.cancelledRequestIds,
           closedBrowserSessions,
           events: runEvents,
@@ -1131,6 +1219,10 @@ export async function revokeRunner(
         };
       }),
     async (transaction) => {
+      profileIds = (await homes(transaction).orderBy("id").execute(databaseOperationOptions())).map(
+        (row) => row.id,
+      );
+      for (const id of profileIds) await lockBrowserProfile(transaction, id);
       await lockAdministrationCommand(transaction, options.administration);
       runIds = new Set(
         (
@@ -1287,6 +1379,7 @@ export async function ensureBootstrapRunnerEnrollment(
     .insertInto("runnerEnrollments")
     .values({
       allowedModules: jsonValue(input.allowedModules),
+      issuanceModules: jsonValue(input.allowedModules),
       consumedAt: null,
       createdAt,
       createdBy: input.createdBy,
@@ -1342,6 +1435,7 @@ export async function createRunnerEnrollment(
      * Issuance chooses the grant; installing newer software cannot widen it.
      */
     readonly allowedModules: readonly RunnerModuleName[];
+    readonly issuanceModules?: readonly RunnerModuleName[];
     /** Null when the deployment authored this enrollment for its own Main Runner. */
     readonly createdBy: UserId | null;
     readonly deviceProfile?: RunnerDeviceProfile;
@@ -1420,6 +1514,7 @@ export async function createRunnerEnrollment(
       .select([
         "deviceProfile",
         "allowedModules",
+        "issuanceModules",
         "expiresAt",
         "id",
         "name",
@@ -1451,9 +1546,11 @@ export async function createRunnerEnrollment(
         existing.ownerUserId !== ownerUserId ||
         // A replay that asks for different modules is a different request:
         // honoring it would widen a grant that is supposed to be immutable.
-        // The comparison is against the stored form of the request, which is
-        // the asked-for set plus the modules every non-exact enrollment carries.
-        !sameStringSet(existing.allowedModules, allowedModules) ||
+        // Issuance intent stays fixed when a migration changes the effective grant.
+        !sameStringSet(
+          existing.issuanceModules ?? existing.allowedModules,
+          input.issuanceModules ?? allowedModules,
+        ) ||
         existing.expiresAt === null
       ) {
         throw new OpensteerError({
@@ -1534,6 +1631,7 @@ export async function createRunnerEnrollment(
       .values({
         deviceProfile: input.deviceProfile ?? null,
         allowedModules: jsonValue(allowedModules),
+        issuanceModules: jsonValue(input.issuanceModules ?? allowedModules),
         consumedAt: null,
         createdBy: input.createdBy,
         expiresAt: input.expiresAt,
@@ -1780,7 +1878,30 @@ export async function enrollRunnerConnection(
     }
 
     await bindRunnerEnvironments(transaction, input.descriptor, enrollment.name);
-    return activateRunnerConnection(transaction, input.descriptor);
+    const connection = await activateRunnerConnection(transaction, input.descriptor);
+    if (input.descriptor.runnerKind === "main") {
+      await transaction
+        .selectFrom("browserProfiles")
+        .select("id")
+        .where("homeRunnerId", "is", null)
+        .where("storageState", "=", "unbound")
+        .where(
+          sql<boolean>`exists (select 1 from deployments where deployment_shape->>'kind' = 'personal')`,
+        )
+        .orderBy("id")
+        .forNoKeyUpdate()
+        .execute(databaseOperationOptions());
+      await transaction
+        .updateTable("browserProfiles")
+        .set({ homeRunnerId: input.descriptor.runnerId })
+        .where("homeRunnerId", "is", null)
+        .where("storageState", "=", "unbound")
+        .where(
+          sql<boolean>`exists (select 1 from deployments where deployment_shape->>'kind' = 'personal')`,
+        )
+        .execute(databaseOperationOptions());
+    }
+    return connection;
   });
 }
 

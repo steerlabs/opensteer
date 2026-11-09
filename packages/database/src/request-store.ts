@@ -1,3 +1,4 @@
+import { lockBrowserHomeRunner } from "./browser-home-store.js";
 import { assertActiveGrant } from "./execution-authority.js";
 import { ReplyTargetSchema } from "@opensteer/core";
 import { enqueueChannelConversationStatus } from "./channel-deliveries.js";
@@ -200,6 +201,7 @@ export interface ResolvedBrowserRequest {
     readonly workspaceId: WorkspaceId;
   } | null;
   readonly profile: {
+    readonly homeRunnerId: RunnerId | null;
     readonly id: BrowserProfileId;
     readonly name: string;
     readonly ownerId: UserId;
@@ -2336,8 +2338,29 @@ export class RequestStore {
             message: "Browser Request is no longer pending",
           });
         }
+        const parsedResponse = RequestResponseSchema.parse(input.response);
+        const creation =
+          parsedResponse.kind === "external" && parsedResponse.value
+            ? parseBrowserDecision(parsedResponse.value)
+            : undefined;
+        const homeRunnerId =
+          creation && "createProfile" in creation
+            ? await lockBrowserHomeRunner(
+                transaction,
+                input.resolvedBy,
+                creation.createProfile.homeRunnerId,
+              )
+            : undefined;
         const observedRequest = requestFromRow(observed);
         await lockActiveDurableRequestAuthority(transaction, observedRequest);
+        if (creation && "profileId" in creation) {
+          await transaction
+            .selectFrom("browserProfiles")
+            .select("id")
+            .where("id", "=", creation.profileId)
+            .forShare()
+            .executeTakeFirst();
+        }
         const row = await transaction
           .selectFrom("requests")
           .selectAll()
@@ -2372,7 +2395,7 @@ export class RequestStore {
             profile =
               (await transaction
                 .selectFrom("browserProfiles")
-                .select(["id", "name", "ownerId"])
+                .select(["id", "name", "ownerId", "homeRunnerId"])
                 .where("id", "=", decision.profileId)
                 .where("ownerId", "=", input.resolvedBy)
                 .where("archivedAt", "is", null)
@@ -2386,6 +2409,7 @@ export class RequestStore {
           } else if ("createProfile" in decision) {
             profile = await insertBrowserProfile(transaction, {
               name: decision.createProfile.name,
+              ...(homeRunnerId ? { homeRunnerId } : {}),
               ownerId: input.resolvedBy,
             });
           } else {
@@ -4426,7 +4450,10 @@ async function enqueueContinuation(
 type BrowserDecision =
   | { readonly decision: "declined" }
   | { readonly decision: "fulfilled"; readonly profileId: BrowserProfileId }
-  | { readonly createProfile: { readonly name: string }; readonly decision: "fulfilled" }
+  | {
+      readonly createProfile: { readonly name: string; readonly homeRunnerId?: RunnerId };
+      readonly decision: "fulfilled";
+    }
   | { readonly decision: "fulfilled"; readonly name: string };
 
 function parseBrowserDecision(value: Readonly<Record<string, unknown>>): BrowserDecision {
@@ -4452,9 +4479,17 @@ function parseBrowserDecision(value: Readonly<Record<string, unknown>>): Browser
     Object.keys(value).length === 2
   ) {
     const profile = value.createProfile as Readonly<Record<string, unknown>>;
-    if (typeof profile.name === "string" && Object.keys(profile).length === 1) {
+    if (
+      typeof profile.name === "string" &&
+      Object.keys(profile).every((key) => key === "name" || key === "homeRunnerId")
+    ) {
       return {
-        createProfile: { name: boundedProfileName(profile.name) },
+        createProfile: {
+          name: boundedProfileName(profile.name),
+          ...(profile.homeRunnerId === undefined
+            ? {}
+            : { homeRunnerId: RunnerIdSchema.parse(profile.homeRunnerId) }),
+        },
         decision: "fulfilled",
       };
     }
@@ -4748,7 +4783,7 @@ async function ensureBrowserGrant(
   await sql`select pg_advisory_xact_lock(hashtextextended(${`browser-grants:${input.createdBy}`}, 0))`.execute(
     transaction,
   );
-  // Under the grant lock a deletion also takes, so approval never grants a deleted profile.
+  // The caller holds the profile row against archival before locking the Request.
   const profile = await transaction
     .selectFrom("browserProfiles")
     .select("archivedAt")

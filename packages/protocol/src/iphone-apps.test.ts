@@ -63,6 +63,25 @@ describe("immutable iPhone profile admission", () => {
         ?.reason,
     ).toBe("runner-device-profile-mismatch");
   });
+  it("admits browser-capable phones while preserving the installed integrations-only descriptor", () => {
+    for (const browser of [
+      undefined,
+      {
+        runtimeId: "phone",
+        agentActions: 1,
+        localProfileStorage: {
+          storageInstanceId: "11111111-1111-4111-8111-111111111111",
+          engine: "wkwebview",
+        },
+      },
+    ]) {
+      const descriptor = RunnerDescriptorSchema.parse({
+        ...raw,
+        modules: { ...raw.modules, ...(browser ? { browser } : {}) },
+      });
+      expect(runnerDescriptorProfileRefusal("iphone", descriptor)).toBeNull();
+    }
+  });
   it("gives the dedicated upgrade reason for protocol mismatches", () => {
     for (const protocolVersion of [undefined, 1, 3, 4]) {
       expect(
