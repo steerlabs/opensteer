@@ -1,7 +1,7 @@
 import { BrowserProfileIdSchema, DeploymentIdSchema, RunnerIdSchema } from "@opensteer/core";
 import { z } from "zod";
 
-export const BrowserEngineSchema = z.enum(["electron", "chromium"]);
+export const BrowserEngineSchema = z.enum(["electron", "chromium", "wkwebview", "android-webview"]);
 export type BrowserEngine = z.infer<typeof BrowserEngineSchema>;
 
 export const LocalProfileBindingSchema = z.strictObject({

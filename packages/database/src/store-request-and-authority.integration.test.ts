@@ -974,6 +974,7 @@ describeStore("PostgreSQL store", (it) => {
       const { startRunFixture, createProjectWorkspace, store, database } = storeFixture;
       const fixture = await startRunFixture(`browser-outcome-${choice}`);
       const target = await createProjectWorkspace(fixture.userId, `browser_outcome_${choice}`);
+      await storeFixture.enrollBrowserRunner(fixture.userId, "Request browser");
       const existing = await store.createBrowserProfile({
         idempotencyKey: `store.integration.test-browser-outcome-${choice}`,
         ownerId: fixture.userId,
@@ -1000,11 +1001,21 @@ describeStore("PostgreSQL store", (it) => {
           subject: { id: target.id, kind: "workspace" },
         },
       });
+      const chosenHome =
+        choice === "new"
+          ? await storeFixture.enrollBrowserRunner(fixture.userId, "Chosen request home")
+          : undefined;
       const value =
         choice === "existing"
           ? { decision: "fulfilled", profileId: existing.id }
           : choice === "new"
-            ? { decision: "fulfilled", createProfile: { name: 'Owner "renamed" work' } }
+            ? {
+                decision: "fulfilled",
+                createProfile: {
+                  name: 'Owner "renamed" work',
+                  ...(chosenHome ? { homeRunnerId: chosenHome } : {}),
+                },
+              }
             : { decision: "declined" };
       await expect(
         store.requests.resolveBrowserRequest({
@@ -1017,11 +1028,24 @@ describeStore("PostgreSQL store", (it) => {
         }),
       ).rejects.toMatchObject({ code: "bad_request" });
       expect((await store.requests.get(opened.request.id))?.status).toBe("pending");
+      if (choice === "new") {
+        await expect(
+          store.requests.resolveBrowserRequest({
+            requestId: opened.request.id,
+            resolvedBy: fixture.userId,
+            response: {
+              kind: "external",
+              value: { decision: "fulfilled", createProfile: { name: "Unplaced" } },
+            },
+          }),
+        ).rejects.toMatchObject({ code: "conflict" });
+      }
       const resolved = await store.requests.resolveBrowserRequest({
         requestId: opened.request.id,
         resolvedBy: fixture.userId,
         response: { kind: "external", value },
       });
+      if (chosenHome) expect(resolved.profile?.homeRunnerId).toBe(chosenHome);
       const reread = await new OpensteerStore(database).requests.get(opened.request.id);
       const raw = await database
         .selectFrom("requests")
@@ -1070,6 +1094,7 @@ describeStore("PostgreSQL store", (it) => {
   }) => {
     const { startRunFixture, store, database } = storeFixture;
     const fixture = await startRunFixture("browser-access-main");
+    await storeFixture.enrollBrowserRunner(fixture.userId, "Main request browser");
     const personal = await store.createBrowserProfile({
       idempotencyKey: "store.integration.test-browser-profile-main",
       ownerId: fixture.userId,
@@ -1141,6 +1166,7 @@ describeStore("PostgreSQL store", (it) => {
     const { startRunFixture, createProjectWorkspace, store, database } = storeFixture;
     const fixture = await startRunFixture("browser-access-existing");
     const target = await createProjectWorkspace(fixture.userId, "browser_access_existing");
+    await storeFixture.enrollBrowserRunner(fixture.userId, "Repeated request browser");
     const profile = await store.createBrowserProfile({
       idempotencyKey: "store.integration.test-browser-profile-1",
       ownerId: fixture.userId,

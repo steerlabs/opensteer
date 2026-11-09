@@ -2014,7 +2014,7 @@ describeStore("PostgreSQL store", (it) => {
     // nothing else, and it arrives only while there is a route to arrive on.
     await enablePersonalRemoteAccess();
     await enrollTestRunner(store, {
-      allowedModules: ["integrations", "messaging", "shell"],
+      allowedModules: ["browser", "integrations", "messaging", "shell"],
       createdBy: ownerId,
       environmentId: createId("environment"),
       modules: reachOnlyModules,
@@ -2114,12 +2114,14 @@ describeStore("PostgreSQL store", (it) => {
       // not turn an empty grant into a different one.
       await expect(
         enrollment(storeFixture, {
-          allowedModules: ["integrations", "messaging", "shell"],
+          allowedModules: ["browser", "integrations", "messaging", "shell"],
           createdBy: ownerId,
           runnerKind: "local",
           suffix: "reachable",
         }),
-      ).resolves.toMatchObject({ allowedModules: ["integrations", "messaging", "shell"] });
+      ).resolves.toMatchObject({
+        allowedModules: ["browser", "integrations", "messaging", "shell"],
+      });
       await expect(
         enrollment(storeFixture, {
           allowedModules: [],
@@ -2169,7 +2171,7 @@ describeStore("PostgreSQL store", (it) => {
       const runnerId = createId("runner");
       const environmentId = createId("environment");
       await enrollTestRunner(store, {
-        allowedModules: ["integrations", "messaging", "shell"],
+        allowedModules: ["browser", "integrations", "messaging", "shell"],
         createdBy: ownerId,
         environmentId,
         modules: reachOnlyModules,
@@ -2186,7 +2188,7 @@ describeStore("PostgreSQL store", (it) => {
         runnerKind: "local",
       });
       await expect(store.authenticateRunnerConnection(descriptor)).resolves.toMatchObject({
-        allowedModules: ["integrations", "messaging", "shell"],
+        allowedModules: ["browser", "integrations", "messaging", "shell"],
       });
 
       // The grant widens behind the store's back — a restored backup, a
@@ -2217,7 +2219,7 @@ describeStore("PostgreSQL store", (it) => {
       // Minting the enrollment needs no route: a person may write down a
       // computer before there is any way for it to arrive.
       await store.createRunnerEnrollment({
-        allowedModules: ["integrations", "messaging", "shell"],
+        allowedModules: ["browser", "integrations", "messaging", "shell"],
         createdBy: ownerId,
         expiresAt: new Date(Date.now() + 60_000),
         id: `ren_${randomUUID()}`,
@@ -3675,15 +3677,12 @@ describeStore("PostgreSQL store", (it) => {
     await store.revokeRunner(binding.runnerId, ownerId, { allowDeployment: true });
     await expect(
       store.reconcileBrowserProfileInventory({ phase: "ready", binding }),
-    ).rejects.toThrow("original computer ownership");
-    await expect(store.acknowledgeBrowserProfileReady(binding)).rejects.toThrow(
-      "original computer ownership",
-    );
-    expect(await store.getBrowserProfileStorage(profile.id)).toEqual({
-      kind: "local",
-      binding,
-      initialized: true,
+    ).rejects.toThrow("cannot hold your browser profiles");
+    await expect(store.acknowledgeBrowserProfileReady(binding)).rejects.toThrow("unavailable");
+    await expect(store.getBrowserProfileStorage(profile.id)).rejects.toMatchObject({
+      code: "not_found",
     });
+    expect(await store.listBrowserProfileErasureJobs(binding.runnerId)).toEqual([]);
   });
   it("counts unfinished erasures against profile creation capacity until disk deletion completes", async ({
     storeFixture,
@@ -3757,6 +3756,7 @@ describeStore("PostgreSQL store", (it) => {
       name: "Buyer",
       status: "ready",
     });
+    const runnerId = await enrollBrowserRunner(ownerId, "Browser Mac");
     const profile = await store.createBrowserProfile({
       idempotencyKey: "profile-delete-shopping",
       name: "Shopping",
@@ -3789,7 +3789,6 @@ describeStore("PostgreSQL store", (it) => {
       profileId: kept.id,
       workspaceId: specialist.id,
     });
-    const runnerId = await enrollBrowserRunner(ownerId, "Browser Mac");
     const startSession = (id: BrowserSessionId, tabGroupId?: BrowserSessionId) =>
       nativeSession(store, {
         id,
@@ -3900,6 +3899,7 @@ describeStore("PostgreSQL store", (it) => {
       name: "Browser workspace",
       status: "ready",
     });
+    const hostedRunnerId = await enrollBrowserRunner(ownerId, "Hosted browser");
     const profile = await store.createBrowserProfile({
       idempotencyKey: "store.integration.test-browser-profile-6",
       name: "Default browser",
@@ -3979,6 +3979,7 @@ describeStore("PostgreSQL store", (it) => {
     );
     const teammateProfile = await store.createBrowserProfile({
       ownerId: teammateId,
+      homeRunnerId: hostedRunnerId,
       name: "Private teammate",
       idempotencyKey: "private-teammate",
     });
@@ -4026,7 +4027,6 @@ describeStore("PostgreSQL store", (it) => {
 
     // Two computers, each offering a browser: the placement rules below are
     // about a profile never running on two of them at once.
-    const hostedRunnerId = await enrollBrowserRunner(ownerId, "Hosted browser");
     const laptopRunnerId = await enrollBrowserRunner(ownerId, "Browser Mac");
     const laptopGrant = await store.createBrowserProfileGrant({
       access: "read-write",

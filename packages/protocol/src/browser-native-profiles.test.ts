@@ -1,3 +1,5 @@
+import { BrowserProfileSchema, CreateBrowserProfileBodySchema } from "./browser.js";
+import { RunnerBrowserModuleSchema } from "./runner.js";
 import { createId } from "@opensteer/core";
 import { expect, it } from "vitest";
 import { DeleteLocalProfileSchema, LocalProfileInventorySchema } from "./browser-relay.js";
@@ -118,4 +120,30 @@ it("keeps deletion and inventory authority exact under the single current contra
       profiles: [{ phase: "ready", binding, seed: { revision: 0, digest: "a".repeat(64) } }],
     }).success,
   ).toBe(false);
+});
+
+it("preserves legacy profile reads and names a home at creation", () => {
+  const profile = { id: binding.profileId, name: "Work" };
+  expect(BrowserProfileSchema.parse(profile)).toEqual({ ...profile, homeRunnerId: null });
+  expect(BrowserProfileSchema.parse({ ...profile, homeRunnerId: binding.runnerId })).toEqual({
+    ...profile,
+    homeRunnerId: binding.runnerId,
+  });
+  expect(
+    CreateBrowserProfileBodySchema.parse({ name: "Work", homeRunnerId: binding.runnerId }),
+  ).toMatchObject({ homeRunnerId: binding.runnerId });
+  expect(
+    CreateBrowserProfileBodySchema.safeParse({ name: "Work", homeRunnerId: "bad" }).success,
+  ).toBe(false);
+});
+it("recognizes phone engines and disables unknown agent action versions", () => {
+  for (const engine of ["wkwebview", "android-webview"])
+    expect(LocalProfileBindingSchema.parse({ ...binding, engine }).engine).toBe(engine);
+  expect(RunnerBrowserModuleSchema.parse({ runtimeId: "old" }).agentActions).toBeUndefined();
+  expect(
+    RunnerBrowserModuleSchema.parse({ runtimeId: "phone", agentActions: 1 }).agentActions,
+  ).toBe(1);
+  expect(
+    RunnerBrowserModuleSchema.parse({ runtimeId: "future", agentActions: 2 }).agentActions,
+  ).toBeUndefined();
 });
