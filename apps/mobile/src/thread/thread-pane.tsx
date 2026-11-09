@@ -99,7 +99,7 @@ import {
 import { TranscriptHostClientContext } from "./attachment-views.js";
 import { Composer } from "./composer.js";
 import { ComposerDockLayout } from "./composer-dock.js";
-import { LivePlace } from "./live-place.js";
+import { RunPageSlot } from "./run-page.js";
 import { PasswordsSuggestion } from "./passwords-suggestion.js";
 import { QueuedMessages } from "./queued-messages.js";
 import {
@@ -372,6 +372,8 @@ function ThreadPaneForUser(
     listRef.current?.scrollToOffset({ animated, offset: Math.max(0, content - viewport) });
   }, []);
   const [atTail, setAtTail] = useState(true);
+  // How far below the bar the transcript starts, under the Run's page.
+  const [pageInset, setPageInset] = useState(0);
   // True while the reader is held in a window loaded around an older update.
   // The live conversation is not on screen, so the foot of what is is not the
   // conversation's tail and nothing here may treat it as one.
@@ -1212,7 +1214,7 @@ function ThreadPaneForUser(
           {
             ...sides,
             paddingBottom: clearance + space[16],
-            paddingTop: headerClearance + space[8],
+            paddingTop: headerClearance + pageInset + space[8],
           },
         ]}
         data={items}
@@ -1283,8 +1285,22 @@ function ThreadPaneForUser(
         // The pill and the load-earlier trigger both read scroll position, so
         // the list reports it every frame rather than every fourth one.
         scrollEventThrottle={16}
-        scrollIndicatorInsets={{ bottom: clearance, top: headerClearance }}
+        scrollIndicatorInsets={{ bottom: clearance, top: headerClearance + pageInset }}
       />
+      {snapshot.user === null ? null : (
+        <RunPageSlot
+          active={focused}
+          beside={companion !== null}
+          clearance={clearance}
+          hostClient={hostClient}
+          onInset={setPageInset}
+          onOpen={openSurface}
+          runId={stopTarget?.id ?? null}
+          scrolledUp={historical || !atTail}
+          threadId={threadId}
+          top={headerClearance}
+        />
+      )}
       {/* An older window has to be left deliberately, and the way out is to
           load the live conversation — so the offer stands there whether or
           not anything new has arrived since. */}
@@ -1355,15 +1371,6 @@ function ThreadPaneForUser(
       ) : null}
       {snapshot.user === null ? null : (
         <>
-          {stopTarget === null ? null : (
-            <LivePlace
-              active={focused}
-              hostClient={hostClient}
-              key={stopTarget.id}
-              onOpen={openSurface}
-              runId={stopTarget.id}
-            />
-          )}
           {voiceThread && onCall ? null : (
             <ThreadServerApprovals hostClient={hostClient} threadId={thread.id} />
           )}

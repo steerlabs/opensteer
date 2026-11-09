@@ -99,6 +99,7 @@ export function ComputerDisplay({
   label,
   machineId,
   onPageSize,
+  onShown,
   interactive = false,
   onReopen,
   preserveLastFrame = false,
@@ -114,6 +115,8 @@ export function ComputerDisplay({
   readonly label: string;
   readonly machineId?: string;
   readonly onPageSize?: ((size: { width: number; height: number }) => void) | undefined;
+  /** Whether a picture of the screen is drawn now, not a word in its place. */
+  readonly onShown?: ((shown: boolean) => void) | undefined;
 }) {
   useNativeBarAway(bar !== undefined);
   const [viewerWidth, setViewerWidth] = useState<number | null>(null);
@@ -141,6 +144,8 @@ export function ComputerDisplay({
   const [foreground, setForeground] = useState(AppState.currentState === "active");
   const [words, setWords] = useState<string | null>("Connecting…");
   const [shown, setShown] = useState(false);
+  const pictured = shown && words === null && !unavailable;
+  useEffect(() => onShown?.(pictured), [onShown, pictured]);
   const [terminal, setTerminal] = useState(false);
   const viewport = useRef(1280);
   const viewportChanged = useRef<((size: number) => void) | null>(null);

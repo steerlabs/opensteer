@@ -1679,110 +1679,80 @@ button.side-needs:hover {
   transition: opacity 220ms var(--ease-out);
 }
 
-/* ---- The live place, over the composer ----
-   A conversation's one live spot: a small picture of where its working Run
-   acts now, and what that place is. It keeps one height, so nothing under it
+/* ---- The live place, in the conversation's head ----
+   A conversation's live page, folded small: a picture of where its working
+   Run acts now, ringed in green while it acts. Its name is its label and
+   tooltip; the head already has the words. One size, so nothing beside it
    moves while the Run streams. */
 
-.live-place {
-  display: flex;
-  width: 100%;
-  max-width: var(--composer-max-width);
-  margin: 0 auto var(--space-8);
-  animation: live-place-in var(--duration-med) var(--ease-out) both;
+.viewfinder {
+  display: grid;
+  flex: none;
+  place-items: center;
+  height: var(--control-height);
+  padding: 0 var(--space-4);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  animation: viewfinder-in var(--duration-med) var(--ease-out) both;
+  transition: transform var(--duration-fast) var(--ease-out);
 }
 
-@keyframes live-place-in {
+@keyframes viewfinder-in {
   from {
     opacity: 0;
-    transform: translateY(4px);
+    transform: scale(0.92);
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .live-place {
+  .viewfinder {
     animation: none;
   }
 }
 
-.viewfinder {
-  display: flex;
-  align-items: center;
-  gap: var(--space-10);
-  width: fit-content;
-  max-width: min(100%, 24rem);
-  padding: var(--space-4) var(--space-14) var(--space-4) var(--space-4);
-  border: 1px solid var(--rim-plate);
-  border-radius: var(--radius-md);
-  background: var(--sheen) var(--fill-plate);
-  color: inherit;
-  text-align: left;
-  transition:
-    border-color var(--duration-fast) var(--ease-out),
-    transform var(--duration-fast) var(--ease-out);
-  box-shadow: var(--edge-plate);
-}
-
 .viewfinder:hover {
-  border-color: var(--line-hover);
-  background-color: var(--fill-plate-hover);
+  background: var(--fill-plate-hover);
 }
 
 .viewfinder:active {
-  box-shadow: none;
-  transform: scale(0.97);
+  transform: scale(0.95);
 }
 
 .viewfinder__frame {
   position: relative;
-  display: block;
-  flex: none;
-  width: 76px;
+  display: grid;
+  place-items: center;
+  width: 42px;
   aspect-ratio: 16 / 10;
   overflow: hidden;
-  border-radius: calc(var(--radius-md) - var(--space-4));
+  border-radius: var(--radius-xs);
   background: var(--surface-elevated);
+  box-shadow: 0 0 0 1px var(--rim-plate);
+  transition: box-shadow var(--duration-fast) var(--ease-out);
 }
 
-.viewfinder__words {
-  display: grid;
-  gap: 1px;
-  min-width: 0;
+/* Green says an agent is acting here, as it does everywhere else. */
+.viewfinder--acting .viewfinder__frame {
+  box-shadow: 0 0 0 1.5px var(--green);
 }
 
-.viewfinder__title {
-  display: flex;
-  align-items: center;
-  gap: var(--space-6);
-  min-width: 0;
-  color: var(--text-soft);
-  font-size: var(--text-md);
-  font-weight: var(--weight-medium);
+/* A picture kept from earlier never stands for the page as it is now. */
+.viewfinder--still .viewfinder__picture,
+.viewfinder--still .viewfinder__native {
+  opacity: 0.45;
 }
 
-.viewfinder:hover .viewfinder__title {
-  color: var(--text);
+.viewfinder__glyph {
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
 }
 
-.viewfinder__name,
-.viewfinder__site {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* The frame is too small for a cursor's name tag, and the words beside it
-   already say where the agent is. */
+/* The frame is too small for a cursor's name tag; the tooltip names the place. */
 .cursor-layer--viewfinder .acur__name {
   display: none;
-}
-
-/* Under the name, past the dot. */
-.viewfinder__site {
-  padding-left: calc(6px + var(--space-6));
-  color: var(--muted-dim);
-  font-size: var(--text-sm);
 }
 
 .viewfinder__picture {

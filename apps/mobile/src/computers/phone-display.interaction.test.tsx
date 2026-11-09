@@ -6,7 +6,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { encodeDisplayViewerFrame } from "@opensteer/protocol";
 import { RunPlaceStore } from "@opensteer/client/host";
 import { createId, PlaceEnteredEventViewSchema } from "@opensteer/core";
-import { LivePlace } from "../thread/live-place.js";
+import { FoldedPage } from "../thread/folded-page.js";
 import type { HostClient, HostSnapshot, WebSocketClient } from "@opensteer/client/host";
 import { sharedDisplayStreams, type DisplaySnapshot } from "@opensteer/client/integrations";
 import type { EditingProxyEvent } from "@opensteer/client/editing";
@@ -167,7 +167,9 @@ vi.mock("@react-navigation/native", () => ({
   useNavigationState: (select: (state: object) => unknown) =>
     select({ index: 0, routes: [{ name: "Thread" }] }),
   StackActions: { replace: (name: string, params: unknown) => ({ name, params }) },
+  useIsFocused: () => true,
 }));
+vi.mock("../sidebar/sidebar-context.js", () => ({ useSidebarVisible: () => false }));
 vi.mock(
   "../browser/toolbar.js",
   async () => (await import("../../test-support/native-chrome.js")).toolbar,
@@ -414,7 +416,14 @@ async function setup(
     act(async () =>
       root!.render(
         screen === "live" ? (
-          <LivePlace active={active} hostClient={client} runId={runId} onOpen={noop} />
+          <FoldedPage
+            hostClient={client}
+            onOpen={noop}
+            onUnfold={noop}
+            room
+            runId={runId}
+            threadId={threadId}
+          />
         ) : screen === "tab" ? (
           <PhoneTabView
             active={active}

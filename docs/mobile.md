@@ -159,6 +159,18 @@ The page's history stands inside the address capsule and the way out stands outs
 identical chevrons in one row read as one control. Fit never happens by itself: a page's size is
 shared with agents and other screens, so a tab keeps its shape until the person chooses Fit.
 
+## The page above a conversation
+
+While a conversation's own Run works in a place, the page stands under the bar and folds into a
+small picture beside Around ([rule](../packages/client/src/host/run-page.ts)). Open or folded is
+presentation, held in memory per conversation and never in a route, so Back and links stay one
+navigation model. It takes the page's own shape and never resizes the page, for the reason Fit never
+happens by itself, and takes at most half the room between the bar and the dock, so a docked
+Request or the keyboard folds it rather than crowding the conversation. A streamed page only
+watches: a tap opens the full tab. Until a picture arrives it is a named row, because a kept
+picture must never stand for the page as it is now. Web shows the same picture in the conversation
+header, or in the sheet's handle at phone width.
+
 ## The sidebar's ends
 
 A safe area says an edge is reserved, not that something stands over all of it. iPhone Duo's inner
