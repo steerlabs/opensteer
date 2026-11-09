@@ -53,13 +53,13 @@ function current(
   sessionId: string,
   tabId: string,
 ): { readonly key: string; readonly entry: Entry } | null {
-  const cache = cacheFor(frames);
+  const cache = caches.get(frames);
   const key = pictureKey(sessionId, tabId);
-  const entry = cache.get(key);
+  const entry = cache?.get(key);
   if (!entry) return null;
   if (entry.invalidation !== frames.invalidationKey?.(sessionId, tabId)) {
     entry.unsubscribe();
-    cache.delete(key);
+    cache!.delete(key);
     return null;
   }
   return { key, entry };

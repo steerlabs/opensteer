@@ -1,6 +1,7 @@
 import { CHAT_THREAD_TITLE } from "@opensteer/core";
 import type { BrowserTabSummary } from "@opensteer/protocol";
 import {
+  browserTabPicture,
   browserTabTitle,
   browserThreadAgentTab,
   browserThreadTabs,
@@ -28,6 +29,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode
 import { FlatList, Image, Platform, Pressable, StyleSheet, View } from "react-native";
 import Animated from "react-native-reanimated";
 import { AgentMarks } from "../browser/agent-marks.js";
+import { useHereDeviceId } from "../computers/here-device.js";
 import { pageSite } from "../browser/surface-route.js";
 import { color, radius, space, touchTarget } from "../theme.js";
 import { ChatOrb } from "../ui/chat-orb.js";
@@ -37,6 +39,7 @@ import { useMobileState } from "../ui/mobile-client-context.js";
 import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { TaskMark } from "../ui/task-mark.js";
+import { TabPicture } from "./tab-picture.js";
 
 export type BrowserTabsScreenProps = StaticScreenProps<{
   readonly deploymentId: string;
@@ -250,9 +253,11 @@ function BrowserTabs(props: {
     ];
   }, [expanded, groups, otherRows, rows, taskRows]);
 
-  // The computer the browser runs on, and the profile it is signed in as.
+  // The device the browser runs on, when that is not this phone, and the profile it is signed in as.
+  const hereId = useHereDeviceId(deploymentId);
   const owner = places.find((place) => place.browser?.sessionId === sessionId);
-  const where = [owner?.device?.name ?? null, owner?.identity?.name ?? null]
+  const device = owner?.device && owner.device.machineId !== hereId ? owner.device.name : null;
+  const where = [device, owner?.identity?.name ?? null]
     .filter((part): part is string => part !== null && part !== "")
     .join(" · ");
 
@@ -359,6 +364,7 @@ function BrowserTabs(props: {
                 last={item.last}
                 onChoose={choose}
                 row={item.row}
+                sessionId={sessionId}
               />
             );
           return item.kind === "label" || item.other ? (
@@ -385,8 +391,10 @@ const TabRow = memo(function TabRow(props: {
   readonly last: boolean;
   readonly onChoose: (id: string) => void;
   readonly row: TabRowItem;
+  readonly sessionId: string;
 }): ReactNode {
   const { agentHere, row } = props;
+  const picture = browserTabPicture(props.hostClient, props.sessionId, row.id);
   const { place } = row;
   const selectAgents = useCallback(
     (snapshot: HostSnapshot) => (place === null ? noAgents : placeAgents(place, snapshot)),
@@ -415,7 +423,9 @@ const TabRow = memo(function TabRow(props: {
         pressed && styles.pressed,
       ]}
     >
-      {row.favicon === null ? (
+      {picture ? (
+        <TabPicture picture={picture} size={32} />
+      ) : row.favicon === null ? (
         <View style={styles.icon}>
           <Symbol name="globe" size={16} tint={color.muted} />
         </View>
