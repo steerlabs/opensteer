@@ -17,12 +17,21 @@ import { MenuView } from "@expo/ui/community/menu";
 import { useHostSelector } from "@opensteer/client/react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useState, type ReactNode } from "react";
-import { Alert, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import {
+  Alert,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+  useWindowDimensions,
+} from "react-native";
 import { operationDetail } from "../client/mobile-client.js";
-import { computerSymbols } from "../computers/computer-symbol.js";
-import { useHereId } from "../computers/use-here-id.js";
+import { useHereDeviceId } from "../computers/here-device.js";
 import { color, controlFontScaleLimit, material, space, touchTarget, type } from "../theme.js";
 import { Symbol } from "../ui/symbol.js";
+import { computerSymbols } from "./settings-model.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import { AppText, Field, Notice, RowGroup, SecondaryButton, SwitchRow } from "../ui/primitives.js";
 import { Screen, useListContentInsets, useReadingColumn } from "../ui/screen.js";
@@ -112,7 +121,7 @@ function BrowserProfilesSettings({
   const navigation = useNavigation();
   const snapshot = useHostSelector(hostClient, selectSnapshot);
   const online = canRespondToRequests(snapshot);
-  const hereId = useHereId();
+  const hereId = useHereDeviceId(deploymentId);
   const rows = browserProfileSettingsRows(snapshot, hereId);
   const homes = profileHomeChoice(snapshot, hereId);
   const deletions = browserProfileDeletionRows(snapshot);
@@ -291,11 +300,21 @@ function HomeMenu(props: {
   );
 }
 
-/** Where a profile lives, said only when that is not this phone. */
-function ProfileHome({ row }: { readonly row: BrowserProfileSettingsRow }): ReactNode {
+/**
+ * Where a profile lives, said only when that is not this phone. At the
+ * accessibility text sizes it stands under the name, as a system list's value
+ * does, rather than squeeze it.
+ */
+function ProfileHome({
+  row,
+  stacked,
+}: {
+  readonly row: BrowserProfileSettingsRow;
+  readonly stacked: boolean;
+}): ReactNode {
   if (row.device)
     return (
-      <View style={styles.home}>
+      <View style={[styles.home, stacked && styles.homeStacked]}>
         <Symbol name={computerSymbols[row.device.glyph]} size={13} tint={color.muted} />
         <AppText numberOfLines={1} role="caption" style={styles.homeName} tone="muted">
           {row.device.name}
@@ -309,7 +328,7 @@ function ProfileHome({ row }: { readonly row: BrowserProfileSettingsRow }): Reac
     );
   if (row.unopened)
     return (
-      <AppText numberOfLines={1} role="caption" style={styles.home} tone="muted">
+      <AppText numberOfLines={1} role="caption" style={!stacked && styles.home} tone="muted">
         Not opened yet
       </AppText>
     );
@@ -330,6 +349,7 @@ function ProfileRow({
   readonly onHistory: () => void;
 }): ReactNode {
   const [expanded, setExpanded] = useState(false);
+  const stacked = useWindowDimensions().fontScale > accessibilityTextScale;
   const [projectsShown, setProjectsShown] = useState(false);
   const [draft, setDraft] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -397,7 +417,9 @@ function ProfileRow({
       >
         {row.identity.kind === "profile" ? (
           <View style={[styles.identity, material.mark, { backgroundColor: row.identity.tint }]}>
-            <AppText role="bodyMedium">{row.identity.initial}</AppText>
+            <AppText maxFontSizeMultiplier={1} role="bodyMedium">
+              {row.identity.initial}
+            </AppText>
           </View>
         ) : null}
         <View style={styles.rowText}>
@@ -405,8 +427,9 @@ function ProfileRow({
           <AppText role="caption" tone="muted">
             {browserProfileAccessSummary(row)}
           </AppText>
+          {stacked ? <ProfileHome row={row} stacked /> : null}
         </View>
-        <ProfileHome row={row} />
+        {stacked ? null : <ProfileHome row={row} stacked={false} />}
       </Pressable>
       {!expanded ? null : (
         <>
@@ -522,6 +545,8 @@ function ProfileRow({
   );
 }
 
+/** Past the largest standard size, iOS's accessibility sizes begin. */
+const accessibilityTextScale = 1.35;
 const selectSnapshot = (snapshot: HostSnapshot) => snapshot;
 const selectUserId = (snapshot: HostSnapshot) =>
   snapshot.session === "authenticated" ? (snapshot.user?.id ?? null) : null;
@@ -540,6 +565,7 @@ const styles = StyleSheet.create({
     gap: space[4],
     maxWidth: "55%",
   },
+  homeStacked: { maxWidth: "100%" },
   homeName: { color: color.muted, flexShrink: 1 },
   homeMenu: { alignSelf: "stretch", flexShrink: 1, maxWidth: "50%" },
   homeTrigger: {

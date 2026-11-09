@@ -7,6 +7,7 @@ import {
   computerUses,
   hostsDeployment,
   type ComputerAppsData,
+  type ComputerGlyph,
   type DeploymentKind,
 } from "@opensteer/client/computers";
 import {
@@ -22,7 +23,6 @@ import { maximumNotificationDevicesPerAccount } from "@opensteer/core";
 import type { HarnessInstallation, MachineSummary, OtherDevice } from "@opensteer/protocol";
 import type { DesktopAccountAuthState } from "@opensteer/protocol/desktop";
 import { deploymentStatusLabel, type DeploymentRow } from "../client/deployment-rows.js";
-import { computerSymbols, type ComputerSymbol } from "../computers/computer-symbol.js";
 import type {
   NotificationPreferences,
   PushRegistrationState,
@@ -389,6 +389,10 @@ export function passwordsSettingsModel(input: {
   };
 }
 
+/** The system's own picture of each kind of place. */
+export type ComputerSymbol =
+  "desktopcomputer" | "laptopcomputer" | "macmini" | "server.rack" | "smartphone";
+
 /** One row of Settings → Computers: where the Opensteer runs, or one computer. */
 export interface ComputerSettingsRow {
   readonly detail: string;
@@ -431,6 +435,15 @@ export interface ThisIphoneSettings {
   readonly removed: boolean;
   readonly selectedDeploymentId: string;
 }
+
+export const computerSymbols: Readonly<Record<ComputerGlyph, ComputerSymbol>> = {
+  compact: "macmini",
+  computer: "desktopcomputer",
+  desktop: "desktopcomputer",
+  laptop: "laptopcomputer",
+  phone: "smartphone",
+  server: "server.rack",
+};
 
 /**
  * The open Opensteer's computers in the words the Computers page uses on

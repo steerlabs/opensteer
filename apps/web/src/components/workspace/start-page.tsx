@@ -379,12 +379,16 @@ export const StartPage = memo(function StartPage({
         result,
         text: `Which computer should ${name} browse on?`,
       });
+    else if (reason === "browser-profile-home-unavailable")
+      setRefusal({
+        kind: "message",
+        text: profileAwayWords(selected) ?? actionErrorMessage(error),
+        pick: true,
+      });
     else if (reason === "browser-placement-unavailable")
       setRefusal({
         kind: "message",
-        text:
-          profileAwayWords(selected) ??
-          `${name}’s computer isn’t available right now. Choose another profile, or try again when it’s back.`,
+        text: `${name}’s computer isn’t available right now. Choose another profile, or try again when it’s back.`,
         pick: true,
       });
     else if (reason === "browser-profile-unavailable")

@@ -1118,6 +1118,14 @@ export class MockPlaceWorld {
       : eligible.length === 1
         ? eligible[0]
         : undefined;
+    // As the Host refuses a profile whose device is away: by name, never elsewhere.
+    if (home && placement && !placement.available)
+      throw new HostClientRequestError({
+        code: "conflict",
+        status: 409,
+        reason: "browser-profile-home-unavailable",
+        message: `${snapshot.browserProfiles.find(({ id }) => id === profileId)?.name ?? "This profile"} is on ${placement.label}, which is offline.`,
+      });
     if (!placement?.available)
       throw new HostClientRequestError({
         code: "conflict",

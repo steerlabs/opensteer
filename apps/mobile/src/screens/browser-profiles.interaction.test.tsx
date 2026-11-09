@@ -32,6 +32,7 @@ vi.mock("react-native", () => ({
   },
   AppState: { addEventListener: () => ({ remove: () => undefined }), currentState: "active" },
   Platform: { OS: "ios" },
+  useWindowDimensions: () => ({ fontScale: 1, height: 844, scale: 3, width: 390 }),
   Text: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
   Pressable: ({
     accessibilityLabel,
@@ -75,7 +76,7 @@ vi.mock("../ui/screen.js", () => ({
   useReadingColumn: () => ({}),
 }));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
-vi.mock("../computers/use-here-id.js", () => ({ useHereId: () => null }));
+vi.mock("../computers/here-device.js", () => ({ useHereDeviceId: () => null }));
 vi.mock("@expo/ui/community/menu", () => ({
   MenuView: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
 }));
