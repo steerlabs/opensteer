@@ -3,9 +3,9 @@
 A founder and release recipe, not a per-change gate. Run it only when Tim asks and supplies the
 signing team and device identifier privately. The device must be paired, reachable and in Developer
 Mode; a new device needs the team's current Apple Program License Agreement accepted. Reusing
-`com.opensteer.opensteer` updates the existing install: never uninstall to update. Connect needs the
-Account origin baked in (`accountUrl` in `apps/desktop/src/releases/desktop-release.json`); without
-it the app lists computers but cannot reach them.
+`com.opensteer.opensteer` updates the existing install: never uninstall to update. Bake both origins
+into the build: the Account origin enables Account sign-in and Connect; the portal origin enables
+account deletion and sharing the Mac download link.
 
 From a clean checkout of the selected commit, with an absolute `MOBILE_EVIDENCE_DIR` outside it and
 the private `MOBILE_DEVICE_ID` and `MOBILE_SIGNING_TEAM`:
@@ -15,6 +15,7 @@ mkdir -p "$MOBILE_EVIDENCE_DIR"
 pnpm install --frozen-lockfile
 unset EXPO_PUBLIC_OPENSTEER_MOCK EXPO_PUBLIC_OPENSTEER_MOCK_HOME
 export EXPO_PUBLIC_OPENSTEER_ACCOUNT_ORIGIN="https://accounts.opensteer.com"
+export EXPO_PUBLIC_OPENSTEER_PORTAL_ORIGIN="https://app.opensteer.com"
 # Prebuilt React Native dependencies leave folly, glog and double-conversion unresolved
 # when a Release build links, so build React Native from source.
 export RCT_USE_RN_DEP=0 RCT_USE_PREBUILT_RNCORE=0
@@ -29,6 +30,7 @@ MOBILE_APP_PATH="$MOBILE_EVIDENCE_DIR/DerivedData/Build/Products/Release-iphoneo
 codesign --verify --deep --strict "$MOBILE_APP_PATH"
 test -s "$MOBILE_APP_PATH/main.jsbundle"
 grep -qF "${EXPO_PUBLIC_OPENSTEER_ACCOUNT_ORIGIN:?}" "$MOBILE_APP_PATH/main.jsbundle"
+grep -qF "${EXPO_PUBLIC_OPENSTEER_PORTAL_ORIGIN:?}" "$MOBILE_APP_PATH/main.jsbundle"
 xcrun devicectl device install app --device "$MOBILE_DEVICE_ID" "$MOBILE_APP_PATH" \
   --json-output "$MOBILE_EVIDENCE_DIR/install.json" --timeout 120
 xcrun devicectl device process launch --device "$MOBILE_DEVICE_ID" com.opensteer.opensteer \
