@@ -47,6 +47,9 @@ import { PlaceActivityStore } from "../host/place-activity.js";
 import { placeList } from "../host/places.js";
 import { mockBrowserPageImage } from "./mock-browser-frames.js";
 
+/** The person's iPhone in the mock world: a device that holds browser profiles. */
+export const mockIphoneRunnerId = "rnr_55555555-5555-4555-8555-555555555555";
+
 const iconData =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==";
 const historyIconRef = "2640059609118b695c139804676372eca75c30d30e5906775902d13e44f5356c";
@@ -414,20 +417,60 @@ export function seedMockPlaces(
             : session,
         ),
       };
+  // Every device can hold browsers: the person's iPhone too, while Opensteer is open on it.
+  machines.push({
+    tabOpenedAt: null,
+    access: null,
+    apps: null,
+    allowedModules: ["browser", "integrations"],
+    detail: null,
+    device: { form: "phone", platform: "ios" },
+    enrollmentId: "ren_runner_iphone",
+    expiresAt: null,
+    computerUse: null,
+    fullDiskAccess: null,
+    id: mockIphoneRunnerId,
+    lastSeenAt: at,
+    localWorkspaces: 0,
+    modules: {
+      browser: { checkedAt: null, detail: null, readiness: "ready" },
+      integrations: { checkedAt: null, detail: null, readiness: "ready" },
+    },
+    name: "Alex's iPhone",
+    ownership: "mine",
+    ownerName: null,
+    pinnedThreads: 0,
+    revocable: true,
+    status: "online",
+    runtimeVersion: null,
+    unlinkedLocalFolders: 0,
+  });
+  const main = machines[0]!.id;
+  const studio = machines.find((machine) => machine.name === "Studio Mac")?.id ?? main;
+  const profileHomes = machines
+    .filter(
+      (machine) =>
+        machine.allowedModules.includes("browser") ||
+        (machine.device?.platform === "macos" && machine.ownership !== "other"),
+    )
+    .map((machine) => machine.id);
+  const profile = (id: number, name: string, homeRunnerId: string | null) =>
+    BrowserProfileSchema.parse({
+      homeRunnerId,
+      id: `bpr_00000000-0000-4000-8000-00000000000${id}`,
+      name,
+    });
   return {
     ...snapshot,
     browserAvailable: true,
+    browserProfileHomes: profileHomes,
     browserProfiles: [
-      BrowserProfileSchema.parse({
-        id: "bpr_00000000-0000-4000-8000-000000000001",
-        name: "Personal",
-        revision: 1,
-      }),
-      BrowserProfileSchema.parse({
-        id: "bpr_00000000-0000-4000-8000-000000000002",
-        name: "Work",
-        revision: 1,
-      }),
+      profile(1, "Personal", main),
+      profile(2, "Work", main),
+      profile(3, "Shopping", mockIphoneRunnerId),
+      profile(4, "Design", studio),
+      // A Mac that is asleep, with the profile that lives on it.
+      profile(5, "Travel", "rnr_44444444-4444-4444-8444-444444444444"),
     ],
     browserPlacements: machines
       .filter(
@@ -1047,13 +1090,42 @@ export class MockPlaceWorld {
         reason: "browser-placement-unavailable",
         message: "The selected computer does not hold this live profile.",
       });
-    const desired = exact ?? holder?.runnerId ?? this.#rememberedPlacements.get(rememberedKey);
+    // A profile opens only on the device it lives on, never anywhere else.
+    const home = profileId
+      ? (snapshot.browserProfiles.find(({ id }) => id === profileId)?.homeRunnerId ?? null)
+      : null;
+    if (home && exact && home !== exact)
+      throw new HostClientRequestError({
+        code: "conflict",
+        status: 409,
+        reason: "browser-placement-unavailable",
+        message: "This profile lives on another computer.",
+      });
+    const desired =
+      exact ?? home ?? holder?.runnerId ?? this.#rememberedPlacements.get(rememberedKey);
     const eligible = snapshot.browserPlacements.filter((placement) => placement.available);
+    const homeMachine = snapshot.machines.find((machine) => machine.id === desired);
     const placement = desired
-      ? snapshot.browserPlacements.find((placement) => placement.runnerId === desired)
+      ? (snapshot.browserPlacements.find((placement) => placement.runnerId === desired) ??
+        (homeMachine && {
+          kind: "runner" as const,
+          runnerId: homeMachine.id,
+          label: homeMachine.name,
+          available: homeMachine.status === "online",
+          runtimeId: "mock-targeted-runtime",
+          environmentIds: [],
+        }))
       : eligible.length === 1
         ? eligible[0]
         : undefined;
+    // As the Host refuses a profile whose device is away: by name, never elsewhere.
+    if (home && placement && !placement.available)
+      throw new HostClientRequestError({
+        code: "conflict",
+        status: 409,
+        reason: "browser-profile-home-unavailable",
+        message: `${snapshot.browserProfiles.find(({ id }) => id === profileId)?.name ?? "This profile"} is on ${placement.label}, which is offline.`,
+      });
     if (!placement?.available)
       throw new HostClientRequestError({
         code: "conflict",

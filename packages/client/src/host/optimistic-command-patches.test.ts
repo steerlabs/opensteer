@@ -45,8 +45,8 @@ describe("independent browser creation", () => {
 
 describe("browser profile patches", () => {
   it("renames a profile in place and forgets a deleted one with its grants", () => {
-    const work = { id: "bpr_work", name: "Work", revision: 3 };
-    const shopping = { id: "bpr_shopping", name: "Shopping", revision: 1 };
+    const work = { homeRunnerId: null, id: "bpr_work", name: "Work", revision: 3 };
+    const shopping = { homeRunnerId: null, id: "bpr_shopping", name: "Shopping", revision: 1 };
     const grant = (id: string, profileId: string) => ({
       access: "read-write" as const,
       createdAt: now,

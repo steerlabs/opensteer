@@ -18,6 +18,7 @@ import { z } from "zod";
 import {
   HostClientRequestError,
   mutationIdempotencyKey,
+  profileAwayWords,
   sameIdentity,
   startPageChoice,
   startPageIndex,
@@ -38,16 +39,20 @@ import {
   type ComputerNotReady,
 } from "@opensteer/client/integrations";
 import { useHostSelector, usePlaceList } from "@opensteer/client/react";
+import { computerGlyph, orderDevices } from "@opensteer/client/computers";
 import type { ApprovedComputerApp, OwnerWindowInfo } from "@opensteer/protocol";
 import { actionErrorMessage } from "../../ui-utils.js";
 import { browserTargetViewport } from "../browser/browser-viewport.js";
 import { AppMark } from "../computer-apps/computer-use-section.js";
+import { computerIcon } from "../computers/device-art.js";
+import { DeviceLabel } from "../computers/device-label.js";
+import { useHereId } from "../computers/here.js";
 import { Icon } from "../icon.js";
 import { Popover } from "../popover.js";
 import { SiteMark } from "../site-mark.js";
 import { useToastToolbar } from "../toast.js";
 import { TaskMark, ChatOrb } from "./task-mark.js";
-import { ProfileAvatar, guestDetail } from "./identity.js";
+import { ProfileAvatar } from "./identity.js";
 import {
   destinationPlaceKey,
   placeSelection,
@@ -227,7 +232,8 @@ export const StartPage = memo(function StartPage({
   readonly link: StartPageLink | null;
   readonly trailing: ReactNode;
 }) {
-  const { localMachine, nav, phone, startPage } = useWorkspace();
+  const { nav, phone, startPage } = useWorkspace();
+  const localMachineId = useHereId();
   const toolbarRef = useToastToolbar();
   const navigate = useNavigate();
   const location = useLocation();
@@ -306,7 +312,6 @@ export const StartPage = memo(function StartPage({
     };
   }, [connected, hostClient, scope.deploymentId, scope.userId]);
 
-  const localMachineId = localMachine?.machineId ?? null;
   const index = useMemo(
     () => startPageIndex({ snapshot, places, approvedApps, localMachineId, choice }),
     [approvedApps, choice, localMachineId, places, snapshot],
@@ -373,6 +378,12 @@ export const StartPage = memo(function StartPage({
         kind: "choose-computer",
         result,
         text: `Which computer should ${name} browse on?`,
+      });
+    else if (reason === "browser-profile-home-unavailable")
+      setRefusal({
+        kind: "message",
+        text: profileAwayWords(selected) ?? actionErrorMessage(error),
+        pick: true,
       });
     else if (reason === "browser-placement-unavailable")
       setRefusal({
@@ -606,9 +617,18 @@ export const StartPage = memo(function StartPage({
               <span>{refusal.text}</span>
               {refusal.kind === "choose-computer" ? (
                 <span className="start-page__refusal-actions">
-                  {snapshot.browserPlacements
-                    .filter((placement) => placement.available)
-                    .map((placement) => (
+                  {orderDevices(
+                    snapshot.browserPlacements
+                      .filter((placement) => placement.available)
+                      .map((placement) => ({
+                        ...placement,
+                        id: placement.runnerId,
+                        name: placement.label,
+                      })),
+                    localMachineId,
+                  ).map((placement) => {
+                    const machine = snapshot.machines.find(({ id }) => id === placement.runnerId);
+                    return (
                       <button
                         className="btn btn--small"
                         key={placement.runnerId}
@@ -620,10 +640,11 @@ export const StartPage = memo(function StartPage({
                         }
                         type="button"
                       >
-                        <Icon name="laptop" />
+                        <Icon name={computerIcon(machine ? computerGlyph(machine) : "computer")} />
                         {placement.label}
                       </button>
-                    ))}
+                    );
+                  })}
                 </span>
               ) : refusal.pick ? (
                 <button
@@ -788,11 +809,6 @@ export const StartPage = memo(function StartPage({
             setPickerOpen(false);
             pick(identity);
           }}
-          guestComputer={
-            places.find(
-              (place) => place.identity?.kind === "guest" && place.browser?.opener.kind === "you",
-            )?.device?.name ?? null
-          }
           profiles={index.profiles}
         />
       ) : null}
@@ -843,9 +859,11 @@ function unavailableWords(
   if (result.action.kind === "switch-to-place") return `${result.title} isn’t available right now.`;
   if (selected.presentation.kind === "profile" && !selected.presentation.available)
     return `${selected.presentation.name} isn’t available anymore. Choose another profile.`;
+  const away = profileAwayWords(selected);
+  if (away) return away;
   if (!snapshot.browserAvailable || snapshot.browserPlacements.length === 0)
     return "No computer can browse right now.";
-  return `${selected.presentation.name}’s computer, ${selected.computerLabel}, isn’t available right now.`;
+  return `${selected.presentation.name}’s computer isn’t available right now.`;
 }
 
 /* ---- Results ---- */
@@ -1244,7 +1262,6 @@ function BrowseWithMenu({
   anchor,
   choice,
   firstRun,
-  guestComputer,
   onAddProfile,
   onClose,
   onManage,
@@ -1254,8 +1271,6 @@ function BrowseWithMenu({
   readonly anchor: HTMLElement;
   readonly choice: BrowserIdentityChoice;
   readonly firstRun: boolean;
-  /** Where the person's own Guest browser is open, when it is. */
-  readonly guestComputer: string | null;
   readonly onAddProfile: () => void;
   readonly onClose: () => void;
   readonly onManage: () => void;
@@ -1273,37 +1288,24 @@ function BrowseWithMenu({
       <div className="picker__section">
         {profiles.map((profile) => {
           const checked = sameIdentity(profile.identity, choice);
-          const guest = profile.identity.kind === "guest";
-          const detail = guest
-            ? profile.yours
-              ? `Your Guest browser is open${guestComputer ? ` on ${guestComputer}` : ""}. Tabs reopen; sign-ins aren’t saved.`
-              : guestDetail
-            : !profile.available
-              ? profile.presentation.kind === "profile" && !profile.presentation.available
-                ? "No longer available"
-                : `Unavailable · ${profile.computerLabel}`
-              : profile.computerLabel;
+          const gone = profile.presentation.kind === "profile" && !profile.presentation.available;
           return (
             <button
               aria-checked={checked}
               className="picker__row"
-              key={
-                guest
-                  ? "guest"
-                  : profile.identity.kind === "profile"
-                    ? profile.identity.profileId
-                    : ""
-              }
+              key={profile.identity.kind === "profile" ? profile.identity.profileId : "guest"}
               onClick={() => onPick(profile.identity)}
               role="menuitemradio"
               type="button"
             >
               <ProfileAvatar identity={profile.presentation} size={18} />
-              <span className="picker__label-stack">
-                <span className="picker__label">{profile.presentation.name}</span>
-                <span className="picker__detail picker__detail--wrap">{detail}</span>
-              </span>
-              {checked ? <Icon className="picker__tick" name="check" /> : null}
+              <span className="picker__label">{profile.presentation.name}</span>
+              {gone ? (
+                <span className="picker__device">No longer available</span>
+              ) : profile.device ? (
+                <DeviceLabel className="picker__device" device={profile.device} />
+              ) : null}
+              <span className="picker__tick">{checked ? <Icon name="check" /> : null}</span>
             </button>
           );
         })}

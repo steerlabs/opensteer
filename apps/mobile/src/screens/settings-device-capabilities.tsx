@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { Alert, TextInput, View } from "react-native";
 import { useNavigation } from "@react-navigation/native";
+import { deviceRemovalProfiles } from "@opensteer/client/computers";
 import { mutationIdempotencyKey, type HostClient } from "@opensteer/client/host";
 import {
   MachineAccessPolicySchema,
@@ -188,7 +189,12 @@ export function SettingsDeviceCapabilities({
           onPress={() =>
             Alert.alert(
               `Remove ${machine.name}?`,
-              "Agents lose access to this device. Signed-in sessions stay signed in. Browser data on the device is not erased.",
+              [
+                deviceRemovalProfiles(machine, host.getSnapshot().browserProfiles),
+                "Agents lose access to this device.",
+              ]
+                .filter(Boolean)
+                .join(" "),
               [
                 { text: "Cancel", style: "cancel" },
                 {

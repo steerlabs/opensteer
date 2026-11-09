@@ -3286,7 +3286,10 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
       return rpcSuccess(
         hostApi["commands.dispatch"].success.parse({
           type: command.type,
-          profile: await client.createBrowserProfile(command.input.name),
+          profile: await client.createBrowserProfile(
+            command.input.name,
+            command.input.homeRunnerId,
+          ),
         }),
       );
     case "browser.source.pair":
@@ -3772,6 +3775,7 @@ function mockBootstrap(
       placements: snapshot.browserPlacements,
       profileGrants: snapshot.browserProfileGrants,
       profiles: snapshot.browserProfiles,
+      ...(snapshot.browserProfileHomes ? { profileHomes: snapshot.browserProfileHomes } : {}),
       profileDeletions: snapshot.browserProfileDeletions,
       // The catalog names each browser's conversations, as the Host's does.
       sessions: snapshot.browserSessions.map((session) => ({
@@ -4092,6 +4096,25 @@ export class MockHostClient implements HostClient {
     deletions: NonNullable<HostSnapshot["browserProfileDeletions"]>,
   ): void {
     this.#state.updatePlaces({ ...this.getSnapshot(), browserProfileDeletions: deletions });
+  }
+
+  /**
+   * Where profiles live, as another Host would say it: `profileHomes`
+   * undefined is a Host older than homes, and a profile mapped to null has
+   * not been opened yet.
+   */
+  setBrowserProfileHomes(
+    profileHomes: readonly string[] | undefined,
+    homes: Readonly<Record<string, string | null>> = {},
+  ): void {
+    const snapshot = this.getSnapshot();
+    this.#state.updatePlaces({
+      ...snapshot,
+      browserProfileHomes: profileHomes,
+      browserProfiles: snapshot.browserProfiles.map((profile) =>
+        profile.name in homes ? { ...profile, homeRunnerId: homes[profile.name]! } : profile,
+      ),
+    });
   }
 
   setSearchSuggestionsAvailable(available: boolean): void {
@@ -7934,8 +7957,13 @@ class MockHostState {
   }
 
   async revokeMachine(machineId: string): Promise<void> {
+    // The profiles that live on it go with it, as the Host deletes them.
     this.update({
       ...this.snapshot,
+      browserProfileHomes: this.snapshot.browserProfileHomes?.filter((id) => id !== machineId),
+      browserProfiles: this.snapshot.browserProfiles.filter(
+        (profile) => profile.homeRunnerId !== machineId,
+      ),
       machines: this.snapshot.machines.filter((machine) => machine.id !== machineId),
     });
   }
@@ -9255,10 +9283,16 @@ class MockHostState {
     const runnerId = RunnerIdSchema.parse(input.runnerId);
     this.update({
       ...this.snapshot,
+      // A phone holds browsers too, as every device does.
+      browserProfileHomes: this.snapshot.browserProfileHomes && [
+        ...this.snapshot.browserProfileHomes,
+        runnerId,
+      ],
       machines: this.snapshot.machines.map((machine) =>
         machine.id === input.enrollmentId
           ? {
               ...machine,
+              allowedModules: ["browser", "integrations"],
               id: runnerId,
               name: input.name,
               status: "online",
@@ -9946,8 +9980,27 @@ class MockHostState {
 
   async createBrowserProfile(
     name: string,
+    homeRunnerId?: string,
   ): Promise<import("../host/client.js").BrowserProfileSummary> {
-    const profile = { id: createId("browserProfile"), name };
+    const homes = this.snapshot.browserProfileHomes;
+    if (homeRunnerId !== undefined && !homes?.includes(homeRunnerId))
+      throw mockConflict("This computer can't keep browser profiles.");
+    // As the Host does: unnamed, a profile lives on the only device that can
+    // hold it, else on the Deployment's main computer.
+    const home =
+      homeRunnerId ??
+      (homes?.length === 1
+        ? homes[0]!
+        : homes?.find((id) =>
+            this.snapshot.machines.some(
+              (machine) =>
+                machine.id === id &&
+                machine.ownership === "deployment" &&
+                machine.allowedModules.includes("agents"),
+            ),
+          )) ??
+      null;
+    const profile = { homeRunnerId: home, id: createId("browserProfile"), name };
     this.update({ ...this.snapshot, browserProfiles: [...this.snapshot.browserProfiles, profile] });
     return profile;
   }

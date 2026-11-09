@@ -6,16 +6,32 @@ import {
   browserProfileProjects,
   canRespondToRequests,
   mutationIdempotencyKey,
+  profileHomeChoice,
   type BrowserProfileSettingsRow,
   type HostClient,
   type HostSnapshot,
+  type ProfileHomeChoice,
+  type ProfileHomeOption,
 } from "@opensteer/client/host";
+import { MenuView } from "@expo/ui/community/menu";
 import { useHostSelector } from "@opensteer/client/react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useState, type ReactNode } from "react";
-import { Alert, Pressable, ScrollView, StyleSheet, View } from "react-native";
+import {
+  Alert,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+  useWindowDimensions,
+} from "react-native";
 import { operationDetail } from "../client/mobile-client.js";
-import { material, space, touchTarget } from "../theme.js";
+import { useHereDeviceId } from "../computers/here-device.js";
+import { color, controlFontScaleLimit, material, space, touchTarget, type } from "../theme.js";
+import { Symbol } from "../ui/symbol.js";
+import { computerSymbols } from "./settings-model.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import { AppText, Field, Notice, RowGroup, SecondaryButton, SwitchRow } from "../ui/primitives.js";
 import { Screen, useListContentInsets, useReadingColumn } from "../ui/screen.js";
@@ -105,11 +121,18 @@ function BrowserProfilesSettings({
   const navigation = useNavigation();
   const snapshot = useHostSelector(hostClient, selectSnapshot);
   const online = canRespondToRequests(snapshot);
-  const rows = browserProfileSettingsRows(snapshot);
+  const hereId = useHereDeviceId(deploymentId);
+  const rows = browserProfileSettingsRows(snapshot, hereId);
+  const homes = profileHomeChoice(snapshot, hereId);
   const deletions = browserProfileDeletionRows(snapshot);
   const column = useReadingColumn();
   const insets = useListContentInsets(space[32]);
   const [draft, setDraft] = useState<string | null>(null);
+  const [chosenHome, setHome] = useState<string | null>(null);
+  // The person's pick stands while it is still on offer; the default follows the list.
+  const home = homes
+    ? (homes.options.find(({ id }) => id === chosenHome)?.id ?? homes.initial)
+    : null;
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const create = () => {
@@ -121,7 +144,7 @@ function BrowserProfilesSettings({
       .dispatch({
         type: "browser.profile.create",
         idempotencyKey: mutationIdempotencyKey("browser-profile"),
-        input: { name },
+        input: { name, ...(home ? { homeRunnerId: home } : {}) },
       })
       .then(() => setDraft(null))
       .catch((error: unknown) =>
@@ -132,6 +155,7 @@ function BrowserProfilesSettings({
   return (
     <Screen edgeToEdge>
       <ScrollView
+        automaticallyAdjustKeyboardInsets
         contentContainerStyle={[styles.content, column, insets]}
         contentInsetAdjustmentBehavior="automatic"
         keyboardShouldPersistTaps="handled"
@@ -192,6 +216,13 @@ function BrowserProfilesSettings({
                 onSubmitEditing: create,
                 returnKeyType: "done",
               }}
+              {...(homes && home
+                ? {
+                    trailing: (
+                      <HomeMenu disabled={busy} home={home} homes={homes} onChoose={setHome} />
+                    ),
+                  }
+                : {})}
             />
             <View style={styles.actions}>
               <SecondaryButton
@@ -217,6 +248,93 @@ function BrowserProfilesSettings({
   );
 }
 
+/** This phone, as the phone itself says it; every other device by its name. */
+function homeName(option: Pick<ProfileHomeOption, "here" | "name">): string {
+  if (!option.here) return option.name;
+  return Platform.OS === "ios" ? "This iPhone" : "This phone";
+}
+
+/** The device a new profile keeps its sign-ins on, chosen inside its name field. */
+function HomeMenu(props: {
+  readonly disabled: boolean;
+  readonly home: string;
+  readonly homes: ProfileHomeChoice;
+  readonly onChoose: (id: string) => void;
+}): ReactNode {
+  const chosen = props.homes.options.find(({ id }) => id === props.home)!;
+  const name = homeName(chosen);
+  const trigger = (
+    <View
+      accessibilityLabel={`Keep its sign-ins on ${name}`}
+      accessibilityRole="button"
+      accessibilityState={{ disabled: props.disabled }}
+      accessible
+      style={[styles.homeTrigger, props.disabled && styles.disabled]}
+    >
+      <Symbol name={computerSymbols[chosen.glyph]} size={15} tint={color.muted} />
+      <Text
+        maxFontSizeMultiplier={controlFontScaleLimit}
+        numberOfLines={1}
+        style={[type.secondary, styles.homeName]}
+      >
+        {name}
+      </Text>
+      <Symbol name="chevron.down" size={11} tint={color.muted} />
+    </View>
+  );
+  if (props.disabled) return trigger;
+  return (
+    <MenuView
+      actions={props.homes.options.map((option) => ({
+        id: option.id,
+        image: computerSymbols[option.glyph],
+        state: option.id === props.home ? ("on" as const) : ("off" as const),
+        title: homeName(option),
+      }))}
+      onPressAction={({ nativeEvent }) => props.onChoose(nativeEvent.event)}
+      style={styles.homeMenu}
+      title="Keep its sign-ins on"
+    >
+      {trigger}
+    </MenuView>
+  );
+}
+
+/**
+ * Where a profile lives, said only when that is not this phone. At the
+ * accessibility text sizes it stands under the name, as a system list's value
+ * does, rather than squeeze it.
+ */
+function ProfileHome({
+  row,
+  stacked,
+}: {
+  readonly row: BrowserProfileSettingsRow;
+  readonly stacked: boolean;
+}): ReactNode {
+  if (row.device)
+    return (
+      <View style={[styles.home, stacked && styles.homeStacked]}>
+        <Symbol name={computerSymbols[row.device.glyph]} size={13} tint={color.muted} />
+        <AppText numberOfLines={1} role="caption" style={styles.homeName} tone="muted">
+          {row.device.name}
+        </AppText>
+        {row.device.online ? null : (
+          <AppText numberOfLines={1} role="caption" tone="muted">
+            · Offline
+          </AppText>
+        )}
+      </View>
+    );
+  if (row.unopened)
+    return (
+      <AppText numberOfLines={1} role="caption" style={!stacked && styles.home} tone="muted">
+        Not opened yet
+      </AppText>
+    );
+  return null;
+}
+
 function ProfileRow({
   row,
   snapshot,
@@ -231,6 +349,7 @@ function ProfileRow({
   readonly onHistory: () => void;
 }): ReactNode {
   const [expanded, setExpanded] = useState(false);
+  const stacked = useWindowDimensions().fontScale > accessibilityTextScale;
   const [projectsShown, setProjectsShown] = useState(false);
   const [draft, setDraft] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -281,14 +400,26 @@ function ProfileRow({
     <View style={styles.row}>
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={`${row.profile.name}, ${browserProfileAccessSummary(row)}`}
+        accessibilityLabel={[
+          row.profile.name,
+          row.device
+            ? `on ${row.device.name}${row.device.online ? "" : ", offline"}`
+            : row.unopened
+              ? "not opened yet"
+              : null,
+          browserProfileAccessSummary(row),
+        ]
+          .filter(Boolean)
+          .join(", ")}
         accessibilityState={{ expanded }}
         onPress={() => setExpanded(!expanded)}
         style={styles.rowHead}
       >
         {row.identity.kind === "profile" ? (
           <View style={[styles.identity, material.mark, { backgroundColor: row.identity.tint }]}>
-            <AppText role="bodyMedium">{row.identity.initial}</AppText>
+            <AppText maxFontSizeMultiplier={1} role="bodyMedium">
+              {row.identity.initial}
+            </AppText>
           </View>
         ) : null}
         <View style={styles.rowText}>
@@ -296,7 +427,9 @@ function ProfileRow({
           <AppText role="caption" tone="muted">
             {browserProfileAccessSummary(row)}
           </AppText>
+          {stacked ? <ProfileHome row={row} stacked /> : null}
         </View>
+        {stacked ? null : <ProfileHome row={row} stacked={false} />}
       </Pressable>
       {!expanded ? null : (
         <>
@@ -412,6 +545,8 @@ function ProfileRow({
   );
 }
 
+/** Past the largest standard size, iOS's accessibility sizes begin. */
+const accessibilityTextScale = 1.35;
 const selectSnapshot = (snapshot: HostSnapshot) => snapshot;
 const selectUserId = (snapshot: HostSnapshot) =>
   snapshot.session === "authenticated" ? (snapshot.user?.id ?? null) : null;
@@ -422,6 +557,24 @@ const styles = StyleSheet.create({
   row: { gap: space[10], paddingHorizontal: space[16], paddingVertical: space[12] },
   rowHead: { alignItems: "center", flexDirection: "row", gap: space[10], minHeight: touchTarget },
   rowText: { flex: 1, gap: space[2] },
+  disabled: { opacity: 0.5 },
+  home: {
+    alignItems: "center",
+    flexDirection: "row",
+    flexShrink: 1,
+    gap: space[4],
+    maxWidth: "55%",
+  },
+  homeStacked: { maxWidth: "100%" },
+  homeName: { color: color.muted, flexShrink: 1 },
+  homeMenu: { alignSelf: "stretch", flexShrink: 1, maxWidth: "50%" },
+  homeTrigger: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: space[6],
+    minHeight: touchTarget,
+    paddingHorizontal: space[12],
+  },
   identity: {
     width: 28,
     height: 28,

@@ -194,6 +194,26 @@ export function orderDevices<Device extends { readonly id: string; readonly name
   );
 }
 
+/**
+ * What removing a device deletes: the browser profiles that live on it and
+ * their sign-ins, or null when none do. A device that is away erases its files
+ * only when it next learns it was removed, so that is all it is promised.
+ */
+export function deviceRemovalProfiles(
+  machine: Pick<MachineSummary, "id" | "name" | "status">,
+  profiles: readonly { readonly homeRunnerId: string | null; readonly name: string }[],
+): string | null {
+  const held = profiles.filter(({ homeRunnerId }) => homeRunnerId === machine.id);
+  if (held.length === 0) return null;
+  const deleted =
+    held.length === 1
+      ? `Its browser profile ${held[0]!.name} and its sign-ins are deleted.`
+      : `Its ${held.length} browser profiles and their sign-ins are deleted.`;
+  return machine.status === "online"
+    ? deleted
+    : `${deleted} ${machine.name} erases ${held.length === 1 ? "it" : "them"} the next time it connects.`;
+}
+
 /* ------------------------------------------------------------------------- *
  * One computer
  * ------------------------------------------------------------------------- */

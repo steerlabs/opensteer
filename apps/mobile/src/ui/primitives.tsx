@@ -417,6 +417,8 @@ export function Field(props: {
   readonly hintPosition?: "before" | "after";
   readonly label: string;
   readonly input: TextInputProps;
+  /** A small control at the field's end, inside its border, that belongs with what is typed. */
+  readonly trailing?: ReactNode;
 }): ReactNode {
   const hint =
     props.hint === undefined ? null : (
@@ -430,18 +432,36 @@ export function Field(props: {
         {props.label}
       </AppText>
       {props.hintPosition === "before" ? hint : null}
-      <TextInput
-        accessibilityHint={props.hint}
-        accessibilityLabel={props.label}
-        {...props.input}
-        cursorColor={color.ember}
-        maxFontSizeMultiplier={controlFontScaleLimit}
-        placeholderTextColor={color.muted}
-        selectionColor={color.ember}
-        style={[type.body, styles.input]}
-      />
+      {props.trailing === undefined ? (
+        <FieldInput {...props} style={styles.input} />
+      ) : (
+        <View style={[styles.input, styles.inputWithTrailing]}>
+          <FieldInput {...props} style={styles.inputInner} />
+          {props.trailing}
+        </View>
+      )}
       {props.hintPosition === "before" ? null : hint}
     </View>
+  );
+}
+
+function FieldInput(props: {
+  readonly hint?: string;
+  readonly label: string;
+  readonly input: TextInputProps;
+  readonly style: TextInputProps["style"];
+}): ReactNode {
+  return (
+    <TextInput
+      accessibilityHint={props.hint}
+      accessibilityLabel={props.label}
+      {...props.input}
+      cursorColor={color.ember}
+      maxFontSizeMultiplier={controlFontScaleLimit}
+      placeholderTextColor={color.muted}
+      selectionColor={color.ember}
+      style={[type.body, props.style]}
+    />
   );
 }
 
@@ -623,6 +643,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: space[12],
     paddingVertical: space[10],
   },
+  inputWithTrailing: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: space[8],
+    paddingEnd: 0,
+    paddingVertical: 0,
+  },
+  inputInner: { color: color.text, flex: 1, minHeight: touchTarget, paddingVertical: space[10] },
   notice: {
     ...material.plate,
     borderRadius: radius.md,
