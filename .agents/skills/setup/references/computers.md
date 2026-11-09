@@ -6,12 +6,11 @@ be on before a remote computer connects, and Personal computers other than Main 
 Never remove and re-add a computer to change what it may run or reach: removal deletes its identity
 and SSH host key. Configure Files and commands separately from Apps.
 
-**App access.** Finish new or broader approval on the Mac that holds the data; a remote client can
-request setup but cannot prove locality. Complete missing macOS grants there
-([set up a Mac app](../../mac-gui/references/app-setup.md)); reapproval grants no OS permission, and
-inspecting status must not open prompts. For Full Disk Access, use the Open System Settings action
-and have the person grant it to the app that launches the Runner (not engine Full access, not a
-helper grant).
+**App access.** The computer's owner can approve new or broader app access from any signed-in
+device. Missing macOS permissions still require local action on the target Mac
+([set up a Mac app](../../mac-gui/references/app-setup.md)); app approval does not grant them.
+Checking status must not open prompts. For Full Disk Access, use the Open System Settings action
+and have the person grant it to the app that launches the Runner.
 
 **Agent SSH.** Use the shipped
 [opensteer:computers skill](../../../../apps/runner/agent-skills/skills/computers/SKILL.md), the

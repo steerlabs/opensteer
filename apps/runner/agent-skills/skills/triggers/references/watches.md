@@ -27,4 +27,6 @@ export default async function ({ event, opensteer }) {
 }
 ```
 
-Use durable observation identities for logical changes, including across activations when duplicate effects matter. Filesystem events are hints, not a durable queue; reconcile content if missing a change matters. Watch product calls are `environment_list`, `thread_message` and `thread_delegate`, intersected with anchor authority.
+Use durable observation identities for logical changes, including across activations when duplicate effects matter. Filesystem events are hints, not a durable queue; reconcile content if missing a change matters.
+
+Watches use the program tool list, including integration tools, within the anchor Thread's authority. Delegate when agent judgment or a Run-only tool is needed; see the [program contract](program-contract.md).
