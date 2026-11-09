@@ -1,3 +1,13 @@
+import { browserBasicInputAllows } from "@opensteer/protocol/browser";
+import { editingClipboardPartCount } from "@opensteer/protocol/editing";
+import {
+  BrowserActionRequestSchema,
+  type BrowserActionRequest,
+  type BrowserActionResult,
+  type BrowserActionEvent,
+  type BrowserActionErrorCode,
+  type BrowserAgentBackend,
+} from "@opensteer/protocol/browser-actions";
 import type { BrowserEngine } from "@opensteer/protocol";
 import type { AdministrationCommandIdentity } from "@opensteer/database";
 import type { ResourceAccessInput } from "@opensteer/database";
@@ -145,6 +155,14 @@ const pageNoticeDelayMs = 250;
  */
 export class BrowserCdpConnectionEnded extends Error {
   override readonly name = "BrowserCdpConnectionEnded";
+}
+
+function browserActionFailure(reason: BrowserActionErrorCode, message: string): OpensteerError {
+  return new OpensteerError({
+    code: reason === "forbidden" ? "forbidden" : "conflict",
+    reason,
+    message,
+  });
 }
 
 /**
@@ -471,6 +489,9 @@ export interface BrowserRuntimeTarget {
   readonly signIn?: boolean;
   /** The Runtime enforces the agent CDP boundary; agents get no CDP on one without it. */
   readonly cdpBoundary?: boolean;
+  readonly agentActions?: boolean | undefined;
+  readonly basicInput?: 1 | undefined;
+  readonly surfaceState?: 1 | undefined;
   /** Shared pages, dialog IDs, view following and the attach ticket's initial size. */
   readonly sharedControl?: boolean;
   /** The Runtime observes a target without starting a screencast. */
@@ -715,6 +736,16 @@ export class BrowserService {
   readonly #actingTimers = new Map<BrowserSessionId, () => void>();
   /** Bindings whose Run ended, by when; see `endedBindingMemoryMs`. */
   readonly #endedBindings = new Map<string, number>();
+  readonly #actionAttachments = new Map<
+    string,
+    {
+      readonly binding: string;
+      readonly profileId: BrowserProfileId | null;
+      readonly workspaceId: WorkspaceId;
+      readonly ownerId: UserId;
+      readonly close: () => void;
+    }
+  >();
   /** What each session's viewers were last told, so a repeat is not sent. */
   readonly #announcedPresence = new Map<BrowserSessionId, string>();
   readonly #onWorkspaceEvent: (event: AgentEvent) => void;
@@ -3022,6 +3053,13 @@ export class BrowserService {
     readonly profileId: BrowserProfileId;
     readonly workspaceId: WorkspaceId;
   }): Promise<number> {
+    for (const attachment of this.#actionAttachments.values())
+      if (
+        attachment.profileId === input.profileId &&
+        attachment.workspaceId === input.workspaceId &&
+        attachment.ownerId === input.ownerId
+      )
+        attachment.close();
     this.invalidatePlaceAuthority();
     // The revocation already committed; the owner's clients reread their grants.
     this.#onProfilesChanged(input.ownerId, input.workspaceId);
@@ -3053,6 +3091,138 @@ export class BrowserService {
    * this Workspace's, the command fails with `BrowserCdpConnectionEnded` and the
    * connection ends with it.
    */
+  async #admitAgentBackend(
+    input: {
+      readonly agentBindingId: string;
+      readonly ownerId: UserId;
+      readonly workspaceId: WorkspaceId;
+      readonly sessionId?: BrowserSessionId;
+    },
+    requested?: "cdp" | "actions",
+    hold = false,
+  ) {
+    const record = input.sessionId
+      ? await this.#usableAgentSession(input, input.sessionId)
+      : await this.#followedAgentSession(input);
+    const broker = this.#brokers.get(record.id);
+    if (!broker)
+      throw new BrowserCdpConnectionEnded("The Browser Session lost its browser connection.");
+    const backend: "cdp" | "actions" | undefined = broker.cdpBoundary
+      ? "cdp"
+      : broker.agentActions
+        ? "actions"
+        : undefined;
+    if (!backend || (requested !== undefined && requested !== backend))
+      throw browserActionFailure(
+        "unsupported-operation",
+        "This Browser Session does not support that agent backend.",
+      );
+    if (!broker.sharedControl)
+      throw browserActionFailure(
+        "unsupported-operation",
+        "The browser cannot keep your tab separate from the agent's tab. Update Opensteer on that computer, then open a new session.",
+      );
+    if (hold && input.sessionId) await this.#holdForAgent(input, record);
+    return { record, broker, backend };
+  }
+
+  async agentBackend(input: {
+    readonly agentBindingId: string;
+    readonly ownerId: UserId;
+    readonly workspaceId: WorkspaceId;
+    readonly sessionId: BrowserSessionId;
+  }): Promise<BrowserAgentBackend> {
+    const { backend } = await this.#admitAgentBackend(input);
+    return { sessionId: input.sessionId, backend, version: 1 };
+  }
+
+  async attachActionsForAgent(
+    input: {
+      readonly agentBindingId: string;
+      readonly ownerId: UserId;
+      readonly workspaceId: WorkspaceId;
+      readonly sessionId: BrowserSessionId;
+    },
+    onEvent: (event: BrowserActionEvent) => void,
+    onClosed?: () => void,
+  ) {
+    const { record, broker } = await this.#admitAgentBackend(input, "actions", true);
+    const attachmentId = globalThis.crypto.randomUUID();
+    const actorToken = (await this.#actorToken(input, record.id)) ?? globalThis.crypto.randomUUID();
+    let closed = false;
+    const assertOpen = () => {
+      if (closed || this.#closed || this.#endedBindings.has(input.agentBindingId))
+        throw new BrowserCdpConnectionEnded("This browser attachment has ended.");
+    };
+    const unsubscribe = broker.subscribeActions(attachmentId, onEvent, () => close());
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      this.#actionAttachments.delete(attachmentId);
+      unsubscribe();
+      broker.detachActions(attachmentId);
+      void broker
+        .sendHostCommand({ type: "agent.detach", sessionId: record.id, attachmentId })
+        .catch(() => undefined);
+      onClosed?.();
+    };
+    this.#actionAttachments.set(attachmentId, {
+      binding: input.agentBindingId,
+      profileId: record.profileId,
+      workspaceId: input.workspaceId,
+      ownerId: input.ownerId,
+      close,
+    });
+    try {
+      await this.#admitAgentBackend(input, "actions");
+      assertOpen();
+      await broker.sendHostCommand({
+        type: "agent.attach",
+        sessionId: record.id,
+        attachmentId,
+        actorToken,
+        backend: "actions",
+      });
+      assertOpen();
+    } catch (error) {
+      close();
+      throw error;
+    }
+    return {
+      session: publicSession(record),
+      close,
+      dispatch: async (
+        value: BrowserActionRequest,
+      ): Promise<{ readonly result: Promise<BrowserActionResult> }> => {
+        const request = BrowserActionRequestSchema.parse(value);
+        assertOpen();
+        if (request.sessionId !== record.id)
+          throw browserActionFailure("forbidden", "The action addresses another Browser Session.");
+        await this.#admitAgentBackend(input, "actions");
+        assertOpen();
+        broker.assertActionTarget(request);
+        if (
+          (request.action.type === "file.stage" || request.action.type === "file.choose") &&
+          !broker.fileStaging
+        )
+          throw browserActionFailure(
+            "unsupported-operation",
+            "This browser does not support file staging.",
+          );
+        this.#noteAgentCommand(record.id, input.agentBindingId);
+        return {
+          result: broker.requestAction({
+            type: "agent.action",
+            attachmentId,
+            actorToken,
+            requestId: globalThis.crypto.randomUUID(),
+            request,
+          }),
+        };
+      },
+    };
+  }
+
   async attachCdpForAgent(
     input: {
       readonly agentBindingId: string;
@@ -3073,31 +3243,7 @@ export class BrowserService {
     dispatch(command: BrowserCdpRequest["command"]): Promise<{ readonly result: Promise<unknown> }>;
     request(command: BrowserCdpRequest["command"]): Promise<unknown>;
   }> {
-    const explicit = input.sessionId;
-    const record = explicit
-      ? await this.#usableAgentSession(input, explicit)
-      : await this.#followedAgentSession(input);
-    const broker = this.#brokers.get(record.id);
-    if (!broker) {
-      throw new BrowserCdpConnectionEnded(
-        record.state === "starting"
-          ? `Browser Session ${record.id} is still starting. Try again in a moment.`
-          : `Browser Session ${record.id} lost its browser connection. Open a new one with browser_session_open.`,
-      );
-    }
-    // A refused connection holds nothing and used nothing, so both refusals
-    // come before anything is recorded.
-    if (!broker.cdpBoundary) {
-      throw new BrowserCdpConnectionEnded(
-        `The browser running Browser Session ${record.id} is an older Opensteer version that doesn't protect sign-ins from agents. Update Opensteer on that computer, then open a new session.`,
-      );
-    }
-    if (!broker.sharedControl) {
-      throw new BrowserCdpConnectionEnded(
-        `The browser running Browser Session ${record.id} cannot keep your tab separate from the agent's tab. Update Opensteer on that computer, then open a new session.`,
-      );
-    }
-    if (explicit) await this.#holdForAgent(input, record);
+    const { record, broker } = await this.#admitAgentBackend(input, "cdp", true);
     let attachmentClosed = false;
     const assertAttached = (bindingWasEnded: boolean) => {
       if (
@@ -3156,13 +3302,9 @@ export class BrowserService {
           : undefined;
       if (!fillAllowed()) return expired;
       assertAttached(bindingWasEnded);
-      if (explicit) {
-        await this.#usableAgentSession(input, record.id);
-      } else if ((await this.#followedAgentSession(input)).id !== record.id) {
-        throw new BrowserCdpConnectionEnded(
-          "This Run opened another Browser Session. Run Browser Harness again to use it.",
-        );
-      }
+      const admitted = await this.#admitAgentBackend(input, "cdp");
+      if (admitted.record.id !== record.id)
+        throw new BrowserCdpConnectionEnded("This Run opened another Browser Session.");
       if (command.method === "Opensteer.stageFile" && !broker.fileStaging) {
         throw new OpensteerError({
           code: "conflict",
@@ -3493,6 +3635,8 @@ export class BrowserService {
       readonly passkeys?: PasskeyMode | undefined;
       readonly popups?: boolean | undefined;
       readonly editing?: 1 | 2 | undefined;
+      readonly basicInput?: 1 | undefined;
+      readonly surfaceState?: 1 | undefined;
       /**
        * Whether the login that opened the socket is still signed in. Read once,
        * after this peer can be reached by `closeAuthSession`, so a login ended
@@ -3551,6 +3695,7 @@ export class BrowserService {
         options.popups === true,
         ownerId,
         options.signedIn,
+        { basicInput: options.basicInput, surfaceState: options.surfaceState },
       );
     } catch (error) {
       detachAuth();
@@ -3829,6 +3974,8 @@ export class BrowserService {
       ...(target.navigationVersion ? { navigationVersion: 1 } : {}),
       ...(target.navigationAttributionVersion ? { navigationAttributionVersion: 1 } : {}),
       ...(target.popupFollowVersion ? { popupFollowVersion: 1 } : {}),
+      ...(target.basicInput ? { basicInput: target.basicInput } : {}),
+      ...(target.surfaceState ? { surfaceState: target.surfaceState } : {}),
       ...(target.editing
         ? {
             editingVersion: target.editing,
@@ -3905,6 +4052,9 @@ export class BrowserService {
           onActivity: (activity) => this.#runtimeActivity(sessionId, activity),
           workspaceId: record.workspaceId,
           cdpBoundary: target.cdpBoundary === true,
+          agentActions: target.agentActions === true,
+          basicInput: target.basicInput,
+          surfaceState: target.surfaceState,
           sharedControl: target.sharedControl === true,
           navigation: target.navigationVersion === true,
           targetControl: target.targetControl === true,
@@ -4219,6 +4369,8 @@ export class BrowserService {
   }
 
   #forgetAgentBinding(agentBindingId: string): void {
+    for (const attachment of this.#actionAttachments.values())
+      if (attachment.binding === agentBindingId) attachment.close();
     for (const actor of this.#actors.values())
       if (actor.binding === agentBindingId) this.#clearActor(actor);
     const now = this.#activityClock.now();
@@ -4451,6 +4603,9 @@ interface HostedBrowserBrokerOptions {
   readonly onPageChanged: () => void;
   readonly workspaceId: WorkspaceId;
   readonly cdpBoundary: boolean;
+  readonly agentActions?: boolean | undefined;
+  readonly basicInput?: 1 | undefined;
+  readonly surfaceState?: 1 | undefined;
   readonly sharedControl: boolean;
   readonly targetControl: boolean;
   readonly captureRegion: boolean;
@@ -4665,6 +4820,17 @@ class HostedBrowserBroker {
    */
   readonly #unaddressedKeySenders = new Set<string>();
   #answeredOlderDialogId: string | null = null;
+  readonly #actionListeners = new Map<string, (event: BrowserActionEvent) => void>();
+  readonly #pendingActions = new Map<
+    string,
+    {
+      readonly attachmentId: string;
+      readonly action: string;
+      readonly resolve: (result: BrowserActionResult) => void;
+      readonly reject: (error: unknown) => void;
+      readonly timeout: NodeJS.Timeout;
+    }
+  >();
   readonly #pendingCdpRequests = new Map<
     string,
     {
@@ -4701,6 +4867,9 @@ class HostedBrowserBroker {
   #stopping = false;
 
   readonly cdpBoundary: boolean;
+  readonly agentActions?: boolean | undefined;
+  readonly basicInput?: 1 | undefined;
+  readonly surfaceState?: 1 | undefined;
   readonly sharedControl: boolean;
   readonly targetControl: boolean;
   readonly captureRegion: boolean;
@@ -4758,6 +4927,9 @@ class HostedBrowserBroker {
     this.#onPageChanged = options.onPageChanged;
     this.workspaceId = options.workspaceId;
     this.cdpBoundary = options.cdpBoundary;
+    this.agentActions = options.agentActions;
+    this.basicInput = options.basicInput;
+    this.surfaceState = options.surfaceState;
     this.sharedControl = options.sharedControl;
     this.targetControl = options.targetControl;
     this.captureRegion = options.captureRegion;
@@ -4921,6 +5093,10 @@ class HostedBrowserBroker {
     popups: boolean,
     userId: UserId,
     signedIn: () => Promise<boolean>,
+    negotiation: {
+      readonly basicInput?: 1 | undefined;
+      readonly surfaceState?: 1 | undefined;
+    } = {},
   ): Promise<BrowserConsumerAttachment> {
     if (this.#settled) throw new OpensteerError({ code: "conflict", message: "Browser closed." });
     if (!this.#snapshot || !this.#runtimeReady) {
@@ -4955,6 +5131,8 @@ class HostedBrowserBroker {
     outlet.authorized = async () => (await stillVisible()) && (await signedIn());
     this.#consumers.set(peer.id, outlet);
     try {
+      outlet.basicInput = negotiation.basicInput === 1 && this.#snapshot.basicInput === 1;
+      outlet.surfaceState = negotiation.surfaceState === 1 && this.#snapshot.surfaceState === 1;
       const version = this.#snapshot.editingVersion;
       outlet.editing = browserViewerEditingVersion(this.#snapshot, editing);
       outlet.clipboard = Boolean(
@@ -4968,6 +5146,7 @@ class HostedBrowserBroker {
             outlet.passkeys,
             outlet.clipboardToken,
             outlet.popups,
+            { basicInput: outlet.basicInput, surfaceState: outlet.surfaceState },
           ),
         ),
       );
@@ -4999,6 +5178,89 @@ class HostedBrowserBroker {
       this.#cdpListeners.delete(listener);
       if (onTerminal) this.#cdpTerminalListeners.delete(onTerminal);
     };
+  }
+
+  subscribeActions(
+    attachmentId: string,
+    onEvent: (event: BrowserActionEvent) => void,
+    onTerminal: () => void,
+  ): () => void {
+    this.#actionListeners.set(attachmentId, onEvent);
+    const terminal = this.subscribeCdp(() => undefined, onTerminal);
+    return () => {
+      this.#actionListeners.delete(attachmentId);
+      terminal();
+    };
+  }
+
+  detachActions(attachmentId: string): void {
+    this.#actionListeners.delete(attachmentId);
+    for (const [id, pending] of this.#pendingActions) {
+      if (pending.attachmentId !== attachmentId) continue;
+      clearTimeout(pending.timeout);
+      this.#pendingActions.delete(id);
+      pending.reject(
+        browserActionFailure(
+          "outcome-unknown",
+          "The agent attachment ended before the action answered.",
+        ),
+      );
+    }
+  }
+
+  assertActionTarget(request: BrowserActionRequest): void {
+    if (request.action.type === "session.tabs") return;
+    const surface = this.#snapshot?.surfaces.find(
+      (candidate) => candidate.id === request.surfaceId,
+    );
+    if (!surface) throw browserActionFailure("target-closed", "The tab no longer exists.");
+    if (request.action.type === "surface.resume") return;
+    if (surface.state === "suspended")
+      throw browserActionFailure("target-suspended", "The tab is suspended.");
+    if (request.documentId !== undefined && request.documentId !== surface.documentId)
+      throw browserActionFailure("stale-document", "The tab has another document.");
+    if (
+      request.geometryRevision !== undefined &&
+      request.geometryRevision !== surface.geometryRevision
+    )
+      throw browserActionFailure("stale-geometry", "The tab geometry changed.");
+  }
+
+  requestAction(
+    message: Extract<BrowserClientMessage, { type: "agent.action" }>,
+  ): Promise<BrowserActionResult> {
+    if (this.#settled || !this.#runtimeReady)
+      return Promise.reject(new BrowserCdpConnectionEnded("The browser connection ended."));
+    if (this.#pendingActions.size >= maxPendingAgentRequests)
+      return Promise.reject(
+        browserActionFailure("too-large", "Too many browser actions are pending."),
+      );
+    return new Promise<BrowserActionResult>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.#pendingActions.delete(message.requestId);
+        reject(
+          browserActionFailure(
+            "outcome-unknown",
+            "The browser action did not answer before its deadline. Do not retry input.",
+          ),
+        );
+      }, message.request.timeoutMs);
+      timeout.unref();
+      this.#pendingActions.set(message.requestId, {
+        attachmentId: message.attachmentId,
+        action: message.request.action.type,
+        resolve,
+        reject,
+        timeout,
+      });
+      void this.#sendCommand(message).catch((error: unknown) => {
+        const pending = this.#pendingActions.get(message.requestId);
+        if (!pending) return;
+        clearTimeout(pending.timeout);
+        this.#pendingActions.delete(message.requestId);
+        reject(error);
+      });
+    });
   }
 
   requestCdp(message: BrowserCdpRequest): Promise<BrowserCdpResponse> {
@@ -5296,6 +5558,31 @@ class HostedBrowserBroker {
     if (!this.#snapshot && message.type !== "browser.snapshot") {
       throw new Error("Browser Runtime sent an event before its snapshot.");
     }
+    if (message.type === "agent.event") {
+      this.#actionListeners.get(message.attachmentId)?.(message.event);
+      return false;
+    }
+    if (message.type === "agent.result" || message.type === "agent.error") {
+      const pending = this.#pendingActions.get(message.requestId);
+      if (!pending || pending.attachmentId !== message.attachmentId) return false;
+      clearTimeout(pending.timeout);
+      this.#pendingActions.delete(message.requestId);
+      if (message.type === "agent.error")
+        pending.reject(
+          new OpensteerError({
+            code: "conflict",
+            reason: message.error.code,
+            message: message.error.message,
+            ...(message.error.dialog ? { details: { dialog: message.error.dialog } } : {}),
+          }),
+        );
+      else if (message.result.type !== pending.action)
+        pending.reject(
+          browserActionFailure("outcome-unknown", "The browser answered a different action."),
+        );
+      else pending.resolve(message.result);
+      return false;
+    }
     if (isCdpResponse(message)) {
       this.#handleCdpResponse(message);
       return false;
@@ -5347,6 +5634,13 @@ class HostedBrowserBroker {
           (message.editingVersion === 2 && message.clipboard !== this.clipboard))
       )
         throw new Error("Browser editing was not negotiated by this Host.");
+      if (
+        (message.basicInput !== undefined && message.basicInput !== this.basicInput) ||
+        (message.surfaceState !== undefined && message.surfaceState !== this.surfaceState) ||
+        (message.surfaces.some((surface) => surface.state !== undefined) &&
+          message.surfaceState !== 1)
+      )
+        throw new Error("Browser basic input or surface state was not negotiated.");
       this.#snapshot = message;
       this.#reconcileIcons(message.surfaces);
       this.#reconcileHistory(message.surfaces);
@@ -5357,6 +5651,11 @@ class HostedBrowserBroker {
       this.bumpCatalog();
     } else if (message.type === "browser.surfaces.changed") {
       if (!this.#snapshot) throw new Error("Browser Runtime snapshot is unavailable.");
+      if (
+        message.surfaces.some((surface) => surface.state !== undefined) &&
+        this.#snapshot.surfaceState !== 1
+      )
+        throw new Error("Browser surface state was not negotiated.");
       const previousPage = this.page;
       const previousActive = this.#snapshot.surfaces.find((surface) => surface.active)?.id ?? null;
       assertBrowserDialogSurface(this.#snapshot.dialog, message.surfaces);
@@ -5503,6 +5802,7 @@ class HostedBrowserBroker {
         consumer.recordEditing("clipboard.written");
       if (
         !consumer.clipboard &&
+        !consumer.basicInput &&
         consumer.mode === "control" &&
         "consumerToken" in message &&
         message.consumerToken === consumer.clipboardToken
@@ -5516,12 +5816,14 @@ class HostedBrowserBroker {
       }
       if (
         !consumer.clipboard &&
+        !consumer.basicInput &&
         (message.type === "clipboard.result" ||
           message.type === "clipboard.written" ||
           message.type === "clipboard.part")
       )
         continue;
-      if (!consumer.editing && editingServerKinds.has(message.type)) continue;
+      if (!consumer.editing && !consumer.basicInput && editingServerKinds.has(message.type))
+        continue;
       if (consumer.mode === "watch" && message.type.startsWith("clipboard.")) continue;
       if (
         (message.type === "clipboard.result" ||
@@ -5531,6 +5833,36 @@ class HostedBrowserBroker {
         (!message.consumerToken || message.consumerToken !== consumer.clipboardToken)
       )
         continue;
+      if (consumer.basicInput) {
+        if (message.type === "clipboard.written") continue;
+        if (message.type === "clipboard.result") {
+          if (
+            message.outcome === "cut" ||
+            (message.items &&
+              (message.items.length !== 1 ||
+                message.items.some(
+                  (item) => item.type !== "text/plain" || item.name !== undefined,
+                )))
+          )
+            continue;
+          if (message.items) {
+            if (consumer.basicClipboardResults.size >= 32)
+              consumer.basicClipboardResults.delete(
+                consumer.basicClipboardResults.keys().next().value!,
+              );
+            consumer.basicClipboardResults.set(message.operationId, {
+              next: 0,
+              total: editingClipboardPartCount(message.items),
+            });
+          }
+        }
+        if (message.type === "clipboard.part") {
+          const permit = consumer.basicClipboardResults.get(message.part.operationId);
+          if (!permit || message.part.index !== permit.next) continue;
+          if (++permit.next === permit.total)
+            consumer.basicClipboardResults.delete(message.part.operationId);
+        }
+      }
       // A viewer names the surface it shows only by subscribing; until then a
       // targeted viewer would take the active surface's editing for its own.
       if (
@@ -5580,6 +5912,7 @@ class HostedBrowserBroker {
               consumer.passkeys,
               consumer.clipboardToken,
               consumer.popups,
+              { basicInput: consumer.basicInput, surfaceState: consumer.surfaceState },
             ),
           ),
         )
@@ -5720,6 +6053,7 @@ class HostedBrowserBroker {
     }
     if (
       !outlet.editing &&
+      !outlet.basicInput &&
       (editingClientKinds.has(message.type) ||
         (message.type === "input.key" &&
           (message.modifiers.includes("primary") ||
@@ -5731,6 +6065,7 @@ class HostedBrowserBroker {
       );
     if (
       !outlet.clipboard &&
+      !outlet.basicInput &&
       (message.type === "clipboard.copy" ||
         message.type === "clipboard.cut" ||
         message.type === "clipboard.paste-data" ||
@@ -5740,6 +6075,24 @@ class HostedBrowserBroker {
         new OpensteerError({
           code: "forbidden",
           message: "The engine clipboard was not negotiated.",
+        }),
+      );
+    if (
+      outlet.basicInput &&
+      (!browserBasicInputAllows(message) ||
+        (message.type === "clipboard.part" &&
+          !outlet.clipboardOperations.has(message.part.operationId)))
+    )
+      return outlet.sendText(
+        JSON.stringify({
+          type: "browser.error",
+          error: {
+            code: "conflict",
+            reason: "unsupported-operation",
+            message:
+              "Basic input supports only text, backward deletion, Enter, select-all, composition and plain-text copy/paste.",
+            retryable: false,
+          },
         }),
       );
     if (message.type === "stream.subscribe" || message.type === "stream.unsubscribe") {
@@ -5826,7 +6179,11 @@ class HostedBrowserBroker {
               surfaceId ? surface.id === surfaceId : surface.active,
             );
       const context = shown && this.#editingContexts.get(shown.id);
-      if (outlet.editing && context && context.geometryRevision === shown.geometryRevision)
+      if (
+        (outlet.editing || outlet.basicInput) &&
+        context &&
+        context.geometryRevision === shown.geometryRevision
+      )
         void outlet.sendText(JSON.stringify(context)).catch(() => undefined);
       outlet.frameWindow = frameWindow;
       outlet.captureRegion = captureRegion;
@@ -5917,6 +6274,28 @@ class HostedBrowserBroker {
           }),
         );
     }
+    const addressedSurface =
+      "surfaceId" in message && message.surfaceId
+        ? message.surfaceId
+        : (outlet.surfaceId ?? this.#snapshot?.surfaces.find((surface) => surface.active)?.id);
+    if (
+      addressedSurface &&
+      message.type !== "input.cancel" &&
+      this.#snapshot?.surfaces.some(
+        (surface) => surface.id === addressedSurface && surface.state === "suspended",
+      )
+    )
+      return outlet.sendText(
+        JSON.stringify({
+          type: "browser.error",
+          error: {
+            code: "conflict",
+            reason: "target-suspended",
+            message: "The tab is suspended.",
+            retryable: false,
+          },
+        }),
+      );
     if (
       !outlet.clipboard &&
       this.clipboard &&
@@ -6027,7 +6406,7 @@ class HostedBrowserBroker {
     }
     return this.#sendCommand(
       (message.type === "input.key" && this.targetedStreaming) ||
-        ((this.#snapshot?.editingVersion !== undefined || outlet.editing) &&
+        ((this.#snapshot?.editingVersion !== undefined || outlet.editing || outlet.basicInput) &&
           (message.type === "input.pointer" ||
             message.type === "input.key" ||
             message.type === "input.command" ||
@@ -6331,6 +6710,7 @@ class HostedBrowserBroker {
         }
       }
       this.#cdpTerminalListeners.clear();
+      for (const attachmentId of this.#actionListeners.keys()) this.detachActions(attachmentId);
       this.#runtimeReady = false;
       for (const pending of this.#pendingStateImports.values()) {
         clearTimeout(pending.timeout);
@@ -6470,6 +6850,9 @@ export class BrowserConsumerOutlet {
   surfaceId: string | null = null;
   captureRegion = false;
   rasterDensity: BrowserRasterDensity = 2;
+  basicInput = false;
+  surfaceState = false;
+  readonly basicClipboardResults = new Map<string, { next: number; readonly total: number }>();
   editing: 1 | 2 | undefined;
   clipboard = false;
   #captureRefusal: number | null = null;

@@ -1335,6 +1335,9 @@ importers:
 
   packages/browser-core:
     devDependencies:
+      '@opensteer/protocol':
+        specifier: workspace:*
+        version: link:../protocol
       '@types/node':
         specifier: 'catalog:'
         version: 26.2.0

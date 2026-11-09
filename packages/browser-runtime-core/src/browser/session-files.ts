@@ -1,6 +1,6 @@
 import { open, mkdir, rm } from "node:fs/promises";
 import path from "node:path";
-import { z } from "zod";
+import { BrowserStageFileParametersSchema as StageFileParametersSchema } from "@opensteer/protocol/browser-actions";
 import { BrowserRuntimeError } from "../errors.js";
 
 /** The CDP method a controller answers itself to move file bytes onto this machine. */
@@ -8,30 +8,6 @@ export const stageFileMethod = "Opensteer.stageFile";
 
 export const maximumStagedFileChunkBytes = 256 * 1_024;
 export const maximumStagedSessionBytes = 512 * 1_024 * 1_024;
-
-const base64 = /^[A-Za-z0-9+/]*={0,2}$/u;
-
-const StageFileParametersSchema = z.strictObject({
-  data: z
-    .string()
-    .max(Math.ceil(maximumStagedFileChunkBytes / 3) * 4)
-    .regex(base64),
-  fileId: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/u),
-  name: z
-    .string()
-    .min(1)
-    .refine(
-      (name) =>
-        Buffer.byteLength(name, "utf8") <= 255 &&
-        name !== "." &&
-        name !== ".." &&
-        !/[/\\\0]/u.test(name),
-      "File name must be one path segment.",
-    ),
-  offset: z.number().int().nonnegative().max(maximumStagedSessionBytes),
-  /** Present only on the last chunk: the whole file's byte length. */
-  size: z.number().int().nonnegative().max(maximumStagedSessionBytes).optional(),
-});
 
 interface StagedFile {
   readonly name: string;

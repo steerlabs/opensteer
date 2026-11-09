@@ -20,6 +20,8 @@ interface IssueBrowserAttachTicketInput {
   readonly navigationAttributionVersion?: 1;
   readonly popupFollowVersion?: 1;
   readonly editingVersion?: 1 | 2;
+  readonly basicInput?: 1;
+  readonly surfaceState?: 1;
   readonly clipboard?: boolean;
   readonly workspaceTabRestoreVersion?: 1;
   readonly initialSurfaceId?: BrowserAttachTicketClaims["initialSurfaceId"];
@@ -119,6 +121,8 @@ export class BrowserAttachTicketSigner {
     const issuedAt = this.#clock();
     const claims: BrowserAttachTicketClaims = BrowserAttachTicketClaimsSchema.parse({
       access: input.access,
+      ...(input.basicInput === 1 ? { basicInput: 1 } : {}),
+      ...(input.surfaceState === 1 ? { surfaceState: 1 } : {}),
       ...(input.passkeys === 1 ? { passkeys: 1 } : {}),
       ...(input.editingVersion
         ? {

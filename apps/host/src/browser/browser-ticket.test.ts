@@ -8,6 +8,25 @@ import { describe, expect, it } from "vitest";
 import { BrowserAttachTicketSigner } from "./browser-ticket.js";
 
 describe("BrowserAttachTicketSigner", () => {
+  it("preserves narrow input and surface-state negotiation without granting full editing", () => {
+    const keys = generateKeyPairSync("ed25519");
+    const signer = new BrowserAttachTicketSigner({ keyId: "phone", privateKey: keys.privateKey });
+    const ticket = signer.issue({
+      access: "read-write",
+      identity: { kind: "fresh" },
+      runtimeId: "phone",
+      sessionId: createBrowserSessionId(),
+      subject: "usr_owner",
+      basicInput: 1,
+      surfaceState: 1,
+    });
+    const claims = BrowserAttachTicketClaimsSchema.parse(
+      JSON.parse(Buffer.from(ticket.split(".")[1]!, "base64url").toString()),
+    );
+    expect(claims).toMatchObject({ basicInput: 1, surfaceState: 1 });
+    expect(claims).not.toHaveProperty("editingVersion");
+    expect(claims).not.toHaveProperty("clipboard");
+  });
   it("binds initial navigation to the signed ticket", () => {
     const keys = generateKeyPairSync("ed25519");
     const initialNavigation = { operationKey: "open:1", url: "https://example.test/" };

@@ -6,13 +6,24 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./frame-limits": "./src/browser-frame-limits.ts"
+    "./frame-limits": "./src/browser-frame-limits.ts",
+    "./bytes": "./src/bytes.ts",
+    "./session-cdp-router": "./src/portable-session-cdp-router.ts",
+    "./agent-cdp-policy": "./src/agent-cdp-policy.ts",
+    "./agent-cdp-allowlist": "./src/agent-cdp-allowlist.ts",
+    "./execution-contexts": "./src/execution-contexts.ts",
+    "./key-codes": "./src/key-codes.ts",
+    "./input-lane": "./src/input-lane.ts",
+    "./page-policy": "./src/page-policy.ts",
+    "./attach-ticket-policy": "./src/attach-ticket-policy.ts",
+    "./latest-frame-stream": "./src/latest-frame-stream.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "devDependencies": {
+    "@opensteer/protocol": "workspace:*",
     "@types/node": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"

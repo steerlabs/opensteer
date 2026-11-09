@@ -19,9 +19,15 @@ export function browserViewerMessage(
   passkeys?: "native" | "notice",
   consumerToken?: string,
   popups = false,
+  negotiation: { readonly basicInput: boolean; readonly surfaceState: boolean } = {
+    basicInput: false,
+    surfaceState: false,
+  },
 ): BrowserServerMessage {
   if (message.type === "browser.snapshot") {
     const {
+      basicInput: _basicInput,
+      surfaceState: _surfaceState,
       navigationAttributionVersion: _navigationAttributionVersion,
       editingVersion: _editingVersion,
       clipboard: _clipboard,
@@ -39,6 +45,10 @@ export function browserViewerMessage(
         : editing === 1
           ? { ...baseline, editingVersion: 1 }
           : baseline;
+    if (negotiation.basicInput && message.type === "browser.snapshot")
+      message = { ...message, basicInput: 1 };
+    if (negotiation.surfaceState && message.type === "browser.snapshot")
+      message = { ...message, surfaceState: 1 };
     if (passkeys) message = { ...message, passkeys, passkeyConsumerToken: consumerToken };
     if (popups) message = { ...message, consumerToken };
   }
@@ -47,7 +57,8 @@ export function browserViewerMessage(
   return {
     ...message,
     surfaces: message.surfaces.map(
-      ({ canGoBack: _canGoBack, canGoForward: _canGoForward, ...surface }) => surface,
+      ({ canGoBack: _canGoBack, canGoForward: _canGoForward, state, ...surface }) =>
+        negotiation.surfaceState && state !== undefined ? { ...surface, state } : surface,
     ),
   };
 }
