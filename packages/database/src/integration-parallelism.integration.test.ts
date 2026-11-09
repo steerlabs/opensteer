@@ -77,7 +77,7 @@ integration("parallel integration lifecycle", () => {
     await writeFile(
       config,
       `import config from ${JSON.stringify(join(repository, "vitest.integration.config.ts"))};
-export default { ...config, test: { ...config.test, include: [${JSON.stringify(join(import.meta.dirname, `integration-parallelism-fixtures/${scenario.startsWith("deadlock-") ? "deadlock" : "[abc]"}.test-support.ts`))}], maxWorkers: 2 } };\n`,
+export default { ...config, test: { ...config.test, globalSetup: [${JSON.stringify(join(import.meta.dirname, "integration-parallelism-fixtures/setup.test-support.ts"))}], include: [${JSON.stringify(join(import.meta.dirname, `integration-parallelism-fixtures/${scenario.startsWith("deadlock-") ? "deadlock" : "[abc]"}.test-support.ts`))}], maxWorkers: 2 } };\n`,
     );
     const before = await Promise.all(authorities.map(({ pool }) => databases(pool)));
     // The fixture config's maxWorkers sizes the slot databases this journey

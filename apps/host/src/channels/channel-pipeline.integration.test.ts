@@ -39,7 +39,7 @@ import {
 } from "@opensteer/protocol";
 import { sql } from "kysely";
 import { createHash, generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import { CredentialService } from "../identity/credential-service.js";
 import { ChannelService } from "./channel-service.js";
 import { MessagingRelayHub, type MessagingRelayPeer } from "./messaging-relay-hub.js";
@@ -146,7 +146,7 @@ integration("messaging pipeline", () => {
     const run = await waitForRun(fixture.workspaceId);
     expect(run).toMatchObject({ status: "queued" });
     expect(run.replyTarget).not.toBeNull();
-    expect(fixture.queued).toEqual([environmentId]);
+    await vi.waitFor(() => expect(fixture.queued).toEqual([environmentId]), 10_000);
 
     // 3. What the agent writes on the way stays in the Thread. When the Run
     //    completes its reply is sent, and a reply longer than Slack accepts
@@ -1170,7 +1170,7 @@ integration("messaging pipeline", () => {
       .where("id", "=", run.threadId)
       .executeTakeFirstOrThrow();
     expect(thread.environmentId).toBe(localEnvironmentId);
-    expect(fixture.queued).toEqual([localEnvironmentId]);
+    await vi.waitFor(() => expect(fixture.queued).toEqual([localEnvironmentId]), 10_000);
 
     await service.close();
     hub.close();
@@ -1216,6 +1216,14 @@ integration("messaging pipeline", () => {
     const queued: string[] = [];
     const computer = { online: input.computerOnline ?? true };
     const hub = new MessagingRelayHub();
+    let service: ChannelService | undefined;
+    onTestFinished(async () => {
+      try {
+        await service?.close();
+      } finally {
+        hub.close();
+      }
+    });
     const relayRequests: { operation: string; payload: unknown }[] = [];
     const peer: MessagingRelayPeer = {
       close: () => undefined,
@@ -1288,7 +1296,7 @@ integration("messaging pipeline", () => {
       environmentId: onlineEnvironmentId,
       expectedRevisions: new Map([[harness.id, harness.runtimeRevision]]),
     });
-    const service = new ChannelService({
+    service = new ChannelService({
       canonicalOrigin,
       channels,
       credentials,

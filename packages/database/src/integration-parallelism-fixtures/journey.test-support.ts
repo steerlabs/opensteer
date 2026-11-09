@@ -18,7 +18,6 @@ export function databaseJourney(label: string): void {
     ]) {
       const pool = new Pool({ connectionString, max: 1 });
       try {
-        await pool.query("create table if not exists parallel_sentinel (label text primary key)");
         await pool.query("truncate parallel_sentinel");
         await pool.query("insert into parallel_sentinel values ($1)", [label]);
         writeFileSync(join(directory, `${kind}-${label}.ready`), "");
