@@ -17,6 +17,8 @@ export class DesktopBrowserProfileErasure {
   readonly #dataDirectory: string;
   readonly #releaseState: (root: string) => BrowserProfileReleaseState;
   readonly #mutations = new MutationQueue();
+  /** Deployments whose engine did not stop; only a new process can erase under them. */
+  readonly #held = new Set<DeploymentId>();
 
   constructor(
     dataDirectory: string,
@@ -26,8 +28,9 @@ export class DesktopBrowserProfileErasure {
     this.#releaseState = releaseState;
   }
 
-  erase(deploymentId: DeploymentId): Promise<void> {
+  erase(deploymentId: DeploymentId, engine: "stopped" | "held" = "stopped"): Promise<void> {
     return this.#mutations.run(async () => {
+      if (engine === "held") this.#held.add(deploymentId);
       await this.#verifyParents();
       await ensurePrivateDirectory(this.#markerDirectory());
       await replacePrivateFileAtomically(this.#marker(deploymentId), '{"version":1}\n');
@@ -64,6 +67,7 @@ export class DesktopBrowserProfileErasure {
     const root = desktopDeploymentPaths(this.#dataDirectory, deploymentId).browserProfilesDirectory;
     await realDirectoryIfPresent(path.dirname(root));
     if (await realDirectoryIfPresent(root)) {
+      if (this.#held.has(deploymentId)) return false;
       if (this.#releaseState(await realpath(root)) === "retained-until-exit") return false;
       await rm(root, { force: true, recursive: true });
       await syncDirectory(path.dirname(root));

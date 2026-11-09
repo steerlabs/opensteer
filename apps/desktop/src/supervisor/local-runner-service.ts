@@ -215,6 +215,8 @@ interface RunnerSlot {
   browser: PersonalLocalBrowserHandle | undefined;
   /** Every browser shutdown asked for so far, chained; never dropped. */
   browserShutdown: Promise<void> | undefined;
+  /** A browser whose stop failed may still hold its profiles open. */
+  browserHeld: boolean;
   child: UtilityProcessLike | undefined;
   /**
    * The Deployment whose computer-use bridge this slot holds, while it holds
@@ -1077,7 +1079,7 @@ export class LocalRunnerService {
     }
     await slot.browserShutdown;
     await slot.computerUseShutdown;
-    await this.#profileErasure.erase(deploymentId);
+    await this.#profileErasure.erase(deploymentId, slot.browserHeld ? "held" : "stopped");
     await this.#removePreference(deploymentId);
     await rm(this.#deploymentDataDirectory(deploymentId), { force: true, recursive: true });
     this.#resetIdentity(slot);
@@ -1095,6 +1097,7 @@ export class LocalRunnerService {
       activeTarget: undefined,
       browser: undefined,
       browserShutdown: undefined,
+      browserHeld: false,
       child: undefined,
       childExit: undefined,
       computerUseShutdown: undefined,
@@ -1375,11 +1378,14 @@ function stopSlotBrowser(slot: RunnerSlot, log: ShutdownLog): Promise<void> {
   slot.browser = undefined;
   const previous = slot.browserShutdown ?? Promise.resolve();
   if (!browser) return previous;
-  const shutdown = previous.then(() => browser.stop());
-  slot.browserShutdown = shutdown;
-  return shutdown.catch((error: unknown) =>
-    logShutdownError(log, "local-browser", browser.runtimeId, error),
+  const shutdown = previous.then(() =>
+    browser.stop().catch((error: unknown) => {
+      slot.browserHeld = true;
+      logShutdownError(log, "local-browser", browser.runtimeId, error);
+    }),
   );
+  slot.browserShutdown = shutdown;
+  return shutdown;
 }
 
 /** True when `settled` resolved inside the bound, false when the bound won. */

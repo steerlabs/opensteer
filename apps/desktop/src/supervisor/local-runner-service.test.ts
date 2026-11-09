@@ -863,34 +863,44 @@ describe("LocalRunnerService", () => {
     },
   );
 
-  it("preserves profiles if the browser engine cannot stop", async () => {
+  it("removes this Mac when its browser engine cannot stop, and erases its profiles at the next start", async () => {
     const directory = await temporaryDirectory();
     const targets = mutableTargetAuthority();
     const target = targets.add("https://failed-stop.opensteer.test");
     const root = desktopDeploymentPaths(directory, target.deploymentId).browserProfilesDirectory;
     await mkdir(root, { recursive: true });
-    await writeFile(path.join(root, "sign-ins"), "preserved");
-    const running = fixture(await configuration(directory), targets, undefined, async (input) => ({
-      bridgeToken: "t".repeat(43),
-      runtimeId: input.runtimeId,
-      signIn: false,
-      url: new URL("http://127.0.0.1:7788/"),
-      stop: async () => {
-        throw new Error("engine did not stop");
-      },
-    }));
+    await writeFile(path.join(root, "sign-ins"), "held");
+    const erasure = new DesktopBrowserProfileErasure(directory);
+    const running = fixture(
+      await configuration(directory),
+      targets,
+      undefined,
+      async (input) => ({
+        bridgeToken: "t".repeat(43),
+        runtimeId: input.runtimeId,
+        signIn: false,
+        url: new URL("http://127.0.0.1:7788/"),
+        stop: async () => {
+          throw new Error("engine did not stop");
+        },
+      }),
+      { profileErasure: erasure },
+    );
     const starting = running.service.start(startInput(target.deploymentId));
     await eventually(() => running.children.length === 1);
     const child = childAt(running.children, 0);
     connect(child);
     await starting;
     const removing = running.service.remove(target.deploymentId);
-    const outcome = expect(removing).rejects.toThrow("engine did not stop");
     await eventually(() => hasStopMessage(child));
     child.emit("exit", 0);
-    await outcome;
-    await expect(readFile(path.join(root, "sign-ins"), "utf8")).resolves.toBe("preserved");
-    await expect(running.service.hasEnrolledRunners()).resolves.toBe(true);
+    await removing;
+    await expect(running.service.hasEnrolledRunners()).resolves.toBe(false);
+    // The engine may still hold these files, so this process never deletes them.
+    await expect(readFile(path.join(root, "sign-ins"), "utf8")).resolves.toBe("held");
+    await expect(erasure.prepare(target.deploymentId)).rejects.toThrow("Restart Opensteer");
+    await new DesktopBrowserProfileErasure(directory).finishPending();
+    expect(existsSync(root)).toBe(false);
   });
 
   it("refuses erasure through a replaced profile root", async () => {
