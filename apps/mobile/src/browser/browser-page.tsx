@@ -38,7 +38,6 @@ import {
   Share,
   StyleSheet,
   TextInput,
-  useWindowDimensions,
   View,
   type LayoutChangeEvent,
 } from "react-native";
@@ -78,7 +77,7 @@ import { Symbol } from "../ui/symbol.js";
 import { AddressCapsule, AddressEditor, type OpenTabSuggestion } from "./address-bar.js";
 import { BrowserStream, submitBrowserCommand, useBrowserFeedState } from "./browser-stream.js";
 import { ChromeSignInAction } from "./chrome-sign-in-action.js";
-import { FollowBand, TaskTabChips } from "./pair-chrome.js";
+import { FollowBand } from "./pair-chrome.js";
 import { pageSite, viewedPage } from "./surface-route.js";
 import { ToolbarAsk, ToolbarLeave, useNativeBarAway } from "./place-bar.js";
 import { Toolbar, ToolbarButton, ToolbarCapsule, ToolbarMenu } from "./toolbar.js";
@@ -89,22 +88,10 @@ const defaultPageAspect = 16 / 9;
 const refusedNotice = "The page is reconnecting. Try again in a moment.";
 /** Where a page's bar moves from under it to over it, as Safari's does on iPad. */
 const regularWidth = 600;
-/**
- * What the paired bar's fixed parts take — its padding, Back, Tabs and More,
- * the gaps between them and the narrowest address worth reading — leaving the
- * rest to the task's other tabs.
- */
-const pairedBarFixed = 2 * space[12] + 3 * touchTarget + 4 * space[8] + 160;
-
-/**
- * What the page's bar adds while a Thread is beside it: the task's other tabs,
- * and in More, Ask and whose Thread that is.
- */
+/** What the page's bar adds while a Thread is beside it. */
 export interface PagePairChrome {
   /** Ask, and whose Thread is beside the page, as More's own sections. */
   readonly menu: readonly NativeMenuSection[];
-  /** This task's tabs in this browser; the one in front is left out of the chips. */
-  readonly taskTabIds: readonly string[];
 }
 
 /** Keeping up with the Thread's agent as it moves between tabs. */
@@ -518,7 +505,6 @@ export function BrowserPage(props: {
   const follow = props.follow ?? null;
   // The bar is over the page where it is wide, and always while a Thread is beside it.
   const top = regular || pair !== null;
-  const { fontScale } = useWindowDimensions();
   const reduceMotion = useReducedMotion();
   const arrival = props.arrival ?? 0;
   // A phone's bar has room for what it is used for most; Drag/select waits in More.
@@ -653,14 +639,6 @@ export function BrowserPage(props: {
     <Toolbar edge={top ? "top" : "bottom"} testID="page-toolbar">
       <ToolbarLeave />
       {address}
-      {pair === null ? null : (
-        <TaskTabChips
-          fontScale={fontScale}
-          onSelect={onSwitchTab}
-          room={width - pairedBarFixed}
-          tabs={tabs.filter(({ id }) => id !== tabId && pair.taskTabIds.includes(id))}
-        />
-      )}
       {tabsButton}
       {pair === null ? <ToolbarAsk /> : null}
       {dragButtonFits ? (

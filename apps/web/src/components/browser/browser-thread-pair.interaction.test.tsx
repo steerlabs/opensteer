@@ -55,7 +55,7 @@ it("follows the docked task's agent in place, pauses for the person's tab and re
   expect(following()).not.toBeNull();
   expect(band()).toBeNull();
 
-  await click(element(`button[aria-label="Show ${confirm.title}"]`));
+  await click(element(`.side-tab[data-place-key="${placeKey(confirm.id)}"] .side-tab__main`));
   expect(shownTab()).toBe(confirm.id);
   expect(following()).toBeNull();
   expect(band()?.textContent).toContain(`Agent is on ${reading.title}`);
@@ -78,45 +78,6 @@ it("leaves the stage alone with the conversation put away", async () => {
   const { threadId, reading, placeKey } = taskBrowser();
   await click(element('button[aria-label="Hide the conversation"]'));
   expect(following()).toBeNull();
-  expect(document.querySelector(".browser-task-tabs")).toBeNull();
   await act(async () => client.actInPlace(threadId, placeKey(reading.id)));
   expect(band()).toBeNull();
-});
-
-it("pauses following before opening the task tab menu", async () => {
-  await mount(() => {
-    const { session, threadId, acting } = taskBrowser();
-    return `/threads/${threadId}?panel=browser&browser=${session.id}&browserTab=${acting.id}`;
-  });
-  const { threadId, acting, reading, placeKey } = taskBrowser();
-  expect(following()).not.toBeNull();
-  await click(element('button[aria-label="All tabs in this browser"]'));
-  await act(async () => client.actInPlace(threadId, placeKey(reading.id)));
-  expect(shownTab()).toBe(acting.id);
-  expect(following()).toBeNull();
-  expect(band()?.textContent).toContain(reading.title);
-});
-
-it("keeps the browser's other tabs reachable when the shown tab is the task's only one", async () => {
-  await mount(() => {
-    const { session, threadId, acting } = taskBrowser();
-    return `/threads/${threadId}?panel=browser&browser=${session.id}&browserTab=${acting.id}`;
-  });
-  const { session, confirm, reading } = taskBrowser();
-  const catalog = session.tabCatalog!;
-  await act(async () => {
-    await client.closeBrowserTab(session.id, confirm.id, {
-      generation: catalog.generation,
-      revision: catalog.revision,
-    });
-  });
-  expect(document.querySelector(`button[aria-label="Show ${confirm.title}"]`)).toBeNull();
-  await click(element('button[aria-label="All tabs in this browser"]'));
-  expect(following()).toBeNull();
-  const row = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find((item) =>
-    item.textContent?.includes(reading.title),
-  );
-  if (row === undefined) throw new Error(`The menu never listed ${reading.title}`);
-  await click(row);
-  expect(shownTab()).toBe(reading.id);
 });

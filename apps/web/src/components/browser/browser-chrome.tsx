@@ -48,7 +48,6 @@ export function BrowserToolbar({
   onNavigated,
   onReload,
   onStop,
-  tabs = null,
   trailing,
 }: {
   activeTab: BrowserTabSummary | undefined;
@@ -77,8 +76,6 @@ export function BrowserToolbar({
   onNavigated?: () => void;
   onReload: () => void;
   onStop?: () => void;
-  /** Beside the address: the docked task's other tabs. */
-  tabs?: ReactNode;
   trailing?: ReactNode;
 }) {
   const [editing, setEditing] = useState(false);
@@ -151,7 +148,6 @@ export function BrowserToolbar({
           url={url}
         />
       )}
-      {tabs}
       {find ? <BrowserFind controls={find} /> : null}
       {notice ? (
         <div className="browser-notice" role="status">
