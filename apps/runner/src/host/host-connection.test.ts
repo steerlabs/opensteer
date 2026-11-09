@@ -1797,6 +1797,98 @@ describe("runnerWebSocketUrl", () => {
 describe("ReconnectingHostConnection engine rechecks", () => {
   const driverKind = HarnessIdSchema.parse("engine-recheck-test");
 
+  it.each([false, true])(
+    "reconciles the complete set but answers only requested accounts (failure: %s)",
+    async (failure) => {
+      const host = await fakeAgentsHost();
+      const runner = engineRecheckRunner(host.url, () => false);
+      const first = {
+        config: {},
+        driverKind,
+        id: createId("harnessInstance"),
+        name: "First",
+        runtimeRevision: 1,
+        sourceId: "test",
+        stateKind: "ambient" as const,
+      };
+      const second = { ...first, id: createId("harnessInstance"), name: "Second" };
+      const harnesses = [first, second];
+      const catalogFor = (harness: typeof first) =>
+        HarnessInstanceCatalogSchema.parse({
+          detail: "Not installed",
+          driverKind,
+          harnessInstanceId: harness.id,
+          models: [],
+          status: "unavailable",
+        });
+      const full = Promise.withResolvers<readonly ReturnType<typeof catalogFor>[]>();
+      const reconcile = vi
+        .spyOn(runner.runtime, "reconcileHarnesses")
+        .mockImplementation(async () => {
+          if (failure) throw new Error("Cannot reconcile");
+        });
+      vi.spyOn(runner.runtime, "inspectHarnesses").mockImplementation(async (definitions) => {
+        if (definitions.length === 2) return await full.promise;
+        return definitions.map((definition) => catalogFor({ ...first, id: definition.id }));
+      });
+      const abort = new AbortController();
+      const running = runner.connection.run(abort.signal);
+      try {
+        await host.until(() => host.attaches.length === 1, "the Runner attachment");
+        expect(host.agentsModules[0]).toMatchObject({ reconcileHarnessInspection: 1 });
+        host.send(1, { harnesses, requestId: "full", type: "host.reconcile-harnesses" });
+        host.send(1, {
+          harnesses,
+          inspect: [second.id],
+          requestId: "targeted",
+          type: "host.reconcile-harnesses",
+        });
+        host.send(1, {
+          harnesses: [second],
+          inspect: [],
+          requestId: "retire",
+          type: "host.reconcile-harnesses",
+        });
+        await host.until(
+          () =>
+            host.catalogs.some((response) => response.requestId === "targeted") &&
+            host.catalogs.some((response) => response.requestId === "retire"),
+          "targeted and retirement catalog responses",
+        );
+        expect(
+          host.catalogs.find((response) => response.requestId === "targeted")?.catalogs,
+        ).toMatchObject([
+          { harnessInstanceId: second.id, status: failure ? "error" : "unavailable" },
+        ]);
+        expect(host.catalogs.find((response) => response.requestId === "retire")?.catalogs).toEqual(
+          [],
+        );
+        if (!failure)
+          expect(host.catalogs.some((response) => response.requestId === "full")).toBe(false);
+        full.resolve(harnesses.map(catalogFor));
+        await host.until(
+          () => host.catalogs.some((response) => response.requestId === "full"),
+          "the full catalog response",
+        );
+        expect(
+          host.catalogs.find((response) => response.requestId === "full")?.catalogs,
+        ).toHaveLength(2);
+        expect(reconcile.mock.calls.map(([desired]) => desired)).toEqual([
+          harnesses,
+          harnesses,
+          [second],
+        ]);
+        expect(runner.errors).toEqual([]);
+      } finally {
+        full.resolve([]);
+        abort.abort(new Error("test complete"));
+        await running;
+        await runner.runtime.close();
+        await host.close();
+      }
+    },
+  );
+
   it("never reconnects while its engines are unchanged, and re-advertises one installed since its hello with its Runs held", async () => {
     // Only the heartbeat's interval is faked, so each heartbeat is one the test sends.
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
@@ -2058,6 +2150,8 @@ async function fakeAgentsHost() {
   await new Promise<void>((ready) => server.listen(0, "127.0.0.1", ready));
   const address = server.address() as AddressInfo;
   const hellos: unknown[] = [];
+  const agentsModules: unknown[] = [];
+  const catalogs: Extract<RunnerToHostMessage, { type: "runner.harness-catalog" }>[] = [];
   const attaches: unknown[] = [];
   const heartbeats = new Map<number, number>();
   const connections = new Map<
@@ -2088,6 +2182,7 @@ async function fakeAgentsHost() {
       const message = RunnerToHostMessageSchema.parse(JSON.parse(raw.toString("utf8")));
       if (message.type === "runner.enroll" || message.type === "runner.authenticate") {
         hellos.push(message.descriptor.modules.agents?.harnessDrivers);
+        agentsModules.push(message.descriptor.modules.agents);
         const fence = {
           bootId: message.descriptor.bootId,
           connectionGeneration: generation,
@@ -2111,11 +2206,15 @@ async function fakeAgentsHost() {
         attaches.push(message.executions);
       } else if (message.type === "runner.heartbeat") {
         heartbeats.set(generation, (heartbeats.get(generation) ?? 0) + 1);
+      } else if (message.type === "runner.harness-catalog") {
+        catalogs.push(message);
       }
       observed();
     });
   });
   return {
+    agentsModules,
+    catalogs,
     attaches,
     heartbeats: (generation: number) => heartbeats.get(generation) ?? 0,
     hellos,

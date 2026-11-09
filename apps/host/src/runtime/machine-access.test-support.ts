@@ -1172,12 +1172,18 @@ export async function connectCallerMachine(
     if (message.type !== "host.inspect-harnesses" && message.type !== "host.reconcile-harnesses") {
       return;
     }
+    const inspected = message.harnesses.filter(
+      (harness) =>
+        message.type !== "host.reconcile-harnesses" ||
+        message.inspect === undefined ||
+        message.inspect.includes(harness.id),
+    );
     // A reconnect still lists the previous boot's catalog until registration replaces it,
     // so each report names its boot and readiness waits for this one's.
     primary.socket.send(
       JSON.stringify({
         ...primary.fence,
-        catalogs: message.harnesses.map((harness) =>
+        catalogs: inspected.map((harness) =>
           HarnessInstanceCatalogSchema.parse({
             continuationIdentity: {
               continuationKey: "runner:v1:8tErnQuB1d-nw979Rab9a4JN0RE_tKRvI_Rtmy45Bbo",

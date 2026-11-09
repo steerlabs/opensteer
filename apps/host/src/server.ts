@@ -224,6 +224,7 @@ import {
   HarnessCatalogReconciliationOwner,
   harnessInspectionDefinition,
   inspectAndRecordHarnessCatalogs,
+  notifyingHarnessCatalogRecorder,
 } from "./agents/harness-catalogs.js";
 import type { RunnerAuthenticator } from "./agents/runner-authenticator.js";
 import type { SecurityEffectService } from "./agents/security-effect-service.js";
@@ -463,8 +464,12 @@ export async function createHostServer(
   appGateway.installHttp(app);
   app.addHook("onRequest", rejectDuplicateCredentialHeaders);
   await registerResponseCompression(app);
+  const harnessCatalogs = {
+    ...notifyingHarnessCatalogRecorder(dependencies.store, dependencies.realtime),
+    listHarnessInstances: dependencies.store.listHarnessInstances.bind(dependencies.store),
+  };
   const harnessCatalogReconciliations = new HarnessCatalogReconciliationOwner({
-    catalogs: dependencies.store,
+    catalogs: harnessCatalogs,
     onError: (environmentId, error) =>
       app.log.warn({ environmentId, err: error }, "Harness catalog reconciliation failed"),
     runners: dependencies.runners,
@@ -792,7 +797,7 @@ export async function createHostServer(
   ): Promise<void> => {
     if (authentication.status !== "ready") return;
     await dependencies.store.discardHarnessCatalog(target.environment.id, target.harness.id);
-    harnessCatalogReconciliations.schedule(target.environment.id);
+    harnessCatalogReconciliations.schedule(target.environment.id, [target.harness.id]);
   };
 
   /**
@@ -1293,7 +1298,7 @@ export async function createHostServer(
       try {
         await dependencies.store.discardHarnessCatalog(target.environment.id, target.harness.id);
         await inspectAndRecordHarnessCatalogs({
-          catalogs: dependencies.store,
+          catalogs: harnessCatalogs,
           environmentId: target.environment.id,
           fresh: true,
           harnesses: [target.harness],
@@ -2123,7 +2128,7 @@ export async function createHostServer(
           sourceId: source.sourceId,
           stateKind: command.stateKind,
         });
-        harnessCatalogReconciliations.schedule(environment.id);
+        harnessCatalogReconciliations.schedule(environment.id, [harness.id]);
         return { harness: harnessView(harness), type: command.type };
       }
       case "harness.update": {
@@ -2227,7 +2232,7 @@ export async function createHostServer(
           },
           AbortSignal.timeout(30_000),
         );
-        harnessCatalogReconciliations.schedule(environment.id);
+        harnessCatalogReconciliations.schedule(environment.id, []);
         return { type: command.type };
       }
       case "harness.authentication.begin": {
@@ -2290,7 +2295,7 @@ export async function createHostServer(
           command.connectionSlot,
         );
         await dependencies.store.discardHarnessCatalog(target.environment.id, target.harness.id);
-        harnessCatalogReconciliations.schedule(target.environment.id);
+        harnessCatalogReconciliations.schedule(target.environment.id, [target.harness.id]);
         return { ...envelope, type: command.type };
       }
       case "machine.access.update": {
