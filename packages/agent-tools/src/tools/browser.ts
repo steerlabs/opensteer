@@ -29,7 +29,7 @@ export const browser_profile_list = defineAgentTool({
   name: "browser_profile_list",
   title: "List browser profiles",
   description:
-    "Find the named browser profiles this Workspace can use: every owner profile in Main, granted ones in a Project. Open the one that fits the task; if none does, use browser_profile_request. Names never prove a website login; verify there.",
+    "Find browser profiles this Workspace can use: every owner profile in Main, granted ones in a Project. Each home names its device and reachability; profiles open only there. If its home is offline, name the device and stop, never replace the profile. Names never prove a login. Request a profile only when none fits.",
   input: z.strictObject({}),
   output: BrowserProfileListOutputSchema,
   access: "read",
@@ -40,7 +40,7 @@ export const use_card = defineAgentTool({
   name: "use_card",
   title: "Request saved card use",
   description:
-    "Request the person's approval to use a saved card on the checkout site in this Browser Session. Run-only; returns the outcome. On ready, focus each required field and call fillCard(cardRef, field); values never appear in results. Never read back, print, log, copy or save card values, including to files. Approval covers filling, not permission to place an order: the person's request must cover the purchase.",
+    "Request approval to use a saved card on this checkout site, only in the main computer's browser. Run-only; returns the outcome. On ready, focus each field and call fillCard(cardRef, field); values never appear in results. Never read back, print, log, copy or save card values. Approval covers filling, not permission to buy: the person's request must cover the purchase.",
   input: z.strictObject({
     site: z.string().trim().min(1).max(2048),
     reason: z.string().trim().min(1).max(500),
@@ -56,7 +56,7 @@ export const sign_in = defineAgentTool({
   name: "sign_in",
   title: "Request sign-in",
   description:
-    "Request saved-login or Chrome sign-in authorization from the person. Run-only; returns the sign-in outcome. Only a passwords field means Opensteer Passwords can help, and says what it needs. Do not poll, repeat or route around the Request. Use ready loginRef only for sealed field filling; never read/reveal credentials. Verify the account. Open a website sign-in page first; omit sessionId for a genuine Mac/phone app.",
+    "Request saved-login or Chrome sign-in authorization. Saved passwords fill websites only in the main computer's browser. Run-only; returns the outcome. Only a passwords field means Passwords can help, and says what it needs. Do not poll, repeat or route around the Request. Use ready loginRef only for sealed field filling; never read/reveal credentials. Verify the account. Open a website sign-in page first; omit sessionId for a genuine Mac/phone app.",
   input: z
     .strictObject({
       reason: z.string().trim().min(1).max(500).describe("Why this task needs the account."),
@@ -132,7 +132,7 @@ export const browser_session_open = defineAgentTool({
   name: "browser_session_open",
   title: "Open a browser session",
   description:
-    "Attach by sessionId, or create with profileId or fresh: true (Guest); choose one. Returns session/placement and wasExisting. Drive with Browser Harness. Sessions outlive Runs; Guest data is lost on close. Identity/placed computer stay fixed. Report update/access refusals; never bypass with Guest, another profile or computer.",
+    "Attach by sessionId, or create with profileId or fresh: true (Guest); choose one. A profile opens only on its home, regardless of environmentId. Guest needs a browser computer running agents. Returns session/placement and wasExisting. Sessions outlive Runs; Guest data is lost on close. Name an offline home; never bypass a refusal with Guest, another profile or computer.",
   input: z
     .strictObject({
       environmentId: EnvironmentIdSchema.optional().describe(

@@ -18,11 +18,13 @@ To continue work, reuse the session ID from earlier in the Thread or find it wit
 
 Several Runs may share a session; `activeAttachmentCount` is not a lock. Sessions outlive Runs. Close a session only when asked or when it is deliberately disposable. Main sees the owner's sessions across Workspaces. Delegated Runs and specialists use the same tools within their inherited reach.
 
-A profile's data stays on its computer, fixed at first open. `environmentId` picks the computer only for a profile that has never been opened, or for Guest; it defaults to this Run's machine, else the only connected browser. It never moves a profile or changes identity.
+A profile's home is chosen at creation and never changes. The listing's `home` gives its name and reachability; null means a legacy server profile not yet placed. A homed profile ignores `environmentId` and opens only on its home, even on a device running no agents. Guest and legacy-unplaced agent opens require an eligible device currently running agents; `environmentId` can choose among those.
 
 ## Failures
 
 A browser error is about that session: read its message, which says what to do next. Never answer a failure by requesting a profile, substituting Guest, or switching profile or computer. “Update this computer to open this profile” needs an update on the profile's computer: report it.
+
+`browser-profile-home-unavailable` names the home device. Tell the person it must reconnect; do not request a new profile or move sign-ins.
 
 Guest sign-ins cannot be saved into a profile. To keep a sign-in, open the right named profile before signing in. Never offer to convert or copy Guest.
 

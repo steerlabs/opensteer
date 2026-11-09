@@ -6,6 +6,7 @@ import { type BrowserCookie } from "@opensteer/browser-profile/cookies";
 import {
   OpensteerError,
   UserIdSchema,
+  RunnerIdSchema,
   type AgentEvent,
   type AuthSessionId,
   type BrowserAccessSuggestion,
@@ -306,6 +307,7 @@ export interface BrowserSessionRepository {
     }>;
   };
   createBrowserProfile(input: {
+    readonly homeRunnerId?: RunnerId;
     readonly idempotencyKey: string;
     readonly name: string;
     readonly ownerId: UserId;
@@ -386,6 +388,7 @@ export interface BrowserSessionRepository {
     ownerId: UserId,
   ): Promise<{ readonly id: WorkspaceId; readonly kind: "main" | "project" } | null>;
   listBrowserProfiles(ownerId: UserId): Promise<readonly BrowserProfileRecord[]>;
+  listEligibleBrowserRunners: OpensteerStore["listEligibleBrowserRunners"];
   renameBrowserProfile(input: {
     readonly name: string;
     readonly ownerId: UserId;
@@ -486,7 +489,7 @@ export interface BrowserRuntimeTarget {
   connect(ticket: string): BrowserRuntimeConnection;
 }
 
-export type BrowserRuntimePlacement = BrowserPlacement;
+export type BrowserRuntimePlacement = BrowserPlacement & { readonly agents?: boolean };
 
 export interface BrowserRuntimeTargetResolver {
   placements(): readonly BrowserRuntimePlacement[];
@@ -549,6 +552,8 @@ export interface BrowserSignInTarget {
   readonly profileName: string | null;
   readonly live: boolean;
   readonly stateImport: boolean;
+  readonly main: boolean;
+  readonly engine?: BrowserEngine;
   /** The session's browser runs saved-password sign-ins on its computer. */
   readonly cardFill?: boolean;
   readonly signIn: boolean;
@@ -573,6 +578,7 @@ type BrowserCdpWireResponse = Extract<
 interface BrowserServiceOptions {
   readonly hostOrigin: URL;
   readonly personal?: boolean;
+  readonly profileRequestRunner?: (runId: RunId) => Promise<RunnerId | null>;
   readonly history?: BrowserHistoryStore;
   readonly onHistoryChanged?: (ownerId: UserId, profileId: BrowserProfileId) => void;
   readonly passkeys?: boolean;
@@ -644,6 +650,8 @@ interface BrowserActor {
 }
 
 export class BrowserService {
+  readonly #personal: boolean;
+  readonly #profileRequestRunner: BrowserServiceOptions["profileRequestRunner"];
   readonly #nativeActivity = new Map<
     string,
     { activity: PlaceActivity; ownerId: UserId; title: string; timer: (() => void) | null }
@@ -721,6 +729,8 @@ export class BrowserService {
   #operationTail = Promise.resolve();
 
   constructor(options: BrowserServiceOptions) {
+    this.#personal = options.personal === true;
+    this.#profileRequestRunner = options.profileRequestRunner;
     this.#localProfiles = options.localProfiles;
     this.#eraseLocalProfiles = options.eraseLocalProfiles;
     this.#passkeys = options.passkeys === true;
@@ -822,10 +832,11 @@ export class BrowserService {
   }
 
   async bootstrap(ownerId: UserId): Promise<HostedBrowserBootstrap> {
-    const [profiles, sessions, grants] = await Promise.all([
+    const [profiles, sessions, grants, homes] = await Promise.all([
       this.#repository.listBrowserProfiles(ownerId),
       this.#repository.listBrowserSessions(ownerId),
       this.#repository.listActiveBrowserProfileGrants(ownerId),
+      this.#repository.listEligibleBrowserRunners(ownerId),
     ]);
     if (
       profiles.length > maxBrowserProfiles ||
@@ -849,14 +860,16 @@ export class BrowserService {
       this.#tabGroups?.layout(ownerId),
     ]);
     const bootstrap: HostedBrowserBootstrap = {
+      profileHomes: homes.map((home) => home.id),
       ...(workspaceTabs ? { workspaceTabRestoreVersion: 1, workspaceTabs } : {}),
       ...(tabGroups ? { tabGroupsVersion: 1, tabGroups } : {}),
       ...(this.#localProfiles
         ? { profileDeletions: await this.#localProfiles.pendingDeletions(ownerId) }
         : {}),
       profileGrants: grants.map(publicProfileGrant),
-      available: !this.#closed && this.#placements().some((placement) => placement.available),
-      placements: this.#placements(),
+      available:
+        !this.#closed && this.#eligiblePlacements(homes).some((placement) => placement.available),
+      placements: this.#eligiblePlacements(homes).map(publicPlacement),
       profiles: profiles.map(publicProfile),
       sessions: sessions.map((session) => ({
         tabCatalog: this.#catalog(ownerId, session.id),
@@ -1049,7 +1062,10 @@ export class BrowserService {
     if (!group) throw new OpensteerError({ code: "not_found", message: "Browser tabs not found." });
     if (group.unavailableReason)
       throw new OpensteerError({ code: "conflict", message: group.unavailableReason });
-    if (previous.profileId && !(await repository.getBrowserProfile(previous.profileId, ownerId)))
+    const profile = previous.profileId
+      ? await repository.getBrowserProfile(previous.profileId, ownerId)
+      : null;
+    if (previous.profileId && !profile)
       throw new OpensteerError({
         code: "not_found",
         message: "This browser profile is no longer available.",
@@ -1058,6 +1074,13 @@ export class BrowserService {
       throw new OpensteerError({
         code: "conflict",
         message: "This page address cannot be reopened.",
+      });
+    const homes = await repository.listEligibleBrowserRunners(ownerId);
+    if (profile?.homeRunnerId) this.#requireProfileHome(profile, profile.homeRunnerId, homes);
+    if (!homes.some((home) => home.id === previous.runnerId))
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "This browser computer is no longer available.",
       });
     const target = this.#resolveTarget(placementOf(previous));
     if (!target)
@@ -1144,11 +1167,35 @@ export class BrowserService {
 
   /** Only people create profiles; every device of theirs learns of it, not just the one that asked. */
   async createProfile(input: {
+    readonly homeRunnerId?: RunnerId;
     readonly name: string;
     readonly ownerId: UserId;
     readonly idempotencyKey: string;
   }): Promise<BrowserProfile> {
-    const profile = await this.#repository.createBrowserProfile(input);
+    if (!input.homeRunnerId && this.#repository instanceof OpensteerStore) {
+      const previous = await this.#repository.database
+        .selectFrom("commands")
+        .select("payload")
+        .where("requestedBy", "=", input.ownerId)
+        .where("idempotencyKey", "=", input.idempotencyKey)
+        .executeTakeFirst();
+      if (previous) {
+        const request = z
+          .object({ request: z.object({ homeRunnerId: z.string().optional() }) })
+          .safeParse(previous.payload);
+        const homeRunnerId =
+          request.success && request.data.request.homeRunnerId
+            ? RunnerIdSchema.parse(request.data.request.homeRunnerId)
+            : undefined;
+        const profile = await this.#repository.createBrowserProfile({
+          ...input,
+          ...(homeRunnerId ? { homeRunnerId } : {}),
+        });
+        return publicProfile(profile);
+      }
+    }
+    const homeRunnerId = input.homeRunnerId ?? (await this.#defaultProfileHome(input.ownerId));
+    const profile = await this.#repository.createBrowserProfile({ ...input, homeRunnerId });
     await this.#ownerProfilesChanged(input.ownerId);
     return publicProfile(profile);
   }
@@ -1204,6 +1251,34 @@ export class BrowserService {
   async #ownerProfilesChanged(ownerId: UserId): Promise<void> {
     const main = await this.#repository.findMainWorkspaceForOwner(ownerId);
     if (main) this.#onProfilesChanged(ownerId, main.id);
+  }
+
+  async profilesRemoved(
+    profiles: readonly { id: BrowserProfileId; ownerId: UserId }[],
+  ): Promise<void> {
+    this.invalidatePlaceAuthority();
+    for (const { id } of profiles) await this.fenceLocalProfile(id);
+    for (const ownerId of new Set(profiles.map((profile) => profile.ownerId)))
+      await this.#ownerProfilesChanged(ownerId);
+  }
+
+  async #defaultProfileHome(
+    ownerId: UserId,
+    request?: { readonly runnerId: RunnerId | null },
+  ): Promise<RunnerId> {
+    const homes = await this.#repository.listEligibleBrowserRunners(ownerId);
+    const preferred = homes.find((home) => home.id === request?.runnerId);
+    const main = this.#personal ? homes.find((home) => home.kind === "main") : undefined;
+    const selected =
+      preferred ??
+      main ??
+      (!this.#personal && !request && homes.length === 1 ? homes[0] : undefined);
+    if (selected) return selected.id;
+    throw new OpensteerError({
+      code: "conflict",
+      reason: "browser-placement-ambiguous",
+      message: "Choose a computer for this browser profile.",
+    });
   }
 
   /**
@@ -1392,7 +1467,8 @@ export class BrowserService {
       throw new OpensteerError({ code: "not_found", message: "Main Workspace not found." });
     const profileId = command.identity.kind === "profile" ? command.identity.profileId : null;
     const identityKey = profileId ?? "guest";
-    if (profileId && !(await this.#repository.getBrowserProfile(profileId, ownerId)))
+    const profile = profileId ? await this.#repository.getBrowserProfile(profileId, ownerId) : null;
+    if (profileId && !profile)
       throw this.#tabOpenRefusal(
         "browser-profile-unavailable",
         "That browser profile is unavailable. Choose a profile.",
@@ -1401,37 +1477,49 @@ export class BrowserService {
       profileId && this.#localProfiles
         ? await this.#localProfiles.storage(profileId)
         : { kind: "unbound" as const };
-    const boundRunnerId = storage.kind === "unbound" ? undefined : storage.binding.runnerId;
-    if (boundRunnerId && command.placement && command.placement.runnerId !== boundRunnerId)
-      throw this.#tabOpenRefusal(
-        "browser-placement-unavailable",
-        "This profile belongs to another computer. Open it on its owning computer.",
-      );
+    const boundRunnerId =
+      profile?.homeRunnerId ?? (storage.kind === "unbound" ? undefined : storage.binding.runnerId);
     const holder = profileId
       ? await this.#repository.findBrowserSessionHoldingProfilePlacement(profileId)
       : null;
-    if (holder && command.placement && !samePlacement(command.placement, placementOf(holder)))
+    if (
+      !boundRunnerId &&
+      holder &&
+      command.placement &&
+      !samePlacement(command.placement, placementOf(holder))
+    )
       throw this.#tabOpenRefusal(
         "browser-placement-unavailable",
         "That profile is already held on another computer. Choose that computer or close its browser first.",
       );
     const remembered =
-      !command.placement && !holder
+      profileId && !command.placement && !holder
         ? await this.#repository.rememberedBrowserPlacement(ownerId, identityKey)
         : null;
-    const eligible = this.#placements().filter((candidate) => candidate.available);
+    const homes = await this.#repository.listEligibleBrowserRunners(ownerId);
+    if (boundRunnerId) this.#requireProfileHome(profile!, boundRunnerId, homes);
+    const eligible = this.#eligiblePlacements(homes).filter((candidate) => candidate.available);
+    const main = this.#personal ? homes.find((home) => home.kind === "main") : undefined;
+    if (this.#personal && !profile && !command.placement && !main)
+      throw this.#tabOpenRefusal(
+        "browser-placement-unavailable",
+        "The main computer's browser is unavailable.",
+      );
     let placement =
       (boundRunnerId ? { kind: "runner" as const, runnerId: boundRunnerId } : command.placement) ??
-      (holder
-        ? placementOf(holder)
-        : remembered
-          ? { kind: "runner" as const, runnerId: remembered }
-          : null);
+      (main && !profile && !command.placement
+        ? { kind: "runner" as const, runnerId: main.id }
+        : holder
+          ? placementOf(holder)
+          : remembered
+            ? { kind: "runner" as const, runnerId: remembered }
+            : null);
     if (!placement) {
       if (eligible.length > 1)
         throw this.#tabOpenRefusal(
           "browser-placement-ambiguous",
           "Choose which computer should open this browser.",
+          eligible,
         );
       placement = eligible[0] ? placementSelector(eligible[0]) : null;
     }
@@ -1445,6 +1533,7 @@ export class BrowserService {
         boundRunnerId
           ? "Waiting for this computer to open its browser profile. Reconnect the owning computer."
           : "The selected browser computer is unavailable.",
+        this.#eligiblePlacements(homes),
       );
     return {
       workspace,
@@ -1778,12 +1867,16 @@ export class BrowserService {
     );
   }
 
-  #tabOpenRefusal(reason: BrowserTabOpenRefusalReason, message: string): OpensteerError {
+  #tabOpenRefusal(
+    reason: BrowserTabOpenRefusalReason,
+    message: string,
+    placements: readonly BrowserPlacement[] = [],
+  ): OpensteerError {
     return new OpensteerError({
       code: "conflict",
       reason,
       message,
-      details: BrowserTabOpenRefusalDetailsSchema.parse({ placements: this.#placements() }),
+      details: BrowserTabOpenRefusalDetailsSchema.parse({ placements }),
       retryable: reason === "browser-session-unavailable",
     });
   }
@@ -2625,6 +2718,18 @@ export class BrowserService {
     }
   }
 
+  async listProfiles(ownerId: UserId) {
+    const [profiles, homes] = await Promise.all([
+      this.#repository.listBrowserProfiles(ownerId),
+      this.#repository.listEligibleBrowserRunners(ownerId),
+    ]);
+    return profiles.map((profile) => ({
+      id: profile.id,
+      name: profile.name,
+      home: this.#profileHome(profile, homes),
+    }));
+  }
+
   async listGrantedProfiles(
     ownerId: UserId,
     workspaceId: WorkspaceId,
@@ -2635,6 +2740,11 @@ export class BrowserService {
       readonly grantId: import("@opensteer/core").BrowserProfileGrantId;
       readonly id: BrowserProfileId;
       readonly name: string;
+      readonly home: {
+        readonly runnerId: RunnerId;
+        readonly name: string;
+        readonly reachable: boolean;
+      } | null;
     }[]
   > {
     const grants = await this.#repository.listActiveBrowserProfileGrantsForWorkspace(
@@ -2648,6 +2758,7 @@ export class BrowserService {
         profile: await this.#repository.getBrowserProfile(grant.profileId, ownerId),
       })),
     );
+    const homes = await this.#repository.listEligibleBrowserRunners(ownerId);
     return profiles.flatMap(({ grant, profile }) =>
       profile
         ? [
@@ -2656,6 +2767,7 @@ export class BrowserService {
               grantId: grant.grantId,
               id: profile.id,
               name: profile.name,
+              home: this.#profileHome(profile, homes),
             } as const,
           ]
         : [],
@@ -3017,6 +3129,10 @@ export class BrowserService {
                 : command.parameters,
             )
           : null;
+      if (lease && broker.live && this.#resolveTarget(placementOf(record))?.main !== true)
+        return {
+          result: Promise.resolve({ status: "unavailable", reason: "main-browser-required" }),
+        };
       const fillAllowed = () =>
         lease === null ||
         (lease.success &&
@@ -3246,6 +3362,7 @@ export class BrowserService {
         .object({ targetInfo: z.object({ surfaceId: BrowserSurfaceIdSchema.optional() }) })
         .parse(response.result).targetInfo.surfaceId;
     }
+    const target = this.#resolveTarget(placementOf(record));
     return {
       ...(tabId ? { tabId } : {}),
       live: record.state === "ready" && broker?.live === true,
@@ -3256,6 +3373,8 @@ export class BrowserService {
       signIn: broker?.signIn ?? false,
       computer: broker?.computer ?? null,
       stateImport: broker?.stateImport ?? false,
+      main: target?.main === true,
+      ...(target?.localProfileStorage ? { engine: target.localProfileStorage.engine } : {}),
       workspaceId: record.workspaceId,
     };
   }
@@ -3319,7 +3438,7 @@ export class BrowserService {
       requestId: input.requestId,
       resolvedBy: input.resolvedBy,
       ...(input.settlementSessionId ? { settlementSessionId: input.settlementSessionId } : {}),
-      response: input.response,
+      response: await this.#profileRequestResponse(input.response, pending),
     });
     for (const event of resolved.events) this.#onWorkspaceEvent(event);
     if (resolved.request.status === "fulfilled" && (resolved.profile || resolved.grant))
@@ -3328,6 +3447,39 @@ export class BrowserService {
       grant: resolved.grant ? publicProfileGrant(resolved.grant) : null,
       profile: resolved.profile ? publicProfile(resolved.profile) : null,
       request: resolved.request,
+    };
+  }
+
+  async #profileRequestResponse(
+    response: RequestResponse,
+    request: Request,
+  ): Promise<RequestResponse> {
+    if (response.kind !== "external") return response;
+    const value = z
+      .union([
+        z.strictObject({
+          decision: z.literal("fulfilled"),
+          createProfile: z.strictObject({
+            name: z.string(),
+            homeRunnerId: RunnerIdSchema.optional(),
+          }),
+        }),
+        z.strictObject({ decision: z.literal("fulfilled"), name: z.string() }),
+      ])
+      .safeParse(response.value);
+    if (!value.success) return response;
+    const creation =
+      "createProfile" in value.data ? value.data.createProfile : { name: value.data.name };
+    if ("homeRunnerId" in creation && creation.homeRunnerId) return response;
+    const preferred = request.originatingRunId
+      ? await this.#profileRequestRunner?.(request.originatingRunId)
+      : null;
+    const homeRunnerId = await this.#defaultProfileHome(request.requestedBy, {
+      runnerId: preferred ?? null,
+    });
+    return {
+      ...response,
+      value: { decision: "fulfilled", createProfile: { name: creation.name, homeRunnerId } },
     };
   }
 
@@ -3569,7 +3721,11 @@ export class BrowserService {
             message: "This Workspace is using a different browser profile.",
           });
         }
-        if (input.placement && !samePlacement(input.placement, placementOf(existing))) {
+        if (
+          !input.profileId &&
+          input.placement &&
+          !samePlacement(input.placement, placementOf(existing))
+        ) {
           throw new OpensteerError({
             code: "conflict",
             message: "This Workspace browser session is running on another placement.",
@@ -3596,47 +3752,25 @@ export class BrowserService {
     if (profile && !this.#localProfiles)
       throw unavailable("Native browser profile storage is unavailable.");
     const storage = profile ? await this.#localProfiles!.storage(profile.id) : null;
-    const boundRunnerId = storage?.kind === "local" ? storage.binding.runnerId : undefined;
-    if (boundRunnerId && input.placement && input.placement.runnerId !== boundRunnerId)
-      throw unavailable(
-        "This profile belongs to another computer. Open it on its owning computer.",
-      );
-    if (
-      boundRunnerId &&
-      input.chosenEnvironmentId &&
-      !this.#targetResolver
-        ?.placements()
-        .some(
-          (candidate) =>
-            candidate.runnerId === boundRunnerId &&
-            candidate.environmentIds.includes(input.chosenEnvironmentId!),
-        )
-    )
-      throw unavailable(
-        "This profile belongs to another computer. Open it on its owning computer.",
-      );
-    // A fresh session holds no profile, so it has no placement affinity to honor.
+    const boundRunnerId =
+      profile?.homeRunnerId ?? (storage?.kind === "local" ? storage.binding.runnerId : undefined);
+    const homes = await this.#repository.listEligibleBrowserRunners(input.ownerId);
+    if (boundRunnerId) this.#requireProfileHome(profile!, boundRunnerId, homes);
     const placementHolder =
-      input.placement || !profile
+      boundRunnerId || input.placement || !profile
         ? null
         : await this.#repository.findBrowserSessionHoldingProfilePlacement(profile.id);
-    // A profile's live state sits on exactly one machine, so a named machine
-    // that disagrees with the one already holding it is a refusal rather than
-    // a move: two browsers must never load the same profile at once.
-    if (input.chosenEnvironmentId && placementHolder) {
-      const holder = this.#connectedPlacements().find(
-        (candidate) => candidate.runnerId === placementHolder.runnerId,
-      );
-      if (!holder?.environmentIds.includes(input.chosenEnvironmentId)) {
-        throw new OpensteerError({
-          code: "conflict",
-          message: `That browser profile is already open on ${holder?.label ?? "another computer"}. Close that session before opening the profile somewhere else.`,
-        });
-      }
-    }
+    const placements = this.#eligiblePlacements(homes).filter(
+      (candidate) =>
+        origin === "workspace" || boundRunnerId !== undefined || candidate.agents === true,
+    );
     const placement =
       (boundRunnerId ? { kind: "runner" as const, runnerId: boundRunnerId } : input.placement) ??
-      (placementHolder ? placementOf(placementHolder) : this.#defaultPlacement(input));
+      (placementHolder
+        ? placementOf(placementHolder)
+        : this.#defaultPlacement(input, placements, homes));
+    if (!placements.some((candidate) => candidate.runnerId === placement.runnerId))
+      throw unavailable("The selected browser computer is unavailable for this open.");
     const target = this.#resolveTarget(placement);
     if (!target)
       throw unavailable(
@@ -3783,8 +3917,8 @@ export class BrowserService {
           computer: target.computer ?? null,
           connectTimeoutMs: this.#connectTimeoutMs,
           fileStaging: target.fileStaging === true,
-          cardFill: target.cardFill === true,
-          signIn: target.signIn === true,
+          cardFill: target.main === true && target.cardFill === true,
+          signIn: target.main === true && target.signIn === true,
           stateImport: target.stateImport === true,
           onState: (state) => {
             const transition = () =>
@@ -4184,22 +4318,21 @@ export class BrowserService {
     return transitioned.session;
   }
 
-  /**
-   * Which computer a session lands on.
-   *
-   * A named computer is answered exactly or refused: substituting another one
-   * would make the choice decorative. When nobody named one, a Runner that runs
-   * agents on this work location and also offers a browser is the same
-   * computer, so the browser belongs next to the agent by default. This is now
-   * an enrolled fact — the environment binding — rather than a co-location
-   * claim the machine made about itself and the Host had to verify.
-   */
-  #defaultPlacement(input: {
-    readonly chosenEnvironmentId?: EnvironmentId;
-    readonly environmentId?: EnvironmentId;
-  }): BrowserPlacementSelector {
-    const placements = this.#placements();
+  #defaultPlacement(
+    input: {
+      readonly chosenEnvironmentId?: EnvironmentId;
+      readonly environmentId?: EnvironmentId;
+      readonly origin?: "agent" | "trigger" | "workspace";
+    },
+    placements: readonly BrowserRuntimePlacement[],
+    homes: Awaited<ReturnType<OpensteerStore["listEligibleBrowserRunners"]>>,
+  ): BrowserPlacementSelector {
     const connected = placements.filter((placement) => placement.available);
+    if (this.#personal && (input.origin ?? "workspace") === "workspace") {
+      const main = homes.find((home) => home.kind === "main");
+      if (main) return { kind: "runner", runnerId: main.id };
+      throw unavailable("The main computer's browser is unavailable.");
+    }
     const { chosenEnvironmentId, environmentId } = input;
     if (chosenEnvironmentId) {
       const chosen = connected.filter((placement) =>
@@ -4236,12 +4369,53 @@ export class BrowserService {
     throw unavailable("No Browser Runtime is connected.");
   }
 
-  #connectedPlacements(): readonly BrowserPlacement[] {
-    return this.#targetResolver?.placements().filter((placement) => placement.available) ?? [];
+  #eligiblePlacements(
+    homes: Awaited<ReturnType<OpensteerStore["listEligibleBrowserRunners"]>>,
+  ): BrowserRuntimePlacement[] {
+    const ids = new Set(homes.map((home) => home.id));
+    return (
+      this.#targetResolver?.placements().filter((placement) => ids.has(placement.runnerId)) ?? []
+    );
   }
 
-  #placements(): BrowserPlacement[] {
-    return this.#targetResolver?.placements().map(publicPlacement) ?? [];
+  #profileHome(
+    profile: BrowserProfileRecord,
+    homes: Awaited<ReturnType<OpensteerStore["listEligibleBrowserRunners"]>>,
+  ) {
+    const home = homes.find((candidate) => candidate.id === profile.homeRunnerId);
+    if (!home) return null;
+    return {
+      runnerId: home.id,
+      name: home.name,
+      reachable: this.#eligiblePlacements(homes).some(
+        (placement) => placement.runnerId === home.id && placement.available,
+      ),
+    };
+  }
+
+  #requireProfileHome(
+    profile: BrowserProfileRecord,
+    runnerId: RunnerId,
+    homes: Awaited<ReturnType<OpensteerStore["listEligibleBrowserRunners"]>>,
+  ): void {
+    const home = homes.find((candidate) => candidate.id === runnerId);
+    if (!home)
+      throw this.#tabOpenRefusal(
+        "browser-profile-unavailable",
+        "That browser profile is unavailable.",
+      );
+    if (
+      !this.#eligiblePlacements(homes).some(
+        (placement) => placement.runnerId === runnerId && placement.available,
+      )
+    )
+      throw new OpensteerError({
+        code: "conflict",
+        reason: "browser-profile-home-unavailable",
+        message: `${profile.name} is on ${home.name}, which is offline or its browser is unavailable.`,
+        details: { runnerId, name: home.name },
+        retryable: true,
+      });
   }
 
   #serialize<T>(operation: () => Promise<T>): Promise<T> {

@@ -924,7 +924,7 @@ it("shares capability acquisition when one of two concurrent attachments is canc
   }
 });
 
-it("requires Personal's Main inventory before named profiles can open on another computer", async () => {
+it("requires the profile home's inventory, not Personal's Main inventory", async () => {
   const mainRunnerId = createId("runner"),
     otherRunnerId = createId("runner");
   const makeStream = (runnerId: typeof mainRunnerId, runnerKind: "main" | "managed") =>
@@ -971,12 +971,15 @@ it("requires Personal's Main inventory before named profiles can open on another
     complete: true,
   });
   try {
+    expect(() => router.requirePersonalProfileInventory(otherRunnerId)).toThrow("home computer");
     await hooks.onMessage!(other, inventory(other));
-    expect(() => router.requirePersonalProfileInventory()).toThrow("Main computer");
+    expect(() => router.requirePersonalProfileInventory(otherRunnerId)).not.toThrow();
+    expect(() => router.requirePersonalProfileInventory(mainRunnerId)).toThrow("home computer");
     await hooks.onMessage!(main, inventory(main));
-    expect(() => router.requirePersonalProfileInventory()).not.toThrow();
+    expect(() => router.requirePersonalProfileInventory(mainRunnerId)).not.toThrow();
     hooks.onLost?.(main, "host-shutdown");
-    expect(() => router.requirePersonalProfileInventory()).toThrow("Main computer");
+    expect(() => router.requirePersonalProfileInventory(mainRunnerId)).toThrow("home computer");
+    expect(() => router.requirePersonalProfileInventory(otherRunnerId)).not.toThrow();
   } finally {
     router.close();
   }

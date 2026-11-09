@@ -1904,6 +1904,7 @@ export const BrowserTabOpenRefusalReasonSchema = z.enum([
   browserTabOpenClosedReason,
   "browser-session-unavailable",
   "browser-profile-unavailable",
+  "browser-profile-home-unavailable",
   "browser-placement-unavailable",
   "browser-placement-ambiguous",
   "browser-tab-open-outcome-unknown",
