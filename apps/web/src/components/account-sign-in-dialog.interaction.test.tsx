@@ -104,6 +104,40 @@ describe("the one-time code", () => {
   });
 });
 
+describe("when sign-in stops working", () => {
+  it("offers Try again after a key is refused, rather than a dead form", async () => {
+    const { flow } = await mount({
+      error: "That key was refused.",
+      harnessInstanceId: "hin-new",
+      kind: "signing-in",
+      methodId: "key",
+      methods: [{ inputLabel: "API key", kind: "secret-input", label: "API key", methodId: "key" }],
+      session: { userCode: null, view: { detail: "That key was refused.", kind: "failed" } },
+    });
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain("refused");
+    const again = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent === "Try again",
+    );
+    await act(async () => again?.click());
+    expect(flow.retry).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops saying it is waiting once the code can no longer be watched", async () => {
+    vi.stubGlobal("navigator", {
+      ...navigator,
+      clipboard: { writeText: vi.fn(async () => undefined) },
+    });
+    const { flow } = await mount({ ...deviceCode, error: "The connection dropped." });
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain("connection dropped");
+    expect(document.body.textContent).not.toContain("Waiting for you");
+    const again = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent === "Try again",
+    );
+    await act(async () => again?.click());
+    expect(flow.retry).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("a way out", () => {
   it("cancels nothing by itself when an account is already here, and asks instead", async () => {
     const { flow } = await mount({

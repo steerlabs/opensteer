@@ -251,7 +251,7 @@ export function AccountSignInDialog({
         {whereLabel} is offline. Sign-in continues when it’s back.
       </div>
     );
-  } else if (failure !== null && !pending && method?.kind !== "secret-input") {
+  } else if (failure !== null && !pending) {
     footer = (
       <>
         {alternatives}
@@ -319,6 +319,7 @@ export function AccountSignInDialog({
         code={code}
         codeRef={codeRef}
         copy={copy}
+        failure={failure}
         onCopy={() => copyCode(code)}
         opened={opened}
         openError={openError}
@@ -329,13 +330,19 @@ export function AccountSignInDialog({
       <>
         {alternatives}
         {cancel}
-        {pending.verificationUrl
-          ? opened
-            ? openPage(pending.verificationUrl, "Open browser again", false)
-            : openPage(pending.verificationUrl, "Copy code and open browser", true, () =>
-                copyCode(code),
-              )
-          : null}
+        {failure !== null ? (
+          <button className="btn btn--primary" onClick={() => flow.retry()} type="button">
+            Try again
+          </button>
+        ) : pending.verificationUrl ? (
+          opened ? (
+            openPage(pending.verificationUrl, "Open browser again", false)
+          ) : (
+            openPage(pending.verificationUrl, "Copy code and open browser", true, () =>
+              copyCode(code),
+            )
+          )
+        ) : null}
       </>
     );
   } else if (pending) {
@@ -343,6 +350,11 @@ export function AccountSignInDialog({
       <>
         {alternatives}
         {cancel}
+        {failure !== null ? (
+          <button className="btn" onClick={() => flow.retry()} type="button">
+            Try again
+          </button>
+        ) : null}
         {pending.verificationUrl
           ? opened
             ? openPage(pending.verificationUrl, "Open again", false)
@@ -436,6 +448,7 @@ function DeviceCode({
   code,
   codeRef,
   copy,
+  failure,
   onCopy,
   opened,
   openError,
@@ -444,6 +457,7 @@ function DeviceCode({
   readonly code: string;
   readonly codeRef: React.RefObject<HTMLElement | null>;
   readonly copy: "idle" | "copied" | "failed";
+  readonly failure: string | null;
   readonly onCopy: () => void;
   readonly opened: boolean;
   readonly openError: string | null;
@@ -475,12 +489,14 @@ function DeviceCode({
           You have a new code. Use this one.
         </div>
       ) : null}
-      {openError !== null ? (
+      {failure !== null || openError !== null ? (
         <div className="notice notice--error" role="alert">
-          {openError}
+          {failure ?? openError}
         </div>
       ) : null}
-      {opened ? <Status>Waiting for you to finish in your browser…</Status> : null}
+      {opened && failure === null ? (
+        <Status>Waiting for you to finish in your browser…</Status>
+      ) : null}
     </>
   );
 }

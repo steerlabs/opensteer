@@ -376,6 +376,8 @@ export function startAccountSignIn({
   let generation = 0;
   let cancelling = false;
   let cancelPromise: Promise<void> | null = null;
+  let cleanupFailed = false;
+  let accountRemoved = false;
   let switchPromise: Promise<void> = Promise.resolve();
   let finishTimer: ReturnType<typeof setTimeout> | null = null;
   let finishGeneration = 0;
@@ -617,10 +619,11 @@ export function startAccountSignIn({
       }
       try {
         await release(run);
+        run = null;
       } catch (cause) {
         failure = cause;
       }
-      if (target.kind === "create" && harnessInstanceId !== null) {
+      if (target.kind === "create" && harnessInstanceId !== null && !accountRemoved) {
         try {
           await client.dispatch({
             type: "harness.delete",
@@ -628,12 +631,20 @@ export function startAccountSignIn({
             harnessInstanceId,
             idempotencyKey: mutationIdempotencyKey(`harness-delete:${harnessInstanceId}`),
           });
+          accountRemoved = true;
         } catch (cause) {
           failure = cause;
         }
       }
-      if (failure !== undefined) fail(failure);
-      else publish({ kind: "cancelled" });
+      if (failure !== undefined) {
+        // Nothing was left behind on purpose: Try again finishes this cleanup.
+        cancelling = false;
+        cancelPromise = null;
+        cleanupFailed = true;
+        fail(failure);
+      } else {
+        publish({ kind: "cancelled" });
+      }
     })();
     return cancelPromise;
   };
@@ -658,7 +669,10 @@ export function startAccountSignIn({
     },
     retry: () => {
       if (cancelling) return;
-      if (state.kind === "signing-in") chooseMethod(state.methodId);
+      if (cleanupFailed) {
+        cleanupFailed = false;
+        void cancel();
+      } else if (state.kind === "signing-in") chooseMethod(state.methodId);
       else if (state.kind === "failed") {
         publish({ kind: "preparing" });
         preparation = prepare().catch((cause: unknown) => {

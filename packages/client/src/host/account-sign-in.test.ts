@@ -277,6 +277,23 @@ describe("account sign-in ownership", () => {
 });
 
 describe("account completion", () => {
+  it("finishes removing a duplicate when Try again follows a refused removal", async () => {
+    const options = { duplicate: true, refuseRemoval: true };
+    const test = fixture(options);
+    await flush();
+    test.status("connected", "ready");
+    await vi.advanceTimersByTimeAsync(1_500);
+    await test.flow.removeDuplicate();
+    expect(test.flow.getState()).toMatchObject({ kind: "failed" });
+    expect(test.accounts()).toHaveLength(2);
+
+    options.refuseRemoval = false;
+    test.flow.retry();
+    await flush();
+    expect(test.flow.getState()).toEqual({ kind: "cancelled" });
+    expect(test.accounts()).toHaveLength(1);
+  });
+
   it("waits for a duplicate decision without deleting anything, then keeps both", async () => {
     const test = fixture({ duplicate: true });
     await flush();

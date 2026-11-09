@@ -169,7 +169,7 @@ export function AccountSignInSheet(props: {
         {alternatives}
       </>
     );
-  } else if (failure !== null && !pending && method?.kind !== "secret-input") {
+  } else if (failure !== null && !pending) {
     body = (
       <>
         {failed}

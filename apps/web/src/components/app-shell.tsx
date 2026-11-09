@@ -700,6 +700,13 @@ export function AppShell({
     },
     [harnessAuthenticationEnvironmentIds, hostClient, toast],
   );
+  // The flow outlives a dialog closing but not the shell: leaving this
+  // Deployment must not keep signing in, or leave an account half added, unseen.
+  const accountSignInFlow = useRef<AccountSignInFlow | null>(null);
+  useEffect(() => {
+    accountSignInFlow.current = accountSignIn?.flow ?? null;
+  }, [accountSignIn]);
+  useEffect(() => () => void accountSignInFlow.current?.cancel(), []);
   const addHarnessAccount = useCallback(
     ({
       continued = false,

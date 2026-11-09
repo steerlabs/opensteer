@@ -84,7 +84,12 @@ describe("adding an account", () => {
     await act(async () => addButton(container).click());
     expect(onAddAccount).toHaveBeenCalledTimes(1);
     expect(onAddAccount.mock.calls[0]![0]).toMatchObject({
-      request: { driverKind: "codex", name: "Codex 3", stateKind: "isolated", type: "harness.create" },
+      request: {
+        driverKind: "codex",
+        name: "Codex 3",
+        stateKind: "isolated",
+        type: "harness.create",
+      },
       title: "Add Codex account",
     });
   });

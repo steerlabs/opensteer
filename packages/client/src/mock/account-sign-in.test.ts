@@ -28,7 +28,10 @@ it("walks an idempotent account create through a device challenge and duplicate 
   const second = () =>
     startAccountSignIn({
       client,
-      target: { kind: "create", request: { ...request, idempotencyKey: "mock-again", name: "Codex 4" } },
+      target: {
+        kind: "create",
+        request: { ...request, idempotencyKey: "mock-again", name: "Codex 4" },
+      },
       errorMessage: String,
     });
   let flow = first;

@@ -86,6 +86,13 @@ than guess; they fence affected Runs and sign-ins first, and their output is nev
 an updater may echo its environment
 ([engine-installation.ts](../packages/harness/src/engine-installation.ts)).
 
+A new private Codex account starts Codex once on its empty home, then links the shared session store
+([materializeOnce](../packages/harness-codex/src/codex-driver.ts)). Codex blocks `initialize` while it
+indexes whatever store it finds at its first start, which took over 100 seconds on 15 GB, and adding
+an account must not wait for that. It indexes only then, and a resume finds an unindexed session by
+file search, so nothing is lost. A Codex release that opens a new state database re-indexes linked
+homes; that is what the `preparing` state is for.
+
 Antigravity is neither shipped nor taken from `PATH`: its driver downloads Google's pinned archive,
 verifies it and publishes an immutable SHA-256-addressed release
 ([pin and reason](../packages/harness-antigravity/src/release.ts)). Codex enables only approved
