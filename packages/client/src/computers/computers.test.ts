@@ -7,7 +7,9 @@ import {
   computerStatus,
   computerUses,
   computerUsesPhrase,
+  deviceElsewhere,
   isServiceMachine,
+  orderDevices,
   type ComputerAppsData,
 } from "./computers.js";
 
@@ -322,5 +324,50 @@ describe("computerStatus", () => {
       tone: "offline",
     });
     expect(computerStatus(machine(), now)).toEqual({ label: "Online", tone: "online" });
+  });
+});
+
+describe("a device, as what lives on it names it", () => {
+  const miniId = "rnr_22222222-2222-4222-8222-222222222222";
+  const phoneId = "rnr_33333333-3333-4333-8333-333333333333";
+  const machines = [
+    machine({ device: { form: "laptop", platform: "macos" }, name: "MacBook" }),
+    machine({
+      device: { form: "compact", platform: "macos" },
+      id: miniId,
+      name: "Mac mini",
+      status: "offline",
+    }),
+  ];
+
+  it("names a device only when it is not the one the reader is at", () => {
+    expect(deviceElsewhere(machines, macId, macId)).toBeNull();
+    expect(deviceElsewhere(machines, miniId, macId)).toEqual({
+      glyph: "compact",
+      id: miniId,
+      name: "Mac mini",
+      online: false,
+    });
+    // A browser cannot say which computer it is on, so it is at none of them.
+    expect(deviceElsewhere(machines, macId, null)?.name).toBe("MacBook");
+    expect(deviceElsewhere(machines, null, macId)).toBeNull();
+  });
+
+  it("lists the device the reader is at first, then the rest by name whoever is online", () => {
+    const devices = [
+      { id: miniId, name: "mac mini" },
+      { id: phoneId, name: "Tim’s iPhone" },
+      { id: macId, name: "MacBook" },
+      { id: "rnr_0", name: "Mac 10" },
+      { id: "rnr_1", name: "Mac 9" },
+    ];
+    expect(orderDevices(devices, phoneId).map(({ name }) => name)).toEqual([
+      "Tim’s iPhone",
+      "Mac 9",
+      "Mac 10",
+      "mac mini",
+      "MacBook",
+    ]);
+    expect(orderDevices(devices, null)[0]?.name).toBe("Mac 9");
   });
 });

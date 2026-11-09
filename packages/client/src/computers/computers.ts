@@ -144,6 +144,57 @@ export function sortComputers(
 }
 
 /* ------------------------------------------------------------------------- *
+ * A device, as what lives on it names it
+ * ------------------------------------------------------------------------- */
+
+/** The device a tab or a profile is on, when that is not the one you are at. */
+export interface DeviceElsewhere {
+  readonly glyph: ComputerGlyph;
+  readonly id: string;
+  readonly name: string;
+  /** Its tabs and profiles wait while it is away. */
+  readonly online: boolean;
+}
+
+/**
+ * The device to name beside something that lives on `deviceId`, or null when
+ * that is where the reader is: what is here needs no label. A reader that
+ * cannot say where it is, as a browser cannot, is at none of them.
+ */
+export function deviceElsewhere(
+  machines: readonly MachineSummary[],
+  deviceId: string | null,
+  hereId: string | null,
+): DeviceElsewhere | null {
+  if (deviceId === null || deviceId === hereId) return null;
+  const machine = machines.find(({ id }) => id === deviceId);
+  if (!machine) return null;
+  return {
+    glyph: computerGlyph(machine),
+    id: machine.id,
+    name: machine.name,
+    online: machine.status === "online",
+  };
+}
+
+/**
+ * The one order devices are listed in wherever tabs and profiles are sorted by
+ * device: the one you are at, then the rest by name. Never by who is online or
+ * busy, so a list does not move while agents work.
+ */
+export function orderDevices<Device extends { readonly id: string; readonly name: string }>(
+  devices: readonly Device[],
+  hereId: string | null,
+): readonly Device[] {
+  return [...devices].sort(
+    (left, right) =>
+      Number(right.id === hereId) - Number(left.id === hereId) ||
+      left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: "base" }) ||
+      (left.id < right.id ? -1 : left.id > right.id ? 1 : 0),
+  );
+}
+
+/* ------------------------------------------------------------------------- *
  * One computer
  * ------------------------------------------------------------------------- */
 
