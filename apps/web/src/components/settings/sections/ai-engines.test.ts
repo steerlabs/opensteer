@@ -19,7 +19,6 @@ import {
   endpointAccountName,
   engineGroups,
   installationUpdateLabel,
-  nextAccountName,
 } from "./ai-engines.js";
 
 describe("installed engine update states", () => {
@@ -164,15 +163,6 @@ describe("endpointAccountName", () => {
     expect(endpointAccountName(server, { baseUrl: "https://OpenRouter.ai/api/v1" })).toBe(
       "openrouter.ai",
     );
-  });
-});
-
-describe("nextAccountName", () => {
-  it("takes the engine's own name first, then the lowest free number", () => {
-    expect(nextAccountName("Codex", [])).toBe("Codex");
-    expect(nextAccountName("Codex", ["Codex"])).toBe("Codex 2");
-    expect(nextAccountName("Codex", ["Codex", "Codex 3"])).toBe("Codex 2");
-    expect(nextAccountName("Codex", ["Work", "Codex 2"])).toBe("Codex");
   });
 });
 

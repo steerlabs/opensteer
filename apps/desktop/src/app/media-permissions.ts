@@ -17,13 +17,21 @@ export function configureDesktopPermissions(
   session.setPermissionCheckHandler((contents, permission, origin, details) => {
     if (permission === "usb") return usbDevices?.permitsRequest(origin) ?? false;
     return (
-      permission === "media" &&
-      details.mediaType === "audio" &&
+      (permission === "clipboard-sanitized-write" ||
+        (permission === "media" && details.mediaType === "audio")) &&
       policy.isAppOrigin(origin) &&
       ownPage(contents, details.isMainFrame, details.requestingUrl ?? "")
     );
   });
   session.setPermissionRequestHandler((contents, permission, callback, details) => {
+    if (permission === "clipboard-sanitized-write") {
+      callback(
+        ownPage(contents, details.isMainFrame, details.requestingUrl) &&
+          policy.isAppOrigin(new URL("/", details.requestingUrl).href) &&
+          (!("securityOrigin" in details) || policy.isAppOrigin(details.securityOrigin ?? "")),
+      );
+      return;
+    }
     if (
       permission !== "media" ||
       !("mediaTypes" in details) ||

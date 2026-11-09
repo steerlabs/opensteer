@@ -1,3 +1,5 @@
+import { useToast } from "../toast.js";
+import { copyText } from "@opensteer/shared/clipboard";
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import {
@@ -844,6 +846,7 @@ export function OwnAppForm({
   const [displayName, setDisplayName] = useState(editing?.displayName ?? manifest.label);
   const [installationUrl, setInstallationUrl] = useState(editing?.installationUrl ?? "");
   const [secrets, setSecrets] = useState<Record<string, string>>({});
+  const toast = useToast();
   const [copied, setCopied] = useState(false);
   // Sharing an app edits the one shared record, so the deployment can never end
   // up with two, and a member's own app is never overwritten by that choice.
@@ -891,7 +894,11 @@ export function OwnAppForm({
           <button
             className="btn btn--small"
             onClick={() => {
-              void navigator.clipboard.writeText(callbackUrl).then(() => {
+              void copyText(callbackUrl).then((success) => {
+                if (!success) {
+                  toast.error("Copy was blocked. Select the text to copy it.");
+                  return;
+                }
                 setCopied(true);
                 window.setTimeout(() => setCopied(false), 1_500);
               });

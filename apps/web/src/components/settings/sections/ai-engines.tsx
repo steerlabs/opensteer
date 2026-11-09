@@ -15,8 +15,11 @@ import {
 import {
   describeConnectionUsage,
   mutationIdempotencyKey,
+  nextAccountName,
+  startHarnessAuthentication,
   observedAccountConnection,
   unwrapRpcResult,
+  type HarnessAuthenticationRun,
   type EnvironmentSummary,
   type HarnessSummary,
   type HostClient,
@@ -24,10 +27,6 @@ import {
 } from "@opensteer/client/host";
 import { actionErrorMessage } from "../../../ui-utils.js";
 import { useShell } from "../../app-shell.js";
-import {
-  startHarnessAuthentication,
-  type HarnessAuthenticationRun,
-} from "../../harness-authentication-dialog.js";
 import { Icon } from "../../icon.js";
 import { Popover } from "../../popover.js";
 import { engineProviderId, ProviderLogo } from "../../provider-brand.js";
@@ -174,21 +173,6 @@ export function aiEngineActions({
           ? { id: "models", label: "Set up models" }
           : retry,
   };
-}
-
-/**
- * The name a new account gets before anyone has signed in to it: the engine's
- * own name while it is the only one, then "Codex 2", "Codex 3" — the lowest
- * number not already taken on this work location, so removing "Codex 2" and
- * adding again yields "Codex 2" rather than "Codex 4".
- */
-export function nextAccountName(engineName: string, takenNames: readonly string[]): string {
-  const taken = new Set(takenNames);
-  if (!taken.has(engineName)) return engineName;
-  for (let index = 2; ; index += 1) {
-    const candidate = `${engineName} ${index}`;
-    if (!taken.has(candidate)) return candidate;
-  }
 }
 
 /** One engine on one work location, with every account of it. */

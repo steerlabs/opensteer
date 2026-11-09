@@ -1,3 +1,5 @@
+import { useToast } from "../toast.js";
+import { copyText } from "@opensteer/shared/clipboard";
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import type { AuthSessionSummary } from "@opensteer/core";
 import type { DesktopTailscaleStatus, OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
@@ -309,6 +311,7 @@ function ScanPanel({
 }
 
 function ManualField({ label, value }: { readonly label: string; readonly value: string }) {
+  const toast = useToast();
   const [copied, setCopied] = useState(false);
   useEffect(() => {
     if (!copied) return;
@@ -324,9 +327,10 @@ function ManualField({ label, value }: { readonly label: string; readonly value:
           aria-label={`Copy ${label.toLowerCase()}`}
           className="btn btn--small btn--ghost"
           onClick={() =>
-            void navigator.clipboard.writeText(value).then(
-              () => setCopied(true),
-              () => undefined,
+            void copyText(value).then((success) =>
+              success
+                ? setCopied(true)
+                : toast.error("Copy was blocked. Select the text to copy it."),
             )
           }
           type="button"

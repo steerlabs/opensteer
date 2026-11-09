@@ -15,7 +15,7 @@ import {
 import { useConnectedAgents, usePersonalRemoteAccess } from "@opensteer/client/react";
 import type { AgentConnection } from "@opensteer/protocol";
 import { useShell } from "../../app-shell.js";
-import { copyText } from "../../copy-mark.js";
+import { copyText } from "@opensteer/shared/clipboard";
 import { Dialog } from "../../dialog.js";
 import { Icon } from "../../icon.js";
 import { ProviderLogo } from "../../provider-brand.js";
@@ -249,10 +249,7 @@ function AddressBlock({ label, value }: { readonly label: string; readonly value
         <button
           className="btn btn--ghost btn--small"
           onClick={() =>
-            void copyText(value).then(
-              () => setCopied(true),
-              () => setFailed(true),
-            )
+            void copyText(value).then((success) => (success ? setCopied(true) : setFailed(true)))
           }
           type="button"
         >
