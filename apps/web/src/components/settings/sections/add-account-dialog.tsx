@@ -43,14 +43,12 @@ export function AddAccountDialog({
   onClose,
   onSubmit,
   sources,
-  submitting,
   whereLabel,
 }: {
   readonly engineName: string;
   readonly onClose: () => void;
   readonly onSubmit: (choice: AddAccountChoice) => void;
   readonly sources: readonly HarnessSourceDescriptor[];
-  readonly submitting: boolean;
   /** The work location the account is added to, which is where it connects from. */
   readonly whereLabel: string;
 }) {
@@ -81,7 +79,7 @@ export function AddAccountDialog({
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!source || !complete || submitting) return;
+    if (!source || !complete) return;
     onSubmit({
       fields: Object.fromEntries(
         source.fields.flatMap((field) => {
@@ -97,16 +95,16 @@ export function AddAccountDialog({
     <Dialog
       footer={
         <>
-          <button className="btn btn--ghost" disabled={submitting} onClick={onClose} type="button">
+          <button className="btn btn--ghost" onClick={onClose} type="button">
             Cancel
           </button>
           <button
             className="btn btn--primary"
-            disabled={!complete || submitting}
+            disabled={!complete}
             form="add-account-form"
             type="submit"
           >
-            {submitting ? "Connecting…" : server ? "Connect" : "Continue"}
+            {server ? "Connect" : "Continue"}
           </button>
         </>
       }
@@ -125,7 +123,6 @@ export function AddAccountDialog({
               >
                 <input
                   checked={candidate.sourceId === source?.sourceId}
-                  disabled={submitting}
                   name="add-account-source"
                   onChange={() => {
                     switched.current = true;
@@ -166,7 +163,6 @@ export function AddAccountDialog({
               {field.kind === "select" ? (
                 <select
                   className="select-input"
-                  disabled={submitting}
                   id={`add-account-${field.id}`}
                   onChange={(event) => set(field.id, event.target.value)}
                   required={field.required !== false}
@@ -192,7 +188,6 @@ export function AddAccountDialog({
                   autoCapitalize="off"
                   autoCorrect="off"
                   className="text-input"
-                  disabled={submitting}
                   id={`add-account-${field.id}`}
                   inputMode={field.kind === "url" ? "url" : "text"}
                   onBlur={() => {
@@ -215,11 +210,6 @@ export function AddAccountDialog({
             </label>
           );
         })}
-        {server ? null : (
-          <p className="field__hint">
-            Sign-in comes next. Whatever you sign in with stays on {whereLabel}.
-          </p>
-        )}
       </form>
     </Dialog>
   );

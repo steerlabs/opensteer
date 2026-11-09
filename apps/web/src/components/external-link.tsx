@@ -1,4 +1,4 @@
-import type { ComponentProps, MouseEvent } from "react";
+import { forwardRef, type ComponentProps, type MouseEvent } from "react";
 import { desktopBridge } from "../desktop/desktop-bridge.js";
 
 /**
@@ -6,15 +6,17 @@ import { desktopBridge } from "../desktop/desktop-bridge.js";
  * desktop main. Main validates the destination before asking the operating
  * system to open it; web sessions retain ordinary anchor behavior.
  */
-export function ExternalLink({
-  href,
-  onOpenError,
-  ...props
-}: Omit<ComponentProps<"a">, "href" | "onClick" | "rel" | "target"> & {
-  readonly href: string;
-  readonly onOpenError?: (reason: unknown) => void;
-}) {
+export const ExternalLink = forwardRef<
+  HTMLAnchorElement,
+  Omit<ComponentProps<"a">, "href" | "onClick" | "ref" | "rel" | "target"> & {
+    readonly href: string;
+    /** Runs inside the press, so it may use what only a person's gesture allows. */
+    readonly onOpen?: () => void;
+    readonly onOpenError?: (reason: unknown) => void;
+  }
+>(function ExternalLink({ href, onOpen, onOpenError, ...props }, ref) {
   const open = (event: MouseEvent<HTMLAnchorElement>) => {
+    onOpen?.();
     const bridge = desktopBridge();
     if (!bridge) return;
     event.preventDefault();
@@ -24,5 +26,5 @@ export function ExternalLink({
     });
   };
 
-  return <a {...props} href={href} onClick={open} rel="noreferrer" target="_blank" />;
-}
+  return <a {...props} href={href} onClick={open} ref={ref} rel="noreferrer" target="_blank" />;
+});

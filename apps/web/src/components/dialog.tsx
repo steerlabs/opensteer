@@ -8,6 +8,8 @@ const focusableSelector =
 
 interface DialogProps {
   children: ReactNode;
+  /** Takes over from another dialog in place, so it does not enter again. */
+  continued?: boolean;
   footer?: ReactNode;
   /** Names the dialog for the control whose `aria-controls` points at it. */
   id?: string | undefined;
@@ -34,6 +36,7 @@ export function Dialog(props: DialogProps) {
 
 function DialogContent({
   children,
+  continued = false,
   footer,
   id,
   labelledBy,
@@ -63,7 +66,11 @@ function DialogContent({
     handleModalKeyDown(event, dialogRef.current, onClose);
 
   return (
-    <div className="dialog-layer" role="presentation" onKeyDown={handleKeyDown}>
+    <div
+      className={continued ? "dialog-layer dialog-layer--continued" : "dialog-layer"}
+      role="presentation"
+      onKeyDown={handleKeyDown}
+    >
       <button
         type="button"
         className="dialog-scrim"

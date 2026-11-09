@@ -1245,6 +1245,22 @@ label.machine-access__grant-head {
   max-width: 14rem;
 }
 
+.settings-row-menu__facts {
+  margin-top: var(--space-4);
+  padding: var(--space-8) var(--space-10) var(--space-4);
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.settings-row-menu__facts p {
+  margin: 0;
+}
+
+.settings-row-menu__facts p + p {
+  margin-top: var(--space-4);
+}
+
 /* "Add account": the source choice and its fields, one column. */
 .add-account {
   display: grid;
