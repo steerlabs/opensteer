@@ -6,7 +6,10 @@ import { color, space } from "../theme.js";
 import { Symbol } from "./symbol.js";
 
 /** Copying with the only signs a phone's clipboard has: a tap of the hand, and `copied` for a moment. */
-export function useCopy(): { readonly copied: boolean; readonly copy: (text: string) => void } {
+export function useCopy(options?: {
+  /** In place of the alert, for a screen with its own line to say so on. */
+  readonly onFailure?: () => void;
+}): { readonly copied: boolean; readonly copy: (text: string) => Promise<void> } {
   const [copied, setCopied] = useState(false);
   const reset = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(
@@ -15,17 +18,21 @@ export function useCopy(): { readonly copied: boolean; readonly copy: (text: str
     },
     [],
   );
-  const copy = (text: string): void => {
-    void Clipboard.setStringAsync(text).then(
-      () => {
-        void Haptics.selectionAsync();
-        setCopied(true);
-        if (reset.current !== null) clearTimeout(reset.current);
-        reset.current = setTimeout(() => setCopied(false), 1_500);
-      },
-      () => Alert.alert("Copy unavailable", "Select the text to copy it."),
-    );
+  const failed = (): void => {
+    if (options?.onFailure) options.onFailure();
+    else Alert.alert("Copy unavailable", "Select the text to copy it.");
   };
+  const copy = (text: string): Promise<void> =>
+    Clipboard.setStringAsync(text).then((written) => {
+      if (written === false) {
+        failed();
+        return;
+      }
+      void Haptics.selectionAsync();
+      setCopied(true);
+      if (reset.current !== null) clearTimeout(reset.current);
+      reset.current = setTimeout(() => setCopied(false), 1_500);
+    }, failed);
   return { copied, copy };
 }
 

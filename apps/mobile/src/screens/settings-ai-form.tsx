@@ -9,21 +9,29 @@ import {
 } from "@opensteer/client/host";
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
-import { Switch, TextInput, View } from "react-native";
+import { StyleSheet, Switch, TextInput, View } from "react-native";
+import { color, space } from "../theme.js";
 import { NativeMenu } from "../thread/composer-menu.js";
-import { AppText, RowGroup, SecondaryButton } from "../ui/primitives.js";
+import { ChoiceMenu } from "../ui/choice-menu.js";
+import { AppText, Notice, RowGroup, SecondaryButton } from "../ui/primitives.js";
 import { ErrorText, Section, styles } from "./settings-form-primitives.js";
-import type { AutomaticModelsForm, SettingsFormProps } from "./settings-form.types.js";
+import type {
+  AiAccountRow,
+  AiAccountsForm,
+  AutomaticModelsForm,
+  SettingsFormProps,
+} from "./settings-form.types.js";
 export function AiSettingsForm(
   props: Pick<
     SettingsFormProps,
-    "page" | "engineUpdates" | "onEngineUpdate" | "onChooseModel" | "automatic"
+    "aiAccounts" | "page" | "engineUpdates" | "onEngineUpdate" | "onChooseModel" | "automatic"
   >,
 ): ReactNode {
   const engineUpdates = props.engineUpdates ?? [];
   return (
     <>
       <SecondaryButton label="Choose account and model" onPress={() => props.onChooseModel?.()} />
+      {props.aiAccounts ? <Accounts form={props.aiAccounts} /> : null}
       {engineUpdates.length === 0 ? null : (
         <Section label="AI">
           <RowGroup>
@@ -51,6 +59,108 @@ export function AiSettingsForm(
       )}
       {props.automatic ? <AutomaticModels form={props.automatic} /> : null}
     </>
+  );
+}
+
+function Accounts({ form }: { readonly form: AiAccountsForm }): ReactNode {
+  const location = form.locations.find(({ id }) => id === form.locationId);
+  return (
+    <>
+      {form.confirmation === null ? null : (
+        <Notice detail={form.confirmation} title="Done" tone="neutral" />
+      )}
+      <ErrorText detail={form.error} />
+      {form.locations.length === 0 ? null : (
+        <Section label="Computer">
+          <View style={accountStyles.location}>
+            <ChoiceMenu
+              accessibilityLabel="Computer"
+              choices={form.locations}
+              label={location?.title ?? "Choose"}
+              onChoose={form.onChooseLocation}
+            />
+          </View>
+        </Section>
+      )}
+      {form.groups.map((group) => (
+        <Section key={group.driverKind} label={group.name}>
+          <RowGroup>
+            {[
+              ...group.rows.map((row) => <AccountRowView form={form} key={row.id} row={row} />),
+              group.addable ? (
+                <View key="add" style={styles.actionRow}>
+                  <SecondaryButton
+                    disabled={form.busyId !== null}
+                    label="Add account"
+                    onPress={() => form.onAdd(group.driverKind)}
+                  />
+                </View>
+              ) : null,
+            ]}
+          </RowGroup>
+        </Section>
+      ))}
+    </>
+  );
+}
+
+function AccountRowView(props: {
+  readonly form: AiAccountsForm;
+  readonly row: AiAccountRow;
+}): ReactNode {
+  const { form, row } = props;
+  const blocked = form.busyId !== null;
+  return (
+    <View style={accountStyles.row}>
+      <View style={[styles.text, styles.grow]}>
+        <View style={accountStyles.name}>
+          <AppText role="bodyMedium" style={styles.text}>
+            {row.name}
+          </AppText>
+          {row.isDefault ? (
+            <AppText role="caption" tone="muted">
+              Default
+            </AppText>
+          ) : null}
+        </View>
+        {row.line === null ? null : (
+          <AppText
+            role="secondary"
+            {...(row.attention === null ? { tone: "muted" as const } : {})}
+            {...(row.attention === null
+              ? {}
+              : { style: row.attention === "bad" ? accountStyles.bad : accountStyles.warn })}
+          >
+            {row.line}
+          </AppText>
+        )}
+      </View>
+      {row.primary ? (
+        <SecondaryButton
+          busy={form.busyId === row.id}
+          compact
+          disabled={blocked}
+          label={row.primary.label}
+          onPress={() => row.primary && form.onAction(row.id, row.primary)}
+        />
+      ) : null}
+      {row.menu.length === 0 ? null : (
+        <ChoiceMenu
+          accessibilityLabel={`More for ${row.name}`}
+          choices={row.menu.map((action) => ({
+            destructive: action.id === "remove",
+            id: action.id,
+            title: action.label,
+          }))}
+          disabled={blocked}
+          label="More"
+          onChoose={(id) => {
+            const action = row.menu.find((candidate) => candidate.id === id);
+            if (action) form.onAction(row.id, action);
+          }}
+        />
+      )}
+    </View>
   );
 }
 
@@ -165,3 +275,17 @@ function AutomaticModels({ form }: { readonly form: AutomaticModelsForm }): Reac
   );
 }
 function noop(): void {}
+
+const accountStyles = StyleSheet.create({
+  bad: { color: color.red },
+  location: { alignItems: "flex-start" },
+  name: { alignItems: "baseline", flexDirection: "row", flexWrap: "wrap", gap: space[8] },
+  row: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: space[8],
+    paddingHorizontal: space[16],
+    paddingVertical: space[10],
+  },
+  warn: { color: color.amber },
+});
