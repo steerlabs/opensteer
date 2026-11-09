@@ -56,6 +56,7 @@ import {
   AssignmentViewSchema,
   AttachmentSchema,
   BrowserSurfaceIdSchema,
+  BrowserTabGroupIdSchema,
   CHAT_THREAD_TITLE,
   DEFAULT_THREAD_ACCESS_MODE,
   DeploymentIdSchema,
@@ -6608,6 +6609,23 @@ class MockHostState {
   }
   seedPlaces(world: MockPlacesWorld = "seeded"): void {
     this.update(seedMockPlaces(this.snapshot, this.now(), world));
+    // A trip planned on two Macs: one group whose tabs run on both.
+    if (world !== "seeded")
+      this.setTabGroups({
+        ...this.tabGroups,
+        revision: this.tabGroups.revision + 1,
+        groups: [
+          {
+            id: BrowserTabGroupIdSchema.parse("btg_00000000-0000-4000-8000-000000000101"),
+            title: "Lisbon trip",
+            color: "cyan",
+            collapsed: false,
+            tabIds: ["mock-tab-0-4", "mock-tab-9-0", "mock-tab-9-1"].map((id) =>
+              BrowserSurfaceIdSchema.parse(id),
+            ),
+          },
+        ],
+      });
     this.#recentMarkColors.delete(`${this.snapshot.user?.id ?? mockUserId}:thread`);
     const template = this.integrations.connections.find(
       (connection) => connection.definitionId === "macos-app" && connection.status === "connected",

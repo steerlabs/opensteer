@@ -1344,24 +1344,123 @@ button.side-needs:hover {
   padding-right: var(--space-6);
 }
 
-/* Between a browser's tabs and the Mac apps and phones: a hairline in the
-   rows' own 1px gap, so every tab row stays one pitch from the next and a
-   window of whole rows stays whole as the list scrolls. */
-.side-divider {
+/* A device's heading in Tabs: its shape in the marks' column and its name in
+   the titles' column, quiet as the Tabs heading itself. It folds what it heads;
+   its chevron shows while it is pointed at, and always once folded. */
+.side-device {
   position: relative;
-  flex: none;
-  height: 0;
-  margin: -1px var(--space-10) 0;
-  scroll-snap-align: none;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  margin-top: var(--space-8);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
 }
 
-.side-divider::before {
+.side-device.holds-open {
+  border-color: var(--rim-selected);
+}
+
+.side-device__main {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--space-10);
+  min-width: 0;
+  min-height: var(--control-height-sm);
+  padding: var(--space-4) var(--space-6) var(--space-4) var(--space-8);
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-strong);
+  letter-spacing: 0.005em;
+  text-align: left;
+}
+
+.side-list > .side-device:first-child {
+  margin-top: 0;
+}
+
+/* The whole heading folds it: its button reaches under everything but the marks. */
+.side-device__main::after {
   position: absolute;
-  inset: 0 0 auto;
-  height: 1px;
-  background: var(--line);
+  inset: 0;
+  border-radius: inherit;
   content: "";
 }
+
+.side-device:hover .side-device__main,
+.side-device__main:focus-visible {
+  color: var(--text-soft);
+}
+
+.side-device__main:focus-visible {
+  outline-offset: -2px;
+}
+
+.side-device__glyph {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 20px;
+}
+
+.side-device__glyph svg {
+  width: 14px;
+  height: 14px;
+}
+
+.side-device__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.side-device__away,
+.side-device__count {
+  flex: none;
+  margin-left: calc(var(--space-6) * -1);
+  font-weight: var(--weight-normal);
+  white-space: nowrap;
+}
+
+.side-device__count {
+  margin-left: auto;
+}
+
+.side-device__marks {
+  position: relative;
+  z-index: 1;
+}
+
+.side-device__chevron {
+  display: grid;
+  flex: none;
+  place-items: center;
+  align-self: stretch;
+  padding: 0 var(--space-10) 0 var(--space-4);
+  color: var(--muted);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
+
+.side-device__chevron svg {
+  width: 12px;
+  height: 12px;
+}
+
+.side-device.is-folded .side-device__chevron,
+.side-device:is(:hover, :focus-within) .side-device__chevron {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .side-device__chevron {
+    opacity: 1;
+  }
+}
+
 
 /* A place that ended keeps its row, dimmed, until it is closed or unlisted. */
 .side-tab.is-unavailable .side-tab__main {
@@ -2891,6 +2990,10 @@ button.start-apps__row--away:focus-visible {
   .side-tab__main,
   .side-new__main,
   .task-family__row {
+    min-height: var(--touch-target);
+  }
+
+  .side-device__main {
     min-height: var(--touch-target);
   }
 
