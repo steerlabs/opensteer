@@ -53,6 +53,7 @@ import {
   OpensteerStore,
 } from "./index.js";
 import { jsonValue } from "./store-primitives.js";
+import { enrollTestRunner } from "./store.integration.test-support.js";
 import { agentPhoneOwnerAccessMigration } from "./migrations.js";
 import {
   installIntegrationInTransaction,
@@ -4284,7 +4285,19 @@ integration.sequential("PostgreSQL computer app connections", () => {
     await expect(accounts(channelRoot)).resolves.toEqual([]);
     await expect(accounts(channelChild)).resolves.toEqual([]);
     const { database } = storeFixture;
+    const browserRunnerId = createId("runner");
+    await enrollTestRunner(store, {
+      allowedModules: ["browser"],
+      createdBy: run.userId,
+      environmentId: createId("environment"),
+      modules: { browser: { runtimeId: "browser", wireVersion: 2 } },
+      name: "Owner's browser computer",
+      runnerId: browserRunnerId,
+      runnerKind: "local",
+      tokenSuffix: browserRunnerId,
+    });
     const profile = await store.createBrowserProfile({
+      homeRunnerId: browserRunnerId,
       name: "Owner",
       idempotencyKey: "access-owner-profile",
       ownerId: run.userId,

@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { expect, it } from "vitest";
+import { createId } from "@opensteer/core";
 import { browserHistoryMaxEntries, browserHistoryRetentionMs } from "@opensteer/protocol";
 import { createDatabase, OpensteerStore } from "./index.js";
 import { cloneTestDatabase, ownTestDatabaseProducer } from "./test-database.test-support.js";
+import { enrollTestRunner } from "./store.integration.test-support.js";
 
 const favicon =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a7i8AAAAASUVORK5CYII=";
@@ -18,6 +20,17 @@ it.runIf(Boolean(process.env.OPENSTEER_TEST_DATABASE_URL))(
     const store = new OpensteerStore(database);
     const ownerId = await store.createUser("History owner");
     const stranger = await store.createUser("History stranger");
+    const runnerId = createId("runner");
+    await enrollTestRunner(store, {
+      allowedModules: ["browser"],
+      createdBy: ownerId,
+      environmentId: createId("environment"),
+      modules: { browser: { runtimeId: "history", wireVersion: 2 } },
+      name: "History computer",
+      runnerId,
+      runnerKind: "local",
+      tokenSuffix: runnerId,
+    });
     const profile = await store.createBrowserProfile({
       ownerId,
       name: "History",
