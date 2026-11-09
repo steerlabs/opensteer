@@ -139,6 +139,7 @@ integration("Durable tab icons", () => {
     cleanups.push(() => caller.close());
     await testRpcData(host.origin, "bootstrap.get", {}, { headers: host.ownerHeaders });
     const profile = await host.store.createBrowserProfile({
+      homeRunnerId: runtime.runnerId,
       ownerId: host.ownerId,
       name: "History",
       idempotencyKey: "history-profile",
@@ -615,6 +616,7 @@ integration("Durable tab icons", () => {
     });
     // A history mutation is a delivery barrier: neither deletion emits a history notice.
     const otherProfile = await host.store.createBrowserProfile({
+      homeRunnerId: runtime.runnerId,
       ownerId: host.ownerId,
       name: "Other",
       idempotencyKey: "other-history-profile",
