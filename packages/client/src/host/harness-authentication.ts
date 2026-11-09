@@ -549,8 +549,10 @@ export function startAccountSignIn({
     } else {
       const methodId = selectMethod
         ? selectMethod(current.setupMethods)
-        : (current.setupMethods.find((item) => item.kind === "local-import") ??
-            current.setupMethods[0]!).methodId;
+        : (
+            current.setupMethods.find((item) => item.kind === "local-import") ??
+            current.setupMethods[0]!
+          ).methodId;
       if (methodId === undefined) {
         fail(new Error(current.detail ?? "This account does not offer that sign-in here."));
       } else {

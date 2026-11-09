@@ -192,10 +192,7 @@ function planAction(
  * The plan's own way in: a browser or device sign-in, never a pasted key. An
  * account whose only ways in are keys is not a plan sign-in.
  */
-export function planSignInMethod(
-  methods: readonly HarnessSetupMethod[],
-): string | undefined {
-  return methods.find(
-    (method) => method.kind !== "secret-input" && method.kind !== "local-import",
-  )?.methodId;
+export function planSignInMethod(methods: readonly HarnessSetupMethod[]): string | undefined {
+  return methods.find((method) => method.kind !== "secret-input" && method.kind !== "local-import")
+    ?.methodId;
 }

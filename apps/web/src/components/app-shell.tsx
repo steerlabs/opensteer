@@ -6,7 +6,10 @@ import { VoiceIsland, useVoiceRuntime } from "./voice.js";
 import { useVoiceCursor } from "./voice-cursor.js";
 import {
   startAccountSignIn,
-  type AccountSignInFlow, handlePersonShow, personShowFromCall } from "@opensteer/client/host";
+  type AccountSignInFlow,
+  handlePersonShow,
+  personShowFromCall,
+} from "@opensteer/client/host";
 import type { VoiceController } from "@opensteer/client/voice";
 import { useDictation } from "./dictation.js";
 import {
