@@ -1,3 +1,4 @@
+import { copyText } from "@opensteer/shared/clipboard";
 import type { BrowserCommand, HostClient, PlaceItem } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
 import { BrowserSurfaceIdSchema } from "@opensteer/core";
@@ -89,8 +90,14 @@ export function TabMenu({
           label: "Copy link",
           onSelect: () =>
             void address()
-              .then((url) => clipboard.writeText(url))
-              .then(() => toast.success("Link copied"), failed),
+              .then(copyText)
+              .then(
+                (success) =>
+                  success
+                    ? toast.success("Link copied")
+                    : toast.error("Copy was blocked. Select the link to copy it."),
+                failed,
+              ),
         },
       ]
     : [];

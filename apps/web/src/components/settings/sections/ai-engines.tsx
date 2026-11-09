@@ -17,8 +17,10 @@ import {
   describeConnectionUsage,
   mutationIdempotencyKey,
   nextAccountName,
+  startHarnessAuthentication,
   observedAccountConnection,
   unwrapRpcResult,
+  type HarnessAuthenticationRun,
   type EnvironmentSummary,
   type HarnessSummary,
   type HostClient,
@@ -27,10 +29,6 @@ import {
 import { actionErrorMessage } from "../../../ui-utils.js";
 import type { AddHarnessAccount } from "../../account-sign-in-dialog.js";
 import { useShell } from "../../app-shell.js";
-import {
-  startHarnessAuthentication,
-  type HarnessAuthenticationRun,
-} from "../../harness-authentication-dialog.js";
 import { Icon } from "../../icon.js";
 import { Popover } from "../../popover.js";
 import { engineProviderId, ProviderLogo } from "../../provider-brand.js";

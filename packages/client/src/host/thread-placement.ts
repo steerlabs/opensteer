@@ -1,4 +1,6 @@
 import type { EnvironmentSummary, HarnessSummary, ThreadSummary } from "./client.js";
+import { accountDisplayName } from "./account-name.js";
+import { observedAccountConnection } from "./connection-usage.js";
 import {
   catalogDefaultModelSelection,
   harnessDisplayRank,
@@ -29,7 +31,7 @@ type ThreadPlacementAvailability =
 /**
  * One account of one AI engine on one work location, and whether a Thread can
  * run there right now. Three names travel with it: `engineName` is the engine
- * ("Codex"), `accountName` is what the person called this account of it, and
+ * ("Codex"), `accountName` is its display name, not its stored rename/uniqueness key, and
  * `whereLabel` is the work location.
  */
 export interface ThreadPlacementOption {
@@ -240,10 +242,17 @@ function placementOption(
     advertised?.readiness === "unavailable"
       ? null
       : (advertised?.sources.find((candidate) => candidate.sourceId === harness.sourceId) ?? null);
+  const catalog = environment.harnessCatalogs.find(
+    (candidate) => candidate.harnessInstanceId === harness.id,
+  );
   const base = {
     accessModes:
       advertised && advertised.readiness !== "unavailable" ? advertised.accessModes : null,
-    accountName: harness.name,
+    accountName: accountDisplayName({
+      name: harness.name,
+      engineName: harnessDriverLabel(harness.driverKind),
+      accountLabel: observedAccountConnection(catalog?.connections ?? [])?.accountLabel,
+    }),
     ...(harness.automaticEligible === undefined
       ? {}
       : { automaticEligible: harness.automaticEligible }),
@@ -287,9 +296,6 @@ function placementOption(
       modelSelection: unavailableSelection,
     };
   }
-  const catalog = environment.harnessCatalogs.find(
-    (candidate) => candidate.harnessInstanceId === harness.id,
-  );
   if (!advertised) {
     return {
       ...base,

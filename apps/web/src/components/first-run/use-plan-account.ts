@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   mutationIdempotencyKey,
+  nextAccountName,
   type HarnessSummary,
   type HostClient,
   type ThreadPlacementOption,
@@ -8,7 +9,7 @@ import {
 import type { HostApiCommandInput } from "@opensteer/protocol";
 import type { HarnessAuthenticationOptions } from "../harness-authentication-dialog.js";
 import { actionErrorMessage } from "../../ui-utils.js";
-import { createdHarnessSignInAction, nextAccountName } from "../settings/sections/ai-engines.js";
+import { createdHarnessSignInAction } from "../settings/sections/ai-engines.js";
 import { planSignInMethod, type SetupPlan } from "./setup-ai.js";
 
 /** How long a new account may take to report its catalog before setup stops waiting. */

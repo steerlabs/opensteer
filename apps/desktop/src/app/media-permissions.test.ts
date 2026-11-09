@@ -31,6 +31,42 @@ const audio = {
   mediaTypes: ["audio"] as Array<"audio" | "video">,
 };
 
+it("allows only sanitized writes from the app's own main frame, without audio fields", () => {
+  const f = fixture();
+  const own = {
+    isMainFrame: true,
+    requestingUrl: "app://opensteer/",
+  };
+  for (const [permission, origin, details, allowed] of [
+    ["clipboard-sanitized-write", "app://opensteer", own, true],
+    ["clipboard-read", "app://opensteer", own, false],
+    [
+      "clipboard-sanitized-write",
+      "https://evil.test",
+      { ...own, securityOrigin: "https://evil.test" },
+      false,
+    ],
+    ["clipboard-sanitized-write", "app://opensteer", { ...own, isMainFrame: false }, false],
+    [
+      "clipboard-sanitized-write",
+      "app://opensteer",
+      { ...own, requestingUrl: "https://evil.test" },
+      false,
+    ],
+  ] as const) {
+    expect(f.check(f.wc, permission, origin, details)).toBe(allowed);
+    const callback = vi.fn();
+    f.request(f.wc, permission, callback, details);
+    expect(callback).toHaveBeenCalledWith(allowed);
+  }
+  f.contents.getURL.mockReturnValue("https://evil.test");
+  expect(f.check(f.wc, "clipboard-sanitized-write", "app://opensteer", own)).toBe(false);
+  const callback = vi.fn();
+  f.request(f.wc, "clipboard-sanitized-write", callback, own);
+  expect(callback).toHaveBeenCalledWith(false);
+  expect(f.ask).not.toHaveBeenCalled();
+});
+
 it("checks only main-frame app audio, preserving USB checks", () => {
   const f = fixture();
   const details = { ...audio, mediaType: "audio" as const };
