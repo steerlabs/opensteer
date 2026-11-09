@@ -515,6 +515,8 @@ export async function createHostServer(
       readonly session: AuthenticatedSession;
       readonly mode: "control" | "watch";
       readonly editing: 1 | 2 | undefined;
+      readonly basicInput: 1 | undefined;
+      readonly surfaceState: 1 | undefined;
       readonly passkeys: "native" | "notice" | undefined;
       readonly popups: boolean;
     }
@@ -2861,7 +2863,14 @@ export async function createHostServer(
 
   app.get<{
     Params: { sessionId: string };
-    Querystring: { mode?: string; editing?: string; passkeys?: string; popups?: string };
+    Querystring: {
+      mode?: string;
+      editing?: string;
+      passkeys?: string;
+      popups?: string;
+      basicInput?: string;
+      surfaceState?: string;
+    };
   }>(
     "/v1/browser-sessions/:sessionId/connect",
     {
@@ -2887,6 +2896,8 @@ export async function createHostServer(
           editing:
             request.query.editing === "2" ? 2 : request.query.editing === "1" ? 1 : undefined,
           popups: request.query.popups === "1",
+          basicInput: request.query.basicInput === "1" ? 1 : undefined,
+          surfaceState: request.query.surfaceState === "1" ? 1 : undefined,
         });
       },
       websocket: true,
@@ -2903,6 +2914,7 @@ export async function createHostServer(
         admitted.editing,
         admitted.passkeys,
         admitted.popups,
+        { basicInput: admitted.basicInput, surfaceState: admitted.surfaceState },
         async () => {
           try {
             const current = await dependencies.authenticator.authenticateSession(request.headers, {
@@ -3017,6 +3029,7 @@ function attachBrowserSocket(
   editing: 1 | 2 | undefined,
   passkeys: "native" | "notice" | undefined,
   popups: boolean,
+  negotiation: { readonly basicInput: 1 | undefined; readonly surfaceState: 1 | undefined },
   signedIn: () => Promise<boolean>,
 ): void {
   installWebSocketLiveness(socket);
@@ -3069,6 +3082,7 @@ function attachBrowserSocket(
       authSessionId: session.id,
       mode,
       editing,
+      ...negotiation,
       passkeys,
       popups,
       signedIn,

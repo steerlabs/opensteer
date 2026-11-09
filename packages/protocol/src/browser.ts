@@ -32,6 +32,16 @@ import {
   type BrowserSessionId,
 } from "@opensteer/core";
 import { z } from "zod";
+import {
+  BrowserAgentAttachSchema,
+  BrowserAgentDetachSchema,
+  BrowserAgentActionSchema,
+  BrowserAgentResultSchema,
+  BrowserAgentErrorSchema,
+  BrowserAgentEventSchema,
+} from "./browser-actions.js";
+export * from "./browser-actions.js";
+export * from "./browser-basic-input.js";
 import { browserBase } from "./browser-message-base.js";
 import {
   LocalProfileBindingSchema,
@@ -201,6 +211,8 @@ export const BrowserAttachTicketClaimsSchema = z
      * editing kinds. Issued only to a runtime advertising `modules.browser.editing`.
      */
     editingVersion: z.union([z.literal(1), z.literal(2)]).optional(),
+    basicInput: z.literal(1).optional(),
+    surfaceState: z.literal(1).optional(),
     /** V2 makes the isolated engine clipboard explicit; v1 implies true. */
     clipboard: z.boolean().optional(),
     workspaceTabRestoreVersion: z.literal(1).optional(),
@@ -253,6 +265,7 @@ export const BrowserFaviconSchema = z
   .regex(/^data:image\/(?:png|x-icon|gif|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/);
 
 export const BrowserSurfaceSchema = z.strictObject({
+  state: z.enum(["live", "suspended"]).optional(),
   canGoBack: z.boolean().optional(),
   canGoForward: z.boolean().optional(),
   active: z.boolean(),
@@ -401,6 +414,9 @@ const cursorSequence = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGE
 
 const BaselineBrowserClientMessageSchema = z
   .discriminatedUnion("type", [
+    BrowserAgentAttachSchema.extend(browserBase),
+    BrowserAgentDetachSchema.extend(browserBase),
+    BrowserAgentActionSchema.extend(browserBase),
     z.strictObject({
       ...browserBase,
       type: z.literal("cursor.query"),
@@ -752,6 +768,8 @@ const BrowserSnapshotSchema = z
     navigationAttributionVersion: z.literal(1).optional(),
     /** Present only when the attach ticket claimed it, and projected only to viewers that opted in. */
     editingVersion: z.union([z.literal(1), z.literal(2)]).optional(),
+    basicInput: z.literal(1).optional(),
+    surfaceState: z.literal(1).optional(),
     /** Only v2 carries this flag; v1 implies an isolated engine clipboard. */
     clipboard: z.boolean().optional(),
     inventoryRevision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
@@ -800,6 +818,9 @@ export const BrowserNavigationCommittedSchema = z.strictObject({
 export type BrowserNavigationCommitted = z.infer<typeof BrowserNavigationCommittedSchema>;
 
 const BaselineBrowserServerMessageSchema = z.discriminatedUnion("type", [
+  BrowserAgentResultSchema,
+  BrowserAgentErrorSchema,
+  BrowserAgentEventSchema,
   z.strictObject({
     ...browserBase,
     type: z.literal("browser.cursor"),
@@ -1300,6 +1321,7 @@ export const BrowserHistoryIconsSchema = z.object({
 });
 export type BrowserHistoryIcons = z.infer<typeof BrowserHistoryIconsSchema>;
 
+/** Every browser implements these Host-only operations on the command channel, with or without CDP. */
 export const browserHostMethods = {
   openTab: "Opensteer.openTab",
   closeTab: "Opensteer.closeTab",

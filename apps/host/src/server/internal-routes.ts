@@ -2,6 +2,8 @@ export const hostInternalRoutePaths = {
   appTunnel: "/internal/v1/apps/tunnel",
   /** Runners that predate session addressing: follows the Run's latest session. */
   browserCdp: "/internal/v1/browser-cdp",
+  browserSessionActions: "/internal/v1/browser-actions/:sessionId",
+  browserSessionBackend: "/internal/v1/browser-backend/:sessionId",
   browserSessionCdp: "/internal/v1/browser-cdp/:sessionId",
   browserSourcePair: "/internal/v1/browser-sources/pair",
   browserSourcePairChallenge: "/internal/v1/browser-sources/pair/challenge",

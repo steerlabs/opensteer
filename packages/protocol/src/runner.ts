@@ -1318,6 +1318,18 @@ export const RunnerBrowserModuleSchema = z
       .object({ version: z.number().int().positive() })
       .transform((value) => (value.version === 3 ? { version: 3 as const } : undefined))
       .optional(),
+    basicInput: z
+      .number()
+      .int()
+      .positive()
+      .transform((version) => (version === 1 ? (1 as const) : undefined))
+      .optional(),
+    surfaceState: z
+      .number()
+      .int()
+      .positive()
+      .transform((version) => (version === 1 ? (1 as const) : undefined))
+      .optional(),
     /** Typed session-scoped agent actions, independent of CDP. */
     agentActions: z
       .number()

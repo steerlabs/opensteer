@@ -1,7 +1,7 @@
 # Browser sessions
 
 A named profile keeps native browser data on its home device. Its live sessions share
-an engine host; each Guest session has its own ephemeral browser. Sessions partition page access
+an engine host; each Guest session has its own throwaway browser. Sessions partition page access
 even when they share a profile, and a session's identity is fixed at creation. Checks:
 [browser-and-passwords](../.agents/skills/browser-and-passwords/SKILL.md).
 
@@ -10,7 +10,9 @@ even when they share a profile, and a session's identity is fixed at creation. C
 The Host database owns durable tab descriptors; live sessions and CDP handles die with their
 connection. Restoring makes a new binding and never restarts a finished Run. A selected dormant tab
 restores only on its saved computer and profile, waiting rather than substitute another computer or
-Guest. Guest website state never persists, and trigger and watch browsers write no tabs. Only a
+Guest. Guest website state is never reusable: Android WebView needs a private on-disk profile while
+open, tombstoned before use and erased at the next startup. This is not RAM-only browsing.
+Trigger and watch browsers write no tabs. Only a
 lineage's latest session can close its tabs, late updates never resurrect a closed row, and reopen
 makes a new row. Only committed navigation becomes a restore URL, except that a failed navigation
 restores to the address it tried, as browsers do, without any credentials typed into it. An overlong
@@ -25,12 +27,31 @@ opened with Opensteer as the macOS default browser start no agent.
 
 ## Agent access and input
 
-A Run's CDP connection binds to one session for life, reaches only its pages and popups, and
-rechecks access and grants on every command. Agent target selection never moves the person's focus.
+A browser device declares abilities, not a device class. The Host places a session on its profile's
+home and admits only what that browser advertises; it never substitutes another home or infers
+abilities from a phone engine name. Host tab open, close and context operations use the ordinary
+command channel even when the browser does not speak CDP.
+
+A Run negotiates its backend for one exact session: `cdpBoundary` selects CDP first, otherwise
+`agentActions` selects typed actions. Both require `sharedControl`. An attachment pins that choice,
+reaches only that session's pages and popups, and rechecks Run access and grants on every command.
+Requesting the other backend refuses `unsupported-operation`, not an upgrade request. Agent target
+selection never moves the person's focus.
 Input, navigation and geometry share a per-surface ordered lane; observations stay outside it, so an
 agent script waiting for a person's click cannot block that click. A lost answer after a key press
 or insertion is never replayed. Person activity is an observation, not an input gate, and never
 records keys or text.
+
+Typed actions expose bounded navigation, DOM-derived semantic reads, locators, native input,
+dialogs, viewport captures and optional staged-file selection, not CDP or arbitrary JavaScript.
+Document and geometry IDs fence stale actions; a dialog has its own one-use identity. A lost answer
+after submission is `outcome-unknown`, never permission to retry a click or insertion. The wire is
+defined in [browser-actions](../packages/protocol/src/browser-actions.ts).
+
+Browsers may negotiate live/suspended surface state. A suspended tab keeps its last in-memory
+picture, or just its named row if none exists, and refuses addressed commands and input with
+`target-suspended`. Watching does not resume, reload or create a native view. Resume is explicit;
+older peers without surface-state negotiation keep their existing behavior.
 
 A failed navigation leaves Chromium's error document committed, and a surface's address stays the
 one it tried to reach, so a person sees where they meant to go and the catalog names a real origin.
@@ -63,7 +84,20 @@ After a fill, page scripts and agent JavaScript can read the value ([Passwords](
 
 ## Remote editing and clipboard
 
-Editing is negotiated per runtime, Host and viewer. Each frame's private editing world, hidden from
+Editing is negotiated per runtime, Host and viewer. `basicInput` is a separate narrow ability, not
+full `editing` or engine `clipboard`: it admits text insertion, backward deletion, Enter,
+select-all, marked composition and plain-text copy/paste. Range replacement, cut, rich clipboard,
+other editing commands and OS shortcuts refuse. Paste carries only the controlling person's
+explicit bytes, never a phone clipboard read; copy returns only non-sensitive selection to that
+viewer. Browsers without this ability retain the full editing contract's existing admission rules.
+
+On iPhone the agent has no arbitrary-script, clipboard or paste action and the native helper never
+reads UIPasteboard. A website may still ask iOS for Paste permission. The person can approve that
+system UI; Opensteer does not claim to prevent the website or its DOM from then receiving clipboard
+data. A JavaScript clipboard shim would not be a security boundary and is not used as one. Android's
+CDP backend must qualify machine-clipboard denial independently before it is enabled.
+
+For full editing, each frame's private editing world, hidden from
 agent CDP, reports field kind, sensitivity and a caret, never values or surrounding text. A
 replacement first verifies the exact text around the caret, else refuses. Rebuilding the hidden
 caret mirror between keystrokes would split Blink's Undo grouping, so the observer updates its nodes
