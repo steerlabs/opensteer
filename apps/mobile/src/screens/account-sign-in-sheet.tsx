@@ -162,13 +162,6 @@ export function AccountSignInSheet(props: {
   } else if (state?.kind === "failed") {
     body = <Notice detail={state.message} title="Sign-in didn’t finish" />;
     footer = retry;
-  } else if (view?.kind === "disconnected") {
-    body = (
-      <>
-        <Said>{`${whereLabel} is offline. Sign-in continues when it’s back.`}</Said>
-        {alternatives}
-      </>
-    );
   } else if (failure !== null && !pending) {
     body = (
       <>
@@ -177,6 +170,13 @@ export function AccountSignInSheet(props: {
       </>
     );
     footer = retry;
+  } else if (view?.kind === "disconnected") {
+    body = (
+      <>
+        <Said>{`${whereLabel} is offline. Sign-in continues when it’s back.`}</Said>
+        {alternatives}
+      </>
+    );
   } else if (method?.kind === "secret-input") {
     body = (
       <>
@@ -288,21 +288,24 @@ export function AccountSignInSheet(props: {
         {alternatives}
       </>
     );
-    footer = asking ? (
-      <View style={styles.footer}>
-        {url === undefined ? null : (
-          <SecondaryButton label="Open again" onPress={() => void open(url)} />
-        )}
-        <PrimaryButton
-          busy={submitting}
-          disabled={value.length === 0}
-          label="Submit"
-          onPress={submit}
-        />
-      </View>
-    ) : (
-      <PrimaryButton label="Open sign-in page" onPress={() => void open(url)} />
-    );
+    footer =
+      failure !== null ? (
+        retry
+      ) : asking ? (
+        <View style={styles.footer}>
+          {url === undefined ? null : (
+            <SecondaryButton label="Open again" onPress={() => void open(url)} />
+          )}
+          <PrimaryButton
+            busy={submitting}
+            disabled={value.length === 0}
+            label="Submit"
+            onPress={submit}
+          />
+        </View>
+      ) : (
+        <PrimaryButton label="Open sign-in page" onPress={() => void open(url)} />
+      );
   } else {
     body = (
       <>

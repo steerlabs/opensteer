@@ -466,7 +466,8 @@ export async function createHostServer(
   await registerResponseCompression(app);
   const harnessCatalogs = {
     ...notifyingHarnessCatalogRecorder(dependencies.store, dependencies.realtime),
-    listHarnessInstances: dependencies.store.listHarnessInstances.bind(dependencies.store),
+    listHarnessInstances: (options?: Parameters<OpensteerStore["listHarnessInstances"]>[0]) =>
+      dependencies.store.listHarnessInstances(options),
   };
   const harnessCatalogReconciliations = new HarnessCatalogReconciliationOwner({
     catalogs: harnessCatalogs,

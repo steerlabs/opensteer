@@ -36,6 +36,7 @@ vi.mock("react-native", () => ({
 }));
 vi.mock("../theme.js", () => ({ color: {}, radius: {}, space: {}, touchTarget: 44 }));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
+vi.mock("../ui/choice-menu.js", () => ({ ChoiceMenu: () => null }));
 vi.mock("../ui/primitives.js", () => ({
   AppText: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
   RowGroup: ({ children }: { children: readonly ReactNode[] }) => <div>{children}</div>,

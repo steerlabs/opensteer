@@ -625,6 +625,14 @@ export function startAccountSignIn({
       } catch (cause) {
         failure = cause;
       }
+      if (target.kind === "create" && harnessInstanceId === null) {
+        try {
+          const result = await client.dispatch(target.request);
+          if (result.type === "harness.create") harnessInstanceId = result.harness.id;
+        } catch {
+          // A Host that refuses the replay holds no account from it to remove.
+        }
+      }
       if (target.kind === "create" && harnessInstanceId !== null && !accountRemoved) {
         try {
           await client.dispatch({

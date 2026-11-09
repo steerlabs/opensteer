@@ -245,12 +245,6 @@ export function AccountSignInDialog({
         {state.message}
       </div>
     );
-  } else if (view?.kind === "disconnected") {
-    body = (
-      <div className="notice notice--warn" role="status">
-        {whereLabel} is offline. Sign-in continues when it’s back.
-      </div>
-    );
   } else if (failure !== null && !pending) {
     footer = (
       <>
@@ -264,6 +258,12 @@ export function AccountSignInDialog({
     body = (
       <div className="notice notice--error" role="alert">
         {failure}
+      </div>
+    );
+  } else if (view?.kind === "disconnected") {
+    body = (
+      <div className="notice notice--warn" role="status">
+        {whereLabel} is offline. Sign-in continues when it’s back.
       </div>
     );
   } else if (method?.kind === "secret-input") {

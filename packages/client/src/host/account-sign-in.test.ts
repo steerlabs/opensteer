@@ -34,6 +34,7 @@ function fixture(
   options: {
     existing?: boolean;
     holdCreate?: boolean;
+    loseCreateAnswer?: boolean;
     holdBegin?: boolean;
     holdCancel?: boolean;
     duplicate?: boolean;
@@ -117,9 +118,15 @@ function fixture(
       switch (command.type) {
         case "harness.create": {
           if (options.holdCreate) await create.promise;
-          accounts = [...accounts, harness];
-          catalogs = [...catalogs, makeCatalog()];
-          changed();
+          if (!accounts.some((item) => item.id === harness.id)) {
+            accounts = [...accounts, harness];
+            catalogs = [...catalogs, makeCatalog()];
+            changed();
+          }
+          if (options.loseCreateAnswer) {
+            options.loseCreateAnswer = false;
+            throw new Error("The connection dropped");
+          }
           return { type: command.type, harness: { ...harness, config: {} } };
         }
         case "harness.authentication.begin": {
@@ -200,6 +207,16 @@ afterEach(() => {
 const flush = () => vi.advanceTimersByTimeAsync(0);
 
 describe("account sign-in ownership", () => {
+  it("removes an account whose create committed though its answer was lost", async () => {
+    const test = fixture({ loseCreateAnswer: true });
+    await flush();
+    expect(test.flow.getState()).toMatchObject({ kind: "failed" });
+    expect(test.accounts()).toHaveLength(1);
+    await test.flow.cancel();
+    expect(test.flow.getState()).toEqual({ kind: "cancelled" });
+    expect(test.accounts()).toHaveLength(0);
+  });
+
   it("owns a create that resolves after cancellation", async () => {
     const test = fixture({ holdCreate: true, holdBegin: true });
     const cancelled = test.flow.cancel();

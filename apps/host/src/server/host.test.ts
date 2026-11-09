@@ -4162,6 +4162,7 @@ describe("durable harness catalogs", () => {
         environmentId,
         [expect.objectContaining({ id: harnessInstanceId })],
         expect.any(AbortSignal),
+        [harnessInstanceId],
       );
       expect(fixture.recordHarnessCatalogs).toHaveBeenCalledExactlyOnceWith({
         catalogs: [readyCatalog],
