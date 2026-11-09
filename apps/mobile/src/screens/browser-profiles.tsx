@@ -146,6 +146,7 @@ function BrowserProfilesSettings({
   return (
     <Screen edgeToEdge>
       <ScrollView
+        automaticallyAdjustKeyboardInsets
         contentContainerStyle={[styles.content, column, insets]}
         contentInsetAdjustmentBehavior="automatic"
         keyboardShouldPersistTaps="handled"
@@ -297,8 +298,13 @@ function ProfileHome({ row }: { readonly row: BrowserProfileSettingsRow }): Reac
       <View style={styles.home}>
         <Symbol name={computerSymbols[row.device.glyph]} size={13} tint={color.muted} />
         <AppText numberOfLines={1} role="caption" style={styles.homeName} tone="muted">
-          {row.device.online ? row.device.name : `${row.device.name} · Offline`}
+          {row.device.name}
         </AppText>
+        {row.device.online ? null : (
+          <AppText numberOfLines={1} role="caption" tone="muted">
+            · Offline
+          </AppText>
+        )}
       </View>
     );
   if (row.unopened)
@@ -532,7 +538,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     flexShrink: 1,
     gap: space[4],
-    maxWidth: "45%",
+    maxWidth: "55%",
   },
   homeName: { color: color.muted, flexShrink: 1 },
   homeMenu: { alignSelf: "stretch", flexShrink: 1, maxWidth: "50%" },

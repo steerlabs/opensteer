@@ -9283,10 +9283,16 @@ class MockHostState {
     const runnerId = RunnerIdSchema.parse(input.runnerId);
     this.update({
       ...this.snapshot,
+      // A phone holds browsers too, as every device does.
+      browserProfileHomes: this.snapshot.browserProfileHomes && [
+        ...this.snapshot.browserProfileHomes,
+        runnerId,
+      ],
       machines: this.snapshot.machines.map((machine) =>
         machine.id === input.enrollmentId
           ? {
               ...machine,
+              allowedModules: ["browser", "integrations"],
               id: runnerId,
               name: input.name,
               status: "online",
