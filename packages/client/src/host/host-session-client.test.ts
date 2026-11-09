@@ -41,7 +41,8 @@ import {
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MockHostClient } from "../mock/mock-host-client.js";
-import { isAppTabOpen, placeDestinationEnded } from "./places.js";
+import { isAppTabOpen, placeDestinationEnded, samePlaceListSource } from "./places.js";
+import { sameStableHostSnapshot } from "./host-snapshot-selectors.js";
 import { assignmentMark } from "./assignment-presentation.js";
 import { bootstrapReadDiagnostics } from "./bootstrap-diagnostics.js";
 import { browserTabStrip } from "./browser-tab-strip.js";
@@ -2101,6 +2102,284 @@ describe("HttpHostClient durable realtime", () => {
       start.mockRestore();
       take.mockRestore();
     }
+  });
+
+  describe("browser catalog churn", () => {
+    async function fixture(withGroup = true) {
+      const workspace = makeWorkspace();
+      const sessionId = createBrowserSessionId();
+      const group: WorkspaceTabLineage = {
+        id: sessionId,
+        revision: 1,
+        createdAt: now,
+        session: {
+          access: "read-write",
+          createdAt: now,
+          updatedAt: now,
+          id: sessionId,
+          origin: "workspace",
+          placement: { kind: "runner", runnerId },
+          profileId: null,
+          runtimeId: "runtime-1",
+          state: "ready",
+          workspaceId: workspace.id,
+          workspaceTabRestoreVersion: 1,
+          tabCatalog: { generation: 1, revision: 1, tabs: [] },
+        },
+        tabs: [
+          {
+            kind: "browser",
+            id: BrowserSurfaceIdSchema.parse("surface_notice"),
+            sessionId,
+            title: "Store",
+            site: "https://store.example/",
+            order: 0,
+            openerId: null,
+            state: "suspended",
+          },
+        ],
+      };
+      const body = bootstrap([workspace], {
+        available: true,
+        workspaceTabRestoreVersion: 1,
+        workspaceTabs: withGroup ? [group] : [],
+        sessions: [group.session],
+        placements: [],
+        profiles: [],
+        profileGrants: [],
+        tabGroupsVersion: 1,
+        tabGroups: { revision: 1, groups: [], order: [] },
+      });
+      const mock = new MockHostClient({ latencyMs: 0 });
+      const machines = mock.getSnapshot().machines;
+      mock.dispose();
+      const socket = new FakeSocket();
+      const fetch = vi.fn(async () => json({ ...body, machines }));
+      const client = createHttpHostClient({
+        fetch,
+        refreshIntervalMs: 0,
+        prefetchHome: false,
+        webSocketFactory: () => socket,
+      });
+      await client.load();
+      socket.open();
+      socket.receive({
+        type: "host.snapshot",
+        snapshot: { ...workspaceSnapshot(workspace, "0"), threads: [makeThread(workspace.id)] },
+      });
+      return { body, client, fetch, group, socket, workspace };
+    }
+
+    it("applies a newer lineage notice without a bootstrap read", async () => {
+      const f = await fixture(false);
+      try {
+        const reads = f.fetch.mock.calls.length;
+        f.socket.receive({
+          type: "host.browser-sessions-changed",
+          workspaceId: f.workspace.id,
+          group: f.group,
+        });
+        expect(placeList(f.client.getSnapshot()).map((place) => place.title)).toContain("Store");
+        expect(f.client.getSnapshot().workspaceTabs).toEqual([f.group]);
+        expect(f.fetch).toHaveBeenCalledTimes(reads);
+        const newer = {
+          ...f.group,
+          revision: 2,
+          tabs: [{ ...f.group.tabs![0]!, title: "Checkout" }],
+        };
+        f.socket.receive({
+          type: "host.browser-sessions-changed",
+          workspaceId: f.workspace.id,
+          group: newer,
+        });
+        expect(placeList(f.client.getSnapshot()).map((place) => place.title)).toContain("Checkout");
+        expect(f.fetch).toHaveBeenCalledTimes(reads);
+      } finally {
+        f.client.dispose();
+      }
+    });
+
+    it.each([1, 0])("ignores a duplicate or older lineage at revision %s", async (revision) => {
+      const f = await fixture();
+      try {
+        const before = f.client.getSnapshot();
+        const listener = vi.fn();
+        f.client.subscribe(listener);
+        const reads = f.fetch.mock.calls.length;
+        f.socket.receive({
+          type: "host.browser-sessions-changed",
+          workspaceId: f.workspace.id,
+          group: { ...f.group, revision },
+        });
+        expect(f.fetch).toHaveBeenCalledTimes(reads);
+        expect(f.client.getSnapshot()).toBe(before);
+        expect(listener).not.toHaveBeenCalled();
+      } finally {
+        f.client.dispose();
+      }
+    });
+
+    it.each(["omitted", "older"] as const)(
+      "keeps a notice lineage through an already-started bootstrap with an %s lineage",
+      async (payload) => {
+        const f = await fixture(false);
+        let release = () => {};
+        try {
+          if (payload === "older") f.body.browser.workspaceTabs = [{ ...f.group, revision: 0 }];
+          f.fetch.mockImplementationOnce(
+            () =>
+              new Promise<Response>((resolve) => {
+                release = () => resolve(json(f.body));
+              }),
+          );
+          const reading = f.client.load();
+          expect(f.fetch).toHaveBeenCalledTimes(2);
+          f.socket.receive({
+            type: "host.browser-sessions-changed",
+            workspaceId: f.workspace.id,
+            group: f.group,
+          });
+          release();
+          await reading;
+          expect(f.client.getSnapshot().workspaceTabs).toEqual([f.group]);
+          expect(placeList(f.client.getSnapshot()).map((place) => place.title)).toContain("Store");
+        } finally {
+          release();
+          f.client.dispose();
+        }
+      },
+    );
+
+    it("keeps a closed lineage revision so delayed notices cannot resurrect rows", async () => {
+      const f = await fixture();
+      try {
+        f.socket.receive({
+          type: "host.browser-sessions-changed",
+          workspaceId: f.workspace.id,
+          group: { ...f.group, revision: 2, tabs: [] },
+        });
+        expect(
+          placeList(f.client.getSnapshot()).filter((place) => place.kind === "browser"),
+        ).toEqual([]);
+        f.body.browser.workspaceTabs = [];
+        await f.client.load();
+        const before = f.client.getSnapshot();
+        const listener = vi.fn();
+        f.client.subscribe(listener);
+        f.socket.receive({
+          type: "host.browser-sessions-changed",
+          workspaceId: f.workspace.id,
+          group: f.group,
+        });
+        expect(f.client.getSnapshot()).toBe(before);
+        expect(listener).not.toHaveBeenCalled();
+        expect(
+          placeList(f.client.getSnapshot()).filter((place) => place.kind === "browser"),
+        ).toEqual([]);
+      } finally {
+        f.client.dispose();
+      }
+    });
+
+    it("rereads a lineage notice whose tabs were omitted", async () => {
+      const f = await fixture();
+      try {
+        const reads = f.fetch.mock.calls.length;
+        f.body.browser.workspaceTabs = [{ ...f.group, revision: 2, tabs: [] }];
+        f.socket.receive({
+          type: "host.browser-sessions-changed",
+          workspaceId: f.workspace.id,
+          group: { ...f.group, tabs: undefined },
+        });
+        await vi.waitFor(() => expect(f.client.getSnapshot().workspaceTabs?.[0]?.revision).toBe(2));
+        expect(f.fetch).toHaveBeenCalledTimes(reads + 1);
+      } finally {
+        f.client.dispose();
+      }
+    });
+
+    it("does not publish identical or older live catalogs", async () => {
+      const f = await fixture();
+      try {
+        const catalog = { generation: 2, revision: 2, tabs: [] };
+        f.socket.receive({
+          type: "host.browser-tabs-changed",
+          sessionId: f.group.session.id,
+          catalog,
+        });
+        const before = f.client.getSnapshot();
+        const listener = vi.fn();
+        f.client.subscribe(listener);
+        f.socket.receive({
+          type: "host.browser-tabs-changed",
+          sessionId: f.group.session.id,
+          catalog,
+        });
+        f.socket.receive({
+          type: "host.browser-tabs-changed",
+          sessionId: f.group.session.id,
+          catalog: { ...catalog, revision: 1 },
+        });
+        expect(listener).not.toHaveBeenCalled();
+        expect(f.client.getSnapshot()).toBe(before);
+      } finally {
+        f.client.dispose();
+      }
+    });
+
+    it("keeps Thread and Workspace arrays during a browser-only publication", async () => {
+      const f = await fixture();
+      try {
+        const before = f.client.getSnapshot();
+        f.socket.receive({
+          type: "host.browser-tabs-changed",
+          sessionId: f.group.session.id,
+          catalog: { generation: 2, revision: 2, tabs: [] },
+        });
+        const after = f.client.getSnapshot();
+        expect(after.browserSessions).not.toBe(before.browserSessions);
+        expect(after.threads).toBe(before.threads);
+        expect(after.workspaces).toBe(before.workspaces);
+      } finally {
+        f.client.dispose();
+      }
+    });
+
+    it("shares unchanged bootstrap records and propagates a changed field", async () => {
+      const f = await fixture();
+      try {
+        // Align the Thread's derived labels with bootstrap before measuring a reread.
+        await f.client.load();
+        const before = f.client.getSnapshot();
+        expect(before.threads).toHaveLength(1);
+        expect(before.machines.length).toBeGreaterThan(0);
+        await f.client.load();
+        const after = f.client.getSnapshot();
+        expect(sameStableHostSnapshot(before, after)).toBe(true);
+        expect(samePlaceListSource(before, after)).toBe(true);
+        for (const key of [
+          "threads",
+          "workspaces",
+          "browserSessions",
+          "workspaceTabs",
+          "environments",
+          "harnesses",
+          "machines",
+        ] as const) {
+          expect(after[key]).toBe(before[key]);
+          expect(after[key]![0]).toBe(before[key]![0]);
+        }
+        f.body.environments[0]!.name = "Renamed computer";
+        await f.client.load();
+        const changed = f.client.getSnapshot();
+        expect(changed.environments[0]!.name).toBe("Renamed computer");
+        expect(changed.environments[0]).not.toBe(after.environments[0]);
+        expect(changed.browserSessions[0]).toBe(after.browserSessions[0]);
+        expect(sameStableHostSnapshot(after, changed)).toBe(false);
+      } finally {
+        f.client.dispose();
+      }
+    });
   });
 
   it.each([
