@@ -926,6 +926,7 @@ function ThreadView({
           hostClient={hostClient}
           onToggle={setSheetOpen}
           open={sheetOpen}
+          runId={stopTarget?.id ?? null}
           threadId={thread.id}
           title={title}
         />
@@ -1120,14 +1121,6 @@ function ThreadView({
       ) : null}
 
       <div className="composer-dock">
-        {stopTarget ? (
-          <LivePlace
-            hostClient={hostClient}
-            key={stopTarget.id}
-            runId={stopTarget.id}
-            threadId={thread.id}
-          />
-        ) : null}
         {voiceThread ? (
           <VoiceStart
             dockHidden={phoneStage && !sheetOpen}
@@ -1349,6 +1342,7 @@ function ConversationSheetHandle({
   hostClient,
   onToggle,
   open,
+  runId,
   threadId,
   title,
 }: {
@@ -1356,6 +1350,8 @@ function ConversationSheetHandle({
   readonly hostClient: HostClient;
   readonly onToggle: (open: boolean) => void;
   readonly open: boolean;
+  /** The conversation's working Run, whose page stands beside the handle when it is not the one shown. */
+  readonly runId: string | null;
   readonly threadId: string;
   readonly title: string;
 }) {
@@ -1414,6 +1410,9 @@ function ConversationSheetHandle({
           name="chevron-down"
         />
       </button>
+      {runId === null ? null : (
+        <LivePlace hostClient={hostClient} key={runId} runId={runId} threadId={threadId} />
+      )}
       <button
         aria-label="Hide computer"
         className="icon-btn thread__sheet-hide"

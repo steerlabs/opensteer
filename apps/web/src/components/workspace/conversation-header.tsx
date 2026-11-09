@@ -34,6 +34,7 @@ import { AreaLink } from "./area-link.js";
 import { destinationPlaceKey, type WorkspaceNavigation } from "./navigation.js";
 import { DrawerButton } from "./place-stage.js";
 import { homeThreadKind, useTaskDirectory } from "./task-directory.js";
+import { LivePlace } from "./viewfinder.js";
 import { useWorkspace } from "./workspace-context.js";
 
 /**
@@ -94,6 +95,16 @@ export function ConversationHeader({
     [threadId],
   );
   const family = useHostSelector(hostClient, selectFamily, sameTaskFamilyGlance);
+  const selectRunId = useCallback(
+    (snapshot: HostSnapshot) => {
+      const thread = snapshot.threads.find(({ id }) => id === threadId);
+      return thread === undefined
+        ? null
+        : (threadStopTarget({ runQueue: snapshot.runQueue, thread })?.id ?? null);
+    },
+    [threadId],
+  );
+  const runId = useHostSelector(hostClient, selectRunId);
   const menu = !home || docked;
   const taskMark = threadMark(threadId, directory.snapshot);
   const projectOrb = homeKind === "project" && project;
@@ -200,6 +211,9 @@ export function ConversationHeader({
           {/* Only a state that asks something of the reader is said in words; the
               mark shows the rest. */}
           {tone === "needs-you" ? <span className="conv-header__state">Needs you</span> : null}
+          {runId === null ? null : (
+            <LivePlace hostClient={hostClient} key={runId} runId={runId} threadId={threadId} />
+          )}
           {family ? (
             <TaskFamilyButton
               key={threadId}

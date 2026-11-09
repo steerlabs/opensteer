@@ -20,6 +20,7 @@ import {
   rememberBrowserLastPicture,
   pageSiteLabel,
   placeActivityPoint,
+  runPlaceActing,
   type HostClient,
   type SurfaceDestination,
 } from "@opensteer/client/host";
@@ -28,6 +29,7 @@ import { BrowserSurfaceIdSchema } from "@opensteer/core";
 import { placeIdentityKey } from "@opensteer/protocol";
 import { useMediaQuery } from "../../ui-utils.js";
 import { ComputerWatchView } from "../computer-watch.js";
+import { Icon } from "../icon.js";
 import { AgentCursors } from "./agent-cursors.js";
 import { destinationPlaceKey } from "./navigation.js";
 import { useWorkspace } from "./workspace-context.js";
@@ -44,8 +46,9 @@ interface RunPlaceView {
 }
 
 /**
- * A conversation's one live spot, over its composer: the place its working Run
- * acts in now. Where that place is already in the middle, the middle shows it.
+ * A conversation's live page, folded small into its header: the place its
+ * working Run acts in now. Where that place is already in the middle, the
+ * middle shows it and this steps aside.
  */
 export function LivePlace({
   hostClient,
@@ -59,6 +62,9 @@ export function LivePlace({
   const entry = useRunPlace(hostClient, runId);
   const { destination, binding, sessionId } = useRunPlaceBinding(hostClient, entry);
   const { selection } = useWorkspace();
+  const acting = useHostSelector(hostClient, (snapshot) =>
+    entry === null ? false : runPlaceActing(entry, snapshot, threadId),
+  );
   if (entry === null) return null;
   const place: RunPlaceView = {
     placeKey:
@@ -72,23 +78,23 @@ export function LivePlace({
   };
   if (selection.kind === "place" && destinationPlaceKey(selection.destination) === place.placeKey)
     return null;
-  return (
-    <div className="live-place">
-      <Viewfinder hostClient={hostClient} place={place} threadId={threadId} />
-    </div>
-  );
+  return <Viewfinder acting={acting} hostClient={hostClient} place={place} threadId={threadId} />;
 }
 
 /**
- * A working Run's live view of the place it is in, framed on its pointer,
- * with the agents' cursors, beside what the place is. Pressing it shows that
- * place in the middle and changes nothing else.
+ * A working Run's live picture of the place it is in, framed on its pointer,
+ * with the agents' cursors, ringed in green while it acts. Pressing it shows
+ * that place in the middle and changes nothing else. Only a picture arriving
+ * now is drawn at full strength; one kept from earlier is dimmed, and with no
+ * picture at all it shows the kind of place.
  */
 export const Viewfinder = memo(function Viewfinder({
+  acting = false,
   hostClient,
   place,
   threadId,
 }: {
+  readonly acting?: boolean;
   readonly hostClient: HostClient;
   readonly place: RunPlaceView;
   readonly threadId: string;
@@ -106,11 +112,56 @@ export const Viewfinder = memo(function Viewfinder({
   const live = inView && conversationShown;
   const [pictureLive, setPictureLive] = useState(false);
   const site = place.site ? pageSiteLabel(place.site) : null;
+  const name = site && site !== place.title ? `${place.title} — ${site}` : place.title;
+  const picture =
+    destination?.kind === "browser" && destination.tabId ? (
+      <BrowserFinder
+        key={`${destination.sessionId}:${destination.tabId}`}
+        onLive={setPictureLive}
+        enabled={live}
+        hostClient={hostClient}
+        placeKey={place.placeKey}
+        sessionId={destination.sessionId}
+        tabId={destination.tabId}
+        threadId={threadId}
+      />
+    ) : binding && (binding.kind === "app" || binding.kind === "phone") && sessionId !== null ? (
+      <span className="viewfinder__native">
+        <ComputerWatchView
+          key={`${binding.machineId}:${binding.kind === "app" ? binding.appKey : "main"}`}
+          appKey={binding.kind === "app" ? binding.appKey : null}
+          compact
+          preserveLastFrame
+          onPictureLive={setPictureLive}
+          hostClient={hostClient}
+          hostConnected={hostConnected}
+          machineId={binding.machineId || null}
+          machines={hostClient.getSnapshot().machines}
+          sessionId={sessionId}
+          visible={live && destination !== null}
+          hiddenReason={
+            !inView
+              ? "not-in-view"
+              : !conversationShown
+                ? "conversation-hidden"
+                : "destination-changed"
+          }
+        />
+      </span>
+    ) : null;
   return (
     <button
-      aria-label={`Open ${place.title}`}
-      className={place.kind === "browser" ? "viewfinder" : "viewfinder viewfinder--native"}
+      aria-label={`Show ${name}${acting ? ", agent working" : ""}`}
+      className={[
+        "viewfinder",
+        place.kind === "browser" ? "" : "viewfinder--native",
+        acting ? "viewfinder--acting" : "",
+        pictureLive ? "" : "viewfinder--still",
+      ]
+        .filter(Boolean)
+        .join(" ")}
       data-place-key={place.placeKey}
+      disabled={destination === null}
       onBlur={() => highlight.set(null)}
       onClick={() => {
         if (destination) nav.showPlace(destination);
@@ -121,54 +172,17 @@ export const Viewfinder = memo(function Viewfinder({
       }
       onPointerLeave={() => highlight.set(null)}
       ref={rootRef}
-      title={place.title}
+      title={name}
       type="button"
     >
       <span aria-hidden className="viewfinder__frame">
-        {destination?.kind === "browser" && destination.tabId ? (
-          <BrowserFinder
-            key={`${destination.sessionId}:${destination.tabId}`}
-            onLive={setPictureLive}
-            enabled={live}
-            hostClient={hostClient}
-            placeKey={place.placeKey}
-            sessionId={destination.sessionId}
-            tabId={destination.tabId}
-            threadId={threadId}
+        {picture}
+        {picture === null ? (
+          <Icon
+            className="viewfinder__glyph"
+            name={place.kind === "browser" ? "globe" : place.kind === "phone" ? "phone" : "desktop"}
           />
-        ) : binding &&
-          (binding.kind === "app" || binding.kind === "phone") &&
-          sessionId !== null ? (
-          <span className="viewfinder__native">
-            <ComputerWatchView
-              key={`${binding.machineId}:${binding.kind === "app" ? binding.appKey : "main"}`}
-              appKey={binding.kind === "app" ? binding.appKey : null}
-              compact
-              preserveLastFrame
-              onPictureLive={setPictureLive}
-              hostClient={hostClient}
-              hostConnected={hostConnected}
-              machineId={binding.machineId || null}
-              machines={hostClient.getSnapshot().machines}
-              sessionId={sessionId}
-              visible={live && destination !== null}
-              hiddenReason={
-                !inView
-                  ? "not-in-view"
-                  : !conversationShown
-                    ? "conversation-hidden"
-                    : "destination-changed"
-              }
-            />
-          </span>
         ) : null}
-      </span>
-      <span className="viewfinder__words">
-        <span className="viewfinder__title">
-          {pictureLive ? <span aria-hidden className="live-dot" /> : null}
-          <span className="viewfinder__name">{place.title}</span>
-        </span>
-        {site && site !== place.title ? <span className="viewfinder__site">{site}</span> : null}
       </span>
     </button>
   );

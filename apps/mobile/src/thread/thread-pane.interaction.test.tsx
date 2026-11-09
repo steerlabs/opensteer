@@ -481,6 +481,7 @@ vi.mock("../ui/notifications-context.js", () => ({
   usePushRegistration: () => ({ status: "signed-out" }),
 }));
 vi.mock("../ui/keyboard.js", () => ({ useKeyboardVisible: () => false }));
+vi.mock("../ui/cellular.js", () => ({ useCellular: () => false }));
 vi.mock("../screens/deployment-gate.js", () => ({
   DeploymentGate: () => null,
   useAttachedHost: () => harness.activeHost,
@@ -500,6 +501,7 @@ vi.mock("../ui/pane.js", async (importOriginal) => {
 vi.mock("../ui/screen.js", () => ({
   Screen: ({ children }: { children?: ReactNode }) => <main>{children}</main>,
   useGutter: () => 16,
+  useLayout: () => ({ readingWidth: 560 }),
   useReadingColumn: () => ({}),
 }));
 vi.mock("../sidebar/sidebar-context.js", () => ({
@@ -511,6 +513,7 @@ vi.mock("../ui/motion.js", () => ({
   appear: undefined,
   bubblePop: undefined,
   bubbleRise: undefined,
+  descend: undefined,
   move: undefined,
   duration: { enter: 0, exit: 0 },
   enter: undefined,
@@ -928,6 +931,7 @@ function clickingInNotes(runId: string, running: boolean): ToolEntry {
 function notesSession(runId: string): ComputerUseSessionSummary {
   return {
     actionCount: 1,
+    actingAppKeys: [],
     apps: [{ bundleId: "com.apple.Notes", displayName: "Notes", teamId: null }],
     openedAt: at,
     runId,
@@ -4487,7 +4491,7 @@ describe("a new task Ask started", () => {
   });
 });
 
-describe("the Run's live place over the composer", () => {
+describe("the Run's page above the conversation", () => {
   const sessionId = "bsn_00000000-0000-4000-8000-000000000001";
   const surfaceId = "srf_00000000-0000-4000-8000-000000000001";
   const nextSurface = "srf_00000000-0000-4000-8000-000000000002";
@@ -4513,7 +4517,14 @@ describe("the Run's live place over the composer", () => {
         site: "https://example.com",
       },
     });
-  const card = (container: HTMLElement) => container.querySelector('[data-testid="live-place"]');
+  const card = (container: HTMLElement) => container.querySelector('[data-testid="run-page"]');
+  // The page takes its height from the room the pane is laid out in.
+  const layOut = () =>
+    act(() =>
+      harness.layouts.get("run-page-slot")?.({
+        nativeEvent: { layout: { height: 800, width: 390 } },
+      }),
+    );
 
   it.each([chatId, workId])(
     "keeps %s's card through thinking, Requests and catalog gaps, switches, then hands off to reply chips",
@@ -4523,6 +4534,7 @@ describe("the Run's live place over the composer", () => {
       const initial = snapshotFor({ entries, run: { id: runId, status: "running" }, threadId });
       const host = fakeHost(initial);
       const { container } = await mount(host, threadId);
+      await layOut();
       expect(card(container)).toBeNull();
       await act(() => host.runPlaces.accept(entered(runId, threadId)));
       const original = card(container);
@@ -4579,8 +4591,8 @@ describe("the Run's live place over the composer", () => {
         expect.anything(),
       );
       await act(() => host.runPlaces.accept(entered(runId, threadId, "3", nextSurface)));
-      expect(card(container)).toBe(original);
-      expect(original?.textContent).toContain("Live page 3");
+      // Another tab is another page: it starts afresh, with no picture of the last one.
+      expect(card(container)?.textContent).toContain("Live page 3");
       expect(container.querySelector("img[src]")).toBeNull();
       const entry = entered(runId, threadId, "3", nextSurface);
       const reply = wrote("Here is your page", runId, threadId);
@@ -4638,6 +4650,7 @@ describe("the Run's live place over the composer", () => {
         }),
       );
       const { container } = await mount(host, chatId);
+      await layOut();
       const original = card(container);
       expect(original).not.toBeNull();
       expect(container.querySelector("[data-native-preview]")).toBeNull();
@@ -4662,7 +4675,7 @@ describe("the Run's live place over the composer", () => {
       const reply = wrote("Still streaming", runId, chatId);
       host.move({ ...host.client.getSnapshot(), transcripts: { [chatId]: [ran(runId), reply] } });
       expect(harness.nativeRenders).toBe(renders);
-      await press(container, "Open Native place");
+      await press(container, "Native place");
       expect(harness.dispatch).toHaveBeenLastCalledWith(
         expect.objectContaining({
           params: expect.objectContaining({
@@ -4684,7 +4697,7 @@ describe("the Run's live place over the composer", () => {
     },
   );
 
-  it("opens the exact place, hides when it is current, and releases media while backgrounded or hidden", async () => {
+  it("opens the exact place, folds away, and releases media while backgrounded or hidden", async () => {
     const runId = createId("run");
     const initial = snapshotFor({
       entries: [ran(runId)],
@@ -4694,7 +4707,8 @@ describe("the Run's live place over the composer", () => {
     const host = fakeHost(initial);
     host.runPlaces.accept(entered(runId, chatId));
     const { container, root, pane } = await mount(host, chatId);
-    await press(container, "Open Live page 1");
+    await layOut();
+    await press(container, "Live page 1, example.com");
     expect(harness.dispatch).toHaveBeenLastCalledWith({
       type: "PUSH",
       name: "WorkspaceBrowser",
@@ -4710,12 +4724,12 @@ describe("the Run's live place over the composer", () => {
     await act(() => root.render(pane(() => undefined)));
     expect(host.watchRelease).toHaveBeenCalledTimes(2);
     harness.inView = true;
-    harness.currentRoute = {
-      name: "WorkspaceBrowser",
-      params: { deploymentId, sessionId, tabId: surfaceId },
-    };
     await act(() => root.render(pane(() => undefined)));
+    expect(host.client.retainBrowserWatch).toHaveBeenCalledTimes(3);
+    // Folded, the page lets go of its picture; the bar's small one is the bar's.
+    await press(container, "Fold page");
     expect(card(container)).toBeNull();
+    expect(host.watchRelease).toHaveBeenCalledTimes(3);
   });
 });
 
