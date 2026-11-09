@@ -404,6 +404,9 @@ function browserSignInUnavailableMessage(
       return passwordSignInResponseMessage({ outcome: "interrupted" }, { site });
     case "busy":
       return "Another agent is waiting for you to sign in to this site. Try again later";
+    case "main-browser-required":
+      return `Saved logins fill only in the browser on the computer that runs Opensteer. Sign in to ${browserSiteLabel(site)} in the browser tab`;
+    case "unsupported-operation":
     case "chrome-blocked":
     case "limit":
     case "unsupported":
