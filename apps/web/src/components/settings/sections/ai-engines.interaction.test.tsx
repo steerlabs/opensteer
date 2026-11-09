@@ -283,7 +283,7 @@ describe("a model server account", () => {
     expect(dialog().querySelector("input")).not.toBeNull();
 
     const { row: mixed } = await mountServer(addModels(needsContext("llama3.2:3b")));
-    expect(mixed.textContent).toContain("Ready");
+    expect(mixed.querySelector(".chip")).toBeNull();
     expect(labels(mixed)).toContain("Set up models");
   });
 
