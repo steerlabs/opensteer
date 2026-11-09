@@ -578,7 +578,11 @@ interface BrowserServiceOptions {
   readonly onProfilesChanged?: (ownerId: UserId, workspaceId: WorkspaceId) => void;
   readonly workspaceTabs?: WorkspaceTabStore;
   readonly tabGroups?: BrowserTabGroupStore;
-  readonly onCatalogChanged?: (sessionId: BrowserSessionId, workspaceId: WorkspaceId) => void;
+  readonly onCatalogChanged?: (
+    sessionId: BrowserSessionId,
+    workspaceId: WorkspaceId,
+    change?: { readonly lineageChanged: boolean },
+  ) => void;
   readonly onMissingActor?: (sessionId: BrowserSessionId, agentBindingId: string) => void;
   readonly onPlaceNotice?: (
     ownerId: UserId,
@@ -610,7 +614,7 @@ interface BrowserServiceOptions {
   readonly onUsageChanged?: (credits: readonly BrowserUsageCredit[]) => void;
   /** A best-effort write that failed after the agent was already answered. */
   readonly onError?: (error: unknown) => void;
-  /** Drives activity expiry and native coalescing; browser commands and connection deadlines use real time. */
+  /** Drives activity expiry and place coalescing; browser commands and connection deadlines use real time. */
   readonly activityClock?: Clock;
   readonly actingWindowMs?: number;
   readonly actorMetadataTimeoutMs?: number;
@@ -636,9 +640,17 @@ interface BrowserActor {
   lineageThreadIds: readonly ThreadId[];
   lineageWorkspaceIds: readonly WorkspaceId[];
   readonly audience: Map<UserId, { threadId: ThreadId; home: boolean }>;
-  readonly surfaces: Map<string, { at: number; seq: number; heldAt?: number }>;
+  readonly surfaces: Map<
+    string,
+    {
+      at: number;
+      seq: number;
+      heldAt?: number;
+      recordedPage?: { readonly key: string; readonly at: number };
+    }
+  >;
+  usageTail?: Promise<void>;
   seq: number;
-  lastSurfaceId: string | null;
 }
 
 export class BrowserService {
@@ -745,7 +757,22 @@ export class BrowserService {
     this.#actorMetadataTimeoutMs = options.actorMetadataTimeoutMs ?? browserActorMetadataTimeoutMs;
     this.#onWorkspaceEvent = options.onWorkspaceEvent;
     this.#runPlaces = new RunPlaceRecorder({
+      clock: this.#activityClock,
       write: (input) => this.#repository.recordRunPlace(input),
+      onPlaceSettled: async ({ runId, bindingGeneration, data }, at, coalesced) => {
+        const { place } = data;
+        if (place.kind !== "browser") return;
+        const actor = [...this.#actors.values()].find(
+          (actor) =>
+            actor.runId === runId &&
+            actor.generation === bindingGeneration &&
+            actor.sessionId === place.sessionId,
+        );
+        if (!actor) return;
+        const recorded = actor.surfaces.get(place.surfaceId)?.recordedPage;
+        if (!coalesced && recorded && recorded.at >= at) return;
+        await this.#recordActorUse(actor, place.surfaceId, true);
+      },
       publish: (event) => this.#onWorkspaceEvent(event),
       onError: (error) => this.#onError(error),
     });
@@ -2288,7 +2315,6 @@ export class BrowserService {
       runId: source.runId,
       audience: new Map(),
       surfaces: new Map(),
-      lastSurfaceId: null,
       seq: 0,
       lineageThreadIds: source.lineageThreadIds,
       lineageWorkspaceIds: source.lineageWorkspaceIds,
@@ -2441,15 +2467,15 @@ export class BrowserService {
     if (timer) clearTimeout(timer);
     this.#catalogNotices.delete(sessionId);
     return this.#serializeKey(`catalog:${sessionId}`, async () => {
+      let lineageChanged = false;
       if (broker && this.#workspaceTabs) {
         const { tabs, closed, revision, dirty } = broker.durableCatalog();
         if (dirty) {
-          if (await this.#workspaceTabs.record(sessionId, tabs, closed))
-            this.#onSessionsChanged(workspaceId, [sessionId], "browser.catalog-flush");
+          lineageChanged = await this.#workspaceTabs.record(sessionId, tabs, closed);
           broker.acknowledgeClosed(closed, revision);
         }
       }
-      this.#onCatalogChanged(sessionId, workspaceId);
+      this.#onCatalogChanged(sessionId, workspaceId, { lineageChanged });
     });
   }
 
@@ -2465,6 +2491,36 @@ export class BrowserService {
       })
       .catch(() => undefined);
     return result;
+  }
+
+  #recordActorUse(actor: BrowserActor, surfaceId: BrowserSurfaceId, force = false): Promise<void> {
+    const broker = this.#brokers.get(actor.sessionId);
+    const key = broker?.pageKeyOf(surfaceId);
+    if (key === undefined) return Promise.resolve();
+    const previous = actor.surfaces.get(surfaceId);
+    if (!force && previous?.recordedPage?.key === key) return actor.usageTail ?? Promise.resolve();
+    const recordedPage = { key, at: this.#activityClock.now() };
+    actor.surfaces.set(surfaceId, { at: 0, seq: 0, ...previous, recordedPage });
+    const page = broker?.pageOf(surfaceId) ?? null;
+    // Separate transactions keep lastUsedAt ordered; now() is fixed inside a transaction.
+    const tail = (actor.usageTail ?? Promise.resolve())
+      .then(() =>
+        this.#repository.recordAgentBrowserUse({
+          agentBindingId: actor.binding,
+          ownerId: actor.ownerId,
+          sessionId: actor.sessionId,
+          tabId: surfaceId,
+          page,
+        }),
+      )
+      .then((credits) => this.announceUsage(credits))
+      .catch((error: unknown) => {
+        const surface = actor.surfaces.get(surfaceId);
+        if (surface?.recordedPage === recordedPage) delete surface.recordedPage;
+        this.#onError(error);
+      });
+    actor.usageTail = tail;
+    return tail;
   }
 
   #runtimeActivity(sessionId: BrowserSessionId, activity: BrowserRuntimeActivity): void {
@@ -2484,24 +2540,12 @@ export class BrowserService {
     const data = this.#placeData(sessionId, activity.surfaceId);
     if (data) this.#runPlaces.enter(actor.runId, actor.generation, data);
 
-    if (actor.lastSurfaceId !== activity.surfaceId) {
-      actor.lastSurfaceId = activity.surfaceId;
-      void this.#repository
-        .recordAgentBrowserUse({
-          agentBindingId: actor.binding,
-          ownerId: actor.ownerId,
-          sessionId,
-          tabId: activity.surfaceId,
-          page: this.#brokers.get(sessionId)?.pageOf(activity.surfaceId) ?? null,
-        })
-        .then((credits) => this.announceUsage(credits))
-        .catch(this.#onError);
-    }
     this.#noteAgentCommand(sessionId, actor.binding);
     const at = this.#activityClock.now();
     const previous = actor.surfaces.get(activity.surfaceId);
     const wasActing = previous !== undefined && at - previous.at < this.#actingWindowMs;
-    actor.surfaces.set(activity.surfaceId, { at, seq: activity.seq });
+    actor.surfaces.set(activity.surfaceId, { ...previous, at, seq: activity.seq });
+    void this.#recordActorUse(actor, activity.surfaceId);
     const previousTimer = this.#actingTimers.get(sessionId);
     if (previousTimer) previousTimer();
     const deadlines = [...this.#actors.values()]
@@ -4724,6 +4768,13 @@ class HostedBrowserBroker {
       site: surface.navigationFailed ? "" : browserPageSite(surface.url).slice(0, 2048),
       title: surface.title.slice(0, 256),
     };
+  }
+
+  pageKeyOf(surfaceId: string): string | undefined {
+    const surface = this.#snapshot?.surfaces.find((surface) => surface.id === surfaceId);
+    return surface
+      ? JSON.stringify([surface.documentId, surface.url, surface.title, surface.navigationFailed])
+      : undefined;
   }
 
   #noticePage(): void {
