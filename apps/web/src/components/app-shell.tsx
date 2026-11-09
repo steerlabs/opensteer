@@ -460,6 +460,8 @@ export function AppShell({
     readonly added: boolean;
     readonly continued: boolean;
     readonly flow: AccountSignInFlow;
+    readonly onAdded?: ((harnessInstanceId: string) => void) | undefined;
+    readonly otherSources?: (() => void) | undefined;
     readonly title: string;
     readonly whereLabel: string;
   } | null>(null);
@@ -699,7 +701,15 @@ export function AppShell({
     [harnessAuthenticationEnvironmentIds, hostClient, toast],
   );
   const addHarnessAccount = useCallback(
-    ({ continued = false, request, selectMethod, title, whereLabel }: AddHarnessAccount) => {
+    ({
+      continued = false,
+      onAdded,
+      otherSources,
+      request,
+      selectMethod,
+      title,
+      whereLabel,
+    }: AddHarnessAccount) => {
       setAccountSignIn({
         added: true,
         continued,
@@ -709,6 +719,8 @@ export function AppShell({
           target: { kind: "create", request },
           ...(selectMethod ? { selectMethod } : {}),
         }),
+        onAdded,
+        otherSources,
         title,
         whereLabel,
       });
@@ -1251,7 +1263,18 @@ export function AppShell({
                   continued={accountSignIn.continued}
                   flow={accountSignIn.flow}
                   onClose={() => closeAccountSignIn(accountSignIn.flow)}
-                  onDone={(state) => finishAccountSignIn(state.accountLabel, accountSignIn.added)}
+                  onDone={(state) => {
+                    finishAccountSignIn(state.accountLabel, accountSignIn.added);
+                    accountSignIn.onAdded?.(state.harnessInstanceId);
+                  }}
+                  onOtherSources={
+                    accountSignIn.otherSources
+                      ? () => {
+                          closeAccountSignIn(accountSignIn.flow);
+                          accountSignIn.otherSources?.();
+                        }
+                      : undefined
+                  }
                   title={accountSignIn.title}
                   whereLabel={accountSignIn.whereLabel}
                 />

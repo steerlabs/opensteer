@@ -16,6 +16,9 @@ const copiedDwellMs = 2_000;
 /** What adding an account takes: the account to create and how to talk about it. */
 export interface AddHarnessAccount {
   readonly continued?: boolean;
+  readonly onAdded?: (harnessInstanceId: string) => void;
+  /** Leaves this sign-in for the other sources the engine offers. */
+  readonly otherSources?: () => void;
   /** The way in to use, when the caller already knows it. */
   readonly selectMethod?: (methods: readonly HarnessSetupMethod[]) => string | undefined;
   readonly request: Extract<HostApiCommandInput, { readonly type: "harness.create" }>;
@@ -39,6 +42,7 @@ export function AccountSignInDialog({
   flow,
   onClose,
   onDone,
+  onOtherSources,
   title,
   whereLabel,
 }: {
@@ -47,6 +51,7 @@ export function AccountSignInDialog({
   readonly flow: AccountSignInFlow;
   readonly onClose: () => void;
   readonly onDone: (state: Extract<AccountSignInState, { readonly kind: "done" }>) => void;
+  readonly onOtherSources?: (() => void) | undefined;
   readonly title: string;
   readonly whereLabel: string;
 }) {
@@ -57,6 +62,7 @@ export function AccountSignInDialog({
   const pending = view?.kind === "pending" ? view : null;
   const code = pending && pending.inputPrompt === undefined ? pending.userCode : null;
 
+  const [choosing, setChoosing] = useState(false);
   const [opened, setOpened] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
   const [value, setValue] = useState("");
@@ -68,6 +74,7 @@ export function AccountSignInDialog({
 
   const methodId = signingIn?.methodId ?? null;
   useEffect(() => {
+    setChoosing(false);
     setOpened(false);
     setOpenError(null);
     setValue("");
@@ -138,24 +145,70 @@ export function AccountSignInDialog({
       Cancel
     </button>
   );
-  const alternatives = signingIn?.methods
-    .filter((candidate) => candidate.methodId !== signingIn.methodId)
-    .map((candidate) => (
-      <button
-        className="btn btn--ghost account-sign-in__alternative"
-        key={candidate.methodId}
-        onClick={() => flow.chooseMethod(candidate.methodId)}
-        type="button"
-      >
-        {alternativeLabel(candidate)}
-      </button>
-    ));
+  const otherMethods =
+    signingIn?.methods.filter((candidate) => candidate.methodId !== signingIn.methodId) ?? [];
+  const onlyMethod = !onOtherSources && otherMethods.length === 1 ? otherMethods[0] : undefined;
+  const alternatives = onlyMethod ? (
+    <button
+      className="btn btn--ghost account-sign-in__alternative"
+      onClick={() => flow.chooseMethod(onlyMethod.methodId)}
+      type="button"
+    >
+      {alternativeLabel(onlyMethod)}
+    </button>
+  ) : otherMethods.length > 0 || onOtherSources ? (
+    <button
+      className="btn btn--ghost account-sign-in__alternative"
+      onClick={() => setChoosing(true)}
+      type="button"
+    >
+      Other ways to sign in
+    </button>
+  ) : null;
 
   let body: ReactNode;
   let footer: ReactNode = cancel;
   const failure = signingIn?.error ?? (view?.kind === "failed" ? view.detail : null);
 
-  if (state.kind === "finishing") {
+  if (choosing && (signingIn || state.kind === "preparing")) {
+    footer = (
+      <>
+        <button className="btn btn--ghost" onClick={() => setChoosing(false)} type="button">
+          Back
+        </button>
+        {cancel}
+      </>
+    );
+    body = (
+      <div aria-label="Other ways to sign in" className="settings-choice-group" role="group">
+        {otherMethods.map((candidate) => (
+          <button
+            className="settings-choice settings-choice--button"
+            key={candidate.methodId}
+            onClick={() => flow.chooseMethod(candidate.methodId)}
+            type="button"
+          >
+            <span className="settings-choice__copy">
+              <span className="settings-choice__title">{candidate.label}</span>
+            </span>
+            <Icon name="chevron-right" />
+          </button>
+        ))}
+        {onOtherSources ? (
+          <button
+            className="settings-choice settings-choice--button"
+            onClick={onOtherSources}
+            type="button"
+          >
+            <span className="settings-choice__copy">
+              <span className="settings-choice__title">Another provider</span>
+            </span>
+            <Icon name="chevron-right" />
+          </button>
+        ) : null}
+      </div>
+    );
+  } else if (state.kind === "finishing") {
     footer = null;
     body = <Status>Signed in. Finishing up…</Status>;
   } else if (state.kind === "duplicate") {

@@ -1348,7 +1348,7 @@ function mockAccountCatalog(harness: HarnessSummary, ready: boolean): HarnessIns
         connectionSlot: "primary",
         label: "Account",
         status: "connected",
-        accountLabel: "demo@opensteer.test",
+        accountLabel: "side@opensteer.test",
         logoutSupported: true,
         authKind:
           kind === "secret-input"
@@ -7281,7 +7281,7 @@ class MockHostState {
     if (attempt) {
       if (
         attempt.method.kind === "device-code" &&
-        this.now().getTime() - attempt.startedAt >= 3_000
+        this.now().getTime() - attempt.startedAt >= 8_000
       ) {
         this.completeHarnessSignIn(harness);
       } else {

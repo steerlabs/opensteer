@@ -294,6 +294,18 @@ export function endpointAccountName(
   return null;
 }
 
+/**
+ * The source pressing Add account starts with, with nothing to ask first: the
+ * only one, or the service's own. Any other source stays one step away.
+ */
+export function directSource(
+  sources: readonly HarnessSourceDescriptor[],
+): HarnessSourceDescriptor | undefined {
+  const candidates =
+    sources.length === 1 ? sources : sources.filter((source) => source.kind === "first-party");
+  return candidates.length === 1 && candidates[0]!.fields.length === 0 ? candidates[0] : undefined;
+}
+
 /** The source an account was added for, as its engine declares it here. */
 function accountSource(
   environment: EnvironmentSummary,
@@ -352,9 +364,17 @@ export function AiEngineSettings({
   const [pending, setPending] = useState<string | null>(null);
   // The engine whose "Add account" needs a choice or a field before it can
   // create anything; null while no dialog is open.
-  const [adding, setAdding] = useState<EngineGroup | null>(null);
+  const [adding, setAdding] = useState<{
+    readonly continued: boolean;
+    readonly engine: EngineGroup;
+  } | null>(null);
   // The server account whose models' limits are open for editing.
   const [configuringModels, setConfiguringModels] = useState<string | null>(null);
+  const [justAdded, setJustAdded] = useState<string | null>(null);
+  useEffect(() => {
+    if (justAdded === null) return;
+    document.querySelector(".settings-account.is-just-added")?.scrollIntoView({ block: "nearest" });
+  }, [justAdded]);
   // A server found or typed in connects in the background. Its first catalog
   // says whether it wants a key, its models, or nothing more.
   const [signInAfterCreate, setSignInAfterCreate] = useState<HarnessSummary | null>(null);
@@ -523,6 +543,10 @@ export function AiEngineSettings({
     setRowState(null);
     onAddAccount({
       continued,
+      onAdded: setJustAdded,
+      ...(engine.sources.length > 1
+        ? { otherSources: () => setAdding({ continued: true, engine }) }
+        : {}),
       request: createRequest(environment, engine, choice),
       title: `Add ${engine.engineName} account`,
       whereLabel: environment.name,
@@ -576,12 +600,12 @@ export function AiEngineSettings({
    * asks first. The question is only ever "which source" and "its fields".
    */
   const addAccount = (engine: EngineGroup) => {
-    const only = engine.sources.length === 1 ? engine.sources[0] : undefined;
-    if (only && only.fields.length === 0) {
-      startAdding(engine, { fields: {}, source: only }, false);
+    const direct = directSource(engine.sources);
+    if (direct) {
+      startAdding(engine, { fields: {}, source: direct }, false);
       return;
     }
-    setAdding(engine);
+    setAdding({ continued: false, engine });
   };
 
   const updateEngine = (engine: EngineGroup) => {
@@ -883,6 +907,7 @@ export function AiEngineSettings({
         }
         engineName={engineName}
         environment={environment}
+        justAdded={justAdded === profile.id}
         key={profile.id}
         profile={profile}
         source={source}
@@ -909,13 +934,14 @@ export function AiEngineSettings({
     <>
       {adding ? (
         <AddAccountDialog
-          engineName={adding.engineName}
+          continued={adding.continued}
+          engineName={adding.engine.engineName}
           onClose={() => setAdding(null)}
           onSubmit={(choice) => {
             setAdding(null);
-            startAdding(adding, choice, true);
+            startAdding(adding.engine, choice, true);
           }}
-          sources={adding.sources}
+          sources={adding.engine.sources}
           whereLabel={environment.name}
         />
       ) : null}
@@ -1159,6 +1185,7 @@ function AccountRow({
   confirming,
   engineName,
   environment,
+  justAdded,
   profile,
   source,
   unavailableReason,
@@ -1168,6 +1195,7 @@ function AccountRow({
   readonly confirming: string | null;
   readonly engineName: string;
   readonly environment: EnvironmentSummary;
+  readonly justAdded: boolean;
   readonly profile: HarnessSummary;
   readonly source: HarnessSourceDescriptor | null;
   readonly unavailableReason: string | null;
@@ -1204,11 +1232,11 @@ function AccountRow({
   // The Sign in button says all there is to say about an account that has one.
   const signInOffered =
     catalog?.status === "authentication-required" && catalog.setupMethods.length > 0;
-  const line = ready ? (accountLine ?? status.detail) : signInOffered ? null : status.detail;
+  const line = ready ? accountLine : signInOffered ? null : status.detail;
   return (
     <SettingsRow
       action={action}
-      className={`settings-account settings-ai-engine-row${confirming ? " is-confirming" : ""}`}
+      className={`settings-account settings-ai-engine-row${confirming ? " is-confirming" : ""}${justAdded ? " is-just-added" : ""}`}
       detail={
         confirming ??
         (line !== null || connection ? (

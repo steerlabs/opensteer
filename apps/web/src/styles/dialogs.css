@@ -254,6 +254,12 @@
   margin-left: 0;
 }
 
+@media (max-width: 30rem) {
+  .dialog__footer:has(.account-sign-in__alternative) > .btn--primary {
+    flex: 1 1 100%;
+  }
+}
+
 .dialog-layer--continued .dialog,
 .dialog-layer--continued .dialog-scrim {
   animation: none;

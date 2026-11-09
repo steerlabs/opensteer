@@ -39,12 +39,14 @@ function fieldAccepts(field: HarnessSourceField, value: string): boolean {
  * reaches this dialog with no change here.
  */
 export function AddAccountDialog({
+  continued = false,
   engineName,
   onClose,
   onSubmit,
   sources,
   whereLabel,
 }: {
+  readonly continued?: boolean;
   readonly engineName: string;
   readonly onClose: () => void;
   readonly onSubmit: (choice: AddAccountChoice) => void;
@@ -93,6 +95,7 @@ export function AddAccountDialog({
   };
   return (
     <Dialog
+      continued={continued}
       footer={
         <>
           <button className="btn btn--ghost" onClick={onClose} type="button">
