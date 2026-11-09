@@ -51,6 +51,7 @@ vi.mock("react-native", () => ({
     },
   },
   PixelRatio: { get: () => 1 },
+  useWindowDimensions: () => ({ fontScale: 1, height: 844, scale: 1, width: 390 }),
   AppState: {
     currentState: "active",
     addEventListener: (_: string, callback: (v: string) => void) => {

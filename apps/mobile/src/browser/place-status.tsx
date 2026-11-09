@@ -21,7 +21,6 @@ import { taskHeading } from "../thread/task-status.js";
 import { ComposerAction } from "../ui/composer-action.js";
 import { AppText } from "../ui/primitives.js";
 import { AgentMarks } from "./agent-marks.js";
-import { statusRowHeight } from "./place-foot.js";
 
 /**
  * What a place says of the conversation it was opened from, under the page:
@@ -122,7 +121,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     flexDirection: "row",
     gap: space[8],
-    height: statusRowHeight,
+    flex: 1,
     paddingHorizontal: space[12],
   },
   said: { alignItems: "center", flex: 1, flexDirection: "row", gap: space[8], minWidth: 0 },

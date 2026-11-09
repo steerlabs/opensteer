@@ -1,19 +1,25 @@
 import type { VoiceSnapshot } from "@opensteer/client/voice";
 import { useEffect, type ReactNode } from "react";
-import { StyleSheet, View } from "react-native";
+import { StyleSheet, useWindowDimensions, View } from "react-native";
 import Animated, { useSharedValue, withTiming, type SharedValue } from "react-native-reanimated";
-import { space, touchTarget } from "../theme.js";
+import { controlFontScaleLimit, space, type as textType, touchTarget } from "../theme.js";
 import { appear, duration, exit } from "../ui/motion.js";
 import { VoiceDock } from "../voice/controls.js";
 import { useVoiceValue } from "../voice/use-voice-value.js";
 import { usePlaceBarStatus } from "./place-bar.js";
 
 /**
- * The status row's whole height: its controls' touch target and no more. It is
- * fixed, its words being capped at the controls' text scale, so the page can
- * make room for it before it is drawn.
+ * The status row's whole height: its controls' touch target, or, at large
+ * text, its words and the Answer pill that grow with them, both capped at the
+ * controls' text scale. It is known before the row is drawn, so the page can
+ * make room for it first.
  */
-export const statusRowHeight = touchTarget;
+export function statusRowHeight(fontScale: number): number {
+  const line = Math.ceil(
+    textType.secondaryMedium.lineHeight * Math.min(fontScale, controlFontScaleLimit),
+  );
+  return Math.max(touchTarget, line + 2 * space[6]);
+}
 
 /**
  * Room for the status row at the foot of a place, eased in and out on the UI
@@ -29,8 +35,9 @@ export function usePlaceStatus(hidden: boolean): {
   readonly row: ReactNode;
 } {
   const status = usePlaceBarStatus();
+  const { fontScale } = useWindowDimensions();
   // The room stays while the foot is taken, so the page keeps its size under the keyboard.
-  const height = status !== null ? statusRowHeight : 0;
+  const height = status !== null ? statusRowHeight(fontScale) : 0;
   const shown = status !== null && !hidden;
   const reserve = useSharedValue(height);
   useEffect(() => {
@@ -40,7 +47,7 @@ export function usePlaceStatus(hidden: boolean): {
     height,
     reserve,
     row: shown ? (
-      <Animated.View entering={appear} exiting={exit} style={styles.slot}>
+      <Animated.View entering={appear} exiting={exit} style={[styles.slot, { height }]}>
         {status}
       </Animated.View>
     ) : null,
