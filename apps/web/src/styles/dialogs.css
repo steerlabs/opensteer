@@ -175,28 +175,94 @@
   color: var(--green);
 }
 
-.harness-authentication__code {
+.account-sign-in {
   display: flex;
   flex-direction: column;
-  gap: var(--space-8);
-  padding: var(--space-16);
+  gap: var(--space-12);
+}
+
+.account-sign-in__lead {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: var(--text-lg);
+  line-height: 1.5;
+}
+
+.account-sign-in__code {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-8) var(--space-12);
+  min-height: 62px;
+  padding: var(--space-10) var(--space-12) var(--space-10) var(--space-16);
   border: 1px solid var(--ember-line);
   border-radius: var(--radius-sm);
   background: var(--sheen) var(--fill-plate);
-  color: var(--muted);
-  font-size: var(--text-sm);
   box-shadow: var(--edge-attention);
 }
 
-.harness-authentication__code code {
+.account-sign-in__code code {
+  min-width: 0;
   color: var(--text);
+  font-family: var(--font-mono);
   font-size: var(--display-lg);
   font-weight: var(--weight-bold);
-  letter-spacing: 0.12em;
+  letter-spacing: 0.1em;
+  overflow-wrap: anywhere;
+  user-select: all;
 }
 
-.harness-authentication__copy {
-  align-self: flex-start;
+.account-sign-in__skeleton {
+  width: 55%;
+  height: 18px;
+}
+
+.account-sign-in__copy.is-copied {
+  color: var(--green);
+}
+
+.account-sign-in__warning {
+  margin: 0;
+  color: var(--amber-text);
+  font-size: var(--text-md);
+}
+
+.account-sign-in__status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  margin: 0;
+  color: var(--text-soft);
+  font-size: var(--text-lg);
+}
+
+.account-sign-in__form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+}
+
+.account-sign-in__alternative {
+  margin-right: auto;
+  margin-left: calc(var(--space-8) * -1);
+  color: var(--muted);
+  font-size: var(--text-md);
+}
+
+.account-sign-in__alternative + .account-sign-in__alternative {
+  margin-left: 0;
+}
+
+@media (max-width: 30rem) {
+  .dialog__footer:has(.account-sign-in__alternative) > .btn--primary {
+    flex: 1 1 100%;
+  }
+}
+
+.dialog-layer--continued .dialog,
+.dialog-layer--continued .dialog-scrim {
+  animation: none;
 }
 
 /* Setup-method chooser: each method is one tappable row. */

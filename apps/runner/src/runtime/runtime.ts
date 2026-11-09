@@ -1039,7 +1039,14 @@ export class RunnerRuntime {
     await mkdir(this.#privateStateDirectory, { mode: 0o700, recursive: true });
     await setPrivateDirectoryMode(this.#privateStateDirectory);
     // An engine started under an account's former definition is not kept.
-    await this.#warm.evict(() => true);
+    await this.#warm.evict((engine) => {
+      const next = definitions.find((definition) => definition.id === engine.harnessInstanceId);
+      return (
+        !next ||
+        next.runtimeRevision !==
+          this.#harnesses.state(engine.harnessInstanceId)?.definition.runtimeRevision
+      );
+    });
     await this.#cancelBackgroundText((attempt) => {
       const next = definitions.find((definition) => definition.id === attempt.accountId);
       return (
@@ -1326,6 +1333,9 @@ export class RunnerRuntime {
         }
         const expiresAt = Date.now() + harnessAuthenticationLifetimeMs;
         if (started.status === "ready") {
+          await this.#warm.evict((engine) => engine.harnessInstanceId === harness.id);
+          if (this.#harnessAuthentications.get(harness.id) !== startingEntry) return;
+          startupSignal.throwIfAborted();
           this.#harnessAuthentications.set(harness.id, {
             ...(request.connectionSlot ? { connectionSlot: request.connectionSlot } : {}),
             driverKind: harness.driverKind,
@@ -1369,19 +1379,34 @@ export class RunnerRuntime {
       }
     };
     void startupTask.then(forgetStartup, forgetStartup);
+    const wait = new AbortController();
+    try {
+      await Promise.race([
+        startupTask,
+        sleep(2_000, undefined, {
+          signal: AbortSignal.any([startupSignal, wait.signal]),
+        }).catch(() => undefined),
+      ]);
+    } finally {
+      wait.abort();
+    }
     return {
       driverKind: harness.driverKind,
       harnessInstanceId: harness.id,
-      state: startingEntry.state,
+      state: this.#harnessAuthentications.get(harness.id)?.state ?? { status: "not-started" },
     };
   }
 
-  #finishAuthentication(
+  async #finishAuthentication(
     harnessInstanceId: string,
     entry: HarnessAuthenticationEntry,
     state: HarnessAuthenticationState,
-  ): void {
+  ): Promise<void> {
     if (this.#harnessAuthentications.get(harnessInstanceId) !== entry) return;
+    if (state.status === "ready") {
+      await this.#warm.evict((engine) => engine.harnessInstanceId === harnessInstanceId);
+      if (this.#harnessAuthentications.get(harnessInstanceId) !== entry) return;
+    }
     this.#harnessAuthentications.set(harnessInstanceId, {
       ...(entry.connectionSlot ? { connectionSlot: entry.connectionSlot } : {}),
       driverKind: entry.driverKind,

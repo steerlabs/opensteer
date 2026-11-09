@@ -1,3 +1,4 @@
+import { copyText } from "@opensteer/shared/clipboard";
 import { createContext, useContext, useMemo } from "react";
 import { chromeExtensionConnectUrl, chromeExtensionProbeUrl } from "@opensteer/client/host";
 import { isLoopbackHostname } from "@opensteer/core";
@@ -96,13 +97,4 @@ function probeOpensteerExtension(): Promise<boolean> {
     image.onerror = () => finish(false);
     image.src = `${chromeExtensionProbeUrl}?${Date.now()}`;
   });
-}
-
-async function copyText(text: string): Promise<boolean> {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    return false;
-  }
 }

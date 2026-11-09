@@ -5,8 +5,9 @@ import { useMemo, useState, type ReactNode } from "react";
 import { operationDetail } from "../client/mobile-client.js";
 import { useMobileState } from "../ui/mobile-client-context.js";
 import { AiSettingsForm } from "./settings-ai-form.js";
+import { useAiAccounts } from "./settings-ai-accounts.js";
 import { useAutomaticModelsForm } from "./settings-automatic-models.js";
-import type { AutomaticModelsForm } from "./settings-form.types.js";
+import type { AiAccountsForm, AutomaticModelsForm } from "./settings-form.types.js";
 import { engineInstallationUpdateModel } from "./settings-model.js";
 import { SettingsPageLayout } from "./settings-page-layout.js";
 import { useSettingsHost } from "./use-settings-host.js";
@@ -37,8 +38,9 @@ export function AiSettingsController(): ReactNode {
     });
   }, [engineUpdateError, engineUpdatePending, snapshot]);
   const hostClient = selection.hostClient;
-  const form = (automatic: AutomaticModelsForm | null) => (
+  const form = (automatic: AutomaticModelsForm | null, aiAccounts: AiAccountsForm | null) => (
     <AiSettingsForm
+      aiAccounts={aiAccounts}
       onChooseModel={() => {
         if (selection.deploymentId)
           navigation.navigate("NewThread", { deploymentId: selection.deploymentId });
@@ -70,22 +72,25 @@ export function AiSettingsController(): ReactNode {
       }}
     />
   );
-  return (
-    <SettingsPageLayout>
-      {hostClient === null ? (
-        form(null)
-      ) : (
-        <WithAutomaticModels host={hostClient} key={selection.deploymentId}>
-          {form}
-        </WithAutomaticModels>
-      )}
-    </SettingsPageLayout>
+  return hostClient === null ? (
+    <SettingsPageLayout>{form(null, null)}</SettingsPageLayout>
+  ) : (
+    <WithHost host={hostClient} key={selection.deploymentId}>
+      {form}
+    </WithHost>
   );
 }
 
-function WithAutomaticModels(props: {
-  readonly children: (automatic: AutomaticModelsForm) => ReactNode;
+function WithHost(props: {
+  readonly children: (automatic: AutomaticModelsForm, aiAccounts: AiAccountsForm) => ReactNode;
   readonly host: HostClient;
 }): ReactNode {
-  return props.children(useAutomaticModelsForm(props.host));
+  const automatic = useAutomaticModelsForm(props.host);
+  const accounts = useAiAccounts(props.host);
+  return (
+    <>
+      <SettingsPageLayout>{props.children(automatic, accounts.form)}</SettingsPageLayout>
+      {accounts.sheet}
+    </>
+  );
 }

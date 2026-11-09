@@ -128,6 +128,20 @@ describe("Thread model picker", () => {
     driver: "claude",
     models: [gpt],
   });
+  it("signs in a signed-out account only where it offers a way to", () => {
+    const signedOut = (setupAvailable: boolean, harnessAuthenticationAllowed = true) =>
+      ({
+        ...placement({ account: "Other", harness: "other", available: false, models: [gpt] }),
+        availability: "authentication-required",
+        harnessAuthenticationAllowed,
+        setupAvailable,
+      }) as ThreadPlacementOption;
+    const action = (input: ThreadPlacementOption) =>
+      build([primary, input], gpt).accounts.find((row) => row.placement === input)?.action.kind;
+    expect(action(signedOut(true))).toBe("sign-in");
+    expect(action(signedOut(false))).toBe("refresh");
+    expect(action(signedOut(true, false))).toBe("blocked");
+  });
   it("browses chips without changing the current selection", () => {
     const picker = build([primary, claude], gpt, {
       step: { kind: "engines", driverKind: "claude" },

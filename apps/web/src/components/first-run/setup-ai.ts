@@ -1,5 +1,6 @@
 import { harnessCatalogEntry } from "@opensteer/core";
 import type { EnvironmentSummary, ThreadPlacementOption } from "@opensteer/client/host";
+import type { HarnessSetupMethod } from "@opensteer/protocol";
 
 /**
  * A plan a person pays for, named the way they know it, and the engine and
@@ -153,10 +154,14 @@ function planAction(
       placement.availability === "authentication-required" &&
       placement.setupAvailable &&
       placement.harnessAuthenticationAllowed &&
-      planSignInMethod(placement) !== undefined,
+      planSignInMethod(placement.setupMethods) !== undefined,
   );
   if (signIn) {
-    return { kind: "sign-in", methodId: planSignInMethod(signIn) ?? null, placement: signIn };
+    return {
+      kind: "sign-in",
+      methodId: planSignInMethod(signIn.setupMethods) ?? null,
+      placement: signIn,
+    };
   }
   if (!main?.connected) return null;
   const driver = main.harnessDrivers.find(({ driverKind }) => driverKind === candidate.driverKind);
@@ -187,8 +192,7 @@ function planAction(
  * The plan's own way in: a browser or device sign-in, never a pasted key. An
  * account whose only ways in are keys is not a plan sign-in.
  */
-export function planSignInMethod(placement: ThreadPlacementOption): string | undefined {
-  return placement.setupMethods.find(
-    (method) => method.kind !== "secret-input" && method.kind !== "local-import",
-  )?.methodId;
+export function planSignInMethod(methods: readonly HarnessSetupMethod[]): string | undefined {
+  return methods.find((method) => method.kind !== "secret-input" && method.kind !== "local-import")
+    ?.methodId;
 }

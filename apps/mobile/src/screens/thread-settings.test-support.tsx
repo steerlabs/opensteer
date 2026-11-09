@@ -128,7 +128,25 @@ vi.mock("@react-navigation/native", () => ({
   useFocusEffect: () => undefined,
   useIsFocused: () => true,
 }));
+vi.mock("expo-clipboard", () => ({ setStringAsync: async () => true }));
 vi.mock("expo-haptics", () => ({ selectionAsync: async () => undefined }));
+vi.mock("@expo/ui/community/menu", () => ({ MenuView: () => null }));
+vi.mock("../ui/sheet.js", () => ({
+  Sheet: ({
+    children,
+    footer,
+    title,
+  }: {
+    children?: ReactNode;
+    footer?: ReactNode;
+    title: string;
+  }) => (
+    <section aria-label={title}>
+      {children}
+      {footer}
+    </section>
+  ),
+}));
 vi.mock("../thread/composer-menu.js", () => ({
   NativeMenu: ({
     accessibilityLabel,
@@ -271,6 +289,7 @@ vi.mock("../ui/primitives.js", () => ({
     </button>
   ),
   RowGroup: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  monoFontFamily: "monospace",
   SwitchRow: ({
     label,
     value,

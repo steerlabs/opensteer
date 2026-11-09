@@ -66,7 +66,6 @@ async function mount(sources: readonly HarnessSourceDescriptor[]) {
         onClose={vi.fn()}
         onSubmit={onSubmit}
         sources={sources}
-        submitting={false}
         whereLabel="Studio Mac"
       />,
     ),

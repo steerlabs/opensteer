@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ThreadPlacementOption } from "@opensteer/client/host";
+import type { AddHarnessAccount } from "../account-sign-in-dialog.js";
 import { SetupPage } from "./setup-page.js";
 
 type Listener = () => void;
@@ -106,6 +107,7 @@ const shell = vi.hoisted(() => ({
     },
     subscribePersonalRemoteAccess: vi.fn(),
   },
+  addHarnessAccount: null,
   openHarnessAuthentication: vi.fn(),
   placements: [] as ThreadPlacementOption[],
   refreshHarnessCatalog: vi.fn(async () => undefined),
@@ -678,46 +680,35 @@ it("asks before replacing a way phones already connect", async () => {
   expect(bridge.tailscaleShare).not.toHaveBeenCalled();
 });
 
-it("adds a plan's account and opens its own sign-in, under StrictMode as the app runs", async () => {
+it("adds a plan's account with only the plan's own way in, under StrictMode as the app runs", async () => {
   strict = true;
+  const addHarnessAccount = vi.fn();
+  (shell as { addHarnessAccount: unknown }).addHarnessAccount = addHarnessAccount;
   shell.snapshot.environments = [
     mainEnvironment([driver("claude", "anthropic"), driver("antigravity", "google")]),
   ];
-  shell.hostClient.dispatch.mockResolvedValue({
-    harness: { id: "hin_gemini" },
-    type: "harness.create",
-  });
   await mount();
   await act(async () => button("Sign in").click());
-  expect(shell.hostClient.dispatch).toHaveBeenCalledWith(
-    expect.objectContaining({
-      driverKind: "antigravity",
-      sourceId: "google",
-      stateKind: "isolated",
-      type: "harness.create",
-    }),
-  );
-  // The new account reports in, waiting for its sign-in.
-  shell.placements = [
-    placement({}),
-    placement({
-      accountName: "Gemini",
-      available: false,
-      availability: "authentication-required",
-      driverKind: "antigravity",
-      engineName: "Antigravity",
-      harnessInstanceId: "hin_gemini",
-      setupMethods: [
-        { kind: "browser-code", label: "Google account", methodId: "google" },
-      ] as never,
-      sourceId: "google",
-    }),
-  ];
-  await render();
-  expect(shell.openHarnessAuthentication).toHaveBeenCalledWith(
-    expect.objectContaining({ harnessInstanceId: "hin_gemini" }),
-    { methodId: "google" },
-  );
+  expect(addHarnessAccount).toHaveBeenCalledTimes(1);
+  const added = addHarnessAccount.mock.calls[0]![0] as AddHarnessAccount;
+  expect(added.request).toMatchObject({
+    driverKind: "antigravity",
+    sourceId: "google",
+    stateKind: "isolated",
+    type: "harness.create",
+  });
+  expect(
+    added.selectMethod?.([
+      { inputLabel: "Key", kind: "secret-input", label: "Key", methodId: "key" },
+      { kind: "browser-code", label: "Google account", methodId: "google" },
+    ]),
+  ).toBe("google");
+  // A plan is never a pasted key, so an account offering only keys has no way in here.
+  expect(
+    added.selectMethod?.([
+      { inputLabel: "Key", kind: "secret-input", label: "Key", methodId: "key" },
+    ]),
+  ).toBeUndefined();
 });
 
 it("asks before moving phones to a different address of the person's own", async () => {

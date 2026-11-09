@@ -448,7 +448,7 @@ describe("Codex app-server harness", () => {
       await session.stop();
 
       const captured = await fixture.capture();
-      const processBoundary = captured.find((message) => message.fakeCodexProcess)
+      const processBoundary = captured.findLast((message) => message.fakeCodexProcess)
         ?.fakeCodexProcess as JsonRecord | undefined;
       const expectedCodexHome = fixture.context.providerState.providerHomeDirectory;
       if (!expectedCodexHome) throw new Error("Expected an isolated Codex home");
@@ -621,7 +621,7 @@ describe("Codex app-server harness", () => {
     );
     const captured = await fixture.capture();
     const argv = (
-      captured.find((message) => message.fakeCodexProcess)?.fakeCodexProcess as
+      captured.findLast((message) => message.fakeCodexProcess)?.fakeCodexProcess as
         JsonRecord | undefined
     )?.argv as unknown[] | undefined;
     expect(argv?.slice(0, 2)).toEqual(["-c", sandboxMarker]);

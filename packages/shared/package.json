@@ -19,6 +19,7 @@
     "./browserPresentation": "./src/browserPresentation.ts",
     "./canonicalJson": "./src/canonicalJson.ts",
     "./clock": "./src/clock.ts",
+    "./clipboard": "./src/clipboard.ts",
     "./coalescedWake": "./src/coalescedWake.ts",
     "./test-support/captureJsonl": "./src/captureJsonl.test-support.ts",
     "./test-support/observation": "./src/observation.test-support.ts",

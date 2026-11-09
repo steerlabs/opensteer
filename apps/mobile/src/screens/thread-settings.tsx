@@ -52,6 +52,7 @@ import {
   finishFirstMessagePickerAttempt,
 } from "../thread/first-message-picker-attempt.js";
 import {
+  accountRecovery,
   buildThreadModelPicker,
   settingsDisabledReason,
   type AccountRow,
@@ -67,6 +68,7 @@ import { useListContentInsets, useReadingColumn } from "../ui/screen.js";
 import { EngineMark } from "../thread/settings/engine-mark.js";
 import { ReasoningSlider } from "../thread/settings/reasoning-slider.js";
 import { Symbol } from "../ui/symbol.js";
+import { placementSignIn, useAccountSignIn } from "./use-account-sign-in.js";
 
 export type ThreadSettingsScreenProps = StaticScreenProps<{
   readonly deploymentId: string;
@@ -444,7 +446,7 @@ function ModelPickerForUser(props: PickerForUserProps): ReactNode {
   const chooseAccount = useCallback(
     (row: AccountRow): void => {
       if (row.selected) return;
-      if (row.action.kind === "blocked" || row.action.kind === "refresh") {
+      if (row.action.kind !== "choose-model") {
         setFailure(row.action.reason);
         return;
       }
@@ -787,36 +789,45 @@ function ModelPickerList(
       mounted.current = false;
     };
   }, []);
-  const chooseAccount = useCallback(
-    (row: AccountRow): void => {
-      if (row.action.kind !== "refresh") {
-        props.onAccount(row);
-        return;
-      }
-      if (refreshing.current || props.disabledReason !== null) return;
-      refreshing.current = true;
-      setRefreshingKey(row.key);
+  const [signedIn, setSignedIn] = useState<string | null>(null);
+  const accountSignIn = useAccountSignIn(props.hostClient, (outcome) => {
+    if (outcome.kind === "done") setSignedIn(outcome.message);
+    else props.onFailure(outcome.message);
+  });
+  const chooseAccount = (row: AccountRow): void => {
+    if (row.action.kind === "sign-in") {
+      if (props.disabledReason !== null) return;
+      setSignedIn(null);
       props.onFailure(null);
-      void (async () => {
-        unwrapRpcResult(
-          await props.hostClient.rpc["harness.catalog.refresh"]({
-            environmentId: row.placement.environmentId,
-            harnessInstanceId: row.placement.harnessInstanceId,
-          }),
-        );
-        await props.hostClient.refresh();
-      })()
-        .catch((error: unknown) => {
-          if (mounted.current)
-            props.onFailure(operationDetail(error, "Models could not be refreshed."));
-        })
-        .finally(() => {
-          refreshing.current = false;
-          if (mounted.current) setRefreshingKey(null);
-        });
-    },
-    [props.disabledReason, props.hostClient, props.onAccount, props.onFailure],
-  );
+      accountSignIn.signIn(placementSignIn(row.placement));
+      return;
+    }
+    if (row.action.kind !== "refresh") {
+      props.onAccount(row);
+      return;
+    }
+    if (refreshing.current || props.disabledReason !== null) return;
+    refreshing.current = true;
+    setRefreshingKey(row.key);
+    props.onFailure(null);
+    void (async () => {
+      unwrapRpcResult(
+        await props.hostClient.rpc["harness.catalog.refresh"]({
+          environmentId: row.placement.environmentId,
+          harnessInstanceId: row.placement.harnessInstanceId,
+        }),
+      );
+      await props.hostClient.refresh();
+    })()
+      .catch((error: unknown) => {
+        if (mounted.current)
+          props.onFailure(operationDetail(error, "Models could not be refreshed."));
+      })
+      .finally(() => {
+        refreshing.current = false;
+        if (mounted.current) setRefreshingKey(null);
+      });
+  };
   const [searching, setSearching] = useState(false);
   const column = useReadingColumn();
   const insets = useListContentInsets(space[24]);
@@ -864,6 +875,7 @@ function ModelPickerList(
           action={{ label: "Dismiss", onPress: props.onDismissFailure }}
         />
       ) : null}
+      {signedIn === null ? null : <Notice detail={signedIn} title="Done" tone="neutral" />}
       {conversation ? (
         <>
           <AppText role="title">Access</AppText>
@@ -974,9 +986,7 @@ function ModelPickerList(
               <AppText tone="muted">{picker.menu.blocked.detail}</AppText>
               <SecondaryButton
                 label={
-                  picker.menu.blocked.availability === "authentication-required"
-                    ? "Sign in"
-                    : "Check again"
+                  accountRecovery(picker.menu.blocked) === "sign-in" ? "Sign in" : "Check again"
                 }
                 disabled={disabled}
                 onPress={() => {
@@ -988,7 +998,7 @@ function ModelPickerList(
                     detail: placement.detail,
                     selected: false,
                     exhausted: false,
-                    action: { kind: "refresh", reason: placement.detail },
+                    action: { kind: accountRecovery(placement), reason: placement.detail },
                   });
                 }}
               />
@@ -1056,6 +1066,7 @@ function ModelPickerList(
           </Pressable>
         </>
       )}
+      {accountSignIn.sheet}
     </ScrollView>
   );
 }
@@ -1396,7 +1407,7 @@ function SubscribedNewThread(props: {
   const chooseAccount = useCallback(
     (row: AccountRow): void => {
       if (row.selected) return;
-      if (row.action.kind === "blocked" || row.action.kind === "refresh") {
+      if (row.action.kind !== "choose-model") {
         setFailure(row.action.reason);
         return;
       }

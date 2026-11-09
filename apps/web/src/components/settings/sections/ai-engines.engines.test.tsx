@@ -42,6 +42,7 @@ async function mount(environmentId?: string) {
           client={client}
           environments={environments}
           harnesses={snapshot.harnesses}
+          onAddAccount={vi.fn()}
           onAuthenticate={vi.fn()}
           onError={vi.fn()}
           placements={threadPlacementOptions(environments, snapshot.harnesses)}
@@ -119,9 +120,6 @@ describe("the engines a work location reports", () => {
     // Cursor's one source is `ambient`: the credential lives in this
     // computer's keychain, so there is nothing for Opensteer to add.
     expect(engineCard(container, "cursor").querySelector(".settings-engine__add")).toBeNull();
-    expect(engineCard(container, "cursor").textContent).toContain(
-      "Shares the Cursor CLI’s sign-in on this computer",
-    );
   });
 
   it("gives an account the Runner's own reason when its engine cannot run here", async () => {

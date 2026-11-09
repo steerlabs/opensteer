@@ -153,6 +153,7 @@ export const bootstrapNoticeSources = [
   "runner.disconnect",
   "runner.registered",
   "harness.update",
+  "harness.catalog",
   "machine.command",
   "machine.access",
 ] as const;

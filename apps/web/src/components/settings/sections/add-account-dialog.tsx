@@ -1,36 +1,15 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import {
+  addAccountAddressField,
+  addAccountChoice,
+  addAccountComplete,
+  addAccountInitialValues,
+  normalizeServerAddress,
+  serverAddressProblem,
+  type AddAccountChoice,
+} from "@opensteer/client/host";
 import type { HarnessSourceDescriptor, HarnessSourceField } from "@opensteer/protocol";
 import { Dialog } from "../../dialog.js";
-import { normalizeServerAddress, serverAddressProblem } from "./model-servers.js";
-
-/** What the person chose: a source, and a value for each field it declares. */
-export interface AddAccountChoice {
-  readonly fields: Readonly<Record<string, string>>;
-  readonly source: HarnessSourceDescriptor;
-}
-
-/** The address field of a source that talks to an endpoint the person names. */
-function addressField(source: HarnessSourceDescriptor | undefined): HarnessSourceField | undefined {
-  return source?.fields.find((field) => field.kind === "url");
-}
-
-/** A source's own defaults, so a field with a sensible answer starts with it. */
-function initialValues(source: HarnessSourceDescriptor | undefined): Record<string, string> {
-  return Object.fromEntries(
-    (source?.fields ?? []).flatMap((field) =>
-      field.defaultValue !== undefined ? [[field.id, field.defaultValue]] : [],
-    ),
-  );
-}
-
-/** Whether a value can be sent for this field; an optional one may be blank. */
-function fieldAccepts(field: HarnessSourceField, value: string): boolean {
-  if (value === "") return field.required === false;
-  if (field.kind === "select") {
-    return field.options?.some((option) => option.value === value) ?? false;
-  }
-  return field.kind !== "url" || serverAddressProblem(value) === null;
-}
 
 /**
  * "Add account" when an engine offers more than one source, or a source that
@@ -39,24 +18,24 @@ function fieldAccepts(field: HarnessSourceField, value: string): boolean {
  * reaches this dialog with no change here.
  */
 export function AddAccountDialog({
+  continued = false,
   engineName,
   onClose,
   onSubmit,
   sources,
-  submitting,
   whereLabel,
 }: {
+  readonly continued?: boolean;
   readonly engineName: string;
   readonly onClose: () => void;
   readonly onSubmit: (choice: AddAccountChoice) => void;
   readonly sources: readonly HarnessSourceDescriptor[];
-  readonly submitting: boolean;
   /** The work location the account is added to, which is where it connects from. */
   readonly whereLabel: string;
 }) {
   const [sourceId, setSourceId] = useState(sources[0]?.sourceId ?? "");
   const [values, setValues] = useState<Readonly<Record<string, string>>>(() =>
-    initialValues(sources[0]),
+    addAccountInitialValues(sources[0]),
   );
   // An address is only judged once the person has left it, so typing one out
   // doesn't flash an error at every keystroke on the way.
@@ -73,40 +52,31 @@ export function AddAccountDialog({
     });
   }, [sourceId]);
   const trimmed = (field: HarnessSourceField) => (values[field.id] ?? "").trim();
-  const complete =
-    source !== undefined && source.fields.every((field) => fieldAccepts(field, trimmed(field)));
-  const address = addressField(source);
+  const complete = source !== undefined && addAccountComplete(source, values);
+  const address = addAccountAddressField(source);
   const server = source?.kind === "compatible-endpoint";
   const set = (id: string, value: string) => setValues((current) => ({ ...current, [id]: value }));
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!source || !complete || submitting) return;
-    onSubmit({
-      fields: Object.fromEntries(
-        source.fields.flatMap((field) => {
-          const value = trimmed(field);
-          if (!value) return [];
-          return [[field.id, field.kind === "url" ? normalizeServerAddress(value) : value]];
-        }),
-      ),
-      source,
-    });
+    if (!source || !complete) return;
+    onSubmit(addAccountChoice(source, values));
   };
   return (
     <Dialog
+      continued={continued}
       footer={
         <>
-          <button className="btn btn--ghost" disabled={submitting} onClick={onClose} type="button">
+          <button className="btn btn--ghost" onClick={onClose} type="button">
             Cancel
           </button>
           <button
             className="btn btn--primary"
-            disabled={!complete || submitting}
+            disabled={!complete}
             form="add-account-form"
             type="submit"
           >
-            {submitting ? "Connecting…" : server ? "Connect" : "Continue"}
+            {server ? "Connect" : "Continue"}
           </button>
         </>
       }
@@ -125,12 +95,11 @@ export function AddAccountDialog({
               >
                 <input
                   checked={candidate.sourceId === source?.sourceId}
-                  disabled={submitting}
                   name="add-account-source"
                   onChange={() => {
                     switched.current = true;
                     setSourceId(candidate.sourceId);
-                    setValues(initialValues(candidate));
+                    setValues(addAccountInitialValues(candidate));
                     setTouched(new Set());
                   }}
                   type="radio"
@@ -166,7 +135,6 @@ export function AddAccountDialog({
               {field.kind === "select" ? (
                 <select
                   className="select-input"
-                  disabled={submitting}
                   id={`add-account-${field.id}`}
                   onChange={(event) => set(field.id, event.target.value)}
                   required={field.required !== false}
@@ -192,7 +160,6 @@ export function AddAccountDialog({
                   autoCapitalize="off"
                   autoCorrect="off"
                   className="text-input"
-                  disabled={submitting}
                   id={`add-account-${field.id}`}
                   inputMode={field.kind === "url" ? "url" : "text"}
                   onBlur={() => {
@@ -215,11 +182,6 @@ export function AddAccountDialog({
             </label>
           );
         })}
-        {server ? null : (
-          <p className="field__hint">
-            Sign-in comes next. Whatever you sign in with stays on {whereLabel}.
-          </p>
-        )}
       </form>
     </Dialog>
   );

@@ -126,7 +126,7 @@ integration("Expo external engine sign-in recovery", () => {
       expect(engine).toBeDefined();
       await act(async () => engine!.click());
       expect(document.body.textContent).toContain("Sign in to use Cursor");
-      const checkAgain = button("Sign in");
+      const checkAgain = button("Check again");
       expect(checkAgain).toBeDefined();
       const before = container.innerHTML;
       await writeFile(state, "happy");

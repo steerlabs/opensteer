@@ -552,6 +552,7 @@ const context: ShellContext = {
   localExecutionAction: null,
   localExecutionError: null,
   localExecutionStatus: scenario.local,
+  addHarnessAccount: null,
   openHarnessAuthentication: null,
   refreshHarnessCatalog: async () => undefined,
   leaveSettings: noOp,

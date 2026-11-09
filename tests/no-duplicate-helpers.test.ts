@@ -26,6 +26,7 @@ const sources = new Map(
  * way to make a stray copy pass.
  */
 const helperHomes: Readonly<Record<string, string | readonly string[]>> = {
+  copyText: "packages/shared/src/clipboard.ts",
   freePort: "packages/shared/src/loopbackPort.test-support.ts",
   CoalescedWake: "packages/shared/src/coalescedWake.ts",
   assertRegularFile: "packages/shared/src/privateFiles.ts",

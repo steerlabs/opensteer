@@ -163,6 +163,7 @@ import {
   type HarnessInstanceCatalog,
   type HarnessModelDescriptor,
   type HarnessSourceDescriptor,
+  type HarnessSetupMethod,
   type HostApiClient,
   type HostApiCommand,
   type HostApiCommandInput,
@@ -619,6 +620,14 @@ const mockCursorContinuationIdentity = ProviderContinuationIdentitySchema.parse(
   driverKind: "cursor",
 });
 const mockCodexCatalog = HarnessInstanceCatalogSchema.parse({
+  setupMethods: [
+    {
+      kind: "device-code",
+      methodId: "device-code",
+      label: "Sign in with ChatGPT",
+      connectionSlot: "primary",
+    },
+  ],
   connections: [
     {
       accountLabel: "demo@opensteer.test",
@@ -698,6 +707,7 @@ const mockCodexCatalog = HarnessInstanceCatalogSchema.parse({
 // The same engine and the same models under a second account, which is the
 // case a single default per (work location, engine) exists to settle.
 const mockCodexSecondCatalog = HarnessInstanceCatalogSchema.parse({
+  setupMethods: mockCodexCatalog.setupMethods,
   connections: [
     {
       accountLabel: "alex@opensteer.test",
@@ -721,6 +731,14 @@ const mockCodexSecondCatalog = HarnessInstanceCatalogSchema.parse({
   status: "ready",
 });
 const mockClaudeCatalog = HarnessInstanceCatalogSchema.parse({
+  setupMethods: [
+    {
+      kind: "browser-code",
+      methodId: "browser-code",
+      label: "Sign in with Claude",
+      connectionSlot: "primary",
+    },
+  ],
   connections: [
     {
       accountLabel: "demo@opensteer.test",
@@ -794,6 +812,15 @@ const mockClaudeCatalog = HarnessInstanceCatalogSchema.parse({
 // A second harness reporting the same canonical (providerId, modelId) pairs —
 // exercises the picker's model-centric grouping ("via Codex / via opencode").
 const mockOpencodeCatalog = HarnessInstanceCatalogSchema.parse({
+  setupMethods: [
+    {
+      kind: "secret-input",
+      methodId: "api-key",
+      label: "API key",
+      inputLabel: "API key",
+      connectionSlot: "primary",
+    },
+  ],
   continuationIdentity: mockOpencodeContinuationIdentity,
   driverKind: "opencode",
   harnessInstanceId: mockOpencodeHarnessInstanceId,
@@ -1259,6 +1286,80 @@ const mockHarnessSourcesByDriver: Readonly<Record<string, readonly HarnessSource
   opencode: mockOpencodeSources,
   pi: mockPiSources,
 };
+
+function mockAccountCatalog(harness: HarnessSummary, ready: boolean): HarnessInstanceCatalog {
+  const template = [
+    mockCodexCatalog,
+    mockClaudeCatalog,
+    mockCursorCatalog,
+    mockOpencodeCatalog,
+    mockPiCatalog,
+  ].find((item) => item.driverKind === harness.driverKind);
+  if (!template || template.status !== "ready")
+    throw new Error("This mock engine has no model catalog.");
+  const source = mockHarnessSourcesByDriver[harness.driverKind]?.find(
+    (item) => item.sourceId === harness.sourceId,
+  );
+  const kind =
+    source?.kind === "cloud-identity"
+      ? "local-import"
+      : harness.driverKind === "opencode" || source?.kind === "compatible-endpoint"
+        ? "secret-input"
+        : harness.driverKind === "claude"
+          ? "browser-code"
+          : "device-code";
+  const setupMethods: HarnessSetupMethod[] =
+    harness.driverKind === "cursor"
+      ? []
+      : template.setupMethods.length > 0 && source?.kind === "first-party"
+        ? template.setupMethods
+        : [
+            kind === "secret-input"
+              ? {
+                  connectionSlot: "primary",
+                  kind,
+                  methodId: kind,
+                  label: "API key",
+                  inputLabel: "API key",
+                }
+              : {
+                  connectionSlot: "primary",
+                  kind,
+                  methodId: kind,
+                  label: kind === "local-import" ? "Use this computer’s credentials" : "Sign in",
+                },
+          ];
+  if (!ready)
+    return HarnessInstanceCatalogSchema.parse({
+      driverKind: harness.driverKind,
+      harnessInstanceId: harness.id,
+      status: "authentication-required",
+      detail: "Sign in required",
+      models: [],
+      connections: [],
+      setupMethods,
+    });
+  return HarnessInstanceCatalogSchema.parse({
+    ...template,
+    harnessInstanceId: harness.id,
+    setupMethods,
+    connections: [
+      {
+        connectionSlot: "primary",
+        label: "Account",
+        status: "connected",
+        accountLabel: "side@opensteer.test",
+        logoutSupported: true,
+        authKind:
+          kind === "secret-input"
+            ? "api-key"
+            : kind === "local-import"
+              ? "cloud-identity"
+              : "subscription",
+      },
+    ],
+  });
+}
 
 interface MockWorkspaceFile {
   content: string | null;
@@ -2174,7 +2275,8 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
           return result;
         })
         .catch(mockRefusal),
-    "harness.authentication.get": async () => rpcSuccess(await client.getHarnessAuthentication()),
+    "harness.authentication.get": async (input) =>
+      rpcSuccess(await client.getHarnessAuthentication(input)),
     "automaticModels.get": async () => rpcSuccess(mockAutomaticModelsView(client)),
     "harness.catalog.refresh": async () => rpcSuccess({}),
     "harness.modelServers.discover": async (input) =>
@@ -2895,13 +2997,22 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
       );
     }
     case "harness.authentication.begin":
-      return rpcSuccess({ ...(await client.beginHarnessAuthentication()), type: command.type });
+      return rpcSuccess({
+        ...(await client.beginHarnessAuthentication(command)),
+        type: command.type,
+      });
     case "harness.authentication.submit":
-      return rpcSuccess({ ...(await client.submitHarnessAuthentication()), type: command.type });
+      return rpcSuccess({
+        ...(await client.submitHarnessAuthentication(command)),
+        type: command.type,
+      });
     case "harness.authentication.logout":
-      return rpcSuccess({ ...(await client.logoutHarness()), type: command.type });
+      return rpcSuccess({ ...(await client.logoutHarness(command)), type: command.type });
     case "harness.authentication.cancel":
-      return rpcSuccess({ ...(await client.cancelHarnessAuthentication()), type: command.type });
+      return rpcSuccess({
+        ...(await client.cancelHarnessAuthentication(command)),
+        type: command.type,
+      });
     case "machine.revoke":
       await client.revokeMachine(command.machineId);
       return rpcSuccess({ type: command.type });
@@ -6077,6 +6188,10 @@ class MockHostState {
   readonly harnessSourceConfigs = new Map<string, Readonly<Record<string, string>>>([
     [mockOpenRouterHarnessInstanceId, { baseUrl: "https://openrouter.ai/api/v1" }],
   ]);
+  private readonly harnessSignIns = new Map<
+    string,
+    { readonly startedAt: number; readonly method: HarnessSetupMethod }
+  >();
   private readonly latencyMs: number;
   private readonly listeners = new Set<() => void>();
   private readonly notificationListeners = new Set<(notification: NotificationView) => void>();
@@ -6406,7 +6521,8 @@ class MockHostState {
       command.type !== "settings.plugin.placement.set" &&
       command.type !== "thread.sendMessage" &&
       command.type !== "thread.icon.set" &&
-      command.type !== "workspace.color.set"
+      command.type !== "workspace.color.set" &&
+      command.type !== "harness.create"
     )
       return executeMockCommand(this, command);
     const key = `${this.snapshot.user?.id ?? mockUserId}:${command.idempotencyKey}`;
@@ -7114,24 +7230,130 @@ class MockHostState {
 
   async acceptInvitation(): Promise<void> {}
 
-  async beginHarnessAuthentication(): Promise<HarnessAuthenticationEnvelope> {
+  async beginHarnessAuthentication(
+    input: Extract<HostApiCommand, { type: "harness.authentication.begin" }>,
+  ): Promise<HarnessAuthenticationEnvelope> {
+    const harness = this.authenticationHarness(input);
+    const environment = this.snapshot.environments.find((item) => item.id === input.environmentId);
+    if (!environment?.harnessAuthenticationAllowed)
+      throw new Error("Sign-in is not allowed on this computer.");
+    const catalog = mockAccountCatalog(harness, false);
+    const method = catalog.setupMethods.find(
+      (item) =>
+        item.methodId === input.methodId &&
+        (!input.connectionSlot || item.connectionSlot === input.connectionSlot),
+    );
+    if (!method) throw new Error("This account does not offer that sign-in method.");
+    if (!this.harnessSignIns.has(harness.id))
+      this.harnessSignIns.set(harness.id, { startedAt: this.now().getTime(), method });
+    if (method.kind === "local-import") this.completeHarnessSignIn(harness);
+    return this.getHarnessAuthentication(input);
+  }
+
+  async submitHarnessAuthentication(
+    input: Extract<HostApiCommand, { type: "harness.authentication.submit" }>,
+  ): Promise<HarnessAuthenticationEnvelope> {
+    const harness = this.authenticationHarness(input);
+    if (!this.harnessSignIns.has(harness.id)) throw new Error("Start sign-in first.");
+    if (!input.value.trim()) throw new Error("Enter the requested credential.");
+    this.completeHarnessSignIn(harness);
     return { authentication: { status: "ready" }, environmentStatus: "connected" };
   }
 
-  async submitHarnessAuthentication(): Promise<HarnessAuthenticationEnvelope> {
-    return { authentication: { status: "ready" }, environmentStatus: "connected" };
-  }
-
-  async logoutHarness(): Promise<HarnessAuthenticationEnvelope> {
+  async logoutHarness(
+    input: Extract<HostApiCommand, { type: "harness.authentication.logout" }>,
+  ): Promise<HarnessAuthenticationEnvelope> {
+    const harness = this.authenticationHarness(input);
+    this.harnessSignIns.delete(harness.id);
+    this.setAuthenticationCatalog(harness, false);
     return { authentication: { status: "not-started" }, environmentStatus: "connected" };
   }
 
-  async getHarnessAuthentication(): Promise<HarnessAuthenticationEnvelope> {
-    return { authentication: { status: "ready" }, environmentStatus: "connected" };
+  async getHarnessAuthentication(input: {
+    readonly environmentId: string;
+    readonly harnessInstanceId: string;
+  }): Promise<HarnessAuthenticationEnvelope> {
+    const harness = this.authenticationHarness(input);
+    const environment = this.snapshot.environments.find((item) => item.id === input.environmentId);
+    if (!environment?.connected)
+      return { authentication: { status: "not-started" }, environmentStatus: "disconnected" };
+    const attempt = this.harnessSignIns.get(harness.id);
+    if (attempt) {
+      if (
+        attempt.method.kind === "device-code" &&
+        this.now().getTime() - attempt.startedAt >= 8_000
+      ) {
+        this.completeHarnessSignIn(harness);
+      } else {
+        const challenge =
+          attempt.method.kind === "secret-input"
+            ? { kind: "secret-input" as const, inputLabel: attempt.method.inputLabel }
+            : attempt.method.kind === "browser-code"
+              ? {
+                  kind: "browser-code" as const,
+                  inputPrompt: "Paste the code from your browser",
+                  authorizationUrl: "https://example.com/mock-sign-in",
+                }
+              : {
+                  kind: "device-code" as const,
+                  userCode: "DEMO-1234",
+                  verificationUrl: "https://example.com/mock-sign-in",
+                };
+        return { authentication: { status: "pending", challenge }, environmentStatus: "connected" };
+      }
+    }
+    const ready = this.snapshot.environments
+      .find((item) => item.id === harness.environmentId)
+      ?.harnessCatalogs.some(
+        (item) => item.harnessInstanceId === harness.id && item.status === "ready",
+      );
+    return {
+      authentication: { status: ready ? "ready" : "not-started" },
+      environmentStatus: "connected",
+    };
   }
 
-  async cancelHarnessAuthentication(): Promise<HarnessAuthenticationEnvelope> {
+  async cancelHarnessAuthentication(
+    input: Extract<HostApiCommand, { type: "harness.authentication.cancel" }>,
+  ): Promise<HarnessAuthenticationEnvelope> {
+    this.harnessSignIns.delete(input.harnessInstanceId);
     return { authentication: { status: "not-started" }, environmentStatus: "connected" };
+  }
+
+  private authenticationHarness(input: {
+    readonly environmentId: string;
+    readonly harnessInstanceId: string;
+  }): HarnessSummary {
+    const harness = this.snapshot.harnesses.find(
+      (item) => item.id === input.harnessInstanceId && item.environmentId === input.environmentId,
+    );
+    if (!harness) throw new Error("AI account not found.");
+    return harness;
+  }
+
+  private completeHarnessSignIn(harness: HarnessSummary): void {
+    this.harnessSignIns.delete(harness.id);
+    this.setAuthenticationCatalog(harness, true);
+  }
+
+  private setAuthenticationCatalog(harness: HarnessSummary, ready: boolean): void {
+    const catalog = mockAccountCatalog(harness, ready);
+    this.update({
+      ...this.snapshot,
+      environments: this.snapshot.environments.map((environment) =>
+        environment.id === harness.environmentId
+          ? {
+              ...environment,
+              harnessCatalogs: [
+                ...environment.harnessCatalogs.filter(
+                  (item) => item.harnessInstanceId !== harness.id,
+                ),
+                catalog,
+              ],
+            }
+          : environment,
+      ),
+    });
   }
 
   async createHarnessInstance(
@@ -7221,6 +7443,11 @@ class MockHostState {
             : environment,
         ),
       });
+    } else {
+      this.setAuthenticationCatalog(
+        harness,
+        harness.stateKind === "ambient" || harness.driverKind === "cursor",
+      );
     }
     return harness;
   }
@@ -7352,6 +7579,7 @@ class MockHostState {
   }
 
   async deleteHarnessInstance(environmentId: string, harnessInstanceId: string): Promise<void> {
+    this.harnessSignIns.delete(harnessInstanceId);
     const removed = this.snapshot.harnesses.find(
       (candidate) =>
         candidate.id === harnessInstanceId && candidate.environmentId === environmentId,
@@ -7365,6 +7593,16 @@ class MockHostState {
       harnesses: removed
         ? normalizeMockHarnessDefaults(remaining, removed.environmentId, removed.driverKind)
         : remaining,
+      environments: this.snapshot.environments.map((environment) =>
+        environment.id === environmentId
+          ? {
+              ...environment,
+              harnessCatalogs: environment.harnessCatalogs.filter(
+                (item) => item.harnessInstanceId !== harnessInstanceId,
+              ),
+            }
+          : environment,
+      ),
     });
   }
 

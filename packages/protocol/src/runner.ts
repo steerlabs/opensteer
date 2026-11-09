@@ -1187,6 +1187,12 @@ export const RunnerAgentsModuleSchema = z
     // loop over it.
     environmentIds: z.array(EnvironmentIdSchema).length(1),
     computerTool: z.literal(1).optional(),
+    reconcileHarnessInspection: z
+      .number()
+      .int()
+      .positive()
+      .transform((version) => (version === 1 ? (1 as const) : undefined))
+      .optional(),
     /** Absent on Runners that cannot give a Run files or take them from it. */
     runFiles: z.literal(1).optional(),
     harnessDrivers: RunnerHarnessDriversSchema,
@@ -2128,12 +2134,24 @@ export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
   // Runner closes everything absent from it, while an inspection is a read of
   // whichever subset the caller happened to care about. A boolean between them
   // meant one dropped element of a partial list silently became a removal.
-  z.strictObject({
-    ...fencedMessageBase,
-    harnesses: z.array(HarnessInspectionDefinitionSchema).max(maxHarnessInstancesPerEnvironment),
-    requestId: CorrelationIdSchema,
-    type: z.literal("host.reconcile-harnesses"),
-  }),
+  z
+    .strictObject({
+      ...fencedMessageBase,
+      harnesses: z.array(HarnessInspectionDefinitionSchema).max(maxHarnessInstancesPerEnvironment),
+      inspect: z.array(HarnessInstanceIdSchema).max(maxHarnessInstancesPerEnvironment).optional(),
+      requestId: CorrelationIdSchema,
+      type: z.literal("host.reconcile-harnesses"),
+    })
+    .superRefine((message, context) => {
+      const desired = new Set(message.harnesses.map((harness) => harness.id));
+      if (message.inspect?.some((id) => !desired.has(id))) {
+        context.addIssue({
+          code: "custom",
+          message: "Inspected harnesses must belong to the desired set",
+          path: ["inspect"],
+        });
+      }
+    }),
   z.strictObject({
     ...fencedMessageBase,
     harnesses: z.array(HarnessInspectionDefinitionSchema).max(maxHarnessInstancesPerEnvironment),

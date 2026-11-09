@@ -1530,6 +1530,7 @@ describe("Runner connection registry", () => {
 
     async function attached(
       onHarnessCatalogInvalidated?: RunnerRegistryHooks["onHarnessCatalogInvalidated"],
+      targetedInspection = false,
     ) {
       const hooks = {
         authorize: vi.fn(async () => undefined),
@@ -1539,7 +1540,11 @@ describe("Runner connection registry", () => {
       const registry = new RunnerRegistry({ hooks });
       const environmentId = createId("environment");
       const peer = new MemoryRunnerPeer("runner");
-      await registerAttached(registry, hello(createId("runner"), environmentId, "boot-1"), peer);
+      const identity = hello(createId("runner"), environmentId, "boot-1");
+      if (targetedInspection && identity.modules.agents) {
+        identity.modules.agents.reconcileHarnessInspection = 1;
+      }
+      await registerAttached(registry, identity, peer);
       // The handshake's welcome shares the peer's message log, so catalog
       // traffic is read on its own rather than by absolute position.
       const catalogs = () =>
@@ -1555,9 +1560,15 @@ describe("Runner connection registry", () => {
       ) => {
         const request = catalogs()[index];
         if (!request) throw new Error("No catalog request was sent");
+        const inspected = request.harnesses.filter(
+          (harness) =>
+            request.type !== "host.reconcile-harnesses" ||
+            request.inspect === undefined ||
+            request.inspect.includes(harness.id),
+        );
         await registry.handle(peer, {
           ...fenceOf(peer),
-          catalogs: request.harnesses.map((harness) =>
+          catalogs: inspected.map((harness) =>
             HarnessInstanceCatalogSchema.parse(
               status !== "ready"
                 ? {
@@ -1598,6 +1609,80 @@ describe("Runner connection registry", () => {
       };
       return { answer, catalogs, environmentId, peer, registry };
     }
+
+    it.each([true, false])(
+      "gates targeted reconcile inspections on Runner support (%s)",
+      async (supported) => {
+        const { answer, catalogs, environmentId, registry } = await attached(undefined, supported);
+        try {
+          const first = definition(createId("harnessInstance"));
+          const second = definition(createId("harnessInstance"));
+          const signal = AbortSignal.timeout(2_000);
+          const request = registry.reconcileHarnesses(environmentId, [first, second], signal, [
+            second.id,
+          ]);
+          await vi.waitFor(() => expect(catalogs()).toHaveLength(1));
+          expect(catalogs()[0]).toMatchObject({ harnesses: [first, second] });
+          expect(catalogs()[0]).toEqual(
+            expect.objectContaining(supported ? { inspect: [second.id] } : {}),
+          );
+          if (!supported) expect(catalogs()[0]).not.toHaveProperty("inspect");
+          const inspection = registry.inspectHarnesses(environmentId, [first], signal);
+          await vi.waitFor(() => expect(catalogs()).toHaveLength(2));
+          await answer(1);
+          await inspection;
+          await answer(0);
+          expect((await request).map((catalog) => catalog.harnessInstanceId)).toEqual(
+            supported ? [second.id] : [first.id, second.id],
+          );
+          const retirement = registry.reconcileHarnesses(environmentId, [first], signal, []);
+          await vi.waitFor(() => expect(catalogs()).toHaveLength(3));
+          if (supported) {
+            const recapture = registry.inspectHarnesses(environmentId, [first], signal, {
+              fresh: true,
+            });
+            await vi.waitFor(() => expect(catalogs()).toHaveLength(4));
+            await answer(3);
+            await expect(recapture).resolves.toHaveLength(1);
+          }
+          await answer(2);
+          expect(await retirement).toHaveLength(supported ? 0 : 1);
+        } finally {
+          await registry.close();
+        }
+      },
+    );
+
+    it.each(["ready", "preparing"] as const)(
+      "does not let an older full catalog overwrite a newer %s observation",
+      async (status) => {
+        const { answer, catalogs, environmentId, registry } = await attached(undefined, true);
+        try {
+          const first = definition(createId("harnessInstance"));
+          const second = definition(createId("harnessInstance"));
+          const signal = AbortSignal.timeout(2_000);
+          const full = registry.reconcileHarnesses(environmentId, [first, second], signal);
+          await vi.waitFor(() => expect(catalogs()).toHaveLength(1));
+          const targeted = registry.inspectHarnesses(environmentId, [first], signal, {
+            fresh: true,
+          });
+          await vi.waitFor(() => expect(catalogs()).toHaveLength(2));
+          await answer(1, status, "new-model");
+          const latest = (await targeted)[0];
+          await answer(0, "ready", "old-model");
+          expect((await full)[0]).toEqual(latest);
+          expect(registry.catalogForHarness(environmentId, first.id)).toEqual(latest);
+          if (status === "preparing") {
+            const recapture = registry.inspectHarnesses(environmentId, [first], signal);
+            await vi.waitFor(() => expect(catalogs()).toHaveLength(3));
+            await answer(2);
+            await expect(recapture).resolves.toMatchObject([{ status: "ready" }]);
+          }
+        } finally {
+          await registry.close();
+        }
+      },
+    );
 
     it("collapses concurrent identical inspections into one round trip", async () => {
       const { answer, catalogs, environmentId, registry } = await attached();

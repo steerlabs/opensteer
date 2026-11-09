@@ -150,6 +150,32 @@ describe("Thread placement", () => {
     expect(options[1]).toMatchObject({ defaultAccount: false, engineName: "Codex" });
   });
 
+  it("uses the connected account label for generated names without replacing explicit names", () => {
+    const computer = environment("environment-main", "main", "Computer", [
+      { driverKind: "codex", readiness: "configured" },
+    ]);
+    computer.harnessCatalogs = computer.harnessCatalogs.map((catalog) => ({
+      ...catalog,
+      connections: [
+        {
+          connectionSlot: "primary",
+          label: "Account",
+          status: "connected",
+          accountLabel: "person@example.com",
+          logoutSupported: true,
+        },
+      ],
+    }));
+    for (const [name, expected] of [
+      ["Codex", "person@example.com"],
+      ["Codex 2", "person@example.com"],
+      ["Work", "Work"],
+    ]) {
+      const options = threadPlacementOptions([computer], [{ ...harnesses[0]!, name: name! }]);
+      expect(options[0]?.accountName).toBe(expected);
+    }
+  });
+
   it("keeps disconnected and explicitly unavailable combinations visible but unselectable", () => {
     const environments: EnvironmentSummary[] = [
       environment("environment-main", "main", "Hosted Runner", [

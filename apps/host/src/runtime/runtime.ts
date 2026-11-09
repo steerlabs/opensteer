@@ -3,7 +3,10 @@ import { ThreadNaming } from "../agents/thread-naming.js";
 import { QuietTasks } from "../threads/quiet-tasks.js";
 import { AdministrationService } from "../administration/administration-service.js";
 import { AdministrationToolHandlers } from "../mcp/handlers/administration.js";
-import { HarnessCatalogReconciliationOwner } from "../agents/harness-catalogs.js";
+import {
+  HarnessCatalogReconciliationOwner,
+  notifyingHarnessCatalogRecorder,
+} from "../agents/harness-catalogs.js";
 import { ThreadService } from "../threads/thread-service.js";
 import { ConnectionOAuth } from "../mcp/connections/index.js";
 import { AgentConnectionStore } from "@opensteer/database";
@@ -471,6 +474,11 @@ export async function createHostRuntime(
     // from that Run's committed durable events and forgets it at the terminal.
     const liveRuns = new LiveRunRegistry();
     const realtime = new RealtimeHub({ liveRuns, store });
+    const harnessCatalogs = {
+      ...notifyingHarnessCatalogRecorder(store, realtime),
+      listHarnessInstances: store.listHarnessInstances.bind(store),
+      listHarnessCatalogs: store.listHarnessCatalogs.bind(store),
+    };
     const pluginSettings = new PluginSettingsStore(database);
     const notices = createPluginChangeNotices(
       (target) => pluginSettings.affectedViewers(target),
@@ -1659,7 +1667,7 @@ export async function createHostRuntime(
           // the re-read runs on its own, bounded, clock.
           if (!committed.wasDuplicate) {
             void inspectHarnessCatalogsAfterUsageLimit({
-              catalogs: store,
+              catalogs: harnessCatalogs,
               event: committed.event,
               runners,
               signal: AbortSignal.timeout(30_000),
@@ -1786,7 +1794,7 @@ export async function createHostRuntime(
             }
             await store.discardHarnessCatalog(harness.environmentId, harness.id);
             const captured = await inspectAndRecordInvalidatedHarnessCatalog({
-              catalogs: store,
+              catalogs: harnessCatalogs,
               environmentId: harness.environmentId,
               harnesses: [harnessInspectionDefinition(harness)],
               runners,
@@ -1857,7 +1865,7 @@ export async function createHostRuntime(
                   await store.listHarnessInstances({ environmentIds: [environmentId] })
                 ).filter((harness) => harness.enabled);
                 const captured = await reconcileAndRecordHarnessCatalogs({
-                  catalogs: store,
+                  catalogs: harnessCatalogs,
                   environmentId,
                   harnesses: harnesses.map(harnessInspectionDefinition),
                   runners,
@@ -2004,11 +2012,13 @@ export async function createHostRuntime(
       console.error("Thread naming failed", error);
     naming = new ThreadNaming({
       store,
+      catalogs: harnessCatalogs,
       runners,
       publish: publishWorkspaceEvent,
       onError: reportThreadNamingError,
     });
     const dispatcher = new HostCommandDispatcher({
+      catalogs: harnessCatalogs,
       runnerRegistrationPending: (environmentId) => {
         const identity = runners.identityForEnvironment(environmentId);
         return identity !== undefined && registeringRunners.has(identity.connectionId);
@@ -2356,7 +2366,7 @@ export async function createHostRuntime(
       terminateRuns: (workspaceId) => securityEffects.terminateWorkspace(workspaceId),
     });
     administrationCatalogs = new HarnessCatalogReconciliationOwner({
-      catalogs: store,
+      catalogs: harnessCatalogs,
       runners,
       onError: (environmentId, error) =>
         reportHarnessCatalogInvalidationError(environmentId, error),
@@ -2741,7 +2751,7 @@ export async function createHostRuntime(
                   )
                 : undefined;
               await reconcileHarnessCatalogs({
-                catalogs: store,
+                catalogs: harnessCatalogs,
                 connectedEnvironmentIds: environments
                   .filter((environment) => runners.isAvailable(environment.id))
                   .map((environment) => environment.id),

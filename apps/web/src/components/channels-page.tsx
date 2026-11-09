@@ -1,3 +1,4 @@
+import { copyText } from "@opensteer/shared/clipboard";
 import { SurfaceMenu } from "./surface-menu.js";
 import { SectionHeader, SettingsSwitch } from "./settings/primitives.js";
 import { IntegrationIcon } from "./integrations/integration-icon.js";
@@ -959,7 +960,11 @@ function ProviderCredentials({
                   onClick={() => {
                     const content = provider.setupArtifact?.content;
                     if (!content) return;
-                    void navigator.clipboard.writeText(content).then(() => {
+                    void copyText(content).then((success) => {
+                      if (!success) {
+                        onOpenError(new Error("Copy was blocked. Select the text to copy it."));
+                        return;
+                      }
                       setCopiedManifest(true);
                       window.setTimeout(() => setCopiedManifest(false), 1_500);
                     });

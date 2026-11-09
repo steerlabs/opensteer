@@ -1,3 +1,4 @@
+import { copyText } from "@opensteer/shared/clipboard";
 import { placeIdentityKey, voiceCallSeed } from "@opensteer/core";
 import { AppCard } from "./apps/app-card.js";
 import { AppMark } from "./computer-apps/computer-use-section.js";
@@ -93,7 +94,7 @@ import {
   TranscriptHostClientContext,
   MessageAttachments,
 } from "./attachments/message-attachments.js";
-import { CopyMark, copyText } from "./copy-mark.js";
+import { CopyMark } from "./copy-mark.js";
 import { Dialog } from "./dialog.js";
 import { Icon, type IconName } from "./icon.js";
 import { Popover } from "./popover.js";
@@ -1027,9 +1028,10 @@ function ReplyMenu({
             icon: "copy" as const,
             label: "Copy whole reply",
             run: () => {
-              copyText(message.body).then(
-                () => toast.success("Reply copied"),
-                () => toast.error("Copy was blocked. Select the text to copy it."),
+              void copyText(message.body).then((success) =>
+                success
+                  ? toast.success("Reply copied")
+                  : toast.error("Copy was blocked. Select the text to copy it."),
               );
             },
           },

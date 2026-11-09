@@ -87,7 +87,10 @@ export function SheetAnchor(props: { readonly active?: boolean; readonly level: 
  */
 export function Sheet(props: {
   readonly children: ReactNode;
-  /** Pinned under the body and above the keyboard: the action the sheet is for. */
+  /**
+   * Pinned under the body and above the keyboard: the action the sheet is for.
+   * Null is a form with no action right now; undefined is a page sheet.
+   */
   readonly footer?: ReactNode;
   readonly onClose: () => void;
   readonly open: boolean;
@@ -194,7 +197,7 @@ function SheetFrame(props: {
               {props.children}
             </View>
           </ScrollView>
-          {hasFooter ? <View style={styles.footer}>{props.footer}</View> : null}
+          {props.footer ? <View style={styles.footer}>{props.footer}</View> : null}
         </KeyboardAvoidingView>
       </SafeAreaView>
     </View>

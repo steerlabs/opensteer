@@ -1,8 +1,6 @@
-import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { HarnessAuthenticationEnvelope } from "@opensteer/client/host";
 import {
-  HarnessAuthenticationBody,
   harnessAuthenticationEnsureDue,
   harnessAuthenticationEnsureIntervalMs,
   harnessAuthenticationSettled,
@@ -12,7 +10,7 @@ import {
   type HarnessAuthenticationClient,
   type HarnessAuthenticationSession,
   type HarnessAuthenticationView,
-} from "./harness-authentication-dialog.js";
+} from "./harness-authentication.js";
 
 function envelope(
   environmentStatus: HarnessAuthenticationEnvelope["environmentStatus"],
@@ -32,10 +30,6 @@ function fold(...envelopes: readonly HarnessAuthenticationEnvelope[]) {
   let session: HarnessAuthenticationSession | null = null;
   for (const next of envelopes) session = nextHarnessAuthenticationSession(session, next);
   return session as HarnessAuthenticationSession;
-}
-
-function render(view: HarnessAuthenticationView | null, error: string | null = null): string {
-  return renderToStaticMarkup(<HarnessAuthenticationBody error={error} view={view} />);
 }
 
 describe("harness authentication state matrix", () => {
@@ -73,12 +67,12 @@ describe("harness authentication state matrix", () => {
   it("polls every state that is still moving and stops on the ones that need a person", () => {
     const moving: HarnessAuthenticationView[] = [
       { kind: "starting" },
+      { kind: "disconnected" },
       { codeReplaced: false, kind: "pending", userCode: "A", verificationUrl: "https://x" },
     ];
     const settled: HarnessAuthenticationView[] = [
       { kind: "ready" },
       { detail: "denied", kind: "failed" },
-      { kind: "disconnected" },
     ];
     for (const view of moving) expect(harnessAuthenticationSettled(view)).toBe(false);
     for (const view of settled) expect(harnessAuthenticationSettled(view)).toBe(true);
@@ -244,23 +238,6 @@ describe("releaseHarnessAuthentication", () => {
     });
 
     expect(attempt.calls).toEqual(["ensure:sent", "cancel"]);
-  });
-});
-
-describe("HarnessAuthenticationBody", () => {
-  it("renders secret setup as a password field without browser or code instructions", () => {
-    const html = render({
-      codeReplaced: false,
-      inputKind: "secret",
-      inputPrompt: "OpenRouter API key",
-      kind: "pending",
-      userCode: "",
-    });
-    expect(html).toContain('type="password"');
-    expect(html).toContain("OpenRouter API key");
-    expect(html).toContain("Save credential");
-    expect(html).not.toContain("one-time code");
-    expect(html).not.toContain("Continue in browser");
   });
 });
 

@@ -1262,10 +1262,16 @@ function respondToHarnessInspections(socket: WebSocket): void {
     if (message.type !== "host.inspect-harnesses" && message.type !== "host.reconcile-harnesses") {
       return;
     }
+    const inspected = message.harnesses.filter(
+      (harness) =>
+        message.type !== "host.reconcile-harnesses" ||
+        message.inspect === undefined ||
+        message.inspect.includes(harness.id),
+    );
     socket.send(
       JSON.stringify({
         ...runnerFence(message),
-        catalogs: message.harnesses.map((harness) =>
+        catalogs: inspected.map((harness) =>
           HarnessInstanceCatalogSchema.parse({
             continuationIdentity: {
               continuationKey: "runner:v1:8tErnQuB1d-nw979Rab9a4JN0RE_tKRvI_Rtmy45Bbo",

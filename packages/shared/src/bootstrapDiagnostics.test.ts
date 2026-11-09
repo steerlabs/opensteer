@@ -47,6 +47,19 @@ describe("bootstrap diagnostics", () => {
     }
   });
 
+  it("does not report a catalog notice burst coalesced into a read and its follow-up", () => {
+    const reads = new BootstrapReadDiagnostics();
+    const notices = new BootstrapNoticeDiagnostics();
+    reads.start("load", 0);
+    for (let index = 0; index < 20; index += 1) {
+      notices.record("host.machines.changed", "harness.catalog", index);
+      reads.trigger("host.machines.changed", index);
+    }
+    reads.start("host.machines.changed", 20);
+    reads.start("host.machines.changed", 21);
+    expect(reads.takeSummary()).toBeUndefined();
+  });
+
   it("counts native-profile reconciliation and erasure publications by fixed source", () => {
     const notices = new BootstrapNoticeDiagnostics();
     notices.record("host.browser-sessions-changed", "browser.profile-reconciled", 0);

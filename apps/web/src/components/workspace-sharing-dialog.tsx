@@ -1,3 +1,4 @@
+import { copyText } from "@opensteer/shared/clipboard";
 import { useCallback, useEffect, useState } from "react";
 import {
   mutationIdempotencyKey,
@@ -82,7 +83,9 @@ export function WorkspaceSharingDialog({
         throw new Error("Workspace invitation command mismatch.");
       }
       setInvitationUrl(result.invitationUrl);
-      await navigator.clipboard?.writeText(result.invitationUrl).catch(() => undefined);
+      if (!(await copyText(result.invitationUrl))) {
+        throw new Error("Copy was blocked. Select the link to copy it.");
+      }
     });
   }
 

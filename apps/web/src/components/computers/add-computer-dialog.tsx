@@ -1,3 +1,5 @@
+import { useToast } from "../toast.js";
+import { copyText } from "@opensteer/shared/clipboard";
 import { usePersonalRemoteAccess } from "@opensteer/client/react";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router";
@@ -302,6 +304,7 @@ function CopyBlock({
   readonly label: string;
   readonly value: string;
 }) {
+  const toast = useToast();
   const [copied, setCopied] = useState(false);
   return (
     <div className="computers-copy-block">
@@ -310,7 +313,11 @@ function CopyBlock({
         <button
           className="btn btn--ghost btn--small"
           onClick={() => {
-            void navigator.clipboard.writeText(value).then(() => setCopied(true));
+            void copyText(value).then((success) =>
+              success
+                ? setCopied(true)
+                : toast.error("Copy was blocked. Select the text to copy it."),
+            );
           }}
           type="button"
         >

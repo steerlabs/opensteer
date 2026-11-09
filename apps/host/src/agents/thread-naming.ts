@@ -18,6 +18,7 @@ import { backgroundTextSupport, resolveAutomaticModels } from "./automatic-model
 import {
   harnessInspectionDefinition,
   inspectAndRecordInvalidatedHarnessCatalog,
+  type HarnessCatalogRecorder,
 } from "./harness-catalogs.js";
 
 /** Three automatic attempts, then the task's own model when it is still eligible. */
@@ -40,6 +41,7 @@ type AttemptFailure = BackgroundTextFailure | "offline" | "account-changed" | "n
 
 interface ThreadNamingDependencies {
   store: OpensteerStore;
+  catalogs?: HarnessCatalogRecorder;
   runners: RunnerRegistry;
   publish: (event: AgentEvent) => void;
   onError: (error: unknown) => void;
@@ -184,7 +186,7 @@ export class ThreadNaming {
         // Catalog ownership remains here; generation never performs discovery.
         if (result && staleCatalogFailures.has(result.failure))
           await inspectAndRecordInvalidatedHarnessCatalog({
-            catalogs: store,
+            catalogs: this.dependencies.catalogs ?? store,
             environmentId: candidate.environmentId,
             harnesses: [harnessInspectionDefinition(harness)],
             runners,

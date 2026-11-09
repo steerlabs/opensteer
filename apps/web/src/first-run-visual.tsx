@@ -239,6 +239,7 @@ if (scenario.kind !== "setup") {
     desktopDeployment: { kind: "personal", name: "Studio Mac", onThisComputer: true },
     executionPreferences: emptyExecutionPreferences,
     hostClient: client,
+    addHarnessAccount: null,
     openHarnessAuthentication: noOp,
     placements,
     refreshHarnessCatalog: async () => undefined,
