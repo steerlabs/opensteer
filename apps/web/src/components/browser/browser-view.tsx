@@ -36,11 +36,7 @@ import { useBrowserCommandKeys } from "./browser-command-keys.js";
 import { BrowserDownloads } from "./browser-downloads.js";
 import { BrowserPageDialog } from "./browser-page-dialog.js";
 import { BrowserPasskeyBar } from "./browser-passkey-bar.js";
-import {
-  BrowserFollowBand,
-  BrowserTaskTabs,
-  type BrowserThreadPair,
-} from "./browser-thread-pair.js";
+import { BrowserFollowBand, type BrowserThreadPair } from "./browser-thread-pair.js";
 import {
   BrowserSignInPopover,
   browserSignInLabel,
@@ -651,7 +647,6 @@ export function PlaceBrowserView({
           }
           compact={compact}
           following={pair?.following ? pair.mark : null}
-          tabs={pair ? <BrowserTaskTabs hostClient={hostClient} pair={pair} /> : null}
           disabled={!pageReachable}
           focusAddress={live && blankPage}
           find={

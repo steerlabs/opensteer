@@ -1,6 +1,6 @@
 import type { PlaceAgent } from "@opensteer/client/host";
-import { memo, type ReactNode } from "react";
-import { Image, Platform, Pressable, StyleSheet, View } from "react-native";
+import type { ReactNode } from "react";
+import { Platform, Pressable, StyleSheet, View } from "react-native";
 import {
   color,
   controlFontScaleLimit,
@@ -13,94 +13,9 @@ import { GlassSurface } from "../ui/glass.js";
 import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { AgentMarks } from "./agent-marks.js";
-import type { OpenTabSuggestion } from "./address-bar.js";
 
 /** Android's touch target is Material's 48dp; iOS's is 44pt. */
 const target = Platform.OS === "android" ? 48 : touchTarget;
-/** At most this many of a task's other tabs stand beside the address; the rest are in the sheet. */
-const maxChips = 2;
-const chipGap = space[8];
-
-/**
- * How many of a task's other tabs fit in the room the bar leaves, and whether
- * they keep their titles. Titled chips give way to favicon-only ones before
- * any is dropped, so the row never wraps; what does not fit is in the tab
- * sheet the count opens.
- */
-export function chipFit(
-  room: number,
-  count: number,
-  fontScale: number,
-): { readonly labeled: boolean; readonly shown: number } {
-  const titled = titledChipWidth(fontScale);
-  for (const [labeled, width] of [
-    [true, titled],
-    [false, target],
-  ] as const)
-    for (let shown = Math.min(count, maxChips); shown > 0; shown -= 1)
-      if (shown * (width + chipGap) <= room) return { labeled, shown };
-  return { labeled: false, shown: 0 };
-}
-
-function titledChipWidth(fontScale: number): number {
-  return Math.round(124 * Math.min(fontScale, controlFontScaleLimit));
-}
-
-/**
- * The task's other tabs in this browser, as Safari's compact tab bar shows
- * them on iPad: each a small capsule with its icon and a short title, a tap
- * away. The tab in front is the address beside them.
- */
-export const TaskTabChips = memo(function TaskTabChips(props: {
-  readonly fontScale: number;
-  readonly onSelect: (tabId: string) => void;
-  readonly room: number;
-  readonly tabs: readonly OpenTabSuggestion[];
-}): ReactNode {
-  const { labeled, shown } = chipFit(props.room, props.tabs.length, props.fontScale);
-  if (shown === 0) return null;
-  return (
-    <View style={styles.chips}>
-      {props.tabs.slice(0, shown).map((tab) => (
-        <Pressable
-          accessibilityHint="Switches to this tab"
-          accessibilityLabel={tab.title}
-          accessibilityRole="button"
-          key={tab.id}
-          onPress={() => props.onSelect(tab.id)}
-          style={({ pressed }) => [
-            styles.chipSlot,
-            labeled ? { maxWidth: titledChipWidth(props.fontScale) } : null,
-            pressed && styles.pressed,
-          ]}
-        >
-          <GlassSurface interactive shape="capsule" style={[styles.chip, !labeled && styles.bare]}>
-            {tab.favicon === null ? (
-              <Symbol name="globe" size={13} tint={color.textSoft} />
-            ) : (
-              <Image
-                accessibilityIgnoresInvertColors
-                source={{ uri: tab.favicon }}
-                style={styles.favicon}
-              />
-            )}
-            {labeled ? (
-              <AppText
-                maxFontSizeMultiplier={controlFontScaleLimit}
-                numberOfLines={1}
-                role="caption"
-                style={styles.chipTitle}
-                tone="soft"
-              >
-                {tab.title}
-              </AppText>
-            ) : null}
-          </GlassSurface>
-        </Pressable>
-      ))}
-    </View>
-  );
-});
 
 /**
  * Where the agent is while the person looks at another tab: a slim band under
@@ -190,19 +105,6 @@ const styles = StyleSheet.create({
     gap: space[4],
     minHeight: target,
   },
-  bare: { justifyContent: "center", paddingHorizontal: 0, width: 34 },
-  chip: {
-    alignItems: "center",
-    flexDirection: "row",
-    gap: space[6],
-    height: 34,
-    maxWidth: "100%",
-    paddingHorizontal: space[10],
-  },
-  chipSlot: { alignItems: "center", justifyContent: "center", minHeight: target, minWidth: target },
-  chipTitle: { flexShrink: 1 },
-  chips: { flexDirection: "row", flexShrink: 0, gap: chipGap },
-  favicon: { borderRadius: 3, height: 14, width: 14 },
   follow: {
     alignItems: "center",
     justifyContent: "center",
