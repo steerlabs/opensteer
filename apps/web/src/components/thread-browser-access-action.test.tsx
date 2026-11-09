@@ -14,8 +14,8 @@ import { BrowserAccessBody } from "./thread-browser-access-action.js";
 const personalId = createId("browserProfile");
 const workId = createId("browserProfile");
 const profiles: BrowserProfileSummary[] = [
-  { id: personalId, name: "Personal" },
-  { id: workId, name: "Work" },
+  { homeRunnerId: null, id: personalId, name: "Personal" },
+  { homeRunnerId: null, id: workId, name: "Work" },
 ];
 const mainId = createId("workspace");
 const projectId = createId("workspace");

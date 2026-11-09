@@ -95,9 +95,10 @@ describe("machineRemovalPrompt", () => {
     expect(
       machineRemovalPrompt(
         machineFixture({ localWorkspaces: 2, name: "Mac mini", pinnedThreads: 1 }),
+        [],
       ),
     ).toBe(
-      "Remove Mac mini? Agents will no longer be able to use it. 1 Thread runs here and 2 Workspaces keep their files on its disk, and will have nowhere to run until you move them.\n\nAgent access: apps, Terminal, screen control and shared folders stop being available here.\nFiles and saved browser profiles: stay on the computer.\nSigned-in sessions: remain signed in. Manage those in Account.",
+      "Remove Mac mini? Agents will no longer be able to use it. 1 Thread runs here and 2 Workspaces keep their files on its disk, and will have nowhere to run until you move them.\n\nAgent access: apps, Terminal, screen control and shared folders stop being available here.\nFiles: stay on the computer.\nOpensteer on it: stays signed in. Manage that in Account.",
     );
   });
 });
@@ -636,7 +637,7 @@ describe("ComputerDetailPage", () => {
     await click(dangerButton(page.container));
 
     expect(confirm).toHaveBeenCalledWith(
-      "Remove Alex's MacBook Pro? Agents will no longer be able to use it.\n\nAgent access: apps, Terminal, screen control and shared folders stop being available here.\nFiles and saved browser profiles: stay on the computer.\nSigned-in sessions: remain signed in. Manage those in Account.",
+      "Remove Alex's MacBook Pro? Agents will no longer be able to use it.\n\nAgent access: apps, Terminal, screen control and shared folders stop being available here.\nFiles: stay on the computer.\nOpensteer on it: stays signed in. Manage that in Account.",
     );
     await vi.waitFor(() =>
       expect(dispatch).toHaveBeenCalledWith(

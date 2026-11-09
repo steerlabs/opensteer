@@ -161,6 +161,11 @@
   font-weight: var(--weight-medium);
 }
 
+.place-state .btn svg {
+  width: 14px;
+  height: 14px;
+}
+
 .place-state__detail {
   max-width: 36rem;
   font-size: var(--text-md);
@@ -3488,7 +3493,8 @@ html[data-tab-sorting] * {
   --ring-bg: var(--surface-raised);
 }
 
-.tab-menu__identity span:last-child {
+.tab-menu__name,
+.tab-menu__identity .device-label {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3508,16 +3514,37 @@ html[data-tab-sorting] * {
   color: var(--muted);
 }
 
+/* A profile row is one line: who, then where when that is not here, then the
+   tick's slot, kept empty so every row's device lines up. */
 .picker__tick {
+  display: grid;
+  place-items: center;
   flex: none;
   width: 14px;
   height: 14px;
-  margin-left: auto;
+  margin-inline-start: auto;
   color: var(--text-soft);
 }
 
-.picker__detail--wrap {
-  white-space: normal;
+.picker__tick svg {
+  width: 14px;
+  height: 14px;
+}
+
+.picker__device {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 70%;
+  margin-inline-start: auto;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker__device + .picker__tick {
+  margin-inline-start: 0;
 }
 
 .popover--profiles,
