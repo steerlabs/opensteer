@@ -156,7 +156,11 @@ function AccountRowView(props: {
       <Spacer />
       {row.primary ? (
         <Button
-          label={form.busyId === row.id ? "Checking…" : row.primary.label}
+          label={
+            form.busyId === row.id && row.primary.id === "refresh-models"
+              ? "Checking…"
+              : row.primary.label
+          }
           modifiers={[buttonStyle("borderless"), disabled(blocked)]}
           onPress={() => row.primary && form.onAction(row.id, row.primary)}
         />
