@@ -42,6 +42,8 @@ export function AccountSignInSheet(props: {
   readonly flow: AccountSignInFlow | null;
   readonly onClose: () => void;
   readonly onDone: (state: Extract<AccountSignInState, { readonly kind: "done" }>) => void;
+  /** Leaves this sign-in for the other sources the engine offers. */
+  readonly onOtherSources?: (() => void) | null;
   readonly title: string;
   readonly whereLabel: string;
 }): ReactNode {
@@ -106,8 +108,9 @@ export function AccountSignInSheet(props: {
 
   const retry = flow ? <PrimaryButton label="Try again" onPress={() => flow.retry()} /> : null;
   const alternatives =
-    flow && signingIn
-      ? signingIn.methods
+    flow && signingIn ? (
+      <>
+        {signingIn.methods
           .filter((candidate) => candidate.methodId !== signingIn.methodId)
           .map((candidate) => (
             <SecondaryButton
@@ -115,8 +118,12 @@ export function AccountSignInSheet(props: {
               label={alternativeLabel(candidate)}
               onPress={() => flow.chooseMethod(candidate.methodId)}
             />
-          ))
-      : null;
+          ))}
+        {props.onOtherSources ? (
+          <SecondaryButton label="Use another provider" onPress={props.onOtherSources} />
+        ) : null}
+      </>
+    ) : null;
   const failure = signingIn?.error ?? (view?.kind === "failed" ? view.detail : null);
   const failed =
     failure === null ? null : <Notice detail={failure} title="Sign-in didn’t finish" />;

@@ -1,5 +1,6 @@
 import {
   accountCreateRequest,
+  directSource,
   startAccountSignIn,
   type AccountSignInFlow,
   type AccountSignInTarget,
@@ -23,6 +24,7 @@ interface OpenSheet {
   readonly choosing: React.ComponentProps<typeof AccountSignInSheet>["choosing"];
   readonly flow: AccountSignInFlow | null;
   readonly key: number;
+  readonly otherSources: (() => void) | null;
   readonly title: string;
   readonly whereLabel: string;
 }
@@ -50,6 +52,7 @@ export function useAccountSignIn(
     target: AccountSignInTarget,
     title: string,
     whereLabel: string,
+    otherSources: (() => void) | null = null,
   ): void => {
     const flow = startAccountSignIn({
       client,
@@ -57,12 +60,30 @@ export function useAccountSignIn(
       target,
     });
     flowRef.current = flow;
-    setOpen({ added: target.kind === "create", choosing: null, flow, key, title, whereLabel });
+    setOpen({
+      added: target.kind === "create",
+      choosing: null,
+      flow,
+      key,
+      otherSources,
+      title,
+      whereLabel,
+    });
   };
   const addAccount = (engine: EngineGroup, environment: EnvironmentSummary): void => {
     const key = (nextKey.current += 1);
     const title = `Add ${engine.engineName} account`;
-    const start = (choice: AddAccountChoice) =>
+    const askForSource = () =>
+      setOpen({
+        added: true,
+        choosing: { onContinue: (choice) => start(choice, null), sources: engine.sources },
+        flow: null,
+        key,
+        otherSources: null,
+        title,
+        whereLabel: environment.name,
+      });
+    const start = (choice: AddAccountChoice, otherSources: (() => void) | null) =>
       begin(
         key,
         {
@@ -77,20 +98,24 @@ export function useAccountSignIn(
         },
         title,
         environment.name,
+        otherSources,
       );
-    const only = engine.sources.length === 1 ? engine.sources[0] : undefined;
-    if (only && only.fields.length === 0) {
-      start({ fields: {}, source: only });
+    const direct = directSource(engine.sources);
+    if (!direct) {
+      askForSource();
       return;
     }
-    setOpen({
-      added: true,
-      choosing: { onContinue: start, sources: engine.sources },
-      flow: null,
-      key,
-      title,
-      whereLabel: environment.name,
-    });
+    start(
+      { fields: {}, source: direct },
+      engine.sources.length > 1
+        ? () => {
+            const flow = flowRef.current;
+            flowRef.current = null;
+            void flow?.cancel();
+            askForSource();
+          }
+        : null,
+    );
   };
   const signIn = (input: {
     readonly environmentId: string;
@@ -127,6 +152,7 @@ export function useAccountSignIn(
         flow={open.flow}
         key={open.key}
         onClose={close}
+        onOtherSources={open.otherSources}
         onDone={({ accountLabel }) => {
           flowRef.current = null;
           setOpen(null);

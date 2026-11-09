@@ -129,11 +129,11 @@ describe("accounts on the AI settings page", () => {
     expect(document.querySelector('[aria-label="Sign in to Codex"]')).not.toBeNull();
     expect(document.body.textContent).toContain("DEMO-1234");
 
-    await act(async () => vi.advanceTimersByTimeAsync(3_000));
+    await act(async () => vi.advanceTimersByTimeAsync(9_500));
     await vi.waitFor(
       () =>
         expect(form.confirmation, "the finished sign-in was never confirmed").toBe(
-          "Signed in as demo@opensteer.test",
+          "Signed in as side@opensteer.test",
         ),
       { timeout: 1_000 },
     );
@@ -185,9 +185,14 @@ describe("accounts on the AI settings page", () => {
     expect(client.getSnapshot().harnesses.some((item) => item.id === row.id)).toBe(false);
   });
 
-  it("asks for a source first, then removes the new account if its sheet closes", async () => {
+  it("starts with the service's own sign-in, and leaves nothing behind for another provider or a closed sheet", async () => {
     const before = client.getSnapshot().harnesses.length;
     await act(async () => form.onAdd("claude"));
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    expect(client.getSnapshot().harnesses).toHaveLength(before + 1);
+
+    await press("Use another provider");
+    await act(async () => vi.advanceTimersByTimeAsync(0));
     expect(document.body.textContent).toContain("Who should this account talk to?");
     expect(client.getSnapshot().harnesses).toHaveLength(before);
 
