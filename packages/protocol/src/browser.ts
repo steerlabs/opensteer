@@ -1647,6 +1647,11 @@ export const HostedBrowserBootstrapSchema = z.object({
   profileGrants: z.array(BrowserProfileGrantSchema).max(100),
   available: z.boolean(),
   placements: z.array(BrowserPlacementSchema).max(129),
+  /**
+   * The computers this person may make a profile on, connected or not. Absent
+   * from a Host older than profile homes, which is offered no choice.
+   */
+  profileHomes: z.array(RunnerIdSchema).max(129).optional(),
   profiles: z.array(BrowserProfileSchema).max(128),
   sessions: z
     .array(HostedBrowserSessionSchema)
