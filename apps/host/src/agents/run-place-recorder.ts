@@ -7,17 +7,24 @@ interface RunPlaceWrite {
   readonly data: EventData<"place.entered">;
 }
 
+/** Called once a place is where the Run is, with when it got there and whether it was coalesced. */
+export type RunPlaceSettled = (at: number, coalesced: boolean) => Promise<void>;
+
+interface RunPlaceEntry {
+  readonly input: RunPlaceWrite;
+  readonly settled: RunPlaceSettled | undefined;
+}
+
+/** A Run moves at most this often in its history; the latest place always lands. */
+const runPlaceIntervalMs = 1000;
+
 /** One lane for browser and native activity; the database owns the Run fence and dedup. */
 export class RunPlaceRecorder {
   readonly #write: (input: RunPlaceWrite) => Promise<AgentEvent | undefined>;
   readonly #publish: (event: AgentEvent) => void;
   readonly #onError: (error: unknown) => void;
   readonly #clock: Clock;
-  readonly #onPlaceSettled: (input: RunPlaceWrite, at: number, coalesced: boolean) => Promise<void>;
-  readonly #pending = new Map<
-    string,
-    { readonly input: RunPlaceWrite; readonly cancel: () => void }
-  >();
+  readonly #pending = new Map<string, RunPlaceEntry & { readonly cancel: () => void }>();
   #closed = false;
   readonly #tails = new Map<string, Promise<void>>();
   readonly #admissions = new Map<
@@ -34,21 +41,18 @@ export class RunPlaceRecorder {
     readonly publish: (event: AgentEvent) => void;
     readonly onError: (error: unknown) => void;
     readonly clock?: Clock;
-    readonly onPlaceSettled?: (
-      input: RunPlaceWrite,
-      at: number,
-      coalesced: boolean,
-    ) => Promise<void>;
   }) {
     this.#write = options.write;
     this.#publish = options.publish;
     this.#onError = options.onError;
     this.#clock = options.clock ?? systemClock;
-    this.#onPlaceSettled = options.onPlaceSettled ?? (async () => undefined);
   }
 
   /** Native calls reserve order at admission, then enter only after a successful answer. */
-  begin(runId: RunId, bindingGeneration: number): (data: EventData<"place.entered">) => void {
+  begin(
+    runId: RunId,
+    bindingGeneration: number,
+  ): (data: EventData<"place.entered">, settled?: RunPlaceSettled) => void {
     if (this.#closed) return () => undefined;
     let admissions = this.#admissions.get(runId);
     if (admissions && admissions.generation > bindingGeneration) return () => undefined;
@@ -58,23 +62,23 @@ export class RunPlaceRecorder {
       this.#admissions.set(runId, admissions);
     }
     const ordinal = ++admissions.next;
-    return (data) => {
+    return (data, settled) => {
       if (this.#admissions.get(runId) !== admissions || ordinal <= admissions.completed) return;
       admissions.completed = ordinal;
-      const input = { runId, bindingGeneration, data };
+      const entry = { input: { runId, bindingGeneration, data }, settled };
       const previous = this.#last.get(runId);
       const pending = this.#pending.get(runId);
       this.#cancelPending(runId);
       if (previous?.generation === bindingGeneration) {
         if (previous.key === placeIdentityKey(data.place) && !pending) return;
-        const remaining = previous.at + 1000 - this.#clock.now();
+        const remaining = previous.at + runPlaceIntervalMs - this.#clock.now();
         if (remaining > 0) {
           const cancel = this.#clock.schedule(() => this.#flushPending(runId), remaining);
-          this.#pending.set(runId, { input, cancel });
+          this.#pending.set(runId, { ...entry, cancel });
           return;
         }
       }
-      this.#enqueue(input, Boolean(pending));
+      this.#enqueue(entry, Boolean(pending));
     };
   }
 
@@ -88,10 +92,10 @@ export class RunPlaceRecorder {
     this.#cancelPending(runId);
     if (!pending || this.#admissions.get(runId)?.generation !== pending.input.bindingGeneration)
       return;
-    this.#enqueue(pending.input, true);
+    this.#enqueue(pending, true);
   }
 
-  #enqueue(input: RunPlaceWrite, coalesced: boolean): void {
+  #enqueue({ input, settled }: RunPlaceEntry, coalesced: boolean): void {
     const { runId, bindingGeneration, data } = input;
     const last = {
       generation: bindingGeneration,
@@ -103,14 +107,16 @@ export class RunPlaceRecorder {
     if (!unchanged) this.#last.set(runId, last);
     const tail = (this.#tails.get(runId) ?? Promise.resolve())
       .then(async () => {
-        if (unchanged) {
-          if (coalesced) await this.#onPlaceSettled(input, last.at, coalesced);
+        // A failed write forgets its place, so a later entry of it writes it after all.
+        if (unchanged && this.#last.has(runId)) {
+          if (coalesced) await settled?.(last.at, coalesced);
           return;
         }
+        if (unchanged) this.#last.set(runId, last);
         const event = await this.#write(input);
         if (event) {
           this.#publish(event);
-          await this.#onPlaceSettled(input, last.at, coalesced);
+          await settled?.(last.at, coalesced);
         }
       })
       .catch((error: unknown) => {
@@ -123,8 +129,13 @@ export class RunPlaceRecorder {
     });
   }
 
-  enter(runId: RunId, bindingGeneration: number, data: EventData<"place.entered">): void {
-    this.begin(runId, bindingGeneration)(data);
+  enter(
+    runId: RunId,
+    bindingGeneration: number,
+    data: EventData<"place.entered">,
+    settled?: RunPlaceSettled,
+  ): void {
+    this.begin(runId, bindingGeneration)(data, settled);
   }
 
   async drain(runId: string): Promise<void> {

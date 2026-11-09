@@ -82,6 +82,39 @@ describe("per-Run place recording", () => {
     }
   });
 
+  it("writes a coalesced return to a place whose leading write failed", async () => {
+    const f = fixture();
+    const failed = Promise.withResolvers<AgentEvent | undefined>();
+    f.write.mockReturnValueOnce(failed.promise);
+    try {
+      for (const data of [browser, app, browser]) f.recorder.enter(runId, 1, data);
+      f.clock.advanceBy(1000);
+      failed.reject(new Error("place write failed"));
+      await f.drain();
+      expect(f.write.mock.calls.map(([input]) => input.data)).toEqual([browser, browser]);
+    } finally {
+      failed.resolve(undefined);
+      await f.drain();
+    }
+  });
+
+  it("settles each landed place through its own entry's callback", async () => {
+    const f = fixture();
+    f.write.mockImplementation(async (input) => input as unknown as AgentEvent);
+    const settled = vi.fn(async (_at: number, _coalesced: boolean) => undefined);
+    const superseded = vi.fn(async (_at: number, _coalesced: boolean) => undefined);
+    f.recorder.enter(runId, 1, browser, settled);
+    f.recorder.enter(runId, 1, app, superseded);
+    f.recorder.enter(runId, 1, phone, settled);
+    f.clock.advanceBy(1000);
+    await f.drain();
+    expect(superseded).not.toHaveBeenCalled();
+    expect(settled.mock.calls).toEqual([
+      [0, false],
+      [1000, true],
+    ]);
+  });
+
   it("drops A → B → A within the window", async () => {
     const f = fixture();
     for (const data of [browser, app, browser]) f.recorder.enter(runId, 1, data);

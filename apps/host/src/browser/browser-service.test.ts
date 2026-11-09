@@ -2161,9 +2161,13 @@ describe("BrowserService", () => {
     const groupId = createBrowserSessionId();
     const tabId = BrowserSurfaceIdSchema.parse("page-1");
     const close = vi.fn(async () => ({ groupId }));
+    const onCatalogChanged = vi.fn(),
+      onSessionsChanged = vi.fn();
     const service = new BrowserService({
       ...nativeProfileOptions(),
       ...profileStateOptions,
+      onCatalogChanged,
+      onSessionsChanged,
       repository,
       connectTimeoutMs: 2000,
       signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
@@ -2208,6 +2212,13 @@ describe("BrowserService", () => {
       method: browserHostMethods.closeTab,
       parameters: { surfaceId: tabId, durable: true },
     });
+    // Its closed revision reaches viewers, so a slower earlier lineage cannot reopen it.
+    expect(onCatalogChanged).toHaveBeenCalledWith(sessionId, workspaceId, {
+      lineageChanged: true,
+    });
+    expect(onSessionsChanged.mock.calls.some(([, , source]) => source === "browser.tabs")).toBe(
+      false,
+    );
   });
   it("publishes a page's own title for the same document while its untitled read is still answering", async () => {
     const keys = generateKeyPairSync("ed25519");
@@ -3042,8 +3053,19 @@ describe("BrowserService", () => {
       const parsed = BrowserClientMessageSchema.safeParse(JSON.parse(data));
       if (!parsed.success || parsed.data.type !== "cdp.command") return;
       forwarded.push(parsed.data);
+      const { command } = parsed.data;
+      // An attach names its page, as Chromium's answer does.
+      const attached =
+        command.method === "Target.attachToTarget" &&
+        typeof command.parameters?.targetId === "string"
+          ? command.parameters.targetId
+          : null;
       if (!options.holdAnswers)
-        runtime.sendServer({ type: "cdp.result", requestId: parsed.data.requestId, result: {} });
+        runtime.sendServer({
+          type: "cdp.result",
+          requestId: parsed.data.requestId,
+          result: attached ? { sessionId: `cdp-${attached}`, surfaceId: attached } : {},
+        });
     });
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     const answer = (requestId: string, result: Record<string, unknown>) =>
@@ -3166,7 +3188,8 @@ describe("BrowserService", () => {
   });
 
   it("records native transitions in the browser's Run place lane and ignores activity-ended notices", async () => {
-    const f = await runPlaceFixture();
+    const clock = new ManualClock(0);
+    const f = await runPlaceFixture(clock);
     const actor = f.audience[0]!;
     const native = {
       ...actor,
@@ -3176,15 +3199,50 @@ describe("BrowserService", () => {
       ended: false,
     };
     await f.activity("page-1");
+    clock.advanceBy(1000);
     f.service.beginRunPlace(
       native.runId,
       native.generation,
     )({ place: native.place, title: native.title, site: null });
     f.service.noteNativeActivity(native);
+    clock.advanceBy(1000);
     await f.activity("page-1");
     f.service.noteNativeActivity({ ...native, ended: true });
     await f.drain();
-    expect(f.record.mock.calls.map(([input]) => input.data.place.kind)).toEqual(["browser"]);
+    expect(f.record.mock.calls.map(([input]) => input.data.place.kind)).toEqual([
+      "browser",
+      "app",
+      "browser",
+    ]);
+  });
+
+  it("records a tab the agent switches back to only when its page changed", async () => {
+    const f = await runPlaceFixture();
+    const usage = vi.spyOn(f.backing, "recordAgentBrowserUse");
+    for (const targetId of ["page-1", "page-2", "page-1", "page-2"])
+      await f.cdp.request({
+        method: "Target.attachToTarget",
+        parameters: { targetId, flatten: true },
+      });
+    await vi.waitFor(() => expect(usage).toHaveBeenCalledTimes(2), { timeout: 1000 });
+    await f.cdp.request({ method: "Browser.getVersion" });
+    expect(usage.mock.calls.map(([input]) => input.tabId)).toEqual(["page-1", "page-2"]);
+  });
+
+  it("credits the settled tab after Stop ends the Run's actor", async () => {
+    const clock = new ManualClock(0);
+    const f = await runPlaceFixture(clock);
+    f.record.mockImplementation(
+      async (input) => ({ type: "place.entered", ...input }) as unknown as AgentEvent,
+    );
+    const usage = vi.spyOn(f.backing, "recordAgentBrowserUse");
+    await f.activity("page-1");
+    await f.activity("page-2");
+    await f.activity("page-1");
+    const actor = f.audience[0]!;
+    f.service.endRevokedRunActors([{ runId: actor.runId, bindingGeneration: actor.generation }]);
+    await f.drain();
+    expect(usage.mock.calls.map(([input]) => input.tabId)).toEqual(["page-1", "page-2", "page-1"]);
   });
 
   it("records no site for a place whose page failed to load, whatever address it shows", async () => {

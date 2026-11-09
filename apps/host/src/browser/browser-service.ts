@@ -759,20 +759,6 @@ export class BrowserService {
     this.#runPlaces = new RunPlaceRecorder({
       clock: this.#activityClock,
       write: (input) => this.#repository.recordRunPlace(input),
-      onPlaceSettled: async ({ runId, bindingGeneration, data }, at, coalesced) => {
-        const { place } = data;
-        if (place.kind !== "browser") return;
-        const actor = [...this.#actors.values()].find(
-          (actor) =>
-            actor.runId === runId &&
-            actor.generation === bindingGeneration &&
-            actor.sessionId === place.sessionId,
-        );
-        if (!actor) return;
-        const recorded = actor.surfaces.get(place.surfaceId)?.recordedPage;
-        if (!coalesced && recorded && recorded.at >= at) return;
-        await this.#recordActorUse(actor, place.surfaceId, true);
-      },
       publish: (event) => this.#onWorkspaceEvent(event),
       onError: (error) => this.#onError(error),
     });
@@ -1129,7 +1115,9 @@ export class BrowserService {
       const broker = session ? this.#brokers.get(session.id) : undefined;
       if (session && broker?.live)
         await this.#disposeWorkspaceTab(ownerId, session.workspaceId, session.id, tabId, broker);
-      if (session) this.#onSessionsChanged(session.workspaceId, [session.id], "browser.tabs");
+      // The closed revision reaches every viewer, so a slower earlier lineage can't bring it back.
+      if (session)
+        this.#onCatalogChanged(session.id, session.workspaceId, { lineageChanged: true });
     });
     return {
       type: "workspace.tab.close" as const,
@@ -2538,7 +2526,15 @@ export class BrowserService {
       activity = { ...activity, pointer: null };
     actor.seq = activity.seq;
     const data = this.#placeData(sessionId, activity.surfaceId);
-    if (data) this.#runPlaces.enter(actor.runId, actor.generation, data);
+    const surfaceId = activity.surfaceId;
+    // The Run's settled tab is its latest use, even after it stopped, so the
+    // actor is held here rather than looked up when the place lands.
+    if (data)
+      this.#runPlaces.enter(actor.runId, actor.generation, data, async (at, coalesced) => {
+        const recorded = actor.surfaces.get(surfaceId)?.recordedPage;
+        if (!coalesced && recorded && recorded.at >= at) return;
+        await this.#recordActorUse(actor, surfaceId, true);
+      });
 
     this.#noteAgentCommand(sessionId, actor.binding);
     const at = this.#activityClock.now();
@@ -3121,7 +3117,15 @@ export class BrowserService {
             // while the command was answering; the live attachment is not
             // touched here, so that end cannot be undone. The agent has its page
             // either way: recording it never delays the answer or fails it.
-            if (target.success) {
+            const actor = actorToken ? this.#actors.get(actorToken) : undefined;
+            // An actor's own lane skips a page it already recorded: switching back is not a new use.
+            if (
+              target.success &&
+              actor?.sessionId === record.id &&
+              broker.pageKeyOf(target.data.surfaceId) !== undefined
+            ) {
+              void this.#recordActorUse(actor, target.data.surfaceId);
+            } else if (target.success) {
               void this.#repository
                 .recordAgentBrowserUse({
                   agentBindingId: input.agentBindingId,

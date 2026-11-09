@@ -1696,6 +1696,8 @@ export async function createHostRuntime(
           }
         },
         onEventRefused: async (identity, event, refusal) => {
+          // This may end the Run, and a place left pending would then be refused.
+          await browser.drainRunPlaces(event.runId);
           const events = await store.failRunForRefusedRunnerEvent({
             bindingGeneration: event.bindingGeneration,
             message: refusal.message,
