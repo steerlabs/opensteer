@@ -6,6 +6,7 @@ import {
   TextField,
   Toggle,
   HStack,
+  Menu,
   Picker,
   Section,
   Spacer,
@@ -13,7 +14,11 @@ import {
   VStack,
 } from "@expo/ui/swift-ui";
 import {
+  accessibilityLabel,
+  buttonStyle,
   disabled,
+  frame,
+  labelStyle,
   lineLimit,
   font,
   foregroundStyle,
@@ -30,21 +35,27 @@ import {
 } from "@opensteer/client/host";
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
-import { color } from "../theme.js";
-import { ErrorText } from "./settings-form-primitives.ios.js";
-import type { AutomaticModelsForm, SettingsFormProps } from "./settings-form.types.js";
+import { color, touchTarget } from "../theme.js";
+import { ErrorText, Lines } from "./settings-form-primitives.ios.js";
+import type {
+  AiAccountRow,
+  AiAccountsForm,
+  AutomaticModelsForm,
+  SettingsFormProps,
+} from "./settings-form.types.js";
 const secondary = foregroundStyle({ type: "hierarchical", style: "secondary" });
 const footnote = font({ textStyle: "footnote" });
 export function AiSettingsForm(
   props: Pick<
     SettingsFormProps,
-    "page" | "engineUpdates" | "onEngineUpdate" | "onChooseModel" | "automatic"
+    "aiAccounts" | "page" | "engineUpdates" | "onEngineUpdate" | "onChooseModel" | "automatic"
   >,
 ): ReactNode {
   const engineUpdates = props.engineUpdates ?? [];
   return (
     <>
       <Button label="Choose account and model" onPress={() => props.onChooseModel?.()} />
+      {props.aiAccounts ? <Accounts form={props.aiAccounts} /> : null}
       {engineUpdates.length === 0 ? null : (
         <Section title="AI">
           {engineUpdates.map((engine) => (
@@ -69,6 +80,110 @@ export function AiSettingsForm(
       )}
       {props.automatic ? <AutomaticModels form={props.automatic} /> : null}
     </>
+  );
+}
+
+function Accounts({ form }: { readonly form: AiAccountsForm }): ReactNode {
+  return (
+    <>
+      {form.confirmation === null ? null : (
+        <Section>
+          <Lines detail={form.confirmation} title="Done" />
+        </Section>
+      )}
+      {form.error === null ? null : (
+        <Section>
+          <ErrorText detail={form.error} />
+        </Section>
+      )}
+      {form.locations.length === 0 ? null : (
+        <Section>
+          <Picker
+            label="Computer"
+            modifiers={[pickerStyle("menu")]}
+            onSelectionChange={(id: string) => form.onChooseLocation(id)}
+            selection={form.locationId ?? ""}
+          >
+            {form.locations.map((location) => (
+              <Text key={location.id} modifiers={[tag(location.id)]}>
+                {location.title}
+              </Text>
+            ))}
+          </Picker>
+        </Section>
+      )}
+      {form.groups.map((group) => (
+        <Section key={group.driverKind} title={group.name}>
+          {group.rows.map((row) => (
+            <AccountRowView form={form} key={row.id} row={row} />
+          ))}
+          {group.addable ? (
+            <Button
+              label="Add account"
+              modifiers={[disabled(form.busyId !== null)]}
+              onPress={() => form.onAdd(group.driverKind)}
+            />
+          ) : null}
+        </Section>
+      ))}
+    </>
+  );
+}
+
+function AccountRowView(props: {
+  readonly form: AiAccountsForm;
+  readonly row: AiAccountRow;
+}): ReactNode {
+  const { form, row } = props;
+  const blocked = form.busyId !== null;
+  const lineTone =
+    row.attention === "bad"
+      ? foregroundStyle(color.red)
+      : row.attention === "warn"
+        ? foregroundStyle(color.amber)
+        : secondary;
+  return (
+    <HStack alignment="center" spacing={12}>
+      <VStack alignment="leading" spacing={2}>
+        <HStack alignment="firstTextBaseline" spacing={8}>
+          <Text modifiers={[font({ textStyle: "body" }), foregroundStyle(color.text)]}>
+            {row.name}
+          </Text>
+          {row.isDefault ? <Text modifiers={[secondary, footnote]}>Default</Text> : null}
+        </HStack>
+        {row.line === null ? null : <Text modifiers={[lineTone, footnote]}>{row.line}</Text>}
+      </VStack>
+      <Spacer />
+      {row.primary ? (
+        <Button
+          label={form.busyId === row.id ? "Checking…" : row.primary.label}
+          modifiers={[buttonStyle("borderless"), disabled(blocked)]}
+          onPress={() => row.primary && form.onAction(row.id, row.primary)}
+        />
+      ) : null}
+      {row.menu.length === 0 ? null : (
+        <Menu
+          label="More"
+          modifiers={[
+            buttonStyle("borderless"),
+            labelStyle("iconOnly"),
+            frame({ minHeight: touchTarget, minWidth: touchTarget }),
+            accessibilityLabel(`More for ${row.name}`),
+            disabled(blocked),
+          ]}
+          systemImage="ellipsis"
+        >
+          {row.menu.map((action) => (
+            <Button
+              key={action.id}
+              label={action.label}
+              onPress={() => form.onAction(row.id, action)}
+              role={action.id === "remove" ? "destructive" : "default"}
+            />
+          ))}
+        </Menu>
+      )}
+    </HStack>
   );
 }
 

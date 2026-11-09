@@ -1,12 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { harnessDriverLabel } from "@opensteer/core";
 import type { ModelServer, ModelServerRuntime } from "@opensteer/protocol";
-import { unwrapRpcResult, type EnvironmentSummary, type HostClient } from "@opensteer/client/host";
-import { actionErrorMessage } from "../../../ui-utils.js";
-import { Dialog } from "../../dialog.js";
-import { Icon } from "../../icon.js";
-import { SegmentedControl } from "../../segmented-control.js";
-import { SettingsRow } from "../primitives.js";
 import {
   modelServerAddress,
   modelServerConnectEngine,
@@ -17,8 +11,16 @@ import {
   modelServerStateLine,
   normalizeServerAddress,
   serverAddressProblem,
+  unwrapRpcResult,
+  type EnvironmentSummary,
+  type HostClient,
   type ModelServerEngine,
-} from "./model-servers.js";
+} from "@opensteer/client/host";
+import { actionErrorMessage } from "../../../ui-utils.js";
+import { Dialog } from "../../dialog.js";
+import { Icon } from "../../icon.js";
+import { SegmentedControl } from "../../segmented-control.js";
+import { SettingsRow } from "../primitives.js";
 
 /** A connected account's row, and the server it talks to. */
 export interface ModelServerAccountRow {

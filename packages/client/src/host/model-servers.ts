@@ -1,7 +1,7 @@
 import { isLoopbackHostname } from "@opensteer/core";
-import type { HarnessDriverSummary } from "@opensteer/client/host";
 import type { HarnessSourceDescriptor, ModelServer, ModelServerRuntime } from "@opensteer/protocol";
 import { parseHttpEndpointBaseUrl } from "@opensteer/shared/httpEndpoint";
+import type { HarnessDriverSummary } from "./client.js";
 
 const runtimeNames: Record<ModelServerRuntime, string> = {
   generic: "Model server",

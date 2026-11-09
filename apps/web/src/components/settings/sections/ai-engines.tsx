@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useSearchParams } from "react-router";
-import { harnessCatalogEntry, harnessDisplayRank, harnessDriverLabel } from "@opensteer/core";
+import { harnessDriverLabel } from "@opensteer/core";
 import type {
   HarnessAuthKind,
-  HarnessObservedConnection,
   HarnessSourceDescriptor,
   HarnessInstallation,
   HostApiCommandInput,
@@ -13,13 +12,20 @@ import {
   type DeploymentStatus,
 } from "@opensteer/protocol/deployment-status";
 import {
-  accountDisplayName,
-  describeConnectionUsage,
+  accountCreateRequest,
+  accountSource,
+  aiEngineAccountRow,
+  aiEngineActions,
+  engineGroups,
+  isModelServerSource,
+  modelServerKey,
   mutationIdempotencyKey,
-  nextAccountName,
   startHarnessAuthentication,
   observedAccountConnection,
   unwrapRpcResult,
+  type AddAccountChoice,
+  type AiEngineAction,
+  type EngineGroup,
   type HarnessAuthenticationRun,
   type EnvironmentSummary,
   type HarnessSummary,
@@ -35,9 +41,8 @@ import { engineProviderId, ProviderLogo } from "../../provider-brand.js";
 import { useToast } from "../../toast.js";
 import { UsageMeter } from "../../usage-meter.js";
 import { SectionHeader, SettingsRow } from "../primitives.js";
-import { AddAccountDialog, type AddAccountChoice } from "./add-account-dialog.js";
+import { AddAccountDialog } from "./add-account-dialog.js";
 import { ModelSettingsDialog } from "./model-settings-dialog.js";
-import { isModelServerSource, modelServerKey, serverAccountName } from "./model-servers.js";
 import {
   ModelServersCard,
   type ModelServerAccountRow,
@@ -52,10 +57,7 @@ export function AiEnginesSection() {
   const toast = useToast();
   return (
     <>
-      <SectionHeader
-        lead="Connect the accounts that power your agents."
-        title="AI services"
-      />
+      <SectionHeader lead="Connect the accounts that power your agents." title="AI services" />
       <AiEngineSettings
         client={hostClient}
         environments={snapshot.environments}
@@ -68,136 +70,6 @@ export function AiEnginesSection() {
       />
     </>
   );
-}
-
-export interface AiEngineAction {
-  readonly danger?: boolean;
-  readonly id:
-    | "add-connection"
-    | "make-default"
-    | "models"
-    | "refresh-models"
-    | "remove"
-    | "rename"
-    | "sign-in"
-    | "sign-out"
-    | "toggle-enabled";
-  readonly label: string;
-}
-
-/**
- * Which controls one account row offers: at most one primary button, with
- * everything else behind the row's overflow menu so a row never becomes a
- * toolbar.
- */
-export function aiEngineActions({
-  catalog,
-  environment,
-  profile,
-  setupOpenable,
-  source = null,
-}: {
-  readonly catalog: HarnessCatalog | undefined;
-  readonly environment: EnvironmentSummary;
-  readonly profile: HarnessSummary;
-  /** Whether this surface can open the sign-in dialog for this profile. */
-  readonly setupOpenable: boolean;
-  readonly source?: HarnessSourceDescriptor | null;
-}): { readonly menu: readonly AiEngineAction[]; readonly primary: AiEngineAction | null } {
-  const allowed = environment.harnessAuthenticationAllowed;
-  const setupReady =
-    profile.enabled &&
-    allowed &&
-    setupOpenable &&
-    catalog !== undefined &&
-    catalog.setupMethods.length > 0;
-  const live = allowed && profile.enabled && environment.connected;
-  // A server that is stopped or unreachable reports an error, and signing in
-  // again cannot start it: the way forward is to check it and try again.
-  const retry =
-    live && (catalog?.status === "error" || catalog?.status === "unavailable")
-      ? ({ id: "refresh-models", label: "Try again" } as const)
-      : null;
-  const configurable = live && source?.modelSettings === true && catalog?.status === "ready";
-  // Setup leads only when typing a context size would make a model usable; one
-  // that can't be fixed from here (not loaded, no tools) is the server's to fix.
-  const stuck = configurable && catalog.models.some((model) => model.needsContextWindow);
-  // Saved limits stay in view while the server is re-read or its computer is
-  // offline, though nothing can be changed or chosen until it answers.
-  const saved = Object.keys(profile.modelSettings ?? {}).length > 0;
-  const checkAgain =
-    live && catalog?.status === "authentication-required" && catalog.setupMethods.length === 0
-      ? ({ id: "refresh-models", label: "Check again" } as const)
-      : null;
-  const menu: AiEngineAction[] = [];
-  if (live && retry === null && checkAgain === null) {
-    menu.push({ id: "refresh-models", label: "Refresh models" });
-  }
-  if ((configurable || saved) && !stuck) {
-    menu.push({ id: "models", label: "Models" });
-  }
-  if (allowed && profile.enabled && !profile.isDefault) {
-    menu.push({ id: "make-default", label: "Make default" });
-  }
-  // "Add connection" is an offer to add a second account beside the ones the
-  // Runner already reports. It exists only where the catalog advertises a
-  // setup method for a connection slot nothing is sitting in yet; an engine
-  // that reports one account and no spare slot has nothing to add.
-  const hasEmptyConnectionSlot =
-    catalog !== undefined &&
-    catalog.setupMethods.some(
-      (method) =>
-        method.connectionSlot !== undefined &&
-        !catalog.connections.some(
-          (connection) => connection.connectionSlot === method.connectionSlot,
-        ),
-    );
-  if (setupReady && catalog.status !== "authentication-required" && hasEmptyConnectionSlot) {
-    menu.push({ id: "add-connection", label: "Add connection" });
-  }
-  if (
-    profile.enabled &&
-    allowed &&
-    environment.connected &&
-    catalog?.connections.some(
-      (connection) => connection.status === "connected" && connection.logoutSupported,
-    )
-  ) {
-    menu.push({ id: "sign-out", label: "Sign out" });
-  }
-  if (allowed) {
-    menu.push({ id: "rename", label: "Rename" });
-    menu.push({ id: "toggle-enabled", label: profile.enabled ? "Turn off" : "Turn on" });
-    if (environment.connected) {
-      menu.push({ danger: true, id: "remove", label: "Remove" });
-    }
-  }
-  return {
-    menu,
-    primary:
-      setupReady && catalog.status === "authentication-required"
-        ? { id: "sign-in", label: "Sign in" }
-        : stuck
-          ? { id: "models", label: "Set up models" }
-          : (retry ?? checkAgain),
-  };
-}
-
-/** One engine on one work location, with every account of it. */
-interface EngineGroup {
-  readonly addable: boolean;
-  readonly driverKind: string;
-  readonly engineName: string;
-  readonly installation: HarnessInstallation | null;
-  readonly profiles: readonly HarnessSummary[];
-  /** The sources a new, private account here may be added for. */
-  readonly sources: readonly HarnessSourceDescriptor[];
-  /**
-   * Why this work location cannot run this engine, in the Runner's own words —
-   * an engine the product does not ship that the person has not installed, for
-   * instance. Null when the Runner advertises the engine as usable.
-   */
-  readonly unavailableReason: string | null;
 }
 
 export function installationUpdateLabel(update: HarnessInstallation["update"]): string {
@@ -217,93 +89,6 @@ export function installationUpdateLabel(update: HarnessInstallation["update"]): 
     case "failed":
       return "Update failed";
   }
-}
-
-/**
- * The engines a work location offers, whether or not an account exists for
- * them yet: every product engine the Runner advertises, plus any driver an
- * existing account still names. A product engine the Runner cannot run, such
- * as one whose CLI is not installed, stays listed with the Runner's reason, so
- * the person learns how to make it runnable. An unavailable driver the
- * product no longer names is skipped unless an account of it still exists.
- */
-export function engineGroups(
-  environment: EnvironmentSummary,
-  profiles: readonly HarnessSummary[],
-): EngineGroup[] {
-  const kinds = new Set<string>();
-  for (const driver of environment.harnessDrivers) {
-    if (
-      driver.readiness !== "unavailable" ||
-      driver.installation ||
-      harnessCatalogEntry(driver.driverKind)
-    )
-      kinds.add(driver.driverKind);
-  }
-  for (const profile of profiles) kinds.add(profile.driverKind);
-  const canAddAccounts =
-    environment.harnessAuthenticationAllowed &&
-    environment.connected &&
-    (environment.providerStateModes.includes("isolated") || environment.kind === "managed");
-  return [...kinds]
-    .sort((left, right) => harnessDisplayRank(left) - harnessDisplayRank(right))
-    .map((driverKind) => {
-      const advertised = environment.harnessDrivers.find(
-        (driver) => driver.driverKind === driverKind,
-      );
-      // A new account is always a private one, so only sources that allow a
-      // private sign-in are on offer; an ambient-only source is the CLI's own.
-      // A model server is added under Model servers, where it is found.
-      const sources =
-        advertised && advertised.readiness !== "unavailable"
-          ? advertised.sources.filter(
-              (source) => source.stateKinds.includes("isolated") && !isModelServerSource(source),
-            )
-          : [];
-      return {
-        addable: canAddAccounts && sources.length > 0,
-        driverKind,
-        engineName: harnessDriverLabel(driverKind),
-        installation: advertised?.installation ?? null,
-        sources,
-        // The default first, as the picker lists it; the rest keep the Host's
-        // creation order so a rename never moves an account.
-        profiles: profiles
-          .filter((profile) => profile.driverKind === driverKind)
-          .sort((left, right) => Number(right.isDefault) - Number(left.isDefault)),
-        unavailableReason: advertised?.readiness === "unavailable" ? advertised.reason : null,
-      };
-    });
-}
-
-/**
- * The name a new account of a model server starts with: what the server is
- * when it runs on the account's own computer, otherwise its address.
- */
-export function endpointAccountName(
-  source: HarnessSourceDescriptor,
-  fields: Readonly<Record<string, string>>,
-): string | null {
-  const runtime = source.fields.find((field) => field.kind === "select");
-  for (const field of source.fields) {
-    const value = fields[field.id];
-    if (field.kind !== "url" || value === undefined) continue;
-    const name = serverAccountName(runtime ? fields[runtime.id] : undefined, value);
-    if (name) return name;
-  }
-  return null;
-}
-
-/** The source an account was added for, as its engine declares it here. */
-function accountSource(
-  environment: EnvironmentSummary,
-  profile: HarnessSummary,
-): HarnessSourceDescriptor | null {
-  const advertised = environment.harnessDrivers.find(
-    (driver) => driver.driverKind === profile.driverKind,
-  );
-  if (!advertised || advertised.readiness === "unavailable") return null;
-  return advertised.sources.find((source) => source.sourceId === profile.sourceId) ?? null;
 }
 
 function authKindLabel(authKind: HarnessAuthKind): string {
@@ -490,33 +275,14 @@ export function AiEngineSettings({
     target: EnvironmentSummary,
     engine: Pick<EngineGroup, "driverKind" | "engineName">,
     choice: AddAccountChoice,
-  ) => {
-    // Names are taken from the accounts as they are now, not as they were
-    // when the dialog opened, so two accounts added in a row never collide.
-    const takenNames = harnesses
-      .filter(
-        (harness) =>
-          harness.environmentId === target.id && harness.driverKind === engine.driverKind,
-      )
-      .map((harness) => harness.name);
-    // An account of the lab itself is named after the engine; one that talks
-    // somewhere else is named after that place — the endpoint's host when the
-    // person typed one — so "openrouter.ai" never reads as "Codex 2".
-    const baseName =
-      choice.source.kind === "first-party"
-        ? engine.engineName
-        : (endpointAccountName(choice.source, choice.fields) ?? choice.source.label);
-    return {
-      ...(Object.keys(choice.fields).length > 0 ? { config: choice.fields } : {}),
+  ) =>
+    accountCreateRequest({
+      choice,
       driverKind: engine.driverKind,
+      engineName: engine.engineName,
       environmentId: target.id,
-      idempotencyKey: mutationIdempotencyKey(`harness-create:${target.id}:${engine.driverKind}`),
-      name: nextAccountName(baseName, takenNames),
-      sourceId: choice.source.sourceId,
-      stateKind: "isolated",
-      type: "harness.create",
-    } satisfies Extract<HostApiCommandInput, { type: "harness.create" }>;
-  };
+      harnesses,
+    });
 
   const startAdding = (engine: EngineGroup, choice: AddAccountChoice, continued: boolean) => {
     if (!environment || !onAddAccount) return;
@@ -1048,8 +814,7 @@ export function AiEngineSettings({
               )}
               {engine.profiles.length === 0 && !engine.addable ? (
                 <p className="card__empty">
-                  {engine.unavailableReason ??
-                    `No ${engine.engineName} account on this computer.`}
+                  {engine.unavailableReason ?? `No ${engine.engineName} account on this computer.`}
                 </p>
               ) : null}
             </section>
@@ -1067,32 +832,6 @@ export function AiEngineSettings({
       </div>
     </>
   );
-}
-
-/**
- * Who this account signs in as, how it is paid for, and what is left of it.
- *
- * Nothing is second-guessed here: a driver emits `billingLabel` only when it
- * adds something the auth kind does not already say, so suppressing it would
- * throw away the one word — a plan name, a lab — the driver thought worth the
- * room. Usage is shown only for a source that can actually report windows,
- * because an empty bar reads as plenty left.
- */
-export function aiEngineAccountLine(
-  connection: HarnessObservedConnection | null,
-  source: HarnessSourceDescriptor | null,
-  now: number = Date.now(),
-  labelInTitle = false,
-): string | null {
-  if (!connection) return null;
-  const line = [
-    labelInTitle ? undefined : connection.accountLabel,
-    connection.billingLabel,
-    source?.quota === "windows" ? describeConnectionUsage(connection, now) : undefined,
-  ]
-    .filter((part): part is string => Boolean(part))
-    .join(" · ");
-  return line.length > 0 ? line : null;
 }
 
 /**
@@ -1172,60 +911,39 @@ function AccountRow({
   readonly source: HarnessSourceDescriptor | null;
   readonly unavailableReason: string | null;
 }) {
-  const status = profile.enabled
-    ? aiEngineStatus(environment, catalog, unavailableReason, source?.modelSettings === true)
-    : {
-        detail: "Turned off. Threads that use it keep it selected but cannot run.",
-        label: "Off",
-        tone: "chip--warn",
-      };
-  const connection = catalog ? observedAccountConnection(catalog.connections) : null;
-  const name = accountDisplayName({
-    accountLabel: connection?.accountLabel,
+  const account = aiEngineAccountRow({
+    catalog,
     engineName,
-    name: profile.name,
+    environment,
+    profile,
+    source,
+    unavailableReason,
   });
-  // A model server is known by its address, whether it takes a key, and the
-  // engine that talks to it — it is listed with the server, not the engine.
-  const server = isModelServerSource(source);
-  const accountLine = server
-    ? [
-        // A server named for its address need not say the address twice.
-        connection?.label !== undefined && connection.label !== profile.name
-          ? connection.label
-          : null,
-        connection?.authKind === "api-key" ? "API key" : null,
-        `Runs with ${engineName}`,
-      ]
-        .filter((part): part is string => part !== null)
-        .join(" · ")
-    : aiEngineAccountLine(connection, source, Date.now(), name === connection?.accountLabel);
-  const ready = status.tone === "chip--ok";
-  // The Sign in button says all there is to say about an account that has one.
-  const signInOffered =
-    catalog?.status === "authentication-required" && catalog.setupMethods.length > 0;
-  const line = ready ? (accountLine ?? status.detail) : signInOffered ? null : status.detail;
   return (
     <SettingsRow
       action={action}
       className={`settings-account settings-ai-engine-row${confirming ? " is-confirming" : ""}`}
       detail={
         confirming ??
-        (line !== null || connection ? (
+        (account.line !== null || account.connection ? (
           <span className="settings-account__facts">
-            {line !== null ? <span className="settings-account__line">{line}</span> : null}
-            {connection && source?.quota === "windows" ? (
-              <UsageMeter connection={connection} />
+            {account.line !== null ? (
+              <span className="settings-account__line">{account.line}</span>
+            ) : null}
+            {account.connection && source?.quota === "windows" ? (
+              <UsageMeter connection={account.connection} />
             ) : null}
           </span>
         ) : undefined)
       }
-      icon={server ? "server" : "user"}
+      icon={account.server ? "server" : "user"}
       title={
         <>
-          {name}
+          {account.name}
           {profile.isDefault ? <span className="chip chip--accent">Default</span> : null}
-          {ready ? null : <span className={`chip ${status.tone}`}>{status.label}</span>}
+          {account.status ? (
+            <span className={`chip chip--${account.status.tone}`}>{account.status.label}</span>
+          ) : null}
         </>
       }
     />
@@ -1374,54 +1092,4 @@ function environmentStatusLabel(environment: EnvironmentSummary): string {
 function environmentStatus(environment: EnvironmentSummary): DeploymentStatus {
   if (environment.connected) return "ready";
   return "offline";
-}
-
-function aiEngineStatus(
-  environment: EnvironmentSummary | null,
-  catalog: HarnessCatalog | undefined,
-  unavailableReason: string | null = null,
-  modelSettings = false,
-): { detail: string; label: string; tone: string } {
-  if (!environment?.connected) {
-    return { detail: "This work location is offline", label: "Offline", tone: "chip--bad" };
-  }
-  // The Runner cannot run this engine here at all, so it reports no catalog for
-  // the account and the only thing worth saying is its own sentence.
-  if (unavailableReason !== null) {
-    return { detail: unavailableReason, label: "Needs attention", tone: "chip--bad" };
-  }
-  // The server answered, but a ready catalog with nothing runnable is not ready.
-  if (catalog?.status === "ready" && !catalog.models.some((model) => !model.unavailableReason)) {
-    return modelSettings
-      ? {
-          detail: catalog.models.some((model) => model.needsContextWindow)
-            ? "Tell Opensteer each model’s context size to start using it."
-            : (catalog.models[0]?.unavailableReason ?? "None of its models can run"),
-          label: "Needs setup",
-          tone: "chip--warn",
-        }
-      : {
-          detail: catalog.models[0]?.unavailableReason ?? "None of its models can run",
-          label: "Needs attention",
-          tone: "chip--bad",
-        };
-  }
-  if (catalog?.status === "ready") {
-    return { detail: catalog.detail ?? "Ready to run", label: "Ready", tone: "chip--ok" };
-  }
-  if (catalog?.status === "preparing") {
-    return { detail: catalog.detail, label: "Preparing", tone: "chip--warn" };
-  }
-  if (catalog?.status === "authentication-required") {
-    return { detail: catalog.detail, label: "Sign in required", tone: "chip--warn" };
-  }
-  return {
-    detail: catalog?.detail ?? "Checking this AI engine",
-    label:
-      catalog?.status === "unavailable" || catalog?.status === "error"
-        ? "Needs attention"
-        : "Starting",
-    tone:
-      catalog?.status === "unavailable" || catalog?.status === "error" ? "chip--bad" : "chip--warn",
-  };
 }

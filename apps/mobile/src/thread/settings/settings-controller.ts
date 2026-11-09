@@ -58,10 +58,20 @@ export interface AccountRow {
   readonly selected: boolean;
   readonly exhausted: boolean;
   readonly action: {
-    readonly kind: "choose-model" | "refresh" | "blocked";
+    readonly kind: "choose-model" | "sign-in" | "refresh" | "blocked";
     readonly reason: string;
   };
 }
+
+/** Sign-in where this account offers one; otherwise look again, as Cursor's CLI signs in on the computer. */
+export function accountRecovery(placement: ThreadPlacementOption): "sign-in" | "refresh" {
+  return placement.availability === "authentication-required" &&
+    placement.harnessAuthenticationAllowed &&
+    placement.setupAvailable
+    ? "sign-in"
+    : "refresh";
+}
+
 export type ThreadModelPicker = ReturnType<typeof buildThreadModelPicker>;
 export interface ThreadModelPickerInput {
   readonly placements: readonly ThreadPlacementOption[];
@@ -115,7 +125,7 @@ export function buildThreadModelPicker(input: ThreadModelPickerInput) {
         ? "choose-model"
         : row.placement.availability === "authentication-required" &&
             row.placement.harnessAuthenticationAllowed
-          ? "refresh"
+          ? accountRecovery(row.placement)
           : "blocked",
       reason: row.placement.detail,
     },

@@ -271,6 +271,63 @@ describe("Expo engine/account/model journeys", () => {
     expect(access).not.toHaveBeenCalled();
   });
 
+  it("opens sign-in on a signed-out account that offers one", async () => {
+    await mount();
+    const begin = vi.fn(async (_command: { readonly type: string }) => ({
+      authentication: { status: "not-started" },
+      environmentStatus: "connected",
+      type: "harness.authentication.begin",
+    }));
+    Object.assign(mobile.hostClient!, {
+      dispatch: begin,
+      refresh: async () => undefined,
+      rpc: {
+        "harness.authentication.get": async () => ({
+          authentication: { status: "not-started" },
+          environmentStatus: "connected",
+        }),
+      },
+    });
+    await act(async () =>
+      move({
+        ...snapshot,
+        environments: snapshot.environments.map((environment) => ({
+          ...environment,
+          harnessCatalogs: environment.harnessCatalogs.map((catalog) =>
+            catalog.harnessInstanceId === second.harnessInstanceId
+              ? {
+                  connections: [],
+                  detail: "Sign in required",
+                  driverKind: catalog.driverKind,
+                  harnessInstanceId: catalog.harnessInstanceId,
+                  models: [],
+                  setupMethods: [
+                    { kind: "device-code", label: "Sign in", methodId: "device-code" },
+                  ],
+                  status: "authentication-required",
+                }
+              : catalog,
+          ),
+        })),
+      } as HostSnapshot),
+    );
+    await act(async () =>
+      document.querySelector<HTMLButtonElement>('[aria-label="This conversation"]')!.click(),
+    );
+    await press("Codex 2");
+    expect(document.querySelector('[aria-label="Sign in to Codex"]')).not.toBeNull();
+    await vi.waitFor(
+      () =>
+        expect(begin, "the sheet never began signing that account in").toHaveBeenCalledWith(
+          expect.objectContaining({
+            harnessInstanceId: second.harnessInstanceId,
+            type: "harness.authentication.begin",
+          }),
+        ),
+      { timeout: 2_000 },
+    );
+  });
+
   it("lets the Voice Thread change Codex account, with no engine to switch to", async () => {
     await mount();
     await act(async () => move({ ...snapshot, voiceThreadId: original.id }));
