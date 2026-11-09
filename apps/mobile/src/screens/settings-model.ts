@@ -436,7 +436,8 @@ export interface ThisIphoneSettings {
   readonly selectedDeploymentId: string;
 }
 
-const computerSymbols: Readonly<Record<ComputerGlyph, ComputerSymbol>> = {
+/** Each computer's shape as the symbol it is drawn with. */
+export const computerSymbols: Readonly<Record<ComputerGlyph, ComputerSymbol>> = {
   compact: "macmini",
   computer: "desktopcomputer",
   desktop: "desktopcomputer",

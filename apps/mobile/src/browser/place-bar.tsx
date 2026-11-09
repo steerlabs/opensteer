@@ -7,15 +7,17 @@ import { ToolbarButton } from "./toolbar.js";
 interface PlaceBar {
   /** Ask and who is here, as the screen around the place built it. */
   readonly ask: ReactNode;
+  /** What the conversation the place was opened from is doing, while there is anything to say. */
+  readonly status: ReactNode;
   /** The system's vertical bar holds the native Back and Ask, so the place's bar leaves them out. */
   readonly verticalBar: boolean;
 }
 
-const PlaceBarContext = createContext<PlaceBar>({ ask: null, verticalBar: false });
+const PlaceBarContext = createContext<PlaceBar>({ ask: null, status: null, verticalBar: false });
 
 export function PlaceBarProvider(props: PlaceBar & { readonly children: ReactNode }): ReactNode {
-  const { ask, children, verticalBar } = props;
-  const value = useMemo(() => ({ ask, verticalBar }), [ask, verticalBar]);
+  const { ask, children, status, verticalBar } = props;
+  const value = useMemo(() => ({ ask, status, verticalBar }), [ask, status, verticalBar]);
   return <PlaceBarContext.Provider value={value}>{children}</PlaceBarContext.Provider>;
 }
 
@@ -67,4 +69,9 @@ export function ToolbarLeave(): ReactNode {
 export function ToolbarAsk(): ReactNode {
   const { ask, verticalBar } = useContext(PlaceBarContext);
   return verticalBar ? null : ask;
+}
+
+/** The status row the screen around the place built, or null. */
+export function usePlaceBarStatus(): ReactNode {
+  return useContext(PlaceBarContext).status;
 }
