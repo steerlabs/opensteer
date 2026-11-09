@@ -6563,7 +6563,7 @@ function watchFrameEnvelope(
 }
 
 function publicProfile(record: BrowserProfileRecord): BrowserProfile {
-  return { id: record.id, name: record.name };
+  return { homeRunnerId: null, id: record.id, name: record.name };
 }
 
 function publicSession(record: BrowserSessionRecord): HostedBrowserSession {

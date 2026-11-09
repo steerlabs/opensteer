@@ -1022,8 +1022,13 @@ export const browserViewerCloseCodes = {
   accessEnded: 4003,
 } as const;
 
-/** A profile is portable identity state. It is not owned by any execution location. */
+/**
+ * A profile lives on one computer, its home, chosen when it is made and never
+ * changed: its sign-ins exist only there. Null for a profile from before homes
+ * that has not been opened yet, and from a Host older than this field.
+ */
 export const BrowserProfileSchema = z.object({
+  homeRunnerId: RunnerIdSchema.nullable().default(null),
   id: BrowserProfileIdSchema,
   name: z.string().min(1).max(120),
 });
@@ -1662,6 +1667,8 @@ export const CreateBrowserProfileGrantResponseSchema = z.object({
 export const BrowserProfileNameSchema = z.string().trim().min(1).max(120);
 
 export const CreateBrowserProfileBodySchema = z.strictObject({
+  /** Left out only when exactly one computer could hold the profile. */
+  homeRunnerId: RunnerIdSchema.optional(),
   name: BrowserProfileNameSchema,
 });
 

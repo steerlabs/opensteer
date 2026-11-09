@@ -6923,7 +6923,7 @@ describe("HttpHostClient hosted browser", () => {
       const browser: HostedBrowserBootstrap = {
         available: true,
         placements: [],
-        profiles: [{ id: profileId, name: "Profile" }],
+        profiles: [{ homeRunnerId: null, id: profileId, name: "Profile" }],
         profileGrants: [
           {
             id: createId("browserProfileGrant"),
@@ -7037,7 +7037,7 @@ describe("HttpHostClient hosted browser", () => {
     const browser: HostedBrowserBootstrap = {
       available: true,
       placements: [],
-      profiles: [{ id: profileId, name: "Brex" }],
+      profiles: [{ homeRunnerId: null, id: profileId, name: "Brex" }],
       // Main reaches the owner's profiles without grant rows; viewing never needs one.
       profileGrants: [],
       sessions: [
@@ -7200,7 +7200,7 @@ describe("HttpHostClient hosted browser", () => {
           runtimeId: "runtime-1",
         },
       ],
-      profiles: [{ id: profileId, name: "Default browser" }],
+      profiles: [{ homeRunnerId: null, id: profileId, name: "Default browser" }],
       sessions: [],
     };
     const fetch = vi.fn(async (input: string | URL | Request) => {
@@ -7374,7 +7374,7 @@ describe("HttpHostClient hosted browser", () => {
               },
             ],
             profileGrants: [],
-            profiles: [{ id: profileId, name: "Default browser" }],
+            profiles: [{ homeRunnerId: null, id: profileId, name: "Default browser" }],
             sessions: [
               {
                 access: "read-write",
@@ -7462,7 +7462,7 @@ describe("HttpHostClient hosted browser", () => {
               },
             ],
             profileGrants: [],
-            profiles: [{ id: profileId, name: "Default browser" }],
+            profiles: [{ homeRunnerId: null, id: profileId, name: "Default browser" }],
             sessions: [
               {
                 access: "read-write",
@@ -7689,7 +7689,7 @@ describe("HttpHostClient hosted browser", () => {
               },
             ],
             profileGrants: [],
-            profiles: [{ id: profileId, name: "Default browser" }],
+            profiles: [{ homeRunnerId: null, id: profileId, name: "Default browser" }],
             sessions: [
               {
                 access: "read-write",
@@ -7841,7 +7841,7 @@ describe("HttpHostClient browser profiles", () => {
     let browser: HostedBrowserBootstrap = {
       available: false,
       placements: [],
-      profiles: [{ id: profileId, name: "Work" }],
+      profiles: [{ homeRunnerId: null, id: profileId, name: "Work" }],
       profileGrants: [],
       sessions: [],
     };
@@ -9830,7 +9830,7 @@ describe("HttpHostClient command projection", () => {
                 runtimeId: "runtime-1",
               },
             ],
-            profiles: [{ id: profileId, name: "Default browser" }],
+            profiles: [{ homeRunnerId: null, id: profileId, name: "Default browser" }],
             sessions: [],
           }),
         );
@@ -10606,7 +10606,7 @@ describe("HttpHostClient lifecycle", () => {
               },
             ],
             profileGrants: [],
-            profiles: [{ id: profileId, name: "Default browser" }],
+            profiles: [{ homeRunnerId: null, id: profileId, name: "Default browser" }],
             sessions: [
               {
                 access: "read-write",
