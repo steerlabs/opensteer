@@ -5,7 +5,7 @@ import type {
   HarnessAuthenticationView,
 } from "@opensteer/client/host";
 import type { HarnessSetupMethod, HostApiCommandInput } from "@opensteer/protocol";
-import { copyText } from "../copy-text.js";
+import { copyText } from "@opensteer/shared/clipboard";
 import { actionErrorMessage } from "../ui-utils.js";
 import { Dialog } from "./dialog.js";
 import { ExternalLink } from "./external-link.js";
@@ -16,8 +16,8 @@ const copiedDwellMs = 2_000;
 /** What adding an account takes: the account to create and how to talk about it. */
 export interface AddHarnessAccount {
   readonly continued?: boolean;
-  /** The way in to use first, when the caller already knows it. */
-  readonly methodKinds?: readonly HarnessSetupMethod["kind"][];
+  /** The way in to use, when the caller already knows it. */
+  readonly selectMethod?: (methods: readonly HarnessSetupMethod[]) => string | undefined;
   readonly request: Extract<HostApiCommandInput, { readonly type: "harness.create" }>;
   readonly title: string;
   readonly whereLabel: string;

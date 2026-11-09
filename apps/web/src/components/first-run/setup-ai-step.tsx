@@ -36,6 +36,7 @@ export function SetupAiStep({
   readonly progress: { readonly count: number; readonly index: number };
 }) {
   const {
+    addHarnessAccount,
     desktopBridge,
     executionPreferences,
     hostClient,
@@ -73,12 +74,7 @@ export function SetupAiStep({
   const [error, setError] = useState<string | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
   const [installing, setInstalling] = useState<readonly string[]>([]);
-  const plans = usePlanAccount({
-    client: hostClient,
-    harnesses: snapshot.harnesses,
-    onAuthenticate: openHarnessAuthentication,
-    placements,
-  });
+  const addPlan = usePlanAccount({ addHarnessAccount, harnesses: snapshot.harnesses });
 
   // Coming back to this window is when a sign-in finished in a browser or a
   // CLI installed in a terminal should show: look again then, and only then.
@@ -107,7 +103,7 @@ export function SetupAiStep({
         action.methodId ? { methodId: action.methodId } : undefined,
       );
     } else if (action.kind === "add") {
-      plans.add(plan, action.environmentId);
+      addPlan(plan, action.environmentId, main?.name ?? "this computer");
     } else if (action.kind === "get") {
       setInstalling((current) => (current.includes(plan.id) ? current : [...current, plan.id]));
       void openExternal(desktopBridge, action.installUrl);
@@ -133,10 +129,6 @@ export function SetupAiStep({
 
   const rowView = (row: SetupAiRow) => (
     <AiRow
-      adding={row.kind === "plan" && plans.adding === row.plan.id}
-      error={
-        row.kind === "plan" && plans.error?.planId === row.plan.id ? plans.error.message : null
-      }
       installing={row.kind === "plan" && installing.includes(row.plan.id)}
       key={row.key}
       onAct={() => act(row)}
@@ -222,16 +214,12 @@ export function SetupAiStep({
 }
 
 function AiRow({
-  adding,
-  error,
   installing,
   onAct,
   onChoose,
   row,
   selected,
 }: {
-  readonly adding: boolean;
-  readonly error: string | null;
   readonly installing: boolean;
   readonly onAct: () => void;
   readonly onChoose: (placement: ThreadPlacementOption) => void;
@@ -261,22 +249,7 @@ function AiRow({
   }
   const { action, plan } = row;
   const icon = <PlanMark plan={plan} />;
-  if (error) {
-    return (
-      <SetupRow
-        detail={<span role="alert">{error}</span>}
-        icon={icon}
-        title={plan.name}
-        tone="attention"
-        trailing={
-          <button className="btn btn--small" onClick={onAct} type="button">
-            Try again
-          </button>
-        }
-      />
-    );
-  }
-  if (action.kind === "working" || adding) {
+  if (action.kind === "working") {
     return (
       <SetupRow
         detail="Getting ready…"

@@ -16,6 +16,7 @@ import { AiEngineSettings } from "./ai-engines.js";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const roots: Root[] = [];
+const onAddAccount = vi.fn();
 const clients: MockHostClient[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) act(() => root.unmount());
@@ -56,6 +57,7 @@ async function mount() {
             client={client}
             environments={environments}
             harnesses={snapshot.harnesses}
+            onAddAccount={onAddAccount}
             onAuthenticate={onAuthenticate}
             onError={onError}
             placements={transform ? placements.map(transform) : placements}
@@ -76,128 +78,15 @@ function addButton(container: HTMLElement): HTMLButtonElement {
   return button;
 }
 
-async function click(button: HTMLButtonElement) {
-  await act(async () => button.click());
-}
-
-describe("account creation", () => {
-  it("retries the exact request after a committed creation loses its response", async () => {
-    const { client, container, onError, render } = await mount();
-    const dispatch = client.dispatch.bind(client);
-    let committed: HostApiCommandOutput | undefined;
-    const spy = vi.spyOn(client, "dispatch").mockImplementation(async (command) => {
-      if (committed) return committed;
-      committed = await dispatch(command);
-      throw new Error("Response lost");
+describe("adding an account", () => {
+  it("hands one press to the sign-in dialog, named with the next free name", async () => {
+    const { container } = await mount();
+    await act(async () => addButton(container).click());
+    expect(onAddAccount).toHaveBeenCalledTimes(1);
+    expect(onAddAccount.mock.calls[0]![0]).toMatchObject({
+      request: { driverKind: "codex", name: "Codex 3", stateKind: "isolated", type: "harness.create" },
+      title: "Add Codex account",
     });
-    await click(addButton(container));
-    expect(onError).toHaveBeenCalledWith("Response lost");
-    // Bootstrap can observe the committed account before the retry succeeds.
-    await render();
-    await click(addButton(container));
-    expect(spy).toHaveBeenCalledTimes(2);
-    expect(spy.mock.calls[1]?.[0]).toEqual(spy.mock.calls[0]?.[0]);
-  });
-
-  it("keeps creation retries separate when the work location changes", async () => {
-    const { client, container, render } = await mount();
-    const main = client.getSnapshot().environments[0];
-    if (!main) throw new Error("Main environment missing");
-    const second = {
-      ...main,
-      id: "env_22222222-2222-4222-8222-222222222222",
-      name: "Second computer",
-    };
-    await render(undefined, [main, second]);
-    const spy = vi.spyOn(client, "dispatch").mockRejectedValue(new Error("Connection lost"));
-    await click(addButton(container));
-    const location = container.querySelector<HTMLInputElement>(`input[value="${second.id}"]`);
-    if (!location) throw new Error("Second location missing");
-    await act(async () => location.click());
-    await click(addButton(container));
-    const firstRequest = spy.mock.calls[0]?.[0];
-    const secondRequest = spy.mock.calls[1]?.[0];
-    expect(firstRequest).toMatchObject({ environmentId: main.id });
-    expect(secondRequest).toMatchObject({ environmentId: second.id });
-    if (firstRequest?.type !== "harness.create" || secondRequest?.type !== "harness.create") {
-      throw new Error("Expected two harness creation requests");
-    }
-    expect(secondRequest.idempotencyKey).not.toBe(firstRequest.idempotencyKey);
-  });
-
-  it("keeps one creation active through preparation, then opens its sign-in once", async () => {
-    const { client, container, onAuthenticate, onError, render } = await mount();
-    const before = new Set(client.getSnapshot().harnesses.map(({ id }) => id));
-    await click(addButton(container));
-    const created = client.getSnapshot().harnesses.find(({ id }) => !before.has(id));
-    if (!created) throw new Error("Expected created account");
-    expect(addButton(container).disabled).toBe(true);
-    await render((placement) =>
-      placement.harnessInstanceId === created.id
-        ? { ...placement, available: false, availability: "preparing", setupAvailable: false }
-        : placement,
-    );
-    expect(addButton(container).disabled).toBe(true);
-    expect(onError).not.toHaveBeenCalled();
-    expect(onAuthenticate).not.toHaveBeenCalled();
-    await render((placement) =>
-      placement.harnessInstanceId === created.id
-        ? {
-            ...placement,
-            available: false,
-            availability: "authentication-required",
-            setupAvailable: true,
-          }
-        : placement,
-    );
-    expect(onAuthenticate).toHaveBeenCalledTimes(1);
-    expect(onAuthenticate.mock.calls[0]?.[0].harnessInstanceId).toBe(created.id);
-    expect(addButton(container).disabled).toBe(false);
-  });
-
-  it("lets the user leave preparation without deleting the account or opening a late dialog", async () => {
-    const { client, container, onAuthenticate, render } = await mount();
-    await click(addButton(container));
-    const count = client.getSnapshot().harnesses.length;
-    const later = [...container.querySelectorAll("button")].find(
-      (button) => button.textContent === "Sign in later",
-    );
-    if (!later) throw new Error("Sign in later button missing");
-    await click(later);
-    await render((placement) => ({
-      ...placement,
-      available: false,
-      availability: "authentication-required",
-      setupAvailable: true,
-    }));
-    expect(onAuthenticate).not.toHaveBeenCalled();
-    expect(client.getSnapshot().harnesses).toHaveLength(count);
-    expect(addButton(container).disabled).toBe(false);
-  });
-
-  it("ends pending sign-in when its computer disconnects and does not reopen it on reconnect", async () => {
-    const { client, container, onAuthenticate, onError, render } = await mount();
-    await click(addButton(container));
-    const environments = client.getSnapshot().environments;
-    const count = client.getSnapshot().harnesses.length;
-    await render(
-      undefined,
-      environments.map((environment) => ({ ...environment, connected: false })),
-    );
-    expect(onError).toHaveBeenCalledTimes(1);
-    expect(onAuthenticate).not.toHaveBeenCalled();
-    await render(
-      (placement) => ({
-        ...placement,
-        available: false,
-        availability: "authentication-required",
-        setupAvailable: true,
-      }),
-      environments,
-    );
-    expect(onAuthenticate).not.toHaveBeenCalled();
-    expect(client.getSnapshot().harnesses).toHaveLength(count);
-    expect(addButton(container).disabled).toBe(false);
   });
 });
 
@@ -268,6 +157,7 @@ describe("a model server account", () => {
               client={client}
               environments={environments}
               harnesses={harnesses}
+              onAddAccount={onAddAccount}
               onAuthenticate={onAuthenticate}
               onError={onError}
               placements={threadPlacementOptions(environments, harnesses)}
@@ -387,7 +277,6 @@ describe("a model server account", () => {
     const { row } = await mountServer(onlyModels(needsContext("qwen3:8b")));
     expect(row.querySelector(".chip--ok")).toBeNull();
     expect(row.textContent).toContain("Needs setup");
-    expect(row.textContent).toContain("1 needs a context size");
     // An account that already needed setup is not interrupted on render.
     expect(document.querySelector('[role="dialog"]')).toBeNull();
     await act(async () => buttonIn(row, "Set up models").click());
@@ -400,7 +289,7 @@ describe("a model server account", () => {
 
   it("leaves a model only the server can fix to the models list, without a nudge", async () => {
     const { row } = await mountServer(addModels(notLoaded));
-    expect(row.textContent).toContain("Ready");
+    expect(row.querySelector(".chip")).toBeNull();
     expect(row.textContent).not.toContain("context size");
     expect(labels(row)).not.toContain("Set up models");
     await openMenuItem(row, "Models");

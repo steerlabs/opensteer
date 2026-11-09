@@ -351,6 +351,7 @@ export function startAccountSignIn({
   client,
   target,
   errorMessage,
+  selectMethod,
   now = Date.now,
   sleep,
 }: {
@@ -359,6 +360,8 @@ export function startAccountSignIn({
   };
   readonly target: AccountSignInTarget;
   readonly errorMessage: (cause: unknown) => string;
+  /** The way in to start with. Answering nothing means this account offers none the caller can use. */
+  readonly selectMethod?: (methods: readonly HarnessSetupMethod[]) => string | undefined;
   readonly now?: () => number;
   readonly sleep?: (ms: number) => Promise<void>;
 }): AccountSignInFlow {
@@ -542,10 +545,15 @@ export function startAccountSignIn({
     } else if (!environment?.harnessAuthenticationAllowed || current.setupMethods.length === 0) {
       fail(new Error(current.detail ?? "This account does not offer sign-in on this computer."));
     } else {
-      const method =
-        current.setupMethods.find((item) => item.kind === "local-import") ??
-        current.setupMethods[0]!;
-      begin(current.setupMethods, method.methodId);
+      const methodId = selectMethod
+        ? selectMethod(current.setupMethods)
+        : (current.setupMethods.find((item) => item.kind === "local-import") ??
+            current.setupMethods[0]!).methodId;
+      if (methodId === undefined) {
+        fail(new Error(current.detail ?? "This account does not offer that sign-in here."));
+      } else {
+        begin(current.setupMethods, methodId);
+      }
     }
   };
   const prepare = async () => {
@@ -591,6 +599,11 @@ export function startAccountSignIn({
   const cancel = () => {
     if (cancelPromise) return cancelPromise;
     if (state.kind === "done" || state.kind === "cancelled") return Promise.resolve();
+    // The sign-in already succeeded: closing stops the wait for its details, not the account.
+    if (state.kind === "finishing") {
+      publish({ kind: "done", harnessInstanceId: state.harnessInstanceId, accountLabel: null });
+      return Promise.resolve();
+    }
     cancelling = true;
     generation += 1;
     stopWatching();

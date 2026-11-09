@@ -296,6 +296,7 @@ function useShellContext(): ShellContext {
     localExecutionAction: null,
     localExecutionError: null,
     localExecutionStatus: null,
+    addHarnessAccount: null,
     openHarnessAuthentication: null,
     refreshHarnessCatalog: async () => undefined,
     leaveSettings: noOp,

@@ -202,6 +202,7 @@ function shellContext(input: {
     localExecutionError: null,
     localExecutionStatus:
       input.localRunnerId === null ? null : localStatus(RunnerIdSchema.parse(input.localRunnerId)),
+    addHarnessAccount: null,
     openHarnessAuthentication: null,
     refreshHarnessCatalog: async () => undefined,
     leaveSettings: noOp,

@@ -938,6 +938,7 @@ function pageElement(input: PageInput) {
     localExecutionAction: null,
     localExecutionError: null,
     localExecutionStatus: input.localExecutionStatus ?? null,
+    addHarnessAccount: null,
     openHarnessAuthentication: null,
     refreshHarnessCatalog: async () => undefined,
     leaveSettings: noOp,

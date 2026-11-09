@@ -4,7 +4,9 @@ import { VoiceContext } from "@opensteer/client/react";
 import { VoiceAsk } from "./voice-ask.js";
 import { VoiceIsland, useVoiceRuntime } from "./voice.js";
 import { useVoiceCursor } from "./voice-cursor.js";
-import { handlePersonShow, personShowFromCall } from "@opensteer/client/host";
+import {
+  startAccountSignIn,
+  type AccountSignInFlow, handlePersonShow, personShowFromCall } from "@opensteer/client/host";
 import type { VoiceController } from "@opensteer/client/voice";
 import { useDictation } from "./dictation.js";
 import {
@@ -118,10 +120,7 @@ import {
   type PaneSizeRange,
 } from "./pane-resize-handle.js";
 import { WorkspaceSharingDialog } from "./workspace-sharing-dialog.js";
-import {
-  HarnessAuthenticationDialog,
-  type HarnessAuthenticationOptions,
-} from "./harness-authentication-dialog.js";
+import { AccountSignInDialog, type AddHarnessAccount } from "./account-sign-in-dialog.js";
 import { useToast } from "./toast.js";
 
 export interface ShellContext {
@@ -189,8 +188,9 @@ export interface ShellContext {
    * ignore the rejection and let the page render that error.
    */
   performLocalExecutionAction: (action: LocalExecutionAction) => Promise<void>;
+  addHarnessAccount: ((input: AddHarnessAccount) => void) | null;
   openHarnessAuthentication:
-    ((placement: ThreadPlacementOption, options?: HarnessAuthenticationOptions) => void) | null;
+    ((placement: ThreadPlacementOption, options?: { readonly methodId?: string }) => void) | null;
   refreshHarnessCatalog: (placement: ThreadPlacementOption) => Promise<void>;
   openSharing: (workspaceId: string) => void;
   placements: ThreadPlacementOption[];
@@ -456,9 +456,12 @@ export function AppShell({
   const [newWorkspaceOpen, setNewWorkspaceOpen] = useState(false);
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
   const [newWorkspaceError, setNewWorkspaceError] = useState<string | null>(null);
-  const [harnessAuthentication, setHarnessAuthentication] = useState<{
-    readonly methodId: string | null;
-    readonly placement: ThreadPlacementOption;
+  const [accountSignIn, setAccountSignIn] = useState<{
+    readonly added: boolean;
+    readonly continued: boolean;
+    readonly flow: AccountSignInFlow;
+    readonly title: string;
+    readonly whereLabel: string;
   } | null>(null);
   const [localExecutionStatus, setLocalExecutionStatus] =
     useState<DesktopLocalExecutionStatus | null>(null);
@@ -661,7 +664,7 @@ export function AppShell({
   // A sign-in that cannot start says so. Dropping the request silently left the
   // reader clicking a control that appeared to do nothing.
   const openHarnessAuthentication = useCallback(
-    (placement: ThreadPlacementOption, options?: HarnessAuthenticationOptions) => {
+    (placement: ThreadPlacementOption, options?: { readonly methodId?: string }) => {
       if (!harnessAuthenticationEnvironmentIds.has(placement.environmentId)) {
         toast.error(`${placement.whereLabel} does not allow signing AI engines in from here.`);
         return;
@@ -672,9 +675,45 @@ export function AppShell({
         );
         return;
       }
-      setHarnessAuthentication({ methodId: options?.methodId ?? null, placement });
+      const methodId = options?.methodId;
+      setAccountSignIn({
+        added: false,
+        continued: false,
+        flow: startAccountSignIn({
+          client: hostClient,
+          errorMessage: actionErrorMessage,
+          target: {
+            environmentId: placement.environmentId,
+            harnessInstanceId: placement.harnessInstanceId,
+            kind: "existing",
+          },
+          ...(methodId ? { selectMethod: () => methodId } : {}),
+        }),
+        title:
+          placement.source?.kind === "compatible-endpoint"
+            ? `Connect ${placement.accountName}`
+            : `Sign in to ${placement.engineName}`,
+        whereLabel: placement.whereLabel,
+      });
     },
-    [harnessAuthenticationEnvironmentIds, toast],
+    [harnessAuthenticationEnvironmentIds, hostClient, toast],
+  );
+  const addHarnessAccount = useCallback(
+    ({ continued = false, request, selectMethod, title, whereLabel }: AddHarnessAccount) => {
+      setAccountSignIn({
+        added: true,
+        continued,
+        flow: startAccountSignIn({
+          client: hostClient,
+          errorMessage: actionErrorMessage,
+          target: { kind: "create", request },
+          ...(selectMethod ? { selectMethod } : {}),
+        }),
+        title,
+        whereLabel,
+      });
+    },
+    [hostClient],
   );
   const refreshHarnessCatalog = useCallback(
     async (placement: ThreadPlacementOption) => {
@@ -692,7 +731,32 @@ export function AppShell({
     },
     [hostClient, reportActionError],
   );
-  const closeHarnessAuthentication = useCallback(() => setHarnessAuthentication(null), []);
+  const closeAccountSignIn = useCallback(
+    (flow: AccountSignInFlow) => {
+      setAccountSignIn(null);
+      // The dialog is gone by now, so a cleanup that failed has only a toast left to say so.
+      void flow.cancel().then(() => {
+        const state = flow.getState();
+        if (state.kind === "failed") toast.error(state.message);
+      });
+    },
+    [toast],
+  );
+  const finishAccountSignIn = useCallback(
+    (label: string | null, added: boolean) => {
+      setAccountSignIn(null);
+      toast.success(
+        added
+          ? label
+            ? `Added ${label}`
+            : "Account added"
+          : label
+            ? `Signed in as ${label}`
+            : "Signed in",
+      );
+    },
+    [toast],
+  );
 
   const createThreadAndSend = useCallback(
     async (
@@ -951,6 +1015,7 @@ export function AppShell({
       leaveSettings: nav.leaveSettings,
       openMobileNavigation,
       openNewWorkspace,
+      addHarnessAccount: harnessAuthenticationEnvironmentIds.size > 0 ? addHarnessAccount : null,
       openHarnessAuthentication:
         harnessAuthenticationEnvironmentIds.size > 0 ? openHarnessAuthentication : null,
       performLocalExecutionAction,
@@ -982,6 +1047,7 @@ export function AppShell({
       viewedLocalExecutionStatus,
       openMobileNavigation,
       openNewWorkspace,
+      addHarnessAccount,
       openHarnessAuthentication,
       openSharing,
       placements,
@@ -999,7 +1065,7 @@ export function AppShell({
     navigationDrawerElement,
   );
   const overlayOpen =
-    harnessAuthentication !== null ||
+    accountSignIn !== null ||
     sharingWorkspace !== null ||
     (!fullWindow && mobileNavigation && mobileNavigationOpen);
   const shellClassName = setupMode
@@ -1180,13 +1246,14 @@ export function AppShell({
                   onCreate={(input) => void createWorkspace(input)}
                 />
               ) : null}
-              {harnessAuthentication ? (
-                <HarnessAuthenticationDialog
-                  client={hostClient}
-                  initialMethodId={harnessAuthentication.methodId}
-                  placement={harnessAuthentication.placement}
-                  onClose={closeHarnessAuthentication}
-                  onReady={closeHarnessAuthentication}
+              {accountSignIn ? (
+                <AccountSignInDialog
+                  continued={accountSignIn.continued}
+                  flow={accountSignIn.flow}
+                  onClose={() => closeAccountSignIn(accountSignIn.flow)}
+                  onDone={(state) => finishAccountSignIn(state.accountLabel, accountSignIn.added)}
+                  title={accountSignIn.title}
+                  whereLabel={accountSignIn.whereLabel}
                 />
               ) : null}
               {shortcutsOpen ? (

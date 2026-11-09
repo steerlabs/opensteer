@@ -224,6 +224,7 @@ function renderSettings(overrides: Partial<ShellContext>, path: string): string 
     localExecutionAction: null,
     localExecutionError: null,
     localExecutionStatus: null,
+    addHarnessAccount: null,
     openHarnessAuthentication: null,
     refreshHarnessCatalog: async () => undefined,
     leaveSettings: noOp,
