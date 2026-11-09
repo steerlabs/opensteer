@@ -14,20 +14,21 @@ import { useHostSelector } from "@opensteer/client/react";
 import { CHAT_THREAD_TITLE } from "@opensteer/core";
 import * as Haptics from "expo-haptics";
 import { memo, useCallback, useMemo, useState, type ReactNode } from "react";
-import { ActivityIndicator, Pressable, StyleSheet, View } from "react-native";
-import { color, controlFontScaleLimit, material, radius, space } from "../theme.js";
+import { StyleSheet, View } from "react-native";
+import { color, controlFontScaleLimit, space } from "../theme.js";
+import { AnswerPill } from "../thread/answer-pill.js";
 import { taskHeading } from "../thread/task-status.js";
-import { GlassSurface } from "../ui/glass.js";
+import { ComposerAction } from "../ui/composer-action.js";
 import { AppText } from "../ui/primitives.js";
 import { AgentMarks } from "./agent-marks.js";
-import { statusPillHeight, statusRowHeight } from "./place-foot.js";
+import { statusRowHeight } from "./place-foot.js";
 
 /**
  * What a place says of the conversation it was opened from, under the page:
- * that conversation's mark and live line with Stop, or that it needs the
- * person with Answer, which goes back to it. Stop is the composer's own, a
- * single press with the same target; it stands on the row's far side, clear of
- * the bar under it, and its touch never reaches past its own pill toward the bar.
+ * that conversation's mark and live line with the composer's own Stop, or
+ * that it needs the person with the Request's own Answer, which goes back to
+ * that conversation to answer it there. Each control is the bar's 44 points
+ * on the row's far side, and the row is no taller than they are.
  */
 export const PlaceStatusRow = memo(function PlaceStatusRow(props: {
   /** The conversation's mark; null while this reader cannot name it. */
@@ -36,7 +37,7 @@ export const PlaceStatusRow = memo(function PlaceStatusRow(props: {
   readonly onAnswer: () => void;
   readonly onStop: () => Promise<void>;
   /** What Stop ends here, as the composer says it. */
-  readonly stops: StopWords;
+  readonly stopLabel: string;
   readonly watch: ThreadWatch;
 }): ReactNode {
   const { watch } = props;
@@ -60,11 +61,8 @@ export const PlaceStatusRow = memo(function PlaceStatusRow(props: {
       );
   };
   const needsYou = watch.kind === "needs-you";
-  const words = needsYou
-    ? "Needs you"
-    : pressed?.failed === true
-      ? "Couldn’t stop. Try again."
-      : watch.words;
+  const failed = pressed?.failed === true;
+  const words = needsYou ? "Needs you" : failed ? "Couldn’t stop" : watch.words;
   const who = props.agent?.title ?? null;
   return (
     <View style={styles.row} testID="place-status">
@@ -80,111 +78,54 @@ export const PlaceStatusRow = memo(function PlaceStatusRow(props: {
           numberOfLines={1}
           role={needsYou ? "secondaryMedium" : "secondary"}
           style={[styles.words, needsYou && styles.needsYou]}
-          tone={pressed?.failed === true ? "danger" : "soft"}
+          tone={failed ? "danger" : "soft"}
         >
           {words}
         </AppText>
       </View>
       {needsYou ? (
-        <Pressable
+        <AnswerPill
           accessibilityHint="Returns to the conversation, where you answer it"
-          accessibilityLabel="Answer"
-          accessibilityRole="button"
-          hitSlop={pillSlop}
+          label="Answer"
           onPress={props.onAnswer}
-          style={({ pressed: down }) => [styles.pill, styles.answer, down && styles.answerDown]}
-        >
-          <AppText
-            maxFontSizeMultiplier={controlFontScaleLimit}
-            numberOfLines={1}
-            role="secondaryMedium"
-            style={styles.answerText}
-          >
-            Answer
-          </AppText>
-        </Pressable>
+          tone="primary"
+        />
       ) : (
-        <Pressable
-          accessibilityLabel={props.stops.label}
-          accessibilityRole="button"
-          accessibilityState={{ busy, disabled: busy || !props.canRespond }}
-          disabled={busy || !props.canRespond}
-          hitSlop={pillSlop}
+        <ComposerAction
+          busy={busy}
+          disabled={!props.canRespond}
+          kind="stop"
+          label={props.stopLabel}
           onPress={onStop}
-          style={({ pressed: down }) => [down && styles.down]}
-        >
-          <GlassSurface
-            interactive
-            shape="capsule"
-            style={[styles.pill, !props.canRespond && styles.unavailable]}
-          >
-            {busy ? (
-              <ActivityIndicator color={color.muted} size="small" />
-            ) : (
-              <View style={styles.square} />
-            )}
-            <AppText
-              maxFontSizeMultiplier={controlFontScaleLimit}
-              numberOfLines={1}
-              role="secondaryMedium"
-            >
-              {props.stops.word}
-            </AppText>
-          </GlassSurface>
-        </Pressable>
+        />
       )}
     </View>
   );
 });
 
-export interface StopWords {
-  readonly label: string;
-  /** The label's verb, all the pill has room for. */
-  readonly word: string;
-}
-
 /**
  * The composer's Stop, in its words: in a conversation it ends only the reply
  * under way; an open task it leaves paused; anything else, its run.
  */
-export function stopWords(stops: "reply" | "task" | "run"): StopWords {
+export function stopLabel(stops: "reply" | "task" | "run"): string {
   return stops === "reply"
-    ? { label: "Stop the reply", word: "Stop" }
+    ? "Stop the reply"
     : stops === "task"
-      ? { label: "Pause this task", word: "Pause" }
-      : { label: "Stop this run", word: "Stop" };
+      ? "Pause this task"
+      : "Stop this run";
 }
 
-/** A pill's touch reaches its sides and up into the row's air, never down toward the bar. */
-const pillSlop = { bottom: 0, left: space[6], right: space[6], top: space[4] };
-
 const styles = StyleSheet.create({
-  answer: { ...material.accent, paddingHorizontal: space[16] },
-  answerDown: { ...material.accentPressed },
-  answerText: { color: color.inkOnEmber },
-  down: { opacity: 0.7 },
   needsYou: { color: color.amber },
-  pill: {
-    alignItems: "center",
-    borderRadius: radius.full,
-    flexDirection: "row",
-    gap: space[6],
-    height: statusPillHeight,
-    justifyContent: "center",
-    paddingEnd: space[14],
-    paddingStart: space[12],
-  },
+  // The bar's own inset, so the row's control stands over the bar's last one.
   row: {
     alignItems: "center",
     flexDirection: "row",
-    gap: space[12],
+    gap: space[8],
     height: statusRowHeight,
     paddingHorizontal: space[12],
   },
   said: { alignItems: "center", flex: 1, flexDirection: "row", gap: space[8], minWidth: 0 },
-  // The composer's Stop, drawn small: its red square.
-  square: { backgroundColor: color.red, borderRadius: 2, height: 10, width: 10 },
-  unavailable: { opacity: 0.4 },
   words: { flexShrink: 1 },
 });
 
@@ -230,16 +171,16 @@ export function usePlaceStatusRow(props: {
   );
   const watch = useHostSelector(hostClient, selectWatch, sameWatch);
   const selectStops = useCallback(
-    (snapshot: HostSnapshot): StopWords => {
+    (snapshot: HostSnapshot): string => {
       const thread = snapshot.threads.find(({ id }) => id === threadId);
-      if (thread === undefined || thread.role === "conversation") return stopWords("reply");
-      return stopWords(
+      if (thread === undefined || thread.role === "conversation") return stopLabel("reply");
+      return stopLabel(
         threadId !== null && taskHeading(snapshot, threadId)?.open === true ? "task" : "run",
       );
     },
     [threadId],
   );
-  const stops = useHostSelector(hostClient, selectStops, sameStopWords);
+  const stops = useHostSelector(hostClient, selectStops);
   const canRespond = useHostSelector(hostClient, canRespondToRequests);
   const selectAgent = useCallback(
     (snapshot: HostSnapshot): PlaceAgent | null => {
@@ -274,7 +215,7 @@ export function usePlaceStatusRow(props: {
           canRespond={canRespond}
           onAnswer={answer}
           onStop={stop}
-          stops={stops}
+          stopLabel={stops}
           watch={watch}
         />
       ),
@@ -283,10 +224,6 @@ export function usePlaceStatusRow(props: {
 }
 
 const noEntries: readonly TranscriptEntry[] = [];
-
-function sameStopWords(left: StopWords, right: StopWords): boolean {
-  return left.label === right.label;
-}
 
 function samePlaceAgent(left: PlaceAgent | null, right: PlaceAgent | null): boolean {
   return samePlaceAgents(

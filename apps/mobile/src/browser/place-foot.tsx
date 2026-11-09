@@ -2,19 +2,18 @@ import type { VoiceSnapshot } from "@opensteer/client/voice";
 import { useEffect, type ReactNode } from "react";
 import { StyleSheet, View } from "react-native";
 import Animated, { useSharedValue, withTiming, type SharedValue } from "react-native-reanimated";
-import { space } from "../theme.js";
+import { space, touchTarget } from "../theme.js";
 import { appear, duration, exit } from "../ui/motion.js";
 import { VoiceDock } from "../voice/controls.js";
 import { useVoiceValue } from "../voice/use-voice-value.js";
 import { usePlaceBarStatus } from "./place-bar.js";
 
-/** The composer's pill height, inside the row's own air. */
-export const statusPillHeight = 34;
 /**
- * The row's whole height. It is fixed, words and pills alike being capped at
- * the controls' text scale, so the page can make room for it before it is drawn.
+ * The status row's whole height: its controls' touch target and no more. It is
+ * fixed, its words being capped at the controls' text scale, so the page can
+ * make room for it before it is drawn.
  */
-export const statusRowHeight = statusPillHeight + 2 * space[4];
+export const statusRowHeight = touchTarget;
 
 /**
  * Room for the status row at the foot of a place, eased in and out on the UI
