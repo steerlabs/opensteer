@@ -4,6 +4,9 @@ inputs:
   go:
     description: Install Go and restore compiler caches for Go consumers
     default: "true"
+  filters:
+    description: Space-separated pnpm workspace selectors; empty installs every workspace
+    default: ""
 outputs:
   go-cache-key:
     description: Source-qualified compiler cache key
@@ -60,4 +63,12 @@ runs:
         path: ${{ steps.store.outputs.path }}
         key: pnpm-${{ runner.os }}-${{ runner.arch }}-${{ steps.store.outputs.version }}-${{ hashFiles('pnpm-lock.yaml') }}
     - shell: bash
-      run: pnpm install --frozen-lockfile
+      env:
+        PNPM_FILTERS: ${{ inputs.filters }}
+      run: |
+        read -r -a filters <<< "$PNPM_FILTERS"
+        args=()
+        for filter in "${filters[@]}"; do
+          args+=(--filter "$filter")
+        done
+        pnpm install --frozen-lockfile "${args[@]}"
