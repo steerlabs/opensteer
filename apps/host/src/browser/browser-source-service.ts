@@ -548,7 +548,7 @@ export class BrowserSourceService {
     const receipt = await this.#store.getSignIn({ ownerId: input.ownerId, invocationId });
     if (receipt) return appliedOutcome(assertReceiptScope(receipt, target.sessionId, site));
     if (!target.live) return problem("session-closed", site, null);
-    if (!target.stateImport) return problem("runtime-outdated", site, null);
+    if (!target.stateImport) return problem(stateImportRefusal(target), site, null);
     const choice = await this.#chooseForOwner(
       input.ownerId,
       target.workspaceId,
@@ -592,6 +592,7 @@ export class BrowserSourceService {
         | "unsupported"
         | "session-closed"
         | "runtime-outdated"
+        | "main-browser-required"
         | "no-saved-card"
         | "passwords-off"
         | "passwords-not-set-up"
@@ -607,6 +608,7 @@ export class BrowserSourceService {
       });
     const target = await check();
     if (!target?.live) return unavailable("session-closed");
+    if (!target.main) return unavailable("main-browser-required");
     const availability = await this.#passwords.probeCard(input.ownerId);
     const current = await check();
     if (!current?.live || current.computer?.runnerId !== target.computer?.runnerId)
@@ -709,7 +711,7 @@ export class BrowserSourceService {
       sessionId,
     });
     const joined =
-      input.loginFill && liveTarget?.live && liveTarget.signIn
+      input.loginFill && liveTarget?.live && liveTarget.main && liveTarget.signIn
         ? this.#passwords.join({ ...input, arrivedAt, site })
         : null;
     if (joined) return joined;
@@ -721,6 +723,8 @@ export class BrowserSourceService {
       originatingRunId: input.runId,
     });
     if (prior?.kind === "browser.password-sign-in") {
+      if (liveTarget && !liveTarget.main)
+        return { status: "unavailable", reason: "main-browser-required", site };
       if (!input.loginFill) return { status: "unavailable", reason: "runtime-outdated", site };
       if (
         prior.payload.kind !== "browser.password-sign-in" ||
@@ -745,7 +749,7 @@ export class BrowserSourceService {
     // A Runner that cannot fill logins never starts Passwords; Chrome still
     // serves it exactly as before.
     const probePasswords = async () =>
-      target.signIn && input.loginFill
+      target.main && target.signIn && input.loginFill
         ? await this.#passwords.probe(input.ownerId, site)
         : "unavailable";
     const passwords = grant ? "unavailable" : await probePasswords();
@@ -765,7 +769,10 @@ export class BrowserSourceService {
     ) {
       return { status: "unavailable", reason: "no-saved-login", site };
     }
-    if (!target.stateImport) return { reason: "runtime-outdated", site, status: "unavailable" };
+    if (!target.main && !grant && !candidates.some((candidate) => candidate.status === "available"))
+      return { reason: "main-browser-required", site, status: "unavailable" };
+    if (!target.stateImport)
+      return { reason: stateImportRefusal(target), site, status: "unavailable" };
     if (!this.#admitCall(input.runId, sessionId, site)) {
       return { reason: "rate-limited", site, status: "unavailable" };
     }
@@ -1195,7 +1202,7 @@ export class BrowserSourceService {
       return problem("session-closed", site, null);
     };
     if (!target?.live || target.workspaceId !== request.targetWorkspaceId) return closed();
-    if (!target.stateImport) return problem("runtime-outdated", site, null);
+    if (!target.stateImport) return problem(stateImportRefusal(target), site, null);
     if (!this.#isConnected(source.id)) return problem("chrome-offline", site, source.name);
     const delivered = await this.#deliver({
       actor: "request",
@@ -1850,12 +1857,21 @@ function agentResult(delivery: Delivery, site: string): AgentBrowserSignInResult
     case "too-large":
     case "session-closed":
     case "runtime-outdated":
+    case "unsupported-operation":
     case "not-allowed":
       return { reason: delivery.problem, site, status: "unavailable" };
   }
 }
 
 /** Receipts are keyed by UUID; callers' identities are namespaced before hashing. */
+function stateImportRefusal(
+  target: BrowserSignInTarget,
+): "unsupported-operation" | "runtime-outdated" {
+  return target.engine === "wkwebview" || target.engine === "android-webview"
+    ? "unsupported-operation"
+    : "runtime-outdated";
+}
+
 function invocationUuid(identity: string): string {
   const bytes = createHash("sha256").update(`browser-sign-in:${identity}`).digest();
   bytes[6] = (bytes[6]! & 0x0f) | 0x40;

@@ -522,6 +522,7 @@ describeStore("MCP administration", (it) => {
     storeFixture: f,
   }) => {
     const run = await f.createRunFixture("admin-browser");
+    const browserRunnerId = await f.enrollBrowserRunner(run.userId, "Browser");
     const project = await f.createProjectWorkspace(run.userId, "admin-browser-target");
     const profile = await f.store.createBrowserProfile({
       ownerId: run.userId,
@@ -564,7 +565,13 @@ describeStore("MCP administration", (it) => {
     );
     try {
       const listed = await agent.call("browser_profile_write", { action: "list" });
-      expect(listed.profiles).toEqual([{ id: profile.id, name: "Private" }]);
+      expect(listed.profiles).toEqual([
+        {
+          id: profile.id,
+          name: "Private",
+          home: { runnerId: browserRunnerId, name: "Browser", reachable: false },
+        },
+      ]);
       expect(JSON.stringify(listed)).not.toContain("storageInstanceId");
       await retryAfterPersonChange(
         agent,
@@ -655,6 +662,7 @@ describeStore("MCP administration", (it) => {
     storeFixture: f,
   }) => {
     const run = await f.createRunFixture("browser-delete-retry");
+    await f.enrollBrowserRunner(run.userId, "Browser");
     const profile = await f.store.createBrowserProfile({
       ownerId: run.userId,
       name: "Old",
@@ -779,6 +787,46 @@ describeStore("MCP administration", (it) => {
   }) => {
     const run = await f.createRunFixture("admin-computer");
     await f.database
+      .updateTable("runners")
+      .set({ allowedModules: sql`'["agents","browser"]'::jsonb` })
+      .where("id", "=", run.runnerId)
+      .execute();
+    const profile = await f.store.createBrowserProfile({
+      ownerId: run.userId,
+      name: "Removed browser",
+      homeRunnerId: run.runnerId,
+      idempotencyKey: "removed-profile",
+    });
+    await f.store.bindBrowserProfile({
+      version: 1,
+      deploymentId: (await f.store.getDeployment())!.id,
+      runnerId: run.runnerId,
+      profileId: profile.id,
+      bindingId: randomUUID(),
+      storageInstanceId: randomUUID(),
+      engine: "chromium",
+    });
+    const session = await f.store.createBrowserSession({
+      id: `bsn_${randomUUID()}` as import("@opensteer/protocol").BrowserSessionId,
+      runnerId: run.runnerId,
+      profileId: profile.id,
+      workspaceId: run.workspace.id,
+      placementKey: `runner:${run.runnerId}:browser`,
+      origin: "workspace",
+      runtimeId: "browser",
+    });
+    const rt = realtime(f.store, run.userId);
+    const browser = new BrowserService({
+      hostOrigin: new URL("https://host.test"),
+      repository: f.store,
+      signer: {} as never,
+      onSessionsChanged: () => undefined,
+      onWorkspaceEvent: () => undefined,
+      onProfilesChanged: (ownerId, workspaceId) =>
+        rt.hub.publishBrowserSessionsChanged(workspaceId, [ownerId], "browser.profiles"),
+    });
+    const abandonSession = vi.spyOn(browser, "abandonSession");
+    await f.database
       .updateTable("users")
       .set({ instanceRole: "administrator" })
       .where("id", "=", run.userId)
@@ -803,9 +851,9 @@ describeStore("MCP administration", (it) => {
       },
       runners: { revoke: revoked },
       channels: { relay: { forget: vi.fn() } },
-      browser: { abandonSession: vi.fn() },
+      browser,
       integrations: { continuations: { notify: vi.fn() } },
-      realtime: { broadcast: vi.fn(), publish: vi.fn() },
+      realtime: rt.hub,
     };
     const agent = mcp(deps as unknown as AdministrationDependencies, run.userId);
     try {
@@ -823,9 +871,18 @@ describeStore("MCP administration", (it) => {
         { machineId: createId("runner") },
       );
       expect(revoked).toHaveBeenCalledOnce();
+      expect(abandonSession).toHaveBeenCalledWith(session.id);
+      expect(await f.store.getBrowserProfile(profile.id, run.userId)).toBeNull();
+      expect(rt.messages).toContainEqual({
+        type: "host.browser-sessions-changed",
+        workspaceId: run.workspace.id,
+      });
+      expect(rt.messages).toContainEqual({ type: "host.machines.changed" });
       expect(await f.store.effectiveMachineOwner(run.runnerId)).toBeNull();
     } finally {
       await agent.service.close();
+      await browser.close();
+      rt.release();
     }
   });
   it("pauses/resumes existing channels and revokes a binding without changing its policies", async ({
@@ -930,6 +987,7 @@ describeStore("MCP administration", (it) => {
       pluginId,
       actorUserId: run.userId,
     });
+    await f.enrollBrowserRunner(run.userId, "Browser");
     const profile = await f.store.createBrowserProfile({
       ownerId: run.userId,
       name: "Research",

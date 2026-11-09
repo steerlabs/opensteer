@@ -22,6 +22,7 @@ import {
   RequestKindSchema,
   RequestStatusSchema,
   RunSchema,
+  RunnerIdSchema,
   ThreadIdSchema,
   TriggerOccurrenceIdSchema,
   ThreadSchema,
@@ -289,6 +290,7 @@ export const RequestCreationOutputSchema = z.object({
 export const BrowserProfileOutputSchema = z.object({
   id: BrowserProfileIdSchema,
   name: z.string(),
+  home: z.object({ runnerId: RunnerIdSchema, name: z.string(), reachable: z.boolean() }).nullable(),
   grantId: z.string().optional(),
   access: z.enum(["read", "read-write"]).optional(),
 });
@@ -520,6 +522,7 @@ export const UseCardOutputSchema = z.discriminatedUnion("status", [
     reason: z.enum([
       "unsupported",
       "runtime-outdated",
+      "main-browser-required",
       "session-closed",
       "not-allowed",
       "rate-limited",

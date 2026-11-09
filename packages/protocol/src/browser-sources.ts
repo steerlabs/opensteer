@@ -111,6 +111,7 @@ export const BrowserSignInProblemSchema = z.union([
     "choose-source",
     "session-closed",
     "runtime-outdated",
+    "unsupported-operation",
     "not-allowed",
     "site-removed",
   ]),
@@ -152,6 +153,8 @@ export const BrowserSignInUnavailableReasonSchema = z.enum([
   "too-large",
   "session-closed",
   "runtime-outdated",
+  "unsupported-operation",
+  "main-browser-required",
   "rate-limited",
   /** A loopback site or this Deployment's own site; see `BrowserSignInProblemSchema`. */
   "not-allowed",

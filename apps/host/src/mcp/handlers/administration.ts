@@ -393,9 +393,9 @@ export class AdministrationToolHandlers {
   }
   async browser_list(c: ToolCall<"browser_profile_write">) {
     await this.authorizeList(c.caller);
-    const { store, browserSources } = this.service.dependencies;
+    const { store, browser, browserSources } = this.service.dependencies;
     const [profiles, grants, sources] = await Promise.all([
-      store.listBrowserProfiles(c.caller.userId),
+      browser.listProfiles(c.caller.userId),
       store.listActiveBrowserProfileGrants(c.caller.userId),
       browserSources.listState({ ownerId: c.caller.userId }),
     ]);

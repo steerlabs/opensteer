@@ -21,6 +21,7 @@ Requests:
 
 const routingGuide = `Routing:
 - Websites: read opensteer:browser and use Browser Harness.
+- A browser profile opens only on its home device; name an offline home without switching identity. Saved passwords and cards fill websites only in the main computer's browser. Downloads stay on the browser's device.
 - Services: read opensteer:integrations; discover with \`integration_search\`, then call.
 - Mac/phone interfaces: read opensteer:computer-use and use \`computer\`, never in place of a missing service integration unless the person named that device.
 - Reminders, schedules, webhooks or watches: read opensteer:triggers before writing code.

@@ -1,6 +1,6 @@
 # Browser sessions
 
-A named profile keeps Chromium-native browser data on its owning computer. Its live sessions share
+A named profile keeps native browser data on its home device. Its live sessions share
 an engine host; each Guest session has its own ephemeral browser. Sessions partition page access
 even when they share a profile, and a session's identity is fixed at creation. Checks:
 [browser-and-passwords](../.agents/skills/browser-and-passwords/SKILL.md).
@@ -119,8 +119,13 @@ Deletion revokes grants and schedules erasure on the owning computer (`pending-c
 offline). Electron keeps a Session until exit, so an opened profile stays `pending-restart` until
 the next start erases it: never move or delete a live Session directory to finish sooner.
 
-A profile belongs permanently to its computer, storage root and engine. The first signed attach
-records the binding and publishes empty native files atomically; an engine-owned directory is never
+Removing a computer deletes its homed profiles in the same transaction. Their storage erasure is
+terminal `unconfirmed`, not pending work and never a claim that files were erased. The removed device
+clears its own storage when it learns of removal; a phone also clears it at sign-out.
+
+A profile's home computer is chosen at creation and never changes. Legacy unplaced server profiles
+adopt an eligible home on first open. Offline homes refuse opens by name, without falling back.
+The first signed attach binds its storage root and engine on that home and publishes empty native files atomically; an engine-owned directory is never
 moved. The Host records initialization so missing established storage is distinguishable from
 never-created storage. A missing directory, root identity, sentinel or cookie mirror refuses to open
 and keeps what remains: never an empty replacement, another computer or Guest. There is no portable
@@ -155,6 +160,8 @@ without its signing inputs, like web and mobile, tells the person to use a Mac.
 
 ## Chrome sign-ins
 
+Chrome sign-in import is the one explicit, person-started exception to sign-ins never moving between
+devices. It requires the target browser's state-import ability; phone browsers do not support it.
 After a person connects Chrome with the [extension](../apps/browser-extension/README.md), each
 sign-in copies one site's current cookies into one live session; nothing syncs. Public suffixes and
 bare intranet names are refused because they would cover every tenant, and
