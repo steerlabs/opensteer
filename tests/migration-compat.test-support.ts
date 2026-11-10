@@ -14,6 +14,7 @@ export async function runMigrationPhase(
     readonly receipt?: string;
     readonly control?: "break-column" | "timeout";
     readonly signal?: AbortSignal;
+    readonly deploymentKind?: "personal" | "server";
   } = {},
 ) {
   const interrupted = new AbortController();
@@ -32,6 +33,7 @@ export async function runMigrationPhase(
         url,
         options.receipt ?? "",
         options.control ?? "",
+        options.deploymentKind ?? "server",
       ],
       {
         cwd: root,

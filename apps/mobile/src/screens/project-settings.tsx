@@ -36,6 +36,12 @@ import { WorkspaceMark } from "../ui/workspace-mark.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 import { ProjectHealthNotice } from "./project-health.js";
 import { memberInitials } from "./project-settings-model.js";
+import { useTeam } from "@opensteer/client/react";
+import {
+  TeamMarker,
+  TeamProjectSection,
+  useTeamProjectAccess,
+} from "../team/team-project-section.js";
 
 export type ProjectSettingsScreenProps = StaticScreenProps<{
   readonly deploymentId: string;
@@ -69,11 +75,27 @@ export function ProjectSettingsScreen(props: ProjectSettingsScreenProps): ReactN
   const hostClient = useAttachedHost(deploymentId);
   if (hostClient === null) return <DeploymentGate deploymentId={deploymentId} />;
   return (
-    <ProjectSettings
+    <ProjectSettingsForViewer
       deploymentId={deploymentId}
       hostClient={hostClient}
-      key={`${deploymentId}:${workspaceId}`}
       workspaceId={workspaceId}
+    />
+  );
+}
+
+/** Remounts for whoever is signed in, so no team read survives a change of person. */
+function ProjectSettingsForViewer(props: {
+  readonly deploymentId: string;
+  readonly hostClient: HostClient;
+  readonly workspaceId: string;
+}): ReactNode {
+  const { identity } = useTeam(props.hostClient);
+  return (
+    <ProjectSettings
+      deploymentId={props.deploymentId}
+      hostClient={props.hostClient}
+      key={`${props.deploymentId}:${props.workspaceId}:${identity ?? ""}`}
+      workspaceId={props.workspaceId}
     />
   );
 }
@@ -94,9 +116,13 @@ function ProjectSettings(props: {
   const administrator = snapshot.user?.instanceRole === "administrator";
   const connected = canRespondToRequests(snapshot);
   const readable = project !== null && userId !== null;
+  const teamProject = snapshot.teamAdministrationAvailable === true;
+  const teamAccess = useTeamProjectAccess(hostClient, workspaceId);
+  const { summary } = useTeam(hostClient);
+  const teamName = summary?.team.name ?? "the team";
 
   const members = useHostRead(
-    readable
+    readable && !teamProject
       ? () => hostClient.rpc["workspace.members.list"]({ workspaceId }).then(unwrapRpcResult)
       : null,
     `members:${workspaceId}:${userId}`,
@@ -134,6 +160,39 @@ function ProjectSettings(props: {
     [deploymentId, navigation],
   );
 
+  if (project === null && teamProject) {
+    const view = teamAccess.data;
+    return (
+      <Screen edgeToEdge>
+        <ScrollView
+          contentContainerStyle={[styles.content, column, insets]}
+          contentInsetAdjustmentBehavior="automatic"
+        >
+          {view ? (
+            <View style={styles.identity}>
+              <WorkspaceMark color={view.project.color} icon={null} name={view.project.name} />
+              <View style={styles.grow}>
+                <AppText role="title">{view.project.name}</AppText>
+                <AppText role="secondary" tone="muted">
+                  {view.audience.myLevel
+                    ? `A shared project in ${teamName}.`
+                    : `A shared project in ${teamName}. You can see who is on it, not its chats or files.`}
+                </AppText>
+                <TeamMarker access={view} teamName={teamName} />
+              </View>
+            </View>
+          ) : null}
+          <TeamProjectSection
+            access={teamAccess}
+            deploymentId={deploymentId}
+            hostClient={hostClient}
+            viewerId={userId}
+          />
+        </ScrollView>
+      </Screen>
+    );
+  }
+
   if (project === null) {
     return (
       <Screen>
@@ -164,14 +223,20 @@ function ProjectSettings(props: {
             <AppText role="title">{project.name}</AppText>
             <AppText role="secondary" tone="muted">
               {[
-                project.machineName === null
-                  ? "Its folder is in Main."
-                  : `Its folder is in Main on ${project.machineName}.`,
-                owner
-                  ? "You own this project."
-                  : members.data === null
-                    ? null
-                    : "An owner decides who joins it and what it can use.",
+                teamProject
+                  ? summary
+                    ? `A shared project in ${teamName}.`
+                    : null
+                  : project.machineName === null
+                    ? "Its folder is in Main."
+                    : `Its folder is in Main on ${project.machineName}.`,
+                teamProject
+                  ? null
+                  : owner
+                    ? "You own this project."
+                    : members.data === null
+                      ? null
+                      : "An owner decides who joins it and what it can use.",
               ]
                 .filter(Boolean)
                 .join(" ")}
@@ -193,15 +258,26 @@ function ProjectSettings(props: {
           workspace={project}
         />
 
-        <PeopleSection
-          connected={connected}
-          hostClient={hostClient}
-          members={members}
-          owner={owner}
-          sharing={snapshot.workspaceSharingAvailable}
-          userId={userId}
-          workspace={project}
-        />
+        {teamAccess.data ? <TeamMarker access={teamAccess.data} teamName={teamName} /> : null}
+        {teamProject ? (
+          <TeamProjectSection
+            access={teamAccess}
+            deploymentId={deploymentId}
+            hostClient={hostClient}
+            viewerId={userId}
+          />
+        ) : null}
+        {teamProject ? null : (
+          <PeopleSection
+            connected={connected}
+            hostClient={hostClient}
+            members={members}
+            owner={owner}
+            sharing={snapshot.workspaceSharingAvailable}
+            userId={userId}
+            workspace={project}
+          />
+        )}
         <AccessSection
           destinations={destinations}
           grants={grants}

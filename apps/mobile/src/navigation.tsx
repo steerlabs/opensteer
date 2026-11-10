@@ -66,6 +66,15 @@ import { ThreadStepScreen } from "./screens/thread-step.js";
 import { ThreadScreen } from "./screens/thread.js";
 import { WorkspaceBrowserScreen } from "./screens/workspace-browser.js";
 import { SidebarShell } from "./sidebar/sidebar-shell.js";
+import {
+  TeamAddScreen,
+  TeamGroupScreen,
+  TeamGroupsScreen,
+  TeamInviteScreen,
+  TeamPeopleScreen,
+  TeamPersonScreen,
+  TeamProjectRuntimeScreen,
+} from "./team/team-screens.js";
 import { color } from "./theme.js";
 import { AroundScreen } from "./thread/around-sheet.js";
 import { QuietlyMovedScreen } from "./threads/quietly-moved-sheet.js";
@@ -347,6 +356,13 @@ const RootStack = createNativeStackNavigator({
       }),
     },
     SettingsGeneral: { screen: SettingsGeneralScreen, options: { title: "General" } },
+    TeamPeople: { screen: TeamPeopleScreen, options: { title: "People" } },
+    TeamPerson: { screen: TeamPersonScreen, options: { title: "Person" } },
+    TeamInvite: { screen: TeamInviteScreen, options: { title: "Invite" } },
+    TeamGroups: { screen: TeamGroupsScreen, options: { title: "Groups" } },
+    TeamGroup: { screen: TeamGroupScreen, options: { title: "Group" } },
+    TeamAdd: { screen: TeamAddScreen, options: { title: "Add" } },
+    TeamProjectRuntime: { screen: TeamProjectRuntimeScreen, options: { title: "How it runs" } },
     SettingsAccount: { screen: SettingsAccountScreen, options: { title: "Account" } },
     SettingsRemoteAccess: {
       screen: SettingsRemoteAccessScreen,
@@ -545,6 +561,18 @@ function destinationOptions(): NativeStackNavigationOptions {
 }
 
 type OpensteerRootParamList = {
+  readonly TeamPeople: { readonly deploymentId: string };
+  readonly TeamPerson: { readonly deploymentId: string; readonly userId: string };
+  readonly TeamInvite: { readonly deploymentId: string };
+  readonly TeamGroups: { readonly deploymentId: string };
+  readonly TeamGroup: { readonly deploymentId: string; readonly groupId: string };
+  readonly TeamAdd: {
+    readonly deploymentId: string;
+    readonly target: "project" | "group";
+    readonly id: string;
+    readonly level: "use" | "manage";
+  };
+  readonly TeamProjectRuntime: { readonly deploymentId: string; readonly workspaceId: string };
   readonly AddDeployment: undefined;
   readonly AddIphone: { readonly deploymentId: string };
   readonly AgentAuthorization: { readonly deploymentId: string; readonly requestId: string };

@@ -1,4 +1,5 @@
 import { AutomaticModelsViewSchema } from "./automatic-models.js";
+import { TeamCommandSchema, TeamCommandResultSchema, teamReadSchemas } from "./team-access.js";
 import { AutomaticModelConfigSchema, AutomaticModelConfigViewSchema } from "@opensteer/core";
 import {
   AgentConnectionSchema,
@@ -1208,6 +1209,7 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
 ]);
 
 const commandInputSchema = z.discriminatedUnion("type", [
+  ...TeamCommandSchema.options,
   SettingsPluginEnableCommandSchema,
   SettingsPluginPlacementCommandSchema,
   BrowserTabOpenCommandSchema,
@@ -1223,6 +1225,7 @@ const commandInputSchema = z.discriminatedUnion("type", [
 ]);
 
 const commandOutputSchema = z.discriminatedUnion("type", [
+  ...TeamCommandResultSchema.options,
   SettingsPluginEnableResultSchema,
   SettingsPluginPlacementResultSchema,
   WorkspaceTabActivateResultSchema,
@@ -1639,6 +1642,91 @@ export const hostApi = defineRpc({
     BrowserSourceInspectionSchema,
   ),
   "auth.config": declaration("GET", emptyInputSchema, IdentityConfigViewSchema),
+  "team.invitations.list": declaration(
+    "GET",
+    teamReadSchemas["team.invitations.list"].input,
+    teamReadSchemas["team.invitations.list"].output,
+  ),
+  "team.summary.get": declaration(
+    "GET",
+    teamReadSchemas["team.summary.get"].input,
+    teamReadSchemas["team.summary.get"].output,
+  ),
+  "team.people.list": declaration(
+    "GET",
+    teamReadSchemas["team.people.list"].input,
+    teamReadSchemas["team.people.list"].output,
+  ),
+  "team.member.get": declaration(
+    "GET",
+    teamReadSchemas["team.member.get"].input,
+    teamReadSchemas["team.member.get"].output,
+  ),
+  "team.directory.search": declaration(
+    "GET",
+    teamReadSchemas["team.directory.search"].input,
+    teamReadSchemas["team.directory.search"].output,
+  ),
+  "team.groups.list": declaration(
+    "GET",
+    teamReadSchemas["team.groups.list"].input,
+    teamReadSchemas["team.groups.list"].output,
+  ),
+  "team.group.get": declaration(
+    "GET",
+    teamReadSchemas["team.group.get"].input,
+    teamReadSchemas["team.group.get"].output,
+  ),
+  "team.project.access.get": declaration(
+    "GET",
+    teamReadSchemas["team.project.access.get"].input,
+    teamReadSchemas["team.project.access.get"].output,
+  ),
+  "team.access.explain": declaration(
+    "GET",
+    teamReadSchemas["team.access.explain"].input,
+    teamReadSchemas["team.access.explain"].output,
+  ),
+  "team.access.preview": declaration(
+    "POST",
+    teamReadSchemas["team.access.preview"].input,
+    teamReadSchemas["team.access.preview"].output,
+  ),
+  "team.member.preview": declaration(
+    "POST",
+    teamReadSchemas["team.member.preview"].input,
+    teamReadSchemas["team.member.preview"].output,
+  ),
+  "team.audit.list": declaration(
+    "GET",
+    teamReadSchemas["team.audit.list"].input,
+    teamReadSchemas["team.audit.list"].output,
+  ),
+  "team.project.settings.get": declaration(
+    "GET",
+    teamReadSchemas["team.project.settings.get"].input,
+    teamReadSchemas["team.project.settings.get"].output,
+  ),
+  "team.project.runtimeChoices": declaration(
+    "GET",
+    teamReadSchemas["team.project.runtimeChoices"].input,
+    teamReadSchemas["team.project.runtimeChoices"].output,
+  ),
+  "team.invitation.preview": declaration(
+    "GET",
+    teamReadSchemas["team.invitation.preview"].input,
+    teamReadSchemas["team.invitation.preview"].output,
+  ),
+  "team.invitation.exchange": declaration(
+    "POST",
+    teamReadSchemas["team.invitation.exchange"].input,
+    teamReadSchemas["team.invitation.exchange"].output,
+  ),
+  "team.invitation.accept": declaration(
+    "POST",
+    teamReadSchemas["team.invitation.accept"].input,
+    teamReadSchemas["team.invitation.accept"].output,
+  ),
   "auth.invitation.accept": declaration(
     "POST",
     emptyInputSchema,

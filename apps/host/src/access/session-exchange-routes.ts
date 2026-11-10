@@ -1,4 +1,4 @@
-import { isIP } from "node:net";
+import { anonymousClientAddress as sessionExchangeClientAddress } from "../identity/anonymous-client-address.js";
 import {
   AccountHostSessionGrantSchema,
   type AccountHostSessionClientSurface,
@@ -210,16 +210,6 @@ function unavailableArm(kind: SessionExchangeCredentialKind): OpensteerError {
 
 function armMismatch(): Error {
   return new Error("A session-exchange arm received a credential of another kind");
-}
-
-/** The rate-limit subject for an unauthenticated exchange, shared with the
- * browser form flow so both surfaces spend the same per-address budget. */
-function sessionExchangeClientAddress(request: FastifyRequest): string {
-  const cloudflareAddress = request.headers["cf-connecting-ip"];
-  if (typeof cloudflareAddress === "string" && isIP(cloudflareAddress) !== 0) {
-    return cloudflareAddress;
-  }
-  return isIP(request.ip) === 0 ? "unknown" : request.ip;
 }
 
 function mediaType(value: string | undefined): string {

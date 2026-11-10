@@ -10,6 +10,8 @@
  * ordered, and it refuses MERGE and data-modifying WITH, whose locks it cannot see.
  */
 export const databaseLockOrder = [
+  "advisory:access-writer",
+  "access_state",
   // Disjoint creation identities are reserved before any materialized authority.
   "advisory:identity",
   "advisory:adoption-proof",
@@ -85,9 +87,13 @@ export const databaseLockOrder = [
   "integration_servers",
   // Membership authority precedes placement and Thread mutation.
   "workspace_memberships",
+  "access_groups",
+  "access_group_members",
+  "access_entries",
   // Environment and profile fences prevent rebinding or catalog adoption across Thread work.
   "execution_environments",
   "harness_instances",
+  "project_runtime_settings",
   "workspace_skill_inventory",
   // Independent lifecycle rows retain their position when no observed edge constrains them.
   "request_continuations",
@@ -95,6 +101,7 @@ export const databaseLockOrder = [
   "workspace_events",
   "agent_notification_mutes",
   "auth_admissions",
+  "team_invitations",
   "auth_jwks",
   "auth_rate_limits",
   "auth_sso_providers",
@@ -266,6 +273,7 @@ export function advisoryLockResource(key: string, seed: number): string {
   if (seed === 2) return "advisory:adoption-proof";
   if (seed === 1) return "advisory:origin";
   if (seed !== 0) throw new Error(`Undeclared advisory hash seed: ${seed}`);
+  if (key === "opensteer:access-writer") return "advisory:access-writer";
   if (key === "deployment-main-runner-enrollment") return "advisory:runner-main";
   if (key.startsWith("sha256:") || /^[a-f0-9]{64}$/u.test(key)) return "advisory:runner-token";
   if (key.startsWith("dep_")) return "advisory:deployment";

@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
-import type { MarkColor, WorkspaceIconName } from "@opensteer/core";
-import { workspaceIconArt } from "@opensteer/client/host";
+import { markColors, type MarkColor, type WorkspaceIconName } from "@opensteer/core";
+import { markColorPaint, workspaceIconArt } from "@opensteer/client/host";
 import { Dialog } from "./dialog.js";
 import { WorkspaceIconPicker } from "./workspace-icon-picker.js";
 import { WorkspaceIconGlyph, WorkspaceOrb } from "./workspace-orb.js";
@@ -8,6 +8,8 @@ import { WorkspaceIconGlyph, WorkspaceOrb } from "./workspace-orb.js";
 export interface NewWorkspaceDialogProps {
   /** The Host can keep a Project's colour (`task-marks-v1`). */
   readonly colors?: boolean;
+  /** A team project has a name and a colour, and no icon. */
+  readonly team?: string | null;
   readonly creating: boolean;
   readonly error: string | null;
   readonly onClose: () => void;
@@ -25,6 +27,7 @@ export interface NewWorkspaceDialogProps {
  */
 export function NewWorkspaceDialog({
   colors = false,
+  team = null,
   creating,
   error,
   onClose,
@@ -43,15 +46,25 @@ export function NewWorkspaceDialog({
         onSubmit={(event) => {
           event.preventDefault();
           if (!submittable) return;
-          onCreate({ color: colors ? color : null, icon, name: name.trim() });
+          onCreate({
+            color: colors || team ? color : null,
+            icon: team ? null : icon,
+            name: name.trim(),
+          });
         }}
       >
         <p className="section__hint">
-          A folder inside Main with its own chat, tasks and instructions. It can use only what you
-          allow it.
+          {team
+            ? `A shared project in ${team}. You’ll manage it: choose who can use it and how it runs on ${team}’s computer.`
+            : "A folder inside Main with its own chat, tasks and instructions. It can use only what you allow it."}
         </p>
         <div className="new-project__identity">
-          <WorkspaceOrb color={colors ? color : null} icon={icon} name={name.trim()} size="large" />
+          <WorkspaceOrb
+            color={colors || team ? color : null}
+            icon={team ? null : icon}
+            name={name.trim()}
+            size="large"
+          />
           <label className="field new-project__name">
             <span className="field__label">Name</span>
             <input
@@ -65,36 +78,56 @@ export function NewWorkspaceDialog({
           </label>
         </div>
 
-        <div className="field">
-          <span className="field__label">{colors ? "Icon and colour" : "Icon"}</span>
-          <button
-            aria-expanded={choosingIcon}
-            className="btn btn--small new-workspace-icon"
-            onClick={() => setChoosingIcon(!choosingIcon)}
-            ref={iconButton}
-            type="button"
-          >
-            {icon ? <WorkspaceIconGlyph icon={icon} /> : null}
-            {icon ? workspaceIconArt[icon].label : "Initials"}
-          </button>
-          {/* Inline rather than a popover, so it stays inside the dialog's
+        {team ? (
+          <div className="field">
+            <span className="field__label">Colour</span>
+            <div className="workspace-icon-picker__colors" role="group" aria-label="Colour">
+              {markColors.map((next) => (
+                <button
+                  aria-label={next[0]!.toUpperCase() + next.slice(1)}
+                  aria-pressed={color === next}
+                  key={next}
+                  onClick={() => setColor(next)}
+                  style={{
+                    background: `linear-gradient(140deg, ${markColorPaint[next].tile.join(", ")})`,
+                  }}
+                  type="button"
+                />
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div className="field">
+            <span className="field__label">{colors ? "Icon and colour" : "Icon"}</span>
+            <button
+              aria-expanded={choosingIcon}
+              className="btn btn--small new-workspace-icon"
+              onClick={() => setChoosingIcon(!choosingIcon)}
+              ref={iconButton}
+              type="button"
+            >
+              {icon ? <WorkspaceIconGlyph icon={icon} /> : null}
+              {icon ? workspaceIconArt[icon].label : "Initials"}
+            </button>
+            {/* Inline rather than a popover, so it stays inside the dialog's
               focus trap and accessible subtree. */}
-          {choosingIcon ? (
-            <WorkspaceIconPicker
-              color={colors ? color : null}
-              name={name}
-              onChange={(next) => {
-                setIcon(next);
-                setChoosingIcon(false);
-                // The chosen option leaves with the picker; focus goes back to
-                // the field it belongs to rather than to the page.
-                iconButton.current?.focus();
-              }}
-              onColorChange={colors ? setColor : undefined}
-              value={icon}
-            />
-          ) : null}
-        </div>
+            {choosingIcon ? (
+              <WorkspaceIconPicker
+                color={colors ? color : null}
+                name={name}
+                onChange={(next) => {
+                  setIcon(next);
+                  setChoosingIcon(false);
+                  // The chosen option leaves with the picker; focus goes back to
+                  // the field it belongs to rather than to the page.
+                  iconButton.current?.focus();
+                }}
+                onColorChange={colors ? setColor : undefined}
+                value={icon}
+              />
+            ) : null}
+          </div>
+        )}
 
         {error ? (
           <p aria-live="polite" className="notice notice--warn">

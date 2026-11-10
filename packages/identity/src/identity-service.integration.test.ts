@@ -14,7 +14,12 @@ import {
   type AuthenticatedSession,
   type NativeOAuthClient,
 } from "@opensteer/core";
-import { OpensteerStore, createDatabase, migrateToLatest } from "@opensteer/database";
+import {
+  acceptTeamInvitation,
+  OpensteerStore,
+  createDatabase,
+  migrateToLatest,
+} from "@opensteer/database";
 import { sql } from "kysely";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { IdentityService } from "./identity-service.js";
@@ -521,6 +526,82 @@ integration("IdentityService", () => {
       });
       expect(account.accessToken).toMatch(/^(?:\$ba\$|[a-f0-9]{96,})/u);
       expect(account.accessToken).not.toContain(accessToken);
+      await new OpensteerStore(database).ensureDeployment({
+        canonicalOrigin: publicOrigin,
+        deploymentId: createId("deployment"),
+        hostInstanceId: createId("hostInstance"),
+        deploymentShape: { kind: "server", defaultWorkspaceBacking: "local-directory" },
+      });
+      await database.updateTable("deployments").set({ authorityModelVersion: 2 }).execute();
+      const selector = "oidc-team-selector-123456789";
+      const verifier = "v".repeat(43);
+      await database
+        .insertInto("teamInvitations")
+        .values({
+          id: crypto.randomUUID(),
+          selector,
+          tokenHash: createHash("sha256").update(verifier).digest("hex"),
+          intendedEmail: "oidc-user@example.com",
+          memberKind: "full",
+          createdBy: userId,
+          createdAt: new Date(),
+          expiresAt: new Date(Date.now() + 600_000),
+          commandId: "oidc-team",
+          requestFingerprint: "test",
+        })
+        .execute();
+      const exchange = await identity.exchangeTeamInvitation(
+        selector,
+        verifier,
+        new Headers({ origin: publicOrigin }),
+      );
+      const teamStarted = await identity.beginOidcSignIn({
+        headers: new Headers({ origin: publicOrigin, cookie: cookieHeader(exchange.headers) }),
+        providerId: "enterprise",
+        returnPath: `/join/${selector}`,
+      });
+      const teamAuthorization = new URL(teamStarted.data.redirectUrl);
+      expectedCodeChallenge = teamAuthorization.searchParams.get("code_challenge");
+      const teamCallback = await identity.handleOidcCallback(
+        new Request(
+          `${publicOrigin}/v1/auth/oidc/callback?code=fixture-code&state=${encodeURIComponent(teamAuthorization.searchParams.get("state") ?? "")}`,
+          {
+            headers: {
+              accept: "text/html",
+              cookie: `${cookieHeader(exchange.headers)}; ${cookieHeader(teamStarted.headers)}`,
+              "sec-fetch-mode": "navigate",
+            },
+          },
+        ),
+      );
+      expect(teamCallback.headers.get("location")).toBe(`${publicOrigin}/join/${selector}`);
+      const teamHeaders = new Headers({
+        cookie: `${cookieHeader(exchange.headers)}; ${sessionCookieHeader(teamCallback.headers)}`,
+      });
+      const teamSession = await identity.requireSession(teamHeaders);
+      const proof = await identity.teamInvitationAdmission(teamHeaders, teamSession);
+      expect(
+        await database
+          .selectFrom("authAdmissions")
+          .select("consumedAt")
+          .where("id", "=", proof.admissionId)
+          .executeTakeFirstOrThrow(),
+      ).toEqual({ consumedAt: null });
+      expect(
+        await database
+          .selectFrom("users")
+          .select("admittedAt")
+          .where("id", "=", userId)
+          .executeTakeFirstOrThrow(),
+      ).toEqual({ admittedAt: null });
+      await acceptTeamInvitation(database, proof);
+      expect(
+        await database
+          .selectFrom("users")
+          .select("admittedAt")
+          .where("id", "=", userId)
+          .executeTakeFirstOrThrow(),
+      ).toEqual({ admittedAt: expect.any(Date) });
     } finally {
       await new Promise<void>((resolve, reject) => {
         issuer.close((error) => (error ? reject(error) : resolve()));
@@ -1893,6 +1974,83 @@ integration("IdentityService", () => {
     ).resolves.toEqual({ instanceRole: "administrator" });
   });
 
+  it("keeps team admission separate from Workspace admission during signup", async () => {
+    const origin = "http://127.0.0.1:4310";
+    const owner = await identityService({ signupPolicy: "open" }).signUpPassword(
+      { displayName: "Owner", email: "owner@team.test", password: "correct horse battery staple" },
+      new Headers({ origin }),
+    );
+    await new OpensteerStore(database).ensureDeployment({
+      canonicalOrigin: origin,
+      deploymentId: createId("deployment"),
+      hostInstanceId: createId("hostInstance"),
+      deploymentShape: { kind: "server", defaultWorkspaceBacking: "local-directory" },
+    });
+    await database.updateTable("deployments").set({ authorityModelVersion: 2 }).execute();
+    const selector = "team-invitation-selector-12345";
+    const verifier = "v".repeat(43);
+    await database
+      .insertInto("teamInvitations")
+      .values({
+        id: crypto.randomUUID(),
+        selector,
+        tokenHash: createHash("sha256").update(verifier).digest("hex"),
+        intendedEmail: "invitee@team.test",
+        memberKind: "full",
+        createdBy: owner.data.session.user.id,
+        createdAt: new Date(),
+        expiresAt: new Date(Date.now() + 600_000),
+        commandId: "signup-team",
+        requestFingerprint: "test",
+      })
+      .execute();
+    const identity = identityService();
+    const exchange = await identity.exchangeTeamInvitation(
+      selector,
+      verifier,
+      new Headers({ origin }),
+    );
+    const headers = new Headers({ origin, cookie: cookieHeader(exchange.headers) });
+    await expect(
+      identity.signUpPassword(
+        {
+          displayName: "Wrong",
+          email: "wrong@team.test",
+          password: "correct horse battery staple",
+        },
+        headers,
+      ),
+    ).rejects.toThrow();
+    const signup = await identity.signUpPassword(
+      {
+        displayName: "Invitee",
+        email: "invitee@team.test",
+        password: "correct horse battery staple",
+      },
+      headers,
+    );
+    const authenticated = new Headers({
+      origin,
+      cookie: `${cookieHeader(exchange.headers)}; ${cookieHeader(signup.headers)}`,
+    });
+    await expect(identity.acceptInvitation(authenticated)).rejects.toThrow();
+    const proof = await identity.teamInvitationAdmission(authenticated, signup.data.session);
+    expect(
+      await database
+        .selectFrom("authAdmissions")
+        .select("consumedAt")
+        .where("id", "=", proof.admissionId)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ consumedAt: null });
+    expect(
+      await database
+        .selectFrom("users")
+        .select("admittedAt")
+        .where("id", "=", signup.data.session.user.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ admittedAt: null });
+  });
+
   it("admits an invite-only signup into the whole Workspace with a single-use link", async () => {
     const origin = "http://127.0.0.1:4310";
     const openIdentity = identityService({ signupPolicy: "open" });
@@ -2009,6 +2167,34 @@ integration("IdentityService", () => {
       new Headers({ cookie: admissionCookie, origin }),
     );
     const sessionCookie = cookieHeader(clientSignup.headers);
+    await expect(
+      inviteOnlyIdentity.teamInvitationAdmission(
+        new Headers({ cookie: `${admissionCookie}; ${sessionCookie}`, origin }),
+        clientSignup.data.session,
+      ),
+    ).rejects.toMatchObject({ reason: "invite-unavailable" });
+    const collisionId = crypto.randomUUID();
+    await database
+      .insertInto("teamInvitations")
+      .values({
+        id: collisionId,
+        selector: issued.invitation.selector,
+        tokenHash: createHash("sha256").update("other verifier").digest("hex"),
+        intendedEmail: clientSignup.data.session.user.email,
+        memberKind: "full",
+        createdBy: ownerId,
+        createdAt: new Date(),
+        expiresAt: new Date(Date.now() + 600_000),
+        commandId: "selector-collision",
+        requestFingerprint: "test",
+      })
+      .execute();
+    await expect(
+      inviteOnlyIdentity.acceptInvitation(
+        new Headers({ cookie: `${admissionCookie}; ${sessionCookie}`, origin }),
+      ),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await database.deleteFrom("teamInvitations").where("id", "=", collisionId).execute();
     const accepted = await inviteOnlyIdentity.acceptInvitation(
       new Headers({ cookie: `${admissionCookie}; ${sessionCookie}`, origin }),
     );

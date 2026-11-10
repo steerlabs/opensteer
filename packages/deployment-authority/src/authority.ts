@@ -309,6 +309,11 @@ export const HostCapabilitySchema = z.enum([
   "browser-profile-manage-v1",
   /** Clients can hold a voice call with its own agent through `voice.*`. */
   "voice-run-v1",
+  /**
+   * The Host serves the `team.*` administration reads and commands. Advertised
+   * only once a team server's whole access backend is enabled.
+   */
+  "team-administration-v1",
   /** The owner's own agents can query and append knowledge facts with the `sql` tool. */
   "knowledge-sql-v1",
 ]);

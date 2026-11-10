@@ -26,6 +26,9 @@ import { useHostRead } from "@opensteer/client/react";
 import { WorkspaceNotificationMute } from "./workspace-notification-mute.js";
 import { WorkspaceSharingDialog } from "./workspace-sharing-dialog.js";
 import { AreaLink, useAreaNavigate } from "./workspace/area-link.js";
+import { useProjectAccess } from "./team/project-access.js";
+import { useShellTeam } from "./team/team-ui.js";
+import { TeamProjectMarker, TeamProjectPage, TeamProjectSections } from "./team/team-project.js";
 
 /**
  * A Project's settings: who is in it, what it may use beyond its own folder,
@@ -36,13 +39,19 @@ import { AreaLink, useAreaNavigate } from "./workspace/area-link.js";
 export function ProjectSettingsRoute() {
   const { workspaceId } = useParams();
   const { hostClient, snapshot } = useShell();
+  const { identity } = useShellTeam();
   const workspace = snapshot.workspaces.find((candidate) => candidate.id === workspaceId) ?? null;
   const activeWorkspaceId = workspace?.id ?? null;
   useEffect(() => {
     if (activeWorkspaceId) hostClient.activateWorkspace(activeWorkspaceId);
   }, [activeWorkspaceId, hostClient]);
-  if (!workspace || workspace.kind !== "project") return <Navigate replace to="/projects" />;
-  return <ProjectSettings key={workspace.id} workspace={workspace} />;
+  if (!workspace || workspace.kind !== "project")
+    return snapshot.teamAdministrationAvailable && workspaceId ? (
+      <TeamProjectPage key={identity ?? "signed-out"} workspaceId={workspaceId} />
+    ) : (
+      <Navigate replace to="/projects" />
+    );
+  return <ProjectSettings key={`${workspace.id}:${identity ?? ""}`} workspace={workspace} />;
 }
 
 function ProjectSettings({ workspace }: { readonly workspace: WorkspaceSummary }) {
@@ -50,9 +59,16 @@ function ProjectSettings({ workspace }: { readonly workspace: WorkspaceSummary }
   const userId = snapshot.user?.id ?? null;
   const administrator = snapshot.user?.instanceRole === "administrator";
   const connected = canRespondToRequests(snapshot);
+  const teamProject = snapshot.teamAdministrationAvailable === true;
+  const teamAccess = useProjectAccess(workspace.id);
+  const teamName = useShellTeam().summary?.team.name ?? null;
   const members = useHostRead(
-    () =>
-      hostClient.rpc["workspace.members.list"]({ workspaceId: workspace.id }).then(unwrapRpcResult),
+    teamProject
+      ? null
+      : () =>
+          hostClient.rpc["workspace.members.list"]({ workspaceId: workspace.id }).then(
+            unwrapRpcResult,
+          ),
     `members:${workspace.id}`,
   );
   const owner =
@@ -76,16 +92,23 @@ function ProjectSettings({ workspace }: { readonly workspace: WorkspaceSummary }
             <WorkspaceIcon workspace={workspace} />
             <div className="project-settings__identity-copy">
               <h1 className="page__title">{workspace.name}</h1>
-              <p className="page__description">
-                {workspace.machineName
-                  ? `Its folder is in Main on ${workspace.machineName}.`
-                  : "Its folder is in Main."}{" "}
-                {owner
-                  ? "You own this project."
-                  : members.data
-                    ? "An owner of this project decides who joins it and what it can use."
-                    : null}
-              </p>
+              {teamProject ? (
+                teamName ? (
+                  <p className="page__description">A shared project in {teamName}.</p>
+                ) : null
+              ) : (
+                <p className="page__description">
+                  {workspace.machineName
+                    ? `Its folder is in Main on ${workspace.machineName}.`
+                    : "Its folder is in Main."}{" "}
+                  {owner
+                    ? "You own this project."
+                    : members.data
+                      ? "An owner of this project decides who joins it and what it can use."
+                      : null}
+                </p>
+              )}
+              {teamProject ? <TeamProjectMarker access={teamAccess} /> : null}
             </div>
           </div>
         </header>
@@ -113,13 +136,17 @@ function ProjectSettings({ workspace }: { readonly workspace: WorkspaceSummary }
           </div>
         ) : null}
 
-        <PeopleSection
-          connected={connected}
-          members={members.data?.members ?? null}
-          membersError={members.error}
-          onChanged={members.reload}
-          workspace={workspace}
-        />
+        {teamProject ? (
+          <TeamProjectSections access={teamAccess} />
+        ) : (
+          <PeopleSection
+            connected={connected}
+            members={members.data?.members ?? null}
+            membersError={members.error}
+            onChanged={members.reload}
+            workspace={workspace}
+          />
+        )}
         <AccessSection workspace={workspace} />
         <PluginsSection
           administrator={administrator}
