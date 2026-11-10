@@ -568,6 +568,7 @@ function watchTailText(value: Buffer): string {
 
 function watchEnvironment(active: ActiveWatch, eventFile: string): Record<string, string> {
   const environment = programEnvironment();
+  if ("projectTimeZone" in active.desired) environment.TZ = active.desired.projectTimeZone;
   environment.OPENSTEER_ACTIVATION_ID = active.desired.activationId;
   environment.OPENSTEER_CAPABILITIES_PATH = active.capabilitiesPath;
   environment.OPENSTEER_EVENT_PATH = eventFile;

@@ -587,6 +587,7 @@ it("reconciles multiple Project Watches on one environment, uses execution lease
   cleanups.push(async () => {
     vi.unstubAllGlobals();
   });
+  const timeZones = new Map<string, string | undefined>();
   const programs = new ProjectProgramExecution({
     privateDirectory: directory,
     nodeExecutable: process.execPath,
@@ -596,7 +597,10 @@ it("reconciles multiple Project Watches on one environment, uses execution lease
         throw new Error("Watch must not run a Trigger");
       },
     },
-    planLaunch: async () => (launch) => launch,
+    planLaunch: async (id, plan) => {
+      timeZones.set(id, plan.environment.TZ);
+      return (launch) => launch;
+    },
     terminate: async () => undefined,
     workspaceManager: {
       prepare: async ({ plan }) => {
@@ -609,7 +613,7 @@ it("reconciles multiple Project Watches on one environment, uses execution lease
   });
   cleanups.push(() => programs.close());
   const f = await fixture((command, runtime) => programs.dispatch(command, runtime));
-  const desired = [0, 1].map(() => {
+  const desired = ["UTC", "Asia/Tokyo"].map((projectTimeZone) => {
     const workspaceId = createId("workspace");
     return {
       activationId: createId("triggerWatchActivation"),
@@ -622,7 +626,7 @@ it("reconciles multiple Project Watches on one environment, uses execution lease
       executionGeneration: 1,
       executionLeaseMs: 10000,
       projectSettingsRevision: 1,
-      projectTimeZone: "UTC",
+      projectTimeZone,
       runnerBootId: f.fence.bootId,
       triggerId: createId("trigger"),
       revisionId: createId("triggerRevision"),
@@ -661,6 +665,9 @@ it("reconciles multiple Project Watches on one environment, uses execution lease
         ).size,
       ).toBe(2),
     { timeout: 2000 },
+  );
+  expect(Object.fromEntries(timeZones)).toEqual(
+    Object.fromEntries(desired.map((item) => [item.activationId, item.projectTimeZone])),
   );
   await expect(
     f.runtime.dispatch({
