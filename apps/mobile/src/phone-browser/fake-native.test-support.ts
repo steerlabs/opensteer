@@ -320,6 +320,8 @@ export class FakePhoneBrowserNative implements PhoneBrowserNativePort {
   }
   async detachAgent(input: Input<"detachAgent">) {
     this.#check(input, "detachAgent");
+    const attachment = this.actionAttachments.get(input.attachmentId);
+    if (attachment) this.authorizations.delete(`attachment-${attachment.actorToken}`);
     this.actionAttachments.delete(input.attachmentId);
   }
   async performAction(

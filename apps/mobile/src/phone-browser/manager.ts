@@ -874,6 +874,16 @@ export class PhoneBrowserManager {
       const attachment = this.#attachments.get(message.attachmentId);
       if (attachment?.channel !== channel || message.sessionId !== session.claims.sessionId) return;
       this.#attachments.delete(message.attachmentId);
+      const key = `${channel.id}:${attachment.actorToken}`;
+      const cdp = [...this.#attachments.values()].some(
+        (other) => other.channel === channel && other.actorToken === attachment.actorToken,
+      )
+        ? undefined
+        : this.#cdp.get(key);
+      if (cdp) {
+        this.#cdp.delete(key);
+        await cdp.then((session) => session.close()).catch(() => undefined);
+      }
       await this.#native.detachAgent({ epoch: channel.epoch, attachmentId: message.attachmentId });
       await this.#releaseCovered({ channel, attachmentId: message.attachmentId });
       return;

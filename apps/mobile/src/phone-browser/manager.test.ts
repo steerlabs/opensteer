@@ -1785,6 +1785,48 @@ test("Android routes stable surface targets through the real CDP allowlist, with
   expect(fixture.native.pipes.size).toBe(0);
 });
 
+test("an agent that detaches and attaches again on the same channel gets a fresh CDP session", async () => {
+  const fixture = await setup("android");
+  const attach = (attachmentId: string) =>
+    fixture.client({
+      type: "agent.attach",
+      sessionId: fixture.sessionId,
+      attachmentId,
+      actorToken: fixture.actorToken,
+      backend: "cdp",
+    });
+  const attachToTarget = async () => {
+    const requestId = uuid();
+    await fixture.client({
+      type: "cdp.command",
+      actorToken: fixture.actorToken,
+      requestId,
+      command: {
+        method: "Target.attachToTarget",
+        parameters: { targetId: fixture.surfaceId, flatten: true },
+      },
+    });
+    return fixture
+      .server()
+      .findLast(
+        (entry) =>
+          (entry.type === "cdp.result" || entry.type === "cdp.error") &&
+          entry.requestId === requestId,
+      )?.type;
+  };
+  const first = uuid();
+  await attach(first);
+  expect(await attachToTarget()).toBe("cdp.result");
+  await fixture.client({
+    type: "agent.detach",
+    sessionId: fixture.sessionId,
+    attachmentId: first,
+  });
+  expect(fixture.native.pipes.size).toBe(0);
+  await attach(uuid());
+  expect(await attachToTarget()).toBe("cdp.result");
+});
+
 test("native action captures deliver directly without returning pixels through the port", async () => {
   const fixture = await setup();
   await fixture.present();
