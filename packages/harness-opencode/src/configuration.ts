@@ -300,10 +300,12 @@ export function opencodeChildPermissionRules(
     ),
     ...previousParentRules,
   ];
+  // Only a child's own refusals survive: a child is never more permitted than its parent.
   return [
     ...parentRules,
     ...childRules.filter(
       (child) =>
+        child.action === "deny" &&
         !inheritedRules.some(
           (rule) =>
             rule.permission === child.permission &&

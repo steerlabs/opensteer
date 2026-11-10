@@ -145,6 +145,14 @@ describe("OpenCode child permission copying (T3 Code, MIT)", () => {
       ...parent,
       guard,
     ]);
+    // Whatever a child session was created allowing, it is never more permitted than its parent.
+    expect(
+      opencodeChildPermissionRules(parent, [
+        guard,
+        { action: "allow", pattern: "*", permission: "bash" },
+        { action: "ask", pattern: "*", permission: "webfetch" },
+      ]),
+    ).toEqual([...parent, guard]);
   });
 });
 
