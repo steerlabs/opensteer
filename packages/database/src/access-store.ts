@@ -1,3 +1,4 @@
+import { isEveryoneMember } from "./everyone-membership.js";
 import { createHash } from "node:crypto";
 import {
   createId,
@@ -197,9 +198,7 @@ function groupPeople(graph: Graph): { people: Map<string, Set<UserId>>; depth: n
     if (group.builtin === "everyone") {
       if (children.get(id)?.length)
         refuse("Everyone cannot have stored members", "immutable-everyone");
-      for (const user of graph.users)
-        if (user.memberKind === "full" && user.memberState === "active" && user.admittedAt)
-          result.add(user.id);
+      for (const user of graph.users) if (isEveryoneMember(user)) result.add(user.id);
     } else
       for (const edge of children.get(id) ?? []) {
         if (edge.memberKind === "group") {

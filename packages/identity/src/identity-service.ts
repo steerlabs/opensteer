@@ -1858,6 +1858,24 @@ export class IdentityService {
     const admission = await this.#admissionFromHeaders(request.headers);
     if (!admission) return response;
 
+    const teamInvitation = await this.#teamInvitationForAdmission(admission);
+    if (teamInvitation) {
+      if (
+        teamInvitation.acceptedAt ||
+        admission.consumedBy ||
+        admission.reservedEmail !== teamInvitation.intendedEmail
+      )
+        throw new OpensteerError({ code: "forbidden", message: "Invitation admission required" });
+      const headers = new Headers(response.headers);
+      headers.set(
+        "location",
+        new URL(
+          `/join/${encodeURIComponent(teamInvitation.selector)}`,
+          this.#options.publicOrigin,
+        ).toString(),
+      );
+      return new Response(response.body, { headers, status: response.status });
+    }
     const authenticatedHeaders = headersWithResponseCookies(request.headers, response.headers);
     const completionHeaders =
       admission.purpose === "setup"
@@ -2002,10 +2020,21 @@ export class IdentityService {
     );
   }
 
+  async #teamInvitationForAdmission(proof: { purpose: string; subjectSelector: string }) {
+    if (proof.purpose !== "invitation") return null;
+    const row = await this.#database
+      .selectFrom("teamInvitations")
+      .select("selector")
+      .where("selector", "=", proof.subjectSelector)
+      .executeTakeFirst();
+    if (!row || (await this.#store.invitationForExchange(proof.subjectSelector))) return null;
+    return readTeamInvitation(this.#database, row.selector);
+  }
+
   async teamInvitationAdmission(headers: Headers, session: AuthenticatedSession) {
     const proof = await this.#admissionFromHeaders(headers);
     const cookie = readCookie(headers.get("cookie"), admissionCookieName);
-    if (!proof || proof.purpose !== "invitation" || !cookie)
+    if (!proof || !cookie || !(await this.#teamInvitationForAdmission(proof)))
       throw new OpensteerError({
         code: "forbidden",
         reason: "invite-unavailable",
@@ -2091,6 +2120,13 @@ export class IdentityService {
     if (!admission || admission.purpose !== "invitation") {
       throw new OpensteerError({ code: "forbidden", message: "Invitation admission required" });
     }
+    const team = await this.#database
+      .selectFrom("teamInvitations")
+      .select("id")
+      .where("selector", "=", admission.subjectSelector)
+      .executeTakeFirst();
+    if (team)
+      throw new OpensteerError({ code: "forbidden", message: "Invitation admission required" });
     const record = await this.#store.invitationForExchange(admission.subjectSelector);
     if (!record) {
       throw new OpensteerError({ code: "not_found", message: "Invitation not found" });
@@ -2392,6 +2428,12 @@ export class IdentityService {
       throw new APIError("FORBIDDEN", { message: "Signup admission required" });
     }
     if (admission.purpose === "invitation") {
+      const team = await this.#teamInvitationForAdmission(admission);
+      if (team) {
+        if (team.acceptedAt || team.intendedEmail !== email || admission.reservedEmail !== email)
+          throw new APIError("FORBIDDEN", { message: "Signup admission required" });
+        return;
+      }
       const invitation = await this.#store.invitationForExchange(admission.subjectSelector);
       if (
         !invitation ||

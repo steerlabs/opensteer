@@ -55,6 +55,73 @@ async function admit(fixture: StoreFixture, name: string) {
 }
 
 describeStore("team administration review regressions", (it) => {
+  it("explains computed Everyone membership, including nesting, but excludes guests", async ({
+    storeFixture,
+  }) => {
+    const p = await prepare(storeFixture);
+    const full = await admit(storeFixture, "Full member");
+    const guest = await admit(storeFixture, "Guest");
+    await p.database
+      .updateTable("users")
+      .set({ memberKind: "guest" })
+      .where("id", "=", guest)
+      .execute();
+    const everyone = { id: randomUUID() };
+    await p.database
+      .insertInto("accessGroups")
+      .values({ id: everyone.id, name: "Everyone", builtin: "everyone", createdBy: p.userId })
+      .execute();
+    const parent = randomUUID();
+    await mutateAccess(
+      p.database,
+      p.input(
+        [
+          { kind: "create-group", id: parent, name: "Parent" },
+          {
+            kind: "add-group-member",
+            groupId: parent,
+            member: { kind: "group", groupId: everyone.id },
+          },
+          {
+            kind: "grant",
+            id: randomUUID(),
+            subject: { kind: "group", groupId: everyone.id },
+            target: { kind: "project", workspaceId: p.workspace.id },
+            level: "use",
+          },
+          {
+            kind: "grant",
+            id: randomUUID(),
+            subject: { kind: "group", groupId: parent },
+            target: { kind: "project", workspaceId: p.workspace.id },
+            level: "use",
+          },
+        ],
+        1,
+      ),
+    );
+    const reads = new TeamAccessReadStore(p.database);
+    const explanation = await reads.explain(p.actor, {
+      workspaceId: p.workspace.id,
+      subject: { kind: "person", userId: full },
+    });
+    expect(explanation.effectiveLevel).toBe("use");
+    expect(explanation.entries).toHaveLength(2);
+    expect(explanation.edges).toEqual(
+      expect.arrayContaining([
+        { groupId: everyone.id, member: { kind: "person", userId: full } },
+        { groupId: parent, member: { kind: "group", groupId: everyone.id } },
+      ]),
+    );
+    const excluded = await reads.explain(p.actor, {
+      workspaceId: p.workspace.id,
+      subject: { kind: "person", userId: guest },
+    });
+    expect(excluded.effectiveLevel).toBeNull();
+    expect(excluded.entries).toEqual([]);
+    expect(excluded.edges).toEqual([]);
+  });
+
   it("removes explicit sources atomically and never restores them on a guest reinvitation", async ({
     storeFixture,
   }) => {

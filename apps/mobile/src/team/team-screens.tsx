@@ -1,5 +1,6 @@
 import {
   accessModeOptions,
+  projectSettingsInput,
   createTeamInvitationDraft,
   grantChanges,
   levelLabel,
@@ -15,7 +16,7 @@ import {
   type TeamAccess,
 } from "@opensteer/client/host";
 import { useHostRead, useHostSnapshot, usePagedList, useTeam } from "@opensteer/client/react";
-import { HarnessInstanceIdSchema, type ThreadAccessMode } from "@opensteer/core";
+import type { ThreadAccessMode } from "@opensteer/core";
 import type {
   AccessChange,
   Level,
@@ -1572,17 +1573,14 @@ function Runtime(props: {
                 access.accessRevision,
                 props.workspaceId,
                 current.settings?.revision ?? null,
-                {
-                  harnessInstanceId: HarnessInstanceIdSchema.parse(instance.id),
-                  modelSelection: {
-                    modelId: model.modelId,
-                    options: model.options,
-                    providerId: model.providerId,
-                  },
+                projectSettingsInput({
+                  saved: current.settings,
+                  instance,
+                  model,
                   accessMode: form.access,
                   instructions: form.instructions,
-                  timeZone: form.timeZone.trim(),
-                },
+                  timeZone: form.timeZone,
+                }),
               )
               .then(() => navigation.goBack())
               .catch((error: unknown) => showError(error, teamName))

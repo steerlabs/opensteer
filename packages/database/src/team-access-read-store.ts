@@ -1,3 +1,4 @@
+import { isEveryoneMember } from "./everyone-membership.js";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import {
   type AuthenticatedHuman,
@@ -739,6 +740,25 @@ export class TeamAccessReadStore {
       )`,
         ["explain-entries", input.workspaceId, input.subject],
       );
+      const person =
+        input.subject.kind === "person"
+          ? await context.database
+              .selectFrom("users")
+              .select(["memberKind", "memberState", "admittedAt"])
+              .where("id", "=", input.subject.userId)
+              .executeTakeFirst()
+          : undefined;
+      const computedEdges =
+        input.subject.kind === "person" && person && isEveryoneMember(person)
+          ? groups
+              .filter((group) => group.builtin === "everyone")
+              .map((group) => ({
+                groupId: group.id,
+                member: input.subject,
+                key: `edge:${group.id}:user:${input.subject.kind === "person" ? input.subject.userId : ""}`,
+              }))
+              .filter((edge) => edge.key > position.id)
+          : [];
       const edges = (
         await sql<{ groupId: string; member: Subject; key: string }>`
         ${relevant} select e.group_id, case when e.member_kind = 'user' then jsonb_build_object('kind', 'person', 'userId', e.member_id)
@@ -753,9 +773,11 @@ export class TeamAccessReadStore {
       const entryRows = entries.items
         .map((entry) => ({ key: `entry:${entry.id}`, entry }))
         .filter((row) => row.key > position.id);
-      const all = [...edges.map((edge) => ({ key: edge.key, edge })), ...entryRows].sort(
-        (first, second) => first.key.localeCompare(second.key),
-      );
+      const all = [
+        ...computedEdges.map((edge) => ({ key: edge.key, edge })),
+        ...edges.map((edge) => ({ key: edge.key, edge })),
+        ...entryRows,
+      ].sort((first, second) => first.key.localeCompare(second.key));
       const page = this.#page(all, 200, scope, (row) => ({ sort: "", id: row.key }));
       let effectiveLevel: Level | null = null;
       if (input.subject.kind === "person") {

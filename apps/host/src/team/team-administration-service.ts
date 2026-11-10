@@ -1,3 +1,5 @@
+import { consumeAnonymousRateLimit } from "../identity/anonymous-rate-limit.js";
+import { contextClientAddress } from "../identity/anonymous-client-address.js";
 import { createHash } from "node:crypto";
 import {
   CommandIdSchema,
@@ -172,10 +174,18 @@ export class TeamAdministrationService {
     if (!decision.allowed) refuse("project-manage-required");
   }
 
-  #rateLimit(procedure: string) {
+  async #rateLimit(procedure: string, context: HostApiServerContext) {
+    const key = `team-invitation:${procedure}:${createHash("sha256").update(contextClientAddress(context)).digest("hex")}`;
+    if (!(await consumeAnonymousRateLimit(this.#database, key, 60, new Date())))
+      throw new OpensteerError({
+        code: "resource_exhausted",
+        reason: "invite-unavailable",
+        message: "Too many invitation attempts; try again later.",
+        retryable: false,
+      });
     const now = Date.now();
     const prior = this.#publicBudget.get(procedure);
-    const budget = !prior || now - prior.at >= 60_000 ? { at: now, remaining: 60 } : prior;
+    const budget = !prior || now - prior.at >= 60_000 ? { at: now, remaining: 120 } : prior;
     this.#publicBudget.set(procedure, budget);
     if (budget.remaining-- <= 0)
       throw new OpensteerError({
@@ -209,7 +219,7 @@ export class TeamAdministrationService {
     if (procedure === "team.invitation.preview" || procedure === "team.invitation.exchange") {
       if (context.headers.authorization !== undefined) this.#session(context);
       await this.#authority();
-      this.#rateLimit(procedure);
+      await this.#rateLimit(procedure, context);
       if (procedure === "team.invitation.preview")
         return this.#invitation(teamReadSchemas[procedure].input.parse(input).selector);
       const parsed = teamReadSchemas[procedure].input.parse(input);
