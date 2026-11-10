@@ -104,8 +104,14 @@ is said, so no screen adds its own line ([what a person is told](connections.md#
 
 Media is visibility-bound: release pictures when hidden, backgrounded or no longer authorized, and
 return picture credit even when decoding fails. Routes name exact tabs or owner-view generations; a
-closed target stays closed and is never replaced by a sibling. Starting browsers and connecting
-Chrome stay on computers.
+closed target stays closed and is never replaced by a sibling. Connecting Chrome stays on computers.
+
+A phone the Host lists as a browser device of the Deployment being viewed opens a conversation's
+links in its own browser, in the profile last used on it, else a Guest there; loopback,
+private-network, `.local` and bare-host addresses mean the computer's network and open on the
+conversation's computer ([link-places.ts](../packages/client/src/host/link-places.ts)). If opening
+there fails, the link goes to the system as before, which is also where every link goes on a phone
+that is not such a device. New tab offers every profile, and a profile opens on its home.
 
 A tab list shows a page's picture only when this phone already presented one
 ([browser-last-picture.ts](../packages/client/src/host/browser-last-picture.ts)); a row never asks

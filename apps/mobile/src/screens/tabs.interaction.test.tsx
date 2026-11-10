@@ -2072,6 +2072,8 @@ it.each(["mac", "phone", "personal", "other", "no-computer-use"])(
       )!;
       return {
         ...snapshot,
+        // Without a browser to start a tab in, Open is only for the person's own computer.
+        browserAvailable: false,
         browserSessions: [],
         workspaceTabs: [],
         deploymentShape: {

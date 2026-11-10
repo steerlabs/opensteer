@@ -11576,7 +11576,7 @@ class MockHostState {
           },
           {
             author: mockAgentAuthor(pictureRun, home.id),
-            body: "Picked a tiger charging through snow and downloaded the full HD photo to your Downloads folder: [tiger-in-snow.jpg](/Users/person/Downloads/tiger-in-snow.jpg). 🐅",
+            body: "Picked a tiger charging through snow and downloaded the full HD photo to your Downloads folder: [tiger-in-snow.jpg](/Users/person/Downloads/tiger-in-snow.jpg). 🐅\n\n[unsplash.com/photos/tiger-in-snow](https://unsplash.com/photos/tiger-in-snow)\n\n[localhost:5173/tiger](http://localhost:5173/tiger)",
             createdAt: at(-60),
             id: pictureReplyId,
             kind: "message",
@@ -13272,6 +13272,8 @@ function createInitialSnapshot(): HostSnapshot {
           "- Saved the command output with the run for audit",
           "",
           "The [expense policy](https://example.com/finance/expense-policy) explains which cost center to use. Related request: [Review the remaining charges](opensteer://requests/req_0192f4a1-2222-4000-8000-000000000002).",
+          "",
+          "[example.com/finance/expense-policy](https://example.com/finance/expense-policy)",
           "",
           "```text",
           "review_items=2",

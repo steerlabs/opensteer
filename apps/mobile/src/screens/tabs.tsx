@@ -518,7 +518,7 @@ function useTabsBar(props: {
           ) : null}
           {openOffered ? (
             <Pressable
-              accessibilityHint="Opens an app on your Mac or an Agent Phone"
+              accessibilityHint="Opens a new tab, or an app on your Mac or an Agent Phone"
               accessibilityLabel="Open"
               accessibilityRole="button"
               onPress={() => open.current?.()}
@@ -533,7 +533,7 @@ function useTabsBar(props: {
         ...(openOffered
           ? [
               {
-                accessibilityHint: "Opens an app on your Mac or an Agent Phone",
+                accessibilityHint: "Opens a new tab, or an app on your Mac or an Agent Phone",
                 accessibilityLabel: "Open",
                 icon: { name: "plus", type: "sfSymbol" as const },
                 label: "Open",
@@ -571,10 +571,12 @@ function useTabsBar(props: {
 }
 
 /**
- * Whether this person has a Mac or Agent Phone of their own to open things
- * on: one they own, or the Main computer of their Personal deployment.
+ * Whether there is anything to open: a browser to start a tab in, or a Mac or
+ * Agent Phone of their own, which they own or is their Personal deployment's
+ * Main computer.
  */
 function selectCanOpen(snapshot: HostSnapshot): boolean {
+  if (snapshot.browserAvailable) return true;
   return snapshot.machines.some(
     (machine) =>
       machine.computerUse !== undefined &&

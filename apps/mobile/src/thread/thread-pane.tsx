@@ -98,6 +98,7 @@ import {
 } from "./surface-chips.js";
 import { TranscriptHostClientContext } from "./attachment-views.js";
 import { Composer } from "./composer.js";
+import { ConversationLinksProvider } from "./conversation-links.js";
 import { ComposerDockLayout } from "./composer-dock.js";
 import { RunPageSlot } from "./run-page.js";
 import { PasswordsSuggestion } from "./passwords-suggestion.js";
@@ -1495,13 +1496,19 @@ function ThreadPaneForUser(
         <TranscriptSurfacesContext.Provider value={surfaces}>
           <TranscriptAppTabsContext.Provider value={appTabs}>
             {/* Beside a page, the screen already keeps the keyboard clear. */}
-            <ComposerDockLayout
-              avoidKeyboard={companion === null}
-              dock={dock}
-              keyboardVerticalOffset={props.keyboardVerticalOffset ?? 0}
+            <ConversationLinksProvider
+              deploymentId={deploymentId}
+              hostClient={hostClient}
+              threadId={threadId}
             >
-              {transcript}
-            </ComposerDockLayout>
+              <ComposerDockLayout
+                avoidKeyboard={companion === null}
+                dock={dock}
+                keyboardVerticalOffset={props.keyboardVerticalOffset ?? 0}
+              >
+                {transcript}
+              </ComposerDockLayout>
+            </ConversationLinksProvider>
           </TranscriptAppTabsContext.Provider>
         </TranscriptSurfacesContext.Provider>
       </TranscriptComputersContext.Provider>

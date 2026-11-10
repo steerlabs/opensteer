@@ -47,6 +47,7 @@ export * from "./task-marks.js";
 export * from "./place-activity.js";
 export * from "./browser-watch.js";
 export * from "./start-page-model.js";
+export * from "./link-places.js";
 export * from "./browser-history.js";
 export * from "./navigation-input.js";
 export * from "./computer-view-retention.js";
