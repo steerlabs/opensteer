@@ -10,10 +10,20 @@ public enum BrowserRefusal: String, Error {
   case staleDialog = "stale-dialog"
   case unsupportedOperation = "unsupported-operation"
   case invalidArgument = "invalid-argument"
+  case helperNotReady = "helper-not-ready"
+  case timeout = "timeout"
+  case storageMissing = "profile-storage-missing"
+  case bindingMismatch = "profile-binding-mismatch"
+  case profileDeleted = "profile-deleted"
+  case staleChooser = "stale-chooser"
+  case tooLarge = "too-large"
+  case dialogOpen = "dialog-open"
+  case outcomeUnknown = "outcome-unknown"
+  case forbidden = "forbidden"
 }
 
 public final class EpochGate: @unchecked Sendable {
-  private let lock = NSLock()
+  private let lock = NSRecursiveLock()
   private var epoch = 0
 
   public init() {}
