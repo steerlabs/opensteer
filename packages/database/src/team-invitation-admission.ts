@@ -86,6 +86,8 @@ export async function readTeamAdmission(
     session.memberGeneration !== user.authorityGeneration ||
     !user.emailVerified ||
     user.disabledAt ||
+    user.memberState === "suspended" ||
+    (user.memberState === "removed" && user.admittedAt === null) ||
     normalizeIdentityEmail(user.email) !== invitation.intendedEmail ||
     proof.reservedEmail !== invitation.intendedEmail ||
     (proof.consumedAt && proof.consumedBy !== user.id) ||

@@ -1,3 +1,5 @@
+import { revokeTeamConnection } from "./team-connection-store.js";
+import type { AccessWorkRevocationRoot } from "./access-store.js";
 import { describeStore } from "@opensteer/database/test-support/store";
 import { AgentConnectionStore } from "./agent-connection-store.js";
 import { sql } from "kysely";
@@ -62,5 +64,67 @@ describeStore("connected-agent team incarnations", (it) => {
       .where("id", "=", third.id)
       .execute();
     expect(await store.authenticate("c".repeat(64))).toBeNull();
+  });
+  it("revokes only the selected connection and preserves the captured root for cleanup", async ({
+    storeFixture,
+  }) => {
+    const fixture = await storeFixture.createRunFixture("connection-revoke-root", null, "project");
+    const database = storeFixture.database;
+    await database.updateTable("deployments").set({ authorityModelVersion: 2 }).execute();
+    await database
+      .updateTable("users")
+      .set({ admittedAt: new Date() })
+      .where("id", "=", fixture.userId)
+      .execute();
+    const store = new AgentConnectionStore(database);
+    const input = {
+      userId: fixture.userId,
+      label: "Agent",
+      clientName: "test",
+      accessMode: "approval-required" as const,
+      reach: { kind: "workspace" as const, workspaceId: fixture.workspace.id },
+      resource: "https://team.test/mcp",
+      expiresAt: new Date(Date.now() + 60_000),
+    };
+    const first = await store.create(input);
+    const second = await store.create(input);
+    await store.activate(first.id, "d".repeat(64));
+    await store.activate(second.id, "e".repeat(64));
+    const roots: AccessWorkRevocationRoot[] = [];
+    const work = {
+      discover: async () => ({ runIds: [], workspaceIds: [] }),
+      cancel: async (_transaction: unknown, selected: readonly AccessWorkRevocationRoot[]) => {
+        roots.push(...selected);
+      },
+    };
+    const command = { connectionId: first.id, expectedRevision: 1, idempotencyKey: "revoke-one" };
+    await revokeTeamConnection(database, { userId: fixture.userId }, command, work);
+    await revokeTeamConnection(database, { userId: fixture.userId }, command, work);
+    expect(roots).toEqual([
+      {
+        kind: "connection",
+        connectionId: first.id,
+        userId: fixture.userId,
+        workspaceId: fixture.workspace.id,
+        memberGenerationCutoff: 1,
+        membershipGenerationCutoff: 1,
+      },
+    ]);
+    expect(await store.authenticate("d".repeat(64))).toBeNull();
+    expect(await store.authenticate("e".repeat(64))).toMatchObject({ id: second.id });
+    expect(
+      await database
+        .selectFrom("users")
+        .select(["authorityGeneration", "memberState"])
+        .where("id", "=", fixture.userId)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ authorityGeneration: "1", memberState: "active" });
+    expect(
+      await database
+        .selectFrom("securityEffects")
+        .select("accessRoot")
+        .where("causeId", "=", command.idempotencyKey)
+        .execute(),
+    ).toEqual([{ accessRoot: roots[0] }]);
   });
 });

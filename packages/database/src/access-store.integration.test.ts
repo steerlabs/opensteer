@@ -17,7 +17,12 @@ import { lockWorkspaceRow, requireActiveWorkspaceMembership } from "./store-prim
 import { testModelSelection } from "./store.integration.test-support.js";
 import { describeStore, type StoreFixture } from "./store.integration.test-support.js";
 import type { DatabaseSchema } from "./schema.js";
-import { accessCapacity, checkAccess, mutateAccess } from "./access-store.js";
+import {
+  accessCapacity,
+  checkAccess,
+  mutateAccess,
+  type AccessWorkRevocationRoot,
+} from "./access-store.js";
 import { claimAccessSecurityEffects } from "./access-effects.js";
 import { failActiveRunsForAccessRevocation } from "./execution-recovery.js";
 import { threadPathLinks } from "./store-primitives.js";
@@ -80,6 +85,7 @@ async function legacyMembershipLifecycle(
   const projectedEffects = effects.map((row) => {
     const {
       id: _id,
+      accessRoot: _accessRoot,
       userId: _user,
       createdAt: _created,
       updatedAt: _updated,
@@ -396,7 +402,26 @@ describeStore("dormant Project access", (it) => {
         const definition = upgradedObjects.get(original.name);
         if (extendedPrincipalChecks.has(original.name))
           expect(definition, original.name).toContain("'project'");
-        else expect(definition, original.name).toBe(original.definition);
+        else if (
+          [
+            "function:opensteer_prevent_last_workspace_owner_removal()",
+            "function:opensteer_require_workspace_owner()",
+            "function:opensteer_project_membership_change()",
+            "function:opensteer_refresh_account_directory_user(text)",
+          ].includes(original.name)
+        ) {
+          expect(definition, original.name).toContain("authority_model_version = 2");
+          expect(definition, original.name).toContain("'server'");
+        } else if (original.name === "function:opensteer_security_effect_scope_immutable()") {
+          expect(definition).toContain("old.access_root");
+          expect(definition).toContain("new.access_root");
+          expect(definition).toContain("security effect scope is immutable");
+        } else if (original.name === "trigger:users:users_account_directory_projection_update") {
+          expect(definition).toContain("admitted_at");
+          expect(definition).toContain("member_state");
+          expect(definition).toContain("disabled_at");
+          expect(definition).toContain("instance_role");
+        } else expect(definition, original.name).toBe(original.definition);
       }
       const upgraded = await legacyMembershipLifecycle(
         database,
@@ -627,6 +652,22 @@ describeStore("dormant Project access", (it) => {
       const access = await setup(storeFixture);
       const { database } = storeFixture;
       expect(await database.selectFrom("authAccounts").select("id").execute()).toEqual([]);
+      await sql`create table access_directory_refresh_probe (user_id text)`.execute(database);
+      const refreshDefinition = (
+        await sql<{
+          definition: string;
+        }>`select pg_get_functiondef('public.opensteer_refresh_account_directory_user(text)'::regprocedure) as definition`.execute(
+          database,
+        )
+      ).rows[0]!.definition;
+      await sql
+        .raw(
+          refreshDefinition.replace(
+            /begin/i,
+            "begin insert into access_directory_refresh_probe values (target_user_id);",
+          ),
+        )
+        .execute(database);
       for (const projectCount of [2, 128]) {
         const setupStarted = performance.now();
         const groupId = randomUUID();
@@ -721,6 +762,7 @@ describeStore("dormant Project access", (it) => {
           (await database.selectFrom("accessState").select("revision").executeTakeFirstOrThrow())
             .revision,
         );
+        await sql`truncate access_directory_refresh_probe`.execute(database);
         const started = performance.now();
         const result = await mutateAccess(measured, {
           actor: { userId: access.userId },
@@ -732,6 +774,10 @@ describeStore("dormant Project access", (it) => {
               : [{ kind: "member", userId: users[0]!, memberState: "suspended" }],
         });
         const elapsed = performance.now() - started;
+        const refreshes = (
+          await sql`select * from access_directory_refresh_probe`.execute(database)
+        ).rows.length;
+        expect(refreshes).toBe(operation === "delete-group" ? 0 : 1);
         const pairs = operation === "delete-group" ? peopleCount * projectCount : projectCount;
         expect(result.transitions).toHaveLength(pairs);
         expect(
@@ -740,7 +786,7 @@ describeStore("dormant Project access", (it) => {
           ),
         ).toBe(true);
         console.info(
-          `access maximum: operation=${operation} pairs=${pairs} statements=${statements} setupMs=${setupMs.toFixed(2)} elapsedMs=${elapsed.toFixed(2)}`,
+          `access maximum: operation=${operation} pairs=${pairs} statements=${statements} refreshes=${refreshes} setupMs=${setupMs.toFixed(2)} elapsedMs=${elapsed.toFixed(2)}`,
         );
         counts.push(statements);
       }
@@ -898,7 +944,7 @@ describeStore("dormant Project access", (it) => {
     const access = await setup(storeFixture);
     const workspaceId = createId("workspace");
     const entryId = randomUUID();
-    const result = await access.mutate({
+    const change: AccessMutation = {
       kind: "create-project",
       workspaceId,
       entryId,
@@ -911,7 +957,25 @@ describeStore("dormant Project access", (it) => {
         ownerEnvironmentId: access.environmentId,
         storageAuthorityId: createId("storageAuthority"),
       },
-    });
+    };
+    const command = {
+      actor: { userId: access.userId },
+      expectedRevision: access.revision(),
+      commandIdentity: createId("command"),
+      changes: [change],
+    };
+    const result = await mutateAccess(storeFixture.database, command);
+    const principalRows = () =>
+      storeFixture.database
+        .selectFrom("principals")
+        .selectAll()
+        .where("workspaceId", "=", workspaceId)
+        .execute();
+    const principals = await principalRows();
+    expect(principals).toMatchObject([{ kind: "project", userId: null, workspaceId }]);
+    expect(principals).toHaveLength(1);
+    expect(await mutateAccess(storeFixture.database, command)).toEqual(result);
+    expect(await principalRows()).toEqual(principals);
     expect(result.transitions).toMatchObject([
       { workspaceId, userId: access.userId, state: "active", role: "owner", generation: 1 },
     ]);
@@ -976,6 +1040,121 @@ describeStore("dormant Project access", (it) => {
         { id: successorEntry, revokedBy: null },
       ].sort((a, b) => (a.id < b.id ? -1 : 1)),
     );
+    await access.mutate({
+      kind: "delete-project",
+      workspaceId,
+      purgeAfter: new Date("2099-01-01"),
+    });
+    expect(await principalRows()).toEqual(principals);
+    await storeFixture.database
+      .updateTable("deployments")
+      .set({ authorityModelVersion: 1 })
+      .execute();
+    await expect(
+      mutateAccess(storeFixture.database, { ...command, commandIdentity: createId("command") }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+  });
+
+  it("restarts with a Run admitted after prefix discovery instead of extending locks after Workspaces", async ({
+    storeFixture,
+  }) => {
+    const run = await storeFixture.createRunFixture("live-scope-race", null, "project");
+    const access = await setup(storeFixture, run);
+    const entry = await storeFixture.database
+      .selectFrom("accessEntries")
+      .select("id")
+      .where("subjectId", "=", run.userId)
+      .where("targetId", "=", run.workspace.id)
+      .executeTakeFirstOrThrow();
+    const ready = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const queries = new Map<unknown, { sql: string; parameters: readonly unknown[] }>();
+    const reservedRuns: unknown[] = [];
+    let paused = false;
+    let attempts = 0;
+    const measured = storeFixture.database.withPlugin({
+      transformQuery(args) {
+        const query = storeFixture.database.getExecutor().compileQuery(args.node, args.queryId);
+        queries.set(args.queryId, query);
+        if (query.sql.includes("pg_advisory_xact_lock")) attempts++;
+        if (query.sql.includes('from "runs"') && query.sql.includes("for no key update"))
+          reservedRuns.push(...query.parameters);
+        return args.node;
+      },
+      async transformResult(args) {
+        const query = queries.get(args.queryId)!;
+        if (
+          !paused &&
+          query.sql.includes('from "agent_connections"') &&
+          !query.sql.includes("for no key update")
+        ) {
+          paused = true;
+          ready.resolve();
+          await withTimeout(release.promise, 5000, {
+            timeoutError: () => new Error("Live admission barrier was never released"),
+          });
+        }
+        return args.result;
+      },
+    });
+    const recorded: AccessWorkRevocationRoot[] = [];
+    const mutation = mutateAccess(
+      measured,
+      {
+        actor: { userId: run.userId },
+        expectedRevision: 1,
+        commandIdentity: createId("command"),
+        changes: [{ kind: "revoke", entryId: entry.id }],
+      },
+      {
+        discover: async () => ({ runIds: [], workspaceIds: [] }),
+        cancel: async (transaction, roots) => {
+          recorded.push(...roots);
+          const membership = await transaction
+            .selectFrom("workspaceMemberships")
+            .select("state")
+            .where("workspaceId", "=", run.workspace.id)
+            .where("userId", "=", run.userId)
+            .executeTakeFirstOrThrow();
+          expect(membership.state).toBe("active");
+        },
+      },
+    );
+    let admitted: Awaited<ReturnType<typeof storeFixture.enqueueHumanTrigger>>;
+    try {
+      await withTimeout(ready.promise, 5000, {
+        timeoutError: () => new Error("Access writer never discovered its prefix"),
+      });
+      admitted = await storeFixture.enqueueHumanTrigger({
+        requestedBy: run.userId,
+        threadId: run.thread.id,
+        idempotencyKey: "concurrent-live-admission",
+        content: [{ type: "text", text: "New work" }],
+      });
+    } finally {
+      release.resolve();
+    }
+    await mutation;
+    expect(attempts).toBe(2);
+    expect(reservedRuns).toContain(admitted!.run.id);
+    expect(recorded).toEqual([
+      {
+        kind: "membership",
+        userId: run.userId,
+        workspaceId: run.workspace.id,
+        membershipGenerationCutoff: 1,
+      },
+    ]);
+    const recovery = await failActiveRunsForAccessRevocation(
+      storeFixture.database,
+      threadPathLinks,
+      { userId: run.userId, workspaceId: run.workspace.id, membershipGenerationCutoff: 1 },
+    );
+    expect(recovery.terminatedRuns.map((row) => row.runId)).toContain(admitted!.run.id);
+    expect(await access.membership(run.userId)).toMatchObject({
+      state: "revoked",
+      generation: "2",
+    });
   });
 
   it("returns a committed self-revoke's result when its command is retried", async ({
@@ -1123,21 +1302,9 @@ describeStore("dormant Project access", (it) => {
       }
       await mutate(prerequisites);
       for (const { second, changes } of pairs) {
-        if (changes.some((change) => change.kind === "delete-project")) {
-          const state = await database
-            .selectFrom("accessState")
-            .select("revision")
-            .executeTakeFirstOrThrow();
-          await expect(mutate(changes), `${first} then ${second}`).rejects.toThrow(
-            "workspace must retain at least one active owner",
-          );
-          expect(
-            await database.selectFrom("accessState").select("revision").executeTakeFirstOrThrow(),
-          ).toEqual(state);
-        } else
-          await expect(mutate(changes), `${first} then ${second}`).resolves.toMatchObject({
-            revision: expect.any(Number),
-          });
+        await expect(mutate(changes), `${first} then ${second}`).resolves.toMatchObject({
+          revision: expect.any(Number),
+        });
       }
       expect(ordinal).toBe(9);
     });
@@ -2059,13 +2226,13 @@ describeStore("dormant Project access", (it) => {
           workspaceId: access.workspace.id,
           purgeAfter: new Date(Date.now() + 86_400_000),
         }),
-      ).rejects.toThrow("workspace must retain at least one active owner");
+      ).resolves.toMatchObject({ revision: expect.any(Number) });
       for (const [person, previous] of history)
         expect(await access.membership(person)).toMatchObject({
           id: previous.id,
-          state: previous.state,
+          state: "revoked",
           role: previous.role,
-          generation: String(previous.generation),
+          generation: String(previous.generation + Number(previous.state === "active")),
         });
       console.info(
         `access trace cost: setupMs=${setupMs.toFixed(2)} traceMs=${(performance.now() - traceStarted).toFixed(2)}`,

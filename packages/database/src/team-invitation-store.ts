@@ -98,6 +98,8 @@ export async function mutateTeamInvitation(
       .rows[0]!.now;
     let result: z.infer<typeof resultSchema>;
     if (command.type === "team.invitation.create") {
+      if (command.trustedComputerConfirmed !== true)
+        teamRefusal("invalid-selection", "bad_request");
       const expiresAt = new Date(now.getTime() + (command.validFor === "1d" ? 1 : 7) * 86_400_000);
       const collision = await transaction
         .selectFrom("teamInvitations")
@@ -120,6 +122,7 @@ export async function mutateTeamInvitation(
           memberKind: command.memberKind,
           createdBy: actor.userId,
           createdAt: now,
+          trustedComputerConfirmedAt: now,
           expiresAt,
           acceptedAt: null,
           acceptedBy: null,

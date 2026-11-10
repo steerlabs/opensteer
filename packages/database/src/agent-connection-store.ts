@@ -1,3 +1,5 @@
+import { revokeTeamConnection } from "./team-connection-store.js";
+import type { AccessWorkRevocationPort } from "./access-store.js";
 import { OpensteerError, type UserId } from "@opensteer/core";
 import type { AgentConnection, AgentConnectionReach } from "@opensteer/protocol";
 import { randomUUID } from "node:crypto";
@@ -9,15 +11,21 @@ import { withDatabaseTransaction } from "./connection.js";
 export class AgentConnectionStore {
   readonly database: Kysely<DatabaseSchema>;
   readonly now: () => Date;
+  readonly #work: AccessWorkRevocationPort | undefined;
   #authority: ReturnType<typeof readDeploymentAuthority> | undefined;
 
   async #isTeam(): Promise<boolean> {
     const authority = await (this.#authority ??= readDeploymentAuthority(this.database));
     return authority.kind === "server" && authority.model === 2;
   }
-  constructor(database: Kysely<DatabaseSchema>, now: () => Date = () => new Date()) {
+  constructor(
+    database: Kysely<DatabaseSchema>,
+    now: () => Date = () => new Date(),
+    work?: AccessWorkRevocationPort,
+  ) {
     this.database = database;
     this.now = now;
+    this.#work = work;
   }
 
   async workspaces(userId: UserId) {
@@ -47,6 +55,20 @@ export class AgentConnectionStore {
     if (team && input.reach.kind !== "workspace") throw unauthorized();
     return withDatabaseTransaction(this.database, async (tx) => {
       let membershipGeneration: string | null = null;
+      if (team && input.reach.kind === "workspace") {
+        const admitted = await tx
+          .selectFrom("users")
+          .innerJoin("workspaceMemberships", "workspaceMemberships.userId", "users.id")
+          .select("users.id")
+          .where("users.id", "=", input.userId)
+          .where("users.admittedAt", "is not", null)
+          .where("users.memberState", "=", "active")
+          .where("users.disabledAt", "is", null)
+          .where("workspaceMemberships.workspaceId", "=", input.reach.workspaceId)
+          .where("workspaceMemberships.state", "=", "active")
+          .executeTakeFirst();
+        if (!admitted) throw unauthorized();
+      }
       if (input.reach.kind === "workspace") {
         const workspace = await tx
           .selectFrom("workspaces")
@@ -186,6 +208,31 @@ export class AgentConnectionStore {
   }
 
   async revoke(userId: UserId, id: string): Promise<void> {
+    if (await this.#isTeam()) {
+      const owned = await this.database
+        .selectFrom("agentConnections")
+        .select("id")
+        .where("id", "=", id)
+        .where("userId", "=", userId)
+        .executeTakeFirst();
+      if (!owned) return;
+      const state = await this.database
+        .selectFrom("accessState")
+        .select("revision")
+        .where("singletonKey", "=", "primary")
+        .executeTakeFirstOrThrow();
+      await revokeTeamConnection(
+        this.database,
+        { userId },
+        {
+          connectionId: id,
+          expectedRevision: Number(state.revision),
+          idempotencyKey: `connection-revoke:${id}`,
+        },
+        this.#work,
+      );
+      return;
+    }
     // Idempotent and owner-filtered; a foreign ID discloses nothing.
     await this.database
       .updateTable("agentConnections")
