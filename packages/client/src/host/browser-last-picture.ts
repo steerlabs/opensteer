@@ -84,7 +84,10 @@ export function getBrowserLastPicture(
  * Asking never streams, requests, subscribes or reorders what is kept.
  */
 export function browserTabPicture(
-  client: { readonly browserWatchFrames: BrowserFrameStore; readonly browserFrames: BrowserFrameStore },
+  client: {
+    readonly browserWatchFrames: BrowserFrameStore;
+    readonly browserFrames: BrowserFrameStore;
+  },
   sessionId: string,
   tabId: string,
 ): BrowserTabPicture | null {

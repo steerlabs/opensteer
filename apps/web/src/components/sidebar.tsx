@@ -222,7 +222,8 @@ export function Sidebar({
   const sectionsOf = (from: BrowserTabStrip) =>
     browserTabSections({ strip: from, machines, hereId, pending: pendingTabs, profiles });
   const liveSections = useMemo(
-    () => browserTabSections({ strip: liveStrip, machines, hereId, pending: pendingTabs, profiles }),
+    () =>
+      browserTabSections({ strip: liveStrip, machines, hereId, pending: pendingTabs, profiles }),
     [liveStrip, machines, hereId, pendingTabs, profiles],
   );
   // Without headings there is nothing to fold.

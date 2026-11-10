@@ -212,10 +212,7 @@ function TabsForReader(props: {
     onOpen: canOpen ? openApp : null,
   });
   const shown = agents ? withAgents : places;
-  const sections = useMemo(
-    () => placeGroups(shown, machines, hereId),
-    [hereId, machines, shown],
-  );
+  const sections = useMemo(() => placeGroups(shown, machines, hereId), [hereId, machines, shown]);
   const signIns = useMemo(() => new Set(signInKeys.split("\n")), [signInKeys]);
   const showProfile = useMemo(() => profileBadgesVisible(places), [places]);
   const open = useCallback(

@@ -116,7 +116,13 @@ export function browserTabSections(input: {
     hereId,
   ).map(({ device, web, pending, native }) => ({ key: device.id, device, web, pending, native }));
   if (apps.length > 0)
-    sections.push({ key: opensteerAppsSectionKey, device: null, web: [], pending: [], native: apps });
+    sections.push({
+      key: opensteerAppsSectionKey,
+      device: null,
+      web: [],
+      pending: [],
+      native: apps,
+    });
   return {
     headed: [...devices.keys()].some((id) => id !== hereId),
     sections,

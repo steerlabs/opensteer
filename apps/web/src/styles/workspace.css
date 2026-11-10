@@ -1461,7 +1461,6 @@ button.side-needs:hover {
   }
 }
 
-
 /* A place that ended keeps its row, dimmed, until it is closed or unlisted. */
 .side-tab.is-unavailable .side-tab__main {
   opacity: 0.48;

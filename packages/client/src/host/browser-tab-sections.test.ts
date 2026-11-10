@@ -108,7 +108,10 @@ describe("tab sections by device", () => {
     const split: BrowserTabStripRow = { kind: "group", group, places: [a, b, c] };
     const whole: BrowserTabStripRow = {
       kind: "group",
-      group: { ...group, id: BrowserTabGroupIdSchema.parse("btg_00000000-0000-4000-8000-000000000002") },
+      group: {
+        ...group,
+        id: BrowserTabGroupIdSchema.parse("btg_00000000-0000-4000-8000-000000000002"),
+      },
       places: [tab("d", "studio")],
     };
     const sections = browserTabSections({
@@ -144,11 +147,9 @@ describe("tab sections by device", () => {
       ],
     });
     expect(keys(sections)).toEqual(["mini", "imac", "studio"]);
-    expect(sections.sections.map((section) => section.pending.map((value) => value.idempotencyKey))).toEqual([
-      ["chosen"],
-      ["profile"],
-      ["in-session"],
-    ]);
+    expect(
+      sections.sections.map((section) => section.pending.map((value) => value.idempotencyKey)),
+    ).toEqual([["chosen"], ["profile"], ["in-session"]]);
     expect(sections.unplaced.map((value) => value.idempotencyKey)).toEqual(["guest"]);
   });
 });
