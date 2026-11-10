@@ -185,7 +185,7 @@ export class TeamAdministrationService {
       });
     const now = Date.now();
     const prior = this.#publicBudget.get(procedure);
-    const budget = !prior || now - prior.at >= 60_000 ? { at: now, remaining: 600 } : prior;
+    const budget = !prior || now - prior.at >= 60_000 ? { at: now, remaining: 120 } : prior;
     this.#publicBudget.set(procedure, budget);
     if (budget.remaining-- <= 0)
       throw new OpensteerError({

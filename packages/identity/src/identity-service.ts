@@ -1862,7 +1862,7 @@ export class IdentityService {
     if (teamInvitation) {
       if (
         teamInvitation.acceptedAt ||
-        admission.consumedAt ||
+        admission.consumedBy ||
         admission.reservedEmail !== teamInvitation.intendedEmail
       )
         throw new OpensteerError({ code: "forbidden", message: "Invitation admission required" });
@@ -2120,6 +2120,13 @@ export class IdentityService {
     if (!admission || admission.purpose !== "invitation") {
       throw new OpensteerError({ code: "forbidden", message: "Invitation admission required" });
     }
+    const team = await this.#database
+      .selectFrom("teamInvitations")
+      .select("id")
+      .where("selector", "=", admission.subjectSelector)
+      .executeTakeFirst();
+    if (team)
+      throw new OpensteerError({ code: "forbidden", message: "Invitation admission required" });
     const record = await this.#store.invitationForExchange(admission.subjectSelector);
     if (!record) {
       throw new OpensteerError({ code: "not_found", message: "Invitation not found" });

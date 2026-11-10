@@ -139,7 +139,7 @@ describeStore("team administration Host boundary", (it) => {
         expect((await request("192.0.2.1")).statusCode).toBe(200);
       expect((await request("192.0.2.1")).statusCode).toBe(429);
       expect((await request("192.0.2.2")).statusCode).toBe(200);
-      for (let index = 0; index < 539; index++)
+      for (let index = 0; index < 59; index++)
         expect((await request(`198.51.100.${1 + Math.floor(index / 60)}`)).statusCode).toBe(200);
       expect((await request("192.0.2.3")).statusCode).toBe(429);
     } finally {
@@ -402,6 +402,9 @@ describeStore("team administration Host boundary", (it) => {
         ...context(pending),
         headers: { origin, cookie: `${pending.cookie}; ${admissionCookie}` },
       };
+      await expect(service.read("team.summary.get", {}, acceptedContext)).rejects.toMatchObject({
+        reason: "membership-lost",
+      });
       const proof = await identity.teamInvitationAdmission(
         new Headers(acceptedContext.headers),
         pending.session,

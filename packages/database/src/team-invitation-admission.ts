@@ -44,6 +44,12 @@ export async function readTeamAdmission(
     !timingSafeEqual(Buffer.from(proof.browserNonceHash), Buffer.from(digest))
   )
     unavailableInvitation();
+  const workspaceInvitation = await database
+    .selectFrom("workspaceInvitations")
+    .select("id")
+    .where("selector", "=", proof.subjectSelector)
+    .executeTakeFirst();
+  if (workspaceInvitation) unavailableInvitation();
   const invitation = await database
     .selectFrom("teamInvitations")
     .selectAll()

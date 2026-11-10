@@ -2173,6 +2173,28 @@ integration("IdentityService", () => {
         clientSignup.data.session,
       ),
     ).rejects.toMatchObject({ reason: "invite-unavailable" });
+    const collisionId = crypto.randomUUID();
+    await database
+      .insertInto("teamInvitations")
+      .values({
+        id: collisionId,
+        selector: issued.invitation.selector,
+        tokenHash: createHash("sha256").update("other verifier").digest("hex"),
+        intendedEmail: clientSignup.data.session.user.email,
+        memberKind: "full",
+        createdBy: ownerId,
+        createdAt: new Date(),
+        expiresAt: new Date(Date.now() + 600_000),
+        commandId: "selector-collision",
+        requestFingerprint: "test",
+      })
+      .execute();
+    await expect(
+      inviteOnlyIdentity.acceptInvitation(
+        new Headers({ cookie: `${admissionCookie}; ${sessionCookie}`, origin }),
+      ),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await database.deleteFrom("teamInvitations").where("id", "=", collisionId).execute();
     const accepted = await inviteOnlyIdentity.acceptInvitation(
       new Headers({ cookie: `${admissionCookie}; ${sessionCookie}`, origin }),
     );
