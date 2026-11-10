@@ -614,7 +614,7 @@ export async function recomputeProjectMemberships(
     includeExpiredFor: pairs,
     onlyPairs: pairs,
   });
-  const memberships = new Map(
+  const memberships = new Map<string, Membership>(
     (
       await transaction
         .selectFrom("workspaceMemberships")

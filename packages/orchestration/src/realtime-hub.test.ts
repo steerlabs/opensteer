@@ -37,7 +37,9 @@ describe("snapshot-before-live synchronization", () => {
         workspaceMembershipAuthorityForUser: authority,
         workspaceSnapshot: async () => {
           snapshotRead.resolve();
-          await withTimeout(release.promise, 1000, "snapshot release missing");
+          await withTimeout(release.promise, 1000, {
+            timeoutError: () => new Error("Snapshot release missing"),
+          });
           return snapshot(workspaceId, "0");
         },
       } as unknown as OpensteerStore,
@@ -45,7 +47,9 @@ describe("snapshot-before-live synchronization", () => {
     const sink = new MemorySink();
     const subscribing = hub.subscribe({ afterSequence: sequence("0"), sink, userId, workspaceId });
     try {
-      await withTimeout(snapshotRead.promise, 1000, "snapshot read never started");
+      await withTimeout(snapshotRead.promise, 1000, {
+        timeoutError: () => new Error("Snapshot read never started"),
+      });
       now = 1001;
       release.resolve();
       await expect(subscribing).rejects.toMatchObject({ code: "forbidden" });
@@ -71,7 +75,9 @@ describe("snapshot-before-live synchronization", () => {
       await send(message);
       if (message.type === "host.events") {
         sending.resolve();
-        await withTimeout(release.promise, 1000, "send release missing");
+        await withTimeout(release.promise, 1000, {
+          timeoutError: () => new Error("Send release missing"),
+        });
       }
     };
     const close = sink.close.bind(sink);
@@ -98,11 +104,15 @@ describe("snapshot-before-live synchronization", () => {
     });
     try {
       hub.publish(event(workspaceId, "1"));
-      await withTimeout(sending.promise, 1000, "first event never reached sink");
+      await withTimeout(sending.promise, 1000, {
+        timeoutError: () => new Error("First event never reached sink"),
+      });
       hub.publish(event(workspaceId, "2"));
       now = 1001;
       release.resolve();
-      await withTimeout(closed.promise, 1000, "expired queued delivery remained open");
+      await withTimeout(closed.promise, 1000, {
+        timeoutError: () => new Error("Expired queued delivery remained open"),
+      });
       expect(sink.messages.filter((message) => message.type === "host.events")).toHaveLength(1);
       expect(sink.closed).toMatchObject({ code: 4003 });
       expect(authority).toHaveBeenCalledTimes(1);
@@ -152,7 +162,9 @@ describe("snapshot-before-live synchronization", () => {
           items: [{ at: 0, op: "append", stream: "assistant", text: "Expired" }],
         },
       });
-      await withTimeout(closed.promise, 1000, "expired live delivery remained open");
+      await withTimeout(closed.promise, 1000, {
+        timeoutError: () => new Error("Expired live delivery remained open"),
+      });
       expect(sink.messages.some((message) => message.type === "host.live")).toBe(false);
       expect(sink.closed).toMatchObject({ code: 4003 });
       expect(authority).toHaveBeenCalledTimes(1);

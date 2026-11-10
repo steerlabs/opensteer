@@ -362,7 +362,7 @@ describeStore("dormant Project access", (it) => {
       const access = await setup(storeFixture);
       const groupId = randomUUID();
       await access.mutate({ kind: "create-group", id: groupId, name: "Scale" });
-      const users = [];
+      const users: UserId[] = [];
       const peopleCount = operation === "delete-group" ? accessCapacity.effectivePairs / 128 : 64;
       for (let index = 0; index < peopleCount; index++)
         users.push(await storeFixture.store.createUser(`Scale ${index}`));
@@ -463,7 +463,9 @@ describeStore("dormant Project access", (it) => {
             ? [{ kind: "delete-group", groupId }]
             : [{ kind: "member", userId: users[0]!, memberState: "suspended" }],
       });
-      await withTimeout(fenced.promise, 3000, "measured writer never acquired its authority fence");
+      await withTimeout(fenced.promise, 3000, {
+        timeoutError: () => new Error("Measured writer never acquired its authority fence"),
+      });
       const waiting = performance.now();
       const competitor = mutateAccess(storeFixture.database, {
         actor: { userId: access.userId },
