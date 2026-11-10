@@ -34,6 +34,7 @@ import {
 } from "node:fs";
 import { isAbsolute } from "node:path";
 import { z } from "zod";
+import { KnowledgeEnvironmentSchema } from "./knowledge.js";
 import { PasskeysEnvironmentSchema } from "./passkeys.js";
 
 export const hostEnvironmentKeys = {
@@ -169,6 +170,7 @@ const HostEnvironmentSchema = z.object({
   OPENSTEER_LOCAL_OWNER_CLAIM_TOKEN: optionalLocalOwnerClaimToken,
   OPENSTEER_LOCAL_PASSWORD_ENABLED: booleanValue(true),
   OPENSTEER_PASSKEYS: PasskeysEnvironmentSchema.shape.OPENSTEER_PASSKEYS,
+  OPENSTEER_KNOWLEDGE: KnowledgeEnvironmentSchema.shape.OPENSTEER_KNOWLEDGE,
   OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID: EnvironmentIdSchema.optional(),
   OPENSTEER_NATIVE_OAUTH_ENABLED: optionalBooleanValue,
   OPENSTEER_DEPLOYMENT_KIND: DeploymentKindSchema.optional(),
@@ -232,6 +234,8 @@ export interface HostConfig {
    * the machine comes to the Host, not the other way round.
    */
   readonly passkeys?: boolean;
+  /** Agents' `sql` tool over the knowledge base; only ever true on a Personal Deployment. */
+  readonly knowledge?: boolean;
   readonly browserRuntime: { readonly attachKeyId: string };
   readonly databaseUrl: string;
   readonly credentialKeyPath: string | undefined;
@@ -346,6 +350,11 @@ export function assertHostConfigInvariants(config: HostConfig): void {
   if (config.workspace.shape.kind === "personal" && config.identity.nativeOAuth !== undefined) {
     throw new Error(
       "A Personal Deployment cannot serve native OAuth: set OPENSTEER_NATIVE_OAUTH_ENABLED=false",
+    );
+  }
+  if (config.knowledge === true && config.workspace.shape.kind !== "personal") {
+    throw new Error(
+      "The knowledge trial runs only on a Personal Deployment: unset OPENSTEER_KNOWLEDGE",
     );
   }
   // A loopback Host mints its own first-owner code; only a networked Host
@@ -549,6 +558,7 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
     canonicalOrigin,
     browserRuntime,
     passkeys: parsed.OPENSTEER_PASSKEYS,
+    knowledge: parsed.OPENSTEER_KNOWLEDGE,
     databaseUrl: parsed.OPENSTEER_DATABASE_URL,
     credentialKeyPath: parsed.OPENSTEER_CREDENTIAL_KEY_PATH,
     dataDirectory: parsed.OPENSTEER_HOST_DATA_DIR,

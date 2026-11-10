@@ -79,6 +79,8 @@ export const CaseSchema = z.strictObject({
   assigned: z.boolean().optional(),
   /** Runs as a voice call's agent, with its guide. */
   voice: z.boolean().optional(),
+  /** Runs on a Host serving the knowledge trial's `sql` tool. */
+  knowledge: z.boolean().default(false),
   machineAccessNotice: z.string().min(1).optional(),
   requesterTimeZone: TimeZoneSchema.optional(),
   engines: z
@@ -113,6 +115,8 @@ export const CaseSchema = z.strictObject({
           path: z.array(z.string().min(1)).min(1),
           pattern: regex,
           first: z.boolean().default(false),
+          /** Only calls after the first valid one matching this, result included, count. */
+          after: call.extend({ result: z.json() }).optional(),
         }),
       )
       .default([]),

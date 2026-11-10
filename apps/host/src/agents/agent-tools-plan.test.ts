@@ -27,7 +27,9 @@ describe("Host Run tools plan", () => {
       "computer_list",
     );
     expect(plan.skills).toEqual(
-      opensteerAgentSkillNames.filter((name) => name !== "opensteer:memory"),
+      opensteerAgentSkillNames.filter(
+        (name) => name !== "opensteer:memory" && name !== "opensteer:knowledge",
+      ),
     );
     expect(plan.instructions).toContain("Role: work");
     expect(plan.instructions).not.toContain("opensteer:projects");
@@ -39,7 +41,9 @@ describe("Host Run tools plan", () => {
     expect(chat.toolsRevision).not.toBe(plan.toolsRevision);
     const main = agentToolsPlanForRun({ ...input, reach: "user" });
     expect(main.instructions).toContain("opensteer:projects");
-    expect(main.skills).toEqual([...opensteerAgentSkillNames]);
+    expect(main.skills).toEqual(
+      opensteerAgentSkillNames.filter((name) => name !== "opensteer:knowledge"),
+    );
     expect(agentToolsPlanForRun({ ...input, reach: "lineage" }).skills).not.toContain(
       "opensteer:memory",
     );
@@ -60,6 +64,29 @@ describe("Host Run tools plan", () => {
       RunAgentToolsPlanSchema.safeParse({ ...plan, tools: ["duplicate", "duplicate"] }).success,
     ).toBe(false);
   });
+});
+
+it("offers sql and its skill only to Main-inheriting Runs on a Host serving the trial", () => {
+  const input = {
+    url: "https://host.test/mcp",
+    token: "token",
+    role: "conversation",
+    accessMode: "full-access",
+  } as const;
+  const offered = (reach: "user" | "workspace" | "lineage", knowledge: boolean) => {
+    const plan = agentToolsPlanForRun({ ...input, reach, knowledge });
+    return [plan.tools.includes("sql"), plan.skills.includes("opensteer:knowledge")];
+  };
+  expect(offered("user", true)).toEqual([true, true]);
+  expect(offered("user", false)).toEqual([false, false]);
+  expect(offered("workspace", true)).toEqual([false, false]);
+  expect(offered("lineage", true)).toEqual([false, false]);
+  for (const kind of ["program", "connection"] as const)
+    expect(
+      toolsFor({ kind, accessMode: "full-access", reach: { kind: "user" }, knowledge: true }).map(
+        ({ name }) => name,
+      ),
+    ).not.toContain("sql");
 });
 
 it("gives a call every tool, and tells it replies are spoken", () => {

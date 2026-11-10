@@ -359,6 +359,7 @@ export interface HostServerDependencies {
   readonly connections?: ConnectionOAuth;
   readonly notificationPreviews?: import("./notifications/notification-preview-service.js").NotificationPreviewService;
   readonly passkeys?: boolean;
+  readonly knowledge?: boolean;
   readonly fetch?: typeof globalThis.fetch;
   readonly attachments: AttachmentService;
   readonly runFiles: RunFileRelay;
@@ -2988,7 +2989,12 @@ export async function advertisedBootstrapMethods(
 export function advertisedCapabilities(
   dependencies: Pick<
     HostServerDependencies,
-    "attachments" | "authenticator" | "personalRemoteAccess" | "passkeys" | "notificationPreviews"
+    | "attachments"
+    | "authenticator"
+    | "personalRemoteAccess"
+    | "passkeys"
+    | "notificationPreviews"
+    | "knowledge"
   >,
 ): readonly HostCapability[] {
   return [
@@ -3019,6 +3025,7 @@ export function advertisedCapabilities(
     "browser-search-suggestions-v1",
     "workspace-tab-reopen-v1",
     "browser-profile-manage-v1",
+    ...(dependencies.knowledge === true ? ["knowledge-sql-v1" as const] : []),
     ...(dependencies.authenticator.identity.nativeOpenIdConfiguration()
       ? (["native-oauth"] as const)
       : []),

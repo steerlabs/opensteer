@@ -309,6 +309,8 @@ export const HostCapabilitySchema = z.enum([
   "browser-profile-manage-v1",
   /** Clients can hold a voice call with its own agent through `voice.*`. */
   "voice-run-v1",
+  /** The owner's own agents can query and append knowledge facts with the `sql` tool. */
+  "knowledge-sql-v1",
 ]);
 export type HostCapability = z.infer<typeof HostCapabilitySchema>;
 

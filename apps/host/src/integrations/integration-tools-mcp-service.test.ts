@@ -208,7 +208,7 @@ describe("Opensteer MCP integration access classes", () => {
     };
     expect(listed.tools.map(({ name }) => name)).toEqual(
       agentTools
-        .filter((tool) => tool.callers.some((kind) => kind === "run"))
+        .filter((tool) => tool.callers.some((kind) => kind === "run") && !("knowledge" in tool))
         .map((tool) => tool.name),
     );
     // The MCP SDK rejects a tools/list result whose inputSchema has no object

@@ -5,6 +5,7 @@ import {
   type LockOrderMode,
 } from "@opensteer/shared/lockOrderMode";
 import { Client, type QueryConfig, type QueryResult, type QueryResultRow } from "pg";
+import { knowledgeExecutorRolePrefix } from "./knowledge-schema.js";
 import { advisoryLockResource, databaseLockRank } from "./lock-order.js";
 
 type Token = {
@@ -132,6 +133,8 @@ function relation(ts: readonly Token[], start: number): Target | undefined {
   let table = ts[i++]?.text;
   if (!table || table === "(" || !/^[a-z_]/iu.test(table)) return;
   if (ts[i]?.text === ".") {
+    // The knowledge schema holds no ranked table, and its names do not resolve unqualified.
+    if (table === "knowledge") return;
     table = ts[i + 1]?.text;
     i += 2;
   }
@@ -1034,7 +1037,12 @@ export function installLockOrderChecker(): void {
     const cb = typeof values === "function" ? values : callback;
     // Read per statement, so a test can opt in or out for its own scope. Off still
     // queues behind earlier checked statements to keep this client's order.
-    const origin = lockOrderMode() === "off" ? undefined : new StatementOrigin();
+    // The knowledge login reaches no ranked table, and cannot run the catalogue
+    // and row-lock reads observation needs, so its statements run as sent.
+    const origin =
+      lockOrderMode() === "off" || this.user?.startsWith(knowledgeExecutorRolePrefix)
+        ? undefined
+        : new StatementOrigin();
     const previous = queues.get(this) ?? Promise.resolve();
     const pending = previous
       .catch(() => undefined)

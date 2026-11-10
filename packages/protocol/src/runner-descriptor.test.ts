@@ -168,11 +168,19 @@ describe("the owning Runner descriptor reader", () => {
       ...wire,
       modules: {
         ...wire.modules,
-        agents: { ...wire.modules.agents, computerTool: 1 },
+        agents: { ...wire.modules.agents, computerTool: 1, knowledgeSkill: 1 },
         integrations: { platform: "darwin", protocolVersion: 5, computerUseVersion: 2 },
       },
     });
     expect(current.modules.agents?.computerTool).toBe(1);
+    expect(current.modules.agents?.knowledgeSkill).toBe(1);
+    expect(RunnerDescriptorSchema.parse(wire).modules.agents?.knowledgeSkill).toBeUndefined();
+    expect(
+      RunnerDescriptorSchema.parse({
+        ...wire,
+        modules: { ...wire.modules, agents: { ...wire.modules.agents, knowledgeSkill: 2 } },
+      }).modules.agents?.knowledgeSkill,
+    ).toBeUndefined();
     expect(current.modules.integrations?.computerUseVersion).toBe(2);
     const future = RunnerDescriptorSchema.parse({
       ...wire,

@@ -217,6 +217,8 @@ export interface RunnerLogger {
 
 /** Execution dependencies exist only when this Runner advertises agents. */
 export interface RunnerAgentsConnection {
+  /** This Runner loaded the `opensteer:knowledge` skill, so the Host may plan it. */
+  readonly knowledgeSkill?: true;
   readonly runFileOptions?: { readonly dataDirectory: string; readonly helperBinary: string };
   readonly earlierBootsContained?: boolean;
   /** Present exactly when this Runner holds directories of its own. */
@@ -775,6 +777,7 @@ export class ReconnectingHostConnection {
       localStorage: (await agents.localWorkspaces?.inventory()) ?? null,
       loginFill: 1,
       computerTool: 1,
+      ...(agents.knowledgeSkill ? { knowledgeSkill: 1 as const } : {}),
       ...(agents.runFileOptions ? { runFiles: 1 as const } : {}),
       maxConcurrentRuns: this.#config.maxConcurrentRuns,
       providerStateModes: [...agents.runtime.providerStateModes()],
