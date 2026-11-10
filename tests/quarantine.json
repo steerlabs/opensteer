@@ -562,5 +562,23 @@
       "Diagnostic reproduction: pnpm test:integration -- apps/host/src/runtime/runtime.integration.test.ts -t 'persists the exact managed owner' passed in 934 ms; the subsequent complete file passed all 22 tests, with the named case taking 747 ms. Temporary phase markers confirmed initial startup, both closes, restart and both expected startup rejections settled; markers were removed. No assertion, timeout or execution exemption changed. Logs: ~/.local/state/opensteer/work/d2a-skill-identity/{check-first,managed-isolated,managed-full}.log.",
       "Reproduce under the normal four-worker selected integration workload and capture bounded startup/shutdown phase diagnostics, including HostRuntime.closingStep(), if it recurs. Acceptance: identify and gate the blocking operation deterministically, preserve managed-owner identity, enrollment replay, Account publication ordering and mismatch refusal assertions, and pass the complete file plus the selected integration workload before removing this record."
     ]
+  },
+  {
+    "file": "tests/browser-tab-groups.integration.test.ts",
+    "name": [
+      "personal tab order",
+      "keeps exactly 10,000 saved positions and refuses an oversized materialization without changing it"
+    ],
+    "area": "Browser",
+    "owner": "Browser maintainers",
+    "status": "investigating",
+    "firstSeen": "2026-11-10T20:11:34Z",
+    "deadline": "2026-11-17T20:11:34Z",
+    "sha": "1ae26f69f93f1afe3e6acf1d430b94fb38589b8a",
+    "evidence": [
+      "CI integration (3) failed in the file's afterEach cleanup, not in the case's assertions: BrowserRuntime.shutdown() rejected with \"Browser shutdown persistence did not finish.\" (reason runtime-shutdown.queue-timeout) after its unchanged 5,000 ms cap. The case took 15,195 ms. https://github.com/steerlabs/opensteer/actions/runs/42891755316/job/130094803994",
+      "The same case passed in CI at d655707d09f9b68e001afb34337cd355ebdb2bdc, whose application code is identical (the next commit changed only a mobile test stub); main at b8e5a6dbb passed; pnpm test:integration -- tests/browser-tab-groups.integration.test.ts -t '10,000 saved positions' passed locally in 5,132 ms.",
+      "Suspect: Runtime or Host shutdown work that scales with the 10,000 seeded saved tabs, slowed past the cap on a loaded runner. Acceptance: find and bound what shutdown waits on with 10,000 saved positions, keep the 5,000 ms cap and the empty-cleanup-failures assertion, and pass the file under the normal integration workload before removing this record."
+    ]
   }
 ]
