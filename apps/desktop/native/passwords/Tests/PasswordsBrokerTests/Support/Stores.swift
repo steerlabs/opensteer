@@ -12,6 +12,7 @@ final class ControlledStore: ProtectedStore, @unchecked Sendable {
   private var writesHeld = false
   private var waitingWriteCount = 0
   private var locked = false
+  var onReadHeld: (@Sendable () -> Void)?
 
   init(directory: URL) throws {
     inner = try FileProtectedStore(directory: directory)
@@ -52,6 +53,7 @@ final class ControlledStore: ProtectedStore, @unchecked Sendable {
     try condition.withLock {
       if locked { throw NotUnlockedSinceRestart() }
       waiting += 1
+      if closed { onReadHeld?() }
       while closed { condition.wait() }
       waiting -= 1
     }

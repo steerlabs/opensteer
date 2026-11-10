@@ -52,6 +52,8 @@ import {
   BrowserHistoryUrlSchema,
   browserHostMethods,
   browserPageSite,
+  browserSessionTabLimit,
+  browserSessionTabsFullReason,
   BrowserProfileAccessSchema,
   BrowserServerMessageSchema,
   browserStateImportHostTimeoutMs,
@@ -171,6 +173,7 @@ function browserActionFailure(reason: BrowserActionErrorCode, message: string): 
  * control only the Host itself issues, so it is never relayed from a consumer.
  */
 const consumerMessageTypes: ReadonlySet<BrowserClientMessage["type"]> = new Set([
+  "autofill.fill",
   "cursor.query",
   "cursor.reset",
   "input.command",
@@ -476,6 +479,7 @@ export interface BrowserRuntimeConnection {
 }
 
 export interface BrowserRuntimeTarget {
+  readonly personFill?: boolean;
   readonly placementKey: string;
   readonly runtimeId: string;
   readonly main?: boolean;
@@ -607,7 +611,11 @@ interface BrowserServiceOptions {
   readonly onProfilesChanged?: (ownerId: UserId, workspaceId: WorkspaceId) => void;
   readonly workspaceTabs?: WorkspaceTabStore;
   readonly tabGroups?: BrowserTabGroupStore;
-  readonly onCatalogChanged?: (sessionId: BrowserSessionId, workspaceId: WorkspaceId) => void;
+  readonly onCatalogChanged?: (
+    sessionId: BrowserSessionId,
+    workspaceId: WorkspaceId,
+    change?: { readonly lineageChanged: boolean },
+  ) => void;
   readonly onMissingActor?: (sessionId: BrowserSessionId, agentBindingId: string) => void;
   readonly onPlaceNotice?: (
     ownerId: UserId,
@@ -639,7 +647,7 @@ interface BrowserServiceOptions {
   readonly onUsageChanged?: (credits: readonly BrowserUsageCredit[]) => void;
   /** A best-effort write that failed after the agent was already answered. */
   readonly onError?: (error: unknown) => void;
-  /** Drives activity expiry and native coalescing; browser commands and connection deadlines use real time. */
+  /** Drives activity expiry and place coalescing; browser commands and connection deadlines use real time. */
   readonly activityClock?: Clock;
   readonly actingWindowMs?: number;
   readonly actorMetadataTimeoutMs?: number;
@@ -665,9 +673,17 @@ interface BrowserActor {
   lineageThreadIds: readonly ThreadId[];
   lineageWorkspaceIds: readonly WorkspaceId[];
   readonly audience: Map<UserId, { threadId: ThreadId; home: boolean }>;
-  readonly surfaces: Map<string, { at: number; seq: number; heldAt?: number }>;
+  readonly surfaces: Map<
+    string,
+    {
+      at: number;
+      seq: number;
+      heldAt?: number;
+      recordedPage?: { readonly key: string; readonly at: number };
+    }
+  >;
+  usageTail?: Promise<void>;
   seq: number;
-  lastSurfaceId: string | null;
 }
 
 export class BrowserService {
@@ -728,6 +744,7 @@ export class BrowserService {
   readonly #onPresenceChanged: NonNullable<BrowserServiceOptions["onPresenceChanged"]>;
   readonly #onUsageChanged: NonNullable<BrowserServiceOptions["onUsageChanged"]>;
   readonly #onError: NonNullable<BrowserServiceOptions["onError"]>;
+  readonly #reservedTabs = new Map<BrowserSessionId, number>();
   readonly #activityClock: Clock;
   readonly #actingWindowMs: number;
   readonly #actorMetadataTimeoutMs: number;
@@ -788,6 +805,7 @@ export class BrowserService {
     this.#actorMetadataTimeoutMs = options.actorMetadataTimeoutMs ?? browserActorMetadataTimeoutMs;
     this.#onWorkspaceEvent = options.onWorkspaceEvent;
     this.#runPlaces = new RunPlaceRecorder({
+      clock: this.#activityClock,
       write: (input) => this.#repository.recordRunPlace(input),
       publish: (event) => this.#onWorkspaceEvent(event),
       onError: (error) => this.#onError(error),
@@ -1190,7 +1208,9 @@ export class BrowserService {
       const broker = session ? this.#brokers.get(session.id) : undefined;
       if (session && broker?.live)
         await this.#disposeWorkspaceTab(ownerId, session.workspaceId, session.id, tabId, broker);
-      if (session) this.#onSessionsChanged(session.workspaceId, [session.id], "browser.tabs");
+      // The closed revision reaches every viewer, so a slower earlier lineage can't bring it back.
+      if (session)
+        this.#onCatalogChanged(session.id, session.workspaceId, { lineageChanged: true });
     });
     return {
       type: "workspace.tab.close" as const,
@@ -1777,6 +1797,8 @@ export class BrowserService {
     return this.#serializeKey(`tab-open:${ownerId}:${command.idempotencyKey}`, async () => {
       budget.signal.throwIfAborted();
       let admitted: BrowserTabOpenBinding | undefined;
+      // Until its page is recorded, an open counts against the session it chose.
+      let reserved: BrowserSessionId | undefined;
       try {
         let pendingFinish: (() => Promise<void>) | undefined;
         const select = async () => {
@@ -1814,24 +1836,37 @@ export class BrowserService {
             identityKey = resolved.identityKey;
             runnerId = placement.runnerId;
             const sessions = await this.#repository.listBrowserSessions(ownerId);
-            record =
-              sessions
-                .filter(
-                  (candidate) =>
-                    candidate.workspaceId === workspace.id &&
-                    candidate.state === "ready" &&
-                    candidate.origin === "workspace" &&
-                    candidate.opener?.kind === "person" &&
-                    candidate.opener.userId === ownerId &&
-                    candidate.profileId === profileId &&
-                    samePlacement(placement, placementOf(candidate)) &&
-                    this.#brokers.get(candidate.id)?.live,
-                )
-                .sort(
-                  (left, right) =>
-                    left.createdAt.getTime() - right.createdAt.getTime() ||
-                    left.id.localeCompare(right.id),
-                )[0] ?? null;
+            const candidates = sessions
+              .filter(
+                (candidate) =>
+                  candidate.workspaceId === workspace.id &&
+                  candidate.state === "ready" &&
+                  candidate.origin === "workspace" &&
+                  candidate.opener?.kind === "person" &&
+                  candidate.opener.userId === ownerId &&
+                  candidate.profileId === profileId &&
+                  samePlacement(placement, placementOf(candidate)) &&
+                  this.#brokers.get(candidate.id)?.live,
+              )
+              .sort(
+                (left, right) =>
+                  left.createdAt.getTime() - right.createdAt.getTime() ||
+                  left.id.localeCompare(right.id),
+              );
+            record = null;
+            for (const candidate of candidates) {
+              const saved = (await this.#workspaceTabs?.tabIds(candidate.id)) ?? [];
+              // Read together after the await: an open is reserved until its page is listed.
+              const listed = this.#brokers.get(candidate.id)?.surfaceIds ?? [];
+              const held =
+                new Set([...saved, ...listed]).size + (this.#reservedTabs.get(candidate.id) ?? 0);
+              if (held < browserSessionTabLimit) {
+                record = candidate;
+                reserved = candidate.id;
+                this.#reservedTabs.set(reserved, (this.#reservedTabs.get(reserved) ?? 0) + 1);
+                break;
+              }
+            }
             if (!record)
               opening = {
                 ownerId,
@@ -1918,19 +1953,30 @@ export class BrowserService {
             outcome: { kind: "failed", reason: "failed" },
           });
           const settled = await this.#repository.getBrowserTabOpen(ownerId, command.idempotencyKey);
-          if (settled?.outcome.kind === "failed") throw this.#tabOpenFailure(settled);
+          if (settled?.outcome.kind === "failed") throw this.#tabOpenFailure(settled, error);
         }
         throw error;
+      } finally {
+        if (reserved) {
+          const left = (this.#reservedTabs.get(reserved) ?? 1) - 1;
+          if (left > 0) this.#reservedTabs.set(reserved, left);
+          else this.#reservedTabs.delete(reserved);
+        }
       }
     });
   }
 
-  #tabOpenFailure(binding: BrowserTabOpenBinding): OpensteerError {
+  #tabOpenFailure(binding: BrowserTabOpenBinding, cause?: unknown): OpensteerError {
+    const full = cause instanceof OpensteerError && cause.reason === browserSessionTabsFullReason;
     return this.#tabOpenRefusal(
       "browser-tab-open-failed",
       binding.outcome.kind === "failed" && binding.outcome.reason === "interrupted"
         ? "Opening was interrupted by a Host restart. Retry to open a new page."
-        : "The browser could not open this page. Retry to open a new page.",
+        : full
+          ? "This browser holds all the tabs it can. Retry to open the page in another browser."
+          : "The browser could not open this page. Retry to open a new page.",
+      [],
+      cause,
     );
   }
 
@@ -1951,8 +1997,10 @@ export class BrowserService {
     reason: BrowserTabOpenRefusalReason,
     message: string,
     placements: readonly BrowserPlacement[] = [],
+    cause?: unknown,
   ): OpensteerError {
     return new OpensteerError({
+      ...(cause === undefined ? {} : { cause }),
       code: "conflict",
       reason,
       message,
@@ -2463,7 +2511,6 @@ export class BrowserService {
       runId: source.runId,
       audience: new Map(),
       surfaces: new Map(),
-      lastSurfaceId: null,
       seq: 0,
       lineageThreadIds: source.lineageThreadIds,
       lineageWorkspaceIds: source.lineageWorkspaceIds,
@@ -2616,15 +2663,16 @@ export class BrowserService {
     if (timer) clearTimeout(timer);
     this.#catalogNotices.delete(sessionId);
     return this.#serializeKey(`catalog:${sessionId}`, async () => {
+      let lineageChanged = false;
       if (broker && this.#workspaceTabs) {
         const { tabs, closed, revision, dirty, surfaceStateRevision, surfaceStateDirty } =
           broker.durableCatalog();
-        const changed = dirty && (await this.#workspaceTabs.record(sessionId, tabs, closed));
-        if (changed || surfaceStateDirty)
-          this.#onSessionsChanged(workspaceId, [sessionId], "browser.catalog-flush");
+        if (dirty) lineageChanged = await this.#workspaceTabs.record(sessionId, tabs, closed);
+        // A tab falling asleep or waking changes the group people hold, as a lineage change does.
+        lineageChanged ||= surfaceStateDirty;
         broker.acknowledgeClosed(closed, revision, surfaceStateRevision);
       }
-      this.#onCatalogChanged(sessionId, workspaceId);
+      this.#onCatalogChanged(sessionId, workspaceId, { lineageChanged });
     });
   }
 
@@ -2642,6 +2690,36 @@ export class BrowserService {
     return result;
   }
 
+  #recordActorUse(actor: BrowserActor, surfaceId: BrowserSurfaceId, force = false): Promise<void> {
+    const broker = this.#brokers.get(actor.sessionId);
+    const key = broker?.pageKeyOf(surfaceId);
+    if (key === undefined) return Promise.resolve();
+    const previous = actor.surfaces.get(surfaceId);
+    if (!force && previous?.recordedPage?.key === key) return actor.usageTail ?? Promise.resolve();
+    const recordedPage = { key, at: this.#activityClock.now() };
+    actor.surfaces.set(surfaceId, { at: 0, seq: 0, ...previous, recordedPage });
+    const page = broker?.pageOf(surfaceId) ?? null;
+    // Separate transactions keep lastUsedAt ordered; now() is fixed inside a transaction.
+    const tail = (actor.usageTail ?? Promise.resolve())
+      .then(() =>
+        this.#repository.recordAgentBrowserUse({
+          agentBindingId: actor.binding,
+          ownerId: actor.ownerId,
+          sessionId: actor.sessionId,
+          tabId: surfaceId,
+          page,
+        }),
+      )
+      .then((credits) => this.announceUsage(credits))
+      .catch((error: unknown) => {
+        const surface = actor.surfaces.get(surfaceId);
+        if (surface?.recordedPage === recordedPage) delete surface.recordedPage;
+        this.#onError(error);
+      });
+    actor.usageTail = tail;
+    return tail;
+  }
+
   #runtimeActivity(sessionId: BrowserSessionId, activity: BrowserRuntimeActivity): void {
     const actor = this.#actors.get(activity.actorToken);
     if (
@@ -2657,26 +2735,22 @@ export class BrowserService {
       activity = { ...activity, pointer: null };
     actor.seq = activity.seq;
     const data = this.#placeData(sessionId, activity.surfaceId);
-    if (data) this.#runPlaces.enter(actor.runId, actor.generation, data);
+    const surfaceId = activity.surfaceId;
+    // The Run's settled tab is its latest use, even after it stopped, so the
+    // actor is held here rather than looked up when the place lands.
+    if (data)
+      this.#runPlaces.enter(actor.runId, actor.generation, data, async (at, coalesced) => {
+        const recorded = actor.surfaces.get(surfaceId)?.recordedPage;
+        if (!coalesced && recorded && recorded.at >= at) return;
+        await this.#recordActorUse(actor, surfaceId, true);
+      });
 
-    if (actor.lastSurfaceId !== activity.surfaceId) {
-      actor.lastSurfaceId = activity.surfaceId;
-      void this.#repository
-        .recordAgentBrowserUse({
-          agentBindingId: actor.binding,
-          ownerId: actor.ownerId,
-          sessionId,
-          tabId: activity.surfaceId,
-          page: this.#brokers.get(sessionId)?.pageOf(activity.surfaceId) ?? null,
-        })
-        .then((credits) => this.announceUsage(credits))
-        .catch(this.#onError);
-    }
     this.#noteAgentCommand(sessionId, actor.binding);
     const at = this.#activityClock.now();
     const previous = actor.surfaces.get(activity.surfaceId);
     const wasActing = previous !== undefined && at - previous.at < this.#actingWindowMs;
-    actor.surfaces.set(activity.surfaceId, { at, seq: activity.seq });
+    actor.surfaces.set(activity.surfaceId, { ...previous, at, seq: activity.seq });
+    void this.#recordActorUse(actor, activity.surfaceId);
     const previousTimer = this.#actingTimers.get(sessionId);
     if (previousTimer) previousTimer();
     const deadlines = [...this.#actors.values()]
@@ -3433,7 +3507,15 @@ export class BrowserService {
             // while the command was answering; the live attachment is not
             // touched here, so that end cannot be undone. The agent has its page
             // either way: recording it never delays the answer or fails it.
-            if (target.success) {
+            const actor = actorToken ? this.#actors.get(actorToken) : undefined;
+            // An actor's own lane skips a page it already recorded: switching back is not a new use.
+            if (
+              target.success &&
+              actor?.sessionId === record.id &&
+              broker.pageKeyOf(target.data.surfaceId) !== undefined
+            ) {
+              void this.#recordActorUse(actor, target.data.surfaceId);
+            } else if (target.success) {
               void this.#repository
                 .recordAgentBrowserUse({
                   agentBindingId: input.agentBindingId,
@@ -3731,6 +3813,7 @@ export class BrowserService {
       readonly mode: BrowserConsumerMode;
       readonly passkeys?: PasskeyMode | undefined;
       readonly popups?: boolean | undefined;
+      readonly autofill?: boolean | undefined;
       readonly editing?: 1 | 2 | undefined;
       readonly basicInput?: 1 | undefined;
       readonly surfaceState?: 1 | undefined;
@@ -3792,7 +3875,11 @@ export class BrowserService {
         options.popups === true,
         ownerId,
         options.signedIn,
-        { basicInput: options.basicInput, surfaceState: options.surfaceState },
+        {
+          basicInput: options.basicInput,
+          surfaceState: options.surfaceState,
+          autofill: options.autofill === true,
+        },
       );
     } catch (error) {
       detachAuth();
@@ -4078,6 +4165,9 @@ export class BrowserService {
         : {}),
       access: "read-write",
       ...(target.passkeys && this.#passkeys ? { passkeys: 1 } : {}),
+      ...(target.personFill && target.main === true && this.#personal
+        ? { personFillVersion: 1 }
+        : {}),
       ...(target.navigationVersion ? { navigationVersion: 1 } : {}),
       ...(target.navigationAttributionVersion ? { navigationAttributionVersion: 1 } : {}),
       ...(target.popupFollowVersion ? { popupFollowVersion: 1 } : {}),
@@ -4853,6 +4943,11 @@ class HostedBrowserBroker {
   #durableTabs: BrowserWorkspaceTabDescriptor[] = [];
   readonly #durableClosed = new Set<BrowserSurfaceId>();
   #durableRevision = 0;
+  /** The pages the Runtime listed last; it lists a new tab before answering its open. */
+  get surfaceIds(): readonly BrowserSurfaceId[] {
+    return this.#snapshot?.surfaces.map((surface) => surface.id) ?? [];
+  }
+
   get workspaceTabRestoreVersion(): 1 | undefined {
     return this.#durableRevision > 0 ? 1 : undefined;
   }
@@ -5194,6 +5289,13 @@ class HostedBrowserBroker {
     };
   }
 
+  pageKeyOf(surfaceId: string): string | undefined {
+    const surface = this.#snapshot?.surfaces.find((surface) => surface.id === surfaceId);
+    return surface
+      ? JSON.stringify([surface.documentId, surface.url, surface.title, surface.navigationFailed])
+      : undefined;
+  }
+
   #noticePage(): void {
     if (this.#pageNoticeTimer !== null) return;
     this.#pageNoticeTimer = setTimeout(() => {
@@ -5216,6 +5318,7 @@ class HostedBrowserBroker {
     negotiation: {
       readonly basicInput?: 1 | undefined;
       readonly surfaceState?: 1 | undefined;
+      readonly autofill?: boolean | undefined;
     } = {},
   ): Promise<BrowserConsumerAttachment> {
     if (this.#settled) throw new OpensteerError({ code: "conflict", message: "Browser closed." });
@@ -5248,6 +5351,7 @@ class HostedBrowserBroker {
     outlet.userId = userId;
     outlet.passkeys = this.passkeys ? passkeys : undefined;
     outlet.popups = popups && mode === "control";
+    outlet.autofill = negotiation.autofill === true && mode === "control";
     outlet.authorized = async () => (await stillVisible()) && (await signedIn());
     this.#consumers.set(peer.id, outlet);
     try {
@@ -5266,7 +5370,11 @@ class HostedBrowserBroker {
             outlet.passkeys,
             outlet.clipboardToken,
             outlet.popups,
-            { basicInput: outlet.basicInput, surfaceState: outlet.surfaceState },
+            {
+              basicInput: outlet.basicInput,
+              surfaceState: outlet.surfaceState,
+              autofill: outlet.autofill,
+            },
           ),
         ),
       );
@@ -5911,6 +6019,15 @@ class HostedBrowserBroker {
     const [unaddressedAuthor, ...otherSenders] = this.#unaddressedKeySenders;
     for (const consumer of this.#consumers.values()) {
       if (
+        message.type.startsWith("browser.autofill.") &&
+        (!this.#snapshot?.personFillVersion ||
+          !consumer.autofill ||
+          consumer.mode !== "control" ||
+          !("consumerToken" in message) ||
+          message.consumerToken !== consumer.clipboardToken)
+      )
+        continue;
+      if (
         message.type === "browser.cursor" &&
         (consumer.mode !== "control" ||
           consumer.clipboardToken !== message.consumerToken ||
@@ -6051,7 +6168,11 @@ class HostedBrowserBroker {
               consumer.passkeys,
               consumer.clipboardToken,
               consumer.popups,
-              { basicInput: consumer.basicInput, surfaceState: consumer.surfaceState },
+              {
+                basicInput: consumer.basicInput,
+                surfaceState: consumer.surfaceState,
+                autofill: consumer.autofill,
+              },
             ),
           ),
         )
@@ -6180,6 +6301,10 @@ class HostedBrowserBroker {
     }
     if (message.type === "passkey.result" || message.type === "passkey.cancel")
       return Promise.reject(new Error("Viewer cannot answer a runtime ceremony."));
+    if (message.type === "autofill.fill") {
+      if (!outlet.autofill || outlet.mode !== "control" || this.#snapshot?.personFillVersion !== 1)
+        return Promise.reject(new Error("Browser autofill was not negotiated."));
+    }
     outlet.recordEditing(message.type);
     if (
       message.type === "clipboard.part" &&
@@ -6744,7 +6869,10 @@ class HostedBrowserBroker {
               inputSequenceStart: _inputSequenceStart,
               ...legacy
             } = compatible;
-            compatible = legacy;
+            compatible =
+              message.type === "autofill.fill"
+                ? { ...legacy, producerId: message.producerId }
+                : legacy;
             if (legacy.type === "input.pointer") {
               const {
                 geometryRevision: _revision,
@@ -6942,6 +7070,7 @@ export class BrowserConsumerOutlet {
   passkeys: PasskeyMode | undefined;
   /** Understands `browser.popup.opened`, and hears its own token for reporting native input. */
   popups = false;
+  autofill = false;
   authorized: () => Promise<boolean> = async () => false;
   readonly clipboardToken = randomUUID();
   readonly legacyClipboard = new LegacyBrowserClipboard(this.clipboardToken, maxBrowserTextBytes);

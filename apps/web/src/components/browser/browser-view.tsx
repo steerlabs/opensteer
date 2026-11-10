@@ -16,6 +16,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -36,11 +37,7 @@ import { useBrowserCommandKeys } from "./browser-command-keys.js";
 import { BrowserDownloads } from "./browser-downloads.js";
 import { BrowserPageDialog } from "./browser-page-dialog.js";
 import { BrowserPasskeyBar } from "./browser-passkey-bar.js";
-import {
-  BrowserFollowBand,
-  BrowserTaskTabs,
-  type BrowserThreadPair,
-} from "./browser-thread-pair.js";
+import { BrowserFollowBand, type BrowserThreadPair } from "./browser-thread-pair.js";
 import {
   BrowserSignInPopover,
   browserSignInLabel,
@@ -54,6 +51,7 @@ import {
   type BrowserKeyboardHandle,
 } from "./browser-viewport.js";
 import { NativeAgentCursors } from "./native-agent-cursors.js";
+import { useNativeAutofill } from "./native-autofill.js";
 import {
   nativeBrowserGeometry,
   useBrowserPresentationMode,
@@ -306,6 +304,18 @@ export function PlaceBrowserView({
       presentationPresented();
   }, [nativePresentation.placement, presentationPresented, sessionId, tabId]);
   const nativeTarget = nativePresentation.target;
+  const nativePlacement = nativePresentation.placement;
+  const nativeEditing = useMemo(
+    () =>
+      nativePlacement
+        ? (hostClient.browserFrames.editing?.target(
+            nativePlacement.sessionId,
+            nativePlacement.surfaceId,
+          ) ?? null)
+        : null,
+    [hostClient, nativePlacement?.sessionId, nativePlacement?.surfaceId],
+  );
+  const autofillShown = useNativeAutofill(nativeEditing, nativePlacement);
   const focusPage = () => (native ? nativePresentation.focusPage() : keyboardRef.current?.focus());
   const live = sessionReady && tabListed && viewer.status === "live";
   const closeFind = () => {
@@ -462,6 +472,7 @@ export function PlaceBrowserView({
   const pageFollowsView = tab?.sizedByAgent !== undefined;
   const loading = place?.loading === true;
   useBrowserCommandKeys({
+    autofillShown,
     visible,
     live: live && !dialog,
     native,
@@ -651,7 +662,6 @@ export function PlaceBrowserView({
           }
           compact={compact}
           following={pair?.following ? pair.mark : null}
-          tabs={pair ? <BrowserTaskTabs hostClient={hostClient} pair={pair} /> : null}
           disabled={!pageReachable}
           focusAddress={live && blankPage}
           find={

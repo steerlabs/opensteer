@@ -309,6 +309,7 @@ describe("LocalRunnerService", () => {
     const running = fixture(await configuration(directory), targets, undefined, async (input) => ({
       bridgeToken: "t".repeat(43),
       signIn: false,
+      personFill: false,
       runtimeId: input.runtimeId,
       stop,
       url: new URL("http://127.0.0.1:7777/"),
@@ -335,6 +336,7 @@ describe("LocalRunnerService", () => {
       return {
         bridgeToken: "t".repeat(43),
         signIn: false,
+        personFill: false,
         runtimeId: input.runtimeId,
         stop: async () => undefined,
         url: new URL("http://127.0.0.1:7777/"),
@@ -378,6 +380,7 @@ describe("LocalRunnerService", () => {
     const browser = vi.fn(async (input: { runtimeId: string }) => ({
       bridgeToken: "t".repeat(43),
       signIn: false,
+      personFill: false,
       runtimeId: input.runtimeId,
       stop: async () => {},
       url: new URL("http://127.0.0.1:7788/"),
@@ -466,6 +469,7 @@ describe("LocalRunnerService", () => {
       return {
         bridgeToken: "t".repeat(43),
         signIn: false,
+        personFill: false,
         runtimeId: input.runtimeId,
         stop: async () => {},
         url: new URL("http://127.0.0.1:7788/"),
@@ -633,6 +637,7 @@ describe("LocalRunnerService", () => {
     const running = fixture(await configuration(directory), targets, undefined, async (input) => ({
       bridgeToken: "t".repeat(43),
       signIn: false,
+      personFill: false,
       runtimeId: input.runtimeId,
       stop,
       url: new URL("http://127.0.0.1:7788/"),
@@ -674,6 +679,7 @@ describe("LocalRunnerService", () => {
     const running = fixture(await configuration(directory), targets, undefined, async (input) => ({
       bridgeToken: "t".repeat(43),
       signIn: false,
+      personFill: false,
       runtimeId: input.runtimeId,
       stop: async () => {
         await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 50));
@@ -822,6 +828,7 @@ describe("LocalRunnerService", () => {
           bridgeToken: "t".repeat(43),
           runtimeId: input.runtimeId,
           signIn: false,
+          personFill: false,
           url: new URL("http://127.0.0.1:7788/"),
           stop: async () => {
             await expect(readFile(path.join(root, "sign-ins"), "utf8")).resolves.toBe("removed");
@@ -879,6 +886,7 @@ describe("LocalRunnerService", () => {
         bridgeToken: "t".repeat(43),
         runtimeId: input.runtimeId,
         signIn: false,
+        personFill: false,
         url: new URL("http://127.0.0.1:7788/"),
         stop: async () => {
           throw new Error("engine did not stop");

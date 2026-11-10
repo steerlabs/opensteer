@@ -10,9 +10,11 @@ even when they share a profile, and a session's identity is fixed at creation. C
 The Host database owns durable tab descriptors; live sessions and CDP handles die with their
 connection. Restoring makes a new binding and never restarts a finished Run. A selected dormant tab
 restores only on its saved computer and profile, waiting rather than substitute another computer or
-Guest. Guest website state is never reused across sessions: Android uses one private on-disk profile
-for all tabs and popups in that session, tombstoned before first use, cleared when its last tab or
-session ends, and deleted at the next startup. Other sessions never reuse it. This is not RAM-only browsing.
+Guest. Each opening of a tab restores it automatically at most once; after a failure it waits for
+the person's Retry, because every attempt starts a Browser Session. Guest website state is never
+reused across sessions: Android uses one private on-disk profile for all tabs and popups in that
+session, tombstoned before first use, cleared when its last tab or session ends, and deleted at the
+next startup. Other sessions never reuse it. This is not RAM-only browsing.
 Trigger and watch browsers write no tabs. Only a
 lineage's latest session can close its tabs, late updates never resurrect a closed row, and reopen
 makes a new row. Only committed navigation becomes a restore URL, except that a failed navigation
@@ -25,6 +27,12 @@ paint. An uncertain open retries with its original key and replays the recorded 
 starts a second browser. Tickets, native creation and navigation are never blindly replayed. Tab
 groups grant no access, and agent reads reveal nothing of a group they only partly reach. Links
 opened with Opensteer as the macOS default browser start no agent.
+
+An agent often works several tabs at once, and its activity arrives once per page command. A tab
+change therefore reaches each connected viewer as that viewer's lineage, which a client applies
+without rereading its bootstrap, and a closed lineage keeps its revision so a slower earlier one
+cannot reopen it. A Run's place history moves at most once a second and always lands where the Run
+settles; its usage is written once per new tab or page, not on every switch between them.
 
 ## Agent access and input
 
@@ -177,7 +185,9 @@ ledger decides this when the popup registers, from the opener's latest person in
 `Page.windowOpen` cannot decide it: a cross-site frame's event reaches only that frame's session, and
 a blocked attempt fires it too. The rule shares Chromium's user activation and its limit: an agent
 timer firing just after a person's input reads as theirs, as it does to Chromium. Any agent command
-after the input cancels the follow, which leaves the popup as a new row.
+after the input cancels the follow, which leaves the popup as a new row. Saved-login offers for a
+field a person activates reach only that viewer by the same rule ([Filling for
+people](passwords.md#filling-for-people)), and Watch never receives them.
 
 ## Profile state
 
@@ -215,6 +225,13 @@ failure cleanup never clear a root. Full Chromium restores session cookies itsel
 removes only tab restore records, only while no engine owns the directory. Electron keeps session
 cookies in an encrypted [mirror](../apps/desktop/src/browser/session-cookie-mirror.ts) with an
 OS-wrapped key. Engine upgrades must requalify cookie persistence.
+
+A live jar is still the browser's own, so a failed mirror save never closes pages or retires the
+profile: the mirror stays dirty and retries with backoff, and only a successful save confirms a
+cookie change. An owner retires only when its live jar cannot be trusted (Network Service loss), on
+deletion, or when its restore fails, and the next open replaces it. The runtime forgets a host once
+its engine close settles, whatever the outcome; engines guard directory reuse themselves, because
+Electron shares one Session per path and Chromium refuses a directory whose process exit is unproven.
 
 ## Passkeys
 

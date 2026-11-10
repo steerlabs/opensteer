@@ -4,9 +4,12 @@ import {
   RemoteEditingProxy,
   type RemoteEditingProxyHandle,
 } from "../remote-editing/remote-editing-proxy.js";
-import { BrowserEditingStore, type BrowserEditingState } from "@opensteer/client/host";
+import { BrowserEditingStore, autofillKey, type BrowserEditingState } from "@opensteer/client/host";
+import type { PersonFillAnchor } from "@opensteer/protocol";
 import type { EditingCaret, EditingContext } from "@opensteer/protocol/editing";
 import { StreamedContextMenu, type StreamedMenuAction } from "./streamed-context-menu.js";
+import { autofillOptionId, useAutofillResultNotice } from "./autofill-chooser.js";
+import { StreamedAutofill, type AutofillFieldBox } from "./streamed-autofill.js";
 import type { DesktopWindowRect } from "@opensteer/protocol/desktop";
 import { attachBrowserCanvas } from "./browser-presenter.js";
 import { BrowserCropCue } from "./browser-crop-cue.js";
@@ -18,6 +21,7 @@ import { observeResize } from "@opensteer/shared/resizeObserver";
 import {
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useImperativeHandle,
   useMemo,
@@ -292,6 +296,43 @@ export function BrowserViewport({
     };
   const caret = scaledCaret(unscaledCaret);
   const menuPoint = scaledCaret(unscaledMenuPoint);
+  // The chooser is drawn while its field's box is known in the picture shown.
+  const autofill = viewportCanInput ? (editingState?.autofill ?? null) : null;
+  const unscaledField =
+    autofill &&
+    localStage &&
+    autofill.offer.geometryRevision === presentedGeometry?.header.geometryRevision
+      ? mappedBrowserBox(localStage, presentedGeometry, autofill.offer.anchor)
+      : null;
+  const autofillField = unscaledField && {
+    left: unscaledField.left * transform.scale + transform.x,
+    top: unscaledField.top * transform.scale + transform.y,
+    width: unscaledField.width * transform.scale,
+    height: unscaledField.height * transform.scale,
+  };
+  const autofillShown =
+    autofill && autofillField && autofill.open && autofill.pending === null ? autofill : null;
+  const autofillShownRef = useRef(autofillShown);
+  autofillShownRef.current = autofillShown;
+  const autofillListId = useId();
+  useAutofillResultNotice(editingTarget);
+  const autofillKeyDown = useCallback(
+    (event: KeyboardEvent) => {
+      const shown = autofillShownRef.current;
+      return (
+        !!shown &&
+        !!editingTarget &&
+        autofillKey(editingTarget, shown, {
+          key: event.key,
+          alt: event.altKey,
+          ctrl: event.ctrlKey,
+          meta: event.metaKey,
+          shift: event.shiftKey,
+        })
+      );
+    },
+    [editingTarget],
+  );
   const dismissMenu = useCallback(() => {
     editingTarget?.dismissMenu();
     textInputRef.current?.focus();
@@ -675,6 +716,7 @@ export function BrowserViewport({
       if (!point || !frame) return;
       event.preventDefault();
       editingTarget?.dismissMenu();
+      editingTarget?.dismissAutofill();
       textInputRef.current?.pointerDown();
       fingerId.current = event.pointerId;
       const rect = browserFrameContentRect(
@@ -704,6 +746,7 @@ export function BrowserViewport({
     if (!point) return;
     event.preventDefault();
     editingTarget?.dismissMenu();
+    editingTarget?.dismissAutofill();
     textInputRef.current?.pointerDown();
     textInputRef.current?.focus(event.pointerType === "pen");
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -892,6 +935,7 @@ export function BrowserViewport({
         onBlur={(event) => {
           if (!event.currentTarget.contains(event.relatedTarget)) {
             cancelInput(activeSurfaceId);
+            editingTarget?.dismissAutofill();
           }
         }}
         onContextMenu={(event) => event.preventDefault()}
@@ -920,6 +964,15 @@ export function BrowserViewport({
             enabled={viewportCanInput}
             key={`${sessionId}:${activeSurfaceId}`}
             label="Browser keyboard input"
+            listbox={
+              autofillShown
+                ? {
+                    id: autofillListId,
+                    active: autofillOptionId(autofillListId, autofillShown.highlighted),
+                  }
+                : null
+            }
+            onKey={autofillKeyDown}
             onLeave={onLeave}
             ref={textInputRef}
             wire={wire}
@@ -941,6 +994,15 @@ export function BrowserViewport({
             linkUrl={menu.linkUrl}
             onAction={menuAction}
             onDismiss={dismissMenu}
+          />
+        ) : null}
+        {autofill && autofillField && localStage && editingTarget ? (
+          <StreamedAutofill
+            autofill={autofill}
+            field={autofillField}
+            listId={autofillListId}
+            onChoose={editingTarget.fillAutofill}
+            view={localStage}
           />
         ) : null}
         {contact ? (
@@ -1299,6 +1361,15 @@ export function mappedBrowserCaret(
   frame: BrowserFrameView | null,
   caret: EditingCaret,
 ): { left: number; top: number; height: number } | null {
+  const box = mappedBrowserBox(container, frame, { ...caret, width: 0 });
+  return box && { left: box.left, top: box.top, height: box.height };
+}
+/** A field's box, normalized like a caret; null while its corner is outside the picture. */
+export function mappedBrowserBox(
+  container: BrowserFrameRect,
+  frame: BrowserFrameView | null,
+  box: PersonFillAnchor,
+): AutofillFieldBox | null {
   if (!frame) return null;
   const content = browserFrameContentRect(
     container,
@@ -1309,12 +1380,15 @@ export function mappedBrowserCaret(
   if (!content) return null;
   const width = frame.header.capture?.width ?? frame.header.viewportWidth;
   const height = frame.header.capture?.height ?? frame.header.viewportHeight;
-  const x = (caret.x * frame.header.viewportWidth) / width,
-    y = (caret.y * frame.header.viewportHeight) / height;
-  if (x < 0 || x > 1 || y < 0 || y > 1) return null;
+  const scaleX = (frame.header.viewportWidth / width) * content.width,
+    scaleY = (frame.header.viewportHeight / height) * content.height;
+  const x = box.x * scaleX,
+    y = box.y * scaleY;
+  if (x < 0 || x > content.width || y < 0 || y > content.height) return null;
   return {
-    left: content.left + x * content.width,
-    top: content.top + y * content.height,
-    height: ((caret.height * frame.header.viewportHeight) / height) * content.height,
+    left: content.left + x,
+    top: content.top + y,
+    width: box.width * scaleX,
+    height: box.height * scaleY,
   };
 }

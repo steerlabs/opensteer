@@ -54,7 +54,7 @@ final class VaultStateTests: BrokerTestCase {
     same(
       try await desktop.call("signin.release", Fixtures.release(id)).result?["reason"],
       .string("passwords-off"))
-    XCTAssertEqual(broker.status, Wire.Status(vault: .ready, agentSignIns: false))
+    XCTAssertEqual(broker.status, Wire.Status(vault: .ready, agentSignIns: false, personFill: true))
   }
 
   /// M5: Allow after the vault stopped being ready says so, in the

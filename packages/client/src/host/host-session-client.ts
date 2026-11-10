@@ -126,6 +126,7 @@ import type {
   TranscriptEntry,
   WorkspaceFilePreview,
   WorkspaceSummary,
+  WorkspaceTabActivationOptions,
 } from "./client.js";
 import { HostClientRequestError, isHostRefusal, mainDoneTasks } from "./client.js";
 import { browserProfileHomeCommand } from "./browser-access.js";
@@ -533,6 +534,8 @@ export class HttpHostClient {
   #presenceCounter = 0;
   #browserStateCounter = 0;
   readonly #browserStateMarks = new Map<string, number>();
+  #workspaceTabsCounter = 0;
+  readonly #workspaceTabsMarks = new Map<string, number>();
   // Released presenters still need the authority of their session during catalog gaps.
   readonly #browserTargetAuthorities = new Map<
     string,
@@ -612,8 +615,11 @@ export class HttpHostClient {
     if (mode === "watch") url.searchParams.set("mode", mode);
     const passkeys = this.browserPasskeys.optIn(this.#capabilities);
     if (mode === "control" && passkeys) url.searchParams.set("passkeys", passkeys);
-    if (mode === "control") url.searchParams.set("popups", "1");
-    if (mode === "control") url.searchParams.set("basicInput", "1");
+    if (mode === "control") {
+      url.searchParams.set("popups", "1");
+      url.searchParams.set("basicInput", "1");
+      url.searchParams.set("autofill", "1");
+    }
     url.searchParams.set("editing", "2");
     return this.#webSocketFactory(url.toString().replace(/^http/, "ws"));
   }
@@ -820,8 +826,8 @@ export class HttpHostClient {
   }
 
   readonly #workspaceTabActivations: WorkspaceTabActivations;
-  activateWorkspaceTab(tabId: string) {
-    return this.#workspaceTabActivations.activate(tabId);
+  activateWorkspaceTab(tabId: string, options?: WorkspaceTabActivationOptions) {
+    return this.#workspaceTabActivations.activate(tabId, options);
   }
 
   #applyWorkspaceTabActivation(
@@ -4089,6 +4095,7 @@ export class HttpHostClient {
     const appTabMark = this.#appTabGeneration;
     const presenceMark = this.#presenceCounter;
     const browserStateMark = this.#browserStateCounter;
+    const workspaceTabsMark = this.#workspaceTabsCounter;
     const ownerViewRevision = this.#ownerViews.revision;
     // The interval's own read is no new attempt, so an outage reads one way.
     if (
@@ -4299,27 +4306,35 @@ export class HttpHostClient {
     const retainedCatalogIds = [...this.#retainedWorkspaceTabLineages.keys()].filter(
       (id) => !payload.browser.workspaceTabs?.some((group) => group.id === id),
     );
-    this.#update({
-      ...this.#snapshot,
+    let workspaceTabs: HostSnapshot["workspaceTabs"];
+    if (payload.browser.workspaceTabRestoreVersion === 1) {
+      const held = new Map(this.#snapshot.workspaceTabs?.map((group) => [group.id, group]));
+      const groups = new Map(
+        payload.browser.workspaceTabs?.map((group) => {
+          const previous = held.get(group.id);
+          return [group.id, previous && previous.revision > group.revision ? previous : group];
+        }),
+      );
+      for (const group of this.#retainedWorkspaceTabLineages.values())
+        if (!groups.has(group.id)) groups.set(group.id, held.get(group.id) ?? group);
+      for (const group of held.values()) {
+        // Keep in-flight patches and closed revisions that reject delayed notices.
+        if (
+          !groups.has(group.id) &&
+          ((this.#workspaceTabsMarks.get(group.id) ?? 0) > workspaceTabsMark ||
+            group.tabs?.length === 0)
+        )
+          groups.set(group.id, group);
+      }
+      workspaceTabs = [...groups.values()];
+    }
+    const bootstrapData: Partial<HostSnapshot> = {
       browserProfileGrants: payload.browser.profileGrants.map((grant) => ({ ...grant })),
       browserTabGroups: this.#tabGroups.receive(
         payload.browser.tabGroupsVersion === 1 ? payload.browser.tabGroups : undefined,
       ),
       workspaceTabRestoreVersion: payload.browser.workspaceTabRestoreVersion,
-      workspaceTabs:
-        payload.browser.workspaceTabRestoreVersion === 1
-          ? [
-              ...(payload.browser.workspaceTabs?.map((group) => {
-                const held = this.#snapshot.workspaceTabs?.find(
-                  (previous) => previous.id === group.id,
-                );
-                return held && held.revision > group.revision ? held : group;
-              }) ?? []),
-              ...[...this.#retainedWorkspaceTabLineages.values()].filter(
-                (group) => !payload.browser.workspaceTabs?.some((listed) => listed.id === group.id),
-              ),
-            ]
-          : undefined,
+      workspaceTabs,
       browserAvailable: payload.browser.available,
       browserPlacements: payload.browser.placements.map((placement) => ({ ...placement })),
       browserProfiles: payload.browser.profiles.map((profile) => ({ ...profile })),
@@ -4346,7 +4361,6 @@ export class HttpHostClient {
       homeThreadId: homeWorkspace?.homeThreadId ?? null,
       voiceThreadId: homeWorkspace?.voiceThreadId ?? null,
       identityConfig: payload.identityConfig,
-      inputQueues,
       machines: payload.machines.map((machine) =>
         this.#ownerViews.reread(
           withNewerComputerPresence(machine, this.#snapshot.machines, patchedSince),
@@ -4359,14 +4373,19 @@ export class HttpHostClient {
       ...(payload.sessionId ? { sessionId: payload.sessionId } : {}),
       sessionSurface: payload.sessionSurface ?? null,
       threads,
-      transcriptWindows,
-      transcripts,
       user: payload.user,
       workspaceSharingAvailable: payload.workspaceSharingAvailable,
       // Home and retained pages supplement this list; only the catalog cursor
       // can establish whether that catalog has been fully read.
       workspaceWindow: payload.workspaceWindow,
       workspaces,
+    };
+    this.#update({
+      ...this.#snapshot,
+      ...shareBootstrapData(this.#snapshot, bootstrapData),
+      inputQueues,
+      transcriptWindows,
+      transcripts,
     });
     // Warm Home through the hydration owner without claiming a conversation
     // or marking it read. A later activation joins this same read.
@@ -4385,6 +4404,8 @@ export class HttpHostClient {
       this.#presenceMarks.delete(sessionId);
       this.#browserPresence.delete(sessionId);
     }
+    for (const [id, mark] of this.#workspaceTabsMarks)
+      if (mark <= workspaceTabsMark) this.#workspaceTabsMarks.delete(id);
     const initialWorkspace = homeWorkspace ?? workspaces[0];
     if (initialWorkspace) this.#ensureWorkspaceChannel(initialWorkspace.id);
     // Retry retained workspaces too: the open thread need not be in Main.
@@ -5192,15 +5213,30 @@ export class HttpHostClient {
       this.browserHistory.changed(message.profileId);
       return;
     }
+    if (message.type === "host.browser-sessions-changed" && message.group?.tabs) {
+      const group = message.group;
+      const held = this.#snapshot.workspaceTabs?.find((previous) => previous.id === group.id);
+      if (held && held.revision >= group.revision) return;
+      this.#workspaceTabsMarks.set(group.id, ++this.#workspaceTabsCounter);
+      this.#update({
+        ...this.#snapshot,
+        workspaceTabs: held
+          ? this.#snapshot.workspaceTabs?.map((previous) =>
+              previous.id === group.id ? group : previous,
+            )
+          : [...(this.#snapshot.workspaceTabs ?? []), group],
+      });
+      // The Host's layout lists only open tabs, so one this lineage closed leaves its group too.
+      const open = new Set(group.tabs?.map((tab) => tab.id));
+      const closed = held?.tabs?.flatMap((tab) => (open.has(tab.id) ? [] : [tab.id])) ?? [];
+      if (closed.length) this.#tabGroups.removeClosed(closed);
+      return;
+    }
     if (
       message.type === "host.browser-sessions-changed" ||
       message.type === "host.app-tabs-changed"
     ) {
-      // The catalog is viewer-wide, whichever Workspace this socket follows.
-      // A session opened, ended or changed hands. Browser Sessions arrive on
-      // the bootstrap, not the event stream, so the reread is the whole answer
-      // — the same one the refresh poll gives, taken now instead of at the end
-      // of the interval.
+      // Viewer-wide notices without a complete lineage still require bootstrap.
       this.#reread(message.type);
       return;
     }
@@ -5209,7 +5245,11 @@ export class HttpHostClient {
     }
     if (message.type === "host.browser-tabs-changed") {
       const next = this.#acceptCatalog(message.sessionId, message.catalog);
-      if (next) this.#patchBrowserSession(message.sessionId, { tabCatalog: next });
+      const held = this.#snapshot.browserSessions.find(
+        (session) => session.id === message.sessionId,
+      );
+      if (next && next !== held?.tabCatalog)
+        this.#patchBrowserSession(message.sessionId, { tabCatalog: next });
       return;
     }
     if (message.type === "host.place-activity" || message.type === "host.place-activity-cleared") {
@@ -6453,6 +6493,7 @@ export class HttpHostClient {
       this.#targetedWatch.clear();
       this.#targetedControl.clear();
       this.#browserStateMarks.clear();
+      this.#workspaceTabsMarks.clear();
       this.#browserTargetAuthorities.clear();
       this.#pendingBrowserTabs.clear();
       this.#clearAttachmentReads();
@@ -6622,16 +6663,19 @@ export class HttpHostClient {
         : {}),
       ...(this.#threadIcons.has(thread.id) ? { icon: this.#threadIcons.get(thread.id)!.icon } : {}),
     }));
-    snapshot = {
-      ...snapshot,
-      workspaces: snapshot.workspaces.map((workspace) => {
-        const mark =
-          this.#workspaceColorEdits.get(workspace.id) ?? this.#workspaceColors.get(workspace.id);
-        return mark && mark.color !== workspace.color
-          ? { ...workspace, color: mark.color }
-          : workspace;
-      }),
-    };
+    const workspaces = snapshot.workspaces.map((workspace) => {
+      const mark =
+        this.#workspaceColorEdits.get(workspace.id) ?? this.#workspaceColors.get(workspace.id);
+      return mark && mark.color !== workspace.color
+        ? { ...workspace, color: mark.color }
+        : workspace;
+    });
+    const threads = snapshot.threads.map((thread) => {
+      const state = snapshot.threadReadStates[thread.id];
+      if (!state) return thread;
+      const unread = isThreadUnread(state);
+      return thread.unread === unread ? thread : { ...thread, unread };
+    });
     this.#snapshot = {
       ...snapshot,
       savedViewReadiness: this.#savedViewReadiness,
@@ -6652,14 +6696,16 @@ export class HttpHostClient {
       iphoneAppsAvailable: this.#capabilities?.includes("iphone-apps-v1") === true,
       voiceAvailable: this.#capabilities?.includes("voice-run-v1") === true,
       ownerViewWindowsAvailable: this.#capabilities?.includes("ownerViewWindows") === true,
-      // An unchanged Thread keeps its identity: screens compare records by
-      // reference, and every publish passes through here.
-      threads: snapshot.threads.map((thread) => {
-        const state = snapshot.threadReadStates[thread.id];
-        if (!state) return thread;
-        const unread = isThreadUnread(state);
-        return thread.unread === unread ? thread : { ...thread, unread };
-      }),
+      threads:
+        threads.length === this.#snapshot.threads.length &&
+        threads.every((thread, index) => thread === this.#snapshot.threads[index])
+          ? this.#snapshot.threads
+          : threads,
+      workspaces:
+        workspaces.length === this.#snapshot.workspaces.length &&
+        workspaces.every((workspace, index) => workspace === this.#snapshot.workspaces[index])
+          ? this.#snapshot.workspaces
+          : workspaces,
       network: this.#network,
       revision: this.#snapshot.revision + 1,
     };
@@ -6671,6 +6717,41 @@ export class HttpHostClient {
     for (const listener of this.#listeners) listener();
     this.#checkBrowserUsageRuns();
   }
+}
+
+// Only bootstrap's plain data is shared; live stores keep their own identities.
+function shareBootstrapData<T>(previous: unknown, next: T): T;
+function shareBootstrapData(previous: unknown, next: unknown): unknown {
+  if (previous === next) return previous;
+  if (Array.isArray(previous) && Array.isArray(next)) {
+    const shared = next.map((value: unknown, index: number) =>
+      shareBootstrapData(previous[index], value),
+    );
+    return previous.length === shared.length &&
+      shared.every((value, index) => value === previous[index])
+      ? previous
+      : shared;
+  }
+  if (
+    previous &&
+    next &&
+    typeof previous === "object" &&
+    typeof next === "object" &&
+    Object.getPrototypeOf(previous) === Object.prototype &&
+    Object.getPrototypeOf(next) === Object.prototype
+  ) {
+    const held = previous as Record<string, unknown>;
+    const incoming = next as Record<string, unknown>;
+    const keys = Object.keys(incoming);
+    const shared: Record<string, unknown> = { ...incoming };
+    let equal = Object.keys(held).length === keys.length;
+    for (const key of keys) {
+      shared[key] = shareBootstrapData(held[key], incoming[key]);
+      if (!Object.hasOwn(held, key) || shared[key] !== held[key]) equal = false;
+    }
+    return equal ? previous : shared;
+  }
+  return next;
 }
 
 export function unwrapRpcResult<Success>(

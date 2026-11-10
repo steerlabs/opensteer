@@ -325,6 +325,52 @@ public final class VaultService: @unchecked Sendable {
     }
   }
 
+  public func personFill() async -> Bool {
+    (try? await run { self.personFillNow() }) ?? false
+  }
+
+  private func personFillNow() -> Bool {
+    do {
+      guard let data = try protectedStore.read(.personFill) else { return true }
+      let object = try StrictObject(CanonicalJSON.parseCanonical(data), keys: ["v", "personFill"], context: "person fill")
+      guard try object.integer("v") == 1 else { return false }
+      return try object.string("personFill") == "on"
+    } catch { return false }
+  }
+
+  public func setPersonFill(_ on: Bool) async throws {
+    try await run {
+      try self.protectedStore.write(.personFill, CanonicalJSON.encode(
+        .object(["v": .integer(1), "personFill": .string(on ? "on" : "off")])))
+    }
+  }
+
+  func fillAccounts(withinSite site: String) async throws -> [LoginSummary] {
+    try await run {
+      guard self.personFillNow() else { return [] }
+      let unlocked = try self.unlockNow()
+      defer { unlocked.close() }
+      return Self.accountChoices(try unlocked.items(withinSite: site))
+    }
+  }
+
+  enum PersonAuthorization: Sendable { case authorized(Wire.Login), changed, off }
+  func authorizePerson(_ params: Wire.FillBeginParams, authority: TransactionAuthority, expiresAt: Date) async throws -> PersonAuthorization? {
+    try await run {
+      guard self.personFillNow() else { return .off }
+      let unlocked = try self.unlockNow()
+      defer { unlocked.close() }
+      guard let item = try? unlocked.item(id: params.loginId), item.revision == params.revision,
+        item.password != nil, item.origins.contains(where: { Origins.isWithinSite($0, site: params.site) })
+      else { return .changed }
+      return authority.whileLive {
+        guard expiresAt > Date() else { return nil }
+        return .authorized(Wire.Login(id: item.id, revision: item.revision,
+          account: String(Display.maskedAccount(item.username).prefix(200)), hasTOTP: item.totp != nil))
+      } ?? nil
+    }
+  }
+
   // MARK: Sign-ins
 
   /// Whether a saved login has an origin within `site`. Never asks anyone.
@@ -424,13 +470,14 @@ public final class VaultService: @unchecked Sendable {
   /// Runs in queue order with login edits, revocations and the off switch.
   func release(
     _ params: Wire.ReleaseParams, login: Wire.Login, site: String, grant key: GrantKey?,
-    permissionVersion: Int64, authority: TransactionAuthority, expiresAt: Date
+    permissionVersion: Int64, authority: TransactionAuthority, expiresAt: Date, kind: Transaction.Kind = .login
   ) async throws -> Wire.ReleaseResult {
     try await run {
       guard expiresAt > Date() else { return .refused(.ended) }
       let unlocked = try self.unlockNow()
       defer { unlocked.close() }
-      guard self.agentSignInsNow() else { return .refused(.passwordsOff) }
+      guard kind == .person ? self.personFillNow() : self.agentSignInsNow() else { return .refused(.passwordsOff) }
+      guard kind != .card, kind != .person || (key == nil && params.destination != .app) else { return .refused(.revoked) }
       guard let item = try? unlocked.item(id: login.id), item.revision == login.revision,
         let password = item.password
       else {

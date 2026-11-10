@@ -6,10 +6,13 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LocalProfileEngine } from "./browser/backend.js";
 import { sessionFilesRoot } from "./browser/session-files.js";
-import { BrowserRuntime, type BrowserOpenTiming } from "./runtime.js";
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import { BrowserRuntime, type BrowserRuntimeOptions, type BrowserOpenTiming } from "./runtime.js";
 import { LocalProfileStore } from "./local-profile-store.js";
 import { LifecycleLanes } from "./async.js";
 import {
+  FakeContext,
+  FakeLaunchedBrowser,
   FakeIsolatingLauncher,
   FakePage,
   FakeSink,
@@ -72,7 +75,9 @@ async function fixture(maxProfileHosts = 8, existingRoot?: string) {
   const verifier = new FakeTicketVerifier();
   const filesRoot = sessionFilesRoot(root);
   const timings: BrowserOpenTiming[] = [];
+  const cleanupFailure = vi.fn<NonNullable<BrowserRuntimeOptions["onHostCleanupFailure"]>>();
   const runtime = new BrowserRuntime({
+    onHostCleanupFailure: cleanupFailure,
     onOpenTiming: (timing) => timings.push(timing),
     launcher,
     ticketVerifier: verifier,
@@ -118,6 +123,7 @@ async function fixture(maxProfileHosts = 8, existingRoot?: string) {
   };
   return {
     timings,
+    cleanupFailure,
     root,
     runtime,
     launcher,
@@ -129,6 +135,120 @@ async function fixture(maxProfileHosts = 8, existingRoot?: string) {
   };
 }
 describe("native profile runtime", () => {
+  it("reopens a native host after its own close rejects and reports the cleanup failure", async () => {
+    const f = await fixture();
+    const first = new FakeLaunchedBrowser(
+      new FakeContext([new FakePage()]),
+      new Error("cookie mirror is stopped"),
+    );
+    vi.spyOn(f.launcher, "launch").mockResolvedValueOnce(first);
+    await (await f.open(1, 1)).close();
+    first.crash();
+    try {
+      await vi.waitFor(
+        () => expect(first.closeCount, "retired engine never began cleanup").toBe(1),
+        { timeout: 1000 },
+      );
+      await (await f.open(1, 2)).close();
+      await vi.waitFor(
+        () =>
+          expect(f.cleanupFailure, "engine close failure was not reported").toHaveBeenCalledWith({
+            kind: "local",
+            stage: expect.any(String),
+            error: expect.any(AggregateError),
+          }),
+        { timeout: 1000 },
+      );
+      await expect(f.runtime.shutdown()).resolves.toBeUndefined();
+    } finally {
+      vi.spyOn(first, "close").mockResolvedValue();
+    }
+  });
+
+  it.each(["settles", "stalls", "deleted"] as const)(
+    "waits beyond the cleanup waiter while engine close %s",
+    async (outcome) => {
+      const f = await fixture();
+      await (await f.open(1, 1)).close();
+      const first = f.launcher.browsersByPartition.get("profile:" + f.binding(1).profileId)!;
+      const closing = gate({ label: "engine disposal", deadlineMs: 1000 });
+      const close = vi.spyOn(first, "close").mockImplementation(() => closing.enter());
+      const cancellation = new AbortController();
+      let opening: ReturnType<typeof f.open> | undefined;
+      vi.useFakeTimers();
+      try {
+        first.crash();
+        await closing.entered;
+        await vi.advanceTimersByTimeAsync(2100);
+        opening = f.open(1, 2, false, cancellation.signal);
+        const settled = vi.fn();
+        void opening.then(settled, settled);
+        await vi.waitFor(
+          () =>
+            expect(
+              f.timings.filter((timing) => timing.stage === "lane-wait"),
+              "new acquisition never entered its lane",
+            ).toHaveLength(2),
+          { timeout: 1000 },
+        );
+        await vi.advanceTimersByTimeAsync(0);
+        expect(settled, "acquisition must wait for engine disposal").not.toHaveBeenCalled();
+        expect(
+          f.cleanupFailure,
+          "cleanup timeout must report the retained host",
+        ).toHaveBeenCalled();
+
+        expect(close).toHaveBeenCalledOnce();
+        if (outcome === "stalls") {
+          cancellation.abort();
+          await expect(
+            withTimeout(opening, 1000, {
+              timeoutError: () => new Error("cancelled acquisition deadlocked its own lane"),
+            }),
+          ).rejects.toThrow();
+          expect(f.launcher.launchCount).toBe(1);
+          const again = f.open(1, 3);
+          const failed = expect(again).rejects.toMatchObject({ code: "conflict", retryable: true });
+          await vi.advanceTimersByTimeAsync(18_000);
+          await failed;
+        }
+        const deletion =
+          outcome === "deleted"
+            ? f.runtime.deleteLocalProfile(f.binding(1), "00000000-0000-4000-8000-000000000008")
+            : undefined;
+        closing.release();
+        if (deletion) {
+          await expect(opening).rejects.toThrow(/deleted/);
+          await expect(deletion).resolves.toBe("deleted");
+          expect(f.launcher.launchCount).toBe(1);
+        } else if (outcome === "settles")
+          await (
+            await withTimeout(opening, 1000, {
+              timeoutError: () => new Error("acquisition did not resume after engine disposal"),
+            })
+          ).close();
+        else await (await f.open(1, 4)).close();
+        if (!deletion) expect(f.launcher.launchCount).toBe(2);
+      } finally {
+        closing.release();
+        cancellation.abort();
+        await opening?.catch(() => undefined);
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("switches an idle native profile's passkey mode after engine disposal", async () => {
+    const f = await fixture();
+    await (await f.open(1, 1)).close();
+    const first = f.launcher.browsersByPartition.get("profile:" + f.binding(1).profileId)!;
+    f.verifier.setClaims("passkeys", { ...f.claims(1, 2), passkeys: 1 });
+    const next = await f.runtime.attach("passkeys", new FakeSink(), { passkeys: true });
+    expect(first.closeCount).toBe(1);
+    expect(f.launcher.launchCount).toBe(2);
+    await next.close();
+  });
+
   it("refuses expired signed opening authority before creating native storage", async () => {
     const f = await fixture();
     const claims = f.claims(1, 1, true);

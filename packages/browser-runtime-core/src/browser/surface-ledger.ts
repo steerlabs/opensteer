@@ -5,6 +5,8 @@ import {
 } from "@opensteer/browser-core";
 import {
   BrowserSurfaceIdSchema,
+  browserSessionTabLimit,
+  browserSessionTabsFullReason,
   browserWorkspaceTabUrlMaxLength,
   type BrowserDialog,
   type BrowserNavigationCommitted,
@@ -185,7 +187,15 @@ interface SurfaceRecord {
   /** Sequence number of `userActivity`; 0 while the person has not acted here. */
   userActivitySequence: number;
   /** The viewer behind this page's latest person input, while it can still open a popup. */
-  viewerInput: { at: number; consumerToken: string; sequence: number } | null;
+  viewerInput: BrowserViewerInput | null;
+  popupInputSequence: number;
+}
+
+export interface BrowserViewerInput {
+  readonly at: number;
+  readonly consumerToken: string;
+  readonly sequence: number;
+  readonly native: boolean;
 }
 
 /** The person's latest action on one page. It never carries keys, text or dialog answers. */
@@ -290,6 +300,11 @@ export class SurfaceLedger {
   private readonly records = new Map<BrowserSurfaceId, SurfaceRecord>();
   private readonly registrations = new Map<BrowserPage, Promise<void>>();
   private readonly removals = new Map<BrowserSurfaceId, Promise<void>>();
+  private readonly agentCommandListeners = new Set<(surfaceId: BrowserSurfaceId) => void>();
+  onAgentCommand(listener: (surfaceId: BrowserSurfaceId) => void): () => void {
+    this.agentCommandListeners.add(listener);
+    return () => this.agentCommandListeners.delete(listener);
+  }
   private sequence = 0;
   private started = false;
   private readonly viewportMutex = new AsyncMutex();
@@ -319,9 +334,15 @@ export class SurfaceLedger {
       width: initialViewport.width,
     };
     this.rootPages = options.rootPages ? [...options.rootPages] : null;
-    this.maxSurfaces = options.maxSurfaces ?? 64;
-    if (!Number.isInteger(this.maxSurfaces) || this.maxSurfaces < 1 || this.maxSurfaces > 64) {
-      throw new Error("Surface maxSurfaces must be an integer from 1 through 64.");
+    this.maxSurfaces = options.maxSurfaces ?? browserSessionTabLimit;
+    if (
+      !Number.isInteger(this.maxSurfaces) ||
+      this.maxSurfaces < 1 ||
+      this.maxSurfaces > browserSessionTabLimit
+    ) {
+      throw new Error(
+        `Surface maxSurfaces must be an integer from 1 through ${browserSessionTabLimit}.`,
+      );
     }
   }
 
@@ -651,11 +672,15 @@ export class SurfaceLedger {
    * Names the viewer behind the person input a page is receiving, before the
    * page can act on it. Null clears it: whoever gave that input is unknown.
    */
-  recordViewerInput(surfaceId: BrowserSurfaceId, consumerToken: string | null | undefined): void {
+  recordViewerInput(
+    surfaceId: BrowserSurfaceId,
+    consumerToken: string | null | undefined,
+    native = false,
+  ): void {
     const record = this.records.get(surfaceId);
     if (!record) return;
     record.viewerInput = consumerToken
-      ? { at: Date.now(), consumerToken, sequence: ++this.sequence }
+      ? { at: Date.now(), consumerToken, sequence: ++this.sequence, native }
       : null;
   }
 
@@ -668,16 +693,30 @@ export class SurfaceLedger {
    */
   private takeViewerInput(record: SurfaceRecord | undefined): string | null {
     const input = record?.viewerInput;
-    if (!record || !input) return null;
-    record.viewerInput = null;
+    if (!record || !input || input.sequence <= record.popupInputSequence) return null;
+    record.popupInputSequence = input.sequence;
     return input.sequence > record.agentSequence && Date.now() - input.at < userActivationLifespanMs
       ? input.consumerToken
       : null;
   }
 
+  latestViewerInput(surfaceId: BrowserSurfaceId): BrowserViewerInput | null {
+    const record = this.records.get(surfaceId);
+    const input = record?.viewerInput;
+    return record &&
+      input &&
+      input.sequence > record.agentSequence &&
+      Date.now() - input.at < userActivationLifespanMs
+      ? input
+      : null;
+  }
+
   recordAgentCommand(targetId: string): void {
     const record = this.recordForTarget(targetId);
-    if (record) record.agentSequence = ++this.sequence;
+    if (record) {
+      record.agentSequence = ++this.sequence;
+      for (const listener of this.agentCommandListeners) listener(record.id);
+    }
   }
 
   targetActivity(targetId: string): BrowserTargetActivity | undefined {
@@ -790,7 +829,9 @@ export class SurfaceLedger {
       return this.toSurface(this.records.get(options.surfaceId)!);
     if (options.viewport) assertViewport(options.viewport);
     if (this.atCapacity(options.surfaceId)) {
-      throw new BrowserRuntimeError("conflict", "The browser cannot open more tabs.");
+      throw new BrowserRuntimeError("conflict", "This browser session holds all the tabs it can.", {
+        reason: browserSessionTabsFullReason,
+      });
     }
     // Discovery waits until the creator has assigned the requested identity.
     await withTimeout(Promise.resolve(this.creatingPage), 18_000, {
@@ -914,6 +955,7 @@ export class SurfaceLedger {
       ...records.map((record) => this.disposeRecord(record)),
     ]);
     this.listeners.clear();
+    this.agentCommandListeners.clear();
   }
 
   async closeOwnedPages(): Promise<void> {
@@ -1197,6 +1239,7 @@ export class SurfaceLedger {
           },
           userActivitySequence: 0,
           viewerInput: null,
+          popupInputSequence: 0,
         };
         announce = () => {
           if (record.announced || this.closed || this.records.get(id) !== record) return;

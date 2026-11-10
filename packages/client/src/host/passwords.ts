@@ -443,6 +443,10 @@ export const passwordsSetUpAction = "Set up Passwords";
 export const passwordsOpenAction = "Open Passwords";
 export const passwordsAgentSignInsLabel = "Agents can use saved passwords and cards";
 export const passwordsAgentSignInsDetail = "Turn this off or on in the Passwords window.";
+/** The Passwords window's switch for filling a person's own sign-ins; pinned by CopyParityTests. */
+export const passwordsPersonFillLabel = "Fill passwords for me in Opensteer";
+export const passwordsPersonFillWindowDetail =
+  "Offers your saved logins when you click a sign-in field in Opensteer’s browser, on this Mac or another device.";
 export const passwordsWaitingLabel = "Waiting for you";
 export const passwordsDeclineAllAction = "Don’t allow all";
 export const passwordsDecliningAllAction = "Not allowing…";
@@ -538,6 +542,8 @@ export type PasswordsSettingsState =
   | { readonly development: boolean; readonly kind: "needs-reset" | "not-set-up" }
   | {
       readonly agentSignIns: "off" | "on";
+      /** Null when this Mac's Passwords predates filling for people. */
+      readonly personFill: "off" | "on" | null;
       readonly development: boolean;
       readonly kind: "ready";
     };
@@ -555,7 +561,12 @@ export function passwordsSettingsState(status: DesktopPasswordsStatus): Password
         case "unsupported":
           return { kind: "unsupported", message: unsupportedMessages.hardware };
         case "ready":
-          return { agentSignIns: broker.agentSignIns, development, kind: "ready" };
+          return {
+            agentSignIns: broker.agentSignIns,
+            personFill: broker.personFill ?? null,
+            development,
+            kind: "ready",
+          };
         case "needs-reset":
         case "not-set-up":
           return { development, kind: broker.vault };

@@ -259,6 +259,10 @@ describe("desktop bridge", () => {
       desktopBridgeChannels.localVisibilityChanged,
       desktopBridgeChannels.browserPresentationEvent,
       desktopBridgeChannels.glassScene,
+      // The autofill popup's own page speaks these on its view, never the app's bridge.
+      desktopBridgeChannels.autofillScene,
+      desktopBridgeChannels.autofillMeasured,
+      desktopBridgeChannels.autofillChoose,
     ]);
     expect(new Set(handlers.keys())).toEqual(
       new Set(

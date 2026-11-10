@@ -57,6 +57,7 @@ export * from "./browser-tab-sections.js";
 
 export * from "./browser-preferences.js";
 
+export * from "./autofill.js";
 export * from "./browser-editing.js";
 export * from "./saved-host-view.js";
 

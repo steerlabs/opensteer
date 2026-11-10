@@ -47,6 +47,7 @@ import { PlaceActivityStore } from "../host/place-activity.js";
 import { placeList } from "../host/places.js";
 import { mockBrowserPageImage } from "./mock-browser-frames.js";
 import { MockBrowserInput } from "./mock-browser-input.js";
+import { MockSignInPage } from "./mock-sign-in-page.js";
 
 /** The person's iPhone in the mock world: a device that holds browser profiles. */
 export const mockIphoneRunnerId = "rnr_55555555-5555-4555-8555-555555555555";
@@ -587,6 +588,7 @@ export interface MockPlaceScript {
 /** All animation derives from elapsed injected-clock time and stable fixture IDs. */
 export class MockPlaceWorld {
   readonly input = new MockBrowserInput((sessionId, command) => this.command(sessionId, command));
+  readonly #signInPage = new MockSignInPage(this.input.editing);
   readonly #history = new Map<string, BrowserHistory>();
   readonly #historyChanged: (profileId: string) => void;
   readonly #entered: (runId: string, threadId: string, data: EventData<"place.entered">) => void;
@@ -911,6 +913,15 @@ export class MockPlaceWorld {
   command(sessionId: string, command: BrowserCommand): void {
     const snapshot = this.#snapshot();
     const session = snapshot.browserSessions.find((session) => session.id === sessionId);
+    const surfaceId = "surfaceId" in command ? command.surfaceId : undefined;
+    if (
+      this.#signInPage.command(
+        sessionId,
+        command,
+        session?.tabs.find((tab) => tab.id === surfaceId)?.title,
+      )
+    )
+      return;
     if (!session?.tabCatalog || session.state !== "ready") {
       // As the Host client: a view's cleanup after its browser has gone needs no error.
       if (

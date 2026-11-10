@@ -140,6 +140,7 @@ private struct AddPasswordsView: View {
     CenteredScreen(symbol: "key.fill", tint: .accentColor, title: Copy.addPasswords, lead: Copy.importWhere) {
       // Off is the one setting that can outlive the last saved login, and it needs a way back.
       if !model.agentSignIns { AgentSignInsToggle(model: model) }
+      PersonFillToggle(model: model)
       SourceList { source in Task { await model.importPasswords(from: source) } }
       if let message = model.message {
         Text(message).foregroundStyle(.orange)
@@ -151,6 +152,20 @@ private struct AddPasswordsView: View {
         Button(Copy.notNow) { model.leave() }
       }
     }
+  }
+}
+
+private struct PersonFillToggle: View {
+  @ObservedObject var model: PasswordsWindowModel
+
+  var body: some View {
+    Toggle(isOn: Binding(get: { model.personFill }, set: { on in Task { await model.setPersonFill(on) } })) {
+      VStack(alignment: .leading, spacing: 2) {
+        Text(Copy.personFill)
+        Text(Copy.personFillDetail).font(.callout).foregroundStyle(.secondary)
+      }
+    }
+    .toggleStyle(AccentSwitchStyle())
   }
 }
 
@@ -232,6 +247,7 @@ private struct ReadyView: View {
     Form {
       Section {
         AgentSignInsToggle(model: model)
+        PersonFillToggle(model: model)
       }
 
       Section {
@@ -254,7 +270,10 @@ private struct ReadyView: View {
           Text(Copy.noSignIns).foregroundStyle(.secondary)
         } else {
           ForEach(Array(model.activity.enumerated()), id: \.offset) { _, entry in
-            ActivityRow(entry: entry)
+            switch entry {
+            case .agent(let entry): ActivityRow(entry: entry)
+            case .person(let entry): PersonActivityRow(entry: entry)
+            }
           }
         }
       }
@@ -459,6 +478,22 @@ struct Monogram: View {
   private static func colour(for text: String) -> Color {
     let sum = text.unicodeScalars.reduce(0) { ($0 &* 31 &+ Int($1.value)) % 1_000_003 }
     return palette[sum % palette.count]
+  }
+}
+
+private struct PersonActivityRow: View {
+  let entry: PersonActivityEntry
+
+  var body: some View {
+    HStack(alignment: .firstTextBaseline) {
+      VStack(alignment: .leading, spacing: 2) {
+        Text(Copy.personFillTitle(entry)).font(.body.weight(.medium))
+        Text("\(entry.site) · \(Copy.personFillLocation(entry.presence))")
+          .font(.callout).foregroundStyle(.secondary)
+      }
+      Spacer()
+      Text(entry.at.formatted(.relative(presentation: .named))).font(.caption).foregroundStyle(.secondary)
+    }
   }
 }
 

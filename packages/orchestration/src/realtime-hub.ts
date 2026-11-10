@@ -16,7 +16,7 @@ import {
   type WorkspaceNotificationPreference,
 } from "@opensteer/core";
 import { OpensteerStore } from "@opensteer/database";
-import { type HostToClientMessage } from "@opensteer/protocol";
+import { type HostToClientMessage, type WorkspaceTabLineage } from "@opensteer/protocol";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import type { LiveFrame, LiveRunRegistry } from "./live-run-registry.js";
 
@@ -50,13 +50,9 @@ interface RealtimeHubOptions {
 type SubscriberState = "synchronizing" | "live" | "closed";
 
 /**
- * A list notice: "this list changed, read it again", or "these conversations'
- * browser usage changed". Browser catalogs follow the viewer; usage and
- * Triggers follow the Workspace. Two of them arriving while a
- * subscriber is still synchronizing say what one says — usage notices merge
- * the conversations they name — so they collapse by type and are sent once
- * the event backlog has drained and the reread would see the rows the Host
- * holds.
+ * Browser catalogs follow the viewer; usage and Triggers follow the Workspace.
+ * During synchronization, keep each lineage's newest revision, merge usage
+ * thread IDs, and collapse broad invalidations until the event backlog drains.
  */
 type WorkspaceNotice = Extract<
   HostToClientMessage,
@@ -81,6 +77,14 @@ function mergeWorkspaceNotices(
   held: WorkspaceNotice | undefined,
   next: WorkspaceNotice,
 ): WorkspaceNotice {
+  if (
+    held?.type === "host.browser-sessions-changed" &&
+    next.type === "host.browser-sessions-changed" &&
+    held.group &&
+    next.group &&
+    held.group.revision > next.group.revision
+  )
+    return held;
   if (held?.type !== "host.browser-usage-changed" || next.type !== "host.browser-usage-changed") {
     return next;
   }
@@ -147,7 +151,7 @@ class Subscriber {
   readonly userId: UserId;
   readonly #options: SubscriberOptions;
   readonly #syncBuffer: AgentEvent[] = [];
-  readonly #syncNotices = new Map<WorkspaceNotice["type"], WorkspaceNotice>();
+  readonly #syncNotices = new Map<string, WorkspaceNotice>();
   readonly #syncViewerMessages: HostToClientMessage[] = [];
   readonly #pending = new Map<string, { readonly bytes: number; readonly event: AgentEvent }>();
   readonly #pendingLive: {
@@ -300,10 +304,10 @@ class Subscriber {
         }
         continue;
       }
-      const pending = this.#syncNotices.values().next();
+      const pending = this.#syncNotices.entries().next();
       if (!pending.done) {
-        this.#syncNotices.delete(pending.value.type);
-        for (const notice of wireNotices(pending.value)) await this.#send(notice);
+        this.#syncNotices.delete(pending.value[0]);
+        for (const notice of wireNotices(pending.value[1])) await this.#send(notice);
         continue;
       }
       const viewerMessage = this.#syncViewerMessages.shift();
@@ -356,12 +360,13 @@ class Subscriber {
 
   enqueueMessage(message: HostToClientMessage): void {
     if (this.#state === "synchronizing") {
-      if (isWorkspaceNotice(message))
-        this.#syncNotices.set(
-          message.type,
-          mergeWorkspaceNotices(this.#syncNotices.get(message.type), message),
-        );
-      else if (
+      if (isWorkspaceNotice(message)) {
+        const key =
+          message.type === "host.browser-sessions-changed" && message.group
+            ? `${message.type}:${message.group.id}`
+            : message.type;
+        this.#syncNotices.set(key, mergeWorkspaceNotices(this.#syncNotices.get(key), message));
+      } else if (
         message.type === "host.read-states" ||
         message.type === "host.read-markers" ||
         message.type === "host.notification-preferences"
@@ -1011,10 +1016,15 @@ export class RealtimeHub {
     workspaceId: WorkspaceId,
     viewerUserIds: readonly UserId[],
     source: BootstrapNoticeSource = "unspecified",
+    group?: WorkspaceTabLineage,
   ): void {
-    this.bootstrapDiagnostics.record("host.browser-sessions-changed", source);
+    if (!group) this.bootstrapDiagnostics.record("host.browser-sessions-changed", source);
     for (const userId of viewerUserIds) {
-      this.#sendViewerMessage(userId, { type: "host.browser-sessions-changed", workspaceId });
+      this.#sendViewerMessage(userId, {
+        type: "host.browser-sessions-changed",
+        workspaceId,
+        ...(group ? { group } : {}),
+      });
     }
   }
 

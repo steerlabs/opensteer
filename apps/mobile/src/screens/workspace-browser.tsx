@@ -3,7 +3,6 @@ import { PendingBrowserTabView, showPendingBrowserTab } from "../browser/pending
 import {
   browserPlaceUnavailableReason,
   browserThreadAgentTab,
-  browserThreadTabs,
   canRespondToRequests,
   describeHostConnection,
   mainWorkspace,
@@ -11,14 +10,11 @@ import {
   placeAgentState,
   placeDestinationEnded,
   samePlaceAgents,
-  transcriptPlaces,
   type BrowserTabDestination,
   type BrowserTabOpenHandle,
   type BrowserThreadTab,
-  type BrowserThreadTabs,
   type HostClient,
   type HostSnapshot,
-  type PlaceEntry,
   type PlaceItem,
   type WorkspaceSurfaceDestination,
 } from "@opensteer/client/host";
@@ -45,6 +41,7 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -521,28 +518,6 @@ function Focused(props: {
     );
   }, [besideId, deploymentId, destination, navigation, pause]);
   const [paired, setPaired] = useState(false);
-  const selectPlaces = useCallback(
-    (current: HostSnapshot): readonly PlaceEntry[] => {
-      const entries = besideId === null ? undefined : current.transcripts[besideId];
-      return entries === undefined ? noPlaces : transcriptPlaces(entries);
-    },
-    [besideId],
-  );
-  const besidePlaces = useHostSelector(hostClient, selectPlaces);
-  const shownSession =
-    shownTab === null
-      ? undefined
-      : snapshot.browserSessions.find(({ id }) => id === shownTab.sessionId);
-  // Kept from one render to the next, so a tab the task used stays its own
-  // through a moment no occupant says so.
-  const previousTabs = useRef<BrowserThreadTabs | undefined>(undefined);
-  const threadTabs =
-    besideId === null || shownSession === undefined
-      ? null
-      : browserThreadTabs(shownSession, besideId, besidePlaces, previousTabs.current);
-  useEffect(() => {
-    if (threadTabs !== null) previousTabs.current = threadTabs;
-  });
   const title =
     place?.title ??
     lastApp.current?.title ??
@@ -665,12 +640,7 @@ function Focused(props: {
         }))
       : [],
   ];
-  const pair: PagePairChrome | null = pairedChrome
-    ? {
-        menu: pairMenu,
-        taskTabIds: threadTabs?.taskTabs.map(({ id }) => id) ?? [],
-      }
-    : null;
+  const pair: PagePairChrome | null = pairedChrome ? { menu: pairMenu } : null;
   const agentAway =
     besideId === null ||
     agentTab === null ||
@@ -845,7 +815,6 @@ function Focused(props: {
   );
 }
 
-const noPlaces: readonly PlaceEntry[] = [];
 /** Wide enough for a task's name, never wider than a pane beside a page leaves it. */
 const companionPillWidth = 320;
 
@@ -1207,13 +1176,15 @@ function SavedTab(props: {
   const [closing, setClosing] = useState(false);
   const closingNow = useRef(false);
   const [attempt, setAttempt] = useState(0);
+  const openingId = useId();
+  const opening = `${openingId}:${attempt}`;
   const activate = hostClient.activateWorkspaceTab;
   useLayoutEffect(() => {
     if (activate === undefined || lasting !== null) return;
     let cancelled = false;
     setFailure(null);
     void activate
-      .call(hostClient, tabId)
+      .call(hostClient, tabId, { opening })
       .then((result) => {
         if (cancelled || result === null) return;
         navigation.setParams({ sessionId: result.session.id, tabId: result.tabId });
@@ -1225,7 +1196,7 @@ function SavedTab(props: {
     return () => {
       cancelled = true;
     };
-  }, [activate, attempt, hostClient, lasting, navigation, tabId]);
+  }, [activate, hostClient, lasting, navigation, opening, tabId]);
   const close = () => {
     if (closingNow.current) return;
     closingNow.current = true;

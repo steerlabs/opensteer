@@ -519,6 +519,7 @@ export async function createHostServer(
       readonly surfaceState: 1 | undefined;
       readonly passkeys: "native" | "notice" | undefined;
       readonly popups: boolean;
+      readonly autofill: boolean;
     }
   >();
   const realtimeSocketSessions = new WeakMap<object, AuthenticatedSession>();
@@ -2872,6 +2873,7 @@ export async function createHostServer(
       popups?: string;
       basicInput?: string;
       surfaceState?: string;
+      autofill?: string;
     };
   }>(
     "/v1/browser-sessions/:sessionId/connect",
@@ -2900,6 +2902,7 @@ export async function createHostServer(
           popups: request.query.popups === "1",
           basicInput: request.query.basicInput === "1" ? 1 : undefined,
           surfaceState: request.query.surfaceState === "1" ? 1 : undefined,
+          autofill: mode === "control" && request.query.autofill === "1",
         });
       },
       websocket: true,
@@ -2916,7 +2919,11 @@ export async function createHostServer(
         admitted.editing,
         admitted.passkeys,
         admitted.popups,
-        { basicInput: admitted.basicInput, surfaceState: admitted.surfaceState },
+        {
+          basicInput: admitted.basicInput,
+          surfaceState: admitted.surfaceState,
+          autofill: admitted.autofill,
+        },
         async () => {
           try {
             const current = await dependencies.authenticator.authenticateSession(request.headers, {
@@ -3032,7 +3039,11 @@ function attachBrowserSocket(
   editing: 1 | 2 | undefined,
   passkeys: "native" | "notice" | undefined,
   popups: boolean,
-  negotiation: { readonly basicInput: 1 | undefined; readonly surfaceState: 1 | undefined },
+  negotiation: {
+    readonly basicInput: 1 | undefined;
+    readonly surfaceState: 1 | undefined;
+    readonly autofill: boolean;
+  },
   signedIn: () => Promise<boolean>,
 ): void {
   installWebSocketLiveness(socket);

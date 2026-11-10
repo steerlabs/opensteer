@@ -67,6 +67,10 @@ and a fresh launch check. Publication verifies matching insider source provenanc
 equality. It refuses versions at or below published Stable and requires first-parent main with
 green CI. Tim approves publication through the secret-free `publish` environment.
 
+Releases and main's CI runs grow with every push, so release tooling never reads either list
+whole: it finds a release by its tag and reads runs newest first. A draft has no tag until it
+is published, so a channel's tags are its published releases.
+
 ## Tim's one-time setup and rotation
 
 The `release` environment holds the signing secrets with **no required reviewer**, so insiders

@@ -796,6 +796,7 @@ const RunnerEnvironmentSchema = z.object({
   OPENSTEER_BROWSER_BRIDGE_URL: z.url().optional(),
   OPENSTEER_BROWSER_RUNTIME_ID: z.string().trim().min(1).max(255).optional(),
   OPENSTEER_BROWSER_SIGN_IN: z.literal("1").optional(),
+  OPENSTEER_BROWSER_PERSON_FILL: z.literal("1").optional(),
   // The same bounds as `ComputerUseBridgeTokenSchema` in `@opensteer/protocol`,
   // written out because this package parses environments for every runtime and
   // does not depend on the wire schemas.
@@ -841,6 +842,8 @@ export interface RunnerConfig {
         readonly runtimeId: string;
         /** The browser runs saved-password sign-ins with Opensteer Passwords on this Mac. */
         readonly signIn: boolean;
+        /** Its pages offer and fill the person's own saved logins. */
+        readonly personFill: boolean;
         readonly url: URL;
       }
     | undefined;
@@ -1061,6 +1064,7 @@ function runnerBrowserBridge(parsed: {
   readonly OPENSTEER_BROWSER_BRIDGE_URL?: string | undefined;
   readonly OPENSTEER_BROWSER_RUNTIME_ID?: string | undefined;
   readonly OPENSTEER_BROWSER_SIGN_IN?: "1" | undefined;
+  readonly OPENSTEER_BROWSER_PERSON_FILL?: "1" | undefined;
 }): RunnerConfig["browserBridge"] {
   const configured = [
     parsed.OPENSTEER_BROWSER_BRIDGE_TOKEN,
@@ -1068,9 +1072,9 @@ function runnerBrowserBridge(parsed: {
     parsed.OPENSTEER_BROWSER_RUNTIME_ID,
   ].filter((value) => value !== undefined);
   if (configured.length === 0) {
-    if (parsed.OPENSTEER_BROWSER_SIGN_IN !== undefined) {
-      throw new Error("OPENSTEER_BROWSER_SIGN_IN needs the Runner's browser bridge settings");
-    }
+    for (const name of ["OPENSTEER_BROWSER_SIGN_IN", "OPENSTEER_BROWSER_PERSON_FILL"] as const)
+      if (parsed[name] !== undefined)
+        throw new Error(`${name} needs the Runner's browser bridge settings`);
     return undefined;
   }
   if (
@@ -1087,6 +1091,7 @@ function runnerBrowserBridge(parsed: {
     bridgeToken: parsed.OPENSTEER_BROWSER_BRIDGE_TOKEN,
     runtimeId: parsed.OPENSTEER_BROWSER_RUNTIME_ID,
     signIn: parsed.OPENSTEER_BROWSER_SIGN_IN === "1",
+    personFill: parsed.OPENSTEER_BROWSER_PERSON_FILL === "1",
     url: new URL(parsed.OPENSTEER_BROWSER_BRIDGE_URL),
   };
 }

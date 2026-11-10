@@ -48,6 +48,7 @@ const socketPollIntervalMs = 100;
 const personMethods: ReadonlySet<PasswordsBrokerMethod> = new Set([
   "signin.approve",
   "card.approve",
+  "fill.begin",
 ]);
 
 type Requests = typeof passwordsBrokerRequests;
@@ -57,6 +58,7 @@ export type PasswordsBrokerParams<Method extends PasswordsBrokerMethod> = z.inpu
 export type PasswordsBrokerResult<Method extends PasswordsBrokerMethod> = z.infer<Results[Method]>;
 
 export interface PasswordsBrokerConnection {
+  readonly protocolVersion: 4 | 5 | 6 | 7 | 8;
   readonly brokerVersion: string;
   readonly development: boolean;
   /** Distinct for every connection this client makes; what a transaction is bound to. */
@@ -83,7 +85,7 @@ export interface PasswordsBrokerPeerVerifier {
 
 export interface PasswordsBrokerClientOptions {
   readonly appVersion: string;
-  readonly protocolVersion?: 4 | 5 | 6 | 7;
+  readonly protocolVersion?: 4 | 5 | 6 | 7 | 8;
   /** The installed broker, which is what LaunchServices starts. */
   readonly brokerAppPath: string;
   readonly connectTimeoutMs?: number;
@@ -148,9 +150,11 @@ export class PasswordsBrokerClient {
   #nextId = 1;
   #closed = false;
   #launchFresh: boolean;
+  #protocolVersion: 4 | 5 | 6 | 7 | 8;
 
   constructor(options: PasswordsBrokerClientOptions) {
     this.#options = options;
+    this.#protocolVersion = options.protocolVersion ?? passwordsBrokerProtocolVersion;
     this.#identity = passwordsBrokerIdentity(options.development);
     this.#now = options.now ?? Date.now;
     this.#launchFresh = options.launchFreshInstance === true;
@@ -208,10 +212,13 @@ export class PasswordsBrokerClient {
     options: PasswordsBrokerCallOptions = {},
   ): Promise<PasswordsBrokerResult<Method>> {
     if (this.#closed) throw stopped();
-    if (method.startsWith("card.") && this.#options.protocolVersion !== 7) {
+    if (
+      (method.startsWith("card.") && this.#protocolVersion < 7) ||
+      (method.startsWith("fill.") && this.#protocolVersion < 8)
+    ) {
       throw new PasswordsBrokerFailure(
         "invalid",
-        "Saved cards require an updated Opensteer Passwords connection.",
+        "This feature requires an updated Opensteer Passwords connection.",
       );
     }
     const { signal } = options;
@@ -232,6 +239,15 @@ export class PasswordsBrokerClient {
       live = this.#live?.generation === options.connection ? this.#live : null;
     }
     if (!live || live.socket.destroyed) throw connectionLost();
+    if (
+      (method.startsWith("card.") && live.protocolVersion < 7) ||
+      (method.startsWith("fill.") && live.protocolVersion < 8)
+    ) {
+      throw new PasswordsBrokerFailure(
+        "invalid",
+        "This feature requires an updated Opensteer Passwords connection.",
+      );
+    }
     if (signal?.aborted) throw aborted();
     const answer = await this.#send(live.socket, method, parsedParams.data, {
       ...(signal === undefined ? {} : { signal }),
@@ -385,7 +401,7 @@ export class PasswordsBrokerClient {
       "hello",
       {
         client: { version: this.#options.appVersion },
-        protocolVersion: this.#options.protocolVersion ?? passwordsBrokerProtocolVersion,
+        protocolVersion: this.#protocolVersion,
       },
       { timeoutMs: Math.max(1, due.at - this.#now()) },
     ).catch((error: unknown) => {
@@ -398,7 +414,8 @@ export class PasswordsBrokerClient {
         : undefined;
     if (
       typeof announced === "number" &&
-      announced !== (this.#options.protocolVersion ?? passwordsBrokerProtocolVersion)
+      announced !== this.#protocolVersion &&
+      !(this.#protocolVersion === 8 && announced >= 4 && announced <= 7)
     ) {
       socket.destroy();
       throw new PasswordsBrokerFailure(
@@ -426,8 +443,14 @@ export class PasswordsBrokerClient {
           : "A development Opensteer Passwords answered this release build, which never uses one.",
       );
     }
+    if (parsed.data.protocolVersion !== this.#protocolVersion) {
+      socket.destroy();
+      this.#protocolVersion = 7;
+      return await this.#establish(retried);
+    }
     this.#requireCurrent(generation, socket);
     const live: LiveConnection = {
+      protocolVersion: parsed.data.protocolVersion,
       brokerVersion: parsed.data.brokerVersion,
       development: parsed.data.development,
       generation,
@@ -532,7 +555,7 @@ export class PasswordsBrokerClient {
       const onAbort = (): void => {
         if (!this.#pending.delete(id)) return;
         settle();
-        if (method.startsWith("signin.") || method.startsWith("card."))
+        if (method.startsWith("signin.") || method.startsWith("card.") || method === "fill.begin")
           this.#cancelAbandoned(socket, params);
         rejectPromise(aborted());
       };
@@ -707,6 +730,7 @@ export class PasswordsBrokerClient {
 
 function describe(live: LiveConnection): PasswordsBrokerConnection {
   return {
+    protocolVersion: live.protocolVersion,
     brokerVersion: live.brokerVersion,
     development: live.development,
     generation: live.generation,

@@ -8,3 +8,4 @@ export {
   type EditingReduction,
 } from "./reducer.js";
 export { editingModifiers, resolveEditingBinding } from "./bindings.js";
+export { autofillKeeps, type AutofillKey } from "./autofill-keys.js";

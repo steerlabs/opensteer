@@ -961,9 +961,10 @@ async function world(
   const activate = host.activateWorkspaceTab;
   Object.defineProperty(host, "activateWorkspaceTab", {
     configurable: true,
-    value: (tabId: string) => {
+    value: (...args: Parameters<typeof activate>) => {
+      const [tabId] = args;
       calls.activations.push(tabId);
-      return activate(tabId);
+      return activate(...args);
     },
   });
   const watch = host.retainBrowserWatch.bind(host) as (...args: unknown[]) => () => void;
