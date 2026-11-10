@@ -1,3 +1,4 @@
+import { HUMAN_AUTHORITY_GUARDS_SQL } from "./human-authority-guards.js";
 import { sql } from "kysely";
 import type { Migration } from "kysely/migration";
 import { PROJECT_AUTHORITY_GUARDS_SQL } from "./project-authority-guards.js";
@@ -35,5 +36,6 @@ export const projectAuthorityCutoverMigration: Migration = {
       `.execute(database);
     }
     await sql.raw(PROJECT_AUTHORITY_GUARDS_SQL).execute(database);
+    await sql.raw(HUMAN_AUTHORITY_GUARDS_SQL).execute(database);
   },
 };
