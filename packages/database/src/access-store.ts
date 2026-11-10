@@ -425,7 +425,6 @@ function propose(graph: Graph, change: AccessMutation, actorId: UserId, now: Dat
       next.projects = next.projects.filter((project) => project.id !== change.workspaceId);
       break;
   }
-  groupPeople(next);
   return next;
 }
 
@@ -670,6 +669,30 @@ async function applySource(
   input: AccessMutationInput,
   now: Date,
 ): Promise<void> {
+  const changedUsers = next.users
+    .filter((after) => {
+      const before = old.users.find((user) => user.id === after.id)!;
+      return (
+        before.memberKind !== after.memberKind ||
+        before.memberState !== after.memberState ||
+        before.admittedAt?.getTime() !== after.admittedAt?.getTime()
+      );
+    })
+    .sort((first, second) => first.id.localeCompare(second.id));
+  if (changedUsers.some((after) => after.memberState !== "active")) {
+    const admins = await transaction
+      .selectFrom("users")
+      .select(["id", "memberState", "admittedAt"])
+      .where("instanceRole", "=", "administrator")
+      .execute();
+    const active = (user: Pick<Graph["users"][number], "memberState" | "admittedAt">) =>
+      user.memberState === "active" && user.admittedAt !== null;
+    if (
+      admins.some(active) &&
+      !admins.some((admin) => active(next.users.find((user) => user.id === admin.id) ?? admin))
+    )
+      refuse("The last active administrator cannot be removed");
+  }
   const oldGroups = new Set(old.groups.map((group) => group.id));
   const nextGroups = new Set(next.groups.map((group) => group.id));
   const deletedGroups = old.groups
@@ -774,6 +797,17 @@ async function applySource(
   }
   if (addedEntries.length)
     await transaction.insertInto("accessEntries").values(addedEntries).execute();
+  const userIds = new Set(changedUsers.map((user) => user.id));
+  if (input.changes.some((change) => change.kind === "create-project"))
+    userIds.add(input.actor.userId);
+  if (userIds.size)
+    await transaction
+      .selectFrom("users")
+      .select("id")
+      .where("id", "in", [...userIds])
+      .orderBy("id")
+      .forNoKeyUpdate()
+      .execute();
   for (const change of input.changes)
     if (change.kind === "create-project")
       await transaction
@@ -802,33 +836,6 @@ async function applySource(
         })
         .where("id", "=", change.workspaceId)
         .execute();
-  const changedUsers = next.users
-    .filter((after) => {
-      const before = old.users.find((user) => user.id === after.id)!;
-      return (
-        before.memberKind !== after.memberKind ||
-        before.memberState !== after.memberState ||
-        before.admittedAt?.getTime() !== after.admittedAt?.getTime()
-      );
-    })
-    .sort((first, second) => first.id.localeCompare(second.id));
-  if (changedUsers.some((after) => after.memberState !== "active")) {
-    const admins = await transaction
-      .selectFrom("users")
-      .select("id")
-      .where("instanceRole", "=", "administrator")
-      .where("memberState", "=", "active")
-      .where("admittedAt", "is not", null)
-      .execute();
-    if (
-      admins.length &&
-      !admins.some(
-        (admin) =>
-          !changedUsers.some((user) => user.id === admin.id && user.memberState !== "active"),
-      )
-    )
-      refuse("The last active administrator cannot be removed");
-  }
   for (const after of changedUsers) {
     const before = old.users.find((user) => user.id === after.id)!;
     await transaction
@@ -925,7 +932,6 @@ export async function mutateAccess(
     AccessTransaction,
     {
       old: Graph;
-      next: Graph;
       pairs: Pair[];
       revision: number;
       growing: boolean;
@@ -938,6 +944,8 @@ export async function mutateAccess(
       async (transaction) => {
         const plan = plans.get(transaction)!;
         const ids = new Set(plan.pairs.map((pair) => pair.workspaceId));
+        for (const change of input.changes)
+          if (change.kind === "delete-project") ids.add(change.workspaceId);
         if (plan.pairs.length) {
           const requests = await sql<{
             originatingWorkspaceId: WorkspaceId;
@@ -1032,7 +1040,6 @@ export async function mutateAccess(
         if (receipt) {
           plans.set(transaction, {
             old,
-            next: old,
             pairs: [],
             revision: safeGeneration(state.revision),
             growing: false,
@@ -1078,13 +1085,9 @@ export async function mutateAccess(
           }
         }
         const pairs = new Map<string, Pair>();
-        let intermediate = old;
-        for (const change of input.changes) {
-          const proposed = propose(intermediate, change, input.actor.userId, now);
-          for (const pair of affectedPairs(intermediate, proposed, memberships, change))
+        for (const change of input.changes)
+          for (const pair of affectedPairs(old, next, memberships, change))
             pairs.set(pairKey(pair), pair);
-          intermediate = proposed;
-        }
         const beforePairs = entriesByPair(old);
         const afterPairs = entriesByPair(next);
         const growing = [...afterPairs].some(([key, value]) => {
@@ -1098,7 +1101,6 @@ export async function mutateAccess(
           capacityError("affectedPairs", pairs.size);
         plans.set(transaction, {
           old,
-          next,
           pairs: [...pairs.values()],
           revision: safeGeneration(state.revision),
           growing,

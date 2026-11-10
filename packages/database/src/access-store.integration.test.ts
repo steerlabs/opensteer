@@ -770,6 +770,260 @@ describeStore("dormant Project access", (it) => {
     ).toMatchObject({ allowed: true, membershipGeneration: 1 });
   });
 
+  const mutationKinds = [
+    "create-project",
+    "create-group",
+    "delete-group",
+    "add-group-member",
+    "remove-group-member",
+    "grant",
+    "revoke",
+    "member",
+    "delete-project",
+  ] as const;
+  for (const first of mutationKinds)
+    it(`reserves the complete lock set for ${first} paired with every mutation kind`, async ({
+      storeFixture,
+    }) => {
+      const access = await setup(storeFixture);
+      const { database, store } = storeFixture;
+      const actorId = "usr_ffffffff-ffff-4fff-8fff-ffffffffffff" as UserId;
+      await store.createUser("High-ID administrator", actorId);
+      await database
+        .updateTable("users")
+        .set({ instanceRole: "administrator", admittedAt: new Date() })
+        .where("id", "=", actorId)
+        .execute();
+      const mutate = async (changes: readonly AccessMutation[]) => {
+        const state = await database
+          .selectFrom("accessState")
+          .select("revision")
+          .executeTakeFirstOrThrow();
+        return mutateAccess(database, {
+          actor: { userId: actorId },
+          expectedRevision: Number(state.revision),
+          commandIdentity: createId("command"),
+          changes,
+        });
+      };
+      let ordinal = 0;
+      for (const second of mutationKinds) {
+        ordinal++;
+        const change = async (
+          kind: (typeof mutationKinds)[number],
+          position: number,
+        ): Promise<AccessMutation> => {
+          const name = `Pair ${ordinal}-${position}`;
+          const userId =
+            `usr_00000000-0000-4000-8000-${(ordinal * 2 - position).toString(16).padStart(12, "0")}` as UserId;
+          await store.createUser(name, userId);
+          await database
+            .updateTable("users")
+            .set({ admittedAt: new Date() })
+            .where("id", "=", userId)
+            .execute();
+          const groupId = randomUUID();
+          const entryId = randomUUID();
+          const target = { kind: "project" as const, workspaceId: access.workspace.id };
+          const subject = { kind: "person" as const, userId };
+          switch (kind) {
+            case "create-project":
+              return {
+                kind,
+                workspaceId: createId("workspace"),
+                entryId,
+                name,
+                color: "blue",
+                backing: {
+                  kind: "local-directory",
+                  generation: 1,
+                  bindingId: createId("workspaceBinding"),
+                  ownerEnvironmentId: access.environmentId,
+                  storageAuthorityId: createId("storageAuthority"),
+                },
+              };
+            case "create-group":
+              return { kind, id: groupId, name };
+            case "delete-group":
+            case "add-group-member":
+            case "remove-group-member":
+              await mutate([{ kind: "create-group", id: groupId, name }]);
+              if (kind !== "add-group-member")
+                await mutate([
+                  { kind: "add-group-member", groupId, member: subject },
+                  {
+                    kind: "grant",
+                    id: entryId,
+                    subject: { kind: "group", groupId },
+                    target,
+                    level: "use",
+                  },
+                ]);
+              return kind === "delete-group"
+                ? { kind, groupId }
+                : { kind, groupId, member: subject };
+            case "grant":
+              return { kind, id: entryId, subject, target, level: "use" };
+            case "revoke":
+              await mutate([{ kind: "grant", id: entryId, subject, target, level: "use" }]);
+              return { kind, entryId };
+            case "member":
+              return { kind, userId, memberKind: "guest" };
+            case "delete-project": {
+              const workspaceId = createId("workspace");
+              await mutate([
+                {
+                  kind: "create-project",
+                  workspaceId,
+                  entryId,
+                  name,
+                  color: "blue",
+                  backing: {
+                    kind: "local-directory",
+                    generation: 1,
+                    bindingId: createId("workspaceBinding"),
+                    ownerEnvironmentId: access.environmentId,
+                    storageAuthorityId: createId("storageAuthority"),
+                  },
+                },
+              ]);
+              return { kind, workspaceId, purgeAfter: new Date("2099-01-01") };
+            }
+          }
+        };
+        const changes = [await change(first, 0), await change(second, 1)];
+        if (changes.some((change) => change.kind === "delete-project")) {
+          const state = await database
+            .selectFrom("accessState")
+            .select("revision")
+            .executeTakeFirstOrThrow();
+          await expect(mutate(changes), `${first} then ${second}`).rejects.toThrow(
+            "workspace must retain at least one active owner",
+          );
+          expect(
+            await database.selectFrom("accessState").select("revision").executeTakeFirstOrThrow(),
+          ).toEqual(state);
+        } else
+          await expect(mutate(changes), `${first} then ${second}`).resolves.toMatchObject({
+            revision: expect.any(Number),
+          });
+      }
+      expect(ordinal).toBe(9);
+    });
+
+  for (const reverse of [false, true])
+    it(`judges administrator handover on the final list state (reverse=${reverse})`, async ({
+      storeFixture,
+    }) => {
+      const access = await setup(storeFixture);
+      const successor = await access.member("Successor administrator");
+      const keeper = await access.member("Retained Project owner");
+      await access.mutate({
+        kind: "grant",
+        id: randomUUID(),
+        subject: { kind: "person", userId: keeper },
+        target: { kind: "project", workspaceId: access.workspace.id },
+        level: "manage",
+      });
+      await storeFixture.database
+        .updateTable("users")
+        .set({ instanceRole: "administrator", memberState: "suspended", admittedAt: null })
+        .where("id", "=", successor)
+        .execute();
+      const changes: AccessMutation[] = [
+        { kind: "member", userId: successor, memberState: "active", admit: true },
+        { kind: "member", userId: access.userId, memberState: "suspended" },
+      ];
+      if (reverse) changes.reverse();
+      await expect(access.mutate(changes)).resolves.toMatchObject({
+        revision: access.revision() + 1,
+      });
+      const state = await storeFixture.database
+        .selectFrom("accessState")
+        .select("revision")
+        .executeTakeFirstOrThrow();
+      await expect(
+        mutateAccess(storeFixture.database, {
+          actor: { userId: successor },
+          expectedRevision: Number(state.revision),
+          commandIdentity: createId("command"),
+          changes: [
+            { kind: "member", userId: access.userId, memberState: "active" },
+            { kind: "member", userId: access.userId, memberState: "suspended" },
+            { kind: "member", userId: successor, memberState: "suspended" },
+          ],
+        }),
+      ).rejects.toThrow("The last active administrator cannot be removed");
+      expect(
+        await storeFixture.database
+          .selectFrom("accessState")
+          .select("revision")
+          .executeTakeFirstOrThrow(),
+      ).toEqual(state);
+      expect(
+        await storeFixture.database
+          .selectFrom("users")
+          .select(["id", "memberState", "admittedAt"])
+          .where("id", "in", [access.userId, successor])
+          .orderBy("id")
+          .execute(),
+      ).toEqual(
+        [
+          { id: access.userId, memberState: "suspended", admittedAt: expect.any(Date) },
+          { id: successor, memberState: "active", admittedAt: expect.any(Date) },
+        ].sort((first, second) => first.id.localeCompare(second.id)),
+      );
+    });
+
+  it("judges cycles on the final graph rather than intermediate edge replacements", async ({
+    storeFixture,
+  }) => {
+    const access = await setup(storeFixture);
+    const first = randomUUID();
+    const second = randomUUID();
+    const userId = await access.member();
+    await access.mutate([
+      { kind: "create-group", id: first, name: "Cycle first" },
+      { kind: "create-group", id: second, name: "Cycle second" },
+      { kind: "add-group-member", groupId: first, member: { kind: "group", groupId: second } },
+      { kind: "add-group-member", groupId: second, member: { kind: "person", userId } },
+      {
+        kind: "grant",
+        id: randomUUID(),
+        subject: { kind: "group", groupId: first },
+        target: { kind: "project", workspaceId: access.workspace.id },
+        level: "use",
+      },
+    ]);
+    await expect(
+      access.mutate([
+        { kind: "add-group-member", groupId: second, member: { kind: "group", groupId: first } },
+        { kind: "remove-group-member", groupId: first, member: { kind: "group", groupId: second } },
+      ]),
+    ).resolves.toMatchObject({ revision: access.revision() + 1 });
+    expect(await access.allowed(userId)).toEqual({ allowed: false });
+    const unchanged = await storeFixture.database
+      .selectFrom("accessGroupMembers")
+      .selectAll()
+      .orderBy("groupId")
+      .orderBy("memberId")
+      .execute();
+    await expect(
+      access.mutate([
+        { kind: "add-group-member", groupId: first, member: { kind: "group", groupId: second } },
+        { kind: "member", userId, memberKind: "guest" },
+      ]),
+    ).rejects.toThrow(/cycle/i);
+    expect(
+      await storeFixture.database
+        .selectFrom("accessGroupMembers")
+        .selectAll()
+        .orderBy("groupId")
+        .orderBy("memberId")
+        .execute(),
+    ).toEqual(unchanged);
+  });
+
   it("refuses unsupported targets and a ninth nesting level without partial writes", async ({
     storeFixture,
   }) => {
@@ -790,6 +1044,39 @@ describeStore("dormant Project access", (it) => {
         member: { kind: "group", groupId: groups[8]! },
       }),
     ).rejects.toMatchObject({ code: "resource_exhausted", reason: "access-capacity" });
+    expect(
+      await storeFixture.database.selectFrom("accessGroupMembers").selectAll().execute(),
+    ).toHaveLength(7);
+    await access.mutate([
+      {
+        kind: "add-group-member",
+        groupId: groups[7]!,
+        member: { kind: "group", groupId: groups[8]! },
+      },
+      {
+        kind: "remove-group-member",
+        groupId: groups[0]!,
+        member: { kind: "group", groupId: groups[1]! },
+      },
+    ]);
+    const transientGroup = randomUUID();
+    await expect(
+      access.mutate([
+        { kind: "create-group", id: transientGroup, name: "Depth must roll back" },
+        {
+          kind: "add-group-member",
+          groupId: groups[0]!,
+          member: { kind: "group", groupId: groups[1]! },
+        },
+      ]),
+    ).rejects.toMatchObject({ code: "resource_exhausted", details: { limit: "depth" } });
+    expect(
+      await storeFixture.database
+        .selectFrom("accessGroups")
+        .select("id")
+        .where("id", "=", transientGroup)
+        .execute(),
+    ).toEqual([]);
     expect(
       await storeFixture.database.selectFrom("accessGroupMembers").selectAll().execute(),
     ).toHaveLength(7);
@@ -1049,6 +1336,46 @@ describeStore("dormant Project access", (it) => {
     await expect(access.mutate({ kind: "revoke", entryId: entries[0]!.id })).resolves.toMatchObject(
       { revision: access.revision() + 1 },
     );
+    const replacement = randomUUID();
+    await expect(
+      access.mutate([
+        {
+          kind: "grant",
+          id: replacement,
+          subject: { kind: "person", userId },
+          target: { kind: "project", workspaceId: access.workspace.id },
+          level: "use",
+        },
+        { kind: "revoke", entryId: entries[1]!.id },
+      ]),
+    ).resolves.toMatchObject({ transitions: [] });
+    const rejected = randomUUID();
+    await expect(
+      access.mutate([
+        {
+          kind: "grant",
+          id: rejected,
+          subject: { kind: "person", userId },
+          target: { kind: "project", workspaceId: access.workspace.id },
+          level: "use",
+        },
+        { kind: "member", userId, memberKind: "guest" },
+      ]),
+    ).rejects.toMatchObject({ code: "resource_exhausted", details: { limit: "matchingEntries" } });
+    expect(
+      await storeFixture.database
+        .selectFrom("accessEntries")
+        .select("id")
+        .where("id", "=", rejected)
+        .execute(),
+    ).toEqual([]);
+    expect(
+      await storeFixture.database
+        .selectFrom("users")
+        .select("memberKind")
+        .where("id", "=", userId)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ memberKind: "full" });
   });
 
   it("checks matching-entry growth per pair rather than the Deployment maximum", async ({
