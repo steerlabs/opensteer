@@ -17,6 +17,7 @@ import {
   aroundLabel,
   aroundPlaces,
   aroundSections,
+  aroundYieldable,
   earlierDays,
   openingSection,
   sameAroundGlance,
@@ -252,5 +253,20 @@ describe("the sheet's sections", () => {
       ["December 31, 2025", ["f"]],
       ["Earlier", ["g"]],
     ]);
+  });
+});
+
+describe("aroundYieldable", () => {
+  it("gives up schedules, then places, and keeps who it works for and its tasks", () => {
+    expect(aroundYieldable(["from", "places", "tasks", "schedules"])).toEqual([
+      "schedules",
+      "places",
+    ]);
+    expect(aroundYieldable(["tasks", "schedules"])).toEqual(["schedules"]);
+  });
+
+  it("keeps one part, so Around is never an empty button", () => {
+    expect(aroundYieldable(["places", "schedules"])).toEqual(["schedules"]);
+    expect(aroundYieldable(["places"])).toEqual([]);
   });
 });

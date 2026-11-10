@@ -149,6 +149,10 @@ vi.mock("../client/mobile-client.js", () => ({
 vi.mock("../ui/bar-title.js", () => ({
   barGlassInset: 8,
   barItemWidth: 44,
+  barNameFloor: 64,
+  barTitleWidth: () => 260,
+  barYield: () => 0,
+  useBarTitleRoom: () => 300,
   useBarTitleWidth: () => 260,
 }));
 vi.mock("../ui/glass.js", () => ({
@@ -204,7 +208,12 @@ vi.mock("./thread-subtitle.js", () => ({
   ThreadSubtitle: () => null,
 }));
 vi.mock("./thread-pane.js", () => ({ sameThreadHeader: () => false }));
-vi.mock("./folded-page.js", () => ({ FoldedPage: () => null }));
+vi.mock("../ui/motion.js", () => ({ appear: {} }));
+vi.mock("react-native-reanimated", () => ({
+  default: { View: ({ children }: { children?: ReactNode }) => <div>{children}</div> },
+  LayoutAnimationConfig: ({ children }: { children?: ReactNode }) => <>{children}</>,
+}));
+vi.mock("./folded-page.js", () => ({ FoldedPage: () => null, foldedPageWidth: 46 }));
 
 const { useThreadHeader } = await import("../screens/thread-header.js");
 const { AroundScreen } = await import("./around-sheet.js");
