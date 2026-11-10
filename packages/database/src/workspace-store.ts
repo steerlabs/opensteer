@@ -83,6 +83,7 @@ export interface CreateWorkspaceInput {
 }
 
 export interface WorkspaceFilesAdmission {
+  readonly authorityDeadline?: number;
   readonly membershipGeneration: number;
   readonly userId: UserId;
   readonly workspace: Workspace;
@@ -1020,11 +1021,18 @@ export async function admitWorkspaceFiles(
   workspaceId: WorkspaceId,
   userId: UserId,
 ): Promise<WorkspaceFilesAdmission | null> {
+  const started = performance.now();
   const row = await database
     .selectFrom("workspaces")
     .innerJoin("workspaceMemberships", "workspaceMemberships.workspaceId", "workspaces.id")
     .selectAll("workspaces")
     .select("workspaceMemberships.generation as membershipGeneration")
+    .select("workspaceMemberships.effectiveUntil")
+    .select(
+      sql<Date | null>`case when workspace_memberships.effective_until is not null then clock_timestamp() end`.as(
+        "checkedAt",
+      ),
+    )
     .where("workspaces.id", "=", workspaceId)
     .where("workspaceMemberships.userId", "=", userId)
     .where(effectiveMembershipPredicate())
@@ -1039,6 +1047,11 @@ export async function admitWorkspaceFiles(
     });
   }
   return {
+    ...(row.effectiveUntil && row.checkedAt
+      ? {
+          authorityDeadline: started + row.effectiveUntil.getTime() - row.checkedAt.getTime(),
+        }
+      : {}),
     membershipGeneration: safeGeneration(row.membershipGeneration),
     userId,
     workspace: workspaceFromRow(row),

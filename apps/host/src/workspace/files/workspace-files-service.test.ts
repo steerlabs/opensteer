@@ -10,6 +10,29 @@ import { WorkspaceFilesService } from "./workspace-files-service.js";
 afterEach(() => vi.useRealTimers());
 
 describe("WorkspaceFilesService", () => {
+  it("never releases a delayed result after its admission deadline, even if current membership is active", async () => {
+    let now = 0;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    const fixture = membershipFixture(localWorkspace());
+    const admission = { ...fixture.admission, authorityDeadline: 1000 };
+    const service = new WorkspaceFilesService({
+      local: {
+        list: async () => {
+          now = 1001;
+          return directoryPage();
+        },
+      } as never,
+      memberships: fixture.repository,
+    });
+    try {
+      await expect(service.list(admission, { limit: 200, parentKey: "" })).rejects.toMatchObject({
+        code: "not_found",
+      });
+    } finally {
+      service.close();
+      clock.mockRestore();
+    }
+  });
   it("fails closed when a Workspace backing has no configured driver", async () => {
     const unavailable = membershipFixture({
       ...localWorkspace(),

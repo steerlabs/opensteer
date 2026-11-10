@@ -343,6 +343,14 @@ export class OpensteerStore {
     return workspaceMembershipStore.workspaceMembershipForUser(this.#database, workspaceId, userId);
   }
 
+  async workspaceMembershipAuthorityForUser(workspaceId: WorkspaceId, userId: UserId) {
+    return workspaceMembershipStore.workspaceMembershipAuthorityForUser(
+      this.#database,
+      workspaceId,
+      userId,
+    );
+  }
+
   async listWorkspaceMembers(
     workspaceId: WorkspaceId,
     actorId: UserId,

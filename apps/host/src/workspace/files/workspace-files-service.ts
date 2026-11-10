@@ -214,6 +214,11 @@ class WorkspaceFilesLease {
   }
 
   assertLive(): void {
+    if (
+      this.#admission.authorityDeadline !== undefined &&
+      performance.now() >= this.#admission.authorityDeadline
+    )
+      this.abort(membershipChangedError());
     this.signal.throwIfAborted();
   }
 

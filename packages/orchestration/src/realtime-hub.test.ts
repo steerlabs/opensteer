@@ -16,9 +16,151 @@ import {
   type WorkspaceTabLineage,
 } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { LiveRunRegistry, RealtimeHub, type RealtimeSink } from "./index.js";
 
 describe("snapshot-before-live synchronization", () => {
+  it("fences a snapshot delayed past the captured membership deadline", async () => {
+    let now = 0;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    const workspaceId = createId("workspace"),
+      userId = createId("user");
+    const snapshotRead = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const authority = async () => ({
+      ...activeMembership(workspaceId, userId),
+      authorityDeadline: 1000,
+    });
+    const hub = new RealtimeHub({
+      store: {
+        notificationState: viewerState(),
+        workspaceMembershipAuthorityForUser: authority,
+        workspaceSnapshot: async () => {
+          snapshotRead.resolve();
+          await withTimeout(release.promise, 1000, "snapshot release missing");
+          return snapshot(workspaceId, "0");
+        },
+      } as unknown as OpensteerStore,
+    });
+    const sink = new MemorySink();
+    const subscribing = hub.subscribe({ afterSequence: sequence("0"), sink, userId, workspaceId });
+    try {
+      await withTimeout(snapshotRead.promise, 1000, "snapshot read never started");
+      now = 1001;
+      release.resolve();
+      await expect(subscribing).rejects.toMatchObject({ code: "forbidden" });
+      expect(sink.messages).toEqual([]);
+      expect(sink.closed).toMatchObject({ code: 4003 });
+    } finally {
+      release.resolve();
+      clock.mockRestore();
+    }
+  });
+
+  it("fences queued events after a blocked send resumes past expiry", async () => {
+    let now = 0;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    const workspaceId = createId("workspace"),
+      userId = createId("user");
+    const sending = Promise.withResolvers<void>(),
+      release = Promise.withResolvers<void>(),
+      closed = Promise.withResolvers<void>();
+    const sink = new MemorySink();
+    const send = sink.send.bind(sink);
+    sink.send = async (message) => {
+      await send(message);
+      if (message.type === "host.events") {
+        sending.resolve();
+        await withTimeout(release.promise, 1000, "send release missing");
+      }
+    };
+    const close = sink.close.bind(sink);
+    sink.close = (code, reason) => {
+      close(code, reason);
+      closed.resolve();
+    };
+    const authority = vi.fn(async () => ({
+      ...activeMembership(workspaceId, userId),
+      authorityDeadline: 1000,
+    }));
+    const hub = new RealtimeHub({
+      store: {
+        notificationState: viewerState(),
+        workspaceMembershipAuthorityForUser: authority,
+        workspaceSnapshot: async () => snapshot(workspaceId, "0"),
+      } as unknown as OpensteerStore,
+    });
+    const unsubscribe = await hub.subscribe({
+      afterSequence: sequence("0"),
+      sink,
+      userId,
+      workspaceId,
+    });
+    try {
+      hub.publish(event(workspaceId, "1"));
+      await withTimeout(sending.promise, 1000, "first event never reached sink");
+      hub.publish(event(workspaceId, "2"));
+      now = 1001;
+      release.resolve();
+      await withTimeout(closed.promise, 1000, "expired queued delivery remained open");
+      expect(sink.messages.filter((message) => message.type === "host.events")).toHaveLength(1);
+      expect(sink.closed).toMatchObject({ code: 4003 });
+      expect(authority).toHaveBeenCalledTimes(1);
+    } finally {
+      release.resolve();
+      unsubscribe();
+      clock.mockRestore();
+    }
+  });
+  it("fences live-only frames without another authority query", async () => {
+    let now = 0;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    const workspaceId = createId("workspace"),
+      userId = createId("user");
+    const closed = Promise.withResolvers<void>();
+    const sink = new MemorySink();
+    const close = sink.close.bind(sink);
+    sink.close = (code, reason) => {
+      close(code, reason);
+      closed.resolve();
+    };
+    const authority = vi.fn(async () => ({
+      ...activeMembership(workspaceId, userId),
+      authorityDeadline: 1000,
+    }));
+    const hub = new RealtimeHub({
+      store: {
+        notificationState: viewerState(),
+        workspaceMembershipAuthorityForUser: authority,
+        workspaceSnapshot: async () => snapshot(workspaceId, "0"),
+      } as unknown as OpensteerStore,
+    });
+    const unsubscribe = await hub.subscribe({
+      afterSequence: sequence("0"),
+      sink,
+      userId,
+      workspaceId,
+    });
+    try {
+      now = 1001;
+      hub.publishLive({
+        afterSequence: sequence("0"),
+        progress: {
+          workspaceId,
+          threadId: createId("thread"),
+          runId: createId("run"),
+          items: [{ at: 0, op: "append", stream: "assistant", text: "Expired" }],
+        },
+      });
+      await withTimeout(closed.promise, 1000, "expired live delivery remained open");
+      expect(sink.messages.some((message) => message.type === "host.live")).toBe(false);
+      expect(sink.closed).toMatchObject({ code: 4003 });
+      expect(authority).toHaveBeenCalledTimes(1);
+    } finally {
+      unsubscribe();
+      clock.mockRestore();
+    }
+  });
   it("does not apply an old cutoff to a replacement whose membership read is pending", async () => {
     const workspaceId = createId("workspace");
     const userId = createId("user");
@@ -26,7 +168,7 @@ describe("snapshot-before-live synchronization", () => {
     const hub = new RealtimeHub({
       store: {
         notificationState: viewerState(),
-        workspaceMembershipForUser: () => membership.promise,
+        workspaceMembershipAuthorityForUser: () => membership.promise,
         workspaceSnapshot: async () => snapshot(workspaceId, "0"),
       } as unknown as OpensteerStore,
     });
@@ -48,7 +190,7 @@ describe("snapshot-before-live synchronization", () => {
     const hub = new RealtimeHub({
       store: {
         notificationState: viewerState(),
-        workspaceMembershipForUser: async () => ({
+        workspaceMembershipAuthorityForUser: async () => ({
           ...activeMembership(workspaceId, userId),
           generation,
         }),
@@ -85,7 +227,7 @@ describe("snapshot-before-live synchronization", () => {
     const hub = new RealtimeHub({
       store: {
         notificationState: viewerState(),
-        workspaceMembershipForUser: async (workspaceId: WorkspaceId, userId: UserId) =>
+        workspaceMembershipAuthorityForUser: async (workspaceId: WorkspaceId, userId: UserId) =>
           activeMembership(workspaceId, userId),
         workspaceSnapshot: async (workspaceId: WorkspaceId) => snapshot(workspaceId, "0"),
       } as unknown as OpensteerStore,
@@ -144,7 +286,7 @@ describe("snapshot-before-live synchronization", () => {
       const workspaceSnapshot = vi.fn(async () => snapshot(workspaceId, "0"));
       const store = {
         notificationState: viewerState(),
-        workspaceMembershipForUser: async () => activeMembership(workspaceId, userId),
+        workspaceMembershipAuthorityForUser: async () => activeMembership(workspaceId, userId),
         workspaceSnapshot,
       } as unknown as OpensteerStore;
       const hub = new RealtimeHub({ store });
@@ -260,7 +402,7 @@ describe("snapshot-before-live synchronization", () => {
       const workspaceSnapshot = vi.fn(async () => snapshot(workspaceId, "0"));
       const store = {
         notificationState: viewerState(),
-        workspaceMembershipForUser: async () => activeMembership(workspaceId, userId),
+        workspaceMembershipAuthorityForUser: async () => activeMembership(workspaceId, userId),
         workspaceSnapshot,
       } as unknown as OpensteerStore;
       const hub = new RealtimeHub({ store });
@@ -293,7 +435,7 @@ describe("snapshot-before-live synchronization", () => {
     });
     const store = {
       notificationState: viewerState(),
-      workspaceMembershipForUser: async () => activeMembership(workspaceId, userId),
+      workspaceMembershipAuthorityForUser: async () => activeMembership(workspaceId, userId),
       workspaceSnapshot: async () => {
         await snapshotGate;
         return snapshot(workspaceId, "0");
@@ -322,7 +464,7 @@ describe("snapshot-before-live synchronization", () => {
     });
     const store = {
       notificationState: viewerState(),
-      workspaceMembershipForUser: async () => activeMembership(workspaceId, userId),
+      workspaceMembershipAuthorityForUser: async () => activeMembership(workspaceId, userId),
       workspaceSnapshot: async () => {
         await snapshotGate;
         return snapshot(workspaceId, "0");
@@ -394,7 +536,7 @@ describe("snapshot-before-live synchronization", () => {
         }),
       notificationState: viewerState(),
       workspaceHead: async () => sequence("1"),
-      workspaceMembershipForUser: async () => activeMembership(workspaceId, userId),
+      workspaceMembershipAuthorityForUser: async () => activeMembership(workspaceId, userId),
     } as unknown as OpensteerStore;
     const hub = new RealtimeHub({ gapFillDelayMs: 1, store });
     const sink = new MemorySink();
@@ -440,7 +582,7 @@ describe("snapshot-before-live synchronization", () => {
       },
       notificationState: viewerState(),
       workspaceHead: async () => head,
-      workspaceMembershipForUser: async () => activeMembership(workspaceId, userId),
+      workspaceMembershipAuthorityForUser: async () => activeMembership(workspaceId, userId),
     } as unknown as OpensteerStore;
     const hub = new RealtimeHub({ gapFillDelayMs: 1, gapFillTimeoutMs: 20, store });
     const sink = new MemorySink();
@@ -489,7 +631,7 @@ describe("snapshot-before-live synchronization", () => {
     });
     const store = {
       notificationState: viewerState(),
-      workspaceMembershipForUser: async () => activeMembership(workspaceId, userId),
+      workspaceMembershipAuthorityForUser: async () => activeMembership(workspaceId, userId),
       workspaceSnapshot: async () => snapshot(workspaceId, "1"),
     } as unknown as OpensteerStore;
     const hub = new RealtimeHub({ liveRuns, store });
@@ -537,7 +679,7 @@ describe("snapshot-before-live synchronization", () => {
     }
     const store = {
       notificationState: viewerState(),
-      workspaceMembershipForUser: async () => activeMembership(workspaceId, userId),
+      workspaceMembershipAuthorityForUser: async () => activeMembership(workspaceId, userId),
       workspaceSnapshot: async () => snapshot(workspaceId, "1"),
     } as unknown as OpensteerStore;
     const hub = new RealtimeHub({ liveRuns, store });
@@ -573,7 +715,7 @@ describe("snapshot-before-live synchronization", () => {
         scannedThrough: sequence("3"),
       }),
       workspaceHead: async () => sequence("3"),
-      workspaceMembershipForUser: async () => activeMembership(workspaceId, userId),
+      workspaceMembershipAuthorityForUser: async () => activeMembership(workspaceId, userId),
     } as unknown as OpensteerStore;
     const hub = new RealtimeHub({ maxWireBytes: oneEventFrameBytes + 1, store });
     const sink = new MemorySink();
@@ -600,7 +742,7 @@ describe("snapshot-before-live synchronization", () => {
     const userId = createId("user");
     const store = {
       notificationState: viewerState(),
-      workspaceMembershipForUser: async (requested: WorkspaceId) =>
+      workspaceMembershipAuthorityForUser: async (requested: WorkspaceId) =>
         activeMembership(requested, userId),
       workspaceSnapshot: async (requested: WorkspaceId) => snapshot(requested, "0"),
     } as unknown as OpensteerStore;
@@ -643,7 +785,7 @@ describe("live subscriber delivery failures", () => {
       const userId = createId("user");
       const store = {
         notificationState: viewerState(),
-        workspaceMembershipForUser: async () => activeMembership(workspaceId, userId),
+        workspaceMembershipAuthorityForUser: async () => activeMembership(workspaceId, userId),
         workspaceSnapshot: async () => snapshot(workspaceId, "0"),
       } as unknown as OpensteerStore;
       const hub = new RealtimeHub({ store });
@@ -704,7 +846,7 @@ describe("live subscriber delivery failures", () => {
     const userId = createId("user");
     const store = {
       notificationState: viewerState(),
-      workspaceMembershipForUser: async () => activeMembership(workspaceId, userId),
+      workspaceMembershipAuthorityForUser: async () => activeMembership(workspaceId, userId),
       workspaceSnapshot: async () => snapshot(workspaceId, "0"),
     } as unknown as OpensteerStore;
     const hub = new RealtimeHub({ store });
@@ -735,7 +877,7 @@ describe("connection-addressed messages", () => {
     const workspaceId = createId("workspace");
     const store = {
       notificationState: viewerState(),
-      workspaceMembershipForUser: async () => activeMembership(workspaceId, userId),
+      workspaceMembershipAuthorityForUser: async () => activeMembership(workspaceId, userId),
       workspaceSnapshot: async () => snapshot(workspaceId, "0"),
     } as unknown as OpensteerStore;
     const hub = new RealtimeHub({ store });

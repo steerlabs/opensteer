@@ -172,6 +172,45 @@ export async function workspaceMembershipForUser(
   return row ? workspaceMembershipFromRow(row) : null;
 }
 
+export async function workspaceMembershipAuthorityForUser(
+  database: Kysely<DatabaseSchema>,
+  workspaceId: WorkspaceId,
+  userId: UserId,
+): Promise<(WorkspaceMembershipRecord & { readonly authorityDeadline?: number }) | null> {
+  const started = performance.now();
+  const row = await database
+    .selectFrom("workspaceMemberships")
+    .select([
+      "generation",
+      "id",
+      "invitedBy",
+      "joinedAt",
+      "role",
+      "userId",
+      "workspaceId",
+      "effectiveUntil",
+      sql<
+        "active" | "revoked"
+      >`case when ${effectiveMembershipPredicate()} then 'active' else 'revoked' end`.as("state"),
+      sql<Date | null>`case when effective_until is not null then clock_timestamp() end`.as(
+        "checkedAt",
+      ),
+    ])
+    .where("workspaceId", "=", workspaceId)
+    .where("userId", "=", userId)
+    .executeTakeFirst();
+  if (!row) return null;
+  const { checkedAt, ...membership } = row;
+  return {
+    ...workspaceMembershipFromRow(membership),
+    ...(row.effectiveUntil && checkedAt
+      ? {
+          authorityDeadline: started + row.effectiveUntil.getTime() - checkedAt.getTime(),
+        }
+      : {}),
+  };
+}
+
 export async function listWorkspaceMembers(
   database: Kysely<DatabaseSchema>,
   workspaceId: WorkspaceId,

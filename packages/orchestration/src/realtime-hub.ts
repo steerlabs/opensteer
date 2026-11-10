@@ -148,9 +148,11 @@ interface SubscriberOptions {
 class Subscriber {
   #membershipGeneration: number | undefined;
   #membershipGenerationCutoff = -1;
+  #authorityDeadline: number | undefined;
 
-  captureMembershipGeneration(generation: number): boolean {
+  captureMembershipGeneration(generation: number, authorityDeadline?: number): boolean {
     this.#membershipGeneration = generation;
+    this.#authorityDeadline = authorityDeadline;
     return generation > this.#membershipGenerationCutoff;
   }
 
@@ -196,6 +198,16 @@ class Subscriber {
   #handedThrough: Sequence;
 
   #send(message: HostToClientMessage): Promise<void> {
+    if (this.#authorityDeadline !== undefined && performance.now() >= this.#authorityDeadline) {
+      this.sink.close(4003, "Workspace access expired");
+      this.close();
+      return Promise.reject(
+        new OpensteerError({
+          code: "forbidden",
+          message: "Workspace access expired",
+        }),
+      );
+    }
     if (this.#options.placeEvents) return this.sink.send(message);
     switch (message.type) {
       case "host.events": {
@@ -225,6 +237,10 @@ class Subscriber {
     }
   }
 
+  deliver(message: HostToClientMessage): Promise<void> {
+    return this.#send(message);
+  }
+
   constructor(options: SubscriberOptions) {
     this.#options = options;
     this.#queuedThrough = options.cursor;
@@ -239,7 +255,7 @@ class Subscriber {
     // Never buffer navigation across synchronization or a reconnect.
     if (!this.acceptsPersonShow) return false;
     try {
-      await this.sink.send(message);
+      await this.#send(message);
       return true;
     } catch {
       return false;
@@ -691,7 +707,7 @@ export class RealtimeHub {
     this.#subscribers.set(input.workspaceId, set);
 
     try {
-      const membership = await this.#store.workspaceMembershipForUser(
+      const membership = await this.#store.workspaceMembershipAuthorityForUser(
         input.workspaceId,
         input.userId,
       );
@@ -701,7 +717,9 @@ export class RealtimeHub {
           message: "Workspace realtime subscription is not authorized",
         });
       }
-      if (!subscriber.captureMembershipGeneration(membership.generation)) {
+      if (
+        !subscriber.captureMembershipGeneration(membership.generation, membership.authorityDeadline)
+      ) {
         subscriber.revokeMembershipThrough(membership.generation);
         throw new OpensteerError({
           code: "forbidden",
@@ -769,7 +787,7 @@ export class RealtimeHub {
             ...(afterThreadId ? { afterThreadId } : {}),
           });
           if (page.markers.length)
-            await input.sink.send({
+            await subscriber.deliver({
               type: "host.read-markers",
               workspaceId: input.workspaceId,
               markers: [...page.markers],
@@ -788,7 +806,7 @@ export class RealtimeHub {
             threadIds: [...replayThreads],
           });
           for (let index = 0; index < states.length; index += 100)
-            await input.sink.send({
+            await subscriber.deliver({
               type: "host.read-states",
               workspaceId: input.workspaceId,
               states: states.slice(index, index + 100),
@@ -801,7 +819,7 @@ export class RealtimeHub {
             ...(afterWorkspaceId ? { afterWorkspaceId } : {}),
           });
           if (page.preferences.length)
-            await input.sink.send({
+            await subscriber.deliver({
               type: "host.notification-preferences",
               preferences: [...page.preferences],
             });

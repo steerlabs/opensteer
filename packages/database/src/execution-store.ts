@@ -143,37 +143,28 @@ export async function renewActiveExecutionBindings(
   if (input.activeRunIds.length === 0) return [];
   // A lease that ran out stays out: the Runner has already stopped the Run on
   // its own deadline, and the Host's sweep is about to settle it.
-  const renewed = await database
-    .updateTable("providerSessions")
-    .set({ leaseExpiresAt: input.leaseExpiresAt, updatedAt: new Date() })
-    .where("active", "=", true)
-    .where("runnerId", "=", input.runnerId)
-    .where("runnerBootId", "=", input.runnerBootId)
-    .where("leaseExpiresAt", ">", new Date(executionNow()))
-    .where(
-      sql<boolean>`exists (
-          select 1
-          from runs run
-          join threads thread on thread.id = run.thread_id
-          join workspace_memberships membership
-            on membership.workspace_id = thread.workspace_id
-           and membership.user_id = run.requested_by
-          where run.id in (${sql.join(input.activeRunIds)})
-            and run.provider_session_id = provider_sessions.id
-            and run.binding_generation = provider_sessions.binding_generation
-            and run.status in ('starting', 'running', 'waiting')
-            and run.harness_instance_id = provider_sessions.harness_instance_id
-            and run.environment_id = thread.environment_id
-            and ${effectiveMembershipPredicate("membership")}
-            and membership.generation = run.membership_generation
-            and opensteer_user_can_execute_environment(
-              run.environment_id,
-              run.requested_by
-            )
-        )`,
-    )
-    .returning(["bindingGeneration", "id"])
-    .execute();
+  const renewed = (
+    await sql<{ id: ProviderSessionId; bindingGeneration: number }>`
+    update provider_sessions set
+      lease_expires_at = least(${input.leaseExpiresAt}, membership.effective_until), updated_at = ${new Date()}
+    from runs run join threads thread on thread.id = run.thread_id
+    join workspace_memberships membership on membership.workspace_id = thread.workspace_id
+      and membership.user_id = run.requested_by
+    where provider_sessions.active = true and provider_sessions.runner_id = ${input.runnerId}
+      and provider_sessions.runner_boot_id = ${input.runnerBootId}
+      and provider_sessions.lease_expires_at > ${new Date(executionNow())}
+      and run.id in (${sql.join(input.activeRunIds)})
+      and run.provider_session_id = provider_sessions.id
+      and run.binding_generation = provider_sessions.binding_generation
+      and run.status in ('starting', 'running', 'waiting')
+      and run.harness_instance_id = provider_sessions.harness_instance_id
+      and run.environment_id = thread.environment_id
+      and ${effectiveMembershipPredicate("membership")}
+      and membership.generation = run.membership_generation
+      and opensteer_user_can_execute_environment(run.environment_id, run.requested_by)
+    returning provider_sessions.id, provider_sessions.binding_generation
+  `.execute(database)
+  ).rows;
   if (renewed.length === 0) return [];
   const runs = await database
     .selectFrom("runs")
@@ -802,7 +793,10 @@ export async function acquireExecutionBinding(
       .updateTable("providerSessions")
       .set({
         bindingGeneration: session.bindingGeneration + 1,
-        leaseExpiresAt: input.bindingLeaseExpiresAt,
+        leaseExpiresAt: sql`least(${input.bindingLeaseExpiresAt}, (
+          select membership.effective_until from workspace_memberships membership
+          where membership.workspace_id = ${run.workspaceId} and membership.user_id = ${run.requestedBy}
+        ))`,
         leaseTokenHash: input.leaseTokenHash,
         runnerBootId: input.runnerBootId,
         runnerId: input.runnerId,
@@ -849,21 +843,36 @@ export async function renewExecutionBinding(
   const run = await database
     .selectFrom("runs")
     .select(["providerSessionId", "threadId"])
-    .where("id", "=", input.runId)
-    .where("status", "in", ["starting", "running", "waiting"])
+    .where("runs.id", "=", input.runId)
+    .where("runs.status", "in", ["starting", "running", "waiting"])
     .executeTakeFirst();
   if (!run?.providerSessionId || run.threadId !== input.threadId) return false;
   const result = await database
     .updateTable("providerSessions")
-    .set({ leaseExpiresAt: input.leaseExpiresAt, updatedAt: new Date() })
-    .where("active", "=", true)
-    .where("threadId", "=", input.threadId)
-    .where("id", "=", run.providerSessionId)
-    .where("runnerId", "=", input.runnerId)
-    .where("runnerBootId", "=", input.runnerBootId)
-    .where("bindingGeneration", "=", input.bindingGeneration)
-    .where("leaseTokenHash", "=", input.leaseTokenHash)
-    .where("leaseExpiresAt", ">", new Date(executionNow()))
+    .from("runs as run")
+    .innerJoin("threads as thread", "thread.id", "run.threadId")
+    .innerJoin("workspaceMemberships as membership", (join) =>
+      join
+        .onRef("membership.workspaceId", "=", "thread.workspaceId")
+        .onRef("membership.userId", "=", "run.requestedBy"),
+    )
+    .set({
+      leaseExpiresAt: sql`least(${input.leaseExpiresAt}, membership.effective_until)`,
+      updatedAt: new Date(),
+    })
+    .where("providerSessions.active", "=", true)
+    .where("providerSessions.threadId", "=", input.threadId)
+    .where("providerSessions.id", "=", run.providerSessionId)
+    .where("providerSessions.runnerId", "=", input.runnerId)
+    .where("providerSessions.runnerBootId", "=", input.runnerBootId)
+    .where("providerSessions.bindingGeneration", "=", input.bindingGeneration)
+    .where("providerSessions.leaseTokenHash", "=", input.leaseTokenHash)
+    .where("providerSessions.leaseExpiresAt", ">", new Date(executionNow()))
+    .where("run.id", "=", input.runId)
+    .where("run.status", "in", ["starting", "running", "waiting"])
+    .whereRef("run.providerSessionId", "=", "providerSessions.id")
+    .whereRef("run.membershipGeneration", "=", "membership.generation")
+    .where(effectiveMembershipPredicate("membership"))
     .executeTakeFirst();
   return result.numUpdatedRows === 1n;
 }
