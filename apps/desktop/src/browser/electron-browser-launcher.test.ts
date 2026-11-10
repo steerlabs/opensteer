@@ -557,7 +557,10 @@ describe("Electron debugger teardown", () => {
       expect(settled, "browser teardown never settled").toHaveBeenCalledOnce();
       await closing;
       await contextClosing;
-      expect(hub.contents.forcefullyCrashRenderer).toHaveBeenCalledOnce();
+      expect(
+        hub.contents.forcefullyCrashRenderer,
+        "teardown crashed a renderer other pages may share",
+      ).not.toHaveBeenCalled();
       expect(hub.contents.debugger.detach).toHaveBeenCalledOnce();
       expect(host.destroy).toHaveBeenCalled();
       expect(hub.browser.context.isConnected?.()).toBe(false);
@@ -2140,7 +2143,10 @@ describe("native Electron profiles", () => {
       helper.webContents.close.mockImplementationOnce(() => {});
       await vi.advanceTimersByTimeAsync(2_000);
       await rejected;
-      expect(helper.webContents.forcefullyCrashRenderer).toHaveBeenCalledOnce();
+      expect(
+        helper.webContents.forcefullyCrashRenderer,
+        "cookie helper timeout crashed a shared renderer",
+      ).not.toHaveBeenCalled();
       expect(() => owner.assertAdmitted()).not.toThrow();
       const captures = electron.views
         .flatMap((v) => v.webContents.debugger.sendCommand.mock.calls)

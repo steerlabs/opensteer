@@ -551,6 +551,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
           // Chromium can retain background shutdown work after Browser.close.
           // Only its captured child may be forced, and the directory remains
           // owned until the OS confirms that child exited.
+          const registered = this.nativeBrowsers.get(directory);
           let exitProven = false;
           const closing = (async () => {
             try {
@@ -594,11 +595,15 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
             );
           } finally {
             clearTimeout(force);
-            if (exitProven) {
+            const release = () => {
+              if (this.nativeBrowsers.get(directory) !== registered) return;
               this.nativeBrowsers.delete(directory);
               this.nativeCloseFailures.delete(directory);
-            } else {
+            };
+            if (exitProven) release();
+            else {
               this.nativeCloseFailures.add(directory);
+              void exited.then(release);
             }
           }
         })().finally(() => signal?.removeEventListener("abort", abort));

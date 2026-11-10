@@ -353,7 +353,7 @@ describe("native Chromium profiles", () => {
     },
   );
 
-  it("fences an unproven exit even after a late exit and another shutdown", async () => {
+  it("fences an unproven exit until its captured child exits, then reopens", async () => {
     const f = await nativeCloseFixture();
     f.browser.close.mockResolvedValueOnce(undefined);
     try {
@@ -363,12 +363,16 @@ describe("native Chromium profiles", () => {
       const failed = expect(stopped).rejects.toThrow("Native Chromium did not exit");
       await vi.advanceTimersByTimeAsync(1800);
       await failed;
-      f.exit();
-      await expect(launched.close()).rejects.toThrow("Native Chromium did not exit");
       await expect(f.launcher.localProfiles.release(f.directory)).rejects.toThrow();
       await expect(f.launcher.launch(nativeProfileRequest(f.directory))).rejects.toThrow(
         /already owned/,
       );
+      f.exit();
+      await expect(launched.close()).rejects.toThrow("Native Chromium did not exit");
+      await vi.advanceTimersByTimeAsync(0);
+      await expect(f.launcher.localProfiles.release(f.directory)).resolves.toBe("released");
+      const reopened = await f.launcher.launch(nativeProfileRequest(f.directory));
+      await reopened.close();
     } finally {
       vi.useRealTimers();
       f.exit();

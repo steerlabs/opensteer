@@ -910,12 +910,6 @@ class ElectronBrowserContext implements BrowserContext {
         contents.close({ waitForBeforeUnload: false });
         await withTimeout(destroyed, 2_000, {
           timeoutError: () => new Error("Browser cookie target did not close."),
-        }).catch((error: unknown) => {
-          if (!contents.isDestroyed()) {
-            contents.forcefullyCrashRenderer();
-            contents.close({ waitForBeforeUnload: false });
-          }
-          throw error;
         });
       }
     }
@@ -2433,10 +2427,8 @@ class ElectronDebuggerHub {
       });
     } catch (error) {
       this.#forcedDisposal.resolve();
-      if (!this.#webContents.isDestroyed()) {
-        this.#webContents.forcefullyCrashRenderer();
-        this.#webContents.close({ waitForBeforeUnload: false });
-      }
+      // Never force-crash: same-site pages, such as a popup and its opener, share a renderer.
+      if (!this.#webContents.isDestroyed()) this.#webContents.close({ waitForBeforeUnload: false });
       throw error;
     } finally {
       if (this.#isAttached()) this.#debugger.detach();
