@@ -1,3 +1,4 @@
+import { deploymentPolicy, deploymentClientPolicy } from "@opensteer/core";
 import { AppTabSchema } from "@opensteer/protocol";
 import {
   mockDevicePlugins,
@@ -3800,6 +3801,7 @@ function mockBootstrap(
       })),
     },
     deploymentShape: snapshot.deploymentShape,
+    deploymentPolicy: snapshot.deploymentPolicy,
     deploymentId: DeploymentIdSchema.parse(snapshot.deploymentId),
     notificationPreferences: snapshot.workspaces.map(({ id }) => preference(id)),
     environments: snapshot.environments,
@@ -12305,7 +12307,16 @@ class MockHostState {
         ...(removed.length ? { browserTabGroups: this.tabGroups } : {}),
       };
     }
-    this.snapshot = { ...snapshot, revision: snapshot.revision + 1 };
+    this.snapshot = {
+      ...snapshot,
+      revision: snapshot.revision + 1,
+      deploymentPolicy:
+        snapshot.deploymentShape === this.snapshot.deploymentShape
+          ? snapshot.deploymentPolicy
+          : snapshot.deploymentShape
+            ? deploymentClientPolicy(deploymentPolicy(snapshot.deploymentShape))
+            : undefined,
+    };
     if (tabsChanged && this.projectTabGroups)
       this.snapshot = { ...this.snapshot, browserTabGroups: this.projectTabGroups() };
     if (this.assignments.size > 0) {
@@ -13467,6 +13478,9 @@ function createInitialSnapshot(): HostSnapshot {
     connectionInterrupted: false,
     network: "unknown",
     deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "personal" },
+    deploymentPolicy: deploymentClientPolicy(
+      deploymentPolicy({ defaultWorkspaceBacking: "local-directory", kind: "personal" }),
+    ),
     deploymentId: "dep_00000000-0000-4000-8000-000000000001",
     environments: [
       {

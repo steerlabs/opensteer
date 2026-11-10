@@ -1,3 +1,4 @@
+import { hostDeploymentPolicy } from "@opensteer/client/host";
 import type { PersonShowMessage } from "@opensteer/protocol";
 import { DesktopWebLinkDeliverySchema } from "@opensteer/protocol/desktop";
 import { VoiceContext } from "@opensteer/client/react";
@@ -227,13 +228,22 @@ export type LocalExecutionAction =
  * computer: there the local Runner is its Main, which the Deployment owns
  * rather than a computer anybody adds or removes.
  */
+export function localEnrollmentModules(snapshot: Parameters<typeof hostDeploymentPolicy>[0]) {
+  return [...(hostDeploymentPolicy(snapshot)?.localRunnerDefaultModules ?? ["shell"])];
+}
+
 export function localRunnerSlotDeploymentId(input: {
   readonly desktopBridge: OpensteerDesktopBridge | null;
   readonly desktopDeployment: DesktopDeploymentSummary | null;
+  readonly deploymentPolicy: import("@opensteer/core").DeploymentClientPolicy | undefined;
 }): DesktopDeploymentSummary["id"] | null {
   const { desktopBridge, desktopDeployment } = input;
   if (desktopBridge === null || desktopDeployment === null) return null;
-  if (desktopDeployment.kind === "personal" && desktopDeployment.onThisComputer) return null;
+  if (
+    input.deploymentPolicy?.deploymentOwnsMainComputer === true &&
+    desktopDeployment.onThisComputer
+  )
+    return null;
   return desktopDeployment.id;
 }
 
@@ -384,7 +394,10 @@ export function AppShell({
     message: string;
     actions: WebLinkFailureActions;
   } | null>(null);
-  const webLinkReady = desktopWebLinksReady(desktopDeployment?.kind === "personal", snapshot);
+  const webLinkReady = desktopWebLinksReady(
+    hostDeploymentPolicy(snapshot)?.nativeWebLinks === true,
+    snapshot,
+  );
   useEffect(() => {
     if (
       !webLinkReady ||
@@ -483,6 +496,7 @@ export function AppShell({
   const localExecutionDeploymentId = localRunnerSlotDeploymentId({
     desktopBridge: localBridge,
     desktopDeployment,
+    deploymentPolicy: hostDeploymentPolicy(snapshot),
   });
   const viewedLocalExecutionStatus =
     localExecutionStatus?.deploymentId === localExecutionDeploymentId ? localExecutionStatus : null;
@@ -495,10 +509,9 @@ export function AppShell({
     null;
   // The grant this computer would join under. A Personal Deployment admits
   // other computers only to be reached, so its grant is exactly `shell`.
-  const localGrant = useMemo<readonly ["agents", "browser", "shell"] | readonly ["shell"]>(
-    () =>
-      snapshot.deploymentShape?.kind === "server" ? ["agents", "browser", "shell"] : ["shell"],
-    [snapshot.deploymentShape?.kind],
+  const localGrant = useMemo<readonly ("agents" | "browser" | "shell")[]>(
+    () => localEnrollmentModules(snapshot),
+    [hostDeploymentPolicy(snapshot)],
   );
   // Every navigation closes the drawer; the destination is on screen now.
   useEffect(() => {
@@ -523,8 +536,8 @@ export function AppShell({
   const personalSetup = deploymentAccess?.personalSetup ?? null;
   const hostedEnvironmentId =
     localBridge !== null &&
-    desktopDeployment?.kind === "personal" &&
-    desktopDeployment.onThisComputer &&
+    hostDeploymentPolicy(snapshot)?.deploymentOwnsMainComputer === true &&
+    desktopDeployment?.onThisComputer &&
     personalSetup?.deploymentId === snapshot.deploymentId
       ? personalSetup.environmentId
       : null;

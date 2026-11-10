@@ -20,6 +20,40 @@ export function previewBootstrap(
 ) {
   const workspace = previewWorkspace(selected, ids.workspaceId, ids.environmentId);
   return {
+    deploymentPolicy:
+      selected.kind === "personal"
+        ? {
+            ownership: "single-user",
+            personalRemoteAccess: true,
+            nativeWebLinks: true,
+            localOwnerClaim: true,
+            deploymentOwnsMainComputer: true,
+            nativePasswords: true,
+            deploymentComputerAccess: true,
+            computerExecutionControls: false,
+            sharing: false,
+            deploymentWideMachineReach: false,
+            serviceManagement: false,
+            runnerEnrollmentMode: "reach-only",
+            projectConsent: "owner-wide",
+            localRunnerDefaultModules: ["shell"],
+          }
+        : {
+            ownership: "members",
+            personalRemoteAccess: false,
+            nativeWebLinks: false,
+            localOwnerClaim: false,
+            deploymentOwnsMainComputer: false,
+            nativePasswords: false,
+            deploymentComputerAccess: false,
+            computerExecutionControls: true,
+            sharing: true,
+            deploymentWideMachineReach: true,
+            serviceManagement: true,
+            runnerEnrollmentMode: "unrestricted",
+            projectConsent: "per-project",
+            localRunnerDefaultModules: ["agents", "browser", "shell"],
+          },
     deploymentId: selected.id,
     notificationPreferences: [{ workspaceId: workspace.id, muted: false, revision: "0" }],
     browser: {

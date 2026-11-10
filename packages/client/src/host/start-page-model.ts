@@ -1,3 +1,4 @@
+import { hostDeploymentPolicy } from "./deployment-policy.js";
 import { parseNavigationInput, webSearchUrl, type NavigationInput } from "./navigation-input.js";
 import {
   computerAppIdentityKey,
@@ -254,7 +255,10 @@ export function startPageIndex(input: {
     if (
       !machine ||
       (machine.ownership !== "mine" &&
-        !(snapshot.deploymentShape?.kind === "personal" && machine.ownership === "deployment"))
+        !(
+          hostDeploymentPolicy(snapshot)?.deploymentComputerAccess === true &&
+          machine.ownership === "deployment"
+        ))
     )
       continue;
     const kind = app.target.kind === "phone" ? "phone" : "apps";

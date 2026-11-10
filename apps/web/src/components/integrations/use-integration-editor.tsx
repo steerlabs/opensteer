@@ -1,3 +1,4 @@
+import { hostDeploymentPolicy } from "@opensteer/client/host";
 import { pluginPath } from "@opensteer/client/settings";
 import { useIntegrationAuthorizationTracking } from "../../integrations/use-integration-authorization-tracking.js";
 import { RunnerIdSchema } from "@opensteer/core";
@@ -91,7 +92,7 @@ export function useIntegrationEditor({
     desktopBridge === null
       ? null
       : currentDeviceMachineId({
-          deploymentKind: snapshot.deploymentShape?.kind ?? null,
+          deploymentPolicy: hostDeploymentPolicy(snapshot) ?? null,
           hostsDeploymentOnThisComputer: desktopDeployment?.onThisComputer === true,
           localRunnerId: localExecutionStatus?.runner.runnerId ?? null,
           machines: snapshot.machines,

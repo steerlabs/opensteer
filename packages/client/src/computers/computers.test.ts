@@ -1,4 +1,21 @@
 import type { MachineSummary } from "@opensteer/protocol";
+import { hostDeploymentPolicy } from "../host/deployment-policy.js";
+
+it.each(["personal", "server"] as const)(
+  "keeps computer grouping for an older %s bootstrap",
+  (kind) => {
+    const bootstrap = { deploymentShape: { kind } };
+    const overview = computersOverview({
+      deploymentPolicy: hostDeploymentPolicy(bootstrap) ?? null,
+      deploymentName: "Computer",
+      hereId: null,
+      machines: [],
+      publicOrigin: null,
+    });
+    expect(overview.home.kind).toBe(kind === "personal" ? "mac" : "server");
+    expect(overview.addTo).toBe(kind === "personal" ? "others" : "yours");
+  },
+);
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   computerGlyph,
@@ -8,11 +25,37 @@ import {
   computerUses,
   computerUsesPhrase,
   isServiceMachine,
+  hostsDeployment,
   type ComputerAppsData,
 } from "./computers.js";
 
+it("uses Main-computer policy rather than ownership", () => {
+  const main = machine({ ownership: "deployment", allowedModules: ["agents"] });
+  expect(hostsDeployment(main, { ownership: "members", deploymentOwnsMainComputer: true })).toBe(
+    true,
+  );
+  expect(
+    hostsDeployment(main, { ownership: "single-user", deploymentOwnsMainComputer: false }),
+  ).toBe(false);
+});
+
 afterEach(() => {
   vi.useRealTimers();
+});
+
+it.each([true, false])("separates Main topology from ownership grouping: %s", (ownsMain) => {
+  const overview = computersOverview({
+    deploymentPolicy: {
+      ownership: ownsMain ? "members" : "single-user",
+      deploymentOwnsMainComputer: ownsMain,
+    },
+    deploymentName: "Home",
+    hereId: null,
+    publicOrigin: "https://home.example",
+    machines: [machine({ ownership: "deployment", allowedModules: ["agents"] })],
+  });
+  expect(overview.home.kind).toBe(ownsMain ? "mac" : "server");
+  expect(overview.addTo).toBe(ownsMain ? "yours" : "others");
 });
 
 const macId = "rnr_11111111-1111-4111-8111-111111111111";
@@ -100,7 +143,20 @@ describe("computersOverview", () => {
 
   it("puts the Mac a Personal Opensteer runs on at the top, never among the others", () => {
     const overview = computersOverview({
-      deploymentKind: "personal",
+      deploymentPolicy: {
+        ownership: "single-user",
+        personalRemoteAccess: true,
+        nativeWebLinks: true,
+        localOwnerClaim: true,
+        deploymentOwnsMainComputer: true,
+        nativePasswords: true,
+        deploymentComputerAccess: true,
+        sharing: false,
+        serviceManagement: false,
+        runnerEnrollmentMode: "reach-only",
+        projectConsent: "owner-wide",
+        localRunnerDefaultModules: ["shell"],
+      },
       deploymentName: "Mac mini",
       hereId: null,
       machines: [machine({ id: "rnr_laptop" }), home, service],
@@ -117,7 +173,20 @@ describe("computersOverview", () => {
   it("names a Personal Opensteer whose Mac has not connected by the Opensteer's name", () => {
     expect(
       computersOverview({
-        deploymentKind: "personal",
+        deploymentPolicy: {
+          ownership: "single-user",
+          personalRemoteAccess: true,
+          nativeWebLinks: true,
+          localOwnerClaim: true,
+          deploymentOwnsMainComputer: true,
+          nativePasswords: true,
+          deploymentComputerAccess: true,
+          sharing: false,
+          serviceManagement: false,
+          runnerEnrollmentMode: "reach-only",
+          projectConsent: "owner-wide",
+          localRunnerDefaultModules: ["shell"],
+        },
         deploymentName: "Studio",
         hereId: null,
         machines: [],
@@ -134,7 +203,20 @@ describe("computersOverview", () => {
     });
     const theirs = machine({ id: "rnr_theirs", ownerName: "Sam", ownership: "other" });
     const overview = computersOverview({
-      deploymentKind: "server",
+      deploymentPolicy: {
+        ownership: "members",
+        personalRemoteAccess: false,
+        nativeWebLinks: false,
+        localOwnerClaim: false,
+        deploymentOwnsMainComputer: false,
+        nativePasswords: false,
+        deploymentComputerAccess: false,
+        sharing: true,
+        serviceManagement: true,
+        runnerEnrollmentMode: "unrestricted",
+        projectConsent: "per-project",
+        localRunnerDefaultModules: ["agents", "browser", "shell"],
+      },
       deploymentName: "Acme",
       hereId: null,
       machines: [theirs, machine({ id: "rnr_mine" }), shared, service],

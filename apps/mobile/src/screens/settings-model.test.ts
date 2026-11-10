@@ -133,7 +133,20 @@ describe("computers in settings", () => {
   const personal = {
     apps: { connections: [], definitions: [] },
 
-    deploymentKind: "personal" as const,
+    deploymentPolicy: {
+      ownership: "single-user",
+      personalRemoteAccess: true,
+      nativeWebLinks: true,
+      localOwnerClaim: true,
+      deploymentOwnsMainComputer: true,
+      nativePasswords: true,
+      deploymentComputerAccess: true,
+      sharing: false,
+      serviceManagement: false,
+      runnerEnrollmentMode: "reach-only",
+      projectConsent: "owner-wide",
+      localRunnerDefaultModules: ["shell"],
+    } as const,
     deploymentName: "Mac mini",
     hostConnected: true,
     publicOrigin: null,
@@ -216,7 +229,20 @@ describe("this iPhone in settings", () => {
   const server = {
     apps: { connections: [], definitions: [] },
 
-    deploymentKind: "server" as const,
+    deploymentPolicy: {
+      ownership: "members",
+      personalRemoteAccess: false,
+      nativeWebLinks: false,
+      localOwnerClaim: false,
+      deploymentOwnsMainComputer: false,
+      nativePasswords: false,
+      deploymentComputerAccess: false,
+      sharing: true,
+      serviceManagement: true,
+      runnerEnrollmentMode: "unrestricted",
+      projectConsent: "per-project",
+      localRunnerDefaultModules: ["agents", "browser", "shell"],
+    } as const,
     deploymentName: "Studio",
     hostConnected: true,
     publicOrigin: "https://studio.example.test",
@@ -388,7 +414,20 @@ describe("Passwords in settings", () => {
   it("names the Mac a Personal Opensteer keeps them on", () => {
     expect(
       passwordsSettingsModel({
-        deploymentKind: "personal",
+        deploymentPolicy: {
+          ownership: "single-user",
+          personalRemoteAccess: true,
+          nativeWebLinks: true,
+          localOwnerClaim: true,
+          deploymentOwnsMainComputer: true,
+          nativePasswords: true,
+          deploymentComputerAccess: true,
+          sharing: false,
+          serviceManagement: false,
+          runnerEnrollmentMode: "reach-only",
+          projectConsent: "owner-wide",
+          localRunnerDefaultModules: ["shell"],
+        },
         deploymentName: "Mac mini",
         machines: [macMini],
       }),
@@ -405,7 +444,20 @@ describe("Passwords in settings", () => {
     // Before the Mac reports itself, a Personal Opensteer is named after it.
     expect(
       passwordsSettingsModel({
-        deploymentKind: "personal",
+        deploymentPolicy: {
+          ownership: "single-user",
+          personalRemoteAccess: true,
+          nativeWebLinks: true,
+          localOwnerClaim: true,
+          deploymentOwnsMainComputer: true,
+          nativePasswords: true,
+          deploymentComputerAccess: true,
+          sharing: false,
+          serviceManagement: false,
+          runnerEnrollmentMode: "reach-only",
+          projectConsent: "owner-wide",
+          localRunnerDefaultModules: ["shell"],
+        },
         deploymentName: "Mac mini",
         machines: [],
       }).detail,
@@ -415,7 +467,20 @@ describe("Passwords in settings", () => {
   it("says a server Opensteer has none yet", () => {
     expect(
       passwordsSettingsModel({
-        deploymentKind: "server",
+        deploymentPolicy: {
+          ownership: "members",
+          personalRemoteAccess: false,
+          nativeWebLinks: false,
+          localOwnerClaim: false,
+          deploymentOwnsMainComputer: false,
+          nativePasswords: false,
+          deploymentComputerAccess: false,
+          sharing: true,
+          serviceManagement: true,
+          runnerEnrollmentMode: "unrestricted",
+          projectConsent: "per-project",
+          localRunnerDefaultModules: ["agents", "browser", "shell"],
+        },
         deploymentName: "steer.example.com",
         machines: [macMini],
       }),

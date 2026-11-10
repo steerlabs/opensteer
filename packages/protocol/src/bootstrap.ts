@@ -93,6 +93,29 @@ export const AppTabsSchema = z.array(AppTabSchema).max(500);
 export type AppTab = z.infer<typeof AppTabSchema>;
 
 export const HostBootstrapSchema = z.object({
+  deploymentPolicy: z
+    .object({
+      ownership: z.enum(["single-user", "members"]).optional().catch(undefined),
+      nativePasswords: z.boolean().optional().catch(undefined),
+      nativeWebLinks: z.boolean().optional().catch(undefined),
+      localOwnerClaim: z.boolean().optional().catch(undefined),
+      deploymentOwnsMainComputer: z.boolean().optional().catch(undefined),
+      personalRemoteAccess: z.boolean().optional().catch(undefined),
+      sharing: z.boolean().optional().catch(undefined),
+      deploymentWideMachineReach: z.boolean().optional().catch(undefined),
+      serviceManagement: z.boolean().optional().catch(undefined),
+      runnerEnrollmentMode: z.enum(["reach-only", "unrestricted"]).optional().catch(undefined),
+      deploymentComputerAccess: z.boolean().optional().catch(undefined),
+      computerExecutionControls: z.boolean().optional().catch(undefined),
+      projectConsent: z.enum(["owner-wide", "per-project"]).optional().catch(undefined),
+      localRunnerDefaultModules: z
+        .array(z.enum(["agents", "browser", "shell"]).optional().catch(undefined))
+        .transform((modules) => modules.filter((module) => module !== undefined))
+        .optional()
+        .catch(undefined),
+    })
+    .optional()
+    .catch({}),
   appTabs: AppTabsSchema.optional(),
   /** Recovery can replace the session silently, and a running app's access ends with the old one. */
   sessionId: AuthSessionIdSchema.optional(),

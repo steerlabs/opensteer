@@ -26,6 +26,7 @@ export interface SettingsView {
   readonly administrator: boolean;
   readonly deployment: DesktopDeploymentSummary | null;
   readonly kind: DeploymentDisplayKind;
+  readonly deploymentPolicy?: import("@opensteer/core").DeploymentClientPolicy | undefined;
   /** True when this Deployment's only identity is the implicit machine owner. */
   readonly machineOwner: boolean;
   readonly name: string;

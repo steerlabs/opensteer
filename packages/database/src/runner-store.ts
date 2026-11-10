@@ -1,3 +1,4 @@
+import { deploymentPolicy } from "@opensteer/core";
 import {
   administrationCommand,
   withAdministrationTransaction,
@@ -458,7 +459,9 @@ async function requireRunnerIsRevocable(
   if (!runner) return;
   if (
     runnerRunsItsDeployment({
-      deploymentIsPersonal: deployment?.deploymentShape.kind === "personal",
+      deploymentIsPersonal: deployment
+        ? deploymentPolicy(deployment.deploymentShape).deploymentOwnsMainComputer
+        : false,
       ownerKind: runner.ownerKind,
       runnerKind: runner.kind,
     })
@@ -503,26 +506,6 @@ export function runnerAdvertisesItsEnvironmentBinding(
   if (advertised.length === 0 || bound.length === 0) return true;
   return sameStringSet(bound, advertised);
 }
-
-/**
- * The only grant a Personal Deployment issues to a computer that is not the one
- * hosting it. A Personal Deployment runs its agents on its own Mac, so every
- * other computer it knows is there to be reached, never to execute.
- */
-const personalReachableGrant: readonly RunnerModuleName[] = ["integrations", "messaging", "shell"];
-
-/**
- * The Personal stack's messaging service is a Deployment-owned managed
- * process beside the Host, not a computer lent over the remote-access route.
- * The Host's computer preset also grants `integrations` and `shell`, although
- * this service advertises only messaging, so this exact grant is the one
- * supervised-service exception.
- */
-const personalSupervisedServiceGrant: readonly RunnerModuleName[] = [
-  "integrations",
-  "messaging",
-  "shell",
-];
 
 /** Said when a Personal Deployment is asked for a computer that would execute. */
 export const personalReachableGrantRefusal =
@@ -589,10 +572,12 @@ async function assertPersonalRunnerAdmission(
     .select("deploymentShape")
     .where("singletonKey", "=", "primary")
     .executeTakeFirst(databaseOperationOptions());
-  if (deployment?.deploymentShape.kind !== "personal") return null;
+  const policy = deployment ? deploymentPolicy(deployment.deploymentShape) : null;
+  const enrollment = policy?.runnerEnrollment;
+  if (!enrollment || enrollment.mode !== "reach-only") return null;
   if (
     runnerRunsItsDeployment({
-      deploymentIsPersonal: true,
+      deploymentIsPersonal: policy?.deploymentOwnsMainComputer === true,
       ownerKind: input.ownerKind,
       runnerKind: input.runnerKind,
     })
@@ -602,14 +587,14 @@ async function assertPersonalRunnerAdmission(
   if (
     input.ownerKind === "deployment" &&
     input.runnerKind === "managed" &&
-    sameStringSet(input.allowedModules, personalSupervisedServiceGrant)
+    sameStringSet(input.allowedModules, enrollment.supervisedServiceModules)
   ) {
     return null;
   }
   // A phone lends its screen and nothing else, so it is reachable in exactly
   // the sense the rule asks: nothing of the Deployment's executes on it.
   if (
-    !sameStringSet(input.allowedModules, personalReachableGrant) &&
+    !sameStringSet(input.allowedModules, enrollment.reachableModules) &&
     !sameStringSet(input.allowedModules, phoneRunnerGrant)
   ) {
     throw new OpensteerError({ code: "forbidden", message: personalReachableGrantRefusal });
@@ -781,7 +766,8 @@ export async function upgradeLegacyPersonalMainRunnerBrowserGrant(
       .selectFrom("deployments")
       .select("deploymentShape")
       .executeTakeFirst(databaseOperationOptions());
-    if (deployment?.deploymentShape.kind !== "personal") return false;
+    if (!deployment || !deploymentPolicy(deployment.deploymentShape).deploymentOwnsMainComputer)
+      return false;
 
     await transaction
       .selectFrom("runnerEnrollments")

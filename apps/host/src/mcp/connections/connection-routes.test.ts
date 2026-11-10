@@ -32,7 +32,7 @@ describe("public MCP discovery boundaries", () => {
     registerConnectionRoutes(app, {
       oauth,
       canonicalOrigin: "https://server.example",
-      personal: false,
+      loopbackOriginAliases: false,
     });
     app.post(
       "/internal/v1/mcp",
@@ -79,7 +79,7 @@ describe("public MCP discovery boundaries", () => {
     registerConnectionRoutes(app, {
       oauth,
       canonicalOrigin: "https://server.example",
-      personal: false,
+      loopbackOriginAliases: false,
     });
     app.post("/internal/v1/mcp", async () => ({ reached: true }));
     try {
@@ -117,7 +117,7 @@ describe("public MCP discovery boundaries", () => {
     registerConnectionRoutes(app, {
       oauth,
       canonicalOrigin: "https://server.example",
-      personal: false,
+      loopbackOriginAliases: false,
     });
     try {
       const headers = { host: "server.example", "x-forwarded-proto": "https" };

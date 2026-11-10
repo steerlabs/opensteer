@@ -1,3 +1,4 @@
+import { deploymentPolicy } from "@opensteer/core";
 import { z } from "zod";
 import { JsonObjectSchema, McpIdentifierSchema } from "./schema-primitives.js";
 import {
@@ -107,7 +108,10 @@ export function resolveIntegrationDeploymentPosture(input: {
   readonly personalAccountLinked: boolean;
 }): IntegrationDeploymentPosture {
   if (input.accountReachability !== null) return "account-adopted-self-hosted";
-  if (input.kind === "personal") {
+  if (
+    deploymentPolicy({ kind: input.kind, defaultWorkspaceBacking: "local-directory" })
+      .integrationAccountBinding === "personal-link"
+  ) {
     return input.personalAccountLinked ? "account-linked-personal" : "account-free-personal";
   }
   return "independent-self-hosted";

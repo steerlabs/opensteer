@@ -89,7 +89,7 @@ async function fixture() {
   registerConnectionRoutes(app, {
     oauth,
     canonicalOrigin: origin,
-    personal: true,
+    loopbackOriginAliases: true,
     remoteOrigin: async () => remoteOrigin,
   });
   registerHostApi(app, authenticator, {

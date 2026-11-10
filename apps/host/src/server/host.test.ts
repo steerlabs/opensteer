@@ -65,6 +65,8 @@ import {
 } from "@opensteer/client/host";
 import { HostAuthenticator } from "../identity/auth.js";
 import { LocalBootstrapService } from "../runtime/local-bootstrap.js";
+import * as core from "@opensteer/core";
+import { ConnectionOAuth, mcpServerMetadataPath } from "../mcp/connections/connection-oauth.js";
 
 type StringDriverKind<T> = T extends { readonly driverKind: unknown }
   ? Omit<T, "driverKind"> & { readonly driverKind: string }
@@ -192,6 +194,40 @@ const personalDiscovery = signHostDiscovery(testDiscoveryKeys, {
 });
 
 describe("public Runner challenge admission", () => {
+  it.each([true, false])(
+    "uses loopback alias policy independently of remote access: %s",
+    async (loopbackOriginAliases) => {
+      const actual = core.deploymentPolicy({
+        kind: personalDiscovery.document.deploymentShape.kind,
+        defaultWorkspaceBacking: "local-directory",
+      });
+      vi.spyOn(core, "deploymentPolicy").mockReturnValue({
+        ...actual,
+        loopbackOriginAliases,
+        services: { ...actual.services, personalRemoteAccess: !loopbackOriginAliases },
+      });
+      const app = await createHostServer({
+        discovery: personalDiscovery,
+        connections: new ConnectionOAuth({
+          deploymentId: personalDiscovery.document.deploymentId,
+          store: {} as never,
+          signingKey: testDiscoveryKeys.privateKey,
+          verificationKey: testDiscoveryKeys.publicKey,
+        }),
+      });
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: mcpServerMetadataPath,
+          headers: { host: "localhost:47821" },
+        });
+        expect(response.statusCode, response.body).toBe(loopbackOriginAliases ? 200 : 403);
+      } finally {
+        await app.close();
+      }
+    },
+  );
+
   it("bounds unauthenticated sockets and releases each slot exactly once", () => {
     const admission = new RunnerChallengeAdmission(2);
     const first = admission.acquire();

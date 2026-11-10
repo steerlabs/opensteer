@@ -1,3 +1,4 @@
+import { hostDeploymentPolicy } from "@opensteer/client/host";
 import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
 import {
   localMcpSecretServers,
@@ -157,7 +158,7 @@ function Plugins({
       setAddEntry(entry);
       if (add?.product.id !== product.id) {
         setAddPlaces([]);
-        setAddEverywhere(host.getSnapshot().deploymentShape?.kind === "personal");
+        setAddEverywhere(hostDeploymentPolicy(host.getSnapshot())?.projectConsent === "owner-wide");
       }
       addConsent.current = null;
       setAddInstalled(false);
@@ -491,7 +492,7 @@ function Plugins({
             ]),
         })),
 
-        ...(host.getSnapshot().deploymentShape?.kind === "personal"
+        ...(hostDeploymentPolicy(host.getSnapshot())?.projectConsent === "owner-wide"
           ? [
               {
                 key: "everywhere",
@@ -643,7 +644,10 @@ function Plugins({
             `${key}:status`,
             pluginState(row).group === "Needs you" || pluginState(row).label === "Waiting"
               ? pluginState(row).label
-              : pluginPlacementLabel(row, host.getSnapshot().deploymentShape?.kind === "personal"),
+              : pluginPlacementLabel(
+                  row,
+                  hostDeploymentPolicy(host.getSnapshot())?.projectConsent === "owner-wide",
+                ),
           ),
         );
         if (group !== "Needs you") items.push(toggle(row));
@@ -865,7 +869,7 @@ function Plugins({
                 key: "places",
                 title: "Where it’s on",
                 rows: [
-                  ...(host.getSnapshot().deploymentShape?.kind === "personal"
+                  ...(hostDeploymentPolicy(host.getSnapshot())?.projectConsent === "owner-wide"
                     ? [
                         {
                           key: "everywhere",

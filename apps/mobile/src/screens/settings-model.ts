@@ -1,3 +1,4 @@
+import type { DeploymentClientPolicy } from "@opensteer/core";
 import {
   computerGlyph,
   computerRole,
@@ -8,7 +9,6 @@ import {
   hostsDeployment,
   type ComputerAppsData,
   type ComputerGlyph,
-  type DeploymentKind,
 } from "@opensteer/client/computers";
 import {
   passwordsElsewhere,
@@ -366,14 +366,14 @@ export interface PasswordsSettingsModel {
 }
 
 export function passwordsSettingsModel(input: {
-  readonly deploymentKind: DeploymentKind | null;
+  readonly deploymentPolicy: DeploymentClientPolicy | null;
   /** A Personal Opensteer is named after its Mac until that Mac reports itself. */
   readonly deploymentName: string;
   readonly machines: readonly MachineSummary[];
 }): PasswordsSettingsModel {
-  const personal = input.deploymentKind === "personal";
+  const personal = input.deploymentPolicy?.nativePasswords === true;
   const homeName =
-    input.machines.find((machine) => hostsDeployment(machine, input.deploymentKind))?.name ??
+    input.machines.find((machine) => hostsDeployment(machine, input.deploymentPolicy))?.name ??
     input.deploymentName;
   return {
     body: passwordsElsewhere({ homeName, personal }),
@@ -452,7 +452,7 @@ const computerSymbols: Readonly<Record<ComputerGlyph, ComputerSymbol>> = {
  */
 export function computersSettingsRows(input: {
   readonly apps: ComputerAppsData | null;
-  readonly deploymentKind: DeploymentKind | null;
+  readonly deploymentPolicy: DeploymentClientPolicy | null;
   readonly deploymentName: string;
   readonly here?: ThisIphoneSettings | null;
   readonly hostConnected: boolean;

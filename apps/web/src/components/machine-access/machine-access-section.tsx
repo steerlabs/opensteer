@@ -1,3 +1,4 @@
+import type { DeploymentClientPolicy } from "@opensteer/core";
 import { machineAccessSharePathMaxBytes, type MachineSummary } from "@opensteer/protocol";
 import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
 import {
@@ -54,7 +55,7 @@ const liveSessionTickMs = 30_000;
 export interface MachineAccessSectionProps {
   readonly access: NonNullable<MachineSummary["access"]>;
   readonly client: HostClient;
-  readonly deploymentKind: "personal" | "server" | null;
+  readonly deploymentPolicy: DeploymentClientPolicy | null;
   readonly deploymentName: string;
   /** The desktop this page runs in, when it runs in one. */
   readonly desktopBridge: OpensteerDesktopBridge | null;
@@ -82,7 +83,7 @@ export interface MachineAccessSectionProps {
 export function MachineAccessSection({
   access,
   client,
-  deploymentKind,
+  deploymentPolicy,
   deploymentName,
   desktopBridge,
   machineId,
@@ -128,7 +129,7 @@ export function MachineAccessSection({
   const dirty = machineAccessEditorDirty(editor);
   // "No one" is the switch itself, so only the audiences remain a choice.
   const audiences = machineReachOptions({
-    deploymentKind,
+    deploymentPolicy,
     deploymentName,
     ownerReachAvailable: access.ownerReachAvailable,
     ownership,

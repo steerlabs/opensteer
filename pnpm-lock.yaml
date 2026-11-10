@@ -138,6 +138,9 @@ importers:
 
   .:
     devDependencies:
+      '@babel/parser':
+        specifier: 7.29.8
+        version: 7.29.8
       '@opensteer/shared':
         specifier: workspace:*
         version: link:packages/shared

@@ -850,6 +850,7 @@ export interface HostSnapshot {
    * at all. Null until the first bootstrap lands.
    */
   deploymentShape: DeploymentShape | null;
+  deploymentPolicy?: import("@opensteer/core").DeploymentClientPolicy | undefined;
   environments: EnvironmentSummary[];
   /**
    * What this person chose last, as the Host remembers it for them in this
