@@ -433,7 +433,7 @@ async function planAccess(
           effective(afterPairs.get(pairKey(pair))?.entries ?? []).level === "manage",
       );
       if (!retained && !projected)
-        refuse("Project must retain an active manager until team cutover", "invalid-selection");
+        refuse("workspace must retain at least one active owner", "invalid-selection");
     }
   }
   const growing = [...afterPairs].some(
@@ -1654,9 +1654,9 @@ async function coordinateAccess(
           });
           return;
         }
+        const { next, pairs, growing } = await planAccess(transaction, input, old, now, memberIds);
         if (!admission && safeGeneration(state.revision) !== input.expectedRevision)
           conflict("Access preview is stale");
-        const { next, pairs, growing } = await planAccess(transaction, input, old, now, memberIds);
         const fencedUsers = next.users
           .filter((after) => {
             const before = old.users.find((user) => user.id === after.id)!;
