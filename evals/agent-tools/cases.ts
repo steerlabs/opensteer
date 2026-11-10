@@ -115,6 +115,8 @@ export const CaseSchema = z.strictObject({
           path: z.array(z.string().min(1)).min(1),
           pattern: regex,
           first: z.boolean().default(false),
+          /** Only calls after the first valid one matching this, result included, count. */
+          after: call.extend({ result: z.json() }).optional(),
         }),
       )
       .default([]),
