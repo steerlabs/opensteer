@@ -1,14 +1,14 @@
 import { useMemo, useState } from "react";
 import {
   accessModeOptions,
+  projectSettingsInput,
   runtimeStateText,
   teamErrorIsStale,
   type ProjectAccessView,
   type ProjectSettingsRead,
 } from "@opensteer/client/host";
 import { useHostRead } from "@opensteer/client/react";
-import { HarnessInstanceIdSchema, type ThreadAccessMode } from "@opensteer/core";
-import type { ModelSelectionInput } from "@opensteer/protocol";
+import type { ThreadAccessMode } from "@opensteer/core";
 import { Icon } from "../icon.js";
 import { LoadingRows } from "../loading-rows.js";
 import { TeamError, TeamSection, useShellTeam } from "./team-ui.js";
@@ -119,22 +119,23 @@ function RuntimeForm({
   const canEdit = initial.can.edit.allowed;
   const save = () => {
     if (!team || !instance || !model) return;
-    const modelSelection: ModelSelectionInput = {
-      modelId: model.modelId,
-      options: model.options,
-      providerId: model.providerId,
-    };
     setPending(true);
     setError(null);
     setSaved(false);
     void team
-      .setProjectSettings(access.accessRevision, workspaceId, settings?.revision ?? null, {
-        harnessInstanceId: HarnessInstanceIdSchema.parse(instance.id),
-        modelSelection,
-        accessMode,
-        instructions,
-        timeZone,
-      })
+      .setProjectSettings(
+        access.accessRevision,
+        workspaceId,
+        settings?.revision ?? null,
+        projectSettingsInput({
+          saved: settings,
+          instance,
+          model,
+          accessMode,
+          instructions,
+          timeZone,
+        }),
+      )
       .then(() => {
         setSaved(true);
         onSaved();

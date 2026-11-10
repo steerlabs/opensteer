@@ -1427,7 +1427,7 @@ export class MockTeamAccess {
                 driverKind: HarnessIdSchema.parse("codex"),
                 name: "Codex",
                 models: [
-                  { modelId: "gpt-5.6-sol", options: { effort: "medium" }, providerId: "openai" },
+                  { modelId: "gpt-5.6-sol", options: {}, providerId: "openai" },
                   { modelId: "gpt-5.6-terra", options: {}, providerId: "openai" },
                 ].map((m) => ModelSelectionSchema.parse(m)),
               },

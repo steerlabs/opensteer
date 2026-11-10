@@ -90,3 +90,4 @@ export * from "./team-presentation.js";
 export * from "./team-session.js";
 export * from "./team-join.js";
 export * from "./team-paging.js";
+export * from "./team-settings.js";
