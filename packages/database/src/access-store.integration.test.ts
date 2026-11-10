@@ -1,5 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { createId, type AccessMutation, type UserId } from "@opensteer/core";
+import {
+  createId,
+  type AccessMutation,
+  type EnvironmentId,
+  type UserId,
+  type WorkspaceId,
+} from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import { Migrator } from "kysely/migration";
 import { createDatabase } from "./connection.js";
@@ -9,11 +15,7 @@ import { expect } from "vitest";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { lockWorkspaceRow, requireActiveWorkspaceMembership } from "./store-primitives.js";
 import { testModelSelection } from "./store.integration.test-support.js";
-import {
-  createStoreFixture,
-  describeStore,
-  type StoreFixture,
-} from "./store.integration.test-support.js";
+import { describeStore, type StoreFixture } from "./store.integration.test-support.js";
 import type { DatabaseSchema } from "./schema.js";
 import { accessCapacity, checkAccess, mutateAccess } from "./access-store.js";
 import { claimAccessSecurityEffects } from "./access-effects.js";
@@ -141,8 +143,60 @@ async function legacyMembershipLifecycle(
   return { serverStatements, personalStatements, effects: projectedEffects };
 }
 
-async function setup(fixture: StoreFixture) {
-  const run = await fixture.createRunFixture("access", null, "project");
+async function seedPeople(
+  database: Kysely<DatabaseSchema>,
+  people: readonly { id: UserId; name: string; administrator?: boolean }[],
+) {
+  await sql`insert into users(id, display_name, email, email_verified, instance_role, admitted_at)
+    select id, name, id || '@test.invalid', true,
+      case when administrator then 'administrator' else 'user' end, now()
+    from jsonb_to_recordset(${JSON.stringify(people)}::jsonb)
+      as person(id text, name text, administrator boolean)`.execute(database);
+}
+
+async function seedProject(fixture: StoreFixture) {
+  const run = {
+    userId: createId("user"),
+    environmentId: createId("environment"),
+    workspace: { id: createId("workspace") },
+  };
+  await seedPeople(fixture.database, [{ id: run.userId, name: "Alex" }]);
+  await sql`insert into deployments(id, active_host_instance_id, canonical_origin, deployment_shape)
+      values (${createId("deployment")}, ${createId("hostInstance")}, 'https://test-host.invalid',
+        '{"kind":"server","defaultWorkspaceBacking":"local-directory"}'::jsonb)`.execute(
+    fixture.database,
+  );
+  await sql`insert into execution_environments(id, name, kind, runner_id, capabilities)
+      values (${run.environmentId}, 'Fixture', 'main', null, '[]'::jsonb)`.execute(
+    fixture.database,
+  );
+  await fixture.database.transaction().execute(async (transaction) => {
+    await sql`insert into workspaces(id, name, color, kind, created_by, backing, status)
+      values (${run.workspace.id}, 'Workspace access', 'blue', 'project', ${run.userId},
+        ${JSON.stringify({
+          kind: "local-directory",
+          generation: 1,
+          bindingId: createId("workspaceBinding"),
+          ownerEnvironmentId: run.environmentId,
+          storageAuthorityId: createId("storageAuthority"),
+        })}::jsonb, 'ready')`.execute(transaction);
+    await sql`insert into workspace_memberships(id, workspace_id, user_id, role, state, generation)
+      values (${createId("workspaceMembership")}, ${run.workspace.id}, ${run.userId}, 'owner', 'active', 1)`.execute(
+      transaction,
+    );
+  });
+  return run;
+}
+
+async function setup(
+  fixture: StoreFixture,
+  existing?: {
+    userId: UserId;
+    environmentId: EnvironmentId;
+    workspace: { id: WorkspaceId };
+  },
+) {
+  const run = existing ?? (await seedProject(fixture));
   await fixture.database.updateTable("deployments").set({ authorityModelVersion: 2 }).execute();
   await fixture.database
     .updateTable("users")
@@ -182,8 +236,8 @@ async function setup(fixture: StoreFixture) {
     return result;
   };
   const member = async (name = "Member") => {
-    const userId = await fixture.store.createUser(name);
-    await mutate({ kind: "member", userId, admit: true });
+    const userId = createId("user");
+    await seedPeople(fixture.database, [{ id: userId, name }]);
     return userId;
   };
   const membership = (userId: UserId) =>
@@ -221,7 +275,7 @@ describeStore("dormant Project access", (it) => {
   it("derives an omitted legacy cleanup cutoff from each revoked generation", async ({
     storeFixture,
   }) => {
-    const access = await storeFixture.createRunFixture("legacy-cutoff", null, "project");
+    const access = await seedProject(storeFixture);
     for (const generation of [1, 2, 4]) {
       const result = await sql<{
         membershipGenerationCutoff: string;
@@ -241,7 +295,7 @@ describeStore("dormant Project access", (it) => {
   it("migrates the previous schema without changing legacy membership data or DTO bytes", async ({
     storeFixture,
   }) => {
-    const source = await storeFixture.createRunFixture("migration-compatibility", null, "project");
+    const source = await seedProject(storeFixture);
     const membership = await storeFixture.database
       .selectFrom("workspaceMemberships")
       .selectAll()
@@ -562,88 +616,91 @@ describeStore("dormant Project access", (it) => {
       storeFixture,
     }) => {
       const counts: number[] = [];
+      const access = await setup(storeFixture);
+      const { database } = storeFixture;
+      expect(await database.selectFrom("authAccounts").select("id").execute()).toEqual([]);
       for (const projectCount of [2, 128]) {
-        const measuredFixture = projectCount === 2 ? storeFixture : await createStoreFixture();
-        const access = await setup(measuredFixture);
+        const setupStarted = performance.now();
         const groupId = randomUUID();
-        await access.mutate({ kind: "create-group", id: groupId, name: `Scale ${projectCount}` });
-        const users: UserId[] = [];
         const peopleCount = operation === "delete-group" ? accessCapacity.effectivePairs / 128 : 64;
-        for (let index = 0; index < peopleCount; index++)
-          users.push(await measuredFixture.store.createUser(`Scale ${index}`));
-        await measuredFixture.database
-          .updateTable("users")
-          .set({ admittedAt: new Date() })
-          .where("id", "in", users)
+        const users = Array.from({ length: peopleCount }, () => createId("user"));
+        await seedPeople(
+          database,
+          users.map((id, index) => ({ id, name: `Scale ${index}` })),
+        );
+        const peopleMs = performance.now() - setupStarted;
+        await database
+          .insertInto("accessGroups")
+          .values({ id: groupId, name: `Scale ${projectCount}`, createdBy: access.userId })
           .execute();
         const projects = [
           access.workspace.id,
           ...Array.from({ length: projectCount - 1 }, () => createId("workspace")),
         ];
-        await measuredFixture.database.transaction().execute(async (transaction) => {
+        await database.transaction().execute(async (transaction) => {
           await sql`insert into workspaces(id, name, color, kind, created_by, backing, status)
-          select project.id, 'Scale', 'blue', 'project', ${access.userId},
+          select project.id, 'Scale ' || project.id, 'blue', 'project', ${access.userId},
             jsonb_set(backing, '{bindingId}', to_jsonb(replace(project.id, 'wsp_', 'wbd_'))), 'ready'
           from workspaces cross join unnest(${projects.slice(1)}::text[]) as project(id)
           where workspaces.id = ${access.workspace.id}`.execute(transaction);
-          await transaction
-            .insertInto("workspaceMemberships")
-            .values(
-              projects.slice(1).map((workspaceId) => ({
-                id: createId("workspaceMembership"),
-                workspaceId,
-                userId: access.userId,
-                role: "owner" as const,
-                state: "active" as const,
-                generation: 1,
-                invitedBy: null,
-              })),
-            )
-            .execute();
-          await transaction
-            .insertInto("accessGroupMembers")
-            .values(
-              users.map((userId) => ({
-                groupId,
-                memberKind: "user" as const,
-                memberId: userId,
-                addedBy: access.userId,
-              })),
-            )
-            .execute();
-          await transaction
-            .insertInto("accessEntries")
-            .values(
-              projects.map((workspaceId) => ({
-                id: randomUUID(),
-                subjectKind: "group" as const,
-                subjectId: groupId,
-                targetKind: "project" as const,
-                targetId: workspaceId,
-                level: "use" as const,
-                grantedBy: access.userId,
-              })),
-            )
-            .execute();
-          const rows = projects.flatMap((workspaceId) =>
-            users.map((userId) => ({
-              id: createId("workspaceMembership"),
-              workspaceId,
-              userId,
-              role: "collaborator" as const,
-              state: "active" as const,
-              generation: 1,
-              invitedBy: null,
-            })),
-          );
-          for (let offset = 0; offset < rows.length; offset += 1000)
-            await transaction
-              .insertInto("workspaceMemberships")
-              .values(rows.slice(offset, offset + 1000))
-              .execute();
+          await sql`insert into workspace_memberships(id, workspace_id, user_id, role, state, generation)
+            select 'wmb_' || gen_random_uuid(), project.id, ${access.userId}, 'owner', 'active', 1
+            from unnest(${projects.slice(1)}::text[]) as project(id)`.execute(transaction);
         });
+        const projectsMs = performance.now() - setupStarted - peopleMs;
+        await database
+          .insertInto("accessGroupMembers")
+          .values(
+            users.map((userId) => ({
+              groupId,
+              memberKind: "user" as const,
+              memberId: userId,
+              addedBy: access.userId,
+            })),
+          )
+          .execute();
+        await database
+          .insertInto("accessEntries")
+          .values(
+            projects.map((workspaceId) => ({
+              id: randomUUID(),
+              subjectKind: "group" as const,
+              subjectId: groupId,
+              targetKind: "project" as const,
+              targetId: workspaceId,
+              level: "use" as const,
+              grantedBy: access.userId,
+            })),
+          )
+          .execute();
+        const graphMs = performance.now() - setupStarted - peopleMs - projectsMs;
+        const membershipStarted = performance.now();
+        await database.transaction().execute(async (transaction) => {
+          await sql`alter table workspace_memberships disable trigger workspace_memberships_account_directory_projection`.execute(
+            transaction,
+          );
+          await sql`insert into workspace_memberships(id, workspace_id, user_id, role, state, generation)
+            select 'wmb_' || gen_random_uuid(), project.id, person.id, 'collaborator', 'active', 1
+            from unnest(${projects}::text[]) as project(id)
+              cross join unnest(${users}::text[]) as person(id)`.execute(transaction);
+          await sql`alter table workspace_memberships enable trigger workspace_memberships_account_directory_projection`.execute(
+            transaction,
+          );
+        });
+        expect(
+          (
+            await sql<{ enabled: string }>`select tgenabled as enabled from pg_trigger
+              where tgrelid = 'workspace_memberships'::regclass
+                and tgname = 'workspace_memberships_account_directory_projection'`.execute(database)
+          ).rows,
+        ).toEqual([{ enabled: "O" }]);
+        await sql`analyze users; analyze workspace_memberships`.execute(database);
+        console.info(
+          `access fixture: people=${peopleCount} projects=${projectCount} peopleMs=${peopleMs.toFixed(2)} projectsMs=${projectsMs.toFixed(2)} graphMs=${graphMs.toFixed(2)} membershipsMs=${(performance.now() - membershipStarted).toFixed(2)}`,
+        );
+        const setupMs = performance.now() - setupStarted;
         let statements = 0;
-        const measured = measuredFixture.database.withPlugin({
+        const measured = database.withPlugin({
           transformQuery(args) {
             statements++;
             return args.node;
@@ -652,7 +709,10 @@ describeStore("dormant Project access", (it) => {
             return args.result;
           },
         });
-        const revision = access.revision();
+        const revision = Number(
+          (await database.selectFrom("accessState").select("revision").executeTakeFirstOrThrow())
+            .revision,
+        );
         const started = performance.now();
         const result = await mutateAccess(measured, {
           actor: { userId: access.userId },
@@ -672,7 +732,7 @@ describeStore("dormant Project access", (it) => {
           ),
         ).toBe(true);
         console.info(
-          `access maximum: operation=${operation} pairs=${pairs} statements=${statements} elapsedMs=${elapsed.toFixed(2)}`,
+          `access maximum: operation=${operation} pairs=${pairs} statements=${statements} setupMs=${setupMs.toFixed(2)} elapsedMs=${elapsed.toFixed(2)}`,
         );
         counts.push(statements);
       }
@@ -952,14 +1012,18 @@ describeStore("dormant Project access", (it) => {
       storeFixture,
     }) => {
       const access = await setup(storeFixture);
-      const { database, store } = storeFixture;
+      const { database } = storeFixture;
       const actorId = "usr_ffffffff-ffff-4fff-8fff-ffffffffffff" as UserId;
-      await store.createUser("High-ID administrator", actorId);
-      await database
-        .updateTable("users")
-        .set({ instanceRole: "administrator", admittedAt: new Date() })
-        .where("id", "=", actorId)
-        .execute();
+      const people = mutationKinds.flatMap((_kind, index) =>
+        [0, 1].map((position) => ({
+          id: `usr_00000000-0000-4000-8000-${((index + 1) * 2 - position).toString(16).padStart(12, "0")}` as UserId,
+          name: `Pair ${index + 1}-${position}`,
+        })),
+      );
+      await seedPeople(database, [
+        { id: actorId, name: "High-ID administrator", administrator: true },
+        ...people,
+      ]);
       const mutate = async (changes: readonly AccessMutation[]) => {
         const state = await database
           .selectFrom("accessState")
@@ -972,22 +1036,14 @@ describeStore("dormant Project access", (it) => {
           changes,
         });
       };
+      const prerequisites: AccessMutation[] = [];
+      const pairs: { second: (typeof mutationKinds)[number]; changes: AccessMutation[] }[] = [];
       let ordinal = 0;
       for (const second of mutationKinds) {
         ordinal++;
-        const change = async (
-          kind: (typeof mutationKinds)[number],
-          position: number,
-        ): Promise<AccessMutation> => {
+        const change = (kind: (typeof mutationKinds)[number], position: number): AccessMutation => {
           const name = `Pair ${ordinal}-${position}`;
-          const userId =
-            `usr_00000000-0000-4000-8000-${(ordinal * 2 - position).toString(16).padStart(12, "0")}` as UserId;
-          await store.createUser(name, userId);
-          await database
-            .updateTable("users")
-            .set({ admittedAt: new Date() })
-            .where("id", "=", userId)
-            .execute();
+          const userId = people[(ordinal - 1) * 2 + position]!.id;
           const groupId = randomUUID();
           const entryId = randomUUID();
           const target = { kind: "project" as const, workspaceId: access.workspace.id };
@@ -1013,9 +1069,9 @@ describeStore("dormant Project access", (it) => {
             case "delete-group":
             case "add-group-member":
             case "remove-group-member":
-              await mutate([{ kind: "create-group", id: groupId, name }]);
+              prerequisites.push({ kind: "create-group", id: groupId, name });
               if (kind !== "add-group-member")
-                await mutate([
+                prerequisites.push(
                   { kind: "add-group-member", groupId, member: subject },
                   {
                     kind: "grant",
@@ -1024,40 +1080,41 @@ describeStore("dormant Project access", (it) => {
                     target,
                     level: "use",
                   },
-                ]);
+                );
               return kind === "delete-group"
                 ? { kind, groupId }
                 : { kind, groupId, member: subject };
             case "grant":
               return { kind, id: entryId, subject, target, level: "use" };
             case "revoke":
-              await mutate([{ kind: "grant", id: entryId, subject, target, level: "use" }]);
+              prerequisites.push({ kind: "grant", id: entryId, subject, target, level: "use" });
               return { kind, entryId };
             case "member":
               return { kind, userId, memberKind: "guest" };
             case "delete-project": {
               const workspaceId = createId("workspace");
-              await mutate([
-                {
-                  kind: "create-project",
-                  workspaceId,
-                  entryId,
-                  name,
-                  color: "blue",
-                  backing: {
-                    kind: "local-directory",
-                    generation: 1,
-                    bindingId: createId("workspaceBinding"),
-                    ownerEnvironmentId: access.environmentId,
-                    storageAuthorityId: createId("storageAuthority"),
-                  },
+              prerequisites.push({
+                kind: "create-project",
+                workspaceId,
+                entryId,
+                name,
+                color: "blue",
+                backing: {
+                  kind: "local-directory",
+                  generation: 1,
+                  bindingId: createId("workspaceBinding"),
+                  ownerEnvironmentId: access.environmentId,
+                  storageAuthorityId: createId("storageAuthority"),
                 },
-              ]);
+              });
               return { kind, workspaceId, purgeAfter: new Date("2099-01-01") };
             }
           }
         };
-        const changes = [await change(first, 0), await change(second, 1)];
+        pairs.push({ second, changes: [change(first, 0), change(second, 1)] });
+      }
+      await mutate(prerequisites);
+      for (const { second, changes } of pairs) {
         if (changes.some((change) => change.kind === "delete-project")) {
           const state = await database
             .selectFrom("accessState")
@@ -1591,7 +1648,8 @@ describeStore("dormant Project access", (it) => {
   it("refuses Request-scope growth but permits revocation of an oversized inherited scope", async ({
     storeFixture,
   }) => {
-    const access = await setup(storeFixture);
+    const run = await storeFixture.createRunFixture("access", null, "project");
+    const access = await setup(storeFixture, run);
     const userId = await access.member();
     const entryId = randomUUID();
     await access.mutate({
@@ -1605,7 +1663,7 @@ describeStore("dormant Project access", (it) => {
       content: [{ type: "text", text: "Request origin" }],
       idempotencyKey: "oversized-request-origin",
       requestedBy: userId,
-      threadId: access.thread.id,
+      threadId: run.thread.id,
     });
     const targets = Array.from({ length: 256 }, () => createId("workspace"));
     await storeFixture.database.transaction().execute(async (transaction) => {
@@ -1639,7 +1697,7 @@ describeStore("dormant Project access", (it) => {
             mode: "live" as const,
             originatingRunId: turn.run.id,
             originatingOccurrenceId: null,
-            originatingThreadId: access.thread.id,
+            originatingThreadId: run.thread.id,
             originatingWorkspaceId: access.workspace.id,
             targetWorkspaceId,
             requestedBy: userId,
@@ -1773,9 +1831,12 @@ describeStore("dormant Project access", (it) => {
       return (random >>> 0) % count;
     };
     try {
+      const setupStarted = performance.now();
       const access = await setup(storeFixture);
-      const people = await Promise.all(
-        Array.from({ length: 4 }, (_, index) => storeFixture.store.createUser(`Trace ${index}`)),
+      const people = Array.from({ length: 4 }, () => createId("user"));
+      await seedPeople(
+        storeFixture.database,
+        people.map((id, index) => ({ id, name: `Trace ${index}` })),
       );
       const kinds = new Map<UserId, "full" | "guest">();
       const active = new Map<UserId, boolean>();
@@ -1783,32 +1844,32 @@ describeStore("dormant Project access", (it) => {
       kinds.set(access.userId, "full");
       active.set(access.userId, true);
       for (const userId of people) {
-        await access.mutate({ kind: "member", userId, admit: true });
         kinds.set(userId, "full");
         active.set(userId, true);
       }
       const groups = Array.from({ length: 4 }, () => randomUUID());
       const children = new Map<string, Set<string>>(groups.map((group) => [group, new Set()]));
-      for (const [index, id] of groups.entries())
-        await access.mutate({
-          kind: "create-group",
-          id,
-          name: `Trace group ${index}`,
-          ...(index === 0 ? { builtin: "everyone" as const } : {}),
-        });
       const grants = new Map<string, { subject: string; level: "use" | "manage" }>();
       const history = new Map<
         UserId,
         { id: string; generation: number; state: string; role: string }
       >();
       const creatorEntry = randomUUID();
-      await access.mutate({
-        kind: "grant",
-        id: creatorEntry,
-        subject: { kind: "person", userId: access.userId },
-        target: { kind: "project", workspaceId: access.workspace.id },
-        level: "manage",
-      });
+      await access.mutate([
+        ...groups.map((id, index) => ({
+          kind: "create-group" as const,
+          id,
+          name: `Trace group ${index}`,
+          ...(index === 0 ? { builtin: "everyone" as const } : {}),
+        })),
+        {
+          kind: "grant",
+          id: creatorEntry,
+          subject: { kind: "person", userId: access.userId },
+          target: { kind: "project", workspaceId: access.workspace.id },
+          level: "manage",
+        },
+      ]);
       grants.set(creatorEntry, { subject: access.userId, level: "manage" });
       const creatorMembership = (await access.membership(access.userId))!;
       history.set(access.userId, {
@@ -1817,6 +1878,7 @@ describeStore("dormant Project access", (it) => {
         state: "active",
         role: "owner",
       });
+      const setupMs = performance.now() - setupStarted;
       const interpret = (userId: UserId) => {
         if (!active.get(userId)) return null;
         const subjects = new Set<string>([userId]);
@@ -1839,6 +1901,7 @@ describeStore("dormant Project access", (it) => {
           role: top[0]!.level === "manage" ? "owner" : "collaborator",
         };
       };
+      const traceStarted = performance.now();
       for (let step = 0; step < steps; step++) {
         const userId = people[choose(people.length)]!;
         const groupId = groups[1 + choose(groups.length - 1)]!;
@@ -1996,6 +2059,9 @@ describeStore("dormant Project access", (it) => {
           role: previous.role,
           generation: String(previous.generation),
         });
+      console.info(
+        `access trace cost: setupMs=${setupMs.toFixed(2)} traceMs=${(performance.now() - traceStarted).toFixed(2)}`,
+      );
     } catch (error) {
       throw new Error(`Access invariant seed=${seed}`, { cause: error });
     }
