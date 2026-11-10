@@ -105,7 +105,8 @@ internal class CdpOwner(private val pool: PhoneBrowserPool, private val emit: (M
       tab
     }
     val handle = UUID.randomUUID().toString()
-    val socket = NativeCdpSocket(name, tab.targetPath ?: throw BrowserFailure(if (tab.popup) "unsupported-operation" else "target-not-ready")) { event ->
+    val path = tab.targetPath ?: if (tab.popup) throw BrowserFailure("unsupported-operation", "A page opened this tab and this phone cannot hand it to an agent; open its address in a new tab instead.") else throw BrowserFailure("target-not-ready")
+    val socket = NativeCdpSocket(name, path) { event ->
       val pipe = pipes[handle] ?: return@NativeCdpSocket
       val method = event.optString("method")
       if (method.startsWith("Target.") || method == "Page.screencastFrame" || method.isBlank()) return@NativeCdpSocket
@@ -124,6 +125,7 @@ internal class CdpOwner(private val pool: PhoneBrowserPool, private val emit: (M
       try {
         pool.gate.execute(pipe.epoch) {
           if (!pipe.tab.live || pipe.tab.generation != pipe.generation) throw BrowserFailure("stale-document")
+          PhoneBrowserNative.authority?.requireAttachment(pipe.epoch, pipe.attachment, pipe.tab.sessionId, pipe.tab.id) ?: throw BrowserFailure("forbidden")
           emit(mapOf("type" to "cdpEvent", "epoch" to pipe.epoch, "pipeHandle" to handle, "method" to method, "params" to jsonFields(parameters)))
         }
       } catch (_: BrowserFailure) { }

@@ -7,6 +7,10 @@ import android.content.res.Configuration
 import android.os.Looper
 import android.os.Message
 import android.webkit.WebView
+import com.opensteer.phoneconnection.PhoneBrowserEndpoint
+import com.opensteer.phoneconnection.PhoneConnectionRuntime
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executors
@@ -33,6 +37,37 @@ internal class PhoneBrowserRuntime(
   private var bindingEpoch = -1
   private val probe = QualificationProbe(context, pool, cdp)
   private val generations = mutableMapOf<String, Int>()
+  private val connection = PhoneConnectionRuntime.get(context)
+  @Volatile private var qualified: Map<String, Any?> = mapOf("platform" to "android", "runtimeId" to runtimeId,
+    "storageInstanceId" to (BrowserStartup.profiles?.manifest?.storageInstanceId ?: ""), "browser" to false,
+    "sharedControl" to false, "agentActions" to false, "cdpBoundary" to false, "fileStaging" to false)
+  private val services = PhoneBrowserServices(gate, connection::browser,
+    { handle -> profiles().manifest.byHandle(handle).binding.fields() },
+    { artifact -> foreground && artifact.isCurrent() }, capture::rejected)
+  private val endpoint = object : PhoneBrowserEndpoint {
+    override fun qualification(deploymentId: String, runnerId: String): JsonObject = nativeJson(
+      if (this@PhoneBrowserRuntime.deploymentId == deploymentId && this@PhoneBrowserRuntime.runnerId == runnerId) qualified
+      else qualified + mapOf("browser" to false, "sharedControl" to false, "cdpBoundary" to false, "fileStaging" to false)
+    ) as JsonObject
+    override fun fence(epoch: Int) = adoptFence(epoch)
+    override fun eraseDeployment(deploymentId: String, epoch: Int): CompletableFuture<JsonArray> = CompletableFuture.supplyAsync({
+      gate.check(epoch)
+      val entries = pool.ui(epoch) { profiles().manifest.all().filter { it.binding.deploymentId == deploymentId } }
+      for (entry in entries) pool.await(pool.ui(epoch) { profiles().erase(entry.binding, entry.deletionId ?: UUID.randomUUID().toString(), ::closeProfile) })
+      files.close()
+      pool.ui(epoch) {
+        downloads.bind(deploymentId); downloads.erase()
+        if (entries.any { it.guest && !profiles().manifest.byHandle(it.handle).deleted }) throw BrowserFailure("profile-erasure-pending")
+        nativeJson(profiles().list(deploymentId)) as JsonArray
+      }
+    }, popupWorker)
+  }
+  fun install(): CompletableFuture<PhoneConnectionRuntime> {
+    gate.adopt(connection.epoch())
+    PhoneBrowserNative.authority = services
+    PhoneBrowserNative.sink = services
+    return connection.registerBrowser(endpoint)
+  }
 
   init {
     cdp.dialogOpened = chrome::protocolDialog
@@ -41,10 +76,11 @@ internal class PhoneBrowserRuntime(
     PhoneBrowserNative.fence = ::fence
     PhoneBrowserNative.currentEpoch = { gate.epoch }
     PhoneBrowserNative.qualificationEvidence = ::qualificationEvidence
+    PhoneBrowserNative.shareDownload = downloads::share
     PhoneBrowserPool.current = pool
     context.registerComponentCallbacks(this)
     pool.onConstruct = { tab, view -> chrome.install(tab, view); downloads.install(tab, view) }
-    pool.onSuspended = { tab -> tab.frameRevisions.clear(); chrome.retire(tab); capture.retire(tab); cdp.retire(tab) }
+    pool.onSuspended = { tab -> tab.frameRevisions.clear(); chrome.suspend(tab); capture.retire(tab); cdp.retire(tab); input.retire(tab) }
     pool.onDocumentRetired = { tab -> chrome.retire(tab); capture.invalidate(tab) }
     pool.onTabRemoved = { tab ->
       downloads.retire(tab)
@@ -88,11 +124,23 @@ internal class PhoneBrowserRuntime(
       gate.check(input.epoch)
       initialized = true
     }
-    return mapOf("platform" to "android", "runtimeId" to runtimeId, "storageInstanceId" to (profiles?.manifest?.storageInstanceId ?: ""),
+    qualified = mapOf("platform" to "android", "runtimeId" to runtimeId, "storageInstanceId" to (profiles?.manifest?.storageInstanceId ?: ""),
       "browser" to (BrowserStartup.reason == null && foreground), "sharedControl" to (BrowserStartup.reason == null && foreground), "agentActions" to false,
       "cdpBoundary" to cdp.qualified, "fileStaging" to (BrowserStartup.reason == null))
+    return qualified
   }
   fun qualificationEvidence(): Map<String, Any?> = mapOf("providerVersion" to BrowserStartup.providerVersion, "reason" to BrowserStartup.reason, "commands" to probe.receipts.toMap(), "release" to BrowserDebugging.release)
+  fun attachAgent(input: AgentRecord) {
+    requireReady(input.epoch)
+    if (input.backend != "cdp") throw BrowserFailure("unsupported-operation")
+    val grant = services.requireCdp(input.epoch, input.channelId, input.actorToken)
+    if (grant.sessionId != input.sessionId || grant.attachmentId != input.attachmentId) throw BrowserFailure("forbidden")
+  }
+  fun detachAgent(input: DetachAgentRecord): CompletableFuture<Unit> {
+    gate.check(input.epoch)
+    connection.browser().detachAgent(input.epoch, input.attachmentId)
+    return cdp.release(input.epoch, input.attachmentId)
+  }
   fun requireReady(epoch: Int) {
     gate.check(epoch)
     if (!initialized || BrowserStartup.reason != null) throw BrowserFailure("browser-unavailable")
@@ -103,7 +151,7 @@ internal class PhoneBrowserRuntime(
     val deadline = RequestDeadline.current()
     requireReady(input.epoch)
     val binding = input.binding.binding()
-    PhoneBrowserNative.authority?.requireAllocation(input.epoch, input.allocationPermit, null, null, binding.fields()) ?: throw BrowserFailure("forbidden")
+    PhoneBrowserNative.authority?.requireAllocation(input.epoch, input.allocationPermit, null, null, binding.fields(), input.initialized) ?: throw BrowserFailure("forbidden")
     if (binding.deploymentId != deploymentId || binding.runnerId != runnerId) throw BrowserFailure("forbidden")
     val entry = pool.await(pool.ui(input.epoch) { profiles().ensure(binding, input.initialized, false, gate, input.epoch) { gate.check(input.epoch); RequestDeadline.check(deadline) } })
     gate.check(input.epoch)
@@ -138,7 +186,8 @@ internal class PhoneBrowserRuntime(
     if (input.state !in setOf("live", "retained") || input.sessionId.isBlank() || input.tabId.isBlank()) throw BrowserFailure("forbidden")
     if (input.viewport.width !in 1..8192 || input.viewport.height !in 1..8192) throw BrowserFailure("invalid-viewport")
     input.url?.takeUnless { it == "about:blank" }?.let(::validateBrowserUrl)
-    PhoneBrowserNative.authority?.requireAllocation(input.epoch, input.allocationPermit, input.sessionId, input.storeHandle) ?: throw BrowserFailure("forbidden")
+    val binding = input.storeHandle?.let { pool.ui(input.epoch) { profiles().manifest.byHandle(it).binding.fields() } }
+    PhoneBrowserNative.authority?.requireAllocation(input.epoch, input.allocationPermit, input.sessionId, input.storeHandle, binding) ?: throw BrowserFailure("forbidden")
     val profile = if (input.storeHandle != null) pool.ui(input.epoch) { profiles().serving(input.storeHandle!!) } else {
       pool.await(pool.ui(input.epoch) { profiles().ensure(ProfileBinding(deploymentId!!, runnerId!!, profiles().manifest.storageInstanceId, UUID.randomUUID().toString(), UUID.randomUUID().toString()), false, true, gate, input.epoch) { gate.check(input.epoch); RequestDeadline.check(deadline) } })
     }
@@ -231,29 +280,36 @@ internal class PhoneBrowserRuntime(
     return true
   }
   fun fence(reason: String): Int {
-    val active = foreground
-    val epoch = gate.advance()
-    pool.ui(epoch) {
-      stop(); pool.tabs.values.filter { it.creating || !it.published }.map { it.id }.forEach(pool::destroyNow); pool.foreground(false)
-      foreground = active
-      if (active) { pool.foreground(true); capture.foreground(true); downloads.foreground(true) }
+    return connection.fence(reason)
+  }
+  private fun adoptFence(epoch: Int) {
+    if (epoch == gate.epoch) return
+    gate.adopt(epoch)
+    BrowserDebugging.set(false)
+    pool.main.post {
+      if (gate.epoch != epoch) return@post
+      capture.stop(); chrome.fence(); cdp.stop(); downloads.stop()
+      pool.tabs.values.filter { it.creating || !it.published }.map { it.id }.forEach(pool::destroyNow)
+      pool.foreground(false)
+      if (foreground) { pool.foreground(true); capture.foreground(true); downloads.foreground(true) }
     }
-    return epoch
   }
   fun stop() { foreground = false; capture.stop(); chrome.stop(); cdp.stop(); downloads.stop() }
   fun setForeground(input: ForegroundRecord): CompletableFuture<Unit> {
     pool.ui(input.epoch) {
       foreground = input.active
-      if (!input.active) stop()
+      if (!input.active) { capture.stop(); chrome.fence(); cdp.stop(); downloads.stop() }
       pool.foreground(input.active); capture.foreground(input.active); downloads.foreground(input.active)
       if (input.active) BrowserStartup.profiles?.flush()
     }
     return if (!input.active) cdp.whenDisabled() else CompletableFuture.completedFuture(Unit)
   }
   fun inactive() {
-    if (chrome.pickerActive) { foreground = false; capture.stop(); chrome.cancelDialogs(); cdp.stop(); pool.foreground(false) } else { foreground = false; fence("background") }
+    foreground = false
+    fence("inactive")
   }
   override fun onTrimMemory(level: Int) {
+    if (level == ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) return
     pool.main.post {
       val critical = level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL && level < ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN || level >= ComponentCallbacks2.TRIM_MEMORY_MODERATE
       pool.trim(critical)
@@ -263,12 +319,14 @@ internal class PhoneBrowserRuntime(
   override fun onLowMemory() = onTrimMemory(ComponentCallbacks2.TRIM_MEMORY_COMPLETE)
   override fun onConfigurationChanged(configuration: Configuration) { pool.tabs.values.forEach(pool::changedGeometry) }
   fun close() {
+    connection.unregisterBrowser(endpoint)
     stop(); pool.tabs.keys.toList().forEach(pool::destroyNow); cdp.close(); capture.close(); files.close(); downloads.close(); popupWorker.shutdownNow(); pool.close()
     context.unregisterComponentCallbacks(this)
     if (PhoneBrowserPool.current === pool) {
       PhoneBrowserPool.current = null
       PhoneBrowserNative.fence = null; PhoneBrowserNative.currentEpoch = null; PhoneBrowserNative.qualificationEvidence = null
       PhoneBrowserNative.authority = null; PhoneBrowserNative.sink = null
+      PhoneBrowserNative.shareDownload = null
     }
   }
 }

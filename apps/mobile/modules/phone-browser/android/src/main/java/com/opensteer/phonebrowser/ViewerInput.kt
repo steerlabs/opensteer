@@ -16,6 +16,7 @@ internal class ViewerInput(private val pool: PhoneBrowserPool, private val emit:
   fun changed(tab: NativeTab) { if (tab.documentId != null && tab.document.isDone) channels[tab.id]?.forEach { emitContext(tab, it) } }
   fun retire(tab: NativeTab) { channels.remove(tab.id); pastes.entries.removeAll { it.value.tab === tab } }
   fun apply(input: ViewerRecord) {
+    PhoneBrowserNative.authority?.requireViewer(input.epoch, input.channelId, input.sessionId, true) ?: throw BrowserFailure("forbidden")
     val message = JSONObject(input.message)
     val copied = if (message.optString("type") == "clipboard.copy") {
       val tab = pool.ui(input.epoch) { pool.check(input, true).also(admission) }

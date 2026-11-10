@@ -17,7 +17,9 @@ class BrowserTransport(
     private val monotonicNanos: () -> Long = System::nanoTime,
 ) {
     private data class Channel(val capability: JsonObject, val credit: FrameCredit = FrameCredit(), var sequence: Long = 0,
-        val captures: MutableSet<String> = mutableSetOf(), var admitted: Boolean = false, var lastFrameAt: Long? = null)
+        val captures: MutableMap<String, String?> = mutableMapOf(), var claims: JsonObject? = null, var admitted: Boolean = false, var lastFrameAt: Long? = null)
+    data class Agent(val channelId: String, val attachmentId: String, val actorToken: String, val sessionId: String)
+    private val agents = mutableMapOf<String, Agent>()
     private val channels = mutableMapOf<String, Channel>()
     private var socket: WebSocket? = null
     private var pendingGrant: JsonObject? = null
@@ -48,7 +50,7 @@ class BrowserTransport(
     }
     fun fence(): Int = synchronized(admission) {
         val epoch = admission.advance()
-        channels.values.forEach { it.credit.close() }; channels.clear(); tickets.retire()
+        channels.values.forEach { it.credit.close() }; channels.clear(); agents.clear(); tickets.retire()
         fenceBrowser(epoch)
         epoch
     }
@@ -87,12 +89,32 @@ class BrowserTransport(
             "browser.client-message" -> {
                 requireChannel(admission.epoch, fence, frame.text("channelId"), frame.obj("capability"))
                 val payload = frame.obj("message")
+                val channelId = frame.text("channelId")
+                val channel = channels.getValue(channelId)
+                when (payload.text("type")) {
+                    "agent.attach" -> {
+                        val claims = channel.claims ?: throw Refused("forbidden")
+                        Wire.requireThat(claims.text("access") == "read-write" && payload.text("sessionId") == claims.text("sessionId") && payload.text("backend") == "cdp", "forbidden")
+                        val agent = Agent(channelId, payload.text("attachmentId"), payload.text("actorToken"), claims.text("sessionId"))
+                        Wire.requireThat(agents[agent.attachmentId]?.let { it != agent } != true, "forbidden")
+                        agents[agent.attachmentId] = agent
+                    }
+                    "agent.detach" -> {
+                        val id = payload.text("attachmentId")
+                        Wire.requireThat(agents[id]?.channelId == channelId, "forbidden")
+                        detachAgent(admission.epoch, id)
+                    }
+                }
                 if (payload["type"] == JsonPrimitive("cdp.command")) {
                     val command = payload.obj("command")
                     if (command["method"] == JsonPrimitive("Page.captureScreenshot")) {
                         val channel = channels.getValue(frame.text("channelId"))
                         Wire.requireThat(channel.captures.size < 32, "capacity")
-                        Wire.requireThat(channel.captures.add(payload.text("requestId")), "duplicate-capture")
+                        val requestId = payload.text("requestId")
+                        Wire.requireThat(!channel.captures.containsKey(requestId), "duplicate-capture")
+                        val actor = payload.text("actorToken")
+                        val agent = requireAgent(admission.epoch, channelId, actor)
+                        channel.captures[requestId] = agent.attachmentId
                     }
                     if (command["method"] == JsonPrimitive("Opensteer.openTab")) {
                         val parameters = command["parameters"] as? JsonObject
@@ -126,6 +148,8 @@ class BrowserTransport(
         val permit = tickets.commit(handle, epoch, fence, digest, ReplayState.parse(transition, 4096))
         val verified = tickets.permit(permit, epoch, fence)
         val channel = channels[verified.channelId] ?: throw Refused("channel-gone")
+        if (channel.claims != null) Wire.requireThat(listOf("sessionId", "identity", "access", "subject").all { channel.claims!![it] == verified.claims[it] }, "forbidden")
+        else channel.claims = verified.claims
         channel.admitted = true
         permit
     }
@@ -138,6 +162,27 @@ class BrowserTransport(
         requireChannel(epoch, admission.fence ?: throw Refused("retired-stream"), channelId,
             admission.capability ?: throw Refused("retired-capability"))
         operation()
+    }
+    fun viewer(epoch: Int, channelId: String, sessionId: String, control: Boolean): String = withChannel(epoch, channelId) {
+        val claims = channels.getValue(channelId).claims ?: throw Refused("forbidden")
+        Wire.requireThat(claims.text("sessionId") == sessionId && (!control || claims.text("access") == "read-write"), "forbidden")
+        claims.text("subject")
+    }
+    fun requireAgent(epoch: Int, channelId: String, actorToken: String): Agent = withChannel(epoch, channelId) {
+        agents.values.singleOrNull { it.channelId == channelId && it.actorToken == actorToken } ?: throw Refused("forbidden")
+    }
+    fun requireAttachment(epoch: Int, attachmentId: String, sessionId: String, channelId: String? = null): Agent = synchronized(admission) {
+        val agent = agents[attachmentId] ?: throw Refused("forbidden")
+        withChannel(epoch, agent.channelId) {
+            Wire.requireThat(agent.sessionId == sessionId && (channelId == null || channelId == agent.channelId), "forbidden")
+            agent
+        }
+    }
+    fun detachAgent(epoch: Int, attachmentId: String) = synchronized(admission) {
+        admission.requireCurrent(epoch, admission.fence ?: throw Refused("retired-stream"), admission.capability ?: throw Refused("retired-capability"))
+        agents.remove(attachmentId)
+        channels.values.forEach { channel -> channel.captures.entries.removeAll { it.value == attachmentId } }
+        Unit
     }
     fun send(epoch: Int, message: JsonObject) = synchronized(admission) {
         val fence = Fence.auxiliary(message)
@@ -168,16 +213,17 @@ class BrowserTransport(
     fun closeChannel(epoch: Int, channelId: String) = synchronized(admission) {
         admission.requireCurrent(epoch, admission.fence ?: throw Refused("retired-stream"), admission.capability ?: throw Refused("retired-capability"))
         channels.remove(channelId)?.credit?.close(); tickets.retireChannel(channelId)
+        agents.entries.removeAll { it.value.channelId == channelId }
     }
     fun ack(epoch: Int, channelId: String, token: String) = synchronized(admission) {
         val fence = admission.fence ?: throw Refused("retired-stream")
         requireChannel(epoch, fence, channelId, admission.capability ?: throw Refused("retired-capability")).credit.ack(token)
     }
 
-    fun frame(epoch: Int, channelId: String, header: JsonObject, pixels: ByteArray, completed: (Boolean) -> Unit) {
+    fun frame(epoch: Int, channelId: String, header: JsonObject, pixels: ByteArray, valid: () -> Boolean = { true }, completed: (Boolean) -> Unit) {
         val fence: Fence
         val channel: Channel
-        val token = UUID.randomUUID().toString()
+        val token = (header["watchToken"] as? JsonPrimitive)?.content ?: UUID.randomUUID().toString()
         if (pixels.isEmpty() || pixels.size > FrameCodec.MAX_FRAME) return completed(false)
         synchronized(admission) {
             fence = admission.fence ?: return completed(false)
@@ -199,6 +245,7 @@ class BrowserTransport(
                 }
                 synchronized(admission) {
                     Wire.requireThat(requireChannel(epoch, fence, channelId, channel.capability) === channel, "channel-gone")
+                    Wire.requireThat(valid(), "stale-frame")
                     socket?.send(bytes.toByteString()) == true
                 }
             } catch (_: Exception) { false }
@@ -206,13 +253,16 @@ class BrowserTransport(
             completed(accepted)
         }
     }
-    fun capture(epoch: Int, channelId: String, requestId: String, pixels: ByteArray, completed: (Boolean) -> Unit) {
+    fun capture(epoch: Int, channelId: String, requestId: String, pixels: ByteArray, attachmentId: String? = null, valid: () -> Boolean = { true }, completed: (Boolean) -> Unit) {
         if (pixels.isEmpty() || pixels.size > FrameCodec.MAX_FRAME) return completed(false)
         val fence = synchronized(admission) {
             try {
                 val current = admission.fence ?: throw Refused("retired-stream")
                 val channel = requireChannel(epoch, current, channelId, admission.capability ?: throw Refused("retired-capability"))
-                Wire.requireThat(channel.captures.remove(requestId), "retired-capture")
+                val expected = channel.captures[requestId] ?: throw Refused("retired-capture")
+                Wire.requireThat(expected == attachmentId, "forbidden")
+                requireAttachment(epoch, expected, channel.claims!!.text("sessionId"), channelId)
+                channel.captures.remove(requestId)
                 current
             } catch (_: Refused) { return completed(false) }
         }
@@ -223,6 +273,8 @@ class BrowserTransport(
                     "result" to Wire.fields("data" to JsonPrimitive(Base64.toBase64String(ownedPixels))))
                 synchronized(admission) {
                     val channel = requireChannel(epoch, fence, channelId, admission.capability ?: throw Refused("retired-capability"))
+                    requireAttachment(epoch, attachmentId ?: throw Refused("forbidden"), channel.claims!!.text("sessionId"), channelId)
+                    Wire.requireThat(valid(), "stale-frame")
                     send(epoch, JsonObject(fence.fields + mapOf("type" to JsonPrimitive("browser.server-message"), "channelId" to JsonPrimitive(channelId),
                         "capability" to channel.capability, "message" to result)))
                     true

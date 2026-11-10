@@ -18,21 +18,22 @@ class PhoneBrowserModule : Module() {
   @Volatile private var browserOwner: PhoneBrowserRuntime? = null
   override fun definition() = ModuleDefinition {
     Name("PhoneBrowser")
-    Events("onEvent")
+    Events("event")
     OnCreate {
       main.post {
         try {
           val context = appContext.reactContext ?: throw BrowserFailure("browser-unavailable")
-          val owner = PhoneBrowserRuntime(context, { appContext.currentActivity }, gate) { event -> sendEvent("onEvent", event) }
-          browserOwner = owner; ready.complete(owner)
+          val owner = PhoneBrowserRuntime(context, { appContext.currentActivity }, gate) { event -> sendEvent("event", event) }
+          browserOwner = owner
+          owner.install().whenComplete { _, error -> if (error == null) ready.complete(owner) else ready.completeExceptionally(error) }
         } catch (error: Throwable) { ready.completeExceptionally(error) }
       }
     }
-    OnDestroy { gate.advance(); main.post { browserOwner?.close(); browserOwner = null }; workers.shutdownNow() }
+    OnDestroy { browserOwner?.fence("disposed"); main.post { browserOwner?.close(); browserOwner = null }; workers.shutdownNow() }
     OnActivityEntersBackground { browserOwner?.inactive() }
     OnActivityResult { _, result -> browserOwner?.chrome?.pickerResult(result.requestCode, result.resultCode, result.data) }
     Function("fence") { reason: String ->
-      try { browserOwner?.fence(reason) ?: gate.advance() } catch (error: BrowserFailure) { throw NativeBrowserException(error.code) }
+      try { (browserOwner ?: throw BrowserFailure("browser-unavailable")).fence(reason) } catch (error: BrowserFailure) { throw NativeBrowserException(error.code) }
     }
     AsyncFunction("initialize") { input: InitializeRecord, promise: Promise -> work(promise) { initialize(input) } }
     AsyncFunction("setForeground") { input: ForegroundRecord, promise: Promise -> priority(input, promise) { setForeground(input) } }
@@ -50,6 +51,9 @@ class PhoneBrowserModule : Module() {
     AsyncFunction("navigate") { input: NavigateRecord, promise: Promise -> work(promise) { navigate(input) } }
     AsyncFunction("respondDialog") { input: DialogRecord, promise: Promise -> priority(input, promise) { chrome.respond(input) } }
     AsyncFunction("respondUpload") { input: UploadRecord, promise: Promise -> priority(input, promise) { chrome.upload(input) } }
+    AsyncFunction("attachAgent") { input: AgentRecord, promise: Promise -> work(promise) { attachAgent(input) } }
+    AsyncFunction("detachAgent") { input: DetachAgentRecord, promise: Promise -> priority(input, promise) { detachAgent(input) } }
+    AsyncFunction("performAction") { _: Map<String, Any?>, promise: Promise -> promise.reject("unsupported-operation", "Android uses the qualified CDP backend.", null) }
     AsyncFunction("applyViewerInput") { input: ViewerRecord, promise: Promise -> work(promise) { requireReady(input.epoch); this.input.apply(input) } }
     AsyncFunction("setCaptureDemand") { input: DemandRecord, promise: Promise -> priority(input, promise) { requireReady(input.epoch); capture.demand(input) } }
     AsyncFunction("ackFrame") { input: AckRecord, promise: Promise -> priority(input, promise) { capture.ack(input) } }
@@ -77,6 +81,10 @@ class PhoneBrowserModule : Module() {
     View(PhoneBrowserPicture::class) {
       Name("PhoneBrowserPicture")
       Prop("tabId") { view: PhoneBrowserPicture, id: String -> view.tabId = id; PhoneBrowserPool.current?.picture(view,view.isAttachedToWindow) }
+    }
+    View(PhoneBrowserDownload::class) {
+      Name("PhoneBrowserDownload")
+      Prop("downloadId") { view: PhoneBrowserDownload, id: String -> view.downloadId = id }
     }
   }
   private fun work(promise: Promise, afterResolve: (PhoneBrowserRuntime) -> Unit = {}, action: PhoneBrowserRuntime.() -> Any?) {

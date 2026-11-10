@@ -15,7 +15,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 internal class BrowserDownloads(private val context: Context, private val pool: PhoneBrowserPool, private val activity: () -> Activity?, private val emit: (Map<String, Any?>) -> Unit) {
-  private data class Download(val id: String, val tab: NativeTab, val epoch: Int, val file: File, val name: String, val stopped: AtomicBoolean = AtomicBoolean(), @Volatile var connection: HttpURLConnection? = null)
+  private data class Download(val id: String, val tab: NativeTab, val epoch: Int, val file: File, val name: String, val stopped: AtomicBoolean = AtomicBoolean(), @Volatile var connection: HttpURLConnection? = null, @Volatile var complete: Boolean = false)
   private var root: File? = null
   private fun key(value: String) = UUID.nameUUIDFromBytes(value.toByteArray(Charsets.UTF_8)).toString()
   fun bind(deploymentId: String) { root = File(context.filesDir, "phone-browser/downloads/${key(deploymentId)}").apply { mkdirs() } }
@@ -97,6 +97,7 @@ internal class BrowserDownloads(private val context: Context, private val pool: 
         } }
         if (total >= 0 && total != received) throw BrowserFailure("download-failed")
         pool.gate.check(entry.epoch)
+        entry.complete = true
         event("complete")
         pool.main.post {
           if (pool.gate.epoch == entry.epoch && tab.hostId != null && pool.tabs[tab.id] === tab) activity()?.let { owner ->
@@ -123,6 +124,14 @@ internal class BrowserDownloads(private val context: Context, private val pool: 
     }
     if (entry.tab.sessionId != session) throw BrowserFailure("forbidden")
     entry.stopped.set(true); entry.connection?.disconnect(); entry.file.delete()
+  }
+  fun share(id: String) {
+    if (!active) throw BrowserFailure("foreground-required")
+    val entry = entries[id]?.takeIf { it.complete && it.file.isFile } ?: throw BrowserFailure("not-found")
+    val owner = activity() ?: throw BrowserFailure("foreground-required")
+    val uri = FileProvider.getUriForFile(context, "${context.packageName}.phonebrowser.downloads", entry.file)
+    owner.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("application/octet-stream")
+      .putExtra(Intent.EXTRA_STREAM, uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION), null))
   }
   fun finish(session: String) {
     entries.values.filter { it.tab.sessionId == session }.forEach { cancel(session, it.id); entries.remove(it.id) }

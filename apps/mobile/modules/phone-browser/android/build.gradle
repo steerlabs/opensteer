@@ -7,9 +7,19 @@ version = '1.0.0'
 android {
   namespace 'com.opensteer.phonebrowser'
   defaultConfig { versionCode 1; versionName '1.0.0' }
+  testOptions {
+    unitTests.all {
+      systemProperty 'phone.vectors', file('../../../../../packages/browser-core/test-vectors').canonicalPath
+      systemProperty 'phone.repo', file('../../../../..').canonicalPath
+    }
+  }
 }
 dependencies {
+  implementation project(':opensteer-phone-connection')
+  implementation 'org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0'
   implementation 'androidx.webkit:webkit:1.14.0'
   testImplementation 'junit:junit:4.13.2'
   testImplementation 'org.json:json:20240303'
+  testImplementation 'org.bouncycastle:bcprov-jdk18on:1.86'
+  testImplementation 'com.squareup.okhttp3:okhttp:5.5.1'
 }

@@ -20,6 +20,7 @@ internal class BrowserCapture(private val pool: PhoneBrowserPool) {
 
   fun demand(input: DemandRecord) {
     val tab = pool.check(input)
+    PhoneBrowserNative.authority?.requireViewer(input.epoch, input.channelId, input.sessionId) ?: throw BrowserFailure("forbidden")
     if (input.maxFps != 8 || input.frameWindow != null && input.frameWindow != 1) throw BrowserFailure("invalid-demand")
     if (input.frames && PhoneBrowserNative.sink == null) throw BrowserFailure("unsupported-operation")
     if (input.frames && pool.ledger.state(tab.id) != TabState.LIVE) throw BrowserFailure("target-suspended")
@@ -30,7 +31,21 @@ internal class BrowserCapture(private val pool: PhoneBrowserPool) {
     credits.getOrPut(tab.id) { CaptureCredit() }.demand(input.channelId, input.density, input.frames)
     schedule()
   }
-  fun ack(input: AckRecord) { pool.check(input); (credits[input.tabId] ?: throw BrowserFailure("stale-frame")).ack(input.channelId, input.token); schedule() }
+  fun ack(input: AckRecord) {
+    pool.check(input)
+    PhoneBrowserNative.authority?.requireViewer(input.epoch, input.channelId, input.sessionId) ?: throw BrowserFailure("forbidden")
+    PhoneBrowserNative.authority?.acknowledge(input.epoch, input.channelId, input.token) ?: throw BrowserFailure("forbidden")
+    (credits[input.tabId] ?: throw BrowserFailure("stale-frame")).ack(input.channelId, input.token)
+    schedule()
+  }
+  fun rejected(artifact: PhoneBrowserArtifact) {
+    pool.main.post {
+      if (pool.gate.epoch == artifact.epoch) {
+        try { credits[artifact.tabId]?.ack(artifact.channelId, artifact.token ?: return@post) } catch (_: BrowserFailure) { }
+        schedule()
+      }
+    }
+  }
   private fun schedule() {
     if (!active || scheduled || busy.get() || credits.values.none { it.density() != null }) return
     scheduled = true
@@ -65,6 +80,7 @@ internal class BrowserCapture(private val pool: PhoneBrowserPool) {
       val tab = pool.check(input, true, true)
       if (input.format !in setOf("jpeg", "png") || input.quality != null && (!input.quality!!.isFinite() || input.quality!! !in 0.0..100.0)) throw BrowserFailure("unsupported-operation")
       PhoneBrowserNative.authority?.requireAttachment(input.epoch, input.attachmentId, input.sessionId, input.tabId) ?: throw BrowserFailure("forbidden")
+      PhoneBrowserNative.authority?.requireViewer(input.epoch, input.channelId, input.sessionId, true) ?: throw BrowserFailure("forbidden")
       encode(tab, input.epoch, input.channelId, input.requestId, null, input.format, (input.quality ?: 80.0) / 100.0, 1.0, input.clip, input.attachmentId)
     }
     return try { pool.await(future) } catch (error: Throwable) { future.completeExceptionally(error); throw error }
@@ -116,7 +132,8 @@ internal class BrowserCapture(private val pool: PhoneBrowserPool) {
             val versions = tab.frameRevisions.getOrPut(channel) { mutableListOf() }
             versions.add(revision); while (versions.size > 2) versions.removeAt(0)
           }
-          sink.deliver(PhoneBrowserArtifact(reference, epoch, tab.sessionId, tab.id, generation, document, geometry, revision, rasterWidth, rasterHeight, "image/$format", geometrySnapshot, bytes, channel, request, attachment, token))
+          sink.deliver(PhoneBrowserArtifact(reference, epoch, tab.sessionId, tab.id, generation, document, geometry, revision, rasterWidth, rasterHeight, "image/$format", geometrySnapshot, bytes, channel, request, attachment, token,
+            { pool.gate.epoch == epoch && tab.live && tab.generation == generation && tab.documentId == document && tab.geometryRevision == geometry }))
           pool.gate.check(epoch)
           result.complete(reference)
         } catch (error: Throwable) { result.completeExceptionally(error) }

@@ -23,7 +23,7 @@ internal class BrowserChrome(
   private val popup: (NativeTab, Message) -> Boolean
 ) {
   private data class Dialog(val id: String, val tab: NativeTab, val document: String, var completion: (Boolean, String?) -> Unit, val epoch: Int, var default: String? = null, var pipe: String? = null, var ui: AlertDialog? = null)
-  private data class Chooser(val id: String, val tab: NativeTab, val document: String, val epoch: Int, val callback: ValueCallback<Array<Uri>>, val params: WebChromeClient.FileChooserParams)
+  private data class Chooser(val id: String, val tab: NativeTab, val page: PageChooser, val callback: ValueCallback<Array<Uri>>, val params: WebChromeClient.FileChooserParams)
   private val dialogs = mutableMapOf<String, Dialog>()
   private val choosers = mutableMapOf<String, Chooser>()
   private var picker: Chooser? = null
@@ -41,16 +41,19 @@ internal class BrowserChrome(
       override fun onJsPrompt(view: WebView, url: String, message: String, defaultValue: String, result: JsPromptResult) = dialog(tab, view, "prompt", message, result, defaultValue)
       override fun onJsBeforeUnload(view: WebView, url: String, message: String, result: JsResult) = dialog(tab, view, "beforeunload", message, result)
       override fun onCreateWindow(view: WebView, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message): Boolean = view === tab.view && popup(tab, resultMsg)
-      override fun onCloseWindow(window: WebView) { if (window === tab.view) pool.destroyNow(tab.id) }
+      override fun onCloseWindow(window: WebView) {
+        if (window === tab.view) tab.pageClose.close(pool.ref(tab), { pool.destroyNow(tab.id) }, emit)
+      }
       override fun onShowFileChooser(view: WebView, callback: ValueCallback<Array<Uri>>, params: FileChooserParams): Boolean {
         if (view !== tab.view) { callback.onReceiveValue(null); return true }
         cancelChooser(tab)
         val document = tab.documentId
         if (document == null || !tab.document.isDone) { callback.onReceiveValue(null); return true }
-        val chooser = Chooser(UUID.randomUUID().toString(), tab, document, pool.gate.epoch, callback, params)
+        val person = pool.isForeground && tab.hostId != null && tab.interactive
+        val chooser = Chooser(UUID.randomUUID().toString(), tab, PageChooser(pool.gate.epoch, tab.generation, document, person), callback, params)
         choosers[tab.id] = chooser
         emit(pool.documentRef(tab) + mapOf("type" to "upload", "chooserId" to chooser.id, "accept" to params.acceptTypes.toList(), "multiple" to (params.mode == FileChooserParams.MODE_OPEN_MULTIPLE)))
-        if (tab.hostId != null && tab.interactive) {
+        if (person) {
           try {
             if (picker != null) throw BrowserFailure("picker-busy")
             picker = chooser
@@ -132,7 +135,7 @@ internal class BrowserChrome(
   }
   fun upload(input: UploadRecord): List<Map<String, Any>> {
     val tab = pool.check(input, true)
-    val pending = choosers[tab.id]?.takeIf { it.id == input.chooserId && it.document == tab.documentId && it.epoch == input.epoch } ?: throw BrowserFailure("stale-document")
+    val pending = choosers[tab.id]?.takeIf { !it.page.person && it.id == input.chooserId && it.page.current(input.epoch, tab.generation, tab.documentId) } ?: throw BrowserFailure("stale-document")
     if (pending.params.mode != WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE && input.stagedFileIds.size > 1) throw BrowserFailure("too-large")
     val chosen = files.choose(input.sessionId, input.stagedFileIds)
     choosers.remove(tab.id)
@@ -146,7 +149,7 @@ internal class BrowserChrome(
     picker = null
     if (choosers[pending.tab.id] !== pending) return
     choosers.remove(pending.tab.id)
-    val current = pool.gate.epoch == pending.epoch && pending.tab.documentId == pending.document && pool.tabs[pending.tab.id] === pending.tab
+    val current = pending.page.current(pool.gate.epoch, pending.tab.generation, pending.tab.documentId) && pool.tabs[pending.tab.id] === pending.tab && pending.tab.view != null
     val selected = if (current && result == Activity.RESULT_OK) {
       val clips = data?.clipData
       if (clips != null) Array(clips.itemCount.coerceAtMost(32)) { clips.getItemAt(it).uri } else data?.data?.let { arrayOf(it) }
@@ -160,5 +163,7 @@ internal class BrowserChrome(
   }
   private fun cancelChooser(tab: NativeTab) { choosers.remove(tab.id)?.let { if (picker === it) picker = null; it.callback.onReceiveValue(null) } }
   fun retire(tab: NativeTab) { cancelDialog(tab); cancelChooser(tab) }
+  fun suspend(tab: NativeTab) { cancelDialog(tab); if (choosers[tab.id]?.page?.survivesFence() != true) cancelChooser(tab) }
+  fun fence() { cancelDialogs(); choosers.values.filter { !it.page.survivesFence() }.map { it.tab }.forEach(::cancelChooser) }
   fun stop() { dialogs.values.map { it.tab }.toList().forEach(::cancelDialog); choosers.values.map { it.tab }.toList().forEach(::cancelChooser) }
 }

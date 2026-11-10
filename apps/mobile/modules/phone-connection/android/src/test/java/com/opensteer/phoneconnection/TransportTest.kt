@@ -65,6 +65,11 @@ class TransportTest {
             val next = ReplayState.parse(verified.obj("replayState"), 4096).claim(claims.text("nonce"), claims.time("expiresAt"), now, 4096)
             transport.commitAttach(admission.epoch, handle, verified.text("claimsDigest"), next.json())
         }
+        fun agent() {
+            transport.receive(JsonObject(fences.obj("fence") + mapOf("type" to JsonPrimitive("browser.client-message"), "channelId" to JsonPrimitive(channelId),
+                "capability" to capability, "message" to Wire.fields("type" to JsonPrimitive("agent.attach"), "attachmentId" to JsonPrimitive("attachment"), "actorToken" to JsonPrimitive("actor"),
+                    "sessionId" to JsonPrimitive("bsn_11111111-1111-4111-8111-111111111111"), "backend" to JsonPrimitive("cdp")))))
+        }
     }
     private fun refused(block: () -> Unit) { try { block(); fail("Expected refusal") } catch (_: Refused) {} }
 
@@ -146,13 +151,14 @@ class TransportTest {
     @Test fun `captures are single use and neither queued captures nor relay sends survive revocation`() {
         for (revoke in listOf(false, true)) {
             val fixture = Fixture(); fixture.admit()
+            fixture.agent()
             val epoch = fixture.admission.epoch
             fixture.transport.receive(JsonObject(fixture.fences.obj("fence") + mapOf("type" to JsonPrimitive("browser.client-message"), "channelId" to JsonPrimitive(fixture.channelId),
-                "capability" to fixture.capability, "message" to Wire.fields("type" to JsonPrimitive("cdp.command"), "requestId" to JsonPrimitive("capture"),
+                "capability" to fixture.capability, "message" to Wire.fields("type" to JsonPrimitive("cdp.command"), "requestId" to JsonPrimitive("capture"), "actorToken" to JsonPrimitive("actor"),
                     "command" to Wire.fields("method" to JsonPrimitive("Page.captureScreenshot"))))))
             var delivered: Boolean? = null
-            fixture.transport.capture(epoch, fixture.channelId, "capture", byteArrayOf(1)) { delivered = it }
-            fixture.transport.capture(epoch, fixture.channelId, "capture", byteArrayOf(2)) {}
+            fixture.transport.capture(epoch, fixture.channelId, "capture", byteArrayOf(1), "attachment") { delivered = it }
+            fixture.transport.capture(epoch, fixture.channelId, "capture", byteArrayOf(2), "attachment") {}
             if (revoke) fixture.transport.receive(JsonObject(fixture.fences.obj("fence") + mapOf("type" to JsonPrimitive("capability.revoke"),
                 "capability" to fixture.capability, "requestId" to JsonPrimitive("revoke"))))
             fixture.runQueued()
@@ -174,10 +180,11 @@ class TransportTest {
     }
     @Test fun `refused captures release bounded pending request admission`() {
         val fixture = Fixture(); fixture.admit()
+        fixture.agent()
         for (request in 1..33) {
             val requestId = "capture-$request"
             fixture.transport.receive(JsonObject(fixture.fences.obj("fence") + mapOf("type" to JsonPrimitive("browser.client-message"), "channelId" to JsonPrimitive(fixture.channelId),
-                "capability" to fixture.capability, "message" to Wire.fields("type" to JsonPrimitive("cdp.command"), "requestId" to JsonPrimitive(requestId),
+                "capability" to fixture.capability, "message" to Wire.fields("type" to JsonPrimitive("cdp.command"), "requestId" to JsonPrimitive(requestId), "actorToken" to JsonPrimitive("actor"),
                     "command" to Wire.fields("method" to JsonPrimitive("Page.captureScreenshot"))))))
             fixture.transport.send(fixture.admission.epoch, JsonObject(fixture.fences.obj("fence") + mapOf("type" to JsonPrimitive("browser.server-message"),
                 "channelId" to JsonPrimitive(fixture.channelId), "capability" to fixture.capability, "message" to Wire.fields("type" to JsonPrimitive("cdp.error"), "requestId" to JsonPrimitive(requestId)))))
