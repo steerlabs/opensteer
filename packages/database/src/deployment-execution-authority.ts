@@ -1,6 +1,36 @@
-import { OpensteerError } from "@opensteer/core";
-import type { Kysely } from "kysely";
+import { OpensteerError, DeploymentShapeSchema } from "@opensteer/core";
+import { sql, type Kysely } from "kysely";
+import { z } from "zod";
 import type { DatabaseSchema } from "./schema.js";
+
+const storedAuthorityRow = z.object({
+  deploymentShape: DeploymentShapeSchema,
+  authorityModelVersion: z.union([z.literal(1), z.literal(2)]),
+});
+export function deploymentAuthorityFromStoredRow(row: unknown) {
+  if (row === null || row === undefined) return null;
+  const parsed = storedAuthorityRow.safeParse(row);
+  if (!parsed.success)
+    throw new OpensteerError({ code: "forbidden", message: "Deployment authority is unavailable" });
+  return { kind: parsed.data.deploymentShape.kind, model: parsed.data.authorityModelVersion };
+}
+
+// Fold the stored witness into an existing read without another round trip.
+export const storedDeploymentAuthority = sql<z.infer<typeof storedAuthorityRow> | null>`(
+  select jsonb_build_object('deploymentShape', deployment_shape,
+    'authorityModelVersion', authority_model_version)
+  from public.deployments where singleton_key = 'primary'
+)`;
+
+export const storedProjectDeployment = sql<boolean>`coalesce(
+  (${storedDeploymentAuthority}->'deploymentShape'->>'kind' = 'server'
+   and (${storedDeploymentAuthority}->>'authorityModelVersion')::integer = 2), false)`;
+
+export function isProjectDeploymentAuthority(
+  authority: ReturnType<typeof deploymentAuthorityFromStoredRow>,
+) {
+  return authority?.kind === "server" && authority.model === 2;
+}
 
 export async function readInitializedDeploymentAuthority(
   database: Kysely<DatabaseSchema>,
@@ -10,10 +40,7 @@ export async function readInitializedDeploymentAuthority(
     .select(["authorityModelVersion", "deploymentShape"])
     .where("singletonKey", "=", "primary")
     .executeTakeFirst();
-  if (!row) return null;
-  if (row.authorityModelVersion !== 1 && row.authorityModelVersion !== 2)
-    throw new OpensteerError({ code: "forbidden", message: "Deployment authority is unavailable" });
-  return { kind: row.deploymentShape.kind, model: row.authorityModelVersion };
+  return deploymentAuthorityFromStoredRow(row);
 }
 
 export async function readDeploymentAuthority(

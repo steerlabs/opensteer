@@ -1,3 +1,8 @@
+import {
+  storedDeploymentAuthority,
+  deploymentAuthorityFromStoredRow,
+  isProjectDeploymentAuthority,
+} from "./deployment-execution-authority.js";
 import { deploymentPolicy } from "@opensteer/core";
 import { runnerRunsItsDeployment, type RunnerId, type UserId } from "@opensteer/core";
 import type { Kysely, Transaction } from "kysely";
@@ -24,11 +29,15 @@ export async function machineOwnershipIn(
 ): Promise<MachineOwnershipRecord | null> {
   const runner = await database
     .selectFrom("runners")
-    .select(["kind", "ownerKind", "ownerUserId"])
+    .select(["kind", "ownerKind", "ownerUserId", storedDeploymentAuthority.as("storedAuthority")])
     .where("id", "=", runnerId)
     .where("revokedAt", "is", null)
     .executeTakeFirst();
-  if (!runner) return null;
+  if (
+    !runner ||
+    isProjectDeploymentAuthority(deploymentAuthorityFromStoredRow(runner.storedAuthority))
+  )
+    return null;
   if (runner.ownerKind === "user") {
     return { effectiveOwner: runner.ownerUserId, ownerKind: "user" };
   }

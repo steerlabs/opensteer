@@ -80,6 +80,7 @@ export const databaseLockOrder = [
   // Enrollment and Runner ownership precede integration and execution authority.
   "runner_enrollments",
   "runners",
+  "advisory:team-computer",
   "computer_use_approval_keys",
   // Installation and sorted Servers establish the parents of Connections and Tools.
   "advisory:installation",
@@ -275,6 +276,7 @@ export function advisoryLockResource(key: string, seed: number): string {
   if (seed === 1) return "advisory:origin";
   if (seed !== 0) throw new Error(`Undeclared advisory hash seed: ${seed}`);
   if (key === "opensteer:access-writer") return "advisory:access-writer";
+  if (key === "deployment-team-computer") return "advisory:team-computer";
   if (key === "deployment-main-runner-enrollment") return "advisory:runner-main";
   if (key.startsWith("sha256:") || /^[a-f0-9]{64}$/u.test(key)) return "advisory:runner-token";
   if (key.startsWith("dep_")) return "advisory:deployment";

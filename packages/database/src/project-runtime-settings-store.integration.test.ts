@@ -81,6 +81,22 @@ async function setup(fixture: StoreFixture, driverKind: "codex" | "native" = "co
   const activate = async () => {
     await fixture.database.updateTable("deployments").set({ authorityModelVersion: 2 }).execute();
     await fixture.database
+      .updateTable("runnerEnrollments")
+      .set({
+        allowedModules: jsonValue(["agents", "shell"]),
+        issuanceModules: jsonValue(["agents", "shell"]),
+      })
+      .where("runnerId", "=", run.runnerId)
+      .execute();
+    await fixture.database
+      .updateTable("runners")
+      .set({
+        allowedModules: jsonValue(["agents", "shell"]),
+        device: jsonValue({ platform: "linux", form: "server" }),
+      })
+      .where("id", "=", run.runnerId)
+      .execute();
+    await fixture.database
       .updateTable("users")
       .set({ admittedAt: new Date() })
       .where("id", "=", run.userId)

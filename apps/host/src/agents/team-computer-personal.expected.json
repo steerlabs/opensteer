@@ -1,0 +1,103 @@
+{
+  "pending": [
+    {
+      "deviceProfile": null,
+      "allowedModules": ["agents", "browser", "integrations", "messaging", "shell"],
+      "expiresAt": "<time>",
+      "id": "id-1",
+      "name": "Main computer",
+      "ownerKind": "deployment",
+      "runnerKind": "main"
+    }
+  ],
+  "listing": {
+    "nextCursor": null,
+    "runners": [
+      {
+        "accessPolicy": {
+          "reach": "nobody",
+          "shares": [],
+          "commands": false,
+          "forwarding": false
+        },
+        "accessPolicyRevision": 1,
+        "deviceProfile": null,
+        "allowedModules": ["agents", "browser", "integrations", "messaging", "shell"],
+        "capabilities": ["filesystem", "voice-run-v1", "browser-profile-create-v1"],
+        "connectionGeneration": 3,
+        "device": {
+          "form": "server",
+          "platform": "linux"
+        },
+        "enrolledAt": "<time>",
+        "id": "id-2",
+        "kind": "main",
+        "lastSeenAt": "<time>",
+        "moduleDescriptors": {
+          "shell": {
+            "platform": "linux",
+            "hostPublicKey": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcH",
+            "fullDiskAccess": false
+          },
+          "agents": {
+            "computerTool": 1,
+            "localStorage": {
+              "bindings": [],
+              "truncated": false,
+              "storageAuthorityId": "id-3"
+            },
+            "environmentIds": ["id-4"],
+            "harnessDrivers": [
+              {
+                "sources": [
+                  {
+                    "kind": "first-party",
+                    "label": "Native",
+                    "quota": "none",
+                    "fields": [],
+                    "sourceId": "native",
+                    "stateKinds": ["isolated"]
+                  }
+                ],
+                "steering": true,
+                "readiness": "configured",
+                "driverKind": "native",
+                "accessModes": ["approval-required", "auto-accept-edits", "auto", "full-access"]
+              }
+            ],
+            "knowledgeSkill": 1,
+            "maxConcurrentRuns": 7,
+            "workspaceBackings": ["local-directory"],
+            "providerStateModes": ["isolated"]
+          }
+        },
+        "updateRequired": null,
+        "name": "Main computer",
+        "ownerKind": "deployment",
+        "ownerUserId": null,
+        "publicKeyFingerprint": "<fingerprint>",
+        "revokedAt": null,
+        "tabOpenedAt": null,
+        "enrollmentId": "id-1",
+        "environmentIds": ["id-4"],
+        "ownerName": null
+      }
+    ]
+  },
+  "grants": [
+    {
+      "allowedModules": ["agents", "browser", "integrations", "messaging", "shell"],
+      "issuanceModules": ["agents", "integrations", "messaging", "shell"],
+      "ownerKind": "deployment",
+      "ownerUserId": null
+    }
+  ],
+  "counts": {
+    "issuance": 8,
+    "pending": 1,
+    "admission": 14,
+    "reconnect": 4,
+    "module-update": 4,
+    "listing": 3
+  }
+}

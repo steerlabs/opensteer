@@ -1,4 +1,9 @@
-import { readDeploymentAuthority } from "./deployment-execution-authority.js";
+import {
+  readDeploymentAuthority,
+  storedDeploymentAuthority,
+  deploymentAuthorityFromStoredRow,
+  isProjectDeploymentAuthority,
+} from "./deployment-execution-authority.js";
 import { withDatabaseTransaction } from "./connection.js";
 import { type CommandRow, type DatabaseSchema } from "./schema.js";
 import {
@@ -366,6 +371,7 @@ export async function effectiveMachineOwners(
     .execute();
   let personalOwner: UserId | null | undefined;
   const authority = await readDeploymentAuthority(database);
+  if (isProjectDeploymentAuthority(authority)) return owners;
   const deploymentIsPersonal = authority.kind === "personal";
   for (const runner of runners) {
     if (runner.ownerKind === "user") {
@@ -430,10 +436,15 @@ export async function getMachineAccessTarget(
   const runner = await database
     .selectFrom("runners")
     .select(["accessPolicy", "accessPolicyRevision", "lastSeenAt", "moduleDescriptors", "name"])
+    .select(storedDeploymentAuthority.as("storedAuthority"))
     .where("id", "=", runnerId)
     .where("revokedAt", "is", null)
     .executeTakeFirst();
-  if (!runner) return null;
+  if (
+    !runner ||
+    isProjectDeploymentAuthority(deploymentAuthorityFromStoredRow(runner.storedAuthority))
+  )
+    return null;
   return {
     lastSeenAt: runner.lastSeenAt,
     name: runner.name,
@@ -458,18 +469,13 @@ export async function listReachableMachines(
 ): Promise<readonly ReachableMachineRecord[]> {
   const authority = await readDeploymentAuthority(database);
   const team = authority.kind === "server" && authority.model === 2;
+  if (team) return [];
   const personalOwner =
     authority.kind === "personal" ? await personalDeploymentOwner(database) : null;
   const rows = await database
     .selectFrom("runners")
     .select(["accessPolicy", "id", "lastSeenAt", "moduleDescriptors", "name"])
     .where("revokedAt", "is", null)
-    .$if(team, (query) =>
-      query
-        .where("ownerKind", "=", "deployment")
-        .where("ownerUserId", "is", null)
-        .where("kind", "!=", "local"),
-    )
     // A Run never reaches the machine it runs on over SSH.
     .where("id", "!=", callerRunnerId)
     .where(sql<boolean>`module_descriptors ? 'shell'`)

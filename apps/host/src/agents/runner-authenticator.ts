@@ -390,6 +390,9 @@ export class RunnerAuthenticator {
       ...proof.descriptor,
       ...fence,
       allowedModules: record.allowedModules,
+      ...(record.admittedModules ? { modules: record.admittedModules } : {}),
+      ...(record.admittedCapabilities ? { capabilities: record.admittedCapabilities } : {}),
+      ...(record.deploymentAuthority ? { deploymentAuthority: record.deploymentAuthority } : {}),
       environmentIds: runnerEnvironmentIds(proof.descriptor),
       fence,
       // Carried out of the admission transaction rather than read again here:

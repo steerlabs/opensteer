@@ -1,3 +1,17 @@
+import {
+  deploymentAuthorityFromStoredRow,
+  isProjectDeploymentAuthority,
+  storedDeploymentAuthority,
+} from "./deployment-execution-authority.js";
+import {
+  teamComputerInventoryCondition,
+  teamComputerModules,
+  teamComputerGrantIsCurrent,
+  teamComputerCapabilities,
+  teamComputerModulesOnly,
+  isDeploymentComputer,
+  assertTeamComputerDescriptor,
+} from "./team-computer.js";
 import { deploymentPolicy } from "@opensteer/core";
 import { lockBrowserProfile } from "./browser-profile-storage-store.js";
 import {
@@ -65,6 +79,9 @@ export interface RunnerAuthenticationRecord {
 }
 
 export interface RunnerConnectionRecord extends RunnerAuthenticationRecord {
+  readonly admittedModules?: RunnerModules;
+  readonly admittedCapabilities?: RunnerDescriptor["capabilities"];
+  readonly deploymentAuthority?: { readonly kind: "server"; readonly model: 2 };
   readonly enrolledAt: Date;
   readonly lastSeenAt: Date;
   /**
@@ -258,20 +275,51 @@ async function activateRunnerConnection(
   // Membership is rechecked here rather than only where the row was written:
   // this is the one place every arrival passes through, redemption and
   // reauthentication alike, and both of the Personal rules are about arrival.
-  const personalRemoteAccessGeneration = await assertPersonalRunnerAdmission(transaction, {
+  const admission = await assertPersonalRunnerAdmission(transaction, {
     allowedModules: existing.allowedModules,
     ownerKind: existing.ownerKind,
     ownerUserId: existing.ownerUserId,
     runnerKind: existing.kind,
     stage: "admission",
   });
+  const personalRemoteAccessGeneration = admission.personalRemoteAccessGeneration;
+  if (admission.team) {
+    if (!teamComputerGrantIsCurrent(existing.allowedModules) || !isDeploymentComputer(existing))
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Team computer requires an operator enrollment",
+      });
+    assertTeamComputerDescriptor(descriptor);
+    await sql`select pg_advisory_xact_lock(hashtextextended('deployment-team-computer', 0))`.execute(
+      transaction,
+      databaseOperationOptions(),
+    );
+    const other = await transaction
+      .selectFrom("runners")
+      .select("id")
+      .where("id", "!=", descriptor.runnerId)
+      .where("revokedAt", "is", null)
+      .executeTakeFirst(databaseOperationOptions());
+    if (other)
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Revoke the previous team computer before activating its replacement",
+      });
+  }
   const environments = await transaction
     .selectFrom("executionEnvironments")
     .select("id")
     .where("runnerId", "=", descriptor.runnerId)
     .orderBy("id", "asc")
+    .$if(admission.team, (query) => query.forNoKeyUpdate())
     .execute(databaseOperationOptions());
   const bound = environments.map((environment) => environment.id);
+  if (admission.team && bound.length)
+    await transaction
+      .updateTable("executionEnvironments")
+      .set({ capabilities: jsonValue(teamComputerCapabilities(descriptor.capabilities)) })
+      .where("id", "in", bound)
+      .execute(databaseOperationOptions());
   const advertised = runnerEnvironmentIds(descriptor);
   if (!runnerAdvertisesItsEnvironmentBinding(bound, advertised)) {
     throw new OpensteerError({
@@ -285,7 +333,13 @@ async function activateRunnerConnection(
   // refuses an agents module the enrollment never granted — and until now it
   // simply had no environment to name.
   if (bound.length === 0 && advertised.length > 0) {
-    await bindRunnerEnvironments(transaction, descriptor, existing.name);
+    await bindRunnerEnvironments(
+      transaction,
+      admission.team
+        ? { ...descriptor, capabilities: teamComputerCapabilities(descriptor.capabilities) }
+        : descriptor,
+      existing.name,
+    );
   }
   const environmentIds = bound.length === 0 ? advertised : bound;
 
@@ -293,7 +347,11 @@ async function activateRunnerConnection(
   const row = await transaction
     .updateTable("runners")
     .set({
-      capabilities: jsonValue(descriptor.capabilities),
+      capabilities: jsonValue(
+        admission.team
+          ? teamComputerCapabilities(descriptor.capabilities)
+          : descriptor.capabilities,
+      ),
       connectionGeneration: sql`connection_generation + 1`,
       device:
         existing.device?.app === "opensteer"
@@ -303,7 +361,9 @@ async function activateRunnerConnection(
             : null,
       lastSeenAt: seenAt,
       maxConcurrentRuns: descriptor.modules.agents?.maxConcurrentRuns ?? null,
-      moduleDescriptors: jsonValue(descriptor.modules),
+      moduleDescriptors: jsonValue(
+        admission.team ? teamComputerModulesOnly(descriptor.modules) : descriptor.modules,
+      ),
       updateRequired: null,
       ...(descriptor.modules.integrations?.platform === "android" ? { name: descriptor.name } : {}),
       updatedAt: seenAt,
@@ -339,6 +399,13 @@ async function activateRunnerConnection(
     environmentIds,
     lastSeenAt: row.lastSeenAt,
     personalRemoteAccessGeneration,
+    ...(admission.team
+      ? {
+          admittedModules: teamComputerModulesOnly(descriptor.modules),
+          admittedCapabilities: teamComputerCapabilities(descriptor.capabilities),
+          deploymentAuthority: { kind: "server" as const, model: 2 as const },
+        }
+      : {}),
   };
 }
 
@@ -583,25 +650,24 @@ async function assertPersonalRunnerAdmission(
     readonly stage: "admission" | "issuance";
     readonly ownerUserId: UserId | null;
   },
-): Promise<number | null> {
+): Promise<{ readonly team: boolean; readonly personalRemoteAccessGeneration: number | null }> {
   const deployment = await transaction
     .selectFrom("deployments")
     .select(["deploymentShape", "authorityModelVersion"])
     .where("singletonKey", "=", "primary")
     .executeTakeFirst(databaseOperationOptions());
-  if (
-    deployment?.deploymentShape.kind === "server" &&
-    deployment.authorityModelVersion === 2 &&
-    (input.ownerKind !== "deployment" || input.ownerUserId !== null || input.runnerKind === "local")
-  ) {
+  const team = isProjectDeploymentAuthority(deploymentAuthorityFromStoredRow(deployment));
+  if (team && !isDeploymentComputer({ ...input, kind: input.runnerKind })) {
     throw new OpensteerError({
       code: "forbidden",
       message: "Team computers must belong to the Deployment",
     });
   }
+  if (team) return { team: true, personalRemoteAccessGeneration: null };
   const policy = deployment ? deploymentPolicy(deployment.deploymentShape) : null;
   const enrollment = policy?.runnerEnrollment;
-  if (!enrollment || enrollment.mode !== "reach-only") return null;
+  if (!enrollment || enrollment.mode !== "reach-only")
+    return { team: false, personalRemoteAccessGeneration: null };
   if (
     runnerRunsItsDeployment({
       deploymentIsPersonal: policy?.deploymentOwnsMainComputer === true,
@@ -609,14 +675,14 @@ async function assertPersonalRunnerAdmission(
       runnerKind: input.runnerKind,
     })
   ) {
-    return null;
+    return { team: false, personalRemoteAccessGeneration: null };
   }
   if (
     input.ownerKind === "deployment" &&
     input.runnerKind === "managed" &&
     sameStringSet(input.allowedModules, enrollment.supervisedServiceModules)
   ) {
-    return null;
+    return { team: false, personalRemoteAccessGeneration: null };
   }
   // Phones lend browsers and apps without executing the Deployment's agents.
   if (
@@ -625,7 +691,7 @@ async function assertPersonalRunnerAdmission(
   ) {
     throw new OpensteerError({ code: "forbidden", message: personalReachableGrantRefusal });
   }
-  if (input.stage === "issuance") return null;
+  if (input.stage === "issuance") return { team: false, personalRemoteAccessGeneration: null };
   const remoteAccess = await transaction
     .selectFrom("personalRemoteAccess")
     .select(["generation", "mode"])
@@ -640,7 +706,7 @@ async function assertPersonalRunnerAdmission(
       reason: personalRemoteAccessRefusedReason,
     });
   }
-  return Number(remoteAccess.generation);
+  return { team: false, personalRemoteAccessGeneration: Number(remoteAccess.generation) };
 }
 
 /**
@@ -869,6 +935,7 @@ export async function listRunners(
   }
   let query = database
     .selectFrom("runners")
+    .where(teamComputerInventoryCondition("runners"))
     .select([
       "accessPolicy",
       "accessPolicyRevision",
@@ -901,10 +968,29 @@ export async function listRunners(
       ]),
     );
   if (input.after) query = query.where("id", ">", input.after);
-  const rows = await query
+  const rawRows = await query
+    .select(storedDeploymentAuthority.as("storedAuthority"))
     .orderBy("id", "asc")
     .limit(input.limit + 1)
     .execute(databaseOperationOptions());
+  const rows = rawRows.flatMap(({ storedAuthority, ...runner }) => {
+    if (!isProjectDeploymentAuthority(deploymentAuthorityFromStoredRow(storedAuthority)))
+      return [runner];
+    if (!isDeploymentComputer(runner)) return [];
+    return [
+      {
+        ...runner,
+        allowedModules: runner.allowedModules.filter((module) =>
+          teamComputerModules.some((allowed) => allowed === module),
+        ),
+        capabilities: teamComputerCapabilities(runner.capabilities),
+        moduleDescriptors: teamComputerModulesOnly(runner.moduleDescriptors),
+        updateRequired: teamComputerGrantIsCurrent(runner.allowedModules)
+          ? runner.updateRequired
+          : ("runner-outdated" as const),
+      },
+    ];
+  });
   const page = rows.slice(0, input.limit);
   const runnerIds = page.map((runner) => runner.id);
   const environments =
@@ -1349,8 +1435,9 @@ export async function listPendingRunnerEnrollments(
       message: "Runner enrollment page limit is invalid",
     });
   }
-  return database
+  const rows = await database
     .selectFrom("runnerEnrollments")
+    .where(teamComputerInventoryCondition("runnerEnrollments"))
     .select([
       "deviceProfile",
       "allowedModules",
@@ -1360,6 +1447,7 @@ export async function listPendingRunnerEnrollments(
       "ownerKind",
       "runnerKind",
     ])
+    .select(["ownerUserId", storedDeploymentAuthority.as("storedAuthority")])
     .where("consumedAt", "is", null)
     .where("expiresAt", ">", new Date())
     .where((expression) =>
@@ -1374,6 +1462,23 @@ export async function listPendingRunnerEnrollments(
     .orderBy("createdAt", "desc")
     .limit(input.limit)
     .execute(databaseOperationOptions());
+  return rows.flatMap(({ storedAuthority, ownerUserId, ...row }) => {
+    if (!isProjectDeploymentAuthority(deploymentAuthorityFromStoredRow(storedAuthority)))
+      return [row];
+    if (
+      !isDeploymentComputer({ ...row, ownerUserId, kind: row.runnerKind }) ||
+      !row.allowedModules.includes("agents")
+    )
+      return [];
+    return [
+      {
+        ...row,
+        allowedModules: row.allowedModules.filter((module) =>
+          teamComputerModules.some((allowed) => allowed === module),
+        ),
+      },
+    ];
+  });
 }
 
 export async function ensureBootstrapRunnerEnrollment(
@@ -1500,14 +1605,36 @@ export async function createRunnerEnrollment(
     // Before the idempotency lookup, so a replay of a request this Deployment
     // would no longer honour is refused rather than answered from the row it
     // once wrote.
-    const allowedModules = input.allowedModules;
-    await assertPersonalRunnerAdmission(transaction, {
-      allowedModules,
+    const requestedModules = input.allowedModules;
+    const admission = await assertPersonalRunnerAdmission(transaction, {
+      allowedModules: requestedModules,
       ownerKind: input.runnerKind === "local" ? "user" : "deployment",
       ownerUserId: input.runnerKind === "local" ? input.createdBy : (input.ownerUserId ?? null),
       runnerKind: input.runnerKind,
       stage: "issuance",
     });
+    if (admission.team && (input.deviceProfile || !requestedModules.includes("agents")))
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Only the fixed team execution computer can be enrolled",
+      });
+    if (admission.team && input.createdBy !== null) {
+      const actor = await transaction
+        .selectFrom("users")
+        .select("id")
+        .where("id", "=", input.createdBy)
+        .where("instanceRole", "=", "administrator")
+        .where("admittedAt", "is not", null)
+        .where("memberState", "=", "active")
+        .where("disabledAt", "is", null)
+        .executeTakeFirst(databaseOperationOptions());
+      if (!actor)
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Only a current team administrator can enroll the fixed computer",
+        });
+    }
+    const allowedModules = admission.team ? teamComputerModules : requestedModules;
     // A local Runner is owned by whoever enrolled it; a managed one by the
     // user the attachment named, when there was one.
     const ownerUserId =
@@ -1561,7 +1688,7 @@ export async function createRunnerEnrollment(
         // Issuance intent stays fixed when a migration changes the effective grant.
         !sameStringSet(
           existing.issuanceModules ?? existing.allowedModules,
-          input.issuanceModules ?? allowedModules,
+          admission.team ? allowedModules : (input.issuanceModules ?? allowedModules),
         ) ||
         existing.expiresAt === null
       ) {
@@ -1643,7 +1770,9 @@ export async function createRunnerEnrollment(
       .values({
         deviceProfile: input.deviceProfile ?? null,
         allowedModules: jsonValue(allowedModules),
-        issuanceModules: jsonValue(input.issuanceModules ?? allowedModules),
+        issuanceModules: jsonValue(
+          admission.team ? allowedModules : (input.issuanceModules ?? allowedModules),
+        ),
         consumedAt: null,
         createdBy: input.createdBy,
         expiresAt: input.expiresAt,
@@ -1734,6 +1863,7 @@ export async function enrollRunnerConnection(
       .select([
         "deviceProfile",
         "allowedModules",
+        storedDeploymentAuthority.as("storedAuthority"),
         "createdBy",
         "name",
         "ownerKind",
@@ -1889,6 +2019,15 @@ export async function enrollRunnerConnection(
         .executeTakeFirstOrThrow(databaseOperationOptions());
     }
 
+    if (
+      isProjectDeploymentAuthority(
+        deploymentAuthorityFromStoredRow(enrollmentIdentity.storedAuthority),
+      )
+    )
+      await sql`select pg_advisory_xact_lock(hashtextextended('deployment-team-computer', 0))`.execute(
+        transaction,
+        databaseOperationOptions(),
+      );
     await bindRunnerEnvironments(transaction, input.descriptor, enrollment.name);
     const connection = await activateRunnerConnection(transaction, input.descriptor);
     return connection;

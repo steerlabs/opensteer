@@ -1,3 +1,7 @@
+import {
+  deploymentAuthorityFromStoredRow,
+  isProjectDeploymentAuthority,
+} from "./deployment-execution-authority.js";
 import { deploymentPolicy, OpensteerError, type RunnerId, type UserId } from "@opensteer/core";
 import { sql, type Kysely, type Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
@@ -6,9 +10,14 @@ import { databaseOperationOptions } from "./operation-budget.js";
 async function eligibleBrowserRunners(database: Kysely<DatabaseSchema>, ownerId: UserId) {
   const deployment = await database
     .selectFrom("deployments")
-    .select("deploymentShape")
+    .select(["deploymentShape", "authorityModelVersion"])
     .where("singletonKey", "=", "primary")
     .executeTakeFirst(databaseOperationOptions());
+  if (isProjectDeploymentAuthority(deploymentAuthorityFromStoredRow(deployment)))
+    throw new OpensteerError({
+      code: "forbidden",
+      message: "Browser homes are unavailable on a team Deployment",
+    });
   const mainOnly =
     deployment !== undefined &&
     deploymentPolicy(deployment.deploymentShape).browserHomesOnDeploymentComputers === "main-only";

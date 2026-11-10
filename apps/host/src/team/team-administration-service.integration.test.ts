@@ -49,6 +49,22 @@ async function setup(fixture: StoreFixture) {
   const manager = await signup("manager");
   const pending = await signup("pending");
   await database.updateTable("deployments").set({ authorityModelVersion: 2 }).execute();
+  await database
+    .updateTable("runnerEnrollments")
+    .set({
+      allowedModules: sql`'["agents","shell"]'::jsonb`,
+      issuanceModules: sql`'["agents","shell"]'::jsonb`,
+    })
+    .where("runnerId", "=", run.runnerId)
+    .execute();
+  await database
+    .updateTable("runners")
+    .set({
+      allowedModules: sql`'["agents","shell"]'::jsonb`,
+      device: sql`'{"platform":"linux","form":"server"}'::jsonb`,
+    })
+    .where("id", "=", run.runnerId)
+    .execute();
   identity = createIdentity();
   await database
     .updateTable("users")

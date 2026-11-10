@@ -1,3 +1,4 @@
+export { teamComputerModules, teamComputerHasExecutionGrant } from "./team-computer.js";
 export { readTeamAdmission } from "./team-invitation-admission.js";
 export * from "./account-directory-store.js";
 export * from "./access-store.js";

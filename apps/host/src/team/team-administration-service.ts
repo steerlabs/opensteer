@@ -18,6 +18,7 @@ import {
 } from "@opensteer/core";
 import {
   TeamAccessReadStore,
+  teamComputerHasExecutionGrant,
   acceptTeamInvitation,
   checkAccess,
   getProjectRuntimeSettings,
@@ -462,6 +463,10 @@ export class TeamAdministrationService {
                 "harnessInstances.driverKind",
                 "harnessInstances.name",
                 "harnessCatalogs.catalog",
+                "runners.ownerKind",
+                "runners.ownerUserId",
+                "runners.device",
+                "runners.allowedModules",
               ])
               .where("workspaces.id", "=", parsed.workspaceId)
               .where("runners.ownerKind", "=", "deployment")
@@ -478,6 +483,7 @@ export class TeamAdministrationService {
               .limit(100)
               .execute();
             const instances = rows.flatMap((row) => {
+              if (!teamComputerHasExecutionGrant(row)) return [];
               const catalog = HarnessInstanceCatalogSchema.parse(row.catalog);
               if (
                 catalog.status !== "ready" ||
@@ -570,15 +576,21 @@ export class TeamAdministrationService {
         const environments = await this.#database
           .selectFrom("executionEnvironments")
           .innerJoin("runners", "runners.id", "executionEnvironments.runnerId")
-          .select("executionEnvironments.id")
+          .select([
+            "executionEnvironments.id",
+            "runners.ownerKind",
+            "runners.ownerUserId",
+            "runners.device",
+            "runners.allowedModules",
+          ])
           .where("runners.ownerKind", "=", "deployment")
           .where("runners.ownerUserId", "is", null)
           .where("runners.revokedAt", "is", null)
-          .where("executionEnvironments.kind", "=", "main")
           .orderBy("executionEnvironments.id")
           .limit(2)
           .execute();
-        if (environments.length !== 1) refuse("team-object-unavailable", "not_found");
+        const fixed = environments.filter(teamComputerHasExecutionGrant);
+        if (fixed.length !== 1) refuse("team-object-unavailable", "not_found");
         projectId = WorkspaceIdSchema.parse(`wsp_${uuidFor(`${identity}:project`)}`);
         changes = [
           {
@@ -591,7 +603,7 @@ export class TeamAdministrationService {
               kind: "local-directory",
               bindingId: WorkspaceBindingIdSchema.parse(`wbd_${uuidFor(`${identity}:binding`)}`),
               generation: 1,
-              ownerEnvironmentId: environments[0]!.id,
+              ownerEnvironmentId: fixed[0]!.id,
               storageAuthorityId: null,
             },
           },

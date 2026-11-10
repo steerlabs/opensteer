@@ -1,3 +1,4 @@
+import { isProjectDeploymentAuthority } from "@opensteer/database";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import { throwIfAborted } from "@opensteer/shared/throwIfAborted";
 import { delay } from "@opensteer/shared/delay";
@@ -87,6 +88,7 @@ export interface RunnerAuxiliaryPeer {
 }
 
 export interface RunnerIdentity extends RunnerDescriptor {
+  readonly deploymentAuthority?: { readonly kind: "server"; readonly model: 2 };
   /** The enrollment's grant, which the advertised modules never exceed. */
   readonly allowedModules: readonly RunnerModuleName[];
   readonly connectionGeneration: number;
@@ -1380,6 +1382,11 @@ export class RunnerRegistry {
         message: "This computer is not connected",
         retryable: true,
       });
+    if (isProjectDeploymentAuthority(connection?.identity.deploymentAuthority ?? null))
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "This personal service is unavailable on a team computer",
+      });
     if (!connection.identity.capabilities.includes("voice-run-v1"))
       throw new OpensteerError({
         code: "conflict",
@@ -1469,6 +1476,11 @@ export class RunnerRegistry {
     signal: AbortSignal,
   ): Promise<RunnerAppResult> {
     const connection = this.#byEnvironment.get(environmentId);
+    if (isProjectDeploymentAuthority(connection?.identity.deploymentAuthority ?? null))
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "This personal service is unavailable on a team computer",
+      });
     const authority = connection?.identity.modules.agents?.localStorage?.storageAuthorityId;
     if (!connection || !authority)
       throw new OpensteerError({
@@ -1675,6 +1687,11 @@ export class RunnerRegistry {
     signal: AbortSignal,
   ) {
     const connection = this.#byEnvironment.get(request.environmentId);
+    if (isProjectDeploymentAuthority(connection?.identity.deploymentAuthority ?? null))
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "This personal service is unavailable on a team computer",
+      });
     if (!connection?.attached || !connection.identity.capabilities.includes("background-text-v1")) {
       throw new OpensteerError({ code: "runner_offline", message: "Background Runner is offline" });
     }
@@ -1731,6 +1748,27 @@ export class RunnerRegistry {
         current.identity.connectionGeneration === connectionGeneration)
         ? current
         : undefined;
+    if (
+      isProjectDeploymentAuthority(connection?.identity.deploymentAuthority ?? null) &&
+      (command.type === "run.execute" ||
+        command.type === "trigger.execute" ||
+        command.type === "watch.reconcile")
+    )
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "A team computer accepts only Project execution commands",
+      });
+    if (
+      connection &&
+      (command.type === "run.execute.project" ||
+        command.type === "trigger.execute.project" ||
+        command.type === "watch.reconcile.project") &&
+      !connection.identity.capabilities.includes("project-authority-v1")
+    )
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "This Runner cannot receive Project execution commands",
+      });
     let runCancellation:
       { active: boolean; pendingInterrupts: number; threadId: string } | undefined;
     let triggerCancellation: { active: boolean; pendingInterrupts: number } | undefined;
@@ -1986,6 +2024,14 @@ export class RunnerRegistry {
         });
         break;
       case "runner.shell.full-disk-access": {
+        if (
+          message.fullDiskAccess &&
+          isProjectDeploymentAuthority(connection.identity.deploymentAuthority ?? null)
+        )
+          throw new OpensteerError({
+            code: "forbidden",
+            message: "Personal disk access is unavailable on a team computer",
+          });
         const shell = connection.identity.modules.shell;
         if (!shell || shell.platform !== "darwin") {
           throw new OpensteerError({
@@ -2009,7 +2055,10 @@ export class RunnerRegistry {
       }
       case "runner.modules.report":
         for (const report of message.modules) {
-          if (connection.identity.modules[report.module] === undefined) {
+          if (
+            connection.identity.modules[report.module] === undefined ||
+            !connection.identity.allowedModules.includes(report.module)
+          ) {
             throw new OpensteerError({
               code: "forbidden",
               message: `Runner reported readiness for the unadvertised ${report.module} module`,

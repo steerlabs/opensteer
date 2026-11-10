@@ -1,3 +1,4 @@
+import { teamComputerHasExecutionGrant } from "./team-computer.js";
 import {
   CommandIdSchema,
   HarnessInstanceIdSchema,
@@ -113,13 +114,14 @@ async function selectedRuntime(
       "runners.revokedAt",
       "runners.updateRequired",
       "runners.capabilities",
+      "runners.device",
+      "runners.allowedModules",
     ])
     .where("harnessInstances.id", "=", harnessInstanceId)
     .executeTakeFirst();
   if (
     !instance ||
-    instance.ownerKind !== "deployment" ||
-    instance.ownerUserId !== null ||
+    !teamComputerHasExecutionGrant(instance) ||
     instance.environmentId !== workspace.ownerEnvironmentId ||
     !instance.enabled ||
     instance.removedAt ||

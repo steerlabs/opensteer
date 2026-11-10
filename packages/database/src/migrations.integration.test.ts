@@ -1476,6 +1476,10 @@ integration("one machine identity migration", () => {
     // the columns that name one.
     await computerAppIdentityMigration.up(database);
     await computerAppPolicyMigration.up(database);
+    // The current ownership reader requires the stored authority witness.
+    await sql`alter table deployments add column authority_model_version integer not null default 1`.execute(
+      database,
+    );
     const before = await sql<{ generation: string }>`
       select connection_generation::text as generation from public.runners
       where id = 'run_11111111-1111-4111-8111-111111111111'

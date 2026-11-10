@@ -45,10 +45,7 @@ const exceptionGroups = {
       reason:
         "Stored authority refuses member computers only on model-2 servers, preserving legacy ownership.",
     },
-    "packages/database/src/runner-store.ts": {
-      counts: { "deployment?.deploymentShape.kind": 1 },
-      reason: "Enrollment and reconnect refuse user-owned placement only on model-2 servers.",
-    },
+
     "packages/database/src/store.ts": {
       counts: { "authority?.kind": 1 },
       reason:
@@ -72,8 +69,14 @@ const exceptionGroups = {
         "Cold grants and Project self-use require persisted server/model-2 identity; legacy execution is unchanged.",
     },
     "packages/database/src/deployment-execution-authority.ts": {
-      counts: { "authority.kind": 1 },
-      reason: "Cold Project-store authority gate validates persisted shape and model.",
+      counts: { "authority?.kind": 1, "authority.kind": 1 },
+      modelCounts: { "authority.model === 2": 1 },
+      projectionCounts: {
+        "->'deploymentShape'->>'kind' = 'server'": 1,
+        "->>'authorityModelVersion')::integer = 2": 1,
+      },
+      reason:
+        "Stored kind/model validation and fixed-computer selection; the caller cannot supply the witness.",
     },
     "packages/database/src/team-administration-authority.ts": {
       counts: { "authority.kind": 1 },
@@ -372,6 +375,23 @@ const sqlExceptions: Record<
 };
 
 describe("deployment policy boundary", () => {
+  it("pins the fixed-computer stored model comparison beside its named exception", () => {
+    const source = readFileSync(
+      path.join(repositoryRoot, "packages/database/src/deployment-execution-authority.ts"),
+      "utf8",
+    );
+    expect([...source.matchAll(/authority\.model === 2/gu)]).toHaveLength(
+      exceptionGroups.dormantProjectAuthority[
+        "packages/database/src/deployment-execution-authority.ts"
+      ].modelCounts["authority.model === 2"],
+    );
+    for (const [expression, count] of Object.entries(
+      exceptionGroups.dormantProjectAuthority[
+        "packages/database/src/deployment-execution-authority.ts"
+      ].projectionCounts,
+    ))
+      expect(source.split(expression).length - 1, expression).toBe(count);
+  });
   it("requires a named exception for a new SQL migration decision", () => {
     const historical = readFileSync(
       path.join(repositoryRoot, "packages/database/src/migrations.ts"),
