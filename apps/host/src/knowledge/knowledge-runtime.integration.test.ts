@@ -61,9 +61,9 @@ integration("the knowledge trial on a Personal Host", () => {
     expect(await host.executor()).toBeNull();
   });
 
-  it("when enabled, advertises the capability and gives the restricted login a password", async () => {
+  it("when enabled, advertises the capability and starts having logged in as the restricted login", async () => {
     const host = await personalHost(true);
     expect(await host.capabilities()).toContain("knowledge-sql-v1");
-    expect(await host.executor()).toEqual({ password: true, connections: "0" });
+    expect(await host.executor()).toEqual({ password: true, connections: "1" });
   });
 });

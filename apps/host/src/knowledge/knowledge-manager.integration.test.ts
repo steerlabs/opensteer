@@ -417,7 +417,7 @@ integration("knowledge through the sql tool", () => {
 
     const whole = refusal(
       await f.call({
-        query: "SELECT lpad('x', 4000, 'x') FROM facts a, facts b WHERE a.topic = $1",
+        query: `SELECT '${"x".repeat(4000)}' FROM facts a, facts b WHERE a.topic = $1`,
         parameters: [topic],
       }),
     );
@@ -425,7 +425,10 @@ integration("knowledge through the sql tool", () => {
       code: "resource_exhausted",
       text: "The result is over 512 KB. Select fewer columns or rows, or aggregate, and call sql again.",
     });
-    const row = refusal(await f.call({ query: "SELECT lpad('x', 600000, 'x')" }));
+    const thousand = "x".repeat(1000);
+    const row = refusal(
+      await f.call({ query: `SELECT replace('${thousand}', 'x', '${thousand}')` }),
+    );
     expect(row.code).toBe("resource_exhausted");
     expect(row.text).toContain("A result row is over 512 KB.");
     const slow = refusal(
@@ -472,9 +475,9 @@ integration("knowledge through the sql tool", () => {
     await expect(
       f.service.callTool("owner", "sql", {}, { operationKey: "off" }),
     ).rejects.toMatchObject({ code: "forbidden" });
-    const { rows } = await sql<{ topics: string }>`
-      select count(*)::text as topics from knowledge.topics
+    const { rows } = await sql`
+      select from pg_catalog.pg_namespace where nspname = 'knowledge'
     `.execute(f.database);
-    expect(rows).toEqual([{ topics: "0" }]);
+    expect(rows).toEqual([]);
   });
 });
