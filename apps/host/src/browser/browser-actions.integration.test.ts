@@ -6,7 +6,12 @@ import {
   type BrowserAction,
   type BrowserActionResult,
 } from "@opensteer/protocol/browser-actions";
-import { createBrowserSessionId } from "@opensteer/protocol/browser";
+import { BrowserSurfaceIdSchema, createBrowserSessionId } from "@opensteer/protocol/browser";
+import { zeroSequence } from "@opensteer/core";
+import { hostApiVersion } from "@opensteer/deployment-authority";
+import { BrowserTabGroupStore } from "@opensteer/database";
+import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
+import { BrowserTabGroupService } from "./browser-tab-group-service.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
@@ -57,7 +62,7 @@ async function connect(url: string, headers: Record<string, string>) {
   if (snapshot) await snapshot;
   return socket;
 }
-async function setup() {
+async function setup(surfaceState = true) {
   const database = await createMachineAccessDatabase(process.env.OPENSTEER_TEST_DATABASE_URL!);
   cleanups.push(() => database.drop());
   const startedAt = Date.now();
@@ -88,7 +93,13 @@ async function setup() {
       idempotencyKey: "phone",
       name: "Phone browser",
     }),
-    { agentActions: true, basicInput: true, surfaceState: true, targetedStreaming: true },
+    {
+      agentActions: true,
+      basicInput: true,
+      surfaceState,
+      targetedStreaming: true,
+      workspaceTabs: true,
+    },
   );
   cleanups.push(() => phone.close());
   await vi.waitFor(() => expect(host.runtime.browser.available).toBe(true), { timeout: 2_000 });
@@ -155,6 +166,238 @@ async function setup() {
 }
 
 integration("session-scoped browser agent backends", () => {
+  it("activates a sleeping surface in place, projects its state with notices, and preserves agent resume", async () => {
+    const f = await setup();
+    const tabId = BrowserSurfaceIdSchema.parse("page-integration");
+    const group = () => f.host.runtime.browser.readWorkspaceTabs(f.host.ownerId, f.sessionId);
+    await vi.waitFor(async () => expect((await group()).tabs).toHaveLength(1), { timeout: 2000 });
+    const realtime = await connect(
+      `ws://127.0.0.1:${f.host.hostPort}/v1/realtime`,
+      f.host.ownerHeaders,
+    );
+    const synchronized = waitForMessage(
+      realtime,
+      (message) => message.type === "host.synchronized",
+      2000,
+    );
+    realtime.send(
+      JSON.stringify({
+        afterSequence: zeroSequence,
+        apiVersion: hostApiVersion,
+        threadId: null,
+        type: "client.subscribe",
+        workspaceId: f.run.workspaceId,
+      }),
+    );
+    await synchronized;
+    const viewer = await connect(
+      `ws://127.0.0.1:${f.host.hostPort}/v1/browser-sessions/${f.sessionId}/connect?surfaceState=1&mode=watch`,
+      f.host.ownerHeaders,
+    );
+    const publish = async (state: "live" | "suspended") => {
+      const noticed = waitForMessage(
+        realtime,
+        (message) => message.type === "host.browser-sessions-changed",
+        2000,
+      );
+      f.phone.sendServer({
+        type: "browser.surfaces.changed",
+        surfaces: [
+          {
+            id: tabId,
+            active: true,
+            title: "Integration page",
+            url: "about:blank",
+            documentId: "document-integration",
+            geometryRevision: 1,
+            state,
+          },
+        ],
+      });
+      await noticed;
+      expect((await group()).tabs?.[0]?.state).toBe(state);
+      expect(
+        (await f.host.runtime.browser.bootstrap(f.host.ownerId)).workspaceTabs?.find(
+          (held) => held.id === f.sessionId,
+        )?.tabs?.[0]?.state,
+      ).toBe(state);
+    };
+    await publish("suspended");
+    const stranger = await f.host.store.createUser("No browser access");
+    await expect(
+      f.host.runtime.browser.activateWorkspaceTab(stranger, tabId),
+    ).rejects.toMatchObject({ code: "not_found" });
+    const watchedError = new Promise<{ code: number; reason: string }>((resolve) =>
+      viewer.once("close", (code, reason) => resolve({ code, reason: reason.toString() })),
+    );
+    viewer.send(
+      JSON.stringify({
+        type: "cdp.command",
+        requestId: crypto.randomUUID(),
+        command: { method: "Opensteer.resumeTab", parameters: { surfaceId: tabId } },
+      }),
+    );
+    expect(
+      await withTimeout(watchedError, 1000, {
+        timeoutError: () => new Error("Watch connection was not refused"),
+      }),
+    ).toEqual({
+      code: 4002,
+      reason: "Watch can only manage its picture subscription and receipts.",
+    });
+    const before = f.phone.receivedCommands().length;
+    const activation = testRpcData(
+      f.host.origin,
+      "commands.dispatch",
+      { type: "workspace.tab.activate", tabId, idempotencyKey: crypto.randomUUID() },
+      { headers: f.host.ownerHeaders },
+    );
+    const resume = await vi.waitFor(
+      () => {
+        const command = f.phone
+          .receivedCommands()
+          .slice(before)
+          .find((message) => message.type === "cdp.command");
+        expect(command, "Activation never reached the phone").toBeDefined();
+        return command!;
+      },
+      { timeout: 1000 },
+    );
+    expect(resume.command).toEqual({
+      method: "Opensteer.resumeTab",
+      parameters: { surfaceId: tabId },
+    });
+    await publish("live");
+    f.phone.sendServer({ type: "cdp.result", requestId: resume.requestId, result: {} });
+    expect(await activation).toMatchObject({
+      type: "workspace.tab.activate",
+      group: { tabs: [expect.objectContaining({ state: "live" })] },
+    });
+    expect(
+      f.phone
+        .receivedCommands()
+        .slice(before)
+        .filter((message) => message.type === "cdp.command"),
+    ).toHaveLength(1);
+    await publish("suspended");
+    const refused = testRpcRequest(
+      f.host.origin,
+      "commands.dispatch",
+      { type: "workspace.tab.activate", tabId, idempotencyKey: crypto.randomUUID() },
+      { headers: f.host.ownerHeaders },
+    );
+    const refusal = await vi.waitFor(
+      () => {
+        const command = f.phone
+          .receivedCommands()
+          .slice(before)
+          .filter((message) => message.type === "cdp.command")[1];
+        expect(command, "Second activation never reached the phone").toBeDefined();
+        return command!;
+      },
+      { timeout: 1000 },
+    );
+    f.phone.sendServer({
+      type: "cdp.error",
+      requestId: refusal.requestId,
+      error: {
+        code: "conflict",
+        reason: "target-suspended",
+        retryable: false,
+        message: "The phone's browser is busy with another tab.",
+      },
+    });
+    const response = await refused;
+    expect(response.status).toBe(409);
+    expect(JSON.stringify(await response.json())).toContain(
+      "The phone's browser is busy with another tab.",
+    );
+    expect(
+      (
+        await f.host.store.database
+          .selectFrom("workspaceTabs")
+          .select("state")
+          .where("id", "=", tabId)
+          .executeTakeFirstOrThrow()
+      ).state,
+    ).toBe("live");
+    const savedTabs = new BrowserTabGroupService({
+      groups: new BrowserTabGroupStore(f.host.store.database),
+      browser: f.host.runtime.browser,
+      publish: () => undefined,
+    });
+    expect(
+      (
+        await savedTabs.read(
+          {
+            kind: "agent",
+            ownerId: f.host.ownerId,
+            workspaceId: f.run.workspaceId,
+            threadId: f.run.threadId,
+            agentBindingId: `run:${f.run.runId}`,
+          },
+          {},
+        )
+      ).tabs.find((tab) => tab.tabId === tabId),
+    ).toMatchObject({ state: "open", sessionId: f.sessionId });
+    const socket = await f.actions();
+    const pending = f.act(
+      socket,
+      { type: "surface.resume" },
+      { documentId: undefined, geometryRevision: undefined },
+    );
+    const command = await vi.waitFor(
+      () => {
+        const message = f.phone
+          .receivedCommands()
+          .findLast((message) => message.type === "agent.action");
+        expect(message, "Harness resume never reached the phone").toBeDefined();
+        return BrowserAgentActionSchema.parse(message);
+      },
+      { timeout: 1000 },
+    );
+    expect(command.request.action.type).toBe("surface.resume");
+    f.phone.sendServer({
+      type: "agent.result",
+      attachmentId: command.attachmentId,
+      requestId: command.requestId,
+      result: {
+        type: "surface.resume",
+        binding: {
+          surfaceId: tabId,
+          documentId: "document-integration",
+          geometryRevision: 1,
+          state: "live",
+          title: "Integration page",
+          url: "about:blank",
+        },
+      },
+    });
+    expect(await pending).toMatchObject({ result: { type: "surface.resume" } });
+    expect(f.phone.protocolErrors()).toEqual([]);
+  });
+
+  it("never sends resume to an existing tab without surface-state negotiation", async () => {
+    const f = await setup(false);
+    const tabId = BrowserSurfaceIdSchema.parse("page-integration");
+    await vi.waitFor(
+      async () =>
+        expect(
+          (await f.host.runtime.browser.readWorkspaceTabs(f.host.ownerId, f.sessionId)).tabs,
+        ).toHaveLength(1),
+      { timeout: 2000 },
+    );
+    const before = f.phone.receivedCommands().length;
+    const result = await f.host.runtime.browser.activateWorkspaceTab(f.host.ownerId, tabId);
+    expect(result.group.tabs?.[0]?.state).toBe("live");
+    expect(
+      f.phone
+        .receivedCommands()
+        .slice(before)
+        .filter((message) => message.type === "cdp.command"),
+    ).toEqual([]);
+  });
+
   it("admits focus, empty-session actions and suspended close without resuming or loosening other fences", async () => {
     const f = await setup();
     const socket = await f.actions();

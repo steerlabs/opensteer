@@ -35,6 +35,7 @@ import {
 } from "./deployment-credentials.js";
 import type { HostVerification } from "./deployment-rows.js";
 import { personalSessionFrom, type PersonalSessionStore } from "./personal-session-store.js";
+import { registerPhoneEnrollmentHost } from "../platform/phone-enrollment-host.js";
 
 /**
  * What this app and one Host agree about, as a live probe of the route this
@@ -126,7 +127,7 @@ export function createNetworkHostPort(options: {
       });
     },
 
-    attach({ authorization, capabilities, origin }): HostClient {
+    attach({ authorization, capabilities, connection, origin }): HostClient {
       const network = createHostNetwork({
         authorization,
         fetch: options.fetch,
@@ -135,7 +136,7 @@ export function createNetworkHostPort(options: {
         origin,
         openWebSocket: options.openWebSocket,
       });
-      return new HttpHostClient({
+      const client = new HttpHostClient({
         baseUrl: origin,
         ...(options.browserPreferencesStorage
           ? { browserPreferencesStorage: options.browserPreferencesStorage }
@@ -147,6 +148,12 @@ export function createNetworkHostPort(options: {
         prefetchHome: true,
         webSocketFactory: network.webSocketFactory,
       });
+      registerPhoneEnrollmentHost(client, {
+        authorization,
+        deploymentId: connection.authority.document.deploymentId,
+        origin,
+      });
+      return client;
     },
 
     /**

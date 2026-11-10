@@ -27,6 +27,7 @@ import type {
 } from "@opensteer/protocol/desktop";
 import {
   browserTabSections,
+  tabSectionPlaceTitle,
   browserTabStrip,
   browserSiteLabel,
   describeHostConnection,
@@ -610,6 +611,7 @@ export function Sidebar({
         groupColor={groupColor}
         onEditGroup={editGroup}
         active={place.key === shownPlaceKey}
+        headed={tabSections.headed}
         badge={presentations.badges ? place.identity : null}
         directory={directory}
         hostClient={hostClient}
@@ -1541,6 +1543,7 @@ const TabRowItem = memo(function TabRowItem({
   groupColor,
   onEditGroup,
   directory,
+  headed,
   hereId,
   highlight,
   hostClient,
@@ -1560,6 +1563,8 @@ const TabRowItem = memo(function TabRowItem({
   /** The profile badge on the site's icon, when two or more identities are in use. */
   readonly badge: PlaceItem["identity"];
   readonly directory: TaskDirectory;
+  /** The row stands under its device's heading. */
+  readonly headed: boolean;
   /** The device this window is on, which a row never names. */
   readonly hereId: string | null;
   readonly highlight: WorkspaceState["highlight"];
@@ -1605,8 +1610,11 @@ const TabRowItem = memo(function TabRowItem({
   const unavailable = place.availability === "unavailable";
   const site = place.site ? browserSiteLabel(place.site) : null;
   // Its section's heading shows the device; its name still says it, but only when it is elsewhere.
+  const title = tabSectionPlaceTitle(place, headed);
   const device =
-    place.device && place.device.machineId !== hereId && place.kind !== "phone"
+    place.device &&
+    place.device.machineId !== hereId &&
+    (place.kind !== "phone" || title !== place.title)
       ? place.device.name
       : null;
   // The whole destination in words, badge or not: "Q4 numbers – Notion — Work · Mac mini".
@@ -1615,7 +1623,7 @@ const TabRowItem = memo(function TabRowItem({
     : place.ownerView
       ? [device, "View only"].filter(Boolean).join(" · ")
       : device;
-  const tip = where ? `${place.title} — ${where}` : place.title;
+  const tip = where ? `${title} — ${where}` : title;
   const label = [tip, place.loading ? "loading" : null, unavailable ? "unavailable" : null]
     .filter(Boolean)
     .join(", ");
@@ -1719,7 +1727,7 @@ const TabRowItem = memo(function TabRowItem({
             </span>
           ) : null}
         </span>
-        <span className="side-tab__title">{place.title}</span>
+        <span className="side-tab__title">{title}</span>
       </button>
       <OccupantMarks
         className="side-tab__marks"

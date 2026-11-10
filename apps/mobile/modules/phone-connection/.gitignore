@@ -1,0 +1,4 @@
+tests/.gradle/
+tests/.kotlin/
+tests/build/
+android/build/

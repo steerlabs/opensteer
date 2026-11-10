@@ -142,12 +142,12 @@ async function setup(
     return handle;
   };
   await attach();
-  const client = async (message: unknown) =>
+  const client = async (message: unknown, targetChannelId = channelId) =>
     relay({
       ...fence,
       type: "browser.client-message",
       capability: capability(),
-      channelId,
+      channelId: targetChannelId,
       message: BrowserClientMessageSchema.parse(message),
     });
   const server = () =>
@@ -190,8 +190,14 @@ async function setup(
   };
   const attachmentId = uuid();
   const actorToken = uuid();
-  const agentAttach = () =>
-    client({ type: "agent.attach", sessionId, attachmentId, actorToken, backend: "actions" });
+  const agentAttach = (id = attachmentId, token = actorToken) =>
+    client({
+      type: "agent.attach",
+      sessionId,
+      attachmentId: id,
+      actorToken: token,
+      backend: "actions",
+    });
   const sessionAction = (actionValue: unknown, patch: Record<string, unknown> = {}) =>
     client({
       type: "agent.action",
@@ -200,12 +206,16 @@ async function setup(
       requestId: uuid(),
       request: { id: nextId++, sessionId, action: actionValue, ...patch },
     });
-  const action = (actionValue: unknown, id = surfaceId, patch: Record<string, unknown> = {}) => {
+  const action = (
+    actionValue: unknown,
+    id = surfaceId,
+    patch: Record<string, unknown> = {},
+    agent = { attachmentId, actorToken },
+  ) => {
     const state = presentation(id);
     return client({
       type: "agent.action",
-      attachmentId,
-      actorToken,
+      ...agent,
       requestId: uuid(),
       request: {
         id: nextId++,
@@ -227,6 +237,7 @@ async function setup(
     sessionId,
     surfaceId,
     client,
+    channelId: () => channelId,
     server,
     reference,
     presentation,
@@ -567,9 +578,11 @@ describe("phone browser manager", () => {
     await fixture.open("other-agent-tab");
     await fixture.present();
     await fixture.agentAttach();
+    const other = { attachmentId: uuid(), actorToken: uuid() };
+    await fixture.agentAttach(other.attachmentId, other.actorToken);
     await Promise.all([
       fixture.action({ type: "surface.resume" }, "agent-tab"),
-      fixture.action({ type: "surface.resume" }, "other-agent-tab"),
+      fixture.action({ type: "surface.resume" }, "other-agent-tab", {}, other),
     ]);
     expect(fixture.presentation().state).toBe("live-visible");
     expect(
@@ -585,6 +598,195 @@ describe("phone browser manager", () => {
         error: expect.objectContaining({ code: "target-suspended" }),
       }),
     );
+  });
+
+  test("one attachment switches retained tabs without losing forms or reloading", async () => {
+    const fixture = await setup();
+    await fixture.open("second");
+    await fixture.agentAttach();
+    await fixture.action({ type: "surface.resume" });
+    fixture.native.tabs.get(fixture.surfaceId)!.form = "unsent form";
+    await fixture.action({ type: "surface.resume" }, "second");
+    expect(fixture.presentation().state).toBe("retained");
+    await fixture.action({ type: "surface.resume" });
+    expect(fixture.presentation("second").state).toBe("retained");
+    expect(fixture.native.tabs.get(fixture.surfaceId)).toMatchObject({
+      form: "unsent form",
+      loads: 1,
+    });
+    expect(fixture.native.tabs.get("second")?.loads).toBe(1);
+  });
+
+  test("people cannot displace a watched tab or an agent, and detach hands a watched tab to people", async () => {
+    const fixture = await setup();
+    await fixture.open("second");
+    await fixture.open("visible");
+    await fixture.present("visible");
+    const resume = (surfaceId: string) =>
+      fixture.client({
+        type: "cdp.command",
+        requestId: uuid(),
+        command: { method: "Opensteer.resumeTab", parameters: { surfaceId } },
+      });
+    await resume(fixture.surfaceId);
+    expect(fixture.presentation().state).toBe("live-covered");
+    await resume("second");
+    expect(fixture.presentation().state).toBe("retained");
+    await fixture.client({ type: "stream.subscribe", surfaceId: "second" });
+    await resume(fixture.surfaceId);
+    expect(fixture.server().at(-1)).toMatchObject({
+      type: "cdp.error",
+      error: { reason: "target-suspended" },
+    });
+    await resume("second");
+    await resume(fixture.surfaceId);
+    expect(fixture.presentation("second").state).toBe("live-covered");
+    await fixture.agentAttach();
+    await fixture.action({ type: "surface.resume" });
+    expect(fixture.presentation("second").state).toBe("retained");
+    await resume("second");
+    expect(fixture.server().at(-1)).toMatchObject({
+      type: "cdp.error",
+      error: { reason: "target-suspended" },
+    });
+    await fixture.client({ type: "stream.subscribe", surfaceId: fixture.surfaceId });
+    const resumes = fixture.native.calls.filter((call) => call.method === "resumeTab").length;
+    await fixture.action({ type: "surface.resume" });
+    expect(fixture.native.calls.filter((call) => call.method === "resumeTab")).toHaveLength(
+      resumes,
+    );
+    await fixture.client({
+      type: "agent.detach",
+      sessionId: fixture.sessionId,
+      attachmentId: fixture.attachmentId,
+    });
+    expect(fixture.presentation().state).toBe("live-covered");
+    await resume("second");
+    expect(fixture.presentation().state).toBe("live-covered");
+    await fixture.client({ type: "stream.unsubscribe", surfaceId: fixture.surfaceId });
+    expect(fixture.presentation().state).toBe("retained");
+    expect(fixture.presentation("visible").state).toBe("live-visible");
+  });
+
+  test("an agent takes ownership of the same people tab and releases an unwatched tab on detach", async () => {
+    const fixture = await setup();
+    await fixture.client({
+      type: "cdp.command",
+      requestId: uuid(),
+      command: {
+        method: "Opensteer.resumeTab",
+        parameters: { surfaceId: fixture.surfaceId },
+      },
+    });
+    await fixture.agentAttach();
+    const resumes = fixture.native.calls.filter((call) => call.method === "resumeTab").length;
+    await fixture.action({ type: "surface.resume" });
+    expect(fixture.native.calls.filter((call) => call.method === "resumeTab")).toHaveLength(
+      resumes,
+    );
+    await fixture.client({
+      type: "agent.detach",
+      sessionId: fixture.sessionId,
+      attachmentId: fixture.attachmentId,
+    });
+    expect(fixture.presentation().state).toBe("retained");
+  });
+
+  test("an agent attaching to a tab a person woke owns it after that person leaves", async () => {
+    const fixture = await setup();
+    await fixture.client({
+      type: "cdp.command",
+      requestId: uuid(),
+      command: {
+        method: "Opensteer.resumeTab",
+        parameters: { surfaceId: fixture.surfaceId },
+      },
+    });
+    await fixture.client({ type: "stream.subscribe", surfaceId: fixture.surfaceId });
+    await fixture.agentAttach();
+    await fixture.action({ type: "surface.attach" });
+    await fixture.client({ type: "stream.unsubscribe", surfaceId: fixture.surfaceId });
+    expect(fixture.presentation().state).toBe("live-covered");
+    await fixture.client({
+      type: "agent.detach",
+      sessionId: fixture.sessionId,
+      attachmentId: fixture.attachmentId,
+    });
+    expect(fixture.presentation().state).toBe("retained");
+  });
+
+  test("releasing an old picture cannot retain a newly claimed tab, and every receiver must leave", async () => {
+    const fixture = await setup();
+    await fixture.open("second");
+    const resume = (surfaceId: string) =>
+      fixture.client({
+        type: "cdp.command",
+        requestId: uuid(),
+        command: { method: "Opensteer.resumeTab", parameters: { surfaceId } },
+      });
+    await resume(fixture.surfaceId);
+    await fixture.client({ type: "stream.subscribe", surfaceId: fixture.surfaceId });
+    await Promise.all([
+      resume("second"),
+      fixture.client({ type: "stream.unsubscribe", surfaceId: fixture.surfaceId }),
+    ]);
+    expect(fixture.presentation("second").state).toBe("live-covered");
+    await fixture.client({ type: "stream.subscribe", surfaceId: "second" });
+    const firstChannel = fixture.channelId();
+    await fixture.attach();
+    await fixture.client({ type: "stream.subscribe", surfaceId: "second" });
+    await fixture.client({ type: "stream.unsubscribe", surfaceId: "second" }, firstChannel);
+    expect(fixture.presentation("second").state).toBe("live-covered");
+    await fixture.client({ type: "stream.unsubscribe", surfaceId: "second" });
+    expect(fixture.presentation("second").state).toBe("retained");
+  });
+
+  test("local presentation frees the covered place without letting an agent change the visible tab", async () => {
+    const fixture = await setup();
+    await fixture.open("second");
+    await fixture.agentAttach();
+    await fixture.action({ type: "surface.resume" });
+    await fixture.present();
+    const other = { attachmentId: uuid(), actorToken: uuid() };
+    await fixture.agentAttach(other.attachmentId, other.actorToken);
+    await fixture.action({ type: "surface.resume" }, "second", {}, other);
+    expect(fixture.presentation().state).toBe("live-visible");
+    expect(fixture.presentation("second").state).toBe("live-covered");
+    await fixture.client({
+      type: "agent.detach",
+      sessionId: fixture.sessionId,
+      attachmentId: fixture.attachmentId,
+    });
+    expect(fixture.presentation().state).toBe("live-visible");
+    expect(fixture.presentation("second").state).toBe("live-covered");
+  });
+
+  test("switching waits for submitted input and fences queued input even after switching back", async () => {
+    const fixture = await setup();
+    await fixture.open("second");
+    await fixture.agentAttach();
+    await fixture.action({ type: "surface.resume" });
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    fixture.native.actionGate = async () => {
+      entered.resolve();
+      await release.promise;
+    };
+    const first = fixture.action({ type: "text.insert", text: "first" });
+    await withTimeout(entered.promise, 1000, {
+      timeoutError: () => new Error("First input never reached native"),
+    });
+    const queued = fixture.action({ type: "text.insert", text: "must not run" });
+    const switched = fixture.action({ type: "surface.resume" }, "second");
+    await Promise.resolve();
+    expect(fixture.presentation("second").state).toBe("retained");
+    release.resolve();
+    await withTimeout(Promise.all([first, queued, switched]), 1000, {
+      timeoutError: () => new Error("Tab switch never settled"),
+    });
+    await fixture.action({ type: "surface.resume" });
+    expect(fixture.native.submitted.filter((type) => type === "text.insert")).toHaveLength(1);
+    expect(fixture.presentation().state).toBe("live-covered");
   });
 
   test("switching retained tabs preserves forms; LRU and memory pressure discard before reload", async () => {
@@ -1279,6 +1481,20 @@ test("Android routes stable surface targets through the real CDP allowlist, with
   expect(await command("Page.captureScreenshot", { format: "png" }, cdpSessionId)).toMatchObject({
     type: "cdp.result",
     result: { data: "AQ==" },
+  });
+  fixture.native.tabs.get(fixture.surfaceId)!.form = "Android form";
+  await fixture.open("second");
+  expect(
+    await command("Target.attachToTarget", { targetId: "second", flatten: true }),
+  ).toMatchObject({ type: "cdp.result" });
+  expect(fixture.presentation().state).toBe("retained");
+  expect(
+    await command("Target.attachToTarget", { targetId: fixture.surfaceId, flatten: true }),
+  ).toMatchObject({ type: "cdp.result" });
+  expect(fixture.presentation("second").state).toBe("retained");
+  expect(fixture.native.tabs.get(fixture.surfaceId)).toMatchObject({
+    form: "Android form",
+    loads: 1,
   });
   await fixture.relay({ ...fixture.currentEnvelope(), type: "browser.close", requestId: uuid() });
   expect(fixture.native.authorizations.size).toBe(0);

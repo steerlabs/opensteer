@@ -1321,10 +1321,11 @@ export const BrowserHistoryIconsSchema = z.object({
 });
 export type BrowserHistoryIcons = z.infer<typeof BrowserHistoryIconsSchema>;
 
-/** Every browser implements these Host-only operations on the command channel, with or without CDP. */
+/** Host-only operations use the command channel with or without CDP; resume requires surfaceState. */
 export const browserHostMethods = {
   openTab: "Opensteer.openTab",
   closeTab: "Opensteer.closeTab",
+  resumeTab: "Opensteer.resumeTab",
   contextCandidate: "Opensteer.contextCandidate",
 } as const;
 export const browserBootstrapSessionsMaxBytes = 768 * 1024;

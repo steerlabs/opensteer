@@ -127,9 +127,20 @@ export async function negotiateBackend(base, sessionId) {
   url.protocol = url.protocol === "wss:" ? "https:" : "http:";
   url.pathname = `${url.pathname.replace(/\/$/u, "")}/backend/${encodeURIComponent(sessionId)}`;
   const response = await fetch(url, { redirect: "error", signal: AbortSignal.timeout(15_000) });
-  if (!response.ok)
-    throw new Error(`Browser backend negotiation refused (HTTP ${response.status}).`);
   const body = await response.text();
+  if (!response.ok) {
+    let message;
+    try {
+      if (Buffer.byteLength(body) <= 16_384) {
+        const refusal = JSON.parse(body)?.error?.message;
+        if (typeof refusal === "string" && refusal.length > 0 && refusal.length <= 2_000)
+          message = refusal;
+      }
+    } catch {}
+    throw new Error(
+      `Browser backend negotiation refused (HTTP ${response.status}).${message ? ` ${message}` : ""}`,
+    );
+  }
   if (Buffer.byteLength(body) > 1_024) throw new Error("Invalid browser backend negotiation");
   const backend = JSON.parse(body);
   if (

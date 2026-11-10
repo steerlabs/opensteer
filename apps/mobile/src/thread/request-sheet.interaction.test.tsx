@@ -152,6 +152,7 @@ vi.mock("../ui/sheet.js", () => ({
     ) : null,
 }));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
+vi.mock("../computers/here-device.js", () => ({ useHereDeviceId: () => null }));
 vi.mock("../ui/sheet-bar.js", () => ({
   SheetBarButton: ({ onPress }: { onPress: () => void }) => (
     <button onClick={onPress}>Close sheet</button>

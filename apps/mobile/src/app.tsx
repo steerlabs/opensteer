@@ -81,6 +81,7 @@ import { IphoneApprovalPrompt } from "./iphone-apps/approval-prompt.js";
 import { IphoneAppsProvider, useIphoneAppsState } from "./iphone-apps/context.js";
 import { IphoneAppsController } from "./iphone-apps/controller.js";
 import { startIphoneBrowserRuntime } from "./phone-browser/runtime.js";
+import { androidPhoneBridge, enrollAndroidPhone } from "./platform/phone-connection.js";
 import { createFakeIphoneApps, type FakeIphoneApps } from "./iphone-apps/fake-bridge.js";
 import { iphoneNotTold, opensteerOn } from "./iphone-apps/model.js";
 import { createShownApprovalsFile } from "./iphone-apps/shown-approvals-file.js";
@@ -169,7 +170,10 @@ function mobileClient(): MobileRoot {
     });
   }
   const iphone = new IphoneAppsController({
-    bridge: fakeIphone?.bridge ?? iphoneApps,
+    bridge: fakeIphone?.bridge ?? androidPhoneBridge ?? iphoneApps,
+    ...(Platform.OS === "android" && !configuration.mock && androidPhoneBridge !== null
+      ? { enrollNative: enrollAndroidPhone }
+      : {}),
     shownApprovals: createShownApprovalsFile({
       filePath: `${root}${storeName}/iphone-approvals-shown.json`,
       privateFiles,

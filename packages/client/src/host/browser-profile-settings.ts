@@ -76,11 +76,13 @@ export interface ProfileHomeChoice {
  * The devices a new profile can be kept on, in the one device order, or null
  * when there is nothing to choose: one device, or a Host that does not say.
  * It starts on the device the reader is at, else the Deployment's main
- * computer, else the first.
+ * computer, else the first. One an agent asked for starts where the Host
+ * would put it instead: the computer that agent works on, else the main one.
  */
 export function profileHomeChoice(
   snapshot: Pick<HostSnapshot, "browserProfileHomes" | "deploymentShape" | "machines">,
   hereId: string | null,
+  asking?: { readonly runnerId: string | null },
 ): ProfileHomeChoice | null {
   const homes = snapshot.browserProfileHomes ?? [];
   const options = orderDevices(
@@ -97,7 +99,11 @@ export function profileHomeChoice(
   );
   if (options.length < 2) return null;
   const initial =
-    options.find(({ here }) => here) ?? options.find(({ main }) => main) ?? options[0]!;
+    (asking
+      ? options.find(({ id }) => id === asking.runnerId)
+      : options.find(({ here }) => here)) ??
+    options.find(({ main }) => main) ??
+    options[0]!;
   return {
     initial: initial.id,
     options: options.map(({ glyph, here, id, name }) => ({ glyph, here, id, name })),

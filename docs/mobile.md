@@ -1,6 +1,7 @@
 # Opensteer on a phone
 
-The mobile app is a Deployment client; execution stays on Runners. It never installs or offers to
+The mobile app is a Deployment client; agent execution stays on computers. A phone may also lend
+its in-app browser while foregrounded. It never installs or offers to
 install apps, including [Agent Phone](agent-phone.md). Files and terminal stay on web and desktop,
 because each would add a protocol and UI to maintain. [Connections](connections.md) owns discovery
 and credentials; [Host boundaries](host-boundaries.md) owns compatibility and session authority.
@@ -245,6 +246,17 @@ keep it on top, but a window-level view has no view controller, so a sheet opene
 an integration's review, couldn't present and the person couldn't approve. Android moves the bar with `Keyboard` events
 rather than `useAnimatedKeyboard`, which clears the decor insets listener on exit and leaves form
 sheets without keyboard handling.
+
+## Phone browser identity
+
+Android's everyday app lends only its browser, not the screen or integrations of the separate
+Agent Phone app. Its phone enrollment grant still includes `browser, integrations`; advertising
+only browser does not broaden that grant. Enrollment tokens are minted and redeemed natively.
+To support Android 24 and later, a Keystore AES-GCM key seals the native Ed25519 seed in
+no-backup storage; this is not a hardware-backed, non-exportable Ed25519 key.
+Removing the phone or signing out fences admission before erasure. A durable denial marker keeps
+its enrollment unusable until all that Deployment's profiles are physically deleted, including
+loaded Android profiles that require a process restart. Sign-out does not wait for that restart.
 
 ## This iPhone's apps
 

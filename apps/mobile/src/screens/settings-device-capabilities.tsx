@@ -178,9 +178,6 @@ export function SettingsDeviceCapabilities({
           />
         </>
       ) : null}
-      {machine.allowedModules.includes("browser") ? (
-        <AppText>Browser · {machine.status}</AppText>
-      ) : null}
       {error ? <AppText>{error}</AppText> : null}
       {machine.revocable ? (
         <SecondaryButton

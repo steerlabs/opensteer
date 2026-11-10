@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { createId } from "@opensteer/core";
 import { expect, vi } from "vitest";
 import { AesGcmSecretVault, StaticEncryptionKeyProvider } from "@opensteer/access/host";
-import { IntegrationPlatformStore } from "@opensteer/database";
+import { IntegrationPlatformStore, personalReachableGrant } from "@opensteer/database";
 import {
   enrollTestRunner,
   describeStore,
@@ -178,7 +178,7 @@ describeStore("plugin devices", (test) => {
       const moved = { runnerId: createId("runner"), userId: run.userId };
       await f.enablePersonalRemoteAccess();
       await enrollTestRunner(f.store, {
-        allowedModules: ["integrations", "messaging", "shell"],
+        allowedModules: personalReachableGrant,
         modules: reachOnlyModules,
         createdBy: run.userId,
         runnerKind: "local",
