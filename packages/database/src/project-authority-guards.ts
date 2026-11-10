@@ -1,4 +1,13 @@
 export const PROJECT_AUTHORITY_GUARDS_SQL = String.raw`
+  create or replace function public.opensteer_stored_execution_authority()
+    returns table (model integer, kind text)
+    language sql stable
+    set search_path = pg_catalog
+    as $$
+      select d.authority_model_version, d.deployment_shape->>'kind'
+      from public.deployments d
+      where d.singleton_key = 'primary'
+    $$;
   create function public.opensteer_project_principal_scope() returns trigger language plpgsql as $$
   begin
     if tg_op = 'UPDATE' and old.kind = 'project' then
@@ -10,9 +19,8 @@ export const PROJECT_AUTHORITY_GUARDS_SQL = String.raw`
     end if;
     if new.kind <> 'project' then return new; end if;
     if not exists (
-      select 1 from public.deployments d
-      where d.singleton_key = 'primary' and d.authority_model_version = 2
-        and d.deployment_shape->>'kind' = 'server'
+      select 1 from public.opensteer_stored_execution_authority() d
+      where d.model = 2 and d.kind = 'server'
     ) or not exists (
       select 1 from public.workspaces w where w.id = new.workspace_id and w.kind = 'project'
         and w.deleted_at is null and w.status not in ('deleting', 'deleted')
