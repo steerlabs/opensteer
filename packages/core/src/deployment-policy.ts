@@ -6,6 +6,7 @@ export interface DeploymentPolicy {
   readonly sharing: boolean;
   readonly deploymentWideMachineReach: boolean;
   readonly appOrigins: "real" | "isolated";
+  readonly executionPrincipal: "person" | "project";
   readonly executionAccess: "administrator" | "member";
   readonly projectConsent: "owner-wide" | "per-project";
   readonly nativePasswords: boolean;
@@ -77,6 +78,7 @@ export function deploymentPolicy(shape: DeploymentShape): DeploymentPolicy {
       sharing: false,
       deploymentWideMachineReach: false,
       appOrigins: "real",
+      executionPrincipal: "person",
       executionAccess: "administrator",
       projectConsent: "owner-wide",
       nativePasswords: true,
@@ -117,6 +119,7 @@ export function deploymentPolicy(shape: DeploymentShape): DeploymentPolicy {
       sharing: true,
       deploymentWideMachineReach: true,
       appOrigins: "isolated",
+      executionPrincipal: "person",
       executionAccess: "member",
       projectConsent: "per-project",
       nativePasswords: false,

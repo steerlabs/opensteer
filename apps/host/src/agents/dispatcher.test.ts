@@ -1087,6 +1087,9 @@ function steerCommand(): CommandRow {
   const runId = createId("run");
   const threadId = createId("thread");
   return {
+    initiatorGeneration: null,
+    membershipGeneration: null,
+    originConnectionId: null,
     requestResponseKeyVersion: null,
     actorPrincipalId: "pri_00000000-0000-4000-8000-000000000099" as CommandRow["actorPrincipalId"],
     attempts: 1,
@@ -1141,6 +1144,9 @@ function requestCommand(input: {
 }): CommandRow {
   const now = new Date();
   return {
+    initiatorGeneration: null,
+    membershipGeneration: null,
+    originConnectionId: null,
     requestResponseKeyVersion: input.keyVersion,
     actorPrincipalId: "pri_00000000-0000-4000-8000-000000000099" as CommandRow["actorPrincipalId"],
     attempts: 1,

@@ -7,6 +7,7 @@ import {
   type DeploymentId,
   OpensteerError,
   createId,
+  deploymentPolicy,
   type UserId,
 } from "@opensteer/core";
 import { type Kysely, sql } from "kysely";
@@ -120,6 +121,8 @@ export async function ensureDeployment(
     const created = await transaction
       .insertInto("deployments")
       .values({
+        authorityModelVersion:
+          deploymentPolicy(input.deploymentShape).executionPrincipal === "person" ? 1 : 2,
         activeHostInstanceId: input.hostInstanceId,
         canonicalOrigin: input.canonicalOrigin,
         createdAt: now,

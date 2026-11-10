@@ -1,3 +1,4 @@
+import { projectAuthorityCutoverMigration } from "./project-authority-migration.js";
 import { PLUGIN_SCHEMA_SQL } from "./plugin-schema.js";
 import { teamAdministrationMigration } from "./team-administration-migration.js";
 import { conversationUnreadPredicate } from "./message-visibility.js";
@@ -4843,6 +4844,7 @@ export function migrationProvider() {
         "0169_access_foundation": accessFoundationMigration,
         "0170_project_execution_preparation": projectExecutionPreparationMigration,
         "0171_team_administration": teamAdministrationMigration,
+        "0172_project_authority_cutover": projectAuthorityCutoverMigration,
       };
     },
   };

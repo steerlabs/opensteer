@@ -360,11 +360,11 @@ describeStore("dormant Project access", (it) => {
         await sql`select generation::double precision as generation, id, invited_by, joined_at, role, state, user_id, workspace_id from workspace_memberships where id = ${membership.id}`.execute(
           database,
         );
-      await new OpensteerStore(database).ensureDeployment({
-        canonicalOrigin: "https://legacy.fixture.invalid",
-        hostInstanceId: createId("hostInstance"),
-        deploymentShape: { kind: "server", defaultWorkspaceBacking: "local-directory" },
-      });
+      await sql`insert into deployments (id, active_host_instance_id, canonical_origin, deployment_shape)
+        values (${createId("deployment")}, ${createId("hostInstance")}, 'https://legacy.fixture.invalid',
+          '{"kind":"server","defaultWorkspaceBacking":"local-directory"}'::jsonb)`.execute(
+        database,
+      );
       const legacy = await legacyMembershipLifecycle(
         database,
         source.userId,
@@ -388,8 +388,16 @@ describeStore("dormant Project access", (it) => {
       const upgradedObjects = new Map(
         (await legacyObjects(database)).rows.map((row) => [row.name, row.definition]),
       );
-      for (const original of originalObjects)
-        expect(upgradedObjects.get(original.name), original.name).toBe(original.definition);
+      const extendedPrincipalChecks = new Set([
+        "constraint:principals:principals_kind_check",
+        "constraint:principals:principals_kind_shape_check",
+      ]);
+      for (const original of originalObjects) {
+        const definition = upgradedObjects.get(original.name);
+        if (extendedPrincipalChecks.has(original.name))
+          expect(definition, original.name).toContain("'project'");
+        else expect(definition, original.name).toBe(original.definition);
+      }
       const upgraded = await legacyMembershipLifecycle(
         database,
         source.userId,

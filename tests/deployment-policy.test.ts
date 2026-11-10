@@ -30,6 +30,26 @@ const clientPolicyDerivations: Record<string, { count: number; reason: string }>
   },
 };
 const exceptionGroups = {
+  dormantProjectAuthority: {
+    "apps/host/src/team/team-administration-service.ts": {
+      counts: { "authority.kind": 1 },
+      reason:
+        "Dormant team administration requires persisted server/model-2 identity independently of runtime activation.",
+    },
+    "packages/database/src/access-store.ts": {
+      counts: { "authority.kind": 1, "deployment.deploymentShape.kind": 1 },
+      reason:
+        "Cold grants and Project self-use require persisted server/model-2 identity; legacy execution is unchanged.",
+    },
+    "packages/database/src/deployment-execution-authority.ts": {
+      counts: { "authority.kind": 1 },
+      reason: "Cold Project-store authority gate validates persisted shape and model.",
+    },
+    "packages/database/src/team-administration-authority.ts": {
+      counts: { "authority.kind": 1 },
+      reason: "Cold team administration authority gate validates persisted shape and model.",
+    },
+  },
   displayAlias: {
     "apps/desktop/src/bridge/methods/web-links.ts": {
       counts: { "selected.kind": 1 },
@@ -252,6 +272,15 @@ const sqlExceptions: Record<
   string,
   { reason: string; decisions: Record<string, Record<string, number>> }
 > = {
+  "packages/database/src/project-authority-guards.ts": {
+    reason:
+      "Cold Project-principal creation requires persisted server/model-2 authority; Personal inserts return before querying Deployment state.",
+    decisions: {
+      "baseline/public.opensteer_project_principal_scope": {
+        "d.deployment_shape->>'kind' = 'server'": 1,
+      },
+    },
+  },
   "packages/database/src/baseline-schema.ts": {
     reason:
       "Historical installed SQL; replace each named function, shape constraint or conversion through a new cutover migration, never by editing history.",
@@ -294,6 +323,9 @@ const sqlExceptions: Record<
       "deploymentKindAndHostIdentityMigration/public.opensteer_user_can_execute_environment": {
         "deployment.deployment_shape->>'kind' = 'server'": 1,
         "deployment.deployment_shape->>'kind' = 'personal'": 1,
+      },
+      "projectExecutionPreparationMigration/public.opensteer_project_runtime_settings_scope": {
+        "d.deployment_shape->>'kind' = 'server'": 1,
       },
       "runnerOwnedLocalWorkspacesMigration/deployments_shape_check": {
         "deployment_shape->>'kind' = any (array['personal', 'server'])": 1,

@@ -1,3 +1,5 @@
+import { authorityPreflight } from "./authority-preflight.js";
+import { createExecutionRuntime } from "./execution-runtime.js";
 import { deploymentPolicy } from "@opensteer/core";
 import { RequestHold } from "../mcp/request-hold.js";
 import { ThreadNaming } from "../agents/thread-naming.js";
@@ -461,16 +463,21 @@ export async function createHostRuntime(
   let pluginChangeNotices: PluginChangeNotices | undefined;
   try {
     authorityLease = await acquireDeploymentAuthorityLease(database);
+    await authorityPreflight(database, config.workspace.shape);
     await migrateToLatest(database).catch((error: unknown) => {
       throw config.mode === "development" ? withDevelopmentDatabaseReset(error) : error;
     });
     // Only the Host knows the origin its own web app answers on, so it is the
     // Host that teaches the store how to name a Thread in a channel message.
-    const store = new OpensteerStore(database, {
+    const storeDependencies = {
       ...(options.executionClock ? { executionClock: options.executionClock } : {}),
-      links: { threadUrl: (threadId) => `${config.canonicalOrigin.origin}/threads/${threadId}` },
-    });
-    const deployment = await store.ensureDeployment({
+      links: {
+        threadUrl: (threadId: import("@opensteer/core").ThreadId) =>
+          `${config.canonicalOrigin.origin}/threads/${threadId}`,
+      },
+    };
+    const initializationStore = new OpensteerStore(database, storeDependencies);
+    const deployment = await initializationStore.ensureDeployment({
       ...(config.deploymentIdentity
         ? {
             deploymentId: config.deploymentIdentity.deploymentId,
@@ -480,6 +487,8 @@ export async function createHostRuntime(
       hostInstanceId: hostInstance.hostInstanceId,
       deploymentShape: config.workspace.shape,
     });
+
+    const { store } = await createExecutionRuntime(database, deployment, storeDependencies);
 
     // What active Runs are streaming, held only in memory; it learns each Run
     // from that Run's committed durable events and forgets it at the terminal.

@@ -909,6 +909,12 @@ export interface AttachmentTable {
 }
 
 export interface ThreadInputTable {
+  initiatorGeneration: ColumnType<
+    string | null,
+    number | string | null | undefined,
+    number | string | null
+  >;
+  originConnectionId: Generated<string | null>;
   assignmentId: Generated<AssignmentId | null>;
   actorPrincipalId: PrincipalId;
   authoritySource: JsonColumn<Readonly<Record<string, unknown>>>;
@@ -959,6 +965,12 @@ export interface RunInitialContext {
 }
 
 export interface RunTable {
+  initiatorGeneration: ColumnType<
+    string | null,
+    number | string | null | undefined,
+    number | string | null
+  >;
+  originConnectionId: Generated<string | null>;
   personWaited: Generated<boolean>;
   doneWhenFinished: Generated<boolean>;
   assignmentId: Generated<AssignmentId | null>;
@@ -1196,6 +1208,7 @@ interface RequestContinuationTable {
 }
 
 interface TriggerTable {
+  createdByPrincipalId: Generated<PrincipalId | null>;
   systemRole: Generated<"memory-light" | "memory-nightly" | null>;
   id: TriggerId;
   workspaceId: WorkspaceId;
@@ -1219,6 +1232,7 @@ interface TriggerTable {
 }
 
 interface TriggerRevisionTable {
+  createdByPrincipalId: Generated<PrincipalId | null>;
   id: TriggerRevisionId;
   triggerId: TriggerId;
   ordinal: number;
@@ -1230,6 +1244,7 @@ interface TriggerRevisionTable {
 }
 
 export interface TriggerWatchActivationTable {
+  createdByPrincipalId: Generated<PrincipalId | null>;
   id: TriggerWatchActivationId;
   triggerId: TriggerId;
   revisionId: TriggerRevisionId;
@@ -1304,6 +1319,17 @@ export interface ProviderSessionTable {
 type CommandStatus = "pending" | "dispatched" | "succeeded" | "failed" | "unknown";
 
 export interface CommandTable {
+  membershipGeneration: ColumnType<
+    string | null,
+    number | string | null | undefined,
+    number | string | null
+  >;
+  initiatorGeneration: ColumnType<
+    string | null,
+    number | string | null | undefined,
+    number | string | null
+  >;
+  originConnectionId: Generated<string | null>;
   id: CommandId;
   environmentId: EnvironmentId | null;
   threadId: ThreadId | null;
@@ -1664,8 +1690,9 @@ interface CredentialAccessAuditTable {
 }
 
 interface PrincipalTable {
+  workspaceId: Generated<WorkspaceId | null>;
   id: PrincipalId;
-  kind: "user" | "channel-identity" | "system";
+  kind: "user" | "project" | "channel-identity" | "system";
   userId: UserId | null;
   displayName: string;
   createdAt: Timestamp;

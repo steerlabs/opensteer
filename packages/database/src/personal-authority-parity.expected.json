@@ -1,0 +1,496 @@
+{
+  "admission": [
+    {
+      "sql": "begin",
+      "parameters": []
+    },
+    {
+      "sql": "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+      "parameters": ["[\"command-idempotency\",\"id-1\",\"parity-turn\"]"]
+    },
+    {
+      "sql": "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+      "parameters": ["[\"command-idempotency\",\"id-1\",\"parity-turn\"]"]
+    },
+    {
+      "sql": "select * from \"thread_inputs\" where \"requested_by\" = $1 and \"idempotency_key\" = $2",
+      "parameters": ["id-1", "parity-turn"]
+    },
+    {
+      "sql": "select \"harness_instance_id\", \"workspace_id\" from \"threads\" where \"id\" = $1",
+      "parameters": ["id-2"]
+    },
+    {
+      "sql": "select \"runs\".\"id\", \"threads\".\"workspace_id\" from \"runs\" inner join \"threads\" on \"threads\".\"id\" = \"runs\".\"thread_id\" where \"runs\".\"thread_id\" = $1 and \"runs\".\"status\" = $2",
+      "parameters": ["id-2", "running"]
+    },
+    {
+      "sql": "select \"id\", \"status\" from \"workspaces\" where \"id\" in ($1) order by \"id\" asc for no key update",
+      "parameters": ["id-3"]
+    },
+    {
+      "sql": "select \"generation\", \"state\" from \"workspace_memberships\" where \"workspace_id\" = $1 and \"user_id\" = $2 for no key update",
+      "parameters": ["id-3", "id-1"]
+    },
+    {
+      "sql": "select \"channel_bindings\".\"id\" as \"binding_id\", \"channel_bindings\".\"account_id\", \"channel_accounts\".\"connection_id\", \"thread_inputs\".\"actor_principal_id\" from \"thread_inputs\" inner join \"channel_bindings\" on thread_inputs.authority_source->>'bindingId' = channel_bindings.id inner join \"channel_accounts\" on \"channel_accounts\".\"id\" = \"channel_bindings\".\"account_id\" where \"thread_inputs\".\"thread_id\" in ($1) and \"thread_inputs\".\"state\" in ($2, $3, $4) and thread_inputs.authority_source->>'kind' = $5",
+      "parameters": ["id-2", "pending", "claimed", "unknown", "channel-ingress"]
+    },
+    {
+      "sql": "select * from \"threads\" where \"id\" = $1 for no key update",
+      "parameters": ["id-2"]
+    },
+    {
+      "sql": "select \"deployment_shape\" from \"deployments\" where \"singleton_key\" = $1",
+      "parameters": ["primary"]
+    },
+    {
+      "sql": "select \"instance_role\" from \"users\" where \"id\" = $1",
+      "parameters": ["id-1"]
+    },
+    {
+      "sql": "select \"execution_environments\".\"id\" from \"execution_environments\" inner join \"runners\" on \"runners\".\"id\" = \"execution_environments\".\"runner_id\" where \"execution_environments\".\"id\" = $1 and (\"runners\".\"owner_kind\" = $2 or (\"runners\".\"owner_kind\" = $3 and \"runners\".\"owner_user_id\" = $4)) and (\"runners\".\"kind\" <> $5 or \"runners\".\"owner_user_id\" is null or \"runners\".\"owner_user_id\" = $6) and \"runners\".\"revoked_at\" is null",
+      "parameters": ["id-4", "deployment", "user", "id-1", "managed", "id-1"]
+    },
+    {
+      "sql": "select \"principals\".\"display_name\", \"principals\".\"id\", \"principals\".\"user_id\" from \"principals\" inner join \"users\" on \"users\".\"id\" = \"principals\".\"user_id\" where \"principals\".\"kind\" = $1 and \"principals\".\"user_id\" = $2",
+      "parameters": ["user", "id-1"]
+    },
+    {
+      "sql": "select \"id\" from \"provider_sessions\" where \"thread_id\" in ($1) order by \"id\" asc for no key update",
+      "parameters": ["id-2"]
+    },
+    {
+      "sql": "select \"id\" from \"causal_chains\" where \"id\" in (select \"causal_chain_id\" from \"thread_inputs\" where \"thread_id\" in ($1) and \"state\" in ($2, $3, $4)) order by \"id\" asc for no key update",
+      "parameters": ["id-2", "pending", "claimed", "unknown"]
+    },
+    {
+      "sql": "select \"id\" from \"delegations\" where ((\"child_thread_id\" in ($1) and \"status\" = $2) or \"id\" in (select \"assignment_id\" from \"thread_inputs\" where \"thread_id\" in ($3) and \"state\" in ($4, $5, $6))) order by \"id\" asc for no key update",
+      "parameters": ["id-2", "open", "id-2", "pending", "claimed", "unknown"]
+    },
+    {
+      "sql": "select \"id\" from \"delegations\" where \"child_thread_id\" = $1 and \"status\" = $2 for no key update",
+      "parameters": ["id-2", "open"]
+    },
+    {
+      "sql": "update \"thread_inputs\" set \"cancel_reason\" = $1, \"state\" = $2, \"updated_at\" = $3 where \"thread_id\" = $4 and \"policy\" = $5 and \"state\" in ($6, $7) and not exists (select \"id\" from \"workspace_memberships\" where \"workspace_id\" = $8 and \"user_id\" = \"thread_inputs\".\"requested_by\" and \"generation\" = \"thread_inputs\".\"membership_generation\" and \"state\" = $9) returning *",
+      "parameters": [
+        "membership-changed",
+        "cancelled",
+        "<time>",
+        "id-2",
+        "report",
+        "pending",
+        "unknown",
+        "id-3",
+        "active"
+      ]
+    },
+    {
+      "sql": "select count(*) as \"count\", coalesce(sum(octet_length(messages.content::text)), 0) as \"bytes\" from \"thread_inputs\" inner join \"messages\" on \"messages\".\"id\" = \"thread_inputs\".\"message_id\" where \"thread_inputs\".\"thread_id\" = $1 and \"thread_inputs\".\"state\" in ($2, $3, $4) and \"thread_inputs\".\"policy\" != $5",
+      "parameters": ["id-2", "pending", "claimed", "unknown", "report"]
+    },
+    {
+      "sql": "select * from \"runs\" where \"thread_id\" = $1 and \"status\" = $2",
+      "parameters": ["id-2", "running"]
+    },
+    {
+      "sql": "insert into \"causal_chains\" (\"id\", \"max_delegations\", \"max_autonomous_runs\", \"root_message_id\", \"root_occurrence_id\", \"used_delegations\", \"used_autonomous_runs\") values ($1, $2, $3, $4, $5, $6, $7)",
+      "parameters": ["id-5", 32, 64, "id-6", null, 0, 0]
+    },
+    {
+      "sql": "insert into \"messages\" (\"quote\", \"actor_principal_id\", \"author\", \"content\", \"id\", \"kind\", \"run_id\", \"sequence\", \"thread_id\") values ($1, $2, $3::jsonb, $4::jsonb, $5, $6, $7, $8, $9) returning *",
+      "parameters": [
+        null,
+        "id-7",
+        "{\"displayName\":\"Alex\",\"kind\":\"human\",\"principalId\":\"id-7\",\"userId\":\"id-1\"}",
+        "[{\"type\":\"text\",\"text\":\"Run parity\"}]",
+        "id-6",
+        "input",
+        null,
+        "0",
+        "id-2"
+      ]
+    },
+    {
+      "sql": "insert into \"thread_inputs\" (\"assignment_id\", \"actor_principal_id\", \"authority_source\", \"cancel_reason\", \"causal_chain_id\", \"delivered_at\", \"idempotency_key\", \"membership_generation\", \"message_id\", \"policy\", \"queue_rank\", \"reply_target\", \"requested_by\", \"request_fingerprint\", \"run_id\", \"state\", \"steer_command_id\", \"thread_id\", \"updated_at\") values ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19) returning *",
+      "parameters": [
+        null,
+        "id-7",
+        "{\"kind\":\"workspace-membership\",\"userId\":\"id-1\"}",
+        null,
+        "id-5",
+        null,
+        "parity-turn",
+        1,
+        "id-6",
+        "queue",
+        "0",
+        null,
+        "id-1",
+        "OZO5aLziWlrUHB2IeyGvZrqhNRxSUBDN1mRNnQu8XdE",
+        null,
+        "pending",
+        null,
+        "id-2",
+        "<time>"
+      ]
+    },
+    {
+      "sql": "update \"threads\" set \"next_message_sequence\" = next_message_sequence + 1, \"updated_at\" = $1, \"asked_at\" = $2 where \"id\" = $3",
+      "parameters": ["<time>", "<time>", "id-2"]
+    },
+    {
+      "sql": "update \"workspaces\" set \"event_sequence\" = event_sequence + 1, \"updated_at\" = $1 where \"id\" = $2 returning \"event_sequence\"",
+      "parameters": ["<time>", "id-3"]
+    },
+    {
+      "sql": "insert into \"workspace_events\" (\"created_at\", \"data\", \"environment_id\", \"event_id\", \"run_id\", \"runner_binding_generation\", \"runner_boot_id\", \"runner_id\", \"runner_ordinal\", \"sequence\", \"thread_id\", \"type\", \"workspace_id\") values ($1, $2::jsonb, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+      "parameters": [
+        "<time>",
+        "{\"input\":{\"assignmentId\":null,\"cancelReason\":null,\"causalChainId\":\"id-5\",\"createdAt\":\"<time>\",\"deliveredAt\":null,\"messageId\":\"id-6\",\"policy\":\"queue\",\"replyTarget\":null,\"runId\":null,\"state\":\"pending\",\"threadId\":\"id-2\",\"updatedAt\":\"<time>\"},\"message\":{\"author\":{\"displayName\":\"Alex\",\"kind\":\"human\",\"principalId\":\"id-7\",\"userId\":\"id-1\"},\"content\":[{\"type\":\"text\",\"text\":\"Run parity\"}],\"createdAt\":\"<time>\",\"id\":\"id-6\",\"kind\":\"input\",\"runId\":null,\"sequence\":\"0\",\"threadId\":\"id-2\"}}",
+        "id-4",
+        "id-8",
+        null,
+        null,
+        null,
+        null,
+        null,
+        "2",
+        "id-2",
+        "message.created",
+        "id-3"
+      ]
+    },
+    {
+      "sql": "select * from \"runs\" where \"thread_id\" = $1 and \"status\" = $2",
+      "parameters": ["id-2", "queued"]
+    },
+    {
+      "sql": "select \"id\" from \"runs\" where \"thread_id\" = $1 and \"status\" in ($2, $3, $4, $5)",
+      "parameters": ["id-2", "queued", "starting", "running", "waiting"]
+    },
+    {
+      "sql": "select \"message_id\" from \"thread_work_inputs\" where \"thread_id\" = $1 and \"state\" = $2 limit $3",
+      "parameters": ["id-2", "pending", 1]
+    },
+    {
+      "sql": "select \"harness_instance_id\" from \"provider_sessions\" where \"thread_id\" = $1 and \"active\" = $2",
+      "parameters": ["id-2", true]
+    },
+    {
+      "sql": "select \"id\" from \"provider_sessions\" where \"thread_id\" in ($1) order by \"id\" asc for no key update",
+      "parameters": ["id-2"]
+    },
+    {
+      "sql": "select \"id\" from \"causal_chains\" where \"id\" in (select \"causal_chain_id\" from \"thread_inputs\" where \"thread_id\" in ($1) and \"state\" in ($2, $3, $4)) order by \"id\" asc for no key update",
+      "parameters": ["id-2", "pending", "claimed", "unknown"]
+    },
+    {
+      "sql": "select \"id\" from \"delegations\" where ((\"child_thread_id\" in ($1) and \"status\" = $2) or \"id\" in (select \"assignment_id\" from \"thread_inputs\" where \"thread_id\" in ($3) and \"state\" in ($4, $5, $6))) order by \"id\" asc for no key update",
+      "parameters": ["id-2", "open", "id-2", "pending", "claimed", "unknown"]
+    },
+    {
+      "sql": "select \"message_id\" from \"thread_inputs\" where \"thread_id\" in ($1) and \"state\" in ($2, $3, $4) order by \"message_id\" asc for no key update",
+      "parameters": ["id-2", "pending", "claimed", "unknown"]
+    },
+    {
+      "sql": "select \"id\" from \"messages\" where \"id\" in (select \"message_id\" from \"thread_inputs\" where \"thread_id\" in ($1) and \"state\" in ($2, $3, $4)) order by \"id\" asc for no key update",
+      "parameters": ["id-2", "pending", "claimed", "unknown"]
+    },
+    {
+      "sql": "select \"thread_inputs\".*, \"messages\".\"kind\" as \"message_kind\" from \"thread_work_inputs\" as \"thread_inputs\" inner join \"messages\" on \"messages\".\"id\" = \"thread_inputs\".\"message_id\" where \"thread_inputs\".\"thread_id\" = $1 and \"thread_inputs\".\"state\" = $2 order by \"thread_inputs\".\"queue_rank\" asc",
+      "parameters": ["id-2", "pending"]
+    },
+    {
+      "sql": "select * from \"thread_inputs\" where \"message_id\" = $1",
+      "parameters": ["id-6"]
+    },
+    {
+      "sql": "select \"thread_inputs\".*, \"messages\".\"kind\" as \"message_kind\" from \"thread_work_inputs\" as \"thread_inputs\" inner join \"messages\" on \"messages\".\"id\" = \"thread_inputs\".\"message_id\" where \"thread_inputs\".\"message_id\" = $1 and \"thread_inputs\".\"state\" = $2 for no key update of \"thread_inputs\"",
+      "parameters": ["id-6", "pending"]
+    },
+    {
+      "sql": "select \"threads\".\"environment_id\", \"threads\".\"workspace_id\", \"workspace_memberships\".\"generation\" from \"threads\" inner join \"workspace_memberships\" on \"workspace_memberships\".\"workspace_id\" = \"threads\".\"workspace_id\" where \"threads\".\"id\" = $1 and \"workspace_memberships\".\"user_id\" = $2 and \"workspace_memberships\".\"state\" = $3",
+      "parameters": ["id-2", "id-1", "active"]
+    },
+    {
+      "sql": "select \"deployment_shape\" from \"deployments\" where \"singleton_key\" = $1",
+      "parameters": ["primary"]
+    },
+    {
+      "sql": "select \"instance_role\" from \"users\" where \"id\" = $1",
+      "parameters": ["id-1"]
+    },
+    {
+      "sql": "select \"execution_environments\".\"id\" from \"execution_environments\" inner join \"runners\" on \"runners\".\"id\" = \"execution_environments\".\"runner_id\" where \"execution_environments\".\"id\" = $1 and (\"runners\".\"owner_kind\" = $2 or (\"runners\".\"owner_kind\" = $3 and \"runners\".\"owner_user_id\" = $4)) and (\"runners\".\"kind\" <> $5 or \"runners\".\"owner_user_id\" is null or \"runners\".\"owner_user_id\" = $6) and \"runners\".\"revoked_at\" is null",
+      "parameters": ["id-4", "deployment", "user", "id-1", "managed", "id-1"]
+    },
+    {
+      "sql": "update \"causal_chains\" set \"used_autonomous_runs\" = \"used_autonomous_runs\" + $1 where \"id\" = $2 and \"used_autonomous_runs\" < \"max_autonomous_runs\" returning \"id\"",
+      "parameters": [1, "id-5"]
+    },
+    {
+      "sql": "select \"id\", \"harness_instance_id\" from \"provider_sessions\" where \"thread_id\" = $1 and \"active\" = $2 for no key update",
+      "parameters": ["id-2", true]
+    },
+    {
+      "sql": "insert into \"runs\" (\"access_mode\", \"activation_input_id\", \"assignment_id\", \"actor_principal_id\", \"authority_source\", \"causal_chain_id\", \"completed_at\", \"environment_id\", \"harness_instance_id\", \"id\", \"membership_generation\", \"model_selection\", \"provider_session_id\", \"reply_target\", \"requested_by\", \"run_ordinal\", \"started_at\", \"status\", \"thread_id\", \"seed_input_id\", \"person_waited\") values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, exists (select 1 from messages where id = $21 and author->>'kind' = 'human')) returning *",
+      "parameters": [
+        "full-access",
+        "id-6",
+        null,
+        "id-7",
+        {
+          "kind": "workspace-membership",
+          "userId": "id-1"
+        },
+        "id-5",
+        null,
+        "id-4",
+        "id-9",
+        "id-10",
+        "1",
+        {
+          "modelId": "gpt-5.6-sol",
+          "options": {
+            "effort": "low"
+          },
+          "providerId": "openai"
+        },
+        "id-11",
+        null,
+        "id-1",
+        0,
+        null,
+        "queued",
+        "id-2",
+        "id-6",
+        "id-6"
+      ]
+    },
+    {
+      "sql": "insert into \"commands\" (\"actor_principal_id\", \"authority_source\", \"dispatcher_id\", \"environment_id\", \"id\", \"idempotency_key\", \"last_error\", \"payload\", \"requested_by\", \"run_id\", \"status\", \"thread_id\", \"type\") values ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12, $13) returning *",
+      "parameters": [
+        "id-7",
+        {
+          "kind": "workspace-membership",
+          "userId": "id-1"
+        },
+        null,
+        "id-4",
+        "id-12",
+        "run:id-10",
+        null,
+        "{\"runId\":\"id-10\",\"threadId\":\"id-2\",\"type\":\"run.execute\"}",
+        "id-1",
+        "id-10",
+        "pending",
+        "id-2",
+        "run.execute"
+      ]
+    },
+    {
+      "sql": "update \"threads\" set \"next_run_ordinal\" = \"next_run_ordinal\" + $1, \"updated_at\" = $2 where \"id\" = $3",
+      "parameters": [1, "<time>", "id-2"]
+    },
+    {
+      "sql": "select \"next_message_sequence\" from \"threads\" where \"id\" = $1",
+      "parameters": ["id-2"]
+    },
+    {
+      "sql": "select * from \"messages\" where \"id\" = $1",
+      "parameters": ["id-6"]
+    },
+    {
+      "sql": "update \"workspaces\" set \"event_sequence\" = event_sequence + 1, \"updated_at\" = $1 where \"id\" = $2 returning \"event_sequence\"",
+      "parameters": ["<time>", "id-3"]
+    },
+    {
+      "sql": "insert into \"workspace_events\" (\"created_at\", \"data\", \"environment_id\", \"event_id\", \"run_id\", \"runner_binding_generation\", \"runner_boot_id\", \"runner_id\", \"runner_ordinal\", \"sequence\", \"thread_id\", \"type\", \"workspace_id\") values ($1, $2::jsonb, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+      "parameters": [
+        "<time>",
+        "{\"message\":{\"author\":{\"displayName\":\"Alex\",\"kind\":\"human\",\"principalId\":\"id-7\",\"userId\":\"id-1\"},\"content\":[{\"type\":\"text\",\"text\":\"Run parity\"}],\"createdAt\":\"<time>\",\"id\":\"id-6\",\"kind\":\"input\",\"runId\":null,\"sequence\":\"0\",\"threadId\":\"id-2\"}}",
+        "id-4",
+        "id-13",
+        "id-10",
+        null,
+        null,
+        null,
+        null,
+        "3",
+        "id-2",
+        "message.placed",
+        "id-3"
+      ]
+    },
+    {
+      "sql": "update \"workspaces\" set \"event_sequence\" = event_sequence + 1, \"updated_at\" = $1 where \"id\" = $2 returning \"event_sequence\"",
+      "parameters": ["<time>", "id-3"]
+    },
+    {
+      "sql": "insert into \"workspace_events\" (\"created_at\", \"data\", \"environment_id\", \"event_id\", \"run_id\", \"runner_binding_generation\", \"runner_boot_id\", \"runner_id\", \"runner_ordinal\", \"sequence\", \"thread_id\", \"type\", \"workspace_id\") values ($1, $2::jsonb, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+      "parameters": [
+        "<time>",
+        "{\"run\":{\"createdAt\":\"<time>\",\"id\":\"id-10\",\"status\":\"queued\",\"threadId\":\"id-2\",\"runOrdinal\":0}}",
+        "id-4",
+        "id-14",
+        "id-10",
+        null,
+        null,
+        null,
+        null,
+        "4",
+        "id-2",
+        "run.queued",
+        "id-3"
+      ]
+    },
+    {
+      "sql": "select \"id\" from \"delegations\" where \"child_thread_id\" = $1 and \"status\" = $2 order by \"id\" asc for no key update",
+      "parameters": ["id-2", "open"]
+    },
+    {
+      "sql": "delete from \"thread_state_pending\" where \"thread_id\" = $1",
+      "parameters": ["id-2"]
+    },
+    {
+      "sql": "select \"status\", \"title\", \"icon\", \"done_at\", \"done_reason\", \"input_queue_paused\", \"projected_input_queue_paused\", \"pending_request_count\", \"workspace_id\", \"environment_id\" from \"threads\" where \"id\" = $1",
+      "parameters": ["id-2"]
+    },
+    {
+      "sql": "select \"status\" from \"runs\" where \"thread_id\" = $1 and \"status\" in ($2, $3, $4, $5) order by \"run_ordinal\" asc limit $6",
+      "parameters": ["id-2", "queued", "starting", "running", "waiting", 1]
+    },
+    {
+      "sql": "select \"status\" from \"runs\" where \"thread_id\" = $1 order by \"run_ordinal\" desc limit $2",
+      "parameters": ["id-2", 1]
+    },
+    {
+      "sql": "select count(*) as \"count\" from \"requests\" where \"originating_thread_id\" = $1 and \"status\" = $2",
+      "parameters": ["id-2", "pending"]
+    },
+    {
+      "sql": "update \"threads\" set \"status\" = $1, \"pending_request_count\" = $2, \"projected_input_queue_paused\" = $3, \"updated_at\" = $4 where \"id\" = $5",
+      "parameters": ["running", 0, false, "<time>", "id-2"]
+    },
+    {
+      "sql": "update \"workspaces\" set \"event_sequence\" = event_sequence + 1, \"updated_at\" = $1 where \"id\" = $2 returning \"event_sequence\"",
+      "parameters": ["<time>", "id-3"]
+    },
+    {
+      "sql": "insert into \"workspace_events\" (\"created_at\", \"data\", \"environment_id\", \"event_id\", \"run_id\", \"runner_binding_generation\", \"runner_boot_id\", \"runner_id\", \"runner_ordinal\", \"sequence\", \"thread_id\", \"type\", \"workspace_id\") values ($1, $2::jsonb, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+      "parameters": [
+        "<time>",
+        "{\"status\":\"running\",\"inputQueuePaused\":false,\"pendingRequests\":0,\"title\":\"Thread parity\",\"icon\":null,\"doneAt\":null,\"doneReason\":null}",
+        "id-4",
+        "id-15",
+        null,
+        null,
+        null,
+        null,
+        null,
+        "5",
+        "id-2",
+        "thread.state-changed",
+        "id-3"
+      ]
+    },
+    {
+      "sql": "commit",
+      "parameters": []
+    }
+  ],
+  "answer": [
+    {
+      "sql": "begin",
+      "parameters": []
+    },
+    {
+      "sql": "select distinct \"originating_workspace_id\", \"target_workspace_id\" from \"requests\" where \"id\" = $1",
+      "parameters": ["id-16"]
+    },
+    {
+      "sql": "select \"id\" from \"workspaces\" where \"id\" in ($1) order by \"id\" asc for no key update",
+      "parameters": ["id-3"]
+    },
+    {
+      "sql": "select distinct \"originating_workspace_id\", \"target_workspace_id\" from \"requests\" where \"id\" = $1",
+      "parameters": ["id-16"]
+    },
+    {
+      "sql": "select * from \"requests\" where \"id\" = $1",
+      "parameters": ["id-16"]
+    },
+    {
+      "sql": "select \"runs\".\"environment_id\", \"runs\".\"id\", \"runs\".\"membership_generation\", \"runs\".\"requested_by\", \"runs\".\"status\", \"runs\".\"thread_id\", \"threads\".\"workspace_id\" from \"runs\" inner join \"threads\" on \"threads\".\"id\" = \"runs\".\"thread_id\" where \"runs\".\"id\" = $1",
+      "parameters": ["id-10"]
+    },
+    {
+      "sql": "select \"id\", \"kind\", \"status\" from \"workspaces\" where \"id\" in ($1)",
+      "parameters": ["id-3"]
+    },
+    {
+      "sql": "select \"generation\", \"state\" from \"workspace_memberships\" where \"workspace_id\" = $1 and \"user_id\" = $2",
+      "parameters": ["id-3", "id-1"]
+    },
+    {
+      "sql": "select * from \"requests\" where \"id\" = $1 for no key update",
+      "parameters": ["id-16"]
+    },
+    {
+      "sql": "update \"requests\" set \"resolved_at\" = $1, \"resolved_by\" = $2, \"settlement_provenance\" = $3, \"response\" = $4::jsonb, \"status\" = $5 where \"id\" = $6 and \"status\" = $7 returning *",
+      "parameters": [
+        "<time>",
+        "id-1",
+        null,
+        "{\"kind\":\"external\",\"value\":{\"decision\":\"declined\"}}",
+        "declined",
+        "id-16",
+        "pending"
+      ]
+    },
+    {
+      "sql": "insert into \"request_continuations\" (\"attempted_at\", \"created_at\", \"reason\", \"request_id\", \"status\", \"updated_at\") values ($1, $2, $3, $4, $5, $6) on conflict (\"request_id\") do nothing",
+      "parameters": [null, "<time>", null, "id-16", "waiting", "<time>"]
+    },
+    {
+      "sql": "select \"environment_id\" from \"runs\" where \"id\" = $1",
+      "parameters": ["id-10"]
+    },
+    {
+      "sql": "update \"workspaces\" set \"event_sequence\" = event_sequence + 1, \"updated_at\" = $1 where \"id\" = $2 returning \"event_sequence\"",
+      "parameters": ["<time>", "id-3"]
+    },
+    {
+      "sql": "insert into \"workspace_events\" (\"created_at\", \"data\", \"environment_id\", \"event_id\", \"run_id\", \"runner_binding_generation\", \"runner_boot_id\", \"runner_id\", \"runner_ordinal\", \"sequence\", \"thread_id\", \"type\", \"workspace_id\") values ($1, $2::jsonb, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+      "parameters": [
+        "<time>",
+        "{\"request\":{\"settlementProvenance\":null,\"callId\":\"parity-request\",\"createdAt\":\"<time>\",\"id\":\"id-16\",\"kind\":\"browser.access\",\"mode\":\"durable\",\"originatingOccurrenceId\":null,\"originatingRunId\":\"id-10\",\"originatingThreadId\":\"id-2\",\"originatingWorkspaceId\":\"id-3\",\"payload\":{\"kind\":\"browser.access\",\"reason\":\"Choose access\",\"suggestion\":{\"kind\":\"user_choice\"}},\"presentation\":{\"kind\":\"external\",\"subject\":{\"id\":\"id-3\",\"kind\":\"workspace\"},\"title\":\"Choose access\"},\"requestedBy\":\"id-1\",\"requiredActor\":\"requester\",\"targetWorkspaceId\":\"id-3\",\"cancellationReason\":null,\"resolvedAt\":\"<time>\",\"resolvedBy\":\"id-1\",\"response\":{\"kind\":\"external\",\"value\":{\"decision\":\"declined\"}},\"status\":\"declined\"}}",
+        "id-4",
+        "id-17",
+        "id-10",
+        null,
+        null,
+        null,
+        null,
+        "12",
+        "id-2",
+        "request.resolved",
+        "id-3"
+      ]
+    },
+    {
+      "sql": "insert into \"thread_state_pending\" (\"thread_id\", \"requested_at\") values ($1, $2) on conflict (\"thread_id\") do nothing",
+      "parameters": ["id-2", "<time>"]
+    },
+    {
+      "sql": "select \"assignment_id\" from \"runs\" where \"id\" = $1",
+      "parameters": ["id-10"]
+    },
+    {
+      "sql": "commit",
+      "parameters": []
+    }
+  ]
+}

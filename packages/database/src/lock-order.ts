@@ -135,6 +135,7 @@ export const databaseLockOrder = [
   "channel_accounts",
   "channel_bindings",
   "channel_identities",
+  // Project Workspaces and memberships precede their principals; principals precede Threads.
   // A sender's new display name reaches its Principal before adoption locks the conversation.
   "principals",
   "channel_access_grants",
