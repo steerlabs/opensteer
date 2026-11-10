@@ -412,6 +412,7 @@ describe("isolated phone page helper", () => {
     const input = document.querySelector("input")!;
     input.focus();
     input.setSelectionRange(1, 3);
+    vi.spyOn(input, "getBoundingClientRect").mockReturnValue(new DOMRect(10, -99, 192, 36));
     const events = vi.fn();
     input.addEventListener("click", events);
     input.addEventListener("input", events);

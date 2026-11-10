@@ -133,6 +133,7 @@ export class PhoneBrowserManager {
   readonly #opening = new Set<string>();
   readonly #clipboard = new Map<string, { tab: PhoneTab; documentId: string }>();
   readonly #retiredConnections = new Set<string>();
+  readonly #localIntents = new Map<string, Set<symbol>>();
   #inventoryConnection: string | null = null;
   readonly #unsubscribe: () => void;
   #qualification: NativeQualification | null = null;
@@ -182,8 +183,16 @@ export class PhoneBrowserManager {
     return this.#qualification ? phoneBrowserDescriptor(this.#qualification) : undefined;
   }
 
+  get runnerId(): string {
+    return this.#runnerId;
+  }
+
   getTabPresentation = (surfaceId: string): PhoneTabPresentation | null =>
     this.#presentations.get(surfaceId) ?? null;
+
+  hasLiveSession(sessionId: string): boolean {
+    return this.#foreground && !!this.#sessions.get(sessionId)?.channels.size;
+  }
 
   localPresentation(deploymentId: string, surfaceId: string): PhonePresentationAdmission | null {
     const tab = this.#tabs.get(surfaceId);
@@ -214,6 +223,20 @@ export class PhoneBrowserManager {
       if (!listeners.size) this.#listeners.delete(surfaceId);
     };
   };
+
+  markLocalPresentation(surfaceId: string): () => void {
+    if (!this.#tabs.has(surfaceId))
+      throw new PhoneBrowserError("target-closed", "The local tab is not held.");
+    const token = Symbol();
+    let intents = this.#localIntents.get(surfaceId);
+    if (!intents) this.#localIntents.set(surfaceId, (intents = new Set()));
+    intents.add(token);
+    return () => {
+      intents.delete(token);
+      if (!intents.size && this.#localIntents.get(surfaceId) === intents)
+        this.#localIntents.delete(surfaceId);
+    };
+  }
 
   async setForeground(active: boolean): Promise<void> {
     if (this.#disposed || this.#foreground === active) return;
@@ -250,15 +273,14 @@ export class PhoneBrowserManager {
         if (this.#covered?.tabId === tab.id) this.#covered = null;
         this.#visible = tab.id;
         try {
-          await this.#makeLive(tab, "live-visible");
-          const metadata = await this.#native.mountTab({
-            ...this.#ref(tab),
-            hostId,
-            presentationGeneration: ++tab.presentationGeneration,
-            interactive: true,
-          });
-          this.#acceptMetadata(tab, metadata);
-          this.#publishTab(tab);
+          await this.#makeLive(tab, "live-visible", () =>
+            this.#native.mountTab({
+              ...this.#ref(tab),
+              hostId,
+              presentationGeneration: ++tab.presentationGeneration,
+              interactive: true,
+            }),
+          );
           await this.#publish(session);
         } catch (error) {
           if (epoch === this.#epoch) await this.#invalidate("presentation-failed", error);
@@ -524,7 +546,13 @@ export class PhoneBrowserManager {
         if (!this.#sameCapability(lease, this.#capability)) {
           if (lease.capabilityGeneration <= this.#capabilityHighWater)
             throw new PhoneBrowserError("forbidden", "The capability grant is retired.");
-          await this.#invalidate("capability-replaced");
+          if (
+            this.#capability?.runtimeId === lease.runtimeId &&
+            Date.parse(this.#capability.expiresAt) > this.#clock.now()
+          ) {
+            for (const channel of this.#channels.values())
+              channel.capability = capabilityReference(lease);
+          } else await this.#invalidate("capability-replaced");
         }
         this.#capability = lease;
         this.#capabilityHighWater = lease.capabilityGeneration;
@@ -734,16 +762,6 @@ export class PhoneBrowserManager {
     channel.held = null;
     await this.#publish(session);
     await this.#inventory();
-    const selected = this.#selected;
-    if (
-      claims.access === "read-write" &&
-      selected?.admission.sessionId === claims.sessionId &&
-      (claims.initialSurfaceId === selected.admission.surfaceId ||
-        claims.dormantSurfaceIds?.includes(
-          BrowserSurfaceIdSchema.parse(selected.admission.surfaceId),
-        ))
-    )
-      await this.presentTab(selected.admission, selected.hostId);
   }
 
   async #startSession(
@@ -753,6 +771,19 @@ export class PhoneBrowserManager {
   ): Promise<PhoneSession> {
     const identity = claims.identity;
     if (identity.kind === "profile-local") this.#assertBinding(identity.binding);
+    if (identity.kind === "profile-local" && claims.initialSurfaceId !== undefined) {
+      const saved = new Set([claims.initialSurfaceId, ...(claims.dormantSurfaceIds ?? [])]);
+      for (const retired of this.#sessions.values()) {
+        if (
+          retired.channels.size ||
+          retired.claims.identity.kind !== "profile-local" ||
+          JSON.stringify(retired.claims.identity.binding) !== JSON.stringify(identity.binding)
+        )
+          continue;
+        for (const tab of retired.tabs.values())
+          if (!saved.has(BrowserSurfaceIdSchema.parse(tab.id))) await this.#closeTab(retired, tab);
+      }
+    }
     const storeHandle =
       identity.kind === "profile-local"
         ? await this.#bounded(epoch, () =>
@@ -1045,7 +1076,8 @@ export class PhoneBrowserManager {
           const { surfaceId } = z
             .strictObject({ surfaceId: BrowserSurfaceIdSchema })
             .parse(parameters);
-          await this.#claimCovered(this.#requireTab(session, surfaceId), null, channel);
+          const tab = this.#requireTab(session, surfaceId);
+          if (!this.#localIntents.has(surfaceId)) await this.#claimCovered(tab, null, channel);
           result = {};
           await this.#publish(session);
         } else if (method === browserHostMethods.closeTab) {
@@ -1404,16 +1436,10 @@ export class PhoneBrowserManager {
       !previous.channels.size &&
       !isLive(retained) &&
       previous !== session &&
-      JSON.stringify(
-        previous.claims.identity.kind === "profile-local"
-          ? previous.claims.identity.binding
-          : "fresh",
-      ) ===
-        JSON.stringify(
-          session.claims.identity.kind === "profile-local"
-            ? session.claims.identity.binding
-            : "fresh",
-        );
+      previous.claims.identity.kind === "profile-local" &&
+      session.claims.identity.kind === "profile-local" &&
+      JSON.stringify(previous.claims.identity.binding) ===
+        JSON.stringify(session.claims.identity.binding);
     if (session.closed.has(id) || (retained && !restore) || this.#opening.has(id))
       throw new PhoneBrowserError("target-closed", "The surface ID was already used.");
     if (session.tabs.size >= 64)
@@ -1471,6 +1497,7 @@ export class PhoneBrowserManager {
       null,
       restore ? retained.lastDocumentId : undefined,
     );
+    if (restore) tab.presentationGeneration = retained.presentationGeneration;
     if (restore && retained.state === "discarded") {
       tab.state = "discarded";
       this.#publishTab(tab);
@@ -1631,11 +1658,17 @@ export class PhoneBrowserManager {
     });
   }
 
-  async #makeLive(tab: PhoneTab, state: "live-visible" | "live-covered"): Promise<void> {
+  async #makeLive(
+    tab: PhoneTab,
+    state: "live-visible" | "live-covered",
+    activate?: () => Promise<NativeTabMetadata>,
+  ): Promise<void> {
     const epoch = this.#epoch;
-    const metadata = isLive(tab)
-      ? tab.metadata
-      : await this.#bounded(epoch, () => this.#native.resumeTab(this.#ref(tab)));
+    const metadata = activate
+      ? await this.#bounded(epoch, activate)
+      : isLive(tab)
+        ? tab.metadata
+        : await this.#bounded(epoch, () => this.#native.resumeTab(this.#ref(tab)));
     this.#assertEpoch(epoch);
     if (tab.state === "closed")
       throw new PhoneBrowserError("target-closed", "The tab closed while resuming.");
@@ -1706,6 +1739,7 @@ export class PhoneBrowserManager {
     session.closed.add(tab.id);
     session.tabs.delete(tab.id);
     this.#tabs.delete(tab.id);
+    this.#localIntents.delete(tab.id);
     session.revision++;
     tab.state = "closed";
     tab.dialog = null;
@@ -1716,6 +1750,13 @@ export class PhoneBrowserManager {
     this.#publishTab(tab);
     if (!nativeClosed) await this.#native.destroyTab(this.#ref(tab));
     await this.#publish(session);
+    if (!session.closing && !session.channels.size && !session.tabs.size) {
+      this.#sessions.delete(session.claims.sessionId);
+      await this.#native.finishSessionFiles({
+        epoch: this.#epoch,
+        sessionId: session.claims.sessionId,
+      });
+    }
   }
 
   async #closeChannel(channel: PhoneChannel): Promise<void> {
@@ -1737,11 +1778,6 @@ export class PhoneBrowserManager {
       for (const tab of channel.session.tabs.values()) await this.#retain(tab);
       if (channel.session.claims.identity.kind === "fresh") {
         for (const tab of channel.session.tabs.values()) await this.#closeTab(channel.session, tab);
-        await this.#native.finishSessionFiles({
-          epoch: this.#epoch,
-          sessionId: channel.session.claims.sessionId,
-        });
-        this.#sessions.delete(channel.session.claims.sessionId);
       }
     }
   }
@@ -2162,6 +2198,9 @@ export class PhoneBrowserManager {
       tab.dialog = null;
       this.#publishTab(tab);
     }
+    for (const session of this.#sessions.values())
+      if (session.claims.identity.kind === "fresh")
+        for (const tab of session.tabs.values()) await this.#closeTab(session, tab);
     await this.#trimRetained();
     this.#assertEpoch(epoch);
   }

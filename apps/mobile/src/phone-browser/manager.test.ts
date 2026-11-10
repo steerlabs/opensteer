@@ -252,6 +252,17 @@ async function setup(
     attachmentId,
     attach,
     relay,
+    renew: async () => {
+      lease = {
+        ...lease,
+        capabilityGeneration: lease.capabilityGeneration + 1,
+        capabilityLeaseId: BrowserCapabilityLeaseSchema.parse({
+          ...lease,
+          capabilityLeaseId: `bcl_${uuid()}`,
+        }).capabilityLeaseId,
+      };
+      await relay({ ...fence, type: "capability.grant", requestId: uuid(), lease });
+    },
     reconnect: async (patch: Record<string, unknown> = {}) => {
       await native.emit({
         type: "connection",
@@ -283,10 +294,30 @@ async function setup(
 }
 
 describe("phone browser manager", () => {
+  test("a live Host capability renewal preserves channels, local views and agent authority", async () => {
+    const fixture = await setup();
+    await fixture.present();
+    await fixture.agentAttach();
+    const epoch = fixture.native.epoch;
+    fixture.native.tabs.get(fixture.surfaceId)!.form = "still here";
+    await fixture.renew();
+    expect(fixture.native.epoch).toBe(epoch);
+    expect(fixture.presentation().state).toBe("live-visible");
+    await fixture.action({ type: "page.info" });
+    expect(fixture.server().at(-1)).toMatchObject({
+      type: "agent.result",
+      result: { type: "page.info" },
+    });
+    expect(fixture.native.tabs.get(fixture.surfaceId)).toMatchObject({
+      form: "still here",
+      loads: 1,
+    });
+  });
   test.each(["ios", "android"] as const)(
     "%s adopts the retained surface into a new Host session without reloading",
     async (platform) => {
       const fixture = await setup(platform);
+      await fixture.present();
       await fixture.present();
       const original = fixture.native.tabs.get(fixture.surfaceId)!;
       original.form = "verification code";
@@ -304,12 +335,15 @@ describe("phone browser manager", () => {
         metadata: discarded.metadata,
       });
       await fixture.open("dormant");
+      await fixture.open("removed-while-offline");
       fixture.native.tabs.get("dormant")!.form = "second form";
       const generation = original.metadata.generation;
       await fixture.manager.setForeground(false);
       await fixture.manager.setForeground(true);
       const sessionId = `bsn_${uuid()}`;
       await fixture.reconnect({ sessionId, dormantSurfaceIds: ["dormant", "discarded"] });
+      expect(fixture.native.tabs.has("removed-while-offline")).toBe(false);
+      expect(fixture.presentation("removed-while-offline").state).toBe("closed");
       expect(fixture.presentation("discarded").state).toBe("discarded");
       expect(fixture.native.tabs.get("discarded")!.loads).toBe(1);
       expect(fixture.native.tabs.get(fixture.surfaceId)).toMatchObject({
@@ -331,6 +365,12 @@ describe("phone browser manager", () => {
         form: "second form",
         loads: 1,
       });
+      await fixture.manager.presentTab(
+        fixture.manager.localPresentation(fixture.deploymentId, fixture.surfaceId)!,
+        "readmitted-host",
+      );
+      expect(fixture.presentation().state).toBe("live-visible");
+      expect(original).toMatchObject({ form: "verification code", loads: 1 });
       expect(fixture.server()).toContainEqual(
         expect.objectContaining({
           type: "browser.snapshot",
@@ -713,7 +753,11 @@ describe("phone browser manager", () => {
     const fixture = await setup();
     await fixture.open("agent-tab");
     await fixture.open("other-agent-tab");
+    const resumes = fixture.native.calls.filter((call) => call.method === "resumeTab").length;
     await fixture.present();
+    expect(fixture.native.calls.filter((call) => call.method === "resumeTab")).toHaveLength(
+      resumes,
+    );
     await fixture.agentAttach();
     const other = { attachmentId: uuid(), actorToken: uuid() };
     await fixture.agentAttach(other.attachmentId, other.actorToken);
@@ -952,10 +996,41 @@ describe("phone browser manager", () => {
     ).toMatchObject({ sessionId: fixture.sessionId, surfaceId: fixture.surfaceId });
     expect(fixture.manager.localPresentation("another-deployment", fixture.surfaceId)).toBeNull();
     expect(fixture.manager.localPresentation(fixture.deploymentId, "unheld-tab")).toBeNull();
+    const release = fixture.manager.markLocalPresentation(fixture.surfaceId);
+    await fixture.client({
+      type: "cdp.command",
+      requestId: uuid(),
+      command: { method: "Opensteer.resumeTab", parameters: { surfaceId: fixture.surfaceId } },
+    });
+    expect(fixture.server().at(-1)).toMatchObject({ type: "cdp.result", result: {} });
+    expect(fixture.presentation().state).toBe("retained");
+    expect(fixture.presentation("second").state).toBe("live-covered");
+    release();
+    await fixture.client({
+      type: "cdp.command",
+      requestId: uuid(),
+      command: { method: "Opensteer.resumeTab", parameters: { surfaceId: fixture.surfaceId } },
+    });
+    expect(fixture.server().at(-1)).toMatchObject({
+      type: "cdp.error",
+      error: { reason: "target-suspended" },
+    });
     await fixture.present();
     expect(fixture.presentation().state).toBe("live-visible");
     expect(fixture.presentation("second").state).toBe("live-covered");
     expect(fixture.native.calls.filter(({ method }) => method === "createTab")).toHaveLength(2);
+  });
+
+  test("a Guest has no retained lineage after its connection is fenced", async () => {
+    const fixture = await setup("ios", { identity: { kind: "fresh" } });
+    await fixture.manager.presentTab(
+      fixture.manager.localPresentation(fixture.deploymentId, fixture.surfaceId)!,
+      "guest-host",
+    );
+    await fixture.manager.setForeground(false);
+    expect(fixture.presentation().state).toBe("closed");
+    expect(fixture.native.tabs.size).toBe(0);
+    expect(fixture.manager.localPresentation(fixture.deploymentId, fixture.surfaceId)).toBeNull();
   });
 
   test("switching waits for submitted input and fences queued input even after switching back", async () => {
@@ -1411,6 +1486,7 @@ describe("phone browser manager", () => {
     fixture.native.tabs.set("popup-tab", {
       sessionId: fixture.sessionId,
       metadata: { ...metadata, generation: 500 },
+      presentationGeneration: 0,
       state: "live",
       loads: 1,
       form: "",
@@ -1483,7 +1559,9 @@ describe("phone browser manager", () => {
       timeoutError: () => new Error("The native action did not start before backgrounding."),
     });
     const oldEpoch = fixture.native.epoch;
+    expect(fixture.manager.hasLiveSession(fixture.sessionId)).toBe(true);
     const leaving = fixture.manager.setForeground(false);
+    expect(fixture.manager.hasLiveSession(fixture.sessionId)).toBe(false);
     expect(fixture.native.epoch).toBeGreaterThan(oldEpoch);
     expect(fixture.native.pipes.size).toBe(0);
     expect(fixture.native.capture.size).toBe(0);
@@ -1492,6 +1570,8 @@ describe("phone browser manager", () => {
     release.resolve();
     await fixture.manager.setForeground(true);
     await fixture.reconnect();
+    expect(fixture.presentation().state).toBe("retained");
+    await fixture.present();
     expect(fixture.presentation().state).toBe("live-visible");
     expect(fixture.native.submitted).toEqual([]);
     expect(fixture.native.replay.entries).toHaveLength(2);

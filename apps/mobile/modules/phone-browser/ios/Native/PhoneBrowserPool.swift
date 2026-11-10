@@ -31,6 +31,7 @@ import WebKit
   var geometryRevision = 0
   var presentationGeneration = 0
   var anchor: [String: Any]?
+  var retainedScrollOffset: CGPoint?
   var frames: [String: WKFrameInfo] = [:]
   var pendingDialog: BrowserDialog?
   var externalPrompt: UIAlertController?
@@ -375,6 +376,7 @@ import WebKit
 
   func helper(_ tab: PhoneBrowserTab, function: String, arguments: [String: Any] = [:], frame: WKFrameInfo? = nil,
     epoch issued: Int? = nil, timeoutMs: Int = 10000, authorization: (() throws -> Void)? = nil,
+    completionAuthorization: (() throws -> Void)? = nil,
     attachmentId: String? = nil) async throws -> Any {
     guard tab.pendingDialog == nil else { throw BrowserRefusal.dialogOpen }
     guard tab.pendingCalls.count < 32 else { throw BrowserRefusal.notActionable }
@@ -441,7 +443,8 @@ import WebKit
         }
       }
       try gate.check(epoch)
-      try authorization?()
+      if let completionAuthorization { try completionAuthorization() }
+      else { try authorization?() }
       guard tab.documentId == documentId else { throw BrowserRefusal.staleDocument }
       guard state.tabs[tab.id] == .live, tab.webView === view else { throw BrowserRefusal.targetSuspended }
       if (result as? [String: Any])?["__phoneBrowserRefusal"] != nil { throw BrowserRefusal.helperNotReady }
@@ -455,13 +458,23 @@ import WebKit
 
   func mount(_ input: BrowserMountInput) async throws -> [String: Any] {
     try gate.check(input.epoch)
-    let tab = try tab(input.tabId)
+    let tab = try tab(input.tabId, live: false)
+    guard let host = hosts.object(forKey: input.hostId as NSString), host.window != nil else {
+      throw BrowserRefusal.notActionable
+    }
     guard input.presentationGeneration >= tab.presentationGeneration else { throw BrowserRefusal.notActionable }
     tab.presentationGeneration = input.presentationGeneration
+    if state.tabs[tab.id] != .live {
+      let reference = BrowserTabInput()
+      reference.epoch = input.epoch; reference.tabId = input.tabId
+      reference.sessionId = input.sessionId; reference.generation = input.generation
+      _ = try await resume(reference, covered: !input.interactive)
+    }
     guard input.presentationGeneration >= tab.presentationGeneration,
-      let host = hosts.object(forKey: input.hostId as NSString), host.window != nil,
+      host.window != nil,
       let view = tab.webView else { throw BrowserRefusal.notActionable }
-    let anchor = try await helper(tab, function: "anchor", epoch: input.epoch) as? [String: Any]
+    let anchor = view.bounds.size == host.bounds.size ? nil :
+      try await helper(tab, function: "anchor", epoch: input.epoch) as? [String: Any]
     try gate.perform(input.epoch) {
       guard input.presentationGeneration >= tab.presentationGeneration else { throw BrowserRefusal.notActionable }
       if let current = state.visible, current != tab.id { throw BrowserRefusal.targetSuspended }
@@ -480,10 +493,8 @@ import WebKit
     return geometry(tab)
   }
 
-  func coverTab(_ id: String) throws {
-    let tab = try tab(id)
-    guard let view = tab.webView else { return }
-    try state.activate(id, covered: true)
+  func parkView(_ tab: PhoneBrowserTab) throws {
+    guard let view = tab.webView else { throw BrowserRefusal.targetSuspended }
     if let old = view.superview as? PhoneBrowserHostView { old.tabId = nil }
     try holder().insertSubview(view, at: 0)
     view.isUserInteractionEnabled = false
@@ -497,6 +508,7 @@ import WebKit
     let anchor = try await helper(tab, function: "anchor", epoch: input.epoch) as? [String: Any]
     return try gate.perform(input.epoch) {
       tab.anchor = anchor
+      tab.retainedScrollOffset = tab.webView?.scrollView.contentOffset
       tab.url = tab.webView?.url ?? tab.url
       cancelDialog(tab)
       cancelChooser(tab)
@@ -510,13 +522,14 @@ import WebKit
     }
   }
 
-  func resume(_ input: BrowserTabInput) async throws -> [String: Any] {
+  func resume(_ input: BrowserTabInput, covered: Bool = true) async throws -> [String: Any] {
     try input.anchor?.validate()
+    var reloaded = false
     let tab: PhoneBrowserTab = try gate.perform(input.epoch) {
       guard foreground else { throw BrowserRefusal.notActionable }
       let tab = try tab(input.tabId, live: false)
-      try state.activate(tab.id, covered: true)
-      let reloaded = tab.webView == nil
+      try state.activate(tab.id, covered: covered)
+      reloaded = tab.webView == nil
       let view = try tab.webView ?? makeView(tab)
       try holder().insertSubview(view, at: 0)
       if reloaded {
@@ -528,7 +541,9 @@ import WebKit
     }
     try await waitReady(tab)
     try gate.check(input.epoch)
-    if let anchor = input.anchor?.dictionary ?? tab.anchor {
+    if !reloaded, let offset = tab.retainedScrollOffset {
+      try gate.perform(input.epoch) { tab.webView?.scrollView.setContentOffset(offset, animated: false) }
+    } else if let anchor = input.anchor?.dictionary ?? tab.anchor {
       _ = try await helper(tab, function: "restoreAnchor", arguments: ["argument": anchor], epoch: input.epoch)
     }
     return metadata(tab)
@@ -615,6 +630,7 @@ import WebKit
 
   func preserveScroll(_ tab: PhoneBrowserTab) {
     guard let scroll = tab.webView?.scrollView else { return }
+    tab.retainedScrollOffset = scroll.contentOffset
     let inset = scroll.adjustedContentInset
     let scale = max(scroll.zoomScale, 0.01)
     tab.anchor = ["x": (scroll.contentOffset.x + inset.left) / scale,

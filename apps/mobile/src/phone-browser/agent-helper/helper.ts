@@ -608,7 +608,7 @@ export function createAgentHelper(documentId: string) {
       if (signal.aborted || disposed) aborted();
       else check(false);
     });
-  const focus = (element: Element, editable = true) => {
+  const focus = (element: Element, editable = true, preventScroll = true) => {
     if (
       !(element instanceof HTMLElement) ||
       (editable &&
@@ -623,7 +623,7 @@ export function createAgentHelper(documentId: string) {
       element.readOnly
     )
       fail("not-actionable", "The field is read-only");
-    element.focus({ preventScroll: true });
+    element.focus({ preventScroll });
     if (
       document.activeElement !== element &&
       element.getRootNode() instanceof ShadowRoot &&
@@ -748,10 +748,16 @@ export function createAgentHelper(documentId: string) {
     return { type: "dom.query" as const, value };
   };
   const act = async (action: Extract<BrowserAction, { type: "dom.act" }>, signal: AbortSignal) => {
-    const { element, x, y } = await prepare(action.locator, signal);
+    const keyboard = ["focus", "fill", "clear"].includes(action.kind);
+    const target = keyboard
+      ? { element: single(action.locator), x: 0, y: 0 }
+      : await prepare(action.locator, signal);
+    const { element, x, y } = target;
     if (signal.aborted || disposed) fail("timeout", "Native canceled input before submission");
+    if (keyboard && (!visible(element) || !enabled(element)))
+      fail("not-actionable", "The field is hidden, inert or disabled");
     if (action.kind === "focus") {
-      focus(element, action.selection === "end");
+      focus(element, action.selection === "end", false);
       if (action.selection === "end") {
         if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
           if (element.selectionStart === null)
@@ -792,7 +798,7 @@ export function createAgentHelper(documentId: string) {
         !["text", "search", "email", "url", "tel", "password", "number"].includes(element.type)
       )
         fail("not-actionable", "Use check, selectOption or the native file chooser for this field");
-      focus(element);
+      focus(element, true, false);
       textPlans.clear();
       const planId = String(++textPlanSequence);
       textPlans.set(planId, { element, text: value, clear: action.kind === "clear" });
@@ -1094,7 +1100,7 @@ export function createAgentHelper(documentId: string) {
         if (functionName === "textFocus") {
           if (!visible(plan.element) || !enabled(plan.element))
             fail("not-actionable", "The original text field is not actionable");
-          focus(plan.element);
+          focus(plan.element, true, false);
           return { focused: true };
         }
         const value =

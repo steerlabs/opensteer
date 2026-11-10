@@ -9,9 +9,9 @@ struct BrowserHelperRefusal: CodedError {
 
 @available(iOS 17, *)
 @MainActor extension PhoneBrowserPool {
-  func authorize(_ input: BrowserWireInput, viewer: Bool) throws -> PhoneBrowserTab {
+  func authorize(_ input: BrowserWireInput, viewer: Bool, checkGeometry: Bool = true) throws -> PhoneBrowserTab {
     let tab = try checked(input, document: input.documentId,
-      geometry: viewer || input.request["geometryRevision"] != nil ? input.geometryRevision : nil)
+      geometry: checkGeometry && (viewer || input.request["geometryRevision"] != nil) ? input.geometryRevision : nil)
     guard foreground, let admission else { throw BrowserRefusal.forbidden }
     if viewer { try admission.viewer(channelId: input.channelId, sessionId: tab.sessionId, epoch: input.epoch, control: true) }
     else {
@@ -206,8 +206,9 @@ struct BrowserHelperRefusal: CodedError {
       }
       let envelope: [String: Any] = ["name": name, "args": routedArgs, "operationId": operation]
       let reply = try await helper(tab, function: "agent", arguments: ["argument": envelope], frame: frame, epoch: input.epoch, timeoutMs: remaining,
-        authorization: { _ = try self.authorize(input, viewer: viewer) }, attachmentId: input.attachmentId)
-      _ = try authorize(input, viewer: viewer)
+        authorization: { _ = try self.authorize(input, viewer: viewer) },
+        completionAuthorization: { _ = try self.authorize(input, viewer: viewer, checkGeometry: false) }, attachmentId: input.attachmentId)
+      _ = try authorize(input, viewer: viewer, checkGeometry: false)
       guard let body = reply as? [String: Any], try JSONSerialization.data(withJSONObject: body).count <= 432 * 1024 else { throw BrowserRefusal.tooLarge }
       if let error = body["error"] as? [String: String] {
         let allowed = ["unsupported-operation", "stale-document", "stale-geometry", "ambiguous", "not-found", "not-actionable", "timeout", "too-large", "outcome-unknown"]
@@ -267,7 +268,7 @@ struct BrowserHelperRefusal: CodedError {
         _ = try await invokeAgent(input, tab: tab, name: "tap", args: ["type": "pointer.tap", "x": x * view.bounds.width,
           "y": y * view.bounds.height, "count": 1], timeout: 10000, viewer: true)
         _ = try await helper(tab, function: "editing", epoch: input.epoch,
-          authorization: { _ = try self.authorize(input, viewer: true) })
+          authorization: { _ = try self.authorize(input, viewer: true, checkGeometry: false) })
         activity(tab, kind: "viewer", pointer: ["x": x * view.bounds.width, "y": y * view.bounds.height])
         return
       } else {

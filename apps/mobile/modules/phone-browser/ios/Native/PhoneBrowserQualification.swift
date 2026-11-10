@@ -30,6 +30,7 @@ import WebKit
       <label>Message<input id=text></label><input id=check type=checkbox>
       <select id=select><option value=a>A</option><option value=b>B</option></select>
       <button id=button onclick="document.getElementById('status').textContent=event.isTrusted?'trusted':'script'">Go</button>
+      <button id=focusButton style='position:fixed;right:10px;top:100px' onclick="document.getElementById('text').focus()">Focus the page field</button>
       <button id=dialog onclick="confirm('qualification')">Dialog</button>
       <input id=file type=file style='position:fixed;left:20px;top:200px;width:200px;height:50px'><pre id=status></pre><pre id=trusted></pre>
       <script>document.getElementById('text').addEventListener('input',e=>document.getElementById('trusted').textContent=String(e.isTrusted));</script>
@@ -123,16 +124,21 @@ import WebKit
       }
       stage = "person-responder-protection"
       view.endEditing(true)
+      _ = try await invoke("act", ["type": "dom.act", "kind": "focus", "locator": ["by": "css", "value": "#button"]])
       do {
         let person = UITextField(frame: CGRect(x: 0, y: 0, width: 150, height: 40))
+        person.text = "person"
         window.addSubview(person)
         defer { person.resignFirstResponder(); person.removeFromSuperview() }
         guard person.becomeFirstResponder() else { throw BrowserRefusal.notActionable }
+        _ = try await invoke("act", ["type": "dom.act", "kind": "click", "locator": ["by": "css", "value": "#focusButton"]])
+        guard person.isFirstResponder, person.text == "person" else { throw BrowserRefusal.forbidden }
         do { try await text("text.insert", value: "must-refuse"); throw BrowserRefusal.forbidden }
         catch BrowserRefusal.notActionable {}
         guard person.isFirstResponder else { throw BrowserRefusal.forbidden }
       }
       checks.append("person-responder-protection")
+      checks.append("script-focus-preserves-person-responder")
       stage = "agent-dialog-interruption"
       do {
         do {
@@ -152,7 +158,7 @@ import WebKit
           <!doctype html><meta name=viewport content='width=device-width,initial-scale=1'>
           <style>#message{position:fixed;left:10px;top:10px;width:180px;height:30px}</style>
           <form onsubmit="event.preventDefault();document.getElementById('submitted').textContent='yes'"><label>Message<input id=message></label></form>
-          <div style='height:180px'></div><input id=rejected oninput="this.value=''" aria-label=Rejected>
+          <div style='height:600px'></div><input id=rejected oninput="this.value=''" aria-label=Rejected>
           <pre id=submitted></pre><div style='height:2000px'></div>
           """, baseURL: URL(string: "https://phone-browser-conformance.invalid"))
         try await waitReady(tab, epoch: epoch)

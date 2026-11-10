@@ -32,7 +32,7 @@ public final class PhoneBrowserConnection: @unchecked Sendable {
   private var pendingResults = 0
   private var streamRevision = UUID()
   private struct Channel {
-    let capability: [String: Any]
+    var capability: [String: Any]
     var sequence = 0
     var lastFrameIds: [String: Int] = [:]
     var authorized = false
@@ -146,9 +146,15 @@ public final class PhoneBrowserConnection: @unchecked Sendable {
       let lease = try WireField.object(frame, "lease")
       guard lease["runtimeId"] as? String == runtimeId else { throw PhoneBrowserFailure.forbidden }
       let previous = admission.capability
+      let continuing = previous.map { (try? admission.check(epoch: admission.epoch, now: now(), capability: $0)) != nil } ?? false
       try admission.grant(lease, now: now())
       if let previous, !PhoneBrowserAdmission.sameCapability(previous, lease) {
-        retireChannels(); onRetire(admission.epoch, "capability-replaced")
+        if continuing {
+          let reference = lease.filter { $0.key != "expiresAt" }
+          for id in channels.keys { channels[id]?.capability = reference }
+        } else {
+          retireChannels(); onRetire(admission.epoch, "capability-replaced")
+        }
       }
       armLease()
     } else if type == "capability.revoke" {

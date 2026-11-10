@@ -44,11 +44,13 @@ final class PhoneBrowserHostView: ExpoView {
     if newWindow == nil, window != nil, let tabId, #available(iOS 17, *),
       PhoneBrowserPool.shared.tabs[tabId]?.webView?.superview === self {
       let pool = PhoneBrowserPool.shared
-      if (try? pool.coverTab(tabId)) == nil {
-        if let tab = pool.tabs[tabId] {
+      if let tab = pool.tabs[tabId], let view = tab.webView {
+        do {
+          try pool.parkView(tab)
+        } catch {
           pool.cancelDialog(tab)
           pool.cancelChooser(tab)
-          tab.webView?.removeFromSuperview()
+          view.removeFromSuperview()
           for released in (try? pool.state.suspend(tabId)) ?? [] { pool.releaseView(released) }
           pool.changed(tab)
         }

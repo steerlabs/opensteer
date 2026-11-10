@@ -935,11 +935,10 @@ function BrowserTab(props: {
       ? place.destination.sessionId
       : null;
   // The session that shows this tab: its lineage's live one, else the route's.
-  const sessionId = lineageSession ?? props.sessionId;
+  const sessionId = local?.sessionId ?? lineageSession ?? props.sessionId;
   useLayoutEffect(() => {
-    if (lineageSession !== null && lineageSession !== props.sessionId)
-      navigation.setParams({ sessionId: lineageSession });
-  }, [lineageSession, navigation, props.sessionId]);
+    if (sessionId !== props.sessionId) navigation.setParams({ sessionId });
+  }, [sessionId, navigation, props.sessionId]);
 
   const currentPage = useRef<string | null>(null);
   const pageKey = `${sessionId}:${tabId}`;
@@ -1013,6 +1012,14 @@ function BrowserTab(props: {
             <Suspense fallback={<TabStatus title="Opening…" waiting />}>
               <LocalPhoneTab
                 active={props.active}
+                available={snapshot.browserPlacements.some(
+                  (placement) =>
+                    placement.runnerId === phoneManager.runnerId && placement.available,
+                )}
+                deploymentId={props.deploymentId}
+                liveSession={
+                  session.state === "ready" && phoneManager.hasLiveSession(local.sessionId)
+                }
                 hostClient={hostClient}
                 manager={phoneManager}
                 admission={local}
@@ -1049,6 +1056,11 @@ function BrowserTab(props: {
       <Suspense fallback={<TabStatus title="Opening…" waiting />}>
         <LocalPhoneTab
           active={props.active}
+          available={snapshot.browserPlacements.some(
+            (placement) => placement.runnerId === phoneManager.runnerId && placement.available,
+          )}
+          deploymentId={props.deploymentId}
+          liveSession={false}
           hostClient={hostClient}
           manager={phoneManager}
           admission={local}

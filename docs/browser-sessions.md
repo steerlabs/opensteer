@@ -66,6 +66,15 @@ input, never takes the phone's visible tab, and never reloads a retained page. D
 unwatched tab; a watched one passes to people until its last picture receiver leaves. Presenting it
 locally frees the covered place. Memory pressure may still discard retained pages.
 
+The phone marks its local presentation intent before asking the Host to reopen a saved tab. That
+resume needs no covered place, even while an agent owns the other live view. After a brief
+background, the Host creates a new session and the phone adopts surviving profile tabs without
+reloading; fresh local viewer admission still precedes presentation. The Host's initial and dormant
+surface list is authoritative for that profile lineage: omitted retired tabs are destroyed. Guest
+tabs have no saved lineage and end when their session loses its connection. Native local mounting
+revives a retained or discarded tab directly in the visible place; resuming it through the covered
+place first would incorrectly displace or be refused by an agent.
+
 A failed navigation leaves Chromium's error document committed, and a surface's address stays the
 one it tried to reach, so a person sees where they meant to go and the catalog names a real origin.
 That address was never visited: `navigationFailed` is what says so, and anything that treats a page
