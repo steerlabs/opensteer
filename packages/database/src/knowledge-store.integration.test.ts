@@ -861,6 +861,15 @@ integration("knowledge storage", () => {
       }),
     ).rejects.toMatchObject({ code: "bad_request", reason: "knowledge-value-too-large" });
     expect(await context.count("thing = 'big'")).toBe(1);
+    const nested = (depth: number) => "[".repeat(depth) + "]".repeat(depth);
+    const deep =
+      "insert into facts (topic, thing, property, value) values ($1, 'deep', 'v', $2::jsonb)";
+    await insert(context, deep, { parameters: [context.open, nested(64)] });
+    for (const depth of [65, 10_000])
+      await expect(
+        insert(context, deep, { parameters: [context.open, nested(depth)] }),
+      ).rejects.toMatchObject({ code: "bad_request", reason: "knowledge-value-too-deep" });
+    expect(await context.count("thing = 'deep'")).toBe(1);
   });
 
   it("lexes statement text as the validator does when the database defaults to legacy strings", async () => {

@@ -135,7 +135,8 @@ const knowledgeSchemaSteps: readonly string[] = [
       thing text not null constraint fact_log_thing_size check (octet_length(thing) between 1 and 256),
       property text not null
         constraint fact_log_property_size check (octet_length(property) between 1 and 128),
-      value jsonb not null constraint fact_log_value_size check (octet_length(value::text) <= 65536),
+      value jsonb not null constraint fact_log_value_size check (octet_length(value::text) <= 65536)
+        constraint fact_log_value_depth check (not jsonb_path_exists(value, 'strict $.**{64}')),
       writer_kind text not null check (writer_kind in ('person', 'project')),
       writer_id text not null,
       initiator_id text,

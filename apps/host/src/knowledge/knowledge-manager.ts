@@ -225,7 +225,7 @@ function rows(result: KnowledgeRows) {
 }
 
 function bounded(output: KnowledgeAnswer): KnowledgeAnswer {
-  if (Buffer.byteLength(JSON.stringify(output), "utf8") <= knowledgeResultBytes) return output;
+  if (encodedBytes(output) <= knowledgeResultBytes) return output;
   throw new OpensteerError({
     code: "resource_exhausted",
     reason: "knowledge-result-too-large",
@@ -234,6 +234,15 @@ function bounded(output: KnowledgeAnswer): KnowledgeAnswer {
       ? "Read facts to see what was saved; don't repeat the INSERT."
       : "Select fewer columns or rows, or aggregate, and call sql again.",
   });
+}
+
+/** A value nested too deeply to encode counts as too large: the agent can select less of it. */
+function encodedBytes(output: KnowledgeAnswer): number {
+  try {
+    return Buffer.byteLength(JSON.stringify(output), "utf8");
+  } catch {
+    return Number.POSITIVE_INFINITY;
+  }
 }
 
 function refusal(message: string, next?: string): OpensteerError {
@@ -324,6 +333,10 @@ function failure(error: unknown): OpensteerError {
       );
     case "knowledge-value-too-large":
       return again("Split the value across properties of under 64 KB each and call sql again.");
+    case "knowledge-value-too-deep":
+      return again(
+        "Nest the value at most 64 arrays and objects deep, or split it across properties, and call sql again.",
+      );
     case "knowledge-too-many-facts":
       return again("Split the write into INSERTs of at most 25 rows and call sql once for each.");
     case "knowledge-seen-fact-mismatch":

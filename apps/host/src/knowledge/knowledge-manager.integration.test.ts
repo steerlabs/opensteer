@@ -451,6 +451,12 @@ integration("knowledge through the sql tool", () => {
     );
     expect(row.code).toBe("resource_exhausted");
     expect(row.text).toContain("A result row is over 512 KB.");
+    const deep = `(replace('xxxxxxxxxx', 'x', '${"[".repeat(1000)}') || replace('xxxxxxxxxx', 'x', '${"]".repeat(1000)}'))::jsonb`;
+    const deepRead = refusal(await f.call({ query: `SELECT ${deep}` }));
+    expect(deepRead).toEqual({
+      code: "resource_exhausted",
+      text: "The result is over 512 KB. Select fewer columns or rows, or aggregate, and call sql again.",
+    });
     const slow = refusal(
       await f.call({
         query:

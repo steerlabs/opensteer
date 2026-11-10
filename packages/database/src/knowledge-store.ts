@@ -472,6 +472,12 @@ function knowledgeError(error: unknown, kind: KnowledgeStatement["kind"]): Opens
     case "23514":
       if (constraint === "fact_log_value_size")
         return refuse("bad_request", "knowledge-value-too-large", "A fact value is over 64 KB.");
+      if (constraint === "fact_log_value_depth")
+        return refuse(
+          "bad_request",
+          "knowledge-value-too-deep",
+          "A fact value nests more than 64 arrays and objects.",
+        );
       if (constraint === "fact_log_writer_present") break;
       return refuse(
         "bad_request",
