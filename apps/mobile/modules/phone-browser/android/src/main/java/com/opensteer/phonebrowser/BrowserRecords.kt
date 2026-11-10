@@ -47,6 +47,11 @@ class ProfileRecord : EpochRecord() {
 }
 class DeploymentRecord : EpochRecord() { @Field var deploymentId = "" }
 class ViewportRecord : Record { @Field var width = 0; @Field var height = 0 }
+class RestoreRecord : Record {
+  @Field var sessionId = ""
+  @Field(key = "generation") var encodedGeneration = -1.0
+  val generation: Int get() = NativeIntegers.parse(encodedGeneration, Int.MAX_VALUE.toLong()).toInt()
+}
 class CreateTabRecord : EpochRecord() {
   @Field var sessionId = ""
   @Field var tabId = ""
@@ -56,6 +61,7 @@ class CreateTabRecord : EpochRecord() {
   @Field var viewport = ViewportRecord()
   @Field var url: String? = null
   @Field var navigationId: String? = null
+  @Field var restoreFrom: RestoreRecord? = null
 }
 class SuspendRecord : TabRef() { @Field var state = "retained" }
 class MountRecord : TabRef() {

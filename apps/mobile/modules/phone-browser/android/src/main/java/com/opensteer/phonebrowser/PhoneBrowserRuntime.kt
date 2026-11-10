@@ -36,6 +36,7 @@ internal class PhoneBrowserRuntime(
   @Volatile private var initialized = false
   private var bindingEpoch = -1
   private val probe = QualificationProbe(context, pool, cdp)
+  private var abilities = BrowserQualification(false, false, false, false)
   private val generations = mutableMapOf<String, Int>()
   private val connection = PhoneConnectionRuntime.get(context)
   @Volatile private var qualified: Map<String, Any?> = mapOf("platform" to "android", "runtimeId" to runtimeId,
@@ -119,14 +120,18 @@ internal class PhoneBrowserRuntime(
     if (BrowserStartup.profiles != null) downloads.bind(input.deploymentId)
     val profiles = BrowserStartup.profiles
     if (!initialized && profiles != null && foreground) {
-      cdp.qualified = probe.run(profiles, input.deploymentId, input.runnerId)
-      cdp.awaitDisabled()
+      probe.runNative(profiles, input.deploymentId, input.runnerId)
+      probe.run(profiles, input.deploymentId, input.runnerId)
+      val disabled = try { cdp.awaitDisabled(); true } catch (_: Exception) { false }
+      probe.receipts["debugger shutdown"] = disabled
+      abilities = BrowserQualification.from(probe.receipts, BrowserDebugging.release, disabled)
+      cdp.qualified = abilities.cdpBoundary
       gate.check(input.epoch)
       initialized = true
     }
     qualified = mapOf("platform" to "android", "runtimeId" to runtimeId, "storageInstanceId" to (profiles?.manifest?.storageInstanceId ?: ""),
-      "browser" to (BrowserStartup.reason == null && foreground), "sharedControl" to (BrowserStartup.reason == null && foreground), "agentActions" to false,
-      "cdpBoundary" to cdp.qualified, "fileStaging" to (BrowserStartup.reason == null))
+      "browser" to (BrowserStartup.reason == null && foreground && abilities.browser), "sharedControl" to (BrowserStartup.reason == null && foreground && abilities.sharedControl), "agentActions" to false,
+      "cdpBoundary" to cdp.qualified, "fileStaging" to abilities.fileStaging)
     return qualified
   }
   fun qualificationEvidence(): Map<String, Any?> = mapOf("providerVersion" to BrowserStartup.providerVersion, "reason" to BrowserStartup.reason, "commands" to probe.receipts.toMap(), "release" to BrowserDebugging.release)
@@ -159,7 +164,7 @@ internal class PhoneBrowserRuntime(
   }
   fun list(input: DeploymentRecord): List<Map<String, Any?>> = pool.ui(input.epoch) {
     if (input.deploymentId != deploymentId) throw BrowserFailure("forbidden")
-    profiles().list(input.deploymentId)
+    profiles().list(input.deploymentId, runnerId)
   }
   fun erase(input: ProfileRecord): String {
     gate.check(input.epoch)
@@ -188,6 +193,20 @@ internal class PhoneBrowserRuntime(
     input.url?.takeUnless { it == "about:blank" }?.let(::validateBrowserUrl)
     val binding = input.storeHandle?.let { pool.ui(input.epoch) { profiles().manifest.byHandle(it).binding.fields() } }
     PhoneBrowserNative.authority?.requireAllocation(input.epoch, input.allocationPermit, input.sessionId, input.storeHandle, binding) ?: throw BrowserFailure("forbidden")
+    input.restoreFrom?.let { restore ->
+      return pool.ui(input.epoch) {
+        val tab = pool.tabs[input.tabId] ?: throw BrowserFailure("target-closed")
+        val profile = profiles().serving(tab.storeHandle)
+        if (profile.binding.deploymentId != deploymentId || profile.binding.runnerId != runnerId) throw BrowserFailure("forbidden")
+        RetainedTabAdoption.require(input.epoch, tab.allocationEpoch, pool.ledger.state(tab.id), tab.sessionId, tab.generation,
+          restore.sessionId, restore.generation, tab.storeHandle, input.storeHandle, profiles().guestOwner(tab.storeHandle))
+        if (profile.guest) profiles().adoptGuest(tab.storeHandle, restore.sessionId, input.sessionId)
+        tab.sessionId = input.sessionId; tab.allocationEpoch = input.epoch
+        tab.generation = (generations[tab.id] ?: tab.generation) + 1; generations[tab.id] = tab.generation
+        tab.frameRevisions.clear(); tab.pendingEvents.clear(); tab.published = false
+        pool.metadata(tab)
+      }
+    }
     val profile = if (input.storeHandle != null) pool.ui(input.epoch) { profiles().serving(input.storeHandle!!) } else {
       pool.await(pool.ui(input.epoch) { profiles().ensure(ProfileBinding(deploymentId!!, runnerId!!, profiles().manifest.storageInstanceId, UUID.randomUUID().toString(), UUID.randomUUID().toString()), false, true, gate, input.epoch) { gate.check(input.epoch); RequestDeadline.check(deadline) } })
     }
@@ -197,6 +216,8 @@ internal class PhoneBrowserRuntime(
       pool.ui(input.epoch) {
         val generation = (generations[input.tabId] ?: 0) + 1
         generations[input.tabId] = generation; tab.generation = generation
+        tab.allocationEpoch = input.epoch
+        if (profile.guest) profiles().claimGuest(profile.handle, input.sessionId)
         tab.navigationId = input.navigationId
       }
       input.url?.takeUnless { it == "about:blank" }?.let { pool.navigate(input.epoch, tab.id, it) }
@@ -285,9 +306,9 @@ internal class PhoneBrowserRuntime(
   private fun adoptFence(epoch: Int) {
     if (epoch == gate.epoch) return
     gate.adopt(epoch)
-    BrowserDebugging.set(false)
     pool.main.post {
       if (gate.epoch != epoch) return@post
+      BrowserDebugging.set(false)
       capture.stop(); chrome.fence(); cdp.stop(); downloads.stop()
       pool.tabs.values.filter { it.creating || !it.published }.map { it.id }.forEach(pool::destroyNow)
       pool.foreground(false)
@@ -302,7 +323,7 @@ internal class PhoneBrowserRuntime(
       pool.foreground(input.active); capture.foreground(input.active); downloads.foreground(input.active)
       if (input.active) BrowserStartup.profiles?.flush()
     }
-    return if (!input.active) cdp.whenDisabled() else CompletableFuture.completedFuture(Unit)
+    return if (!input.active && cdp.qualified) cdp.whenDisabled() else CompletableFuture.completedFuture(Unit)
   }
   fun inactive() {
     foreground = false

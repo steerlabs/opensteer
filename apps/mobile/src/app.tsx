@@ -82,6 +82,7 @@ import { IphoneAppsProvider, useIphoneAppsState } from "./iphone-apps/context.js
 import { IphoneAppsController } from "./iphone-apps/controller.js";
 import { startPhoneBrowserRuntime } from "./phone-browser/runtime.js";
 import { createIphoneBrowserPlatform } from "./phone-browser/iphone-platform.js";
+import { createAndroidBrowserPlatform } from "./phone-browser/android-platform.js";
 import { androidPhoneBridge, enrollAndroidPhone } from "./platform/phone-connection.js";
 import { createFakeIphoneApps, type FakeIphoneApps } from "./iphone-apps/fake-bridge.js";
 import { iphoneNotTold, opensteerOn } from "./iphone-apps/model.js";
@@ -181,7 +182,10 @@ function mobileClient(): MobileRoot {
     }),
   });
   if (!configuration.mock) {
-    const phoneBrowserPlatform = createIphoneBrowserPlatform(iphoneApps);
+    const phoneBrowserPlatform =
+      Platform.OS === "android"
+        ? createAndroidBrowserPlatform()
+        : createIphoneBrowserPlatform(iphoneApps);
     if (phoneBrowserPlatform) startPhoneBrowserRuntime(phoneBrowserPlatform);
   }
   const lifecycle = createMobileLifecycle({ appState: AppState, network: Network });

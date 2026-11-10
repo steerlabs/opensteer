@@ -1,6 +1,7 @@
 import { requireOptionalNativeModule } from "expo";
 import { Platform } from "react-native";
 import type { HostClient } from "@opensteer/client/host";
+import { hostApiVersion } from "@opensteer/deployment-authority";
 import type {
   PhoneBrowserNativeEvent,
   PhoneBrowserNativePort,
@@ -28,6 +29,7 @@ interface NativePhoneConnection extends Omit<PhoneConnectionPort, "onEvent"> {
   retarget: IphoneAppsBridge["retarget"];
   disconnect: IphoneAppsBridge["disconnect"];
   enrollFromHost(input: {
+    readonly apiVersion: number;
     readonly origin: string;
     readonly authorization: string;
     readonly deploymentId: string;
@@ -67,14 +69,9 @@ export const phoneConnection: PhoneConnectionPort = {
   sendRelay: (input) => connection().sendRelay(input),
   closeChannel: (input) => connection().closeChannel(input),
   onEvent: (listener) => {
-    let pending = Promise.resolve();
     let subscribed = true;
     const subscription = connection().addListener("onEvent", (event) => {
-      pending = pending
-        .then(async () => {
-          if (subscribed) await listener(event);
-        })
-        .catch(() => undefined);
+      if (subscribed) void listener(event).catch(() => undefined);
     });
     return () => {
       subscribed = false;
@@ -82,6 +79,10 @@ export const phoneConnection: PhoneConnectionPort = {
     };
   },
 };
+
+export async function retryPhoneRetirement(): Promise<void> {
+  if (connection().getSnapshot().pendingErasure) await connection().completeRetirement();
+}
 
 export const phoneConnectionClock = {
   now: () => connection().now(),
@@ -122,6 +123,7 @@ export async function enrollAndroidPhone(input: {
   const host = await phoneEnrollmentHost(input.hostClient, input.deploymentId);
   return connection().enrollFromHost({
     ...host,
+    apiVersion: hostApiVersion,
     deploymentId: input.deploymentId,
     name: input.name,
   });

@@ -283,60 +283,63 @@ async function setup(
 }
 
 describe("phone browser manager", () => {
-  test("a new Host session adopts the retained surface after foreground return without reloading", async () => {
-    const fixture = await setup();
-    await fixture.present();
-    const original = fixture.native.tabs.get(fixture.surfaceId)!;
-    original.form = "verification code";
-    await fixture.open("discarded");
-    await fixture.native.emit({
-      type: "memoryPressure",
-      epoch: fixture.reference().epoch,
-      level: "critical",
-    });
-    const discarded = fixture.native.tabs.get("discarded")!;
-    discarded.metadata = { ...discarded.metadata, documentId: "" };
-    await fixture.native.emit({
-      type: "documentChanged",
-      ...fixture.reference("discarded"),
-      metadata: discarded.metadata,
-    });
-    await fixture.open("dormant");
-    fixture.native.tabs.get("dormant")!.form = "second form";
-    const generation = original.metadata.generation;
-    await fixture.manager.setForeground(false);
-    await fixture.manager.setForeground(true);
-    const sessionId = `bsn_${uuid()}`;
-    await fixture.reconnect({ sessionId, dormantSurfaceIds: ["dormant", "discarded"] });
-    expect(fixture.presentation("discarded").state).toBe("discarded");
-    expect(fixture.native.tabs.get("discarded")!.loads).toBe(1);
-    expect(fixture.native.tabs.get(fixture.surfaceId)).toMatchObject({
-      sessionId,
-      form: "verification code",
-      loads: 1,
-    });
-    expect(fixture.native.tabs.get(fixture.surfaceId)!.metadata.generation).toBeGreaterThan(
-      generation,
-    );
-    expect(
-      fixture.manager.localPresentation(fixture.deploymentId, fixture.surfaceId)?.sessionId,
-    ).toBe(sessionId);
-    expect(fixture.manager.localPresentation(fixture.deploymentId, "dormant")?.sessionId).toBe(
-      sessionId,
-    );
-    expect(fixture.native.tabs.get("dormant")).toMatchObject({
-      sessionId,
-      form: "second form",
-      loads: 1,
-    });
-    expect(fixture.server()).toContainEqual(
-      expect.objectContaining({
-        type: "browser.snapshot",
+  test.each(["ios", "android"] as const)(
+    "%s adopts the retained surface into a new Host session without reloading",
+    async (platform) => {
+      const fixture = await setup(platform);
+      await fixture.present();
+      const original = fixture.native.tabs.get(fixture.surfaceId)!;
+      original.form = "verification code";
+      await fixture.open("discarded");
+      await fixture.native.emit({
+        type: "memoryPressure",
+        epoch: fixture.reference().epoch,
+        level: "critical",
+      });
+      const discarded = fixture.native.tabs.get("discarded")!;
+      discarded.metadata = { ...discarded.metadata, documentId: "" };
+      await fixture.native.emit({
+        type: "documentChanged",
+        ...fixture.reference("discarded"),
+        metadata: discarded.metadata,
+      });
+      await fixture.open("dormant");
+      fixture.native.tabs.get("dormant")!.form = "second form";
+      const generation = original.metadata.generation;
+      await fixture.manager.setForeground(false);
+      await fixture.manager.setForeground(true);
+      const sessionId = `bsn_${uuid()}`;
+      await fixture.reconnect({ sessionId, dormantSurfaceIds: ["dormant", "discarded"] });
+      expect(fixture.presentation("discarded").state).toBe("discarded");
+      expect(fixture.native.tabs.get("discarded")!.loads).toBe(1);
+      expect(fixture.native.tabs.get(fixture.surfaceId)).toMatchObject({
         sessionId,
-        surfaces: expect.arrayContaining([expect.objectContaining({ id: fixture.surfaceId })]),
-      }),
-    );
-  });
+        form: "verification code",
+        loads: 1,
+      });
+      expect(fixture.native.tabs.get(fixture.surfaceId)!.metadata.generation).toBeGreaterThan(
+        generation,
+      );
+      expect(
+        fixture.manager.localPresentation(fixture.deploymentId, fixture.surfaceId)?.sessionId,
+      ).toBe(sessionId);
+      expect(fixture.manager.localPresentation(fixture.deploymentId, "dormant")?.sessionId).toBe(
+        sessionId,
+      );
+      expect(fixture.native.tabs.get("dormant")).toMatchObject({
+        sessionId,
+        form: "second form",
+        loads: 1,
+      });
+      expect(fixture.server()).toContainEqual(
+        expect.objectContaining({
+          type: "browser.snapshot",
+          sessionId,
+          surfaces: expect.arrayContaining([expect.objectContaining({ id: fixture.surfaceId })]),
+        }),
+      );
+    },
+  );
   test("sends a completed profile inventory once per native connection, not after each attachment", async () => {
     const fixture = await setup();
     await fixture.attach();

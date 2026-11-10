@@ -268,7 +268,7 @@ describe("this iPhone in settings", () => {
       machines: [],
     });
     expect(rows[1]).toMatchObject({
-      detail: "You're here · Update Opensteer on Studio to add this iPhone",
+      detail: "You're here · Update Opensteer on Studio to add this phone",
       opens: null,
     });
   });

@@ -109,6 +109,13 @@ reads UIPasteboard. A website may still ask iOS for Paste permission. The person
 system UI; Opensteer does not claim to prevent the website or its DOM from then receiving clipboard
 data. A JavaScript clipboard shim would not be a security boundary and is not used as one. Android's
 CDP backend must qualify machine-clipboard denial independently before it is enabled.
+It must also prove that releasing the last native CDP permit makes the WebView debugger inaccessible.
+Debug app builds never declare CDP; a release on a debuggable system or provider that fails shutdown
+also omits it. The phone still offers each independently qualified browser/viewer/file ability, and
+agent backend negotiation returns `unsupported-operation` rather than falling back.
+Android cannot map a page-opened popup to an agent's trusted CDP target. That tab remains usable by
+people, but an agent receives: “A page opened this tab and this phone cannot hand it to an agent;
+open its address in a new tab instead.” Opensteer never reloads or recreates it to bypass that refusal.
 
 For full editing, each frame's private editing world, hidden from
 agent CDP, reports field kind, sensitivity and a caret, never values or surrounding text. A

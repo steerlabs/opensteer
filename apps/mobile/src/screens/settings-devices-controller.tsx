@@ -6,6 +6,7 @@ import { useHostRead } from "@opensteer/client/react";
 import { connectDeviceDraftText } from "@opensteer/client/settings";
 import { useNavigation } from "@react-navigation/native";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Platform } from "react-native";
 import { useComputerUseData } from "../computers/use-computer-use-data.js";
 import { useIphoneApps, useIphoneAppsState } from "../iphone-apps/context.js";
 import { useHostValue, useMobileState } from "../ui/mobile-client-context.js";
@@ -67,6 +68,8 @@ export function DevicesSettingsController(): ReactNode {
               available: snapshot.iphoneAppsAvailable,
               deploymentName,
               deviceName: iphoneApps.snapshot.deviceName,
+              browserOnly: Platform.OS === "android",
+              pendingErasure: iphoneApps.snapshot.pendingErasure === true,
               heldBy:
                 enrollment === null
                   ? null
@@ -167,12 +170,15 @@ export function DevicesSettingsController(): ReactNode {
               ? [
                   {
                     key: "iphone",
-                    title: "This iPhone",
+                    title: "This phone",
                     rows: [
                       {
                         key: "share",
                         kind: "button" as const,
-                        label: "Share this iPhone’s apps",
+                        label:
+                          Platform.OS === "android"
+                            ? "Add this phone’s browser"
+                            : "Share this iPhone’s apps",
                         onPress: () => {
                           setAdding(false);
                           if (selection.deploymentId)

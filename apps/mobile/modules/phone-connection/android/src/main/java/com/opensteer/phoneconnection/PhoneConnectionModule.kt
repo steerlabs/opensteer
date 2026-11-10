@@ -33,7 +33,7 @@ class PhoneConnectionModule : Module() {
           admitted {
             val value = input.objectValue()
             finish(promise, runtime().enrollFromHost(value.text("origin", max = 8192), value.text("authorization", max = 16384),
-                value.text("deploymentId"), value.text("name", max = 120))) { it.native() }
+                value.text("deploymentId"), value.text("name", max = 120), value.number("apiVersion", min = 1, max = Int.MAX_VALUE.toLong()).toInt())) { it.native() }
           }
         }
         AsyncFunction("discardPendingEnrollment") { admitted { runtime().discardPendingEnrollment().native() } }

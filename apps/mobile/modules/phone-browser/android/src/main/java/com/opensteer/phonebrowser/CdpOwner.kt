@@ -24,7 +24,6 @@ internal class CdpOwner(private val pool: PhoneBrowserPool, private val emit: (M
     if (BrowserStartup.profiles == null) return
     BrowserDebugging.set(false)
     if (shutdownWorker.isShutdown) return
-    if (!BrowserDebugging.release) return
     val completion = java.util.concurrent.CompletableFuture<Unit>()
     stopping = completion
     val deadline = System.nanoTime()+2_000_000_000L
@@ -49,7 +48,10 @@ internal class CdpOwner(private val pool: PhoneBrowserPool, private val emit: (M
 
   @Synchronized fun <T> probe(epoch: Int, action: () -> T): T {
     pool.gate.check(epoch)
-    beforeEnable()
+    try { beforeEnable() } catch (error: java.util.concurrent.ExecutionException) {
+      if ((error.cause as? BrowserFailure)?.reason != "debugging-still-accessible") throw error
+      stopping = java.util.concurrent.CompletableFuture.completedFuture(Unit)
+    }
     val expired = java.util.concurrent.atomic.AtomicBoolean()
     val timeout = Runnable { expired.set(true); if (permits.empty()) disable() }
     pool.ui(epoch) { probes++; enable(); pool.main.postDelayed(timeout, 30000) }
