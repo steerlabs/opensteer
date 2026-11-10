@@ -1,3 +1,7 @@
+import {
+  ProjectHostToRunnerMessageSchema,
+  ProjectRunnerToHostMessageSchema,
+} from "./project-transport.js";
 import { ProjectExecutableCommandSchema } from "./project-execution.js";
 import { pendingAgentEventMaxSerializedBytes } from "./runner-execution.js";
 import {
@@ -220,7 +224,10 @@ const LegacyRunnerCommandSchema = z
       runnerCommandMaxSerializedBytes,
     `Runner command must not exceed ${runnerCommandMaxSerializedBytes} serialized bytes`,
   );
-export const RunnerCommandSchema = z.union([LegacyRunnerCommandSchema, ProjectExecutableCommandSchema]);
+export const RunnerCommandSchema = z.union([
+  LegacyRunnerCommandSchema,
+  ProjectExecutableCommandSchema,
+]);
 export type RunnerCommand = z.infer<typeof RunnerCommandSchema>;
 
 function pendingEventVariant<T extends keyof typeof runnerEventDataSchemas>(type: T) {
@@ -1972,3 +1979,17 @@ export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
   }),
 ]);
 export type HostToRunnerMessage = z.infer<typeof HostToRunnerMessageSchema>;
+
+// Project families are parsed only after connection authentication and the execution gate.
+export const ProjectAwareRunnerOperationalMessageSchema = z.union([
+  RunnerOperationalMessageSchema,
+  ProjectRunnerToHostMessageSchema,
+]);
+export const ProjectAwareHostToRunnerMessageSchema = z.union([
+  HostToRunnerMessageSchema,
+  ProjectHostToRunnerMessageSchema,
+]);
+export type ProjectAwareRunnerOperationalMessage = z.infer<
+  typeof ProjectAwareRunnerOperationalMessageSchema
+>;
+export type ProjectAwareHostToRunnerMessage = z.infer<typeof ProjectAwareHostToRunnerMessageSchema>;
