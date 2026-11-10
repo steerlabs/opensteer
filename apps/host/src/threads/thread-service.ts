@@ -83,9 +83,7 @@ export class ThreadService {
     }
     const input = {
       ...selection,
-      ...(actor.kind === "person"
-        ? { ownerSession: true as const }
-        : { authority: threadCallerAuthority(actor) }),
+      ...(actor.kind === "person" ? {} : { authority: threadCallerAuthority(actor) }),
       accessMode:
         command.accessMode ??
         (actor.kind === "person"

@@ -117,7 +117,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
   readonly #runToolTokens: RunToolTokenService;
   readonly #requestResponseVault: RequestResponseVault;
   readonly #agentToolsUrl: string;
-  readonly #knowledge: boolean;
+  readonly #knowledge: { owner(): Promise<UserId | null> } | undefined;
   readonly #agentBrowserCdpUrl: string;
   readonly #pluginVersions: (
     workspaceId: WorkspaceId,
@@ -178,9 +178,10 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     readonly triggers: TriggerStore;
     readonly workspaces: Pick<WorkspaceService, "ensureExecutionReady">;
     readonly workspaceAccess: WorkspaceExecutionAccessService;
-    readonly knowledge?: boolean;
+    /** Present while the knowledge trial is on. */
+    readonly knowledge?: { owner(): Promise<UserId | null> } | undefined;
   }) {
-    this.#knowledge = options.knowledge === true;
+    this.#knowledge = options.knowledge;
     this.#attachmentRunTokens = options.attachmentRunTokens;
     this.#attachments = options.attachments;
     this.#requestResponseVault = options.requestResponseVault;
@@ -492,10 +493,12 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     });
 
     const knowledge =
-      this.#knowledge &&
+      this.#knowledge !== undefined &&
       knowledgeEligible({
-        enabled: true,
-        thread: await this.#store.threadProvenance(context.thread.id),
+        callerKind: "run",
+        reach: threadReachScope(context.thread).kind,
+        userId: context.run.requestedBy,
+        owner: await this.#knowledge.owner(),
         agents: identity.modules.agents,
       });
     const toolsToken = this.#runToolTokens.issue({

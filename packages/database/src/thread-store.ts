@@ -145,8 +145,6 @@ export interface CreateThreadInput {
   readonly expectedHarnessRevision?: number;
   readonly icon?: WorkspaceIconName;
   readonly authority?: ThreadCallerAuthority;
-  /** The person asked for this Thread in their own signed-in session. */
-  readonly ownerSession?: true;
   readonly accessMode?: ThreadAccessMode;
   readonly createdBy: UserId;
   readonly environmentId: EnvironmentId;
@@ -1163,27 +1161,10 @@ export async function createThreadInTransaction(
     workspace.createdBy === input.createdBy &&
     membership.role === "owner";
   let specialistId: string | null = input.specialistId ?? null;
-  let ownerStarted = input.ownerSession === true && input.authority === undefined;
-  if (input.authority?.kind === "run") {
-    const source = await transaction
-      .selectFrom("runs")
-      .innerJoin("threads", "threads.id", "runs.threadId")
-      .select("threads.ownerStarted")
-      .where("runs.id", "=", input.authority.scope.runId)
-      .executeTakeFirst();
-    ownerStarted = source?.ownerStarted === true;
-  }
   if (input.parentThreadId) {
     const parent = await transaction
       .selectFrom("threads")
-      .select([
-        "lineageRootThreadId",
-        "role",
-        "workspaceId",
-        "inheritsMain",
-        "ownerStarted",
-        "specialistId",
-      ])
+      .select(["lineageRootThreadId", "role", "workspaceId", "inheritsMain", "specialistId"])
       .where("threads.id", "=", input.parentThreadId)
       .executeTakeFirst();
     if (!parent) {
@@ -1203,7 +1184,6 @@ export async function createThreadInTransaction(
     }
     lineageRootThreadId = parent.lineageRootThreadId;
     inheritsMain = parent.inheritsMain;
-    ownerStarted &&= parent.ownerStarted;
     specialistId = parent.specialistId;
     listed = parent.role === "conversation";
   }
@@ -1211,7 +1191,6 @@ export async function createThreadInTransaction(
   const thread = await insertThread({
     accessMode: resolvedInput.accessMode,
     inheritsMain,
-    ownerStarted,
     specialistId,
     createdByPrincipalId: actorPrincipalId,
     id,

@@ -12,13 +12,14 @@ import { CommandService, KeyedAdmissionQueue, RealtimeHub } from "@opensteer/orc
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { agentTools } from "@opensteer/agent-tools";
+import { agentTools, opensteerAgentSkillsFor } from "@opensteer/agent-tools";
 import { HarnessInstanceCatalogSchema } from "@opensteer/protocol";
 import {
   createId,
   ModelSelectionSchema,
   ThreadIdSchema,
   MessageIdSchema,
+  threadReachScope,
   type ThreadAccessMode,
   ThreadAccessModeSchema,
 } from "@opensteer/core";
@@ -74,6 +75,7 @@ async function serveMcp(
     >;
     readonly knowledge?: {
       readonly advertised: boolean;
+      readonly owner: import("@opensteer/core").UserId;
       readonly sql: KnowledgeManager["sql"];
     };
     readonly notify?: { current?: () => void };
@@ -236,7 +238,7 @@ async function serveMcp(
     ...(options.knowledge
       ? {
           knowledgeFor: knowledgeForCaller({
-            store,
+            owner: async () => options.knowledge?.owner ?? null,
             agents: () => (options.knowledge?.advertised ? { knowledgeSkill: 1 } : {}),
           }),
         }
@@ -555,97 +557,36 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     ).toContain("outside the caller's reach");
   });
 
-  it("offers knowledge only where the owner started the whole lineage in their own session", async ({
+  it("offers knowledge to a connected agent's task exactly where it offers Main's memory", async ({
     storeFixture,
   }) => {
-    const f = await storeFixture.startRunFixture("knowledge-provenance");
-    const { store, database } = storeFixture;
-    const create = (
-      key: string,
-      extra: Partial<Parameters<OpensteerStore["createThread"]>[0]> = {},
-    ) =>
-      store
-        .createThread({
-          createdBy: f.userId,
+    const f = await storeFixture.startRunFixture("knowledge-reach");
+    const { store } = storeFixture;
+    const delegateUrl = await serveMcp(store);
+    const start = async (reach: "user" | "workspace") => {
+      const agent = await connection(store, delegateUrl, {
+        userId: f.userId,
+        accessMode: "full-access",
+        reach:
+          reach === "user" ? { kind: "user" } : { kind: "workspace", workspaceId: f.workspace.id },
+      });
+      const delegated = await agent.client.callTool({
+        name: "thread_delegate",
+        arguments: {
+          workspaceId: f.workspace.id,
           environmentId: f.environmentId,
           harnessInstanceId: f.harnessInstance.id,
-          idempotencyKey: key,
-          modelSelection: testModelSelection,
-          title: key,
-          workspaceId: f.workspace.id,
-          ...extra,
-        })
-        .then(({ thread }) => thread);
-    const runAuthority = {
-      kind: "run" as const,
-      userId: f.userId,
-      accessMode: f.thread.accessMode,
-      reach: { kind: "user" as const },
-      scope: {
-        bindingGeneration: f.bindingGeneration,
-        environmentId: f.environmentId,
-        membershipGeneration: 1,
-        requestedBy: f.userId,
-        runId: f.run.id,
-        runnerBootId: f.runnerBootId,
-        runnerId: f.runnerId,
-        threadId: f.thread.id,
-        workspaceId: f.workspace.id,
-      },
-    };
-
-    const delegateUrl = await serveMcp(store);
-    const agent = await connection(store, delegateUrl, {
-      userId: f.userId,
-      accessMode: "full-access",
-      reach: { kind: "user" },
-    });
-    const delegated = await agent.client.callTool({
-      name: "thread_delegate",
-      arguments: {
-        workspaceId: f.workspace.id,
-        environmentId: f.environmentId,
-        harnessInstanceId: f.harnessInstance.id,
-        model: { ...testModelSelection, options: {} },
-        title: "Connected work",
-        task: "Work in Main",
-        operationKey: "knowledge-provenance",
-      },
-    });
-    expect(delegated.isError, JSON.stringify(delegated.content)).not.toBe(true);
-    const connected = ThreadIdSchema.parse(
-      (delegated.structuredContent as { threadId: string }).threadId,
-    );
-
-    const owned = await create("owned", { ownerSession: true });
-    const ownedChild = await create("owned-child", {
-      ownerSession: true,
-      parentThreadId: owned.id,
-    });
-    const connectedChild = await create("connected-child", {
-      ownerSession: true,
-      parentThreadId: connected,
-    });
-    const unknownRunChild = await create("unknown-run-child", { authority: runAuthority });
-    await database
-      .updateTable("threads")
-      .set({ ownerStarted: true })
-      .where("id", "=", f.thread.id)
-      .execute();
-    const ownedRunChild = await create("owned-run-child", { authority: runAuthority });
-    const expected = {
-      [owned.id]: true,
-      [ownedChild.id]: true,
-      [ownedRunChild.id]: true,
-      [connected]: false,
-      [connectedChild.id]: false,
-      [unknownRunChild.id]: false,
-    };
-    for (const [threadId, ownerStarted] of Object.entries(expected))
-      expect(await store.threadProvenance(ThreadIdSchema.parse(threadId)), threadId).toEqual({
-        inheritsMain: true,
-        ownerStarted,
+          model: { ...testModelSelection, options: {} },
+          title: `Connected work with ${reach} reach`,
+          task: "Work in Main",
+          operationKey: `knowledge-reach-${reach}`,
+        },
       });
+      expect(delegated.isError, JSON.stringify(delegated.content)).not.toBe(true);
+      return ThreadIdSchema.parse((delegated.structuredContent as { threadId: string }).threadId);
+    };
+    const wide = await start("user");
+    const narrow = await start("workspace");
 
     const scope = (threadId: string) => ({
       aud: "opensteer-run-tools" as const,
@@ -664,9 +605,8 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
       workspaceId: f.workspace.id,
     });
     const sql = vi.fn(async () => ({ source: { kind: "knowledge", trust: "data" } }) as never);
-    const runScopes = Object.fromEntries(
-      Object.keys(expected).map((threadId) => [threadId, scope(threadId)]),
-    );
+    const threads = [f.thread.id, wide, narrow];
+    const runScopes = Object.fromEntries(threads.map((threadId) => [threadId, scope(threadId)]));
     const sees = async (url: URL, threadId: string) => {
       const client = new Client({ name: `run-${threadId}`, version: "1" });
       clients.push(client);
@@ -681,19 +621,34 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
       const called = await client.callTool({ name: "sql", arguments: {} });
       return { listed, dispatched: sql.mock.calls.length === 1, refused: called.isError === true };
     };
-    const advertised = await serveMcp(store, { runScopes, knowledge: { advertised: true, sql } });
-    for (const [threadId, eligible] of Object.entries(expected))
-      expect(await sees(advertised, threadId), threadId).toEqual({
-        listed: eligible,
-        dispatched: eligible,
-        refused: !eligible,
-      });
-    const silent = await serveMcp(store, { runScopes, knowledge: { advertised: false, sql } });
-    expect(await sees(silent, owned.id)).toEqual({
-      listed: false,
-      dispatched: false,
-      refused: true,
+    const memory = async (threadId: typeof wide) => {
+      const thread = await store.getThreadForOwner(threadId, f.userId);
+      return opensteerAgentSkillsFor(threadReachScope(thread!).kind).includes("opensteer:memory");
+    };
+    expect([await memory(wide), await memory(narrow)]).toEqual([true, false]);
+    const served = await serveMcp(store, {
+      runScopes,
+      knowledge: { advertised: true, owner: f.userId, sql },
     });
+    for (const threadId of threads) {
+      const offered = await memory(threadId);
+      expect(await sees(served, threadId), threadId).toEqual({
+        listed: offered,
+        dispatched: offered,
+        refused: !offered,
+      });
+    }
+    for (const knowledge of [
+      { advertised: false, owner: f.userId, sql },
+      { advertised: true, owner: createId("user"), sql },
+    ]) {
+      const refusing = await serveMcp(store, { runScopes, knowledge });
+      expect(await sees(refusing, wide)).toEqual({
+        listed: false,
+        dispatched: false,
+        refused: true,
+      });
+    }
   });
 
   it("returns a connection's original task on retry after the person's defaults change", async ({

@@ -607,12 +607,14 @@ describe("HostCommandDispatcher model selection", () => {
   });
 
   it.each([
-    { ownerStarted: true, advertised: true, offered: true },
-    { ownerStarted: false, advertised: true, offered: false },
-    { ownerStarted: true, advertised: false, offered: false },
-  ])(
-    "plans knowledge only for owner-started Main work on a Runner that advertises it: %o",
-    async ({ ownerStarted, advertised, offered }) => {
+    { reach: "user", owner: "requester", advertised: true, offered: true },
+    { reach: "workspace", owner: "requester", advertised: true, offered: false },
+    { reach: "user", owner: "another", advertised: true, offered: false },
+    { reach: "user", owner: "none", advertised: true, offered: false },
+    { reach: "user", owner: "requester", advertised: false, offered: false },
+  ] as const)(
+    "plans knowledge exactly where Main's memory goes, for the owner on a Runner that advertises it: %o",
+    async ({ reach, owner, advertised, offered }) => {
       const planFor = async (
         knowledge: NonNullable<Parameters<typeof dispatchRun>[0]["knowledge"]>,
       ) => {
@@ -626,10 +628,12 @@ describe("HostCommandDispatcher model selection", () => {
         if (command.type !== "run.execute") throw new Error("Expected run.execute");
         return RunExecutionContextSchema.shape.agentTools.parse(command.context.agentTools);
       };
-      const plan = await planFor({ enabled: true, ownerStarted, advertised });
+      const plan = await planFor({ enabled: true, reach, owner, advertised });
       expect(plan.skills.includes("opensteer:knowledge")).toBe(offered);
       expect(plan.tools.includes("sql")).toBe(offered);
-      const off = await planFor({ enabled: false, ownerStarted, advertised });
+      if (owner === "requester" && advertised)
+        expect(plan.skills.includes("opensteer:memory")).toBe(offered);
+      const off = await planFor({ enabled: false, reach, owner, advertised });
       expect(plan.toolsRevision === off.toolsRevision).toBe(!offered);
     },
   );
@@ -786,7 +790,8 @@ describe("HostCommandDispatcher model selection", () => {
     readonly requesterTimeZone?: string | null;
     readonly knowledge?: {
       readonly enabled: boolean;
-      readonly ownerStarted: boolean;
+      readonly reach: "user" | "workspace";
+      readonly owner: "requester" | "another" | "none";
       readonly advertised: boolean;
     };
   }) {
@@ -884,7 +889,7 @@ describe("HostCommandDispatcher model selection", () => {
             requestedBy,
           },
           thread: {
-            inheritsMain: input.knowledge !== undefined,
+            inheritsMain: input.knowledge !== undefined && input.knowledge.reach !== "workspace",
             ...(input.specialistId ? { specialistId: input.specialistId } : {}),
             id: threadId,
             role: input.role ?? "work",
@@ -892,10 +897,6 @@ describe("HostCommandDispatcher model selection", () => {
           workspace: { id: createId("workspace"), kind: "project", status: "ready" },
         }),
         notificationState: { timeZoneFor },
-        threadProvenance: async () =>
-          input.knowledge
-            ? { inheritsMain: true, ownerStarted: input.knowledge.ownerStarted }
-            : { inheritsMain: false, ownerStarted: false },
         recordHarnessCatalogs: async ({
           catalogs,
         }: Parameters<OpensteerStore["recordHarnessCatalogs"]>[0]) => catalogs,
@@ -905,7 +906,18 @@ describe("HostCommandDispatcher model selection", () => {
       triggers: {} as never,
       workspaces: { ensureExecutionReady: async () => undefined } as never,
       workspaceAccess: { plan: async () => ({ kind: "test-plan" }) } as never,
-      ...(input.knowledge?.enabled ? { knowledge: true } : {}),
+      ...(input.knowledge?.enabled
+        ? {
+            knowledge: {
+              owner: async () =>
+                input.knowledge?.owner === "requester"
+                  ? requestedBy
+                  : input.knowledge?.owner === "another"
+                    ? createId("user")
+                    : null,
+            },
+          }
+        : {}),
     });
     const command = {
       ...steerCommand(),

@@ -2060,7 +2060,7 @@ export async function createHostRuntime(
       browser,
       egress,
       executionLeaseMs: config.executionLeaseMs,
-      knowledge: knowledge !== undefined,
+      knowledge,
       workspaceSkillPolicy: (workspaceId, ownerUserId) =>
         integrationPlatformStore.settings.workspaceSkillPolicy(workspaceId, ownerUserId),
       pluginVersions: async (workspaceId, ownerUserId) =>
@@ -2439,7 +2439,7 @@ export async function createHostRuntime(
       ...(knowledge
         ? {
             knowledgeFor: knowledgeForCaller({
-              store,
+              owner: () => knowledge!.owner(),
               agents: (runnerId, bootId) => {
                 const identity = runnerRegistry?.identityForRunner(runnerId);
                 return identity?.bootId === bootId ? identity.modules.agents : null;

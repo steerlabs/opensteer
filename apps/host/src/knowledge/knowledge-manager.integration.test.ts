@@ -14,6 +14,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { AgentCaller, RunCaller } from "../mcp/agent-caller.js";
 import { agentToolHandlers } from "../mcp/handlers/index.js";
 import { OpensteerMcpService } from "../mcp/opensteer-mcp-service.js";
+import { knowledgeForCaller } from "./knowledge-eligibility.js";
 import { startKnowledgeManager } from "./knowledge-manager.js";
 
 const unavailable = new Proxy(
@@ -54,7 +55,7 @@ async function fixture(options: { knowledge?: boolean; statementTimeoutMs?: numb
           });
     const workspaceId = createId("workspace");
     const environmentId = createId("environment");
-    const thread = (inheritsMain: boolean) => {
+    const thread = (inheritsMain: boolean, specialistId: string | null = null) => {
       const id = createId("thread");
       return {
         id,
@@ -63,16 +64,16 @@ async function fixture(options: { knowledge?: boolean; statementTimeoutMs?: numb
         lineageRootThreadId: id,
         accessMode: "full-access",
         inheritsMain,
-        specialistId: null,
+        specialistId,
         harnessInstanceId: `hin-${id}`,
       } as unknown as Thread;
     };
-    const run = (anchor: Thread): RunCaller => {
+    const run = (anchor: Thread, userId = owner): RunCaller => {
       const runId = createId("run");
       return {
         kind: "run",
         key: `run:${runId}`,
-        userId: owner,
+        userId,
         accessMode: "full-access",
         reach: threadReachScope(anchor),
         thread: anchor,
@@ -91,6 +92,8 @@ async function fixture(options: { knowledge?: boolean; statementTimeoutMs?: numb
     const callers: Record<string, AgentCaller> = {
       owner: main,
       shared,
+      specialist: run(thread(true, "specialist")),
+      stranger: run(thread(true), createId("user")),
       connection: {
         kind: "connection",
         key: "connection:c",
@@ -146,7 +149,14 @@ async function fixture(options: { knowledge?: boolean; statementTimeoutMs?: numb
       handlers,
       publicUrl: url,
       onToolError,
-      ...(manager ? { knowledgeFor: async (caller: AgentCaller) => caller.kind === "run" } : {}),
+      ...(manager
+        ? {
+            knowledgeFor: knowledgeForCaller({
+              owner: () => manager.owner(),
+              agents: () => ({ knowledgeSkill: 1 }),
+            }),
+          }
+        : {}),
       store: {
         requests: { get: async () => null },
         getThreadForOwner: async () => null,
@@ -455,11 +465,11 @@ integration("knowledge through the sql tool", () => {
   it("offers and serves sql only to the owner's own Main-inheriting Runs", async () => {
     const f = await fixture();
     const topic = await f.general();
-    for (const token of ["owner", "shared", "connection", "program"]) {
+    for (const token of ["owner", "shared", "specialist", "stranger", "connection", "program"]) {
       const names = (await (await f.connect(token)).listTools()).tools.map(({ name }) => name);
       expect(names.includes("sql"), token).toBe(token === "owner");
     }
-    for (const token of ["shared", "connection", "program"]) {
+    for (const token of ["shared", "specialist", "stranger", "connection", "program"]) {
       await expect(
         f.service.callTool(
           token,

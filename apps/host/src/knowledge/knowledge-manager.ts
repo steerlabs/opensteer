@@ -34,6 +34,8 @@ export type KnowledgeAnswer = Omit<KnowledgeSqlOutput, "rows"> & {
 
 export interface KnowledgeManager {
   sql(call: KnowledgeSqlCall): Promise<KnowledgeAnswer>;
+  /** The Personal owner, the only person whose Runs may hold the tool. */
+  owner(): Promise<UserId | null>;
   close(): Promise<void>;
 }
 
@@ -118,6 +120,7 @@ export async function startKnowledgeManager(options: {
         throw failure(error);
       }
     },
+    owner: ownerOf,
     async close() {
       await pool.end();
     },

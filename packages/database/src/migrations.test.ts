@@ -176,7 +176,6 @@ const releasedMigrationNames = [
   "0166_memory_pass_activity",
   "0167_quiet_tasks",
   "0168_devices",
-  "0169_thread_owner_started",
 ];
 
 describe("migration names", () => {

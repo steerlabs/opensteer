@@ -4391,7 +4391,6 @@ export async function delegateThreadInTransaction(
       "workspaceId",
       "doneAt",
       "inheritsMain",
-      "ownerStarted",
       "specialistId",
     ])
     .where("id", "in", [input.origin.parentThreadId, ...(input.threadId ? [input.threadId] : [])])
@@ -4553,13 +4552,6 @@ export async function delegateThreadInTransaction(
         .executeTakeFirst()
     : null;
   const listedNow = reusedRow !== null && !reusedRow.listed && listed && !managedAnchor;
-  const ownerStarted = input.origin.kind === "run" && parent.ownerStarted;
-  if (reusedRow?.ownerStarted && !ownerStarted)
-    await transaction
-      .updateTable("threads")
-      .set({ ownerStarted: false })
-      .where("id", "=", reusedRow.id)
-      .execute();
   const threadRow = reusedRow
     ? listedNow
       ? await transaction
@@ -4572,7 +4564,6 @@ export async function delegateThreadInTransaction(
     : await insertThread({
         accessMode: ThreadAccessModeSchema.parse(input.accessMode),
         inheritsMain: parent.inheritsMain,
-        ownerStarted,
         specialistId: input.specialistId ?? parent.specialistId,
         role: "work",
         createdByPrincipalId: actorPrincipalId,

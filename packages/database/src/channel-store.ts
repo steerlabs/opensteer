@@ -1917,7 +1917,6 @@ export class ChannelStore {
             // A messaging context never inherits another Thread's history:
             // every rotation, including a change of consent, is a fresh root.
             inheritsMain,
-            ownerStarted: false,
             role: inheritsMain ? "conversation" : "work",
             createdByPrincipalId: identity.principalId,
             id: threadId,

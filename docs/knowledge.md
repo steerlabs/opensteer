@@ -15,19 +15,15 @@ and its facts in place.
 
 ## Who holds the tool
 
+Knowledge follows the boundary personal memory follows: a conversation other people can start never
+holds the person's private things, and the Host already expresses that as Main inheritance.
 [One rule](../apps/host/src/knowledge/knowledge-eligibility.ts) decides the Run's skill and tool
-plan, what MCP lists and what dispatch accepts: a Run in Main whose whole lineage the owner started
-in their own signed-in session, on a Runner that advertises `knowledgeSkill`. Each Thread records
-`owner_started` when it is created, and a child is owner-started only if its parent is. Threads that
-a connected agent, a Trigger, a watch, a Program or a channel message created never are, including
-a direct message to the owner's bot. The [manager](../apps/host/src/knowledge/knowledge-manager.ts)
-checks the owner again.
-
-Provenance belongs to the Thread, not to each message. A connected agent's message or a Trigger
-that lands in an owner-started Thread runs with the tool.
-
-A Runner that cannot load the knowledge skill still starts, does not advertise it, and its Runs
-plan exactly as with the trial off.
+plan, what MCP lists and what dispatch accepts: a Run that inherits Main (reach `user`), requested by
+the Personal owner, on a Runner that advertises `knowledgeSkill`. So the owner's own tasks and
+chats, their direct message to their bot and a task a connected agent with user reach starts in Main
+hold it, exactly where they hold memory. A shared channel conversation, a workspace- or
+lineage-reach Run, and a connection or Program calling directly never do. A Runner that cannot load
+the skill still starts and plans its Runs exactly as with the trial off.
 
 ## The boundary
 
