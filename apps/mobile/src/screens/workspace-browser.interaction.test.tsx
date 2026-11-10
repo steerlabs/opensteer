@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   BrowserEditingStore,
+  browserThreadAgentTab,
   placeList,
   type BrowserSessionSummary,
   type HostSnapshot,
@@ -67,6 +68,8 @@ const state = vi.hoisted(() => ({
   fontScale: 1,
   foreground: true,
   conversationMounts: 0,
+  /** How the conversation beside the page shows one of its tabs there, as its live card does. */
+  besideShowTab: null as ((tab: { sessionId: string; tabId: string }) => void) | null,
   pageMounts: 0,
   /** Every claim of the active Thread a pane beside the page made. */
   conversationClaims: [] as string[],
@@ -144,6 +147,9 @@ vi.mock("@opensteer/client/react", async () => {
       if (state.snapshot === null) throw new Error("Missing snapshot fixture");
       return placeList(state.snapshot);
     },
+    // No Run place in these fixtures: the agent's tab is the one its Thread occupies.
+    useThreadAgentTab: (_client: unknown, threadId: string | null) =>
+      threadId === null ? null : browserThreadAgentTab(state.snapshot!.browserSessions, threadId),
   };
 });
 vi.mock("../ui/mobile-client-context.js", () => ({
@@ -495,11 +501,15 @@ vi.mock("../thread/thread-pane.js", async () => {
     ThreadPane: (props: {
       threadId: string;
       onHeader?: (header: { title: string }) => void;
-      withPage?: { page: { title: string } | null };
+      withPage?: {
+        page: { title: string } | null;
+        showTab: ((tab: { sessionId: string; tabId: string }) => void) | null;
+      };
     }) => {
       const insets = useContentInsets();
       const inView = usePaneInView();
       const { onHeader, threadId } = props;
+      state.besideShowTab = props.withPage?.showTab ?? null;
       React.useEffect(() => {
         state.conversationMounts += 1;
       }, []);
@@ -597,6 +607,7 @@ afterEach(() => {
   state.focusedInput = null;
   state.fontScale = 1;
   state.conversationMounts = 0;
+  state.besideShowTab = null;
   state.pageMounts = 0;
   state.conversationClaims = [];
   state.drafts = null;
@@ -2337,7 +2348,7 @@ describe("a page beside its agent's thread", () => {
     expect(header().textContent).toContain("Tab");
   });
 
-  it("follows the agent to its tab in place, and pauses when the person moves the page", () => {
+  it("follows the agent in place, stops for the person, and picks up again from the live card", () => {
     vi.useFakeTimers();
     try {
       state.pair = { height: 1000, width: 744 };
@@ -2386,7 +2397,6 @@ describe("a page beside its agent's thread", () => {
       state.snapshot = agentOn("page-1");
       render();
       expect(element(container, "Address, example.com. Following the agent")).not.toBeNull();
-      expect(container.querySelector('[data-testid="follow-band"]')).toBeNull();
 
       // The agent moves on; the page keeps up in place.
       state.snapshot = agentOn("page-2");
@@ -2401,17 +2411,15 @@ describe("a page beside its agent's thread", () => {
       showTab("page-2");
       expect(element(container, "Address, example.com. Following the agent")).not.toBeNull();
 
-      // The person goes back to the first tab: following stops and says where the agent is.
+      // The person goes back to the first tab: following stops, and the page stays theirs.
       state.setParams.mockClear();
       showTab("page-1");
       expect(element(container, "Address, example.com")).not.toBeNull();
-      expect(container.querySelector('[data-testid="follow-band"]')?.textContent).toContain(
-        "Agent is on Flights",
-      );
       act(() => vi.advanceTimersByTime(5000));
       expect(state.setParams).not.toHaveBeenCalled();
 
-      press(container, "Follow");
+      // The conversation's live card shows the agent's tab in place, and following picks up there.
+      act(() => state.besideShowTab?.({ sessionId: "browser-child", tabId: "page-2" }));
       expect(state.setParams).toHaveBeenCalledExactlyOnceWith({
         editAddress: false,
         popup: false,
@@ -2419,16 +2427,25 @@ describe("a page beside its agent's thread", () => {
         tabId: "page-2",
       });
       showTab("page-2");
-      expect(container.querySelector('[data-testid="follow-band"]')).toBeNull();
+      expect(element(container, "Address, example.com. Following the agent")).not.toBeNull();
       expect(state.conversationMounts).toBe(1);
 
-      // The tab sheet marks the tab shown when it opened, so following stops under it.
+      // The tab sheet holds the page under it, and following catches up once it closes.
       state.setParams.mockClear();
       press(container, "Tabs, 2");
+      state.focused = false;
       state.snapshot = agentOn("page-1");
       render();
       act(() => vi.advanceTimersByTime(5000));
       expect(state.setParams).not.toHaveBeenCalled();
+      state.focused = true;
+      render();
+      expect(state.setParams).toHaveBeenCalledExactlyOnceWith({
+        editAddress: false,
+        popup: false,
+        sessionId: "browser-child",
+        tabId: "page-1",
+      });
     } finally {
       vi.useRealTimers();
     }

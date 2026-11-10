@@ -270,7 +270,8 @@
   gap: var(--space-8);
   transition:
     border-color var(--duration-fast) linear,
-    background-color var(--duration-fast) linear;
+    background-color var(--duration-fast) linear,
+    box-shadow var(--duration-fast) linear;
   box-shadow: var(--edge-plate);
 }
 
@@ -1400,7 +1401,7 @@ button.browser-download__file:hover {
 
 /* A docked conversation beside the page. Following its agent rings the
    address in green with the task's mark: the one sign that this is what the
-   agent sees. */
+   agent sees. Anywhere else, the conversation's live card says where it is. */
 .browser-address--following,
 .browser-address--following:focus-within {
   border-color: var(--green);
@@ -1409,59 +1410,35 @@ button.browser-download__file:hover {
     0 0 0 0.5px var(--green);
 }
 
+/* Folded into the address's own gap until the page follows. */
 .browser-address__following {
   display: grid;
   flex: none;
   place-items: center;
-  margin-right: var(--space-4);
-}
-
-/* Where the agent went while the person looked elsewhere: a band under the
-   chrome, so the page below keeps all of its picture. */
-.browser-follow-band {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: var(--space-8);
-  height: 32px;
-  padding: 0 var(--space-10) 0 var(--space-12);
-  border-bottom: 1px solid var(--line);
-  color: var(--text-soft);
-  background: var(--surface-elevated);
-  font-size: var(--text-sm);
-}
-
-.browser-follow-band__mark {
-  display: grid;
-  flex: none;
-  place-items: center;
-}
-
-.browser-follow-band__text {
-  flex: 1;
-  min-width: 0;
+  width: 0;
+  margin-left: calc(0px - var(--space-8));
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  opacity: 0;
+  scale: 0.6;
+  pointer-events: none;
+  transition:
+    width var(--duration-fast) var(--ease-out),
+    margin var(--duration-fast) var(--ease-out),
+    opacity var(--duration-fast) linear,
+    scale var(--duration-fast) var(--ease-out);
 }
 
-.browser-follow-band__text strong {
-  color: var(--text);
-  font-weight: var(--weight-medium);
+.browser-address--following .browser-address__following {
+  width: 16px;
+  margin-right: var(--space-4);
+  margin-left: 0;
+  opacity: 1;
+  scale: 1;
+  pointer-events: auto;
 }
 
-.browser-follow-band__follow {
-  flex: none;
-  height: 22px;
-  padding: 0 var(--space-10);
-  border: 1px solid var(--green-line);
-  border-radius: var(--radius-full);
-  color: var(--green);
-  background: var(--green-wash);
-  font-size: var(--text-xs);
-  font-weight: var(--weight-medium);
-}
-
-.browser-follow-band__follow:hover {
-  background: color-mix(in srgb, var(--green) 16%, transparent);
+@media (prefers-reduced-motion: reduce) {
+  .browser-address__following {
+    transition: none;
+  }
 }
