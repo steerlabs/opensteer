@@ -82,6 +82,95 @@ const runnerId = createId("runner");
 const environmentId = createId("environment");
 const harnessInstanceId = createId("harnessInstance");
 
+it("opts control viewers into basic input and exposes only the returned negotiation", async () => {
+  const workspace = makeWorkspace();
+  const sessionId = createBrowserSessionId();
+  const surfaceId = BrowserSurfaceIdSchema.parse("phone-page");
+  const session = {
+    id: sessionId,
+    access: "read-write" as const,
+    origin: "workspace" as const,
+    state: "ready" as const,
+    createdAt: now,
+    updatedAt: now,
+    workspaceId: workspace.id,
+    profileId: null,
+    runtimeId: "runtime",
+    placement: { kind: "runner" as const, runnerId },
+    tabCatalog: {
+      generation: 1,
+      revision: 1,
+      tabs: [
+        {
+          id: surfaceId,
+          title: "Page",
+          site: "https://example.test",
+          iconRef: null,
+          order: 0,
+          openerId: null,
+          availability: "ready" as const,
+          documentId: null,
+          occupants: [],
+        },
+      ],
+    },
+  };
+  const sockets: { url: string; socket: FakeSocket }[] = [];
+  const client = createHttpHostClient({
+    capabilities: ["browser-target-control-v1"],
+    refreshIntervalMs: 0,
+    fetch: async () =>
+      json(
+        bootstrap([workspace], {
+          available: true,
+          placements: [],
+          profiles: [],
+          profileGrants: [],
+          sessions: [session],
+        }),
+      ),
+    webSocketFactory: (url) => {
+      const socket = new FakeSocket();
+      sockets.push({ url, socket });
+      return socket;
+    },
+  });
+  try {
+    await client.load();
+    const release = client.retainBrowserViewer(sessionId, surfaceId, { picture: false });
+    const control = sockets.find(({ url }) => url.includes("/browser-sessions/"))!;
+    expect(new URL(control.url).searchParams.get("basicInput")).toBe("1");
+    const target = client.browserFrames.editing!.target(sessionId, surfaceId);
+    expect(target.get().input).toBe("none");
+    control.socket.open();
+    control.socket.receiveRaw({
+      type: "browser.snapshot",
+      sessionId,
+      access: "read-write",
+      state: "ready",
+      targetedStreamingVersion: 1,
+      basicInput: 1,
+      dialog: null,
+      surfaces: [{ id: surfaceId, title: "Page", url: "https://example.test", active: true }],
+    });
+    expect(target.get().input).toBe("basic");
+    expect(client.browserViewerState(sessionId, surfaceId).input).toBe("basic");
+    await target.send({ kind: "command", command: "selectAll" });
+    expect(parseSent(control.socket, control.socket.sent.length - 1)).toMatchObject({
+      type: "input.command",
+      command: "selectAll",
+    });
+    const releaseWatch = client.retainBrowserWatch(sessionId, surfaceId);
+    const watch = sockets.find(({ url }) => new URL(url).searchParams.get("mode") === "watch")!;
+    expect(new URL(watch.url).searchParams.has("basicInput")).toBe(false);
+    releaseWatch();
+    release();
+    expect(target.get().input).toBe("none");
+  } finally {
+    client.dispose();
+  }
+});
+
 afterEach(() => {
   vi.useRealTimers();
 });
