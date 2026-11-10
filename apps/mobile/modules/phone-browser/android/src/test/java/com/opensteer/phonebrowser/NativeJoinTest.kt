@@ -15,6 +15,39 @@ import java.io.File
 import java.util.concurrent.Executor
 
 class NativeJoinTest {
+  @Test fun queuedMutationsAndStagingRecheckRevocationAndLastPermitDisablesWithoutJavascript() {
+    val fixture = Fixture(); fixture.admit(); fixture.agent()
+    var debugging = true
+    val permits = CdpPermits { debugging = false }
+    permits.grant("attachment", 0, fixture.channel)
+    fixture.client(Wire.fields("type" to JsonPrimitive("agent.attach"), "attachmentId" to JsonPrimitive("last"), "actorToken" to JsonPrimitive("actor"), "sessionId" to JsonPrimitive(fixture.session), "backend" to JsonPrimitive("cdp")))
+    permits.grant("last", 0, fixture.channel)
+    fixture.onDetach = { _, id -> permits.remove(id) }
+    var mutations = 0
+    var staged = 0
+    fixture.queue.add(Runnable { assertThrows(BrowserFailure::class.java) { fixture.service.withAttachment(0, "last", fixture.session) { mutations++ } } })
+    fixture.queue.add(Runnable { assertThrows(BrowserFailure::class.java) { fixture.service.withAttachment(0, "last", fixture.session) { staged++ } } })
+    fixture.writer.detachAgent(0, "attachment")
+    assertTrue(debugging)
+    fixture.writer.detachAgent(0, "last")
+    assertFalse("Debugging shutdown must not wait for the JS detach handler", debugging)
+    fixture.drain()
+    assertEquals(0, mutations)
+    assertEquals(0, staged)
+  }
+  @Test fun sameRunAttachmentsUseExactIdentityAndRetireOnlyTheirOwnAuthority() {
+    val fixture = Fixture(); fixture.admit(); fixture.agent()
+    fixture.client(Wire.fields("type" to JsonPrimitive("agent.attach"), "attachmentId" to JsonPrimitive("second"), "actorToken" to JsonPrimitive("actor"), "sessionId" to JsonPrimitive(fixture.session), "backend" to JsonPrimitive("cdp")))
+    assertEquals("attachment", fixture.service.requireCdp(0, fixture.channel, "actor", "attachment").attachmentId)
+    assertEquals("second", fixture.service.requireCdp(0, fixture.channel, "actor", "second").attachmentId)
+    assertThrows(BrowserFailure::class.java) { fixture.service.requireCdp(0, fixture.channel, "wrong-actor", "second") }
+    fixture.writer.detachAgent(0, "attachment")
+    assertThrows(BrowserFailure::class.java) { fixture.service.requireCdp(0, fixture.channel, "actor", "attachment") }
+    assertEquals("second", fixture.service.requireCdp(0, fixture.channel, "actor", "second").attachmentId)
+    fixture.writer.detachAgent(0, "second")
+    fixture.agent()
+    assertEquals("attachment", fixture.service.requireCdp(0, fixture.channel, "actor", "attachment").attachmentId)
+  }
   private class Memory : DurableBytes {
     private var bytes: ByteArray? = null
     override fun read() = bytes
@@ -35,12 +68,14 @@ class NativeJoinTest {
     val fences = vector("fences")
     val tickets = vector("attach-tickets")
     val gate = EpochGate()
-    val admission = Admission({ fences.number("now") }).apply { active = true }
+    var now = fences.number("now")
+    val admission = Admission({ now }).apply { active = true }
     val queue = mutableListOf<Runnable>()
     val socket = Socket()
     val events = mutableListOf<JsonObject>()
-    val writer = BrowserTransport(admission, AttachTickets("phone", ReplayLedger(Memory()).apply { initialize() }) { fences.number("now") },
-      Executor { queue.add(it) }, { events.add(it) }, gate::adopt)
+    var onDetach: (Int, String) -> Unit = { _, _ -> }
+    val writer = BrowserTransport(admission, AttachTickets("phone", ReplayLedger(Memory()).apply { initialize() }) { now },
+      Executor { queue.add(it) }, { events.add(it) }, gate::adopt, detachBrowser = { epoch, id -> onDetach(epoch, id) })
     var connected = true
     var page = true
     var tick = 0
@@ -54,7 +89,7 @@ class NativeJoinTest {
     fun relay(type: String, fields: JsonObject = JsonObject(emptyMap())) = JsonObject(fences.obj("fence") + fields + ("type" to JsonPrimitive(type)))
     fun client(message: JsonObject) = writer.receive(relay("browser.client-message", Wire.fields("channelId" to JsonPrimitive(channel), "capability" to capability, "message" to message)))
     fun agent() = client(Wire.fields("type" to JsonPrimitive("agent.attach"), "attachmentId" to JsonPrimitive("attachment"), "actorToken" to JsonPrimitive("actor"), "sessionId" to JsonPrimitive(session), "backend" to JsonPrimitive("cdp")))
-    fun captureRequest() = client(Wire.fields("type" to JsonPrimitive("cdp.command"), "requestId" to JsonPrimitive("capture"), "actorToken" to JsonPrimitive("actor"),
+    fun captureRequest() = client(Wire.fields("type" to JsonPrimitive("cdp.command"), "requestId" to JsonPrimitive("capture"), "actorToken" to JsonPrimitive("actor"), "attachmentId" to JsonPrimitive("attachment"),
       "command" to Wire.fields("method" to JsonPrimitive("Page.captureScreenshot"))))
     fun signed(customClaims: JsonObject): Pair<JsonElement, JsonElement> {
       val key = Ed25519PrivateKeyParameters(ByteArray(32) { 7 }, 0)
@@ -72,13 +107,13 @@ class NativeJoinTest {
       val handle = events.last().text("authorityHandle")
       val verified = writer.verifyAttach(gate.epoch, handle)
       return writer.commitAttach(gate.epoch, handle, verified.text("claimsDigest"), ReplayState.parse(verified.obj("replayState"), 4096)
-        .claim(customClaims.text("nonce"), customClaims.time("expiresAt"), fences.number("now"), 4096).json())
+        .claim(customClaims.text("nonce"), customClaims.time("expiresAt"), now, 4096).json())
     }
-    fun admit(customClaims: JsonObject? = null) {
+    fun admit(customClaims: JsonObject? = null, deadline: String = "2026-11-09T12:00:01.000Z") {
       val (pem, token) = customClaims?.let(::signed) ?: (tickets.getValue("publicKeyPem") to tickets.getValue("cases").jsonArray.first().jsonObject.getValue("token"))
-      writer.online(socket, JsonObject(fences.obj("welcome") + mapOf("browserWireVersion" to JsonPrimitive(1), "browserAttachPublicKeys" to JsonArray(listOf(
+      writer.online(socket, JsonObject(fences.obj("welcome") + mapOf("streamLeaseExpiresAt" to JsonPrimitive(deadline), "browserWireVersion" to JsonPrimitive(1), "browserAttachPublicKeys" to JsonArray(listOf(
         Wire.fields("keyId" to JsonPrimitive("fixture"), "publicKeyPem" to pem))))))
-      writer.receive(relay("capability.grant", Wire.fields("requestId" to JsonPrimitive("grant"), "lease" to JsonObject(capability + ("expiresAt" to JsonPrimitive("2026-11-09T12:00:01.000Z"))))))
+      writer.receive(relay("capability.grant", Wire.fields("requestId" to JsonPrimitive("grant"), "lease" to JsonObject(capability + ("expiresAt" to JsonPrimitive(deadline))))))
       writer.send(gate.epoch, relay("capability.accepted", Wire.fields("requestId" to JsonPrimitive("grant"), "capability" to capability)))
       writer.receive(relay("browser.attach", Wire.fields("channelId" to JsonPrimitive(channel), "capability" to capability, "requestId" to JsonPrimitive("attach"),
         "attachTicket" to token)))
@@ -101,10 +136,10 @@ class NativeJoinTest {
     fixture.service.requireAllocation(0, fixture.permit, fixture.session, null)
     assertThrows(BrowserFailure::class.java) { fixture.service.requireAllocation(0, fixture.permit, "wrong-session", null) }
     assertThrows(BrowserFailure::class.java) { fixture.service.requireAllocation(0, fixture.permit, fixture.session, "wrong-profile") }
-    assertThrows(BrowserFailure::class.java) { fixture.service.requireCdp(0, fixture.channel, "actor") }
+    assertThrows(BrowserFailure::class.java) { fixture.service.requireCdp(0, fixture.channel, "actor", "attachment") }
     fixture.agent()
-    assertEquals("attachment", fixture.service.requireCdp(0, fixture.channel, "actor").attachmentId)
-    assertThrows(BrowserFailure::class.java) { fixture.service.requireCdp(0, fixture.channel, "other") }
+    assertEquals("attachment", fixture.service.requireCdp(0, fixture.channel, "actor", "attachment").attachmentId)
+    assertThrows(BrowserFailure::class.java) { fixture.service.requireCdp(0, fixture.channel, "other", "attachment") }
     assertThrows(BrowserFailure::class.java) { fixture.service.requireAttachment(0, "attachment", "other", "tab") }
     assertThrows(BrowserFailure::class.java) { fixture.service.viewerActor(0, fixture.channel, "other") }
     fixture.client(Wire.fields("type" to JsonPrimitive("agent.detach"), "attachmentId" to JsonPrimitive("attachment")))
@@ -149,14 +184,18 @@ class NativeJoinTest {
       "runnerId" to "rnr_11111111-1111-4111-8111-111111111111", "profileId" to "bpr_11111111-1111-4111-8111-111111111111",
       "storageInstanceId" to "11111111-1111-4111-8111-111111111111", "bindingId" to "11111111-1111-4111-8111-111111111111")) as JsonObject
     val identity = Wire.fields("kind" to JsonPrimitive("profile-local"), "binding" to binding, "initialized" to JsonPrimitive(false), "readyUrl" to JsonPrimitive("https://fixture.invalid/initial"))
-    fixture.admit(JsonObject(fixture.claims() + ("identity" to identity)))
+    fixture.admit(JsonObject(fixture.claims() + ("identity" to identity)), "2026-11-09T12:02:00.000Z")
+    fixture.now += 21000
+    assertThrows(BrowserFailure::class.java) { fixture.service.requireAllocation(0, fixture.permit, fixture.session, "store") }
     val currentIdentity = JsonObject(identity + mapOf("initialized" to JsonPrimitive(true), "readyUrl" to JsonPrimitive("https://fixture.invalid/current")))
-    val operation = JsonObject(fixture.claims() + mapOf("nonce" to JsonPrimitive("operation-nonce-1111111111111111"), "identity" to currentIdentity))
+    val operation = JsonObject(fixture.claims() + mapOf("nonce" to JsonPrimitive("operation-nonce-1111111111111111"), "identity" to currentIdentity,
+      "issuedAt" to JsonPrimitive("2026-11-09T12:00:21.000Z"), "expiresAt" to JsonPrimitive("2026-11-09T12:01:21.000Z"),
+      "operationExpiresAt" to JsonPrimitive("2026-11-09T12:00:39.000Z"), "remainingBudgetMs" to JsonPrimitive(18000)))
     val permit = fixture.operation(operation)
     fixture.service.requireAllocation(0, permit, fixture.session, null, binding.mapValues { it.value.jsonPrimitive.let { value -> value.intOrNull ?: value.content } }, true)
     val fresh = fixture.operation(JsonObject(operation + mapOf("nonce" to JsonPrimitive("fresh-operation-nonce-1111111111111111"), "identity" to Wire.fields("kind" to JsonPrimitive("fresh")))))
-    assertThrows(BrowserFailure::class.java) { fixture.service.requireAllocation(0, fresh, fixture.session, null, binding.mapValues { it.value.jsonPrimitive.let { value -> value.intOrNull ?: value.content } }, true) }
-    fixture.service.requireAllocation(0, fixture.permit, fixture.session, null, binding.mapValues { it.value.jsonPrimitive.let { value -> value.intOrNull ?: value.content } }, false)
+    fixture.service.requireAllocation(0, fresh, fixture.session, null, binding.mapValues { it.value.jsonPrimitive.let { value -> value.intOrNull ?: value.content } })
+    assertEquals(identity, fixture.writer.allocationClaims(0, fresh, fixture.session).obj("identity"))
     for ((index, changed) in listOf(
       operation + ("subject" to JsonPrimitive("another-subject")),
       operation + ("access" to JsonPrimitive("read")),
@@ -165,6 +204,12 @@ class NativeJoinTest {
     ).withIndex()) {
       assertThrows(Refused::class.java) { fixture.operation(JsonObject(changed + ("nonce" to JsonPrimitive("refused-operation-nonce-$index-1111111111111111")))) }
     }
+    fixture.now += 19000
+    assertThrows(BrowserFailure::class.java) { fixture.service.requireAllocation(0, fresh, fixture.session, null, binding.mapValues { it.value.jsonPrimitive.content }) }
+    fixture.agent()
+    fixture.service.requireAllocation(0, "cdp:attachment", fixture.session, null, binding.mapValues { it.value.jsonPrimitive.let { value -> value.intOrNull ?: value.content } })
+    fixture.writer.detachAgent(0, "attachment")
+    assertThrows(BrowserFailure::class.java) { fixture.service.requireAllocation(0, "cdp:attachment", fixture.session, null, binding.mapValues { it.value.jsonPrimitive.content }) }
   }
   @Test fun readOnlyWatchersNeverBecomeControllersOrAgents() {
     val fixture = Fixture()
@@ -172,7 +217,7 @@ class NativeJoinTest {
     fixture.service.requireViewer(0, fixture.channel, fixture.session)
     assertThrows(BrowserFailure::class.java) { fixture.service.requireViewer(0, fixture.channel, fixture.session, true) }
     assertThrows(Refused::class.java) { fixture.agent() }
-    assertThrows(BrowserFailure::class.java) { fixture.service.requireCdp(0, fixture.channel, "actor") }
+    assertThrows(BrowserFailure::class.java) { fixture.service.requireCdp(0, fixture.channel, "actor", "attachment") }
   }
   @Test fun queuedFramesAreDroppedOnPageLossAndOfflineKeepsOneEpoch() {
     for (offline in listOf(false, true)) {
@@ -181,6 +226,7 @@ class NativeJoinTest {
       if (offline) {
         fixture.writer.offline("inactive")
         assertEquals(fixture.admission.epoch, fixture.gate.epoch)
+        assertFalse(fixture.service.frameWritable(fixture.gate.epoch, fixture.channel))
       } else fixture.page = false
       fixture.drain()
       assertTrue(fixture.socket.binary.isEmpty())

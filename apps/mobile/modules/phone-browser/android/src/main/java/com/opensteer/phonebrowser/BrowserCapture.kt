@@ -59,6 +59,7 @@ internal class BrowserCapture(private val pool: PhoneBrowserPool) {
     val tab = pool.tabs.getValue(id)
     val credit = credits.getValue(id)
     val channel = credit.channel() ?: return
+    if (PhoneBrowserNative.authority?.frameWritable(pool.gate.epoch, channel) != true) { schedule(); return }
     if (PhoneBrowserNative.sink == null) { credit.demand(channel, 1.0, false); schedule(); return }
     val token = UUID.randomUUID().toString()
     val density = credit.density() ?: return
@@ -81,6 +82,7 @@ internal class BrowserCapture(private val pool: PhoneBrowserPool) {
       if (input.format !in setOf("jpeg", "png") || input.quality != null && (!input.quality!!.isFinite() || input.quality!! !in 0.0..100.0)) throw BrowserFailure("unsupported-operation")
       PhoneBrowserNative.authority?.requireAttachment(input.epoch, input.attachmentId, input.sessionId, input.tabId) ?: throw BrowserFailure("forbidden")
       PhoneBrowserNative.authority?.requireViewer(input.epoch, input.channelId, input.sessionId, true) ?: throw BrowserFailure("forbidden")
+      if (PhoneBrowserNative.authority?.frameWritable(input.epoch, input.channelId) != true) throw BrowserFailure("capture-busy")
       encode(tab, input.epoch, input.channelId, input.requestId, null, input.format, (input.quality ?: 80.0) / 100.0, 1.0, input.clip, input.attachmentId)
     }
     return try { pool.await(future) } catch (error: Throwable) { future.completeExceptionally(error); throw error }

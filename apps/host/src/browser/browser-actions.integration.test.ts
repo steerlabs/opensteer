@@ -586,7 +586,10 @@ integration("session-scoped browser agent backends", () => {
           actorToken: expect.any(String),
           attachmentId: expect.any(String),
         });
-        expect(query).toMatchObject({ actorToken: attachment!.actorToken });
+        expect(query).toMatchObject({
+          actorToken: attachment!.actorToken,
+          attachmentId: attachment!.attachmentId,
+        });
         expect(commands.indexOf(attachment!)).toBeLessThan(commands.indexOf(query!));
       },
       { timeout: 2_000 },

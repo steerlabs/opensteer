@@ -103,7 +103,10 @@ and network state is re-read on foreground because Expo gets no listener events 
 is said, so no screen adds its own line ([what a person is told](connections.md#what-a-person-is-told)).
 
 Media is visibility-bound: release pictures when hidden, backgrounded or no longer authorized, and
-return picture credit even when decoding fails. Routes name exact tabs or owner-view generations; a
+return viewer picture credit even when decoding fails. Phone-to-Host native credit is separate:
+Android waits for OkHttp's outbound queue to drain, while iPhone waits for socket write completion,
+not enqueue acceptance; an iPhone picture-write timeout cancels that transport before releasing credit.
+Routes name exact tabs or owner-view generations; a
 closed target stays closed and is never replaced by a sibling. Connecting Chrome stays on computers.
 
 A phone the Host lists as a browser device of the Deployment being viewed opens a conversation's
@@ -276,9 +279,12 @@ its enrollment unusable until all that Deployment's profiles are physically dele
 loaded Android profiles that require a process restart. Sign-out does not wait for that restart.
 “Pending restart” is not completed erasure: the native startup gate deletes retired stores before
 loading any page. A persisted retiring identity covers even stores not yet tombstoned when the
-process ended; unfinished Guest deletion also keeps retirement pending. Android Guest uses an app-private throwaway disk profile, never a reusable or
-RAM-only store. Ending it clears cookies and web storage, but service workers and caches can remain
-until that startup deletion. The person's system file picker may survive backgrounding for its
+process ended; unfinished Guest deletion also keeps retirement pending. Android Guest uses one
+app-private throwaway disk profile per session, shared by its tabs and popups, never by another
+session or Deployment. The last tab or session ending clears cookies and web storage, but service
+workers and caches can remain until startup deletion. Confirmed Guest deletion drops its manifest
+row; pending erasure and named-profile deletion authority stay durable. A full manifest refuses new
+profiles rather than writing an unreadable next startup. The person's system file picker may survive backgrounding for its
 original page; agent-staged choosers cannot.
 
 ## This iPhone's apps

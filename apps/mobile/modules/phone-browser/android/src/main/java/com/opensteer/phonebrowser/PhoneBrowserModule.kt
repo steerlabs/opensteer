@@ -70,7 +70,9 @@ class PhoneBrowserModule : Module() {
     } }
     AsyncFunction("closeCdpPipe") { input: ClosePipeRecord, promise: Promise -> priority(input, promise) { cdp.close(input.epoch, input.pipeHandle) } }
     AsyncFunction("releaseCdp") { input: ReleaseCdpRecord, promise: Promise -> priority(input, promise) { cdp.release(input.epoch, input.attachmentId) } }
-    AsyncFunction("stageChunk") { input: StageRecord, promise: Promise -> work(promise) { requireReady(input.epoch); gate.execute(input.epoch) { files.stage(input) } } }
+    AsyncFunction("stageChunk") { input: StageRecord, promise: Promise -> work(promise) { requireReady(input.epoch); gate.execute(input.epoch) {
+      PhoneBrowserNative.authority?.withAttachment(input.epoch, input.attachmentId, input.sessionId) { files.stage(input) } ?: throw BrowserFailure("forbidden")
+    } } }
     AsyncFunction("finishSessionFiles") { input: SessionFilesRecord, promise: Promise -> work(promise) { gate.execute(input.epoch) { files.finish(input.sessionId); downloads.finish(input.sessionId) } } }
     AsyncFunction("cancelDownload") { input: CancelDownloadRecord, promise: Promise -> priority(input, promise) { downloads.cancel(input.sessionId, input.downloadId) } }
     View(PhoneBrowserPoolHost::class) {

@@ -874,12 +874,8 @@ export class PhoneBrowserManager {
       const attachment = this.#attachments.get(message.attachmentId);
       if (attachment?.channel !== channel || message.sessionId !== session.claims.sessionId) return;
       this.#attachments.delete(message.attachmentId);
-      const key = `${channel.id}:${attachment.actorToken}`;
-      const cdp = [...this.#attachments.values()].some(
-        (other) => other.channel === channel && other.actorToken === attachment.actorToken,
-      )
-        ? undefined
-        : this.#cdp.get(key);
+      const key = `${channel.id}:${message.attachmentId}`;
+      const cdp = this.#cdp.get(key);
       if (cdp) {
         this.#cdp.delete(key);
         await cdp.then((session) => session.close()).catch(() => undefined);
@@ -1046,8 +1042,10 @@ export class PhoneBrowserManager {
           const parsed = openParametersSchema.parse(parameters);
           if (parsed.surfaceId && session.claims.workspaceTabRestoreVersion !== 1)
             throw new PhoneBrowserError("forbidden", "Tab restore was not negotiated.");
+          let allocationPermit = session.allocationPermit;
           if (authorityHandle) {
-            const { claims } = await this.#verified(authorityHandle, channel.epoch);
+            const { claims, permit } = await this.#verified(authorityHandle, channel.epoch);
+            allocationPermit = permit;
             if (
               claims.sessionId !== session.claims.sessionId ||
               claims.initialNavigation?.operationKey !== parsed.idempotencyKey ||
@@ -1073,6 +1071,7 @@ export class PhoneBrowserManager {
               parsed.url ?? "about:blank",
               parsed.viewport,
               message.navigationId,
+              allocationPermit,
             ).then((tab) => tab.id);
           if (!previous) session.opened.set(parsed.idempotencyKey, { fingerprint, outcome });
           result = { tabId: await outcome };
@@ -1116,7 +1115,9 @@ export class PhoneBrowserManager {
       } else {
         if (!message.actorToken || !this.descriptor?.cdpBoundary)
           throw new PhoneBrowserError("unsupported-operation", "CDP is unavailable.");
-        const cdp = await this.#cdpSession(channel, message.actorToken);
+        if (!message.attachmentId)
+          throw new PhoneBrowserError("forbidden", "The exact agent attachment is required.");
+        const cdp = await this.#cdpSession(channel, message.actorToken, message.attachmentId);
         const command = {
           method: message.command.method,
           ...(message.command.parameters ? { parameters: message.command.parameters } : {}),
@@ -1326,8 +1327,15 @@ export class PhoneBrowserManager {
     }
   }
 
-  async #cdpSession(channel: PhoneChannel, actorToken: string): Promise<PhoneCdpSession> {
-    const key = `${channel.id}:${actorToken}`;
+  async #cdpSession(
+    channel: PhoneChannel,
+    actorToken: string,
+    attachmentId: string,
+  ): Promise<PhoneCdpSession> {
+    const attachment = this.#attachments.get(attachmentId);
+    if (attachment?.channel !== channel || attachment.actorToken !== actorToken)
+      throw new PhoneBrowserError("forbidden", "The agent attachment ended.");
+    const key = `${channel.id}:${attachmentId}`;
     let pending = this.#cdp.get(key);
     if (!pending) {
       pending = this.#bounded(channel.epoch, async () => {
@@ -1335,6 +1343,7 @@ export class PhoneBrowserManager {
           epoch: channel.epoch,
           channelId: channel.id,
           actorToken,
+          attachmentId,
         });
         this.#assertEpoch(channel.epoch);
         return new PhoneCdpSession(this.#native, {
@@ -1345,7 +1354,15 @@ export class PhoneBrowserManager {
           tabs: () => [...channel.session.tabs.values()],
           ref: (tab) => this.#ref(tab),
           resume: (tab) => this.#claimCovered(tab, { channel, attachmentId: permit.attachmentId }),
-          create: (url) => this.#createTab(channel.session, `bsf_${this.#uuid()}`, url),
+          create: (url) =>
+            this.#createTab(
+              channel.session,
+              `bsf_${this.#uuid()}`,
+              url,
+              undefined,
+              undefined,
+              `cdp:${attachmentId}`,
+            ),
           close: (tab) => this.#closeTab(channel.session, tab),
           event: (event) => {
             void this.#send(channel, { type: "cdp.event", event }).catch(() => undefined);
@@ -1592,6 +1609,19 @@ export class PhoneBrowserManager {
       if (tab.state === "closed")
         throw new PhoneBrowserError("target-closed", "This tab has closed.");
       if (isLive(tab)) {
+        if (
+          this.#covered?.tabId === tab.id &&
+          this.#covered.owner &&
+          (!owner ||
+            this.#covered.owner.channel !== owner.channel ||
+            this.#covered.owner.attachmentId !== owner.attachmentId)
+        )
+          throw new PhoneBrowserError(
+            "target-suspended",
+            owner
+              ? "Another agent is using this phone's browser."
+              : "An agent is using this phone's browser.",
+          );
         if (this.#covered?.tabId === tab.id && !this.#covered.owner && owner)
           this.#covered.owner = owner;
         return;

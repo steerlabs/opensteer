@@ -18,17 +18,17 @@ internal class PhoneBrowserServices(
     catch (_: Refused) { throw BrowserFailure("forbidden") }
   }
   override fun requireAllocation(epoch: Int, permit: String, sessionId: String?, storeHandle: String?, binding: Map<String, Any>?, initialized: Boolean?) = admitted(epoch) { writer ->
-    val claims = writer.allocationPermit(epoch, permit).claims
+    val claims = if (sessionId == null) writer.allocationPermit(epoch, permit).claims else writer.allocationClaims(epoch, permit, sessionId)
     if (sessionId != null && claims.text("sessionId") != sessionId) throw BrowserFailure("forbidden")
     val identity = claims["identity"] as? JsonObject ?: throw BrowserFailure("forbidden")
     val expected = binding ?: storeHandle?.let(this.binding)
     if (expected != null) {
       if (identity["kind"] != JsonPrimitive("profile-local") || identity["binding"] != nativeJson(expected)) throw BrowserFailure("forbidden")
-      if (initialized != null && identity["initialized"] != JsonPrimitive(initialized)) throw BrowserFailure("forbidden")
+      if (sessionId == null && initialized != null && identity["initialized"] != JsonPrimitive(initialized)) throw BrowserFailure("forbidden")
     } else if (identity["kind"] != JsonPrimitive("fresh")) throw BrowserFailure("forbidden")
   }
-  override fun requireCdp(epoch: Int, channelId: String, actorToken: String): PhoneBrowserCdpGrant = admitted(epoch) { writer ->
-    val agent = writer.requireAgent(epoch, channelId, actorToken)
+  override fun requireCdp(epoch: Int, channelId: String, actorToken: String, attachmentId: String): PhoneBrowserCdpGrant = admitted(epoch) { writer ->
+    val agent = writer.requireAgent(epoch, channelId, actorToken, attachmentId)
     PhoneBrowserCdpGrant(agent.attachmentId, agent.sessionId)
   }
   override fun viewerActor(epoch: Int, channelId: String, sessionId: String): String? = admitted(epoch) {
@@ -40,7 +40,13 @@ internal class PhoneBrowserServices(
   override fun requireAttachment(epoch: Int, attachmentId: String, sessionId: String, tabId: String) = admitted(epoch) {
     it.requireAttachment(epoch, attachmentId, sessionId); Unit
   }
+  override fun <Result> withAttachment(epoch: Int, attachmentId: String, sessionId: String, operation: () -> Result): Result = admitted(epoch) {
+    it.withAttachment(epoch, attachmentId, sessionId, operation)
+  }
   override fun acknowledge(epoch: Int, channelId: String, token: String) = admitted(epoch) { it.ack(epoch, channelId, token) }
+  override fun frameWritable(epoch: Int, channelId: String) = try {
+    admitted(epoch) { it.frameWritable(epoch, channelId) }
+  } catch (_: BrowserFailure) { false }
   override fun deliver(artifact: PhoneBrowserArtifact) = admitted(artifact.epoch) { writer ->
     if (!current(artifact)) throw BrowserFailure("stale-document")
     val completed: (Boolean) -> Unit = { if (artifact.token != null) completedFrame(artifact) }

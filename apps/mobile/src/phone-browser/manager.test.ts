@@ -45,8 +45,8 @@ async function setup(
   platform: "ios" | "android" = "ios",
   initialClaims: Record<string, unknown> = {},
 ) {
-  const native = new FakePhoneBrowserNative(platform);
   const clock = new FakeClock();
+  const native = new FakePhoneBrowserNative(platform, clock.now);
   const fence = RunnerAuxiliaryFrameFenceSchema.parse(fences.fence);
   const deploymentId = `dep_${uuid()}`;
   const manager = new PhoneBrowserManager({
@@ -175,14 +175,31 @@ async function setup(
     geometryRevision: presentation(id).geometryRevision,
   });
   const open = async (id: string, key = uuid()) => {
-    await client({
-      type: "cdp.command",
-      requestId: uuid(),
-      command: {
-        method: "Opensteer.openTab",
-        parameters: { surfaceId: id, idempotencyKey: key, url: "https://example.com/new" },
+    const handle = `operation-${uuid()}`;
+    native.tickets.set(
+      handle,
+      makeClaims({
+        identity: { kind: "fresh" },
+        initialNavigation: { operationKey: key, url: "https://example.com/new" },
+      }),
+    );
+    await relay(
+      {
+        ...fence,
+        type: "browser.client-message",
+        capability: capability(),
+        channelId,
+        message: {
+          type: "cdp.command",
+          requestId: uuid(),
+          command: {
+            method: "Opensteer.openTab",
+            parameters: { surfaceId: id, idempotencyKey: key, url: "https://example.com/new" },
+          },
+        },
       },
-    });
+      handle,
+    );
   };
   const revision = () => {
     const message = server().findLast((entry) => entry.type === "browser.surfaces.changed");
@@ -907,6 +924,16 @@ describe("phone browser manager", () => {
     expect(fixture.native.calls.filter((call) => call.method === "resumeTab")).toHaveLength(
       resumes,
     );
+    const competitor = { attachmentId: uuid(), actorToken: uuid() };
+    await fixture.agentAttach(competitor.attachmentId, competitor.actorToken);
+    await fixture.action({ type: "surface.attach" }, fixture.surfaceId, {}, competitor);
+    expect(fixture.server().at(-1)).toMatchObject({
+      type: "agent.error",
+      error: { code: "target-suspended" },
+    });
+    expect(fixture.native.calls.filter((call) => call.method === "resumeTab")).toHaveLength(
+      resumes,
+    );
     await fixture.client({
       type: "agent.detach",
       sessionId: fixture.sessionId,
@@ -1338,11 +1365,18 @@ describe("phone browser manager", () => {
     await fixture.client({ type: "stream.demand", surfaceId: fixture.surfaceId, density: 0.75 });
     await fixture.present();
     expect([...fixture.native.capture.values()]).toEqual([true]);
+    fixture.native.transportBlocked = true;
+    expect(fixture.native.captureFrame(fixture.channelId(), fixture.surfaceId)).toBe(true);
+    expect(fixture.native.captureFrame(fixture.channelId(), fixture.surfaceId)).toBe(false);
     const token = uuid();
     await fixture.client({ type: "stream.ack", surfaceId: fixture.surfaceId, token });
     expect(
       fixture.native.calls.findLast((entry) => entry.method === "ackFrame")?.input,
     ).toMatchObject({ token, epoch: fixture.native.epoch });
+    expect(fixture.native.captureFrame(fixture.channelId(), fixture.surfaceId)).toBe(false);
+    fixture.native.drainTransport();
+    expect(fixture.native.captureFrame(fixture.channelId(), fixture.surfaceId)).toBe(true);
+    fixture.native.drainTransport();
     expect(
       fixture.native.calls
         .filter((entry) => entry.method === "setCaptureDemand")
@@ -1711,6 +1745,13 @@ test("descriptors declare only the actually qualified platform abilities", () =>
 
 test("Android routes stable surface targets through the real CDP allowlist, with debugging only while attached", async () => {
   const fixture = await setup("android");
+  await fixture.client({
+    type: "agent.attach",
+    sessionId: fixture.sessionId,
+    attachmentId: fixture.attachmentId,
+    actorToken: fixture.actorToken,
+    backend: "cdp",
+  });
   const command = async (
     method: string,
     parameters?: Record<string, unknown>,
@@ -1720,6 +1761,7 @@ test("Android routes stable surface targets through the real CDP allowlist, with
     await fixture.client({
       type: "cdp.command",
       actorToken: fixture.actorToken,
+      attachmentId: fixture.attachmentId,
       requestId,
       command: {
         method,
@@ -1785,7 +1827,44 @@ test("Android routes stable surface targets through the real CDP allowlist, with
   expect(fixture.native.pipes.size).toBe(0);
 });
 
-test("an agent that detaches and attaches again on the same channel gets a fresh CDP session", async () => {
+test.each(["ios", "android"] as const)(
+  "%s opens a profile tab with fresh operation authority then an agent tab after initial expiry",
+  async (platform) => {
+    const fixture = await setup(platform);
+    fixture.clock.advance(21_000);
+    await fixture.open("later-host-tab");
+    expect(fixture.presentation("later-host-tab")).toBeDefined();
+    if (platform === "ios") {
+      await fixture.agentAttach();
+      await fixture.sessionAction({ type: "surface.open", url: "https://agent.example/" });
+      expect(fixture.server().at(-1)).toMatchObject({
+        type: "agent.result",
+        result: { type: "surface.open" },
+      });
+    } else {
+      await fixture.client({
+        type: "agent.attach",
+        sessionId: fixture.sessionId,
+        attachmentId: fixture.attachmentId,
+        actorToken: fixture.actorToken,
+        backend: "cdp",
+      });
+      await fixture.client({
+        type: "cdp.command",
+        requestId: uuid(),
+        actorToken: fixture.actorToken,
+        attachmentId: fixture.attachmentId,
+        command: { method: "Target.createTarget", parameters: { url: "https://agent.example/" } },
+      });
+      expect(fixture.server().at(-1)).toMatchObject({
+        type: "cdp.result",
+        result: { targetId: expect.any(String) },
+      });
+    }
+  },
+);
+
+test("overlapping same-Run CDP attachments own separate routers and survive each other's detach", async () => {
   const fixture = await setup("android");
   const attach = (attachmentId: string) =>
     fixture.client({
@@ -1795,11 +1874,12 @@ test("an agent that detaches and attaches again on the same channel gets a fresh
       actorToken: fixture.actorToken,
       backend: "cdp",
     });
-  const attachToTarget = async () => {
+  const attachToTarget = async (attachmentId: string) => {
     const requestId = uuid();
     await fixture.client({
       type: "cdp.command",
       actorToken: fixture.actorToken,
+      attachmentId,
       requestId,
       command: {
         method: "Target.attachToTarget",
@@ -1816,15 +1896,27 @@ test("an agent that detaches and attaches again on the same channel gets a fresh
   };
   const first = uuid();
   await attach(first);
-  expect(await attachToTarget()).toBe("cdp.result");
+  expect(await attachToTarget(first)).toBe("cdp.result");
+  const second = uuid();
+  await attach(second);
+  await fixture.present();
+  expect(await attachToTarget(second)).toBe("cdp.result");
   await fixture.client({
     type: "agent.detach",
     sessionId: fixture.sessionId,
     attachmentId: first,
   });
+  expect(fixture.native.pipes.size).toBe(1);
+  expect(await attachToTarget(second)).toBe("cdp.result");
+  await fixture.client({
+    type: "agent.detach",
+    sessionId: fixture.sessionId,
+    attachmentId: second,
+  });
   expect(fixture.native.pipes.size).toBe(0);
-  await attach(uuid());
-  expect(await attachToTarget()).toBe("cdp.result");
+  const third = uuid();
+  await attach(third);
+  expect(await attachToTarget(third)).toBe("cdp.result");
 });
 
 test("native action captures deliver directly without returning pixels through the port", async () => {

@@ -153,17 +153,17 @@ internal class InputSequences {
   fun clear() = lanes.clear()
 }
 
-internal class CdpPermits {
+internal class CdpPermits(private val onEmpty: () -> Unit = {}) {
   private val values = mutableMapOf<String, Pair<Int, String>>()
-  fun grant(id: String, epoch: Int, channel: String) { values[id] = epoch to channel }
-  fun require(id: String, epoch: Int): String {
+  @Synchronized fun grant(id: String, epoch: Int, channel: String) { values[id] = epoch to channel }
+  @Synchronized fun require(id: String, epoch: Int): String {
     val permit = values[id] ?: throw BrowserFailure("forbidden")
     if (permit.first != epoch) throw BrowserFailure("stale-epoch")
     return permit.second
   }
-  fun remove(id: String) { values.remove(id) }
-  fun empty() = values.isEmpty()
-  fun clear() = values.clear()
+  @Synchronized fun remove(id: String) { if (values.remove(id) != null && values.isEmpty()) onEmpty() }
+  @Synchronized fun empty() = values.isEmpty()
+  @Synchronized fun clear() { val hadValues = values.isNotEmpty(); values.clear(); if (hadValues) onEmpty() }
 }
 
 internal object RequestDeadline {

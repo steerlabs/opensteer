@@ -97,7 +97,7 @@ class CaptureRecord : DocumentRef() {
   @Field var quality: Double? = null
   @Field var clip: ClipRecord? = null
 }
-class AuthorizeRecord : EpochRecord() { @Field var channelId = ""; @Field var actorToken = "" }
+class AuthorizeRecord : EpochRecord() { @Field var channelId = ""; @Field var actorToken = ""; @Field var attachmentId = "" }
 class OpenPipeRecord : DocumentRef() { @Field var attachmentId = "" }
 class SendCdpRecord : DocumentRef() {
   @Field var pipeHandle = ""
@@ -108,6 +108,7 @@ class SendCdpRecord : DocumentRef() {
 class ClosePipeRecord : EpochRecord() { @Field var pipeHandle = "" }
 class ReleaseCdpRecord : EpochRecord() { @Field var attachmentId = "" }
 class StageRecord : EpochRecord() {
+  @Field var attachmentId = ""
   @Field var sessionId = ""
   @Field var fileId = ""
   @Field var name = ""

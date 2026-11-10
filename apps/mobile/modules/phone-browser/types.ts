@@ -237,6 +237,7 @@ export interface PhoneBrowserNativePort extends Pick<
   stageChunk(
     input: Epoch & {
       sessionId: string;
+      attachmentId: string;
       fileId: string;
       name: string;
       offset: number;

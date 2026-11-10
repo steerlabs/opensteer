@@ -23,6 +23,7 @@ internal class NativeProfiles(context: Context) {
   private val loaded = mutableMapOf<String, Profile>()
   private val activeGuests = mutableSetOf<String>()
   private val guestOwners = mutableMapOf<String, String>()
+  private val guestSessions = GuestSessionProfiles()
   private val denied = mutableSetOf<String>()
   val startupDeleted = mutableListOf<String>()
 
@@ -47,7 +48,7 @@ internal class NativeProfiles(context: Context) {
         if (!ProfileStore.getInstance().deleteProfile(entry.name)) throw BrowserFailure("profile-erasure-failed")
       }
       if (ProfileStore.getInstance().allProfileNames.contains(entry.name)) throw BrowserFailure("profile-erasure-failed")
-      if (!entry.deleted) manifest.deleted(entry.handle)
+      if (!entry.deleted || entry.guest) manifest.deleted(entry.handle)
       startupDeleted.add(entry.handle)
     }
   }
@@ -95,8 +96,13 @@ internal class NativeProfiles(context: Context) {
   }
 
   fun guestOwner(handle: String): String? = guestOwners[handle]
+  fun guest(deploymentId: String, runnerId: String, session: String, gate: EpochGate, epoch: Int, canCommit: () -> Unit): CompletableFuture<ProfileEntry> =
+    guestSessions.getOrCreate(deploymentId, runnerId, session) {
+      ensure(ProfileBinding(deploymentId, runnerId, manifest.storageInstanceId, java.util.UUID.randomUUID().toString(), java.util.UUID.randomUUID().toString()), false, true, gate, epoch, canCommit)
+        .thenApply { entry -> claimGuest(entry.handle, session); entry }
+    }
   fun claimGuest(handle: String, session: String) {
-    if (!serving(handle).guest || !activeGuests.contains(handle) || guestOwners.containsKey(handle)) throw BrowserFailure("forbidden")
+    if (!serving(handle).guest || !activeGuests.contains(handle) || guestOwners[handle]?.let { it != session } == true) throw BrowserFailure("forbidden")
     guestOwners[handle] = session
   }
   fun adoptGuest(handle: String, previous: String, session: String) {
@@ -113,7 +119,7 @@ internal class NativeProfiles(context: Context) {
     val entry = manifest.find(binding) ?: throw BrowserFailure("profile-missing")
     denied.add(entry.handle)
     try { manifest.tombstone(entry.handle, deletionId) }
-    finally { activeGuests.remove(entry.handle); guestOwners.remove(entry.handle); close(entry.name) }
+    finally { activeGuests.remove(entry.handle); guestOwners.remove(entry.handle); guestSessions.remove(entry.handle); close(entry.name) }
     if (entry.deleted) return CompletableFuture.completedFuture(mapOf("state" to "deleted", "deletionId" to deletionId))
     val result = CompletableFuture<Map<String, String>>()
     val profile = loaded[entry.handle]

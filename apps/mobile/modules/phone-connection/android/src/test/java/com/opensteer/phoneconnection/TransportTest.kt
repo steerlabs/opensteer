@@ -18,12 +18,15 @@ class TransportTest {
         override fun write(bytes: ByteArray) { this.bytes = bytes }
     }
     private class Socket : WebSocket {
+        var queued = 0L
+        var blocked = false
+        var accepting = true
         val text = mutableListOf<String>()
         val bytes = mutableListOf<ByteArray>()
         override fun request() = Request.Builder().url("https://host.example.test").build()
-        override fun queueSize() = 0L
-        override fun send(text: String): Boolean { this.text.add(text); return true }
-        override fun send(bytes: ByteString): Boolean { this.bytes.add(bytes.toByteArray()); return true }
+        override fun queueSize() = queued
+        override fun send(text: String): Boolean { if (!accepting) return false; this.text.add(text); if (blocked) queued += text.toByteArray(Charsets.UTF_8).size; return true }
+        override fun send(bytes: ByteString): Boolean { if (!accepting) return false; this.bytes.add(bytes.toByteArray()); if (blocked) queued += bytes.size; return true }
         override fun close(code: Int, reason: String?) = true
         override fun cancel() {}
     }
@@ -36,8 +39,9 @@ class TransportTest {
         val ledger = ReplayLedger(Memory()).apply { initialize() }
         val events = mutableListOf<JsonObject>()
         val queue = mutableListOf<Runnable>()
+        val drainChecks = mutableListOf<Runnable>()
         val socket = Socket()
-        val transport = BrowserTransport(admission, AttachTickets("phone", ledger) { now }, Executor { queue.add(it) }, { events.add(it) }, {}, { tick })
+        val transport = BrowserTransport(admission, AttachTickets("phone", ledger) { now }, Executor { queue.add(it) }, { events.add(it) }, {}, { tick }, scheduleDrain = { drainChecks.add(it) })
         val capability = Wire.parse("""{"runtimeId":"phone","capabilityGeneration":1,"capabilityLeaseId":"bcl_11111111-1111-4111-8111-111111111111"}""")
         val channelId = "bch_11111111-1111-4111-8111-111111111111"
         val rawToken = tickets["cases"]!!.jsonArray.first().jsonObject.text("token", max = 16384)
@@ -73,6 +77,71 @@ class TransportTest {
     }
     private fun refused(block: () -> Unit) { try { block(); fail("Expected refusal") } catch (_: Refused) {} }
 
+    @Test fun `explicit screenshots share native transport credit until drained`() {
+        val fixture = Fixture(); fixture.admit(); fixture.agent(); fixture.socket.blocked = true
+        fun request(id: String) {
+            fixture.transport.receive(JsonObject(fixture.fences.obj("fence") + mapOf("type" to JsonPrimitive("browser.client-message"),
+                "channelId" to JsonPrimitive(fixture.channelId), "capability" to fixture.capability,
+                "message" to Wire.fields("type" to JsonPrimitive("cdp.command"), "requestId" to JsonPrimitive(id),
+                    "actorToken" to JsonPrimitive("actor"), "attachmentId" to JsonPrimitive("attachment"),
+                    "command" to Wire.fields("method" to JsonPrimitive("Page.captureScreenshot"))))))
+        }
+        val results = mutableListOf<Boolean>()
+        request("first")
+        fixture.transport.capture(fixture.admission.epoch, fixture.channelId, "first", byteArrayOf(1), "attachment") { results.add(it) }
+        fixture.runQueued()
+        assertTrue("A screenshot is not complete while its bytes remain queued", results.isEmpty())
+        assertFalse(fixture.transport.frameWritable(fixture.admission.epoch, fixture.channelId))
+        val bytes = fixture.socket.queued
+        request("second")
+        fixture.transport.capture(fixture.admission.epoch, fixture.channelId, "second", byteArrayOf(2), "attachment") { results.add(it) }
+        fixture.runQueued()
+        assertEquals(listOf(false), results)
+        assertEquals(bytes, fixture.socket.queued)
+        fixture.socket.queued = 0
+        fixture.drainChecks.removeAt(0).run()
+        assertEquals(listOf(false, true), results)
+        assertTrue(fixture.transport.frameWritable(fixture.admission.epoch, fixture.channelId))
+    }
+
+    @Test fun `undrained socket holds frame credit and bounds queued pictures`() {
+        val fixture = Fixture(); fixture.admit(); fixture.socket.blocked = true
+        val results = mutableListOf<Boolean>()
+        val header = vector("frames").obj("header")
+        fixture.transport.frame(fixture.admission.epoch, fixture.channelId, header, ByteArray(524288)) { results.add(it) }
+        fixture.runQueued()
+        assertTrue("Enqueue is not write completion", results.isEmpty())
+        repeat(8) {
+            fixture.tick += 125_000_000
+            fixture.transport.frame(fixture.admission.epoch, fixture.channelId, header, ByteArray(524288)) { results.add(it) }
+            fixture.runQueued()
+        }
+        assertEquals(1, fixture.socket.bytes.size)
+        assertTrue(fixture.socket.queued < 600000)
+        fixture.transport.closeChannel(fixture.admission.epoch, fixture.channelId)
+        assertEquals(9, results.size)
+        assertFalse(results.last())
+    }
+    @Test fun `native frame completion follows real drain and failure releases credit`() {
+        val fixture = Fixture(); fixture.admit(); fixture.socket.blocked = true
+        val results = mutableListOf<Boolean>()
+        val header = vector("frames").obj("header")
+        fixture.transport.frame(fixture.admission.epoch, fixture.channelId, header, byteArrayOf(1)) { results.add(it) }
+        fixture.runQueued()
+        assertFalse(fixture.transport.frameWritable(fixture.admission.epoch, fixture.channelId))
+        assertTrue(results.isEmpty())
+        fixture.socket.queued = 0
+        fixture.drainChecks.removeAt(0).run()
+        assertEquals(listOf(true), results)
+        assertTrue(fixture.transport.frameWritable(fixture.admission.epoch, fixture.channelId))
+        fixture.tick += 125_000_000
+        fixture.socket.accepting = false
+        fixture.transport.frame(fixture.admission.epoch, fixture.channelId, header, byteArrayOf(2)) { results.add(it) }
+        fixture.runQueued()
+        assertEquals(listOf(true, false), results)
+        assertTrue(fixture.transport.frameWritable(fixture.admission.epoch, fixture.channelId))
+    }
+
     @Test fun `attach handles bind exact verified bytes and fsynced nonce state survives reconnect`() {
         val fixture = Fixture()
         val handle = fixture.attach()
@@ -103,7 +172,7 @@ class TransportTest {
             "lease" to JsonObject(next + ("expiresAt" to JsonPrimitive("2026-11-09T12:00:02.000Z"))))))
         assertEquals(epoch, fixture.admission.epoch)
         fixture.transport.send(epoch, JsonObject(fixture.fences.obj("fence") + mapOf("type" to JsonPrimitive("capability.accepted"), "requestId" to JsonPrimitive("renewal"), "capability" to next)))
-        assertEquals("attachment", fixture.transport.requireAgent(epoch, fixture.channelId, "actor").attachmentId)
+        assertEquals("attachment", fixture.transport.requireAgent(epoch, fixture.channelId, "actor", "attachment").attachmentId)
         fixture.runQueued()
         assertEquals(true, delivered)
         assertEquals(next, FrameCodec.decodeRelay(fixture.socket.bytes.single()).first.obj("capability"))
@@ -111,7 +180,7 @@ class TransportTest {
             "capability" to fixture.capability, "message" to Wire.fields("type" to JsonPrimitive("agent.detach"), "attachmentId" to JsonPrimitive("attachment"))))) }
         fixture.transport.receive(JsonObject(fixture.fences.obj("fence") + mapOf("type" to JsonPrimitive("capability.revoke"), "requestId" to JsonPrimitive("revoke"), "capability" to next)))
         assertTrue(fixture.admission.epoch > epoch)
-        refused { fixture.transport.requireAgent(fixture.admission.epoch, fixture.channelId, "actor") }
+        refused { fixture.transport.requireAgent(fixture.admission.epoch, fixture.channelId, "actor", "attachment") }
     }
     @Test fun `queued native pixels are dropped on background channel close revocation or lease expiry`() {
         for (loss in listOf("epoch", "channel", "expiry", "revocation")) {
@@ -176,7 +245,7 @@ class TransportTest {
             fixture.agent()
             val epoch = fixture.admission.epoch
             fixture.transport.receive(JsonObject(fixture.fences.obj("fence") + mapOf("type" to JsonPrimitive("browser.client-message"), "channelId" to JsonPrimitive(fixture.channelId),
-                "capability" to fixture.capability, "message" to Wire.fields("type" to JsonPrimitive("cdp.command"), "requestId" to JsonPrimitive("capture"), "actorToken" to JsonPrimitive("actor"),
+                "capability" to fixture.capability, "message" to Wire.fields("type" to JsonPrimitive("cdp.command"), "requestId" to JsonPrimitive("capture"), "actorToken" to JsonPrimitive("actor"), "attachmentId" to JsonPrimitive("attachment"),
                     "command" to Wire.fields("method" to JsonPrimitive("Page.captureScreenshot"))))))
             var delivered: Boolean? = null
             fixture.transport.capture(epoch, fixture.channelId, "capture", byteArrayOf(1), "attachment") { delivered = it }
@@ -206,7 +275,7 @@ class TransportTest {
         for (request in 1..33) {
             val requestId = "capture-$request"
             fixture.transport.receive(JsonObject(fixture.fences.obj("fence") + mapOf("type" to JsonPrimitive("browser.client-message"), "channelId" to JsonPrimitive(fixture.channelId),
-                "capability" to fixture.capability, "message" to Wire.fields("type" to JsonPrimitive("cdp.command"), "requestId" to JsonPrimitive(requestId), "actorToken" to JsonPrimitive("actor"),
+                "capability" to fixture.capability, "message" to Wire.fields("type" to JsonPrimitive("cdp.command"), "requestId" to JsonPrimitive(requestId), "actorToken" to JsonPrimitive("actor"), "attachmentId" to JsonPrimitive("attachment"),
                     "command" to Wire.fields("method" to JsonPrimitive("Page.captureScreenshot"))))))
             fixture.transport.send(fixture.admission.epoch, JsonObject(fixture.fences.obj("fence") + mapOf("type" to JsonPrimitive("browser.server-message"),
                 "channelId" to JsonPrimitive(fixture.channelId), "capability" to fixture.capability, "message" to Wire.fields("type" to JsonPrimitive("cdp.error"), "requestId" to JsonPrimitive(requestId)))))

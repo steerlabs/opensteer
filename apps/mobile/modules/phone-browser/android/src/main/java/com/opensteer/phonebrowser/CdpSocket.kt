@@ -152,7 +152,7 @@ internal class NativeCdpSocket(name: String, path: String, private val event: (J
     } finally { expiration.cancel(false) }
   }
 
-  fun submit(method: String, params: JSONObject = JSONObject(), sessionId: String? = null, gate: EpochGate? = null, epoch: Int = -1): CompletableFuture<JSONObject> {
+  fun submit(method: String, params: JSONObject = JSONObject(), sessionId: String? = null, gate: EpochGate? = null, epoch: Int = -1, authorize: ((() -> Unit) -> Unit) = { it() }): CompletableFuture<JSONObject> {
     if (closed.get()) throw BrowserFailure("target-closed")
     val id = sequence.incrementAndGet()
     val response = CompletableFuture<JSONObject>()
@@ -171,7 +171,7 @@ internal class NativeCdpSocket(name: String, path: String, private val event: (J
           val send = {
             if (closed.get()) throw BrowserFailure("target-closed")
             if (response.isDone) throw BrowserFailure("outcome-unknown")
-            writeFrame(1, bytes)
+            authorize { writeFrame(1, bytes) }
           }
           if (gate == null) send() else gate.execute(epoch, send)
         } catch (error: Throwable) { response.completeExceptionally(error) }
