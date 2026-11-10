@@ -1992,6 +1992,7 @@ class ElectronDebuggerHub {
   #attachment: Promise<void> | null = null;
   #closed = false;
   readonly #forcedDisposal = Promise.withResolvers<void>();
+  #forced = false;
   #closePromise: Promise<void> | undefined;
   /**
    * Resolves when the next Runtime command may go to Chromium. Browser-side
@@ -2426,6 +2427,7 @@ class ElectronDebuggerHub {
         timeoutError: () => new Error("Electron CDP target teardown timed out."),
       });
     } catch (error) {
+      this.#forced = true;
       this.#forcedDisposal.resolve();
       // Never force-crash: same-site pages, such as a popup and its opener, share a renderer.
       if (!this.#webContents.isDestroyed()) this.#webContents.close({ waitForBeforeUnload: false });
@@ -2453,7 +2455,7 @@ class ElectronDebuggerHub {
     this.#updateThrottling();
     const teardown = (async () => {
       await Promise.race([this.#ownershipTail, this.#forcedDisposal.promise]);
-      if (this.#outstandingInput.size > 0 && !this.#webContents.isDestroyed())
+      while (this.#outstandingInput.size > 0 && !this.#webContents.isDestroyed() && !this.#forced)
         await Promise.race([
           Promise.all(this.#outstandingInput),
           this.#destroyed,
