@@ -100,6 +100,10 @@ vi.mock("../../../src/browser/pair-chrome.js", () => ({
   TaskTabChips: () => null,
 }));
 vi.mock("../../../src/browser/agent-marks.js", () => ({ AgentMarks: () => null }));
+vi.mock("../../../src/browser/place-foot.js", () => ({
+  PlaceVoiceDock: () => null,
+  usePlaceStatus: () => ({ height: 0, reserve: { value: 0 }, row: null }),
+}));
 vi.mock("../../../src/ui/motion.js", () => ({
   appear: undefined,
   duration: { enter: 0, exit: 0 },
