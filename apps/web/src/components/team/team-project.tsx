@@ -46,6 +46,12 @@ export function TeamProjectSections({ access }: { readonly access: ProjectAccess
   );
 }
 
+/** The marker on a shared Project's own page, read after the page paints. */
+export function TeamProjectHomeMarker({ workspaceId }: { readonly workspaceId: string }) {
+  const access = useProjectAccess(workspaceId);
+  return <TeamProjectMarker access={access} />;
+}
+
 export function TeamProjectMarker({ access }: { readonly access: ProjectAccessRead }) {
   const { summary } = useShellTeam();
   if (!access.data || !summary) return null;

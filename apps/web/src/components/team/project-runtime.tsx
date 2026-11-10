@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   accessModeOptions,
   runtimeStateText,
@@ -105,10 +105,6 @@ function RuntimeForm({
   const instance = instances.find(({ id }) => id === instanceId) ?? null;
   const models = instance?.models ?? [];
   const model = models.find((m) => `${m.providerId}/${m.modelId}` === modelKey) ?? null;
-  useEffect(() => {
-    if (instance && !model && models[0])
-      setModelKey(`${models[0].providerId}/${models[0].modelId}`);
-  }, [instance, model, models]);
   const unchanged = useMemo(
     () =>
       settings !== null &&
@@ -179,8 +175,11 @@ function RuntimeForm({
               className="select-input"
               disabled={!canEdit || choices.data === null}
               onChange={(event) => {
+                const next = instances.find(({ id }) => id === event.currentTarget.value);
                 setInstanceId(event.currentTarget.value);
-                setModelKey("");
+                setModelKey(
+                  next?.models[0] ? `${next.models[0].providerId}/${next.models[0].modelId}` : "",
+                );
               }}
               value={instanceId}
             >
@@ -204,7 +203,11 @@ function RuntimeForm({
             >
               {model ? null : (
                 <option value="">
-                  {settings && !instance ? settings.modelSelection.modelId : "Choose a model"}
+                  {settings &&
+                  modelKey ===
+                    `${settings.modelSelection.providerId}/${settings.modelSelection.modelId}`
+                    ? `${settings.modelSelection.modelId} (not available)`
+                    : "Choose a model"}
                 </option>
               )}
               {models.map((option) => (

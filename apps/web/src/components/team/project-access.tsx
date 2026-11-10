@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  accessPathSentence,
   accessPaths,
   changeLevelChanges,
   grantChanges,
@@ -17,7 +18,6 @@ import type {
   AccessChange,
   AccessExplanation,
   EntryView,
-  GroupRef,
   Level,
   PersonRef,
   Subject,
@@ -486,7 +486,7 @@ export function WhyContent({
       <ul className="team-why__paths">
         {paths.map(({ entry, via }) => (
           <li key={`${entry.id}:${via.map((group) => group.id).join(">")}`}>
-            {pathSentence(name, entry, via)}
+            {accessPathSentence(name, { entry, via })}
           </li>
         ))}
       </ul>
@@ -494,15 +494,6 @@ export function WhyContent({
       {explanation.truncated ? <p className="team-why__foot">Some paths aren’t shown.</p> : null}
     </div>
   );
-}
-
-function pathSentence(name: string, entry: EntryView, via: readonly GroupRef[]): string {
-  const added = `${entry.grantedBy.name} added ${via.length ? "it" : name}, ${formatDay(entry.grantedAt)} (${levelLabel(entry.level)})`;
-  if (via.length === 0) return `Added directly: ${added}.`;
-  const chain = via.map((group, index) =>
-    index === 0 ? `${name} is in ${group.name}` : `which is in ${group.name}`,
-  );
-  return `${chain.join(", ")}. ${added.replace(/^(.*?) added it/u, "$1 added that group")}.`;
 }
 
 function AddPeopleDialog({

@@ -350,3 +350,20 @@ export function accessPaths(explanation: AccessExplanation, limit = 12): AccessP
     )
     .slice(0, limit);
 }
+
+function shortDay(value: string): string {
+  return new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" }).format(
+    new Date(value),
+  );
+}
+
+/** One way in, as a sentence: directly, or through a chain of groups. */
+export function accessPathSentence(name: string, { entry, via }: AccessPath): string {
+  const level = levelLabel(entry.level);
+  const when = shortDay(entry.grantedAt);
+  if (via.length === 0) return `Added directly by ${entry.grantedBy.name}, ${when} (${level}).`;
+  const chain = via.map((group, index) =>
+    index === 0 ? `${name} is in ${group.name}` : `which is in ${group.name}`,
+  );
+  return `${chain.join(", ")}. ${entry.grantedBy.name} added ${via.at(-1)!.name}, ${when} (${level}).`;
+}
