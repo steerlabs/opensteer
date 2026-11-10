@@ -396,6 +396,8 @@ export interface WorkspaceNavigation {
   readonly leaveSettings: () => void;
   /** The path of a conversation: Chat at the root, a task under /threads. */
   readonly threadPath: (threadId: string) => string;
+  /** A subagent's read-only view, in its conversation's place. */
+  readonly subagentPath: (threadId: string, nodeId: string) => string;
   /** Task row, task line, the menu under a name: the conversation only. */
   readonly openConversation: (
     path: string,
@@ -526,6 +528,11 @@ export function useWorkspaceNavigation(
     (threadId: string) =>
       threadId === homeThreadId ? "/" : `/threads/${encodeURIComponent(threadId)}`,
     [homeThreadId],
+  );
+  const subagentPath = useCallback(
+    (threadId: string, nodeId: string) =>
+      `/threads/${encodeURIComponent(threadId)}/subagents/${encodeURIComponent(nodeId)}`,
+    [],
   );
   const conversationHref = useCallback((to: string): To => areaAddress(to, search), [search]);
   const openPage = useCallback<WorkspaceNavigation["openPage"]>(
@@ -689,6 +696,7 @@ export function useWorkspaceNavigation(
       showPlace,
       showPlaceWithConversation,
       succeedPlace,
+      subagentPath,
       threadPath,
     }),
     [
@@ -709,6 +717,7 @@ export function useWorkspaceNavigation(
       showPlace,
       showPlaceWithConversation,
       succeedPlace,
+      subagentPath,
       threadPath,
     ],
   );

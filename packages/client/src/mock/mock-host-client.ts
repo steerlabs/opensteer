@@ -2521,7 +2521,14 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
       const own = (client.getSnapshot().transcripts[threadId] ?? []).some(
         (entry) => entry.kind === "node" && entry.nodeId === nodeId,
       );
-      if (!own) throw new Error("Subagent not found.");
+      if (!own)
+        return mockRefusal(
+          new HostClientRequestError({
+            code: "not_found",
+            message: "Subagent not found",
+            status: 404,
+          }),
+        );
       const all = client.nodeEvents.filter(
         (event) =>
           event.threadId === threadId &&

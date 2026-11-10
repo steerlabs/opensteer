@@ -2,8 +2,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { groupTranscriptEntries } from "./agent-activity-model.js";
 import {
+  agentCardLabel,
+  agentMemberWord,
+  agentPhaseLabel,
   assignmentSubagentCard,
   conversationSubagents,
+  earlierHelpers,
   foldedSubagentSummary,
   nodeSubagentCard,
   subagentGroup,
@@ -13,6 +17,7 @@ import {
   visibleAgentMembers,
 } from "./subagent-model.js";
 import type { NodeEntry } from "./client.js";
+import { taskFamily } from "./task-family.js";
 const clients: MockHostClient[] = [];
 afterEach(() => {
   for (const client of clients.splice(0)) client.dispose();
@@ -59,6 +64,16 @@ describe("shared agent contract", () => {
     expect(
       nodeSubagentCard(node, thread.id, nodes, { ...snapshot, network: "offline" }),
     ).toMatchObject({ word: "Last known: Working", moving: false });
+    const failed = nodeSubagentCard({ ...node, status: "failed" }, thread.id, nodes, snapshot)!;
+    expect(agentMemberWord(failed)).toBe("Failed");
+    expect(
+      agentCardLabel(
+        { ...failed, endedAt: new Date(Date.parse(failed.startedAt) + 72_000).toISOString() },
+        0,
+      ),
+    ).toBe(
+      `Trace the client, subagent, Couldn't finish, 1 minute 12 seconds. ${failed.line!.text}`,
+    );
     expect(
       nodeSubagentCard({ ...node, status: "completed" }, thread.id, nodes, {
         ...snapshot,
@@ -146,6 +161,9 @@ describe("shared agent contract", () => {
         { settled: 0, total: 0, word: "Not started", tone: "pending" },
       ],
     });
+    expect(agentPhaseLabel(workflow.phases[1]!)).toBe(
+      "Phase 2, Validate, Working, 0 of 1 finished",
+    );
     const parent = nodes.find((n) => n.nodeKind === "workflow")!;
     const failed = nodes.map((n) =>
       n.parentNodeId === parent.nodeId ? { ...n, status: "failed" as const } : n,
@@ -216,6 +234,18 @@ describe("shared agent contract", () => {
       },
     };
     expect(conversationSubagents(settled, thread.id).pill).toBeNull();
+    const helpers = conversationSubagents(snapshot, thread.id, { tasks: false });
+    expect(helpers.pill).toEqual({ live: 5, total: 11, needsYou: 1 });
+    expect([...helpers.now, ...helpers.earlier].every((card) => card.origin === "subagent")).toBe(
+      true,
+    );
+    const family = taskFamily(snapshot, thread.id);
+    const earlier = earlierHelpers(helpers.earlier, family.earlier);
+    expect(earlier.length).toBe(helpers.earlier.length + family.earlier.length);
+    const ends = earlier.map((item) =>
+      item.kind === "agent" ? (item.card.endedAt ?? item.card.startedAt) : item.task.finishedAt!,
+    );
+    expect(ends).toEqual(ends.toSorted().reverse());
     const assignment = Object.values(snapshot.assignments).find(
       (a) => a.parentThreadId === thread.id,
     )!;

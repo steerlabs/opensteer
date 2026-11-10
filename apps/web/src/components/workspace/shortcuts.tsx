@@ -163,7 +163,7 @@ export function useWorkspaceShortcuts({
           pathname === "/"
             ? snapshot.homeThreadId
             : pathname.startsWith("/threads/")
-              ? decodeURIComponent(pathname.slice("/threads/".length))
+              ? decodeURIComponent(pathname.slice("/threads/".length).split("/")[0]!)
               : null;
         const at = open ? order.indexOf(open) : -1;
         const next = order[at + (event.key === "ArrowUp" ? -1 : 1)];

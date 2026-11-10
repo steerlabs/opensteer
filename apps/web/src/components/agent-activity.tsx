@@ -55,6 +55,11 @@ import {
   turnFolds,
   turnOpen,
   turnWords,
+  subagentTurnModel,
+  type AgentCard,
+  type AgentGroup,
+  type SubagentDetailEntry,
+  type SubagentReader,
   type ActivityStepHead,
   type ActivityTone,
   type ConversationActivity as ReplyActivity,
@@ -114,6 +119,13 @@ import { TaskMark, ChatOrb } from "./workspace/task-mark.js";
 import { automationPath, useMediaQuery } from "../ui-utils.js";
 import { AreaLink } from "./workspace/area-link.js";
 import { DelegationLine } from "./task-line.js";
+import {
+  AgentCardView,
+  AgentFolds,
+  AgentGroupView,
+  AgentsLive,
+  useReturnToAgentCard,
+} from "./agent-cards.js";
 
 // Fetched with this module, not when a reply is first drawn: until it lands a
 // reply shows its raw Markdown, and on a weak link that wait is what people see.
@@ -187,6 +199,50 @@ export interface TranscriptComputers {
 }
 const ReaderComputers = createContext<TranscriptComputers | null>(null);
 
+/** What the transcript's helper cards are read from, and whose transcript it is. */
+interface AgentSource {
+  readonly reader: SubagentReader;
+  readonly threadId: string;
+}
+const AgentReader = createContext<AgentSource | null>(null);
+
+const noReader: SubagentReader = {
+  assignments: {},
+  connection: "connected",
+  environments: [],
+  homeThreadId: null,
+  network: "online",
+  requests: {},
+  threads: [],
+  transcripts: {},
+  waitingRequests: [],
+};
+
+/**
+ * The reader the shared subagent model reads: the screen's own snapshot with
+ * this transcript as drawn, and offline whenever the transcript is not live,
+ * so a card says "Last known" exactly when the trace does.
+ */
+function useAgentSource(
+  source: SubagentReader | null,
+  entries: readonly TranscriptEntry[],
+  threadId: string | null,
+  live: boolean,
+): AgentSource {
+  return useMemo(() => {
+    const base = source ?? noReader;
+    const id = threadId ?? "";
+    return {
+      threadId: id,
+      reader: {
+        ...base,
+        connection: live ? base.connection : "offline",
+        transcripts: { ...base.transcripts, [id]: [...entries] },
+      },
+    };
+  }, [entries, live, source, threadId]);
+}
+
 const noWorkspaces: readonly WorkspaceSummary[] = [];
 const noWaitingRequests: readonly WaitingRequest[] = [];
 const noAssignments: Readonly<Record<string, AssignmentSummary>> = {};
@@ -221,6 +277,7 @@ export function AgentTranscript({
   inputQueuePaused = false,
   queued = null,
   renderPasswordsSuggestion,
+  subagentReader = null,
   viewerUserId = null,
   workspaces = noWorkspaces,
 }: {
@@ -272,6 +329,12 @@ export function AgentTranscript({
   queued?: ReactNode;
   /** Draws an offer of Opensteer Passwords; a screen that has none shows no offer. */
   renderPasswordsSuggestion?: (offer: PasswordsSetupOffer) => ReactNode;
+  /**
+   * What helper cards read beyond the transcript: Requests, models, tasks and
+   * whether the Host is in reach. Without it cards are drawn from the
+   * transcript alone.
+   */
+  subagentReader?: SubagentReader | null;
   viewerUserId?: string | null;
   workspaces?: readonly WorkspaceSummary[];
 }) {
@@ -328,6 +391,8 @@ export function AgentTranscript({
       ? threadActivityIndicator(activity, { conversation, groups, startHold })
       : null;
   const speakers = useMemo(() => ({ threadId, workspaces }), [threadId, workspaces]);
+  const agents = useAgentSource(subagentReader, entries, threadId, live);
+  useReturnToAgentCard(threadId);
   const passwordsOffer = useMemo(
     () => (renderPasswordsSuggestion ? passwordsSetupOffer(groups) : null),
     [groups, renderPasswordsSuggestion],
@@ -335,83 +400,89 @@ export function AgentTranscript({
 
   return (
     <TranscriptLive value={live}>
-      <RequestShown value={requestShown}>
-        <ConversationMode value={conversation}>
-          <ReplyWith value={onReply}>
-            <OpenActivity value={onOpenActivity}>
-              <ActivityOfTurn value={activities}>
-                <ActivityOpenedFrom value={activityOwner}>
-                  <ActivityAnchor value={onActivityAnchor}>
-                    <TaskViews value={renderTask}>
-                      <HomeThread value={homeThreadId}>
-                        <TranscriptHostClientContext value={attachmentReader}>
-                          <ReaderComputers value={computers}>
-                            <TranscriptBrowsers value={browserSessions}>
-                              <Speakers value={speakers}>
-                                {rows.map(({ group, key }, index) => (
-                                  <Fragment key={key}>
-                                    {places?.[index]?.time ? (
-                                      <p className="transcript__time">{places[index].time}</p>
-                                    ) : null}
-                                    <div
-                                      className="transcript__row"
-                                      data-continued={places?.[index]?.continued || undefined}
-                                      data-joined={places?.[index]?.joined || undefined}
-                                      data-transcript-row={key}
-                                    >
-                                      {group.kind === "app" ? (
-                                        <AppCard entry={group.entry} />
-                                      ) : group.kind === "turn" ? (
-                                        <TurnView
-                                          turn={group.turn}
-                                          turnKey={group.key}
-                                          reveal={revealMessage}
-                                        />
-                                      ) : group.kind === "delegation" ? (
-                                        <DelegationNotice delegation={group.entry} />
-                                      ) : group.kind === "assignment" ? (
-                                        renderTask?.([group.entry])
+      <AgentsLive value={live}>
+        <AgentReader value={agents}>
+          <AgentFolds>
+            <RequestShown value={requestShown}>
+              <ConversationMode value={conversation}>
+                <ReplyWith value={onReply}>
+                  <OpenActivity value={onOpenActivity}>
+                    <ActivityOfTurn value={activities}>
+                      <ActivityOpenedFrom value={activityOwner}>
+                        <ActivityAnchor value={onActivityAnchor}>
+                          <TaskViews value={renderTask}>
+                            <HomeThread value={homeThreadId}>
+                              <TranscriptHostClientContext value={attachmentReader}>
+                                <ReaderComputers value={computers}>
+                                  <TranscriptBrowsers value={browserSessions}>
+                                    <Speakers value={speakers}>
+                                      {rows.map(({ group, key }, index) => (
+                                        <Fragment key={key}>
+                                          {places?.[index]?.time ? (
+                                            <p className="transcript__time">{places[index].time}</p>
+                                          ) : null}
+                                          <div
+                                            className="transcript__row"
+                                            data-continued={places?.[index]?.continued || undefined}
+                                            data-joined={places?.[index]?.joined || undefined}
+                                            data-transcript-row={key}
+                                          >
+                                            {group.kind === "app" ? (
+                                              <AppCard entry={group.entry} />
+                                            ) : group.kind === "turn" ? (
+                                              <TurnView
+                                                turn={group.turn}
+                                                turnKey={group.key}
+                                                reveal={revealMessage}
+                                              />
+                                            ) : group.kind === "delegation" ? (
+                                              <DelegationNotice delegation={group.entry} />
+                                            ) : group.kind === "assignment" ? (
+                                              renderTask?.([group.entry])
+                                            ) : (
+                                              <TranscriptMessage
+                                                joinedRun={group.joinedRun === true}
+                                                reveal={
+                                                  revealMessage?.id === group.entry.id
+                                                    ? revealMessage
+                                                    : null
+                                                }
+                                                message={group.entry}
+                                                viewerUserId={viewerUserId}
+                                                workspaces={workspaces}
+                                              />
+                                            )}
+                                          </div>
+                                        </Fragment>
+                                      ))}
+                                      {indicator === null ? null : indicator.kind === "typing" ? (
+                                        // No turn has begun, so there is no Activity to open yet.
+                                        <div className="turn turn--conversation">
+                                          <Typing />
+                                        </div>
                                       ) : (
-                                        <TranscriptMessage
-                                          joinedRun={group.joinedRun === true}
-                                          reveal={
-                                            revealMessage?.id === group.entry.id
-                                              ? revealMessage
-                                              : null
-                                          }
-                                          message={group.entry}
-                                          viewerUserId={viewerUserId}
-                                          workspaces={workspaces}
-                                        />
+                                        <WorkingIndicator label={indicator.label} />
                                       )}
-                                    </div>
-                                  </Fragment>
-                                ))}
-                                {indicator === null ? null : indicator.kind === "typing" ? (
-                                  // No turn has begun, so there is no Activity to open yet.
-                                  <div className="turn turn--conversation">
-                                    <Typing />
-                                  </div>
-                                ) : (
-                                  <WorkingIndicator label={indicator.label} />
-                                )}
-                                {passwordsOffer === null
-                                  ? null
-                                  : renderPasswordsSuggestion?.(passwordsOffer)}
-                                {queued}
-                              </Speakers>
-                            </TranscriptBrowsers>
-                          </ReaderComputers>
-                        </TranscriptHostClientContext>
-                      </HomeThread>
-                    </TaskViews>
-                  </ActivityAnchor>
-                </ActivityOpenedFrom>
-              </ActivityOfTurn>
-            </OpenActivity>
-          </ReplyWith>
-        </ConversationMode>
-      </RequestShown>
+                                      {passwordsOffer === null
+                                        ? null
+                                        : renderPasswordsSuggestion?.(passwordsOffer)}
+                                      {queued}
+                                    </Speakers>
+                                  </TranscriptBrowsers>
+                                </ReaderComputers>
+                              </TranscriptHostClientContext>
+                            </HomeThread>
+                          </TaskViews>
+                        </ActivityAnchor>
+                      </ActivityOpenedFrom>
+                    </ActivityOfTurn>
+                  </OpenActivity>
+                </ReplyWith>
+              </ConversationMode>
+            </RequestShown>
+          </AgentFolds>
+        </AgentReader>
+      </AgentsLive>
     </TranscriptLive>
   );
 }
@@ -782,6 +853,10 @@ function ConversationTurn({ turn, turnKey }: { turn: Turn; turnKey: string }) {
   // A Run that ended without a reply, stopped or failed, keeps its places under how it ended.
   const placesUnderOutcome = settled && outcome && view.reply === null;
   const tasks = renderTask === undefined ? [] : turn.assignments;
+  const agents = useTurnAgents(turn, false);
+  const helpers = agents?.rows.filter(
+    (row) => row.kind === "workflow" || (row.kind === "agents" && row.group.noun === "subagent"),
+  );
   const openActivity = useContext(OpenActivity);
   // A reply arrives only if its typing was on screen: one already there when
   // the Thread opened, or that scrolling brought back, just stands there.
@@ -791,7 +866,16 @@ function ConversationTurn({ turn, turnKey }: { turn: Turn; turnKey: string }) {
   // (`conversationRows`). One can still come to nothing here for what
   // only this screen knows: a Mac session it is not shown, or tasks it has no
   // card for.
-  if (!now && !kept && !composing && !startHold && !view.reply && !outcome && tasks.length === 0)
+  if (
+    !now &&
+    !kept &&
+    !composing &&
+    !startHold &&
+    !view.reply &&
+    !outcome &&
+    tasks.length === 0 &&
+    !helpers?.length
+  )
     return null;
   return (
     <div className="turn turn--conversation">
@@ -802,6 +886,13 @@ function ConversationTurn({ turn, turnKey }: { turn: Turn; turnKey: string }) {
       ) : null}
       {composing && restartPending(turn.run) ? <RunRestart>{restartingLabel}</RunRestart> : null}
       {turn.source ? <TurnSource source={turn.source} /> : null}
+      {helpers?.map((row) =>
+        row.kind === "workflow" ? (
+          <AgentCardView card={row.card} key={row.card.key} />
+        ) : row.kind === "agents" ? (
+          <AgentGroupView group={row.group} key={row.group.key} />
+        ) : null,
+      )}
       {view.reply ? (
         <ReplyBubble arrived={typed.current} message={view.reply} turnKey={turnKey} />
       ) : composing ? (
@@ -1166,6 +1257,8 @@ export function ConversationActivity({
   returnFocusTo = null,
   reveal = null,
   selection,
+  subagentReader = null,
+  threadId = null,
 }: {
   /** What the panel hangs from beside the conversation: the control that holds it, or the header. */
   anchor: HTMLElement;
@@ -1182,8 +1275,12 @@ export function ConversationActivity({
   /** A message to show among the steps, for a search or a link that named it. */
   reveal?: string | null;
   selection: ConversationActivitySelection;
+  /** See `AgentTranscript`'s `subagentReader`. */
+  subagentReader?: SubagentReader | null;
+  threadId?: string | null;
 }) {
   const narrow = useMediaQuery("(max-width: 620px)");
+  const agents = useAgentSource(subagentReader, entries, threadId, live);
   const titleId = useId();
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const groups = useMemo(
@@ -1212,25 +1309,31 @@ export function ConversationActivity({
           : null;
   const body = (
     <TranscriptLive value={live}>
-      <QuietSteps value>
-        <TranscriptBrowsers value={browserSessions}>
-          <div className="activity__body" ref={bodyRef}>
-            {activity !== null && activity.steps.length > 0 ? (
-              <TurnContent
-                reveal={reveal}
-                entries={activity.steps}
-                live={live}
-                status={false}
-                turn={activity.turn}
-              />
-            ) : (
-              <p className="activity__empty">
-                {activity?.live ? "Nothing to show yet." : "Nothing to show."}
-              </p>
-            )}
-          </div>
-        </TranscriptBrowsers>
-      </QuietSteps>
+      <AgentsLive value={live}>
+        <AgentReader value={agents}>
+          <AgentFolds>
+            <QuietSteps value>
+              <TranscriptBrowsers value={browserSessions}>
+                <div className="activity__body" ref={bodyRef}>
+                  {activity !== null && activity.steps.length > 0 ? (
+                    <TurnContent
+                      reveal={reveal}
+                      entries={activity.steps}
+                      live={live}
+                      status={false}
+                      turn={activity.turn}
+                    />
+                  ) : (
+                    <p className="activity__empty">
+                      {activity?.live ? "Nothing to show yet." : "Nothing to show."}
+                    </p>
+                  )}
+                </div>
+              </TranscriptBrowsers>
+            </QuietSteps>
+          </AgentFolds>
+        </AgentReader>
+      </AgentsLive>
     </TranscriptLive>
   );
   if (narrow) {
@@ -1303,12 +1406,18 @@ function TurnContent({
   const folded = fold !== undefined && !fold.open;
   const summary = useMemo(() => (status ? workSummary(turn) : null), [status, turn]);
   // A note keeps its row's key folded or not, so opening the steps never redraws it.
+  // Folded, live helpers stand under the status line instead of after the words.
   const rows = useMemo(
-    () => workRows(folded ? turnWords(turn) : (entries ?? turn.work)),
+    () =>
+      workRows(
+        folded ? turnWords(turn).filter((entry) => entry.kind !== "node") : (entries ?? turn.work),
+      ),
     [entries, folded, turn],
   );
+  const agents = useTurnAgents(turn, folded);
   const trace = traceWindow(rows, { showAll: folded || showAll, keep: reveal });
   const lastWord = active ? null : trace.rows.findLast(({ kind }) => kind === "note");
+  const drawn = new Set<string>();
   return (
     <div className="turn__content">
       {summary === null ? null : (
@@ -1318,23 +1427,74 @@ function TurnContent({
           {...(fold ? { onToggle: fold.onToggle, open: fold.open } : {})}
         />
       )}
+      {folded && agents?.keptOutside ? <AgentGroupView group={agents.keptOutside} /> : null}
       {trace.hidden > 0 ? (
         <button className="trace__earlier" type="button" onClick={() => setShowAll(true)}>
           Show {trace.hidden} earlier {trace.hidden === 1 ? "step" : "steps"}
         </button>
       ) : null}
-      {trace.rows.map((row) => (
-        <WorkRowView
-          active={active}
-          answer={row === lastWord}
-          key={row.key}
-          live={live}
-          row={row}
-          turn={turn}
-        />
-      ))}
+      {trace.rows.map((row) => {
+        if (row.kind === "subagent") {
+          // A helper stands where it started, with the helpers that started beside it.
+          const place = agents?.placed.get(`node:${row.entry.nodeId}`);
+          if (!place || drawn.has(place.key)) return null;
+          drawn.add(place.key);
+          return place.kind === "group" ? (
+            <AgentGroupView group={place.group} key={place.key} />
+          ) : (
+            <AgentCardView card={place.card} key={place.key} />
+          );
+        }
+        return (
+          <WorkRowView
+            active={active}
+            answer={row === lastWord}
+            key={row.key}
+            live={live}
+            row={row}
+            turn={turn}
+          />
+        );
+      })}
     </div>
   );
+}
+
+type AgentPlace =
+  | { readonly kind: "group"; readonly key: string; readonly group: AgentGroup }
+  | { readonly kind: "workflow"; readonly key: string; readonly card: AgentCard };
+
+/**
+ * The turn's helpers from the shared model: where each card stands, and the
+ * live ones kept under a folded turn's status line. A card kept there stays
+ * for the life of the view, even once it finishes.
+ */
+function useTurnAgents(turn: Turn, folded: boolean) {
+  const source = useContext(AgentReader);
+  const kept = useRef<readonly string[]>([]);
+  const model = useMemo(
+    () =>
+      source
+        ? subagentTurnModel(turn, source.threadId, source.reader, {
+            folded,
+            keptKeys: kept.current,
+          })
+        : null,
+    [folded, source, turn],
+  );
+  if (model) kept.current = model.keptKeys;
+  return useMemo(() => {
+    if (!model) return null;
+    const placed = new Map<string, AgentPlace>();
+    for (const row of model.rows) {
+      if (row.kind === "workflow")
+        placed.set(row.card.key, { kind: "workflow", key: row.card.key, card: row.card });
+      else if (row.kind === "agents" && row.group.noun === "subagent")
+        for (const card of row.group.cards)
+          placed.set(card.key, { kind: "group", key: row.group.key, group: row.group });
+    }
+    return { keptOutside: model.keptOutside, placed, rows: model.rows };
+  }, [model]);
 }
 
 function WorkRowView({
@@ -1363,7 +1523,14 @@ function WorkRowView({
     case "reasoning":
       return <Reasoning entry={row.entry} active={active} />;
     case "subagent":
-      return <SubagentRow active={active} live={live} row={row} turn={turn} />;
+      // Drawn as an agent card by the turn, with the helpers beside it.
+      return null;
+    case "task":
+      return (
+        <div className="trace-step">
+          <StepHead head={row.head} />
+        </div>
+      );
     case "steps":
       return <StepsRow row={row} turn={turn} />;
     case "place":
@@ -1446,83 +1613,90 @@ function TracePlace({
   );
 }
 
-/**
- * A subagent the agent started, standing where it started: what it was asked,
- * its own steps — subagents it started nest inside — and what it returned.
- * One at work opens as it starts, so its running step shows; one that arrives
- * finished stays closed until asked.
- */
-function SubagentRow({
-  active,
-  live,
-  row,
-  turn,
-}: {
-  active: boolean;
-  live: boolean;
-  row: Extract<WorkRow, { kind: "subagent" }>;
-  turn: Turn;
-}) {
-  const node = row.entry;
-  const [open, setOpen] = useState(live && node.status === "running");
-  const own = turn.subagentWork[node.nodeId];
-  const rows = useMemo(() => workRows(own ?? []), [own]);
-  // The model leaves the head once it is open, so the body's last line keeps it.
-  const hasBody = Boolean(node.prompt || node.result || node.model) || rows.length > 0;
-  return (
-    <div className={open ? "subagent trace-step trace-step--open" : "subagent trace-step"}>
-      <StepHead head={row.head} {...(hasBody ? { onToggle: () => setOpen(!open), open } : {})} />
-      {open && hasBody ? (
-        <div className="trace-step__body">
-          {node.prompt ? <SubagentPrompt text={node.prompt} /> : null}
-          {rows.length > 0 ? (
-            <div className="subagent__steps">
-              {rows.map((child) => (
-                <WorkRowView active={active} key={child.key} live={live} row={child} turn={turn} />
-              ))}
-            </div>
-          ) : null}
-          {node.result ? (
-            <>
-              <span className="eyebrow eyebrow--micro">Result</span>
-              <Suspense fallback={<p className="md-prose md-prose--plain">{node.result}</p>}>
-                <Markdown text={node.result} />
-              </Suspense>
-            </>
-          ) : null}
-          {node.model ? <p className="subagent__facts">{node.model}</p> : null}
-        </div>
-      ) : null}
-    </div>
-  );
-}
+type SubagentPart =
+  | { readonly kind: "tools"; readonly key: string; readonly rows: WorkRow[]; readonly turn: Turn }
+  | { readonly kind: "entry"; readonly entry: Exclude<SubagentDetailEntry, ToolEntry> };
 
-/** What a subagent was asked: its first lines, and the rest on request. */
-function SubagentPrompt({ text }: { text: string }) {
-  const [full, setFull] = useState(false);
-  const long = text.length > 280 || text.split("\n").length > 3;
+/**
+ * A subagent's own steps, read-only, drawn with the transcript's own rows:
+ * what it said, what it thought, the tools it called with their live output,
+ * and the subagents it started, as cards.
+ */
+export function SubagentSteps({
+  active,
+  entries,
+  live,
+}: {
+  /** It is still at work, so a thought arriving opens as it does in a live turn. */
+  active: boolean;
+  entries: readonly SubagentDetailEntry[];
+  live: boolean;
+}) {
+  const parts = useMemo(() => {
+    const drawn: SubagentPart[] = [];
+    let tools: ToolEntry[] = [];
+    const flush = () => {
+      const [first] = tools;
+      if (!first) return;
+      const work = tools;
+      drawn.push({
+        kind: "tools",
+        key: first.id,
+        rows: workRows(work),
+        turn: { assignments: [], reply: null, run: null, runId: null, work },
+      });
+      tools = [];
+    };
+    for (const entry of entries) {
+      if (entry.kind === "tool") tools.push(entry);
+      else {
+        flush();
+        drawn.push({ kind: "entry", entry });
+      }
+    }
+    flush();
+    return drawn;
+  }, [entries]);
   return (
-    <div className="subagent__prompt">
-      <p
-        className={
-          long && !full
-            ? "subagent__prompt-text subagent__prompt-text--clamped"
-            : "subagent__prompt-text"
-        }
-      >
-        {text}
-      </p>
-      {long ? (
-        <button
-          aria-expanded={full}
-          className="subagent__more"
-          onClick={() => setFull(!full)}
-          type="button"
-        >
-          {full ? "Less" : "More"}
-        </button>
-      ) : null}
-    </div>
+    <TranscriptLive value={live}>
+      <AgentsLive value={live}>
+        <AgentFolds>
+          <div className="turn__content">
+            {parts.map((part) =>
+              part.kind === "tools" ? (
+                <Fragment key={part.key}>
+                  {part.rows.map((row) => (
+                    <WorkRowView
+                      active={active}
+                      key={row.key}
+                      live={live}
+                      row={row}
+                      turn={part.turn}
+                    />
+                  ))}
+                </Fragment>
+              ) : part.entry.kind === "message" ? (
+                <div
+                  className="msg--assistant__body"
+                  data-message-id={part.entry.id}
+                  key={part.entry.id}
+                >
+                  <Suspense
+                    fallback={<p className="md-prose md-prose--plain">{part.entry.text}</p>}
+                  >
+                    <Markdown text={part.entry.text} />
+                  </Suspense>
+                </div>
+              ) : part.entry.kind === "reasoning" ? (
+                <Reasoning active={active} entry={part.entry} key={part.entry.id} />
+              ) : (
+                <AgentCardView card={part.entry.card} key={part.entry.card.key} />
+              ),
+            )}
+          </div>
+        </AgentFolds>
+      </AgentsLive>
+    </TranscriptLive>
   );
 }
 

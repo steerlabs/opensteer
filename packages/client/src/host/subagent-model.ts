@@ -9,6 +9,7 @@ import {
   type AssignmentReader,
 } from "./assignment-presentation.js";
 import type { TaskMark } from "./task-marks.js";
+import type { FamilyTask } from "./task-family.js";
 import { catalogModelDisplayName } from "./model-catalog.js";
 import { requestWaitingOnAssignment } from "./waiting-requests.js";
 
@@ -325,16 +326,21 @@ export function assignmentSubagentCard(
     task: { assignmentId: assignment.id, mark: assignmentMark(assignment, reader), menu: true },
   };
 }
-export function conversationSubagents(reader: SubagentReader, threadId: string): AgentRoster {
+/** `tasks: false` leaves delegated tasks to a surface that lists them on their own. */
+export function conversationSubagents(
+  reader: SubagentReader,
+  threadId: string,
+  { tasks = true }: { readonly tasks?: boolean } = {},
+): AgentRoster {
   const entries = reader.transcripts[threadId] ?? [];
   const nodes = transcriptNodes(entries);
   const cards = nodes.flatMap((node) => {
     const card = nodeSubagentCard(node, threadId, nodes, reader);
     return card ? [card] : [];
   });
-  const assignments = new Map(Object.entries(reader.assignments));
+  const assignments = new Map(tasks ? Object.entries(reader.assignments) : []);
   for (const entry of entries)
-    if (entry.kind === "assignment")
+    if (tasks && entry.kind === "assignment")
       assignments.set(entry.assignment.id, currentAssignment(entry, reader.assignments));
   for (const assignment of assignments.values())
     if (assignment.origin === "run" && assignment.parentThreadId === threadId)
@@ -360,6 +366,23 @@ export function conversationSubagents(reader: SubagentReader, threadId: string):
         }
       : null,
   };
+}
+export type EarlierHelper =
+  | { readonly kind: "agent"; readonly card: AgentCard }
+  | { readonly kind: "task"; readonly task: FamilyTask };
+/** Settled subagents and settled tasks as one list, newest end first. */
+export function earlierHelpers(
+  cards: readonly AgentCard[],
+  tasks: readonly FamilyTask[],
+): readonly EarlierHelper[] {
+  return [
+    ...cards.map(
+      (card) => ({ at: card.endedAt ?? card.startedAt, item: { kind: "agent", card } }) as const,
+    ),
+    ...tasks.map((task) => ({ at: task.finishedAt ?? "", item: { kind: "task", task } }) as const),
+  ]
+    .sort((a, b) => b.at.localeCompare(a.at))
+    .map(({ item }) => item);
 }
 export type SubagentTurnRow =
   | { readonly kind: "work"; readonly entry: WorkEntry }
@@ -480,4 +503,41 @@ export function executionNodeEntry(node: import("@opensteer/core").ExecutionNode
     title: node.title,
     ...(node.usage ? { usage: node.usage } : {}),
   };
+}
+
+function spokenDuration(milliseconds: number): string {
+  const seconds = Math.max(0, Math.round(milliseconds / 1_000));
+  const units = [
+    [Math.floor(seconds / 3_600), "hour"],
+    [Math.floor(seconds / 60) % 60, "minute"],
+    [seconds % 60, "second"],
+  ] as const;
+  const spoken = units
+    .filter(([count]) => count > 0)
+    .slice(0, 2)
+    .map(([count, unit]) => `${count} ${unit}${count === 1 ? "" : "s"}`);
+  return spoken.length ? spoken.join(" ") : "0 seconds";
+}
+/** A card's accessible name; elapsed is read once, never as it ticks. */
+export function agentCardLabel(card: AgentCard, now: number, owner: string | null = null): string {
+  if (card.origin === "task")
+    return `${card.title}${owner ? `, ${owner}` : ""}, task, ${card.word}${card.line ? `. ${card.line.text}` : ""}. Open task`;
+  if (card.workflow) {
+    const phase = card.workflow.phases.findIndex(
+      (candidate) => candidate.index === card.workflow?.openPhase,
+    );
+    return [
+      `${card.title}, workflow, ${card.word}`,
+      ...(phase >= 0 ? [`phase ${phase + 1} of ${card.workflow.phases.length}`] : []),
+    ].join(", ");
+  }
+  const end = card.endedAt ? Date.parse(card.endedAt) : now;
+  return `${card.title}, subagent, ${card.word}, ${spokenDuration(end - Date.parse(card.startedAt))}.${card.line ? ` ${card.line.text}` : ""}`;
+}
+export function agentPhaseLabel(phase: WorkflowView["phases"][number]): string {
+  return `Phase ${phase.index + 1}, ${phase.title}, ${phase.word}, ${phase.settled} of ${phase.total} finished`;
+}
+/** The word in a workflow member's fixed-width status slot. */
+export function agentMemberWord(card: AgentCard): string {
+  return card.tone === "failed" ? card.word.replace(words.failed, "Failed") : card.word;
 }
