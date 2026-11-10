@@ -1,0 +1,69 @@
+import type { CommandId, UserId, WorkspaceId } from "./ids.js";
+
+export type AccessPrincipal =
+  | { readonly kind: "person"; readonly userId: UserId }
+  | { readonly kind: "project"; readonly workspaceId: WorkspaceId };
+
+export type AccessSubject = AccessPrincipal | { readonly kind: "group"; readonly groupId: string };
+
+export type AccessTarget =
+  | { readonly kind: "project"; readonly workspaceId: WorkspaceId }
+  | { readonly kind: "topic"; readonly topicId: string }
+  | { readonly kind: "team-account"; readonly accountId: string };
+
+export type ProjectAccessLevel = "use" | "manage";
+export type TopicAccessLevel = "read" | "write" | "manage";
+export type TeamAccountAccessLevel = "use";
+export type AccessAction = "inspect" | "use" | "read" | "write" | "manage" | "administer";
+
+export type AccessMutation =
+  | {
+      readonly kind: "create-group";
+      readonly id: string;
+      readonly name: string;
+      readonly builtin?: "everyone";
+    }
+  | { readonly kind: "delete-group"; readonly groupId: string }
+  | {
+      readonly kind: "add-group-member" | "remove-group-member";
+      readonly groupId: string;
+      readonly member: Exclude<AccessSubject, { kind: "project" }>;
+    }
+  | {
+      readonly kind: "grant";
+      readonly id: string;
+      readonly subject: AccessSubject;
+      readonly target: AccessTarget;
+      readonly level: ProjectAccessLevel | TopicAccessLevel;
+      readonly expiresAt?: Date | null;
+    }
+  | { readonly kind: "revoke"; readonly entryId: string }
+  | {
+      readonly kind: "member";
+      readonly userId: UserId;
+      readonly memberKind?: "full" | "guest";
+      readonly memberState?: "active" | "suspended" | "removed";
+      readonly admit?: boolean;
+    }
+  | { readonly kind: "delete-project"; readonly workspaceId: WorkspaceId };
+
+export interface AuthenticatedHuman {
+  readonly userId: UserId;
+  readonly authorityGeneration?: number;
+}
+
+export interface AccessMutationInput {
+  readonly actor: AuthenticatedHuman;
+  readonly expectedRevision: number;
+  readonly commandIdentity: CommandId;
+  readonly change: AccessMutation;
+}
+
+export type AccessDecision =
+  | { readonly allowed: false }
+  | {
+      readonly allowed: true;
+      readonly memberGeneration?: number;
+      readonly membershipGeneration?: number;
+      readonly effectiveUntil?: Date | null;
+    };

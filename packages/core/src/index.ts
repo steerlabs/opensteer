@@ -1,4 +1,5 @@
 export * from "./collections.js";
+export * from "./access.js";
 export * from "./computer-app.js";
 export * from "./tool-identity.js";
 export * from "./attachments.js";
