@@ -20,7 +20,11 @@ export interface ProjectAdmissionPort {
   admitProjectWork(input: {
     readonly threadId: ThreadId;
     readonly origin: HumanRoot | null;
-    readonly source: Exclude<ThreadInputSource, { kind: "channel" | "automation" }>;
+    readonly source:
+      | Exclude<ThreadInputSource, { kind: "channel" | "automation" | "trigger" | "watch" }>
+      | (Extract<ThreadInputSource, { kind: "trigger" | "watch" }> & {
+          readonly executionGeneration: number;
+        });
     readonly content: readonly ContentPart[];
     readonly policy: ThreadInputPolicy;
     readonly idempotencyKey: string;
