@@ -2248,7 +2248,12 @@ export class IdentityService {
     readonly headers: Headers;
     readonly userId: UserId;
   }> {
-    const session = await this.requireSession(headers);
+    const team = await this.#isTeam();
+    const session = team
+      ? await this.#readIdentitySessionCookie(headers)
+      : await this.requireSession(headers);
+    if (!session)
+      throw new OpensteerError({ code: "unauthorized", message: "Authentication required" });
     const admission = await this.#admissionFromHeaders(headers);
     if (!admission || admission.purpose !== "setup") {
       throw new OpensteerError({ code: "forbidden", message: "Setup admission required" });
@@ -2280,9 +2285,39 @@ export class IdentityService {
         throw new OpensteerError({ code: "conflict", message: "Setup is already complete" });
       }
       const now = new Date();
+      if (team) {
+        const member = await transaction
+          .selectFrom("users")
+          .select("authorityGeneration")
+          .where("id", "=", session.user.id)
+          .where("disabledAt", "is", null)
+          .where("memberState", "=", "active")
+          .forNoKeyUpdate()
+          .executeTakeFirst();
+        const currentSession = member
+          ? await transaction
+              .selectFrom("authSessions")
+              .select("id")
+              .where("id", "=", session.id)
+              .where("userId", "=", session.user.id)
+              .where("memberGeneration", "=", member.authorityGeneration)
+              .where("expiresAt", ">", now)
+              .where("absoluteExpiresAt", ">", now)
+              .forShare()
+              .executeTakeFirst()
+          : null;
+        if (!currentSession)
+          throw new OpensteerError({ code: "unauthorized", message: "Authentication required" });
+      }
       await transaction
         .updateTable("users")
-        .set({ instanceRole: "administrator", updatedAt: now })
+        .set({
+          instanceRole: "administrator",
+          updatedAt: now,
+          ...(team
+            ? { admittedAt: now, memberKind: "full" as const, memberState: "active" as const }
+            : {}),
+        })
         .where("id", "=", session.user.id)
         .executeTakeFirstOrThrow();
       await transaction

@@ -5,7 +5,14 @@ import {
   type RunnerId,
   type WorkspaceId,
 } from "@opensteer/core";
-import type { OpensteerStore, SecurityEffectRecord, TriggerStore } from "@opensteer/database";
+import {
+  AccessWorkRevocationRootSchema,
+  type AccessRunTerminationPort,
+  type AccessProgramRevocationPort,
+  type OpensteerStore,
+  type SecurityEffectRecord,
+  type TriggerStore,
+} from "@opensteer/database";
 import type { RealtimeHub, RunnerRegistry } from "@opensteer/orchestration";
 import { CorrelationIdSchema, type RunnerCommand } from "@opensteer/protocol";
 import type { BrowserService } from "../browser/browser-service.js";
@@ -18,6 +25,8 @@ const maximumRetryMilliseconds = 5 * 60_000;
 type SecurityEffectStore = Pick<
   OpensteerStore,
   | "claimSecurityEffects"
+  | "claimAccessSecurityEffects"
+  | "securityEffectAuthority"
   | "completeSecurityEffect"
   | "failActiveRunsForMembershipRevocation"
   | "failActiveRunsForWorkspaceDeletion"
@@ -31,6 +40,8 @@ export class SecurityEffectService {
   readonly #realtime: Pick<RealtimeHub, "closeUserWorkspace" | "publishViewerTasksChanged">;
   readonly #runners: Pick<RunnerRegistry, "dispatch" | "identityForEnvironment" | "revokeRuns">;
   readonly #store: SecurityEffectStore;
+  readonly #rootRuns: AccessRunTerminationPort | undefined;
+  readonly #rootPrograms: AccessProgramRevocationPort | undefined;
   readonly #triggers: Pick<
     TriggerStore,
     "activeExecutionsForMembershipRevocation" | "revokeForMembershipRevocation"
@@ -44,6 +55,8 @@ export class SecurityEffectService {
     readonly realtime: Pick<RealtimeHub, "closeUserWorkspace" | "publishViewerTasksChanged">;
     readonly runners: Pick<RunnerRegistry, "dispatch" | "identityForEnvironment" | "revokeRuns">;
     readonly store: SecurityEffectStore;
+    readonly rootRuns?: AccessRunTerminationPort;
+    readonly rootPrograms?: AccessProgramRevocationPort;
     readonly triggers: Pick<
       TriggerStore,
       "activeExecutionsForMembershipRevocation" | "revokeForMembershipRevocation"
@@ -55,6 +68,8 @@ export class SecurityEffectService {
     this.#realtime = options.realtime;
     this.#runners = options.runners;
     this.#store = options.store;
+    this.#rootRuns = options.rootRuns;
+    this.#rootPrograms = options.rootPrograms;
     this.#triggers = options.triggers;
   }
 
@@ -74,9 +89,13 @@ export class SecurityEffectService {
   }
 
   async #drain(): Promise<void> {
+    const authority = await this.#store.securityEffectAuthority();
+    const team = authority?.kind === "server" && authority.model === 2;
     for (;;) {
       const now = new Date();
-      const effects = await this.#store.claimSecurityEffects({
+      const effects = await this.#store[
+        team ? "claimAccessSecurityEffects" : "claimSecurityEffects"
+      ]({
         leaseUntil: new Date(now.getTime() + claimLeaseMilliseconds),
         limit: claimLimit,
         now,
@@ -92,14 +111,17 @@ export class SecurityEffectService {
       switch (effect.kind) {
         case "close-realtime":
           this.#realtime.publishViewerTasksChanged(effect.userId);
-          this.#realtime.closeUserWorkspace(effect.userId, effect.workspaceId);
+          if (cutoff(effect) === undefined)
+            this.#realtime.closeUserWorkspace(effect.userId, effect.workspaceId);
+          else this.#realtime.closeUserWorkspace(effect.userId, effect.workspaceId, cutoff(effect));
           break;
         case "stop-runs": {
           await this.#terminateAffectedRuns(effect);
           break;
         }
         case "revoke-browser":
-          await this.#browser.revokeWorkspaceUser(effect.userId, effect.workspaceId);
+          if (cutoff(effect) === undefined)
+            await this.#browser.revokeWorkspaceUser(effect.userId, effect.workspaceId);
           break;
         case "revoke-mounts":
           // Effects are independently retryable and may be claimed by a later
@@ -113,6 +135,20 @@ export class SecurityEffectService {
           await this.#terminateAffectedRuns(effect);
           break;
         case "revoke-triggers":
+          if (cutoff(effect) !== undefined) {
+            if (!this.#rootPrograms)
+              throw new Error("Captured-root observation revocation is unavailable");
+            await this.#rootPrograms.revoke({
+              workspaceId: effect.workspaceId,
+              root: {
+                kind: "membership",
+                userId: effect.userId,
+                workspaceId: effect.workspaceId,
+                membershipGenerationCutoff: cutoff(effect)!,
+              },
+            });
+            break;
+          }
           await this.#interruptAffectedTriggers(effect);
           await this.#triggers.revokeForMembershipRevocation({
             membershipGeneration: effect.membershipGeneration,
@@ -134,9 +170,22 @@ export class SecurityEffectService {
   }
 
   async #terminateAffectedRuns(effect: SecurityEffectRecord): Promise<void> {
+    const root =
+      "accessRoot" in effect ? AccessWorkRevocationRootSchema.parse(effect.accessRoot) : undefined;
+    if (root && root.kind !== "membership") {
+      if (!this.#rootRuns) throw new Error("Captured-root Run termination is unavailable");
+      if (!this.#rootPrograms)
+        throw new Error("Captured-root observation revocation is unavailable");
+      await this.#applyRunRecovery(
+        await this.#rootRuns.terminate({ workspaceId: effect.workspaceId, root }),
+      );
+      await this.#rootPrograms.revoke({ workspaceId: effect.workspaceId, root });
+      return;
+    }
     const recovery = await this.#store.failActiveRunsForMembershipRevocation({
       userId: effect.userId,
       workspaceId: effect.workspaceId,
+      ...(cutoff(effect) !== undefined ? { membershipGenerationCutoff: cutoff(effect)! } : {}),
     });
     await this.#applyRunRecovery(recovery);
   }
@@ -190,4 +239,11 @@ function retryDelay(attempt: number): number {
     baseRetryMilliseconds * 2 ** Math.min(Math.max(0, attempt - 1), 12),
     maximumRetryMilliseconds,
   );
+}
+
+function cutoff(effect: SecurityEffectRecord): number | undefined {
+  return "membershipGenerationCutoff" in effect &&
+    typeof effect.membershipGenerationCutoff === "number"
+    ? effect.membershipGenerationCutoff
+    : undefined;
 }

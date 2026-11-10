@@ -363,6 +363,7 @@ describeStore("team administration Host boundary", (it) => {
       const invitationId = randomUUID();
       const creation = {
         type: "team.invitation.create" as const,
+        trustedComputerConfirmed: true,
         id: invitationId,
         selector,
         tokenHash: createHash("sha256").update(verifier).digest("hex"),
@@ -372,6 +373,9 @@ describeStore("team administration Host boundary", (it) => {
         expectedRevision: 3,
         idempotencyKey: "invite-person",
       };
+      await expect(
+        service.command({ ...creation, trustedComputerConfirmed: false }, context(admin)),
+      ).rejects.toMatchObject({ code: "bad_request" });
       const created = await service.command(creation, context(admin));
       expect(await service.command(creation, context(admin))).toEqual(created);
       const listed = await service.read("team.invitations.list", { limit: 1 }, context(admin));
@@ -418,6 +422,43 @@ describeStore("team administration Host boundary", (it) => {
         headers: acceptedContext.headers,
       });
       expect(realtime.statusCode, realtime.body).toBe(401);
+      await database
+        .updateTable("users")
+        .set({ memberState: "suspended" })
+        .where("id", "=", pending.session.user.id)
+        .execute();
+      await expect(
+        identity.requireTeamInvitationSession(new Headers(acceptedContext.headers)),
+      ).rejects.toMatchObject({ reason: "invite-unavailable" });
+      await database
+        .updateTable("users")
+        .set({ memberState: "active" })
+        .where("id", "=", pending.session.user.id)
+        .execute();
+      await database
+        .updateTable("users")
+        .set({ disabledAt: new Date() })
+        .where("id", "=", pending.session.user.id)
+        .execute();
+      await expect(
+        identity.requireTeamInvitationSession(new Headers(acceptedContext.headers)),
+      ).rejects.toMatchObject({ code: "unauthorized" });
+      await database
+        .updateTable("users")
+        .set({ disabledAt: null })
+        .where("id", "=", pending.session.user.id)
+        .execute();
+      const replacementLogin = await identity.signInPassword(
+        { email: pending.session.user.email, password: "a correct test password" },
+        new Headers({ origin }),
+      );
+      pending.cookie = replacementLogin.headers
+        .getSetCookie()
+        .map((value) => value.split(";", 1)[0]!)
+        .join("; ");
+      pending.session = replacementLogin.data.session;
+      acceptedContext.session = pending.session;
+      acceptedContext.headers.cookie = `${pending.cookie}; ${admissionCookie}`;
       const proof = await identity.teamInvitationAdmission(
         new Headers(acceptedContext.headers),
         pending.session,
@@ -511,6 +552,7 @@ describeStore("team administration Host boundary", (it) => {
         },
         context(admin),
       );
+      expect(await identity.authenticate(new Headers({ cookie: pending.cookie }))).toBeNull();
       const removed = await service.command(
         {
           type: "team.member.change",
