@@ -1,3 +1,4 @@
+import { requireHumanRequester } from "@opensteer/database";
 import { authorityPreflight } from "./authority-preflight.js";
 import { createExecutionRuntime } from "./execution-runtime.js";
 import { deploymentPolicy } from "@opensteer/core";
@@ -2132,7 +2133,7 @@ export async function createHostRuntime(
         if (run.assignmentId)
           await commands.cancelAssignment({
             assignmentId: run.assignmentId,
-            requestedBy: run.requestedBy,
+            requestedBy: requireHumanRequester(run.requestedBy),
             idempotencyKey: `specialist-remove:${input.specialistId}:${run.assignmentId}`,
           });
       await localWorkspaceDriver.removeSpecialist(
