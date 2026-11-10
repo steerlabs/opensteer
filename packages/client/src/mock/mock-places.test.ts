@@ -6,6 +6,35 @@ import { browserTabStrip } from "../host/browser-tab-strip.js";
 import { placeList } from "../host/places.js";
 import { runPages } from "../host/surfaces.js";
 
+it("activates an existing mock surface without replacing its document or duplicating the tab", async () => {
+  const client = new MockHostClient({ latencyMs: 0 });
+  try {
+    const session = client
+      .getSnapshot()
+      .browserSessions.find((held) => held.tabCatalog?.tabs.length)!;
+    const tab = session.tabCatalog!.tabs[0]!;
+    const response = await client.rpc["commands.dispatch"]({
+      type: "workspace.tab.activate",
+      tabId: BrowserSurfaceIdSchema.parse(tab.id),
+      idempotencyKey: "existing-surface",
+    });
+    expect(response.ok).toBe(true);
+    const updated = client.getSnapshot().browserSessions.find((held) => held.id === session.id)!;
+    expect(updated.tabCatalog?.tabs.find((held) => held.id === tab.id)?.documentId).toBe(
+      tab.documentId,
+    );
+    expect(updated.tabs.filter((held) => held.id === tab.id)).toHaveLength(1);
+    expect(
+      client
+        .getSnapshot()
+        .workspaceTabs?.find((group) => group.session.id === session.id)
+        ?.tabs?.find((held) => held.id === tab.id)?.state,
+    ).toBe("live");
+  } finally {
+    client.dispose();
+  }
+});
+
 describe("moving mock workspace", () => {
   it("moves cursors independently, churns tabs, resolves icons and shares targeted demand", async () => {
     vi.useFakeTimers();
