@@ -26,7 +26,10 @@ export const projectAuthorityCutoverMigration: Migration = {
         add constraint ${sql.id(`${table}_origin_connection_id_fkey`)} foreign key (origin_connection_id) references public.agent_connections(id) on delete restrict not valid
       `.execute(database);
     }
-    await sql`alter table public.commands add column membership_generation bigint,
+    await sql`alter table public.commands add column originating_grant_id text,
+      add constraint commands_originating_grant_id_fkey foreign key (originating_grant_id) references public.grants(id) on delete restrict not valid,
+      add constraint commands_project_control_grant check (type <> 'run.control.project' or originating_grant_id is not null) not valid,
+      add column membership_generation bigint,
       add constraint commands_membership_generation_bounds check (membership_generation between 1 and 9007199254740991) not valid
     `.execute(database);
     for (const table of ["triggers", "trigger_revisions", "trigger_watch_activations"]) {

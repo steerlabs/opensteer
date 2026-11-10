@@ -1319,6 +1319,7 @@ export interface ProviderSessionTable {
 type CommandStatus = "pending" | "dispatched" | "succeeded" | "failed" | "unknown";
 
 export interface CommandTable {
+  originatingGrantId: Generated<GrantId | null>;
   membershipGeneration: ColumnType<
     string | null,
     number | string | null | undefined,

@@ -200,12 +200,27 @@ declare stored_model integer; stored_kind text;
           and new.membership_generation is not distinct from old.membership_generation
           and new.initiator_generation is not distinct from old.initiator_generation
           and new.origin_connection_id is not distinct from old.origin_connection_id
+          and new.originating_grant_id is not distinct from old.originating_grant_id
           and new.authority_source is not distinct from old.authority_source then return new; end if;
         select model, kind into stored_model, stored_kind from public.opensteer_stored_execution_authority();
         if stored_model = 2 and tg_op = 'UPDATE' and (old.type in ('run.execute.project', 'run.control.project') or new.type in ('run.execute.project', 'run.control.project')) then
-          if (new.actor_principal_id is distinct from old.actor_principal_id or new.requested_by is distinct from old.requested_by or new.membership_generation is distinct from old.membership_generation or new.initiator_generation is distinct from old.initiator_generation or new.origin_connection_id is distinct from old.origin_connection_id or new.authority_source is distinct from old.authority_source or new.type is distinct from old.type or new.payload is distinct from old.payload or new.thread_id is distinct from old.thread_id or new.run_id is distinct from old.run_id or new.environment_id is distinct from old.environment_id) then raise exception 'Project work authority is immutable' using errcode = '23514'; end if;
+          if (new.actor_principal_id is distinct from old.actor_principal_id or new.requested_by is distinct from old.requested_by or new.membership_generation is distinct from old.membership_generation or new.initiator_generation is distinct from old.initiator_generation or new.origin_connection_id is distinct from old.origin_connection_id or new.authority_source is distinct from old.authority_source or new.type is distinct from old.type or new.originating_grant_id is distinct from old.originating_grant_id or new.payload is distinct from old.payload or new.thread_id is distinct from old.thread_id or new.run_id is distinct from old.run_id or new.environment_id is distinct from old.environment_id) then raise exception 'Project work authority is immutable' using errcode = '23514'; end if;
         end if;
         if stored_model = 2 and new.type in ('run.execute.project', 'run.control.project') then
+          if new.type = 'run.control.project' and not exists (
+            select 1 from public.grants g join public.runs r on r.id = g.run_id
+              join public.threads t on t.id = r.thread_id
+            where g.id = new.originating_grant_id and r.id = new.run_id
+              and new.payload->'binding' = jsonb_build_object(
+                'authority', jsonb_build_object('version', 1,
+                  'principal', jsonb_build_object('kind', 'project', 'principalId', r.actor_principal_id, 'workspaceId', t.workspace_id),
+                  'origin', case when r.requested_by is null then 'null'::jsonb else jsonb_build_object(
+                    'userId', r.requested_by, 'initiatorGeneration', r.initiator_generation,
+                    'membershipGeneration', r.membership_generation, 'originConnectionId', r.origin_connection_id) end),
+                'runId', r.id, 'threadId', r.thread_id, 'workspaceId', t.workspace_id,
+                'environmentId', r.environment_id, 'grantId', g.id, 'runnerId', g.runner_id,
+                'runnerBootId', g.runner_boot_id, 'bindingGeneration', g.binding_generation)
+          ) then raise exception 'Invalid Project control grant' using errcode = '23514'; end if;
 
           if (not (new.type = 'run.control.project' and new.payload #>> '{control,kind}' in ('run.interrupt', 'request.refuse'))
             and not public.opensteer_project_work_is_valid(new.thread_id, new.actor_principal_id, new.requested_by, new.membership_generation, new.initiator_generation, new.origin_connection_id, new.authority_source)) or not exists (
@@ -377,7 +392,7 @@ declare
   drop trigger if exists runs_execution_authority on public.runs;
   create trigger runs_execution_authority before insert or update of actor_principal_id, requested_by, membership_generation, initiator_generation, origin_connection_id, authority_source, thread_id, environment_id, harness_instance_id, seed_input_id, activation_input_id, causal_chain_id, assignment_id, reply_target on public.runs for each row execute function public.opensteer_enforce_run_execution_authority();
   drop trigger if exists commands_execution_authority on public.commands;
-  create trigger commands_execution_authority before insert or update of actor_principal_id, requested_by, membership_generation, initiator_generation, origin_connection_id, authority_source, type, thread_id, run_id, environment_id, payload on public.commands for each row execute function public.opensteer_enforce_command_execution_authority();
+  create trigger commands_execution_authority before insert or update of actor_principal_id, requested_by, membership_generation, initiator_generation, origin_connection_id, originating_grant_id, authority_source, type, thread_id, run_id, environment_id, payload on public.commands for each row execute function public.opensteer_enforce_command_execution_authority();
   drop trigger if exists thread_inputs_execution_authority on public.thread_inputs;
   create trigger thread_inputs_execution_authority before insert or update of actor_principal_id, requested_by, membership_generation, initiator_generation, origin_connection_id, authority_source, thread_id, causal_chain_id, assignment_id, reply_target, run_id on public.thread_inputs for each row execute function public.opensteer_enforce_input_execution_authority();
   drop trigger if exists threads_execution_authority on public.threads;
