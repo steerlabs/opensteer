@@ -752,7 +752,14 @@ async function startWithin(
       workspaceManager,
     });
     const runnerConfig: RunnerConfig = {
-      browserBridge: undefined,
+      browserBridge: options.browser
+        ? {
+            bridgeToken: options.browser.bridgeToken,
+            runtimeId: options.browser.runtimeId,
+            signIn: false,
+            url: options.browser.url,
+          }
+        : undefined,
       controlCaPath: undefined,
       dataDirectory: executionDataDirectory,
       deploymentShape: runnerDeploymentProfile,
@@ -792,6 +799,7 @@ async function startWithin(
       ...(options.executionClock ? { executionClock: options.executionClock } : {}),
       bootId,
       config: runnerConfig,
+      browserBridge: runnerConfig.browserBridge,
       identity,
       identityStore,
       logger: options.runnerLogger ?? silentLogger,
@@ -799,16 +807,6 @@ async function startWithin(
       runtimeVersion: "vertical-test",
       agents: {
         earlierBootsContained: earlierBoots === "proven",
-        ...(options.browser
-          ? {
-              browserBridge: {
-                bridgeToken: options.browser.bridgeToken,
-                runtimeId: options.browser.runtimeId,
-                signIn: false,
-                url: options.browser.url,
-              },
-            }
-          : {}),
         runtime: runner,
         workspaceBackings,
         ...(localAuthority

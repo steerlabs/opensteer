@@ -176,7 +176,7 @@ integration("Host browser broker vertical", () => {
       "commands.dispatch",
       {
         idempotencyKey: "browser-profile-1",
-        input: { name: "Integration browser" },
+        input: { name: "Integration browser", homeRunnerId: browserRuntime.runnerId },
         type: "browser.profile.create",
       },
       { headers: sessionHeaders },

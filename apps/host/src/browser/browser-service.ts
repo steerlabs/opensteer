@@ -1530,6 +1530,15 @@ export class BrowserService {
     const homes = await this.#repository.listEligibleBrowserRunners(ownerId);
     if (boundRunnerId) this.#requireProfileHome(profile!, boundRunnerId, homes);
     const eligible = this.#eligiblePlacements(homes).filter((candidate) => candidate.available);
+    if (
+      command.placement &&
+      !eligible.some((candidate) => candidate.runnerId === command.placement?.runnerId)
+    )
+      throw this.#tabOpenRefusal(
+        "browser-placement-unavailable",
+        "The selected browser computer is unavailable.",
+        this.#eligiblePlacements(homes),
+      );
     const main = this.#personal ? homes.find((home) => home.kind === "main") : undefined;
     if (this.#personal && !profile && !command.placement && !main)
       throw this.#tabOpenRefusal(
@@ -3106,7 +3115,9 @@ export class BrowserService {
       : await this.#followedAgentSession(input);
     const broker = this.#brokers.get(record.id);
     if (!broker)
-      throw new BrowserCdpConnectionEnded("The Browser Session lost its browser connection.");
+      throw new BrowserCdpConnectionEnded(
+        `Browser Session ${record.id} lost its browser connection. Open a new one with browser_session_open.`,
+      );
     const backend: "cdp" | "actions" | undefined = broker.cdpBoundary
       ? "cdp"
       : broker.agentActions
@@ -3905,9 +3916,19 @@ export class BrowserService {
       boundRunnerId || input.placement || !profile
         ? null
         : await this.#repository.findBrowserSessionHoldingProfilePlacement(profile.id);
+    const standaloneServices = new Set(
+      this.#personal
+        ? []
+        : homes
+            .filter((home) => home.kind === "managed" && home.ownerKind === "deployment")
+            .map((home) => home.id),
+    );
     const placements = this.#eligiblePlacements(homes).filter(
       (candidate) =>
-        origin === "workspace" || boundRunnerId !== undefined || candidate.agents === true,
+        origin === "workspace" ||
+        boundRunnerId !== undefined ||
+        candidate.agents === true ||
+        standaloneServices.has(candidate.runnerId),
     );
     const placement =
       (boundRunnerId ? { kind: "runner" as const, runnerId: boundRunnerId } : input.placement) ??

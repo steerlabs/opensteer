@@ -604,7 +604,7 @@ describe("BrowserService", () => {
         type: "browser.tab.open",
         idempotencyKey: randomUUID(),
         identity: { kind: "profile", profileId: profile.id },
-        placement: { kind: "runner", runnerId: createId("runner") },
+        placement: { kind: "runner", runnerId: relay.runnerId },
       }),
     ).rejects.toMatchObject({
       reason: "browser-tab-open-failed",
@@ -4668,6 +4668,54 @@ describe("BrowserService", () => {
     },
   );
 
+  it.each(["server", "personal"] as const)(
+    "admits an agent guest through a deployment-owned browser-only service only on a server: %s",
+    async (deployment) => {
+      const keys = generateKeyPairSync("ed25519");
+      const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+        targetedStreaming: true,
+      });
+      const ownerId = createId("user");
+      const workspaceId = createId("workspace");
+      const runner = testRunner({ agents: false });
+      const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+      vi.spyOn(repository, "listEligibleBrowserRunners").mockResolvedValue([
+        {
+          id: runner.runnerId,
+          name: "Browser service",
+          kind: "managed",
+          ownerKind: "deployment",
+          ownerUserId: null,
+          allowedModules: ["browser"],
+        },
+      ]);
+      const service = placementService({
+        keys,
+        ownerId,
+        workspaceId,
+        runtime,
+        repository,
+        personal: deployment === "personal",
+        runners: [runner],
+      });
+      const opening = service.openAgentSession({
+        agentBindingId: "run:browser-service",
+        ownerId,
+        workspaceId,
+        fresh: true,
+      });
+      if (deployment === "personal") {
+        await expect(opening).rejects.toMatchObject({ code: "workspace_unavailable" });
+        expect(runtime.connectionCount()).toBe(0);
+      } else {
+        expect((await opening).session.placement).toEqual({
+          kind: "runner",
+          runnerId: runner.runnerId,
+        });
+      }
+    },
+  );
+
   it.each(["person", "agent"] as const)(
     "opens a homed profile on a browser-only device for a %s",
     async (caller) => {
@@ -5506,7 +5554,9 @@ async function attachedSessionIds(
 class MemoryBrowserRepository implements BrowserSessionRepository {
   mainRunnerId: RunnerId | undefined;
   rememberedPlacement: RunnerId | null = null;
-  async listEligibleBrowserRunners() {
+  async listEligibleBrowserRunners(): ReturnType<
+    BrowserSessionRepository["listEligibleBrowserRunners"]
+  > {
     return [...eligibleRunners].map(([id, name]) => ({
       id,
       name,

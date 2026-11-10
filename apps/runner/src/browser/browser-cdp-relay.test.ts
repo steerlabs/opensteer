@@ -67,6 +67,41 @@ afterEach(async () => {
 });
 
 describe("BrowserCdpRelay", () => {
+  it.each([
+    "Browser Session bsn_00000000-0000-4000-8000-000000000001 has ended. Open a new one with browser_session_open.",
+    "Browser Session bsn_00000000-0000-4000-8000-000000000001 was not found. browser_session_list shows available sessions.",
+  ])("preserves the Host's actionable backend refusal: %s", async (message) => {
+    const sessionId = createBrowserSessionId();
+    const http = createServer((request, response) => {
+      expect(request.headers.authorization).toBe("Bearer run-capability-secret");
+      response.writeHead(403, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: { code: "forbidden", message, retryable: false } }));
+    });
+    heldHosts.push(() => http.close());
+    http.listen(0, "127.0.0.1");
+    await once(http, "listening");
+    const address = http.address();
+    if (!address || typeof address === "string") throw new Error("Refusal fixture did not bind");
+    const relay = new BrowserCdpRelay({
+      url: `http://127.0.0.1:${address.port}/internal/v1/browser-cdp`,
+      token: () => "run-capability-secret",
+      transport: developmentTransport,
+    });
+    try {
+      const url = await relay.start();
+      await expect(
+        runBrowserHarness(
+          fileURLToPath(new URL("../../browser-harness/browser-harness.mjs", import.meta.url)),
+          "await pageInfo()",
+          url,
+          sessionId,
+        ),
+      ).rejects.toThrow(message);
+    } finally {
+      await relay.close();
+    }
+  });
+
   it("negotiates once for the exact session and carries actions with the same Run bearer", async () => {
     let negotiations = 0;
     const seen: string[] = [];
