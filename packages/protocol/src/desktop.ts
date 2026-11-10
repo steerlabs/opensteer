@@ -1670,9 +1670,24 @@ export const DesktopBrowserAutofillInputSchema = z.strictObject({
 });
 export type DesktopBrowserAutofillInput = z.infer<typeof DesktopBrowserAutofillInputSchema>;
 
-/** What the autofill popup page receives and reports; it has no Desktop bridge. */
+/**
+ * The popup page draws its panel this many CSS pixels inside its window on
+ * every side, leaving room for the panel's shadow.
+ */
+export const desktopAutofillPopupInset = 16;
+
+/**
+ * What the autofill popup page receives and reports; it has no Desktop bridge.
+ * Main keeps the window hidden until the page has measured the scene's panel.
+ */
 export interface OpensteerAutofillPopupBridge {
   onScene(listener: (scene: DesktopAutofillScene | null) => void): () => void;
+  /** The panel's size in CSS pixels for `sceneRevision`, without the inset. */
+  measured(input: {
+    readonly sceneRevision: number;
+    readonly width: number;
+    readonly height: number;
+  }): void;
   choose(input: { readonly sceneRevision: number; readonly accountId: string }): void;
 }
 
