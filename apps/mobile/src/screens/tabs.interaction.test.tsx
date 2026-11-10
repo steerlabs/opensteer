@@ -121,6 +121,7 @@ vi.mock("../voice/cursor-mark.js", () => ({ PillMic: () => null, VoiceCursor: ()
 vi.mock("react-native-webview", () => ({ WebView: () => null }));
 vi.mock("../dictation/context.js", () => ({ useDictation: () => dictation }));
 
+vi.mock("../phone-browser/runtime.js", () => ({ usePhoneBrowserManager: () => null }));
 vi.mock("react-native", async () => {
   const React = await vi.importActual<typeof import("react")>("react");
   const flatten = (style: unknown): Record<string, unknown> =>
