@@ -10,7 +10,6 @@ import { z } from "zod";
 import {
   ProtectedJsonFile,
   ProtectedStateUnreadableError,
-  ProtectedStorageUnavailableError,
   type DesktopSecretCryptography,
 } from "../secrets/protected-json-file.js";
 
@@ -71,7 +70,8 @@ interface SessionCookieMirrorOptions {
   readonly capture: () => Promise<unknown[]>;
   readonly restore: (cookies: readonly Record<string, unknown>[]) => Promise<void>;
   readonly subscribe: (invalidate: () => void) => () => void;
-  readonly onFailure: (error: unknown) => void;
+  readonly onSaveFailed?: (error: unknown) => void;
+  readonly onSaveRecovered?: () => void;
   readonly onIdle?: () => void;
   readonly publish?: (file: string, content: string, assertCurrent: () => void) => Promise<void>;
 }
@@ -92,7 +92,9 @@ export class SessionCookieMirror {
   #epoch = 0;
   #dirty = 0;
   #captured = 0;
-  #failure: unknown;
+  #saveFailed = false;
+  #retryTimer: ReturnType<typeof setTimeout> | undefined;
+  #retryDelay = 1_000;
   #stopped = false;
   readonly #waiters = new Set<{
     generation: number;
@@ -136,9 +138,8 @@ export class SessionCookieMirror {
       const generation = this.#dirty;
       await this.#capture(epoch, true);
       if (this.#epoch !== epoch) throw unreadable();
-      this.#captured = generation;
       this.#suspended = false;
-      this.#settle();
+      this.#saved(generation);
       this.#pump();
     });
   }
@@ -147,6 +148,7 @@ export class SessionCookieMirror {
   suspend(): void {
     this.#suspended = true;
     this.#epoch++;
+    this.#cancelRetry();
   }
 
   /** The gate remains closed until this has restored and reconciled the complete jar. */
@@ -166,9 +168,8 @@ export class SessionCookieMirror {
         const generation = this.#dirty;
         await this.#capture(epoch, true, restoring);
         if (epoch !== this.#epoch) return false;
-        this.#captured = generation;
         this.#suspended = false;
-        this.#settle();
+        this.#saved(generation);
         this.#pump();
         return true;
       } catch (error) {
@@ -180,32 +181,37 @@ export class SessionCookieMirror {
 
   /** Event delivery can lag an acknowledged cookie write: always demand a new capture. */
   flush(): Promise<void> {
-    if (this.#failure) return Promise.reject(this.#failure);
     if (this.#stopped) return Promise.reject(unreadable());
     const generation = ++this.#dirty;
     const result = new Promise<void>((resolve, reject) =>
       this.#waiters.add({ generation, resolve, reject }),
     );
+    // An explicit flush asks for a fresh attempt even during backoff.
+    this.#cancelRetry();
     this.#pump();
     return result;
   }
 
   async mutate(operation: () => Promise<void>, signal?: AbortSignal): Promise<void> {
-    // A flush waits out suspension without occupying the lane needed by recovery.
-    await this.flush();
-    const epoch = this.#epoch;
-    const interrupted = new Error(
-      "Browser profile recovery interrupted the cookie operation. Try again.",
-    );
-    await this.#enqueue(
-      async () => {
+    try {
+      // A flush waits out suspension without occupying the lane needed by recovery.
+      await this.flush();
+      const epoch = this.#epoch;
+      const interrupted = new Error(
+        "Browser profile recovery interrupted the cookie operation. Try again.",
+      );
+      await this.#enqueue(async () => {
+        signal?.throwIfAborted();
         if (this.#suspended || this.#epoch !== epoch) throw interrupted;
         await operation();
         if (this.#suspended || this.#epoch !== epoch) throw interrupted;
-      },
-      (error) => error !== interrupted && !(signal?.aborted && error === signal.reason),
-    );
-    await this.flush();
+      });
+      await this.flush();
+    } catch (error) {
+      this.#dirty++;
+      this.#scheduleRetry();
+      throw error;
+    }
   }
 
   /** Disable before clearing a deleted profile; never publish an empty shutdown jar. */
@@ -225,37 +231,17 @@ export class SessionCookieMirror {
     this.#canonical = undefined;
   }
 
-  #enqueue<T>(
-    operation: () => Promise<T>,
-    fatal: (error: unknown) => boolean = () => true,
-  ): Promise<T> {
+  #enqueue<T>(operation: () => Promise<T>): Promise<T> {
     const result = this.#lane.then(async () => {
       try {
-        if (this.#failure) throw this.#failure;
         if (this.#stopped) throw unreadable();
         return await operation();
       } finally {
         this.#options.onIdle?.();
       }
     });
-    this.#lane = result.catch((error: unknown) => {
-      if (!fatal(error)) return;
-      const failure =
-        error instanceof ProtectedStorageUnavailableError ||
-        error instanceof ProtectedStateUnreadableError
-          ? error
-          : new Error("Browser profile cookie persistence failed. The profile was preserved.", {
-              cause: error,
-            });
-      this.#failure = failure;
-      this.#suspended = true;
-      this.#options.onFailure(failure);
-      for (const waiter of this.#waiters) waiter.reject(failure);
-      this.#waiters.clear();
-    });
-    return result.catch((error: unknown) => {
-      throw this.#failure ?? error;
-    });
+    this.#lane = result.catch(() => undefined);
+    return result;
   }
 
   #pump(): void {
@@ -263,7 +249,7 @@ export class SessionCookieMirror {
       this.#pumping ||
       this.#suspended ||
       this.#stopped ||
-      this.#failure ||
+      this.#retryTimer ||
       this.#dirty <= this.#captured
     )
       return;
@@ -272,10 +258,24 @@ export class SessionCookieMirror {
       while (!this.#suspended && !this.#stopped && this.#dirty > this.#captured) {
         const generation = this.#dirty;
         const epoch = this.#epoch;
-        await this.#capture(epoch);
+        try {
+          await this.#capture(epoch);
+        } catch (error) {
+          if (this.#suspended || this.#epoch !== epoch || this.#stopped) break;
+          for (const waiter of this.#waiters)
+            if (waiter.generation <= generation) {
+              this.#waiters.delete(waiter);
+              waiter.reject(error);
+            }
+          this.#scheduleRetry();
+          if (!this.#saveFailed) {
+            this.#saveFailed = true;
+            this.#options.onSaveFailed?.(error);
+          }
+          break;
+        }
         if (this.#suspended || this.#epoch !== epoch) break;
-        this.#captured = generation;
-        this.#settle();
+        this.#saved(generation);
       }
     })
       .finally(() => {
@@ -283,6 +283,32 @@ export class SessionCookieMirror {
         this.#pump();
       })
       .catch(() => undefined);
+  }
+
+  #scheduleRetry(): void {
+    if (this.#retryTimer || this.#suspended || this.#stopped) return;
+    this.#retryTimer = setTimeout(() => {
+      this.#retryTimer = undefined;
+      this.#pump();
+    }, this.#retryDelay);
+    this.#retryTimer.unref?.();
+    this.#retryDelay = Math.min(this.#retryDelay * 2, 30_000);
+  }
+
+  #cancelRetry(): void {
+    if (this.#retryTimer) clearTimeout(this.#retryTimer);
+    this.#retryTimer = undefined;
+  }
+
+  #saved(generation: number): void {
+    this.#captured = generation;
+    this.#cancelRetry();
+    this.#retryDelay = 1_000;
+    if (this.#saveFailed) {
+      this.#saveFailed = false;
+      this.#options.onSaveRecovered?.();
+    }
+    this.#settle();
   }
 
   #settle(): void {
@@ -405,12 +431,18 @@ export class SessionCookieMirror {
       tag: cipher.getAuthTag().toString("base64"),
     });
     if (Buffer.byteLength(serialized) > maximumBytes) throw unreadable();
-    await (this.#options.publish ?? replacePrivateFileAtomically)(this.#file, serialized, () => {
-      if (epoch !== this.#epoch || this.#stopped || (this.#suspended && !restoring))
-        throw unreadable();
-    });
-    if (epoch !== this.#epoch || this.#stopped) return;
     this.#sequence = sequence;
+    try {
+      await (this.#options.publish ?? replacePrivateFileAtomically)(this.#file, serialized, () => {
+        if (epoch !== this.#epoch || this.#stopped || (this.#suspended && !restoring))
+          throw unreadable();
+      });
+    } catch (error) {
+      // Publication can reject after rename; the on-disk contents are now unknown.
+      this.#canonical = undefined;
+      throw error;
+    }
+    if (epoch !== this.#epoch || this.#stopped) return;
     this.#canonical = canonical;
   }
 

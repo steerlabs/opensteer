@@ -1,6 +1,7 @@
 import {
   BrowserRuntime,
   BrowserRuntimeServer,
+  BrowserRuntimeError,
   Ed25519AttachTicketVerifier,
   defaultAttachTicketReplayLedgerPath,
   nativeProfileReadyClient,
@@ -62,6 +63,10 @@ async function start(config: ReturnType<typeof readBrowserRuntimeConfig>): Promi
     onOpenTiming: (timing) =>
       process.stdout.write(
         `${JSON.stringify({ event: "browser.session.open.timing", ...timing })}\n`,
+      ),
+    onHostCleanupFailure: ({ kind, stage, error }) =>
+      process.stderr.write(
+        `${JSON.stringify({ event: "browser.host.cleanup.failed", kind, stage, code: error instanceof BrowserRuntimeError ? error.code : "internal" })}\n`,
       ),
     runtimeId: config.runtimeId,
     sessionFilesRoot: sessionFilesRoot(config.profileRoot),

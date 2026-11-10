@@ -114,7 +114,7 @@ it("preserves both established local bindings and native sign-ins byte for byte 
             }));
           },
           subscribe: () => () => {},
-          onFailure: (error) => {
+          onSaveFailed: (error) => {
             throw error;
           },
           publish: async () => {
