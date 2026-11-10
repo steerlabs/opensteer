@@ -465,7 +465,21 @@
 }
 
 @media (max-width: 600px) {
-  .team-entry {
+  .card__row.team-invitation {
+    flex-wrap: wrap;
+    row-gap: var(--space-8);
+  }
+
+  .team-invitation .card__row-body {
+    flex: 1 1 calc(100% - 34px - var(--space-12));
+  }
+
+  .team-invitation .card__row-actions {
+    width: 100%;
+    padding-left: calc(34px + var(--space-12));
+  }
+
+  .card__row.team-entry {
     flex-wrap: wrap;
     row-gap: var(--space-2);
   }
