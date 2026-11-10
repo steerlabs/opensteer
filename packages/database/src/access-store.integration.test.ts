@@ -85,7 +85,6 @@ async function legacyMembershipLifecycle(
   const projectedEffects = effects.map((row) => {
     const {
       id: _id,
-      accessRoot: _accessRoot,
       userId: _user,
       createdAt: _created,
       updatedAt: _updated,
@@ -412,10 +411,6 @@ describeStore("dormant Project access", (it) => {
         ) {
           expect(definition, original.name).toContain("authority_model_version = 2");
           expect(definition, original.name).toContain("'server'");
-        } else if (original.name === "function:opensteer_security_effect_scope_immutable()") {
-          expect(definition).toContain("old.access_root");
-          expect(definition).toContain("new.access_root");
-          expect(definition).toContain("security effect scope is immutable");
         } else expect(definition, original.name).toBe(original.definition);
       }
       const upgraded = await legacyMembershipLifecycle(

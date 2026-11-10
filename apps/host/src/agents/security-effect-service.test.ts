@@ -295,63 +295,6 @@ describe("SecurityEffectService", () => {
   });
 });
 
-describe("captured-root cleanup", () => {
-  it("keeps a global effect retryable without an adapter and never widens it to legacy cleanup", async () => {
-    const root = { kind: "member" as const, userId: createId("user"), memberGenerationCutoff: 1 };
-    const effect = {
-      id: createId("securityEffect"),
-      userId: root.userId,
-      workspaceId: createId("workspace"),
-      kind: "stop-runs" as const,
-      membershipGeneration: 1,
-      membershipGenerationCutoff: 0,
-      attempts: 1,
-      accessRoot: root,
-    };
-    const legacy = vi.fn();
-    const failed = vi.fn();
-    const completed = vi.fn();
-    const options = {
-      rootPrograms: { revoke: vi.fn(async () => undefined) },
-      browser: { revokeWorkspaceUser: vi.fn() },
-      onWatchDesiredChanged: vi.fn(),
-      publish: vi.fn(),
-      realtime: { closeUserWorkspace: vi.fn(), publishViewerTasksChanged: vi.fn() },
-      runners: { dispatch: vi.fn(), identityForEnvironment: () => undefined, revokeRuns: vi.fn() },
-      store: {
-        securityEffectAuthority: async () => ({ kind: "server" as const, model: 2 as const }),
-        claimSecurityEffects: vi.fn(),
-        claimAccessSecurityEffects: async () => [effect],
-        completeSecurityEffect: completed,
-        failSecurityEffect: failed,
-        failActiveRunsForMembershipRevocation: legacy,
-        failActiveRunsForWorkspaceDeletion: vi.fn(),
-      },
-      triggers: {
-        activeExecutionsForMembershipRevocation: vi.fn(),
-        revokeForMembershipRevocation: vi.fn(),
-      },
-    };
-    await expect(new SecurityEffectService(options).reconcile()).rejects.toThrow(
-      "Captured-root Run termination is unavailable",
-    );
-    expect(legacy).not.toHaveBeenCalled();
-    expect(completed).not.toHaveBeenCalled();
-    expect(failed).toHaveBeenCalledOnce();
-    const captured: unknown[] = [];
-    const rootRuns = {
-      terminate: async (selection: unknown) => {
-        captured.push(selection);
-        return recovery([]);
-      },
-    };
-    await new SecurityEffectService({ ...options, rootRuns }).reconcile();
-    expect(captured).toEqual([{ workspaceId: effect.workspaceId, root }]);
-    expect(completed).toHaveBeenCalledWith(effect.id);
-    expect(legacy).not.toHaveBeenCalled();
-  });
-});
-
 function recovery(events: readonly AgentEvent[]) {
   return {
     events,

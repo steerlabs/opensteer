@@ -1,4 +1,4 @@
-import { AccessWorkRevocationRootSchema, type AccessWorkRevocationRoot } from "./access-store.js";
+import { type AccessWorkRevocationRoot } from "./access-store.js";
 import { OpensteerError } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
@@ -14,16 +14,8 @@ export interface AccessProgramRevocationPort {
   }): Promise<void>;
 }
 
-export interface AccessRunTerminationPort {
-  terminate(input: {
-    readonly workspaceId: import("@opensteer/core").WorkspaceId;
-    readonly root: AccessWorkRevocationRoot;
-  }): Promise<import("./execution-recovery.js").RunRecoveryOutcome>;
-}
-
 export interface AccessSecurityEffect extends SecurityEffectRecord {
   readonly membershipGenerationCutoff: number;
-  readonly accessRoot?: AccessWorkRevocationRoot;
 }
 
 export async function claimAccessSecurityEffects(
@@ -82,9 +74,6 @@ export async function claimAccessSecurityEffects(
       kind: row.kind,
       membershipGeneration: safeGeneration(row.membershipGeneration),
       membershipGenerationCutoff: Number(row.membershipGenerationCutoff),
-      ...(row.accessRoot !== null
-        ? { accessRoot: AccessWorkRevocationRootSchema.parse(row.accessRoot) }
-        : {}),
       userId: row.userId,
       workspaceId: row.workspaceId,
     }));

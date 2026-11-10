@@ -9,8 +9,6 @@ import {
   MarkColorSchema,
   normalizeIdentityEmail,
   WorkspaceBackingSchema,
-  UserIdSchema,
-  WorkspaceIdSchema,
   type AccessDecision,
   type AccessMutation,
   type AccessMutationInput,
@@ -91,29 +89,6 @@ export type AccessWorkRevocationRoot =
       readonly memberGenerationCutoff: number;
       readonly membershipGenerationCutoff: number;
     };
-
-const cutoffGeneration = z.number().int().positive().safe();
-export const AccessWorkRevocationRootSchema = z.discriminatedUnion("kind", [
-  z.strictObject({
-    kind: z.literal("member"),
-    userId: UserIdSchema,
-    memberGenerationCutoff: cutoffGeneration,
-  }),
-  z.strictObject({
-    kind: z.literal("membership"),
-    userId: UserIdSchema,
-    workspaceId: WorkspaceIdSchema,
-    membershipGenerationCutoff: cutoffGeneration,
-  }),
-  z.strictObject({
-    kind: z.literal("connection"),
-    userId: UserIdSchema,
-    workspaceId: WorkspaceIdSchema,
-    connectionId: z.string().min(1),
-    memberGenerationCutoff: cutoffGeneration,
-    membershipGenerationCutoff: cutoffGeneration,
-  }),
-]);
 
 export interface AccessWorkRevocationPort {
   discover(
@@ -1814,29 +1789,6 @@ async function coordinateAccess(
               displayName: change.name.trim(),
             })
             .execute();
-        }
-        for (const root of plan.roots) {
-          if (root.kind !== "member") continue;
-          for (const workspaceId of new Set(plan.liveScope.workspaceIds)) {
-            await transaction
-              .insertInto("securityEffects")
-              .values({
-                id: createId("securityEffect"),
-                kind: "stop-runs",
-                workspaceId,
-                userId: root.userId,
-                membershipGeneration: 1,
-                membershipGenerationCutoff: 0,
-                accessRoot: jsonValue(root),
-                causeId: input.commandIdentity,
-                status: "pending",
-                nextAttemptAt: now,
-                lastError: null,
-                createdAt: now,
-                updatedAt: now,
-              })
-              .execute();
-          }
         }
         const revision = plan.revision + 1;
         if (!Number.isSafeInteger(revision)) throw new Error("Access revision exhausted");

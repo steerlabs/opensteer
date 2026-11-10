@@ -6,8 +6,6 @@ import {
   type WorkspaceId,
 } from "@opensteer/core";
 import {
-  AccessWorkRevocationRootSchema,
-  type AccessRunTerminationPort,
   type AccessProgramRevocationPort,
   type OpensteerStore,
   type SecurityEffectRecord,
@@ -40,7 +38,6 @@ export class SecurityEffectService {
   readonly #realtime: Pick<RealtimeHub, "closeUserWorkspace" | "publishViewerTasksChanged">;
   readonly #runners: Pick<RunnerRegistry, "dispatch" | "identityForEnvironment" | "revokeRuns">;
   readonly #store: SecurityEffectStore;
-  readonly #rootRuns: AccessRunTerminationPort | undefined;
   readonly #rootPrograms: AccessProgramRevocationPort | undefined;
   readonly #triggers: Pick<
     TriggerStore,
@@ -55,7 +52,6 @@ export class SecurityEffectService {
     readonly realtime: Pick<RealtimeHub, "closeUserWorkspace" | "publishViewerTasksChanged">;
     readonly runners: Pick<RunnerRegistry, "dispatch" | "identityForEnvironment" | "revokeRuns">;
     readonly store: SecurityEffectStore;
-    readonly rootRuns?: AccessRunTerminationPort;
     readonly rootPrograms?: AccessProgramRevocationPort;
     readonly triggers: Pick<
       TriggerStore,
@@ -68,7 +64,6 @@ export class SecurityEffectService {
     this.#realtime = options.realtime;
     this.#runners = options.runners;
     this.#store = options.store;
-    this.#rootRuns = options.rootRuns;
     this.#rootPrograms = options.rootPrograms;
     this.#triggers = options.triggers;
   }
@@ -170,18 +165,6 @@ export class SecurityEffectService {
   }
 
   async #terminateAffectedRuns(effect: SecurityEffectRecord): Promise<void> {
-    const root =
-      "accessRoot" in effect ? AccessWorkRevocationRootSchema.parse(effect.accessRoot) : undefined;
-    if (root && root.kind !== "membership") {
-      if (!this.#rootRuns) throw new Error("Captured-root Run termination is unavailable");
-      if (!this.#rootPrograms)
-        throw new Error("Captured-root observation revocation is unavailable");
-      await this.#applyRunRecovery(
-        await this.#rootRuns.terminate({ workspaceId: effect.workspaceId, root }),
-      );
-      await this.#rootPrograms.revoke({ workspaceId: effect.workspaceId, root });
-      return;
-    }
     const recovery = await this.#store.failActiveRunsForMembershipRevocation({
       userId: effect.userId,
       workspaceId: effect.workspaceId,

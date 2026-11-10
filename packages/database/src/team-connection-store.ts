@@ -110,28 +110,6 @@ export async function revokeTeamConnection(
         .where("id", "=", plan.connection.id)
         .where("revokedAt", "is", null)
         .execute();
-      const now = new Date();
-      for (const root of plan.roots) {
-        if (root.kind !== "connection") continue;
-        await transaction
-          .insertInto("securityEffects")
-          .values({
-            id: createId("securityEffect"),
-            kind: "stop-runs",
-            workspaceId: root.workspaceId,
-            userId: root.userId,
-            membershipGeneration: root.membershipGenerationCutoff,
-            membershipGenerationCutoff: root.membershipGenerationCutoff,
-            accessRoot: jsonValue(root),
-            causeId: `team.connection.revoke:${actor.userId}:${input.idempotencyKey}`,
-            status: "pending",
-            nextAttemptAt: now,
-            createdAt: now,
-            updatedAt: now,
-            lastError: null,
-          })
-          .execute();
-      }
       await transaction
         .insertInto("securityAudit")
         .values({

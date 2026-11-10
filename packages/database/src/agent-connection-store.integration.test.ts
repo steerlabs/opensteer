@@ -65,80 +65,99 @@ describeStore("connected-agent team incarnations", (it) => {
       .execute();
     expect(await store.authenticate("c".repeat(64))).toBeNull();
   });
-  it("revokes only the selected connection and preserves the captured root for cleanup", async ({
-    storeFixture,
-  }) => {
-    const fixture = await storeFixture.createRunFixture("connection-revoke-root", null, "project");
-    const database = storeFixture.database;
-    await database.updateTable("deployments").set({ authorityModelVersion: 2 }).execute();
-    await database
-      .updateTable("users")
-      .set({ admittedAt: new Date() })
-      .where("id", "=", fixture.userId)
-      .execute();
-    const store = new AgentConnectionStore(database);
-    const input = {
-      userId: fixture.userId,
-      label: "Agent",
-      clientName: "test",
-      accessMode: "approval-required" as const,
-      reach: { kind: "workspace" as const, workspaceId: fixture.workspace.id },
-      resource: "https://team.test/mcp",
-      expiresAt: new Date(Date.now() + 60_000),
-    };
-    const first = await store.create(input);
-    const second = await store.create(input);
-    await store.activate(first.id, "d".repeat(64));
-    await store.activate(second.id, "e".repeat(64));
-    const roots: AccessWorkRevocationRoot[] = [];
-    const work = {
-      discover: async () => ({ runIds: [], workspaceIds: [] }),
-      cancel: async (_transaction: unknown, selected: readonly AccessWorkRevocationRoot[]) => {
-        roots.push(...selected);
-      },
-    };
-    const command = { connectionId: first.id, expectedRevision: 1, idempotencyKey: "revoke-one" };
-    await revokeTeamConnection(database, { userId: fixture.userId }, command, work);
-    await revokeTeamConnection(database, { userId: fixture.userId }, command, work);
-    expect(roots).toEqual([
-      {
-        kind: "connection",
-        connectionId: first.id,
-        userId: fixture.userId,
-        workspaceId: fixture.workspace.id,
-        memberGenerationCutoff: 1,
-        membershipGenerationCutoff: 1,
-      },
-    ]);
-    expect(await store.authenticate("d".repeat(64))).toBeNull();
-    expect(await store.authenticate("e".repeat(64))).toMatchObject({ id: second.id });
-    expect(
+  for (const reverse of [false, true])
+    it(`revokes two connections independently through the port (reverse=${reverse})`, async ({
+      storeFixture,
+    }) => {
+      const fixture = await storeFixture.createRunFixture(
+        "connection-revoke-root",
+        null,
+        "project",
+      );
+      const database = storeFixture.database;
+      await database.updateTable("deployments").set({ authorityModelVersion: 2 }).execute();
       await database
-        .selectFrom("users")
-        .select(["authorityGeneration", "memberState"])
+        .updateTable("users")
+        .set({ admittedAt: new Date() })
         .where("id", "=", fixture.userId)
-        .executeTakeFirstOrThrow(),
-    ).toEqual({ authorityGeneration: "1", memberState: "active" });
-    expect(
+        .execute();
+      const store = new AgentConnectionStore(database);
+      const input = {
+        userId: fixture.userId,
+        label: "Agent",
+        clientName: "test",
+        accessMode: "approval-required" as const,
+        reach: { kind: "workspace" as const, workspaceId: fixture.workspace.id },
+        resource: "https://team.test/mcp",
+        expiresAt: new Date(Date.now() + 60_000),
+      };
+      const createdFirst = await store.create(input);
+      const createdSecond = await store.create(input);
+      const first = reverse ? createdSecond : createdFirst;
+      const second = reverse ? createdFirst : createdSecond;
+      await store.activate(first.id, "d".repeat(64));
+      await store.activate(second.id, "e".repeat(64));
+      const roots: AccessWorkRevocationRoot[] = [];
+      const work = {
+        discover: async () => ({ runIds: [], workspaceIds: [] }),
+        cancel: async (_transaction: unknown, selected: readonly AccessWorkRevocationRoot[]) => {
+          roots.push(...selected);
+        },
+      };
+      const command = { connectionId: first.id, expectedRevision: 1, idempotencyKey: "revoke-one" };
+      await revokeTeamConnection(database, { userId: fixture.userId }, command, work);
+      await revokeTeamConnection(database, { userId: fixture.userId }, command, work);
+      expect(roots).toEqual([
+        {
+          kind: "connection",
+          connectionId: first.id,
+          userId: fixture.userId,
+          workspaceId: fixture.workspace.id,
+          memberGenerationCutoff: 1,
+          membershipGenerationCutoff: 1,
+        },
+      ]);
+      expect(await store.authenticate("d".repeat(64))).toBeNull();
+      expect(await store.authenticate("e".repeat(64))).toMatchObject({ id: second.id });
+      expect(
+        await database
+          .selectFrom("users")
+          .select(["authorityGeneration", "memberState"])
+          .where("id", "=", fixture.userId)
+          .executeTakeFirstOrThrow(),
+      ).toEqual({ authorityGeneration: "1", memberState: "active" });
+      expect(
+        await database
+          .selectFrom("securityEffects")
+          .select("id")
+          .where("userId", "=", fixture.userId)
+          .execute(),
+      ).toEqual([]);
+      const administrator = await storeFixture.store.createUser("Another administrator");
       await database
-        .selectFrom("securityEffects")
-        .select("accessRoot")
-        .where("userId", "=", fixture.userId)
-        .execute(),
-    ).toEqual([{ accessRoot: roots[0] }]);
-    const administrator = await storeFixture.store.createUser("Another administrator");
-    await database
-      .updateTable("users")
-      .set({ admittedAt: new Date(), instanceRole: "administrator" })
-      .where("id", "=", administrator)
-      .execute();
-    await revokeTeamConnection(
-      database,
-      { userId: administrator },
-      { ...command, connectionId: second.id },
-      work,
-    );
-    expect(await store.authenticate("e".repeat(64))).toBeNull();
-    expect(roots).toHaveLength(2);
-  });
+        .updateTable("users")
+        .set({ admittedAt: new Date(), instanceRole: "administrator" })
+        .where("id", "=", administrator)
+        .execute();
+      await revokeTeamConnection(
+        database,
+        { userId: administrator },
+        { ...command, connectionId: second.id },
+        work,
+      );
+      expect(await store.authenticate("e".repeat(64))).toBeNull();
+      expect(roots).toHaveLength(2);
+      expect(roots[1]).toMatchObject({
+        kind: "connection",
+        connectionId: second.id,
+        userId: fixture.userId,
+      });
+      expect(
+        await database
+          .selectFrom("securityEffects")
+          .select("id")
+          .where("userId", "=", fixture.userId)
+          .execute(),
+      ).toEqual([]);
+    });
 });
