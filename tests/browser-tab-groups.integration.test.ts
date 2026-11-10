@@ -245,7 +245,7 @@ integration("personal tab order", () => {
     });
     const c = child();
     const d = child();
-    await recorder.record(a.sessionId, [c, d], []);
+    await recorder.recordChanges(a.sessionId, [c, d], []);
     expect(await resolvedOrder(stack)).toEqual([a.tabId, c.id, d.id, b.tabId]);
     expect((await bootstrap(stack)).tabGroups?.order).toEqual([]);
     const group = await command(stack, {
@@ -255,7 +255,7 @@ integration("personal tab order", () => {
     });
     if (group.type !== "workspace.tabs.group") throw new Error("Wrong group result");
     const e = child();
-    await recorder.record(a.sessionId, [e], []);
+    await recorder.recordChanges(a.sessionId, [e], []);
     expect(await resolvedOrder(stack)).toEqual([a.tabId, b.tabId, c.id, d.id, e.id]);
     expect(
       (await recorder.read(owner.id, a.sessionId))?.tabs?.every((tab) =>
@@ -1001,7 +1001,7 @@ integration("agent organization and durable ownership", () => {
       });
       const tabId = BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`);
       seedIds.push(tabId);
-      await new WorkspaceTabStore(db).record(
+      await new WorkspaceTabStore(db).recordChanges(
         id,
         [
           {

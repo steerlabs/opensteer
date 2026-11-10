@@ -259,7 +259,7 @@ export async function seedWorkspace(
     runtimeId: "benchmark",
     workspaceId: workspace.id,
   });
-  await new WorkspaceTabStore(database).record(
+  await new WorkspaceTabStore(database).recordChanges(
     sessionId,
     Array.from({ length: tabCount }, (_, index) => ({
       id: BrowserSurfaceIdSchema.parse(`surface_bench-${index}`),

@@ -1,3 +1,15 @@
+import {
+  keyedStreamHardCapBytes,
+  KeyedStreamPublisher,
+  KeyedStreamReceiver,
+  keyedStreamBytes,
+} from "@opensteer/protocol/keyed-stream";
+import type { BrowserTabRecord, BrowserTabStreamMeta } from "@opensteer/protocol/browser-tabs";
+import {
+  BrowserRuntimeServerMessageSchema,
+  type BrowserRuntimeServerMessage,
+} from "@opensteer/protocol/browser";
+import type { WorkspaceTabDescriptor } from "@opensteer/database";
 import { browserBasicInputAllows } from "@opensteer/protocol/browser";
 import { editingClipboardPartCount } from "@opensteer/protocol/editing";
 import {
@@ -42,7 +54,7 @@ import {
   type BrowserHistoryStore,
   type BrowserTabGroupStore,
 } from "@opensteer/database";
-import type { BrowserWorkspaceTabDescriptor, WorkspaceTabLineage } from "@opensteer/protocol";
+import type { WorkspaceTabLineage } from "@opensteer/protocol";
 import {
   browserBootstrapSessionsMaxBytes,
   browserCaptureMaxTargets,
@@ -55,7 +67,6 @@ import {
   browserSessionTabLimit,
   browserSessionTabsFullReason,
   BrowserProfileAccessSchema,
-  BrowserServerMessageSchema,
   browserStateImportHostTimeoutMs,
   BrowserSurfaceIdSchema,
   BrowserTabCatalogSchema,
@@ -2609,7 +2620,7 @@ export class BrowserService {
         .filter(
           ([sessionId, broker]) =>
             this.#catalogNotices.has(sessionId) ||
-            broker.durableCatalog().dirty ||
+            broker.hasTabChanges ||
             this.#sessionOperations.has(`catalog:${sessionId}`),
         )
         .map(([sessionId, broker]) =>
@@ -2665,12 +2676,15 @@ export class BrowserService {
     return this.#serializeKey(`catalog:${sessionId}`, async () => {
       let lineageChanged = false;
       if (broker && this.#workspaceTabs) {
-        const { tabs, closed, revision, dirty, surfaceStateRevision, surfaceStateDirty } =
-          broker.durableCatalog();
-        if (dirty) lineageChanged = await this.#workspaceTabs.record(sessionId, tabs, closed);
-        // A tab falling asleep or waking changes the group people hold, as a lineage change does.
-        lineageChanged ||= surfaceStateDirty;
-        broker.acknowledgeClosed(closed, revision, surfaceStateRevision);
+        const changes = broker.tabChanges();
+        if (changes.tabs.length || changes.closed.length)
+          lineageChanged = await this.#workspaceTabs.recordChanges(
+            sessionId,
+            changes.tabs,
+            changes.closed,
+          );
+        lineageChanged ||= changes.stateDirty;
+        broker.acknowledgeTabChanges(changes);
       }
       this.#onCatalogChanged(sessionId, workspaceId, { lineageChanged });
     });
@@ -4156,6 +4170,11 @@ export class BrowserService {
         ? { ...personNavigation, navigationId: randomUUID() }
         : undefined;
     input.operationBudget?.signal.throwIfAborted();
+    const workspaceTabRestore =
+      target.workspaceTabRestoreVersion &&
+      origin !== "trigger" &&
+      !input.agentBindingId?.startsWith("trigger:") &&
+      !input.agentBindingId?.startsWith("watch:");
     const ticket = this.#signer.issue({
       ...(input.operationBudget
         ? {
@@ -4179,14 +4198,10 @@ export class BrowserService {
             ...(target.editing === 2 ? { clipboard: target.clipboard === true } : {}),
           }
         : {}),
-      ...(target.workspaceTabRestoreVersion &&
-      origin !== "trigger" &&
-      !input.agentBindingId?.startsWith("trigger:") &&
-      !input.agentBindingId?.startsWith("watch:")
+      ...(workspaceTabRestore
         ? {
             workspaceTabRestoreVersion: 1,
             initialSurfaceId: input.initialSurfaceId,
-            dormantSurfaceIds: input.dormantSurfaceIds ? [...input.dormantSurfaceIds] : undefined,
           }
         : {}),
       initialNavigation: {
@@ -4225,6 +4240,10 @@ export class BrowserService {
     const broker = withoutDatabaseOperationSignal(
       () =>
         new HostedBrowserBroker({
+          workspaceTabRestoreVersion: workspaceTabRestore,
+          ...(workspaceTabRestore && input.initialSurfaceId
+            ? { savedTabIds: [input.initialSurfaceId, ...(input.dormantSurfaceIds ?? [])] }
+            : {}),
           profileId: record.profileId,
           ...(initialHistoryNavigation ? { initialHistoryNavigation } : {}),
           historyWrite: (operation) => {
@@ -4317,13 +4336,6 @@ export class BrowserService {
       try {
         stage = "runtime-readiness";
         await broker.ready();
-        if (
-          target.workspaceTabRestoreVersion &&
-          origin !== "trigger" &&
-          !input.agentBindingId?.startsWith("trigger:") &&
-          !input.agentBindingId?.startsWith("watch:")
-        )
-          await broker.workspaceTabsReady();
         let initialTabId = broker.catalog(() => []).tabs[0]?.id;
         {
           const ready = InitialPageReadySchema.parse(socket.initialPage);
@@ -4784,6 +4796,8 @@ interface PendingStateImport {
 }
 
 interface HostedBrowserBrokerOptions {
+  readonly savedTabIds?: readonly BrowserSurfaceId[];
+  readonly workspaceTabRestoreVersion?: boolean | undefined;
   readonly initialHistoryNavigation?: { navigationId: string; ownerId: UserId; typed: boolean };
   readonly profileId: BrowserProfileId | null;
   readonly historyWrite: (operation: (store: BrowserHistoryStore) => Promise<boolean>) => void;
@@ -4871,7 +4885,7 @@ class HostedBrowserBroker {
       return;
     this.#historyNavigations.delete(event.navigationId);
     if (!BrowserHistoryUrlSchema.safeParse(event.url).success) return;
-    const surface = this.#snapshot?.surfaces.find(
+    const surface = this.#surfaces.find(
       (surface) => surface.id === event.surfaceId && surface.documentId === event.documentId,
     );
     const title = surface?.title.slice(0, 200) ?? "";
@@ -4934,61 +4948,40 @@ class HostedBrowserBroker {
   get navigationVersion(): 1 | undefined {
     return this.#navigation && this.live ? 1 : undefined;
   }
-  readonly #durableReady = Promise.withResolvers<void>();
-  workspaceTabsReady(): Promise<void> {
-    return withTimeout(this.#durableReady.promise, this.#connectTimeoutMs, {
-      timeoutError: () => new Error("Browser Runtime did not send its durable tab inventory."),
-    });
-  }
-  #durableTabs: BrowserWorkspaceTabDescriptor[] = [];
-  readonly #durableClosed = new Set<BrowserSurfaceId>();
-  #durableRevision = 0;
-  /** The pages the Runtime listed last; it lists a new tab before answering its open. */
+  readonly #restoreTabs: boolean;
+  readonly #savedTabIds: readonly BrowserSurfaceId[] | undefined;
+  readonly #tabs = new KeyedStreamReceiver<BrowserTabRecord, BrowserTabStreamMeta>();
+  readonly #dirtyTabs = new Map<string, WorkspaceTabDescriptor>();
+  readonly #closedTabs = new Set<BrowserSurfaceId>();
+  #tabStateRevision = 0;
+  #storedTabStateRevision = 0;
+  #surfaces: BrowserSurface[] = [];
   get surfaceIds(): readonly BrowserSurfaceId[] {
-    return this.#snapshot?.surfaces.map((surface) => surface.id) ?? [];
+    return [...this.#tabs.rows.values()].map((row) => row.id);
   }
-
   get workspaceTabRestoreVersion(): 1 | undefined {
-    return this.#durableRevision > 0 ? 1 : undefined;
+    return this.#restoreTabs ? 1 : undefined;
   }
-  #storedDurableRevision = 0;
-  #surfaceStateRevision = 0;
-  #announcedSurfaceStateRevision = 0;
-  #durableIcon(tab: BrowserWorkspaceTabDescriptor) {
-    const surface = this.#snapshot?.surfaces.find(
-      (surface) => surface.id === tab.id && surface.url === tab.url,
-    );
-    return surface ? this.#surfaceIcon(surface) : undefined;
-  }
-  #durableIconRefs(): string {
-    return JSON.stringify(
-      this.#durableTabs.map((tab) => [tab.id, this.#durableIcon(tab)?.ref ?? null]),
+  get hasTabChanges(): boolean {
+    return (
+      this.#dirtyTabs.size > 0 ||
+      this.#closedTabs.size > 0 ||
+      this.#tabStateRevision !== this.#storedTabStateRevision
     );
   }
-  #durableDescriptors() {
-    return this.#durableTabs.map((tab) => {
-      const icon = this.#durableIcon(tab);
-      return { ...tab, ...(icon ? { favicon: icon.favicon } : {}) };
-    });
-  }
-  durableCatalog() {
+  tabChanges() {
     return {
-      tabs: this.#durableDescriptors(),
-      closed: [...this.#durableClosed],
-      revision: this.#durableRevision,
-      dirty: this.#storedDurableRevision < this.#durableRevision,
-      surfaceStateRevision: this.#surfaceStateRevision,
-      surfaceStateDirty: this.#announcedSurfaceStateRevision < this.#surfaceStateRevision,
+      tabs: [...this.#dirtyTabs.values()],
+      closed: [...this.#closedTabs],
+      stateRevision: this.#tabStateRevision,
+      stateDirty: this.#tabStateRevision !== this.#storedTabStateRevision,
     };
   }
-  acknowledgeClosed(
-    ids: readonly BrowserSurfaceId[],
-    revision: number,
-    surfaceStateRevision: number,
-  ) {
-    this.#storedDurableRevision = revision;
-    this.#announcedSurfaceStateRevision = surfaceStateRevision;
-    for (const id of ids) this.#durableClosed.delete(id);
+  acknowledgeTabChanges(changes: ReturnType<HostedBrowserBroker["tabChanges"]>): void {
+    for (const row of changes.tabs)
+      if (this.#dirtyTabs.get(row.id) === row) this.#dirtyTabs.delete(row.id);
+    for (const id of changes.closed) this.#closedTabs.delete(id);
+    this.#storedTabStateRevision = changes.stateRevision;
   }
   readonly #onTabsChanged: () => void;
   readonly #onActivity: (activity: BrowserRuntimeActivity) => void;
@@ -5020,7 +5013,7 @@ class HostedBrowserBroker {
   readonly #sessionId: BrowserSessionId;
   readonly #groupId: BrowserSessionId;
   readonly #socket: BrowserRuntimeConnection;
-  #snapshot: Extract<BrowserServerMessage, { type: "browser.snapshot" }> | null = null;
+  #snapshot: Extract<BrowserRuntimeServerMessage, { type: "browser.snapshot" }> | null = null;
   readonly #editingContexts = new Map<
     BrowserSurfaceId,
     Extract<BrowserServerMessage, { type: "browser.editing" }>
@@ -5068,6 +5061,7 @@ class HostedBrowserBroker {
    */
   #latestFrame: { readonly frame: Buffer; readonly header: BrowserBinaryFrameHeader } | null = null;
   #streamReconcileTail = Promise.resolve();
+  #viewerCommitted = false;
   #runtimeReady = false;
   #runtimeStreaming = false;
   #protocolFailed = false;
@@ -5098,6 +5092,8 @@ class HostedBrowserBroker {
 
   readonly #passkeys: PasskeyService | undefined;
   constructor(options: HostedBrowserBrokerOptions) {
+    this.#restoreTabs = options.workspaceTabRestoreVersion === true;
+    this.#savedTabIds = options.savedTabIds;
     this.profileId = options.profileId;
     this.#historyWrite = options.historyWrite;
     if (options.initialHistoryNavigation) {
@@ -5119,7 +5115,7 @@ class HostedBrowserBroker {
                 outlet.subscription === null
                   ? null
                   : (outlet.surfaceId ??
-                    this.#snapshot?.surfaces.find((surface) => surface.active)?.id ??
+                    this.#surfaces.find((surface) => surface.active)?.id ??
                     null),
               live: outlet.peer.isOpen(),
               authorized: outlet.authorized,
@@ -5167,6 +5163,22 @@ class HostedBrowserBroker {
     this.#readyPromise = this.#waitUntilReady();
   }
 
+  async #sendSavedTabs(): Promise<void> {
+    if (!this.#savedTabIds) return;
+    const rows = new Map(this.#savedTabIds.map((id) => [id, { id }]));
+    const publisher = new KeyedStreamPublisher({
+      ids: () => rows.keys(),
+      read: (id) => rows.get(BrowserSurfaceIdSchema.parse(id)),
+      meta: () => ({}),
+      targetBytes: 64 * 1024,
+      envelopeBytes: keyedStreamBytes({ type: "session.saved", stream: null }) - 4,
+    });
+    for (let stream = publisher.next(); stream; stream = publisher.next()) {
+      await this.#sendCommand({ type: "session.saved", stream });
+      publisher.settled(stream, true);
+    }
+  }
+
   ready(): Promise<void> {
     return this.#readyPromise;
   }
@@ -5180,12 +5192,13 @@ class HostedBrowserBroker {
     return this.#snapshot?.targetedStreamingVersion === 1;
   }
   get inventoryRevision(): number {
-    return this.#snapshot?.inventoryRevision ?? this.#inventoryRevision;
+    return this.#tabs.meta?.inventoryRevision ?? 0;
   }
-  #inventoryRevision = 0;
-  readonly #icons = new Map<
+  readonly #icons = new Map<string, { favicon: string; ref: string }>();
+  #iconBytes = 0;
+  readonly #restoredIcons = new Map<
     BrowserSurfaceId,
-    { url: string; favicon: string; ref: string; restoring: boolean }
+    { url: string; favicon: string; ref: string }
   >();
   readonly #dialogs = new Map<string, BrowserDialog>();
   bumpCatalog(): void {
@@ -5193,38 +5206,20 @@ class HostedBrowserBroker {
     this.#onTabsChanged();
   }
   restoreIcon(id: BrowserSurfaceId, url: string, favicon: string): void {
-    this.#rememberIcon(id, url, favicon, true);
-  }
-  #rememberIcon(id: BrowserSurfaceId, url: string, favicon: string, restoring: boolean): void {
-    if (this.#icons.size >= 64 && !this.#icons.has(id))
-      this.#icons.delete(this.#icons.keys().next().value!);
-    this.#icons.set(id, {
-      url,
-      favicon,
-      ref: workspaceTabIconRef(this.#groupId, favicon),
-      restoring,
-    });
-  }
-  #reconcileIcons(surfaces: readonly BrowserSurface[]): void {
-    for (const [id, icon] of this.#icons)
-      if (!icon.restoring && !surfaces.some((surface) => surface.id === id)) this.#icons.delete(id);
-    for (const surface of surfaces) {
-      const held = this.#icons.get(surface.id);
-      if (surface.favicon) this.#rememberIcon(surface.id, surface.url, surface.favicon, false);
-      else if (held?.url === surface.url) held.restoring = false;
-      else if (held && !(held.restoring && surface.url === "about:blank"))
-        this.#icons.delete(surface.id);
-    }
+    this.#restoredIcons.set(id, { url, favicon, ref: workspaceTabIconRef(this.#groupId, favicon) });
   }
   #surfaceIcon(surface: BrowserSurface) {
-    const icon = this.#icons.get(surface.id);
-    return icon && (icon.url === surface.url || (icon.restoring && surface.url === "about:blank"))
-      ? icon
+    const row = this.#tabs.rows.get(surface.id);
+    const current = row?.icon ? this.#icons.get(row.icon) : undefined;
+    if (current) return current;
+    const restored = this.#restoredIcons.get(surface.id);
+    return restored && (restored.url === surface.url || surface.url === "about:blank")
+      ? restored
       : undefined;
   }
   icon(iconRef: string): string | null {
     return (
-      this.#snapshot?.surfaces
+      this.#surfaces
         .map((surface) => this.#surfaceIcon(surface))
         .find((icon) => icon?.ref === iconRef)?.favicon ?? null
     );
@@ -5235,7 +5230,7 @@ class HostedBrowserBroker {
       revision: this.#catalogRevisions.revision,
       inventoryRevision: this.inventoryRevision,
       tabs:
-        this.#snapshot?.surfaces.map((surface, index) => ({
+        this.#surfaces.map((surface, index) => ({
           id: surface.id,
           title: surface.title.slice(0, 256),
           site: browserPageSite(surface.url).slice(0, 2048),
@@ -5245,8 +5240,8 @@ class HostedBrowserBroker {
           availability: this.live ? "ready" : "unavailable",
           ...(surface.loading ? { loading: true } : {}),
           ...(surface.navigationFailed ? { navigationFailed: true } : {}),
-          ...(surface.canGoBack === undefined ? {} : { canGoBack: surface.canGoBack }),
-          ...(surface.canGoForward === undefined ? {} : { canGoForward: surface.canGoForward }),
+          ...(!this.#navigation ? {} : { canGoBack: surface.canGoBack }),
+          ...(!this.#navigation ? {} : { canGoForward: surface.canGoForward }),
           documentId: surface.documentId ?? null,
           occupants: occupants(surface.id),
         })) ?? [],
@@ -5263,17 +5258,17 @@ class HostedBrowserBroker {
 
   /** The page the person sees: the active tab's title and site. */
   get page(): BrowserPagePresence | null {
-    const surface = this.#snapshot?.surfaces.find((surface) => surface.active);
+    const surface = this.#surfaces.find((surface) => surface.active);
     if (!surface) return null;
     return { title: surface.title.slice(0, 256), url: browserPageSite(surface.url) };
   }
 
   geometryOf(surfaceId: string): number | undefined {
-    return this.#snapshot?.surfaces.find((surface) => surface.id === surfaceId)?.geometryRevision;
+    return this.#surfaces.find((surface) => surface.id === surfaceId)?.geometryRevision;
   }
 
   surfaceStateOf(surfaceId: string) {
-    return this.#snapshot?.surfaces.find((surface) => surface.id === surfaceId)?.state;
+    return this.#surfaces.find((surface) => surface.id === surfaceId)?.state;
   }
 
   /**
@@ -5281,7 +5276,7 @@ class HostedBrowserBroker {
    * that failed to load shows an address it never reached, so it records none.
    */
   pageOf(surfaceId: string): BrowserUsePage | null {
-    const surface = this.#snapshot?.surfaces.find((surface) => surface.id === surfaceId);
+    const surface = this.#surfaces.find((surface) => surface.id === surfaceId);
     if (!surface) return null;
     return {
       site: surface.navigationFailed ? "" : browserPageSite(surface.url).slice(0, 2048),
@@ -5290,7 +5285,7 @@ class HostedBrowserBroker {
   }
 
   pageKeyOf(surfaceId: string): string | undefined {
-    const surface = this.#snapshot?.surfaces.find((surface) => surface.id === surfaceId);
+    const surface = this.#surfaces.find((surface) => surface.id === surfaceId);
     return surface
       ? JSON.stringify([surface.documentId, surface.url, surface.title, surface.navigationFailed])
       : undefined;
@@ -5365,7 +5360,11 @@ class HostedBrowserBroker {
       await outlet.sendText(
         JSON.stringify(
           browserViewerMessage(
-            this.#snapshot,
+            {
+              ...this.#snapshot,
+              surfaces: this.#surfaces,
+              inventoryRevision: this.inventoryRevision,
+            },
             outlet.editing,
             outlet.passkeys,
             outlet.clipboardToken,
@@ -5438,9 +5437,7 @@ class HostedBrowserBroker {
 
   assertActionTarget(request: BrowserActionRequest): void {
     if (["session.tabs", "surface.open"].includes(request.action.type)) return;
-    const surface = this.#snapshot?.surfaces.find(
-      (candidate) => candidate.id === request.surfaceId,
-    );
+    const surface = this.#surfaces.find((candidate) => candidate.id === request.surfaceId);
     if (!surface) throw browserActionFailure("target-closed", "The tab no longer exists.");
     if (request.action.type === "surface.resume") return;
     if (surface.state === "suspended" && request.action.type !== "surface.close")
@@ -5695,7 +5692,7 @@ class HostedBrowserBroker {
       if (decoded.header.watchToken) {
         throw new Error("Browser Runtime sent a Host-only Watch token.");
       }
-      const activeSurface = this.#snapshot?.surfaces.find(
+      const activeSurface = this.#surfaces.find(
         (surface) =>
           surface.id === decoded.header.surfaceId && (this.targetedStreaming || surface.active),
       );
@@ -5773,12 +5770,14 @@ class HostedBrowserBroker {
         dialog: { ...olderBrowserDialogSchema.parse(decoded.dialog), id: randomUUID() },
       };
     }
-    const message = BrowserServerMessageSchema.parse(decoded);
+    let message: BrowserServerMessage | BrowserRuntimeServerMessage =
+      BrowserRuntimeServerMessageSchema.parse(decoded);
     if (message.type === "passkey.ceremony" || message.type === "passkey.cancel") {
       if (!this.#passkeys || !this.#runtimeReady)
         throw new Error("Browser passkeys were not negotiated.");
       if (message.type === "passkey.ceremony") {
-        if (!this.#snapshot?.surfaces.some((surface) => surface.id === message.surfaceId))
+        const surfaceId = message.surfaceId;
+        if (!this.#surfaces.some((surface) => surface.id === surfaceId))
           throw new Error("Unknown passkey surface.");
         this.#passkeys.ceremony(message);
       } else this.#passkeys.cancel(message.ceremonyId);
@@ -5854,19 +5853,23 @@ class HostedBrowserBroker {
       else pending.resolve();
       return false;
     }
-    if (message.type === "browser.workspace-tabs") {
-      this.#durableTabs = message.tabs;
-      this.#durableRevision++;
-      this.#durableReady.resolve();
-      for (const id of message.closed) this.#durableClosed.add(id);
-      this.#onTabsChanged();
+    if (message.type === "browser.tab.icon") {
+      if (createHash("sha256").update(message.favicon).digest("base64url") !== message.key)
+        throw new Error("Browser icon key mismatch.");
+      const bytes = Buffer.byteLength(message.favicon);
+      if (!this.#icons.has(message.key) && this.#iconBytes + bytes <= 16 * 1024 * 1024) {
+        this.#icons.set(message.key, {
+          favicon: message.favicon,
+          ref: workspaceTabIconRef(this.#groupId, message.favicon),
+        });
+        this.#iconBytes += bytes;
+      }
       return false;
     }
     if (message.type === "browser.snapshot") {
       if (this.#snapshot) throw new Error("Browser Runtime sent a duplicate snapshot.");
       if (message.sessionId !== this.#sessionId) throw new Error("Browser session ID mismatch.");
       if (message.access !== "read-write") throw new Error("Browser access negotiation failed.");
-      assertBrowserDialogSurface(message.dialog, message.surfaces);
       if (
         message.editingVersion !== undefined &&
         (message.editingVersion !== this.editing ||
@@ -5875,114 +5878,105 @@ class HostedBrowserBroker {
         throw new Error("Browser editing was not negotiated by this Host.");
       if (
         (message.basicInput !== undefined && message.basicInput !== this.basicInput) ||
-        (message.surfaceState !== undefined && message.surfaceState !== this.surfaceState) ||
-        (message.surfaces.some((surface) => surface.state !== undefined) &&
-          message.surfaceState !== 1)
+        (message.surfaceState !== undefined && message.surfaceState !== this.surfaceState)
       )
         throw new Error("Browser basic input or surface state was not negotiated.");
       this.#snapshot = message;
-      this.#reconcileIcons(message.surfaces);
-      this.#reconcileHistory(message.surfaces);
-      this.#inventoryRevision = message.inventoryRevision ?? 1;
       if (message.dialog) this.#dialogs.set(message.dialog.surfaceId, message.dialog);
-      await this.#onState("ready");
-      this.#runtimeReady = true;
-      this.bumpCatalog();
-    } else if (message.type === "browser.surfaces.changed") {
-      if (!this.#snapshot) throw new Error("Browser Runtime snapshot is unavailable.");
-      if (
-        message.surfaces.some((surface) => surface.state !== undefined) &&
-        this.#snapshot.surfaceState !== 1
-      )
-        throw new Error("Browser surface state was not negotiated.");
+      return false;
+    }
+    if (message.type === "browser.tabs") {
+      if (frame.byteLength > keyedStreamHardCapBytes)
+        throw new Error("Browser tab frame exceeds the hard byte cap.");
+      const withoutUnknownIcon = <T extends { icon?: string | null | undefined }>(row: T): T =>
+        row.icon && !this.#icons.has(row.icon) ? { ...row, icon: null } : row;
+      const stream =
+        message.stream.op === "rows"
+          ? { ...message.stream, rows: message.stream.rows.map(withoutUnknownIcon) }
+          : message.stream.op === "change"
+            ? {
+                ...message.stream,
+                ...(message.stream.add ? { add: message.stream.add.map(withoutUnknownIcon) } : {}),
+                ...(message.stream.update
+                  ? { update: message.stream.update.map(withoutUnknownIcon) }
+                  : {}),
+              }
+            : message.stream;
       const previousPage = this.page;
-      const previousActive = this.#snapshot.surfaces.find((surface) => surface.active)?.id ?? null;
-      assertBrowserDialogSurface(this.#snapshot.dialog, message.surfaces);
-      const previousSurfaces = this.#snapshot.surfaces;
-      for (const surface of previousSurfaces) {
-        const next = message.surfaces.find((candidate) => candidate.id === surface.id);
-        if (!next || next.documentId !== surface.documentId)
-          this.#passkeys?.documentChanged(surface.id);
+      const previousActive = this.#tabs.meta?.activeId ?? null;
+      let changed:
+        { added: string[]; updated: string[]; removed: string[]; structural: boolean } | undefined;
+      const unsubscribe = this.#tabs.onChange((value) => {
+        changed = value;
+      });
+      const result = this.#tabs.apply(stream);
+      unsubscribe();
+      if (result === "resync") {
+        await this.#sendCommand({ type: "tabs.resync" });
+        return false;
       }
-      const previousIcons = this.#durableIconRefs();
-      if (
-        this.surfaceState === 1 &&
-        JSON.stringify(previousSurfaces.map(({ id, state }) => [id, state])) !==
-          JSON.stringify(message.surfaces.map(({ id, state }) => [id, state]))
-      )
-        this.#surfaceStateRevision++;
-      const inventoryChanged =
-        JSON.stringify(previousSurfaces.map(({ id, order }) => [id, order])) !==
-        JSON.stringify(message.surfaces.map(({ id, order }) => [id, order]));
-      if (inventoryChanged) this.#inventoryRevision++;
-      this.#snapshot = {
-        ...this.#snapshot,
-        surfaces: message.surfaces,
-        ...(message.inventoryRevision === undefined
-          ? {}
-          : { inventoryRevision: message.inventoryRevision }),
-      };
-      for (const surfaceId of this.#editingContexts.keys())
-        if (!message.surfaces.some((surface) => surface.id === surfaceId))
-          this.#editingContexts.delete(surfaceId);
-      this.#reconcileIcons(message.surfaces);
-      this.#reconcileHistory(message.surfaces);
-      if (previousIcons !== this.#durableIconRefs()) {
-        this.#durableRevision++;
-        this.#onTabsChanged();
+      if (result !== "applied" || !changed) return false;
+      const changes = changed;
+      for (const id of [...changes.added, ...changes.updated]) {
+        const row = this.#tabs.rows.get(id)!;
+        const previous = this.#surfaces.find((surface) => surface.id === id);
+        if (previous && previous.documentId !== row.documentId)
+          this.#passkeys?.documentChanged(row.id);
+        if (previous?.state !== row.state) this.#tabStateRevision++;
+        const icon = row.icon ? this.#icons.get(row.icon) : undefined;
+        const restored = this.#restoredIcons.get(row.id);
+        const favicon =
+          icon?.favicon ??
+          (restored?.url === row.url || row.url === "about:blank" ? restored?.favicon : null) ??
+          null;
+        if (icon || (restored && row.url !== restored.url && row.url !== "about:blank"))
+          this.#restoredIcons.delete(row.id);
+        if (this.#restoreTabs)
+          this.#dirtyTabs.set(id, {
+            id: row.id,
+            title: row.title,
+            url: row.url,
+            order: row.order,
+            openerId: row.openerId,
+            favicon,
+          });
       }
-      const visible = (surfaces: readonly BrowserSurface[]) =>
-        surfaces.map(
-          ({
-            id,
-            order,
-            title,
-            url,
-            favicon,
-            loading,
-            documentId,
-            openerId,
-            canGoBack,
-            canGoForward,
-            state,
-          }) => ({
-            canGoBack,
-            canGoForward,
-            state,
-            id,
-            order,
-            title,
-            site: browserPageSite(url),
-            favicon,
-            loading,
-            documentId,
-            openerId,
-          }),
-        );
-      if (JSON.stringify(visible(previousSurfaces)) !== JSON.stringify(visible(message.surfaces)))
-        this.bumpCatalog();
-      for (const id of this.#dialogs.keys())
-        if (!message.surfaces.some((surface) => surface.id === id)) this.#dialogs.delete(id);
+      for (const id of changes.removed) {
+        const tabId = BrowserSurfaceIdSchema.parse(id);
+        this.#passkeys?.documentChanged(tabId);
+        this.#editingContexts.delete(tabId);
+        this.#dialogs.delete(tabId);
+        this.#tabStateRevision++;
+        if (this.#restoreTabs && stream.op === "change") {
+          this.#dirtyTabs.delete(id);
+          this.#closedTabs.add(tabId);
+        }
+      }
+      const active = this.#tabs.meta?.activeId ?? null;
+      this.#surfaces = [...this.#tabs.rows.values()].map((row) => {
+        const { icon, ...surface } = row;
+        return {
+          ...surface,
+          active: row.id === active,
+          ...(icon && this.#icons.has(icon) ? { favicon: this.#icons.get(icon)!.favicon } : {}),
+        };
+      });
+      assertBrowserDialogSurface(this.#snapshot?.dialog ?? null, this.#surfaces);
+      this.#reconcileHistory(this.#surfaces);
+      if (!this.#runtimeReady) {
+        await this.#sendSavedTabs();
+        await this.#onState("ready");
+        this.#runtimeReady = true;
+      }
+      this.bumpCatalog();
       const page = this.page;
       if (previousPage?.title !== page?.title || previousPage?.url !== page?.url)
         this.#noticePage();
-      // A title or address changing is not a new picture. Only another tab
-      // coming forward makes a picture that is not yet sent out of date.
-      const active = message.surfaces.find((surface) => surface.active)?.id ?? null;
-      if (this.targetedStreaming) {
-        void this.#reconcileStreaming().catch(() => undefined);
-      }
-      if (this.#latestFrame && this.#latestFrame.header.surfaceId !== active) {
+      if (this.targetedStreaming) void this.#reconcileStreaming().catch(() => undefined);
+      if (this.#latestFrame && this.#latestFrame.header.surfaceId !== active)
         this.#latestFrame = null;
-      }
-      for (const [id] of this.#latestFrames)
-        if (
-          !message.surfaces.some(
-            (surface) =>
-              surface.id === id &&
-              surface.geometryRevision === this.#latestFrames.get(id)?.header.geometryRevision,
-          )
-        ) {
+      for (const [id, frame] of this.#latestFrames)
+        if (this.#tabs.rows.get(id)?.geometryRevision !== frame.header.geometryRevision) {
           this.#latestFrames.delete(id);
           this.#frameIds.delete(id);
         }
@@ -5992,9 +5986,22 @@ class HostedBrowserBroker {
         if (consumer.surfaceId === null && previousActive !== active) consumer.resetSubscription();
         consumer.dropPendingOutside(consumer.surfaceId ?? active);
       }
+      const firstCommit = stream.op === "end" && !this.#viewerCommitted;
+      this.#viewerCommitted = true;
+      message = firstCommit
+        ? {
+            ...this.#snapshot!,
+            surfaces: this.#surfaces,
+            inventoryRevision: this.inventoryRevision,
+          }
+        : {
+            type: "browser.surfaces.changed",
+            surfaces: this.#surfaces,
+            inventoryRevision: this.inventoryRevision,
+          };
     } else if (message.type === "browser.dialog.changed") {
       if (!this.#snapshot) throw new Error("Browser Runtime snapshot is unavailable.");
-      assertBrowserDialogSurface(message.dialog, this.#snapshot.surfaces);
+      assertBrowserDialogSurface(message.dialog, this.#surfaces);
       const dialogSurface = message.dialog?.surfaceId ?? message.surfaceId;
       if (dialogSurface) {
         if (message.dialog) this.#dialogs.set(dialogSurface, message.dialog);
@@ -6002,7 +6009,7 @@ class HostedBrowserBroker {
       }
       if (
         !message.surfaceId ||
-        message.surfaceId === this.#snapshot.surfaces.find((surface) => surface.active)?.id
+        message.surfaceId === this.#surfaces.find((surface) => surface.active)?.id
       )
         this.#snapshot = { ...this.#snapshot, dialog: message.dialog };
     } else if (message.type === "browser.status") {
@@ -6032,7 +6039,7 @@ class HostedBrowserBroker {
         (consumer.mode !== "control" ||
           consumer.clipboardToken !== message.consumerToken ||
           message.surfaceId !==
-            (consumer.surfaceId ?? this.#snapshot?.surfaces.find((surface) => surface.active)?.id))
+            (consumer.surfaceId ?? this.#surfaces.find((surface) => surface.active)?.id))
       )
         continue;
       if (
@@ -6125,7 +6132,7 @@ class HostedBrowserBroker {
         message.type === "browser.editing" &&
         (consumer.subscription === null ||
           message.surfaceId !==
-            (consumer.surfaceId ?? this.#snapshot?.surfaces.find((surface) => surface.active)?.id))
+            (consumer.surfaceId ?? this.#surfaces.find((surface) => surface.active)?.id))
       )
         continue;
       if (
@@ -6156,7 +6163,7 @@ class HostedBrowserBroker {
         message.type === "browser.dialog.changed" &&
         consumer.surfaceId === null &&
         message.surfaceId &&
-        message.surfaceId !== this.#snapshot?.surfaces.find((surface) => surface.active)?.id
+        message.surfaceId !== this.#surfaces.find((surface) => surface.active)?.id
       )
         continue;
       void consumer
@@ -6399,7 +6406,7 @@ class HostedBrowserBroker {
             message: "Update the browser computer for targeted viewing.",
           }),
         );
-      if (surfaceId && !this.#snapshot?.surfaces.some((surface) => surface.id === surfaceId))
+      if (surfaceId && !this.#surfaces.some((surface) => surface.id === surfaceId))
         return Promise.reject(
           new OpensteerError({ code: "not_found", message: "Browser tab not found." }),
         );
@@ -6439,7 +6446,7 @@ class HostedBrowserBroker {
       const shown =
         subscription === null
           ? undefined
-          : this.#snapshot?.surfaces.find((surface) =>
+          : this.#surfaces.find((surface) =>
               surfaceId ? surface.id === surfaceId : surface.active,
             );
       const context = shown && this.#editingContexts.get(shown.id);
@@ -6541,11 +6548,11 @@ class HostedBrowserBroker {
     const addressedSurface =
       "surfaceId" in message && message.surfaceId
         ? message.surfaceId
-        : (outlet.surfaceId ?? this.#snapshot?.surfaces.find((surface) => surface.active)?.id);
+        : (outlet.surfaceId ?? this.#surfaces.find((surface) => surface.active)?.id);
     if (
       addressedSurface &&
       message.type !== "input.cancel" &&
-      this.#snapshot?.surfaces.some(
+      this.#surfaces.some(
         (surface) => surface.id === addressedSurface && surface.state === "suspended",
       )
     )
@@ -6662,7 +6669,7 @@ class HostedBrowserBroker {
             BrowserSurfaceIdSchema.optional().parse(
               message.surfaceId ??
                 outlet.surfaceId ??
-                this.#snapshot?.surfaces.find((surface) => surface.active)?.id,
+                this.#surfaces.find((surface) => surface.active)?.id,
             ),
           )
         : undefined;
@@ -6688,7 +6695,7 @@ class HostedBrowserBroker {
   #reconcileStreaming(): Promise<void> {
     const operation = this.#streamReconcileTail.then(async () => {
       if (this.#settled) return;
-      const surfaces = new Set<string>(this.#snapshot?.surfaces.map((surface) => surface.id));
+      const surfaces = new Set<string>(this.#surfaces.map((surface) => surface.id));
       const targets = new Set(
         [...this.#consumers.values()].flatMap((consumer) =>
           consumer.subscription === "frames" &&
@@ -6701,7 +6708,7 @@ class HostedBrowserBroker {
       const legacy = [...this.#consumers.values()].some(
         (consumer) => consumer.subscription === "frames" && consumer.surfaceId === null,
       );
-      const active = this.#snapshot?.surfaces.find((surface) => surface.active)?.id;
+      const active = this.#surfaces.find((surface) => surface.active)?.id;
       if (this.targetedStreaming && legacy && active) targets.add(active);
       const admitted = new Set([...targets].slice(0, browserCaptureMaxTargets));
       // Picture demand wins for a shared surface; observation consumes no capture slot.
@@ -6840,7 +6847,9 @@ class HostedBrowserBroker {
           if (
             this.#settled ||
             this.#protocolFailed ||
-            !this.#runtimeReady ||
+            (!this.#runtimeReady &&
+              message.type !== "session.saved" &&
+              message.type !== "tabs.resync") ||
             this.#socket.readyState !== WebSocket.OPEN
           ) {
             reject(
@@ -7469,7 +7478,9 @@ function publicProfileGrant(record: {
   };
 }
 
-function isCdpResponse(message: BrowserServerMessage): message is BrowserCdpWireResponse {
+function isCdpResponse(
+  message: BrowserServerMessage | BrowserRuntimeServerMessage,
+): message is BrowserCdpWireResponse {
   return message.type === "cdp.error" || message.type === "cdp.result";
 }
 

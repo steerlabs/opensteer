@@ -36,11 +36,7 @@ describe("BrowserRuntime", () => {
     popup.cdpSession.responses.set("Emulation.setDeviceMetricsOverride", () => {
       throw new Error("a write that reached the popup");
     });
-    const snapshot = sink.messages.find((message) => message.type === "browser.snapshot");
-    const rootSurface =
-      snapshot?.type === "browser.snapshot"
-        ? snapshot.surfaces.find((surface) => surface.title === "Root")
-        : undefined;
+    const rootSurface = [...sink.tabs.rows.values()].find((surface) => surface.title === "Root");
     if (!rootSurface) throw new Error("Missing root surface");
 
     await attachment.handle(
@@ -258,10 +254,8 @@ it.each(["live", "released", "ambiguous", "other-consumer"] as const)(
     const attachment = await runtime.attach("fresh-ticket", sink);
     try {
       await flushMicrotasks();
-      const snapshot = sink.messages.find((message) => message.type === "browser.snapshot");
-      if (snapshot?.type !== "browser.snapshot" || !snapshot.surfaces[0])
-        throw new Error("Missing browser surface");
-      const surfaceId = snapshot.surfaces[0].id;
+      const surfaceId = sink.tabs.rows.values().next().value?.id;
+      if (!surfaceId) throw new Error("Missing browser surface");
       const presentation = runtime.presentSurface(
         BrowserSessionIdSchema.parse(claims.sessionId),
         surfaceId,

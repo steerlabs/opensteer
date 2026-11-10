@@ -734,7 +734,7 @@ describeStore("shaped agent Thread tools", (it) => {
       runtimeId: "test",
       workspaceId: workspace.id,
     });
-    await new WorkspaceTabStore(storeFixture.database).record(
+    await new WorkspaceTabStore(storeFixture.database).recordChanges(
       sessionId,
       [{ id: tabId, title: "Guest", url: "https://example.com", order: 0, openerId: null }],
       [],
@@ -895,7 +895,7 @@ describeStore("shaped agent Thread tools", (it) => {
       runtimeId: "test",
       workspaceId: f.workspace.id,
     });
-    await new WorkspaceTabStore(storeFixture.database).record(
+    await new WorkspaceTabStore(storeFixture.database).recordChanges(
       sessionId,
       [{ id: tabId, title: "Guest", url: "https://example.com", order: 0, openerId: null }],
       [],

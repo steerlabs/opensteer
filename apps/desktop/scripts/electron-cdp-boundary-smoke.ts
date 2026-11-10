@@ -42,7 +42,7 @@ import {
 import {
   BrowserAttachTicketClaimsSchema,
   BrowserSessionIdSchema,
-  type BrowserServerMessage,
+  type BrowserRuntimeServerMessage,
 } from "@opensteer/protocol";
 import { app, WebContentsView, type WebContents } from "electron";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -236,13 +236,13 @@ async function run(): Promise<void> {
   raw.onEvent((method, parameters) => rawEvents.push({ method, parameters }));
   report.controls.rawChannelCookieRead = foundSecrets(await raw.send("Network.getAllCookies"));
 
-  const messages: BrowserServerMessage[] = [];
+  const messages: BrowserRuntimeServerMessage[] = [];
   const controller = new BrowserController({
     cdpRouter: router,
     claims: BrowserAttachTicketClaimsSchema.parse({
       operationExpiresAt: new Date(Date.now() + 18_000).toISOString(),
       remainingBudgetMs: 18_000,
-      wireVersion: 1,
+      wireVersion: 2,
       access: "read-write",
       audience: "opensteer-browser-runtime",
       expiresAt: "2030-01-01T00:05:00.000Z",
@@ -956,7 +956,7 @@ async function privateWorldOutput(
   platform: CdpSession,
   worlds: readonly PrivateWorld[],
   platformEvents: readonly { method: string; parameters: CdpParameters }[],
-  messages: readonly BrowserServerMessage[],
+  messages: readonly BrowserRuntimeServerMessage[],
 ): Promise<[boolean, unknown]> {
   const contextIds = new Set(worlds.map((world) => world.contextId));
   for (const world of worlds) {
@@ -1075,7 +1075,10 @@ class AgentCommandError extends Error {
 }
 
 /** Speaks to the controller as the Host's broker does for Browser Harness. */
-function agentClient(controller: BrowserController, messages: readonly BrowserServerMessage[]) {
+function agentClient(
+  controller: BrowserController,
+  messages: readonly BrowserRuntimeServerMessage[],
+) {
   return {
     async send(method: string, parameters?: CdpParameters, sessionId?: string): Promise<unknown> {
       const requestId = randomUUID();

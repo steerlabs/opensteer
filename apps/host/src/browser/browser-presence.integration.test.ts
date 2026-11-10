@@ -340,9 +340,8 @@ integration("Browser presence and conversation usage", () => {
         : storeRead.call(this, ownerId, ...args);
     });
     const change = (title: string, closed = false) => {
-      runtime.sendServer({
-        type: "browser.workspace-tabs",
-        tabs: closed
+      runtime.publishTabs({
+        surfaces: closed
           ? []
           : [
               {
@@ -510,8 +509,7 @@ integration("Browser presence and conversation usage", () => {
       () => undefined,
     );
     cleanups.push(async () => cdp.close());
-    runtime.sendServer({
-      type: "browser.surfaces.changed",
+    runtime.publishTabs({
       surfaces: [
         {
           id: "voice-page",
@@ -522,9 +520,8 @@ integration("Browser presence and conversation usage", () => {
         },
       ],
     });
-    runtime.sendServer({
-      type: "browser.workspace-tabs",
-      tabs: [
+    runtime.publishTabs({
+      surfaces: [
         {
           id: "voice-page",
           title: "Private title",
@@ -784,7 +781,7 @@ integration("Browser presence and conversation usage", () => {
         placement: { kind: "runner", runnerId: producer.runnerId },
       });
       sessionIds.push(opened.session.id);
-      producer.sendServer({ type: "browser.surfaces.changed", surfaces }, opened.session.id);
+      producer.publishTabs({ surfaces }, opened.session.id);
     }
     const sessionId = sessionIds[0]!;
     const source = (await host.store.getThreadForOwner(firstRun.threadId, host.ownerId))!;
@@ -895,9 +892,8 @@ integration("Browser presence and conversation usage", () => {
     });
     try {
       holdComplete = true;
-      runtime.sendServer(
+      runtime.publishTabs(
         {
-          type: "browser.surfaces.changed",
           surfaces: surfaces.map((surface) => ({ ...surface, title: "Revised" })),
         },
         sessionId,
@@ -1036,10 +1032,9 @@ integration("Browser presence and conversation usage", () => {
           }
         : {}),
     }));
-    runtime.sendServer({ type: "browser.surfaces.changed", surfaces });
-    runtime.sendServer({
-      type: "browser.workspace-tabs",
-      tabs: surfaces,
+    runtime.publishTabs({ surfaces });
+    runtime.publishTabs({
+      surfaces: surfaces,
       closed: ["page-integration"],
     });
     let cold = await host.runtime.browser.bootstrap(host.ownerId);
@@ -1190,14 +1185,13 @@ integration("Browser presence and conversation usage", () => {
         return catalogs;
       });
     try {
-      runtime.sendServer({
-        type: "browser.surfaces.changed",
+      runtime.publishTabs({
         surfaces: surfaces.map((surface) => ({ ...surface, title: `${surface.title} deferred` })),
       });
       const older = await withTimeout(projected.promise, 5_000, {
         timeoutError: () => new Error("Host did not project the deferred catalog"),
       });
-      runtime.sendServer({ type: "browser.surfaces.changed", surfaces });
+      runtime.publishTabs({ surfaces });
       await liveClient.waitForSnapshot((snapshot) =>
         snapshot.browserSessions.some(
           (session) =>
@@ -1506,8 +1500,7 @@ integration("Browser presence and conversation usage", () => {
       reason: "form" as const,
       checkedAt: new Date().toISOString(),
     };
-    runtime.sendServer({
-      type: "browser.surfaces.changed",
+    runtime.publishTabs({
       surfaces: surfaces.map((surface) =>
         surface.id === page.tabId ? { ...surface, documentId: candidate.documentId } : surface,
       ),
@@ -1646,8 +1639,7 @@ integration("Browser presence and conversation usage", () => {
       .where(sql<boolean>`content->0->>'text' = 'Use this page'`)
       .execute();
     expect(messages).toEqual([{ id: accepted[0].message.id }]);
-    runtime.sendServer({
-      type: "browser.surfaces.changed",
+    runtime.publishTabs({
       surfaces: surfaces.map((surface) =>
         surface.id === "page-y"
           ? { ...surface, documentId: "new-document", title: "Sign in" }
@@ -1757,10 +1749,9 @@ integration("Browser presence and conversation usage", () => {
     await new Promise((resolve) => setTimeout(resolve, 200));
     expect(ofType(owner, "host.place-activity")).toHaveLength(beforeLate);
     const beforeEmpty = runtime.receivedCommands().length;
-    runtime.sendServer({ type: "browser.surfaces.changed", surfaces: [] });
-    runtime.sendServer({
-      type: "browser.workspace-tabs",
-      tabs: [],
+    runtime.publishTabs({ surfaces: [] });
+    runtime.publishTabs({
+      surfaces: [],
       closed: surfaces.map(({ id }) => id),
     });
     await until(async () =>
@@ -1982,8 +1973,7 @@ integration("Browser presence and conversation usage", () => {
     );
     if (opened.type !== "browser.session.start") throw new Error("Unexpected command");
     const sessionId = opened.session.id;
-    runtime.sendServer({
-      type: "browser.surfaces.changed",
+    runtime.publishTabs({
       surfaces: [
         {
           id: "page-shared",
@@ -2176,7 +2166,7 @@ integration("Browser presence and conversation usage", () => {
     // A. The page changes. Viewers are patched; nothing is reread.
     const beforeNavigation = owner.messages.length;
     const beforeNavigationElsewhere = ownerElsewhere.messages.length;
-    browserComputer.sendServer({
+    browserComputer.publishTabs({
       surfaces: [
         {
           active: true,
@@ -2185,7 +2175,6 @@ integration("Browser presence and conversation usage", () => {
           url: "https://shop.example/shoes?size=10",
         },
       ],
-      type: "browser.surfaces.changed",
     });
     const navigated = await until(() => presenceOf(owner, beforeNavigation, sessionId)[0]);
     expect(navigated).toEqual({
@@ -2194,7 +2183,7 @@ integration("Browser presence and conversation usage", () => {
       sessionId,
     });
     await until(() => presenceOf(ownerElsewhere, beforeNavigationElsewhere, sessionId)[0]);
-    browserComputer.sendServer({
+    browserComputer.publishTabs({
       surfaces: [
         {
           active: true,
@@ -2203,7 +2192,6 @@ integration("Browser presence and conversation usage", () => {
           url: "https://shop.example/shoes?size=10&color=blue",
         },
       ],
-      type: "browser.surfaces.changed",
     });
     await until(() =>
       presenceOf(owner, beforeNavigation, sessionId).find(
@@ -2296,8 +2284,7 @@ integration("Browser presence and conversation usage", () => {
 
     // A later attach sees navigation's new title/site and invalidates cached usage.
     const beforeRenamed = owner.messages.length;
-    browserComputer.sendServer({
-      type: "browser.surfaces.changed",
+    browserComputer.publishTabs({
       surfaces: [
         {
           active: true,
@@ -2799,7 +2786,7 @@ integration("Browser presence and conversation usage", () => {
     );
     let restoredAt = 0;
     try {
-      browserComputer.sendServer({
+      browserComputer.publishTabs({
         surfaces: [
           {
             active: true,
@@ -2808,7 +2795,6 @@ integration("Browser presence and conversation usage", () => {
             url: "https://shop.example/prices?q=boots&sort=price",
           },
         ],
-        type: "browser.surfaces.changed",
       });
       await new Promise<void>((resolve) => setTimeout(resolve, 700));
       expect(

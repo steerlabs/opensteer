@@ -232,7 +232,7 @@ integration("agent-to-agent messaging round trip", () => {
     });
     const tabId = BrowserSurfaceIdSchema.parse("saved-gmail");
     const tabs = new WorkspaceTabStore(database);
-    await tabs.record(
+    await tabs.recordChanges(
       sessionId,
       [
         {
@@ -265,7 +265,7 @@ integration("agent-to-agent messaging round trip", () => {
       runtimeId: "test",
       workspaceId: otherWorkspace.id,
     });
-    await tabs.record(
+    await tabs.recordChanges(
       otherSession,
       [
         {
@@ -502,7 +502,7 @@ integration("agent-to-agent messaging round trip", () => {
       order: index,
       openerId: null,
     }));
-    await tabs.record(sessionId, rows.slice(64), []);
+    await tabs.recordChanges(sessionId, rows.slice(64), []);
     await tabs.suspend(sessionId);
     const recentSessionId = createBrowserSessionId();
     await store.createBrowserSession({
@@ -514,7 +514,7 @@ integration("agent-to-agent messaging round trip", () => {
       runtimeId: "test",
       workspaceId: f.threadA.workspaceId,
     });
-    await tabs.record(recentSessionId, rows.slice(0, 64), []);
+    await tabs.recordChanges(recentSessionId, rows.slice(0, 64), []);
     const read = async (input: Record<string, string>) => {
       const result = await service.handle(f.tokenA, {
         type: "browser.tab.read",

@@ -1,9 +1,11 @@
+import { KeyedStreamReceiver } from "@opensteer/protocol/keyed-stream";
+import type { BrowserTabRecord, BrowserTabStreamMeta } from "@opensteer/protocol/browser-tabs";
 import type { BrowserCdpBackend, CdpChannel, CdpParameters } from "@opensteer/browser-core";
 import type { BrowserCookie } from "@opensteer/browser-profile/cookies";
 import {
   BrowserAttachTicketClaimsSchema,
   type BrowserAttachTicketClaims,
-  type BrowserServerMessage,
+  type BrowserRuntimeServerMessage,
 } from "@opensteer/protocol";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { mkdtempSync } from "node:fs";
@@ -306,6 +308,10 @@ export class FakePage implements BrowserPage {
 }
 
 export class FakeContext implements BrowserContext {
+  connected = true;
+  isConnected(): boolean {
+    return this.connected;
+  }
   private readonly pageListeners = new Set<(page: BrowserPage) => void>();
   private readonly pageList: BrowserPage[];
 
@@ -468,18 +474,28 @@ export class FakeIsolatingLauncher implements BrowserLauncher {
   }
 }
 
+export function committedBrowserTabs(messages: readonly BrowserRuntimeServerMessage[]) {
+  const receiver = new KeyedStreamReceiver<BrowserTabRecord, BrowserTabStreamMeta>();
+  for (const message of messages)
+    if (message.type === "browser.tabs") receiver.apply(message.stream);
+  return receiver;
+}
+
 export class FakeSink implements BrowserControllerSink {
+  get tabs() {
+    return committedBrowserTabs(this.messages);
+  }
   readonly frames: BrowserFrame[] = [];
-  readonly messages: BrowserServerMessage[] = [];
+  readonly messages: BrowserRuntimeServerMessage[] = [];
   sendFrameImplementation: ((frame: BrowserFrame) => Promise<void>) | null = null;
-  sendServerImplementation: ((message: BrowserServerMessage) => Promise<void>) | null = null;
+  sendServerImplementation: ((message: BrowserRuntimeServerMessage) => Promise<void>) | null = null;
 
   async sendFrame(frame: BrowserFrame): Promise<void> {
     this.frames.push(frame);
     await this.sendFrameImplementation?.(frame);
   }
 
-  async sendServer(message: BrowserServerMessage): Promise<void> {
+  async sendServer(message: BrowserRuntimeServerMessage): Promise<void> {
     this.messages.push(message);
     await this.sendServerImplementation?.(message);
   }
@@ -510,7 +526,7 @@ export function validClaims(
   return BrowserAttachTicketClaimsSchema.parse({
     operationExpiresAt: new Date(Date.now() + 18_000).toISOString(),
     remainingBudgetMs: 18_000,
-    wireVersion: 1,
+    wireVersion: 2,
     audience: "opensteer-browser-runtime",
     access: "read-write",
     expiresAt: "2030-01-01T00:05:00.000Z",

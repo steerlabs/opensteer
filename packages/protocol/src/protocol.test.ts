@@ -381,7 +381,7 @@ describe("wire protocol", () => {
     expect(advertisedRunnerModules(descriptor.modules)).toEqual(["browser"]);
     for (const browser of [
       { runtimeId: "chromium" },
-      { wireVersion: 1, runtimeId: "chromium" },
+      { wireVersion: 2, runtimeId: "chromium" },
       { wireVersion: 3, runtimeId: "chromium" },
     ]) {
       expect(
@@ -1239,7 +1239,7 @@ describe("wire protocol", () => {
     const claims = {
       operationExpiresAt: new Date(Date.now() + 18_000).toISOString(),
       remainingBudgetMs: 18_000,
-      wireVersion: 1,
+      wireVersion: 2,
       access: "read-write",
       audience: "opensteer-browser-runtime",
       expiresAt: new Date().toISOString(),

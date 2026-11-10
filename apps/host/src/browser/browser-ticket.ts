@@ -26,7 +26,6 @@ interface IssueBrowserAttachTicketInput {
   readonly clipboard?: boolean;
   readonly workspaceTabRestoreVersion?: 1;
   readonly initialSurfaceId?: BrowserAttachTicketClaims["initialSurfaceId"];
-  readonly dormantSurfaceIds?: BrowserAttachTicketClaims["dormantSurfaceIds"];
   /** The session's immutable native binding, or a temporary Guest. */
   readonly identity: BrowserAttachTicketIdentity;
   readonly runtimeId: string;
@@ -144,13 +143,12 @@ export class BrowserAttachTicketSigner {
         ? {
             workspaceTabRestoreVersion: input.workspaceTabRestoreVersion,
             initialSurfaceId: input.initialSurfaceId,
-            dormantSurfaceIds: input.dormantSurfaceIds,
           }
         : {}),
       operationExpiresAt:
         input.operationExpiresAt ?? new Date(issuedAt.getTime() + 18_000).toISOString(),
       remainingBudgetMs: Math.min(18_000, input.remainingBudgetMs ?? 18_000),
-      wireVersion: 1,
+      wireVersion: 2,
       audience: "opensteer-browser-runtime",
       expiresAt: new Date(issuedAt.getTime() + this.#lifetimeMs).toISOString(),
       identity: input.identity,

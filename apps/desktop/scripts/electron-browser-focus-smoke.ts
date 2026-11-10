@@ -10,7 +10,7 @@ import {
 import {
   BrowserAttachTicketClaimsSchema,
   BrowserSessionIdSchema,
-  type BrowserServerMessage,
+  type BrowserRuntimeServerMessage,
 } from "@opensteer/protocol";
 import { app } from "electron";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
@@ -151,14 +151,14 @@ async function run(): Promise<void> {
     await pageCdp.send("Page.navigate", { url: origin });
     await waitFor(() => page.url() === `${origin}/`);
 
-    const messages: BrowserServerMessage[] = [];
+    const messages: BrowserRuntimeServerMessage[] = [];
     const frames: BrowserFrame[] = [];
     const controller = new BrowserController({
       cdpRouter: router,
       claims: BrowserAttachTicketClaimsSchema.parse({
         operationExpiresAt: new Date(Date.now() + 18_000).toISOString(),
         remainingBudgetMs: 18_000,
-        wireVersion: 1,
+        wireVersion: 2,
         access: "read-write",
         audience: "opensteer-browser-runtime",
         expiresAt: "2099-01-01T00:05:00.000Z",
@@ -712,7 +712,7 @@ async function waitForFrontmost(file: string, expectedPid: number): Promise<void
 }
 
 /** The dialog the person sees now, as the latest `browser.dialog.changed` named it. */
-function shownDialogId(messages: readonly BrowserServerMessage[]): string {
+function shownDialogId(messages: readonly BrowserRuntimeServerMessage[]): string {
   const latest = messages.findLast((message) => message.type === "browser.dialog.changed");
   if (latest?.type !== "browser.dialog.changed" || !latest.dialog) {
     throw new Error("No browser dialog is shown.");

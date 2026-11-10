@@ -9,7 +9,7 @@ import {
   browserTabOpenReplayWindowMs,
   projectBrowserSessionOpener,
   type BrowserSessionId,
-  type BrowserWorkspaceTabDescriptor,
+  type BrowserTabRecord,
   type WorkspaceTabLineage,
 } from "@opensteer/protocol";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
@@ -29,7 +29,10 @@ export function workspaceTabIconRef(groupId: BrowserSessionId, favicon: string):
   return createHash("sha256").update(groupId).update("\0").update(favicon).digest("base64url");
 }
 
-export type WorkspaceTabDescriptor = BrowserWorkspaceTabDescriptor & {
+export type WorkspaceTabDescriptor = Pick<
+  BrowserTabRecord,
+  "id" | "title" | "url" | "order" | "openerId"
+> & {
   readonly favicon?: string | null;
 };
 
@@ -271,7 +274,7 @@ export class WorkspaceTabStore {
       .where("id", "=", groupId)
       .execute(databaseOperationOptions());
   }
-  async record(
+  async recordChanges(
     sessionId: BrowserSessionId,
     descriptors: readonly WorkspaceTabDescriptor[],
     closed: readonly string[],
@@ -295,11 +298,31 @@ export class WorkspaceTabStore {
         .orderBy("id", "desc")
         .executeTakeFirstOrThrow(databaseOperationOptions());
       if (latest.id !== sessionId) return false;
-      const previous = await tx
-        .selectFrom("workspaceTabs")
-        .selectAll()
-        .where("groupId", "=", session.tabGroupId)
-        .execute(databaseOperationOptions());
+      const previous = descriptors.length
+        ? await tx
+            .selectFrom("workspaceTabs")
+            .selectAll()
+            .where(
+              "id",
+              "in",
+              descriptors.map((row) => row.id),
+            )
+            .execute(databaseOperationOptions())
+        : [];
+      let nextOrder: number | undefined;
+      let openCount = 0;
+      if (descriptors.some((row) => !previous.some((held) => held.id === row.id))) {
+        const bounds = await tx
+          .selectFrom("workspaceTabs")
+          .select((eb) => [
+            eb.fn.max("order").as("maxOrder"),
+            eb.fn.countAll().filterWhere("closedAt", "is", null).as("openCount"),
+          ])
+          .where("groupId", "=", session.tabGroupId)
+          .executeTakeFirstOrThrow(databaseOperationOptions());
+        nextOrder = (bounds.maxOrder ?? -1) + 1;
+        openCount = Number(bounds.openCount);
+      }
       let changed = false;
       if (closed.length) {
         const closedAt = new Date();
@@ -311,13 +334,18 @@ export class WorkspaceTabStore {
           .where("closedAt", "is", null)
           .executeTakeFirst(databaseOperationOptions());
         changed = result.numUpdatedRows > 0n;
+        openCount -= Number(result.numUpdatedRows);
         for (const row of previous)
           if (row.sessionId === sessionId && closed.includes(row.id) && !row.closedAt)
             row.closedAt = closedAt;
       }
       for (const descriptor of descriptors) {
         const held = previous.find((row) => row.id === descriptor.id);
-        if (held?.closedAt || (held && held.sessionId !== sessionId)) continue;
+        if (
+          held?.closedAt ||
+          (held && (held.sessionId !== sessionId || held.groupId !== session.tabGroupId))
+        )
+          continue;
         // The old producer may have outlived its closed marker's retention.
         if (!held && (session.state === "closed" || session.state === "failed")) continue;
         const initializing =
@@ -332,7 +360,7 @@ export class WorkspaceTabStore {
           url: initializing ? held.url : descriptor.url,
           favicon,
           iconRef: favicon ? workspaceTabIconRef(session.tabGroupId, favicon) : null,
-          order: held?.order ?? Math.max(-1, ...previous.map((row) => row.order)) + 1,
+          order: held?.order ?? nextOrder!,
           openerId: held?.openerId ?? descriptor.openerId,
           state: initializing ? ("restoring" as const) : ("live" as const),
         };
@@ -352,7 +380,7 @@ export class WorkspaceTabStore {
             .where("closedAt", "is", null)
             .execute(databaseOperationOptions());
         } else {
-          if (previous.filter((row) => !row.closedAt).length >= browserSessionTabLimit)
+          if (openCount >= browserSessionTabLimit)
             throw new OpensteerError({
               code: "conflict",
               message: "Browser tab limit reached.",
@@ -370,6 +398,8 @@ export class WorkspaceTabStore {
             .values(inserted)
             .onConflict((c) => c.column("id").doNothing())
             .execute(databaseOperationOptions());
+          nextOrder!++;
+          openCount++;
           previous.push({
             ...inserted,
             closedBy: null,

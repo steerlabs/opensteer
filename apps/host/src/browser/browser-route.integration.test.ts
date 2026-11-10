@@ -274,7 +274,7 @@ integration("Host browser broker vertical", () => {
     expect((await fastViewerFrame).frameId).toBe(6);
     // A new title or address while a picture is out is the same picture: its
     // acknowledgement still counts and nothing is dropped.
-    browserRuntime.sendServer({
+    browserRuntime.publishTabs({
       surfaces: [
         {
           active: true,
@@ -285,7 +285,6 @@ integration("Host browser broker vertical", () => {
           url: "https://example.com/next",
         },
       ],
-      type: "browser.surfaces.changed",
     });
     await new Promise((resolve) => setTimeout(resolve, 75));
     const latestWatchFrame = waitForBinary(watchSocket);

@@ -24,7 +24,7 @@ import {
   LoginRefSchema,
   passwordLoginLifetimeMs,
   PasswordSignInAuthorityResultSchema,
-  type BrowserServerMessage,
+  type BrowserRuntimeServerMessage,
   type LoginField,
   type PasswordSignInAuthorityCommand,
   type PasswordSignInAuthorityEvent,
@@ -528,7 +528,7 @@ async function harness(options: { profile?: string; workspaceLease?: boolean } =
   });
   router.registerSession(sessionId, targetId, (id) => ledger!.resolveTarget(id), files.root);
   await ledger.start();
-  const messages: BrowserServerMessage[] = [];
+  const messages: BrowserRuntimeServerMessage[] = [];
   const hostSend = async (message: unknown) => {
     const parsed = BrowserClientMessageSchema.parse(message);
     traffic.push(JSON.stringify({ direction: "host-to-runtime", message: parsed }));
@@ -539,7 +539,7 @@ async function harness(options: { profile?: string; workspaceLease?: boolean } =
     claims: BrowserAttachTicketClaimsSchema.parse({
       operationExpiresAt: new Date(Date.now() + 18_000).toISOString(),
       remainingBudgetMs: 18_000,
-      wireVersion: 1,
+      wireVersion: 2,
       access: "read-write",
       audience: "opensteer-browser-runtime",
       issuedAt: new Date().toISOString(),

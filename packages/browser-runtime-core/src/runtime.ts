@@ -86,7 +86,7 @@ export interface BrowserOpenTiming {
 }
 
 export interface BrowserRuntimeHealth {
-  wireVersion: 1;
+  wireVersion: 2;
   localProfileStorage?: { storageInstanceId: string; engine: BrowserEngine };
   profileHostCount: number;
   runtimeId: string;
@@ -311,7 +311,7 @@ export class BrowserRuntime implements NativePresentationSource {
 
   health(): BrowserRuntimeHealth {
     return {
-      wireVersion: 1,
+      wireVersion: 2,
       ...(this.localProfileStorage
         ? {
             localProfileStorage: this.localProfileStorage,
@@ -612,7 +612,7 @@ export class BrowserRuntime implements NativePresentationSource {
     };
     const verified = await wait(this.ticketVerifier.verify(ticket, { runtimeId: this.runtimeId }));
     const claims = options.passkeys ? verified : { ...verified, passkeys: undefined };
-    if (claims.wireVersion !== 1)
+    if (claims.wireVersion !== 2)
       throw new BrowserRuntimeError(
         "conflict",
         "Update this Browser Runtime to use the current browser contract.",
@@ -747,9 +747,6 @@ export class BrowserRuntime implements NativePresentationSource {
               ? { devicePixelRatio: 1, ...claims.viewport }
               : this.initialViewport,
             rootPages: [rootPage],
-            ...(claims.workspaceTabRestoreVersion === 1 && claims.dormantSurfaceIds
-              ? { dormantSurfaceIds: claims.dormantSurfaceIds }
-              : {}),
             ...(claims.workspaceTabRestoreVersion === 1 && claims.initialSurfaceId
               ? { initialSurfaceId: claims.initialSurfaceId }
               : {}),

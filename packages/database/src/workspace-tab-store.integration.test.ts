@@ -18,7 +18,7 @@ import {
   browserTabOpenReplayWindowMs,
   createBrowserSessionId,
 } from "@opensteer/protocol";
-import { sql } from "kysely";
+import { sql, PostgresQueryCompiler } from "kysely";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -178,7 +178,7 @@ integration.sequential("durable workspace tabs", () => {
       const f = await fixture();
       const a = BrowserSurfaceIdSchema.parse("surface_00000000-0000-4000-8000-000000000001");
       const b = BrowserSurfaceIdSchema.parse("surface_00000000-0000-4000-8000-000000000002");
-      await tabs.record(
+      await tabs.recordChanges(
         f.groupId,
         [
           { ...f.second, id: b, openerId: null },
@@ -340,10 +340,10 @@ integration.sequential("durable workspace tabs", () => {
   }) => {
     const { fixture, tabs } = storeFixture;
     const f = await fixture();
-    expect(await tabs.record(f.groupId, [f.first, f.second], [])).toBe(true);
+    expect(await tabs.recordChanges(f.groupId, [f.first, f.second], [])).toBe(true);
     const before = await tabs.read(f.ownerId, f.groupId);
     expect(before?.tabs).toHaveLength(2);
-    expect(await tabs.record(f.groupId, [f.first, f.second], [])).toBe(false);
+    expect(await tabs.recordChanges(f.groupId, [f.first, f.second], [])).toBe(false);
     expect((await tabs.read(f.ownerId, f.groupId))?.revision).toBe(before?.revision);
     await tabs.suspend(f.groupId);
     expect((await tabs.read(f.ownerId, f.groupId))?.tabs?.map((t) => t.state)).toEqual([
@@ -352,40 +352,81 @@ integration.sequential("durable workspace tabs", () => {
     ]);
     await tabs.close(f.ownerId, f.first.id);
     expect((await tabs.read(f.ownerId, f.groupId))?.tabs?.map((t) => t.id)).toEqual([f.second.id]);
-    await tabs.record(f.groupId, [f.first, f.second], []);
+    await tabs.recordChanges(f.groupId, [f.first, f.second], []);
     expect((await tabs.read(f.ownerId, f.groupId))?.tabs?.map((t) => t.id)).toEqual([f.second.id]);
+  });
+  it("reads and writes only the named row for a title change", async ({ storeFixture }) => {
+    const { fixture, tabs, database } = storeFixture;
+    const f = await fixture();
+    await tabs.recordChanges(f.groupId, [f.first, f.second], []);
+    const statements: Array<{ sql: string; rows: number; writes: bigint }> = [];
+    const queries = new Map<object, string>();
+    const measured = new WorkspaceTabStore(
+      database.withPlugin({
+        transformQuery({ node, queryId }) {
+          queries.set(queryId, new PostgresQueryCompiler().compileQuery(node, queryId).sql);
+          return node;
+        },
+        async transformResult({ queryId, result }) {
+          statements.push({
+            sql: queries.get(queryId)!,
+            rows: result.rows.length,
+            writes: result.numAffectedRows ?? 0n,
+          });
+          return result;
+        },
+      }),
+    );
+    expect(await measured.recordChanges(f.groupId, [{ ...f.first, title: "Changed" }], [])).toBe(
+      true,
+    );
+    expect(
+      statements
+        .filter((statement) => statement.sql.startsWith('select * from "workspace_tabs"'))
+        .map((statement) => statement.rows),
+    ).toEqual([1]);
+    expect(
+      statements
+        .filter((statement) => statement.sql.startsWith('update "workspace_tabs"'))
+        .map((statement) => statement.writes),
+    ).toEqual([1n]);
+    const group = await tabs.read(f.ownerId, f.groupId);
+    expect(group?.tabs?.map((tab) => [tab.id, tab.title])).toEqual([
+      [f.first.id, "Changed"],
+      [f.second.id, f.second.title],
+    ]);
   });
   it("fences old producers and rejects resurrection after a close during activation", async ({
     storeFixture,
   }) => {
     const { fixture, tabs, store } = storeFixture;
     const f = await fixture();
-    await tabs.record(f.groupId, [f.first, f.second], []);
+    await tabs.recordChanges(f.groupId, [f.first, f.second], []);
     await tabs.suspend(f.groupId);
     const replacement = createBrowserSessionId();
     await store.createBrowserSession({ ...f.session, id: replacement, tabGroupId: f.groupId });
     await tabs.bind(f.groupId, replacement, f.first.id);
-    await tabs.record(replacement, [{ ...f.first, title: "", url: "about:blank" }], []);
-    await tabs.record(replacement, [{ ...f.first, title: "", url: "about:blank" }], []);
+    await tabs.recordChanges(replacement, [{ ...f.first, title: "", url: "about:blank" }], []);
+    await tabs.recordChanges(replacement, [{ ...f.first, title: "", url: "about:blank" }], []);
     expect((await tabs.get(f.ownerId, f.first.id))?.url).toBe(f.first.url);
-    await tabs.record(f.groupId, [{ ...f.first, title: "Stale" }], [f.second.id]);
+    await tabs.recordChanges(f.groupId, [{ ...f.first, title: "Stale" }], [f.second.id]);
     expect((await tabs.get(f.ownerId, f.first.id))?.title).toBe("One");
     await tabs.close(f.ownerId, f.first.id);
-    await tabs.record(replacement, [f.first], []);
+    await tabs.recordChanges(replacement, [f.first], []);
     expect(await tabs.get(f.ownerId, f.first.id)).toBeNull();
-    await tabs.record(replacement, [f.second], []);
+    await tabs.recordChanges(replacement, [f.second], []);
     await tabs.closeLineage(replacement);
     expect((await tabs.read(f.ownerId, f.groupId))?.tabs).toEqual([]);
   });
   it("ignores an obsolete session close after rebinding its group", async ({ storeFixture }) => {
     const { fixture, tabs, store } = storeFixture;
     const f = await fixture();
-    await tabs.record(f.groupId, [f.first, f.second], []);
+    await tabs.recordChanges(f.groupId, [f.first, f.second], []);
     await tabs.suspend(f.groupId);
     const replacement = createBrowserSessionId();
     await store.createBrowserSession({ ...f.session, id: replacement, tabGroupId: f.groupId });
     await tabs.bind(f.groupId, replacement, f.first.id);
-    await tabs.record(replacement, [f.first], []);
+    await tabs.recordChanges(replacement, [f.first], []);
     const before = await tabs.read(f.ownerId, f.groupId);
     await tabs.closeLineage(f.groupId);
     expect(await tabs.read(f.ownerId, f.groupId)).toEqual(before);
@@ -402,16 +443,18 @@ integration.sequential("durable workspace tabs", () => {
       id: BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`),
       order,
     }));
-    await tabs.record(f.groupId, original, []);
-    expect(await tabs.record(f.groupId, [...original.slice(1), f.second], [original[0]!.id])).toBe(
-      true,
-    );
+    await tabs.recordChanges(f.groupId, original, []);
+    expect(
+      await tabs.recordChanges(f.groupId, [...original.slice(1), f.second], [original[0]!.id]),
+    ).toBe(true);
     const group = await tabs.read(f.ownerId, f.groupId);
     expect(group?.tabs).toHaveLength(64);
     expect(group?.tabs?.some((tab) => tab.id === original[0]!.id)).toBe(false);
     expect(group?.tabs?.some((tab) => tab.id === f.second.id)).toBe(true);
-    expect(await tabs.record(f.groupId, original, [])).toBe(false);
-    await expect(tabs.record(f.groupId, [f.first], [])).rejects.toMatchObject({ code: "conflict" });
+    expect(await tabs.recordChanges(f.groupId, original, [])).toBe(false);
+    await expect(tabs.recordChanges(f.groupId, [f.first], [])).rejects.toMatchObject({
+      code: "conflict",
+    });
   });
   it("preserves a long durable URL and resolves an omitted group's replacement session", async ({
     storeFixture,
@@ -419,7 +462,7 @@ integration.sequential("durable workspace tabs", () => {
     const { fixture, tabs, store, database } = storeFixture;
     const f = await fixture();
     const url = `https://tabs.test/${"x".repeat(9000)}#/document/42`;
-    await tabs.record(f.groupId, [{ ...f.first, url }], []);
+    await tabs.recordChanges(f.groupId, [{ ...f.first, url }], []);
     const replacement = createBrowserSessionId();
     await store.createBrowserSession({ ...f.session, id: replacement, tabGroupId: f.groupId });
     await tabs.bind(f.groupId, replacement, f.first.id);
@@ -484,7 +527,7 @@ integration.sequential("durable workspace tabs", () => {
   }) => {
     const { fixture, tabs, store } = storeFixture;
     const f = await fixture();
-    await tabs.record(f.groupId, [f.first], []);
+    await tabs.recordChanges(f.groupId, [f.first], []);
     expect(await tabs.read(f.strangerId, f.groupId)).toBeNull();
     expect(await tabs.get(f.strangerId, f.first.id)).toBeNull();
     expect(await tabs.list(f.strangerId)).toEqual([]);
@@ -537,7 +580,7 @@ integration.sequential("durable workspace tabs", () => {
     const id = createBrowserSessionId();
     await store.createBrowserSession({ ...f.session, id });
     expect(
-      await tabs.record(
+      await tabs.recordChanges(
         id,
         [{ ...f.first, id: BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`) }],
         [],
@@ -566,7 +609,7 @@ integration.sequential("durable workspace tabs", () => {
   }) => {
     const { fixture, tabs, store, database } = storeFixture;
     const f = await fixture();
-    await tabs.record(f.groupId, [f.first], []);
+    await tabs.recordChanges(f.groupId, [f.first], []);
     const replacement = createBrowserSessionId();
     await store.createBrowserSession({ ...f.session, id: replacement, tabGroupId: f.groupId });
     const profile = await store.createBrowserProfile({
@@ -594,20 +637,26 @@ integration.sequential("durable workspace tabs", () => {
   }) => {
     const { fixture, tabs } = storeFixture;
     const f = await fixture();
-    await tabs.record(f.groupId, [f.first, f.second], []);
+    await tabs.recordChanges(f.groupId, [f.first, f.second], []);
     const base = (await tabs.read(f.ownerId, f.groupId))!.revision;
-    expect(await tabs.record(f.groupId, [{ ...f.first, favicon: iconA }, f.second], [])).toBe(true);
+    expect(
+      await tabs.recordChanges(f.groupId, [{ ...f.first, favicon: iconA }, f.second], []),
+    ).toBe(true);
     expect((await tabs.read(f.ownerId, f.groupId))!.revision).toBe(base + 1);
     expect((await tabs.get(f.ownerId, f.first.id))?.favicon).toBe(iconA);
-    expect(await tabs.record(f.groupId, [{ ...f.first, favicon: iconA }, f.second], [])).toBe(
+    expect(
+      await tabs.recordChanges(f.groupId, [{ ...f.first, favicon: iconA }, f.second], []),
+    ).toBe(false);
+    // Omission is "unknown" and null on the same URL is a failed reload: both keep the icon.
+    expect(await tabs.recordChanges(f.groupId, [f.first, f.second], [])).toBe(false);
+    expect(await tabs.recordChanges(f.groupId, [{ ...f.first, favicon: null }, f.second], [])).toBe(
       false,
     );
-    // Omission is "unknown" and null on the same URL is a failed reload: both keep the icon.
-    expect(await tabs.record(f.groupId, [f.first, f.second], [])).toBe(false);
-    expect(await tabs.record(f.groupId, [{ ...f.first, favicon: null }, f.second], [])).toBe(false);
     expect((await tabs.read(f.ownerId, f.groupId))!.revision).toBe(base + 1);
     expect((await tabs.get(f.ownerId, f.first.id))?.favicon).toBe(iconA);
-    expect(await tabs.record(f.groupId, [{ ...f.first, favicon: iconB }, f.second], [])).toBe(true);
+    expect(
+      await tabs.recordChanges(f.groupId, [{ ...f.first, favicon: iconB }, f.second], []),
+    ).toBe(true);
     expect((await tabs.get(f.ownerId, f.first.id))?.favicon).toBe(iconB);
     expect((await tabs.read(f.ownerId, f.groupId))!.revision).toBe(base + 2);
   });
@@ -616,23 +665,23 @@ integration.sequential("durable workspace tabs", () => {
   }) => {
     const { fixture, tabs } = storeFixture;
     const f = await fixture();
-    await tabs.record(f.groupId, [{ ...f.first, favicon: iconA }], []);
+    await tabs.recordChanges(f.groupId, [{ ...f.first, favicon: iconA }], []);
     const before = (await tabs.read(f.ownerId, f.groupId))!;
     const oldRef = before.tabs![0]!.iconRef;
     expect(oldRef).toEqual(expect.any(String));
     const moved = { ...f.first, url: "https://tabs.test/elsewhere" };
-    expect(await tabs.record(f.groupId, [moved], [])).toBe(true);
+    expect(await tabs.recordChanges(f.groupId, [moved], [])).toBe(true);
     let row = await tabs.get(f.ownerId, f.first.id);
     expect(row?.favicon ?? null).toBeNull();
     expect(row?.iconRef ?? null).toBeNull();
     expect((await tabs.read(f.ownerId, f.groupId))!.tabs![0]!.iconRef ?? null).toBeNull();
     expect(await tabs.icon(f.ownerId, f.groupId, oldRef!)).toBeNull();
-    await tabs.record(f.groupId, [{ ...moved, favicon: iconA }], []);
+    await tabs.recordChanges(f.groupId, [{ ...moved, favicon: iconA }], []);
     const nulled = { ...f.first, url: "https://tabs.test/third", favicon: null };
-    expect(await tabs.record(f.groupId, [nulled], [])).toBe(true);
+    expect(await tabs.recordChanges(f.groupId, [nulled], [])).toBe(true);
     expect((await tabs.get(f.ownerId, f.first.id))?.favicon ?? null).toBeNull();
     const settled = { ...f.first, url: "https://tabs.test/fourth", favicon: iconB };
-    expect(await tabs.record(f.groupId, [settled], [])).toBe(true);
+    expect(await tabs.recordChanges(f.groupId, [settled], [])).toBe(true);
     row = await tabs.get(f.ownerId, f.first.id);
     expect(row?.favicon).toBe(iconB);
     expect(row?.iconRef).toEqual(expect.any(String));
@@ -642,7 +691,7 @@ integration.sequential("durable workspace tabs", () => {
   }) => {
     const { fixture, tabs, store } = storeFixture;
     const f = await fixture();
-    await tabs.record(
+    await tabs.recordChanges(
       f.groupId,
       [
         { ...f.first, favicon: iconA },
@@ -655,15 +704,15 @@ integration.sequential("durable workspace tabs", () => {
     const replacement = createBrowserSessionId();
     await store.createBrowserSession({ ...f.session, id: replacement, tabGroupId: f.groupId });
     await tabs.bind(f.groupId, replacement, f.first.id);
-    await tabs.record(replacement, [{ ...f.first, title: "", url: "about:blank" }], []);
-    await tabs.record(
+    await tabs.recordChanges(replacement, [{ ...f.first, title: "", url: "about:blank" }], []);
+    await tabs.recordChanges(
       replacement,
       [{ ...f.first, title: "", url: "about:blank", favicon: null }],
       [],
     );
     expect((await tabs.get(f.ownerId, f.first.id))?.favicon).toBe(iconA);
     // The page reloads at its durable URL; the Runtime has not fetched its icon yet.
-    await tabs.record(replacement, [f.first], []);
+    await tabs.recordChanges(replacement, [f.first], []);
     const after = (await tabs.read(f.ownerId, f.groupId))!.tabs!;
     expect(after.map((tab) => [tab.id, tab.state])).toEqual([
       [f.first.id, "live"],
@@ -676,20 +725,20 @@ integration.sequential("durable workspace tabs", () => {
     expect(await tabs.icon(f.ownerId, replacement, before[1]!.iconRef!)).toBe(iconB);
     // The obsolete producer neither reads nor rewrites the group's icons.
     expect(await tabs.icon(f.ownerId, f.groupId, before[0]!.iconRef!)).toBeNull();
-    expect(await tabs.record(f.groupId, [{ ...f.first, favicon: iconC }], [])).toBe(false);
+    expect(await tabs.recordChanges(f.groupId, [{ ...f.first, favicon: iconC }], [])).toBe(false);
     expect((await tabs.get(f.ownerId, f.first.id))?.favicon).toBe(iconA);
   });
   it("does not resurrect a closed tab's icon or serve it after close", async ({ storeFixture }) => {
     const { fixture, tabs } = storeFixture;
     const f = await fixture();
-    await tabs.record(f.groupId, [{ ...f.first, favicon: iconA }, f.second], []);
+    await tabs.recordChanges(f.groupId, [{ ...f.first, favicon: iconA }, f.second], []);
     const ref = (await tabs.read(f.ownerId, f.groupId))!.tabs![0]!.iconRef!;
     expect(await tabs.icon(f.ownerId, f.groupId, ref)).toBe(iconA);
     await tabs.close(f.ownerId, f.first.id);
     expect(await tabs.icon(f.ownerId, f.groupId, ref)).toBeNull();
-    expect(await tabs.record(f.groupId, [{ ...f.first, favicon: iconA }, f.second], [])).toBe(
-      false,
-    );
+    expect(
+      await tabs.recordChanges(f.groupId, [{ ...f.first, favicon: iconA }, f.second], []),
+    ).toBe(false);
     expect(await tabs.get(f.ownerId, f.first.id)).toBeNull();
     expect(await tabs.icon(f.ownerId, f.groupId, ref)).toBeNull();
   });
@@ -698,7 +747,7 @@ integration.sequential("durable workspace tabs", () => {
   }) => {
     const { fixture, tabs, store } = storeFixture;
     const f = await fixture();
-    await tabs.record(f.groupId, [{ ...f.first, favicon: iconA }], []);
+    await tabs.recordChanges(f.groupId, [{ ...f.first, favicon: iconA }], []);
     const ref = (await tabs.read(f.ownerId, f.groupId))!.tabs![0]!.iconRef!;
     const other = createBrowserSessionId();
     await store.createBrowserSession({ ...f.session, id: other });
@@ -708,7 +757,7 @@ integration.sequential("durable workspace tabs", () => {
       openerId: null,
       favicon: iconB,
     };
-    await tabs.record(other, [otherTab], []);
+    await tabs.recordChanges(other, [otherTab], []);
     const otherRef = (await tabs.read(f.ownerId, other))!.tabs![0]!.iconRef!;
     expect(otherRef).not.toBe(ref);
     expect(await tabs.icon(f.ownerId, f.groupId, ref)).toBe(iconA);
@@ -730,7 +779,7 @@ integration.sequential("durable workspace tabs", () => {
   }) => {
     const { fixture, tabs } = storeFixture;
     const f = await fixture();
-    await tabs.record(f.groupId, [{ ...f.first, favicon: iconA }], []);
+    await tabs.recordChanges(f.groupId, [{ ...f.first, favicon: iconA }], []);
     const revision = (await tabs.read(f.ownerId, f.groupId))!.revision;
     const prefix = "data:image/png;base64,";
     const largest = 64 + Math.ceil(browserFaviconMaxBytes / 3) * 4;
@@ -741,11 +790,11 @@ integration.sequential("durable workspace tabs", () => {
       prefix + "A".repeat(largest - prefix.length + 4),
       "",
     ])
-      await expect(tabs.record(f.groupId, [{ ...f.first, favicon }], [])).rejects.toThrow();
+      await expect(tabs.recordChanges(f.groupId, [{ ...f.first, favicon }], [])).rejects.toThrow();
     expect((await tabs.read(f.ownerId, f.groupId))!.revision).toBe(revision);
     expect((await tabs.get(f.ownerId, f.first.id))?.favicon).toBe(iconA);
     const bounded = prefix + "A".repeat(largest - prefix.length);
-    expect(await tabs.record(f.groupId, [{ ...f.first, favicon: bounded }], [])).toBe(true);
+    expect(await tabs.recordChanges(f.groupId, [{ ...f.first, favicon: bounded }], [])).toBe(true);
     expect((await tabs.get(f.ownerId, f.first.id))?.favicon).toBe(bounded);
   });
   // Reopen failures: wrong actor, expired/consumed marker, stale producer, lost
@@ -756,7 +805,7 @@ integration.sequential("durable workspace tabs", () => {
   }) => {
     const { fixture, tabs, database, allowReopen } = storeFixture;
     const f = await fixture();
-    await tabs.record(f.groupId, [{ ...f.first, favicon: iconA }, f.second], []);
+    await tabs.recordChanges(f.groupId, [{ ...f.first, favicon: iconA }, f.second], []);
     await tabs.close(f.ownerId, f.first.id);
     await database
       .updateTable("workspaceTabs")
@@ -778,7 +827,7 @@ integration.sequential("durable workspace tabs", () => {
       state: "suspended",
     });
     expect(second).toMatchObject({ groupId: f.groupId, title: "Popup", state: "suspended" });
-    await tabs.record(f.groupId, [{ ...f.first, title: "Late", favicon: iconB }], []);
+    await tabs.recordChanges(f.groupId, [{ ...f.first, title: "Late", favicon: iconB }], []);
     expect(await tabs.get(f.ownerId, f.first.id)).toBeNull();
     expect((await tabs.get(f.ownerId, first.id))?.title).toBe("One");
     await expect(tabs.reopen(f.ownerId, allowReopen)).rejects.toMatchObject({
@@ -806,7 +855,7 @@ integration.sequential("durable workspace tabs", () => {
       title: `Concurrent ${index}`,
     }));
     for (const [index, row] of originals.entries()) {
-      await tabs.record(index % 2 ? other : f.groupId, [row], []);
+      await tabs.recordChanges(index % 2 ? other : f.groupId, [row], []);
       await tabs.close(f.ownerId, row.id);
     }
     const reopened = await Promise.all(
@@ -831,7 +880,7 @@ integration.sequential("durable workspace tabs", () => {
   }) => {
     const { fixture, tabs, database, allowReopen } = storeFixture;
     const f = await fixture();
-    await tabs.record(f.groupId, [f.first, f.second], []);
+    await tabs.recordChanges(f.groupId, [f.first, f.second], []);
     await database
       .insertInto("workspaceMemberships")
       .values({
@@ -849,15 +898,15 @@ integration.sequential("durable workspace tabs", () => {
       })
       .execute();
     const shared = { ...f.first, id: BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`) };
-    await tabs.record(f.groupId, [shared], []);
+    await tabs.recordChanges(f.groupId, [shared], []);
     await tabs.close(f.strangerId, shared.id);
     await expect(tabs.reopen(f.ownerId, allowReopen)).rejects.toMatchObject({ code: "not_found" });
     expect((await tabs.reopen(f.strangerId, allowReopen)).title).toBe("One");
     await tabs.close(f.ownerId, f.first.id, false);
-    await tabs.record(f.groupId, [], [f.second.id]);
+    await tabs.recordChanges(f.groupId, [], [f.second.id]);
     await expect(tabs.reopen(f.ownerId, allowReopen)).rejects.toMatchObject({ code: "not_found" });
     const third = { ...f.first, id: BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`) };
-    await tabs.record(f.groupId, [third], []);
+    await tabs.recordChanges(f.groupId, [third], []);
     await tabs.close(f.ownerId, third.id);
     await expect(tabs.reopen(f.strangerId, allowReopen)).rejects.toMatchObject({
       code: "not_found",
@@ -877,14 +926,14 @@ integration.sequential("durable workspace tabs", () => {
     ).toBeDefined();
     await expect(tabs.reopen(f.ownerId, allowReopen)).rejects.toMatchObject({ code: "not_found" });
     const fourth = { ...third, id: BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`) };
-    await tabs.record(f.groupId, [fourth], []);
+    await tabs.recordChanges(f.groupId, [fourth], []);
     await tabs.closeLineage(f.groupId);
     await expect(tabs.reopen(f.ownerId, allowReopen)).rejects.toMatchObject({ code: "not_found" });
   });
   it("does not consume refused access or a close at the 64-tab bound", async ({ storeFixture }) => {
     const { fixture, tabs, allowReopen } = storeFixture;
     const f = await fixture();
-    await tabs.record(f.groupId, [f.first], []);
+    await tabs.recordChanges(f.groupId, [f.first], []);
     await tabs.close(f.ownerId, f.first.id);
     await expect(
       tabs.reopen(f.ownerId, async () => {
@@ -895,7 +944,7 @@ integration.sequential("durable workspace tabs", () => {
       ...f.second,
       id: BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`),
     }));
-    await tabs.record(f.groupId, full, []);
+    await tabs.recordChanges(f.groupId, full, []);
     await expect(tabs.reopen(f.ownerId, allowReopen)).rejects.toMatchObject({
       message: "Browser tab limit reached.",
     });
@@ -960,14 +1009,14 @@ integration.sequential("durable workspace tabs", () => {
   }) => {
     const { fixture, tabs, store, allowReopen } = storeFixture;
     const f = await fixture();
-    await tabs.record(f.groupId, [f.first, f.second], []);
+    await tabs.recordChanges(f.groupId, [f.first, f.second], []);
     await tabs.suspend(f.groupId);
     const replacement = createBrowserSessionId();
     await store.createBrowserSession({ ...f.session, id: replacement, tabGroupId: f.groupId });
     await tabs.bind(f.groupId, replacement, f.first.id);
     await tabs.close(f.ownerId, f.first.id);
     const reopened = await tabs.reopen(f.ownerId, allowReopen);
-    await tabs.record(replacement, [{ ...f.first, title: "Late activation" }], []);
+    await tabs.recordChanges(replacement, [{ ...f.first, title: "Late activation" }], []);
     expect(await tabs.get(f.ownerId, f.first.id)).toBeNull();
     expect(await tabs.get(f.ownerId, reopened.id)).toMatchObject({
       title: "One",
@@ -986,7 +1035,7 @@ integration.sequential("durable workspace tabs", () => {
       order: 2,
       openerId: null,
     };
-    await tabs.record(f.groupId, [f.first, f.second, third], []);
+    await tabs.recordChanges(f.groupId, [f.first, f.second, third], []);
     const groups = new BrowserTabGroupStore(database);
     const grouped = await groups.group(f.ownerId, {
       tabIds: [f.first.id, f.second.id],
@@ -1017,7 +1066,7 @@ integration.sequential("durable workspace tabs", () => {
   it("serializes a close during reopen using tab-before-layout locks", async ({ storeFixture }) => {
     const { fixture, tabs, database, allowReopen } = storeFixture;
     const f = await fixture();
-    await tabs.record(f.groupId, [f.first, f.second], []);
+    await tabs.recordChanges(f.groupId, [f.first, f.second], []);
     await tabs.close(f.ownerId, f.first.id);
     let release!: () => void;
     let reached!: () => void;
@@ -1058,7 +1107,7 @@ integration.sequential("durable workspace tabs", () => {
     const f = await fixture();
     const id = createBrowserSessionId();
     await store.createBrowserSession({ ...f.session, id, origin: "trigger" });
-    expect(await tabs.record(id, [f.first], [])).toBe(false);
+    expect(await tabs.recordChanges(id, [f.first], [])).toBe(false);
     expect(await tabs.list(f.ownerId)).toEqual([]);
   });
 });

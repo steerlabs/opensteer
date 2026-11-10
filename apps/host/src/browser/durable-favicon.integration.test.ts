@@ -273,9 +273,8 @@ integration("Durable tab icons", () => {
     expect(runtime.receivedCommands().some((command) => command.type === "cdp.command")).toBe(
       false,
     );
-    runtime.sendServer(
+    runtime.publishTabs(
       {
-        type: "browser.surfaces.changed",
         surfaces: [
           surface("page-integration", "https://www.amazon.com/", "amazon-1", {
             favicon: iconA,
@@ -315,9 +314,8 @@ integration("Durable tab icons", () => {
         viewer,
         (message) => message.type === "browser.surfaces.changed",
       );
-      runtime.sendServer(
+      runtime.publishTabs(
         {
-          type: "browser.surfaces.changed",
           surfaces: surfaces.map(({ navigationId: _navigationId, ...surface }) => surface),
         },
         sessionId,
@@ -595,9 +593,8 @@ integration("Durable tab icons", () => {
       guestViewer,
       (message) => message.type === "browser.surfaces.changed",
     );
-    runtime.sendServer(
+    runtime.publishTabs(
       {
-        type: "browser.surfaces.changed",
         surfaces: [
           surface("page-integration", "https://guest.example/", "guest", { favicon: iconA }),
         ],
@@ -740,13 +737,11 @@ integration("Durable tab icons", () => {
     const urlB = "https://b.example/";
     const steps: Record<string, unknown>[] = [];
 
-    runtime.sendServer({
-      type: "browser.surfaces.changed",
+    runtime.publishTabs({
       surfaces: [surface("page-a", urlOne, iconA), surface("page-b", urlB, undefined)],
     });
-    runtime.sendServer({
-      type: "browser.workspace-tabs",
-      tabs: [descriptor("page-a", urlOne), descriptor("page-b", urlB)],
+    runtime.publishTabs({
+      surfaces: [descriptor("page-a", urlOne), descriptor("page-b", urlB)],
       closed: ["page-integration"],
     });
     await until(
@@ -759,8 +754,7 @@ integration("Durable tab icons", () => {
 
     // An icon-only change: the Runtime's durable descriptors do not change.
     let notices = tabsChanged();
-    runtime.sendServer({
-      type: "browser.surfaces.changed",
+    runtime.publishTabs({
       surfaces: [surface("page-a", urlOne, iconB), surface("page-b", urlB, undefined)],
     });
     await until(
@@ -773,8 +767,7 @@ integration("Durable tab icons", () => {
 
     // Loading, geometry and a transiently absent icon on the same page are not writes.
     notices = tabsChanged();
-    runtime.sendServer({
-      type: "browser.surfaces.changed",
+    runtime.publishTabs({
       surfaces: [
         surface("page-a", urlOne, undefined, { loading: true, geometryRevision: 2 }),
         surface("page-b", urlB, undefined, { geometryRevision: 2 }),
@@ -791,8 +784,7 @@ integration("Durable tab icons", () => {
       (await row("page-a"))?.iconRef,
     );
     notices = tabsChanged();
-    runtime.sendServer({
-      type: "browser.surfaces.changed",
+    runtime.publishTabs({
       surfaces: [
         surface("page-a", urlOne, iconB, { geometryRevision: 3 }),
         surface("page-b", urlB, undefined, { geometryRevision: 3 }),
@@ -805,9 +797,8 @@ integration("Durable tab icons", () => {
 
     // A committed navigation clears the old icon before the new page names one.
     notices = tabsChanged();
-    runtime.sendServer({
-      type: "browser.workspace-tabs",
-      tabs: [descriptor("page-a", urlTwo), descriptor("page-b", urlB)],
+    runtime.publishTabs({
+      surfaces: [descriptor("page-a", urlTwo), descriptor("page-b", urlB)],
       closed: [],
     });
     await until(
@@ -817,27 +808,11 @@ integration("Durable tab icons", () => {
     await settledNotice(notices);
     expect((await row("page-a"))?.favicon ?? null).toBeNull();
     expect((await row("page-a"))?.iconRef ?? null).toBeNull();
-    // The descriptor arrives first; a flush must not copy the preceding document's image.
-    expect((await row("page-a"))?.url).toBe(urlTwo);
-    // An icon shown while the address differs from the committed one is not stored.
-    notices = tabsChanged();
-    runtime.sendServer({
-      type: "browser.surfaces.changed",
-      surfaces: [
-        surface("page-a", "https://a.example/three", iconC),
-        surface("page-b", urlB, undefined),
-      ],
-    });
-    await settledNotice(notices);
-    expect((await row("page-a"))?.favicon ?? null).toBeNull();
-    runtime.sendServer({
-      type: "browser.surfaces.changed",
+    runtime.publishTabs({
       surfaces: [surface("page-a", urlTwo, iconC), surface("page-b", urlB, undefined)],
     });
-    // Only the raw URL changed, at the same origin and with identical icon bytes.
     await until(async () => ((await row("page-a"))?.favicon === iconC ? true : undefined));
-    runtime.sendServer({
-      type: "browser.surfaces.changed",
+    runtime.publishTabs({
       surfaces: [surface("page-a", urlTwo, iconA), surface("page-b", urlB, undefined)],
     });
     await until(

@@ -293,7 +293,7 @@ describe("typed browser agent wire", () => {
   it("negotiates narrow input and surface state without granting full editing or altering older peers", () => {
     const descriptor = {
       runtimeId: "phone",
-      wireVersion: 1,
+      wireVersion: 2,
       basicInput: 1,
       surfaceState: 1,
       agentActions: 1,
@@ -306,7 +306,7 @@ describe("typed browser agent wire", () => {
     const claims = {
       access: "read-write",
       audience: "opensteer-browser-runtime",
-      wireVersion: 1,
+      wireVersion: 2,
       operationExpiresAt: "2026-11-09T12:00:18Z",
       remainingBudgetMs: 18_000,
       expiresAt: "2026-11-09T12:01:00Z",

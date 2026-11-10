@@ -3,14 +3,14 @@ import {
   BrowserAttachPublicKeysSchema,
   BrowserClientMessageSchema,
   BrowserEngineSchema,
-  BrowserServerMessageSchema,
+  BrowserRuntimeServerMessageSchema,
   createBrowserBridgeAttachedSchema,
   HeldLocalProfileSchema,
   serializeJsonFrame,
   type BrowserAttachPublicKey,
   type BrowserBridgeAttached,
   type BrowserClientMessage,
-  type BrowserServerMessage,
+  type BrowserRuntimeServerMessage,
   type LocalProfileBinding,
 } from "@opensteer/protocol";
 import {
@@ -39,7 +39,7 @@ const LocalHealthSchema = z.object({
 export interface BrowserChannelSink {
   onClosed(channelId: BrowserChannelId, code: number, reason: string): void;
   onFrame(channelId: BrowserChannelId, frame: Buffer): void;
-  onServerMessage(channelId: BrowserChannelId, message: BrowserServerMessage): void;
+  onServerMessage(channelId: BrowserChannelId, message: BrowserRuntimeServerMessage): void;
 }
 
 export class BrowserRelayError extends Error {
@@ -258,7 +258,7 @@ export class LocalBrowserRuntimeBridge {
             readiness.resolve(ready.data);
             return;
           }
-          const message = BrowserServerMessageSchema.parse(value);
+          const message = BrowserRuntimeServerMessageSchema.parse(value);
           if (message.type === "browser.error")
             readiness.reject(new BrowserRelayError(message.error.message));
           sink.onServerMessage(channelId, message);

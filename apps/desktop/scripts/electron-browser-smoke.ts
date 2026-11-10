@@ -1,3 +1,4 @@
+import { committedBrowserTabs } from "@opensteer/browser-runtime-core/test-support";
 import {
   browserFrameFits,
   defaultBrowserViewport,
@@ -18,9 +19,9 @@ import {
 import {
   BrowserAttachTicketClaimsSchema,
   BrowserContextCandidateSchema,
-  BrowserServerMessageSchema,
+  BrowserRuntimeServerMessageSchema,
   BrowserSessionIdSchema,
-  type BrowserServerMessage,
+  type BrowserRuntimeServerMessage,
 } from "@opensteer/protocol";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
@@ -444,14 +445,14 @@ async function run(): Promise<void> {
 
   // Exercise the same controller path used by remote Web and Electron panels,
   // not only Electron's raw debugger mechanics.
-  const routedMessages: BrowserServerMessage[] = [];
+  const routedMessages: BrowserRuntimeServerMessage[] = [];
   const routedFrames: BrowserFrame[] = [];
   const controller = new BrowserController({
     cdpRouter,
     claims: BrowserAttachTicketClaimsSchema.parse({
       operationExpiresAt: new Date(Date.now() + 18_000).toISOString(),
       remainingBudgetMs: 18_000,
-      wireVersion: 1,
+      wireVersion: 2,
       access: "read-write",
       audience: "opensteer-browser-runtime",
       expiresAt: "2030-01-01T00:05:00.000Z",
@@ -1306,7 +1307,7 @@ async function transportAgentSizePhase(origin: string): Promise<void> {
         return BrowserAttachTicketClaimsSchema.parse({
           operationExpiresAt: new Date(Date.now() + 18_000).toISOString(),
           remainingBudgetMs: 18_000,
-          wireVersion: 1,
+          wireVersion: 2,
           access: "read-write",
           audience: "opensteer-browser-runtime",
           expiresAt: new Date(now + 300_000).toISOString(),
@@ -1321,7 +1322,7 @@ async function transportAgentSizePhase(origin: string): Promise<void> {
     },
   });
   const server = new BrowserRuntimeServer({ host: "127.0.0.1", port: 0, runtime });
-  const frames: BrowserServerMessage[] = [];
+  const frames: BrowserRuntimeServerMessage[] = [];
   const wireFrames: unknown[] = [];
   const steps: Array<{
     step: string;
@@ -1353,7 +1354,7 @@ async function transportAgentSizePhase(origin: string): Promise<void> {
       try {
         const frame: unknown = JSON.parse(String(data));
         wireFrames.push(frame);
-        frames.push(BrowserServerMessageSchema.parse(frame));
+        frames.push(BrowserRuntimeServerMessageSchema.parse(frame));
       } catch (error) {
         refused = error;
       }
@@ -1368,7 +1369,9 @@ async function transportAgentSizePhase(origin: string): Promise<void> {
     await until(() => frames.some((frame) => frame.type === "browser.snapshot"));
     const snapshot = frames.find((frame) => frame.type === "browser.snapshot");
     if (snapshot?.type !== "browser.snapshot") throw new Error("Runtime omitted its snapshot.");
-    const surface = snapshot.surfaces.find((candidate) => candidate.openerId == null);
+    const surface = [...committedBrowserTabs(frames).rows.values()].find(
+      (candidate) => candidate.openerId == null,
+    );
     if (!surface) throw new Error("Runtime omitted the root surface.");
 
     const command = async (
@@ -1429,13 +1432,7 @@ async function transportAgentSizePhase(origin: string): Promise<void> {
       }
       return { width: value.width, height: value.height };
     };
-    const latestSurface = () => {
-      for (const frame of frames.toReversed()) {
-        if (frame.type === "browser.snapshot" || frame.type === "browser.surfaces.changed")
-          return frame.surfaces.find((candidate) => candidate.id === surface.id);
-      }
-      return undefined;
-    };
+    const latestSurface = () => committedBrowserTabs(frames).rows.get(surface.id);
     const expectStep = async (
       step: string,
       width: number,
@@ -1461,16 +1458,14 @@ async function transportAgentSizePhase(origin: string): Promise<void> {
      * geometry revision as well as the flag.
      */
     const expectSurface = async (after: number, sizedByAgent: boolean, beyondRevision = -1) => {
-      await until(() =>
-        frames.slice(after).some((frame) => {
-          if (frame.type !== "browser.surfaces.changed") return false;
-          const changed = frame.surfaces.find((candidate) => candidate.id === surface.id);
-          return (
-            changed?.sizedByAgent === sizedByAgent &&
-            (changed.geometryRevision ?? 0) > beyondRevision
-          );
-        }),
-      );
+      await until(() => {
+        const changed = latestSurface();
+        return (
+          frames.length > after &&
+          changed?.sizedByAgent === sizedByAgent &&
+          changed.geometryRevision > beyondRevision
+        );
+      });
     };
     const expectEmptyReply = (reply: Awaited<ReturnType<typeof command>>) => {
       if (
@@ -1657,7 +1652,7 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
     files.root,
   );
   await ledger.start();
-  const messages: BrowserServerMessage[] = [];
+  const messages: BrowserRuntimeServerMessage[] = [];
   /** When each of `messages` arrived. */
   const messageTimes: number[] = [];
   const frames: Array<BrowserFrame & { readonly at: number }> = [];
@@ -1666,7 +1661,7 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
     claims: BrowserAttachTicketClaimsSchema.parse({
       operationExpiresAt: new Date(Date.now() + 18_000).toISOString(),
       remainingBudgetMs: 18_000,
-      wireVersion: 1,
+      wireVersion: 2,
       access: "read-write",
       audience: "opensteer-browser-runtime",
       expiresAt: "2030-01-01T00:05:00.000Z",
@@ -1832,7 +1827,7 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
     return frames.find(matches)!;
   };
   const errors = () => messages.filter((message) => message.type === "browser.error");
-  const expectedErrors = new Set<BrowserServerMessage>();
+  const expectedErrors = new Set<BrowserRuntimeServerMessage>();
   const screenScale = screen.getPrimaryDisplay().scaleFactor;
   const artifactDirectory =
     process.env.OPENSTEER_BROWSER_FOLLOW_E2E_ARTIFACT_DIR ??
@@ -2404,12 +2399,12 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
         ),
     );
     await waitFor(() =>
-      messages.slice(activatedFrom).some((message) => message.type === "browser.surfaces.changed"),
+      messages.slice(activatedFrom).some((message) => message.type === "browser.tabs"),
     );
     const order = messages
       .slice(activatedFrom)
       .map((message) => message.type)
-      .filter((type) => type === "browser.dialog.changed" || type === "browser.surfaces.changed");
+      .filter((type) => type === "browser.dialog.changed" || type === "browser.tabs");
     const answerSettled = await settles(
       controller.handle({
         accept: true,
@@ -3196,8 +3191,9 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
         for (let index = returnFrom; index < messages.length; index += 1) {
           const message = messages[index]!;
           if (
-            message.type === "browser.surfaces.changed" &&
-            message.surfaces.some((surface) => surface.active && surface.id === surfaceId)
+            message.type === "browser.tabs" &&
+            message.stream.op === "change" &&
+            message.stream.meta?.activeId === surfaceId
           ) {
             return messageTimes[index]!;
           }
@@ -4285,8 +4281,9 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
               .slice(from)
               .some(
                 (message) =>
-                  message.type === "browser.surfaces.changed" &&
-                  message.surfaces.some((surface) => surface.id === popup.id),
+                  message.type === "browser.tabs" &&
+                  message.stream.op === "change" &&
+                  message.stream.add?.some((surface) => surface.id === popup.id),
               ),
           2_000,
         );
@@ -4366,8 +4363,7 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
             .slice(from)
             .filter(
               (message) =>
-                message.type === "browser.surfaces.changed" ||
-                message.type === "browser.dialog.changed",
+                message.type === "browser.tabs" || message.type === "browser.dialog.changed",
             ),
         });
         await controller.handle({ type: "surface.close", surfaceId: popup.id });

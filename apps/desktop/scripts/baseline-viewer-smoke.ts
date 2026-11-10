@@ -1,3 +1,9 @@
+import { KeyedStreamReceiver } from "@opensteer/protocol/keyed-stream";
+import type {
+  BrowserTabRecord,
+  BrowserTabStreamMeta,
+  BrowserRuntimeServerMessage,
+} from "@opensteer/protocol/browser";
 import { existsSync as guestMarkerExists } from "node:fs";
 import {
   browserViewerEditingVersion,
@@ -69,7 +75,39 @@ const output = path.join(
 let viewerVersion: 1 | 2 | undefined;
 let requestedVersion: 1 | 2 | undefined;
 const consumerToken = randomUUID();
-function project(message: BrowserServerMessage): BrowserServerMessage | undefined {
+const tabStream = new KeyedStreamReceiver<BrowserTabRecord, BrowserTabStreamMeta>();
+let runtimeSnapshot: Extract<BrowserRuntimeServerMessage, { type: "browser.snapshot" }> | undefined;
+const icons = new Map<string, string>();
+function project(
+  message: BrowserServerMessage | BrowserRuntimeServerMessage,
+): BrowserServerMessage | undefined {
+  if (message.type === "browser.tab.icon") {
+    icons.set(message.key, message.favicon);
+    return;
+  }
+  if (message.type === "browser.snapshot" && !("surfaces" in message)) {
+    runtimeSnapshot = message;
+    return;
+  }
+  if (message.type === "browser.tabs") {
+    if (tabStream.apply(message.stream) !== "applied" || !runtimeSnapshot) return;
+    const surfaces = [...tabStream.rows.values()].map(({ icon, ...row }) => ({
+      ...row,
+      active: row.id === tabStream.meta?.activeId,
+      ...(icon && icons.has(icon) ? { favicon: icons.get(icon)! } : {}),
+    }));
+    return browserViewerMessage(
+      message.stream.op === "end"
+        ? { ...runtimeSnapshot, surfaces, inventoryRevision: tabStream.meta!.inventoryRevision }
+        : {
+            type: "browser.surfaces.changed",
+            surfaces,
+            inventoryRevision: tabStream.meta!.inventoryRevision,
+          },
+      viewerVersion,
+    );
+  }
+
   if (
     !viewerVersion &&
     [
@@ -90,7 +128,7 @@ const run = promisify(execFile);
 const scratch = mkdtempSync(path.join(tmpdir(), "opensteer-baseline-viewer-"));
 app.setPath("userData", path.join(scratch, "user-data"));
 const records: string[] = [];
-const runtimeMessages: BrowserServerMessage[] = [];
+const runtimeMessages: BrowserRuntimeServerMessage[] = [];
 const rendererErrors: string[] = [];
 let failure: string | undefined;
 let window: BrowserWindow | undefined;
@@ -315,11 +353,9 @@ async function main() {
     attachment = await runtime.attach("baseline", {
       sendServer: async (message) => {
         runtimeMessages.push(message);
-        if (message.type === "browser.snapshot") snapshot = message;
-        if (peer?.readyState === WebSocket.OPEN) {
-          const projected = project(message);
-          if (projected) peer.send(JSON.stringify(projected));
-        }
+        const projected = project(message);
+        if (projected?.type === "browser.snapshot") snapshot = projected;
+        if (projected && peer?.readyState === WebSocket.OPEN) peer.send(JSON.stringify(projected));
       },
       sendFrame: async (frame) => {
         if (peer?.readyState === WebSocket.OPEN) peer.send(encodeBrowserFrame(frame));

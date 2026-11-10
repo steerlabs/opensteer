@@ -12,11 +12,11 @@ import {
   type BrowserNavigationCommitted,
   type BrowserSurface,
   type BrowserSurfaceId,
-  type BrowserWorkspaceTabDescriptor,
+  type BrowserTabRecord,
 } from "@opensteer/protocol/browser";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { AsyncMutex } from "../async.js";
 import { BrowserRuntimeError } from "../errors.js";
@@ -251,17 +251,19 @@ export class SurfaceLedger {
   private nextOrder = 0;
   private inventorySealed = false;
   private inventoryVersion = 0;
-  private inventoryIds = "";
   private legacyPersonUntil = 0;
+  get closing(): boolean {
+    return (
+      this.closed ||
+      this.tearingDown ||
+      this.inventorySealed ||
+      this.context.isConnected?.() === false
+    );
+  }
   get sealed(): boolean {
     return this.inventorySealed;
   }
   get inventoryRevision(): number {
-    const ids = JSON.stringify(this.snapshot().map(({ id, order }) => [id, order]));
-    if (ids !== this.inventoryIds) {
-      this.inventoryIds = ids;
-      this.inventoryVersion++;
-    }
     return this.inventoryVersion;
   }
   recordLegacyPersonActivity(targeted: boolean): void {
@@ -364,19 +366,35 @@ export class SurfaceLedger {
     return () => this.listeners.delete(listener);
   }
 
-  durableSnapshot(): BrowserWorkspaceTabDescriptor[] {
-    return [...this.records.values()]
-      .filter((record) => record.announced)
-      .map((record) => {
-        const url = record.unreachableUrl ?? record.committedUrl;
-        return {
-          id: record.id,
-          title: record.title.slice(0, 256),
-          url: url.length <= browserWorkspaceTabUrlMaxLength ? url : "opensteer:unavailable-url",
-          order: record.order,
-          openerId: record.openerId,
-        };
-      });
+  get activeSurfaceId(): BrowserSurfaceId | null {
+    return this.activeId;
+  }
+  toRecord(id: BrowserSurfaceId): BrowserTabRecord | undefined {
+    const record = this.records.get(id);
+    if (!record?.announced) return undefined;
+    const url = record.unreachableUrl ?? record.committedUrl;
+    return {
+      id,
+      state: "live",
+      title: record.title.slice(0, 256),
+      url: url.length <= browserWorkspaceTabUrlMaxLength ? url : "opensteer:unavailable-url",
+      icon: record.favicon ? createHash("sha256").update(record.favicon).digest("base64url") : null,
+      order: record.order,
+      openerId: record.openerId,
+      documentId: record.documentId,
+      geometryRevision: record.geometryRevision,
+      loading: record.loading,
+      navigationFailed: record.navigationFailed,
+      canGoBack: record.navigation?.canGoBack ?? false,
+      canGoForward: record.navigation?.canGoForward ?? false,
+      sizedByAgent: record.agentMetrics !== null,
+    };
+  }
+  setSavedTabs(ids: Iterable<string>): void {
+    this.dormantSurfaceIds.clear();
+    for (const id of ids)
+      if (!this.records.has(BrowserSurfaceIdSchema.parse(id)))
+        this.dormantSurfaceIds.add(BrowserSurfaceIdSchema.parse(id));
   }
 
   /** Correlates only this Page.navigate with the document Chromium says it produced. */
@@ -1743,6 +1761,9 @@ export class SurfaceLedger {
   }
 
   private emit(event: SurfaceLedgerEvent): void {
+    if (event.type === "changed" && (event.change === "created" || event.change === "closed"))
+      this.inventoryVersion++;
+
     for (const listener of this.listeners) {
       try {
         listener(event);

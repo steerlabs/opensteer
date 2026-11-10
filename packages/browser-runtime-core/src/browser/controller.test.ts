@@ -1,3 +1,6 @@
+import { KeyedStreamReceiver } from "@opensteer/protocol/keyed-stream";
+import type { BrowserTabRecord, BrowserTabStreamMeta } from "@opensteer/protocol/browser-tabs";
+import { createHash, randomUUID } from "node:crypto";
 import { SessionCdpRouter } from "@opensteer/browser-core";
 import {
   browserHostMethods,
@@ -57,6 +60,191 @@ describe("BrowserController", () => {
       files.root,
     );
     await ledger.start();
+  });
+
+  it("announces geometry before its pixels while a tab frame is in flight", async () => {
+    const controller = createController();
+    const held = gate({ label: "tab geometry frame", deadlineMs: 2000 });
+    const delivered = new KeyedStreamReceiver<BrowserTabRecord, BrowserTabStreamMeta>();
+    try {
+      await controller.start();
+      for (const message of sink.messages)
+        if (message.type === "browser.tabs") delivered.apply(message.stream);
+      await controller.handle({ type: "stream.subscribe" });
+      sink.sendServerImplementation = async (message) => {
+        if (message.type === "browser.tabs") {
+          await held.enter();
+          delivered.apply(message.stream);
+        }
+      };
+      const surfaceId = ledger.active()!.surface.id;
+      await controller.handle({ type: "viewport.set", surfaceId, width: 900, height: 600 });
+      await held.entered;
+      sink.sendFrameImplementation = async (frame) => {
+        expect(delivered.rows.get(surfaceId)?.geometryRevision).toBe(frame.header.geometryRevision);
+      };
+      page.cdpSession.emit("Page.screencastFrame", {
+        data: jpeg(900, 600).toString("base64"),
+        metadata: { deviceHeight: 600, deviceWidth: 900 },
+        sessionId: 1,
+      });
+      await flushMicrotasks();
+      expect(sink.frames).toHaveLength(0);
+      held.release();
+      await vi.waitFor(
+        () => expect(sink.frames, "The new geometry's frame never arrived.").toHaveLength(1),
+        { timeout: 1000 },
+      );
+    } finally {
+      held.release();
+      await controller.close();
+      await ledger.close();
+    }
+  });
+  it("holds a dialog until its snapshot commits", async () => {
+    const held = gate({ label: "initial tab rows", deadlineMs: 2000 });
+    const controller = createController();
+    sink.sendServerImplementation = async (message) => {
+      if (message.type === "browser.tabs" && message.stream.op === "rows") await held.enter();
+    };
+    try {
+      const starting = controller.start();
+      await held.entered;
+      page.cdpSession.emit("Page.javascriptDialogOpening", {
+        type: "alert",
+        message: "First script",
+        url: "https://example.test/",
+      });
+      await flushMicrotasks();
+      expect(sink.messages.filter((message) => message.type === "browser.dialog.changed")).toEqual(
+        [],
+      );
+      held.release();
+      await starting;
+      const endAt = sink.messages.findIndex(
+        (message) => message.type === "browser.tabs" && message.stream.op === "end",
+      );
+      const dialogAt = sink.messages.findIndex(
+        (message) => message.type === "browser.dialog.changed",
+      );
+      expect(endAt).toBeGreaterThan(-1);
+      expect(dialogAt).toBeGreaterThan(endAt);
+    } finally {
+      held.release();
+      await controller.close();
+      await ledger.close();
+    }
+  });
+  it("commits a tab before its open result and its removal before its close result", async () => {
+    const controller = createController();
+    const receiver = new KeyedStreamReceiver<BrowserTabRecord, BrowserTabStreamMeta>();
+    try {
+      await controller.start();
+      const requestId = randomUUID();
+      await controller.handle({
+        type: "cdp.command",
+        requestId,
+        command: {
+          method: browserHostMethods.openTab,
+          parameters: { idempotencyKey: "ordered-open" },
+        },
+      });
+      let opened: string | undefined;
+      for (const message of sink.messages) {
+        if (message.type === "browser.tabs") receiver.apply(message.stream);
+        if (message.type === "cdp.result" && message.requestId === requestId) {
+          opened = (message.result as { tabId: string }).tabId;
+          expect(receiver.rows.has(opened), "Open answered before its tab committed.").toBe(true);
+        }
+      }
+      expect(opened).toBeDefined();
+      const start = sink.messages.length;
+      const closeId = randomUUID();
+      await controller.handle({
+        type: "cdp.command",
+        requestId: closeId,
+        command: {
+          method: browserHostMethods.closeTab,
+          parameters: { surfaceId: opened, inventoryRevision: ledger.inventoryRevision },
+        },
+      });
+      for (const message of sink.messages.slice(start)) {
+        if (message.type === "browser.tabs") receiver.apply(message.stream);
+        if (message.type === "cdp.result" && message.requestId === closeId)
+          expect(receiver.rows.has(opened!)).toBe(false);
+      }
+    } finally {
+      await controller.close();
+      await ledger.close();
+    }
+  });
+  it("sends a content keyed icon before its row once on each connection", async () => {
+    const favicon = "data:image/png;base64,AAAA";
+    const key = createHash("sha256").update(favicon).digest("base64url");
+    const toRecord = ledger.toRecord.bind(ledger),
+      binding = ledger.binding.bind(ledger);
+    vi.spyOn(ledger, "toRecord").mockImplementation((id) => {
+      const row = toRecord(id);
+      return row ? { ...row, icon: key } : undefined;
+    });
+    vi.spyOn(ledger, "binding").mockImplementation((id) => {
+      const held = binding(id);
+      return held ? { ...held, surface: { ...held.surface, favicon } } : null;
+    });
+    const controller = createController();
+    try {
+      await controller.start();
+      const iconAt = sink.messages.findIndex((message) => message.type === "browser.tab.icon");
+      const rowAt = sink.messages.findIndex(
+        (message) => message.type === "browser.tabs" && message.stream.op === "rows",
+      );
+      expect(iconAt).toBeGreaterThan(-1);
+      expect(iconAt).toBeLessThan(rowAt);
+      page.setMetadata("New title", "https://example.test/");
+      await controller.handle({ type: "tabs.resync" });
+      expect(sink.messages.filter((message) => message.type === "browser.tab.icon")).toHaveLength(
+        1,
+      );
+      const next = new FakeSink();
+      await controller.reattach(next);
+      expect(next.messages.filter((message) => message.type === "browser.tab.icon")).toHaveLength(
+        1,
+      );
+      expect(
+        next.messages.findIndex((message) => message.type === "browser.tab.icon"),
+      ).toBeLessThan(
+        next.messages.findIndex(
+          (message) => message.type === "browser.tabs" && message.stream.op === "rows",
+        ),
+      );
+    } finally {
+      await controller.close();
+      await ledger.close();
+    }
+  });
+  it("does not remove durable tabs when the browser tears down", async () => {
+    const controller = createController();
+    try {
+      await controller.start();
+      context.connected = false;
+      await page.close();
+      await controller.handle({ type: "tabs.resync" });
+      const receiver = new KeyedStreamReceiver<BrowserTabRecord, BrowserTabStreamMeta>();
+      for (const message of sink.messages)
+        if (message.type === "browser.tabs") receiver.apply(message.stream);
+      expect(receiver.rows.size).toBe(1);
+      expect(
+        sink.messages.some(
+          (message) =>
+            message.type === "browser.tabs" &&
+            message.stream.op === "change" &&
+            message.stream.remove?.length,
+        ),
+      ).toBe(false);
+    } finally {
+      await controller.close();
+      await ledger.close();
+    }
   });
 
   it("queries cursor hints outside the mutation lane and fences canceled observations", async () => {
@@ -287,13 +475,20 @@ describe("BrowserController", () => {
           }),
         { timeout: 1000 },
       );
-      expect(
-        sink.messages.some(
-          (message) =>
-            message.type === "browser.surfaces.changed" &&
-            message.surfaces.some((surface) => surface.id === id && "navigationFailed" in surface),
-        ),
-      ).toBe(true);
+      await vi.waitFor(
+        () =>
+          expect(
+            sink.messages.some(
+              (message) =>
+                message.type === "browser.tabs" &&
+                message.stream.op === "change" &&
+                [...(message.stream.add ?? []), ...(message.stream.update ?? [])].some(
+                  (surface) => surface.id === id && surface.navigationFailed,
+                ),
+            ),
+          ).toBe(true),
+        { timeout: 1000 },
+      );
     } finally {
       await controller.close();
       await ledger.close();
@@ -2882,16 +3077,14 @@ describe("BrowserController", () => {
       sink.messages
         .slice(switchMessagesStart)
         .filter(
-          (message) =>
-            message.type === "browser.dialog.changed" ||
-            message.type === "browser.surfaces.changed",
+          (message) => message.type === "browser.dialog.changed" || message.type === "browser.tabs",
         )
         .map((message) =>
           message.type === "browser.dialog.changed"
             ? `${message.type}:${message.dialog === null ? "cleared" : "open"}`
             : message.type,
         ),
-    ).toEqual(["browser.dialog.changed:cleared", "browser.surfaces.changed"]);
+    ).toEqual(["browser.dialog.changed:cleared", "browser.tabs"]);
     await controller.close();
     await ledger.close();
   });
@@ -3169,7 +3362,7 @@ describe("BrowserController", () => {
     });
     let blocked = true;
     sink.sendServerImplementation = async (message) => {
-      if (blocked && message.type === "browser.surfaces.changed") await slowSend;
+      if (blocked && message.type === "browser.tabs") await slowSend;
     };
 
     page.setMetadata("Update 0", "https://example.test/update-0");
@@ -3179,7 +3372,9 @@ describe("BrowserController", () => {
       await flushMicrotasks();
     }
     expect(
-      sink.messages.filter((message) => message.type === "browser.surfaces.changed"),
+      sink.messages.filter(
+        (message) => message.type === "browser.tabs" && message.stream.op === "change",
+      ),
     ).toHaveLength(1);
 
     blocked = false;
@@ -3187,11 +3382,14 @@ describe("BrowserController", () => {
     await flushMicrotasks();
     await flushMicrotasks();
     const snapshots = sink.messages.filter(
-      (message) => message.type === "browser.surfaces.changed",
+      (message) => message.type === "browser.tabs" && message.stream.op === "change",
     );
     expect(snapshots).toHaveLength(2);
     expect(snapshots.at(-1)).toMatchObject({
-      surfaces: [expect.objectContaining({ url: "https://example.test/update-100" })],
+      stream: {
+        op: "change",
+        update: [expect.objectContaining({ url: "https://example.test/update-100" })],
+      },
     });
     await controller.close();
     await ledger.close();

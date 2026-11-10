@@ -1,10 +1,12 @@
+import { KeyedStreamReceiver } from "@opensteer/protocol/keyed-stream";
+import type { BrowserTabRecord, BrowserTabStreamMeta } from "@opensteer/protocol/browser-tabs";
 import { afterEach, describe, expect, test } from "vitest";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
   BrowserAttachTicketClaimsSchema,
   BrowserClientMessageSchema,
   BrowserDialogSchema,
-  BrowserServerMessageSchema,
+  BrowserRuntimeServerMessageSchema,
   LocalProfileBindingSchema,
   type BrowserClientMessage,
 } from "@opensteer/protocol/browser";
@@ -101,7 +103,7 @@ async function setup(
     BrowserAttachTicketClaimsSchema.parse({
       access: "read-write",
       audience: "opensteer-browser-runtime",
-      wireVersion: 1,
+      wireVersion: 2,
       issuedAt: new Date(clock.now()).toISOString(),
       expiresAt: new Date(clock.now() + 30_000).toISOString(),
       operationExpiresAt: new Date(clock.now() + 20_000).toISOString(),
@@ -202,8 +204,9 @@ async function setup(
     );
   };
   const revision = () => {
-    const message = server().findLast((entry) => entry.type === "browser.surfaces.changed");
-    return message?.type === "browser.surfaces.changed" ? message.inventoryRevision : undefined;
+    const receiver = new KeyedStreamReceiver<BrowserTabRecord, BrowserTabStreamMeta>();
+    for (const entry of server()) if (entry.type === "browser.tabs") receiver.apply(entry.stream);
+    return receiver.meta?.inventoryRevision;
   };
   const attachmentId = uuid();
   const actorToken = uuid();
@@ -330,6 +333,24 @@ describe("phone browser manager", () => {
       loads: 1,
     });
   });
+  test("restarts a saved-tab snapshot without retaining its abandoned adoptions", async () => {
+    const fixture = await setup();
+    await fixture.open("keep");
+    await fixture.open("drop");
+    await fixture.manager.setForeground(false);
+    await fixture.manager.setForeground(true);
+    await fixture.reconnect({ sessionId: `bsn_${uuid()}` });
+    const saved = (stream: unknown) => fixture.client({ type: "session.saved", stream });
+    await saved({ op: "begin", generation: "abandoned" });
+    await saved({ op: "rows", rows: [{ id: fixture.surfaceId }, { id: "drop" }] });
+    expect(fixture.native.tabs.has("drop")).toBe(true);
+    await saved({ op: "begin", generation: "current" });
+    await saved({ op: "rows", rows: [{ id: fixture.surfaceId }, { id: "keep" }] });
+    expect(fixture.native.tabs.has("drop")).toBe(true);
+    await saved({ op: "end", revision: 0, count: 2, meta: {} });
+    expect(fixture.native.tabs.has("drop")).toBe(false);
+    expect(fixture.native.tabs.has("keep")).toBe(true);
+  });
   test.each(["ios", "android"] as const)(
     "%s adopts the retained surface into a new Host session without reloading",
     async (platform) => {
@@ -358,7 +379,29 @@ describe("phone browser manager", () => {
       await fixture.manager.setForeground(false);
       await fixture.manager.setForeground(true);
       const sessionId = `bsn_${uuid()}`;
-      await fixture.reconnect({ sessionId, dormantSurfaceIds: ["dormant", "discarded"] });
+      await fixture.reconnect({ sessionId });
+      await fixture.relay({
+        ...fixture.currentEnvelope(),
+        type: "browser.client-message",
+        message: { type: "session.saved", stream: { op: "begin", generation: "saved" } },
+      });
+      await fixture.relay({
+        ...fixture.currentEnvelope(),
+        type: "browser.client-message",
+        message: {
+          type: "session.saved",
+          stream: {
+            op: "rows",
+            rows: [fixture.surfaceId, "dormant", "discarded"].map((id) => ({ id })),
+          },
+        },
+      });
+      expect(fixture.native.tabs.has("removed-while-offline")).toBe(true);
+      await fixture.relay({
+        ...fixture.currentEnvelope(),
+        type: "browser.client-message",
+        message: { type: "session.saved", stream: { op: "end", revision: 0, count: 3, meta: {} } },
+      });
       expect(fixture.native.tabs.has("removed-while-offline")).toBe(false);
       expect(fixture.presentation("removed-while-offline").state).toBe("closed");
       expect(fixture.presentation("discarded").state).toBe("discarded");
@@ -392,7 +435,6 @@ describe("phone browser manager", () => {
         expect.objectContaining({
           type: "browser.snapshot",
           sessionId,
-          surfaces: expect.arrayContaining([expect.objectContaining({ id: fixture.surfaceId })]),
         }),
       );
     },
@@ -724,7 +766,7 @@ describe("phone browser manager", () => {
     for (const entry of fixture.native.output)
       expect(BrowserRelayToHostMessageSchema.safeParse(entry).success).toBe(true);
     for (const entry of fixture.server())
-      expect(BrowserServerMessageSchema.safeParse(entry).success).toBe(true);
+      expect(BrowserRuntimeServerMessageSchema.safeParse(entry).success).toBe(true);
     expect(fixture.native.calls.findIndex((entry) => entry.method === "commitAttach")).toBeLessThan(
       fixture.native.calls.findIndex((entry) => entry.method === "createTab"),
     );
@@ -752,15 +794,19 @@ describe("phone browser manager", () => {
         ? [entry.message]
         : [],
     );
-    expect(heard[0]).toMatchObject({
-      type: "browser.snapshot",
-      surfaces: [expect.objectContaining({ title: "Loaded" })],
-    });
+    expect(heard[0]).toMatchObject({ type: "browser.snapshot" });
+    expect(heard).toContainEqual(
+      expect.objectContaining({
+        type: "browser.tabs",
+        stream: { op: "rows", rows: [expect.objectContaining({ title: "Loaded" })] },
+      }),
+    );
     expect(heard.map((message) => message.type)).toEqual([
       "browser.snapshot",
+      "browser.tabs",
+      "browser.tabs",
+      "browser.tabs",
       "navigation.committed",
-      "browser.surfaces.changed",
-      "browser.workspace-tabs",
     ]);
   });
 
@@ -1748,7 +1794,7 @@ test("descriptors declare only the actually qualified platform abilities", () =>
     const descriptor = phoneBrowserDescriptor(native.qualification)!;
     expect(RunnerBrowserModuleSchema.safeParse(descriptor).success).toBe(true);
     expect(descriptor).toMatchObject({
-      wireVersion: 1,
+      wireVersion: 2,
       basicInput: 1,
       surfaceState: 1,
       localProfileStorage: { engine: platform === "ios" ? "wkwebview" : "android-webview" },

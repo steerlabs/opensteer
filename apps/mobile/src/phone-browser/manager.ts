@@ -1,4 +1,14 @@
 import {
+  KeyedStreamPublisher,
+  KeyedStreamReceiver,
+  keyedStreamBytes,
+} from "@opensteer/protocol/keyed-stream";
+import {
+  browserWorkspaceTabUrlMaxLength,
+  type BrowserTabRecord,
+  type BrowserTabStreamMeta,
+} from "@opensteer/protocol/browser-tabs";
+import {
   transitionReplayLedger,
   validateAttachTicketClaims,
 } from "@opensteer/browser-core/attach-ticket-policy";
@@ -9,15 +19,14 @@ import {
   BrowserAttachTicketClaimsSchema,
   BrowserClientMessageSchema,
   BrowserContextCandidateSchema,
-  BrowserServerMessageSchema,
+  BrowserRuntimeServerMessageSchema,
   BrowserSessionTabOpenCommandSchema,
   browserBasicInputAllows,
   browserHostMethods,
   type BrowserActionBindingSchema,
   type BrowserActionResult,
   type BrowserClientMessage,
-  type BrowserServerMessage,
-  type BrowserSurface,
+  type BrowserRuntimeServerMessage,
   type HeldLocalProfile,
   type LocalProfileBinding,
 } from "@opensteer/protocol/browser";
@@ -113,6 +122,17 @@ export class PhoneBrowserManager {
   readonly #uuid: () => string;
   readonly #deploymentId: string;
   readonly #runnerId: string;
+  readonly #tabStreams = new WeakMap<
+    PhoneChannel,
+    {
+      publisher: KeyedStreamPublisher<BrowserTabRecord, BrowserTabStreamMeta>;
+      sending: Promise<void> | null;
+    }
+  >();
+  readonly #savedStreams = new WeakMap<
+    PhoneChannel,
+    { receiver: KeyedStreamReceiver<{ id: string }, Record<string, never>>; adopted: Set<string> }
+  >();
   readonly #sessions = new Map<string, PhoneSession>();
   readonly #sessionStarts = new Map<string, Promise<PhoneSession>>();
   readonly #initialOperations = new Map<string, string>();
@@ -760,18 +780,16 @@ export class PhoneBrowserManager {
       access: claims.access,
       state: "ready",
       dialog: first?.dialog ?? null,
-      surfaces: this.#surfaces(session),
-      inventoryRevision: session.revision,
       targetedStreamingVersion: 1,
       inputLanesVersion: 1,
       ...(claims.navigationAttributionVersion ? { navigationAttributionVersion: 1 } : {}),
       ...(claims.basicInput ? { basicInput: 1 } : {}),
       ...(claims.surfaceState ? { surfaceState: 1 } : {}),
     });
-    for (let held = channel.held?.shift(); held; held = channel.held?.shift())
-      await this.#send(channel, held, true);
+    const held = channel.held;
     channel.held = null;
     await this.#publish(session);
+    for (const message of held ?? []) await this.#send(channel, message, true);
     await this.#inventory();
   }
 
@@ -782,19 +800,6 @@ export class PhoneBrowserManager {
   ): Promise<PhoneSession> {
     const identity = claims.identity;
     if (identity.kind === "profile-local") this.#assertBinding(identity.binding);
-    if (identity.kind === "profile-local" && claims.initialSurfaceId !== undefined) {
-      const saved = new Set([claims.initialSurfaceId, ...(claims.dormantSurfaceIds ?? [])]);
-      for (const retired of this.#sessions.values()) {
-        if (
-          retired.channels.size ||
-          retired.claims.identity.kind !== "profile-local" ||
-          JSON.stringify(retired.claims.identity.binding) !== JSON.stringify(identity.binding)
-        )
-          continue;
-        for (const tab of retired.tabs.values())
-          if (!saved.has(BrowserSurfaceIdSchema.parse(tab.id))) await this.#closeTab(retired, tab);
-      }
-    }
     const storeHandle =
       identity.kind === "profile-local"
         ? await this.#bounded(epoch, () =>
@@ -836,11 +841,6 @@ export class PhoneBrowserManager {
         ),
       Math.max(0, deadline - this.#clock.now()),
     );
-    for (const id of claims.dormantSurfaceIds ?? []) {
-      const held = this.#tabs.get(id);
-      if (held && held.state !== "closed" && held.sessionId !== claims.sessionId)
-        await this.#createTab(session, id, held.metadata.url, claims.viewport);
-    }
     this.#sessions.set(claims.sessionId, session);
     return session;
   }
@@ -851,6 +851,51 @@ export class PhoneBrowserManager {
     authorityHandle?: string,
   ): Promise<void> {
     const session = channel.session;
+    if (message.type === "tabs.resync") {
+      this.#tabStream(channel).publisher.reset();
+      await this.#publishChannel(channel);
+      return;
+    }
+    if (message.type === "session.saved") {
+      if (session.claims.identity.kind !== "profile-local") return;
+      let saved = this.#savedStreams.get(channel);
+      if (!saved) {
+        saved = { receiver: new KeyedStreamReceiver(), adopted: new Set() };
+        this.#savedStreams.set(channel, saved);
+      }
+      const { receiver, adopted } = saved;
+      const result = receiver.apply(message.stream);
+      if (message.stream.op === "rows" && receiver.state === "assembling")
+        for (const row of message.stream.rows) {
+          const held = this.#tabs.get(row.id);
+          if (held && held.state !== "closed" && held.sessionId !== session.claims.sessionId) {
+            await this.#createTab(session, row.id, held.metadata.url, session.claims.viewport);
+            adopted.add(row.id);
+          }
+        }
+      if (result === "applied") {
+        for (const id of adopted) {
+          const tab = session.tabs.get(id);
+          if (tab && !receiver.rows.has(id)) await this.#closeTab(session, tab);
+        }
+        adopted.clear();
+        for (const retired of this.#sessions.values()) {
+          if (
+            retired === session ||
+            retired.channels.size ||
+            retired.claims.identity.kind !== "profile-local" ||
+            JSON.stringify(retired.claims.identity.binding) !==
+              JSON.stringify(session.claims.identity.binding)
+          )
+            continue;
+          for (const tab of retired.tabs.values())
+            if (!receiver.rows.has(tab.id)) await this.#closeTab(retired, tab);
+        }
+      }
+      await this.#publish(session);
+      return;
+    }
+
     if (session.closing)
       throw new PhoneBrowserError("target-closed", "The browser session is closing.");
     if (message.type === "agent.attach") {
@@ -1881,6 +1926,12 @@ export class PhoneBrowserManager {
   }
 
   #publishTab(tab: PhoneTab): void {
+    const session = this.#sessions.get(tab.sessionId);
+    for (const id of session?.channels ?? []) {
+      const channel = this.#channels.get(id);
+      if (channel) this.#tabStream(channel).publisher.mark(tab.id);
+    }
+
     this.#presentations.set(tab.id, {
       surfaceId: tab.id,
       nativeGeneration: tab.metadata.generation,
@@ -1928,53 +1979,99 @@ export class PhoneBrowserManager {
     }
   }
 
-  #surfaces(session: PhoneSession): BrowserSurface[] {
-    return [...session.tabs.values()].map((tab) => ({
-      id: BrowserSurfaceIdSchema.parse(tab.id),
-      active: session.activeId === tab.id,
-      title: tab.metadata.title,
-      url: tab.metadata.url,
-      ...(tab.metadata.documentId ? { documentId: tab.metadata.documentId } : {}),
-      geometryRevision: tab.metadata.geometryRevision,
-      loading: tab.metadata.loading,
-      navigationFailed: tab.metadata.navigationFailed,
-      canGoBack: tab.metadata.canGoBack,
-      canGoForward: tab.metadata.canGoForward,
-      order: tab.order,
-      openerId: tab.openerId ? BrowserSurfaceIdSchema.parse(tab.openerId) : null,
-      state: isLive(tab) ? "live" : "suspended",
-    }));
+  #tabStream(channel: PhoneChannel) {
+    let stream = this.#tabStreams.get(channel);
+    if (!stream) {
+      const session = channel.session;
+      stream = {
+        sending: null,
+        publisher: new KeyedStreamPublisher<BrowserTabRecord, BrowserTabStreamMeta>({
+          generation: this.#uuid(),
+          ids: () => session.tabs.keys(),
+          read: (id) => {
+            const tab = session.tabs.get(id);
+            if (!tab) return undefined;
+            const metadata = tab.metadata;
+            return {
+              id: BrowserSurfaceIdSchema.parse(id),
+              state: isLive(tab) ? "live" : "suspended",
+              title: metadata.title.slice(0, 256),
+              url:
+                metadata.url.length <= browserWorkspaceTabUrlMaxLength
+                  ? metadata.url
+                  : "opensteer:unavailable-url",
+              icon: null,
+              order: tab.order,
+              openerId: tab.openerId ? BrowserSurfaceIdSchema.parse(tab.openerId) : null,
+              documentId: metadata.documentId || tab.lastDocumentId,
+              geometryRevision: metadata.geometryRevision,
+              loading: metadata.loading,
+              navigationFailed: metadata.navigationFailed,
+              canGoBack: metadata.canGoBack,
+              canGoForward: metadata.canGoForward,
+              sizedByAgent: false,
+            };
+          },
+          meta: () => ({
+            activeId: session.activeId ? BrowserSurfaceIdSchema.parse(session.activeId) : null,
+            inventoryRevision: session.revision,
+          }),
+          targetBytes: 64 * 1024,
+          envelopeBytes: keyedStreamBytes({ type: "browser.tabs", stream: null }) - 4,
+        }),
+      };
+      this.#tabStreams.set(channel, stream);
+    }
+    return stream;
   }
-
+  async #publishChannel(channel: PhoneChannel): Promise<void> {
+    if (channel.held) return;
+    const stream = this.#tabStream(channel);
+    if (stream.sending) {
+      await stream.sending;
+      if (stream.publisher.pending) await this.#publishChannel(channel);
+      return;
+    }
+    stream.sending = (async () => {
+      for (let frame = stream.publisher.next(); frame; frame = stream.publisher.next()) {
+        try {
+          await this.#send(channel, { type: "browser.tabs", stream: frame });
+          stream.publisher.settled(frame, true);
+        } catch (error) {
+          stream.publisher.settled(frame, false);
+          throw error;
+        }
+      }
+    })();
+    try {
+      await stream.sending;
+    } finally {
+      stream.sending = null;
+    }
+    if (stream.publisher.pending) await this.#publishChannel(channel);
+  }
   async #publish(session: PhoneSession): Promise<void> {
-    await this.#broadcast(session, {
-      type: "browser.surfaces.changed",
-      surfaces: this.#surfaces(session),
-      inventoryRevision: session.revision,
-    });
-    await this.#broadcast(session, {
-      type: "browser.workspace-tabs",
-      tabs: [...session.tabs.values()].map((tab) => ({
-        id: BrowserSurfaceIdSchema.parse(tab.id),
-        title: tab.metadata.title.slice(0, 256),
-        url: tab.metadata.url,
-        order: tab.order,
-        openerId: tab.openerId ? BrowserSurfaceIdSchema.parse(tab.openerId) : null,
-      })),
-      closed: [...session.closed].slice(-64).map((id) => BrowserSurfaceIdSchema.parse(id)),
-    });
+    for (const id of session.channels) {
+      const channel = this.#channels.get(id);
+      if (!channel) continue;
+      const stream = this.#tabStream(channel);
+      stream.publisher.markMeta();
+      await this.#publishChannel(channel);
+    }
   }
 
-  async #broadcast(session: PhoneSession, message: BrowserServerMessage): Promise<void> {
+  async #broadcast(session: PhoneSession, message: BrowserRuntimeServerMessage): Promise<void> {
     for (const id of session.channels) {
       const channel = this.#channels.get(id);
       if (channel) await this.#send(channel, message);
     }
   }
 
-  async #send(channel: PhoneChannel, message: BrowserServerMessage, held = false): Promise<void> {
-    if (message.type === "browser.workspace-tabs" && !channel.claims.workspaceTabRestoreVersion)
-      return;
+  async #send(
+    channel: PhoneChannel,
+    message: BrowserRuntimeServerMessage,
+    held = false,
+  ): Promise<void> {
     if (message.type === "browser.editing" && !channel.claims.basicInput) return;
     if (
       channel.epoch !== this.#epoch ||
@@ -1982,23 +2079,9 @@ export class PhoneBrowserManager {
       !this.#connection
     )
       return;
-    // The Host refuses a stream whose first message is not its snapshot.
     if (channel.held && !held && message.type !== "browser.snapshot") {
-      // The snapshot and the publication after it carry both of these whole.
-      if (message.type !== "browser.surfaces.changed" && message.type !== "browser.workspace-tabs")
-        channel.held.push(message);
+      channel.held.push(message);
       return;
-    }
-    if (message.type === "browser.snapshot" || message.type === "browser.surfaces.changed") {
-      message = {
-        ...message,
-        surfaces: message.surfaces.map((surface) => {
-          const { state, ...baseline } = surface;
-          return channel.claims.surfaceState
-            ? { ...baseline, ...(state ? { state } : {}) }
-            : baseline;
-        }),
-      };
     }
     if (message.type === "clipboard.result")
       this.#clipboard.delete(`${channel.id}:${message.operationId}`);
@@ -2007,7 +2090,7 @@ export class PhoneBrowserManager {
       type: "browser.server-message",
       channelId: channel.id,
       capability: channel.capability,
-      message: BrowserServerMessageSchema.parse(message),
+      message: BrowserRuntimeServerMessageSchema.parse(message),
     });
   }
 

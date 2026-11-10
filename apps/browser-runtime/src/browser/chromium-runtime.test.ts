@@ -273,8 +273,11 @@ describe("real Chromium runtime", () => {
     const binding = ledger.binding(ledger.snapshot()[0]!.id)!;
     const fragmentUrl = `${site.origin}/plain#/document/42`;
     await binding.cdp.send("Page.navigate", { url: fragmentUrl });
-    await waitForLedgerState(ledger, () => ledger.durableSnapshot()[0]?.url === fragmentUrl);
-    expect(ledger.durableSnapshot()[0]?.url).toBe(fragmentUrl);
+    await waitForLedgerState(
+      ledger,
+      () => ledger.toRecord(binding.surface.id)?.url === fragmentUrl,
+    );
+    expect(ledger.toRecord(binding.surface.id)?.url).toBe(fragmentUrl);
     const reloaded = new Promise<void>((resolve) => {
       const loaded = () => {
         binding.cdp.off("Page.loadEventFired", loaded);
@@ -284,11 +287,11 @@ describe("real Chromium runtime", () => {
     });
     await binding.cdp.send("Page.reload");
     await withBrowserTestSignal(reloaded);
-    expect(ledger.durableSnapshot()[0]?.url).toBe(fragmentUrl);
+    expect(ledger.toRecord(binding.surface.id)?.url).toBe(fragmentUrl);
     const longUrl = `${site.origin}/plain?q=${"x".repeat(9000)}#/document/43`;
     await binding.cdp.send("Page.navigate", { url: longUrl });
-    await waitForLedgerState(ledger, () => ledger.durableSnapshot()[0]?.url === longUrl);
-    expect(ledger.durableSnapshot()[0]?.url).toBe(longUrl);
+    await waitForLedgerState(ledger, () => ledger.toRecord(binding.surface.id)?.url === longUrl);
+    expect(ledger.toRecord(binding.surface.id)?.url).toBe(longUrl);
     const overflowUrl = `${site.origin}/plain#${"x".repeat(16400)}`;
     await binding.cdp.send("Page.navigate", { url: overflowUrl });
     await waitFor(() => binding.page.url() === overflowUrl);
@@ -301,9 +304,9 @@ describe("real Chromium runtime", () => {
     });
     await waitForLedgerState(
       ledger,
-      () => ledger.durableSnapshot()[0]?.url === "opensteer:unavailable-url",
+      () => ledger.toRecord(binding.surface.id)?.url === "opensteer:unavailable-url",
     );
-    expect(ledger.durableSnapshot()[0]?.url).toBe("opensteer:unavailable-url");
+    expect(ledger.toRecord(binding.surface.id)?.url).toBe("opensteer:unavailable-url");
     const artifact = join(
       process.env.OPENSTEER_DURABLE_URL_EVIDENCE_DIR ?? tmpdir(),
       "durable-url-engine.json",
@@ -318,7 +321,7 @@ describe("real Chromium runtime", () => {
           fragmentUrl,
           longUrlLength: longUrl.length,
           overflowUrlLength: overflowUrl.length,
-          descriptor: ledger.durableSnapshot()[0],
+          descriptor: ledger.toRecord(binding.surface.id),
         },
         null,
         2,
@@ -834,16 +837,12 @@ describe("real Chromium runtime", () => {
     }
     // The viewer already holds the inventories sent before this window, so a frame of
     // a geometry they announced is in order whenever it lands.
-    const announcedBefore =
-      sink.messages
-        .flatMap((message) => (message.type === "browser.surfaces.changed" ? [message] : []))
-        .at(-1)
-        ?.surfaces.find((surface) => surface.id === y.surfaceId)?.geometryRevision ?? -1;
+    const announcedBefore = sink.tabs.rows.get(y.surfaceId)?.geometryRevision ?? -1;
     const order: { type: string; revision: number }[] = [];
     let releaseList: (() => void) | undefined;
     let blockList = false;
     sink.sendServerImplementation = async (message) => {
-      if (message.type === "browser.surfaces.changed") {
+      if (message.type === "browser.tabs" && message.stream.op === "change") {
         if (blockList) {
           blockList = false;
           await new Promise<void>((resolve) => {
@@ -852,8 +851,7 @@ describe("real Chromium runtime", () => {
         }
         order.push({
           type: "inventory",
-          revision:
-            message.surfaces.find((surface) => surface.id === y.surfaceId)?.geometryRevision ?? 0,
+          revision: sink.tabs.rows.get(y.surfaceId)?.geometryRevision ?? 0,
         });
       }
     };
@@ -1468,18 +1466,10 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
     );
     const personPopupSize = await pageSize(String(personPopupAttach.sessionId));
     expect(personPopupSize).toEqual(emulated);
-    const latestSurfaces = sink.messages
-      .filter((message) => message.type === "browser.surfaces.changed")
-      .at(-1);
-    expect(latestSurfaces).toMatchObject({
-      surfaces: expect.arrayContaining([
-        expect.objectContaining({
-          active: true,
-          id: personPopup.surface.id,
-          openerId: person.surface.id,
-        }),
-      ]),
+    expect(sink.tabs.rows.get(personPopup.surface.id)).toMatchObject({
+      openerId: person.surface.id,
     });
+    expect(sink.tabs.meta?.activeId).toBe(personPopup.surface.id);
 
     // A closed page fails instead of being replaced.
     await request("Target.closeTarget", { targetId: rootTargetId });

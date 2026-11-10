@@ -220,8 +220,7 @@ integration("session-scoped browser agent backends", () => {
         (message) => message.type === "host.browser-sessions-changed",
         2000,
       );
-      f.phone.sendServer({
-        type: "browser.surfaces.changed",
+      f.phone.publishTabs({
         surfaces: [
           {
             id: tabId,
@@ -459,7 +458,7 @@ integration("session-scoped browser agent backends", () => {
         (message) => message.type === "browser.surfaces.changed",
         2_000,
       );
-      f.phone.sendServer({ type: "browser.surfaces.changed", surfaces });
+      f.phone.publishTabs({ surfaces });
       await changed;
     };
     await publish([]);
@@ -696,8 +695,7 @@ integration("session-scoped browser agent backends", () => {
       (message) => message.type === "browser.surfaces.changed",
       2_000,
     );
-    f.phone.sendServer({
-      type: "browser.surfaces.changed",
+    f.phone.publishTabs({
       surfaces: [
         {
           id: "page-integration",
@@ -869,8 +867,7 @@ integration("session-scoped browser agent backends", () => {
       (message) => message.type === "browser.surfaces.changed",
       2_000,
     );
-    f.phone.sendServer({
-      type: "browser.surfaces.changed",
+    f.phone.publishTabs({
       surfaces: [
         {
           id: "page-integration",

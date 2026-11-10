@@ -23,7 +23,7 @@ const binding = LocalProfileBindingSchema.parse({
 const claims = {
   operationExpiresAt: new Date(Date.now() + 18_000).toISOString(),
   remainingBudgetMs: 18_000,
-  wireVersion: 1,
+  wireVersion: 2,
   access: "read-write",
   audience: "opensteer-browser-runtime",
   expiresAt: "2026-10-31T12:01:00.000Z",
@@ -77,7 +77,7 @@ it("requires the current signed wire contract and safe initial navigation", () =
   });
   for (const value of [
     { ...claims, wireVersion: undefined },
-    { ...claims, wireVersion: 2 },
+    { ...claims, wireVersion: 1 },
     { ...claims, initialNavigation: { ...initialNavigation, url: "file:///private" } },
     {
       ...claims,

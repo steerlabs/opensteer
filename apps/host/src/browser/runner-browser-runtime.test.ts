@@ -20,7 +20,7 @@ async function maintenanceFixture() {
       modules: {
         browser: {
           runtimeId: "browser",
-          wireVersion: 1,
+          wireVersion: 2,
           localProfileStorage: { storageInstanceId, engine: "chromium" },
         },
       },
@@ -277,7 +277,7 @@ it.each(
     identity: {
       runnerId,
       modules: {
-        browser: { wireVersion: 1, runtimeId: "browser", [capability]: version },
+        browser: { wireVersion: 2, runtimeId: "browser", [capability]: version },
       },
     },
   } as unknown as RunnerAuxiliaryStream;
@@ -307,7 +307,7 @@ it.each([
   const stream = {
     identity: {
       runnerId,
-      modules: { browser: { wireVersion: 1, runtimeId: "browser", editing, clipboard } },
+      modules: { browser: { wireVersion: 2, runtimeId: "browser", editing, clipboard } },
     },
   } as RunnerAuxiliaryStream;
   const registry: RunnerBrowserRegistry = {
@@ -404,7 +404,7 @@ it("closes a browser whose background renewal times out without an unhandled rej
     fence: { runnerId, connectionId: "connection", connectionGeneration: 1 },
     identity: {
       runnerId,
-      modules: { browser: { wireVersion: 1, runtimeId: "browser" } },
+      modules: { browser: { wireVersion: 2, runtimeId: "browser" } },
     },
     streamLeaseExpiresAt: new Date(Date.now() + 10_000).toISOString(),
   } as RunnerAuxiliaryStream;
@@ -477,7 +477,7 @@ it("keeps native execution unavailable until the exact stream completes reconcil
       modules: {
         browser: {
           runtimeId: "native",
-          wireVersion: 1,
+          wireVersion: 2,
           localProfileStorage: { storageInstanceId, engine: "electron" },
         },
       },
@@ -567,7 +567,7 @@ it.each(["pending-restart", "deleted", "failed"] as const)(
         modules: {
           browser: {
             runtimeId: "browser",
-            wireVersion: 1,
+            wireVersion: 2,
             localProfileStorage: { storageInstanceId, engine: "electron" },
           },
         },
@@ -683,7 +683,7 @@ it("never admits a failed or truncated inventory as an empty complete inventory"
       modules: {
         browser: {
           runtimeId: "browser",
-          wireVersion: 1,
+          wireVersion: 2,
           localProfileStorage: { storageInstanceId, engine: "electron" },
         },
       },
@@ -755,7 +755,7 @@ it("retries the same erasure after a lost acknowledgement on a replacement auxil
       modules: {
         browser: {
           runtimeId: "browser",
-          wireVersion: 1,
+          wireVersion: 2,
           localProfileStorage: { storageInstanceId, engine: "electron" },
         },
       },
@@ -855,7 +855,7 @@ it("shares capability acquisition when one of two concurrent attachments is canc
     fence: { runnerId, connectionId: "concurrent", connectionGeneration: 1 },
     identity: {
       runnerId,
-      modules: { browser: { runtimeId: "browser", wireVersion: 1 } },
+      modules: { browser: { runtimeId: "browser", wireVersion: 2 } },
     },
     streamLeaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
   } as RunnerAuxiliaryStream;
@@ -936,7 +936,7 @@ it("requires the profile home's inventory, not Personal's Main inventory", async
         modules: {
           browser: {
             runtimeId: "browser",
-            wireVersion: 1,
+            wireVersion: 2,
             localProfileStorage: { storageInstanceId: crypto.randomUUID(), engine: "electron" },
           },
         },
@@ -991,7 +991,7 @@ it("reports a rejected attachment's reason before closing its channel", async ()
     fence: { runnerId, connectionId: "connection", connectionGeneration: 1 },
     identity: {
       runnerId,
-      modules: { browser: { wireVersion: 1, runtimeId: "browser" } },
+      modules: { browser: { wireVersion: 2, runtimeId: "browser" } },
     },
     streamLeaseExpiresAt: new Date(Date.now() + 10_000).toISOString(),
   } as RunnerAuxiliaryStream;
@@ -1068,7 +1068,7 @@ it("gives attachment the startup budget", async () => {
       runnerId,
       modules: {
         browser: {
-          wireVersion: 1,
+          wireVersion: 2,
           runtimeId: "browser",
           localProfileStorage: {
             storageInstanceId: "00000000-0000-4000-8000-000000000001",
@@ -1149,7 +1149,7 @@ it.each(["timeout", "cancel"] as const)(
       fence: { runnerId, connectionId: "connection", connectionGeneration: 1 },
       identity: {
         runnerId,
-        modules: { browser: { wireVersion: 1, runtimeId: "browser" } },
+        modules: { browser: { wireVersion: 2, runtimeId: "browser" } },
       },
       streamLeaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
     } as RunnerAuxiliaryStream;

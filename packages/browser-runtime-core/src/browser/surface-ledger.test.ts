@@ -375,14 +375,16 @@ describe("SurfaceLedger", () => {
         },
       });
       expect(ledger.snapshot()[0]).toMatchObject({ url: "https://offline.test/page?q=1#part" });
-      expect(ledger.durableSnapshot()[0]).toMatchObject({
+      expect(ledger.toRecord(ledger.snapshot()[0]!.id)).toMatchObject({
         url: "https://offline.test/page?q=1#part",
       });
       expect(ledger.committedUrl(id)).toBe("chrome-error://chromewebdata/");
       page.cdpSession.emit("Page.frameNavigated", {
         frame: { id: "main", loaderId: "next", url: "https://online.test/" },
       });
-      expect(ledger.durableSnapshot()[0]).toMatchObject({ url: "https://online.test/" });
+      expect(ledger.toRecord(ledger.snapshot()[0]!.id)).toMatchObject({
+        url: "https://online.test/",
+      });
     } finally {
       await ledger.close();
     }
@@ -401,7 +403,9 @@ describe("SurfaceLedger", () => {
           unreachableUrl: `https://offline.test/${"a".repeat(browserWorkspaceTabUrlMaxLength)}`,
         },
       });
-      expect(ledger.durableSnapshot()[0]).toMatchObject({ url: "opensteer:unavailable-url" });
+      expect(ledger.toRecord(ledger.snapshot()[0]!.id)).toMatchObject({
+        url: "opensteer:unavailable-url",
+      });
     } finally {
       await ledger.close();
     }
@@ -442,16 +446,20 @@ describe("SurfaceLedger", () => {
       page.cdpSession.emit("Page.frameNavigated", {
         frame: { id: "main", url: "https://example.test/", urlFragment: "#/document/42" },
       });
-      expect(ledger.durableSnapshot()[0]?.url).toBe("https://example.test/#/document/42");
+      expect(ledger.toRecord(ledger.snapshot()[0]!.id)?.url).toBe(
+        "https://example.test/#/document/42",
+      );
       page.cdpSession.emit("Page.frameNavigated", {
         frame: { id: "child", parentId: "main", url: "https://child.test/", urlFragment: "#child" },
       });
-      expect(ledger.durableSnapshot()[0]?.url).toBe("https://example.test/#/document/42");
+      expect(ledger.toRecord(ledger.snapshot()[0]!.id)?.url).toBe(
+        "https://example.test/#/document/42",
+      );
       for (const urlFragment of [undefined, 42, "invalid"]) {
         page.cdpSession.emit("Page.frameNavigated", {
           frame: { id: "main", url: "https://example.test/next", urlFragment },
         });
-        expect(ledger.durableSnapshot()[0]?.url).toBe("https://example.test/next");
+        expect(ledger.toRecord(ledger.snapshot()[0]!.id)?.url).toBe("https://example.test/next");
       }
     } finally {
       await ledger.close();
@@ -464,19 +472,19 @@ describe("SurfaceLedger", () => {
     try {
       const url = `https://example.test/${"x".repeat(9000)}`;
       page.cdpSession.emit("Page.frameNavigated", { frame: { id: "main", url } });
-      expect(ledger.durableSnapshot()[0]?.url).toBe(url);
+      expect(ledger.toRecord(ledger.snapshot()[0]!.id)?.url).toBe(url);
       const limitUrl = "https://example.test/".padEnd(16384, "x");
       page.cdpSession.emit("Page.frameNavigated", { frame: { id: "main", url: limitUrl } });
-      expect(ledger.durableSnapshot()[0]?.url).toBe(limitUrl);
+      expect(ledger.toRecord(ledger.snapshot()[0]!.id)?.url).toBe(limitUrl);
       page.cdpSession.emit("Page.frameNavigated", {
         frame: { id: "main", url: limitUrl, urlFragment: "#over" },
       });
-      expect(ledger.durableSnapshot()[0]?.url).toBe("opensteer:unavailable-url");
+      expect(ledger.toRecord(ledger.snapshot()[0]!.id)?.url).toBe("opensteer:unavailable-url");
       page.cdpSession.emit("Page.navigatedWithinDocument", {
         frameId: "main",
         url: `${limitUrl}x`,
       });
-      expect(ledger.durableSnapshot()[0]?.url).toBe("opensteer:unavailable-url");
+      expect(ledger.toRecord(ledger.snapshot()[0]!.id)?.url).toBe("opensteer:unavailable-url");
     } finally {
       await ledger.close();
     }

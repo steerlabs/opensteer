@@ -74,7 +74,7 @@ integration("Reopen closed workspace tab through the Host", () => {
         .executeTakeFirstOrThrow()
     ).createdBy;
     const first = BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`);
-    await tabs.record(
+    await tabs.recordChanges(
       sessionId,
       [
         {
