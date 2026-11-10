@@ -1,3 +1,4 @@
+import { deploymentPolicy, deploymentClientPolicy } from "@opensteer/core";
 import { readAutomaticModelPreview } from "./agents/automatic-models.js";
 import { registerDesktopUpdateMaintenance } from "./access/personal-desktop-update-routes.js";
 import { ThreadService, assertAccessModeEnforceable } from "./threads/thread-service.js";
@@ -84,7 +85,6 @@ import {
   unsupportedVersionReason,
   type AgentEvent,
   type AuthenticatedSession,
-  type DeploymentDisplayKind,
   type EnvironmentId,
   type HarnessInstanceId,
   type HarnessInstanceStateKind,
@@ -534,7 +534,10 @@ export async function createHostServer(
     ? {
         oauth: dependencies.connections,
         canonicalOrigin: dependencies.discovery.document.canonicalOrigin,
-        personal: dependencies.discovery.document.deploymentShape.kind === "personal",
+        personal: deploymentPolicy({
+          kind: dependencies.discovery.document.deploymentShape.kind,
+          defaultWorkspaceBacking: "local-directory",
+        }).services.personalRemoteAccess,
         remoteOrigin: async () =>
           (await dependencies.personalRemoteAccess?.service.status())?.route?.document.route
             .origin ?? null,
@@ -939,7 +942,7 @@ export async function createHostServer(
 
   const machineRegistryRows = async (
     session: NonNullable<HostApiServerContext["session"]>,
-  ): Promise<Omit<MachineProjectionInput, "deploymentKind">> => {
+  ): Promise<Omit<MachineProjectionInput, "deploymentOwnership">> => {
     const ownerId = session.user.id;
     const includeDeployment = session.user.instanceRole === "administrator";
     const [runnerPage, pendingRunners] = await Promise.all([
@@ -1125,10 +1128,14 @@ export async function createHostServer(
     return readiness;
   };
 
-  const machineSummaries = async (
-    session: NonNullable<HostApiServerContext["session"]>,
-    deploymentKind: DeploymentDisplayKind,
-  ) => projectMachines({ ...(await machineRegistryRows(session)), deploymentKind });
+  const machineSummaries = async (session: NonNullable<HostApiServerContext["session"]>) =>
+    projectMachines({
+      ...(await machineRegistryRows(session)),
+      deploymentOwnership: deploymentPolicy({
+        kind: dependencies.discovery.document.deploymentShape.kind,
+        defaultWorkspaceBacking: "local-directory",
+      }).ownership,
+    });
 
   const coreRpcHandlers = {
     ...createVoiceHandlers({ ...dependencies, publishWorkspaceEvent, threads: threadService }),
@@ -1225,7 +1232,7 @@ export async function createHostServer(
           workspaceBackings: runner?.modules.agents?.workspaceBackings ?? [],
         };
       });
-      const machines = await machineSummaries(session, identityConfig.deployment.kind);
+      const machines = await machineSummaries(session);
       const notificationPreferences =
         homeWorkspace && !workspacePage.workspaces.some(({ id }) => id === homeWorkspace.id)
           ? [
@@ -1244,6 +1251,12 @@ export async function createHostServer(
           notificationPreferences,
           deploymentId: dependencies.discovery.document.deploymentId,
           deploymentShape: dependencies.discovery.document.deploymentShape,
+          deploymentPolicy: deploymentClientPolicy(
+            deploymentPolicy({
+              kind: dependencies.discovery.document.deploymentShape.kind,
+              defaultWorkspaceBacking: "local-directory",
+            }),
+          ),
           environments: environmentSummaries,
           executionPreferences,
           quietTaskDays,
@@ -1362,10 +1375,9 @@ export async function createHostServer(
     },
     "machines.list": async (_input, context) => {
       const session = requireRpcSession(context);
-      const identityConfig = await dependencies.authenticator.identity.configuration();
       return rpcSuccess(
         hostApi["machines.list"].success.parse({
-          machines: await machineSummaries(session, identityConfig.deployment.kind),
+          machines: await machineSummaries(session),
         }),
       );
     },

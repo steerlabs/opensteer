@@ -4336,6 +4336,7 @@ export class HttpHostClient {
       browserSessions,
       connection: workspaces.length ? this.#snapshot.connection : "connected",
       deploymentShape: payload.deploymentShape,
+      deploymentPolicy: payload.deploymentPolicy,
       deploymentId: payload.deploymentId,
       environments,
       // Absence is the older Host saying nothing is remembered, not a gap to

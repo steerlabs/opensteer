@@ -93,6 +93,13 @@ export const AppTabsSchema = z.array(AppTabSchema).max(500);
 export type AppTab = z.infer<typeof AppTabSchema>;
 
 export const HostBootstrapSchema = z.object({
+  deploymentPolicy: z
+    .object({
+      ownership: z.enum(["single-user", "members"]),
+      localRunnerDefaultModules: z.array(z.enum(["agents", "browser", "shell"])).max(3),
+    })
+    .optional()
+    .catch(undefined),
   appTabs: AppTabsSchema.optional(),
   /** Recovery can replace the session silently, and a running app's access ends with the old one. */
   sessionId: AuthSessionIdSchema.optional(),

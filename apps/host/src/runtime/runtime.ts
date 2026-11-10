@@ -1,3 +1,4 @@
+import { deploymentPolicy } from "@opensteer/core";
 import { RequestHold } from "../mcp/request-hold.js";
 import { ThreadNaming } from "../agents/thread-naming.js";
 import { QuietTasks } from "../threads/quiet-tasks.js";
@@ -528,7 +529,7 @@ export async function createHostRuntime(
       });
     }
     const localSetupToken =
-      config.workspace.shape.kind === "personal"
+      deploymentPolicy(config.workspace.shape).ownership === "single-user"
         ? config.identity.localOwnerClaimToken
         : config.exposure === "loopback"
           ? deriveLocalSetupToken(config.authSecret)
@@ -562,7 +563,7 @@ export async function createHostRuntime(
     const identity = new IdentityService(database, {
       deployment: {
         kind:
-          config.workspace.shape.kind === "personal"
+          deploymentPolicy(config.workspace.shape).ownership === "single-user"
             ? "personal"
             : config.mode === "development" && config.exposure === "loopback"
               ? "development"
@@ -575,7 +576,7 @@ export async function createHostRuntime(
         realtime.closeSession(sessionId);
         closeBrowserSession(sessionId);
       },
-      ...(localSetupToken && config.workspace.shape.kind === "personal"
+      ...(localSetupToken && deploymentPolicy(config.workspace.shape).ownership === "single-user"
         ? {
             localMachineOwner: {
               displayName: "You",
@@ -614,7 +615,8 @@ export async function createHostRuntime(
     const runFileRelay = new RunFileRelay();
     let disconnectBrowserSources = () => {};
     const personalAccessAuthority =
-      config.workspace.shape.kind === "personal" && config.exposure === "loopback"
+      deploymentPolicy(config.workspace.shape).services.personalRemoteAccess &&
+      config.exposure === "loopback"
         ? hostAuthority
         : undefined;
     const personalRemoteAccess = personalAccessAuthority
@@ -755,7 +757,7 @@ export async function createHostRuntime(
       deploymentId: deployment.id,
       repository: store,
       baseUrl: config.canonicalOrigin,
-      ...(deployment.deploymentShape.kind === "personal"
+      ...(deploymentPolicy(deployment.deploymentShape).ownership === "single-user"
         ? { beforeProfileOpen: () => runnerBrowsers.requirePersonalProfileInventory() }
         : {}),
       onReconciled: async (profileId) => {
@@ -803,7 +805,7 @@ export async function createHostRuntime(
     const browser = new BrowserService({
       onMissingActor: (sessionId, bindingId) => logMissingBrowserActor(sessionId, bindingId),
       hostOrigin: config.canonicalOrigin,
-      personal: deployment.deploymentShape.kind === "personal",
+      personal: deploymentPolicy(deployment.deploymentShape).ownership === "single-user",
       localProfiles,
       eraseLocalProfiles: (runnerId) => runnerBrowsers.resumeDeletions(runnerId),
       passkeys: config.passkeys === true,
@@ -901,7 +903,7 @@ export async function createHostRuntime(
     const passwordSignIns = new PasswordSignInService({
       authority: computerApps,
       resolveAuthority: async (ownerId) => {
-        if (config.workspace.shape.kind !== "personal") return null;
+        if (deploymentPolicy(config.workspace.shape).ownership !== "single-user") return null;
         let after: RunnerId | undefined;
         do {
           const page = await store.listRunners({
@@ -997,7 +999,7 @@ export async function createHostRuntime(
       return resolveIntegrationDeploymentPosture({
         accountReachability: config.account?.reachability ?? null,
         personalAccountLinked:
-          config.workspace.shape.kind === "personal" &&
+          deploymentPolicy(config.workspace.shape).ownership === "single-user" &&
           (await database
             .selectFrom("personalRemoteAccountLink")
             .select("singletonKey")
@@ -1133,7 +1135,10 @@ export async function createHostRuntime(
       drivers: { local: localWorkspaceDriver },
       shape: { ...config.workspace.shape, defaultWorkspaceBacking: "local-directory" },
       resolveOwnerEnvironmentId: async (ownerId) => {
-        if (config.workspace.shape.kind === "personal" && storage.kind === "local-directory")
+        if (
+          deploymentPolicy(config.workspace.shape).ownership === "single-user" &&
+          storage.kind === "local-directory"
+        )
           return storage.ownerEnvironmentId;
         const environments = await store.listEnvironmentsForUser(ownerId);
         const environment = environments.find(
@@ -1414,7 +1419,7 @@ export async function createHostRuntime(
     };
     const integrationPlatform = new IntegrationPlatformService({
       longRequestHold: (run) => longRequestHold(run.runId),
-      personal: config.workspace.shape.kind === "personal",
+      personal: deploymentPolicy(config.workspace.shape).ownership === "single-user",
       adapters: integrationAdapters,
       secretVault: integrationVault,
       listConnections: (ownerUserId) => integrationStore.listConnections(ownerUserId),
@@ -2339,7 +2344,8 @@ export async function createHostRuntime(
     const localBootstrap = localSetupToken
       ? new LocalBootstrapService({
           publicUrl: config.runtimeOrigin,
-          requireSetupCredential: config.workspace.shape.kind === "personal",
+          requireSetupCredential:
+            deploymentPolicy(config.workspace.shape).ownership === "single-user",
           runners: runnerAuthenticator,
           setupToken: localSetupToken,
           store,

@@ -1,3 +1,4 @@
+import { deploymentPolicy } from "@opensteer/core";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { CanonicalOriginSchema } from "@opensteer/core";
 import { encodeBase64Url } from "@opensteer/shared/base64url";
@@ -9,7 +10,10 @@ export const maximumPersonalHostAccessRouteSigningBytes = 8 * 1_024;
 export function isPersonalHost(
   discovery: Pick<z.infer<typeof HostDiscoveryDocumentSchema>, "deploymentShape">,
 ): boolean {
-  return discovery.deploymentShape.kind === "personal";
+  return deploymentPolicy({
+    kind: discovery.deploymentShape.kind,
+    defaultWorkspaceBacking: "local-directory",
+  }).services.personalRemoteAccess;
 }
 
 export const PersonalAccessRouteGenerationSchema = z

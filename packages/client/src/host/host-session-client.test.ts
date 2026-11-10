@@ -261,6 +261,23 @@ function preferencesForWorkspaces(value: unknown) {
 }
 
 describe("saved-view readiness", () => {
+  it.each([
+    undefined,
+    { ownership: "members" as const, localRunnerDefaultModules: ["agents", "browser", "shell"] },
+    { ownership: "future-model", localRunnerDefaultModules: ["future-module"] },
+  ])("retains the Host policy projection without deriving it from shape: %j", async (policy) => {
+    const client = createHttpHostClient({
+      refreshIntervalMs: 0,
+      fetch: async () => json({ ...bootstrap([]), deploymentPolicy: policy }),
+    });
+    await client.load();
+    expect(client.getSnapshot().deploymentShape?.kind).toBe("personal");
+    expect(client.getSnapshot().deploymentPolicy).toEqual(
+      policy?.ownership === "future-model" ? undefined : policy,
+    );
+    client.dispose();
+  });
+
   it("distinguishes unknown Main, explicitly absent Home, and accepted latest/around windows", async () => {
     const main = makeWorkspace();
     const thread = makeThread(main.id);
