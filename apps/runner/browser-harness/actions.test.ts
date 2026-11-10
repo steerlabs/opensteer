@@ -23,6 +23,7 @@ const binding = {
 };
 
 class Socket extends EventEmitter {
+  tabs = [binding];
   requests: Array<ReturnType<typeof BrowserActionRequestSchema.parse>> = [];
   binding = { ...binding };
   respond = true;
@@ -38,7 +39,7 @@ class Socket extends EventEmitter {
     let result: unknown;
     switch (request.action.type) {
       case "session.tabs":
-        result = { type: request.action.type, tabs: [this.binding] };
+        result = { type: request.action.type, tabs: this.tabs };
         break;
       case "surface.attach":
       case "surface.resume":
@@ -141,6 +142,51 @@ function fixture() {
 }
 
 describe("actions Harness conformance", () => {
+  it("opens the first tab without a target and focuses before pressing or appending", async () => {
+    const { socket, harness } = fixture();
+    socket.tabs = [];
+    await harness.listTabs();
+    expect(socket.requests[0]).not.toHaveProperty("surfaceId");
+    await harness.newTab("https://first.test/");
+    const opened = socket.requests.find((request) => request.action.type === "surface.open");
+    expect(opened).not.toHaveProperty("surfaceId");
+    expect(opened).not.toHaveProperty("documentId");
+    const start = socket.requests.length;
+    await harness.page.locator("input").focus();
+    await harness.page.locator("input").press("Enter");
+    await harness.page.locator("input").press("Backspace");
+    await harness.fillInput("input", "tail", { clear: false });
+    expect(socket.requests.slice(start).map((request) => request.action)).toEqual([
+      { type: "dom.act", locator: { by: "css", value: "input" }, kind: "focus" },
+      { type: "dom.act", locator: { by: "css", value: "input" }, kind: "focus" },
+      { type: "text.key", key: "Enter" },
+      { type: "dom.act", locator: { by: "css", value: "input" }, kind: "focus" },
+      { type: "text.key", key: "Backspace" },
+      {
+        type: "dom.act",
+        locator: { by: "css", value: "input", position: "first" },
+        kind: "focus",
+        selection: "end",
+      },
+      { type: "text.insert", text: "tail" },
+    ]);
+  });
+
+  it("never sends text after an unsuccessful focus or replays an unknown focus outcome", async () => {
+    for (const code of ["outcome-unknown", "stale-document", "not-actionable"] as const) {
+      const { socket, harness } = fixture();
+      await harness.ensureRealTab();
+      socket.errorCode = code;
+      socket.errorOnce = true;
+      const start = socket.requests.length;
+      await expect(harness.page.locator("input").press("Enter")).rejects.toMatchObject({ code });
+      expect(
+        socket.requests.slice(start).filter((request) => request.action.type === "dom.act"),
+      ).toHaveLength(1);
+      expect(socket.requests.some((request) => request.action.type === "text.key")).toBe(false);
+      expect(socket.requests.some((request) => request.action.type === "text.insert")).toBe(false);
+    }
+  });
   it("maps page operations to the real bounded action schemas", async () => {
     const { socket, harness } = fixture();
     expect(await harness.listTabs()).toMatchObject([{ targetId: binding.surfaceId }]);
@@ -339,8 +385,7 @@ describe("actions Harness conformance", () => {
       () => harness.page.getByText(/Pay/u),
       () => harness.page.getByRole("button", { includeHidden: true }),
       () => harness.page.getByRole("checkbox", { checked: true }),
-      () => harness.page.locator("input").press("Enter"),
-      () => harness.fillInput("input", "text", { clear: false }),
+      () => harness.page.locator("input").press("Tab"),
       () => harness.fillLogin("ref", "username"),
       () => harness.fillCard("ref", "number"),
       () => harness.page.screenshot({ fullPage: true }),

@@ -179,13 +179,24 @@ export const BrowserActionSchema = z.discriminatedUnion("type", [
     .strictObject({
       type: z.literal("dom.act"),
       ...locatorFields,
-      kind: z.enum(["click", "fill", "clear", "check", "uncheck", "setChecked", "selectOption"]),
+      kind: z.enum([
+        "click",
+        "focus",
+        "fill",
+        "clear",
+        "check",
+        "uncheck",
+        "setChecked",
+        "selectOption",
+      ]),
       button: z.literal("left").optional(),
       clickCount: z.union([z.literal(1), z.literal(2)]).optional(),
+      selection: z.literal("end").optional(),
       value: z.union([text, z.boolean()]).optional(),
       values: z.array(text).max(100).optional(),
     })
     .refine((action) => {
+      if (action.selection !== undefined && action.kind !== "focus") return false;
       if (action.kind === "fill")
         return (
           typeof action.value === "string" &&
@@ -276,7 +287,7 @@ export const BrowserActionRequestSchema = z
   .strictObject({
     id: revision,
     sessionId: BrowserSessionIdSchema,
-    surfaceId: BrowserSurfaceIdSchema,
+    surfaceId: BrowserSurfaceIdSchema.optional(),
     documentId: identifier.optional(),
     geometryRevision: revision.optional(),
     timeoutMs: BrowserActionTimeoutSchema.default(browserActionDefaultTimeoutMs),
@@ -284,7 +295,18 @@ export const BrowserActionRequestSchema = z
   })
   .superRefine((request, context) => {
     if (
-      !["session.tabs", "surface.attach", "surface.resume"].includes(request.action.type) &&
+      !["session.tabs", "surface.open"].includes(request.action.type) &&
+      request.surfaceId === undefined
+    )
+      context.addIssue({
+        code: "custom",
+        path: ["surfaceId"],
+        message: "A surface operation requires its surface ID.",
+      });
+    if (
+      !["session.tabs", "surface.open", "surface.attach", "surface.resume"].includes(
+        request.action.type,
+      ) &&
       !request.documentId
     )
       context.addIssue({

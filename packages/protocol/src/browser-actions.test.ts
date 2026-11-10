@@ -110,6 +110,54 @@ const relay = {
 };
 
 describe("typed browser agent wire", () => {
+  it("admits payload-free focus and surface-free session actions, keeping existing target fences", () => {
+    const focus = { type: "dom.act", kind: "focus", locator };
+    expect(BrowserActionRequestSchema.safeParse({ ...request, action: focus }).success).toBe(true);
+    expect(
+      BrowserActionRequestSchema.safeParse({ ...request, action: { ...focus, selection: "end" } })
+        .success,
+    ).toBe(true);
+    expect(
+      BrowserActionRequestSchema.safeParse({
+        ...request,
+        action: { ...focus, kind: "click", selection: "end" },
+      }).success,
+    ).toBe(false);
+    expect(
+      BrowserActionRequestSchema.safeParse({ ...request, action: { ...focus, selection: "all" } })
+        .success,
+    ).toBe(false);
+    for (const extra of [{ value: "text" }, { values: [] }, { button: "left" }, { clickCount: 1 }])
+      expect(
+        BrowserActionRequestSchema.safeParse({ ...request, action: { ...focus, ...extra } })
+          .success,
+      ).toBe(false);
+    for (const action of [
+      { type: "session.tabs" },
+      { type: "surface.open", url: "https://example.test/" },
+    ])
+      expect(BrowserActionRequestSchema.parse({ id: 1, sessionId, action })).not.toHaveProperty(
+        "surfaceId",
+      );
+    for (const { action } of examples.filter(
+      ({ action }) => !["session.tabs", "surface.open"].includes(action.type),
+    ))
+      expect(
+        BrowserActionRequestSchema.safeParse({ ...request, surfaceId: undefined, action }).success,
+        action.type,
+      ).toBe(false);
+    expect(
+      BrowserActionRequestSchema.safeParse({ ...request, action: focus, documentId: undefined })
+        .success,
+    ).toBe(false);
+    expect(
+      BrowserActionRequestSchema.safeParse({
+        ...request,
+        action: { type: "surface.close" },
+        documentId: undefined,
+      }).success,
+    ).toBe(false);
+  });
   it.each(examples)(
     "admits $action.type through the fenced relay with its bounded result",
     ({ action, result }) => {
