@@ -106,6 +106,11 @@ return picture credit even when decoding fails. Routes name exact tabs or owner-
 closed target stays closed and is never replaced by a sibling. Starting browsers and connecting
 Chrome stay on computers.
 
+A tab list shows a page's picture only when this phone already presented one
+([browser-last-picture.ts](../packages/client/src/host/browser-last-picture.ts)); a row never asks
+for one, because each would cost a stream on cellular. A kept picture is dropped when its tab
+closes or loads another page, so it never shows a page the tab no longer has.
+
 A zero-reorder H.264 stream does not guarantee immediate Android output: the software AVC decoder
 can hold pictures until more input arrives, and
 [low-latency decoding](https://source.android.com/docs/core/media/low-latency-media) is optional, so

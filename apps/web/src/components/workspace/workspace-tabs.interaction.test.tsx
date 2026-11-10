@@ -276,7 +276,7 @@ describe("tabs that read like a browser's", () => {
     await settle(60);
   }
 
-  it("web tabs first, a hairline, then Mac apps and phones, each in authoritative order, and + New tab last", async () => {
+  it("a device's web tabs, then its apps with no line between, each in authoritative order, and + New tab last", async () => {
     await mount("/");
     const places = placeList(client.getSnapshot());
     const web = places.filter((place) => place.kind === "browser").map((place) => place.key);
@@ -286,8 +286,7 @@ describe("tabs that read like a browser's", () => {
     expect(rowKeys()).toEqual([...web, ...native]);
     const items = [...element(".side-section--tabs .side-list").children];
     const lastWeb = items.indexOf(row(web.at(-1)!));
-    expect(items[lastWeb + 1]?.classList.contains("side-divider")).toBe(true);
-    expect(items[lastWeb + 2]).toBe(row(native[0]!));
+    expect(items[lastWeb + 1]).toBe(row(native[0]!));
     expect(items.at(-1)?.classList.contains("side-new")).toBe(true);
     const webPlaces = places.filter((place) => place.kind === "browser");
     const boundary = webPlaces.findIndex((place, index) => {

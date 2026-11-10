@@ -151,15 +151,17 @@ export const PendingBrowserTabView = memo(function PendingBrowserTabView(props: 
   );
 });
 
+/** Openings still on their way, each under the device it opens on. */
 export function PendingBrowserTabRows({
   hostClient,
   onOpen,
+  rows,
 }: {
   readonly hostClient: HostClient;
   readonly onOpen: () => void;
+  readonly rows: readonly PendingBrowserTab[];
 }) {
-  const rows = useHostSelector(hostClient, (snapshot) => snapshot.pendingBrowserTabs);
-  return rows?.map((pending) => (
+  return rows.map((pending) => (
     <PendingRow
       key={pending.idempotencyKey}
       hostClient={hostClient}

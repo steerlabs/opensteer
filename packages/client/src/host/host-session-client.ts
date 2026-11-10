@@ -146,6 +146,7 @@ import { LiveStreamLedger, type LiveProgressInput } from "./live-progress.js";
 import { applyOptimisticCommandPatch, withThreadNames } from "./optimistic-command-patches.js";
 import { PlaceActivityStore } from "./place-activity.js";
 import { newerBrowserTabCatalog, placeList } from "./places.js";
+import { keepBrowserLastPictures } from "./browser-last-picture.js";
 import { isActiveRunStatus, RunQueueProjection, toRunQueueEntry } from "./run-queue-state.js";
 import { mergeTaskEntries } from "./task-entries.js";
 import { threadStopTarget } from "./thread-activity.js";
@@ -6476,6 +6477,8 @@ export class HttpHostClient {
         snapshot.workspaces !== this.#snapshot.workspaces
       ) {
         const places = placeList(snapshot);
+        keepBrowserLastPictures(this.browserWatchFrames, places);
+        keepBrowserLastPictures(this.browserFrames, places);
         if (snapshot.connection === "connected")
           this.#placeActivity.reconcile(
             new Set(places.filter((place) => place.availability === "ready").map(({ key }) => key)),

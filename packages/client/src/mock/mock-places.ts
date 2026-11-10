@@ -306,6 +306,27 @@ export function seedMockPlaces(
       placement: { kind: "runner", runnerId: "rnr_88888888-8888-4888-8888-888888888888" },
     };
   }
+  if (busy) {
+    // Tabs on the person's iPhone, and one on a Mac that is asleep, which waits for it.
+    add(11, "workspace", [
+      { title: "Running shoes – Allbirds", site: "https://www.allbirds.com", occupants: [] },
+      { title: "Cart – Target", site: "https://www.target.com", occupants: [] },
+    ]);
+    sessions[sessions.length - 1] = {
+      ...sessions[sessions.length - 1]!,
+      placement: { kind: "runner", runnerId: mockIphoneRunnerId },
+      profileId: "bpr_00000000-0000-4000-8000-000000000003",
+    };
+    add(12, "workspace", [
+      { title: "Lisbon itinerary – TripIt", site: "https://www.tripit.com", occupants: [] },
+    ]);
+    sessions[sessions.length - 1] = {
+      ...sessions[sessions.length - 1]!,
+      placement: { kind: "runner", runnerId: "rnr_44444444-4444-4444-8444-444444444444" },
+      profileId: "bpr_00000000-0000-4000-8000-000000000005",
+      state: "failed",
+    };
+  }
   if (world === "stress")
     add(
       10,

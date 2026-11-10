@@ -1,5 +1,8 @@
 import { PendingBrowserTabRows } from "../browser/pending-browser-tab.js";
 import {
+  browserTabPicture,
+  browserTabSections,
+  browserTabStrip,
   placeAgents,
   placeAgentsWords,
   placeHasAgents,
@@ -9,7 +12,9 @@ import {
   type HostSnapshot,
   type PlaceItem,
   type PlaceKind,
+  type TabSectionDevice,
 } from "@opensteer/client/host";
+import type { MachineSummary } from "@opensteer/protocol";
 import { useHostSelector, usePlaceList } from "@opensteer/client/react";
 import {
   StackActions,
@@ -40,6 +45,7 @@ import { opensteerAppGlyph } from "../browser/agent-surface.js";
 import { tabSiteLabel } from "../browser/site-label.js";
 import { workspaceRoute } from "../browser/surface-route.js";
 import { MacAppIcon } from "../computers/app-mark.js";
+import { useHereDeviceId } from "../computers/here-device.js";
 import { useSidebarMenu } from "../navigation-header.js";
 import { color, controlFontScaleLimit, radius, space, touchTarget } from "../theme.js";
 import { NativeMenu, type NativeMenuOption } from "../thread/composer-menu.js";
@@ -49,6 +55,8 @@ import { Symbol } from "../ui/symbol.js";
 import { Screen, useListContentInsets, useReadingColumn } from "../ui/screen.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 import { useAppForeground } from "../ui/foreground.js";
+import { computerSymbols } from "./settings-model.js";
+import { TabPicture } from "./tab-picture.js";
 
 export type TabsScreenProps = StaticScreenProps<{ readonly deploymentId: string }>;
 
@@ -56,11 +64,11 @@ export type TabsScreenProps = StaticScreenProps<{ readonly deploymentId: string 
  * Tabs: every tab, app and phone this person may see on the Deployment, from
  * the shared place list web and desktop read — tabs they opened by hand,
  * tasks' and delegated work's tabs, saved tabs and the person's own views —
- * grouped by the computer each is on, in their own order within a group.
+ * one section per device, in the person's own order within it.
  *
- * It is words and marks only. A picture costs a stream per row on a phone
- * that may be on cellular, so the list asks for none; the one page in front
- * is the only picture. A row opens exactly its place, alone. Nothing here
+ * A row shows a picture of its page only when this phone already holds one;
+ * it never asks for one, because a picture costs a stream per row on a phone
+ * that may be on cellular. A row opens exactly its place, alone. Nothing here
  * chooses a conversation, from who is in a place or from what was in front.
  */
 export function TabsScreen(props: TabsScreenProps): ReactNode {
@@ -122,35 +130,36 @@ function AttachedTabs(props: {
   );
 }
 
-/** One computer's places of one kind, under a header naming both. */
-export interface PlaceGroup {
+/** One device's tabs, then its apps; or the Opensteer Apps, which run on none. */
+interface PlaceGroup {
   readonly key: string;
-  readonly title: string;
+  /** Null for the Opensteer Apps. */
+  readonly device: TabSectionDevice | null;
+  /** Sections wear their device as a heading once anything runs elsewhere than this phone. */
+  readonly headed: boolean;
   readonly data: readonly PlaceItem[];
 }
 
-/**
- * Places grouped by the computer they are on, and on a Mac its tabs apart
- * from its apps, so an app never passes for a tab. Groups come in the order
- * their first place does, and each keeps the person's own order.
- */
-export function placeGroups(places: readonly PlaceItem[]): readonly PlaceGroup[] {
-  const groups = new Map<string, { title: string; data: PlaceItem[] }>();
-  for (const place of places) {
-    const key = `${place.kind}:${place.device?.machineId ?? ""}`;
-    const group = groups.get(key);
-    if (group === undefined) groups.set(key, { data: [place], title: groupTitle(place) });
-    else group.data.push(place);
-  }
-  return [...groups].map(([key, { data, title }]) => ({ data, key, title }));
-}
-
-function groupTitle(place: PlaceItem): string {
-  // On no computer: it lives in the Deployment, so there is none to name or miss.
-  if (place.kind === "opensteer-app") return "Apps";
-  const computer = place.device?.name ?? "Computer unavailable";
-  if (place.kind === "phone") return `Agent Phone · ${computer}`;
-  return `${computer} · ${place.kind === "app" ? "Apps" : "Browser"}`;
+/** Places as sections by device, in the order every surface lists devices in. */
+function placeGroups(
+  places: readonly PlaceItem[],
+  machines: readonly MachineSummary[],
+  hereId: string | null,
+): readonly PlaceGroup[] {
+  const { headed, sections } = browserTabSections({
+    strip: browserTabStrip(places),
+    machines,
+    hereId,
+  });
+  return sections.map((section) => ({
+    key: section.key,
+    device: section.device,
+    headed,
+    data: [
+      ...section.web.flatMap((row) => (row.kind === "place" ? [row.place] : row.places)),
+      ...section.native,
+    ],
+  }));
 }
 
 /**
@@ -170,6 +179,7 @@ function selectSignIns(snapshot: HostSnapshot): string {
 }
 
 const selectLoaded = (snapshot: HostSnapshot) => snapshot.deploymentShape !== null;
+const selectMachines = (snapshot: HostSnapshot) => snapshot.machines;
 
 function TabsForReader(props: {
   readonly active: boolean;
@@ -184,6 +194,8 @@ function TabsForReader(props: {
   const column = useReadingColumn();
   const insets = useListContentInsets(space[32]);
   const places = usePlaceList(hostClient);
+  const machines = useHostSelector(hostClient, selectMachines);
+  const hereId = useHereDeviceId(deploymentId);
   const loaded = useHostSelector(hostClient, selectLoaded);
   const signInKeys = useHostSelector(hostClient, selectSignIns);
   const [agents, setAgents] = useState(false);
@@ -200,7 +212,7 @@ function TabsForReader(props: {
     onOpen: canOpen ? openApp : null,
   });
   const shown = agents ? withAgents : places;
-  const sections = useMemo(() => placeGroups(shown), [shown]);
+  const sections = useMemo(() => placeGroups(shown, machines, hereId), [hereId, machines, shown]);
   const signIns = useMemo(() => new Set(signInKeys.split("\n")), [signInKeys]);
   const showProfile = useMemo(() => profileBadgesVisible(places), [places]);
   const open = useCallback(
@@ -222,10 +234,11 @@ function TabsForReader(props: {
         }
         onOpen={open}
         place={item}
+        shown={props.active}
         showProfile={showProfile}
       />
     ),
-    [hostClient, open, showProfile, signIns],
+    [hostClient, open, props.active, showProfile, signIns],
   );
   const loading = !loaded && places.length === 0;
   return (
@@ -272,7 +285,13 @@ function TabsForReader(props: {
           </>
         }
         renderItem={renderItem}
-        renderSectionHeader={({ section }) => <GroupHead title={section.title} />}
+        renderSectionHeader={({ section }) =>
+          section.headed ? (
+            <GroupHead device={section.device} />
+          ) : section.key === sections[0]?.key ? null : (
+            <View style={styles.groupGap} />
+          )
+        }
         sections={sections}
         stickySectionHeadersEnabled={false}
       />
@@ -280,19 +299,39 @@ function TabsForReader(props: {
   );
 }
 
-/** A computer's name over its places, announced as a heading. */
-function GroupHead(props: { readonly title: string }): ReactNode {
+/**
+ * A device's shape and name over its tabs and apps, and Offline when it is
+ * away, announced as a heading; the Opensteer Apps are headed Apps.
+ */
+function GroupHead(props: { readonly device: TabSectionDevice | null }): ReactNode {
+  const { device } = props;
+  const name = device?.name ?? "Apps";
+  const offline = device !== null && !device.online;
   return (
-    <View accessibilityLabel={props.title} accessibilityRole="header" style={styles.groupHead}>
+    <View
+      accessibilityLabel={offline ? `${name}, offline` : name}
+      accessibilityRole="header"
+      style={styles.groupHead}
+    >
+      <Symbol
+        name={device ? computerSymbols[device.glyph] : opensteerAppGlyph}
+        size={13}
+        tint={color.muted}
+      />
       <AppText
         maxFontSizeMultiplier={controlFontScaleLimit}
         numberOfLines={1}
         role="caption"
-        style={styles.groupTitle}
+        style={[styles.groupTitle, styles.shrink]}
         tone="muted"
       >
-        {props.title}
+        {name}
       </AppText>
+      {offline ? (
+        <AppText maxFontSizeMultiplier={controlFontScaleLimit} role="caption" tone="muted">
+          · Offline
+        </AppText>
+      ) : null}
     </View>
   );
 }
@@ -333,6 +372,8 @@ interface PlaceRowProps {
   readonly needsYou: boolean;
   readonly onOpen: (place: PlaceItem) => void;
   readonly place: PlaceItem;
+  /** The list is on screen: a row looks again for a picture this phone has kept. */
+  readonly shown: boolean;
   readonly showProfile: boolean;
 }
 
@@ -352,6 +393,10 @@ const PlaceRow = memo(function PlaceRow(props: PlaceRowProps): ReactNode {
   const acting = agents.unnamedActing || agents.agents.some((agent) => agent.acting);
   const detail = placeDetail(place, props.showProfile);
   const unavailable = place.availability === "unavailable";
+  const picture =
+    props.shown && place.destination.kind === "browser" && place.destination.tabId
+      ? browserTabPicture(hostClient, place.destination.sessionId, place.destination.tabId)
+      : null;
   return (
     <Pressable
       accessibilityHint={kindHint[place.kind]}
@@ -375,7 +420,9 @@ const PlaceRow = memo(function PlaceRow(props: PlaceRowProps): ReactNode {
       testID={`place:${acting ? "acting" : "idle"}`}
     >
       <View style={[styles.mark, unavailable && styles.dimmed]}>
-        {place.icon.kind === "app" ? (
+        {picture ? (
+          <TabPicture picture={picture} size={32} />
+        ) : place.icon.kind === "app" ? (
           <MacAppIcon
             app={place.icon.app}
             hostClient={props.hostClient}
@@ -560,7 +607,15 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     width: 32,
   },
-  groupHead: { paddingBottom: space[6], paddingHorizontal: space[4], paddingTop: space[16] },
+  groupGap: { height: space[16] },
+  groupHead: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: space[6],
+    paddingBottom: space[6],
+    paddingHorizontal: space[4],
+    paddingTop: space[16],
+  },
   groupTitle: { fontWeight: "600" },
   mark: { height: 32, width: 32 },
   notices: { gap: space[8], paddingBottom: space[8] },
@@ -579,5 +634,6 @@ const styles = StyleSheet.create({
   rowFirst: { borderTopLeftRadius: radius.md, borderTopRightRadius: radius.md },
   rowLast: { borderBottomLeftRadius: radius.md, borderBottomRightRadius: radius.md },
   rowSeparated: { borderColor: color.line, borderTopWidth: StyleSheet.hairlineWidth },
+  shrink: { flexShrink: 1 },
   words: { flex: 1, gap: space[2], minWidth: 0 },
 });
