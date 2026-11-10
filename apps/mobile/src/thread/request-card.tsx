@@ -11,7 +11,7 @@ import {
   View,
 } from "react-native";
 import { useChromeInspection } from "../browser/chrome-sign-in-parts.js";
-import { navigationRef } from "../navigation-ref.js";
+import { navigationRef, pushSubagent } from "../navigation-ref.js";
 import {
   color,
   controlBorderWidth,
@@ -25,6 +25,7 @@ import {
 import { AppText, monoFontFamily, StatusDot } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { AnswerPill, AnswerRow } from "./answer-pill.js";
+import { AskedBySubagent } from "./asked-by-subagent.js";
 import { NativeMenu, type NativeMenuOption } from "./composer-menu.js";
 import { requestTitle } from "./docked-requests.js";
 import { IntegrationConnectCard } from "./integration-connect-sheet.js";
@@ -242,10 +243,18 @@ function AnswerCard(props: RequestCardProps): ReactNode {
               {requestAgentProposedLabel}
             </AppText>
           ) : null}
-          {props.subagentTitle ? (
-            <AppText numberOfLines={1} role="caption" tone="muted">
-              Asked by subagent {props.subagentTitle}
-            </AppText>
+          {props.subagentTitle && request.originatingNodeId !== undefined ? (
+            <AskedBySubagent
+              onOpen={() => {
+                if (request.originatingNodeId === undefined) return;
+                pushSubagent({
+                  deploymentId,
+                  nodeId: request.originatingNodeId,
+                  threadId: request.originatingThreadId,
+                });
+              }}
+              title={props.subagentTitle}
+            />
           ) : null}
           {signInLine === null ? null : (
             <View style={styles.signInLine}>

@@ -1019,11 +1019,16 @@ export type RunAttempt = z.infer<typeof RunAttemptSchema>;
 /** One subagent a Run's engine started, as the Host recorded it. */
 const executionNodeShape = {
   attemptId: RunAttemptIdSchema,
+  effort: z.string().min(1).max(64).nullable(),
   endedAt: IsoDateTimeSchema.nullable(),
   id: ExecutionNodeIdSchema,
-  kind: z.enum(["subagent", "task"]),
+  kind: z.enum(["subagent", "task", "workflow"]),
   model: z.string().min(1).max(255).nullable(),
   parentNodeId: ExecutionNodeIdSchema.nullable(),
+  /** Which of its workflow's phases a member belongs to. */
+  phaseIndex: z.number().int().min(0).nullable(),
+  /** A workflow's phases, in order, by title; empty for anything else. */
+  phases: z.array(z.string().min(1).max(120)),
   prompt: z
     .string()
     .max(8 * 1_024)

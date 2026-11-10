@@ -358,7 +358,7 @@ it("keeps reply chips from place entries alone, unioned with browser usage and n
       site: null,
     },
   ];
-  const turn = { runId, work: places, subagentWork: {} };
+  const turn = { runId, work: places };
   const chips = replyPlaces(turn, [], []);
   expect(chips.map((chip) => chip.kind)).toEqual(["page", "app", "phone"]);
   expect(

@@ -1,3 +1,4 @@
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { AttachmentCache } from "../attachments/attachment-cache.js";
 import { agentTools } from "@opensteer/agent-tools";
 import { createId as createStorageFixtureId } from "@opensteer/core";
@@ -4126,6 +4127,99 @@ describe("RunnerRuntime", () => {
     }
   });
 
+  it("flushes node progress before durable events and attributes child tool output", async () => {
+    const nodeId = createId("executionNode");
+    const script: HarnessEvent[] = [
+      {
+        type: "node.started",
+        data: {
+          nodeId,
+          kind: "subagent",
+          title: "Research",
+          model: null,
+          nativeRef: "child",
+          sessionRef: null,
+          originCallId: null,
+          parentNodeId: null,
+          prompt: null,
+        },
+      },
+      { type: "node.progress", data: { nodeId, text: "Reading" } },
+      { type: "node.progress", data: { nodeId, text: "Checking" } },
+      {
+        type: "tool.started",
+        data: {
+          nodeId,
+          callId: "child-tool",
+          tool: { namespace: "test", name: "read" },
+          arguments: {},
+        },
+      },
+      { type: "tool.delta", data: { callId: "child-tool", text: "Source" } },
+      {
+        type: "tool.completed",
+        data: { nodeId, callId: "child-tool", output: { text: "Source" }, isError: false },
+      },
+      {
+        type: "node.completed",
+        data: { nodeId, status: "completed", result: "Answer", usage: null },
+      },
+    ];
+    const registry = new HarnessRegistry();
+    registry.registerDriver(
+      new FakeHarnessDriver("node-progress-driver", () => new ScriptedHarnessSession(script)),
+    );
+    const environmentId = createId("environment");
+    const runtime = configuredRuntime({ environmentId, registry });
+    const messages: RunnerOperationalReport[] = [];
+    const complete = Promise.withResolvers<void>();
+    try {
+      const execute = executeCommand(environmentId, "node-progress-driver");
+      await reconcile(registry, execute);
+      await runtime.handleCommand(execute, {
+        send: async (message) => {
+          messages.push(message);
+          if (message.type === "runner.event" && message.event.type === "run.completed")
+            complete.resolve();
+        },
+      });
+      await withTimeout(complete.promise, 5_000, {
+        timeoutError: () => new Error("The scripted node Run never completed"),
+      });
+      const live = messages.flatMap((message) =>
+        message.type === "runner.live" ? message.progress.items : [],
+      );
+      expect(live).toEqual([
+        { nodeId, stream: "node", op: "replace", length: 8, text: "Checking" },
+        { nodeId, stream: "tool", callId: "child-tool", op: "append", at: 0, text: "Source" },
+      ]);
+      const firstLive = messages.findIndex((message) => message.type === "runner.live");
+      const toolStart = messages.findIndex(
+        (message) => message.type === "runner.event" && message.event.type === "tool.started",
+      );
+      const lastLive = messages.findLastIndex((message) => message.type === "runner.live");
+      const toolEnd = messages.findIndex(
+        (message) => message.type === "runner.event" && message.event.type === "tool.completed",
+      );
+      expect(firstLive).toBeLessThan(toolStart);
+      expect(lastLive).toBeLessThan(toolEnd);
+      const events = messages.flatMap((message) =>
+        message.type === "runner.event" ? [message.event] : [],
+      );
+      expect(events.map((event) => event.ordinal)).toEqual(events.map((_, index) => index));
+      expect(events.map((event) => event.type)).toEqual([
+        "run.started",
+        "node.started",
+        "tool.started",
+        "tool.completed",
+        "node.completed",
+        "run.completed",
+      ]);
+    } finally {
+      await runtime.close();
+    }
+  });
+
   it(
     "bounds each tool's live deltas without dropping its authoritative completion",
     { timeout: 30_000 },
@@ -4554,12 +4648,13 @@ describe("RunnerRuntime", () => {
       testCase.check(calls.at(-1)!.data.arguments);
     });
 
-    it("records a subagent whose title is long in UTF-16 units", async () => {
+    it("records subagent titles and messages within their durable bounds", async () => {
       const title = "😀".repeat(121);
       const renamed = "🙂".repeat(121);
       const reported: HarnessEvent[] = [];
       const nodes = new SubagentNodes((event) => void reported.push(event));
       nodes.open("child", { title });
+      nodes.message("child", "\u0001".repeat(100_000));
       nodes.update("child", { title: renamed });
       nodes.complete("child", "completed");
       const events = await eventsOfScriptedRun(new ScriptedHarnessSession(reported));
@@ -4571,6 +4666,9 @@ describe("RunnerRuntime", () => {
       );
       expect(titles).toEqual([title.slice(0, 240), renamed.slice(0, 240)]);
       expect(titles.every((shown) => shown.isWellFormed())).toBe(true);
+      const message = events.find((event) => event.type === "node.message");
+      expect(message?.data.text.length).toBeLessThan(100_000);
+      expect(message?.data.text.endsWith("…")).toBe(true);
     });
 
     it("resolves fitted approvals and forms and records engine and Runner failures", async () => {

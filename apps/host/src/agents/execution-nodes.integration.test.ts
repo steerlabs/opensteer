@@ -718,6 +718,7 @@ function fakeClaudeSdk(script: ClaudeScript): ClaudeAgentSdk {
         [Symbol.asyncIterator]: () => generator as never,
         close: () => abort.abort(),
         interrupt: () => Promise.resolve(undefined),
+        stopTask: () => Promise.resolve(),
       };
       return handle;
     },

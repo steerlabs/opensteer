@@ -110,6 +110,7 @@ export function createHostApiHandlers(
     | "run.attempts.list"
     | "tasks.list"
     | "thread.events.list"
+    | "node.events.list"
     | "thread.messages.list"
     | "thread.readState.get"
     | "thread.inputQueue.get"

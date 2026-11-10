@@ -9,8 +9,9 @@ import {
 import { useHostSnapshot } from "@opensteer/client/react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useState, type ReactNode } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { Markdown } from "../markdown/markdown.js";
+import { useNodeWatch } from "../thread/node-watch.js";
 import { color, radius, space, touchTarget, type } from "../theme.js";
 import { useCopy } from "../ui/copy-mark.js";
 import { useMobileState } from "../ui/mobile-client-context.js";
@@ -22,6 +23,7 @@ import { useGutter } from "../ui/screen.js";
 export type ThreadStepScreenProps = StaticScreenProps<{
   readonly deploymentId: string;
   readonly entryId: string;
+  readonly nodeId?: string;
   readonly threadId: string;
 }>;
 
@@ -33,12 +35,49 @@ export type ThreadStepScreenProps = StaticScreenProps<{
  * finishes while the sheet is open says so.
  */
 export function ThreadStepScreen(props: ThreadStepScreenProps): ReactNode {
-  const { deploymentId, entryId, threadId } = props.route.params;
+  const { deploymentId, entryId, nodeId, threadId } = props.route.params;
   const { selection } = useMobileState();
   if (selection.deploymentId !== deploymentId || selection.hostClient === null) {
     return <Missing detail="This deployment is no longer open." />;
   }
+  if (nodeId !== undefined)
+    return (
+      <SubagentStep
+        entryId={entryId}
+        hostClient={selection.hostClient}
+        nodeId={nodeId}
+        threadId={threadId}
+      />
+    );
   return <SubscribedStep entryId={entryId} hostClient={selection.hostClient} threadId={threadId} />;
+}
+
+/**
+ * A subagent's step is never in its conversation's transcript, so the sheet
+ * watches that subagent itself while it is open, and its output keeps streaming.
+ */
+function SubagentStep(props: {
+  readonly entryId: string;
+  readonly hostClient: HostClient;
+  readonly nodeId: string;
+  readonly threadId: string;
+}): ReactNode {
+  const { entryId, hostClient, nodeId, threadId } = props;
+  const { snapshot, unreachable } = useNodeWatch(hostClient, threadId, nodeId, true);
+  const entry = snapshot?.entries.find(({ id }) => id === entryId);
+  if (entry?.kind === "tool") return <ToolDetail tool={entry} />;
+  if (entry?.kind === "reasoning") return <ThoughtDetail reasoning={entry} />;
+  if (!unreachable && (snapshot === null || snapshot.status === "loading"))
+    return (
+      <View
+        accessibilityLabel="Loading this step"
+        accessible
+        style={[styles.sheet, styles.missing]}
+      >
+        <ActivityIndicator color={color.muted} />
+      </View>
+    );
+  return <Missing detail="This step is no longer loaded. Open the subagent again to see it." />;
 }
 
 function SubscribedStep(props: {

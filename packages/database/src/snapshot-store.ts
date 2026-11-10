@@ -1,6 +1,7 @@
 import { withDatabaseTransaction } from "./connection.js";
 import {
   type UserId,
+  type ExecutionNodeId,
   type AgentEvent,
   type Sequence,
   type ThreadId,
@@ -28,6 +29,7 @@ import {
   threadPageMaxItems,
   type ThreadMessagePage,
   type ThreadEventPage,
+  type NodeEventPage,
   type TaskPage,
   eventPageMaxItems,
   taskLineMaxLength,
@@ -58,6 +60,7 @@ import {
   messageFromRow,
   threadRunQueueEntriesFromRows,
   threadFromRow,
+  executionNodeFromRow,
 } from "./thread-row-mappers.js";
 import { requestFromRow } from "./request-store.js";
 import { workspaceFromRow } from "./store-primitives.js";
@@ -789,6 +792,7 @@ export async function threadEventPageForOwner(
           .selectFrom("workspaceEvents")
           .select(({ fn }) => fn.countAll<string>().as("count"))
           .where("threadId", "=", input.threadId)
+          .where("nodeDetailId", "is", null)
           .where(
             "type",
             "not in",
@@ -854,6 +858,7 @@ async function newestTurns(
       turnStartSelection.as("turnStart"),
     ])
     .where("threadId", "=", threadId)
+    .where("nodeDetailId", "is", null)
     .where(
       "type",
       "not in",
@@ -876,6 +881,7 @@ async function newestTurns(
     .selectFrom("workspaceEvents")
     .selectAll()
     .where("threadId", "=", threadId)
+    .where("nodeDetailId", "is", null)
     .where(
       "type",
       "not in",
@@ -930,6 +936,7 @@ async function eventsAroundMessage(
     .selectFrom("workspaceEvents")
     .select("sequence")
     .where("threadId", "=", threadId)
+    .where("nodeDetailId", "is", null)
     .where("type", "in", ["message.created", "message.placed", "assistant.message"])
     .where(
       sql<boolean>`(data #>> '{message,id}' = ${messageId} or data ->> 'messageId' = ${messageId})`,
@@ -947,6 +954,7 @@ async function eventsAroundMessage(
     .selectFrom("workspaceEvents")
     .selectAll()
     .where("threadId", "=", threadId)
+    .where("nodeDetailId", "is", null)
     .where(
       "type",
       "not in",
@@ -1008,6 +1016,100 @@ async function eventsAroundMessage(
       )
     : false;
   return { events, hasMore };
+}
+
+export async function nodeEventPageForOwner(
+  database: Kysely<DatabaseSchema>,
+  input: {
+    readonly ownerId: UserId;
+    readonly threadId: ThreadId;
+    readonly nodeId: ExecutionNodeId;
+    readonly through?: Sequence;
+    readonly before?: string;
+    readonly maxItems?: number;
+    readonly maxBytes?: number;
+  },
+): Promise<NodeEventPage | null> {
+  const maxItems = boundedWindowLimit(input.maxItems, eventPageMaxItems);
+  const maxBytes = boundedWindowBytes(input.maxBytes, 640 * 1_024);
+  const before = input.before === undefined ? null : SequenceSchema.safeParse(input.before);
+  if (before && !before.success) throw invalidWindowCursor();
+  return withDatabaseTransaction(
+    database,
+    async (transaction) => {
+      const node = await transaction
+        .selectFrom("executionNodes")
+        .innerJoin("runs", "runs.id", "executionNodes.runId")
+        .innerJoin("threads", "threads.id", "runs.threadId")
+        .innerJoin(
+          "workspaceMemberships",
+          "workspaceMemberships.workspaceId",
+          "threads.workspaceId",
+        )
+        .selectAll("executionNodes")
+        .where("executionNodes.id", "=", input.nodeId)
+        .where("threads.id", "=", input.threadId)
+        .where("workspaceMemberships.userId", "=", input.ownerId)
+        .where("workspaceMemberships.state", "=", "active")
+        .executeTakeFirst();
+      if (!node) return null;
+      let query = transaction
+        .selectFrom("workspaceEvents")
+        .where("threadId", "=", input.threadId)
+        .where("nodeDetailId", "=", input.nodeId);
+      if (input.through !== undefined) query = query.where("sequence", "<=", input.through);
+      const count = await query
+        .select(({ fn }) => fn.countAll<string>().as("count"))
+        .executeTakeFirstOrThrow();
+      if (before?.success) query = query.where("sequence", "<", before.data);
+      const metadata = await query
+        .select([
+          "sequence",
+          sql<number>`octet_length(replace(replace(data::text, ', ', ','), ': ', ':'))`.as(
+            "dataBytes",
+          ),
+        ])
+        .orderBy("sequence", "desc")
+        .limit(maxItems + 1)
+        .execute();
+      const estimated = historyPageLength(
+        metadata.map((row) => ({ bytes: Number(row.dataBytes), turnStart: false })),
+        { maxBytes, maxItems, maxTurns: Number.POSITIVE_INFINITY },
+      );
+      const sequences = metadata.slice(0, estimated).map((row) => row.sequence);
+      const candidates =
+        sequences.length === 0
+          ? []
+          : await query
+              .selectAll()
+              .where("sequence", "in", sequences)
+              .orderBy("sequence", "desc")
+              .execute();
+      const window = boundedSerializedPrefix(candidates.map(eventFromRow), maxItems, maxBytes);
+      const events = [...window.items].reverse();
+      if (candidates.length > 0 && events.length === 0) {
+        throw new OpensteerError({
+          code: "internal",
+          message: "A node event exceeds the history byte ceiling",
+        });
+      }
+      const hasMore = metadata.length > events.length;
+      return {
+        threadId: input.threadId,
+        nodeId: input.nodeId,
+        node: executionNodeFromRow(node),
+        events,
+        window: {
+          byteCount: window.byteCount,
+          itemCount: events.length,
+          hasMore,
+          nextBefore: hasMore ? (events[0]?.sequence ?? null) : null,
+          totalItems: safeCount(count.count),
+        },
+      };
+    },
+    "repeatable read",
+  );
 }
 
 export async function eventsAfter(

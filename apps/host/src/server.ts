@@ -1400,6 +1400,18 @@ export async function createHostServer(
       if (!page) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
       return rpcSuccess(hostApi["thread.events.list"].success.parse(page));
     },
+    "node.events.list": async (input, context) => {
+      const page = await dependencies.store.nodeEventPageForOwner({
+        nodeId: input.nodeId,
+        threadId: input.threadId,
+        ...(input.before === undefined ? {} : { before: input.before }),
+        ...(input.through === undefined ? {} : { through: input.through }),
+        maxItems: Math.min(input.limit ?? eventPageMaxItems, eventPageMaxItems),
+        ownerId: requireRpcSession(context).user.id,
+      });
+      if (!page) throw new OpensteerError({ code: "not_found", message: "Subagent not found" });
+      return rpcSuccess(hostApi["node.events.list"].success.parse(page));
+    },
     "thread.messages.list": async (input, context) => {
       const page = await dependencies.store.threadMessagePageForOwner({
         threadId: input.threadId,
@@ -1467,7 +1479,19 @@ export async function createHostServer(
       );
       if (!thread) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
       return rpcSuccess({
-        runs: dependencies.liveRuns.threadFrames(thread.id).slice(0, 64),
+        runs: dependencies.liveRuns
+          .threadFrames(thread.id)
+          .slice(0, 64)
+          .map((frame) => ({
+            ...frame,
+            progress: {
+              ...frame.progress,
+              items: frame.progress.items.filter(
+                (item) => item.stream !== "tool" || item.nodeId === undefined,
+              ),
+            },
+          }))
+          .filter((frame) => frame.progress.items.length > 0),
         threadId: thread.id,
       });
     },
@@ -1663,6 +1687,7 @@ export async function createHostServer(
     | "run.attempts.list"
     | "tasks.list"
     | "thread.events.list"
+    | "node.events.list"
     | "thread.messages.list"
     | "thread.readState.get"
     | "thread.inputQueue.get"
@@ -3021,6 +3046,7 @@ export function advertisedCapabilities(
     "task-family-v1",
     "snapshot-messages-omit-v1",
     "history-turns-v1",
+    "node-detail-v1",
     "place-events-v1",
     "person-show-v1",
     "shared-task-done-v1",
@@ -3968,6 +3994,16 @@ function attachRealtimeSocket(
         continue;
       }
       if (message.type === "client.ack") continue;
+      if (message.type === "client.watch-node") {
+        if (!unsubscribe || workspaceId !== message.workspaceId)
+          throw badMessage("Subscribe before watching a subagent");
+        realtime.watchNode({
+          sinkId: sink.id,
+          workspaceId: message.workspaceId,
+          nodeId: message.nodeId,
+        });
+        continue;
+      }
       if (unsubscribe) throw badMessage("Client is already subscribed");
       // Nothing is streamed to a client on another epoch: the events it would
       // receive are exactly what the epoch governs, so the refusal comes

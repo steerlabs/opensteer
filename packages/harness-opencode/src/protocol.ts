@@ -77,6 +77,15 @@ export const OpencodeProvidersSchema = z.looseObject({
 });
 
 export const OpencodeSessionSchema = z.looseObject({
+  permission: z
+    .array(
+      z.object({
+        permission: z.string(),
+        pattern: z.string(),
+        action: z.enum(["allow", "ask", "deny"]),
+      }),
+    )
+    .optional(),
   directory: z.string().optional(),
   id: z.string().min(1).max(255),
   /** Set on a subagent's child session: the session whose `task` call started it. */

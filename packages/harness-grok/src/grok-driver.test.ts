@@ -118,7 +118,22 @@ describe("Grok normalization", () => {
         status: "cancelled",
         subagent_id: "child",
       }),
-    ).toEqual([{ key: "child", kind: "subagent", state: "failed" }]);
+    ).toEqual([{ key: "child", kind: "subagent", state: "interrupted" }]);
+  });
+
+  it("reads end notices after balanced titles and keeps cancellation interrupted", () => {
+    const child = "11111111-1111-4111-8111-111111111111";
+    for (const [tail, state] of [
+      ["(Review (failed drafts)) completed successfully", "completed"],
+      ["(Review) cancelled", "interrupted"],
+    ]) {
+      expect(
+        normalizeGrokUpdate({
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: `Background subagent ${child} ${tail}` },
+        })?.at(-1),
+      ).toEqual({ key: child, kind: "subagent", state });
+    }
   });
 
   it("rewrites only enabled leading skill invocations", () => {

@@ -1,3 +1,4 @@
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { collisionSkills } from "@opensteer/shared/test-support/agentSkills";
 import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -405,11 +406,121 @@ describe("Muse Code sessions", () => {
       optionId: "approve-once",
     });
     await executing;
+    await observer.waitFor("run.completed");
     expect(observer.events.map((event) => event.type)).toEqual(
       expect.arrayContaining(["node.started", "node.completed", "run.completed"]),
     );
     await session.stop();
     await adapter.close();
+  });
+
+  it("cancels a workflow using its real run identifier", async () => {
+    const fixture = await setup("workflow-cancel");
+    const adapter = await fixture.driver.create({
+      config: {},
+      instanceId: fixture.context.harnessInstanceId,
+      sourceId: "meta",
+    });
+    const session = await adapter.startSession(fixture.context);
+    const observer = observe(session.events);
+    try {
+      const executing = session.execute(fixture.turn("review"));
+      await observer.waitFor("node.started");
+      await session.interrupt();
+      await executing;
+      expect(
+        (await fixture.messages())
+          .filter((entry) => entry.message?.method === "workflow/cancel")
+          .map((entry) => entry.message?.params),
+      ).toEqual([expect.objectContaining({ workflowRunId: "real-workflow-run" })]);
+      expect(
+        (await fixture.messages()).some((entry) => entry.message?.method === "subagent/stop"),
+      ).toBe(false);
+      expect(
+        observer.events
+          .filter((event) => event.type === "node.completed")
+          .map((event) => event.data.status),
+      ).toEqual(["interrupted", "interrupted"]);
+    } finally {
+      await session.stop();
+      await adapter.close();
+    }
+  });
+
+  it("projects workflow retries and terminal-only members with their results", async () => {
+    const fixture = await setup("workflow");
+    const adapter = await fixture.driver.create({
+      config: {},
+      instanceId: fixture.context.harnessInstanceId,
+      sourceId: "meta",
+    });
+    const session = await adapter.startSession(fixture.context);
+    const observer = observe(session.events);
+    try {
+      await withTimeout(session.execute(fixture.turn("review")), 2_000, {
+        timeoutError: () => new Error("Muse workflow members never settled"),
+      });
+      await observer.waitFor("run.completed");
+      const nodes = observer.events.filter((event) => event.type === "node.started");
+      expect(
+        nodes.map((event) => ({
+          kind: event.data.kind,
+          ref: event.data.nativeRef,
+          title: event.data.title,
+          parent: event.data.parentNodeId,
+          phase: event.data.phaseIndex,
+        })),
+      ).toEqual([
+        {
+          kind: "workflow",
+          ref: "real-workflow-run",
+          title: "Review",
+          parent: null,
+          phase: undefined,
+        },
+        {
+          kind: "subagent",
+          ref: "reviewer",
+          title: "Review code",
+          parent: nodes[0]!.data.nodeId,
+          phase: 0,
+        },
+        {
+          kind: "subagent",
+          ref: "reviewer",
+          title: "Review code",
+          parent: nodes[0]!.data.nodeId,
+          phase: 0,
+        },
+        {
+          kind: "subagent",
+          ref: "reporter",
+          title: "Write report",
+          parent: nodes[0]!.data.nodeId,
+          phase: 1,
+        },
+      ]);
+      expect(
+        observer.events
+          .filter((event) => event.type === "node.updated")
+          .map((event) => event.data.phases)
+          .filter(Boolean),
+      ).toEqual([["Review"], ["Review", "Report"]]);
+      const results = observer.events.filter((event) => event.type === "node.completed");
+      expect(
+        nodes.map(
+          (node) => results.find((result) => result.data.nodeId === node.data.nodeId)?.data,
+        ),
+      ).toEqual([
+        expect.objectContaining({ status: "completed", result: "Reviewed" }),
+        expect.objectContaining({ status: "failed", result: "Try again" }),
+        expect.objectContaining({ status: "completed", result: "Review passed" }),
+        expect.objectContaining({ status: "completed", result: "Report ready" }),
+      ]);
+    } finally {
+      await session.stop();
+      await adapter.close();
+    }
   });
 
   it("answers workflow-child approvals itself in Full mode", async () => {

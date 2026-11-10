@@ -78,6 +78,7 @@ vi.mock("@react-navigation/native", () => ({
   StackActions: {
     push: (name: string, params: object) => ({ name, params, type: "PUSH" }),
   },
+  useIsFocused: () => true,
   useNavigation: () => ({
     dispatch: harness.dispatch,
     goBack: harness.goBack,
@@ -143,7 +144,7 @@ vi.mock("../thread/attachment-views.js", async () => {
 });
 vi.mock("../thread/task-line.js", async () => ({
   ...(await vi.importActual<typeof import("../thread/task-line.js")>("../thread/task-line.js")),
-  AssignmentLines: () => null,
+  TaskCards: () => null,
 }));
 vi.mock("../thread/computer-use-line.js", () => ({
   ComputerUseLine: () => null,

@@ -1,4 +1,5 @@
 import {
+  type AgentRoster,
   browserSiteLabel,
   conversationSurfaces,
   conversationThreadIds,
@@ -25,6 +26,7 @@ import {
   type SurfaceGlyph,
 } from "../browser/agent-surface.js";
 import { sameDestination, type OpensteerAppDestination } from "../browser/surface-route.js";
+import { aroundAgentsSelector } from "./agent-select.js";
 
 /**
  * What is around a conversation: the places it and the work it handed out
@@ -122,32 +124,39 @@ export function sameAroundPlaces(
 }
 
 /** The sheet's sections, in the order the header button draws their parts. */
-export type AroundSection = "places" | "tasks" | "earlier" | "schedules";
+export type AroundSection = "places" | "tasks" | "agents" | "earlier" | "schedules";
 
 /** The sections with something in them: a tile never stands for an empty list. */
 export function aroundSections(
   places: readonly AroundPlace[],
   family: TaskFamily,
+  agents: Pick<AgentRoster, "now" | "earlier">,
 ): readonly AroundSection[] {
   return [
     ...(places.length > 0 ? (["places"] as const) : []),
     ...(family.running.length > 0 ? (["tasks"] as const) : []),
+    ...(agents.now.length + agents.earlier.length > 0 ? (["agents"] as const) : []),
     ...(family.earlier.length > 0 ? (["earlier"] as const) : []),
     ...(family.automations.length > 0 ? (["schedules"] as const) : []),
   ];
 }
 
 /**
- * Where the sheet opens: a task that needs the reader, else a place an agent
- * works in, else the first section with anything in it.
+ * Where the sheet opens: the section the reader asked for, else a task or an
+ * agent that needs them, else a place an agent works in, else the first
+ * section with anything in it.
  */
 export function openingSection(
   places: readonly AroundPlace[],
   family: TaskFamily,
+  agents: Pick<AgentRoster, "now" | "earlier">,
+  asked: AroundSection | null = null,
 ): AroundSection | null {
+  if (asked !== null) return asked;
   if (family.running.some(({ needsYou }) => needsYou)) return "tasks";
+  if (agents.now.some(({ tone }) => tone === "needs-you")) return "agents";
   if (places.some(({ working }) => working)) return "places";
-  return aroundSections(places, family)[0] ?? null;
+  return aroundSections(places, family, agents)[0] ?? null;
 }
 
 /** The chosen section while it has anything in it, else the first that does. */
@@ -165,12 +174,35 @@ export interface EarlierDay {
 }
 
 export function earlierDays(tasks: readonly FamilyTask[], now: number): readonly EarlierDay[] {
-  const days: { title: string; tasks: FamilyTask[] }[] = [];
-  for (const task of tasks) {
-    const title = task.finishedAt === null ? "Earlier" : dayTitle(Date.parse(task.finishedAt), now);
+  return byDay(tasks, (task) => task.finishedAt, now).map((day) => ({
+    tasks: day.items,
+    title: day.title,
+  }));
+}
+
+/** Settled helpers under the day they ended, newest first, as earlier tasks are. */
+export function earlierAgentDays<T extends { readonly endedAt: string | null }>(
+  cards: readonly T[],
+  now: number,
+): readonly { readonly title: string; readonly cards: readonly T[] }[] {
+  return byDay(cards, (card) => card.endedAt, now).map((day) => ({
+    cards: day.items,
+    title: day.title,
+  }));
+}
+
+function byDay<T>(
+  items: readonly T[],
+  ended: (item: T) => string | null,
+  now: number,
+): { readonly title: string; readonly items: readonly T[] }[] {
+  const days: { title: string; items: T[] }[] = [];
+  for (const item of items) {
+    const at = ended(item);
+    const title = at === null ? "Earlier" : dayTitle(Date.parse(at), now);
     const last = days.at(-1);
-    if (last?.title === title) last.tasks.push(task);
-    else days.push({ tasks: [task], title });
+    if (last?.title === title) last.items.push(item);
+    else days.push({ items: [item], title });
   }
   return days;
 }
@@ -232,6 +264,8 @@ export interface AroundGlance {
   /** The symbol every open place shares, or null when they are of more than one kind. */
   readonly placeGlyph: SurfaceGlyph | null;
   readonly family: TaskFamilyGlance | null;
+  /** The conversation's helpers, live or settled: the roster stays reachable after the pill leaves. */
+  readonly agents: NonNullable<AgentRoster["pill"]> | null;
   readonly from: RequesterLink | null;
 }
 
@@ -246,6 +280,7 @@ export function aroundGlanceSelector(
     readonly source: AroundPlaceSource;
     readonly places: Pick<AroundGlance, "places" | "placesWorking" | "placeGlyph">;
   } | null = null;
+  const aroundAgents = aroundAgentsSelector(threadId);
   return (snapshot) => {
     if (
       held === null ||
@@ -265,8 +300,13 @@ export function aroundGlanceSelector(
     }
     const family = taskFamilyGlance(snapshot, threadId);
     const from = aroundFrom(snapshot, threadId);
-    if (held.places.places === 0 && family === null && from === null) return null;
-    return { ...held.places, family, from };
+    const roster = aroundAgents(snapshot);
+    const total = roster.now.length + roster.earlier.length;
+    const agents =
+      total === 0 ? null : { live: roster.now.length, needsYou: roster.pill?.needsYou ?? 0, total };
+    if (held.places.places === 0 && family === null && agents === null && from === null)
+      return null;
+    return { ...held.places, agents, family, from };
   };
 }
 
@@ -277,20 +317,23 @@ export function sameAroundGlance(left: AroundGlance | null, right: AroundGlance 
     left.placesWorking === right.placesWorking &&
     left.placeGlyph === right.placeGlyph &&
     sameTaskFamilyGlance(left.family, right.family) &&
+    left.agents?.live === right.agents?.live &&
+    left.agents?.total === right.agents?.total &&
+    left.agents?.needsYou === right.agents?.needsYou &&
     sameRequesterLink(left.from, right.from)
   );
 }
 
 /** What the header control says to a screen reader, part by part in the order it draws them. */
 /** Around's parts, in the order the bar shows them. */
-export const aroundParts = ["from", "places", "tasks", "schedules"] as const;
+export const aroundParts = ["from", "places", "tasks", "agents", "schedules"] as const;
 export type AroundPart = (typeof aroundParts)[number];
 
 /**
  * Which of the parts present give way, in order, when the bar is short of
  * room for the conversation's name: schedules, then places, which the page
- * beside Around often stands for. Who it works for and its tasks stay, and so
- * does one part at least, so Around is never an empty button. Everything that
+ * beside Around often stands for. Who it works for, its tasks and its agents stay,
+ * and so does one part at least, so Around is never an empty button. Everything that
  * gives way is still one tap away, in Around.
  */
 export function aroundYieldable(present: readonly AroundPart[]): readonly AroundPart[] {
@@ -318,6 +361,16 @@ export function aroundLabel(glance: AroundGlance): string {
         : family.earlier > 0
           ? [`${family.earlier} earlier ${family.earlier === 1 ? "task" : "tasks"}`]
           : []),
+    ...(glance.agents === null
+      ? []
+      : glance.agents.live === 0
+        ? [`${glance.agents.total} earlier ${glance.agents.total === 1 ? "agent" : "agents"}`]
+        : [
+            `${glance.agents.live} ${glance.agents.live === 1 ? "agent" : "agents"} working` +
+              (glance.agents.needsYou > 0
+                ? `, ${glance.agents.needsYou} ${glance.agents.needsYou === 1 ? "needs" : "need"} you`
+                : ""),
+          ]),
     ...(family === null || family.automations === 0
       ? []
       : [`${family.automations} ${family.automations === 1 ? "schedule" : "schedules"}`]),

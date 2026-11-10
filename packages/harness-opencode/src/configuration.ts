@@ -99,10 +99,7 @@ export function opencodeAccessModeConfiguration(
   for (const tool of opencodeReadOnlyTools) permission[tool] = "allow";
   for (const tool of openSteerToolIds) permission[tool] = "allow";
   for (const tool of opencodeActingTools) permission[tool] = acting;
-  // Only OpenCode's own subagents, by name: an agent defined anywhere else
-  // could carry rules of its own. Each runs under this same table, so a
-  // subagent can never do more than the Run may, and asks as the Run does.
-  permission.task = { "*": "deny", explore: "allow", general: "allow" };
+  permission.task = "allow";
   // The one difference between the two gated modes: edits inside the Workspace
   // are pre-approved, while commands and the network still ask.
   if (accessMode === "auto-accept-edits") permission.edit = "allow";
@@ -169,8 +166,6 @@ export function opencodeSessionConfiguration(
     // which can name another provider entirely (opencode-facts §5).
     small_model: model,
     snapshot: false,
-    // A subagent never starts subagents of its own.
-    subagent_depth: 1,
     ...opencodeAccountPin(input.providerId),
   };
 }
@@ -270,4 +265,53 @@ function opencodeMcpServer(plan: OpencodeMcpServerPlan): Record<string, unknown>
     type: "remote",
     url: plan.url,
   };
+}
+
+export interface OpencodePermissionRule {
+  readonly permission: string;
+  readonly pattern: string;
+  readonly action: OpencodePermissionAction;
+}
+
+// Adapted from T3 Code (MIT), openCodePermissionRules/openCodeChildPermissionRules.
+export function opencodePermissionRules(
+  accessMode: ThreadAccessMode,
+  toolIds: readonly string[] = [],
+): OpencodePermissionRule[] {
+  return [
+    { permission: "*", pattern: "*", action: "deny" },
+    ...Object.entries(opencodeAccessModeConfiguration(accessMode, toolIds)).flatMap(
+      ([permission, action]) =>
+        typeof action === "string"
+          ? [{ permission, pattern: "*", action }]
+          : Object.entries(action).map(([pattern, action]) => ({ permission, pattern, action })),
+    ),
+  ];
+}
+
+export function opencodeChildPermissionRules(
+  parentRules: readonly OpencodePermissionRule[],
+  childRules: readonly OpencodePermissionRule[],
+  previousParentRules: readonly OpencodePermissionRule[] = [],
+): OpencodePermissionRule[] {
+  const inheritedRules = [
+    ...parentRules.filter(
+      (rule) => rule.permission === "external_directory" || rule.action === "deny",
+    ),
+    ...previousParentRules,
+  ];
+  // Only a child's own refusals survive: a child is never more permitted than its parent.
+  return [
+    ...parentRules,
+    ...childRules.filter(
+      (child) =>
+        child.action === "deny" &&
+        !inheritedRules.some(
+          (rule) =>
+            rule.permission === child.permission &&
+            rule.pattern === child.pattern &&
+            rule.action === child.action,
+        ),
+    ),
+  ];
 }

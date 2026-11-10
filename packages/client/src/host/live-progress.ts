@@ -13,6 +13,7 @@ import {
 
 /** One stream as the client draws it. */
 export interface LiveStreamView {
+  readonly nodeId?: string;
   readonly key: LiveStreamKey;
   /** Every unit the stream has received; more than `tail` once it was cut. */
   readonly length: number;
@@ -38,11 +39,10 @@ export interface LiveProgressInput {
   };
 }
 
-type LiveItemInput =
-  | ({ readonly at: number; readonly op: "append"; readonly text: string } & LiveStreamKey)
-  | ({ readonly length: number; readonly op: "replace"; readonly text: string } & LiveStreamKey);
+type LiveItemInput = import("@opensteer/core").LiveItem;
 
 interface LiveStream {
+  nodeId?: string;
   key: LiveStreamKey;
   length: number;
   /**
@@ -97,9 +97,10 @@ export class LiveStreamLedger {
         const current = run.streams.get(id);
         // A replacement never takes a stream back: a reread that answers after
         // newer appends were drawn is older than what the client holds.
-        if (current && item.length < current.length) continue;
+        if (current && item.stream !== "node" && item.length < current.length) continue;
         run.streams.set(id, {
           key,
+          ...(item.stream === "tool" && item.nodeId ? { nodeId: item.nodeId } : {}),
           length: item.length,
           openedAfter: current?.openedAfter ?? input.afterSequence,
           tail: item.text,
@@ -122,6 +123,7 @@ export class LiveStreamLedger {
         gap = true;
         continue;
       }
+      if (item.stream === "tool" && item.nodeId) stream.nodeId = item.nodeId;
       stream.tail = appendLiveStreamTail(stream.tail, item.text.slice(stream.length - item.at));
       stream.length = end;
       run.streams.set(id, stream);
@@ -133,7 +135,16 @@ export class LiveStreamLedger {
         runId: progress.runId,
         streams: [...changed].flatMap((id) => {
           const stream = run.streams.get(id);
-          return stream ? [{ key: stream.key, length: stream.length, tail: stream.tail }] : [];
+          return stream
+            ? [
+                {
+                  key: stream.key,
+                  length: stream.length,
+                  tail: stream.tail,
+                  ...(stream.nodeId ? { nodeId: stream.nodeId } : {}),
+                },
+              ]
+            : [];
         }),
         threadId: run.threadId,
         workspaceId: run.workspaceId,
@@ -148,7 +159,11 @@ export class LiveStreamLedger {
     if (
       event.type === "run.completed" ||
       event.type === "run.failed" ||
-      event.type === "run.interrupted"
+      event.type === "run.interrupted" ||
+      (event.type === "run.status" &&
+        (event.data.status === "completed" ||
+          event.data.status === "failed" ||
+          event.data.status === "interrupted"))
     ) {
       this.#runs.delete(event.runId);
       this.#endedRuns.add(event.runId);
@@ -208,6 +223,7 @@ export class LiveStreamLedger {
         runId: run.runId,
         streams: [...run.streams.values()].map((stream) => ({
           key: stream.key,
+          ...(stream.nodeId ? { nodeId: stream.nodeId } : {}),
           length: stream.length,
           tail: stream.tail,
         })),
@@ -242,6 +258,8 @@ export function liveStreamText(stream: LiveStreamView): string {
 
 function completedStreamKey(event: AgentEvent): LiveStreamKey | undefined {
   switch (event.type) {
+    case "node.completed":
+      return { stream: "node", nodeId: event.data.nodeId };
     case "assistant.message":
       return { stream: "assistant" };
     case "reasoning.completed":

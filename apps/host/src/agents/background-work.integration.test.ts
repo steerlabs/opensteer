@@ -717,6 +717,7 @@ function backgroundClaudeSdk(finished: Promise<void>): ClaudeAgentSdk {
         [Symbol.asyncIterator]: () => generator as never,
         close: () => closed.abort(),
         interrupt: () => Promise.resolve(undefined),
+        stopTask: () => Promise.resolve(),
       };
       return handle;
     },
@@ -765,10 +766,13 @@ async function clientView(
   const turns = groups.flatMap((group) =>
     group.kind === "turn" ? [conversationTurn(group.turn)] : [],
   );
-  // Each subagent's steps, as the turn that holds the subagent shows them.
-  const subagentSteps = groups.flatMap((group) =>
-    group.kind === "turn" ? Object.values(group.turn.subagentWork).map((work) => work.length) : [],
-  );
+  // Each subagent's own steps, which belong to its transcript and not the conversation's.
+  const stepsByNode = new Map<string, number>();
+  for (const row of rows) {
+    if (row.type === "tool.started" && row.nodeDetailId)
+      stepsByNode.set(row.nodeDetailId, (stepsByNode.get(row.nodeDetailId) ?? 0) + 1);
+  }
+  const subagentSteps = [...stepsByNode.values()];
   const run = await runRow(active, runId);
   const thread = await active.host.store.database
     .selectFrom("threads")

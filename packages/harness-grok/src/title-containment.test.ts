@@ -1,5 +1,9 @@
 import { ModelSelectionSchema, createId, type HarnessInstanceId } from "@opensteer/core";
-import { nativeUserHarnessRuntimeBoundary, type HarnessSessionContext } from "@opensteer/harness";
+import {
+  nativeUserHarnessRuntimeBoundary,
+  type HarnessEvent,
+  type HarnessSessionContext,
+} from "@opensteer/harness";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -146,6 +150,131 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       }
     } finally {
       await adapter.close();
+    }
+  });
+
+  it("replays child lifecycle and scoped detail through the production ACP driver", async () => {
+    const root = await temporaryDirectory();
+    const workspace = join(root, "workspace");
+    const executable = join(root, "fake-grok");
+    await mkdir(workspace);
+    await writeFile(
+      executable,
+      `#!/usr/bin/env node
+const { createInterface } = require("node:readline");
+const send = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
+const child = "11111111-1111-4111-8111-111111111111";
+const update = (sessionId, update) => send({ jsonrpc: "2.0", method: "_x.ai/session/update", params: { sessionId, update } });
+createInterface({ input: process.stdin }).on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.id === undefined) return;
+  let result = {};
+  if (message.method === "initialize") result = { protocolVersion: 1, agentCapabilities: {}, authMethods: [] };
+  if (message.method === "session/new") result = { sessionId: "root", configOptions: [] };
+  if (message.method === "session/prompt") {
+    update("foreign", { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "UNOWNED" } });
+    update("root", { sessionUpdate: "subagent_spawned", subagent_id: "worker", child_session_id: child, subagent_type: "research", description: "Review" });
+    update("root", { sessionUpdate: "tool_call", toolCallId: "spawn", title: "spawn_subagent", rawInput: { description: "Review", model: "grok-4.6" } });
+    update("root", { sessionUpdate: "tool_call_update", toolCallId: "spawn", status: "completed", rawOutput: "Subagent started in background.\\nsubagent_id: " + child + "\\nget_command_or_subagent_output" });
+    update(child, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Child answer" } });
+    update(child, { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "Child reasoning" } });
+    update(child, { sessionUpdate: "tool_call", toolCallId: "inspect", title: "Inspect files", rawInput: {} });
+    update(child, { sessionUpdate: "tool_call_update", toolCallId: "inspect", status: "completed", rawOutput: "files" });
+    update("root", { sessionUpdate: "tool_call", toolCallId: "poll", title: "get_command_or_subagent_output", rawInput: { task_id: child }, rawOutput: { result: { task_id: child, status: "running", output: "Final report" } }, status: "completed" });
+    update("root", { sessionUpdate: "subagent_finished", child_session_id: child, status: "completed", output: "Final report" });
+    update("root", { sessionUpdate: "subagent_spawned", subagent_id: "cancelled", description: "Cancelled" });
+    update("root", { sessionUpdate: "subagent_finished", subagent_id: "cancelled", status: "cancelled" });
+    update("root", { sessionUpdate: "subagent_spawned", subagent_id: "killed", description: "Still running" });
+    result = { stopReason: "end_turn" };
+  }
+  send({ jsonrpc: "2.0", id: message.id, result });
+});
+`,
+      { mode: 0o700 },
+    );
+    const context = sessionContext(root, workspace, {
+      GROK_HOME: join(root, "grok-home"),
+      PATH: process.env.PATH ?? "",
+    });
+    const adapter = await new GrokHarnessDriver({ executable }).create({
+      config: {},
+      instanceId: context.harnessInstanceId,
+      sourceId: "xai",
+    });
+    const session = await adapter.startSession(context);
+    const events: HarnessEvent[] = [];
+    const observing = (async () => {
+      for await (const event of session.events) events.push(event);
+    })();
+    try {
+      await session.execute({
+        context: {
+          assignment: null,
+          requesterTimeZone: null,
+          threadState: { previousAssignment: null, previousRun: null },
+        },
+        environment: context.environment,
+        inputs: [],
+        reports: { messages: [], omittedCount: 0, throughSequence: null },
+        requestedBy: createId("user"),
+        runId: createId("run"),
+        signal: AbortSignal.timeout(5_000),
+        attachments: new Map(),
+      });
+      await session.stop();
+      await observing;
+      const nodes = events.filter((event) => event.type === "node.started");
+      expect(
+        nodes.map((event) => [
+          event.data.nativeRef,
+          event.data.kind,
+          event.data.model,
+          event.data.parentNodeId,
+        ]),
+      ).toEqual([
+        ["worker", "subagent", null, null],
+        ["cancelled", "subagent", null, null],
+        ["killed", "subagent", null, null],
+      ]);
+      const nodeId = nodes[0]!.data.nodeId;
+      expect(
+        events
+          .filter((event) => event.type === "node.completed")
+          .map((event) => [event.data.status, event.data.result]),
+      ).toEqual([
+        ["completed", "Final report"],
+        ["interrupted", null],
+        ["interrupted", null],
+      ]);
+      expect(
+        events.filter((event) => event.type === "node.message").map((event) => event.data),
+      ).toEqual([{ nodeId, text: "Child answer" }]);
+      expect(
+        events.filter((event) => event.type === "reasoning.completed").map((event) => event.data),
+      ).toEqual([{ nodeId, blockId: "thought", text: "Child reasoning" }]);
+      expect(
+        events.flatMap((event) =>
+          event.type === "tool.started" && event.data.callId === "inspect"
+            ? [event.data.nodeId]
+            : [],
+        ),
+      ).toEqual([nodeId]);
+      expect(
+        events.flatMap((event) =>
+          event.type === "tool.completed" && event.data.callId === "inspect"
+            ? [event.data.nodeId]
+            : [],
+        ),
+      ).toEqual([nodeId]);
+      expect(
+        events.some((event) => event.type === "node.progress" && event.data.nodeId === nodeId),
+      ).toBe(true);
+      expect(JSON.stringify(events)).not.toContain("UNOWNED");
+      expect(events.some((event) => event.type === "assistant.message")).toBe(false);
+    } finally {
+      await session.stop();
+      await adapter.close();
+      await observing;
     }
   });
 

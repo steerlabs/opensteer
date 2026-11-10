@@ -384,12 +384,18 @@ describeStore("dormant Project access", (it) => {
           connection,
         );
       const originalObjects = (await legacyObjects(database)).rows;
-      await migrateToLatest(database);
+      // The access migrations alone must leave what was there alone; later ones may change it.
+      const access = await new Migrator({
+        db: database,
+        provider: { getMigrations: async () => migrations },
+      }).migrateTo("0172_team_administration");
+      if (access.error) throw access.error;
       const upgradedObjects = new Map(
         (await legacyObjects(database)).rows.map((row) => [row.name, row.definition]),
       );
       for (const original of originalObjects)
         expect(upgradedObjects.get(original.name), original.name).toBe(original.definition);
+      await migrateToLatest(database);
       const upgraded = await legacyMembershipLifecycle(
         database,
         source.userId,

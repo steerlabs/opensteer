@@ -281,7 +281,7 @@ export function Sidebar({
     pathname === "/"
       ? snapshot.homeThreadId
       : pathname.startsWith("/threads/")
-        ? decodeURIComponent(pathname.slice("/threads/".length))
+        ? decodeURIComponent(pathname.slice("/threads/".length).split("/")[0]!)
         : null;
   const openRowThreadId = openThreadId === null ? null : listedRowThreadId(snapshot, openThreadId);
   const directory = useTaskDirectory(hostClient, openRowThreadId);

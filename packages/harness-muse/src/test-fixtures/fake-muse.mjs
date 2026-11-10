@@ -238,6 +238,82 @@ function serve() {
           });
           return;
         }
+        if (scenario === "workflow" || scenario === "workflow-cancel") {
+          const base = {
+            itemId: "workflow-item",
+            kind: "workflow",
+            workflowRunId: "real-workflow-run",
+            callId: "launch-call",
+            entryId: "Review",
+            turnId,
+          };
+          const child = {
+            childId: "reviewer",
+            label: "Review code",
+            phase: "Review",
+            attempt: 1,
+            status: "running",
+          };
+          notification("item/started", {
+            item: { ...base, revision: 1, status: "inProgress", children: [child] },
+          });
+          if (scenario === "workflow-cancel") return;
+          notification("item/updated", {
+            item: {
+              ...base,
+              revision: 2,
+              status: "inProgress",
+              children: [
+                {
+                  ...child,
+                  status: "completed",
+                  terminal: "completed",
+                  failureKind: "tool_error",
+                  failureReason: "Try again",
+                },
+                { ...child, attempt: 2, status: "running" },
+                {
+                  childId: "reporter",
+                  label: "Write report",
+                  phase: "Report",
+                  attempt: 1,
+                  status: "completed",
+                  terminal: "completed",
+                  resultRef: "report-result",
+                },
+              ],
+            },
+          });
+          notification("item/completed", {
+            item: {
+              ...base,
+              revision: 3,
+              status: "completed",
+              finalSummary: "Reviewed",
+              children: [
+                {
+                  childId: "reviewer",
+                  attempt: 1,
+                  status: "completed",
+                  terminal: "completed",
+                  failureKind: "tool_error",
+                },
+                {
+                  childId: "reviewer",
+                  attempt: 2,
+                  status: "completed",
+                  terminal: "completed",
+                  resultRef: "review-result",
+                },
+              ],
+            },
+          });
+          notification("item/updated", {
+            item: { ...base, revision: 2, status: "inProgress", children: [child] },
+          });
+          finishTurn();
+          return;
+        }
         if (scenario === "child-approval") {
           notification("item/started", {
             item: {
@@ -299,6 +375,17 @@ function serve() {
         }
         if (scenario === "streaming") streamItems();
         finishTurn();
+      });
+      return;
+    }
+    if (method === "item/readOutput") {
+      response(id, {
+        content: params.outputRef === "report-result" ? "Report ready" : "Review passed",
+        encoding: "utf8",
+        byteLen: 12,
+        offsetBytes: 0,
+        eof: true,
+        mediaType: "text/plain",
       });
       return;
     }
@@ -455,7 +542,7 @@ function serve() {
       item: {
         itemId: "message-1",
         kind: "agentMessage",
-        revision: 1,
+        revision: scenario === "streaming" ? 2 : 1,
         role: "assistant",
         status: "completed",
         text: "Hello from Muse",

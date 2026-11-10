@@ -2095,6 +2095,10 @@ export class OpensteerStore {
     return snapshotStore.threadMessagePageForOwner(this.#database, input);
   }
 
+  nodeEventPageForOwner(input: Parameters<typeof snapshotStore.nodeEventPageForOwner>[1]) {
+    return snapshotStore.nodeEventPageForOwner(this.#database, input);
+  }
+
   async threadEventPageForOwner(input: {
     readonly view?: "conversation";
     readonly placeEvents?: "include";

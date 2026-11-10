@@ -2,6 +2,8 @@ import {
   appendLiveStreamTail,
   liveAppendTextMaxLength,
   liveProgressMaxItems,
+  liveNodeProgressMaxLength,
+  type ExecutionNodeId,
   liveStreamKeyId,
   surrogateSafeCut,
   type LiveItem,
@@ -13,6 +15,7 @@ const liveFrameMaxBytes = 512 * 1_024;
 
 interface LiveStream {
   readonly key: LiveStreamKey;
+  nodeId?: ExecutionNodeId;
   /** Units received but not yet sent. */
   pending: string;
   /** Total units this stream has received, sent or not. */
@@ -70,17 +73,22 @@ export class LiveProgressBuffer {
     this.#options = options;
   }
 
-  append(key: LiveStreamKey, text: string): void {
+  append(
+    key: Exclude<LiveStreamKey, { stream: "node" }> & { readonly nodeId?: ExecutionNodeId },
+    text: string,
+  ): void {
     if (this.#closed || text.length === 0) return;
     const id = liveStreamKeyId(key);
     const stream = this.#streams.get(id) ?? {
       key,
+      ...(key.nodeId === undefined ? {} : { nodeId: key.nodeId }),
       length: 0,
       pending: "",
       resync: false,
       tail: "",
     };
     this.#streams.set(id, stream);
+    if (key.stream === "tool" && key.nodeId !== undefined) stream.nodeId = key.nodeId;
     stream.length += text.length;
     stream.tail = appendLiveStreamTail(stream.tail, text);
     if (this.#exhausted) return;
@@ -93,6 +101,23 @@ export class LiveProgressBuffer {
       return;
     }
     this.#schedule();
+  }
+
+  replaceNode(nodeId: ExecutionNodeId, text: string): void {
+    if (this.#closed) return;
+    const bounded = text.slice(0, surrogateSafeCut(text, liveNodeProgressMaxLength));
+    const key = { stream: "node" as const, nodeId };
+    const id = liveStreamKeyId(key);
+    const previous = this.#streams.get(id);
+    this.#pendingBytes -= Buffer.byteLength(previous?.pending ?? "", "utf8");
+    this.#streams.set(id, {
+      key,
+      length: bounded.length,
+      tail: bounded,
+      pending: "",
+      resync: !this.#exhausted,
+    });
+    if (!this.#exhausted) this.#schedule();
   }
 
   /**
@@ -210,7 +235,7 @@ export class LiveProgressBuffer {
             : surrogateSafeCut(rest, liveAppendTextMaxLength);
         const text = rest.slice(0, cut);
         rest = rest.slice(text.length);
-        items.push(appendItem(stream.key, at, text));
+        items.push(appendItem(stream, at, text));
         at += text.length;
       }
     }
@@ -253,14 +278,24 @@ export class LiveProgressBuffer {
   }
 }
 
-function appendItem(key: LiveStreamKey, at: number, text: string): LiveItem {
+function appendItem(stream: LiveStream, at: number, text: string): LiveItem {
+  const { key } = stream;
   switch (key.stream) {
     case "assistant":
       return { at, op: "append", stream: "assistant", text };
     case "reasoning":
       return { at, blockId: key.blockId, op: "append", stream: "reasoning", text };
     case "tool":
-      return { at, callId: key.callId, op: "append", stream: "tool", text };
+      return {
+        at,
+        callId: key.callId,
+        ...(stream.nodeId === undefined ? {} : { nodeId: stream.nodeId }),
+        op: "append",
+        stream: "tool",
+        text,
+      };
+    case "node":
+      return replaceItem(stream);
   }
 }
 
@@ -277,9 +312,18 @@ function replaceItem(stream: LiveStream): LiveItem {
         stream: "reasoning",
         text: stream.tail,
       };
+    case "node":
+      return {
+        nodeId: key.nodeId,
+        length: stream.length,
+        op: "replace",
+        stream: "node",
+        text: stream.tail,
+      };
     case "tool":
       return {
         callId: key.callId,
+        ...(stream.nodeId === undefined ? {} : { nodeId: stream.nodeId }),
         length: stream.length,
         op: "replace",
         stream: "tool",
