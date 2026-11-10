@@ -218,7 +218,7 @@ describe("BrowserCdpRelay", () => {
       );
       expect(output.trim()).toBe("Phone");
       expect(negotiations).toBe(1);
-      expect(seen).toEqual(["session.tabs", "page.info", "dom.act"]);
+      expect(seen).toEqual(["session.tabs", "surface.attach", "page.info", "dom.act"]);
       relay.suspend();
       const backend = new URL(url);
       backend.protocol = "http:";
