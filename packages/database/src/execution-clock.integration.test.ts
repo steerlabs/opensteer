@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createId } from "@opensteer/core";
 import { randomUUID } from "node:crypto";
-import { sql } from "kysely";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { mutateAccess } from "./access-store.js";
 import { ManualClock } from "@opensteer/shared/test-support/clock";
