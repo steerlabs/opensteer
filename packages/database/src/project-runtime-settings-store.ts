@@ -64,12 +64,12 @@ function settingsFromRow(row: Selectable<ProjectRuntimeSettingsTable>): ProjectR
   };
 }
 
-function refuse(message: string): never {
-  throw new OpensteerError({ code: "forbidden", message });
+function refuse(message: string, reason = "invalid-selection"): never {
+  throw new OpensteerError({ code: "forbidden", reason, message });
 }
 
-function conflict(message: string): never {
-  throw new OpensteerError({ code: "conflict", message });
+function conflict(message: string, reason = "settings-revision-changed"): never {
+  throw new OpensteerError({ code: "conflict", reason, message });
 }
 
 async function projectWorkspace(database: Kysely<DatabaseSchema>, workspaceId: WorkspaceId) {
@@ -215,7 +215,8 @@ export async function setProjectRuntimeSettings(
         ? {}
         : { expectedMemberGeneration: authenticatedHuman.authorityGeneration }),
     });
-    if (!allowed.allowed) refuse("An active admitted Project manager is required");
+    if (!allowed.allowed)
+      refuse("An active admitted Project manager is required", "project-manage-required");
     const environment = await transaction
       .selectFrom("executionEnvironments")
       .select("runnerId")
@@ -249,15 +250,17 @@ export async function setProjectRuntimeSettings(
     if (receipt) {
       const saved = z.object({ fingerprint: z.string(), revision }).parse(receipt.metadata);
       if (saved.fingerprint !== fingerprint)
-        conflict("Settings command identity was reused with different input");
+        conflict(
+          "Settings command identity was reused with different input",
+          "idempotency-conflict",
+        );
       if (!previous || Number(previous.revision) !== saved.revision)
         conflict("Settings changed after this command");
       return settingsFromRow(previous);
     }
-    if (
-      Number(access.revision) !== parsed.expectedAccessRevision ||
-      (previous ? Number(previous.revision) : null) !== parsed.expectedSettingsRevision
-    )
+    if (Number(access.revision) !== parsed.expectedAccessRevision)
+      conflict("Project access revision changed", "access-revision-changed");
+    if ((previous ? Number(previous.revision) : null) !== parsed.expectedSettingsRevision)
       conflict("Project runtime settings or access revision changed");
     await transaction
       .selectFrom("harnessCatalogs")
@@ -308,7 +311,7 @@ export async function setProjectRuntimeSettings(
         id: createId("securityAudit"),
         action: "project-runtime-settings.updated",
         actorUserId: authenticatedHuman.userId,
-        actorSessionId: null,
+        actorSessionId: authenticatedHuman.sessionId ?? null,
         workspaceId: parsed.workspaceId,
         requestId: parsed.commandIdentity,
         targetId: parsed.workspaceId,

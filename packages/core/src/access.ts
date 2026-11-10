@@ -34,6 +34,7 @@ export type AccessMutation =
       readonly builtin?: "everyone";
     }
   | { readonly kind: "delete-group"; readonly groupId: string }
+  | { readonly kind: "rename-group"; readonly groupId: string; readonly name: string }
   | {
       readonly kind: "add-group-member" | "remove-group-member";
       readonly groupId: string;
@@ -53,6 +54,7 @@ export type AccessMutation =
       readonly memberKind?: "full" | "guest";
       readonly memberState?: "active" | "suspended" | "removed";
       readonly admit?: boolean;
+      readonly administrator?: boolean;
     }
   | {
       readonly kind: "delete-project";
@@ -63,6 +65,7 @@ export type AccessMutation =
 export interface AuthenticatedHuman {
   readonly userId: UserId;
   readonly authorityGeneration?: number;
+  readonly sessionId?: import("./ids.js").AuthSessionId;
 }
 
 export interface AccessMutationInput {

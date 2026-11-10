@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
 import {
   createId,
+  CommandIdSchema,
   OpensteerError,
   MarkColorSchema,
+  normalizeIdentityEmail,
   WorkspaceBackingSchema,
   type AccessDecision,
   type AccessMutation,
@@ -16,6 +18,12 @@ import {
 } from "@opensteer/core";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import { z } from "zod";
+import {
+  SafeChangeSummarySchema,
+  TeamReasonSchema,
+  type AccessPreview,
+  type TeamReason,
+} from "@opensteer/protocol";
 import type { AccessEntryTable, DatabaseSchema, WorkspaceMembershipTable } from "./schema.js";
 import {
   assertProjectAuthority,
@@ -23,6 +31,12 @@ import {
 } from "./deployment-execution-authority.js";
 import { withRequestWorkspaceLocks } from "./request-workspace-locks.js";
 import { jsonValue, safeGeneration } from "./store-primitives.js";
+import {
+  consumeTeamAdmission,
+  readTeamAdmission,
+  unavailableInvitation,
+  type TeamAdmissionInput,
+} from "./team-invitation-admission.js";
 
 export const accessCapacity = {
   projects: 128,
@@ -78,12 +92,17 @@ const resultSchema = z.object({
 });
 const pairKey = (pair: Pair) => `${pair.workspaceId}/${pair.userId}`;
 
-function refuse(message: string): never {
-  throw new OpensteerError({ code: "bad_request", message });
+function refuse(message: string, reason: TeamReason = "invalid-subject"): never {
+  throw new OpensteerError({ code: "bad_request", reason, message });
 }
 
-function conflict(message: string): never {
-  throw new OpensteerError({ code: "conflict", message, retryable: true });
+function conflict(message: string, reason: TeamReason = "access-revision-changed"): never {
+  throw new OpensteerError({
+    code: "conflict",
+    reason,
+    message,
+    retryable: reason === "access-revision-changed",
+  });
 }
 
 async function databaseTime(database: Database): Promise<Date> {
@@ -102,7 +121,7 @@ async function takeWriterLock(transaction: AccessTransaction): Promise<void> {
 async function readGraph(database: Database, memberIds?: readonly UserId[]) {
   let userQuery = database
     .selectFrom("users")
-    .select(["id", "memberKind", "memberState", "admittedAt"]);
+    .select(["id", "displayName", "instanceRole", "memberKind", "memberState", "admittedAt"]);
   if (memberIds) userQuery = userQuery.where("id", "in", memberIds);
   const users = await userQuery.execute();
   const projects = await database
@@ -166,7 +185,7 @@ function groupPeople(graph: Graph): { people: Map<string, Set<UserId>>; depth: n
   const depths = new Map<string, number>();
   const visiting = new Set<string>();
   const visit = (id: string): Set<UserId> => {
-    if (visiting.has(id)) refuse("Access groups cannot contain a cycle");
+    if (visiting.has(id)) refuse("Access groups cannot contain a cycle", "access-cycle");
     const cached = people.get(id);
     if (cached) return cached;
     const group = groups.get(id);
@@ -175,7 +194,8 @@ function groupPeople(graph: Graph): { people: Map<string, Set<UserId>>; depth: n
     const result = new Set<UserId>();
     let depth = 1;
     if (group.builtin === "everyone") {
-      if (children.get(id)?.length) refuse("Everyone cannot have stored members");
+      if (children.get(id)?.length)
+        refuse("Everyone cannot have stored members", "immutable-everyone");
       for (const user of graph.users)
         if (user.memberKind === "full" && user.memberState === "active" && user.admittedAt)
           result.add(user.id);
@@ -245,7 +265,7 @@ function effective(entries: readonly Entry[]): Effective {
 function capacityError(limit: keyof typeof accessCapacity, count: number): never {
   throw new OpensteerError({
     code: "resource_exhausted",
-    reason: "access-capacity",
+    reason: limit === "depth" ? "access-depth" : "access-capacity",
     message: "Access change exceeds the safety limit",
     details: { limit, maximum: accessCapacity[limit], count },
   });
@@ -274,6 +294,129 @@ function checkCapacity(old: Graph, next: Graph): void {
       value.entries.length > (oldPairs.get(key)?.entries.length ?? 0)
     )
       capacityError("matchingEntries", value.entries.length);
+}
+
+async function planAccess(
+  database: Database,
+  input: AccessMutationInput,
+  old: Graph,
+  now: Date,
+  memberIds?: readonly UserId[],
+) {
+  const introducedIds = input.changes.flatMap((change) => introducedEntryId(change) ?? []);
+  if (new Set(introducedIds).size !== introducedIds.length) refuse("Access entries are immutable");
+  if (
+    introducedIds.length &&
+    (await database
+      .selectFrom("accessEntries")
+      .select("id")
+      .where("id", "in", introducedIds)
+      .executeTakeFirst())
+  )
+    refuse("Access entries are immutable");
+  let next = old;
+  for (const [changeIndex, change] of input.changes.entries()) {
+    try {
+      next = propose(next, change, input.actor.userId, now);
+    } catch (error) {
+      if (error instanceof OpensteerError)
+        throw new OpensteerError({
+          code: error.code,
+          ...(error.reason ? { reason: error.reason } : {}),
+          message: error.message,
+          retryable: error.retryable,
+          details: { ...error.details, changeIndex },
+        });
+      throw error;
+    }
+  }
+  if (
+    new Set(next.groups.map((group) => group.name.trim().toLowerCase())).size !== next.groups.length
+  )
+    refuse("Group already exists");
+  checkCapacity(old, next);
+  if (
+    input.changes.some(
+      (change) =>
+        change.kind === "member" &&
+        (change.memberState !== undefined || change.administrator !== undefined),
+    )
+  ) {
+    const admins = await database
+      .selectFrom("users")
+      .select(["id", "instanceRole", "memberState", "admittedAt"])
+      .where("instanceRole", "=", "administrator")
+      .execute();
+    const active = (
+      user: Pick<Graph["users"][number], "instanceRole" | "memberState" | "admittedAt">,
+    ) =>
+      user.instanceRole === "administrator" &&
+      user.memberState === "active" &&
+      user.admittedAt !== null;
+    if (
+      admins.some(active) &&
+      ![
+        ...admins.map((admin) => next.users.find((user) => user.id === admin.id) ?? admin),
+        ...next.users.filter((user) => !admins.some((admin) => admin.id === user.id)),
+      ].some(active)
+    )
+      conflict("The last active administrator cannot be removed", "last-active-admin");
+  }
+  let membershipQuery = database
+    .selectFrom("workspaceMemberships")
+    .selectAll()
+    .where("state", "=", "active");
+  if (memberIds) membershipQuery = membershipQuery.where("userId", "in", memberIds);
+  const memberships = await membershipQuery.execute();
+  const beforePairs = entriesByPair(old);
+  const afterPairs = entriesByPair(next);
+  if (memberIds && afterPairs.size > beforePairs.size) {
+    const total = await database
+      .selectFrom("workspaceMemberships")
+      .innerJoin("workspaces", "workspaces.id", "workspaceMemberships.workspaceId")
+      .select(sql<string>`count(*)`.as("count"))
+      .where("workspaceMemberships.state", "=", "active")
+      .where("workspaces.kind", "=", "project")
+      .where("workspaces.deletedAt", "is", null)
+      .where("workspaces.status", "not in", ["deleting", "deleted"])
+      .executeTakeFirstOrThrow();
+    if (Number(total.count) + afterPairs.size - beforePairs.size > accessCapacity.effectivePairs)
+      capacityError("effectivePairs", Number(total.count) + afterPairs.size - beforePairs.size);
+  }
+  const pairs = new Map<string, Pair>();
+  for (const change of input.changes)
+    for (const pair of affectedPairs(old, next, memberships, change))
+      pairs.set(pairKey(pair), pair);
+  const growing = [...afterPairs].some(
+    ([key, value]) =>
+      value.entries.length > (beforePairs.get(key)?.entries.length ?? 0) ||
+      (effective(value.entries).level === "manage" &&
+        effective(beforePairs.get(key)?.entries ?? []).level !== "manage"),
+  );
+  if (growing && pairs.size > accessCapacity.affectedPairs)
+    capacityError("affectedPairs", pairs.size);
+  if (growing) {
+    const scopes = new Set([...pairs.values()].map((pair) => pair.workspaceId));
+    for (const change of input.changes)
+      if (change.kind === "delete-project") scopes.add(change.workspaceId);
+    if (pairs.size) {
+      const requests = await sql<{
+        originatingWorkspaceId: WorkspaceId;
+        targetWorkspaceId: WorkspaceId;
+      }>`select distinct request.originating_workspace_id, request.target_workspace_id
+        from requests request join jsonb_to_recordset(${JSON.stringify([...pairs.values()])}::jsonb) as pair("workspaceId" text, "userId" text)
+          on request.requested_by = pair."userId" and (request.originating_workspace_id = pair."workspaceId" or request.target_workspace_id = pair."workspaceId") where request.status = 'pending'`.execute(
+        database,
+      );
+      for (const request of requests.rows) {
+        scopes.add(request.originatingWorkspaceId);
+        scopes.add(request.targetWorkspaceId);
+      }
+    }
+    if (scopes.size > accessCapacity.requestWorkspaces)
+      capacityError("requestWorkspaces", scopes.size);
+  }
+  return { old, next, pairs: [...pairs.values()], growing };
 }
 
 function propose(graph: Graph, change: AccessMutation, actorId: UserId, now: Date): Graph {
@@ -310,10 +453,7 @@ function propose(graph: Graph, change: AccessMutation, actorId: UserId, now: Dat
       if (!change.name.trim() || change.name.trim().length > 120) refuse("Invalid group name");
       if (
         next.groups.some(
-          (value) =>
-            value.id === change.id ||
-            value.name.trim().toLowerCase() === change.name.trim().toLowerCase() ||
-            (change.builtin && value.builtin === change.builtin),
+          (value) => value.id === change.id || (change.builtin && value.builtin === change.builtin),
         )
       )
         refuse("Group already exists");
@@ -326,8 +466,15 @@ function propose(graph: Graph, change: AccessMutation, actorId: UserId, now: Dat
         deletedAt: null,
       });
       break;
+    case "rename-group": {
+      const value = group(change.groupId);
+      if (value.builtin) refuse("Everyone cannot be renamed", "immutable-everyone");
+      if (!change.name.trim() || change.name.trim().length > 120) refuse("Invalid group name");
+      value.name = change.name.trim();
+      break;
+    }
     case "delete-group":
-      if (group(change.groupId).builtin) refuse("Everyone cannot be deleted");
+      if (group(change.groupId).builtin) refuse("Everyone cannot be deleted", "immutable-everyone");
       next.groups = next.groups.filter((value) => value.id !== change.groupId);
       next.edges = next.edges.filter(
         (value) =>
@@ -340,7 +487,7 @@ function propose(graph: Graph, change: AccessMutation, actorId: UserId, now: Dat
       break;
     case "add-group-member":
     case "remove-group-member": {
-      if (group(change.groupId).builtin) refuse("Everyone cannot be edited");
+      if (group(change.groupId).builtin) refuse("Everyone cannot be edited", "immutable-everyone");
       const memberKind = change.member.kind === "person" ? "user" : "group";
       const memberId =
         change.member.kind === "person" ? change.member.userId : change.member.groupId;
@@ -364,10 +511,12 @@ function propose(graph: Graph, change: AccessMutation, actorId: UserId, now: Dat
     }
     case "grant": {
       z.uuid().parse(change.id);
-      if (change.target.kind !== "project") refuse("This access target is not implemented");
-      if (change.subject.kind === "project") refuse("Project-to-Project grants are unavailable");
+      if (change.target.kind !== "project")
+        refuse("This access target is not implemented", "unsupported-target");
+      if (change.subject.kind === "project")
+        refuse("Project-to-Project grants are unavailable", "unsupported-target");
       if (change.level !== "use" && change.level !== "manage")
-        refuse("Invalid Project access level");
+        refuse("Invalid Project access level", "invalid-level");
       const workspaceId = change.target.workspaceId;
       if (!next.projects.some((project) => project.id === workspaceId))
         refuse("Live Project is required");
@@ -403,8 +552,13 @@ function propose(graph: Graph, change: AccessMutation, actorId: UserId, now: Dat
     case "member": {
       const user = next.users.find((value) => value.id === change.userId);
       if (!user) refuse("Person does not exist");
+      if (user.memberState === "removed" && !change.admit)
+        refuse("Removed people require a new invitation", "member-removed");
+      if (!user.admittedAt && !change.admit) refuse("Person is not admitted");
       if (change.memberKind) user.memberKind = change.memberKind;
       if (change.memberState) user.memberState = change.memberState;
+      if (change.administrator !== undefined)
+        user.instanceRole = change.administrator ? "administrator" : "user";
       if (change.admit) user.admittedAt ??= now;
       break;
     }
@@ -659,48 +813,64 @@ async function applySource(
   next: Graph,
   input: AccessMutationInput,
   now: Date,
+  admission?: TeamAdmissionInput,
 ): Promise<void> {
   const changedUsers = next.users
     .filter((after) => {
       const before = old.users.find((user) => user.id === after.id)!;
       return (
         before.memberKind !== after.memberKind ||
+        before.instanceRole !== after.instanceRole ||
         before.memberState !== after.memberState ||
         before.admittedAt?.getTime() !== after.admittedAt?.getTime()
       );
     })
     .sort((first, second) => first.id.localeCompare(second.id));
-  if (changedUsers.some((after) => after.memberState !== "active")) {
-    const admins = await transaction
-      .selectFrom("users")
-      .select(["id", "memberState", "admittedAt"])
-      .where("instanceRole", "=", "administrator")
-      .execute();
-    const active = (user: Pick<Graph["users"][number], "memberState" | "admittedAt">) =>
-      user.memberState === "active" && user.admittedAt !== null;
-    if (
-      admins.some(active) &&
-      !admins.some((admin) => active(next.users.find((user) => user.id === admin.id) ?? admin))
-    )
-      refuse("The last active administrator cannot be removed");
-  }
   const oldGroups = new Set(old.groups.map((group) => group.id));
   const nextGroups = new Set(next.groups.map((group) => group.id));
   const deletedGroups = old.groups
     .filter((group) => !nextGroups.has(group.id))
     .map((group) => group.id);
-  if (deletedGroups.length) {
+  const changedGroupIds = [
+    ...deletedGroups,
+    ...next.groups
+      .filter((group) =>
+        old.groups.some((before) => before.id === group.id && before.name !== group.name),
+      )
+      .map((group) => group.id),
+  ];
+  if (changedGroupIds.length)
     await transaction
       .selectFrom("accessGroups")
       .select("id")
-      .where("id", "in", deletedGroups)
+      .where("id", "in", changedGroupIds)
       .orderBy("id")
       .forNoKeyUpdate()
       .execute();
+  if (deletedGroups.length) {
     await transaction
       .updateTable("accessGroups")
       .set({ deletedAt: now })
       .where("id", "in", deletedGroups)
+      .execute();
+  }
+  const renamedGroups = next.groups
+    .filter((group) =>
+      old.groups.some((before) => before.id === group.id && before.name !== group.name),
+    )
+    .sort((first, second) => first.id.localeCompare(second.id));
+  for (const group of renamedGroups) {
+    let temporaryName = `Renaming ${createId("command")}`;
+    while (
+      [...old.groups, ...next.groups].some(
+        (value) => value.name.toLowerCase() === temporaryName.toLowerCase(),
+      )
+    )
+      temporaryName = `Renaming ${createId("command")}`;
+    await transaction
+      .updateTable("accessGroups")
+      .set({ name: temporaryName })
+      .where("id", "=", group.id)
       .execute();
   }
   const addedGroups = next.groups.filter((group) => !oldGroups.has(group.id));
@@ -716,6 +886,12 @@ async function applySource(
       });
   if (addedGroups.length)
     await transaction.insertInto("accessGroups").values(addedGroups).execute();
+  for (const group of renamedGroups)
+    await transaction
+      .updateTable("accessGroups")
+      .set({ name: group.name })
+      .where("id", "=", group.id)
+      .execute();
   const edgeKey = (edge: Graph["edges"][number]) =>
     JSON.stringify([edge.groupId, edge.memberKind, edge.memberId]);
   const oldEdges = new Set(old.edges.map(edgeKey));
@@ -793,6 +969,7 @@ async function applySource(
   }
   if (addedEntries.length)
     await transaction.insertInto("accessEntries").values(addedEntries).execute();
+  const invitation = admission ? await consumeTeamAdmission(transaction, admission, now) : null;
   const userIds = new Set(changedUsers.map((user) => user.id));
   if (input.changes.some((change) => change.kind === "create-project"))
     userIds.add(input.actor.userId);
@@ -804,6 +981,29 @@ async function applySource(
       .orderBy("id")
       .forNoKeyUpdate()
       .execute();
+  if (admission && invitation) {
+    const user = await transaction
+      .selectFrom("users")
+      .select(["email", "emailVerified", "disabledAt"])
+      .where("id", "=", admission.userId)
+      .executeTakeFirstOrThrow();
+    const session = await transaction
+      .selectFrom("authSessions")
+      .select("id")
+      .where("id", "=", admission.sessionId)
+      .where("userId", "=", admission.userId)
+      .where("expiresAt", ">", now)
+      .where("absoluteExpiresAt", ">", now)
+      .forShare()
+      .executeTakeFirst();
+    if (
+      !session ||
+      !user.emailVerified ||
+      user.disabledAt ||
+      normalizeIdentityEmail(user.email) !== invitation.intendedEmail
+    )
+      unavailableInvitation();
+  }
   for (const change of input.changes)
     if (change.kind === "create-project")
       await transaction
@@ -838,9 +1038,10 @@ async function applySource(
       .updateTable("users")
       .set({
         memberKind: after.memberKind,
+        instanceRole: after.instanceRole,
         memberState: after.memberState,
         admittedAt: after.admittedAt,
-        ...(before.memberState !== after.memberState
+        ...(before.memberState !== after.memberState || before.instanceRole !== after.instanceRole
           ? {
               authorityGeneration: sql`authority_generation + 1`,
               memberStateChangedAt: now,
@@ -859,13 +1060,184 @@ function introducedEntryId(change: AccessMutation): string | undefined {
   return undefined;
 }
 
+function safeChanges(old: Graph, next: Graph) {
+  const summaries: unknown[] = [];
+  const entry = (value: Entry | undefined) =>
+    value
+      ? {
+          id: value.id,
+          subject:
+            value.subjectKind === "user"
+              ? { kind: "person", userId: value.subjectId }
+              : { kind: "group", groupId: value.subjectId },
+          target: { kind: "project", workspaceId: value.targetId },
+          level: value.level,
+        }
+      : null;
+  const group = (value: Graph["groups"][number] | undefined) =>
+    value ? { id: value.id, name: value.name, builtin: value.builtin } : null;
+  const member = (value: Graph["users"][number]) => ({
+    id: value.id,
+    kind: value.memberKind,
+    state: value.memberState,
+    administrator: value.instanceRole === "administrator",
+  });
+  for (const id of new Set([...old.entries, ...next.entries].map((value) => value.id))) {
+    const before = entry(old.entries.find((value) => value.id === id));
+    const after = entry(next.entries.find((value) => value.id === id));
+    if (JSON.stringify(before) !== JSON.stringify(after))
+      summaries.push({ kind: "entry", before, after });
+    if (summaries.length === 100) break;
+  }
+  for (const id of new Set([...old.groups, ...next.groups].map((value) => value.id))) {
+    if (summaries.length === 100) break;
+    const before = group(old.groups.find((value) => value.id === id));
+    const after = group(next.groups.find((value) => value.id === id));
+    if (JSON.stringify(before) !== JSON.stringify(after))
+      summaries.push({ kind: "group", before, after });
+  }
+  for (const value of next.users) {
+    if (summaries.length === 100) break;
+    const before = member(old.users.find((user) => user.id === value.id)!);
+    const after = member(value);
+    if (JSON.stringify(before) !== JSON.stringify(after))
+      summaries.push({ kind: "member", before, after });
+  }
+  return z.array(SafeChangeSummarySchema).max(100).parse(summaries);
+}
+
+export async function previewAccess(
+  database: Database,
+  input: AccessMutationInput,
+): Promise<AccessPreview> {
+  if (!input.changes.length) refuse("At least one access change is required");
+  return database
+    .transaction()
+    .setIsolationLevel("repeatable read")
+    .setAccessMode("read only")
+    .execute(async (transaction) => {
+      await assertProjectAuthority(transaction);
+      const actor = await requireActor(transaction, input);
+      const state = await transaction
+        .selectFrom("accessState")
+        .select("revision")
+        .where("singletonKey", "=", "primary")
+        .executeTakeFirstOrThrow();
+      const accessRevision = safeGeneration(state.revision);
+      const blocked = (error: OpensteerError, changeIndex = 0): AccessPreview => ({
+        accessRevision,
+        allowed: false,
+        blockers: [
+          {
+            changeIndex,
+            reason: TeamReasonSchema.parse(error.reason),
+            ...(typeof error.details?.limit === "string" &&
+            typeof error.details.maximum === "number"
+              ? { capacity: { limit: error.details.limit, maximum: error.details.maximum } }
+              : {}),
+          },
+        ],
+        counts: { peopleGaining: 0, peopleLosing: 0, levelChanges: 0 },
+        changes: [],
+        surviving: [],
+        truncated: false,
+      });
+      for (const [changeIndex, change] of input.changes.entries()) {
+        try {
+          await authorizeMutation(transaction, actor, change);
+        } catch (error) {
+          if (error instanceof OpensteerError) return blocked(error, changeIndex);
+          throw error;
+        }
+      }
+      try {
+        if (accessRevision !== input.expectedRevision) conflict("Access preview is stale");
+        const plan = await planAccess(
+          transaction,
+          input,
+          await readGraph(transaction),
+          await databaseTime(transaction),
+        );
+        const before = entriesByPair(plan.old);
+        const after = entriesByPair(plan.next);
+        const changes: AccessPreview["changes"] = [];
+        const surviving: AccessPreview["surviving"] = [];
+        const counts = { peopleGaining: 0, peopleLosing: 0, levelChanges: 0 };
+        let detailCount = 0;
+        let truncatedEntries = false;
+        for (const pair of plan.pairs) {
+          const key = pairKey(pair);
+          const previous = effective(before.get(key)?.entries ?? []).level;
+          const current = effective(after.get(key)?.entries ?? []).level;
+          if (previous !== current) {
+            if (!previous) counts.peopleGaining++;
+            else if (!current) counts.peopleLosing++;
+            else counts.levelChanges++;
+            detailCount++;
+            if (changes.length + surviving.length < 100)
+              changes.push({
+                user: {
+                  id: pair.userId,
+                  name: plan.next.users.find((user) => user.id === pair.userId)!.displayName,
+                },
+                project: { kind: "project", workspaceId: pair.workspaceId },
+                before: previous,
+                after: current,
+              });
+          } else if (current) {
+            if (after.get(key)!.entries.length > accessCapacity.matchingEntries)
+              truncatedEntries = true;
+            detailCount++;
+            if (changes.length + surviving.length < 100)
+              surviving.push({
+                userId: pair.userId,
+                project: { kind: "project", workspaceId: pair.workspaceId },
+                level: current,
+                entryIds: after
+                  .get(key)!
+                  .entries.slice(0, accessCapacity.matchingEntries)
+                  .map((entry) => entry.id),
+              });
+          }
+        }
+        return {
+          accessRevision,
+          allowed: true,
+          blockers: [],
+          counts,
+          changes,
+          surviving,
+          truncated: detailCount > 100 || truncatedEntries,
+        };
+      } catch (error) {
+        if (error instanceof OpensteerError && TeamReasonSchema.safeParse(error.reason).success)
+          return blocked(
+            error,
+            typeof error.details?.changeIndex === "number" ? error.details.changeIndex : 0,
+          );
+        throw error;
+      }
+    });
+}
+
 async function requireActor(
   transaction: AccessTransaction,
   input: AccessMutationInput,
-): Promise<{ readonly id: UserId; readonly administrator: boolean }> {
+): Promise<{
+  readonly id: UserId;
+  readonly administrator: boolean;
+  readonly memberKind: "full" | "guest";
+}> {
   const actor = await transaction
     .selectFrom("users")
-    .select(["id", "instanceRole", "memberState", "admittedAt", "authorityGeneration"])
+    .select([
+      "id",
+      "instanceRole",
+      "memberKind",
+      "memberState",
+      "admittedAt",
+      "authorityGeneration",
+    ])
     .where("id", "=", input.actor.userId)
     .executeTakeFirst();
   if (
@@ -875,8 +1247,23 @@ async function requireActor(
     (input.actor.authorityGeneration !== undefined &&
       safeGeneration(actor.authorityGeneration) !== input.actor.authorityGeneration)
   )
-    throw new OpensteerError({ code: "forbidden", message: "Active admitted human is required" });
-  return { id: actor.id, administrator: actor.instanceRole === "administrator" };
+    throw new OpensteerError({
+      code: "forbidden",
+      reason:
+        !actor || !actor.admittedAt
+          ? "membership-lost"
+          : actor.memberState === "removed"
+            ? "member-removed"
+            : actor.memberState === "suspended"
+              ? "member-suspended"
+              : "member-generation-changed",
+      message: "Active admitted human is required",
+    });
+  return {
+    id: actor.id,
+    administrator: actor.instanceRole === "administrator",
+    memberKind: actor.memberKind,
+  };
 }
 
 async function authorizeMutation(
@@ -885,6 +1272,7 @@ async function authorizeMutation(
   change: AccessMutation,
 ): Promise<void> {
   if (actor.administrator) return;
+  if (change.kind === "create-project" && actor.memberKind === "full") return;
   let workspaceId: WorkspaceId | undefined;
   if (change.kind === "grant" && change.target.kind === "project")
     workspaceId = change.target.workspaceId;
@@ -910,6 +1298,7 @@ async function authorizeMutation(
     return;
   throw new OpensteerError({
     code: "forbidden",
+    reason: workspaceId ? "project-manage-required" : "team-admin-required",
     message: "Human access administration is required",
   });
 }
@@ -917,6 +1306,40 @@ async function authorizeMutation(
 export async function mutateAccess(
   database: Database,
   input: AccessMutationInput,
+): Promise<AccessMutationResult> {
+  return coordinateAccess(database, input);
+}
+
+export async function acceptTeamInvitation(
+  database: Database,
+  admission: TeamAdmissionInput,
+): Promise<AccessMutationResult> {
+  await assertProjectAuthority(database);
+  const invitation = await readTeamAdmission(database, admission);
+  return coordinateAccess(
+    database,
+    {
+      actor: { userId: admission.userId, sessionId: admission.sessionId },
+      expectedRevision: 1,
+      commandIdentity: CommandIdSchema.parse(`cmd_${invitation.id}`),
+      changes: [
+        {
+          kind: "member",
+          userId: admission.userId,
+          admit: true,
+          memberKind: invitation.memberKind,
+          memberState: "active",
+        },
+      ],
+    },
+    admission,
+  );
+}
+
+async function coordinateAccess(
+  database: Database,
+  input: AccessMutationInput,
+  admission?: TeamAdmissionInput,
 ): Promise<AccessMutationResult> {
   if (!input.changes.length) refuse("At least one access change is required");
   const introducedIds = input.changes.flatMap((change) => introducedEntryId(change) ?? []);
@@ -935,12 +1358,23 @@ export async function mutateAccess(
     AccessTransaction,
     {
       old: Graph;
+      next: Graph;
+      now: Date;
       pairs: Pair[];
       revision: number;
       growing: boolean;
     }
   >();
-  const fingerprint = createHash("sha256").update(JSON.stringify(input)).digest("hex");
+  const fingerprint = createHash("sha256")
+    .update(
+      JSON.stringify({
+        actorId: input.actor.userId,
+        expectedRevision: input.expectedRevision,
+        commandIdentity: input.commandIdentity,
+        changes: input.changes,
+      }),
+    )
+    .digest("hex");
   try {
     return await withRequestWorkspaceLocks(
       database,
@@ -972,7 +1406,8 @@ export async function mutateAccess(
       },
       async (transaction) => {
         await lockMemberships(transaction, plans.get(transaction)!.pairs);
-        const actor = await requireActor(transaction, input);
+        const actor = admission ? null : await requireActor(transaction, input);
+        if (admission) await readTeamAdmission(transaction, admission);
         // Before permissions: a committed change may have removed the actor's own right to repeat it.
         const receipt = await transaction
           .selectFrom("securityAudit")
@@ -982,18 +1417,16 @@ export async function mutateAccess(
           .executeTakeFirst();
         if (receipt) {
           if (receipt.metadata.fingerprint !== fingerprint)
-            conflict("Access command identity was reused");
+            conflict("Access command identity was reused", "idempotency-conflict");
           return resultSchema.parse(receipt.metadata.result);
         }
-        for (const change of input.changes) await authorizeMutation(transaction, actor, change);
+        if (actor)
+          for (const change of input.changes) await authorizeMutation(transaction, actor, change);
         const plan = plans.get(transaction)!;
-        if (plan.revision !== input.expectedRevision) conflict("Access preview is stale");
-        const now = await databaseTime(transaction);
-        const next = input.changes.reduce(
-          (graph, change) => propose(graph, change, input.actor.userId, now),
-          plan.old,
-        );
-        await applySource(transaction, plan.old, next, input, now);
+        if (!admission && plan.revision !== input.expectedRevision)
+          conflict("Access preview is stale");
+        const { now, next } = plan;
+        await applySource(transaction, plan.old, next, input, now, admission);
         const transitions = await recomputeProjectMemberships(transaction, {
           actorId: input.actor.userId,
           pairs: plan.pairs,
@@ -1015,12 +1448,12 @@ export async function mutateAccess(
             id: createId("securityAudit"),
             action: "access.mutated",
             actorUserId: input.actor.userId,
-            actorSessionId: null,
+            actorSessionId: input.actor.sessionId ?? null,
             workspaceId: null,
             requestId: input.commandIdentity,
             targetId: null,
             targetType: "access",
-            metadata: jsonValue({ fingerprint, result }),
+            metadata: jsonValue({ fingerprint, result, changes: safeChanges(plan.old, next) }),
           })
           .execute();
         return result;
@@ -1028,6 +1461,7 @@ export async function mutateAccess(
       async (transaction) => {
         await takeWriterLock(transaction);
         await assertProjectAuthority(transaction);
+        if (admission) await readTeamAdmission(transaction, admission);
         const state = await transaction
           .selectFrom("accessState")
           .select("revision")
@@ -1045,68 +1479,51 @@ export async function mutateAccess(
         if (receipt) {
           plans.set(transaction, {
             old,
+            next: old,
+            now,
             pairs: [],
             revision: safeGeneration(state.revision),
             growing: false,
           });
           return;
         }
-        if (
-          introducedIds.length &&
-          (await transaction
-            .selectFrom("accessEntries")
+        if (!admission && safeGeneration(state.revision) !== input.expectedRevision)
+          conflict("Access preview is stale");
+        const { next, pairs, growing } = await planAccess(transaction, input, old, now, memberIds);
+        const fencedUsers = next.users
+          .filter((after) => {
+            const before = old.users.find((user) => user.id === after.id)!;
+            return (
+              before.instanceRole !== after.instanceRole ||
+              (before.memberState !== after.memberState && after.memberState !== "active")
+            );
+          })
+          .map((user) => user.id);
+        if (fencedUsers.length) {
+          const connections = await transaction
+            .selectFrom("agentConnections")
             .select("id")
-            .where("id", "in", introducedIds)
-            .executeTakeFirst())
-        )
-          refuse("Access entries are immutable");
-        const next = input.changes.reduce(
-          (graph, change) => propose(graph, change, input.actor.userId, now),
-          old,
-        );
-        checkCapacity(old, next);
-        let membershipQuery = transaction
-          .selectFrom("workspaceMemberships")
-          .selectAll()
-          .where("state", "=", "active");
-        if (memberIds) membershipQuery = membershipQuery.where("userId", "in", memberIds);
-        const memberships = await membershipQuery.execute();
-        if (memberIds) {
-          const projected = entriesByPair(next).size;
-          const current = entriesByPair(old).size;
-          const delta = projected - current;
-          if (delta > 0) {
-            const total = await transaction
-              .selectFrom("workspaceMemberships")
-              .innerJoin("workspaces", "workspaces.id", "workspaceMemberships.workspaceId")
-              .select(sql<string>`count(*)`.as("count"))
-              .where("workspaceMemberships.state", "=", "active")
-              .where("workspaces.kind", "=", "project")
-              .where("workspaces.deletedAt", "is", null)
-              .where("workspaces.status", "not in", ["deleting", "deleted"])
-              .executeTakeFirstOrThrow();
-            if (Number(total.count) + delta > accessCapacity.effectivePairs)
-              capacityError("effectivePairs", Number(total.count) + delta);
-          }
+            .where("userId", "in", fencedUsers)
+            .where("revokedAt", "is", null)
+            .orderBy("id")
+            .forNoKeyUpdate()
+            .execute();
+          if (connections.length)
+            await transaction
+              .updateTable("agentConnections")
+              .set({ revokedAt: now })
+              .where(
+                "id",
+                "in",
+                connections.map((connection) => connection.id),
+              )
+              .execute();
         }
-        const pairs = new Map<string, Pair>();
-        for (const change of input.changes)
-          for (const pair of affectedPairs(old, next, memberships, change))
-            pairs.set(pairKey(pair), pair);
-        const beforePairs = entriesByPair(old);
-        const afterPairs = entriesByPair(next);
-        const growing = [...afterPairs].some(([key, value]) => {
-          const before = beforePairs.get(key)?.entries ?? [];
-          return (
-            value.entries.length > before.length ||
-            (effective(value.entries).level === "manage" && effective(before).level !== "manage")
-          );
-        });
-        if (growing && pairs.size > accessCapacity.affectedPairs)
-          capacityError("affectedPairs", pairs.size);
         plans.set(transaction, {
           old,
-          pairs: [...pairs.values()],
+          next,
+          now,
+          pairs,
           revision: safeGeneration(state.revision),
           growing,
         });
