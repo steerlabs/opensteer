@@ -143,7 +143,6 @@ export class PasswordsService {
       }
       return compatibility.broker();
     }
-    const service = this;
     const session: PasswordsBrokerSession &
       PasswordsBrokerCardSession &
       Partial<PasswordsBrokerPersonFillSession> = {
@@ -168,9 +167,6 @@ export class PasswordsService {
         await this.#bound(transactionId, "signin.commit", (client, connection) =>
           client.call("signin.commit", { transactionId }, { connection, signal }),
         ),
-      get protocolVersion() {
-        return service.#client?.connection?.protocolVersion ?? protocolVersion;
-      },
       cancel: async (transactionId) => await this.#cancel(transactionId),
       probe: async (params) => await this.#probe(params),
       approve: async (params, signal) =>
@@ -193,6 +189,10 @@ export class PasswordsService {
         );
       },
     };
+    Object.defineProperty(session, "protocolVersion", {
+      enumerable: true,
+      get: () => this.#client?.connection?.protocolVersion ?? protocolVersion,
+    });
     if (protocolVersion >= 8) {
       const fillAccounts: PasswordsBrokerPersonFillSession["fillAccounts"] = async (
         params,
