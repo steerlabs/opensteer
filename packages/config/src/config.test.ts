@@ -280,6 +280,13 @@ describe("configuration", () => {
     expect(() =>
       parseHostConfig({ ...personalEnvironment, OPENSTEER_NATIVE_OAUTH_ENABLED: "true" }),
     ).toThrow(/Personal Deployment cannot serve native OAuth/u);
+    expect(personal.knowledge).toBe(false);
+    expect(parseHostConfig({ ...personalEnvironment, OPENSTEER_KNOWLEDGE: "1" }).knowledge).toBe(
+      true,
+    );
+    expect(() => parseHostConfig({ ...hostEnvironment, OPENSTEER_KNOWLEDGE: "1" })).toThrow(
+      /knowledge trial runs only on a Personal Deployment/u,
+    );
     expect(
       parseHostConfig({ ...hostEnvironment, OPENSTEER_NATIVE_OAUTH_ENABLED: "true" }).identity
         .nativeOAuth?.clients,

@@ -1187,6 +1187,13 @@ export const RunnerAgentsModuleSchema = z
     // loop over it.
     environmentIds: z.array(EnvironmentIdSchema).length(1),
     computerTool: z.literal(1).optional(),
+    /** Absent on Runners that cannot load the `opensteer:knowledge` skill. */
+    knowledgeSkill: z
+      .number()
+      .int()
+      .positive()
+      .transform((version) => (version === 1 ? (1 as const) : undefined))
+      .optional(),
     reconcileHarnessInspection: z
       .number()
       .int()

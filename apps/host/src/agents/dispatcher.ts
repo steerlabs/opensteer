@@ -1,3 +1,4 @@
+import { knowledgeEligible } from "../knowledge/knowledge-eligibility.js";
 import { agentToolsPlanForRun } from "./agent-tools-plan.js";
 import { SpecialistStore } from "@opensteer/database";
 import {
@@ -116,6 +117,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
   readonly #runToolTokens: RunToolTokenService;
   readonly #requestResponseVault: RequestResponseVault;
   readonly #agentToolsUrl: string;
+  readonly #knowledge: { owner(): Promise<UserId | null> } | undefined;
   readonly #agentBrowserCdpUrl: string;
   readonly #pluginVersions: (
     workspaceId: WorkspaceId,
@@ -176,7 +178,10 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     readonly triggers: TriggerStore;
     readonly workspaces: Pick<WorkspaceService, "ensureExecutionReady">;
     readonly workspaceAccess: WorkspaceExecutionAccessService;
+    /** Present while the knowledge trial is on. */
+    readonly knowledge?: { owner(): Promise<UserId | null> } | undefined;
   }) {
+    this.#knowledge = options.knowledge;
     this.#attachmentRunTokens = options.attachmentRunTokens;
     this.#attachments = options.attachments;
     this.#requestResponseVault = options.requestResponseVault;
@@ -487,6 +492,15 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       workspace: context.workspace,
     });
 
+    const knowledge =
+      this.#knowledge !== undefined &&
+      knowledgeEligible({
+        callerKind: "run",
+        reach: threadReachScope(context.thread).kind,
+        userId: context.run.requestedBy,
+        owner: await this.#knowledge.owner(),
+        agents: identity.modules.agents,
+      });
     const toolsToken = this.#runToolTokens.issue({
       bindingGeneration: binding.bindingGeneration,
       grantId: binding.grantId,
@@ -587,6 +601,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           role: context.thread.role,
           accessMode: context.thread.accessMode,
           reach: threadReachScope(context.thread).kind,
+          knowledge,
         }),
         browserCdp: { url: this.#agentBrowserCdpUrl },
         ...(context.thread.specialistId ? { specialistId: context.thread.specialistId } : {}),

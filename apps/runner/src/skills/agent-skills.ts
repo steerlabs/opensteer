@@ -21,9 +21,14 @@ const PluginManifestSchema = z.object({
   version: z.string().regex(/^\d+\.\d+\.\d+$/u),
 });
 
+/** Trial skills: a Runner that cannot load one starts without it and does not advertise it. */
+const optionalSkills = new Set(["opensteer:knowledge"] as const);
+type OptionalSkillName = typeof optionalSkills extends Set<infer Name> ? Name : never;
+
 export interface AgentSkillBundle {
   readonly rootPath: string;
-  readonly paths: Readonly<Record<OpensteerAgentSkillName, string>>;
+  readonly paths: Readonly<Record<Exclude<OpensteerAgentSkillName, OptionalSkillName>, string>> &
+    Readonly<Partial<Record<OptionalSkillName, string>>>;
 }
 
 export async function loadAgentSkillBundle(directory: string): Promise<AgentSkillBundle> {
@@ -36,33 +41,43 @@ export async function loadAgentSkillBundle(directory: string): Promise<AgentSkil
   PluginManifestSchema.parse(JSON.parse(await readFile(manifestPath, "utf8")));
 
   const entries = await Promise.all(
-    opensteerAgentSkillNames.map(async (name) => {
-      const skillDirectory = join(rootPath, "skills", name.split(":")[1]!);
-      await requireDirectory(skillDirectory, `Agent Skill ${name}`);
-      const resolvedSkill = await realpath(skillDirectory);
-      assertWithin(rootPath, resolvedSkill);
-      const skillFile = join(resolvedSkill, "SKILL.md");
-      const stat = await requireRegularFile(skillFile, `Agent Skill ${name}`);
-      await requireRegularFile(
-        join(resolvedSkill, "agents", "openai.yaml"),
-        `Agent Skill ${name} OpenAI metadata`,
-      );
-      if (stat.size > maximumSkillBytes) throw new Error(`Agent Skill ${name} is too large`);
-      const content = await readFile(skillFile, "utf8");
-      try {
-        parseHarnessSkillMetadata(content, name.split(":")[1]!);
-      } catch {
-        throw new Error(`Agent Skill ${name} has invalid metadata`);
-      }
-      return [name, resolvedSkill] as const;
-    }),
+    opensteerAgentSkillNames.map((name) =>
+      loadSkill(rootPath, name).catch((error: unknown) => {
+        if (optionalSkills.has(name as OptionalSkillName)) return null;
+        throw error;
+      }),
+    ),
   );
   return Object.freeze({
-    paths: Object.freeze(Object.fromEntries(entries)) as Readonly<
-      Record<OpensteerAgentSkillName, string>
-    >,
+    paths: Object.freeze(
+      Object.fromEntries(entries.filter((entry) => entry !== null)),
+    ) as AgentSkillBundle["paths"],
     rootPath,
   });
+}
+
+async function loadSkill(
+  rootPath: string,
+  name: OpensteerAgentSkillName,
+): Promise<readonly [OpensteerAgentSkillName, string]> {
+  const skillDirectory = join(rootPath, "skills", name.split(":")[1]!);
+  await requireDirectory(skillDirectory, `Agent Skill ${name}`);
+  const resolvedSkill = await realpath(skillDirectory);
+  assertWithin(rootPath, resolvedSkill);
+  const skillFile = join(resolvedSkill, "SKILL.md");
+  const stat = await requireRegularFile(skillFile, `Agent Skill ${name}`);
+  await requireRegularFile(
+    join(resolvedSkill, "agents", "openai.yaml"),
+    `Agent Skill ${name} OpenAI metadata`,
+  );
+  if (stat.size > maximumSkillBytes) throw new Error(`Agent Skill ${name} is too large`);
+  const content = await readFile(skillFile, "utf8");
+  try {
+    parseHarnessSkillMetadata(content, name.split(":")[1]!);
+  } catch {
+    throw new Error(`Agent Skill ${name} has invalid metadata`);
+  }
+  return [name, resolvedSkill] as const;
 }
 
 export function planAgentSkills(
@@ -72,11 +87,13 @@ export function planAgentSkills(
   return Object.freeze(
     names.map((value) => {
       const name = OpensteerAgentSkillNameSchema.parse(value);
+      const path = bundle.paths[name];
+      if (!path) throw new Error(`Agent Skill ${name} is not available on this Runner`);
       return Object.freeze({
         plugin: "opensteer",
         localName: name.split(":")[1]!,
         fullName: name,
-        path: bundle.paths[name],
+        path,
       });
     }),
   );

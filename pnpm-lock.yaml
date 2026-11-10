@@ -698,6 +698,9 @@ importers:
       kysely:
         specifier: 'catalog:'
         version: 0.29.4
+      libpg-query:
+        specifier: 17.8.2
+        version: 17.8.2
       quickjs-emscripten-core:
         specifier: 0.32.0
         version: 0.32.0
@@ -741,6 +744,9 @@ importers:
       '@opensteer/runner':
         specifier: workspace:*
         version: link:../runner
+      '@pgsql/types':
+        specifier: 17.6.2
+        version: 17.6.2
       '@types/node':
         specifier: 'catalog:'
         version: 26.2.0
@@ -4311,6 +4317,9 @@ packages:
     resolution: {integrity: sha512-adpW58ySPQMOUPv8pTKT3RIyCFqfUFt8X05ukPdtkQToXDVr8dMtxuenik1yx8tNFTbpApWsM/Hi5SzlIx48+Q==}
     engines: {node: '>=20.0.0'}
 
+  '@pgsql/types@17.6.2':
+    resolution: {integrity: sha512-1UtbELdbqNdyOShhrVfSz3a1gDi0s9XXiQemx+6QqtsrXe62a6zOGU+vjb2GRfG5jeEokI1zBBcfD42enRv0Rw==}
+
   '@pinojs/redact@0.4.0':
     resolution: {integrity: sha512-k2ENnmBugE/rzQfEcdWHcCY+/FM3VLzH9cYEsbdsoqrvzAKRhUZeRNhAZvB8OitQJ1TBed3yqWtdjzS6wJKBwg==}
 
@@ -6840,6 +6849,9 @@ packages:
   leven@3.1.0:
     resolution: {integrity: sha512-qsda+H8jTaUaN/x5vzW2rzc+8Rw4TAQ/4KjB46IwK5VH+IlVeeeje/EoZRpiXvIqjFgK84QffqPztGI3VBLG1A==}
     engines: {node: '>=6'}
+
+  libpg-query@17.8.2:
+    resolution: {integrity: sha512-a1acubGMU80wUCS79qQWgCvyflzD9AbzuosGkbOyaBAtiZyifiigDl11S+l/9Z/vODHciOXvWVpSQGPUw6eW/w==}
 
   light-my-request@6.6.0:
     resolution: {integrity: sha512-CHYbu8RtboSIoVsHZ6Ye4cj4Aw/yg2oAFimlF7mNvfDV192LR7nDiKtSIfCuLT7KokPSTn/9kfVLm5OGN0A28A==}
@@ -11054,6 +11066,8 @@ snapshots:
       tslib: 2.8.1
       tsyringe: 4.10.0
 
+  '@pgsql/types@17.6.2': {}
+
   '@pinojs/redact@0.4.0': {}
 
   '@protobufjs/aspromise@1.1.2': {}
@@ -13810,6 +13824,10 @@ snapshots:
   lazy-val@1.0.5: {}
 
   leven@3.1.0: {}
+
+  libpg-query@17.8.2:
+    dependencies:
+      '@pgsql/types': 17.6.2
 
   light-my-request@6.6.0:
     dependencies:

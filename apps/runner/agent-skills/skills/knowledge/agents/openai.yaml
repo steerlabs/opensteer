@@ -1,0 +1,9 @@
+interface:
+  display_name: "Opensteer Knowledge"
+  short_description: "Query and record the person's structured facts with SQL"
+  default_prompt: "Use $opensteer:knowledge to look up or record facts with the sql tool."
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "opensteer"
+      description: "Opensteer sql tool"

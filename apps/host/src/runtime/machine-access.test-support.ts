@@ -295,7 +295,7 @@ export async function configurePersonalRemoteAccess(
   return (await response.json()) as { readonly generation: number; readonly mode: string };
 }
 
-function personalMachineAccessHostConfig(
+export function personalMachineAccessHostConfig(
   hostPort: number,
   hostDataDirectory: string,
   databaseUrl: string,

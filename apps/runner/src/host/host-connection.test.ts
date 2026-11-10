@@ -62,6 +62,7 @@ const testAgentSkills = {
   paths: {
     "opensteer:skills": "/runner/agent-skills/skills/skills",
     "opensteer:memory": "/runner/agent-skills/skills/memory",
+    "opensteer:knowledge": "/runner/agent-skills/skills/knowledge",
     "opensteer:integrations": "/runner/agent-skills/skills/integrations",
     "opensteer:browser": "/runner/agent-skills/skills/browser",
     "opensteer:computer-use": "/runner/agent-skills/skills/computer-use",
@@ -869,6 +870,7 @@ describe("runnerWebSocketUrl", () => {
     };
     const connection = new ReconnectingHostConnection({
       agents: {
+        knowledgeSkill: true,
         localWorkspaces: (() => {
           const local = localStorageFixture(environmentId);
           local.service.scanSkills = async () => {
@@ -922,6 +924,7 @@ describe("runnerWebSocketUrl", () => {
             agents: {
               environmentIds: [environmentId],
               computerTool: 1,
+              knowledgeSkill: 1,
               harnessDrivers: [],
               localStorage: expect.objectContaining({
                 bindings: [expect.objectContaining({ state: "ready" })],

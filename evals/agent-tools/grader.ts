@@ -81,25 +81,29 @@ export function grade(
         (c) => toolMatches(c.tool, forbidden.tool) && partialMatch(c.args, forbidden.args),
       ),
     );
-  for (const [i, match] of expect.callsArgMatch.entries()) {
-    const candidates = calls.filter(
-      (c) => toolMatches(c.tool, match.tool) && partialMatch(c.args, match.args),
+  const boundaryOf = (after: { tool: string; args: unknown; result: unknown }) =>
+    calls.findIndex(
+      (c) =>
+        c.valid &&
+        toolMatches(c.tool, after.tool) &&
+        partialMatch(c.args, after.args) &&
+        partialMatch(c.result, after.result),
     );
+  for (const [i, match] of expect.callsArgMatch.entries()) {
+    const boundary = match.after ? boundaryOf(match.after) : -1;
+    const candidates = calls
+      .slice(boundary + 1)
+      .filter((c) => toolMatches(c.tool, match.tool) && partialMatch(c.args, match.args));
     add(
       `callsArgMatch[${i}]:${match.tool}`,
-      (match.first ? candidates.slice(0, 1) : candidates).some(
-        (c) => c.valid && argumentMatches(c, match),
-      ),
+      (!match.after || boundary >= 0) &&
+        (match.first ? candidates.slice(0, 1) : candidates).some(
+          (c) => c.valid && argumentMatches(c, match),
+        ),
     );
   }
   for (const [i, match] of expect.notCallsArgMatch.entries()) {
-    const boundary = calls.findIndex(
-      (c) =>
-        c.valid &&
-        toolMatches(c.tool, match.after.tool) &&
-        partialMatch(c.args, match.after.args) &&
-        partialMatch(c.result, match.after.result),
-    );
+    const boundary = boundaryOf(match.after);
     add(
       `notCallsArgMatch[${i}]:${match.tool}`,
       boundary >= 0 &&

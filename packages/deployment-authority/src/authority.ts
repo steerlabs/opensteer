@@ -314,6 +314,8 @@ export const HostCapabilitySchema = z.enum([
    * only once a team server's whole access backend is enabled.
    */
   "team-administration-v1",
+  /** The owner's own agents can query and append knowledge facts with the `sql` tool. */
+  "knowledge-sql-v1",
 ]);
 export type HostCapability = z.infer<typeof HostCapabilitySchema>;
 

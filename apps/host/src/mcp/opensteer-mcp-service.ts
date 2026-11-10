@@ -80,6 +80,8 @@ export class OpensteerMcpService {
     readonly publicUrl: URL;
     /** A failure the caller was told only that something went wrong. */
     readonly onToolError?: (error: unknown, tool: string) => void;
+    /** Whether this caller may hold the knowledge trial's `sql` tool; absent, nobody may. */
+    readonly knowledgeFor?: (caller: AgentCaller) => Promise<boolean>;
   };
   constructor(options: {
     readonly callers: Pick<AgentCallerResolver, "authenticate">;
@@ -92,6 +94,7 @@ export class OpensteerMcpService {
     };
     readonly publicUrl: URL;
     readonly onToolError?: (error: unknown, tool: string) => void;
+    readonly knowledgeFor?: (caller: AgentCaller) => Promise<boolean>;
   }) {
     this.options = options;
     this.#runtimeOrigin = options.publicUrl;
@@ -345,11 +348,11 @@ export class OpensteerMcpService {
     return session;
   }
 
-  createServer(
+  async createServer(
     caller: AgentCaller,
     detachedSessionId?: string,
     longRequestHold = false,
-  ): McpServer {
+  ): Promise<McpServer> {
     const server = new McpServer(
       { name: "opensteer", version: "1.0.0" },
       {
@@ -358,7 +361,7 @@ export class OpensteerMcpService {
       },
     );
     const advertisedTools: Tool[] = [];
-    for (const tool of toolsFor(caller)) {
+    for (const tool of await this.#toolsFor(caller)) {
       const annotations = agentToolAnnotations(tool);
       const registration = {
         annotations,
@@ -473,7 +476,7 @@ export class OpensteerMcpService {
     const check = async () => {
       const access = "readsOnly" in tool && tool.readsOnly?.(input as never) ? "read" : tool.access;
       toolAccess[access](caller, await this.#targets(caller, tool, input));
-      if (!toolsFor(caller).some((spec) => spec.name === tool.name))
+      if (!(await this.#toolsFor(caller)).some((spec) => spec.name === tool.name))
         throw new OpensteerError({
           code: "forbidden",
           message: "This tool is unavailable to this caller",
@@ -518,6 +521,10 @@ export class OpensteerMcpService {
     return invoke();
   }
 
+  async #toolsFor(caller: AgentCaller) {
+    const knowledge = (await this.options.knowledgeFor?.(caller)) === true;
+    return toolsFor({ ...caller, knowledge });
+  }
   async #targets(caller: AgentCaller, tool: AgentTool, input: object): Promise<Thread[]> {
     const ids: Thread["id"][] = [];
     const record = input as Record<string, unknown>;

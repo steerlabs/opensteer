@@ -807,7 +807,9 @@ async function isPersonalDeployment(database: Kysely<DatabaseSchema>): Promise<b
 }
 
 /** A Personal Deployment has exactly one established owner. */
-async function personalDeploymentOwner(database: Kysely<DatabaseSchema>): Promise<UserId | null> {
+export async function personalDeploymentOwner(
+  database: Kysely<DatabaseSchema>,
+): Promise<UserId | null> {
   const owner = await database
     .selectFrom("users")
     .select("id")
