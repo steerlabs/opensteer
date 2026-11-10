@@ -84,6 +84,10 @@ async function ensureKnowledgeExecutor(
       alter role ${name} set temp_file_limit = '32MB';
       alter role ${name} set work_mem = '4MB';
       alter role ${name} set log_min_messages = 'fatal';
+      revoke all on schema knowledge from public;
+      revoke all on all tables in schema knowledge from public;
+      revoke all on all sequences in schema knowledge from public;
+      revoke all on all functions in schema knowledge from public;
       grant usage on schema knowledge to ${name};
       grant select on knowledge.fact_log, knowledge.facts, knowledge.fact_history to ${name};
       grant insert (topic, thing, property, value, seen_fact_id) on knowledge.facts to ${name};

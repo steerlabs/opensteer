@@ -272,6 +272,44 @@ integration("knowledge storage", () => {
     );
   });
 
+  it("keeps the knowledge tables private when the Host's default privileges grant PUBLIC", async () => {
+    const clone = await cloneTestDatabase("host");
+    const state = { role: "", client: undefined as pg.Client | undefined };
+    const { database } = await ownTestDatabaseProducer(clone.url, async () => {
+      const database = createDatabase({ connectionString: clone.url, maxConnections: 1 });
+      return {
+        database,
+        async close() {
+          await state.client?.end().catch(() => undefined);
+          if (state.role)
+            await sql`drop owned by ${sql.id(state.role)}; drop role ${sql.id(state.role)}`.execute(
+              database,
+            );
+          await database.destroy();
+        },
+      };
+    });
+    await sql`
+      alter default privileges grant all on tables to public;
+      alter default privileges grant all on sequences to public;
+      alter default privileges grant all on functions to public;
+      alter default privileges grant all on schemas to public;
+    `.execute(database);
+    const credentials = await prepareKnowledgeExecutor(database);
+    state.role = credentials.role;
+    state.client = new pg.Client({ connectionString: executorUrl(clone.url, credentials) });
+    state.client.on("error", () => undefined);
+    await state.client.connect();
+    for (const statement of [
+      "select from knowledge.topics",
+      "select from knowledge.operations",
+      "select nextval('knowledge.fact_log_id_seq')",
+      "select knowledge.require_read_committed()",
+      "create table knowledge.planted (x int)",
+    ])
+      expect(await sqlState(state.client.query(statement)), statement).toBe("42501");
+  });
+
   it("refuses to turn the trial on for a database user that may not create roles", async () => {
     const clone = await cloneTestDatabase("host");
     const limited = `knowledge_limited_${randomUUID().replaceAll("-", "")}`;
