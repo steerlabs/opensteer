@@ -26,6 +26,6 @@ export function assertSupportedRuntimeAuthority(model: number): void {
     throw new OpensteerError({
       code: "conflict",
       message:
-        "Unsupported Deployment authority model; this Host cannot start. Use a compatible Host or restore a model-1 database offline.",
+        "Unsupported Deployment authority model; this Host cannot start. Export this previous private-workspace Deployment, then create a new team Deployment. Nothing was converted or deleted.",
     });
 }
