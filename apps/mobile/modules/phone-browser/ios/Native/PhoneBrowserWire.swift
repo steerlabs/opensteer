@@ -12,7 +12,7 @@ struct BrowserHelperRefusal: CodedError {
   func authorize(_ input: BrowserWireInput, viewer: Bool) throws -> PhoneBrowserTab {
     let tab = try checked(input, document: input.documentId, geometry: input.geometryRevision)
     guard foreground, let admission else { throw BrowserRefusal.forbidden }
-    if viewer { try admission.viewer(channelId: input.channelId, sessionId: tab.sessionId, epoch: input.epoch) }
+    if viewer { try admission.viewer(channelId: input.channelId, sessionId: tab.sessionId, epoch: input.epoch, control: true) }
     else {
       guard input.deadline.isFinite, input.deadline > Date().timeIntervalSince1970 * 1000 else { throw BrowserRefusal.timeout }
       try admission.action(channelId: input.channelId, attachmentId: input.attachmentId,
@@ -40,14 +40,14 @@ struct BrowserHelperRefusal: CodedError {
     primitive.geometryRevision = input.geometryRevision; primitive.timeoutMs = remaining
     primitive.actorToken = input.actorToken
     switch type {
+    case "page.wait":
+      return try await waitPage(input, tab: tab, action: action, timeout: remaining)
     case "file.choose":
       guard #available(iOS 18.4, *) else { throw BrowserRefusal.unsupportedOperation }
-      guard let point = action["point"] as? [String: Double], action["locator"] == nil else { throw BrowserRefusal.unsupportedOperation }
       guard let ids = action["stagedFileIds"] as? [String], !ids.isEmpty, tab.stagedSelection == nil,
         tab.chooser == nil, !tab.inputBusy else { throw BrowserRefusal.notActionable }
       _ = try files.selected(ids, session: tab.sessionId)
-      guard let view = tab.webView, let window = view.window, let x = point["x"], let y = point["y"],
-        x.isFinite, y.isFinite, x >= 0, y >= 0, x < view.bounds.width, y < view.bounds.height else { throw BrowserRefusal.notActionable }
+      guard let view = tab.webView, let window = view.window else { throw BrowserRefusal.notActionable }
       try protectResponder(view, window: window)
       let operation = UUID()
       try gate.perform(input.epoch) {
@@ -58,8 +58,10 @@ struct BrowserHelperRefusal: CodedError {
         tab.inputBusy = false
         if tab.stagedSelection?.operationId == operation || tab.chosenSelectionId == operation { cancelChooser(tab) }
       }
-      guard try await helper(tab, function: "tap", arguments: ["argument": ["x": x, "y": y, "requireFile": true]],
-        epoch: input.epoch, timeoutMs: remaining) as? Bool == true else { throw BrowserRefusal.notActionable }
+      var target: [String: Any] = [:]
+      if let locator = action["locator"] { target["locator"] = locator }
+      if let point = action["point"] { target["point"] = point }
+      guard try await invokeAgent(input, tab: tab, name: "fileChoose", args: target, timeout: remaining)["chosen"] as? Bool == true else { throw BrowserRefusal.notActionable }
       _ = try authorize(input, viewer: false)
       guard let chosen = tab.chosenFiles else { throw BrowserRefusal.notActionable }
       return ["type": type, "files": chosen]
@@ -96,7 +98,10 @@ struct BrowserHelperRefusal: CodedError {
         guard let key = action["key"] as? String, ["Enter", "Backspace"].contains(key) else { throw BrowserRefusal.unsupportedOperation }
         primitive.action.kind = key == "Enter" ? "text.enter" : "text.backspace"
       }
-      if type == "pointer.tap", BrowserWireNumber.integer(action["count"]) != 1 { throw BrowserRefusal.unsupportedOperation }
+      if type == "pointer.tap" {
+        _ = try await invokeAgent(input, tab: tab, name: "tap", args: action, timeout: remaining)
+        return ["type": type]
+      }
       if type == "scroll", action["locator"] != nil {
         return try await invokeAgent(input, tab: tab, name: "scroll", args: action, timeout: remaining)
       }
@@ -145,9 +150,39 @@ struct BrowserHelperRefusal: CodedError {
     }
   }
 
+  func waitPage(_ input: BrowserWireInput, tab: PhoneBrowserTab, action: [String: Any], timeout: Int) async throws -> [String: Any] {
+    guard let requested = BrowserWireNumber.integer(action["timeout"]), (1...30000).contains(requested) else { throw BrowserRefusal.invalidArgument }
+    let id = UUID()
+    defer { tab.pageWaitChecks.removeValue(forKey: id); tab.pendingCalls.removeValue(forKey: id); tab.callEpochs.removeValue(forKey: id) }
+    return try await withCheckedThrowingContinuation { continuation in
+      var finished = false
+      let finish: (Result<[String: Any], Error>) -> Void = { result in
+        guard !finished else { return }; finished = true
+        continuation.resume(with: result)
+      }
+      tab.callEpochs[id] = input.epoch
+      tab.pendingCalls[id] = { finish(.failure($0)) }
+      let check = {
+        do {
+          _ = try self.authorize(input, viewer: false)
+          guard tab.pendingDialog == nil else { throw BrowserRefusal.dialogOpen }
+          if let url = action["url"] as? String, tab.webView?.url?.absoluteString != url { return }
+          if action["loadState"] as? String == "load", tab.webView?.isLoading == true { return }
+          guard (try? tab.readiness.require(frame: "main")) != nil else { return }
+          finish(.success(["type": "page.wait", "binding": ["surfaceId": tab.id, "documentId": tab.documentId,
+            "geometryRevision": tab.geometryRevision, "state": "live", "title": String((tab.webView?.title ?? "").prefix(1000)),
+            "url": tab.webView?.url?.absoluteString ?? "about:blank"]]))
+        } catch { finish(.failure(error)) }
+      }
+      tab.pageWaitChecks[id] = check
+      DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(min(requested, timeout))) { finish(.failure(BrowserRefusal.timeout)) }
+      check()
+    }
+  }
+
   func invokeAgent(_ input: BrowserWireInput, tab: PhoneBrowserTab, name: String, args: [String: Any], timeout: Int) async throws -> [String: Any] {
-    guard ["query", "snapshot", "act", "tap", "focus", "scroll", "wait"].contains(name) else { throw BrowserRefusal.unsupportedOperation }
-    if ["act", "tap", "focus"].contains(name), let view = tab.webView, let window = view.window {
+    guard ["query", "snapshot", "act", "tap", "focus", "scroll", "wait", "fileChoose"].contains(name) else { throw BrowserRefusal.unsupportedOperation }
+    if ["act", "tap", "focus", "fileChoose"].contains(name), let view = tab.webView, let window = view.window {
       try protectResponder(view, window: window)
     }
     let operation = name == "wait" ? args["id"] as? String ?? UUID().uuidString : UUID().uuidString
@@ -175,6 +210,7 @@ struct BrowserHelperRefusal: CodedError {
       return result
     } catch {
       cancelAgent(tab, operations: [operation])
+      if ["act", "tap", "focus", "fileChoose"].contains(name), error as? BrowserRefusal == .timeout { throw BrowserRefusal.outcomeUnknown }
       throw error
     }
   }
@@ -192,7 +228,12 @@ struct BrowserHelperRefusal: CodedError {
   func wireViewer(_ input: BrowserWireInput) async throws {
     let tab = try authorize(input, viewer: true)
     let message = input.message
-    guard message["surfaceId"] as? String == tab.id, let type = message["type"] as? String else { throw BrowserRefusal.invalidArgument }
+    guard let type = message["type"] as? String,
+      type == "clipboard.part" || message["surfaceId"] as? String == tab.id else { throw BrowserRefusal.invalidArgument }
+    if ["clipboard.copy", "clipboard.paste-data", "clipboard.part"].contains(type) {
+      try await wireClipboard(input, tab: tab)
+      return
+    }
     let primitive = BrowserActionInput()
     primitive.epoch = input.epoch; primitive.tabId = tab.id; primitive.documentId = tab.documentId
     primitive.geometryRevision = input.geometryRevision; primitive.contextId = tab.contextId

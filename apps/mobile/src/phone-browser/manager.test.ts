@@ -3,6 +3,7 @@ import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
   BrowserAttachTicketClaimsSchema,
   BrowserClientMessageSchema,
+  BrowserDialogSchema,
   BrowserServerMessageSchema,
   LocalProfileBindingSchema,
   type BrowserClientMessage,
@@ -270,6 +271,54 @@ async function setup(
 }
 
 describe("phone browser manager", () => {
+  test("an old host unmount cannot retain a tab moved to a second host", async () => {
+    const fixture = await setup();
+    await fixture.present();
+    await fixture.manager.presentTab(
+      {
+        sessionId: fixture.sessionId,
+        surfaceId: fixture.surfaceId,
+        runtimeId: "phone-runtime",
+        bindingId: fixture.binding.bindingId,
+        targetControl: 1,
+      },
+      "native-host-2",
+    );
+    await fixture.manager.hideTab(fixture.surfaceId, "native-host-1");
+    expect(fixture.presentation().state).toBe("live-visible");
+    expect(fixture.native.tabs.get(fixture.surfaceId)?.loads).toBe(1);
+    await fixture.manager.hideTab(fixture.surfaceId, "native-host-2");
+    expect(fixture.presentation().state).toBe("retained");
+  });
+
+  test("a native dialog interruption includes its answer-once dialog in the typed error", async () => {
+    const fixture = await setup();
+    await fixture.present();
+    await fixture.agentAttach();
+    const dialog = BrowserDialogSchema.parse({
+      id: uuid(),
+      surfaceId: fixture.surfaceId,
+      type: "confirm",
+      message: "Continue?",
+    });
+    fixture.native.actionGate = async () => {
+      await fixture.native.emit({ ...fixture.reference(), type: "dialog", dialog });
+      throw new PhoneBrowserError("dialog-open", "The page opened a dialog.");
+    };
+    await fixture.action({
+      type: "dom.act",
+      kind: "click",
+      locator: { by: "role", value: "button", name: "Go" },
+    });
+    expect(fixture.server().at(-1)).toMatchObject({
+      type: "agent.error",
+      error: { code: "dialog-open", dialog },
+    });
+    fixture.native.actionGate = null;
+    await fixture.action({ type: "dialog.respond", dialogId: dialog.id, accept: false });
+    expect(fixture.native.dialogsAnswered).toEqual([dialog.id]);
+  });
+
   test("session actions need no surface or document, including opening the first tab after an empty inventory", async () => {
     const fixture = await setup();
     await fixture.agentAttach();

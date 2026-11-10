@@ -213,6 +213,20 @@ final class PhoneBrowserTransportTests: XCTestCase {
     XCTAssertEqual(try ledger.snapshot().entries.count, 0)
     let permit = try connection.commitAttach(epoch: 0, attachHandle: handle, claimsDigest: verified["claimsDigest"] as! String, replayTransition: proposed)
     XCTAssertEqual(try connection.permit(permit, epoch: 0).claimsDigest, verified["claimsDigest"] as! String)
+    let claims = verified["claims"] as! [String: Any]
+    let sessionId = claims["sessionId"] as! String
+    let actor = UUID().uuidString
+    let attachment = UUID().uuidString
+    XCTAssertThrowsError(try connection.checkAgent(epoch: 0, channelId: channelId, sessionId: sessionId, attachmentId: attachment, actorToken: actor))
+    let agentAttach: [String: Any] = ["type": "agent.attach", "sessionId": sessionId, "attachmentId": attachment, "actorToken": actor, "backend": "actions"]
+    try connection.receive(fence.merging(["type": "browser.client-message", "channelId": channelId, "capability": capability,
+      "message": agentAttach]) { _, next in next })
+    XCTAssertNoThrow(try connection.checkAgent(epoch: 0, channelId: channelId, sessionId: sessionId, attachmentId: attachment, actorToken: actor))
+    XCTAssertThrowsError(try connection.checkAgent(epoch: 0, channelId: channelId, sessionId: "another-session", attachmentId: attachment, actorToken: actor))
+    XCTAssertThrowsError(try connection.checkAgent(epoch: 0, channelId: channelId, sessionId: sessionId, attachmentId: attachment, actorToken: UUID().uuidString))
+    try connection.receive(fence.merging(["type": "browser.client-message", "channelId": channelId, "capability": capability,
+      "message": ["type": "agent.detach", "sessionId": sessionId, "attachmentId": attachment]]) { _, next in next })
+    XCTAssertThrowsError(try connection.checkAgent(epoch: 0, channelId: channelId, sessionId: sessionId, attachmentId: attachment, actorToken: actor))
     XCTAssertThrowsError(try connection.commitAttach(epoch: 0, attachHandle: handle, claimsDigest: verified["claimsDigest"] as! String, replayTransition: proposed))
     let writer = try connection.frameWriter(epoch: 0, channelId: channelId)
     var header = try vector("frames")["header"] as! [String: Any]

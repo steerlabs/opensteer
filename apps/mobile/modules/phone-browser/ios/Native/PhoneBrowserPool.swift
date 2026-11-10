@@ -8,6 +8,8 @@ import WebKit
   let storeHandle: String
   var generation = 0
   var revision = 0
+  var pageWaitChecks: [UUID: () -> Void] = [:]
+  var clipboardPastes: [String: BrowserClipboardPaste] = [:]
   var captureRevision = 0
   var activitySequence = 0
   var agentOperations = Set<String>()
@@ -117,7 +119,6 @@ import WebKit
         MainActor.assumeIsolated {
           guard let self else { return }
           if notification.name == UIApplication.willResignActiveNotification {
-            self.gate.advance()
             self.setForeground(false)
           } else if notification.name == UIApplication.didReceiveMemoryWarningNotification {
             for id in self.state.memoryPressure() { self.releaseView(id) }
@@ -151,6 +152,7 @@ import WebKit
   func changed(_ tab: PhoneBrowserTab) {
     tab.revision += 1
     emit?("tabChanged", ["tabId": tab.id, "metadata": metadata(tab)])
+    for check in Array(tab.pageWaitChecks.values) { check() }
   }
 
   func window() throws -> UIWindow {
@@ -185,11 +187,8 @@ import WebKit
       let bundle = Bundle(url: resource), let url = bundle.url(forResource: "phone-browser-helper", withExtension: "js") else {
       throw BrowserRefusal.unsupportedOperation
     }
-    if let agent = bundle.url(forResource: "agent-helper", withExtension: "js") {
-      let source = try String(contentsOf: agent, encoding: .utf8)
-      configuration.userContentController.addUserScript(WKUserScript(source: source,
-        injectionTime: .atDocumentStart, forMainFrameOnly: false, in: world))
-    }
+    configuration.userContentController.addUserScript(WKUserScript(source: PhoneBrowserAgentScript.source,
+      injectionTime: .atDocumentStart, forMainFrameOnly: false, in: world))
     let script = try String(contentsOf: url, encoding: .utf8)
     configuration.userContentController.addUserScript(WKUserScript(source: script,
       injectionTime: .atDocumentStart, forMainFrameOnly: false, in: world))
@@ -580,6 +579,9 @@ import WebKit
     tab.pendingDialog = dialog
     emit?("dialog", ["tabId": tab.id, "documentId": tab.documentId,
       "dialog": ["id": dialog.id, "kind": kind, "message": String(message.prefix(16384)), "defaultText": defaultText as Any? ?? NSNull()]])
+    let pending = tab.pendingCalls.values
+    tab.pendingCalls.removeAll(); tab.callEpochs.removeAll()
+    for cancel in pending { cancel(BrowserRefusal.dialogOpen) }
   }
 
   func respondDialog(_ input: BrowserDialogInput) throws {

@@ -39,6 +39,28 @@ const query = (target: ReturnType<typeof locator>, read = "count", fields = {}) 
   invoke("query", { type: "dom.query", locator: target, read, ...fields });
 
 describe("isolated phone page helper", () => {
+  it("chooses only an actionable file input from a fresh locator or exact point", async () => {
+    document.body.innerHTML = '<label>Document<input type="file" data-hit></label>';
+    const file = document.querySelector("input")!;
+    const clicked = vi.spyOn(file, "click").mockImplementation(() => undefined);
+    await expect(invoke("fileChoose", { locator: locator("label", "Document") })).resolves.toEqual({
+      chosen: true,
+    });
+    await expect(invoke("fileChoose", { point: { x: 15, y: 15 } })).resolves.toEqual({
+      chosen: true,
+    });
+    expect(clicked).toHaveBeenCalledTimes(2);
+    await expect(invoke("fileChoose", { locator: locator("css", "label") })).rejects.toMatchObject({
+      code: "not-actionable",
+    });
+    await expect(
+      invoke("fileChoose", { point: { x: 15, y: 15 }, locator: locator("css", "input") }),
+    ).rejects.toBeInstanceOf(PhoneHelperError);
+    await expect(invoke("fileChoose", { point: { x: -1, y: 15 } })).rejects.toBeInstanceOf(
+      PhoneHelperError,
+    );
+    expect(clicked).toHaveBeenCalledTimes(2);
+  });
   it("refuses malformed and oversized arguments for every fixed function with typed errors", async () => {
     const target = locator("css", "input");
     const actions: Record<string, Record<string, unknown>> = {

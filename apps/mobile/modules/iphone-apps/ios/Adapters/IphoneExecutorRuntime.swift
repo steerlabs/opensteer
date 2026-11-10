@@ -118,7 +118,12 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
     } catch IphoneStorageError.protectedDataUnavailable {
       // Try again after unlocking. The persisted record is still authoritative.
     } catch {
-      lock.lock(); issue = .failed; lock.unlock(); publish()
+      lock.lock()
+      issue = .failed
+      if case IphoneStorageError.keychain(let status) = error {
+        issueMessage = "iPhone secure storage is unavailable (status \(status))."
+      }
+      lock.unlock(); publish()
     }
   }
 

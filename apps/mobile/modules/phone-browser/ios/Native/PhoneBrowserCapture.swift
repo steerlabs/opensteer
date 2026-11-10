@@ -22,6 +22,7 @@ public struct PhoneBrowserFrame {
   public let height: Int
   public let mimeType: String
   public let bytes: Data
+  public let clip: [String: Double]?
 }
 
 @MainActor public protocol PhoneBrowserFrameSink: AnyObject {
@@ -162,6 +163,7 @@ public struct PhoneBrowserFrame {
     return try pool.gate.perform(issued) {
       guard pool.foreground, pool.tabs[tab.id] === tab, pool.state.tabs[tab.id] == .live,
         tab.documentId == document, tab.geometryRevision == geometry else { throw BrowserRefusal.staleDocument }
+      if !streamed, ((encoded.0.count + 2) / 3) * 4 + 2048 > 432 * 1024 { throw BrowserRefusal.tooLarge }
       let picture = UIImage(cgImage: encoded.1)
       tab.latestPicture = picture
       for local in pictures.allObjects where local.tabId == tab.id { local.draw(picture) }
@@ -174,7 +176,8 @@ public struct PhoneBrowserFrame {
           captureRevision: nextRevision, channelId: route?.channelId, requestId: route?.requestId,
           attachmentId: route?.attachmentId, artifactId: artifact, tabId: tab.id, documentId: document,
           geometryRevision: geometry, geometry: pool.geometry(tab), channelIds: channels, token: token, width: encoded.1.width,
-          height: encoded.1.height, mimeType: format == "png" ? "image/png" : "image/jpeg", bytes: encoded.0)
+          height: encoded.1.height, mimeType: format == "png" ? "image/png" : "image/jpeg", bytes: encoded.0,
+          clip: clip.map { ["x": $0.x, "y": $0.y, "width": $0.width, "height": $0.height] })
         guard sink?.receive(frame) == true else { throw BrowserRefusal.notActionable }
         tab.captureRevision = nextRevision
         if streamed { tab.capture.complete(token: token) }

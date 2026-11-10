@@ -86,6 +86,7 @@ import WebKit
   func invalidateWork(before epoch: Int) {
     files.invalidate(before: epoch)
     for tab in tabs.values {
+      tab.clipboardPastes = tab.clipboardPastes.filter { $0.value.epoch >= epoch }
       cancelAgent(tab)
       if let dialog = tab.pendingDialog, dialog.epoch < epoch { cancelDialog(tab) }
       if tab.externalEpoch < epoch { tab.externalPrompt?.dismiss(animated: false); tab.externalPrompt = nil }

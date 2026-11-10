@@ -14,8 +14,21 @@ import WebKit
   private(set) var runnerId = ""
   private var erasing = Set<UUID>()
 
+  func prepareErasure(_ deployment: String) throws {
+    try loadManifest()
+    guard self.deploymentId.isEmpty || self.deploymentId == deployment || held.isEmpty else { throw BrowserRefusal.bindingMismatch }
+    self.deploymentId = deployment
+  }
+
   func initialize(deploymentId: String, runnerId: String) throws {
     guard !deploymentId.isEmpty, !runnerId.isEmpty else { throw BrowserRefusal.invalidArgument }
+    try loadManifest()
+    if self.deploymentId != deploymentId || self.runnerId != runnerId { held.removeAll() }
+    self.deploymentId = deploymentId
+    self.runnerId = runnerId
+  }
+
+  private func loadManifest() throws {
     if manifestURL == nil {
       var directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("PhoneBrowser", isDirectory: true)
@@ -31,9 +44,6 @@ import WebKit
       manifestURL = url
       try save()
     }
-    if self.deploymentId != deploymentId || self.runnerId != runnerId { held.removeAll() }
-    self.deploymentId = deploymentId
-    self.runnerId = runnerId
   }
 
   var storageInstanceId: String { manifest.storageInstanceId.uuidString.lowercased() }

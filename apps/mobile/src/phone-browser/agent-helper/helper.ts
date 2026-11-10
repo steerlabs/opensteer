@@ -980,14 +980,24 @@ export function createAgentHelper(documentId: string) {
     const request = fields(input, ["documentId", "operationId", "name", "args"]);
     string(request.documentId, 1, 255);
     string(request.name, 1, 32);
-    oneOf(request.name, ["query", "snapshot", "act", "tap", "focus", "scroll", "wait", "cancel"]);
+    oneOf(request.name, [
+      "query",
+      "snapshot",
+      "act",
+      "tap",
+      "focus",
+      "scroll",
+      "wait",
+      "cancel",
+      "fileChoose",
+    ]);
     if (request.operationId !== undefined) string(request.operationId, 1, 255);
     if (disposed || request.documentId !== documentId)
       fail("stale-document", "The helper belongs to another document");
     const { name: functionName, args } = request;
     const controller = new AbortController();
     const operationId = request.operationId;
-    const mutating = functionName === "act" || functionName === "focus" || functionName === "tap";
+    const mutating = ["act", "focus", "tap", "fileChoose"].includes(functionName);
     if (mutating) {
       if (!operationId)
         fail("unsupported-operation", "Async input requires a native operationId for cancellation");
@@ -1015,6 +1025,35 @@ export function createAgentHelper(documentId: string) {
         if (bytes(input) > browserActionMaxBytes)
           fail("too-large", "Helper arguments exceed 432 KiB");
         result = await wait(args as WaitArguments);
+      } else if (functionName === "fileChoose") {
+        const target = fields(args, ["locator", "point"]);
+        if ((target.locator === undefined) === (target.point === undefined))
+          fail("unsupported-operation", "Choose one file target");
+        let element: Element;
+        if (target.locator !== undefined) {
+          checkLocator(target.locator);
+          element = (await prepare(target.locator, controller.signal)).element;
+        } else {
+          const point = fields(target.point, ["x", "y"]);
+          number(point.x, 0, 32768);
+          number(point.y, 0, 32768);
+          const found = document.elementFromPoint(point.x as number, point.y as number);
+          if (!found) fail("not-actionable", "The file target is not visible");
+          element = found;
+        }
+        if (bytes(input) > browserActionMaxBytes)
+          fail("too-large", "Helper arguments exceed 432 KiB");
+        if (controller.signal.aborted || disposed)
+          fail("timeout", "Native canceled file selection");
+        if (
+          !(element instanceof HTMLInputElement) ||
+          element.type !== "file" ||
+          !visible(element) ||
+          !enabled(element)
+        )
+          fail("not-actionable", "The target is not an actionable file input");
+        element.click();
+        result = { chosen: true };
       } else if (functionName === "focus") {
         const focusing = fields(args, ["locator"]);
         checkLocator(focusing.locator);

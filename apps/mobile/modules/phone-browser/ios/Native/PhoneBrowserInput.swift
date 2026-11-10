@@ -13,7 +13,8 @@ import WebKit
 
   func perform(_ input: BrowserActionInput, viewer: Bool) async throws -> [String: Any] {
     try gate.check(input.epoch)
-    guard foreground, (1...30000).contains(input.timeoutMs), input.action.text.utf8.count <= 432 * 1024,
+    let textLimit = viewer && input.action.kind == "text.paste" ? 16 * 1024 * 1024 : 432 * 1024
+    guard foreground, (1...30000).contains(input.timeoutMs), input.action.text.utf8.count <= textLimit,
       (input.action.selector?.utf8.count ?? 0) <= 16384 else { throw BrowserRefusal.invalidArgument }
     let tab = try tab(input.tabId)
     guard tab.documentId == input.documentId else { throw BrowserRefusal.staleDocument }
@@ -95,7 +96,10 @@ import WebKit
         try protectResponder(view, window: window)
         guard view.becomeFirstResponder(), let responder = firstResponder(in: view), let keyInput = responder as? UIKeyInput else { throw BrowserRefusal.notActionable }
         switch action.kind {
-        case "text.insert", "text.paste": keyInput.insertText(action.text)
+        case "text.insert", "text.paste":
+          keyInput.insertText(action.text)
+          (responder as? UITextInput)?.unmarkText()
+          tab.markedByRemote = false
         case "text.backspace": keyInput.deleteBackward()
         case "text.enter": keyInput.insertText("\n")
         case "text.selectAll": responder.selectAll(nil)

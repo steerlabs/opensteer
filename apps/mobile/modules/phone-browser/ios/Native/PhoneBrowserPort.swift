@@ -11,7 +11,7 @@ public struct PhoneBrowserEventRoute {
 @MainActor public protocol PhoneBrowserAdmission: AnyObject {
   func allocation(permit: String, binding: [String: Any]?, sessionId: String?, epoch: Int) throws
   func action(channelId: String, attachmentId: String, actorToken: String, sessionId: String, epoch: Int) throws
-  func viewer(channelId: String, sessionId: String, epoch: Int) throws
+  func viewer(channelId: String, sessionId: String, epoch: Int, control: Bool) throws
   func routes(sessionId: String, tabId: String, actorToken: String?) -> [PhoneBrowserEventRoute]
 }
 
@@ -112,10 +112,14 @@ struct BrowserWireInput: Record, BrowserReference {
       for key in ["downloadId", "name", "received", "total"] { event[key] = body[key] }
       let state = body["state"] as? String
       event["state"] = state == "downloading" ? "receiving" : state == "complete" ? "complete" : "failed"
+    case "serverMessage":
+      event["documentId"] = tab.documentId; event["geometryRevision"] = tab.geometryRevision
+      event["channelId"] = body["channelId"]; event["message"] = body["message"]
     case "activity", "editing":
       guard let admission, !tab.documentId.isEmpty else { return [] }
       event["documentId"] = tab.documentId; event["geometryRevision"] = tab.geometryRevision
-      return admission.routes(sessionId: tab.sessionId, tabId: tab.id, actorToken: body["actorToken"] as? String).map { route in
+      return admission.routes(sessionId: tab.sessionId, tabId: tab.id, actorToken: body["actorToken"] as? String).compactMap { route in
+        if name == "activity", UUID(uuidString: route.actorToken) == nil { return nil }
         var routed = event
         routed["channelId"] = route.channelId
         if name == "activity" {
@@ -135,17 +139,21 @@ struct BrowserWireInput: Record, BrowserReference {
   }
 
   func qualification(_ input: BrowserInitializeInput) async throws -> [String: Any] {
+    guard UIApplication.shared.applicationState == .active else { throw BrowserRefusal.notActionable }
+    setForeground(true)
     _ = try await initialize(input)
-    return ["platform": "ios", "runtimeId": runtimeId, "storageInstanceId": stores.storageInstanceId,
-      "browser": true, "sharedControl": false, "agentActions": false, "cdpBoundary": false,
-      "fileStaging": ProcessInfo.processInfo.isOperatingSystemAtLeast(OperatingSystemVersion(majorVersion: 18, minorVersion: 4, patchVersion: 0))]
+    let result = await qualify(epoch: input.epoch)
+    try gate.check(input.epoch)
+    PhoneBrowserServices.shared.qualified(result)
+    return result
   }
 
   func portCreate(_ input: BrowserCreateInput) async throws -> [String: Any] {
     try gate.check(input.epoch)
     guard let admission else { throw BrowserRefusal.forbidden }
     guard ["live", "retained"].contains(input.state) else { throw BrowserRefusal.invalidArgument }
-    try admission.allocation(permit: input.allocationPermit, binding: nil, sessionId: input.sessionId, epoch: input.epoch)
+    let existingBinding = input.storeHandle.flatMap { stores.held[$0]?.binding }.map(stores.bindingDictionary)
+    try admission.allocation(permit: input.allocationPermit, binding: existingBinding, sessionId: input.sessionId, epoch: input.epoch)
     if input.storeHandle == nil {
       let guest = BrowserProfileInput()
       guest.epoch = input.epoch; guest.guestSessionId = input.sessionId

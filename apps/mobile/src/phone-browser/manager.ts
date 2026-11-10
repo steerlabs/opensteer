@@ -242,7 +242,8 @@ export class PhoneBrowserManager {
     await this.#bounded(epoch, () => turn);
   }
 
-  async hideTab(surfaceId: string): Promise<void> {
+  async hideTab(surfaceId: string, hostId?: string): Promise<void> {
+    if (hostId && this.#selected?.hostId !== hostId) return;
     const tab = this.#tabs.get(surfaceId);
     if (!tab || this.#visible !== surfaceId) return;
     this.#selected = null;
@@ -1185,13 +1186,18 @@ export class PhoneBrowserManager {
         result,
       });
     } catch (error) {
+      const dialog = message.request.surfaceId
+        ? this.#tabs.get(message.request.surfaceId)?.dialog
+        : null;
+      const code = error instanceof PhoneBrowserError ? error.code : "forbidden";
       await this.#send(channel, {
         type: "agent.error",
         attachmentId: message.attachmentId,
         requestId: message.requestId,
         error: {
-          code: error instanceof PhoneBrowserError ? error.code : "forbidden",
+          code: code === "dialog-open" && !dialog ? "outcome-unknown" : code,
           message: safeMessage(error),
+          ...(code === "dialog-open" && dialog ? { dialog } : {}),
         },
       });
     }

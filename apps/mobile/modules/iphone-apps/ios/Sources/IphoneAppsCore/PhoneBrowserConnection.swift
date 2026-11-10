@@ -15,6 +15,7 @@ public final class PhoneBrowserConnection: @unchecked Sendable {
   private var channels: [String: Channel] = [:]
   private var tickets: [String: Ticket] = [:]
   private var permits: [String: Permit] = [:]
+  private var agents: [String: (channelId: String, sessionId: String, actorToken: String)] = [:]
   private var leaseTimer: DispatchSourceTimer?
   private var closeTransport: (() -> Void)?
   private var pendingFrames: Set<String> = []
@@ -27,6 +28,8 @@ public final class PhoneBrowserConnection: @unchecked Sendable {
     var lastFrameIds: [String: Int] = [:]
     var authorized = false
     var closing = false
+    var claims: [String: Any]?
+    var actorToken: String?
   }
   private struct Ticket {
     let bytes: String
@@ -77,7 +80,7 @@ public final class PhoneBrowserConnection: @unchecked Sendable {
   }
 
   private func retireChannels() {
-    tickets.removeAll(); permits.removeAll(); channels.removeAll()
+    tickets.removeAll(); permits.removeAll(); channels.removeAll(); agents.removeAll()
   }
 
   public func adopt(_ welcome: [String: Any], sender: @escaping Sender, close: @escaping () -> Void) throws {
@@ -100,7 +103,7 @@ public final class PhoneBrowserConnection: @unchecked Sendable {
     admission.release()
     streamRevision = UUID()
     sender = nil; closeTransport?(); closeTransport = nil
-    keys.removeAll(); tickets.removeAll(); permits.removeAll(); channels.removeAll()
+    keys.removeAll(); retireChannels()
     onRetire(admission.epoch, reason)
     if let lost { observer?(["type": "connection", "state": "offline", "reason": reason, "fence": lost.fields]) }
   }
@@ -156,6 +159,20 @@ public final class PhoneBrowserConnection: @unchecked Sendable {
         let channelId = try WireField.string(frame, "channelId")
         guard var channel = channels[channelId], !channel.closing, PhoneBrowserAdmission.sameCapability(channel.capability, capability) else { throw PhoneBrowserFailure.forbidden }
         var message = try WireField.object(frame, "message")
+        if message["type"] as? String == "agent.attach" {
+          guard channel.authorized, channel.claims?["access"] as? String == "read-write",
+            let session = message["sessionId"] as? String, session == channel.claims?["sessionId"] as? String,
+            message["backend"] as? String == "actions", let actor = message["actorToken"] as? String,
+            UUID(uuidString: actor) != nil, let id = message["attachmentId"] as? String,
+            UUID(uuidString: id) != nil, agents[id] == nil, agents.count < 128 else { throw PhoneBrowserFailure.forbidden }
+          agents[id] = (channelId, session, actor)
+        } else if message["type"] as? String == "agent.detach", let id = message["attachmentId"] as? String {
+          guard agents[id]?.channelId == channelId else { throw PhoneBrowserFailure.forbidden }
+          agents.removeValue(forKey: id)
+        }
+        if let actor = message["actorToken"] as? String, UUID(uuidString: actor) != nil {
+          channel.actorToken = actor; channels[channelId] = channel
+        }
         if message["type"] as? String == "stream.ack", let token = message["token"] as? String,
           let surfaceId = channel.watchTokens.first(where: { $0.value == token })?.key,
           message["surfaceId"] == nil || message["surfaceId"] as? String == surfaceId {
@@ -172,6 +189,7 @@ public final class PhoneBrowserConnection: @unchecked Sendable {
         channels[channelId]?.closing = true
         tickets = tickets.filter { $0.value.channelId != channelId }
         permits = permits.filter { $0.value.channelId != channelId }
+        agents = agents.filter { $0.value.channelId != channelId }
       }
     }
     event["message"] = sanitized
@@ -209,6 +227,7 @@ public final class PhoneBrowserConnection: @unchecked Sendable {
     permits = permits.filter { (try? PhoneBrowserAdmission.milliseconds($0.value.claims, "operationExpiresAt")) ?? 0 > now() }
     try ledger.claim(nonce: verified.nonce, expiresAt: verified.expiresAt, now: proposed.highWaterAt, expected: witness, proposed: proposed)
     channels[ticket.channelId]?.authorized = true
+    channels[ticket.channelId]?.claims = verified.claims
     tickets.removeValue(forKey: attachHandle)
     let handle = UUID().uuidString
     permits[handle] = Permit(epoch: epoch, fence: fence, channelId: ticket.channelId, claims: verified.claims, claimsDigest: verified.digest)
@@ -253,6 +272,7 @@ public final class PhoneBrowserConnection: @unchecked Sendable {
     channels.removeValue(forKey: channelId)
     tickets = tickets.filter { $0.value.channelId != channelId }
     permits = permits.filter { $0.value.channelId != channelId }
+    agents = agents.filter { $0.value.channelId != channelId }
   }
 
   public func sendHeartbeat() async throws {
@@ -287,6 +307,34 @@ public final class PhoneBrowserConnection: @unchecked Sendable {
     lock.lock(); defer { lock.unlock() }
     guard let channel = channels[channelId], channel.authorized, !channel.closing else { throw PhoneBrowserFailure.forbidden }
     try admission.check(epoch: epoch, now: now(), capability: channel.capability)
+  }
+
+  public func checkViewer(epoch: Int, channelId: String, sessionId: String, control: Bool = true) throws {
+    lock.lock(); defer { lock.unlock() }
+    try checkChannel(epoch: epoch, channelId: channelId)
+    guard let claims = channels[channelId]?.claims, claims["sessionId"] as? String == sessionId,
+      !control || claims["access"] as? String == "read-write" else { throw PhoneBrowserFailure.forbidden }
+  }
+
+  public func checkAgent(epoch: Int, channelId: String, sessionId: String, attachmentId: String, actorToken: String) throws {
+    lock.lock(); defer { lock.unlock() }
+    try checkViewer(epoch: epoch, channelId: channelId, sessionId: sessionId)
+    guard let agent = agents[attachmentId], agent.channelId == channelId,
+      agent.sessionId == sessionId, agent.actorToken == actorToken else { throw PhoneBrowserFailure.forbidden }
+  }
+
+  public func detachAgent(epoch: Int, attachmentId: String) throws {
+    lock.lock(); defer { lock.unlock() }
+    guard epoch == admission.epoch else { throw PhoneBrowserFailure.forbidden }
+    agents.removeValue(forKey: attachmentId)
+  }
+
+  public func eventRoutes(epoch: Int, sessionId: String, actorToken: String?) -> [(channelId: String, actorToken: String)] {
+    lock.lock(); defer { lock.unlock() }
+    return channels.compactMap { id, channel in
+      guard (try? checkViewer(epoch: epoch, channelId: id, sessionId: sessionId, control: false)) != nil else { return nil }
+      return (id, actorToken ?? channel.actorToken ?? "")
+    }
   }
 
   private func write(epoch: Int, channelId: String, fence: AuxiliaryFence, revision: UUID, header: [String: Any]?, message: [String: Any]?, completion: @escaping (Bool) -> Void, pixels: Data, dataPath: [String]? = nil) {
