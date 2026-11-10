@@ -1674,7 +1674,6 @@ export type DesktopBrowserAutofillInput = z.infer<typeof DesktopBrowserAutofillI
 export interface OpensteerAutofillPopupBridge {
   onScene(listener: (scene: DesktopAutofillScene | null) => void): () => void;
   choose(input: { readonly sceneRevision: number; readonly accountId: string }): void;
-  highlight(input: { readonly sceneRevision: number; readonly index: number }): void;
 }
 
 export const DesktopBrowserNavigationAvailableSchema = z.strictObject({ hardReload: z.boolean() });

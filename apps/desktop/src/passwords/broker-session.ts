@@ -1,4 +1,8 @@
 import type {
+  PasswordsBrokerFillAccountsParamsSchema,
+  PasswordsBrokerFillAccountsResultSchema,
+  PasswordsBrokerFillBeginParamsSchema,
+  PasswordsBrokerFillBeginResultSchema,
   PasswordsBrokerCardRequestParamsSchema,
   PasswordsBrokerCardRequestResultSchema,
   PasswordsBrokerCardApproveParamsSchema,
@@ -57,7 +61,7 @@ export interface PasswordsBrokerSignInGrant {
 
 /** Every transaction call stays on the connection that carried request; it never reconnects. */
 export interface PasswordsBrokerSession {
-  readonly protocolVersion?: 4 | 5 | 6 | 7;
+  readonly protocolVersion?: 4 | 5 | 6 | 7 | 8;
   probe(params: PasswordsBrokerSignInProbeParams): Promise<PasswordsBrokerSignInProbeResult>;
   request(
     params: PasswordsBrokerSignInRequestParams | PasswordsBrokerSignInRequestV6Params,
@@ -92,4 +96,23 @@ export interface PasswordsBrokerCardSession {
     params: z.infer<typeof PasswordsBrokerCardReleaseParamsSchema>,
     signal?: AbortSignal,
   ): Promise<z.infer<typeof PasswordsBrokerCardReleaseResultSchema>>;
+}
+
+/**
+ * Person fill on a protocol 8 connection. A person transaction is released and
+ * ended with `release` (kind browser) and `cancel`, and is never an agent's.
+ */
+export interface PasswordsBrokerPersonFillSession {
+  fillAccounts(
+    params: z.infer<typeof PasswordsBrokerFillAccountsParamsSchema>,
+    signal?: AbortSignal,
+  ): Promise<z.infer<typeof PasswordsBrokerFillAccountsResultSchema>>;
+  /** Lasts as long as the connection that owns the transaction, like a sign-in grant. */
+  fillBegin(
+    params: z.infer<typeof PasswordsBrokerFillBeginParamsSchema>,
+    signal: AbortSignal,
+  ): Promise<{
+    decision: z.infer<typeof PasswordsBrokerFillBeginResultSchema>;
+    lifetime: AbortSignal;
+  }>;
 }

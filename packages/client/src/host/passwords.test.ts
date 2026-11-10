@@ -257,7 +257,14 @@ describe("passwordsSettingsState", () => {
         broker: { agentSignIns: "off", vault: "ready" },
         development: true,
       }),
-    ).toEqual({ agentSignIns: "off", development: true, kind: "ready" });
+    ).toEqual({ agentSignIns: "off", personFill: null, development: true, kind: "ready" });
+    expect(
+      passwordsSettingsState({
+        availability: "available",
+        broker: { agentSignIns: "off", personFill: "on", vault: "ready" },
+        development: false,
+      }),
+    ).toMatchObject({ agentSignIns: "off", personFill: "on", kind: "ready" });
   });
 
   it("counts the sign-ins waiting in the chat", () => {
