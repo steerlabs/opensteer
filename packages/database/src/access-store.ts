@@ -1170,6 +1170,7 @@ async function applySource(
         })
         .where("id", "=", change.workspaceId)
         .execute();
+  // The legacy Account presence trigger observes instanceRole on each final user-state write.
   for (const after of changedUsers) {
     const before = old.users.find((user) => user.id === after.id)!;
     await transaction

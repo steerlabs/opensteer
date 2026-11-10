@@ -416,11 +416,6 @@ describeStore("dormant Project access", (it) => {
           expect(definition).toContain("old.access_root");
           expect(definition).toContain("new.access_root");
           expect(definition).toContain("security effect scope is immutable");
-        } else if (original.name === "trigger:users:users_account_directory_projection_update") {
-          expect(definition).toContain("admitted_at");
-          expect(definition).toContain("member_state");
-          expect(definition).toContain("disabled_at");
-          expect(definition).toContain("instance_role");
         } else expect(definition, original.name).toBe(original.definition);
       }
       const upgraded = await legacyMembershipLifecycle(

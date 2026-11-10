@@ -1,3 +1,4 @@
+import { mutateAccess } from "./access-store.js";
 import { describeStore } from "./store.integration.test-support.js";
 import { sql } from "kysely";
 import { expect } from "vitest";
@@ -11,6 +12,11 @@ describeStore("team Account presence", (it) => {
     const fixture = await storeFixture.createRunFixture("team-presence", null, "project");
     const database = storeFixture.database;
     const directory = new AccountDirectoryStore(database);
+    await database
+      .updateTable("users")
+      .set({ admittedAt: new Date(), instanceRole: "administrator" })
+      .where("id", "=", fixture.userId)
+      .execute();
     await database.updateTable("deployments").set({ authorityModelVersion: 2 }).execute();
     await directory.configureProvider({ issuer: "https://account.test", providerId: "account" });
     const person = createId("user");
@@ -49,7 +55,7 @@ describeStore("team Account presence", (it) => {
     ).toEqual([]);
     await database
       .updateTable("users")
-      .set({ admittedAt: new Date() })
+      .set({ admittedAt: new Date(), instanceRole: "user" })
       .where("id", "=", person)
       .execute();
     expect(
@@ -105,6 +111,14 @@ describeStore("team Account presence", (it) => {
       expect(
         (await sql`select * from human_directory_refresh_probe`.execute(database)).rows,
       ).toHaveLength(1);
+      await database
+        .updateTable("users")
+        .set({ memberState: "active" })
+        .where("id", "=", person)
+        .execute();
+      expect(
+        (await sql`select * from human_directory_refresh_probe`.execute(database)).rows,
+      ).toHaveLength(1);
     }
     await database
       .updateTable("deployments")
@@ -123,11 +137,12 @@ describeStore("team Account presence", (it) => {
     expect(
       (await sql`select * from human_directory_refresh_probe`.execute(database)).rows,
     ).toHaveLength(0);
-    await database
-      .updateTable("users")
-      .set({ memberState: "suspended" })
-      .where("id", "=", person)
-      .execute();
+    await mutateAccess(database, {
+      actor: { userId: fixture.userId },
+      expectedRevision: 1,
+      commandIdentity: createId("command"),
+      changes: [{ kind: "member", userId: person, memberState: "suspended" }],
+    });
     expect(
       (await sql`select * from human_directory_refresh_probe`.execute(database)).rows,
     ).toHaveLength(1);
