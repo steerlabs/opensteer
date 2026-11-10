@@ -783,6 +783,9 @@ importers:
       '@opensteer/apple-data':
         specifier: workspace:*
         version: link:../../packages/apple-data
+      '@opensteer/browser-core':
+        specifier: workspace:*
+        version: link:../../packages/browser-core
       '@opensteer/client':
         specifier: workspace:*
         version: link:../../packages/client
