@@ -122,10 +122,9 @@ export class PageAutofill {
   }
 
   update(scene: DesktopAutofillScene | null, geometry: Geometry | null): void {
-    if (scene?.sceneRevision !== this.#scene?.sceneRevision) {
-      this.#panel = null;
-      this.#hide();
-    }
+    // A highlight move is a new revision of the same panel: keep its size so the
+    // list never blinks; a new measurement still resizes it.
+    if (!scene) this.#panel = null;
     this.#scene = scene;
     this.#geometry = geometry;
     this.#sync();

@@ -104,16 +104,11 @@ it("shows only a main-frame measurement of the current scene and refuses stale p
     measured(1);
     expect(fakes.window!.visible).toBe(true);
     expect(fakes.window!.bounds).toEqual({ x: 94, y: 228, width: 232, height: 132 });
-    popup.update({ ...scene, sceneRevision: 2 }, geometry);
-    expect(fakes.window!.visible).toBe(false);
+    // A highlight move is a new revision of the same panel: it stays up, sized as measured.
+    popup.update({ ...scene, sceneRevision: 2, highlighted: 1 }, geometry);
+    expect(fakes.window!.visible).toBe(true);
+    expect(fakes.window!.bounds).toEqual({ x: 94, y: 228, width: 232, height: 132 });
     measured(1);
-    expect(fakes.window!.visible).toBe(false);
-    contents.ipc.emit(channels.autofillChoose, event, {
-      sceneRevision: 2,
-      accountId: scene.accounts[0]!.id,
-    });
-    expect(choose).not.toHaveBeenCalled();
-    measured(2);
     contents.ipc.emit(channels.autofillChoose, event, {
       sceneRevision: 1,
       accountId: scene.accounts[0]!.id,
@@ -130,7 +125,10 @@ it("shows only a main-frame measurement of the current scene and refuses stale p
     expect(choose).toHaveBeenCalledExactlyOnceWith(2, scene.accounts[0]!.id);
     popup.update({ ...scene, sceneRevision: 2, anchor: { ...scene.anchor, y: 1_000 } }, geometry);
     expect(fakes.window!.visible).toBe(false);
+    // A closed list forgets its size: the next one waits for its own measurement.
+    popup.update(null, geometry);
     popup.update({ ...scene, sceneRevision: 3 }, geometry);
+    expect(fakes.window!.visible).toBe(false);
     measured(3);
     expect(fakes.window!.visible).toBe(true);
     parent.emit("blur");
