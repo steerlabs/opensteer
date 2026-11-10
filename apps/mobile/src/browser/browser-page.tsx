@@ -1478,7 +1478,7 @@ export function PageTyping(props: {
       pointerEvents={props.softKeyboard === false ? "none" : "auto"}
       style={props.softKeyboard === false ? styles.hardwareInput : undefined}
     >
-      <Toolbar edge="bottom" testID="page-typing">
+      <Toolbar edge="bottom" {...(props.softKeyboard === false ? {} : { testID: "page-typing" })}>
         <Animated.View
           layout={move}
           style={offer && chooseLogin ? styles.typingRound : styles.typingField}

@@ -102,7 +102,9 @@ vi.mock("../../../src/browser/toolbar.js", async () => {
   return {
     ...(await import("../../../test-support/native-chrome.js")).toolbar,
     Toolbar: ({ children, testID }: { children?: ReactNode; testID?: string }) => (
-      <View testID={testID}>{children}</View>
+      <View collapsable={false} testID={testID}>
+        {children}
+      </View>
     ),
   };
 });
