@@ -572,13 +572,12 @@ async function assertPersonalRunnerAdmission(
     .select("deploymentShape")
     .where("singletonKey", "=", "primary")
     .executeTakeFirst(databaseOperationOptions());
-  const enrollment = deployment
-    ? deploymentPolicy(deployment.deploymentShape).runnerEnrollment
-    : null;
+  const policy = deployment ? deploymentPolicy(deployment.deploymentShape) : null;
+  const enrollment = policy?.runnerEnrollment;
   if (!enrollment || enrollment.mode !== "reach-only") return null;
   if (
     runnerRunsItsDeployment({
-      deploymentIsPersonal: true,
+      deploymentIsPersonal: policy?.deploymentOwnsMainComputer === true,
       ownerKind: input.ownerKind,
       runnerKind: input.runnerKind,
     })

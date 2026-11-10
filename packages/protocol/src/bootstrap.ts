@@ -102,6 +102,7 @@ export const HostBootstrapSchema = z.object({
       deploymentOwnsMainComputer: z.boolean().optional().catch(undefined),
       personalRemoteAccess: z.boolean().optional().catch(undefined),
       sharing: z.boolean().optional().catch(undefined),
+      deploymentWideMachineReach: z.boolean().optional().catch(undefined),
       serviceManagement: z.boolean().optional().catch(undefined),
       runnerEnrollmentMode: z.enum(["reach-only", "unrestricted"]).optional().catch(undefined),
       deploymentComputerAccess: z.boolean().optional().catch(undefined),

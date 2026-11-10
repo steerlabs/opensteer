@@ -4,6 +4,7 @@ export interface DeploymentPolicy {
   readonly ownership: "single-user" | "members";
   readonly workspaceNamespace: "single-owner" | "owner-scoped";
   readonly sharing: boolean;
+  readonly deploymentWideMachineReach: boolean;
   readonly appOrigins: "real" | "isolated";
   readonly executionAccess: "administrator" | "member";
   readonly projectConsent: "owner-wide" | "per-project";
@@ -58,6 +59,7 @@ type DeploymentClientFacts = {
   | "deploymentComputerAccess"
   | "projectConsent"
   | "sharing"
+  | "deploymentWideMachineReach"
   | "serviceManagement"
 >;
 
@@ -71,6 +73,7 @@ export function deploymentPolicy(shape: DeploymentShape): DeploymentPolicy {
       ownership: "single-user",
       workspaceNamespace: "single-owner",
       sharing: false,
+      deploymentWideMachineReach: false,
       appOrigins: "real",
       executionAccess: "administrator",
       projectConsent: "owner-wide",
@@ -109,6 +112,7 @@ export function deploymentPolicy(shape: DeploymentShape): DeploymentPolicy {
       ownership: "members",
       workspaceNamespace: "owner-scoped",
       sharing: true,
+      deploymentWideMachineReach: true,
       appOrigins: "isolated",
       executionAccess: "member",
       projectConsent: "per-project",
@@ -150,6 +154,7 @@ export function deploymentClientPolicy(policy: DeploymentPolicy): DeploymentClie
     ownership: policy.ownership,
     runnerEnrollmentMode: policy.runnerEnrollment.mode,
     sharing: policy.sharing,
+    deploymentWideMachineReach: policy.deploymentWideMachineReach,
     serviceManagement: policy.serviceManagement,
     personalRemoteAccess: policy.services.personalRemoteAccess,
     nativePasswords: policy.nativePasswords,

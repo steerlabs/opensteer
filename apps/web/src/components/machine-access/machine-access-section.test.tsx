@@ -46,6 +46,7 @@ describe("machineReachOptions", () => {
           nativePasswords: false,
           deploymentComputerAccess: false,
           sharing: true,
+          deploymentWideMachineReach: true,
           serviceManagement: true,
           runnerEnrollmentMode: "unrestricted",
           projectConsent: "per-project",
@@ -72,6 +73,7 @@ describe("machineReachOptions", () => {
           nativePasswords: true,
           deploymentComputerAccess: true,
           sharing: false,
+          deploymentWideMachineReach: false,
           serviceManagement: false,
           runnerEnrollmentMode: "reach-only",
           projectConsent: "owner-wide",
@@ -90,6 +92,7 @@ describe("machineReachOptions", () => {
         deploymentPolicy: {
           ownership: deploymentKind === "personal" ? "single-user" : "members",
           sharing: deploymentKind === "server",
+          deploymentWideMachineReach: deploymentKind === "server",
           localRunnerDefaultModules: [],
         },
         deploymentName: "Acme",
@@ -101,15 +104,24 @@ describe("machineReachOptions", () => {
     expect(forKind("personal")).toEqual(["nobody", "owner"]);
   });
 
-  it.each([true, false])("uses sharing rather than ownership: %s", (sharing) => {
-    const options = machineReachOptions({
-      deploymentPolicy: { ownership: sharing ? "single-user" : "members", sharing },
-      deploymentName: "Acme",
-      ownerReachAvailable: true,
-      ownership: "mine",
-    });
-    expect(options.some((option) => option.reach === "deployment")).toBe(sharing);
-  });
+  it.each([true, false])(
+    "uses the machine reach audience, not Workspace sharing: %s",
+    (deploymentWideMachineReach) => {
+      const options = machineReachOptions({
+        deploymentPolicy: {
+          ownership: deploymentWideMachineReach ? "single-user" : "members",
+          sharing: !deploymentWideMachineReach,
+          deploymentWideMachineReach,
+        },
+        deploymentName: "Acme",
+        ownerReachAvailable: true,
+        ownership: "mine",
+      });
+      expect(options.some((option) => option.reach === "deployment")).toBe(
+        deploymentWideMachineReach,
+      );
+    },
+  );
 });
 
 describe("machineAccessAuditLabel", () => {
@@ -630,6 +642,7 @@ function sectionElement(input: {
         nativePasswords: false,
         deploymentComputerAccess: false,
         sharing: true,
+        deploymentWideMachineReach: true,
         serviceManagement: true,
         runnerEnrollmentMode: "unrestricted",
         projectConsent: "per-project",

@@ -1,4 +1,5 @@
 import { resourceAccessLevelsMigration } from "./migrations.js";
+import * as core from "@opensteer/core";
 import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import {
   createId as createStorageFixtureId,
@@ -24,7 +25,7 @@ import {
 } from "@opensteer/protocol";
 import { sql } from "kysely";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
-import { describe, expect } from "vitest";
+import { describe, expect, vi } from "vitest";
 import {
   configuredBootstrapEnrollmentLifetimeMs,
   OpensteerStore,
@@ -2138,6 +2139,27 @@ describeStore("PostgreSQL store", (it) => {
           suffix: "main",
         }),
       ).resolves.toMatchObject({ allowedModules: ["agents", "browser"] });
+    });
+
+    it("does not infer Main ownership from reach-only enrollment", async ({ storeFixture }) => {
+      await personalDeployment(storeFixture);
+      const actualPolicy = core.deploymentPolicy;
+      const policy = vi.spyOn(core, "deploymentPolicy").mockImplementation((shape) => ({
+        ...actualPolicy(shape),
+        deploymentOwnsMainComputer: false,
+      }));
+      try {
+        await expect(
+          enrollment(storeFixture, {
+            allowedModules: ["agents", "browser"],
+            createdBy: null,
+            runnerKind: "main",
+            suffix: "no-main-ownership",
+          }),
+        ).rejects.toMatchObject({ code: "forbidden" });
+      } finally {
+        policy.mockRestore();
+      }
     });
 
     it("leaves a server Deployment free to grant whatever it likes", async ({ storeFixture }) => {
