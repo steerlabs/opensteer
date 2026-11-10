@@ -47,7 +47,7 @@ import {
   type RequestPayload,
 } from "@opensteer/core";
 import type { CardChoice, MachineSummary, PasswordSignInCard } from "@opensteer/protocol";
-import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import * as Haptics from "expo-haptics";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
@@ -76,6 +76,7 @@ import { SheetBarButton } from "../ui/sheet-bar.js";
 import { Symbol } from "../ui/symbol.js";
 import { AnswerPill, AnswerRow } from "./answer-pill.js";
 import { requestTitle } from "./docked-requests.js";
+import { AskedBySubagent } from "./asked-by-subagent.js";
 import { InstallReview } from "./integration-install-review.js";
 import {
   approvalMenuOptions,
@@ -188,7 +189,9 @@ function SheetForRequest(props: {
   readonly userId: string;
 }): ReactNode {
   const { deploymentId, hostClient, surface, userId } = props;
+  const navigation = useNavigation();
   const threadId = surface?.request.originatingThreadId ?? "";
+  const nodeId = surface?.request.originatingNodeId;
   const { drafts } = useMobileClient();
   const { gate, owner } = useThreadMutation({ deploymentId, threadId, userId });
   const archived = useHostSelector(
@@ -218,6 +221,16 @@ function SheetForRequest(props: {
       onClose={props.onClose}
       reason={props.reason}
       subagentTitle={props.subagentTitle}
+      {...(nodeId === undefined
+        ? {}
+        : {
+            onOpenSubagent: () => {
+              props.onClose();
+              navigation.dispatch(
+                StackActions.push("Subagent", { deploymentId, nodeId, threadId }),
+              );
+            },
+          })}
       surface={surface}
     />
   );
@@ -255,6 +268,8 @@ export function RequestSheetContent(props: {
   readonly onClose: () => void;
   readonly reason: boolean;
   readonly subagentTitle: string | null;
+  /** Opens the asking subagent's own view, where it can be answered too. */
+  readonly onOpenSubagent?: () => void;
   readonly surface: SurfaceModel;
 }): ReactNode {
   const { surface } = props;
@@ -369,7 +384,9 @@ export function RequestSheetContent(props: {
             {requestAgentProposedLabel}
           </AppText>
         ) : null}
-        {props.subagentTitle ? (
+        {props.subagentTitle && props.onOpenSubagent ? (
+          <AskedBySubagent onOpen={props.onOpenSubagent} title={props.subagentTitle} />
+        ) : props.subagentTitle ? (
           <AppText role="caption" tone="muted">
             Asked by subagent {props.subagentTitle}
           </AppText>

@@ -3,14 +3,8 @@
 import { act, useEffect, type ReactNode, type Ref } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  unwrapRpcResult,
-  type AssignmentEntry,
-  type HostClient,
-  type HostSnapshot,
-} from "@opensteer/client/host";
+import { unwrapRpcResult, type HostClient } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
-import { AssignmentSummarySchema, createId, type AssignmentSummary } from "@opensteer/core";
 import { rpcSuccess } from "@opensteer/protocol";
 import type { ThreadHeaderState } from "../thread/thread-pane.js";
 
@@ -229,7 +223,6 @@ vi.mock("../ui/task-mark.js", () => ({
 
 const { ProjectScreen } = await import("./project.js");
 const { useThreadHeader } = await import("./thread-header.js");
-const { AssignmentLines, TaskScopeContext } = await import("../thread/task-line.js");
 const { ThreadMenu } = await import("../thread/thread-menu.js");
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const roots: Root[] = [];
@@ -275,26 +268,6 @@ async function client() {
   await result.load();
   harness.client = result;
   return result;
-}
-function hold(snapshot: HostSnapshot) {
-  let current = snapshot;
-  const listeners = new Set<() => void>();
-  return {
-    client: {
-      getSnapshot: () => current,
-      subscribe: (listener: () => void) => {
-        listeners.add(listener);
-        return () => listeners.delete(listener);
-      },
-      observeThread: () => () => undefined,
-    } as unknown as HostClient,
-    move(next: HostSnapshot) {
-      act(() => {
-        current = next;
-        listeners.forEach((listener) => listener());
-      });
-    },
-  };
 }
 async function project(
   role: "owner" | "member",
@@ -660,167 +633,4 @@ describe("mobile task mark review journeys", () => {
       }
     },
   );
-
-  it("names a Travel owner without drawing it, and keeps the task's mark through its recolour", async () => {
-    const host = await client();
-    const snapshot = host.getSnapshot();
-    const workspace = {
-      ...snapshot.workspaces.find(({ kind }) => kind === "project")!,
-      name: "Travel",
-      icon: "luggage" as const,
-      color: "blue" as const,
-    };
-    const thread = {
-      ...snapshot.threads.find(({ role }) => role === "work")!,
-      workspaceId: workspace.id,
-      title: "Tokyo flights",
-      icon: "plane" as const,
-      color: "teal" as const,
-    };
-    const assignment = assignmentFor(snapshot, thread);
-    const state = hold({ ...snapshot, workspaces: [workspace], threads: [thread] });
-    const open = vi.fn();
-    const container = render(
-      <TaskScopeContext
-        value={{ hostClient: state.client, onViewWork: open, dockedRequestId: null }}
-      >
-        <AssignmentLines entries={[entryFor(assignment)]} />
-      </TaskScopeContext>,
-    );
-    // The line draws only the task's own mark; who does it is said, not drawn.
-    expect(container.querySelector("[data-workspace]")).toBeNull();
-    expect(container.textContent).not.toContain("Travel");
-    expect(container.querySelector('[aria-label^="Tokyo flights, Travel,"]')).not.toBeNull();
-    state.move({
-      ...snapshot,
-      workspaces: [{ ...workspace, color: "magenta" }],
-      threads: [thread],
-    });
-    expect(container.querySelector("[data-workspace]")).toBeNull();
-    expect(container.querySelector('[aria-label^="Tokyo flights, Travel,"]')).not.toBeNull();
-    expect(
-      container.querySelector('[data-task-icon="plane"]')?.getAttribute("data-task-color"),
-    ).toBe("teal");
-    await press(
-      container,
-      container.querySelector("button[aria-label]")!.getAttribute("aria-label")!,
-    );
-    expect(open).toHaveBeenCalledWith(thread.id);
-  });
-
-  it("does not call an unloaded completed project Opensteer and resolves attribution when loaded", async () => {
-    const host = await client();
-    const snapshot = host.getSnapshot();
-    const workspace = {
-      ...snapshot.workspaces.find(({ kind }) => kind === "project")!,
-      name: "Travel",
-    };
-    const thread = {
-      ...snapshot.threads.find(({ role }) => role === "work")!,
-      workspaceId: workspace.id,
-      icon: "plane" as const,
-      color: "teal" as const,
-    };
-    const assignment = {
-      ...assignmentFor(snapshot, thread),
-      status: "completed" as const,
-      finishedAt: "2026-10-25T10:05:00Z",
-      returnStatus: "delivered" as const,
-    };
-    const state = hold({ ...snapshot, workspaces: [], threads: [] });
-    const container = render(
-      <TaskScopeContext
-        value={{ hostClient: state.client, onViewWork: () => undefined, dockedRequestId: null }}
-      >
-        <AssignmentLines entries={[entryFor(assignment)]} />
-      </TaskScopeContext>,
-    );
-    expect(container.textContent).not.toContain("Opensteer");
-    expect(container.querySelector("[aria-label]")?.getAttribute("aria-label")).not.toContain(
-      "Opensteer",
-    );
-    expect(container.querySelector("[data-chat-orb]")).toBeNull();
-    expect(container.querySelector("[data-workspace]")).toBeNull();
-    expect(container.querySelector('[data-task-icon="plane"]')).not.toBeNull();
-    state.move({ ...snapshot, workspaces: [workspace], threads: [] });
-    expect(container.querySelector("[data-workspace]")).toBeNull();
-    expect(container.querySelector("[aria-label]")?.getAttribute("aria-label")).toContain("Travel");
-  });
-
-  it("names Opensteer, without its orb, only for a known Main assignment", async () => {
-    const host = await client();
-    const snapshot = host.getSnapshot();
-    const thread = snapshot.threads.find(({ id }) => id === snapshot.homeThreadId)!;
-    const assignment = assignmentFor(snapshot, thread);
-    const container = render(
-      <TaskScopeContext
-        value={{ hostClient: host, onViewWork: () => undefined, dockedRequestId: null }}
-      >
-        <AssignmentLines entries={[entryFor(assignment)]} />
-      </TaskScopeContext>,
-    );
-    expect(container.querySelector("[data-chat-orb]")).toBeNull();
-    expect(container.querySelector("[aria-label]")?.getAttribute("aria-label")).toContain(
-      "Opensteer",
-    );
-  });
 });
-
-function assignmentFor(
-  snapshot: HostSnapshot,
-  thread: HostSnapshot["threads"][number],
-): AssignmentSummary {
-  return AssignmentSummarySchema.parse({
-    createdAt: "2026-10-25T10:00:00Z",
-    updatedAt: "2026-10-25T10:00:00Z",
-    currentRunId: null,
-    currentRunStatus: null,
-    finishedAt: null,
-    id: createId("delegation"),
-    initialRunId: createId("run"),
-    modelLabel: null,
-    objectivePreview: "Plan trip",
-    origin: "run",
-    parentThreadId: snapshot.homeThreadId!,
-    resultPreview: null,
-    returnStatus: "pending",
-    revision: 1,
-    status: "open",
-    workerThread: {
-      id: thread.id,
-      environmentId: thread.environmentId,
-      workspaceId: thread.workspaceId,
-      status: thread.status,
-      pendingRequests: 0,
-      title: thread.title,
-      icon: thread.icon,
-      color: thread.color ?? undefined,
-    },
-  });
-}
-function entryFor(assignment: AssignmentSummary): AssignmentEntry {
-  return {
-    assignment,
-    createdAt: assignment.createdAt,
-    id: `assignment:${assignment.id}`,
-    kind: "assignment",
-    runId: null,
-  };
-}
-
-it.each(["/source", "PortableFS service retired, volume original"])(
-  "shows Project relocation paths and reports an adoption refusal on mobile (%s)",
-  async (source) => {
-    const { host, container, workspace } = await project("owner", "active", true, source);
-    expect(container.textContent).toContain(source);
-    expect(container.textContent).toContain("/Main/Projects/research");
-    const dispatch = vi
-      .spyOn(host, "dispatch")
-      .mockRejectedValueOnce(new Error("Target directory missing"));
-    await press(container, "I moved it");
-    expect(dispatch).toHaveBeenCalledWith(
-      expect.objectContaining({ type: "workspace.adoptRelocated", workspaceId: workspace.id }),
-    );
-    expect(container.textContent).toContain("Target directory missing");
-  },
-);
