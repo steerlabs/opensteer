@@ -3451,6 +3451,20 @@ describe("BrowserController", () => {
     },
   );
 
+  it("asks the authority to reuse only when the offer listed the account as confirmed", async () => {
+    const fixture = await autofillController({
+      accounts: async () => [{ ...fixture.account, ready: true }],
+    });
+    try {
+      fixture.activate();
+      const offer = await fixture.waitOffer();
+      await fixture.controller.handle(fixture.choice(offer.offerId));
+      expect(fixture.fill).toHaveBeenCalledWith(expect.objectContaining({ reuseOnly: true }));
+    } finally {
+      await fixture.controller.close();
+    }
+  });
+
   it("drops account replies from an older activation and accepts only one listed choice from its producer", async () => {
     const pending = Promise.withResolvers<import("@opensteer/protocol").PersonFillAccountView[]>();
     let called = 0;
@@ -3484,6 +3498,8 @@ describe("BrowserController", () => {
         fixture.controller.handle(fixture.choice(offer.offerId)),
       ]);
       expect(fixture.fill).toHaveBeenCalledTimes(1);
+      // The offer listed this account as unconfirmed, so the authority may confirm it.
+      expect(fixture.fill).toHaveBeenCalledWith(expect.objectContaining({ reuseOnly: false }));
       expect(sink.messages).toContainEqual({
         type: "browser.autofill.result",
         surfaceId: fixture.surfaceId,

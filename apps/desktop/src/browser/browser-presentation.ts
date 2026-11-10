@@ -766,9 +766,11 @@ export class DesktopBrowserPresentationManager {
     const zoom = () => {
       if (current()) this.#autofill(presentation.owner);
     };
+    const resetKeys = () => autofillKeys.reset();
     contents.on("before-mouse-event", mouse);
     contents.on("zoom-changed", zoom);
     contents.on("before-input-event", key);
+    contents.on("blur", resetKeys);
     contents.on("found-in-page", find);
     contents.on("enter-html-full-screen", enter);
     contents.on("leave-html-full-screen", leave);
@@ -781,6 +783,7 @@ export class DesktopBrowserPresentationManager {
       contents.off("before-mouse-event", mouse);
       contents.off("zoom-changed", zoom);
       contents.off("before-input-event", key);
+      contents.off("blur", resetKeys);
       contents.off("found-in-page", find);
       contents.off("enter-html-full-screen", enter);
       contents.off("leave-html-full-screen", leave);

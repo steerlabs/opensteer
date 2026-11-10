@@ -40,8 +40,9 @@ export class AutofillSceneState {
 }
 
 /**
- * Which page keys the chooser takes. A key it took keeps its release from the
- * page too, even after the chooser has closed, or a keyup handler would act on it.
+ * Which page keys the chooser takes. A press it took stays its own until
+ * release, repeats included, even after the chooser has closed, so the page
+ * never sees half of it. Losing focus can swallow a release; `reset` then.
  */
 export class AutofillKeys {
   readonly #taken = new Set<string>();
@@ -53,9 +54,15 @@ export class AutofillKeys {
   ): { forward: boolean; prevent: boolean } {
     if (input.type === "keyUp") return { forward: false, prevent: this.#taken.delete(input.code) };
     const forward = shown && focused && input.type === "keyDown";
-    const prevent = forward && ["ArrowUp", "ArrowDown", "Enter", "Escape"].includes(input.key);
+    const prevent =
+      this.#taken.has(input.code) ||
+      (forward && ["ArrowUp", "ArrowDown", "Enter", "Escape"].includes(input.key));
     if (prevent) this.#taken.add(input.code);
     return { forward, prevent };
+  }
+
+  reset(): void {
+    this.#taken.clear();
   }
 }
 

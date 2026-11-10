@@ -33,11 +33,12 @@ describe("native autofill scene", () => {
         forward: true,
         prevent: ["ArrowUp", "ArrowDown", "Enter", "Escape"].includes(key),
       });
-    expect(keys.decide({ type: "keyDown", key: "Enter", code: "Enter" }, false, true)).toEqual({
+    const fresh = new AutofillKeys();
+    expect(fresh.decide({ type: "keyDown", key: "Enter", code: "Enter" }, false, true)).toEqual({
       forward: false,
       prevent: false,
     });
-    expect(keys.decide({ type: "keyDown", key: "Enter", code: "Enter" }, true, false)).toEqual({
+    expect(fresh.decide({ type: "keyDown", key: "Enter", code: "Enter" }, true, false)).toEqual({
       forward: false,
       prevent: false,
     });
@@ -47,9 +48,25 @@ describe("native autofill scene", () => {
     keys.decide({ type: "keyDown", key: "Enter", code: "NumpadEnter" }, true, true);
     keys.decide({ type: "keyDown", key: "a", code: "KeyA" }, true, true);
     const up = (code: string) => keys.decide({ type: "keyUp", key: "", code }, false, true);
+    // A held key repeats after the chooser closed: the page still never sees any of it.
+    expect(
+      keys.decide({ type: "keyDown", key: "Enter", code: "NumpadEnter" }, false, true),
+    ).toEqual({ forward: false, prevent: true });
     expect(up("KeyA")).toEqual({ forward: false, prevent: false });
     expect(up("NumpadEnter")).toEqual({ forward: false, prevent: true });
     expect(up("NumpadEnter")).toEqual({ forward: false, prevent: false });
+    expect(
+      keys.decide({ type: "keyDown", key: "Enter", code: "NumpadEnter" }, false, true),
+    ).toEqual({ forward: false, prevent: false });
+  });
+  it("forgets taken keys whose release focus loss swallowed", () => {
+    const keys = new AutofillKeys();
+    keys.decide({ type: "keyDown", key: "Escape", code: "Escape" }, true, true);
+    keys.reset();
+    expect(keys.decide({ type: "keyDown", key: "Escape", code: "Escape" }, false, true)).toEqual({
+      forward: false,
+      prevent: false,
+    });
   });
 });
 

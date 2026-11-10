@@ -787,7 +787,9 @@ export function BrowserPage(props: {
               ]}
             >
               <BrowserStream
-                active={props.active}
+                // The device check takes the app inactive; keeping the stream keeps
+                // its connection, and with it the offer the person chose from.
+                active={props.active || confirmingLogin !== null}
                 tabId={tabId}
                 documentId={liveTab?.documentId}
                 hostClient={hostClient}

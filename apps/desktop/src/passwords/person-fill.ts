@@ -90,6 +90,9 @@ export class PasswordsPersonFillAuthority {
     if (!broker || this.#closed || input.signal.aborted) return "expired";
     let entry = this.#entries.get(entryKey);
     if (!this.#live(entry)) entry = undefined;
+    // An account offered as confirmed skipped the viewer's own check; once that
+    // confirmation has lapsed, the person must be asked again through a new offer.
+    if (!entry && input.reuseOnly) return "expired";
     if (!entry) {
       const target = webContents.fromDevToolsTargetId(input.targetId);
       if (!target || target.isDestroyed()) return "stale";

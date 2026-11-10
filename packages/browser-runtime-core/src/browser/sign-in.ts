@@ -28,6 +28,11 @@ export interface PersonFillInput extends PersonFillScope {
   /** Which bound elements exist besides the activated one. */
   readonly slots: { readonly partner: boolean; readonly group: boolean };
   /**
+   * The account was offered as already confirmed, so the viewer skipped its own
+   * check: fill only inside that confirmation, never begin a new one.
+   */
+  readonly reuseOnly: boolean;
+  /**
    * Writes one released value into a bound element after rechecking it.
    * False: the element or page changed, so nothing more may be written.
    */

@@ -2519,6 +2519,9 @@ export class BrowserController {
           loginId: message.loginId,
           revision: message.revision,
           slots: offer.binding.slots,
+          reuseOnly: offer.accounts.some(
+            (account) => account.id === message.loginId && account.ready,
+          ),
           signal: offer.abort.signal,
           write: (slot, value) =>
             !offer.abort.signal.aborted && nativeLive()

@@ -56,6 +56,7 @@ function fixture() {
     loginId: account.id,
     revision: 1,
     slots: { partner: true, group: false },
+    reuseOnly: false,
     signal: new AbortController().signal,
     write: vi.fn(async (slot, value) => {
       order.push(`write:${slot}:${value}`);
@@ -79,6 +80,15 @@ describe("person fill authority", () => {
     const downgraded = new PasswordsPersonFillAuthority(reconnected);
     expect(await downgraded.accounts(input)).toEqual([]);
     expect(await downgraded.fill(input)).toBe("unavailable");
+  });
+  it("fills a choice offered as confirmed only inside that confirmation", async () => {
+    const { authority, broker, input } = fixture();
+    // The viewer skipped its own check because the offer said ready; it has since lapsed.
+    expect(await authority.fill({ ...input, reuseOnly: true })).toBe("expired");
+    expect(broker.fillBegin).not.toHaveBeenCalled();
+    expect(await authority.fill(input)).toBe("filled");
+    expect(await authority.fill({ ...input, reuseOnly: true })).toBe("filled");
+    expect(broker.fillBegin).toHaveBeenCalledTimes(1);
   });
   it("reuses only the consumer, tab, site, login revision and presence that confirmed", async () => {
     const { authority, broker, input } = fixture();
