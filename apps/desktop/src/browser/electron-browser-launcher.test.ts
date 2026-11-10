@@ -2038,7 +2038,7 @@ describe("native Electron profiles", () => {
       await rm(f.root, { recursive: true, force: true });
     }
   });
-  it.each(["rejected", "hung"])("disposes before rejecting a %s final save", async (mode) => {
+  it.each(["rejected", "hung"])("saves after disposal and reports a %s final save", async (mode) => {
     const f = await fixture();
     const { acquireElectronLocalProfile } = await import("./electron-local-profile.js");
     try {
@@ -2052,9 +2052,11 @@ describe("native Electron profiles", () => {
         configure: () => {},
       });
       const entered = Promise.withResolvers<void>();
+      let pageClosedFirst = false;
       const flush = vi
         .spyOn(owner.session.cookies, "flushStore")
         .mockImplementationOnce(async () => {
+          pageClosedFirst = page.webContents.close.mock.calls.length > 0;
           entered.resolve();
           if (mode === "hung") await new Promise(() => {});
           throw new Error("secret final save failure");
@@ -2066,6 +2068,9 @@ describe("native Electron profiles", () => {
       await withTimeout(entered.promise, 1_000, {
         timeoutError: () => new Error("Final save never started."),
       });
+      expect(pageClosedFirst, "final save ran before the pages that write cookies closed").toBe(
+        true,
+      );
       if (mode === "hung") await vi.advanceTimersByTimeAsync(5_000);
       await vi.waitFor(
         () =>

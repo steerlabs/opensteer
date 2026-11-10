@@ -567,49 +567,48 @@ class ElectronLaunchedBrowser implements LaunchedBrowser {
   }
 
   async #close(): Promise<void> {
-    let saveFailure: BrowserRuntimeError | undefined;
+    const failures: unknown[] = [];
+    await (this.cdp as ElectronBrowserCdpBackend).close().catch((error) => failures.push(error));
     try {
-      if (this.#localProfile && this.#admitted && !this.#localProfile.retired) {
-        const profile = this.#localProfile;
-        let saving = true;
-        try {
-          await withTimeout(
-            (async () => {
-              await this.#profileSession.cookies.flushStore();
-              if (saving && !profile.retired) await profile.mirror.flush();
-            })(),
-            5_000,
-            { timeoutError: () => new Error("Browser profile final save timed out.") },
-          );
-        } catch (cause) {
-          if (!this.#localProfile.retired)
-            saveFailure = new BrowserRuntimeError(
-              "conflict",
-              "Browser profile storage is unavailable. The profile was preserved.",
-              { cause, reason: "browser-profile-persistence-failed" },
-            );
-        } finally {
-          saving = false;
-        }
-      }
+      await this.context.close();
+    } catch (error) {
+      failures.push(error);
     } finally {
-      try {
-        await (this.cdp as ElectronBrowserCdpBackend).close();
-      } finally {
-        try {
-          await this.context.close();
-        } finally {
-          this.#notifyClosed();
-        }
-      }
+      this.#notifyClosed();
     }
-    if (!this.#localProfile) {
-      await Promise.all([
-        this.#profileSession.clearCache(),
-        this.#profileSession.clearStorageData(),
-      ]);
+    // The final save follows disposal so it captures what closing pages wrote last.
+    await (
+      this.#localProfile
+        ? this.#finalSave(this.#localProfile)
+        : Promise.all([this.#profileSession.clearCache(), this.#profileSession.clearStorageData()])
+    ).catch((error) => failures.push(error));
+    if (failures.length === 1) throw failures[0];
+    if (failures.length)
+      throw new AggregateError(failures, "Electron browser close did not complete cleanly.");
+  }
+
+  async #finalSave(profile: ElectronLocalProfile): Promise<void> {
+    if (!this.#admitted || profile.retired) return;
+    let saving = true;
+    try {
+      await withTimeout(
+        (async () => {
+          await this.#profileSession.cookies.flushStore();
+          if (saving && !profile.retired) await profile.mirror.flush();
+        })(),
+        5_000,
+        { timeoutError: () => new Error("Browser profile final save timed out.") },
+      );
+    } catch (cause) {
+      if (profile.retired) return;
+      throw new BrowserRuntimeError(
+        "conflict",
+        "Browser profile storage is unavailable. The profile was preserved.",
+        { cause, reason: "browser-profile-persistence-failed" },
+      );
+    } finally {
+      saving = false;
     }
-    if (saveFailure) throw saveFailure;
   }
 
   #notifyClosed(): void {
