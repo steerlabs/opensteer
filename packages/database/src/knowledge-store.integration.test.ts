@@ -58,6 +58,7 @@ async function fixture() {
         (${hidden}, 'z', 'divisor', '0', 'person', ${owner}, 'seed', 'seed', 5)
     `.execute(database);
     return {
+      url: clone.url,
       database,
       credentials,
       pool,
@@ -301,6 +302,36 @@ integration("knowledge storage", () => {
     });
     expect(await context.count()).toBe(5);
     expect(await context.count("writer_id <> agent_id and agent_id <> 'seed'")).toBe(0);
+  });
+
+  it("connects only as the restricted login, whatever the Host's connection string carries", async () => {
+    const context = await fixture();
+    const host = new URL(context.url);
+    const user = decodeURIComponent(host.username);
+    const password = decodeURIComponent(host.password);
+    const carrying = new URL(context.url);
+    carrying.searchParams.set("user", user);
+    carrying.searchParams.set("password", password);
+    carrying.searchParams.set("options", `-c role=${user}`);
+    const pool = createKnowledgeExecutorPool(carrying.toString(), context.credentials);
+    try {
+      const { rows } = await pool.query<{ session: string; current: string }>(
+        "select session_user::text as session, current_user::text as current",
+      );
+      expect(rows).toEqual([
+        { session: context.credentials.role, current: context.credentials.role },
+      ]);
+    } finally {
+      await pool.end();
+    }
+    const superuser = createKnowledgeExecutorPool(context.url, { role: user, password });
+    try {
+      await expect(superuser.query("select 1")).rejects.toThrow(
+        "The knowledge pool is not logged in as its restricted login",
+      );
+    } finally {
+      await superuser.end();
+    }
   });
 
   it("logs in as its own role, which cannot become another or read any application table", async () => {

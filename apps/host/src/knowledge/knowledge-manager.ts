@@ -102,6 +102,7 @@ export async function startKnowledgeManager(options: {
     }));
 
   try {
+    (await pool.connect()).release();
     const established = await ownerOf();
     if (established) await seed(established);
   } catch (error) {

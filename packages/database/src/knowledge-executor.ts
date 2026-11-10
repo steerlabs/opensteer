@@ -35,20 +35,36 @@ function scramVerifier(password: string): string {
   return `SCRAM-SHA-256$4096:${salt.toString("base64")}$${storedKey.toString("base64")}:${serverKey.toString("base64")}`;
 }
 
-/** The two connections agent SQL runs on, logged in as the restricted role and nothing else. */
+/**
+ * The two connections agent SQL runs on. Only the server's address comes from
+ * the Host's connection string: nothing in its query (a user, a password,
+ * startup options) can change who these connections log in as.
+ */
 export function createKnowledgeExecutorPool(
   hostConnectionString: string,
   credentials: KnowledgeExecutorCredentials,
 ): pg.Pool {
   const url = new URL(hostConnectionString);
-  url.username = encodeURIComponent(credentials.role);
-  url.password = encodeURIComponent(credentials.password);
   const pool = new pg.Pool({
+    host: decodeURIComponent(url.hostname).replace(/^\[(.*)\]$/u, "$1"),
+    port: url.port ? Number(url.port) : 5432,
+    database: decodeURIComponent(url.pathname.slice(1)),
+    user: credentials.role,
+    password: credentials.password,
+    ssl: false,
     application_name: "opensteer-knowledge",
-    connectionString: url.toString(),
     connectionTimeoutMillis: 5_000,
     idleTimeoutMillis: 30_000,
     max: 2,
+    onConnect: async (client) => {
+      const { rows } = await client.query<{ restricted: boolean }>(
+        `select session_user = $1 and current_user = $1 and not r.rolsuper as restricted
+         from pg_catalog.pg_roles r where r.rolname = session_user`,
+        [credentials.role],
+      );
+      if (rows[0]?.restricted !== true)
+        throw new Error("The knowledge pool is not logged in as its restricted login");
+    },
   });
   // An idle connection that dies is dropped from the pool; nothing else needs to hear about it.
   pool.on("error", () => undefined);
