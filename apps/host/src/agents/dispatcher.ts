@@ -116,6 +116,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
   readonly #runToolTokens: RunToolTokenService;
   readonly #requestResponseVault: RequestResponseVault;
   readonly #agentToolsUrl: string;
+  readonly #knowledge: boolean;
   readonly #agentBrowserCdpUrl: string;
   readonly #pluginVersions: (
     workspaceId: WorkspaceId,
@@ -176,7 +177,9 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     readonly triggers: TriggerStore;
     readonly workspaces: Pick<WorkspaceService, "ensureExecutionReady">;
     readonly workspaceAccess: WorkspaceExecutionAccessService;
+    readonly knowledge?: boolean;
   }) {
+    this.#knowledge = options.knowledge === true;
     this.#attachmentRunTokens = options.attachmentRunTokens;
     this.#attachments = options.attachments;
     this.#requestResponseVault = options.requestResponseVault;
@@ -587,6 +590,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           role: context.thread.role,
           accessMode: context.thread.accessMode,
           reach: threadReachScope(context.thread).kind,
+          knowledge: this.#knowledge,
         }),
         browserCdp: { url: this.#agentBrowserCdpUrl },
         ...(context.thread.specialistId ? { specialistId: context.thread.specialistId } : {}),

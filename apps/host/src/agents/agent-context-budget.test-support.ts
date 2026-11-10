@@ -18,6 +18,7 @@ export async function measureMcpContext(kind: AgentCallerKind) {
     handlers: unavailable as never,
     callers: unavailable as never,
     store: unavailable as never,
+    knowledge: true,
   });
   const server = service.createServer({
     kind,

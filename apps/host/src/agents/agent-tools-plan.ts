@@ -18,11 +18,13 @@ export function agentToolsPlanForRun(input: {
   readonly role: ThreadRole;
   readonly accessMode: ThreadAccessMode;
   readonly reach: ThreadReachScope["kind"];
+  readonly knowledge?: boolean;
 }): RunAgentToolsPlan {
   const runTools = toolsFor({
     kind: "run",
     accessMode: input.accessMode,
     reach: { kind: input.reach },
+    knowledge: input.knowledge === true,
   });
   const runToolsCatalog = runTools.map((tool) => ({
     name: tool.name,
@@ -34,7 +36,7 @@ export function agentToolsPlanForRun(input: {
   const instructions =
     platformGuideForRun({ role: input.role, reach: input.reach }) +
     (input.voiceCall ? `\n\n${voiceGuide}` : "");
-  const skills = [...opensteerAgentSkillsFor(input.reach)];
+  const skills = [...opensteerAgentSkillsFor(input.reach, { knowledge: input.knowledge === true })];
   const toolsRevision = createHash("sha256")
     .update(JSON.stringify({ catalog: runToolsCatalog, instructions, skills }))
     .digest("hex");

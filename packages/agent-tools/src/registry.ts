@@ -28,6 +28,8 @@ export interface AgentToolSpec<
   /** A call that only reads, so it needs read access whatever the tool's own. */
   readsOnly?(input: z.output<Input>): boolean;
   readonly minimumReach?: "workspace" | "user";
+  /** Offered only where the Host serves the knowledge trial. */
+  readonly knowledge?: true;
   /** Overrides the schema derived from `input` when a union reads poorly to models. */
   readonly advertisedInputSchema?: Readonly<Record<string, unknown>>;
   readonly callers: readonly AgentCallerKind[];

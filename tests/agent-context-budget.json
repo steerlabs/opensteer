@@ -1,5 +1,5 @@
 {
-  "opensteer.run.toolsJsonBytes": 47893,
+  "opensteer.run.toolsJsonBytes": 49341,
   "opensteer.run.instructionsBytes": 0,
   "opensteer.program.toolsJsonBytes": 24511,
   "opensteer.program.instructionsBytes": 0,
@@ -11,8 +11,8 @@
   "runGuide.work.user.bytes": 5347,
   "runGuide.work.workspace.bytes": 5012,
   "runGuide.work.lineage.bytes": 5091,
-  "bundledSkills.catalogBytes": 2558,
-  "bundledSkills.bodyBytes": 27235,
-  "bundledSkills.referenceBytes": 114586,
-  "bundledSkills.openaiMetadataBytes": 3117
+  "bundledSkills.catalogBytes": 2828,
+  "bundledSkills.bodyBytes": 29755,
+  "bundledSkills.referenceBytes": 115434,
+  "bundledSkills.openaiMetadataBytes": 3442
 }

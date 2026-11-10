@@ -140,10 +140,12 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
     computer: async () => unavailable(),
     integration_request: async () => unavailable(),
     integration_propose: async () => unavailable(),
+    sql: async () => unavailable(),
   };
   const agent = new OpensteerMcpService({
     publicUrl: url,
     handlers,
+    knowledge: testCase.knowledge,
     callers: {
       authenticate: async (token: string) => {
         const claims = await agentTokens.authenticate(token);
@@ -318,6 +320,7 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
                 : { status: "unavailable", message: "No case mock matches these arguments" };
             }
             if (isRecord(result) && typeof result.$error === "string") {
+              calls[index] = { tool: name, args, valid, result };
               return agentToolFailureResult({
                 code: "bad_request",
                 message: result.$error,

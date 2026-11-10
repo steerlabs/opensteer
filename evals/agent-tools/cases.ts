@@ -79,6 +79,8 @@ export const CaseSchema = z.strictObject({
   assigned: z.boolean().optional(),
   /** Runs as a voice call's agent, with its guide. */
   voice: z.boolean().optional(),
+  /** Runs on a Host serving the knowledge trial's `sql` tool. */
+  knowledge: z.boolean().default(false),
   machineAccessNotice: z.string().min(1).optional(),
   requesterTimeZone: TimeZoneSchema.optional(),
   engines: z

@@ -80,6 +80,8 @@ export class OpensteerMcpService {
     readonly publicUrl: URL;
     /** A failure the caller was told only that something went wrong. */
     readonly onToolError?: (error: unknown, tool: string) => void;
+    /** This Host serves the knowledge trial's `sql` tool. */
+    readonly knowledge?: boolean;
   };
   constructor(options: {
     readonly callers: Pick<AgentCallerResolver, "authenticate">;
@@ -92,6 +94,7 @@ export class OpensteerMcpService {
     };
     readonly publicUrl: URL;
     readonly onToolError?: (error: unknown, tool: string) => void;
+    readonly knowledge?: boolean;
   }) {
     this.options = options;
     this.#runtimeOrigin = options.publicUrl;
@@ -358,7 +361,7 @@ export class OpensteerMcpService {
       },
     );
     const advertisedTools: Tool[] = [];
-    for (const tool of toolsFor(caller)) {
+    for (const tool of this.#toolsFor(caller)) {
       const annotations = agentToolAnnotations(tool);
       const registration = {
         annotations,
@@ -473,7 +476,7 @@ export class OpensteerMcpService {
     const check = async () => {
       const access = "readsOnly" in tool && tool.readsOnly?.(input as never) ? "read" : tool.access;
       toolAccess[access](caller, await this.#targets(caller, tool, input));
-      if (!toolsFor(caller).some((spec) => spec.name === tool.name))
+      if (!this.#toolsFor(caller).some((spec) => spec.name === tool.name))
         throw new OpensteerError({
           code: "forbidden",
           message: "This tool is unavailable to this caller",
@@ -518,6 +521,9 @@ export class OpensteerMcpService {
     return invoke();
   }
 
+  #toolsFor(caller: AgentCaller) {
+    return toolsFor({ ...caller, knowledge: this.options.knowledge === true });
+  }
   async #targets(caller: AgentCaller, tool: AgentTool, input: object): Promise<Thread[]> {
     const ids: Thread["id"][] = [];
     const record = input as Record<string, unknown>;
