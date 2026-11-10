@@ -191,6 +191,7 @@ export interface NotificationPreviewKeyTable {
 }
 
 export interface AuthSessionTable {
+  memberGeneration: ColumnType<string | null, string | null | undefined, string | null>;
   id: AuthSessionId;
   userId: UserId;
   token: string;
@@ -2087,6 +2088,8 @@ export interface AppVersionTable {
 }
 
 export interface AgentConnectionTable {
+  memberGeneration: ColumnType<string | null, string | null | undefined, string | null>;
+  membershipGeneration: ColumnType<string | null, string | null | undefined, string | null>;
   id: string;
   userId: UserId;
   label: string;
@@ -2101,7 +2104,25 @@ export interface AgentConnectionTable {
   revokedAt: NullableTimestamp;
 }
 
+export interface TeamInvitationTable {
+  id: string;
+  selector: string;
+  tokenHash: string;
+  intendedEmail: string;
+  memberKind: "full" | "guest";
+  createdBy: UserId;
+  createdAt: Timestamp;
+  expiresAt: Timestamp;
+  acceptedAt: NullableTimestamp;
+  acceptedBy: UserId | null;
+  revokedAt: NullableTimestamp;
+  revokedBy: UserId | null;
+  commandId: string;
+  requestFingerprint: string;
+}
+
 export interface DatabaseSchema {
+  teamInvitations: TeamInvitationTable;
   accessGroups: AccessGroupTable;
   accessGroupMembers: AccessGroupMemberTable;
   accessEntries: AccessEntryTable;

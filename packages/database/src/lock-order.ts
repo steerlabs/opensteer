@@ -101,6 +101,7 @@ export const databaseLockOrder = [
   "workspace_events",
   "agent_notification_mutes",
   "auth_admissions",
+  "team_invitations",
   "auth_jwks",
   "auth_rate_limits",
   "auth_sso_providers",

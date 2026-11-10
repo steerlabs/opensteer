@@ -178,6 +178,7 @@ const releasedMigrationNames = [
   "0168_devices",
   "0169_access_foundation",
   "0170_project_execution_preparation",
+  "0171_team_administration",
 ];
 
 describe("migration names", () => {
