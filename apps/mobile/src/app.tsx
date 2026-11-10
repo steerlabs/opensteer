@@ -115,6 +115,7 @@ const configuration = readMobileConfiguration(
     EXPO_PUBLIC_OPENSTEER_BUILD_PROFILE: process.env.EXPO_PUBLIC_OPENSTEER_BUILD_PROFILE,
     EXPO_PUBLIC_OPENSTEER_MOCK: process.env.EXPO_PUBLIC_OPENSTEER_MOCK,
     EXPO_PUBLIC_OPENSTEER_MOCK_HOME: process.env.EXPO_PUBLIC_OPENSTEER_MOCK_HOME,
+    EXPO_PUBLIC_OPENSTEER_MOCK_PHONE: process.env.EXPO_PUBLIC_OPENSTEER_MOCK_PHONE,
   },
   { development: __DEV__ },
 );
@@ -166,9 +167,16 @@ function mobileClient(): MobileRoot {
   const mockHosts = new Map<string, MockHostClient>();
   let fakeIphone: FakeIphoneApps | null = null;
   if (configuration.mock) {
+    const android = Platform.OS === "android";
     fakeIphone = createFakeIphoneApps({
+      browser: configuration.mockPhone !== "no-browser",
+      erasesOnRestart: android,
       host: (deploymentId) => mockHosts.get(deploymentId) ?? null,
-      supported: Platform.OS === "ios",
+      ...(android ? { deviceName: "Pixel 9", offers: [], platform: "android" as const } : {}),
+      scenario:
+        configuration.mockPhone === "away" || configuration.mockPhone === "needs-update"
+          ? configuration.mockPhone
+          : null,
     });
   }
   const iphone = new IphoneAppsController({

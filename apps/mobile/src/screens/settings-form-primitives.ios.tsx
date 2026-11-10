@@ -33,7 +33,10 @@ export function Lines(props: {
       <Text modifiers={[font({ textStyle: "body" }), foregroundStyle(color.text)]}>
         {props.title}
       </Text>
-      {props.detail === null ? null : <Text modifiers={[secondary, footnote]}>{props.detail}</Text>}
+      {/* Inside a Button, hierarchical secondary would take the button's tint. */}
+      {props.detail === null ? null : (
+        <Text modifiers={[foregroundStyle(color.muted), footnote]}>{props.detail}</Text>
+      )}
     </VStack>
   );
 }

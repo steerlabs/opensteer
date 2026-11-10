@@ -2,7 +2,7 @@ import type {
   IntegrationConnectionSummary,
   IntegrationDefinitionSummaryView,
 } from "@opensteer/integration-core";
-import type { MachineSummary } from "@opensteer/protocol";
+import type { MachineSummary, RunnerDevicePlatform } from "@opensteer/protocol";
 import { formatRelativeTime } from "../host/thread-list-model.js";
 import { computerAppRows } from "../integrations/computer-apps.js";
 import {
@@ -214,6 +214,20 @@ export function deviceRemovalProfiles(
     : `${deleted} ${machine.name} erases ${held.length === 1 ? "it" : "them"} the next time it connects.`;
 }
 
+/** The question asked before a device is removed, the same for every device. */
+export function deviceRemovalConfirmation(
+  machine: Pick<MachineSummary, "id" | "name" | "status">,
+  profiles: Parameters<typeof deviceRemovalProfiles>[1],
+): { readonly confirm: string; readonly message: string; readonly title: string } {
+  return {
+    confirm: "Remove device",
+    message: [deviceRemovalProfiles(machine, profiles), "Agents lose access to this device."]
+      .filter((part): part is string => part !== null)
+      .join(" "),
+    title: `Remove ${machine.name}?`,
+  };
+}
+
 /* ------------------------------------------------------------------------- *
  * One computer
  * ------------------------------------------------------------------------- */
@@ -223,6 +237,61 @@ export type ComputerGlyph = "laptop" | "desktop" | "compact" | "server" | "phone
 
 export function computerGlyph(machine: MachineSummary): ComputerGlyph {
   return machine.device?.form ?? "computer";
+}
+
+/**
+ * What a phone is called where its name is not enough. The platform decides
+ * only the word: an iPhone is Apple's own, any other phone a phone.
+ */
+export function phoneNoun(platform: RunnerDevicePlatform | null): "iPhone" | "phone" {
+  return platform === "ios" ? "iPhone" : "phone";
+}
+
+/** Whether a device lends its apps, as the Host last heard it advertise them. */
+export function deviceLendsApps(machine: Pick<MachineSummary, "modules">): boolean {
+  return machine.modules.integrations !== undefined;
+}
+
+/**
+ * A device's browser, as its page lists it: the profiles that live there, why
+ * it is not working while the device is there, or that the device has never
+ * offered one although it may. Null where it may not hold browsers at all.
+ */
+export type DeviceBrowser =
+  | { readonly kind: "lent"; readonly profiles: number }
+  | { readonly kind: "unavailable"; readonly detail: string }
+  | { readonly kind: "not-offered" };
+
+export function deviceBrowser(
+  machine: Pick<MachineSummary, "allowedModules" | "id" | "modules" | "status">,
+  profiles: readonly { readonly homeRunnerId: string | null }[],
+): DeviceBrowser | null {
+  if (!machine.allowedModules.includes("browser")) return null;
+  const module = machine.modules.browser;
+  if (module === undefined) return { kind: "not-offered" };
+  // An away device says nothing fresh about its browser; its profiles still live there.
+  if (machine.status === "online" && module.readiness === "unavailable" && module.detail !== null)
+    return { detail: module.detail, kind: "unavailable" };
+  return {
+    kind: "lent",
+    profiles: profiles.filter(({ homeRunnerId }) => homeRunnerId === machine.id).length,
+  };
+}
+
+/** The browser row's value: how many profiles live there, or why there are none to use. */
+export function deviceBrowserDetail(browser: DeviceBrowser): string {
+  switch (browser.kind) {
+    case "lent":
+      return browser.profiles === 0
+        ? "No profiles"
+        : browser.profiles === 1
+          ? "1 profile"
+          : `${browser.profiles} profiles`;
+    case "unavailable":
+      return browser.detail;
+    case "not-offered":
+      return "Not available";
+  }
 }
 
 export type ServiceGlyph = "browser" | "messaging";
@@ -326,7 +395,8 @@ export function computerRole(
 ): ComputerRole | null {
   if (machine.status === "pending") return "waiting";
   if (machine.modules.agents) return "works";
-  if (uses.length > 0) return "uses";
+  // A device that lends its browser has shared something even with no app on.
+  if (uses.length > 0 || machine.modules.browser !== undefined) return "uses";
   if (machine.ownership === "other" || !appsLoaded) return null;
   return "idle";
 }

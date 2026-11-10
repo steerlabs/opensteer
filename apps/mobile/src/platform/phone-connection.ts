@@ -129,6 +129,12 @@ export async function enrollAndroidPhone(input: {
   });
 }
 
+// The native snapshot still carries the iPhone's app slots; this phone shares none.
+const withoutApps = (snapshot: IphoneAppsSnapshot): IphoneAppsSnapshot => ({
+  ...snapshot,
+  permissions: {},
+});
+
 const unsupported = async (): Promise<never> => {
   throw new Error("This phone does not share iPhone apps.");
 };
@@ -137,9 +143,11 @@ export const androidPhoneBridge: IphoneAppsBridge | null =
   native === null
     ? null
     : {
-        getSnapshot: () => connection().getSnapshot(),
+        getSnapshot: () => withoutApps(connection().getSnapshot()),
         subscribe: (listener) => {
-          const subscription = connection().addListener("onChange", listener);
+          const subscription = connection().addListener("onChange", (snapshot) =>
+            listener(withoutApps(snapshot)),
+          );
           return () => subscription.remove();
         },
         prepare: (input) => connection().prepare(input),

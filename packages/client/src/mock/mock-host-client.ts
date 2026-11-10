@@ -1912,6 +1912,15 @@ const mockMachines: readonly MachineSummary[] = [
   },
 ];
 
+export interface MockPhoneJoin {
+  readonly enrollmentId: string;
+  /** What the phone advertises; an iPhone's apps alone when omitted. */
+  readonly modules?: readonly ("browser" | "integrations")[];
+  readonly name: string;
+  readonly platform?: "android" | "ios";
+  readonly runnerId: string;
+}
+
 export interface MockHostClientOptions {
   desktopUpdates?: MockDesktopUpdateScenario;
   specialistPlugins?: { id: string; name: string; manifest: SpecialistManifest }[];
@@ -4622,8 +4631,14 @@ export class MockHostClient implements HostClient {
   }
 
   /** Scripted bridge hooks: device reports and taps never enter the production Host API. */
-  mockConnectIphone(input: { enrollmentId: string; runnerId: string; name: string }): void {
+  /** This phone joins as what it advertises: an iPhone its apps and, once qualified, its browser. */
+  mockConnectIphone(input: MockPhoneJoin): void {
     this.#state.mockConnectIphone(input);
+  }
+
+  /** The phone stopped reaching this Host, as a closed or cut-off app does. */
+  mockPhoneAway(runnerId: string): void {
+    this.#state.mockPhoneAway(runnerId);
   }
 
   activateWorkspace(workspaceId: string): void {
@@ -9292,7 +9307,16 @@ class MockHostState {
     return result;
   }
 
-  mockConnectIphone(input: { enrollmentId: string; runnerId: string; name: string }): void {
+  mockPhoneAway(runnerId: string): void {
+    this.update({
+      ...this.snapshot,
+      machines: this.snapshot.machines.map((machine) =>
+        machine.id === runnerId ? { ...machine, status: "offline" } : machine,
+      ),
+    });
+  }
+
+  mockConnectIphone(input: MockPhoneJoin): void {
     const enrollment = [...this.phoneEnrollments.values()].find(
       ({ result }) => result.enrollmentId === input.enrollmentId,
     );
@@ -9323,25 +9347,26 @@ class MockHostState {
               status: "online",
               expiresAt: null,
               revocable: true,
-              device: { form: "phone", platform: "ios" },
+              device: { form: "phone", platform: input.platform ?? "ios" },
               computerUse: null,
               lastSeenAt: this.now().toISOString(),
-              apps: mockIphoneAppDefinitions.map((definition) => ({
-                definitionId: definition.id,
-                operations: definition.computerApp!.operations.map(({ name }) => ({
-                  operation: name,
-                  state: "ready",
-                  detail: null,
-                  remedy: null,
-                })),
-              })),
-              modules: {
-                integrations: {
-                  checkedAt: this.now().toISOString(),
-                  detail: null,
-                  readiness: "ready",
-                },
-              },
+              apps: !(input.modules ?? ["integrations"]).includes("integrations")
+                ? null
+                : mockIphoneAppDefinitions.map((definition) => ({
+                    definitionId: definition.id,
+                    operations: definition.computerApp!.operations.map(({ name }) => ({
+                      operation: name,
+                      state: "ready",
+                      detail: null,
+                      remedy: null,
+                    })),
+                  })),
+              modules: Object.fromEntries(
+                (input.modules ?? ["integrations"]).map((module) => [
+                  module,
+                  { checkedAt: this.now().toISOString(), detail: null, readiness: "ready" },
+                ]),
+              ),
             }
           : machine,
       ),

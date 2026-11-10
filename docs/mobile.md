@@ -254,7 +254,9 @@ sheets without keyboard handling.
 Android's everyday app lends only its browser, not the screen or integrations of the separate
 Agent Phone app. Its phone enrollment grant still includes `browser, integrations`; advertising
 only browser does not broaden that grant. Enrollment tokens are minted and redeemed natively.
-Settings adds it as “This phone” through the same enrollment flow as iPhone. The shared phone
+Settings adds it as “This phone” through the same enrollment flow as iPhone. A phone's own page
+shows the browser and apps the Host lists it advertising, never what its platform implies; the
+platform only names it. The shared phone
 manager joins its native connection and WebView pool; viewing another Deployment does not retarget
 the enrolled identity. Native registration and pending erasure finish before identity preparation,
 and the connection advertises only after the WebView's qualification completes.
@@ -275,8 +277,8 @@ original page; agent-staged choosers cannot.
 ## This iPhone's apps
 
 While the app is open, an iPhone can serve Calendar, Contacts, Reminders, current Location and
-Photos metadata to agents as a local Runner with only the integrations module
-([native module](../apps/mobile/modules/iphone-apps/ios)). It exposes no screen, files, other apps
+Photos metadata to agents as a local Runner with the integrations module, plus the browser module
+once its browser qualifies ([native module](../apps/mobile/modules/iphone-apps/ios)). It exposes no screen, files, other apps
 or Messages. The Host decides each app's agent access; iOS separately decides whether Opensteer may
 use the store.
 

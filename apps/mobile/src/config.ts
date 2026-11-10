@@ -7,6 +7,7 @@ const MobileEnvironmentSchema = z.object({
   EXPO_PUBLIC_OPENSTEER_BUILD_PROFILE: z.enum(["development", "preview", "production"]).optional(),
   EXPO_PUBLIC_OPENSTEER_MOCK: z.enum(["0", "1"]).optional(),
   EXPO_PUBLIC_OPENSTEER_MOCK_HOME: z.literal("absent").optional(),
+  EXPO_PUBLIC_OPENSTEER_MOCK_PHONE: z.enum(["away", "needs-update", "no-browser"]).optional(),
 });
 
 export interface MobileConfiguration {
@@ -22,6 +23,8 @@ export interface MobileConfiguration {
   readonly mock: boolean;
   /** Explicit first-message fixture; the ordinary mock keeps its seeded Chat. */
   readonly mockHome: "seeded" | "absent";
+  /** What becomes of this phone in mock mode once it is added; null for the ordinary phone. */
+  readonly mockPhone: "away" | "needs-update" | "no-browser" | null;
   /**
    * Why this build must not start, or null. It is a state rather than a throw
    * because the answer belongs on screen in a sentence: a build that was asked
@@ -83,6 +86,7 @@ export function readMobileConfiguration(
         : bareServiceOrigin(accountOrigin, "Opensteer Account origin"),
     mock: mockEnabled,
     mockHome: emptyHomeRequested && mockEnabled ? "absent" : "seeded",
+    mockPhone: mockEnabled ? (parsed.EXPO_PUBLIC_OPENSTEER_MOCK_PHONE ?? null) : null,
     refusal:
       mockRequested && !mockAllowed
         ? "This build was made with Opensteer's mock mode turned on, which only development and preview builds may run. Install a build made without it."
