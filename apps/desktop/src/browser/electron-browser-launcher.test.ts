@@ -2038,58 +2038,64 @@ describe("native Electron profiles", () => {
       await rm(f.root, { recursive: true, force: true });
     }
   });
-  it.each(["rejected", "hung"])("saves after disposal and reports a %s final save", async (mode) => {
-    const f = await fixture();
-    const { acquireElectronLocalProfile } = await import("./electron-local-profile.js");
-    try {
-      await f.initialize();
-      const browser = await f.launch();
-      const page = electron.views.at(-1)!;
-      const owner = acquireElectronLocalProfile({
-        root: f.root,
-        directory: f.directory,
-        binding: f.binding,
-        configure: () => {},
-      });
-      const entered = Promise.withResolvers<void>();
-      let pageClosedFirst = false;
-      const flush = vi
-        .spyOn(owner.session.cookies, "flushStore")
-        .mockImplementationOnce(async () => {
-          pageClosedFirst = page.webContents.close.mock.calls.length > 0;
-          entered.resolve();
-          if (mode === "hung") await new Promise(() => {});
-          throw new Error("secret final save failure");
+  it.each(["rejected", "hung"])(
+    "saves after disposal and reports a %s final save",
+    async (mode) => {
+      const f = await fixture();
+      const { acquireElectronLocalProfile } = await import("./electron-local-profile.js");
+      try {
+        await f.initialize();
+        const browser = await f.launch();
+        const page = electron.views.at(-1)!;
+        const owner = acquireElectronLocalProfile({
+          root: f.root,
+          directory: f.directory,
+          binding: f.binding,
+          configure: () => {},
         });
-      vi.useFakeTimers();
-      const closed = browser.close().catch((error: unknown) => error);
-      const settled = vi.fn();
-      void closed.then(settled);
-      await withTimeout(entered.promise, 1_000, {
-        timeoutError: () => new Error("Final save never started."),
-      });
-      expect(pageClosedFirst, "final save ran before the pages that write cookies closed").toBe(
-        true,
-      );
-      if (mode === "hung") await vi.advanceTimersByTimeAsync(5_000);
-      await vi.waitFor(
-        () =>
-          expect(settled, "final save failure never settled after disposal").toHaveBeenCalledOnce(),
-        { timeout: 1_000 },
-      );
-      expect(await closed).toMatchObject({ reason: "browser-profile-persistence-failed" });
-      expect(browser.context.isConnected?.()).toBe(false);
-      expect(page.webContents.close).toHaveBeenCalled();
-      await expect(browser.cdp.send("Target.getTargets")).rejects.toThrow(/closed/);
-      expect(() => owner.assertReady()).not.toThrow();
-      flush.mockRestore();
-    } finally {
-      await f.launcher.localProfiles.release(f.directory);
-      vi.useRealTimers();
-      f.launcher.close();
-      await rm(f.root, { recursive: true, force: true });
-    }
-  });
+        const entered = Promise.withResolvers<void>();
+        let pageClosedFirst = false;
+        const flush = vi
+          .spyOn(owner.session.cookies, "flushStore")
+          .mockImplementationOnce(async () => {
+            pageClosedFirst = page.webContents.close.mock.calls.length > 0;
+            entered.resolve();
+            if (mode === "hung") await new Promise(() => {});
+            throw new Error("secret final save failure");
+          });
+        vi.useFakeTimers();
+        const closed = browser.close().catch((error: unknown) => error);
+        const settled = vi.fn();
+        void closed.then(settled);
+        await withTimeout(entered.promise, 1_000, {
+          timeoutError: () => new Error("Final save never started."),
+        });
+        expect(pageClosedFirst, "final save ran before the pages that write cookies closed").toBe(
+          true,
+        );
+        if (mode === "hung") await vi.advanceTimersByTimeAsync(5_000);
+        await vi.waitFor(
+          () =>
+            expect(
+              settled,
+              "final save failure never settled after disposal",
+            ).toHaveBeenCalledOnce(),
+          { timeout: 1_000 },
+        );
+        expect(await closed).toMatchObject({ reason: "browser-profile-persistence-failed" });
+        expect(browser.context.isConnected?.()).toBe(false);
+        expect(page.webContents.close).toHaveBeenCalled();
+        await expect(browser.cdp.send("Target.getTargets")).rejects.toThrow(/closed/);
+        expect(() => owner.assertReady()).not.toThrow();
+        flush.mockRestore();
+      } finally {
+        await f.launcher.localProfiles.release(f.directory);
+        vi.useRealTimers();
+        f.launcher.close();
+        await rm(f.root, { recursive: true, force: true });
+      }
+    },
+  );
   it("rejects a helper close timeout without retiring and reconciles a partial import", async () => {
     const f = await fixture();
     const { acquireElectronLocalProfile } = await import("./electron-local-profile.js");
