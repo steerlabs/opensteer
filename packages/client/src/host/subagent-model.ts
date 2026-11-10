@@ -334,7 +334,12 @@ export function conversationSubagents(
 ): AgentRoster {
   const entries = reader.transcripts[threadId] ?? [];
   const nodes = transcriptNodes(entries);
+  const workflows = new Set(
+    nodes.filter((node) => node.nodeKind === "workflow").map((node) => node.nodeId),
+  );
+  // A workflow's members are listed inside its row, never again beside it.
   const cards = nodes.flatMap((node) => {
+    if (node.parentNodeId && workflows.has(node.parentNodeId)) return [];
     const card = nodeSubagentCard(node, threadId, nodes, reader);
     return card ? [card] : [];
   });

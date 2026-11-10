@@ -219,11 +219,15 @@ describe("shared agent contract", () => {
       "Review the experience",
       "Trace the client",
       "Verify every surface",
-      "Validate phone behavior",
       "Wait for another reader",
     ]);
+    // A workflow's members are listed inside its row, never again beside it.
+    const workflow = roster.now.find((card) => card.title === "Verify every surface")!;
+    expect(
+      workflow.workflow!.phases.flatMap((phase) => phase.members.map((card) => card.title)),
+    ).toContain("Validate phone behavior");
     expect(roster.earlier.some((card) => card.title === "Check the tool output")).toBe(true);
-    expect(roster.pill).toEqual({ live: 5, total: 12, needsYou: 1 });
+    expect(roster.pill).toEqual({ live: 4, total: 10, needsYou: 1 });
     const settled = {
       ...snapshot,
       transcripts: {
@@ -235,7 +239,7 @@ describe("shared agent contract", () => {
     };
     expect(conversationSubagents(settled, thread.id).pill).toBeNull();
     const helpers = conversationSubagents(snapshot, thread.id, { tasks: false });
-    expect(helpers.pill).toEqual({ live: 5, total: 11, needsYou: 1 });
+    expect(helpers.pill).toEqual({ live: 4, total: 9, needsYou: 1 });
     expect([...helpers.now, ...helpers.earlier].every((card) => card.origin === "subagent")).toBe(
       true,
     );

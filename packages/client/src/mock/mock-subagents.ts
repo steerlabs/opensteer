@@ -27,7 +27,7 @@ export function seedMockSubagents(snapshot: HostSnapshot): {
     ...base,
     id: threadId,
     title: "Subagents everywhere",
-    role: "conversation" as const,
+    role: "work" as const,
     parentThreadId: null,
     status: "running" as const,
     pendingRequests: 1,

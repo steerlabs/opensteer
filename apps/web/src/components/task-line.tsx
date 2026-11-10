@@ -63,18 +63,6 @@ export function ObservedWorker({ entry }: { entry: AssignmentEntry }) {
 }
 
 /**
- * Who does a task, when it says something: the reader's own Opensteer or a
- * project. A task card keeps it to its name and tooltip; null while the
- * Workspace is not loaded, rather than a guess.
- */
-export function taskOwner(assignment: AssignmentSummary, snapshot: HostSnapshot): string | null {
-  const workspace = snapshot.workspaces.find(
-    ({ id }) => id === assignment.workerThread.workspaceId,
-  );
-  return workspace ? (workspace.kind === "main" ? "Opensteer" : workspace.name) : null;
-}
-
-/**
  * The line every task shares. The link covers the whole line, so the line
  * and anything under it open the task.
  */

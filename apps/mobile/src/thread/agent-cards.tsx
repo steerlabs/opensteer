@@ -211,8 +211,9 @@ function kindWord(card: AgentCard): string | null {
   return card.origin === "task" ? "Task" : card.kind === "workflow" ? "Workflow" : null;
 }
 
-function cardLabel(card: AgentCard, now: number): string {
-  if (card.origin === "task") return `${card.title}, task, ${card.word}. Open task`;
+function cardLabel(card: AgentCard, now: number, owner: string | null = null): string {
+  if (card.origin === "task")
+    return `${card.title}${owner ? `, ${owner}` : ""}, task, ${card.word}. Open task`;
   const time = spokenDuration(elapsed(card.startedAt, card.endedAt, now));
   if (card.workflow) {
     const open = card.workflow.phases.findIndex(
@@ -241,6 +242,8 @@ interface AgentCardRowProps {
   readonly card: AgentCard;
   readonly live: boolean;
   readonly onOpen: (card: AgentCard) => void;
+  /** Who does a delegated task, spoken in its name. */
+  readonly owner?: string | null;
   readonly accessibilityActions?: readonly { readonly label: string; readonly name: string }[];
   readonly onAccessibilityAction?: (name: string) => void;
   /**
@@ -347,7 +350,7 @@ export const AgentCardRow = memo(function AgentCardRow(props: AgentCardRowProps)
     </>
   );
   // Read when the row draws; the elapsed text alone keeps time between draws.
-  const label = cardLabel(card, Date.now());
+  const label = cardLabel(card, Date.now(), props.owner);
   if (card.opens === null)
     return (
       <View accessibilityLabel={label} accessible style={styles.row}>

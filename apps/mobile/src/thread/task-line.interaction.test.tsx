@@ -247,7 +247,7 @@ describe("a task's card on a phone", () => {
       const { node, onViewWork, tasks } = await linesFor((seeded) => [variant(seeded, 0, change)]);
       const open = card(node);
       expect(open.getAttribute("aria-label")).toBe(
-        `${tasks[0]!.workerThread.title}, task, ${word}. Open task`,
+        `${tasks[0]!.workerThread.title}, Opensteer, task, ${word}. Open task`,
       );
       expect(open.textContent).toContain(`Task${word}`);
       const shown = open.querySelector<HTMLElement>("[data-dot]")!;

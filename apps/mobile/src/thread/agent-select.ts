@@ -46,11 +46,16 @@ export function samePlain(left: unknown, right: unknown): boolean {
   );
 }
 
-/** The pill's counts alone, from the whole roster, so nothing else a helper does redraws the dock. */
+/**
+ * The pill's counts alone, so nothing else a helper does redraws the dock. It
+ * counts what the Agents page it opens lists.
+ */
 export function agentsPillSelector(
   threadId: string,
 ): (snapshot: HostSnapshot) => AgentRoster["pill"] {
-  return heldSelector((snapshot) => conversationSubagents(snapshot, threadId).pill);
+  return heldSelector(
+    (snapshot) => conversationSubagents(snapshot, threadId, { tasks: false }).pill,
+  );
 }
 
 /**

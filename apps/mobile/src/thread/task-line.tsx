@@ -1,5 +1,6 @@
 import {
   assignmentPresentation,
+  taskOwner,
   assignmentRequester,
   assignmentSubagentCard,
   currentAssignment,
@@ -302,6 +303,7 @@ function TaskCardRow(props: {
           live={props.agents.live}
           onAccessibilityAction={onAccessibilityAction}
           onOpen={props.agents.onOpen}
+          owner={taskOwner(assignment, snapshot)}
         />
       </MenuView>
     </>

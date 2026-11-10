@@ -26,11 +26,12 @@ import {
   type AssignmentEntry,
   type AssignmentTone,
   type WorkflowView,
+  taskOwner,
 } from "@opensteer/client/host";
 import type { AssignmentSummary } from "@opensteer/core";
 import { useShell } from "./app-shell.js";
 import { Icon } from "./icon.js";
-import { LifecycleNews, ObservedWorker, TaskLineState, TaskMenu, taskOwner } from "./task-line.js";
+import { LifecycleNews, ObservedWorker, TaskLineState, TaskMenu } from "./task-line.js";
 import { AreaLink } from "./workspace/area-link.js";
 import { TaskMark } from "./workspace/task-mark.js";
 import { useOptionalWorkspace } from "./workspace/workspace-context.js";
