@@ -113,6 +113,9 @@ export async function startLocalBrowserRuntime(
       bridgeToken,
       runtimeId: options.runtimeId,
       signIn: options.loginAuthority !== undefined,
+      personFill: !!(
+        options.loginAuthority?.personFillAccounts && options.loginAuthority.personFill
+      ),
       stop: async (signal) => {
         unregisterPresentation?.();
         const cancel = () => launcher.close();

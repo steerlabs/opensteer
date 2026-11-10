@@ -818,6 +818,7 @@ registerHooks({load(url,context,next){const result=next(url,context);if(!url.end
     transport.closeAllSockets();
   });
   manager = new DesktopBrowserPresentationManager({
+    autofillPreload: path.join(desktop, "dist/autofill-preload.cjs"),
     glassPreload: path.join(desktop, "dist/glass-preload.cjs"),
     onError: (error) => artifacts.event("presentation.error", { error: errorText(error) }),
     quit: () => app.quit(),
