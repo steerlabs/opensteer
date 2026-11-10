@@ -862,13 +862,17 @@ integration("knowledge storage", () => {
     expect(rowsOf(forged)[0]![0]).toBe("\\");
     await sql`alter database ${sql.id(name)} set backslash_quote = off`.execute(context.database);
     const pool = createKnowledgeExecutorPool(context.url, context.credentials);
-    const quoted = await runKnowledgeStatement(pool, {
-      statement: { kind: "select", text: "select 'it''s', E'\\'' || 'x'", parameters: [] },
-      readTopicIds: [context.open],
-      writeTopicIds: [],
-      writer,
-    }).finally(() => pool.end());
-    expect(rowsOf(quoted)).toEqual([["it's", "'x"]]);
+    try {
+      const quoted = await runKnowledgeStatement(pool, {
+        statement: { kind: "select", text: "select 'it''s', E'\\'' || 'x'", parameters: [] },
+        readTopicIds: [context.open],
+        writeTopicIds: [],
+        writer,
+      });
+      expect(rowsOf(quoted)).toEqual([["it's", "'x"]]);
+    } finally {
+      await pool.end();
+    }
   });
 
   it("drops a connection that receives a message over 1 MB before the driver parses it", async () => {

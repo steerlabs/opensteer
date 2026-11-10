@@ -54,7 +54,8 @@ export function createKnowledgeExecutorPool(
   credentials: KnowledgeExecutorCredentials,
 ): pg.Pool {
   const url = new URL(hostConnectionString);
-  const pool = new pg.Pool({
+  // pg-pool awaits onConnect and drops the connection when it rejects; its types say void.
+  const options: pg.PoolConfig & { onConnect(client: pg.PoolClient): Promise<void> } = {
     host: decodeURIComponent(url.hostname).replace(/^\[(.*)\]$/u, "$1"),
     port: url.port ? Number(url.port) : 5432,
     database: decodeURIComponent(url.pathname.slice(1)),
@@ -66,7 +67,7 @@ export function createKnowledgeExecutorPool(
     connectionTimeoutMillis: 5_000,
     idleTimeoutMillis: 30_000,
     max: 2,
-    onConnect: async (client) => {
+    async onConnect(client) {
       const { rows } = await client.query<{ restricted: boolean }>(
         `select session_user = $1 and current_user = $1 and not r.rolsuper as restricted
          from pg_catalog.pg_roles r where r.rolname = session_user`,
@@ -75,7 +76,8 @@ export function createKnowledgeExecutorPool(
       if (rows[0]?.restricted !== true)
         throw new Error("The knowledge pool is not logged in as its restricted login");
     },
-  });
+  };
+  const pool = new pg.Pool(options);
   // An idle connection that dies is dropped from the pool; nothing else needs to hear about it.
   pool.on("error", () => undefined);
   return pool;
