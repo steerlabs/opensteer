@@ -72,6 +72,8 @@ export function RemoteEditingProxy({
   context,
   enabled,
   label,
+  listbox = null,
+  onKey,
   onLeave,
   cancelCompositionOnBlur = false,
   platform,
@@ -84,6 +86,10 @@ export function RemoteEditingProxy({
   readonly enabled: boolean;
   readonly label: string;
   readonly cancelCompositionOnBlur?: boolean;
+  /** A list shown for this field, whose highlighted option the field announces. */
+  readonly listbox?: { readonly id: string; readonly active: string } | null;
+  /** Sees each key first; true keeps the key, and its release, from the target. */
+  readonly onKey?: ((event: KeyboardEvent) => boolean) | undefined;
   readonly onLeave?: (() => void) | undefined;
   readonly platform?: EditingViewerPlatform;
   readonly ref?: Ref<RemoteEditingProxyHandle>;
@@ -93,8 +99,17 @@ export function RemoteEditingProxy({
   const lastElement = useRef<RemoteProxyElement | null>(null);
   const restoreFocus = useRef(false);
   const state = useRef(createEditingState(platform ?? viewerEditingPlatform(), abilities));
-  const current = useRef({ enabled, context, abilities, wire, onLeave, cancelCompositionOnBlur });
-  current.current = { enabled, context, abilities, wire, onLeave, cancelCompositionOnBlur };
+  const current = useRef({
+    enabled,
+    context,
+    abilities,
+    wire,
+    onKey,
+    onLeave,
+    cancelCompositionOnBlur,
+  });
+  current.current = { enabled, context, abilities, wire, onKey, onLeave, cancelCompositionOnBlur };
+  const keptKeys = useRef(new Set<string>());
   const [preedit, setPreedit] = useState("");
   const [error, setError] = useState<string | null>(null);
   const touchFocus = useRef(false);
@@ -343,6 +358,18 @@ export function RemoteEditingProxy({
                 if (type === "keydown") current.current.onLeave();
                 return;
               }
+              const composing =
+                event.isComposing || event.keyCode === 229 || event.key === "Process";
+              if (
+                type === "keydown"
+                  ? !composing && current.current.onKey?.(event)
+                  : keptKeys.current.delete(event.code)
+              ) {
+                if (type === "keydown") keptKeys.current.add(event.code);
+                event.preventDefault();
+                event.stopPropagation();
+                return;
+              }
               event.stopPropagation();
               const keyEvent: Extract<EditingProxyEvent, { type: "keydown" | "keyup" }> = {
                 type,
@@ -358,7 +385,7 @@ export function RemoteEditingProxy({
                     ? event.location
                     : 0,
                 repeat: event.repeat,
-                composing: event.isComposing || event.keyCode === 229 || event.key === "Process",
+                composing,
               };
               if (type === "keydown" && desktopBridge()?.writeViewerClipboard) {
                 const binding = resolveEditingBinding(keyEvent, state.current.platform);
@@ -527,6 +554,13 @@ export function RemoteEditingProxy({
         sensitive={sensitive}
         aria-label={label}
         {...editingProxyAttributes(abilities, context)}
+        {...(listbox
+          ? {
+              "aria-activedescendant": listbox.active,
+              "aria-autocomplete": "list" as const,
+              "aria-controls": listbox.id,
+            }
+          : {})}
         className="remote-keyboard-input"
         disabled={!enabled}
         ref={assign}

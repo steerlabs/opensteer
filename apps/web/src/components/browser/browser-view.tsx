@@ -16,6 +16,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -50,6 +51,7 @@ import {
   type BrowserKeyboardHandle,
 } from "./browser-viewport.js";
 import { NativeAgentCursors } from "./native-agent-cursors.js";
+import { useNativeAutofill } from "./native-autofill.js";
 import {
   nativeBrowserGeometry,
   useBrowserPresentationMode,
@@ -302,6 +304,18 @@ export function PlaceBrowserView({
       presentationPresented();
   }, [nativePresentation.placement, presentationPresented, sessionId, tabId]);
   const nativeTarget = nativePresentation.target;
+  const nativePlacement = nativePresentation.placement;
+  const nativeEditing = useMemo(
+    () =>
+      nativePlacement
+        ? (hostClient.browserFrames.editing?.target(
+            nativePlacement.sessionId,
+            nativePlacement.surfaceId,
+          ) ?? null)
+        : null,
+    [hostClient, nativePlacement?.sessionId, nativePlacement?.surfaceId],
+  );
+  const autofillShown = useNativeAutofill(nativeEditing, nativePlacement);
   const focusPage = () => (native ? nativePresentation.focusPage() : keyboardRef.current?.focus());
   const live = sessionReady && tabListed && viewer.status === "live";
   const closeFind = () => {
@@ -458,6 +472,7 @@ export function PlaceBrowserView({
   const pageFollowsView = tab?.sizedByAgent !== undefined;
   const loading = place?.loading === true;
   useBrowserCommandKeys({
+    autofillShown,
     visible,
     live: live && !dialog,
     native,

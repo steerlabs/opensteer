@@ -1,9 +1,11 @@
 import { useEffect, useRef, type RefObject } from "react";
-import type { BrowserCommand } from "@opensteer/client/host";
+import { autofillKeeps, type BrowserCommand } from "@opensteer/client/host";
 import type { BrowserSurfaceId } from "@opensteer/core";
 import { desktopBridge } from "../../desktop/desktop-bridge.js";
 
 interface BrowserCommandKeys {
+  /** The native page's autofill chooser is shown and keeps its own keys. */
+  autofillShown: boolean;
   visible: boolean;
   live: boolean;
   native: boolean;
@@ -102,6 +104,7 @@ export function useBrowserCommandKeys(options: BrowserCommandKeys): void {
     const unsubscribe = bridge?.onEvent((event) => {
       if (event.type !== "key" || !current.current.visible) return;
       const key = event.key;
+      if (current.current.autofillShown && autofillKeeps(key)) return;
       const stage = current.current.stageRef.current;
       const view = stage?.closest(".browser-view");
       const focused =
