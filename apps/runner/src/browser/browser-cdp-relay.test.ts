@@ -24,6 +24,10 @@ import {
 import WebSocket, { WebSocketServer } from "ws";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { BrowserCdpRelay } from "./browser-cdp-relay.js";
+import {
+  BrowserActionRequestSchema,
+  BrowserActionResponseSchema,
+} from "@opensteer/protocol/browser-actions";
 
 const servers: WebSocketServer[] = [];
 const heldHosts: Array<() => void> = [];
@@ -63,6 +67,85 @@ afterEach(async () => {
 });
 
 describe("BrowserCdpRelay", () => {
+  it("negotiates once for the exact session and carries actions with the same Run bearer", async () => {
+    let negotiations = 0;
+    const seen: string[] = [];
+    const sessionId = createBrowserSessionId();
+    const binding = {
+      surfaceId: "phone-tab",
+      documentId: "doc-1",
+      geometryRevision: 2,
+      state: "live",
+      title: "Phone",
+      url: "https://example.test/",
+    };
+    const http = createServer((request, response) => {
+      expect(request.url).toBe(`/internal/v1/browser-backend/${sessionId}`);
+      expect(request.headers.authorization).toBe("Bearer run-capability-secret");
+      negotiations++;
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ sessionId, backend: "actions", version: 1 }));
+    });
+    const server = new WebSocketServer({ server: http });
+    servers.push(server);
+    heldHosts.push(() => {
+      http.close();
+    });
+    http.listen(0, "127.0.0.1");
+    await once(http, "listening");
+    const address = http.address();
+    if (!address || typeof address === "string") throw new Error("Action fixture did not bind");
+    server.on("connection", (socket, request) => {
+      expect(request.url).toBe(`/internal/v1/browser-actions/${sessionId}`);
+      expect(request.headers.authorization).toBe("Bearer run-capability-secret");
+      socket.on("message", (raw) => {
+        const message = BrowserActionRequestSchema.parse(JSON.parse(raw.toString()));
+        seen.push(message.action.type);
+        const type = message.action.type;
+        const result =
+          type === "session.tabs"
+            ? { type, tabs: [binding] }
+            : type === "surface.attach"
+              ? { type, binding }
+              : type === "page.info"
+                ? {
+                    type,
+                    binding,
+                    loading: false,
+                    navigationFailed: false,
+                    sizedByAgent: false,
+                    dialog: null,
+                  }
+                : { type, outcome: "acted", trusted: false };
+        socket.send(JSON.stringify(BrowserActionResponseSchema.parse({ id: message.id, result })));
+      });
+    });
+    const relay = new BrowserCdpRelay({
+      url: `http://127.0.0.1:${address.port}/internal/v1/browser-cdp`,
+      token: () => "run-capability-secret",
+      transport: developmentTransport,
+    });
+    try {
+      const url = await relay.start();
+      const output = await runBrowserHarness(
+        fileURLToPath(new URL("../../browser-harness/browser-harness.mjs", import.meta.url)),
+        'console.log((await pageInfo()).title); await page.getByRole("button", { name: "Pay" }).click();',
+        url,
+        sessionId,
+      );
+      expect(output.trim()).toBe("Phone");
+      expect(negotiations).toBe(1);
+      expect(seen).toEqual(["session.tabs", "page.info", "dom.act"]);
+      relay.suspend();
+      const backend = new URL(url);
+      backend.protocol = "http:";
+      backend.pathname += `/backend/${sessionId}`;
+      expect((await fetch(backend)).status).toBe(403);
+    } finally {
+      await relay.close();
+    }
+  });
+
   it("serves a production Personal deployment over its co-located loopback Host", async () => {
     const upstream = await fakeCdpServer((request) => ({ echoed: request.method }));
     const relay = new BrowserCdpRelay({
@@ -799,10 +882,19 @@ async function fakeCdpServer(resultFor: (request: FakeCdpRequest) => unknown): P
   authorization(): string | undefined;
   paths(): readonly string[];
 }> {
-  const server = new WebSocketServer({ host: "127.0.0.1", port: 0, perMessageDeflate: false });
+  const http = createServer((request, response) => {
+    const sessionId = request.url?.split("/").at(-1);
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ sessionId, backend: "cdp", version: 1 }));
+  });
+  const server = new WebSocketServer({ server: http, perMessageDeflate: false });
   servers.push(server);
-  await once(server, "listening");
-  const address = server.address();
+  heldHosts.push(() => {
+    http.close();
+  });
+  http.listen(0, "127.0.0.1");
+  await once(http, "listening");
+  const address = http.address();
   if (!address || typeof address === "string") throw new Error("Fake CDP server did not bind");
   let authorization: string | undefined;
   const paths: string[] = [];
