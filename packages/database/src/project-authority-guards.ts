@@ -69,7 +69,7 @@ export const PROJECT_AUTHORITY_GUARDS_SQL = String.raw`
       join public.harness_instances h on h.id = coalesce(source #>> '{projectRuntime,harnessInstanceId}', t.harness_instance_id)
       where t.id = work_thread and w.kind = 'project'
         and w.deleted_at is null and w.status not in ('deleting', 'deleted')
-        and e.id = w.owner_environment_id and r.owner_kind = 'deployment' and r.revoked_at is null
+        and e.id = w.owner_environment_id and r.owner_kind = 'deployment' and r.owner_user_id is null and r.revoked_at is null
         and r.capabilities @> '["project-authority-v1"]'::jsonb
         and h.environment_id = e.id and h.state_kind = 'isolated'
         and h.driver_kind in ('codex', 'claude') and h.enabled and h.removed_at is null
@@ -118,13 +118,13 @@ export const PROJECT_AUTHORITY_GUARDS_SQL = String.raw`
             select 1 from public.trigger_occurrences o
             join public.triggers g on g.id = o.trigger_id
             where o.id = source->>'occurrenceId' and g.workspace_id = w.id
-              and o.execution_generation::text = source->>'incarnation'
+              and o.execution_generation between 1 and 9007199254740991 and o.execution_generation::text = source->>'incarnation'
               and g.current_revision_id = o.revision_id and g.status = 'active'
           ))
           or (source->>'kind' = 'watch-observation' and requester is null and exists (
             select 1 from public.trigger_watch_activations a join public.triggers g on g.id = a.trigger_id
             where a.id = source->>'activationId' and a.workspace_id = w.id
-              and a.execution_generation::text = source->>'incarnation'
+              and a.execution_generation between 1 and 9007199254740991 and a.execution_generation::text = source->>'incarnation'
               and source->>'revisionId' = a.revision_id and source->>'triggerId' = a.trigger_id
               and length(source->>'observationId') > 0
               and a.desired = 'active' and g.status = 'active' and g.current_revision_id = a.revision_id
@@ -141,6 +141,10 @@ declare stored_model integer; stored_kind text;
           if not public.opensteer_project_work_is_valid(new.thread_id, new.actor_principal_id, new.requested_by, new.membership_generation, new.initiator_generation, new.origin_connection_id, new.authority_source) or not exists (
             select 1 from public.threads t join public.thread_inputs i on i.message_id = new.seed_input_id
             where t.id = new.thread_id and t.environment_id = new.environment_id
+              and (not new.authority_source ? 'projectRuntime' or (
+                new.model_selection = new.authority_source #> '{projectRuntime,modelSelection}'
+                and new.access_mode = new.authority_source #>> '{projectRuntime,accessMode}'
+              ))
               and coalesce(new.authority_source #>> '{projectRuntime,harnessInstanceId}', t.harness_instance_id) = new.harness_instance_id and i.thread_id = t.id
               and i.actor_principal_id = new.actor_principal_id
               and i.requested_by is not distinct from new.requested_by
@@ -311,7 +315,7 @@ declare stored_model integer; stored_kind text;
             join public.harness_instances h on h.id = new.harness_instance_id and h.environment_id = e.id
             where w.id = new.workspace_id and w.kind = 'project' and w.deleted_at is null
               and w.status not in ('deleting','deleted') and e.id = new.environment_id
-              and r.owner_kind = 'deployment' and r.revoked_at is null
+              and r.owner_kind = 'deployment' and r.owner_user_id is null and r.revoked_at is null
         and r.capabilities @> '["project-authority-v1"]'::jsonb
               and h.state_kind = 'isolated' and h.driver_kind in ('codex','claude') and h.enabled and h.removed_at is null
               and not new.inherits_main and new.specialist_id is null
@@ -399,6 +403,17 @@ declare
         return new;
       end;
   $$;
+  create function public.opensteer_project_run_settings_immutable() returns trigger language plpgsql set search_path = pg_catalog as $$
+  declare stored_model integer;
+  begin
+    select model into stored_model from public.opensteer_stored_execution_authority();
+    if stored_model = 2 and (new.model_selection is distinct from old.model_selection or new.access_mode is distinct from old.access_mode) then
+      raise exception 'Admitted Project Run settings are immutable' using errcode = '23514';
+    end if;
+    return new;
+  end $$;
+  create trigger runs_admitted_project_settings before update of model_selection, access_mode on public.runs
+    for each row execute function public.opensteer_project_run_settings_immutable();
   drop trigger if exists runs_execution_authority on public.runs;
   create trigger runs_execution_authority before insert or update of actor_principal_id, requested_by, membership_generation, initiator_generation, origin_connection_id, authority_source, thread_id, environment_id, harness_instance_id, seed_input_id, activation_input_id, causal_chain_id, assignment_id, reply_target on public.runs for each row execute function public.opensteer_enforce_run_execution_authority();
   drop trigger if exists commands_execution_authority on public.commands;
