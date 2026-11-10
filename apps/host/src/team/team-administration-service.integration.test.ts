@@ -408,6 +408,79 @@ describeStore("team administration Host boundary", (it) => {
       await expect(
         service.read("team.invitation.accept", {}, acceptedContext),
       ).rejects.toMatchObject({ reason: "invite-unavailable" });
+      const promotion = await service.command(
+        {
+          type: "team.member.change",
+          userId: pending.session.user.id,
+          change: { kind: "set-administrator", value: true },
+          idempotencyKey: "promote-before-removal",
+          expectedRevision: 4,
+        },
+        context(admin),
+      );
+      const removed = await service.command(
+        {
+          type: "team.member.change",
+          userId: pending.session.user.id,
+          change: { kind: "set-state", value: "removed" },
+          idempotencyKey: "remove-before-reinvite",
+          expectedRevision: promotion.accessRevision,
+        },
+        context(admin),
+      );
+      const tombstone = await database
+        .selectFrom("workspaceMemberships")
+        .select(["id", "generation", "state"])
+        .where("userId", "=", pending.session.user.id)
+        .where("workspaceId", "=", prepared.workspace.id)
+        .executeTakeFirstOrThrow();
+      const replacement = {
+        ...creation,
+        id: randomUUID(),
+        selector: randomBytes(24).toString("base64url"),
+        expectedRevision: removed.accessRevision,
+        memberKind: "guest" as const,
+        idempotencyKey: "reinvite-person",
+      };
+      await service.command(replacement, context(admin));
+      const replacementProof = await identity.exchangeTeamInvitation(
+        replacement.selector,
+        verifier,
+        new Headers({ origin }),
+      );
+      const rejoined = await service.read(
+        "team.invitation.accept",
+        {},
+        {
+          ...context(pending),
+          headers: {
+            origin,
+            cookie: `${pending.cookie}; ${replacementProof.headers
+              .getSetCookie()
+              .map((value) => value.split(";", 1)[0]!)
+              .join("; ")}`,
+          },
+        },
+      );
+      expect(rejoined).toMatchObject({
+        member: { id: pending.session.user.id, kind: "guest", administrator: false },
+      });
+      expect(
+        await database
+          .selectFrom("workspaceMemberships")
+          .select(["id", "generation", "state"])
+          .where("userId", "=", pending.session.user.id)
+          .where("workspaceId", "=", prepared.workspace.id)
+          .executeTakeFirstOrThrow(),
+      ).toEqual(tombstone);
+      expect(tombstone.state).toBe("revoked");
+      expect(
+        await database
+          .selectFrom("users")
+          .select("authorityGeneration")
+          .where("id", "=", pending.session.user.id)
+          .executeTakeFirstOrThrow(),
+      ).toEqual({ authorityGeneration: "4" });
     } finally {
       await app.close();
     }

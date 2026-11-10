@@ -260,6 +260,7 @@ function Person(props: {
 }): ReactNode {
   const navigation = useNavigation();
   const { team, summary, generation } = useTeam(props.hostClient);
+  const { snapshot } = useHostSnapshot(props.hostClient);
   const teamName = summary?.team.name ?? "the team";
   const read = useHostRead(
     team ? () => team.member({ userId: props.userId }) : null,

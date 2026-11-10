@@ -265,7 +265,7 @@ function effective(entries: readonly Entry[]): Effective {
 function capacityError(limit: keyof typeof accessCapacity, count: number): never {
   throw new OpensteerError({
     code: "resource_exhausted",
-    reason: limit === "depth" ? "access-depth" : "access-capacity",
+    reason: "access-capacity",
     message: "Access change exceeds the safety limit",
     details: { limit, maximum: accessCapacity[limit], count },
   });
@@ -1330,6 +1330,7 @@ export async function acceptTeamInvitation(
           admit: true,
           memberKind: invitation.memberKind,
           memberState: "active",
+          administrator: false,
         },
       ],
     },
