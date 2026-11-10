@@ -36,6 +36,7 @@ import { Symbol } from "../ui/symbol.js";
 import { WorkspaceMark } from "../ui/workspace-mark.js";
 import { NeedsYouTag, UnreadDot } from "../threads/task-row.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
+import { useCanCreateProject } from "../team/team-parts.js";
 
 export type ProjectsScreenProps = StaticScreenProps<{ readonly deploymentId: string }>;
 
@@ -77,6 +78,7 @@ function ProjectDirectory(props: {
   const [loadingMore, setLoadingMore] = useState(false);
   const loadingMoreRef = useRef(false);
   const { deploymentId } = props;
+  const teamAllowsCreate = useCanCreateProject(props.hostClient);
 
   const directory = useMemo<Directory>(
     () => ({
@@ -85,7 +87,7 @@ function ProjectDirectory(props: {
       loaded: snapshot.workspaces.length > 0,
       projects: groupTasksByProject(snapshot, taskList(snapshot)).folders,
     }),
-    [snapshot],
+    [snapshot, teamAllowsCreate],
   );
 
   const create = useCallback(
@@ -93,6 +95,10 @@ function ProjectDirectory(props: {
     [deploymentId, navigation],
   );
   useLayoutEffect(() => {
+    if (!teamAllowsCreate) {
+      navigation.setOptions(headerActions({}));
+      return;
+    }
     navigation.setOptions(
       headerActions({
         right: {
@@ -106,7 +112,7 @@ function ProjectDirectory(props: {
         },
       }),
     );
-  }, [create, directory.canCreate, navigation]);
+  }, [create, directory.canCreate, navigation, teamAllowsCreate]);
 
   const open = useCallback(
     (workspaceId: string) => navigation.navigate("Project", { deploymentId, workspaceId }),

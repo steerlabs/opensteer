@@ -36,6 +36,7 @@ import { ChromeSection } from "./sections/chrome.js";
 import { GeneralSection } from "./sections/general.js";
 import { PasswordsSection } from "./sections/passwords.js";
 import { PluginsSection } from "./sections/plugins.js";
+import { TeamSettingsNavigation } from "../team/team-settings.js";
 
 // Loaded with its page so connections cost nothing on attach.
 const ExternalAgentsSection = lazy(() =>
@@ -210,6 +211,7 @@ export function SettingsShell() {
               <SettingsNavigationLink item={item} key={item.id} />
             ))}
           </div>
+          <TeamSettingsNavigation />
         </nav>
         <div className="settings-navigation__account">
           <NavLink

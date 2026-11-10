@@ -104,6 +104,7 @@ import { useVoiceAvailable, useVoiceOn } from "../voice/use-voice-value.js";
 import { DraftRow } from "./draft-row.js";
 import { sidebarFolders, type SidebarFolder } from "./project-folders.js";
 import { voiceRowMark, type VoiceRowMark } from "./voice-row.js";
+import { CreateProjectGate } from "../team/team-parts.js";
 
 /** The root destinations the sidebar switches between. */
 export type SidebarDestination = "Home" | "Schedules" | "Projects" | "Tabs";
@@ -695,6 +696,7 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
               ? []
               : [
                   <ProjectsHead
+                    hostClient={hostClient}
                     key="projects-head"
                     onNewProject={() => actions.onNewProject(deploymentId)}
                     onProjects={actions.onProjects}
@@ -1056,6 +1058,7 @@ function VoiceRow(props: {
  * new Project, so neither needs a trip through the list above.
  */
 function ProjectsHead(props: {
+  readonly hostClient: HostClient | null;
   readonly onNewProject: () => void;
   readonly onProjects: () => void;
 }): ReactNode {
@@ -1077,7 +1080,9 @@ function ProjectsHead(props: {
           Projects
         </AppText>
       </Pressable>
-      <IconButton icon="plus" label="New project" onPress={props.onNewProject} small />
+      <CreateProjectGate hostClient={props.hostClient}>
+        <IconButton icon="plus" label="New project" onPress={props.onNewProject} small />
+      </CreateProjectGate>
     </View>
   );
 }

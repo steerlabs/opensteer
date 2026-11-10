@@ -209,6 +209,63 @@ integration("Host vertical slice", () => {
     dataDirectory = undefined;
   });
 
+  it.each(["server", "personal"] as const)(
+    "refuses unsupported %s authority at real runtime startup without changing model-1 startup",
+    async (kind) => {
+      dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-authority-startup-"));
+      const base = testHostConfig(await freePort(), dataDirectory, new URL("http://127.0.0.1:9"));
+      const config: HostConfig =
+        kind === "server"
+          ? base
+          : {
+              ...base,
+              acceptsExternalRunners: false,
+              exposure: "loopback",
+              identity: {
+                ...base.identity,
+                initialOwnerEnrollment: undefined,
+                localPasswordEnabled: false,
+                localOwnerClaimToken: accessToken,
+              },
+              workspace: {
+                ...base.workspace,
+                shape: { ...base.workspace.shape, kind },
+              },
+            };
+      const database = createDatabase({ connectionString: config.databaseUrl });
+      try {
+        const store = new OpensteerStore(database);
+        const hostInstance = await loadOrCreateHostInstance(dataDirectory);
+        const deployment = await store.ensureDeployment({
+          canonicalOrigin: config.canonicalOrigin.origin,
+          deploymentShape: config.workspace.shape,
+          hostInstanceId: hostInstance.hostInstanceId,
+        });
+        runtime = await createHostRuntime(config);
+        await runtime.listen();
+        expect(await store.getDeployment()).toMatchObject({ id: deployment.id });
+        await runtime.close();
+        runtime = undefined;
+        await database
+          .updateTable("deployments")
+          .set({ authorityModelVersion: 2 })
+          .where("id", "=", deployment.id)
+          .executeTakeFirstOrThrow();
+        await expect(
+          createHostRuntime(config).then((started) => {
+            runtime = started;
+            return "runtime-started";
+          }),
+        ).rejects.toMatchObject({
+          code: "conflict",
+          message: expect.stringContaining("Unsupported Deployment authority model"),
+        });
+      } finally {
+        await database.destroy();
+      }
+    },
+  );
+
   it("provisions a workspace and carries a Runner turn through durable projection", async () => {
     dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-host-integration-"));
     const hostPort = await freePort();

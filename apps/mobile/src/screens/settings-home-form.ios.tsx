@@ -1,10 +1,12 @@
 import { contactSupport } from "../report-mail.js";
 import { Button, Form, Host, Section } from "@expo/ui/swift-ui";
-import { settingsDestinations } from "./settings-home-model.js";
+import { settingsDestinations, type SettingsHomeTeam } from "./settings-home-model.js";
 export function SettingsHomeForm({
   onOpen,
+  team,
 }: {
   readonly onOpen: (route: (typeof settingsDestinations)[number]["route"]) => void;
+  readonly team: SettingsHomeTeam | null;
 }) {
   return (
     <Host style={{ flex: 1 }} useViewportSizeMeasurement>
@@ -18,6 +20,13 @@ export function SettingsHomeForm({
               ))}
           </Section>
         ))}
+        {team ? (
+          <Section title={team.name}>
+            {team.rows.map((row) => (
+              <Button key={row.title} label={row.title} onPress={row.onPress} />
+            ))}
+          </Section>
+        ) : null}
         <Section>
           <Button label="Contact support" onPress={() => contactSupport()} />
         </Section>

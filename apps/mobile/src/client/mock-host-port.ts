@@ -1,6 +1,6 @@
 import type { DeploymentConnection } from "@opensteer/client/connections";
 import type { HostClient } from "@opensteer/client/host";
-import { MockDesktopUpdates, MockHostClient } from "@opensteer/client/mock";
+import { MockDesktopUpdates, MockHostClient, type MockTeamScenario } from "@opensteer/client/mock";
 import type { HostApiCommandInput } from "@opensteer/protocol";
 import type { MobileHostPortFactory } from "./host-port.js";
 import { mockSignedOutDeploymentId } from "./mock-mode.js";
@@ -19,6 +19,7 @@ export function createMockHostPort(
      */
     readonly hosts?: Map<string, MockHostClient>;
     readonly initialHome?: "seeded" | "absent";
+    readonly team?: MockTeamScenario | null;
     /** Each command a kept Host accepted, as a real Host would push its effects. */
     readonly onCommand?: (command: HostApiCommandInput) => void;
   } = {},
@@ -29,11 +30,17 @@ export function createMockHostPort(
   const attach = (connection: DeploymentConnection): HostClient => {
     const hosts = options.hosts;
     if (hosts === undefined)
-      return new MockHostClient({ initialHome: options.initialHome ?? "seeded" });
+      return new MockHostClient({
+        initialHome: options.initialHome ?? "seeded",
+        ...(options.team ? { team: options.team } : {}),
+      });
     const deploymentId = connection.authority.document.deploymentId;
     let host = hosts.get(deploymentId);
     if (host === undefined) {
-      const created = new MockHostClient({ initialHome: options.initialHome ?? "seeded" });
+      const created = new MockHostClient({
+        initialHome: options.initialHome ?? "seeded",
+        ...(options.team ? { team: options.team } : {}),
+      });
       const dispatch = created.dispatch.bind(created);
       created.dispatch = async (command) => {
         const result = await dispatch(command);

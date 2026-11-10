@@ -22,7 +22,7 @@ import {
 } from "../desktop/web-links.js";
 import { lastBrowsingChoice, openWorkspaceWebLink } from "./workspace/start-page.js";
 import { DownloadFeedback } from "./browser/browser-downloads.js";
-import { provisionalThreadTitle } from "@opensteer/core";
+import { markColorAllocationOrder, provisionalThreadTitle } from "@opensteer/core";
 import { useNativeBrowserOverlay } from "./native-browser-overlays.js";
 import {
   createContext,
@@ -78,7 +78,7 @@ import {
   taskUnderWay,
 } from "@opensteer/client/host";
 import { Dialog } from "./dialog.js";
-import { useActionReview, useHostSelector } from "@opensteer/client/react";
+import { useActionReview, useHostSelector, useTeam } from "@opensteer/client/react";
 import type { PendingSubmission } from "./composer.js";
 import {
   claimFirstMessage,
@@ -620,6 +620,9 @@ export function AppShell({
   );
   const closeMobileNavigation = useCallback(() => setMobileNavigationOpen(false), []);
   const openMobileNavigation = useCallback(() => setMobileNavigationOpen(true), []);
+  const team = useTeam(hostClient);
+  const teamProjects = snapshot.teamAdministrationAvailable === true;
+  const canCreateProject = !teamProjects || team.summary?.can.createProject.allowed === true;
   const openNewWorkspace = useCallback(() => {
     setNewWorkspaceError(null);
     setNewWorkspaceOpen(true);
@@ -633,6 +636,15 @@ export function AppShell({
       setCreatingWorkspace(true);
       setNewWorkspaceError(null);
       try {
+        if (team.team && team.summary) {
+          const created = await team.team.createProject(team.summary.accessRevision, {
+            name: input.name,
+            color: input.color ?? markColorAllocationOrder[0]!,
+          });
+          setNewWorkspaceOpen(false);
+          openConversation(`/workspaces/${encodeURIComponent(created.projectId)}/settings`);
+          return;
+        }
         const result = await hostClient.dispatch({
           ...(input.icon ? { icon: input.icon } : {}),
           idempotencyKey: mutationIdempotencyKey("workspace"),
@@ -659,7 +671,7 @@ export function AppShell({
         setCreatingWorkspace(false);
       }
     },
-    [hostClient, openConversation, reportActionError],
+    [hostClient, openConversation, reportActionError, team.summary, team.team],
   );
   const openSharing = useCallback(
     (workspaceId: string) => {
@@ -1196,7 +1208,7 @@ export function AppShell({
                       throw error;
                     }
                   }}
-                  onNewProject={openNewWorkspace}
+                  onNewProject={canCreateProject ? openNewWorkspace : null}
                   onSetTaskDone={setTaskDone}
                   onToggleCollapsed={toggleSidebar}
                 />
@@ -1269,6 +1281,7 @@ export function AppShell({
               {newWorkspaceOpen ? (
                 <NewWorkspaceDialog
                   colors={snapshot.taskMarksAvailable}
+                  team={teamProjects ? (team.summary?.team.name ?? null) : null}
                   creating={creatingWorkspace}
                   error={newWorkspaceError}
                   onClose={() => {

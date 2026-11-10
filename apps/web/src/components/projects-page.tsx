@@ -15,6 +15,7 @@ import { useTaskSnapshot } from "./task-rows.js";
 import { WorkspaceOrb } from "./workspace-orb.js";
 import { AreaLink } from "./workspace/area-link.js";
 import { TaskState } from "./workspace/task-mark.js";
+import { useShellTeam } from "./team/team-ui.js";
 
 /** Past this many, the directory offers to narrow itself by name. */
 const filterFrom = 7;
@@ -30,6 +31,9 @@ export function ProjectsPage() {
   const now = useMinuteClock();
   const [loadingMore, setLoadingMore] = useState(false);
   const [query, setQuery] = useState("");
+  const { summary } = useShellTeam();
+  const canCreate =
+    snapshot.teamAdministrationAvailable !== true || summary?.can.createProject.allowed === true;
   const folders = useMemo(
     () => groupTasksByProject(snapshot, taskList(snapshot)).folders,
     [snapshot],
@@ -49,15 +53,17 @@ export function ProjectsPage() {
             description="Each Project is a folder inside Main with its own chat, tasks, people and access. Agents can start work in one, or you can."
             title="Projects"
           />
-          <div className="automations-head__actions">
-            <button
-              className="btn btn--primary btn--small"
-              onClick={openNewWorkspace}
-              type="button"
-            >
-              <Icon name="plus" /> New project
-            </button>
-          </div>
+          {canCreate ? (
+            <div className="automations-head__actions">
+              <button
+                className="btn btn--primary btn--small"
+                onClick={openNewWorkspace}
+                type="button"
+              >
+                <Icon name="plus" /> New project
+              </button>
+            </div>
+          ) : null}
         </div>
 
         {folders.length >= filterFrom ? (
@@ -84,9 +90,11 @@ export function ProjectsPage() {
               Give recurring or long-running work its own folder, chat and instructions — a launch,
               your finances, a client. Opensteer can also make one when work calls for it.
             </p>
-            <button className="btn btn--primary" onClick={openNewWorkspace} type="button">
-              <Icon name="plus" /> New project
-            </button>
+            {canCreate ? (
+              <button className="btn btn--primary" onClick={openNewWorkspace} type="button">
+                <Icon name="plus" /> New project
+              </button>
+            ) : null}
           </div>
         ) : shown.length === 0 ? (
           <p className="automations-list__empty" role="status">
