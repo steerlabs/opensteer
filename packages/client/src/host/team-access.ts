@@ -94,7 +94,10 @@ export class TeamAccess {
     options: ReadOptions = {},
   ) {
     return unwrapRpcResult(
-      await this.#port.rpc["team.member.get"]({ ...input, userId: UserIdSchema.parse(input.userId) }, options),
+      await this.#port.rpc["team.member.get"](
+        { ...input, userId: UserIdSchema.parse(input.userId) },
+        options,
+      ),
     );
   }
   async directory(
