@@ -29,7 +29,10 @@ export interface ViewerClipboardResult {
   readonly items: readonly EditingClipboardPayloadItem[];
 }
 export type BrowserContextMenu = Extract<BrowserServerMessage, { type: "browser.contextmenu" }>;
-export type BrowserAutofillOffer = Extract<BrowserServerMessage, { type: "browser.autofill.offer" }>;
+export type BrowserAutofillOffer = Extract<
+  BrowserServerMessage,
+  { type: "browser.autofill.offer" }
+>;
 /**
  * The saved logins this viewer was offered for the field it just activated.
  * The page withdraws the offer when the field loses its place.
@@ -179,7 +182,8 @@ export class BrowserEditingStore {
       },
       dismissAutofill: () => {
         const autofill = target.state.autofill;
-        if (autofill?.open) this.#set(target, { ...target.state, autofill: { ...autofill, open: false } });
+        if (autofill?.open)
+          this.#set(target, { ...target.state, autofill: { ...autofill, open: false } });
       },
       moveAutofill: (delta) => {
         const autofill = target.state.autofill;

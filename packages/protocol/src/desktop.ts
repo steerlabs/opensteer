@@ -1656,7 +1656,11 @@ export const DesktopAutofillSceneSchema = z.strictObject({
     x: z.number().finite(),
     y: z.number().finite(),
   }),
-  highlighted: z.number().int().min(0).max(personFillMaxAccounts - 1),
+  highlighted: z
+    .number()
+    .int()
+    .min(0)
+    .max(personFillMaxAccounts - 1),
   reducedMotion: z.boolean(),
   role: PersonFillRoleSchema,
   sceneRevision: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
