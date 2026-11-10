@@ -927,6 +927,7 @@ export class PhoneBrowserManager {
       return;
     }
     if (message.type.startsWith("input.") || message.type.startsWith("clipboard.")) {
+      // Key/plain-clipboard packets intentionally omit sender document IDs; native responder/frame fencing guards them.
       if (!channel.claims.basicInput || !browserBasicInputAllows(message))
         throw new PhoneBrowserError(
           "unsupported-operation",
@@ -1080,8 +1081,18 @@ export class PhoneBrowserManager {
       let result: BrowserActionResult;
       if (action.type === "session.tabs")
         result = { type: "session.tabs", tabs: [...session.tabs.values()].map(actionBinding) };
-      else {
+      else if (action.type === "surface.open") {
+        const opened = await this.#createTab(
+          session,
+          `bsf_${this.#uuid()}`,
+          action.url ?? "about:blank",
+          action.viewport,
+        );
+        result = { type: "surface.open", binding: actionBinding(opened) };
+      } else {
         const tab = this.#requireTab(session, request.surfaceId);
+        if (action.type !== "surface.resume" && action.type !== "surface.close")
+          this.#assertLive(tab);
         if (request.documentId && request.documentId !== tab.metadata.documentId)
           throw new PhoneBrowserError("stale-document", "The document changed.");
         if (
@@ -1090,22 +1101,12 @@ export class PhoneBrowserManager {
         )
           throw new PhoneBrowserError("stale-geometry", "The page geometry changed.");
         if (action.type === "surface.resume" || action.type === "surface.attach") {
-          await this.#resumeAgent(tab);
+          if (action.type === "surface.resume") await this.#resumeAgent(tab);
           result = { type: action.type, binding: actionBinding(tab) };
         } else if (action.type === "surface.close") {
           await this.#closeTab(session, tab);
           result = { type: "surface.close", outcome: "closed" };
-        } else if (action.type === "surface.open") {
-          this.#assertLive(tab);
-          const opened = await this.#createTab(
-            session,
-            `bsf_${this.#uuid()}`,
-            action.url ?? "about:blank",
-            action.viewport,
-          );
-          result = { type: "surface.open", binding: actionBinding(opened) };
         } else {
-          this.#assertLive(tab);
           if (action.type === "page.info")
             result = {
               type: "page.info",
@@ -1183,7 +1184,6 @@ export class PhoneBrowserManager {
         requestId: message.requestId,
         result,
       });
-      if (!channel.session.tabs.size) await this.#endSession(channel.session);
     } catch (error) {
       await this.#send(channel, {
         type: "agent.error",

@@ -191,6 +191,14 @@ async function setup(
   const actorToken = uuid();
   const agentAttach = () =>
     client({ type: "agent.attach", sessionId, attachmentId, actorToken, backend: "actions" });
+  const sessionAction = (actionValue: unknown, patch: Record<string, unknown> = {}) =>
+    client({
+      type: "agent.action",
+      attachmentId,
+      actorToken,
+      requestId: uuid(),
+      request: { id: nextId++, sessionId, action: actionValue, ...patch },
+    });
   const action = (actionValue: unknown, id = surfaceId, patch: Record<string, unknown> = {}) => {
     const state = presentation(id);
     return client({
@@ -225,6 +233,7 @@ async function setup(
     open,
     revision,
     agentAttach,
+    sessionAction,
     action,
     actorToken,
     attachmentId,
@@ -261,6 +270,189 @@ async function setup(
 }
 
 describe("phone browser manager", () => {
+  test("session actions need no surface or document, including opening the first tab after an empty inventory", async () => {
+    const fixture = await setup();
+    await fixture.agentAttach();
+    await fixture.action({ type: "surface.close" });
+    expect(fixture.presentation().state).toBe("closed");
+    expect(fixture.native.tabs.size).toBe(0);
+    await fixture.sessionAction({ type: "session.tabs" });
+    expect(fixture.server().at(-1)).toMatchObject({
+      type: "agent.result",
+      result: { type: "session.tabs", tabs: [] },
+    });
+    await fixture.sessionAction({ type: "surface.open", url: "https://first.example/" });
+    const opened = fixture.server().at(-1);
+    expect(opened).toMatchObject({
+      type: "agent.result",
+      result: {
+        type: "surface.open",
+        binding: { state: "suspended", url: "https://first.example/" },
+      },
+    });
+    if (opened?.type !== "agent.result" || opened.result.type !== "surface.open")
+      throw new Error("The session did not return its newly opened tab.");
+    expect(fixture.native.tabs.has(opened.result.binding.surfaceId)).toBe(true);
+    const legacy = {
+      surfaceId: "unrelated-surface",
+      documentId: "old-document",
+      geometryRevision: 999,
+    };
+    await fixture.sessionAction({ type: "session.tabs" }, legacy);
+    expect(fixture.server().at(-1)).toMatchObject({
+      type: "agent.result",
+      result: { type: "session.tabs", tabs: [opened.result.binding] },
+    });
+    await fixture.sessionAction({ type: "surface.open" }, legacy);
+    expect(fixture.server().at(-1)).toMatchObject({
+      type: "agent.result",
+      result: { type: "surface.open", binding: { url: "about:blank" } },
+    });
+    expect(fixture.native.tabs.size).toBe(2);
+  });
+
+  test.each(["retained", "discarded"] as const)(
+    "closing a %s tab checks its document and geometry without resuming or allocating a view",
+    async (state) => {
+      const fixture = await setup();
+      await fixture.agentAttach();
+      if (state === "discarded")
+        await fixture.native.emit({
+          type: "memoryPressure",
+          epoch: fixture.native.epoch,
+          level: "warning",
+        });
+      expect(fixture.presentation().state).toBe(state);
+      const before = fixture.native.calls.length;
+      for (const action of [
+        { type: "page.info" },
+        { type: "surface.attach" },
+        { type: "dom.act", kind: "focus", locator: { by: "css", value: "input" } },
+      ]) {
+        await fixture.action(action);
+        expect(fixture.server().at(-1)).toMatchObject({
+          type: "agent.error",
+          error: { code: "target-suspended" },
+        });
+      }
+      await fixture.action({ type: "surface.close" }, fixture.surfaceId, {
+        documentId: "old-document",
+      });
+      expect(fixture.server().at(-1)).toMatchObject({
+        type: "agent.error",
+        error: { code: "stale-document" },
+      });
+      await fixture.action({ type: "surface.close" }, fixture.surfaceId, { geometryRevision: 999 });
+      expect(fixture.server().at(-1)).toMatchObject({
+        type: "agent.error",
+        error: { code: "stale-geometry" },
+      });
+      expect(fixture.native.tabs.has(fixture.surfaceId)).toBe(true);
+      await fixture.action({ type: "surface.close" });
+      expect(fixture.server().findLast((message) => message.type === "agent.result")).toMatchObject(
+        {
+          result: { type: "surface.close", outcome: "closed" },
+        },
+      );
+      expect(fixture.presentation().state).toBe("closed");
+      expect(fixture.native.tabs.has(fixture.surfaceId)).toBe(false);
+      expect(
+        fixture.native.calls
+          .slice(before)
+          .filter((call) =>
+            ["resumeTab", "createTab", "mountTab", "performAction"].includes(call.method),
+          ),
+      ).toEqual([]);
+    },
+  );
+
+  test("focus and focus-to-end reach the native primitive unchanged and report script-made results", async () => {
+    const fixture = await setup();
+    await fixture.present();
+    await fixture.agentAttach();
+    for (const action of [
+      { type: "dom.act", kind: "focus", locator: { by: "label", value: "Search" } },
+      {
+        type: "dom.act",
+        kind: "focus",
+        selection: "end",
+        locator: { by: "css", value: "#message" },
+      },
+    ]) {
+      await fixture.action(action);
+      expect(fixture.server().at(-1)).toMatchObject({
+        type: "agent.result",
+        result: { type: "dom.act", outcome: "acted", trusted: false },
+      });
+      expect(
+        fixture.native.calls.findLast((call) => call.method === "performAction")?.input,
+      ).toMatchObject({
+        documentId: fixture.presentation().documentId,
+        request: { action },
+      });
+    }
+    expect(fixture.native.submitted).toEqual(["dom.act", "dom.act"]);
+  });
+
+  test("the manager rejects malformed actions before native even when the sender skips schema validation", async () => {
+    const fixture = await setup();
+    await fixture.present();
+    await fixture.agentAttach();
+    const base = {
+      id: 1,
+      sessionId: fixture.sessionId,
+      surfaceId: fixture.surfaceId,
+      documentId: fixture.presentation().documentId,
+    };
+    for (const request of [
+      {
+        ...base,
+        action: {
+          type: "dom.act",
+          kind: "click",
+          selection: "end",
+          locator: { by: "css", value: "input" },
+        },
+      },
+      {
+        ...base,
+        action: {
+          type: "dom.act",
+          kind: "focus",
+          value: "replacement",
+          locator: { by: "css", value: "input" },
+        },
+      },
+      {
+        ...base,
+        documentId: undefined,
+        action: { type: "dom.act", kind: "focus", locator: { by: "css", value: "input" } },
+      },
+      { ...base, surfaceId: undefined, action: { type: "page.info" } },
+      { ...base, surfaceId: null, action: { type: "session.tabs" } },
+      { ...base, action: { type: "pointer.tap", x: 1, y: 1, count: 1 } },
+    ]) {
+      await expect(
+        fixture.native.emit({
+          type: "relayCommand",
+          message: {
+            ...fixture.currentEnvelope(),
+            type: "browser.client-message",
+            message: {
+              type: "agent.action",
+              attachmentId: fixture.attachmentId,
+              actorToken: fixture.actorToken,
+              requestId: uuid(),
+              request,
+            },
+          } as unknown as PhoneRelayCommand,
+        }),
+      ).rejects.toMatchObject({ name: "ZodError" });
+    }
+    expect(fixture.native.calls.filter((call) => call.method === "performAction")).toEqual([]);
+    expect(fixture.native.submitted).toEqual([]);
+  });
+
   test("parses actual Host/relay messages, admits opaque single-use attach before allocation, and returns exact initialPage", async () => {
     const fixture = await setup("ios", {
       initialNavigation: { operationKey: "first-navigation", url: "https://example.com" },
