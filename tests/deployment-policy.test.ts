@@ -274,10 +274,10 @@ const sqlExceptions: Record<
 > = {
   "packages/database/src/project-authority-guards.ts": {
     reason:
-      "Cold Project-principal creation requires persisted server/model-2 authority; Personal inserts return before querying Deployment state.",
+      "Cold Project-principal creation uses the sole stored-authority helper; Personal principal inserts return before reading the model.",
     decisions: {
       "baseline/public.opensteer_project_principal_scope": {
-        "d.deployment_shape->>'kind' = 'server'": 1,
+        "d.kind = 'server'": 1,
       },
     },
   },
@@ -350,6 +350,21 @@ describe("deployment policy boundary", () => {
       sqlExceptions["packages/database/src/migrations.ts"]!.decisions,
     );
   });
+  it.each([
+    "select * from public.opensteer_stored_execution_authority() d where d.kind = 'server';",
+    "select * into authority from public.opensteer_stored_execution_authority(); if authority.kind = 'server' then return; end if;",
+  ])("tracks stored-helper comparisons as named SQL decisions: %s", (query) => {
+    const inventory = sqlKindDecisionInventory(
+      `create function public.unlisted_scope() returns void as $$ begin ${query} end $$;`,
+    );
+    expect(Object.keys(inventory)).toEqual(["baseline/public.unlisted_scope"]);
+    expect(Object.values(inventory)[0]).toEqual(
+      query.includes("authority.kind")
+        ? { "authority.kind = 'server' then return": 1 }
+        : { "d.kind = 'server'": 1 },
+    );
+  });
+
   it.each([
     "deployment_shape->>'kind' = 'server'",
     "'server' = deployment_shape->>'kind'",
