@@ -433,6 +433,10 @@ describe("team administration wire contract", () => {
         Array.from({ length: 100 }, () => ({ ...grant, id: crypto.randomUUID() })),
       ).success,
     ).toBe(true);
+    expect(
+      AccessChangesSchema.safeParse([{ kind: "create-group", id: entryId, name: "Support" }, grant])
+        .success,
+    ).toBe(true);
   });
 
   it("keeps settings bounded and Host-derived catalog identifiers out of executable input", () => {

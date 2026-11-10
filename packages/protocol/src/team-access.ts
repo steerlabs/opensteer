@@ -103,7 +103,9 @@ export const AccessChangesSchema = z
   )
   .refine((changes) => {
     const createdIds = changes.flatMap((change) =>
-      change.kind === "grant" || change.kind === "create-group" ? [change.id] : [],
+      change.kind === "grant" || change.kind === "create-group"
+        ? [`${change.kind}:${change.id}`]
+        : [],
     );
     return new Set(createdIds).size === createdIds.length;
   }, "An access batch cannot create duplicate IDs");
@@ -617,6 +619,8 @@ export type Level = z.infer<typeof LevelSchema>;
 export type Subject = z.infer<typeof SubjectSchema>;
 export type ProjectTarget = z.infer<typeof ProjectTargetSchema>;
 export type Can = z.infer<typeof CanSchema>;
+export type MemberCan = z.infer<typeof MemberCanSchema>;
+export type GroupCan = z.infer<typeof GroupCanSchema>;
 export type MutationBase = z.infer<typeof MutationBaseSchema>;
 export type TeamReason = z.infer<typeof TeamReasonSchema>;
 export type AccessChange = z.infer<typeof AccessChangeSchema>;
