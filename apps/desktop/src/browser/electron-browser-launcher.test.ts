@@ -6,7 +6,7 @@ import { gate } from "@opensteer/shared/test-support/observation";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import type { BaseWindow } from "electron";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -2486,6 +2486,87 @@ describe("native Electron profiles", () => {
     } finally {
       f.launcher.close();
       await rm(f.root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("native Electron profiles through the shared runtime", () => {
+  it("reopens a profile whose owner retired after Network Service loss, without clearing it", async () => {
+    const { app, session } = await import("electron");
+    const { BrowserRuntime, sessionFilesRoot } = await import("@opensteer/browser-runtime-core");
+    const { FakeSink, FakeTicketVerifier, validClaims } =
+      await import("@opensteer/browser-runtime-core/test-support");
+    const root = await realpath(await mkdtemp(path.join(tmpdir(), "opensteer-native-runtime-")));
+    const launcher = new ElectronBrowserLauncher({
+      downloads: { accept: vi.fn() },
+      pagePolicyPreloadPath: "/policy.cjs",
+      localProfileRoot: root,
+    });
+    const verifier = new FakeTicketVerifier();
+    const runtime = new BrowserRuntime({
+      launcher,
+      ticketVerifier: verifier,
+      localProfiles: { root },
+      acknowledgeProfileReady: async () => {},
+      runtimeId: "runtime_test",
+      sessionFilesRoot: sessionFilesRoot(root),
+    });
+    try {
+      await runtime.prepare();
+      const binding: LocalProfileBinding = {
+        version: 1,
+        deploymentId: createId("deployment"),
+        profileId: createId("browserProfile"),
+        runnerId: createId("runner"),
+        storageInstanceId: runtime.localProfileStorage!.storageInstanceId,
+        bindingId: randomUUID(),
+        engine: "electron",
+      };
+      let initialized = false;
+      const open = async (token: string) => {
+        verifier.setClaims(
+          token,
+          validClaims({
+            identity: {
+              kind: "profile-local",
+              binding,
+              initialized,
+              readyUrl: "https://host.test/ready",
+            },
+            sessionId: BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`),
+          }),
+        );
+        const attached = await runtime.attach(token, new FakeSink());
+        initialized = true;
+        return attached;
+      };
+      const views = electron.views.length;
+      await open("first");
+      const native = vi.mocked(session.fromPath).mock.results.at(-1)!.value;
+      const pages = electron.views.slice(views);
+      for (const [event, listener] of vi.mocked(app.on).mock.calls)
+        if ((event as string) === "child-process-gone")
+          (listener as (event: unknown, details: unknown) => void)(
+            {},
+            { type: "Utility", serviceName: "network.mojom.NetworkService" },
+          );
+      await vi.waitFor(
+        () =>
+          expect(
+            pages.every((view) => view.webContents.close.mock.calls.length > 0),
+            "Network Service loss never closed the retired owner's views",
+          ).toBe(true),
+        { timeout: 2_000 },
+      );
+      const reopened = await open("second");
+      await reopened.close();
+      expect(vi.mocked(session.fromPath).mock.results.at(-1)!.value).toBe(native);
+      expect(native.clearStorageData).not.toHaveBeenCalled();
+      expect(native.clearCache).not.toHaveBeenCalled();
+    } finally {
+      await runtime.shutdown().catch(() => undefined);
+      launcher.close();
+      await rm(root, { recursive: true, force: true });
     }
   });
 });
