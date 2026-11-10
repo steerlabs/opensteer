@@ -41,6 +41,7 @@ describe("deployment policy", () => {
           insecureLoopbackOrigins: true,
           externalRunners: false,
           serverTooling: false,
+          knowledgeTrial: true,
         },
         services: {
           personalRemoteAccess: true,
@@ -87,6 +88,7 @@ describe("deployment policy", () => {
           insecureLoopbackOrigins: false,
           externalRunners: true,
           serverTooling: true,
+          knowledgeTrial: false,
         },
         services: {
           personalRemoteAccess: false,

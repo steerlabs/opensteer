@@ -359,7 +359,10 @@ export function assertHostConfigInvariants(config: HostConfig): void {
       "A Personal Deployment cannot serve native OAuth: set OPENSTEER_NATIVE_OAUTH_ENABLED=false",
     );
   }
-  if (config.knowledge === true && config.workspace.shape.kind !== "personal") {
+  if (
+    config.knowledge === true &&
+    !deploymentPolicy(config.workspace.shape).configuration.knowledgeTrial
+  ) {
     throw new Error(
       "The knowledge trial runs only on a Personal Deployment: unset OPENSTEER_KNOWLEDGE",
     );

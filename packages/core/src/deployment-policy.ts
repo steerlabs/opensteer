@@ -28,6 +28,7 @@ export interface DeploymentPolicy {
     readonly insecureLoopbackOrigins: boolean;
     readonly externalRunners: boolean;
     readonly serverTooling: boolean;
+    readonly knowledgeTrial: boolean;
   };
   readonly services: {
     readonly personalRemoteAccess: boolean;
@@ -103,6 +104,7 @@ export function deploymentPolicy(shape: DeploymentShape): DeploymentPolicy {
         insecureLoopbackOrigins: true,
         externalRunners: false,
         serverTooling: false,
+        knowledgeTrial: true,
       },
       services: {
         personalRemoteAccess: true,
@@ -148,6 +150,7 @@ export function deploymentPolicy(shape: DeploymentShape): DeploymentPolicy {
         insecureLoopbackOrigins: false,
         externalRunners: true,
         serverTooling: true,
+        knowledgeTrial: false,
       },
       services: {
         personalRemoteAccess: false,
