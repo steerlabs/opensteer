@@ -25,6 +25,12 @@ export interface KnowledgeWriter {
   readonly runId: string | null;
 }
 
+export interface KnowledgeFactKey {
+  readonly topic: string;
+  readonly thing: string;
+  readonly property: string;
+}
+
 export type KnowledgeStatement =
   | {
       readonly kind: "select";
@@ -37,6 +43,8 @@ export type KnowledgeStatement =
       readonly parameters: readonly KnowledgeJson[];
       readonly operationKey: string;
       readonly onlyIfUnchanged: boolean;
+      /** Every key the INSERT writes; locked in one order first, so writers never wait on each other in a cycle. */
+      readonly keys: readonly KnowledgeFactKey[];
     };
 
 export interface KnowledgeRunInput {
@@ -46,6 +54,8 @@ export interface KnowledgeRunInput {
   readonly writer: KnowledgeWriter;
   readonly statementTimeoutMs?: number;
   readonly lockTimeoutMs?: number;
+  /** Runs inside the write transaction just before COMMIT; a throw rolls the write back. */
+  readonly beforeCommit?: () => Promise<void>;
 }
 
 export interface KnowledgeRows {
@@ -227,12 +237,29 @@ async function run(
     if (receipt.facts.some((fact) => !writable.has(fact.topic))) throw notWritable();
     return { kind: "insert", receipt, replayed: true, returning: null };
   }
+  const keys = [
+    ...new Map(
+      statement.keys.map((key) => [JSON.stringify([key.topic, key.thing, key.property]), key]),
+    ),
+  ].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+  if (keys.length)
+    await client.query(
+      `select count(pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(
+         'knowledge:' || pg_catalog.jsonb_build_array(k.topic, k.thing, k.property)::text, 0)))
+       from unnest($1::text[], $2::text[], $3::text[]) as k(topic, thing, property)`,
+      [
+        keys.map(([, key]) => key.topic),
+        keys.map(([, key]) => key.thing),
+        keys.map(([, key]) => key.property),
+      ],
+    );
   const result = await query(client, statement.text, parameters);
   const completed = await client.query<{ receipt: unknown }>(
     "select knowledge.complete_operation() as receipt",
   );
   const receipt = ReceiptSchema.parse(completed.rows[0]?.receipt);
   const returning = result.fields.length ? await rows(client, result, names) : null;
+  await input.beforeCommit?.();
   try {
     await client.query("commit");
   } catch {

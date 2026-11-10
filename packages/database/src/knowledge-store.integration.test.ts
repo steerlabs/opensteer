@@ -2,7 +2,7 @@ import { createId, type KnowledgeTopicId } from "@opensteer/core";
 import { sql } from "kysely";
 import { randomUUID } from "node:crypto";
 import pg from "pg";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createDatabase } from "./connection.js";
 import {
   createKnowledgeExecutorPool,
@@ -13,6 +13,7 @@ import {
   ensureKnowledgeGeneralTopic,
   listKnowledgeTopics,
   runKnowledgeStatement,
+  type KnowledgeFactKey,
   type KnowledgeJson,
   type KnowledgeResult,
   type KnowledgeWriter,
@@ -122,6 +123,7 @@ function insert(
     onlyIfUnchanged?: boolean;
     lockTimeoutMs?: number;
     writer?: KnowledgeWriter;
+    keys?: KnowledgeFactKey[];
   } = {},
 ) {
   return runKnowledgeStatement(context.pool, {
@@ -131,6 +133,7 @@ function insert(
       parameters: options.parameters ?? [],
       operationKey: options.operationKey ?? randomUUID(),
       onlyIfUnchanged: options.onlyIfUnchanged ?? false,
+      keys: options.keys ?? [],
     },
     readTopicIds: options.read ?? [context.open],
     writeTopicIds: options.write ?? [context.open],
@@ -447,6 +450,43 @@ integration("knowledge storage", () => {
       details: { thing: "trip/osaka", currentFactId: created.rows[0].id, seenFactId: null },
     });
     expect(await context.count("thing = 'trip/osaka'")).toBe(1);
+  });
+
+  it("lets two writers of the same keys in opposite row orders both commit", async () => {
+    const context = await fixture();
+    const key = (thing: string) => ({ topic: context.open, thing, property: "p" });
+    const write = (things: [string, string]) =>
+      insert(
+        context,
+        `insert into facts (topic, thing, property, value) values ($1, $2, 'p', '1'), ($1, $3, 'p', '2')`,
+        {
+          parameters: [context.open, ...things],
+          keys: things.map(key),
+          lockTimeoutMs: 10_000,
+        },
+      );
+    const holder = await context.executorClient();
+    await holder.query("begin");
+    await holder.query(
+      `select pg_advisory_xact_lock(hashtextextended('knowledge:' || jsonb_build_array($1::text, 'x'::text, 'p'::text)::text, 0))`,
+      [context.open],
+    );
+    const writers = [write(["x", "y"]), write(["y", "x"])];
+    await vi.waitFor(
+      async () => {
+        const { rows } = await sql<{ waiting: string }>`
+          select count(*)::text as waiting from pg_catalog.pg_locks
+          where locktype = 'advisory' and not granted
+            and database = (select oid from pg_catalog.pg_database where datname = current_database())
+        `.execute(context.database);
+        if (rows[0]?.waiting !== "2") throw new Error("Both writers never waited on a key lock");
+      },
+      { timeout: 10_000, interval: 20 },
+    );
+    await holder.query("commit");
+    const settled = await Promise.allSettled(writers);
+    expect(settled.map(({ status }) => status)).toEqual(["fulfilled", "fulfilled"]);
+    expect(await context.count(`topic = '${context.open}' and property = 'p'`)).toBe(4);
   });
 
   it("aborts the whole statement at the 26th row", async () => {
