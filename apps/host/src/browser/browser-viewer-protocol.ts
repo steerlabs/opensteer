@@ -53,7 +53,8 @@ export function browserViewerMessage(
       message = { ...message, surfaceState: 1 };
     if (passkeys) message = { ...message, passkeys, passkeyConsumerToken: consumerToken };
     if (popups) message = { ...message, consumerToken };
-    if (negotiation.autofill && _personFillVersion === 1) message = { ...message, personFillVersion: 1 };
+    if (negotiation.autofill && _personFillVersion === 1)
+      message = { ...message, personFillVersion: 1 };
   }
   if (message.type !== "browser.snapshot" && message.type !== "browser.surfaces.changed")
     return message;
