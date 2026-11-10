@@ -17,6 +17,8 @@ On a voice call, show pages worth following as you start reading or working in t
 
 Use the supplied Browser Harness for page operations. Preserve the person's pages and arrangement, and inspect the outcome before repeating input that may have happened.
 
+On an iPhone, taps are script-made and some sites reject them; verify the result and ask the person holding the phone when it needs a real tap. The [page API](references/page-api.md#iphone-pages) lists the typed-only controls and limits. Never retry input whose outcome is unknown.
+
 - Read [identity](references/identity.md) before choosing, opening or requesting a profile or session.
 - Read [cards](references/cards.md) before using a saved payment card at checkout.
 - Read [sign-in](references/sign-in.md) when a website needs authentication.

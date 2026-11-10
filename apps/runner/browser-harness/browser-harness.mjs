@@ -1,16 +1,17 @@
 #!/usr/bin/env node
 /**
- * Provider-free Browser Harness for an already-authorized CDP WebSocket.
+ * Provider-free Browser Harness for an already-authorized Run-local connection.
  *
  * Opensteer owns browser launch, profiles, grants, and session lifetime. This
  * executable keeps the useful code-generation workflow: it evaluates one
- * JavaScript program from stdin with a compact set of asynchronous CDP helpers.
+ * JavaScript program from stdin with session-negotiated page helpers.
  */
 
 import { randomUUID } from "node:crypto";
 import { open, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { COMMAND_TIMEOUT, CdpProtocolError, createPage, evaluationResult } from "./page.mjs";
+import { ActionsClient, createActionsHarness, negotiateBackend } from "./actions.mjs";
 
 const VERSION = "0.5.0-opensteer";
 const MAX_MESSAGE_BYTES = 1_048_576;
@@ -65,7 +66,7 @@ function pageDialogLine(dialog) {
   if (typeof dialog?.type !== "string" || typeof dialog.message !== "string") return null;
   const text = dialog.message.length > 200 ? `${dialog.message.slice(0, 200)}…` : dialog.message;
   const kind = `${dialog.type === "alert" ? "an" : "a"} ${dialog.type}`;
-  return `[opensteer] This page shows ${kind} dialog (${JSON.stringify(text)}); the page answers no other command until the dialog is answered with Page.handleJavaScriptDialog.`;
+  return `[opensteer] This page shows ${kind} dialog (${JSON.stringify(text)}); the page answers no other command until the dialog is answered with respondDialog({ accept: true or false }).`;
 }
 
 /**
@@ -997,6 +998,7 @@ function createBrowserHarness(client, initialTargetId) {
     pageInfo,
     page,
     pressKey,
+    respondDialog: (options) => cdp("Page.handleJavaScriptDialog", options),
     scroll,
     setInputFiles,
     sleep,
@@ -1042,8 +1044,15 @@ async function main() {
     );
   }
   const program = await readProgram();
-  const client = await CdpClient.connect(url, args[1]);
-  const harness = createBrowserHarness(client, args[3]);
+  const backend = await negotiateBackend(url, args[1]);
+  const client =
+    backend === "actions"
+      ? await ActionsClient.connect(url, args[1])
+      : await CdpClient.connect(url, args[1]);
+  const harness =
+    backend === "actions"
+      ? createActionsHarness(client, args[3])
+      : createBrowserHarness(client, args[3]);
   try {
     const names = Object.keys(harness);
     const execute = new AsyncFunction(...names, `"use strict";\n{\n${program}\n}\n`);
