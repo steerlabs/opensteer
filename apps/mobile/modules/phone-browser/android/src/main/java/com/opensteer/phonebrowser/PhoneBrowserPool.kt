@@ -49,6 +49,7 @@ internal class NativeTab(val id: String, val profileName: String, var url: Strin
   val pendingEvents = linkedMapOf<String, Map<String, Any?>>()
   var popup = false
   var sessionId = ""
+  var allocationEpoch = -1
   var storeHandle = ""
   @Volatile var generation = 1
   var revision = 0L
@@ -168,7 +169,7 @@ internal class PhoneBrowserPool(
     val tab = ui(epoch) {
       ledger.create(tabId)
       NativeTab(tabId, profile, "about:blank", width, height).also {
-        it.live = true; it.sessionId = sessionId; it.storeHandle = storeHandle
+        it.live = true; it.sessionId = sessionId; it.storeHandle = storeHandle; it.allocationEpoch = epoch
         tabs[tabId] = it
         try { construct(it) } catch (error: Throwable) { destroyView(it); tabs.remove(tabId); ledger.destroy(tabId); throw error }
       }
@@ -317,7 +318,7 @@ internal class PhoneBrowserPool(
   fun popup(epoch: Int, tabId: String, opener: NativeTab, message: android.os.Message): NativeTab = ui(epoch) {
     ledger.create(tabId)
     val tab = NativeTab(tabId, opener.profileName, "about:blank", opener.view?.width ?: opener.width, opener.view?.height ?: opener.height)
-    tab.live = true; tab.popup = true; tab.sessionId = opener.sessionId; tab.storeHandle = opener.storeHandle
+    tab.live = true; tab.popup = true; tab.sessionId = opener.sessionId; tab.storeHandle = opener.storeHandle; tab.allocationEpoch = epoch
     tabs[tabId] = tab
     try {
       construct(tab, false)

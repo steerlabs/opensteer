@@ -4,7 +4,7 @@ import type { IntegrationAccess } from "@opensteer/client/integrations";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import * as Haptics from "expo-haptics";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ScrollView, StyleSheet, View } from "react-native";
+import { Platform, ScrollView, StyleSheet, View } from "react-native";
 import { space } from "../theme.js";
 import { useHostValue, useMobileState } from "../ui/mobile-client-context.js";
 import { AppText, Field, PrimaryButton, RowGroup, SectionLabel, Toggle } from "../ui/primitives.js";
@@ -55,7 +55,7 @@ export function AddIphoneScreen(props: AddIphoneScreenProps): ReactNode {
           <AppText role="secondary" tone="muted">
             {row === undefined
               ? "This deployment is no longer on this phone."
-              : `Open ${row.name} to add this iPhone to it.`}
+              : `Open ${row.name} to add this phone to it.`}
           </AppText>
         ) : (
           <AddIphoneForm
@@ -117,7 +117,10 @@ export function AddIphoneForm(props: {
   const adding = state.adding === props.deploymentId;
   const trimmed = name.trim();
   // Only apps this build can share are offered; the iPhone's page says why the others aren't.
-  const apps = iphoneAppIds.filter((app) => iphonePermissionOf(state.snapshot, app) !== null);
+  const apps =
+    Platform.OS === "android"
+      ? []
+      : iphoneAppIds.filter((app) => iphonePermissionOf(state.snapshot, app) !== null);
   const chosen = apps.flatMap((app) => {
     const access = draft[app];
     return access === undefined ? [] : [{ access, app }];
@@ -160,10 +163,12 @@ export function AddIphoneForm(props: {
   return (
     <View style={styles.form}>
       <AppText role="body" tone="soft">
-        {addIphoneIntro(props.opensteer)}
+        {Platform.OS === "android"
+          ? `Add this phone to ${props.opensteer} to use its browser while Opensteer is open. Its profiles and sign-ins stay on this phone.`
+          : addIphoneIntro(props.opensteer)}
       </AppText>
       <Field
-        hint={addIphoneNameHint}
+        hint={Platform.OS === "android" ? "A name for this phone." : addIphoneNameHint}
         input={{
           autoCapitalize: "words",
           autoCorrect: false,
@@ -221,7 +226,7 @@ export function AddIphoneForm(props: {
         <View style={styles.section}>
           <PrimaryButton
             busy={adding}
-            disabled={trimmed === ""}
+            disabled={trimmed === "" || state.snapshot.pendingErasure === true}
             label={addIphoneButton(trimmed, chosen.length)}
             onPress={add}
           />
@@ -230,6 +235,12 @@ export function AddIphoneForm(props: {
               {failure}
             </AppText>
           )}
+          {state.snapshot.pendingErasure ? (
+            <AppText role="secondary" tone="muted">
+              Restart Opensteer to finish erasing this phone’s browser profiles before adding it
+              again.
+            </AppText>
+          ) : null}
         </View>
       ) : (
         <AppText role="secondary" tone="muted">

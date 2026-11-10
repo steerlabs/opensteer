@@ -11,6 +11,85 @@ import java.util.concurrent.TimeUnit
 
 internal class QualificationProbe(private val context: Context, private val pool: PhoneBrowserPool, private val cdp: CdpOwner) {
   val receipts = linkedMapOf<String, Any?>()
+  fun runNative(profiles: NativeProfiles, deployment: String, runner: String) {
+    val epoch = pool.gate.epoch
+    var tab: NativeTab? = null
+    var entry: ProfileEntry? = null
+    val files = SessionFiles(context)
+    val nonce = UUID.randomUUID().toString()
+    val address = "https://phone-native-qualification.invalid/$nonce"
+    try {
+      entry = pool.await(pool.ui(epoch) {
+        profiles.ensure(ProfileBinding(deployment, runner, profiles.manifest.storageInstanceId, UUID.randomUUID().toString(), UUID.randomUUID().toString()), false, true, pool.gate, epoch)
+      })
+      pool.fixture = { url -> if (url == address) """<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>Native qualification</title><input id="text"><script>window.trusted=[];document.addEventListener('input',e=>trusted.push(e.isTrusted));</script>""" else null }
+      val current = pool.create(epoch, "native-probe-$nonce", entry.name, 720, 960)
+      tab = current
+      pool.navigate(epoch, current.id, address)
+      check(JSONObject(pool.evaluate(current, epoch, "({ready:document.title==='Native qualification'})")).getBoolean("ready"))
+      receipts["native browser"] = true
+      ability("native input") {
+        val editorReady = CompletableFuture<android.view.inputmethod.InputConnection>()
+        val previous = pool.onEditingContextChanged
+        fun observe(changed: NativeTab) {
+          if (changed === current && changed.editor?.inputType?.let { it != android.text.InputType.TYPE_NULL } == true)
+            changed.connection?.let { editorReady.complete(it) }
+        }
+        pool.ui(epoch) {
+          pool.onEditingContextChanged = { changed -> previous?.invoke(changed); observe(changed) }
+          current.view?.requestFocus() ?: throw BrowserFailure("target-suspended")
+        }
+        try {
+          val point = JSONObject(pool.evaluate(current, epoch, "(()=>{const r=document.querySelector('#text').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2,width:innerWidth}})()"))
+          pool.ui(epoch) {
+            val view = current.view ?: throw BrowserFailure("target-suspended")
+            val scale = view.width / point.getDouble("width")
+            val now = android.os.SystemClock.uptimeMillis()
+            for (action in listOf(android.view.MotionEvent.ACTION_DOWN, android.view.MotionEvent.ACTION_UP)) {
+              val event = android.view.MotionEvent.obtain(now, now, action, (point.getDouble("x") * scale).toFloat(), (point.getDouble("y") * scale).toFloat(), 0)
+              event.source = android.view.InputDevice.SOURCE_TOUCHSCREEN
+              try { check(view.dispatchTouchEvent(event)) } finally { event.recycle() }
+            }
+          }
+          pool.ui(epoch) { observe(current) }
+          val connection = editorReady.get(3, TimeUnit.SECONDS)
+          pool.ui(epoch) { check(connection.commitText("native fixture", 1)) }
+          val edited = JSONObject(pool.evaluate(current, epoch, "({value:document.querySelector('#text').value,trusted:trusted.length>0&&trusted.every(Boolean)})"))
+          check(edited.getString("value") == "native fixture" && edited.getBoolean("trusted"))
+        } finally {
+          pool.ui(pool.gate.epoch) { pool.onEditingContextChanged = previous }
+        }
+      }
+      ability("native picture") {
+        pool.ui(epoch) {
+          val view = current.view ?: throw BrowserFailure("target-suspended")
+          val bitmap = android.graphics.Bitmap.createBitmap(view.width, view.height, android.graphics.Bitmap.Config.ARGB_8888)
+          try {
+            view.draw(android.graphics.Canvas(bitmap))
+            val bytes = java.io.ByteArrayOutputStream()
+            check(bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 75, bytes) && bytes.size() > 0)
+          } finally { bitmap.recycle() }
+        }
+      }
+      ability("native staging") {
+        val staged = StageRecord().apply { sessionId = nonce; fileId = UUID.randomUUID().toString(); name = "fixture.txt"; data = "Zml4dHVyZQ=="; size = 7 }
+        check(files.stage(staged)["complete"] == true)
+        check(File(files.choose(nonce, listOf(staged.fileId)).single().first.path!!).readText() == "fixture")
+      }
+    } catch (error: Throwable) {
+      receipts["native failure"] = if (error is BrowserFailure) error.reason else error.javaClass.simpleName
+    } finally {
+      files.close(); pool.fixture = null
+      pool.ui(pool.gate.epoch) {
+        tab?.let { pool.destroyNow(it.id) }
+        entry?.let { profiles.endGuest(it.handle) { name -> pool.tabs.values.filter { it.profileName == name }.map { it.id }.forEach(pool::destroyNow) } }
+      }
+    }
+  }
+  private fun ability(name: String, action: () -> Unit) {
+    try { action(); receipts[name] = true }
+    catch (error: Throwable) { receipts[name] = false; receipts["$name failure"] = if (error is BrowserFailure) error.reason else error.javaClass.simpleName }
+  }
   fun run(profiles: NativeProfiles, deployment: String, runner: String): Boolean {
     return try { cdp.probe(pool.gate.epoch) { runFixture(profiles, deployment, runner) } }
     catch (error: Throwable) { receipts["passed"] = false; receipts["failure"] = error.javaClass.simpleName; false }

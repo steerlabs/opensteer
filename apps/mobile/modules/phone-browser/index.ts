@@ -29,6 +29,13 @@ export const phoneBrowser: Browser.PhoneBrowserNativePort = {
   navigate: (input) => native.navigate(input),
   respondDialog: (input) => native.respondDialog(input),
   respondUpload: (input) => native.respondUpload(input),
+  attachAgent: (input) => native.attachAgent(input),
+  detachAgent: (input) => native.detachAgent(input),
+  authorizeCdp: (input) => native.authorizeCdp(input),
+  openCdpPipe: (input) => native.openCdpPipe(input),
+  sendCdp: (input) => native.sendCdp(input),
+  closeCdpPipe: (input) => native.closeCdpPipe(input),
+  releaseCdp: (input) => native.releaseCdp(input),
   performAction: (input) => native.performAction(input),
   applyViewerInput: (input) => native.applyViewerInput(input),
   setCaptureDemand: (input) => native.setCaptureDemand(input),
@@ -38,19 +45,9 @@ export const phoneBrowser: Browser.PhoneBrowserNativePort = {
   finishSessionFiles: (input) => native.finishSessionFiles(input),
   cancelDownload: (input) => native.cancelDownload(input),
   onEvent(listener) {
-    let pending = Promise.resolve();
     let active = true;
     const subscription = native.addListener("event", (event) => {
-      pending = pending
-        .then(async () => {
-          if (active) await listener(event);
-        })
-        .catch((error: unknown) => {
-          console.error(
-            "Phone browser event handler failed",
-            error instanceof Error ? error.name : "unknown",
-          );
-        });
+      if (active) void listener(event).catch(() => undefined);
     });
     return () => {
       active = false;

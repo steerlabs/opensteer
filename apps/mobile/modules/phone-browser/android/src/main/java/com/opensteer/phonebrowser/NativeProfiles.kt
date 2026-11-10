@@ -22,6 +22,7 @@ internal class NativeProfiles(context: Context) {
   val manifest: ProfileManifest
   private val loaded = mutableMapOf<String, Profile>()
   private val activeGuests = mutableSetOf<String>()
+  private val guestOwners = mutableMapOf<String, String>()
   private val denied = mutableSetOf<String>()
   val startupDeleted = mutableListOf<String>()
 
@@ -92,6 +93,16 @@ internal class NativeProfiles(context: Context) {
     return entry
   }
 
+  fun guestOwner(handle: String): String? = guestOwners[handle]
+  fun claimGuest(handle: String, session: String) {
+    if (!serving(handle).guest || !activeGuests.contains(handle) || guestOwners.containsKey(handle)) throw BrowserFailure("forbidden")
+    guestOwners[handle] = session
+  }
+  fun adoptGuest(handle: String, previous: String, session: String) {
+    if (!serving(handle).guest || !activeGuests.contains(handle) || guestOwners[handle] != previous) throw BrowserFailure("forbidden")
+    guestOwners[handle] = session
+  }
+
   private fun hasMarker(profile: Profile, entry: ProfileEntry): Boolean = profile.cookieManager.getCookie("https://phone-browser.invalid")
     ?.split(';')?.any { it.trim() == "__Host-opensteer_profile=${entry.handle}" } == true
 
@@ -101,7 +112,7 @@ internal class NativeProfiles(context: Context) {
     val entry = manifest.find(binding) ?: throw BrowserFailure("profile-missing")
     denied.add(entry.handle)
     try { manifest.tombstone(entry.handle, deletionId) }
-    finally { activeGuests.remove(entry.handle); close(entry.name) }
+    finally { activeGuests.remove(entry.handle); guestOwners.remove(entry.handle); close(entry.name) }
     if (entry.deleted) return CompletableFuture.completedFuture(mapOf("state" to "deleted", "deletionId" to deletionId))
     val result = CompletableFuture<Map<String, String>>()
     val profile = loaded[entry.handle]
@@ -116,7 +127,7 @@ internal class NativeProfiles(context: Context) {
     return result
   }
 
-  fun list(deploymentId: String) = manifest.all().filter { it.binding.deploymentId == deploymentId && !it.guest }.map { entry ->
+  fun list(deploymentId: String, runnerId: String? = null) = manifest.all().filter { it.binding.deploymentId == deploymentId && (runnerId == null || it.binding.runnerId == runnerId) && !it.guest }.map { entry ->
     if (entry.deletionId == null) mapOf("phase" to "ready", "binding" to entry.binding.fields())
     else mapOf("phase" to "deleted", "binding" to entry.binding.fields(), "deletionId" to entry.deletionId, "erasure" to if (entry.deleted) "deleted" else "pending-restart")
   }
