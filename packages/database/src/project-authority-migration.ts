@@ -37,6 +37,18 @@ export const projectAuthorityCutoverMigration: Migration = {
     }
     await sql.raw(PROJECT_AUTHORITY_GUARDS_SQL).execute(database);
     await sql.raw(HUMAN_AUTHORITY_GUARDS_SQL).execute(database);
+    await sql`
+      alter table public.security_effects add column access_root jsonb,
+        add constraint security_effects_access_root_object check (access_root is null or jsonb_typeof(access_root) = 'object') not valid;
+      create or replace function public.opensteer_security_effect_scope_immutable() returns trigger language plpgsql as $$
+      begin
+        if (old.workspace_id, old.user_id, old.membership_generation_cutoff, old.membership_generation, old.kind, old.cause_id, old.access_root)
+          is distinct from (new.workspace_id, new.user_id, new.membership_generation_cutoff, new.membership_generation, new.kind, new.cause_id, new.access_root) then
+          raise exception 'security effect scope is immutable';
+        end if;
+        return new;
+      end $$;
+    `.execute(database);
     await sql`alter table public.team_invitations add column trusted_computer_confirmed_at timestamptz`.execute(
       database,
     );
