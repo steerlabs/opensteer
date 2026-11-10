@@ -2117,19 +2117,20 @@ button.side-needs:hover {
   bottom: -1px;
 }
 
+/* The name truncates first; past its floor the bar's other items give way in
+   rank order (bar-yield.ts) rather than spilling past its end. */
 .conv-header__text {
   display: flex;
   align-items: center;
   gap: var(--space-8);
   flex: 1;
-  /* However much the bar holds, the name keeps a readable floor. */
-  min-width: min(96px, 40%);
+  min-width: 0;
 }
 
 .conv-header__title {
   display: flex;
   flex: 0 1 auto;
-  min-width: min(120px, 60%);
+  min-width: 0;
   margin: 0;
   font-size: inherit;
   outline: none;
@@ -2191,6 +2192,15 @@ button.side-needs:hover {
   line-height: 1.35;
 }
 
+.conv-header__yield {
+  display: contents;
+}
+
+/* Given way for room: the bar says where it went instead. */
+[data-yielded] {
+  display: none !important;
+}
+
 /* What the bar says about the conversation and its controls hold the end. */
 .conv-header__end {
   display: flex;
@@ -2205,6 +2215,11 @@ button.side-needs:hover {
   flex: none;
   align-items: center;
   gap: var(--space-2);
+}
+
+/* With everything in it given way, it takes no gap either. */
+.conv-header__actions:not(:has(> :not([data-yielded]))) {
+  display: none;
 }
 
 /* Work handed out by another conversation leads back to it, one quiet row

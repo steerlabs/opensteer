@@ -1,17 +1,18 @@
 import {
-  changeRunPageMemory,
   pageSiteLabel,
   runPageActed,
+  runPageDesktopAspect,
   runPageFolded,
-  runPageMemory,
+  runPageHandleHeight,
+  runPageKeptTranscript,
   runPageOpened,
+  runPageRowHeight,
   runPageShown,
   runPageSize,
-  subscribeRunPageMemory,
   type HostClient,
   type RunPageMoment,
 } from "@opensteer/client/host";
-import { useRunPlace } from "@opensteer/client/react";
+import { useRunPageView, useRunPlace } from "@opensteer/client/react";
 import { observeResize } from "@opensteer/shared/resizeObserver";
 import {
   memo,
@@ -20,7 +21,6 @@ import {
   useLayoutEffect,
   useRef,
   useState,
-  useSyncExternalStore,
   type RefObject,
 } from "react";
 import { Icon } from "../icon.js";
@@ -32,15 +32,6 @@ import {
   useRunPlaceView,
 } from "./viewfinder.js";
 import { useWorkspace } from "./workspace-context.js";
-
-/** The edge between the page and the conversation, which folds the page. */
-const handleHeight = 20;
-/** A page with no picture to show is a row this tall, never a large empty box. */
-const rowHeight = 52;
-/** Before a picture says otherwise, a page is the shape of a desktop browser. */
-const desktopAspect = 1.6;
-/** How much of the conversation stays in view under the page. */
-const keptTranscript = 132;
 
 /**
  * Whether the browser says this connection costs the person data: cellular,
@@ -65,13 +56,7 @@ export function useRunPage(
   runId: string | null,
   moment: () => Omit<RunPageMoment, "cellular">,
 ) {
-  const memory = useSyncExternalStore(
-    useCallback(
-      (listener: () => void) => subscribeRunPageMemory(hostClient, threadId, listener),
-      [hostClient, threadId],
-    ),
-    useCallback(() => runPageMemory(hostClient, threadId), [hostClient, threadId]),
-  );
+  const [{ memory }, update] = useRunPageView(hostClient, threadId);
   const entry = useRunPlace(hostClient, runId);
   const placeRunId = entry?.runId ?? null;
   const [fits, setFits] = useState(true);
@@ -79,20 +64,24 @@ export function useRunPage(
   momentRef.current = moment;
   useEffect(() => {
     if (placeRunId === null) return;
-    changeRunPageMemory(hostClient, threadId, (current) =>
-      runPageActed(current, placeRunId, { ...momentRef.current(), cellular: meteredConnection() }),
-    );
-  }, [hostClient, placeRunId, threadId]);
+    update((view) => {
+      const memory = runPageActed(view.memory, placeRunId, {
+        ...momentRef.current(),
+        cellular: meteredConnection(),
+      });
+      return memory === view.memory ? view : { ...view, memory };
+    });
+  }, [placeRunId, update]);
   // Pressing the folded picture hands focus to the page it opens.
   const focusPage = useRef(false);
   const unfold = useCallback(() => {
     if (placeRunId === null) return;
     focusPage.current = document.activeElement?.closest(".viewfinder") != null;
-    changeRunPageMemory(hostClient, threadId, () => runPageOpened(placeRunId));
-  }, [hostClient, placeRunId, threadId]);
+    update((view) => ({ ...view, memory: runPageOpened(placeRunId) }));
+  }, [placeRunId, update]);
   const fold = useCallback(
-    () => changeRunPageMemory(hostClient, threadId, runPageFolded),
-    [hostClient, threadId],
+    () => update((view) => ({ ...view, memory: runPageFolded(view.memory) })),
+    [update],
   );
   return {
     fits,
@@ -110,13 +99,17 @@ export function useRunPage(
  * The page a conversation's Run is in, above the conversation, while that Run
  * works there. It only watches: pressing it shows the full tab. It measures
  * the room left even while folded, so the folded picture knows whether it can
- * open here. The transcript keeps every line where it was as it opens or folds.
+ * open here. Where the head has no room for that picture, folded is the named
+ * row here instead. The transcript keeps every line where it was throughout,
+ * and focus inside it is never dropped when it folds or its Run ends.
  */
 export const RunPage = memo(function RunPage({
   focusPage,
+  foldedHere,
   hostClient,
   onFits,
   onFold,
+  onUnfold,
   open,
   runId,
   scrollRef,
@@ -124,9 +117,13 @@ export const RunPage = memo(function RunPage({
   threadRef,
 }: {
   readonly focusPage: RefObject<boolean>;
+  /** The head has given up the folded picture for room, so folded stands here as the row. */
+  readonly foldedHere: boolean;
   readonly hostClient: HostClient;
   readonly onFits: (fits: boolean) => void;
   readonly onFold: () => void;
+  /** Null where there is no room to open it: the row then opens the full tab. */
+  readonly onUnfold: (() => void) | null;
   readonly open: boolean;
   readonly runId: string;
   readonly scrollRef: RefObject<HTMLElement | null>;
@@ -139,7 +136,7 @@ export const RunPage = memo(function RunPage({
   const placeKey = place?.placeKey ?? null;
   const [shape, setShape] = useState<{ readonly key: string | null; readonly aspect: number }>({
     key: null,
-    aspect: desktopAspect,
+    aspect: runPageDesktopAspect,
   });
   const onShape = useCallback(
     (aspect: number) =>
@@ -165,9 +162,9 @@ export const RunPage = memo(function RunPage({
     room === null
       ? null
       : runPageSize({
-          aspect: seen ? shape.aspect : desktopAspect,
+          aspect: seen ? shape.aspect : runPageDesktopAspect,
           room: room.height,
-          transcript: keptTranscript,
+          transcript: runPageKeptTranscript,
           width: room.width,
         });
   const fits = page !== null;
@@ -194,35 +191,39 @@ export const RunPage = memo(function RunPage({
     [hostClient, tab?.sessionId, tab?.tabId],
   );
 
-  const shown = open && place !== null;
-  const asPage = shown && seen && page !== null;
-  const height = shown ? (asPage ? page.height : rowHeight) + handleHeight : 0;
+  const shown = place !== null && (open || foldedHere);
+  const asPage = open && seen && page !== null;
+  const height = shown
+    ? asPage
+      ? page.height + runPageHandleHeight
+      : runPageRowHeight + (open ? runPageHandleHeight : 0)
+    : 0;
   useHeldLines(scrollRef, height);
 
   const panelRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<HTMLButtonElement | null>(null);
-  const focusFolded = useRef(false);
-  const fold = useCallback(() => {
-    focusFolded.current = panelRef.current?.contains(document.activeElement) ?? false;
-    onFold();
-  }, [onFold]);
   useLayoutEffect(() => {
     if (shown && focusPage.current) viewRef.current?.focus({ preventScroll: true });
     focusPage.current = false;
-    if (!shown && focusFolded.current)
-      threadRef.current
-        ?.querySelector<HTMLElement>(".conv-header .viewfinder")
-        ?.focus({ preventScroll: true });
-    focusFolded.current = false;
-  }, [focusPage, shown, threadRef]);
+  }, [focusPage, shown]);
+  useFocusKept(panelRef, threadRef, shown);
 
   const drag = useRef<number | null>(null);
   const dragged = useRef(false);
+  const fold = () => {
+    onFold();
+    // Folded here, the handle goes and the row stays: focus stays on the row.
+    if (foldedHere && panelRef.current?.contains(document.activeElement))
+      viewRef.current?.focus({ preventScroll: true });
+  };
   if (!shown) return null;
   const site = place.site ? pageSiteLabel(place.site) : null;
+  // Folded here, pressing it does what the folded picture does: open it when it fits.
+  const unfoldsHere = !open && onUnfold !== null;
   return (
     <div className="run-page" ref={panelRef}>
       <button
+        aria-expanded={unfoldsHere ? false : undefined}
         aria-label={`Show ${placeName(place)}${acting ? ", agent working" : ""}`}
         className={[
           "run-page__view",
@@ -232,9 +233,10 @@ export const RunPage = memo(function RunPage({
         ]
           .filter(Boolean)
           .join(" ")}
-        disabled={destination === null}
+        disabled={destination === null && !unfoldsHere}
         onClick={() => {
-          if (destination) nav.showPlace(destination);
+          if (unfoldsHere) onUnfold();
+          else if (destination) nav.showPlace(destination);
         }}
         ref={viewRef}
         title={placeName(place)}
@@ -272,29 +274,31 @@ export const RunPage = memo(function RunPage({
           </>
         )}
       </button>
-      <button
-        aria-label="Fold page"
-        className="run-page__handle"
-        onClick={() => {
-          // The drag that ended here already folded it.
-          if (dragged.current) dragged.current = false;
-          else fold();
-        }}
-        onPointerDown={(event) => {
-          drag.current = event.clientY;
-          dragged.current = false;
-        }}
-        onPointerUp={(event) => {
-          const from = drag.current;
-          drag.current = null;
-          if (from === null || from - event.clientY < 24) return;
-          dragged.current = true;
-          fold();
-        }}
-        type="button"
-      >
-        <span aria-hidden className="run-page__grip" />
-      </button>
+      {open ? (
+        <button
+          aria-label="Fold page"
+          className="run-page__handle"
+          onClick={() => {
+            // The drag that ended here already folded it.
+            if (dragged.current) dragged.current = false;
+            else fold();
+          }}
+          onPointerDown={(event) => {
+            drag.current = event.clientY;
+            dragged.current = false;
+          }}
+          onPointerUp={(event) => {
+            const from = drag.current;
+            drag.current = null;
+            if (from === null || from - event.clientY < 24) return;
+            dragged.current = true;
+            fold();
+          }}
+          type="button"
+        >
+          <span aria-hidden className="run-page__grip" />
+        </button>
+      ) : null}
     </div>
   );
 });
@@ -321,7 +325,7 @@ function useRoom(threadRef: RefObject<HTMLElement | null>) {
       for (const child of body.children)
         if (!child.classList.contains("thread__conversation"))
           taken += (child as HTMLElement).offsetHeight;
-      const height = thread.clientHeight - taken - handleHeight;
+      const height = thread.clientHeight - taken - runPageHandleHeight;
       const width = thread.clientWidth;
       setRoom((current) =>
         current?.height === height && current.width === width ? current : { height, width },
@@ -348,6 +352,50 @@ function useRoom(threadRef: RefObject<HTMLElement | null>) {
     };
   }, [threadRef]);
   return room;
+}
+
+/**
+ * Focus inside the page is never dropped: when the page folds, gives way or
+ * its Run ends, focus moves to what stands for it now, the folded picture or
+ * the row, or else to the composer, where the conversation goes on.
+ */
+function useFocusKept(
+  panelRef: RefObject<HTMLElement | null>,
+  threadRef: RefObject<HTMLElement | null>,
+  shown: boolean,
+) {
+  useLayoutEffect(() => {
+    const panel = panelRef.current;
+    if (!shown || !panel) return;
+    // What had focus here, until focus moves somewhere else that is still drawn.
+    let last = panel.contains(document.activeElement) ? document.activeElement : null;
+    const enter = (event: FocusEvent) => (last = event.target as Element);
+    const leave = (event: FocusEvent) => {
+      if (event.relatedTarget instanceof Node && !panel.contains(event.relatedTarget)) last = null;
+    };
+    panel.addEventListener("focusin", enter);
+    panel.addEventListener("focusout", leave);
+    return () => {
+      panel.removeEventListener("focusin", enter);
+      panel.removeEventListener("focusout", leave);
+      const went = last;
+      const thread = threadRef.current;
+      // After the commit that removes the page, when what replaces it is drawn.
+      queueMicrotask(() => {
+        // Only focus that went away with the page: elsewhere it is the person's own.
+        if (went === null || went.isConnected || !thread?.isConnected) return;
+        const now = document.activeElement;
+        if (now !== null && now !== document.body && now.isConnected) return;
+        const next =
+          [...thread.querySelectorAll<HTMLElement>(".conv-header .viewfinder")].find(
+            (picture) => picture.closest("[data-yielded]") === null,
+          ) ??
+          thread.querySelector<HTMLElement>(".run-page__view") ??
+          thread.querySelector<HTMLElement>(".composer-dock textarea");
+        next?.focus({ preventScroll: true });
+      });
+    };
+  }, [panelRef, shown, threadRef]);
 }
 
 /**
