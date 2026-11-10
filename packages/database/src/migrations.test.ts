@@ -177,6 +177,7 @@ const releasedMigrationNames = [
   "0167_quiet_tasks",
   "0168_devices",
   "0169_access_foundation",
+  "0170_project_execution_preparation",
 ];
 
 describe("migration names", () => {

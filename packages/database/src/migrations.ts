@@ -31,6 +31,48 @@ import { BASELINE_SCHEMA_SQL } from "./baseline-schema.js";
 import type { DatabaseSchema } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
 
+export const projectExecutionPreparationMigration: Migration = {
+  async up(database) {
+    await sql`
+      create table public.project_runtime_settings (
+        workspace_id text primary key references public.workspaces(id) on delete restrict,
+        harness_instance_id text not null references public.harness_instances(id) on delete restrict,
+        model_selection jsonb not null check (jsonb_typeof(model_selection) = 'object'),
+        access_mode text not null check (access_mode in ('approval-required', 'auto-accept-edits', 'auto', 'full-access')),
+        instructions text not null default '' check (octet_length(instructions) <= 65536),
+        time_zone text not null default 'UTC' check (length(time_zone) between 1 and 64),
+        revision bigint not null default 1 check (revision between 1 and 9007199254740991),
+        updated_by text not null references public.users(id) on delete restrict,
+        updated_at timestamptz not null default now()
+      );
+      create function public.opensteer_project_runtime_settings_scope() returns trigger language plpgsql as $$
+      begin
+        if not exists (
+          select 1 from public.deployments d
+          where d.singleton_key = 'primary' and d.authority_model_version = 2
+            and d.deployment_shape->>'kind' = 'server'
+        ) then
+          raise exception 'Project runtime settings require server authority model 2' using errcode = '23514';
+        end if;
+        if not exists (
+          select 1 from public.workspaces w
+          join public.harness_instances h on h.id = new.harness_instance_id
+          join public.execution_environments e on e.id = h.environment_id
+          join public.runners r on r.id = e.runner_id
+          where w.id = new.workspace_id and w.kind = 'project' and w.deleted_at is null
+            and w.status not in ('deleting', 'deleted')
+            and e.id = w.owner_environment_id and r.owner_kind = 'deployment'
+        ) then
+          raise exception 'Project runtime settings require a live Project and its deployment-owned environment' using errcode = '23514';
+        end if;
+        return new;
+      end $$;
+      create trigger project_runtime_settings_scope before insert or update on public.project_runtime_settings
+        for each row execute function public.opensteer_project_runtime_settings_scope();
+    `.execute(database);
+  },
+};
+
 export const accessFoundationMigration: Migration = {
   async up(database) {
     await sql`
@@ -4798,6 +4840,7 @@ export function migrationProvider() {
         "0167_quiet_tasks": quietTasksMigration,
         "0168_devices": devicesMigration,
         "0169_access_foundation": accessFoundationMigration,
+        "0170_project_execution_preparation": projectExecutionPreparationMigration,
       };
     },
   };

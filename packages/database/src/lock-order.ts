@@ -93,6 +93,7 @@ export const databaseLockOrder = [
   // Environment and profile fences prevent rebinding or catalog adoption across Thread work.
   "execution_environments",
   "harness_instances",
+  "project_runtime_settings",
   "workspace_skill_inventory",
   // Independent lifecycle rows retain their position when no observed edge constrains them.
   "request_continuations",

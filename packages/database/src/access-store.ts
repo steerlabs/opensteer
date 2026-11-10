@@ -17,6 +17,10 @@ import {
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import { z } from "zod";
 import type { AccessEntryTable, DatabaseSchema, WorkspaceMembershipTable } from "./schema.js";
+import {
+  assertProjectAuthority,
+  readDeploymentAuthority,
+} from "./deployment-execution-authority.js";
 import { withRequestWorkspaceLocks } from "./request-workspace-locks.js";
 import { jsonValue, safeGeneration } from "./store-primitives.js";
 
@@ -93,19 +97,6 @@ async function takeWriterLock(transaction: AccessTransaction): Promise<void> {
     transaction,
   );
   writerTransactions.add(transaction);
-}
-
-async function requireNewAuthority(database: Database): Promise<void> {
-  const deployment = await database
-    .selectFrom("deployments")
-    .select(["authorityModelVersion", "deploymentShape"])
-    .where("singletonKey", "=", "primary")
-    .executeTakeFirst();
-  if (deployment?.authorityModelVersion !== 2 || deployment.deploymentShape.kind !== "server")
-    throw new OpensteerError({
-      code: "forbidden",
-      message: "Project grant authority is not activated",
-    });
 }
 
 async function readGraph(database: Database, memberIds?: readonly UserId[]) {
@@ -742,7 +733,7 @@ async function applySource(
       .orderBy("groupId")
       .orderBy("memberKind")
       .orderBy("memberId")
-      // Deleted edges need the deletion-strength fence.
+      // FOR UPDATE: Deletes these group edges, in one row order.
       .forUpdate()
       .execute();
     await transaction.deleteFrom("accessGroupMembers").where(matches).execute();
@@ -780,16 +771,21 @@ async function applySource(
         .execute();
   }
   const addedEntries = next.entries.filter((entry) => !oldEntries.has(entry.id));
-  const transientIds = input.changes.flatMap((change) =>
-    change.kind === "grant" && !nextEntries.has(change.id) ? [change.id] : [],
+  // An entry added and revoked in one list is still saved, so its ID is never free again.
+  const transientIds = new Set(
+    input.changes.flatMap((change) => {
+      const id = introducedEntryId(change);
+      return id !== undefined && !nextEntries.has(id) ? [id] : [];
+    }),
   );
-  if (transientIds.length) {
+  if (transientIds.size) {
     let graph = old;
     for (const change of input.changes) {
       graph = propose(graph, change, input.actor.userId, now);
-      if (change.kind === "grant" && transientIds.includes(change.id))
+      const id = introducedEntryId(change);
+      if (id !== undefined && transientIds.has(id))
         addedEntries.push({
-          ...graph.entries.find((entry) => entry.id === change.id)!,
+          ...graph.entries.find((entry) => entry.id === id)!,
           revokedAt: now,
           revokedBy: input.actor.userId,
         });
@@ -857,14 +853,19 @@ async function applySource(
   }
 }
 
-async function authorizeMutation(
+function introducedEntryId(change: AccessMutation): string | undefined {
+  if (change.kind === "grant") return change.id;
+  if (change.kind === "create-project") return change.entryId;
+  return undefined;
+}
+
+async function requireActor(
   transaction: AccessTransaction,
   input: AccessMutationInput,
-  change: AccessMutation,
-): Promise<void> {
+): Promise<{ readonly id: UserId; readonly administrator: boolean }> {
   const actor = await transaction
     .selectFrom("users")
-    .selectAll()
+    .select(["id", "instanceRole", "memberState", "admittedAt", "authorityGeneration"])
     .where("id", "=", input.actor.userId)
     .executeTakeFirst();
   if (
@@ -875,7 +876,15 @@ async function authorizeMutation(
       safeGeneration(actor.authorityGeneration) !== input.actor.authorityGeneration)
   )
     throw new OpensteerError({ code: "forbidden", message: "Active admitted human is required" });
-  if (actor.instanceRole === "administrator") return;
+  return { id: actor.id, administrator: actor.instanceRole === "administrator" };
+}
+
+async function authorizeMutation(
+  transaction: AccessTransaction,
+  actor: Awaited<ReturnType<typeof requireActor>>,
+  change: AccessMutation,
+): Promise<void> {
+  if (actor.administrator) return;
   let workspaceId: WorkspaceId | undefined;
   if (change.kind === "grant" && change.target.kind === "project")
     workspaceId = change.target.workspaceId;
@@ -910,13 +919,7 @@ export async function mutateAccess(
   input: AccessMutationInput,
 ): Promise<AccessMutationResult> {
   if (!input.changes.length) refuse("At least one access change is required");
-  const introducedIds = input.changes.flatMap((change) =>
-    change.kind === "grant"
-      ? [change.id]
-      : change.kind === "create-project"
-        ? [change.entryId]
-        : [],
-  );
+  const introducedIds = input.changes.flatMap((change) => introducedEntryId(change) ?? []);
   if (new Set(introducedIds).size !== introducedIds.length) refuse("Access entries are immutable");
   const memberIds = input.changes.every((change) => change.kind === "member")
     ? [
@@ -969,7 +972,8 @@ export async function mutateAccess(
       },
       async (transaction) => {
         await lockMemberships(transaction, plans.get(transaction)!.pairs);
-        for (const change of input.changes) await authorizeMutation(transaction, input, change);
+        const actor = await requireActor(transaction, input);
+        // Before permissions: a committed change may have removed the actor's own right to repeat it.
         const receipt = await transaction
           .selectFrom("securityAudit")
           .select("metadata")
@@ -981,6 +985,7 @@ export async function mutateAccess(
             conflict("Access command identity was reused");
           return resultSchema.parse(receipt.metadata.result);
         }
+        for (const change of input.changes) await authorizeMutation(transaction, actor, change);
         const plan = plans.get(transaction)!;
         if (plan.revision !== input.expectedRevision) conflict("Access preview is stale");
         const now = await databaseTime(transaction);
@@ -1022,7 +1027,7 @@ export async function mutateAccess(
       },
       async (transaction) => {
         await takeWriterLock(transaction);
-        await requireNewAuthority(transaction);
+        await assertProjectAuthority(transaction);
         const state = await transaction
           .selectFrom("accessState")
           .select("revision")
@@ -1128,6 +1133,8 @@ export async function checkAccess(
   if (input.target.kind === "topic" || input.target.kind === "team-account")
     return { allowed: false };
   if (input.principal.kind === "project") {
+    const authority = await readDeploymentAuthority(database);
+    if (authority.kind !== "server" || authority.model !== 2) return { allowed: false };
     if (
       input.target.kind !== "project" ||
       input.target.workspaceId !== input.principal.workspaceId ||

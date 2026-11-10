@@ -13,6 +13,7 @@ import { type Kysely, sql } from "kysely";
 import { type DatabaseSchema } from "./schema.js";
 import { isDeepStrictEqual } from "node:util";
 import { jsonValue } from "./store-primitives.js";
+import { assertSupportedRuntimeAuthority } from "./deployment-execution-authority.js";
 
 function deploymentFromRow(row: {
   readonly activeHostInstanceId: HostInstanceId;
@@ -59,6 +60,7 @@ export async function ensureDeployment(
       .forNoKeyUpdate()
       .executeTakeFirst();
     if (existing) {
+      assertSupportedRuntimeAuthority(existing.authorityModelVersion);
       if (input.deploymentId !== undefined && existing.id !== input.deploymentId) {
         throw new OpensteerError({
           code: "conflict",
