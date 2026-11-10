@@ -678,6 +678,11 @@ export const grammarDecisions: readonly GateCase[] = [
 ];
 
 export const otherDecisions: readonly GateCase[] = [
+  [
+    "SELECT '\\' AS a, ' AS b, (WITH s AS MATERIALIZED (SELECT set_config($q$knowledge.read_$q$ || $q$topics$q$, $q${open,hid$q$ || $q$den}$q$, true) x) SELECT (SELECT x FROM s) || (SELECT string_agg(value::text, $q$,$q$) FROM facts)) AS c --'",
+    "admit",
+    "two plain literals here; read with legacy strings, a set_config that widens the scope",
+  ],
   ["SELECT lpad(thing, 10) FROM facts", "function", "lpad pads to any width in one call"],
   ["SELECT rpad(thing, 10, '.') FROM facts", "function", "rpad pads to any width in one call"],
   ["SELECT format('%1000000000s', '')", "function", "format with a width"],
