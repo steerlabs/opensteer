@@ -5,11 +5,13 @@ data class PhoneBrowserCdpGrant(val attachmentId: String, val sessionId: String)
 
 interface PhoneBrowserAuthority {
   fun requireAllocation(epoch: Int, permit: String, sessionId: String?, storeHandle: String?, binding: Map<String, Any>? = null, initialized: Boolean? = null)
-  fun requireCdp(epoch: Int, channelId: String, actorToken: String): PhoneBrowserCdpGrant
+  fun requireCdp(epoch: Int, channelId: String, actorToken: String, attachmentId: String): PhoneBrowserCdpGrant
   fun viewerActor(epoch: Int, channelId: String, sessionId: String): String? = null
   fun requireAttachment(epoch: Int, attachmentId: String, sessionId: String, tabId: String)
+  fun <Result> withAttachment(epoch: Int, attachmentId: String, sessionId: String, operation: () -> Result): Result
   fun requireViewer(epoch: Int, channelId: String, sessionId: String, control: Boolean = false)
   fun acknowledge(epoch: Int, channelId: String, token: String)
+  fun frameWritable(epoch: Int, channelId: String): Boolean
 }
 
 data class PhoneBrowserGeometry(

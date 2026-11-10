@@ -10,8 +10,9 @@ even when they share a profile, and a session's identity is fixed at creation. C
 The Host database owns durable tab descriptors; live sessions and CDP handles die with their
 connection. Restoring makes a new binding and never restarts a finished Run. A selected dormant tab
 restores only on its saved computer and profile, waiting rather than substitute another computer or
-Guest. Guest website state is never reusable: Android WebView needs a private on-disk profile while
-open, tombstoned before use and erased at the next startup. This is not RAM-only browsing.
+Guest. Guest website state is never reused across sessions: Android uses one private on-disk profile
+for all tabs and popups in that session, tombstoned before first use, cleared when its last tab or
+session ends, and deleted at the next startup. Other sessions never reuse it. This is not RAM-only browsing.
 Trigger and watch browsers write no tabs. Only a
 lineage's latest session can close its tabs, late updates never resurrect a closed row, and reopen
 makes a new row. Only committed navigation becomes a restore URL, except that a failed navigation
@@ -60,13 +61,19 @@ instead of opening another tab. Agents keep their explicit resume path. Older pe
 surface-state negotiation keep their existing behavior.
 
 A phone keeps at most two live views: its visible tab and one covered tab. The covered place belongs
-to an agent attachment or to people elsewhere. An attachment may switch tabs after its prior input
-settles; agents may replace people, but another attachment cannot displace the owner. People may
+to an exact agent attachment or to people elsewhere. Each Android Harness connection owns its CDP
+router, permit and pipes, even when another connection belongs to the same Run; closing one never
+retires the other. An attachment may switch tabs after its prior input settles; agents may replace
+people, but another attachment cannot claim even the owner's already-live tab. People may
 replace another people-owned tab only when nobody receives its picture, preventing competing
 devices from repeatedly waking each other's tabs. Replacing retains the old page and fences queued
 input, never takes the phone's visible tab, and never reloads a retained page. Detaching retains an
 unwatched tab; a watched one passes to people until its last picture receiver leaves. Presenting it
 locally frees the covered place. Memory pressure may still discard retained pages.
+Native picture credit follows transport capacity, not enqueue acceptance or a viewer's ACK.
+Android admits no further capture while its socket still holds picture bytes; it captures the
+current page after drain rather than buffering old pictures. Native attachment revocation fences
+queued CDP writes and staging before side effects and releases debugging without a JavaScript round trip.
 
 The phone marks its local presentation intent before asking the Host to reopen a saved tab. That
 resume needs no covered place, even while an agent owns the other live view. After a brief

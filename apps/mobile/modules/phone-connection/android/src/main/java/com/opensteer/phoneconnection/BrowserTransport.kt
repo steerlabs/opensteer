@@ -15,6 +15,8 @@ class BrowserTransport(
     private val emit: (JsonObject) -> Unit,
     private val fenceBrowser: (Int) -> Unit,
     private val monotonicNanos: () -> Long = System::nanoTime,
+    private val detachBrowser: (Int, String) -> Unit = { _, _ -> },
+    private val scheduleDrain: (Runnable) -> Unit = {},
 ) {
     private data class Channel(var capability: JsonObject, val credit: FrameCredit = FrameCredit(), var sequence: Long = 0,
         val captures: MutableMap<String, String?> = mutableMapOf(), var claims: JsonObject? = null, var admitted: Boolean = false, var lastFrameAt: Long? = null)
@@ -26,6 +28,8 @@ class BrowserTransport(
     private var grantRequest: String? = null
     private var grantFrame: JsonObject? = null
     private var revoked: JsonObject? = null
+    private data class PendingFrame(val channelId: String, val channel: Channel, val token: String, val current: () -> Boolean, val completed: (Boolean) -> Unit)
+    private var pendingFrame: PendingFrame? = null
 
     fun online(value: WebSocket, welcome: JsonObject) = synchronized(admission) {
         val fence = admission.adopt(welcome)
@@ -49,8 +53,11 @@ class BrowserTransport(
         grantFrame?.let { emit(Wire.fields("type" to JsonPrimitive("relayCommand"), "message" to it)) }
     }
     fun fence(): Int = synchronized(admission) {
+        finishFrame(false)
         val epoch = admission.advance()
-        channels.values.forEach { it.credit.close() }; channels.clear(); agents.clear(); tickets.retire()
+        channels.values.forEach { it.credit.close() }; channels.clear()
+        agents.keys.toList().forEach { id -> agents.remove(id); detachBrowser(epoch, id) }
+        tickets.retire()
         fenceBrowser(epoch)
         epoch
     }
@@ -120,7 +127,7 @@ class BrowserTransport(
                         val requestId = payload.text("requestId")
                         Wire.requireThat(!channel.captures.containsKey(requestId), "duplicate-capture")
                         val actor = payload.text("actorToken")
-                        val agent = requireAgent(admission.epoch, channelId, actor)
+                        val agent = requireAgent(admission.epoch, channelId, actor, payload.text("attachmentId"))
                         channel.captures[requestId] = agent.attachmentId
                     }
                     if (command["method"] == JsonPrimitive("Opensteer.openTab")) {
@@ -172,6 +179,21 @@ class BrowserTransport(
         admission.requireCurrent(epoch, fence, admission.capability ?: throw Refused("retired-capability"))
         tickets.permit(permit, epoch, fence)
     }
+    fun allocationClaims(epoch: Int, permit: String, sessionId: String): JsonObject = synchronized(admission) {
+        val channelId = if (permit.startsWith("cdp:")) {
+            val agent = requireAttachment(epoch, permit.removePrefix("cdp:"), sessionId)
+            agent.channelId
+        } else {
+            val operation = allocationPermit(epoch, permit)
+            Wire.requireThat(operation.claims.text("sessionId") == sessionId, "forbidden")
+            operation.channelId
+        }
+        withChannel(epoch, channelId) {
+            val claims = channels.getValue(channelId).claims ?: throw Refused("forbidden")
+            Wire.requireThat(claims.text("sessionId") == sessionId, "forbidden")
+            claims
+        }
+    }
     fun <Result> withChannel(epoch: Int, channelId: String, operation: () -> Result): Result = synchronized(admission) {
         requireChannel(epoch, admission.fence ?: throw Refused("retired-stream"), channelId,
             admission.capability ?: throw Refused("retired-capability"))
@@ -182,8 +204,10 @@ class BrowserTransport(
         Wire.requireThat(claims.text("sessionId") == sessionId && (!control || claims.text("access") == "read-write"), "forbidden")
         claims.text("subject")
     }
-    fun requireAgent(epoch: Int, channelId: String, actorToken: String): Agent = withChannel(epoch, channelId) {
-        agents.values.singleOrNull { it.channelId == channelId && it.actorToken == actorToken } ?: throw Refused("forbidden")
+    fun requireAgent(epoch: Int, channelId: String, actorToken: String, attachmentId: String): Agent = withChannel(epoch, channelId) {
+        val agent = agents[attachmentId] ?: throw Refused("forbidden")
+        Wire.requireThat(agent.channelId == channelId && agent.actorToken == actorToken, "forbidden")
+        agent
     }
     fun requireAttachment(epoch: Int, attachmentId: String, sessionId: String, channelId: String? = null): Agent = synchronized(admission) {
         val agent = agents[attachmentId] ?: throw Refused("forbidden")
@@ -194,9 +218,13 @@ class BrowserTransport(
     }
     fun detachAgent(epoch: Int, attachmentId: String) = synchronized(admission) {
         admission.requireCurrent(epoch, admission.fence ?: throw Refused("retired-stream"), admission.capability ?: throw Refused("retired-capability"))
-        agents.remove(attachmentId)
+        if (agents.remove(attachmentId) != null) detachBrowser(epoch, attachmentId)
         channels.values.forEach { channel -> channel.captures.entries.removeAll { it.value == attachmentId } }
         Unit
+    }
+    fun <Result> withAttachment(epoch: Int, attachmentId: String, sessionId: String, operation: () -> Result): Result = synchronized(admission) {
+        requireAttachment(epoch, attachmentId, sessionId)
+        operation()
     }
     fun send(epoch: Int, message: JsonObject) = synchronized(admission) {
         val fence = Fence.auxiliary(message)
@@ -226,12 +254,33 @@ class BrowserTransport(
     }
     fun closeChannel(epoch: Int, channelId: String) = synchronized(admission) {
         admission.requireCurrent(epoch, admission.fence ?: throw Refused("retired-stream"), admission.capability ?: throw Refused("retired-capability"))
+        if (pendingFrame?.channelId == channelId) finishFrame(false)
         channels.remove(channelId)?.credit?.close(); tickets.retireChannel(channelId)
-        agents.entries.removeAll { it.value.channelId == channelId }
+        agents.values.filter { it.channelId == channelId }.map { it.attachmentId }.forEach { detachAgent(epoch, it) }
     }
     fun ack(epoch: Int, channelId: String, token: String) = synchronized(admission) {
         val fence = admission.fence ?: throw Refused("retired-stream")
         requireChannel(epoch, fence, channelId, admission.capability ?: throw Refused("retired-capability")).credit.ack(token)
+    }
+    fun frameWritable(epoch: Int, channelId: String): Boolean = synchronized(admission) {
+        requireChannel(epoch, admission.fence ?: throw Refused("retired-stream"), channelId, admission.capability ?: throw Refused("retired-capability"))
+        pendingFrame == null && socket?.queueSize() == 0L
+    }
+    private fun finishFrame(accepted: Boolean) {
+        val pending = pendingFrame ?: return
+        pendingFrame = null
+        pending.channel.credit.ack(pending.token)
+        pending.completed(accepted)
+    }
+    private fun awaitFrameDrain(pending: PendingFrame): Unit = synchronized(admission) {
+        if (pendingFrame !== pending) return@synchronized
+        val current = try {
+            val fence = admission.fence ?: throw Refused("retired-stream")
+            requireChannel(admission.epoch, fence, pending.channelId, pending.channel.capability) === pending.channel && pending.current()
+        } catch (_: Exception) { false }
+        if (!current || socket == null) finishFrame(false)
+        else if (socket!!.queueSize() == 0L) finishFrame(true)
+        else try { scheduleDrain(Runnable { awaitFrameDrain(pending) }) } catch (_: Exception) { finishFrame(false) }
     }
 
     fun frame(epoch: Int, channelId: String, header: JsonObject, pixels: ByteArray, valid: () -> Boolean = { true }, completed: (Boolean) -> Unit) {
@@ -244,11 +293,12 @@ class BrowserTransport(
             channel = try { requireChannel(epoch, fence, channelId, admission.capability ?: throw Refused("retired-capability")) }
                 catch (_: Refused) { return completed(false) }
             val at = monotonicNanos()
-            if (channel.lastFrameAt?.let { at - it < 125_000_000 } == true || !channel.credit.reserve(token)) return completed(false)
+            if (pendingFrame != null || socket?.queueSize() != 0L || channel.lastFrameAt?.let { at - it < 125_000_000 } == true || !channel.credit.reserve(token)) return completed(false)
             channel.lastFrameAt = at
+            pendingFrame = PendingFrame(channelId, channel, token, valid, completed)
         }
         val ownedPixels = pixels.copyOf()
-        worker.execute {
+        val deliver = Runnable {
             val accepted = try {
                 val frame = FrameCodec.envelope(header, ownedPixels)
                 val bytes = synchronized(admission) {
@@ -259,16 +309,25 @@ class BrowserTransport(
                 }
                 synchronized(admission) {
                     Wire.requireThat(requireChannel(epoch, fence, channelId, channel.capability) === channel, "channel-gone")
+                    Wire.requireThat(pendingFrame?.token == token && socket?.queueSize() == 0L, "capture-busy")
                     Wire.requireThat(valid(), "stale-frame")
                     socket?.send(bytes.toByteString()) == true
                 }
             } catch (_: Exception) { false }
-            channel.credit.ack(token)
-            completed(accepted)
+            synchronized(admission) {
+                val pending = pendingFrame
+                if (pending?.token == token) {
+                    if (accepted) awaitFrameDrain(pending) else finishFrame(false)
+                }
+            }
+        }
+        try { worker.execute(deliver) } catch (_: Exception) {
+            synchronized(admission) { if (pendingFrame?.token == token) finishFrame(false) }
         }
     }
     fun capture(epoch: Int, channelId: String, requestId: String, pixels: ByteArray, attachmentId: String? = null, valid: () -> Boolean = { true }, completed: (Boolean) -> Unit) {
         if (pixels.isEmpty() || pixels.size > FrameCodec.MAX_FRAME) return completed(false)
+        val token = UUID.randomUUID().toString()
         val fence = synchronized(admission) {
             try {
                 val current = admission.fence ?: throw Refused("retired-stream")
@@ -276,25 +335,36 @@ class BrowserTransport(
                 val expected = channel.captures[requestId] ?: throw Refused("retired-capture")
                 Wire.requireThat(expected == attachmentId, "forbidden")
                 requireAttachment(epoch, expected, channel.claims!!.text("sessionId"), channelId)
+                Wire.requireThat(pendingFrame == null && socket?.queueSize() == 0L && channel.credit.reserve(token), "capture-busy")
                 channel.captures.remove(requestId)
+                pendingFrame = PendingFrame(channelId, channel, token, valid, completed)
                 current
             } catch (_: Refused) { return completed(false) }
         }
         val ownedPixels = pixels.copyOf()
-        worker.execute {
+        val deliver = Runnable {
             val sent = try {
                 val result = Wire.fields("type" to JsonPrimitive("cdp.result"), "requestId" to JsonPrimitive(requestId),
                     "result" to Wire.fields("data" to JsonPrimitive(Base64.toBase64String(ownedPixels))))
                 synchronized(admission) {
                     val channel = requireChannel(epoch, fence, channelId, admission.capability ?: throw Refused("retired-capability"))
                     requireAttachment(epoch, attachmentId ?: throw Refused("forbidden"), channel.claims!!.text("sessionId"), channelId)
+                    Wire.requireThat(pendingFrame?.token == token && socket?.queueSize() == 0L, "capture-busy")
                     Wire.requireThat(valid(), "stale-frame")
                     send(epoch, JsonObject(fence.fields + mapOf("type" to JsonPrimitive("browser.server-message"), "channelId" to JsonPrimitive(channelId),
                         "capability" to channel.capability, "message" to result)))
                     true
                 }
             } catch (_: Exception) { false }
-            completed(sent)
+            synchronized(admission) {
+                val pending = pendingFrame
+                if (pending?.token == token) {
+                    if (sent) awaitFrameDrain(pending) else finishFrame(false)
+                }
+            }
+        }
+        try { worker.execute(deliver) } catch (_: Exception) {
+            synchronized(admission) { if (pendingFrame?.token == token) finishFrame(false) }
         }
     }
     private fun requireChannel(epoch: Int, fence: Fence, channelId: String, capability: JsonObject): Channel {

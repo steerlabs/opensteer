@@ -3419,6 +3419,7 @@ export class BrowserService {
       const answered = broker.requestCdp({
         command,
         ...(actorToken ? { actorToken } : {}),
+        ...(nativeAttachment ? { attachmentId: nativeAttachment.attachmentId } : {}),
         requestId: globalThis.crypto.randomUUID(),
         type: "cdp.command",
       });

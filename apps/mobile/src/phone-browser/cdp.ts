@@ -103,6 +103,7 @@ export class PhoneCdpSession {
         throw new PhoneBrowserError("forbidden", "File staging belongs to the browser session.");
       const parameters = BrowserStageFileParametersSchema.parse(command.parameters);
       const staged = await this.#native.stageChunk({
+        attachmentId: this.#owner.attachmentId,
         fileId: parameters.fileId,
         name: parameters.name,
         offset: parameters.offset,

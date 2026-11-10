@@ -18,6 +18,7 @@ import java.util.concurrent.ScheduledFuture
 interface PhoneBrowserEndpoint {
     fun qualification(deploymentId: String, runnerId: String): JsonObject
     fun fence(epoch: Int)
+    fun detachAgent(epoch: Int, attachmentId: String)
     fun eraseDeployment(deploymentId: String, runnerId: String, epoch: Int): CompletableFuture<JsonArray>
 }
 
@@ -269,7 +270,9 @@ class PhoneConnectionRuntime private constructor(context: Context) {
         if (transport != null) return
         val qualification = endpoint?.qualification(current.text("deploymentId"), current.text("runnerId")) ?: return
         transport = BrowserTransport(admission, AttachTickets(qualification.text("runtimeId"), storage.replay(current), ::now), worker,
-            { event -> eventObserver?.invoke(event) }, { epoch -> endpoint?.fence(epoch) })
+            { event -> eventObserver?.invoke(event) }, { epoch -> endpoint?.fence(epoch) },
+            detachBrowser = { epoch, attachmentId -> endpoint?.detachAgent(epoch, attachmentId) },
+            scheduleDrain = { task -> worker.schedule(task, 16, TimeUnit.MILLISECONDS); Unit })
     }
     @Synchronized private fun publish() { revision += 1; observer?.invoke(snapshot()) }
     @Synchronized private fun close(reason: String) {

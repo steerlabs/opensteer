@@ -10,7 +10,9 @@ import java.util.concurrent.TimeUnit
 
 internal class CdpOwner(private val pool: PhoneBrowserPool, private val emit: (Map<String, Any?>) -> Unit) {
   private data class Pipe(val socket: NativeCdpSocket, val attachment: String, val tab: NativeTab, val epoch: Int, val generation: Int)
-  private val permits = CdpPermits()
+  private val permits: CdpPermits = CdpPermits {
+    pool.main.post { if (permits.empty() && probes == 0) disable() }
+  }
   private val pipes = ConcurrentHashMap<String, Pipe>()
   private val name = "webview_devtools_remote_${Process.myPid()}"
   var dialogOpened: ((NativeTab, String, JSONObject, (Boolean, String?) -> Unit) -> Unit)? = null
@@ -18,11 +20,13 @@ internal class CdpOwner(private val pool: PhoneBrowserPool, private val emit: (M
   var dialogClosed: ((NativeTab, String) -> Unit)? = null
   @Volatile var qualified = false
   private var probes = 0
+  private var debugging = false
   private val shutdownWorker = java.util.concurrent.Executors.newSingleThreadScheduledExecutor()
   @Volatile private var stopping = java.util.concurrent.CompletableFuture.completedFuture(Unit)
   private fun disable() {
-    if (BrowserStartup.profiles == null) return
+    if (BrowserStartup.profiles == null || !debugging) return
     BrowserDebugging.set(false)
+    debugging = false
     if (shutdownWorker.isShutdown) return
     val completion = java.util.concurrent.CompletableFuture<Unit>()
     stopping = completion
@@ -44,6 +48,7 @@ internal class CdpOwner(private val pool: PhoneBrowserPool, private val emit: (M
   private fun enable() {
     if (!stopping.isDone || stopping.isCompletedExceptionally) throw BrowserFailure("target-not-ready")
     BrowserDebugging.set(true)
+    debugging = true
   }
 
   @Synchronized fun <T> probe(epoch: Int, action: () -> T): T {
@@ -89,10 +94,12 @@ internal class CdpOwner(private val pool: PhoneBrowserPool, private val emit: (M
     val result = pool.ui(input.epoch) {
     if (!qualified) throw BrowserFailure("unsupported-operation")
     val authority = PhoneBrowserNative.authority ?: throw BrowserFailure("forbidden")
-    val grant = authority.requireCdp(input.epoch, input.channelId, input.actorToken)
-    enable()
-    permits.grant(grant.attachmentId, input.epoch, input.channelId)
-    mapOf("attachmentId" to grant.attachmentId, "filesRoot" to files.directory(grant.sessionId).absolutePath)
+    val grant = authority.requireCdp(input.epoch, input.channelId, input.actorToken, input.attachmentId)
+    authority.withAttachment(input.epoch, grant.attachmentId, grant.sessionId) {
+      enable()
+      permits.grant(grant.attachmentId, input.epoch, input.channelId)
+      mapOf("attachmentId" to grant.attachmentId, "filesRoot" to files.directory(grant.sessionId).absolutePath)
+    }
     }
     try { awaitNativeDiscovery(name); pool.gate.check(input.epoch); return result }
     catch (error: Throwable) { RequestDeadline.cleanup { release(pool.gate.epoch, result.getValue("attachmentId")) }; throw error }
@@ -118,7 +125,12 @@ internal class CdpOwner(private val pool: PhoneBrowserPool, private val emit: (M
           if (pipes[handle] === pipe && pipe.epoch == pool.gate.epoch && pipe.tab.documentId != null) dialogOpened?.invoke(pipe.tab,handle,dialogParameters) { accept, text ->
             val params = JSONObject().put("accept",accept)
             if (text != null) params.put("promptText",text)
-            pipe.socket.submit("Page.handleJavaScriptDialog",params,gate=pool.gate,epoch=pipe.epoch)
+            pipe.socket.submit("Page.handleJavaScriptDialog",params,gate=pool.gate,epoch=pipe.epoch,authorize = { send ->
+              PhoneBrowserNative.authority?.withAttachment(pipe.epoch, pipe.attachment, pipe.tab.sessionId) {
+                permits.require(pipe.attachment, pipe.epoch)
+                send()
+              } ?: throw BrowserFailure("forbidden")
+            })
           }
         }
       } else if (method == "Page.javascriptDialogClosed") pool.main.post { dialogClosed?.invoke(pipe.tab,handle) }
@@ -153,7 +165,13 @@ internal class CdpOwner(private val pool: PhoneBrowserPool, private val emit: (M
       if (input.method.startsWith("Target.") || input.method.startsWith("Browser.") || input.method in setOf("Page.startScreencast", "Page.captureScreenshot", "Page.handleJavaScriptDialog", "Page.setWebLifecycleState", "Page.crash")) throw BrowserFailure("unsupported-operation")
       pipe
     }
-    val response = pipe.socket.submit(input.method, JSONObject(input.params), gate=pool.gate, epoch=input.epoch)
+    val response = pipe.socket.submit(input.method, JSONObject(input.params), gate=pool.gate, epoch=input.epoch, authorize = { send ->
+      PhoneBrowserNative.authority?.withAttachment(input.epoch, pipe.attachment, input.sessionId) {
+        permits.require(pipe.attachment, input.epoch)
+        if (!pipe.tab.live || pipe.tab.generation != input.generation || pipe.tab.documentId != input.documentId) throw BrowserFailure("stale-document")
+        send()
+      } ?: throw BrowserFailure("forbidden")
+    })
     val reply = try { response.get(6, TimeUnit.SECONDS) } catch (_: java.util.concurrent.TimeoutException) { throw BrowserFailure("outcome-unknown") }
     pool.ui(input.epoch) { pool.check(input, true); permits.require(pipe.attachment, input.epoch); PhoneBrowserNative.authority?.requireAttachment(input.epoch, pipe.attachment, input.sessionId, input.tabId) ?: throw BrowserFailure("forbidden") }
     if (reply.has("error")) throw BrowserFailure("cdp-command-failed", reply.getJSONObject("error").optString("message").take(1000))
@@ -169,6 +187,15 @@ internal class CdpOwner(private val pool: PhoneBrowserPool, private val emit: (M
       permits.remove(attachment)
       if (permits.empty() && probes == 0) disable()
       if (permits.empty()) stopping else java.util.concurrent.CompletableFuture.completedFuture(Unit)
+    }
+  }
+  fun revoke(attachment: String) {
+    permits.remove(attachment)
+    pipes.entries.filter { it.value.attachment == attachment }.forEach { (handle, pipe) ->
+      if (pipes.remove(handle, pipe)) {
+        pipe.socket.close()
+        pool.main.post { dialogCancelled?.invoke(pipe.tab, handle) }
+      }
     }
   }
   fun retire(tab: NativeTab) { pipes.entries.filter { it.value.tab === tab }.forEach { pipes.remove(it.key)?.let { pipe -> dialogCancelled?.invoke(pipe.tab,it.key); pipe.socket.close() } } }

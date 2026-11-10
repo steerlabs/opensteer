@@ -3,6 +3,93 @@ import CryptoKit
 @testable import IphoneAppsCore
 
 final class PhoneBrowserTransportTests: XCTestCase {
+  func testFreshOpeningAndLaterAgentAllocationKeepEstablishedProfileAfterExpiry() throws {
+    let fixture = try vector("attach-tickets")
+    let fences = try vector("fences")
+    let clock = BrowserTestClock((fixture["now"] as! NSNumber).int64Value)
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let ledger = try PhoneBrowserReplayLedger(directory: directory)
+    let queue = DispatchQueue(label: "test.allocation-and-native-drain")
+    var deadlines: [() -> Void] = []
+    var writes: [(Error?) -> Void] = []
+    var closed = false
+    let connection = PhoneBrowserConnection(now: { clock.now }, queue: queue, scheduleWriteTimeout: { _, work in deadlines.append(work) })
+    try connection.configure(epoch: 0, runtimeId: "phone", ledger: ledger)
+    defer { connection.offline(reason: "test-finished") }
+    let key = Curve25519.Signing.PrivateKey()
+    var welcome = fences["welcome"] as! [String: Any]
+    welcome["streamLeaseExpiresAt"] = "2026-11-09T12:02:00.000Z"
+    welcome["browserWireVersion"] = 1
+    welcome["browserAttachPublicKeys"] = [["keyId": "test", "publicKeyPem": IphoneProofs.publicKeyPem(key)]]
+    var events: [[String: Any]] = []
+    connection.setObserver { events.append($0) }
+    try connection.adopt(welcome, sender: { message, completed in
+      if case .data = message { writes.append(completed) } else { completed(nil) }
+    }, close: { closed = true })
+    let fence = fences["fence"] as! [String: Any]
+    let capability: [String: Any] = ["runtimeId": "phone", "capabilityGeneration": 1, "capabilityLeaseId": "bcl_11111111-1111-4111-8111-111111111111"]
+    try connection.receive(fence.merging(["type": "capability.grant", "requestId": "grant", "lease": capability.merging(["expiresAt": "2026-11-09T12:02:00.000Z"]) { _, next in next }]) { _, next in next })
+    let channel = "bch_11111111-1111-4111-8111-111111111111"
+    func client(_ message: [String: Any]) throws {
+      try connection.receive(fence.merging(["type": "browser.client-message", "channelId": channel, "capability": capability, "message": message]) { _, next in next })
+    }
+    func commit(_ claims: [String: Any], initial: Bool) throws -> String {
+      let header = IphoneProofs.base64url(try JSONSerialization.data(withJSONObject: ["alg": "EdDSA", "kid": "test", "typ": "opensteer-browser-attach+jwt"]))
+      let body = header + "." + IphoneProofs.base64url(try JSONSerialization.data(withJSONObject: claims))
+      let token = body + "." + IphoneProofs.base64url(try key.signature(for: Data(body.utf8)))
+      if initial {
+        try connection.receive(fence.merging(["type": "browser.attach", "requestId": "attach", "channelId": channel, "capability": capability, "attachTicket": token]) { _, next in next })
+      } else {
+        try client(["type": "cdp.command", "requestId": "open", "command": ["method": "Opensteer.openTab", "parameters": ["operationAuthority": token]]])
+      }
+      let handle = initial ? (events.last!["message"] as! [String: Any])["attachHandle"] as! String : events.last!["authorityHandle"] as! String
+      let verified = try connection.verifyAttach(epoch: 0, attachHandle: handle)
+      let transition = try ledger.snapshot().claiming(nonce: claims["nonce"] as! String, expiresAt: try PhoneBrowserAdmission.milliseconds(claims, "expiresAt"), now: clock.now, capacity: ledger.capacity)
+      let proposed = try JSONSerialization.jsonObject(with: JSONEncoder().encode(transition)) as! [String: Any]
+      return try connection.commitAttach(epoch: 0, attachHandle: handle, claimsDigest: verified["claimsDigest"] as! String, replayTransition: proposed)
+    }
+    var claims = fixture["claims"] as! [String: Any]
+    let binding: [String: Any] = ["version": 1, "deploymentId": "dep_11111111-1111-4111-8111-111111111111", "runnerId": "rnr_11111111-1111-4111-8111-111111111111", "storageInstanceId": "11111111-1111-4111-8111-111111111111", "profileId": "bpr_11111111-1111-4111-8111-111111111111", "bindingId": "11111111-1111-4111-8111-111111111111", "engine": "wkwebview"]
+    let identity: [String: Any] = ["kind": "profile-local", "binding": binding, "initialized": false, "readyUrl": "https://example.test/"]
+    claims["identity"] = identity
+    let initial = try commit(claims, initial: true)
+    clock.advance(21000)
+    XCTAssertThrowsError(try connection.permit(initial, epoch: 0))
+    claims["identity"] = ["kind": "fresh"]
+    claims["nonce"] = "fresh-opening-nonce-1111111111"
+    claims["issuedAt"] = "2026-11-09T12:00:21.000Z"
+    claims["expiresAt"] = "2026-11-09T12:01:21.000Z"
+    claims["operationExpiresAt"] = "2026-11-09T12:00:39.000Z"
+    claims["remainingBudgetMs"] = 18000
+    let operation = try commit(claims, initial: false)
+    XCTAssertEqual(try connection.permit(operation, epoch: 0).claims["identity"] as? NSDictionary, identity as NSDictionary)
+    clock.advance(19000)
+    XCTAssertThrowsError(try connection.permit(operation, epoch: 0))
+    let attachment = UUID().uuidString
+    let actor = UUID().uuidString
+    let session = claims["sessionId"] as! String
+    try client(["type": "agent.attach", "sessionId": session, "attachmentId": attachment, "actorToken": actor, "backend": "actions"])
+    try client(["type": "agent.action", "attachmentId": attachment, "actorToken": actor, "requestId": "later", "request": ["sessionId": session, "timeoutMs": 30000, "action": ["type": "surface.open"]]])
+    XCTAssertEqual(try connection.permit("action:later", epoch: 0).claims["identity"] as? NSDictionary, identity as NSDictionary)
+    try connection.detachAgent(epoch: 0, attachmentId: attachment)
+    XCTAssertThrowsError(try connection.permit("action:later", epoch: 0))
+    let writer = try connection.frameWriter(epoch: 0, channelId: channel)
+    var header = try vector("frames")["header"] as! [String: Any]
+    header.removeValue(forKey: "watchToken")
+    var results: [Bool] = []
+    writer.writeFrame(header: header, pixels: Data([1])) { results.append($0) }
+    queue.sync {}
+    XCTAssertTrue(results.isEmpty)
+    writer.writeFrame(header: header, pixels: Data([2])) { results.append($0) }
+    XCTAssertEqual(writes.count, 1)
+    XCTAssertEqual(results, [false])
+    deadlines[0]()
+    XCTAssertTrue(closed, "A timeout cannot release credit while the socket still owns the previous picture")
+    XCTAssertEqual(results, [false, false])
+    writes[0](nil)
+    XCTAssertEqual(results, [false, false])
+  }
   private func vector(_ name: String) throws -> [String: Any] {
     var root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
     while root.path != "/" {

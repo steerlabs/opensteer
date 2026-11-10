@@ -51,6 +51,7 @@ internal class PhoneBrowserRuntime(
       else qualified + mapOf("browser" to false, "sharedControl" to false, "cdpBoundary" to false, "fileStaging" to false)
     ) as JsonObject
     override fun fence(epoch: Int) = adoptFence(epoch)
+    override fun detachAgent(epoch: Int, attachmentId: String) { cdp.revoke(attachmentId) }
     override fun eraseDeployment(deploymentId: String, runnerId: String, epoch: Int): CompletableFuture<JsonArray> = CompletableFuture.supplyAsync({
       gate.check(epoch)
       val entries = pool.ui(epoch) { profiles().manifest.all().filter { it.binding.deploymentId == deploymentId } }
@@ -138,7 +139,7 @@ internal class PhoneBrowserRuntime(
   fun attachAgent(input: AgentRecord) {
     requireReady(input.epoch)
     if (input.backend != "cdp") throw BrowserFailure("unsupported-operation")
-    val grant = services.requireCdp(input.epoch, input.channelId, input.actorToken)
+    val grant = services.requireCdp(input.epoch, input.channelId, input.actorToken, input.attachmentId)
     if (grant.sessionId != input.sessionId || grant.attachmentId != input.attachmentId) throw BrowserFailure("forbidden")
   }
   fun detachAgent(input: DetachAgentRecord): CompletableFuture<Unit> {
@@ -208,7 +209,7 @@ internal class PhoneBrowserRuntime(
       }
     }
     val profile = if (input.storeHandle != null) pool.ui(input.epoch) { profiles().serving(input.storeHandle!!) } else {
-      pool.await(pool.ui(input.epoch) { profiles().ensure(ProfileBinding(deploymentId!!, runnerId!!, profiles().manifest.storageInstanceId, UUID.randomUUID().toString(), UUID.randomUUID().toString()), false, true, gate, input.epoch) { gate.check(input.epoch); RequestDeadline.check(deadline) } })
+      pool.await(pool.ui(input.epoch) { profiles().guest(deploymentId!!, runnerId!!, input.sessionId, gate, input.epoch) { gate.check(input.epoch); RequestDeadline.check(deadline) } })
     }
     if (profile.binding.deploymentId != deploymentId || profile.binding.runnerId != runnerId) throw BrowserFailure("forbidden")
     val tab = pool.create(input.epoch, input.tabId, profile.name, (input.viewport.width * context.resources.displayMetrics.density).toInt(), (input.viewport.height * context.resources.displayMetrics.density).toInt(), sessionId = input.sessionId, storeHandle = profile.handle)
@@ -225,7 +226,7 @@ internal class PhoneBrowserRuntime(
       return pool.ui(input.epoch) { tab.creating = false; pool.metadata(tab) }
     } catch (error: Throwable) {
       RequestDeadline.cleanup { pool.ui(gate.epoch) { pool.destroyNow(tab.id) } }
-      if (profile.guest) RequestDeadline.cleanup { pool.ui(gate.epoch) { profiles().endGuest(profile.handle, ::closeProfile) } }
+      if (profile.guest) RequestDeadline.cleanup { pool.ui(gate.epoch) { if (profiles().guestActive(profile.handle) && pool.tabs.values.none { it.storeHandle == profile.handle }) profiles().endGuest(profile.handle, ::closeProfile) } }
       throw error
     }
   }

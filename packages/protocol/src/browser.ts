@@ -685,6 +685,7 @@ const BaselineBrowserClientMessageSchema = z
       ...browserRequestBase,
       command: BrowserCdpCommandSchema,
       actorToken: z.uuid().optional(),
+      attachmentId: z.uuid().optional(),
       /** Host-only attribution for Page.navigate and Opensteer.openTab. */
       navigationId: z.uuid().optional(),
       type: z.literal("cdp.command"),

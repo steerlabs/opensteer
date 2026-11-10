@@ -6,6 +6,14 @@ import type { PhoneTab } from "./state.js";
 test("Android CDP stages session-owned files before routing page commands and fences closed attachments", async () => {
   const native = new FakePhoneBrowserNative("android");
   const epoch = native.fence("initialize");
+  await native.attachAgent({
+    epoch,
+    channelId: "channel",
+    sessionId: "session",
+    attachmentId: "attachment",
+    actorToken: "actor",
+    backend: "cdp",
+  });
   const stage = vi.spyOn(native, "stageChunk");
   vi.spyOn(native, "openCdpPipe").mockResolvedValue("pipe");
   const send = vi.spyOn(native, "sendCdp").mockResolvedValue({});
@@ -45,7 +53,12 @@ test("Android CDP stages session-owned files before routing page commands and fe
   expect(await cdp.send({ method: "Opensteer.stageFile", parameters })).toEqual({
     path: `/native/session/${parameters.fileId}/upload.txt`,
   });
-  expect(stage).toHaveBeenLastCalledWith({ ...parameters, epoch, sessionId: "session" });
+  expect(stage).toHaveBeenLastCalledWith({
+    ...parameters,
+    epoch,
+    sessionId: "session",
+    attachmentId: "attachment",
+  });
   const attached = (await cdp.send({
     method: "Target.attachToTarget",
     parameters: { targetId: "tab", flatten: true },

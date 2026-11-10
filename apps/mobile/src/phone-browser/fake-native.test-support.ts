@@ -60,8 +60,8 @@ export class FakePhoneBrowserNative implements PhoneBrowserNativePort {
   readonly output: BrowserRelayToHostMessage[] = [];
   readonly profiles = new Map<string, HeldLocalProfile>();
   readonly tickets = new Map<string, BrowserAttachTicketClaims>();
-  readonly permits = new Set<string>();
-  readonly pipes = new Map<string, NativeDocumentRef>();
+  readonly permits = new Map<string, number>();
+  readonly pipes = new Map<string, NativeDocumentRef & { attachmentId: string }>();
   readonly authorizations = new Set<string>();
   readonly actionAttachments = new Map<string, Input<"attachAgent">>();
   readonly capture = new Map<string, boolean>();
@@ -69,6 +69,13 @@ export class FakePhoneBrowserNative implements PhoneBrowserNativePort {
   readonly dialogsAnswered: string[] = [];
   readonly calls: { method: string; input: unknown }[] = [];
   readonly #listeners = new Set<(event: PhoneBrowserNativeEvent) => Promise<void>>();
+  readonly #ticketChannels = new Map<string, string>();
+  readonly #permitChannels = new Map<string, string>();
+  readonly #channelClaims = new Map<string, BrowserAttachTicketClaims>();
+  readonly #actionPermits = new Map<string, string>();
+  transportBlocked = false;
+  transportQueueBytes = 0;
+  #pendingPicture: { channelId: string; tabId: string } | null = null;
   replay: ReplayLedgerState = { version: 1, highWaterAt: 0, entries: [] };
   actionGate: (() => Promise<void>) | null = null;
   actionError: PhoneBrowserError | null = null;
@@ -77,7 +84,10 @@ export class FakePhoneBrowserNative implements PhoneBrowserNativePort {
   #next = 0;
   readonly qualification: NativeQualification;
 
-  constructor(platform: "ios" | "android" = "ios") {
+  constructor(
+    platform: "ios" | "android" = "ios",
+    readonly now: () => number = () => Date.parse("2026-11-09T12:00:00.000Z"),
+  ) {
     this.qualification = {
       platform,
       runtimeId: "phone-runtime",
@@ -91,13 +101,24 @@ export class FakePhoneBrowserNative implements PhoneBrowserNativePort {
   }
 
   async emit(event: PhoneBrowserNativeEvent): Promise<void> {
+    if (event.type === "relayCommand") {
+      if (event.message.type === "browser.attach")
+        this.#ticketChannels.set(event.message.attachHandle, event.message.channelId);
+      else if (event.message.type === "browser.client-message" && event.authorityHandle)
+        this.#ticketChannels.set(event.authorityHandle, event.message.channelId);
+    }
     if (
       event.type === "relayCommand" &&
       event.message.type === "browser.client-message" &&
       event.message.message.type === "agent.action" &&
       event.message.message.request.action.type === "surface.open"
-    )
-      this.permits.add(`action:${event.message.message.requestId}`);
+    ) {
+      const message = event.message.message;
+      const permit = `action:${message.requestId}`;
+      this.permits.set(permit, this.now() + message.request.timeoutMs);
+      this.#permitChannels.set(permit, event.message.channelId);
+      this.#actionPermits.set(permit, message.attachmentId);
+    }
     await Promise.all([...this.#listeners].map((listener) => listener(event)));
   }
   onEvent(listener: (event: PhoneBrowserNativeEvent) => Promise<void>) {
@@ -114,6 +135,12 @@ export class FakePhoneBrowserNative implements PhoneBrowserNativePort {
     this.authorizations.clear();
     this.actionAttachments.clear();
     this.capture.clear();
+    this.permits.clear();
+    this.#channelClaims.clear();
+    this.#permitChannels.clear();
+    this.#ticketChannels.clear();
+    this.#actionPermits.clear();
+    this.drainTransport();
     return this.epoch;
   }
   #check(input: Epoch, method: string): void {
@@ -160,13 +187,19 @@ export class FakePhoneBrowserNative implements PhoneBrowserNativePort {
     const claims = this.tickets.get(input.attachHandle);
     if (
       !claims ||
+      Date.parse(claims.operationExpiresAt) <= this.now() ||
+      Date.parse(claims.expiresAt) <= this.now() ||
       input.claimsDigest !== input.attachHandle ||
       this.replay.entries.some((entry) => entry.nonce === claims.nonce)
     )
       throw new PhoneBrowserError("forbidden", "The ticket was already consumed.");
     this.replay = input.replayTransition;
     this.tickets.delete(input.attachHandle);
-    this.permits.add(input.attachHandle);
+    this.permits.set(input.attachHandle, Date.parse(claims.operationExpiresAt));
+    const channelId = this.#ticketChannels.get(input.attachHandle);
+    if (!channelId) throw new PhoneBrowserError("forbidden", "No native channel.");
+    this.#permitChannels.set(input.attachHandle, channelId);
+    if (!this.#channelClaims.has(channelId)) this.#channelClaims.set(channelId, claims);
     return input.attachHandle;
   }
   async sendRelay(input: Input<"sendRelay">) {
@@ -177,10 +210,12 @@ export class FakePhoneBrowserNative implements PhoneBrowserNativePort {
     this.#check(input, "closeChannel");
     for (const key of this.capture.keys())
       if (key.startsWith(`${input.channelId}:`)) this.capture.delete(key);
+    this.#channelClaims.delete(input.channelId);
+    if (this.#pendingPicture?.channelId === input.channelId) this.drainTransport();
   }
   async ensureProfile(input: Input<"ensureProfile">) {
     this.#check(input, "ensureProfile");
-    if (!this.permits.has(input.allocationPermit))
+    if ((this.permits.get(input.allocationPermit) ?? 0) <= this.now())
       throw new PhoneBrowserError("forbidden", "No allocation permit.");
     if (input.initialized && !this.profiles.has(input.binding.bindingId))
       throw new PhoneBrowserError("forbidden", "Initialized storage is missing.");
@@ -213,8 +248,32 @@ export class FakePhoneBrowserNative implements PhoneBrowserNativePort {
   }
   async createTab(input: Input<"createTab">) {
     this.#check(input, "createTab");
-    if (!this.permits.has(input.allocationPermit))
+    const cdpAttachment = input.allocationPermit.startsWith("cdp:")
+      ? this.actionAttachments.get(input.allocationPermit.slice(4))
+      : undefined;
+    if (
+      cdpAttachment
+        ? !this.authorizations.has(cdpAttachment.attachmentId) ||
+          cdpAttachment.sessionId !== input.sessionId
+        : (this.permits.get(input.allocationPermit) ?? 0) <= this.now()
+    )
       throw new PhoneBrowserError("forbidden", "No allocation permit.");
+    const actionAttachment = this.#actionPermits.get(input.allocationPermit);
+    if (
+      actionAttachment &&
+      this.actionAttachments.get(actionAttachment)?.sessionId !== input.sessionId
+    )
+      throw new PhoneBrowserError("forbidden", "The action attachment ended.");
+    const channelId = cdpAttachment?.channelId ?? this.#permitChannels.get(input.allocationPermit);
+    const claims = channelId ? this.#channelClaims.get(channelId) : undefined;
+    if (
+      !claims ||
+      claims.sessionId !== input.sessionId ||
+      (claims.identity.kind === "profile-local"
+        ? claims.identity.binding.bindingId !== input.storeHandle
+        : input.storeHandle !== null)
+    )
+      throw new PhoneBrowserError("forbidden", "The profile authority changed.");
     if (input.restoreFrom) {
       const retained = this.tabs.get(input.tabId);
       if (
@@ -320,9 +379,10 @@ export class FakePhoneBrowserNative implements PhoneBrowserNativePort {
   }
   async detachAgent(input: Input<"detachAgent">) {
     this.#check(input, "detachAgent");
-    const attachment = this.actionAttachments.get(input.attachmentId);
-    if (attachment) this.authorizations.delete(`attachment-${attachment.actorToken}`);
+    this.authorizations.delete(input.attachmentId);
     this.actionAttachments.delete(input.attachmentId);
+    for (const [handle, pipe] of this.pipes)
+      if (pipe.attachmentId === input.attachmentId) this.pipes.delete(handle);
   }
   async performAction(
     input: Input<"performAction">,
@@ -384,8 +444,27 @@ export class FakePhoneBrowserNative implements PhoneBrowserNativePort {
   async ackFrame(input: Input<"ackFrame">) {
     this.#tab(input, "ackFrame");
   }
+  captureFrame(channelId: string, tabId: string, byteLength = 524288): boolean {
+    return (
+      !!this.capture.get(`${channelId}:${tabId}`) &&
+      this.#queuePicture(channelId, tabId, byteLength)
+    );
+  }
+  #queuePicture(channelId: string, tabId: string, byteLength: number): boolean {
+    if (this.#pendingPicture || this.transportQueueBytes) return false;
+    this.#pendingPicture = { channelId, tabId };
+    this.transportQueueBytes = byteLength;
+    if (!this.transportBlocked) this.drainTransport();
+    return true;
+  }
+  drainTransport(): void {
+    this.transportQueueBytes = 0;
+    this.#pendingPicture = null;
+  }
   async captureOnce(input: Input<"captureOnce">) {
     this.#document(input, "captureOnce");
+    if (!this.#queuePicture(input.channelId, input.tabId, 1))
+      throw new PhoneBrowserError("not-actionable", "The native picture transport is busy.");
     this.#direct(input.channelId, {
       type: "cdp.result",
       requestId: input.requestId,
@@ -410,7 +489,10 @@ export class FakePhoneBrowserNative implements PhoneBrowserNativePort {
   }
   async authorizeCdp(input: Input<"authorizeCdp">) {
     this.#check(input, "authorizeCdp");
-    const attachmentId = `attachment-${input.actorToken}`;
+    const attachment = this.actionAttachments.get(input.attachmentId);
+    if (attachment?.channelId !== input.channelId || attachment.actorToken !== input.actorToken)
+      throw new PhoneBrowserError("forbidden", "No native attachment.");
+    const attachmentId = attachment.attachmentId;
     this.authorizations.add(attachmentId);
     return { attachmentId, filesRoot: "/native/session-files" };
   }
@@ -456,6 +538,8 @@ export class FakePhoneBrowserNative implements PhoneBrowserNativePort {
   }
   async stageChunk(input: Input<"stageChunk">) {
     this.#check(input, "stageChunk");
+    if (this.actionAttachments.get(input.attachmentId)?.sessionId !== input.sessionId)
+      throw new PhoneBrowserError("forbidden", "The staging attachment ended.");
     return { fileId: input.fileId, complete: true };
   }
   async finishSessionFiles(input: Input<"finishSessionFiles">) {

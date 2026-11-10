@@ -307,6 +307,7 @@ export interface PhoneBrowserNativePort {
     input: Epoch & {
       channelId: string;
       actorToken: string;
+      attachmentId: string;
     },
   ): Promise<{ attachmentId: string; filesRoot: string }>;
   openCdpPipe(input: NativeDocumentRef & { attachmentId: string }): Promise<string>;
@@ -323,6 +324,7 @@ export interface PhoneBrowserNativePort {
   stageChunk(
     input: Epoch & {
       sessionId: string;
+      attachmentId: string;
       fileId: string;
       name: string;
       offset: number;

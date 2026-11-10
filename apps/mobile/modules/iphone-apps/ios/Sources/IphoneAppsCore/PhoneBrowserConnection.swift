@@ -8,6 +8,7 @@ public final class PhoneBrowserConnection: @unchecked Sendable {
   private let now: () -> Int64
   private let onRetire: (Int, String) -> Void
   private let onDetach: (Int, String) -> Void
+  private let scheduleWriteTimeout: (Int, @escaping () -> Void) -> Void
   private var sender: Sender?
   private var observer: (([String: Any]) -> Void)?
   private var keys: [[String: Any]] = []
@@ -38,6 +39,7 @@ public final class PhoneBrowserConnection: @unchecked Sendable {
     var authorized = false
     var closing = false
     var claims: [String: Any]?
+    var claimsDigest = ""
     var actorToken: String?
   }
   private struct Ticket {
@@ -59,8 +61,10 @@ public final class PhoneBrowserConnection: @unchecked Sendable {
   public init(now: @escaping () -> Int64,
     queue: DispatchQueue = DispatchQueue(label: "com.opensteer.phone-browser.writer", qos: .userInitiated),
     onRetire: @escaping (Int, String) -> Void = { _, _ in },
-    onDetach: @escaping (Int, String) -> Void = { _, _ in }) {
+    onDetach: @escaping (Int, String) -> Void = { _, _ in },
+    scheduleWriteTimeout: ((Int, @escaping () -> Void) -> Void)? = nil) {
     self.now = now; self.queue = queue; self.onRetire = onRetire; self.onDetach = onDetach
+    self.scheduleWriteTimeout = scheduleWriteTimeout ?? { milliseconds, work in queue.asyncAfter(deadline: .now() + .milliseconds(milliseconds), execute: work) }
   }
 
   public func setObserver(_ observer: (([String: Any]) -> Void)?) {
@@ -255,10 +259,23 @@ public final class PhoneBrowserConnection: @unchecked Sendable {
     let proposed = try JSONDecoder().decode(PhoneBrowserReplayState.self, from: JSONSerialization.data(withJSONObject: replayTransition))
     guard proposed.highWaterAt <= now() + 5000, proposed.highWaterAt >= now() - 5000 else { throw PhoneBrowserFailure.forbidden }
     _ = try PhoneBrowserTickets.verify(ticket.bytes, keys: keys, runtimeId: runtimeId, now: now())
+    if let previous = channels[ticket.channelId]?.claims {
+      guard let identity = verified.claims["identity"] as? [String: Any],
+        let priorIdentity = previous["identity"] as? [String: Any],
+        ["sessionId", "access", "subject"].allSatisfy({ previous[$0] as? String == verified.claims[$0] as? String }) else { throw PhoneBrowserFailure.forbidden }
+      let sameIdentity = identity["kind"] as? String == "fresh" ||
+        (identity["kind"] as? String == "profile-local" && priorIdentity["kind"] as? String == "profile-local" &&
+          identity["binding"] as? NSDictionary == priorIdentity["binding"] as? NSDictionary) ||
+        identity as NSDictionary == priorIdentity as NSDictionary
+      guard sameIdentity else { throw PhoneBrowserFailure.forbidden }
+    }
     permits = permits.filter { (try? PhoneBrowserAdmission.milliseconds($0.value.claims, "operationExpiresAt")) ?? 0 > now() }
     try ledger.claim(nonce: verified.nonce, expiresAt: verified.expiresAt, now: proposed.highWaterAt, expected: witness, proposed: proposed)
     channels[ticket.channelId]?.authorized = true
-    channels[ticket.channelId]?.claims = verified.claims
+    if channels[ticket.channelId]?.claims == nil {
+      channels[ticket.channelId]?.claims = verified.claims
+      channels[ticket.channelId]?.claimsDigest = verified.digest
+    }
     tickets.removeValue(forKey: attachHandle)
     let handle = UUID().uuidString
     permits[handle] = Permit(epoch: epoch, fence: fence, channelId: ticket.channelId, claims: verified.claims, claimsDigest: verified.digest)
@@ -272,16 +289,18 @@ public final class PhoneBrowserConnection: @unchecked Sendable {
       guard let action = actions[requestId],
         let request = action.message["request"] as? [String: Any],
         (request["action"] as? [String: Any])?["type"] as? String == "surface.open",
-        let permit = permits.values.first(where: { $0.channelId == action.channelId && $0.epoch == epoch && $0.fence == admission.fence }) else { throw PhoneBrowserFailure.forbidden }
+        let channel = channels[action.channelId], let claims = channel.claims,
+        let fence = admission.fence else { throw PhoneBrowserFailure.forbidden }
       try checkAction(epoch: epoch, channelId: action.channelId, sessionId: action.sessionId,
         attachmentId: action.attachmentId, actorToken: action.actorToken, requestId: requestId)
-      return permit
+      return Permit(epoch: epoch, fence: fence, channelId: action.channelId, claims: claims, claimsDigest: channel.claimsDigest)
     }
     guard let permit = permits[handle], permit.epoch == epoch, permit.fence == admission.fence,
       let channel = channels[permit.channelId], !channel.closing else { throw PhoneBrowserFailure.forbidden }
     try admission.check(epoch: epoch, now: now(), capability: channel.capability)
     guard try PhoneBrowserAdmission.milliseconds(permit.claims, "operationExpiresAt") > now() else { throw PhoneBrowserFailure.forbidden }
-    return permit
+    guard let claims = channel.claims else { throw PhoneBrowserFailure.forbidden }
+    return Permit(epoch: permit.epoch, fence: permit.fence, channelId: permit.channelId, claims: claims, claimsDigest: permit.claimsDigest)
   }
 
   public func sendRelay(epoch: Int, message: [String: Any], completion: @escaping (Error?) -> Void) {
@@ -411,7 +430,12 @@ public final class PhoneBrowserConnection: @unchecked Sendable {
       if header != nil { pendingFrames.remove(pendingKey) } else { pendingResults -= 1 }
       lock.unlock(); completion(success)
     }
-    queue.asyncAfter(deadline: .now() + .milliseconds(Int(timeout))) { finished(false) }
+    scheduleWriteTimeout(Int(timeout)) { [self] in
+      lock.lock(); defer { lock.unlock() }
+      guard !completed else { return }
+      if revision == streamRevision, fence == admission.fence { offline(reason: "picture-write-timeout") }
+      finished(false)
+    }
     queue.async { [self] in
       let send = {
       lock.lock(); defer { lock.unlock() }
