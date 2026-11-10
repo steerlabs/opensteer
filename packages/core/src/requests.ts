@@ -69,6 +69,7 @@ export const RequestCancellationReasonSchema = z.enum([
   "membership-revoked",
   "resource-deleted",
   "authority-revoked",
+  "no-eligible-manager",
 ]);
 export type RequestCancellationReason = z.infer<typeof RequestCancellationReasonSchema>;
 

@@ -41,6 +41,11 @@ export const projectAuthorityCutoverMigration: Migration = {
         add constraint requests_requester_audience
           check (required_actor <> 'requester' or requested_by is not null) not valid;
       alter table public.requests
+        drop constraint requests_cancellation_reason_check,
+        add constraint requests_cancellation_reason_check check (cancellation_reason is null or cancellation_reason in (
+          'run-ended', 'process-lost', 'source-closed', 'thread-archived', 'workspace-deleted',
+          'membership-revoked', 'resource-deleted', 'authority-revoked', 'no-eligible-manager')) not valid;
+      alter table public.requests
         add constraint requests_originating_grant_id_fkey
           foreign key (originating_grant_id) references public.grants(id)
           on delete restrict not valid;
