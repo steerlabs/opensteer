@@ -131,6 +131,8 @@ describeStore("additive Project authority preparation", (it) => {
         ).rows;
       const freshDefinitions = await definitions();
       await sql`drop trigger project_principal_scope on principals; drop function opensteer_project_principal_scope();
+        drop trigger request_grant_identity on grants;
+        drop function opensteer_request_grant_identity();
         drop trigger project_request_scope on requests;
         drop function opensteer_project_request_scope();
         alter table requests drop column originating_grant_id, drop constraint requests_requester_audience;
