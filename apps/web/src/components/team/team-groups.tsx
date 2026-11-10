@@ -7,7 +7,7 @@ import {
   type GroupDetail,
   type TeamAccess,
 } from "@opensteer/client/host";
-import { useHostRead } from "@opensteer/client/react";
+import { useHostRead, usePagedList } from "@opensteer/client/react";
 import type { AccessChange, Subject, SubjectView } from "@opensteer/protocol";
 import { Dialog } from "../dialog.js";
 import { Icon } from "../icon.js";
@@ -15,19 +15,21 @@ import { LoadingRows } from "../loading-rows.js";
 import { SectionHeader } from "../settings/primitives.js";
 import { AccessChangeDialog } from "./access-change-dialog.js";
 import { TeamTabs } from "./team-people.js";
-import { CanNote, TeamAvatar, TeamError, TeamSection, useShellTeam } from "./team-ui.js";
+import { CanNote, ShowMore, TeamAvatar, TeamError, TeamSection, useShellTeam } from "./team-ui.js";
 
 export function TeamGroupsPage() {
-  const { team, summary, generation } = useShellTeam();
+  const { team, summary, generation, identity } = useShellTeam();
   const navigate = useNavigate();
   const teamName = summary?.team.name ?? "the team";
-  const read = useHostRead(
-    team ? () => team.groups({ limit: 100 }) : null,
-    `team-groups:${generation}`,
+  const read = usePagedList(
+    team
+      ? (cursor: string | null) => team.groups({ limit: 100, ...(cursor ? { cursor } : {}) })
+      : null,
+    `team-groups:${identity}:${generation}`,
   );
   const [creating, setCreating] = useState(false);
   if (!team) return null;
-  const list = read.data;
+  const list = read.first;
   return (
     <>
       <SectionHeader
@@ -55,10 +57,10 @@ export function TeamGroupsPage() {
           ) : (
             <LoadingRows label="Loading groups" rows={3} />
           )
-        ) : list.items.length === 0 ? (
+        ) : read.items.length === 0 ? (
           <div className="card__empty">No groups yet.</div>
         ) : (
-          list.items.map((group) => (
+          read.items.map((group) => (
             <Link
               className="card__row"
               key={group.id}
@@ -84,6 +86,7 @@ export function TeamGroupsPage() {
             </Link>
           ))
         )}
+        <ShowMore list={read} team={teamName} />
       </div>
       {creating && list ? (
         <NameDialog
@@ -176,15 +179,25 @@ type GroupDialog =
 export function TeamGroupPage() {
   const { groupId = "" } = useParams();
   const navigate = useNavigate();
-  const { team, summary, generation } = useShellTeam();
+  const { team, summary, generation, identity } = useShellTeam();
   const teamName = summary?.team.name ?? "the team";
   const read = useHostRead(
     team ? () => team.group({ groupId, limit: 100 }) : null,
-    `team-group:${groupId}:${generation}`,
+    `team-group:${identity}:${groupId}:${generation}`,
   );
   const [dialog, setDialog] = useState<GroupDialog | null>(null);
-  if (!team) return null;
   const group = read.data;
+  // The group's own read is the first page of its members; "Show more" reads on from it.
+  const members = usePagedList(
+    team && group
+      ? (cursor: string | null) =>
+          cursor
+            ? team.group({ groupId, limit: 100, cursor }).then((next) => next.directMembers)
+            : Promise.resolve(group.directMembers)
+      : null,
+    `team-group-members:${identity}:${groupId}:${generation}:${group ? "read" : "waiting"}`,
+  );
+  if (!team) return null;
   return (
     <>
       <Link className="page__back" to="/settings/team/groups">
@@ -249,10 +262,12 @@ export function TeamGroupPage() {
             title="Members"
           >
             <div className="card">
-              {group.directMembers.items.length === 0 ? (
+              {members.first === null ? (
+                <LoadingRows label="Loading members" rows={2} />
+              ) : members.items.length === 0 ? (
                 <div className="card__empty">Nobody is in this group yet.</div>
               ) : (
-                group.directMembers.items.map((member) => (
+                members.items.map((member) => (
                   <div className="card__row" key={subjectKey(member)}>
                     <TeamAvatar group={member.kind === "group"} name={member.name} />
                     <span className="card__row-body">
@@ -289,6 +304,7 @@ export function TeamGroupPage() {
                   </div>
                 ))
               )}
+              <ShowMore list={members} team={teamName} />
             </div>
             <CanNote can={group.can.editMembers} team={teamName} />
           </TeamSection>

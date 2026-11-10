@@ -13,7 +13,7 @@ import {
   type ProjectAccessView,
   type TeamAccess,
 } from "@opensteer/client/host";
-import { useHostRead, type HostRead } from "@opensteer/client/react";
+import { useHostRead, usePagedList, type HostRead } from "@opensteer/client/react";
 import type {
   AccessChange,
   AccessExplanation,
@@ -31,6 +31,7 @@ import { SurfaceMenu } from "../surface-menu.js";
 import {
   AccessPreviewPanel,
   LevelPicker,
+  ShowMore,
   TeamAvatar,
   TeamError,
   TeamMark,
@@ -43,10 +44,10 @@ export type ProjectAccessRead = HostRead<ProjectAccessView>;
 
 /** One read of a Project's access view, shared by its marker and its People section. */
 export function useProjectAccess(workspaceId: string): ProjectAccessRead {
-  const { team, generation } = useShellTeam();
+  const { team, generation, identity } = useShellTeam();
   return useHostRead(
     team ? () => team.projectAccess({ workspaceId }) : null,
-    `team-access:${workspaceId}:${generation}`,
+    `team-access:${identity}:${workspaceId}:${generation}`,
   );
 }
 
@@ -232,16 +233,22 @@ export function ProjectAccessSection({
   readonly teamName: string;
   readonly viewerId: string | null;
 }) {
-  const { team } = useShellTeam();
+  const { team, identity } = useShellTeam();
   const view = access.data;
-  const [more, setMore] = useState<EntryView[]>([]);
-  const [cursor, setCursor] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<{ entry: EntryView; level: Level | null } | null>(null);
-  useEffect(() => {
-    setMore([]);
-    setCursor(view?.entries?.nextCursor ?? null);
-  }, [view]);
+  // The access read is the first page of entries; "Show more" reads on from it.
+  const entryPages = usePagedList(
+    team && view?.entries
+      ? (cursor: string | null) =>
+          cursor
+            ? team
+                .projectAccess({ workspaceId: view.project.id, cursor })
+                .then((next) => next.entries ?? { items: [], nextCursor: null })
+            : Promise.resolve(view.entries!)
+      : null,
+    `team-access-entries:${identity}:${view?.project.id}:${view?.accessRevision}:${view ? "read" : "waiting"}`,
+  );
   if (!team) return null;
   if (!view)
     return (
@@ -257,7 +264,7 @@ export function ProjectAccessSection({
         </div>
       </TeamSection>
     );
-  const entries = [...(view.entries?.items ?? []), ...more];
+  const entries = entryPages.first ? entryPages.items : (view.entries?.items ?? []);
   const { project, audience } = view;
   return (
     <TeamSection
@@ -291,23 +298,7 @@ export function ProjectAccessSection({
             />
           ))
         )}
-        {cursor ? (
-          <button
-            className="btn btn--ghost btn--small team-more"
-            onClick={() =>
-              void team
-                .projectAccess({ workspaceId: project.id, cursor })
-                .then((page) => {
-                  setMore((current) => [...current, ...(page.entries?.items ?? [])]);
-                  setCursor(page.entries?.nextCursor ?? null);
-                })
-                .catch(() => undefined)
-            }
-            type="button"
-          >
-            Show more
-          </button>
-        ) : null}
+        <ShowMore list={entryPages} team={teamName} />
       </div>
       {adding || appointing ? (
         <AddPeopleDialog

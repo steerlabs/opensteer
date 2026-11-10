@@ -75,7 +75,7 @@ describe("team data follows who is signed in", () => {
       () => expect(session.getState().summary?.projects[0]?.name).toBe("A's secret project"),
       deadline,
     );
-    session.holdLink("invite-a", "https://acme.example/join/a#secret");
+    session.getState().holdLink("invite-a", "https://acme.example/join/a#secret");
 
     set({ session: "authentication-required", user: null });
     expect(session.getState()).toMatchObject({ summary: null, team: null, links: new Map() });
@@ -110,5 +110,23 @@ describe("team data follows who is signed in", () => {
     requests.shift()!.resolve();
     await vi.waitFor(() => expect(session.getState().summary?.me.id).toBe("viewer-b"), deadline);
     expect(seen).not.toContain("viewer-a");
+  });
+
+  it("refuses a link that viewer A's late answer tries to keep once viewer B is signed in", async () => {
+    const { host, requests, set } = fakeHost();
+    const session = new TeamSession(host);
+    session.subscribe(() => {});
+    session.start();
+    await vi.waitFor(() => expect(requests).toHaveLength(1), deadline);
+    // A's invite form took these when it rendered, then awaited creation.
+    const { holdLink, forgetLink } = session.getState();
+    set({ session: "authentication-required", user: null });
+    set({ session: "authenticated", user: { id: "viewer-b" } as never, sessionId: "session-b" });
+    session.getState().holdLink("invite-b", "https://acme.example/join/b#b-secret");
+    holdLink("invite-a", "https://acme.example/join/a#a-secret");
+    forgetLink("invite-b");
+    expect([...session.getState().links]).toEqual([
+      ["invite-b", "https://acme.example/join/b#b-secret"],
+    ]);
   });
 });

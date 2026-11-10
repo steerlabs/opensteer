@@ -2,6 +2,7 @@ import {
   accessPreviewHeadline,
   accessPreviewLines,
   initialsOf,
+  pagedListBound,
   teamErrorText,
   teamReasonText,
   type HostClient,
@@ -238,4 +239,45 @@ export function useCanCreateProject(hostClient: HostClient): boolean {
     (snapshot) => snapshot.teamAdministrationAvailable === true,
   );
   return !team || summary?.can.createProject.allowed === true;
+}
+
+/** "Show more" for a paged team list: one page per press, up to the list's bound. */
+export function ShowMoreRow(props: {
+  readonly list: {
+    readonly nextCursor: string | null;
+    readonly loadingMore: boolean;
+    readonly capped: boolean;
+    readonly error: unknown;
+    readonly first: unknown;
+    readonly more: () => void;
+  };
+  readonly team: string;
+}): ReactNode {
+  const { list } = props;
+  if (list.first && list.error)
+    return (
+      <View style={styles.row}>
+        <View style={styles.grow}>
+          <AppText role="secondary" tone="danger">
+            {teamErrorText(list.error, props.team)}
+          </AppText>
+        </View>
+        <SecondaryButton compact label="Try again" onPress={list.more} />
+      </View>
+    );
+  if (list.nextCursor)
+    return (
+      <View style={styles.row}>
+        <SecondaryButton busy={list.loadingMore} compact label="Show more" onPress={list.more} />
+      </View>
+    );
+  if (list.capped)
+    return (
+      <View style={styles.row}>
+        <AppText role="caption" tone="muted">
+          {`Showing the first ${pagedListBound.toLocaleString()}. Search to find the rest.`}
+        </AppText>
+      </View>
+    );
+  return null;
 }

@@ -12,7 +12,7 @@ import {
   type MemberDetailView,
   type TeamAccess,
 } from "@opensteer/client/host";
-import { useHostRead } from "@opensteer/client/react";
+import { useHostRead, usePagedList } from "@opensteer/client/react";
 import type { MemberChange, MemberKind, MemberState, MemberSummary } from "@opensteer/protocol";
 import { useShell } from "../app-shell.js";
 import { Dialog } from "../dialog.js";
@@ -21,6 +21,7 @@ import { LoadingRows } from "../loading-rows.js";
 import { SectionHeader, SettingsSegmented, formatWhen } from "../settings/primitives.js";
 import {
   CanNote,
+  ShowMore,
   TeamAvatar,
   TeamError,
   TeamSection,
@@ -77,31 +78,26 @@ function useDebounced(value: string) {
 }
 
 export function TeamPeoplePage() {
-  const { team, summary, generation, error: summaryError } = useShellTeam();
+  const { team, summary, generation, identity, error: summaryError } = useShellTeam();
   const teamName = summary?.team.name ?? "the team";
   const [query, setQuery] = useState("");
   const [state, setState] = useState<"all" | MemberState>("all");
   const [inviting, setInviting] = useState(false);
-  const [more, setMore] = useState<MemberSummary[]>([]);
-  const [cursor, setCursor] = useState<string | null>(null);
   const debounced = useDebounced(query);
-  const read = useHostRead(
+  const list = usePagedList(
     team
-      ? () =>
+      ? (cursor: string | null) =>
           team.people({
             limit: 30,
+            ...(cursor ? { cursor } : {}),
             ...(debounced ? { query: debounced } : {}),
             ...(state === "all" ? {} : { state }),
           })
       : null,
-    `team-people:${debounced}:${state}:${generation}`,
+    `team-people:${identity}:${debounced}:${state}:${generation}`,
   );
-  useEffect(() => {
-    setMore([]);
-    setCursor(read.data?.nextCursor ?? null);
-  }, [read.data]);
   if (!team) return null;
-  const people = [...(read.data?.items ?? []), ...more];
+  const people = list.items;
   return (
     <>
       <SectionHeader
@@ -146,10 +142,10 @@ export function TeamPeoplePage() {
         />
       </div>
       <div className="card team-people">
-        {read.data === null ? (
-          read.error ? (
+        {list.first === null ? (
+          list.error ? (
             <div className="card__empty">
-              <TeamError error={read.error} onRetry={read.reload} team={teamName} />
+              <TeamError error={list.error} onRetry={list.reload} team={teamName} />
             </div>
           ) : (
             <LoadingRows label="Loading people" rows={5} />
@@ -185,28 +181,7 @@ export function TeamPeoplePage() {
             </Link>
           ))
         )}
-        {cursor ? (
-          <button
-            className="btn btn--ghost btn--small team-more"
-            onClick={() =>
-              void team
-                .people({
-                  cursor,
-                  limit: 30,
-                  ...(debounced ? { query: debounced } : {}),
-                  ...(state === "all" ? {} : { state }),
-                })
-                .then((page) => {
-                  setMore((current) => [...current, ...page.items]);
-                  setCursor(page.nextCursor);
-                })
-                .catch(() => undefined)
-            }
-            type="button"
-          >
-            Show more
-          </button>
-        ) : null}
+        <ShowMore list={list} team={teamName} />
       </div>
       {summary?.can.invite.allowed ? (
         <Invitations onInvite={() => setInviting(true)} team={team} teamName={teamName} />
@@ -242,18 +217,15 @@ function Invitations({
   readonly team: TeamAccess;
   readonly teamName: string;
 }) {
-  const { generation, links, forgetLink } = useShellTeam();
-  const read = useHostRead(() => team.invitations({ limit: 30 }), `team-invitations:${generation}`);
-  const [more, setMore] = useState<NonNullable<typeof read.data>["items"]>([]);
-  const [cursor, setCursor] = useState<string | null>(null);
+  const { generation, identity, links, forgetLink } = useShellTeam();
+  const paged = usePagedList(
+    (cursor: string | null) => team.invitations({ limit: 30, ...(cursor ? { cursor } : {}) }),
+    `team-invitations:${identity}:${generation}`,
+  );
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState<unknown>(null);
-  useEffect(() => {
-    setMore([]);
-    setCursor(read.data?.nextCursor ?? null);
-  }, [read.data]);
-  const list = read.data;
-  const items = [...(list?.items ?? []), ...more];
+  const list = paged.first;
+  const items = paged.items;
   return (
     <TeamSection
       hint="Open invitations, and those made, used or revoked in the last 30 days, from any device. A link can be copied only in the tab that made it; anywhere else, revoke it and invite again."
@@ -262,9 +234,9 @@ function Invitations({
     >
       <div className="card">
         {!list ? (
-          read.error ? (
+          paged.error ? (
             <div className="card__empty">
-              <TeamError error={read.error} onRetry={read.reload} team={teamName} />
+              <TeamError error={paged.error} onRetry={paged.reload} team={teamName} />
             </div>
           ) : (
             <LoadingRows label="Loading invitations" rows={2} />
@@ -328,23 +300,7 @@ function Invitations({
             );
           })
         )}
-        {cursor ? (
-          <button
-            className="btn btn--ghost btn--small team-more"
-            onClick={() =>
-              void team
-                .invitations({ cursor, limit: 30 })
-                .then((page) => {
-                  setMore((current) => [...current, ...page.items]);
-                  setCursor(page.nextCursor);
-                })
-                .catch(setError)
-            }
-            type="button"
-          >
-            Show more
-          </button>
-        ) : null}
+        <ShowMore list={paged} team={teamName} />
       </div>
       <TeamError error={error} team={teamName} />
     </TeamSection>
@@ -509,19 +465,39 @@ function InviteDialog({
 
 export function TeamPersonPage() {
   const { userId = "" } = useParams();
-  const { team, summary, generation } = useShellTeam();
+  const { team, summary, generation, identity } = useShellTeam();
   const { snapshot } = useShell();
   const teamName = summary?.team.name ?? "the team";
   const read = useHostRead(
     team ? () => team.member({ userId }) : null,
-    `team-member:${userId}:${generation}`,
+    `team-member:${identity}:${userId}:${generation}`,
   );
   const [change, setChange] = useState<MemberChange | null>(null);
   const [disconnecting, setDisconnecting] = useState<
     MemberDetailView["connections"]["items"][number] | null
   >(null);
-  if (!team) return null;
   const person = read.data;
+  // The person's own read is the first page of each list; "Show more" reads on from it.
+  const loaded = `${identity}:${userId}:${generation}:${person ? "read" : "waiting"}`;
+  const groups = usePagedList(
+    team && person
+      ? (cursor: string | null) =>
+          cursor
+            ? team.member({ userId, groupPage: { cursor } }).then((next) => next.groups)
+            : Promise.resolve(person.groups)
+      : null,
+    `team-member-groups:${loaded}`,
+  );
+  const connections = usePagedList(
+    team && person
+      ? (cursor: string | null) =>
+          cursor
+            ? team.member({ userId, connectionPage: { cursor } }).then((next) => next.connections)
+            : Promise.resolve(person.connections)
+      : null,
+    `team-member-connections:${loaded}`,
+  );
+  if (!team) return null;
   return (
     <>
       <Link className="page__back" to="/settings/team/people">
@@ -611,9 +587,9 @@ export function TeamPersonPage() {
           </TeamSection>
 
           <TeamSection id="team-person-groups" title="Groups">
-            {person.groups.items.length ? (
+            {groups.items.length ? (
               <ul className="team-chips">
-                {person.groups.items.map((group) => (
+                {groups.items.map((group) => (
                   <li key={group.id}>
                     <Link
                       className="chip"
@@ -624,9 +600,10 @@ export function TeamPersonPage() {
                   </li>
                 ))}
               </ul>
-            ) : (
+            ) : groups.first ? (
               <p className="settings-footnote">Not in any group.</p>
-            )}
+            ) : null}
+            <ShowMore list={groups} team={teamName} />
           </TeamSection>
 
           <TeamSection
@@ -635,10 +612,10 @@ export function TeamPersonPage() {
             title="Connected agents"
           >
             <div className="card">
-              {person.connections.items.length === 0 ? (
+              {connections.first && connections.items.length === 0 ? (
                 <div className="card__empty">None.</div>
               ) : (
-                person.connections.items.map((connection) => (
+                connections.items.map((connection) => (
                   <div className="card__row" key={connection.id}>
                     <span className="card__row-glyph">
                       <Icon name="plug" />
@@ -666,6 +643,7 @@ export function TeamPersonPage() {
                         Disconnect
                       </button>
                     ) : null}
+                    <ShowMore list={connections} team={teamName} />
                   </div>
                 ))
               )}
