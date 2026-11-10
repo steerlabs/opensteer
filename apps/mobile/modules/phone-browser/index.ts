@@ -1,12 +1,12 @@
-import { NativeModule, requireNativeModule, requireNativeView } from "expo";
+import { type NativeModule, requireNativeModule, requireNativeView } from "expo";
 import type * as Browser from "./types";
 
 export type * from "./types";
 
-declare class PhoneBrowserModule extends NativeModule<{
+type PhoneBrowserModule = NativeModule<{
   event: (event: Browser.PhoneBrowserNativeEvent) => void;
-}> {}
-interface PhoneBrowserModule extends Omit<Browser.PhoneBrowserNativePort, "onEvent"> {}
+}> &
+  Omit<Browser.PhoneBrowserNativePort, "onEvent">;
 
 const native = requireNativeModule<PhoneBrowserModule>("PhoneBrowser");
 export const phoneBrowser: Browser.PhoneBrowserNativePort = {

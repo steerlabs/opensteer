@@ -4014,7 +4014,11 @@ export class MockHostClient implements HostClient {
           listener,
         ),
     };
-    this.browserFrames = { ...frames, cursor: this.#browserCursor };
+    this.browserFrames = {
+      ...frames,
+      cursor: this.#browserCursor,
+      editing: this.#places.input.editing,
+    };
     this.browserWatchFrames = frames;
     this.rpc = createInMemoryHostApiClient(mockHostApiHandlers(this.#state), mockRpcContext());
     this.#tabGroups = new BrowserTabGroupClient(

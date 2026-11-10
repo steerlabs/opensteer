@@ -7,8 +7,11 @@ struct RemoteInputTraits: Equatable {
   let enterKeyHint: String
   let autocapitalize: String
   let showsKeyboard: Bool
+  let keyboardMayReplaceText: Bool
+  var allowsSuggestions: Bool { keyboardMayReplaceText && !sensitive }
 
-  init(_ context: [String: Any]?, softKeyboard: Bool) {
+  init(_ context: [String: Any]?, softKeyboard: Bool, keyboardMayReplaceText: Bool = true) {
+    self.keyboardMayReplaceText = keyboardMayReplaceText
     let field = context?["field"] as? [String: Any]
     editable = field != nil
     sensitive = field?["sensitive"] as? Bool == true

@@ -159,18 +159,18 @@ import UniformTypeIdentifiers
   public override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
     for press in presses { hardware(press, down: false) { super.pressesCancelled([press], with: event) } }
   }
-  public func configure(_ context: [String: Any]?, focused: Bool, softKeyboard: Bool = true) {
+  public func configure(_ context: [String: Any]?, focused: Bool, softKeyboard: Bool = true, keyboardMayReplaceText: Bool = true) {
     gate.enqueue {
       if context?["contextId"] as? String != self.contextId {
         self.unmarkText()
         // The ending's acknowledgement precedes the reset and new-context input.
-        self.gate.enqueue { self.applyConfiguration(context, focused: focused, softKeyboard: softKeyboard) }
+        self.gate.enqueue { self.applyConfiguration(context, focused: focused, softKeyboard: softKeyboard, keyboardMayReplaceText: keyboardMayReplaceText) }
       } else {
-        self.applyConfiguration(context, focused: focused, softKeyboard: softKeyboard)
+        self.applyConfiguration(context, focused: focused, softKeyboard: softKeyboard, keyboardMayReplaceText: keyboardMayReplaceText)
       }
     }
   }
-  private func applyConfiguration(_ context: [String: Any]?, focused: Bool, softKeyboard: Bool) {
+  private func applyConfiguration(_ context: [String: Any]?, focused: Bool, softKeyboard: Bool, keyboardMayReplaceText: Bool) {
     let nextContext = context?["contextId"] as? String
     if nextContext != contextId {
       contextId = nextContext
@@ -180,14 +180,18 @@ import UniformTypeIdentifiers
       selectedRange = NSRange(location: 0, length: 0)
       mutating = false
     }
-    let nextTraits = RemoteInputTraits(context, softKeyboard: softKeyboard)
+    let nextTraits = RemoteInputTraits(context, softKeyboard: softKeyboard, keyboardMayReplaceText: keyboardMayReplaceText)
     let changed = traits != nextTraits
     if changed {
       traits = nextTraits
       isEditable = nextTraits.editable
       isSecureTextEntry = nextTraits.sensitive
-      autocorrectionType = nextTraits.sensitive ? .no : .default
-      spellCheckingType = nextTraits.sensitive ? .no : .default
+      autocorrectionType = nextTraits.allowsSuggestions ? .default : .no
+      spellCheckingType = nextTraits.allowsSuggestions ? .default : .no
+      if #available(iOS 17.0, *) {
+        inlinePredictionType = nextTraits.keyboardMayReplaceText ? .default : .no
+      }
+      smartInsertDeleteType = nextTraits.keyboardMayReplaceText ? .default : .no
       keyboardType = ["numeric": .numberPad, "decimal": .decimalPad, "tel": .phonePad, "email": .emailAddress, "url": .URL, "search": .webSearch][nextTraits.inputMode] ?? .default
       returnKeyType = ["done": .done, "go": .go, "next": .next, "search": .search, "send": .send][nextTraits.enterKeyHint] ?? .default
       autocapitalizationType = ["sentences": .sentences, "words": .words, "characters": .allCharacters][nextTraits.autocapitalize] ?? .none

@@ -11,6 +11,7 @@ import { bootstrapReadDiagnostics } from "./bootstrap-diagnostics.js";
 import { BrowserPasskeys, type BrowserPasskeyPort } from "./browser-passkeys.js";
 import { emptySavedViewReadiness } from "./saved-host-view.js";
 import { BrowserEditingStore } from "./browser-editing.js";
+import { browserBasicInputAllows } from "@opensteer/protocol/browser";
 import { BrowserPreferences } from "./browser-preferences.js";
 import { WorkspaceTabActivations } from "./workspace-tab-activations.js";
 import { browserTabOrderTabs } from "./browser-tab-order.js";
@@ -398,6 +399,7 @@ interface LiveReread {
 }
 
 interface BrowserChannelState {
+  basicInputOnly?: boolean;
   /**
    * The Watch frame this socket delivered and has not yet acknowledged. The
    * Host sends the next only after it, so it is returned exactly once: when
@@ -553,8 +555,9 @@ export class HttpHostClient {
           message.editingVersion,
           surfaceId,
           message.clipboard,
+          message.basicInput,
         );
-      else this.#browserEditing.receive(sessionId, message);
+      else this.#browserEditing.receive(sessionId, message, surfaceId);
       if (message.type === "browser.snapshot" || message.type === "browser.surfaces.changed")
         this.#patchBrowserSession(sessionId, {
           tabs: browserTabs(message.surfaces),
@@ -609,6 +612,7 @@ export class HttpHostClient {
     const passkeys = this.browserPasskeys.optIn(this.#capabilities);
     if (mode === "control" && passkeys) url.searchParams.set("passkeys", passkeys);
     if (mode === "control") url.searchParams.set("popups", "1");
+    if (mode === "control") url.searchParams.set("basicInput", "1");
     url.searchParams.set("editing", "2");
     return this.#webSocketFactory(url.toString().replace(/^http/, "ws"));
   }
@@ -3194,6 +3198,7 @@ export class HttpHostClient {
       if (browserCommandNeedsNoView(command)) return;
       throw new Error("The browser view is not synchronized.");
     }
+    if (channel.basicInputOnly && !browserBasicInputAllows(command)) return;
     channel.socket.send(JSON.stringify(command));
   }
 
@@ -5805,7 +5810,7 @@ export class HttpHostClient {
     if (this.#reconnectSuspended()) return;
     const socket = this.#webSocketFactory(
       this.#webSocketUrl(
-        `/v1/browser-sessions/${encodeURIComponent(channel.sessionId)}/connect?editing=2${channel.mode === "watch" ? "&mode=watch" : ""}`,
+        `/v1/browser-sessions/${encodeURIComponent(channel.sessionId)}/connect?editing=2${channel.mode === "watch" ? "&mode=watch" : "&basicInput=1"}`,
       ),
     );
     socket.binaryType = "arraybuffer";
@@ -5908,12 +5913,14 @@ export class HttpHostClient {
       if (message.sessionId !== sessionId) throw new Error("Browser session ID mismatch.");
       assertBrowserDialogSurface(message.dialog, message.surfaces);
       channel.synchronized = true;
+      channel.basicInputOnly = message.editingVersion === undefined && message.basicInput === 1;
       if (channel.mode === "control")
         this.#browserEditing.negotiate(
           sessionId,
           message.editingVersion,
           undefined,
           message.clipboard,
+          message.basicInput,
         );
       channel.reconnectAttempt = 0;
       this.#patchBrowserSession(sessionId, {
@@ -5937,6 +5944,13 @@ export class HttpHostClient {
       return;
     }
     if (message.type === "browser.error") {
+      if (
+        message.error.reason === "unsupported-operation" ||
+        message.error.reason === "target-suspended"
+      ) {
+        if (channel.mode === "control") this.#browserEditing.receive(sessionId, message);
+        return;
+      }
       this.#patchBrowserSession(sessionId, { error: message.error.message });
       return;
     }

@@ -2,9 +2,71 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BrowserWatchStore } from "./browser-watch.js";
 import type { WebSocketClient } from "./host-session-client.js";
 import { healthySocketMs } from "./realtime-frames.js";
+import { BrowserSurfaceIdSchema } from "@opensteer/protocol";
 
 const sessionId = "bsn_00000000-0000-4000-8000-000000000001";
 const surfaceId = "srf_00000000-0000-4000-8000-000000000001";
+
+it("keeps basic input refusals local to input, preserving the viewer and its picture", () => {
+  const socket = new TargetSocket();
+  const store = new BrowserWatchStore(
+    () => socket,
+    "control",
+    undefined,
+    () => 0,
+  );
+  const release = store.retain(sessionId, surfaceId);
+  try {
+    socket.open();
+    socket.receive({
+      type: "browser.snapshot",
+      sessionId,
+      access: "read-write",
+      state: "ready",
+      targetedStreamingVersion: 1,
+      basicInput: 1,
+      dialog: null,
+      surfaces: [{ id: surfaceId, title: "Page", url: "about:blank", active: true }],
+    });
+    socket.subscribed();
+    socket.picture();
+    const frame = store.get(sessionId, surfaceId).frame;
+    expect(store.status(sessionId, surfaceId).input).toBe("basic");
+    const before = socket.sent.length;
+    const pointer = {
+      type: "input.pointer" as const,
+      surfaceId: BrowserSurfaceIdSchema.parse(surfaceId),
+      action: "down" as const,
+      geometryRevision: 1,
+      x: 0.5,
+      y: 0.5,
+      viewportWidth: 800,
+      viewportHeight: 600,
+      modifiers: [],
+    };
+    store.send(sessionId, surfaceId, { ...pointer, button: "right" });
+    store.send(sessionId, surfaceId, { ...pointer, button: "left", modifiers: ["shift"] });
+    expect(socket.sent).toHaveLength(before);
+    store.send(sessionId, surfaceId, { ...pointer, button: "left" });
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
+      ...pointer,
+      button: "left",
+      inputSequence: 1,
+    });
+    for (const reason of ["unsupported-operation", "target-suspended"]) {
+      socket.receive({
+        type: "browser.error",
+        error: { code: "conflict", reason, message: "Raw implementation detail", retryable: false },
+      });
+      expect(store.get(sessionId, surfaceId)).toMatchObject({ frame, error: null });
+      expect(store.get(sessionId, surfaceId).inputError).toBeFalsy();
+      expect(socket.closes).toEqual([]);
+    }
+  } finally {
+    release();
+    store.dispose();
+  }
+});
 
 class TargetSocket implements WebSocketClient {
   binaryType: "arraybuffer" | "blob" = "blob";

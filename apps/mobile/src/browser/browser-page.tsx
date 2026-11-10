@@ -761,6 +761,7 @@ export function BrowserPage(props: {
     >
       {pageMenu ? (
         <BrowserPageMenu
+          basicInput={editingState.input === "basic"}
           menu={pageMenu}
           sensitive={editingState.context?.field?.sensitive === true}
           onAction={pageAction}
