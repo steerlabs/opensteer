@@ -1,13 +1,22 @@
 import {
   pageSiteLabel,
   runPageActed,
+  runPageDesktopAspect,
   runPageFolded,
+  runPageHandleHeight,
+  runPageKeptTranscript,
+  runPageRowHeight,
   runPageSize,
   runPageShown,
   type HostClient,
   type SurfaceDestination,
 } from "@opensteer/client/host";
-import { useHostSelector, useRunPlace, useRunPlaceBinding } from "@opensteer/client/react";
+import {
+  useHostSelector,
+  useRunPageView,
+  useRunPlace,
+  useRunPlaceBinding,
+} from "@opensteer/client/react";
 import type { PlaceEnteredEventView } from "@opensteer/core";
 import { placeIdentityKey } from "@opensteer/protocol";
 import { useNavigationState } from "@react-navigation/native";
@@ -40,17 +49,8 @@ import {
   usePicture,
   useRunPlaceActing,
 } from "./live-place.js";
-import { useRunPageView } from "./run-page-memory.js";
 
-/** The edge between the page and the conversation, which folds the page. */
-const handleHeight = space[20];
-/** A page with no picture to show is a row this tall, never a large empty box. */
-const rowHeight = 52;
 const rowPicture = { height: 30, width: 46 } as const;
-/** Before a picture says otherwise, a page is the shape of a desktop browser. */
-const desktopAspect = 1.6;
-/** How much of the conversation stays in view under the page, at standard text size. */
-const keptTranscript = 132;
 
 const selectAuthorized = (snapshot: {
   readonly session: string;
@@ -105,9 +105,9 @@ export const RunPageSlot = memo(function RunPageSlot(props: {
   const placeKey = entry === null ? null : placeIdentityKey(entry.data.place);
   const [aspect, setAspect] = useState<{ readonly key: string | null; readonly value: number }>({
     key: null,
-    value: desktopAspect,
+    value: runPageDesktopAspect,
   });
-  const pageAspect = aspect.key === placeKey ? aspect.value : desktopAspect;
+  const pageAspect = aspect.key === placeKey ? aspect.value : runPageDesktopAspect;
   const onPageSize = useCallback(
     (page: { readonly height: number; readonly width: number }) => {
       if (page.width > 0 && page.height > 0)
@@ -138,8 +138,8 @@ export const RunPageSlot = memo(function RunPageSlot(props: {
       ? null
       : runPageSize({
           aspect: pageAspect,
-          room: size.height - top - clearance - handleHeight,
-          transcript: Math.round(keptTranscript * Math.min(fontScale, 2)),
+          room: size.height - top - clearance - runPageHandleHeight,
+          transcript: Math.round(runPageKeptTranscript * Math.min(fontScale, 2)),
           width: Math.min(size.width, column),
         });
   const fits = page !== null;
@@ -348,7 +348,7 @@ const styles = StyleSheet.create({
     alignSelf: "center",
     flexDirection: "row",
     gap: space[10],
-    minHeight: rowHeight,
+    minHeight: runPageRowHeight,
     paddingHorizontal: space[16],
     paddingVertical: space[8],
     width: "100%",
@@ -357,8 +357,8 @@ const styles = StyleSheet.create({
   picture: { backgroundColor: color.surfaceCode, overflow: "hidden" },
   waiting: { ...StyleSheet.absoluteFill, backgroundColor: "rgba(8, 8, 8, 0.45)" },
   words: { flex: 1, gap: space[2], minWidth: 0 },
-  handle: { alignItems: "center", height: handleHeight, justifyContent: "center" },
-  grip: { alignItems: "center", height: handleHeight, justifyContent: "center", width: 64 },
+  handle: { alignItems: "center", height: runPageHandleHeight, justifyContent: "center" },
+  grip: { alignItems: "center", height: runPageHandleHeight, justifyContent: "center", width: 64 },
   grabber: {
     backgroundColor: color.lineHover,
     borderRadius: radius.full,

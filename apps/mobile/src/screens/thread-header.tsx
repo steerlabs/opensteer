@@ -1,4 +1,4 @@
-import { useHostSelector } from "@opensteer/client/react";
+import { useHostSelector, useRunPageView } from "@opensteer/client/react";
 import { runPageOpened, type HostClient, type SurfaceDestination } from "@opensteer/client/host";
 import { StackActions, useNavigation } from "@react-navigation/native";
 import { useCallback, useLayoutEffect, useMemo, useState, type ReactNode } from "react";
@@ -11,7 +11,6 @@ import {
 } from "../thread/around-button.js";
 import { aroundGlanceSelector, sameAroundGlance } from "../thread/around-model.js";
 import { FoldedPage } from "../thread/folded-page.js";
-import { useRunPageView } from "../thread/run-page-memory.js";
 import { surfaceRoute } from "../browser/surface-route.js";
 import { sameThreadHeader, type ThreadHeaderState } from "../thread/thread-pane.js";
 import { TaskStateIndicator } from "../thread/task-status.js";
