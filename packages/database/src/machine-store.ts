@@ -1,4 +1,4 @@
-import { deploymentPolicy } from "@opensteer/core";
+import { readDeploymentAuthority } from "./deployment-execution-authority.js";
 import { withDatabaseTransaction } from "./connection.js";
 import { type CommandRow, type DatabaseSchema } from "./schema.js";
 import {
@@ -365,9 +365,11 @@ export async function effectiveMachineOwners(
     .where("revokedAt", "is", null)
     .execute();
   let personalOwner: UserId | null | undefined;
-  const deploymentIsPersonal = await isPersonalDeployment(database);
+  const authority = await readDeploymentAuthority(database);
+  const deploymentIsPersonal = authority.kind === "personal";
   for (const runner of runners) {
     if (runner.ownerKind === "user") {
+      if (authority.kind === "server" && authority.model === 2) continue;
       owners.set(runner.id, { effectiveOwner: runner.ownerUserId, ownerKind: "user" });
       continue;
     }
@@ -454,13 +456,20 @@ export async function listReachableMachines(
   userId: UserId,
   callerRunnerId: RunnerId,
 ): Promise<readonly ReachableMachineRecord[]> {
-  const personalOwner = (await isPersonalDeployment(database))
-    ? await personalDeploymentOwner(database)
-    : null;
+  const authority = await readDeploymentAuthority(database);
+  const team = authority.kind === "server" && authority.model === 2;
+  const personalOwner =
+    authority.kind === "personal" ? await personalDeploymentOwner(database) : null;
   const rows = await database
     .selectFrom("runners")
     .select(["accessPolicy", "id", "lastSeenAt", "moduleDescriptors", "name"])
     .where("revokedAt", "is", null)
+    .$if(team, (query) =>
+      query
+        .where("ownerKind", "=", "deployment")
+        .where("ownerUserId", "is", null)
+        .where("kind", "!=", "local"),
+    )
     // A Run never reaches the machine it runs on over SSH.
     .where("id", "!=", callerRunnerId)
     .where(sql<boolean>`module_descriptors ? 'shell'`)
@@ -796,17 +805,6 @@ export async function listShellHistory(
         : null,
     sessions,
   };
-}
-
-async function isPersonalDeployment(database: Kysely<DatabaseSchema>): Promise<boolean> {
-  const deployment = await database
-    .selectFrom("deployments")
-    .select("deploymentShape")
-    .where("singletonKey", "=", "primary")
-    .executeTakeFirst();
-  return deployment
-    ? deploymentPolicy(deployment.deploymentShape).deploymentOwnsMainComputer
-    : false;
 }
 
 /** A Personal Deployment has exactly one established owner. */
