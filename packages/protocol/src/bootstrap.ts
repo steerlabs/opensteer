@@ -113,7 +113,7 @@ export const HostBootstrapSchema = z.object({
         .catch(undefined),
     })
     .optional()
-    .catch(undefined),
+    .catch({}),
   appTabs: AppTabsSchema.optional(),
   /** Recovery can replace the session silently, and a running app's access ends with the old one. */
   sessionId: AuthSessionIdSchema.optional(),

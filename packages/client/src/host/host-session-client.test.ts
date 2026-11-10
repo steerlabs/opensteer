@@ -352,6 +352,29 @@ describe("saved-view readiness", () => {
     client.dispose();
   });
 
+  it.each(["personal", "server"] as const)(
+    "does not derive facts from an unreadable %s Host projection",
+    async (kind) => {
+      for (const projection of ["future-policy-format", null, []]) {
+        const client = createHttpHostClient({
+          refreshIntervalMs: 0,
+          fetch: async () =>
+            json({
+              ...bootstrap([]),
+              deploymentShape: { kind, defaultWorkspaceBacking: "local-directory" },
+              deploymentPolicy: projection,
+            }),
+        });
+        try {
+          await client.load();
+          expect(client.getSnapshot().deploymentPolicy, JSON.stringify(projection)).toEqual({});
+        } finally {
+          client.dispose();
+        }
+      }
+    },
+  );
+
   it.each([
     {
       policy: {

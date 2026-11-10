@@ -15,7 +15,7 @@ export function hostDeploymentPolicy(
     | null
     | undefined,
 ): DeploymentClientPolicy | undefined {
-  if (bootstrap?.deploymentPolicy) return bootstrap.deploymentPolicy;
+  if (bootstrap?.deploymentPolicy !== undefined) return bootstrap.deploymentPolicy;
   return bootstrap?.deploymentShape
     ? deploymentClientPolicy(
         deploymentPolicy({
