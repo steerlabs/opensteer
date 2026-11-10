@@ -132,6 +132,14 @@ describeStore("browser profile homes", (it) => {
   it("requires a selection when ambiguous, preserves idempotency, and binds only to the chosen home", async ({
     storeFixture: fixture,
   }) => {
+    const unhomedOwner = await fixture.store.createUser("No computer");
+    await expect(
+      fixture.store.createBrowserProfile({
+        ownerId: unhomedOwner,
+        name: "No home",
+        idempotencyKey: "no-home",
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
     const run = await setup(fixture);
     const implicit = await fixture.store.createBrowserProfile({
       ownerId: run.userId,
@@ -328,7 +336,18 @@ describeStore("browser profile homes", (it) => {
     expect(await fixture.store.listBrowserProfileErasureJobs(home)).toEqual([]);
     expect(await fixture.store.listPendingBrowserProfileDeletions(run.userId)).toEqual([]);
     const remaining = await computer(fixture, run.userId);
-    for (let index = 0; index < 128; index++)
+    await fixture.database
+      .insertInto("browserProfiles")
+      .values(
+        Array.from({ length: 126 }, (_, index) => ({
+          id: createId("browserProfile"),
+          ownerId: run.userId,
+          homeRunnerId: remaining,
+          name: `Replacement ${index}`,
+        })),
+      )
+      .execute();
+    for (const index of [126, 127])
       await fixture.store.createBrowserProfile({
         ownerId: run.userId,
         homeRunnerId: remaining,
@@ -413,11 +432,17 @@ describeStore("browser profile homes", (it) => {
     },
   );
 
-  it.for(["create", "bind", "start"] as const)(
+  it.for(["create", "implicit-create", "bind", "start"] as const)(
     "serializes %s against removal at the Runner row",
     async (operation, { storeFixture: fixture }) => {
       const run = await setup(fixture);
       const home = await computer(fixture, run.userId);
+      if (operation === "implicit-create")
+        await fixture.database
+          .updateTable("runners")
+          .set({ allowedModules: sql`'["agents","messaging"]'::jsonb` })
+          .where("id", "=", run.runnerId)
+          .execute();
       const profile = await fixture.store.createBrowserProfile({
         ownerId: run.userId,
         homeRunnerId: home,
@@ -448,25 +473,25 @@ describeStore("browser profile homes", (it) => {
       let competing: Promise<PromiseSettledResult<unknown>[]> | undefined;
       try {
         removing = fixture.store.revokeRunner(home, run.userId);
-        await vi.waitFor(
+        const removingPid = await vi.waitFor(
           async () => {
             const result = await sql<{
-              count: string;
-            }>`select count(*)::text as count from pg_stat_activity where ${blockerPid} = any(pg_blocking_pids(pid))`.execute(
+              pid: number;
+            }>`select pid from pg_stat_activity where ${blockerPid} = any(pg_blocking_pids(pid))`.execute(
               fixture.database,
             );
-            expect(
-              Number(result.rows[0]!.count),
-              "Removal never waited for its Runner fence",
-            ).toBeGreaterThan(0);
+            expect(result.rows.length, "Removal never waited for its Runner fence").toBeGreaterThan(
+              0,
+            );
+            return result.rows[0]!.pid;
           },
           { timeout: 2_000 },
         );
         const action =
-          operation === "create"
+          operation === "create" || operation === "implicit-create"
             ? fixture.store.createBrowserProfile({
                 ownerId: run.userId,
-                homeRunnerId: home,
+                ...(operation === "create" ? { homeRunnerId: home } : {}),
                 name: "Too late",
                 idempotencyKey: "late",
               })
@@ -482,6 +507,19 @@ describeStore("browser profile homes", (it) => {
                   workspaceId: run.workspace.id,
                 });
         competing = Promise.allSettled([action]);
+        await vi.waitFor(
+          async () => {
+            const result = await sql<{ count: string }>`select count(*)::text as count
+              from pg_stat_activity where pid <> ${removingPid} and
+                (${blockerPid} = any(pg_blocking_pids(pid)) or
+                 ${removingPid} = any(pg_blocking_pids(pid)))`.execute(fixture.database);
+            expect(
+              Number(result.rows[0]!.count),
+              "Competing operation never waited for removal's fence",
+            ).toBeGreaterThan(0);
+          },
+          { timeout: 2_000 },
+        );
         release.resolve();
         await blocker;
         await removing;

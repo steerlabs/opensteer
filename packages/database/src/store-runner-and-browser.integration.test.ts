@@ -3687,17 +3687,27 @@ describeStore("PostgreSQL store", (it) => {
   it("counts unfinished erasures against profile creation capacity until disk deletion completes", async ({
     storeFixture,
   }) => {
-    const { store } = storeFixture;
+    const { store, database } = storeFixture;
     const { ownerId, binding, profile } = await nativeProfileFixture(storeFixture, "capacity");
     await store.bindBrowserProfile(binding);
     await store.acknowledgeBrowserProfileReady(binding);
     await store.deleteBrowserProfile({ ownerId, profileId: profile.id });
-    for (let index = 0; index < 127; index++)
-      await store.createBrowserProfile({
-        ownerId,
-        name: `Profile ${index}`,
-        idempotencyKey: `capacity-${index}`,
-      });
+    await database
+      .insertInto("browserProfiles")
+      .values(
+        Array.from({ length: 126 }, (_, index) => ({
+          id: createId("browserProfile"),
+          ownerId,
+          homeRunnerId: binding.runnerId,
+          name: `Profile ${index}`,
+        })),
+      )
+      .execute();
+    await store.createBrowserProfile({
+      ownerId,
+      name: "Last available slot",
+      idempotencyKey: "capacity-last-slot",
+    });
     const create = { ownerId, name: "Overflow", idempotencyKey: "capacity-overflow" };
     await expect(store.createBrowserProfile(create)).rejects.toMatchObject({ code: "conflict" });
     const [job] = await store.listBrowserProfileErasureJobs(binding.runnerId);

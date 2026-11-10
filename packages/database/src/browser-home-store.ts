@@ -43,19 +43,18 @@ export async function lockBrowserHomeRunner(
   ownerId: UserId,
   homeRunnerId?: RunnerId,
 ): Promise<RunnerId> {
-  const candidates = homeRunnerId
-    ? undefined
-    : await listEligibleBrowserRunners(transaction, ownerId);
-  const selected = homeRunnerId ?? (candidates?.length === 1 ? candidates[0]?.id : undefined);
-  if (!selected)
+  const eligible = eligibleBrowserRunners(transaction, ownerId);
+  const candidates = await (homeRunnerId ? eligible.where("id", "=", homeRunnerId) : eligible)
+    .orderBy("id")
+    .limit(2)
+    .forShare()
+    .execute(databaseOperationOptions());
+  if (!homeRunnerId && candidates.length !== 1)
     throw new OpensteerError({
       code: "conflict",
       message: "Choose a computer for this browser profile.",
     });
-  const runner = await eligibleBrowserRunners(transaction, ownerId)
-    .where("id", "=", selected)
-    .forShare()
-    .executeTakeFirst(databaseOperationOptions());
+  const runner = candidates[0];
   if (!runner)
     throw new OpensteerError({
       code: "forbidden",
