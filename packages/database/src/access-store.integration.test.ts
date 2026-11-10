@@ -19,10 +19,12 @@ import {
   mutateAccess,
 } from "./access-store.js";
 import { createAccessExpiryScheduler } from "./access-expiry.js";
+import { loadMembershipAuthority } from "./effective-membership.js";
 
 async function setup(fixture: StoreFixture) {
   const run = await fixture.createRunFixture("access", null, "project");
   await fixture.database.updateTable("deployments").set({ authorityModelVersion: 2 }).execute();
+  await loadMembershipAuthority(fixture.database);
   await fixture.database
     .updateTable("users")
     .set({ instanceRole: "administrator", admittedAt: new Date() })
@@ -95,6 +97,12 @@ describeStore("dormant Project access", (it) => {
       returning membership_generation_cutoff`.execute(storeFixture.database);
       expect(Number(result.rows[0]!.membershipGenerationCutoff)).toBe(generation - 1);
     }
+    await expect(
+      sql`insert into security_effects (
+      id, kind, workspace_id, user_id, membership_generation, cause_id, status, next_attempt_at
+    ) values (${createId("securityEffect")}, 'close-realtime', ${access.workspace.id}, ${access.userId}, 6,
+      ${createId("command")}, 'pending', clock_timestamp())`.execute(storeFixture.database),
+    ).rejects.toThrow("marked security effects require an explicit generation cutoff");
   });
   it("migrates the previous schema without changing legacy membership data or DTO bytes", async ({
     storeFixture,
@@ -357,142 +365,149 @@ describeStore("dormant Project access", (it) => {
     expect(await access.allowed(userId, 1)).toEqual({ allowed: false });
   });
 
+  const statementCounts = new Map<string, number>();
   for (const operation of ["delete-group", "suspend"] as const)
-    it(`measures the largest ${operation} and a competing writer`, async ({ storeFixture }) => {
-      const access = await setup(storeFixture);
-      const groupId = randomUUID();
-      await access.mutate({ kind: "create-group", id: groupId, name: "Scale" });
-      const users: UserId[] = [];
-      const peopleCount = operation === "delete-group" ? accessCapacity.effectivePairs / 128 : 64;
-      for (let index = 0; index < peopleCount; index++)
-        users.push(await storeFixture.store.createUser(`Scale ${index}`));
-      await storeFixture.database
-        .updateTable("users")
-        .set({ admittedAt: new Date() })
-        .where("id", "in", users)
-        .execute();
-      const projects = [
-        access.workspace.id,
-        ...Array.from({ length: 127 }, () => createId("workspace")),
-      ];
-      await storeFixture.database.transaction().execute(async (transaction) => {
-        await sql`insert into workspaces(id, name, color, kind, created_by, backing, status)
+    for (const projectCount of [2, 128])
+      it(`measures ${operation} on ${projectCount} Projects and a competing writer`, async ({
+        storeFixture,
+      }) => {
+        const access = await setup(storeFixture);
+        const groupId = randomUUID();
+        await access.mutate({ kind: "create-group", id: groupId, name: "Scale" });
+        const users: UserId[] = [];
+        const peopleCount = operation === "delete-group" ? accessCapacity.effectivePairs / 128 : 64;
+        for (let index = 0; index < peopleCount; index++)
+          users.push(await storeFixture.store.createUser(`Scale ${index}`));
+        await storeFixture.database
+          .updateTable("users")
+          .set({ admittedAt: new Date() })
+          .where("id", "in", users)
+          .execute();
+        const projects = [
+          access.workspace.id,
+          ...Array.from({ length: projectCount - 1 }, () => createId("workspace")),
+        ];
+        await storeFixture.database.transaction().execute(async (transaction) => {
+          await sql`insert into workspaces(id, name, color, kind, created_by, backing, status)
           select project.id, 'Scale', 'blue', 'project', ${access.userId},
             jsonb_set(backing, '{bindingId}', to_jsonb(replace(project.id, 'wsp_', 'wbd_'))), 'ready'
           from workspaces cross join unnest(${projects.slice(1)}::text[]) as project(id)
           where workspaces.id = ${access.workspace.id}`.execute(transaction);
-        await transaction
-          .insertInto("workspaceMemberships")
-          .values(
-            projects.slice(1).map((workspaceId) => ({
+          await transaction
+            .insertInto("workspaceMemberships")
+            .values(
+              projects.slice(1).map((workspaceId) => ({
+                id: createId("workspaceMembership"),
+                workspaceId,
+                userId: access.userId,
+                role: "owner" as const,
+                state: "active" as const,
+                generation: 1,
+                invitedBy: null,
+              })),
+            )
+            .execute();
+          await transaction
+            .insertInto("accessGroupMembers")
+            .values(
+              users.map((userId) => ({
+                groupId,
+                memberKind: "user" as const,
+                memberId: userId,
+                addedBy: access.userId,
+              })),
+            )
+            .execute();
+          await transaction
+            .insertInto("accessEntries")
+            .values(
+              projects.map((workspaceId) => ({
+                id: randomUUID(),
+                subjectKind: "group" as const,
+                subjectId: groupId,
+                targetKind: "project" as const,
+                targetId: workspaceId,
+                level: "use" as const,
+                grantedBy: access.userId,
+              })),
+            )
+            .execute();
+          const rows = projects.flatMap((workspaceId) =>
+            users.map((userId) => ({
               id: createId("workspaceMembership"),
               workspaceId,
-              userId: access.userId,
-              role: "owner" as const,
+              userId,
+              role: "collaborator" as const,
               state: "active" as const,
               generation: 1,
               invitedBy: null,
             })),
-          )
-          .execute();
-        await transaction
-          .insertInto("accessGroupMembers")
-          .values(
-            users.map((userId) => ({
-              groupId,
-              memberKind: "user" as const,
-              memberId: userId,
-              addedBy: access.userId,
-            })),
-          )
-          .execute();
-        await transaction
-          .insertInto("accessEntries")
-          .values(
-            projects.map((workspaceId) => ({
-              id: randomUUID(),
-              subjectKind: "group" as const,
-              subjectId: groupId,
-              targetKind: "project" as const,
-              targetId: workspaceId,
-              level: "use" as const,
-              grantedBy: access.userId,
-            })),
-          )
-          .execute();
-        const rows = projects.flatMap((workspaceId) =>
-          users.map((userId) => ({
-            id: createId("workspaceMembership"),
-            workspaceId,
-            userId,
-            role: "collaborator" as const,
-            state: "active" as const,
-            generation: 1,
-            invitedBy: null,
-          })),
+          );
+          for (let offset = 0; offset < rows.length; offset += 1000)
+            await transaction
+              .insertInto("workspaceMemberships")
+              .values(rows.slice(offset, offset + 1000))
+              .execute();
+        });
+        const fenced = Promise.withResolvers<void>();
+        let statements = 0;
+        const measured = storeFixture.database.withPlugin({
+          transformQuery(args) {
+            statements++;
+            if (
+              args.node.kind === "SelectQueryNode" &&
+              JSON.stringify(args.node).includes('"name":"workspaces"') &&
+              JSON.stringify(args.node).includes("ForNoKeyUpdate")
+            )
+              fenced.resolve();
+            return args.node;
+          },
+          async transformResult(args) {
+            return args.result;
+          },
+        });
+        const revision = access.revision();
+        const started = performance.now();
+        const mutation = mutateAccess(measured, {
+          actor: { userId: access.userId },
+          commandIdentity: createId("command"),
+          expectedRevision: revision,
+          changes:
+            operation === "delete-group"
+              ? [{ kind: "delete-group", groupId }]
+              : [{ kind: "member", userId: users[0]!, memberState: "suspended" }],
+        });
+        await withTimeout(fenced.promise, 3000, {
+          timeoutError: () => new Error("Measured writer never acquired its authority fence"),
+        });
+        const waiting = performance.now();
+        const competitor = mutateAccess(storeFixture.database, {
+          actor: { userId: access.userId },
+          commandIdentity: createId("command"),
+          expectedRevision: revision + 1,
+          changes: [{ kind: "create-group", id: randomUUID(), name: "Competing writer" }],
+        });
+        const competitorResult = competitor.then(
+          () => ({ elapsed: performance.now() - waiting, accepted: true }),
+          () => ({ elapsed: performance.now() - waiting, accepted: false }),
         );
-        for (let offset = 0; offset < rows.length; offset += 1000)
-          await transaction
-            .insertInto("workspaceMemberships")
-            .values(rows.slice(offset, offset + 1000))
-            .execute();
+        const result = await mutation;
+        const elapsed = performance.now() - started;
+        const waited = await competitorResult;
+        const pairs = operation === "delete-group" ? peopleCount * projectCount : projectCount;
+        expect(result.transitions).toHaveLength(pairs);
+        expect(
+          result.transitions.every(
+            (transition) => transition.state === "revoked" && transition.generation === 2,
+          ),
+        ).toBe(true);
+        console.info(
+          `access maximum: operation=${operation} pairs=${pairs} statements=${statements} elapsedMs=${elapsed.toFixed(2)} competingMs=${waited.elapsed.toFixed(2)} competingAccepted=${waited.accepted}`,
+        );
+        if (projectCount === 2) statementCounts.set(operation, statements);
+        else expect(statements).toBe(statementCounts.get(operation));
+        expect(waited.accepted).toBe(true);
       });
-      const fenced = Promise.withResolvers<void>();
-      const measured = storeFixture.database.withPlugin({
-        transformQuery(args) {
-          if (
-            args.node.kind === "SelectQueryNode" &&
-            JSON.stringify(args.node).includes('"name":"workspaces"') &&
-            JSON.stringify(args.node).includes("ForNoKeyUpdate")
-          )
-            fenced.resolve();
-          return args.node;
-        },
-        async transformResult(args) {
-          return args.result;
-        },
-      });
-      const revision = access.revision();
-      const started = performance.now();
-      const mutation = mutateAccess(measured, {
-        actor: { userId: access.userId },
-        commandIdentity: createId("command"),
-        expectedRevision: revision,
-        changes:
-          operation === "delete-group"
-            ? [{ kind: "delete-group", groupId }]
-            : [{ kind: "member", userId: users[0]!, memberState: "suspended" }],
-      });
-      await withTimeout(fenced.promise, 3000, {
-        timeoutError: () => new Error("Measured writer never acquired its authority fence"),
-      });
-      const waiting = performance.now();
-      const competitor = mutateAccess(storeFixture.database, {
-        actor: { userId: access.userId },
-        commandIdentity: createId("command"),
-        expectedRevision: revision + 1,
-        changes: [{ kind: "create-group", id: randomUUID(), name: "Competing writer" }],
-      });
-      const competitorResult = competitor.then(
-        () => ({ elapsed: performance.now() - waiting, accepted: true }),
-        () => ({ elapsed: performance.now() - waiting, accepted: false }),
-      );
-      const result = await mutation;
-      const elapsed = performance.now() - started;
-      const waited = await competitorResult;
-      const pairs = operation === "delete-group" ? accessCapacity.effectivePairs : 128;
-      expect(result.transitions).toHaveLength(pairs);
-      expect(
-        result.transitions.every(
-          (transition) => transition.state === "revoked" && transition.generation === 2,
-        ),
-      ).toBe(true);
-      console.info(
-        `access maximum: operation=${operation} pairs=${pairs} elapsedMs=${elapsed.toFixed(2)} competingMs=${waited.elapsed.toFixed(2)} competingAccepted=${waited.accepted}`,
-      );
-      expect(elapsed).toBeLessThan(operation === "delete-group" ? 2000 : 500);
-      expect(waited.accepted).toBe(true);
-    });
   it("does not activate authority writers on an existing Deployment", async ({ storeFixture }) => {
     const { database, createRunFixture } = storeFixture;
     const fixture = await createRunFixture("access-legacy", null, "project");
@@ -931,6 +946,35 @@ describeStore("dormant Project access", (it) => {
     });
     await access.mutate({ kind: "member", userId, memberState: "removed" });
     expect(await access.membership(userId)).toBeUndefined();
+    await sql`insert into workspace_memberships(id, workspace_id, user_id, role, state, generation, invited_by, effective_until)
+      select 'wmb_' || gen_random_uuid(), ${access.workspace.id}, id, 'collaborator', 'active', 1, null, clock_timestamp() - interval '1 day'
+      from users where id like ${`${prefix}%`} limit ${accessCapacity.effectivePairs}`.execute(
+      storeFixture.database,
+    );
+    const groupId = randomUUID();
+    await access.mutate({
+      kind: "create-group",
+      id: groupId,
+      name: "Live admission beside overdue authority",
+    });
+    await access.mutate({
+      kind: "grant",
+      id: randomUUID(),
+      subject: { kind: "group", groupId },
+      target: { kind: "project", workspaceId: access.workspace.id },
+      level: "use",
+    });
+    const candidate = await storeFixture.store.createUser("New full member");
+    await access.mutate({
+      kind: "add-group-member",
+      groupId,
+      member: { kind: "person", userId: candidate },
+    });
+    await access.mutate({ kind: "member", userId: candidate, admit: true });
+    expect(await access.allowed(candidate)).toMatchObject({
+      allowed: true,
+      membershipGeneration: 1,
+    });
   });
 
   it("refuses capacity growth atomically but permits reductions above a bound", async ({
@@ -1211,7 +1255,11 @@ describeStore("dormant Project access", (it) => {
   it("matches an independent uncached graph interpreter through a seeded mutation trace", async ({
     storeFixture,
   }) => {
-    const seed = 0x792a51;
+    const seed = Number(process.env.OPENSTEER_ACCESS_SEED ?? 0x792a51);
+    const steps = Number(process.env.OPENSTEER_ACCESS_STEPS ?? 80);
+    expect(Number.isSafeInteger(seed) && seed > 0 && seed <= 0xffffffff).toBe(true);
+    expect(Number.isSafeInteger(steps) && steps > 0).toBe(true);
+    console.info(`access trace: seed=${seed} steps=${steps}`);
     let random = seed;
     const choose = (count: number) => {
       random ^= random << 13;
@@ -1295,7 +1343,7 @@ describeStore("dormant Project access", (it) => {
             : new Date(Math.max(...top.map((grant) => grant.expiresAt!.getTime()))),
         };
       };
-      for (let step = 0; step < 80; step++) {
+      for (let step = 0; step < steps; step++) {
         const userId = people[choose(people.length)]!;
         const groupId = groups[1 + choose(groups.length - 1)]!;
         const operation = choose(9);
@@ -1412,6 +1460,12 @@ describeStore("dormant Project access", (it) => {
             } else expect(result.reason).toMatchObject({ code: "conflict" });
           }
         }
+        const rows = await storeFixture.database
+          .selectFrom("workspaceMemberships")
+          .selectAll()
+          .where("workspaceId", "=", access.workspace.id)
+          .execute();
+        const memberships = new Map(rows.map((row) => [row.userId, row]));
         for (const person of observedPeople) {
           const previous = history.get(person);
           const now = new Date();
@@ -1447,7 +1501,7 @@ describeStore("dormant Project access", (it) => {
               until: value?.until ?? null,
             };
           }
-          const row = await access.membership(person);
+          const row = memberships.get(person);
           if (!expected) {
             expect(row).toBeUndefined();
             continue;
@@ -1461,13 +1515,7 @@ describeStore("dormant Project access", (it) => {
           });
           history.set(person, { ...expected, id: row!.id });
         }
-        expect(
-          await storeFixture.database
-            .selectFrom("workspaceMemberships")
-            .select("userId")
-            .where("workspaceId", "=", access.workspace.id)
-            .execute(),
-        ).toHaveLength(history.size);
+        expect(rows).toHaveLength(history.size);
       }
       await access.mutate({
         kind: "delete-project",
