@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { createId, type AuthenticatedHuman } from "@opensteer/core";
+import { createId, OpensteerError, type AuthenticatedHuman } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import { requireTeamHuman, teamRefusal } from "./team-administration-authority.js";
@@ -166,6 +166,12 @@ export async function revokeTeamConnection(
             ]
           : [];
       const scope = await discover(transaction, roots);
+      if (!work && scope.runIds.length)
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Captured-root work cancellation is unavailable",
+          retryable: false,
+        });
       if (scope.runIds.length)
         await transaction
           .selectFrom("runs")

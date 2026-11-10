@@ -1904,6 +1904,12 @@ async function coordinateAccess(
           );
         }
         const liveScope = await discover(transaction, pairs, fencedUsers, roots);
+        if (!work && liveScope.runIds.length && roots.some((root) => root.kind === "member"))
+          throw new OpensteerError({
+            code: "conflict",
+            message: "Captured-root work cancellation is unavailable",
+            retryable: false,
+          });
         if (liveScope.connectionIds.length)
           await transaction
             .selectFrom("agentConnections")
