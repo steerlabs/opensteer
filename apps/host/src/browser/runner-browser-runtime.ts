@@ -210,6 +210,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       stateImport: browser.stateImport === true,
       fileStaging: browser.fileStaging === true,
       cardFill: browser.cardFill === 1,
+      personFill: browser.personFill === 1,
       signIn: browser.signIn?.version === 3,
       cdpBoundary: browser.cdpBoundary === 1,
       sharedControl: browser.sharedControl === 1,

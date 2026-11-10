@@ -22,6 +22,7 @@ import {
   usageLimitNotice,
   visibleTranscript,
   withoutOwnAssignment,
+  type BrowserTabDestination,
   type HostClient,
   type HostSnapshot,
   type ConversationRow,
@@ -238,6 +239,11 @@ interface ThreadPaneProps {
 /** The page in front of a conversation drawn beside it, or null for one with no web address. */
 export interface PageCompanion {
   readonly page: BrowserPageContentPart | null;
+  /**
+   * Shows another browser tab in that page, in place, while it is a browser
+   * tab: the conversation stays where it is, and following picks up there.
+   */
+  readonly showTab: ((tab: BrowserTabDestination) => void) | null;
 }
 
 /** The pane's complete read set; maps and run entries are scoped to this Thread. */
@@ -807,14 +813,19 @@ function ThreadPaneForUser(
     },
     [navigation],
   );
+  const showTab = props.withPage?.showTab ?? null;
   const openSurface = useCallback(
     (destination: SurfaceDestination | OpensteerAppDestination) => {
       if (inFront(destination)) return;
+      if (destination.kind === "browser" && showTab !== null) {
+        showTab(destination);
+        return;
+      }
       navigation.dispatch(
         StackActions.push("WorkspaceBrowser", surfaceRoute(deploymentId, threadId, destination)),
       );
     },
-    [deploymentId, inFront, navigation, threadId],
+    [deploymentId, inFront, navigation, showTab, threadId],
   );
   const appTabs = useMemo<TranscriptAppTabs>(
     () => ({

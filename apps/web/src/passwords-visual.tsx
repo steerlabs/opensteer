@@ -420,9 +420,7 @@ function App() {
   if (view === "resolved") return <ResolvedView />;
   if (view === "cards") return <CardsView />;
   return (
-    <MemoryRouter
-      initialEntries={[view === "settings" ? "/settings/sign-ins/passwords" : "/visual"]}
-    >
+    <MemoryRouter initialEntries={[view === "settings" ? "/settings/passwords" : "/visual"]}>
       <div className="app-shell">
         <main className="app-shell__main">
           <Routes>
@@ -474,7 +472,7 @@ function previewStatus(state: string): DesktopPasswordsStatus {
     development = false,
   ): DesktopPasswordsStatus => ({
     availability: "available",
-    broker: { agentSignIns, vault },
+    broker: { agentSignIns, personFill: agentSignIns, vault },
     development,
   });
   switch (state) {

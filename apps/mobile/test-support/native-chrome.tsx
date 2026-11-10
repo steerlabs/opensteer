@@ -83,6 +83,7 @@ export const reanimated = {
   FadeInDown: transition,
   FadeInUp: transition,
   FadeOut: transition,
+  LayoutAnimationConfig: (props: Children) => <>{props.children}</>,
   LinearTransition: transition,
   useAnimatedStyle: () => ({}),
   useReducedMotion: () => true,

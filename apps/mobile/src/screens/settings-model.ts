@@ -383,6 +383,7 @@ export function passwordsSettingsModel(input: {
           passwordsHowItWorks[0],
           passwordsCardsFact,
           "You can allow or decline a sign-in from this phone. Allowing first confirms it’s you on this device.",
+          `In Opensteer’s browser, tap a sign-in field to fill your own saved login. ${homeName} types it; it never comes to this phone.`,
         ]
       : [],
     title: passwordsSettingsLabel,

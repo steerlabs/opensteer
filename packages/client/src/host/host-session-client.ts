@@ -611,7 +611,10 @@ export class HttpHostClient {
     if (mode === "watch") url.searchParams.set("mode", mode);
     const passkeys = this.browserPasskeys.optIn(this.#capabilities);
     if (mode === "control" && passkeys) url.searchParams.set("passkeys", passkeys);
-    if (mode === "control") url.searchParams.set("popups", "1");
+    if (mode === "control") {
+      url.searchParams.set("popups", "1");
+      url.searchParams.set("autofill", "1");
+    }
     url.searchParams.set("editing", "2");
     return this.#webSocketFactory(url.toString().replace(/^http/, "ws"));
   }

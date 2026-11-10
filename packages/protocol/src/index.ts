@@ -5,6 +5,7 @@ export * from "./browser.js";
 export * from "./places.js";
 export * from "./browser-sources.js";
 export * from "./password-sign-in.js";
+export * from "./person-fill.js";
 // browser-relay.js is the Host-to-runtime relay wire and speaks Node Buffers;
 // this barrel is consumed by browser and native clients, so import it from
 // "@opensteer/protocol/browser-relay" instead.

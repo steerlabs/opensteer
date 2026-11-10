@@ -517,6 +517,7 @@ export async function createHostServer(
       readonly editing: 1 | 2 | undefined;
       readonly passkeys: "native" | "notice" | undefined;
       readonly popups: boolean;
+      readonly autofill: boolean;
     }
   >();
   const realtimeSocketSessions = new WeakMap<object, AuthenticatedSession>();
@@ -2872,7 +2873,13 @@ export async function createHostServer(
 
   app.get<{
     Params: { sessionId: string };
-    Querystring: { mode?: string; editing?: string; passkeys?: string; popups?: string };
+    Querystring: {
+      mode?: string;
+      editing?: string;
+      passkeys?: string;
+      popups?: string;
+      autofill?: string;
+    };
   }>(
     "/v1/browser-sessions/:sessionId/connect",
     {
@@ -2898,6 +2905,7 @@ export async function createHostServer(
           editing:
             request.query.editing === "2" ? 2 : request.query.editing === "1" ? 1 : undefined,
           popups: request.query.popups === "1",
+          autofill: mode === "control" && request.query.autofill === "1",
         });
       },
       websocket: true,
@@ -2914,6 +2922,7 @@ export async function createHostServer(
         admitted.editing,
         admitted.passkeys,
         admitted.popups,
+        admitted.autofill,
         async () => {
           try {
             const current = await dependencies.authenticator.authenticateSession(request.headers, {
@@ -3028,6 +3037,7 @@ function attachBrowserSocket(
   editing: 1 | 2 | undefined,
   passkeys: "native" | "notice" | undefined,
   popups: boolean,
+  autofill: boolean,
   signedIn: () => Promise<boolean>,
 ): void {
   installWebSocketLiveness(socket);
@@ -3082,6 +3092,7 @@ function attachBrowserSocket(
       editing,
       passkeys,
       popups,
+      autofill,
       signedIn,
     });
     if (socket.readyState !== socket.OPEN) {

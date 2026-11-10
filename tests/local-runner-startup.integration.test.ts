@@ -140,7 +140,13 @@ integration("local Runner startup with a real credentialed worker", () => {
           browser: async ({ runtimeId }) => {
             const browser = await resource("browser");
             resources.push(browser);
-            return { bridgeToken: "b".repeat(43), runtimeId, signIn: false, ...browser };
+            return {
+              bridgeToken: "b".repeat(43),
+              runtimeId,
+              signIn: false,
+              personFill: false,
+              ...browser,
+            };
           },
           computerName: async () => "Startup E2E Mac",
           computerUse: {

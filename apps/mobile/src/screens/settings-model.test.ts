@@ -438,6 +438,7 @@ describe("Passwords in settings", () => {
         "You allow an account once per Workspace from any device signed in to this Opensteer. After that, agents there can use it to sign in on their own.",
         "Cards work on websites only. Every use needs a fresh approval, lasting up to 30 minutes; it does not approve a charge.",
         "You can allow or decline a sign-in from this phone. Allowing first confirms it’s you on this device.",
+        "In Opensteer’s browser, tap a sign-in field to fill your own saved login. Studio Mac types it; it never comes to this phone.",
       ],
       title: "Passwords",
     });

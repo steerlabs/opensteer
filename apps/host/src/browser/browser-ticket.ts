@@ -15,6 +15,7 @@ interface IssueBrowserAttachTicketInput {
   readonly operationExpiresAt?: string;
   readonly remainingBudgetMs?: number;
   readonly passkeys?: 1;
+  readonly personFillVersion?: 1;
   readonly navigationVersion?: 1;
   readonly initialNavigation?: BrowserAttachTicketClaims["initialNavigation"];
   readonly navigationAttributionVersion?: 1;
@@ -119,6 +120,7 @@ export class BrowserAttachTicketSigner {
     const issuedAt = this.#clock();
     const claims: BrowserAttachTicketClaims = BrowserAttachTicketClaimsSchema.parse({
       access: input.access,
+      ...(input.personFillVersion === 1 ? { personFillVersion: 1 } : {}),
       ...(input.passkeys === 1 ? { passkeys: 1 } : {}),
       ...(input.editingVersion
         ? {

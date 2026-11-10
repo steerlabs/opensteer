@@ -13,6 +13,7 @@ export interface PersonalLocalBrowserHandle {
   readonly runtimeId: string;
   /** Whether it signs in with Opensteer Passwords, which its Runner then advertises. */
   readonly signIn: boolean;
+  readonly personFill: boolean;
   readonly url: URL;
   stop(signal?: AbortSignal): Promise<void>;
 }

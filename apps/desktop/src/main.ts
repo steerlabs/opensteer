@@ -422,6 +422,7 @@ async function runDesktop(
           broker: passwords.broker(),
           legacyBroker: passwords.broker(4),
           ownOrigins: ownOrigins.current,
+          observeStatus: (listener) => passwords.onStatusChanged(listener),
         })
       : undefined;
   shutdown.add({
@@ -612,6 +613,7 @@ async function runDesktop(
   const nativePasskeys = createMacosNativePasskeys();
   const browserPresentation = new DesktopBrowserPresentationManager({
     transport: hostTransport,
+    autofillPreload: path.join(import.meta.dirname, "autofill-preload.cjs"),
     glassPreload: path.join(import.meta.dirname, "glass-preload.cjs"),
     onError: (error) => reportNonFatal("desktop.browser.presentation-failed", error),
     quit: () => app.quit(),

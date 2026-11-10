@@ -14,6 +14,7 @@ import {
 import type { BrowserSessionId, BrowserSurfaceId } from "@opensteer/protocol/browser";
 import {
   DesktopBrowserPresentationIdSchema,
+  type DesktopBrowserAutofillInput,
   type DesktopBrowserFindInput,
   type DesktopBrowserGlassInput,
   type DesktopBrowserOverlayInput,
@@ -45,6 +46,8 @@ import {
   type NativePlacement,
 } from "./electron-browser-launcher.js";
 import { PageGlass } from "./page-glass.js";
+import { PageAutofill } from "./page-autofill.js";
+import { AutofillKeys, AutofillSceneState } from "./autofill-state.js";
 
 interface Authority {
   sockets: Set<string>;
@@ -74,12 +77,14 @@ interface Presentation {
   page: PageSlot | null;
   pending: PageSlot | null;
   scene: DesktopGlassScene | null;
+  readonly autofill: AutofillSceneState;
 }
 interface Owner {
   readonly window: ElectronAppWindow;
   readonly contents: WebContents;
   readonly overlays: Set<string>;
   glass: PageGlass | null;
+  autofill: PageAutofill | null;
   current: Presentation | null;
   restore: { presentation: Presentation; revision: number } | null;
   pageHadFocus: boolean;
@@ -102,6 +107,7 @@ export class DesktopBrowserPresentationManager {
     | "viewerConsumerToken"
   >;
   readonly #glassPreload: string;
+  readonly #autofillPreload: string;
   readonly #onError: (error: unknown) => void;
   readonly #quit: () => void;
   readonly #unsubscribe: () => void;
@@ -116,11 +122,13 @@ export class DesktopBrowserPresentationManager {
       | "viewerConsumerToken"
     >;
     glassPreload: string;
+    autofillPreload: string;
     onError: (error: unknown) => void;
     quit: () => void;
   }) {
     this.#transport = options.transport;
     this.#glassPreload = options.glassPreload;
+    this.#autofillPreload = options.autofillPreload;
     this.#onError = options.onError;
     this.#quit = options.quit;
     this.#unsubscribe = options.transport.observeBrowserSockets((event) => this.#socket(event));
@@ -148,6 +156,7 @@ export class DesktopBrowserPresentationManager {
       pageHadFocus: false,
       hardReload: false,
       glass: null,
+      autofill: null,
     };
     this.#owners.set(contents.id, owner);
     const gone = () => {
@@ -167,9 +176,11 @@ export class DesktopBrowserPresentationManager {
     window.once("closed", () => {
       gone();
       owner.glass?.close();
+      owner.autofill?.close();
       this.#owners.delete(contents.id);
     });
     const focused = (focused: boolean) => {
+      if (!focused && owner.current) this.#dismissAutofill(owner.current);
       this.#navigationMenu();
       this.#emit(owner, { type: "window-focus", focused });
       for (const presentation of this.#presentations.values())
@@ -177,6 +188,17 @@ export class DesktopBrowserPresentationManager {
     };
     window.on("focus", () => focused(true));
     window.on("blur", () => focused(false));
+    const windowEvents: NodeJS.EventEmitter = window;
+    for (const event of [
+      "hide",
+      "minimize",
+      "close",
+      "enter-full-screen",
+      "leave-full-screen",
+    ] as const)
+      windowEvents.on(event, () => {
+        if (owner.current) this.#dismissAutofill(owner.current);
+      });
     contents.on("zoom-changed", () => {
       if (owner.current) this.#stage(owner.current);
     });
@@ -242,6 +264,7 @@ export class DesktopBrowserPresentationManager {
       this.#stage(existing);
       return { presentationId: existing.id, revision: existing.revision };
     }
+    if (owner.current) this.#dismissAutofill(owner.current);
     for (const candidate of this.#presentations.values())
       if (candidate.owner === owner && candidate !== owner.current)
         this.#end(candidate, "released");
@@ -260,6 +283,7 @@ export class DesktopBrowserPresentationManager {
       page: null,
       pending: null,
       scene: null,
+      autofill: new AutofillSceneState(),
     };
     this.#presentations.set(presentation.id, presentation);
     this.#passkeyChanged();
@@ -283,6 +307,7 @@ export class DesktopBrowserPresentationManager {
       input.surfaceId &&
       input.surfaceId !== (presentation.pending ?? presentation.page)?.surface.surfaceId
     ) {
+      this.#dismissAutofill(presentation);
       presentation.revision += 1;
       this.#passkeyChanged();
       presentation.scene = null;
@@ -325,6 +350,7 @@ export class DesktopBrowserPresentationManager {
         : null;
       owner.pageHadFocus = owner.current?.page?.native.view.webContents.isFocused() ?? false;
     }
+    if (owner.current) this.#dismissAutofill(owner.current);
     owner.overlays.add(input.overlayId);
     if (!owner.current?.page) return;
     this.#order(owner);
@@ -375,6 +401,18 @@ export class DesktopBrowserPresentationManager {
     presentation.scene = input.scene;
     this.#glass(presentation.owner);
   }
+  setAutofill(sender: WebContents, input: DesktopBrowserAutofillInput): void {
+    const presentation = this.#target(sender, input);
+    if (
+      !presentation ||
+      presentation.owner.current !== presentation ||
+      presentation.owner.overlays.size ||
+      !presentation.owner.window.isFocused()
+    )
+      return;
+    if (!presentation.autofill.set(input.scene)) return;
+    this.#autofill(presentation.owner);
+  }
   focusPage(sender: WebContents, target: DesktopBrowserPresentationTarget): void {
     const presentation = this.#target(sender, target);
     if (
@@ -419,7 +457,10 @@ export class DesktopBrowserPresentationManager {
     this.endAll();
     this.#unsubscribe();
     this.#passkeyListeners.clear();
-    for (const owner of this.#owners.values()) owner.glass?.close();
+    for (const owner of this.#owners.values()) {
+      owner.glass?.close();
+      owner.autofill?.close();
+    }
   }
 
   #socket(event: DesktopBrowserSocketObservation): void {
@@ -489,11 +530,14 @@ export class DesktopBrowserPresentationManager {
           (presentation.page !== page && presentation.pending !== page)
         )
           return;
+        const first = !page.placement;
         page.placement = placement;
+        if (first) this.#order(owner);
         if (presentation.page === page && owner.current === presentation)
           this.#placed(presentation, page);
       });
-      this.#order(owner);
+      // A surface change cleared this presentation's scene; its glass goes now.
+      this.#glass(owner);
       native.setStage(this.#dips(presentation), owner.window.isFocused());
       this.#follow(presentation, page);
       const paint = new AbortController();
@@ -579,9 +623,21 @@ export class DesktopBrowserPresentationManager {
       }
     });
     const gone = () => this.#end(presentation, "page-closed");
+    const autofillKeys = new AutofillKeys();
     const key = (event: Electron.Event, input: Input) => {
       const outstanding = page.native.inputOutstanding();
       contents.setIgnoreMenuShortcuts(outstanding);
+      const autofill = autofillKeys.decide(
+        input,
+        current() && !outstanding && !!presentation.owner.autofill?.shown,
+        contents.isFocused(),
+      );
+      if (autofill.forward)
+        this.#emit(presentation.owner, { type: "key", key: forwardedKey(input) });
+      if (autofill.prevent) {
+        event.preventDefault();
+        return;
+      }
       if (input.type !== "keyDown" || !desktopBrowserAppShortcut(input)) return;
       event.preventDefault();
       if (outstanding || !current()) return;
@@ -593,7 +649,8 @@ export class DesktopBrowserPresentationManager {
       } else {
         if (desktopBrowserAppFocusShortcut(forwardedKey(input)))
           presentation.owner.contents.focus();
-        this.#emit(presentation.owner, { type: "key", key: forwardedKey(input) });
+        if (!autofill.forward)
+          this.#emit(presentation.owner, { type: "key", key: forwardedKey(input) });
       }
     };
     const find = (_event: Electron.Event, result: Electron.Result) => {
@@ -608,6 +665,7 @@ export class DesktopBrowserPresentationManager {
         });
     };
     const fullscreen = (active: boolean) => {
+      if (current()) this.#dismissAutofill(presentation);
       if (current())
         this.#emit(presentation.owner, {
           type: "fullscreen",
@@ -705,7 +763,17 @@ export class DesktopBrowserPresentationManager {
         );
       Menu.buildFromTemplate(items).popup({ window: presentation.owner.window });
     };
+    const mouse = (_event: Electron.Event, input: Electron.MouseInputEvent) => {
+      if (current() && input.type === "mouseDown") this.#dismissAutofill(presentation);
+    };
+    const zoom = () => {
+      if (current()) this.#autofill(presentation.owner);
+    };
+    const resetKeys = () => autofillKeys.reset();
+    contents.on("before-mouse-event", mouse);
+    contents.on("zoom-changed", zoom);
     contents.on("before-input-event", key);
+    contents.on("blur", resetKeys);
     contents.on("found-in-page", find);
     contents.on("enter-html-full-screen", enter);
     contents.on("leave-html-full-screen", leave);
@@ -715,7 +783,10 @@ export class DesktopBrowserPresentationManager {
       passkeyInput?.();
       viewerInput?.();
       surfaceEvents();
+      contents.off("before-mouse-event", mouse);
+      contents.off("zoom-changed", zoom);
       contents.off("before-input-event", key);
+      contents.off("blur", resetKeys);
       contents.off("found-in-page", find);
       contents.off("enter-html-full-screen", enter);
       contents.off("leave-html-full-screen", leave);
@@ -822,12 +893,15 @@ export class DesktopBrowserPresentationManager {
       stage: css(this.#dips(presentation)),
     });
     this.#glass(presentation.owner);
+    this.#autofill(presentation.owner);
   }
   #order(owner: Owner): void {
     if (owner.window.isDestroyed()) return;
     const pages: PageSlot[] = [];
+    // A pending page joins the window at its first placement, never before.
     for (const presentation of this.#presentations.values())
-      if (presentation.owner === owner && presentation.pending) pages.push(presentation.pending);
+      if (presentation.owner === owner && presentation.pending?.placement)
+        pages.push(presentation.pending);
     if (owner.current?.page) pages.push(owner.current.page);
     const views = pages.map((page) => page.native.view);
     if (owner.overlays.size || !owner.current?.page) views.push(owner.window.appView);
@@ -851,15 +925,66 @@ export class DesktopBrowserPresentationManager {
       scene &&
       (scene.cursors.length || scene.croppedRight || scene.croppedBottom)
     )
-      owner.glass = new PageGlass(owner.window, this.#glassPreload, this.#onError);
+      owner.glass = new PageGlass(owner.window, this.#glassPreload, this.#onError, () =>
+        owner.autofill?.orderAboveGlass(),
+      );
     owner.glass?.update(
       owner.current?.page?.placement?.bounds ?? null,
       owner.current?.scene ?? null,
       !owner.overlays.size && owner.current !== null,
     );
+    owner.autofill?.orderAboveGlass();
+  }
+  #autofill(owner: Owner): void {
+    const presentation = owner.current;
+    const page = presentation?.page;
+    const scene = presentation?.autofill.scene ?? null;
+    const geometry =
+      scene && presentation && page?.placement && !owner.overlays.size
+        ? {
+            page: page.placement.bounds,
+            stage: this.#dips(presentation),
+            pageZoom: page.native.view.webContents.getZoomFactor(),
+            appZoom: owner.contents.getZoomFactor(),
+          }
+        : null;
+    if (!owner.autofill && scene && this.#supportsGlass())
+      owner.autofill = new PageAutofill(owner.window, this.#autofillPreload, {
+        onError: this.#onError,
+        dismiss: () => {
+          if (owner.current) this.#dismissAutofill(owner.current);
+        },
+        choose: (sceneRevision, accountId) => {
+          const current = owner.current;
+          if (!current || !current.autofill.acceptsChoice(sceneRevision, accountId)) return;
+          current.autofill.set(null);
+          owner.autofill?.update(null, null);
+          this.#emit(owner, {
+            type: "autofill-choice",
+            presentationId: current.id,
+            sceneRevision,
+            accountId,
+          });
+        },
+      });
+    owner.autofill?.update(scene, geometry);
+  }
+  #dismissAutofill(presentation: Presentation): void {
+    const scene = presentation.autofill.scene;
+    if (!scene) return;
+    presentation.autofill.set(null);
+    if (presentation.owner.current === presentation)
+      presentation.owner.autofill?.update(null, null);
+    this.#emit(presentation.owner, {
+      type: "autofill-dismiss",
+      presentationId: presentation.id,
+      sceneRevision: scene.sceneRevision,
+    });
   }
   #end(presentation: Presentation, reason: DesktopBrowserPresentationEnd): void {
-    if (!this.#presentations.delete(presentation.id)) return;
+    if (!this.#presentations.has(presentation.id)) return;
+    this.#dismissAutofill(presentation);
+    this.#presentations.delete(presentation.id);
     const owner = presentation.owner;
     if (owner.current === presentation) owner.current = null;
     if (presentation.pending) this.#disposePage(presentation.pending);

@@ -10,9 +10,9 @@ final class CardTests: BrokerTestCase {
     try await broker.saveCard(CardDraft(number: "4242424242424242", expiryMonth: 3, expiryYear: 2030, cvc: "123"))
     return try unwrap(try await broker.listCards().first)
   }
-  func client() async throws -> TestClient {
+  func client(_ version: Int64 = 7) async throws -> TestClient {
     let client = try await harness.client(greet: false)
-    _ = try await client.hello(version: 7)
+    _ = try await client.hello(version: version)
     return client
   }
   func requestCard(_ client: TestClient, _ id: String) async throws -> JSONValue {
@@ -32,7 +32,7 @@ final class CardTests: BrokerTestCase {
 
   func testConsentCommitDestinationsRevocationAndActivity() async throws {
     let card = try await ready()
-    let desktop = try await client()
+    let desktop = try await client(8)
     let other = try await client()
     let id = UUID().uuidString.lowercased()
     let offered = try await requestCard(desktop, id)

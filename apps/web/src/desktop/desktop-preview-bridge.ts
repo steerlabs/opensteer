@@ -791,7 +791,7 @@ function previewPasswordsStatus(search: string): DesktopPasswordsStatus {
     default:
       return {
         availability: "available",
-        broker: { agentSignIns: "on", vault: "ready" },
+        broker: { agentSignIns: "on", personFill: "on", vault: "ready" },
         development: variant === "development",
       };
   }

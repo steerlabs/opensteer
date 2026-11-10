@@ -1,16 +1,16 @@
 import Foundation
 import PasswordsCore
 
-/// The broker IPC, v4 through v7: exactly the shapes `packages/protocol/src/passwords-broker.ts`
+/// The broker IPC, v4 through v8: exactly the shapes `packages/protocol/src/passwords-broker.ts`
 /// declares. Frames are parsed with the strict JSON parser (no duplicate keys,
 /// integers only) and every object is closed, as `z.strictObject` is. Answers
 /// are encoded canonically. `Tests/Fixtures/passwords-wire.json` is written
 /// from these types and parsed by the protocol's schemas.
 public enum Wire {
-  /// Login requests retain the v6 shape on v7 connections.
+  /// Login requests retain the v6 shape on v7–8 connections.
   public static let protocolVersion: Int64 = 6
-  public static let latestProtocolVersion: Int64 = 7
-  public static let supportedProtocolVersions: [Int64] = [7, 6, 5, 4]
+  public static let latestProtocolVersion: Int64 = 8
+  public static let supportedProtocolVersions: [Int64] = [8, 7, 6, 5, 4]
   public static let maxAccounts = 100
 
   public enum Method: String, CaseIterable, Sendable {
@@ -18,6 +18,8 @@ public enum Wire {
     case cardRequest = "card.request"
     case cardApprove = "card.approve"
     case cardRelease = "card.release"
+    case fillAccounts = "fill.accounts"
+    case fillBegin = "fill.begin"
     case hello
     case status
     case windowOpen = "window.open"
@@ -89,8 +91,8 @@ public enum Wire {
       ]))
   }
 
-  public static func statusChanged(_ status: Status) -> Data {
-    encode(.object(["event": .string("status.changed"), "params": status.json]))
+  public static func statusChanged(_ status: Status, protocolVersion: Int64 = 7) -> Data {
+    encode(.object(["event": .string("status.changed"), "params": status.json(protocolVersion: protocolVersion)]))
   }
 
   /// Every value the broker builds is within the canonical encoder's range;
@@ -179,7 +181,7 @@ public enum Wire {
     public init(json: JSONValue, protocolVersion negotiated: Int64? = nil) throws {
       let version: Int64
       if let negotiated {
-        version = negotiated == 7 ? 6 : negotiated
+        version = (negotiated == 7 || negotiated == 8) ? 6 : negotiated
       } else if case .object(let fields) = json,
         case .integer(let offered)? = fields["protocolVersion"]
       {
@@ -366,7 +368,7 @@ public enum Wire {
     public init(json: JSONValue, protocolVersion negotiated: Int64? = nil) throws {
       let version: Int64
       if let negotiated {
-        version = negotiated == 7 ? 6 : negotiated
+        version = (negotiated == 7 || negotiated == 8) ? 6 : negotiated
       } else if case .object(let fields) = json, fields["kind"] != nil {
         version = 5
       } else {
@@ -423,7 +425,81 @@ public enum Wire {
     _ = try strict(json, [])
   }
 
+  public struct FillAccountsParams: Equatable, Sendable {
+    public let origin: String
+    public init(json: JSONValue) throws {
+      origin = try string(try strict(json, ["origin"]), "origin")
+      guard WireRules.origin(origin) else { throw Failure.invalid("Filling needs an exact HTTPS origin.") }
+    }
+    public var json: JSONValue { .object(["origin": .string(origin)]) }
+  }
+
+  public enum FillPresence: String, Sendable { case here, elsewhere }
+
+  public struct FillBeginParams: Equatable, Sendable {
+    public let transactionId: String
+    public let loginId: String
+    public let revision: Int64
+    public let origin: String
+    public let presence: FillPresence
+    public let site: String
+    public var siteHost: String { String(site.dropFirst("https://".count)) }
+
+    public init(json: JSONValue) throws {
+      let object = try strict(json, ["transactionId", "loginId", "revision", "origin", "presence"])
+      transactionId = try transaction(object)
+      loginId = try string(object, "loginId")
+      revision = try integer(object, "revision")
+      origin = try string(object, "origin")
+      guard WireRules.isUUID(loginId), (0...9_007_199_254_740_991).contains(revision),
+        WireRules.origin(origin), let presence = FillPresence(rawValue: try string(object, "presence"))
+      else { throw Failure.invalid("Invalid saved login fill.") }
+      guard let host = URL(string: origin)?.host, let domain = Origins.registrableDomain(host)
+      else { throw Failure.invalid("Invalid fill site.") }
+      self.site = "https://" + domain
+      self.presence = presence
+    }
+    public var json: JSONValue {
+      .object(["transactionId": .string(transactionId), "loginId": .string(loginId),
+        "revision": .integer(revision), "origin": .string(origin), "presence": .string(presence.rawValue)])
+    }
+  }
+
   // MARK: Results
+
+  public struct FillAccount: Equatable, Sendable {
+    public let id: String
+    public let revision: Int64
+    public let username: String
+    public let label: String?
+    public let hasCode: Bool
+    public var json: JSONValue {
+      .object(["id": .string(id), "revision": .integer(revision), "username": .string(username),
+        "label": label.map(JSONValue.string) ?? .null, "hasCode": .bool(hasCode)])
+    }
+  }
+
+  public enum FillState: String, Sendable { case on, off; case notSetUp = "not-set-up" }
+  public static func fillAccounts(_ state: FillState, _ accounts: [FillAccount] = []) -> JSONValue {
+    .object(["fill": .string(state.rawValue), "accounts": .array(accounts.map(\.json))])
+  }
+
+  public enum FillUnavailableReason: String, Sendable {
+    case off = "fill-off", notSetUp = "not-set-up", busy
+  }
+  public enum FillDecision: Equatable, Sendable {
+    case authorized(Date), changed, cancelled, unavailable(FillUnavailableReason)
+    public var json: JSONValue {
+      switch self {
+      case .authorized(let deadline):
+        return .object(["decision": .string("authorized"), "expiresAt": .string(ActivityLog.timestamp(deadline))])
+      case .changed: return .object(["decision": .string("changed")])
+      case .cancelled: return .object(["decision": .string("cancelled")])
+      case .unavailable(let reason):
+        return .object(["decision": .string("unavailable"), "reason": .string(reason.rawValue)])
+      }
+    }
+  }
 
   public enum VaultState: String, Sendable {
     case notSetUp = "not-set-up"
@@ -435,16 +511,22 @@ public enum Wire {
   public struct Status: Equatable, Sendable {
     public let vault: VaultState
     public let agentSignIns: Bool
+    public let personFill: Bool
 
-    public init(vault: VaultState, agentSignIns: Bool) {
+    public init(vault: VaultState, agentSignIns: Bool, personFill: Bool = false) {
       self.vault = vault
       self.agentSignIns = agentSignIns
+      self.personFill = personFill
     }
 
-    public var json: JSONValue {
-      .object([
+    public var json: JSONValue { json(protocolVersion: 7) }
+
+    public func json(protocolVersion: Int64) -> JSONValue {
+      var fields: [String: JSONValue] = [
         "agentSignIns": .string(agentSignIns ? "on" : "off"), "vault": .string(vault.rawValue),
-      ])
+      ]
+      if protocolVersion >= 8 { fields["personFill"] = .string(personFill ? "on" : "off") }
+      return .object(fields)
     }
   }
 

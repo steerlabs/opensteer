@@ -1,4 +1,8 @@
-import { BrowserSurfaceIdSchema, type BrowserServerMessage } from "@opensteer/protocol";
+import {
+  BrowserSurfaceIdSchema,
+  type BrowserServerMessage,
+  type PersonFillStatus,
+} from "@opensteer/protocol";
 import {
   EditingClipboardItemsSchema,
   EditingKeystrokeSchema,
@@ -25,12 +29,30 @@ export interface ViewerClipboardResult {
   readonly items: readonly EditingClipboardPayloadItem[];
 }
 export type BrowserContextMenu = Extract<BrowserServerMessage, { type: "browser.contextmenu" }>;
+export type BrowserAutofillOffer = Extract<
+  BrowserServerMessage,
+  { type: "browser.autofill.offer" }
+>;
+/**
+ * The saved logins this viewer was offered for the field it just activated.
+ * The page withdraws the offer when the field loses its place.
+ */
+export interface BrowserAutofillState {
+  readonly offer: BrowserAutofillOffer;
+  /** Shown as a list; a new activation opens it, Esc closes it. */
+  readonly open: boolean;
+  readonly highlighted: number;
+  /** The account being filled, until its result arrives. */
+  readonly pending: string | null;
+  readonly result: PersonFillStatus | null;
+}
 export interface BrowserEditingState {
   readonly negotiated: boolean;
   readonly abilities: EditingTargetAbilities;
   readonly context: EditingContext | null;
   readonly geometryRevision?: number;
   readonly menu: BrowserContextMenu | null;
+  readonly autofill: BrowserAutofillState | null;
 }
 export interface BrowserEditingTarget {
   get(): BrowserEditingState;
@@ -42,6 +64,12 @@ export interface BrowserEditingTarget {
     onError?: (message: string) => void,
   ): () => void;
   dismissMenu(): void;
+  /** Hides the list; the offer stays until the page withdraws it. */
+  dismissAutofill(): void;
+  /** Moves the highlight, wrapping, and shows the list. */
+  moveAutofill(delta: 1 | -1): void;
+  /** Asks the page to fill this offered account; the caller has done any device check. */
+  fillAutofill(loginId: string): void;
 }
 const full: EditingTargetAbilities = {
   composition: true,
@@ -61,6 +89,7 @@ const empty: BrowserEditingState = {
   abilities: baseline,
   context: null,
   menu: null,
+  autofill: null,
 };
 interface Target {
   readonly sessionId: string;
@@ -150,6 +179,46 @@ export class BrowserEditingStore {
       },
       dismissMenu: () => {
         if (target.state.menu) this.#set(target, { ...target.state, menu: null });
+      },
+      dismissAutofill: () => {
+        const autofill = target.state.autofill;
+        if (autofill?.open)
+          this.#set(target, { ...target.state, autofill: { ...autofill, open: false } });
+      },
+      moveAutofill: (delta) => {
+        const autofill = target.state.autofill;
+        if (!autofill || autofill.pending) return;
+        const count = autofill.offer.accounts.length;
+        const highlighted = autofill.open
+          ? (autofill.highlighted + delta + count) % count
+          : autofill.highlighted;
+        this.#set(target, { ...target.state, autofill: { ...autofill, open: true, highlighted } });
+      },
+      fillAutofill: (loginId) => {
+        const autofill = target.state.autofill;
+        const account = autofill?.offer.accounts.find(({ id }) => id === loginId);
+        if (!autofill || !account || autofill.pending) return;
+        this.#set(target, {
+          ...target.state,
+          autofill: { ...autofill, open: false, pending: loginId, result: null },
+        });
+        try {
+          this.sendCommand(target.sessionId, target.surfaceId, {
+            type: "autofill.fill",
+            surfaceId: BrowserSurfaceIdSchema.parse(target.surfaceId),
+            offerId: autofill.offer.offerId,
+            loginId,
+            revision: account.revision,
+          });
+        } catch {
+          // Nothing reached the page, so no result will come: let the person try again.
+          const current = target.state.autofill;
+          if (current?.offer.offerId === autofill.offer.offerId && current.pending === loginId)
+            this.#set(target, {
+              ...target.state,
+              autofill: { ...current, pending: null, result: "unavailable" },
+            });
+        }
       },
     };
   }
@@ -342,6 +411,35 @@ export class BrowserEditingStore {
     pending.resolve({ outcome: pending.outcome, items });
   }
   receive(sessionId: string, message: BrowserServerMessage): void {
+    if (
+      message.type === "browser.autofill.offer" ||
+      message.type === "browser.autofill.withdrawn" ||
+      message.type === "browser.autofill.result"
+    ) {
+      const target = this.#target(sessionId, message.surfaceId);
+      const current = target.state.autofill;
+      if (message.type === "browser.autofill.offer") {
+        // The same offer again only moves its field; a new one is a new activation.
+        const autofill: BrowserAutofillState =
+          current?.offer.offerId === message.offerId
+            ? {
+                ...current,
+                offer: message,
+                highlighted: Math.min(current.highlighted, message.accounts.length - 1),
+              }
+            : { offer: message, open: true, highlighted: 0, pending: null, result: null };
+        this.#set(target, { ...target.state, autofill });
+      } else if (current?.offer.offerId === message.offerId) {
+        this.#set(target, {
+          ...target.state,
+          autofill:
+            message.type === "browser.autofill.withdrawn"
+              ? null
+              : { ...current, pending: null, result: message.status },
+        });
+      }
+      return;
+    }
     if (message.type === "browser.editing" || message.type === "browser.contextmenu") {
       const target = this.#target(sessionId, message.surfaceId);
       if (!target.state.negotiated) return;

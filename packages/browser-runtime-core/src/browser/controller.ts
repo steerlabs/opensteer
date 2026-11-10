@@ -19,6 +19,11 @@ import {
   browserWorkspaceTabUrlMaxLength,
   LoginFieldSchema,
   CardRefSchema,
+  personFillMaxAccounts,
+  type PersonFillAnchor,
+  type PersonFillAccountView,
+  type PersonFillPresence,
+  type PersonFillStatus,
   CardFieldSchema,
   LoginRefSchema,
   previousReleaseEligibility,
@@ -31,7 +36,7 @@ import {
 import type { EditingCaret } from "@opensteer/protocol/editing";
 import { delay } from "@opensteer/shared/delay";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { AsyncMutex } from "../async.js";
 import { BrowserRuntimeError, toBrowserRuntimeError } from "../errors.js";
@@ -57,7 +62,12 @@ import {
   editingModifiers,
 } from "./editing-commands.js";
 import { PageCursorHints } from "./cursor-hints.js";
-import { PageEditingObserver } from "./editing-observer.js";
+import {
+  PageEditingObserver,
+  type PersonFillBinding,
+  type PersonFillObservation,
+} from "./editing-observer.js";
+import type { BrowserLoginAuthority } from "./sign-in.js";
 import type { HostSignIns } from "./host-sign-ins.js";
 import { BrowserInputLane } from "./input-lane.js";
 import { keyEventParameters } from "./key-codes.js";
@@ -78,6 +88,9 @@ export interface BrowserControllerSink extends BrowserFrameSink {
 }
 
 interface BrowserControllerOptions {
+  loginAuthority?: BrowserLoginAuthority | undefined;
+  nativePresentation?:
+    ((surfaceId: BrowserSurfaceId, consumerToken: string) => boolean) | undefined;
   verifyOpenAuthority?: (ticket: string) => Promise<BrowserAttachTicketClaims>;
   passkeys?: HostRelayAuthenticator | undefined;
   cdpRouter: SessionCdpRouter;
@@ -197,7 +210,24 @@ interface PointerGesture {
   y: number;
 }
 
+interface PersonOffer {
+  readonly offerId: string;
+  readonly consumerToken: string;
+  readonly presence: PersonFillPresence;
+  readonly binding: PersonFillBinding;
+  readonly targetId: string;
+  readonly abort: AbortController;
+  origin: string;
+  accounts: PersonFillAccountView[];
+  anchor: Promise<PersonFillAnchor | null>;
+  claimed: boolean;
+}
+
 export class BrowserController {
+  private readonly personAuthority: BrowserLoginAuthority | undefined;
+  private readonly nativePresentation: BrowserControllerOptions["nativePresentation"];
+  private readonly personOffers = new Map<BrowserSurfaceId, PersonOffer>();
+
   private readonly cursorHints = new Map<
     BrowserSurfaceId,
     { hints: PageCursorHints; unsubscribe: () => void }
@@ -301,6 +331,7 @@ export class BrowserController {
   private terminated = false;
   private unsubscribeCdp: (() => void) | null = null;
   private unsubscribeLedger: (() => void) | null = null;
+  private unsubscribeAgentCommand: (() => void) | null = null;
   private readonly platform: NodeJS.Platform;
   private readonly replaceSiteCookies: BrowserControllerOptions["replaceSiteCookies"];
   private readonly signIns: HostSignIns;
@@ -333,6 +364,13 @@ export class BrowserController {
     return this.send(message);
   }
   constructor(options: BrowserControllerOptions) {
+    this.personAuthority =
+      options.claims.personFillVersion === 1 &&
+      options.loginAuthority?.personFillAccounts &&
+      options.loginAuthority.personFill
+        ? options.loginAuthority
+        : undefined;
+    this.nativePresentation = options.nativePresentation;
     this.verifyOpenAuthority = options.verifyOpenAuthority;
     this.#passkeys = options.passkeys;
     this.disconnectPromise = new Promise<void>((resolve) => {
@@ -439,6 +477,9 @@ export class BrowserController {
       if (this.closed || !this.initialSnapshotQueued) return;
       void this.send({ event, type: "cdp.event" }).catch(() => undefined);
     });
+    this.unsubscribeAgentCommand = this.ledger.onAgentCommand((surfaceId) =>
+      this.withdrawPersonOffer(surfaceId),
+    );
     const publishDialog = this.cdpRouter.useDialogEvents(this.claims.sessionId);
     this.unsubscribeLedger = this.ledger.subscribe((event) => {
       if (event.type === "dialog-event") {
@@ -470,6 +511,7 @@ export class BrowserController {
       surfaces,
       targetedStreamingVersion: 1,
       inputLanesVersion: 1,
+      ...(this.personAuthority ? { personFillVersion: 1 } : {}),
       ...(this.claims.navigationAttributionVersion === 1
         ? { navigationAttributionVersion: 1 }
         : {}),
@@ -484,7 +526,7 @@ export class BrowserController {
       inventoryRevision: this.ledger.inventoryRevision,
       type: "browser.snapshot",
     });
-    if (this.editing)
+    if (this.editing || this.personAuthority)
       for (const surface of surfaces) void this.editingObserver(surface.id).catch(() => undefined);
     await this.publishWorkspaceTabs();
     this.screencast.viewersShown(this.deliveredActive);
@@ -581,6 +623,7 @@ export class BrowserController {
   }
 
   close(): Promise<void> {
+    for (const surfaceId of this.personOffers.keys()) this.withdrawPersonOffer(surfaceId);
     for (const entry of this.cursorHints.values()) {
       entry.unsubscribe();
       entry.hints.close();
@@ -620,6 +663,8 @@ export class BrowserController {
     this.unsubscribeCdp = null;
     this.unsubscribeLedger?.();
     this.unsubscribeLedger = null;
+    this.unsubscribeAgentCommand?.();
+    this.unsubscribeAgentCommand = null;
     await Promise.race([
       Promise.all([...this.lanes.values()].map((lane) => lane.idle())).then(async () => {
         for (const surfaceId of this.lanes.keys()) await this.releaseSurface(surfaceId);
@@ -640,6 +685,7 @@ export class BrowserController {
   }
 
   private enqueue(message: BrowserClientMessage): Promise<void> {
+    if (message.type === "autofill.fill") return this.fillPersonOffer(message);
     if (
       (message.type === "navigation.go" || message.type === "cdp.command") &&
       message.navigationId !== undefined &&
@@ -2296,7 +2342,7 @@ export class BrowserController {
       const observer = new PageEditingObserver(
         binding.cdp,
         (context) => {
-          if (!this.closed && this.initialSnapshotQueued)
+          if (this.editing && !this.closed && this.initialSnapshotQueued)
             void this.send({
               type: "browser.editing",
               surfaceId,
@@ -2323,6 +2369,8 @@ export class BrowserController {
             })
             .catch(() => undefined);
         },
+        undefined,
+        this.personAuthority ? (event) => this.observePersonFill(surfaceId, event) : undefined,
       );
       const unsubscribeCapture =
         binding.page.capture?.subscribe(() => observer.refresh()) ?? (() => {});
@@ -2337,6 +2385,166 @@ export class BrowserController {
     }
     await entry.ready;
     return entry.observer;
+  }
+
+  private withdrawPersonOffer(surfaceId: BrowserSurfaceId): void {
+    const offer = this.personOffers.get(surfaceId);
+    if (!offer) return;
+    this.personOffers.delete(surfaceId);
+    offer.abort.abort();
+    offer.binding.release();
+    if (offer.accounts.length)
+      void this.send({
+        type: "browser.autofill.withdrawn",
+        surfaceId,
+        consumerToken: offer.consumerToken,
+        offerId: offer.offerId,
+      }).catch(() => undefined);
+  }
+
+  private observePersonFill(surfaceId: BrowserSurfaceId, event: PersonFillObservation): void {
+    const current = this.personOffers.get(surfaceId);
+    if (event.type === "focus") {
+      if (current && event.bindingId !== current.binding.bindingId)
+        this.withdrawPersonOffer(surfaceId);
+      return;
+    }
+    if (event.type === "withdrawn") {
+      if (current?.binding.bindingId === event.bindingId) this.withdrawPersonOffer(surfaceId);
+      return;
+    }
+    if (!event.activated) {
+      if (current?.binding === event.binding) {
+        current.anchor = event.anchor;
+        void this.publishPersonOffer(surfaceId, current).catch(() => undefined);
+      }
+      return;
+    }
+    this.withdrawPersonOffer(surfaceId);
+    const input = this.ledger.latestViewerInput(surfaceId);
+    const surface = this.ledger.binding(surfaceId);
+    if (!input || !surface || !this.personAuthority || this.closed) {
+      event.binding.release();
+      return;
+    }
+    const offer: PersonOffer = {
+      offerId: randomUUID(),
+      consumerToken: input.consumerToken,
+      presence: input.native ? "here" : "elsewhere",
+      binding: event.binding,
+      targetId: surface.targetId,
+      origin: "",
+      accounts: [],
+      anchor: event.anchor,
+      claimed: false,
+      abort: new AbortController(),
+    };
+    this.personOffers.set(surfaceId, offer);
+    void (async () => {
+      const origin = await offer.binding.origin();
+      if (this.personOffers.get(surfaceId) !== offer) return;
+      if (!origin) {
+        this.withdrawPersonOffer(surfaceId);
+        return;
+      }
+      offer.origin = origin;
+      const accounts = await this.personAuthority!.personFillAccounts!({
+        consumerToken: offer.consumerToken,
+        targetId: offer.targetId,
+        origin,
+        role: offer.binding.role,
+        presence: offer.presence,
+      });
+      if (this.personOffers.get(surfaceId) !== offer) return;
+      if (!accounts.length) {
+        this.withdrawPersonOffer(surfaceId);
+        return;
+      }
+      offer.accounts = accounts.slice(0, personFillMaxAccounts);
+      await this.publishPersonOffer(surfaceId, offer);
+    })().catch(() => {
+      if (this.personOffers.get(surfaceId) === offer) this.withdrawPersonOffer(surfaceId);
+    });
+  }
+
+  private async publishPersonOffer(surfaceId: BrowserSurfaceId, offer: PersonOffer): Promise<void> {
+    const measuring = offer.anchor;
+    const box = await measuring;
+    if (this.personOffers.get(surfaceId) !== offer || offer.anchor !== measuring) return;
+    // A field scrolled out of view takes its offer with it; a new activation offers again.
+    if (!box) return this.withdrawPersonOffer(surfaceId);
+    if (!offer.accounts.length) return;
+    // Viewport-relative, unlike carets: native pages place it in page CSS pixels and
+    // streamed viewers map it through the frame's capture themselves.
+    await this.send({
+      type: "browser.autofill.offer",
+      surfaceId,
+      offerId: offer.offerId,
+      consumerToken: offer.consumerToken,
+      role: offer.binding.role,
+      accounts: offer.accounts,
+      geometryRevision: this.ledger.binding(surfaceId)?.surface.geometryRevision ?? 0,
+      anchor: box,
+    });
+  }
+
+  private async fillPersonOffer(
+    message: Extract<BrowserClientMessage, { type: "autofill.fill" }>,
+  ): Promise<void> {
+    const offer = this.personOffers.get(message.surfaceId);
+    if (
+      !this.personAuthority ||
+      !offer ||
+      offer.claimed ||
+      offer.offerId !== message.offerId ||
+      message.producerId !== offer.consumerToken ||
+      !offer.accounts.some(
+        (account) => account.id === message.loginId && account.revision === message.revision,
+      )
+    )
+      return;
+    offer.claimed = true;
+    const nativeLive = () =>
+      offer.presence !== "here" ||
+      this.nativePresentation?.(message.surfaceId, offer.consumerToken) === true;
+    let status: PersonFillStatus = "unavailable";
+    try {
+      if (nativeLive())
+        status = await this.personAuthority.personFill!({
+          consumerToken: offer.consumerToken,
+          targetId: offer.targetId,
+          origin: offer.origin,
+          role: offer.binding.role,
+          presence: offer.presence,
+          loginId: message.loginId,
+          revision: message.revision,
+          slots: offer.binding.slots,
+          reuseOnly: offer.accounts.some(
+            (account) => account.id === message.loginId && account.ready,
+          ),
+          signal: offer.abort.signal,
+          write: (slot, value) =>
+            !offer.abort.signal.aborted && nativeLive()
+              ? offer.binding.write(slot, value, offer.origin)
+              : Promise.resolve(false),
+        });
+    } catch {
+      // Authority errors can contain saved values; only a fixed status crosses the wire.
+      status = "unavailable";
+    }
+    try {
+      if (this.personOffers.get(message.surfaceId) === offer)
+        await this.send({
+          type: "browser.autofill.result",
+          surfaceId: message.surfaceId,
+          offerId: offer.offerId,
+          consumerToken: offer.consumerToken,
+          status,
+        });
+    } finally {
+      if (this.personOffers.get(message.surfaceId) === offer)
+        this.withdrawPersonOffer(message.surfaceId);
+    }
   }
 
   private editingCoordinates(
@@ -2383,6 +2591,11 @@ export class BrowserController {
   }
 
   private onLedgerEvent(event: SurfaceLedgerEvent): void {
+    if (event.type === "closed")
+      for (const surfaceId of this.personOffers.keys()) this.withdrawPersonOffer(surfaceId);
+    if (event.type === "changed" && event.change === "closed")
+      this.withdrawPersonOffer(event.surface.id);
+
     if (event.type === "navigation.committed") {
       if (!this.closed && this.claims.navigationAttributionVersion === 1)
         void this.send(event).catch(() => undefined);
@@ -2407,7 +2620,11 @@ export class BrowserController {
           ? [event.surface.id]
           : [],
       ).catch(() => undefined);
-    if (this.editing && event.type === "changed" && event.change !== "closed")
+    if (
+      (this.editing || this.personAuthority) &&
+      event.type === "changed" &&
+      event.change !== "closed"
+    )
       void this.editingObserver(event.surface.id).catch(() => undefined);
     if (event.type === "geometry") this.cursorHints.get(event.surfaceId)?.hints.invalidate();
     if (event.type === "geometry") this.observers.get(event.surfaceId)?.observer.refresh();

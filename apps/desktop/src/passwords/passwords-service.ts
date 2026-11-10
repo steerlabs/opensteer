@@ -19,6 +19,7 @@ import {
   PasswordsBrokerFailure,
   type PasswordsBrokerSession,
   type PasswordsBrokerCardSession,
+  type PasswordsBrokerPersonFillSession,
   type PasswordsBrokerSignInGrant,
 } from "./broker-session.js";
 import { ensurePasswordsBrokerInstalled } from "./install.js";
@@ -39,7 +40,7 @@ const notRunningSentence =
 
 export interface PasswordsServiceOptions {
   readonly appVersion: string;
-  readonly protocolVersion?: 4 | 5 | 6 | 7;
+  readonly protocolVersion?: 4 | 5 | 6 | 7 | 8;
   /** The broker this build ships, already resolved for packaged/development. */
   readonly bundledBrokerPath: () => string;
   /** Test seams for the broker connection; production uses the defaults. */
@@ -63,7 +64,7 @@ export interface PasswordsServiceOptions {
 }
 
 interface Transaction {
-  readonly credential: "login" | "card";
+  readonly credential: "login" | "card" | "person";
   /** The client and connection the broker bound this transaction to. */
   readonly client: PasswordsBrokerClient;
   readonly generation: number;
@@ -86,7 +87,7 @@ export class PasswordsService {
   readonly #now: () => number;
   readonly #listeners = new Set<(status: DesktopPasswordsStatus) => void>();
   readonly #transactions = new Map<string, Transaction>();
-  #compatibilityService: PasswordsService | null = null;
+  readonly #compatibilityServices = new Map<4 | 5 | 6 | 7 | 8, PasswordsService>();
   #client: PasswordsBrokerClient | null = null;
   #clientPromise: Promise<PasswordsBrokerClient> | null = null;
   #last: string | null = null;
@@ -128,14 +129,23 @@ export class PasswordsService {
 
   /** The narrow surface the login authority uses. */
   broker(
-    protocolVersion: 4 | 5 | 6 | 7 = this.#options.protocolVersion ?? 7,
-  ): PasswordsBrokerSession & PasswordsBrokerCardSession {
+    protocolVersion: 4 | 5 | 6 | 7 | 8 = this.#options.protocolVersion ?? 8,
+  ): PasswordsBrokerSession &
+    PasswordsBrokerCardSession &
+    Partial<PasswordsBrokerPersonFillSession> {
     // Browser-only consent from a previous-release Host must stay on protocol4.
-    if (protocolVersion !== (this.#options.protocolVersion ?? 7)) {
-      this.#compatibilityService ??= new PasswordsService({ ...this.#options, protocolVersion });
-      return this.#compatibilityService.broker();
+    if (protocolVersion !== (this.#options.protocolVersion ?? 8)) {
+      let compatibility = this.#compatibilityServices.get(protocolVersion);
+      if (!compatibility) {
+        compatibility = new PasswordsService({ ...this.#options, protocolVersion });
+        this.#compatibilityServices.set(protocolVersion, compatibility);
+        if (this.#stopped) void compatibility.stop();
+      }
+      return compatibility.broker();
     }
-    return {
+    const session: PasswordsBrokerSession &
+      PasswordsBrokerCardSession &
+      Partial<PasswordsBrokerPersonFillSession> = {
       cardProbe: async () => {
         try {
           return await this.#call("card.probe", {});
@@ -157,7 +167,6 @@ export class PasswordsService {
         await this.#bound(transactionId, "signin.commit", (client, connection) =>
           client.call("signin.commit", { transactionId }, { connection, signal }),
         ),
-      protocolVersion: this.#options.protocolVersion ?? 7,
       cancel: async (transactionId) => await this.#cancel(transactionId),
       probe: async (params) => await this.#probe(params),
       approve: async (params, signal) =>
@@ -165,11 +174,51 @@ export class PasswordsService {
           client.call("signin.approve", params, { connection, signal }),
         ),
       request: async (params, signal) => await this.#request(params, signal),
-      release: async (params, signal) =>
-        await this.#bound(params.transactionId, "signin.release", (client, connection) =>
+      release: async (params, signal) => {
+        if (
+          this.#transactions.get(params.transactionId)?.credential === "person" &&
+          (!("kind" in params) || params.kind !== "browser")
+        ) {
+          throw new PasswordsBrokerFailure(
+            "invalid",
+            "Person fills require a browser destination.",
+          );
+        }
+        return await this.#bound(params.transactionId, "signin.release", (client, connection) =>
           client.call("signin.release", params, { connection, ...(signal ? { signal } : {}) }),
-        ),
+        );
+      },
     };
+    Object.defineProperty(session, "protocolVersion", {
+      enumerable: true,
+      get: () => this.#client?.connection?.protocolVersion ?? protocolVersion,
+    });
+    if (protocolVersion >= 8) {
+      const fillAccounts: PasswordsBrokerPersonFillSession["fillAccounts"] = async (
+        params,
+        signal,
+      ) => {
+        const client = await this.#ready();
+        return await this.#guard(client.call("fill.accounts", params, signal ? { signal } : {}));
+      };
+      const fillBegin: PasswordsBrokerPersonFillSession["fillBegin"] = async (params, signal) =>
+        await this.#startTransaction("fill.begin", params, signal);
+      Object.defineProperties(session, {
+        fillAccounts: {
+          get: () =>
+            (this.#client?.connection?.protocolVersion ?? protocolVersion) >= 8
+              ? fillAccounts
+              : undefined,
+        },
+        fillBegin: {
+          get: () =>
+            (this.#client?.connection?.protocolVersion ?? protocolVersion) >= 8
+              ? fillBegin
+              : undefined,
+        },
+      });
+    }
+    return session;
   }
 
   async stop(): Promise<void> {
@@ -179,7 +228,10 @@ export class PasswordsService {
     this.#client = null;
     this.#clientPromise = null;
     if (client) this.#connectionLost(client);
-    await Promise.all([client?.close(), this.#compatibilityService?.stop()]);
+    await Promise.all([
+      client?.close(),
+      ...Array.from(this.#compatibilityServices.values(), (service) => service.stop()),
+    ]);
   }
 
   async #probe(
@@ -201,7 +253,7 @@ export class PasswordsService {
     return await this.#startTransaction("signin.request", params, signal);
   }
 
-  async #startTransaction<Method extends "signin.request" | "card.request">(
+  async #startTransaction<Method extends "signin.request" | "card.request" | "fill.begin">(
     method: Method,
     params: PasswordsBrokerParams<Method>,
     signal: AbortSignal,
@@ -213,7 +265,7 @@ export class PasswordsService {
       throw new PasswordsBrokerFailure("invalid", "That sign-in was already requested.");
     }
     const transaction: Transaction = {
-      credential: method === "card.request" ? "card" : "login",
+      credential: method === "card.request" ? "card" : method === "fill.begin" ? "person" : "login",
       aborted: false,
       client,
       generation: connection.generation,
@@ -222,8 +274,19 @@ export class PasswordsService {
     this.#transactions.set(params.transactionId, transaction);
     try {
       const decision = await this.#guard(
-        client.call(method, params, { connection: connection.generation, signal }),
+        client.call(method, params, {
+          connection: connection.generation,
+          signal: AbortSignal.any([signal, transaction.lifetime.signal]),
+        }),
       );
+      if (
+        decision.decision === "unavailable" ||
+        decision.decision === "cancelled" ||
+        decision.decision === "changed"
+      ) {
+        transaction.lifetime.abort();
+        this.#transactions.delete(params.transactionId);
+      }
       return { decision, lifetime: transaction.lifetime.signal };
     } catch (error) {
       if (error instanceof PasswordsBrokerFailure && error.code === "aborted") {
@@ -265,8 +328,9 @@ export class PasswordsService {
     }
     if (
       (method.startsWith("card.") && transaction.credential !== "card") ||
-      ((method === "signin.approve" || method === "signin.release") &&
-        transaction.credential !== "login")
+      (method === "signin.approve" && transaction.credential !== "login") ||
+      (method === "signin.commit" && transaction.credential === "person") ||
+      (method === "signin.release" && transaction.credential === "card")
     ) {
       throw new PasswordsBrokerFailure("invalid", "This credential cannot be used on that path.");
     }
@@ -390,7 +454,7 @@ export class PasswordsService {
     const client = new PasswordsBrokerClient({
       ...this.#options.client,
       appVersion: this.#options.appVersion,
-      protocolVersion: this.#options.protocolVersion ?? 7,
+      protocolVersion: this.#options.protocolVersion ?? 8,
       brokerAppPath: installed.path,
       development,
       launchFreshInstance: installed.launchFreshInstance,
@@ -440,11 +504,14 @@ export class PasswordsService {
   }
 
   #publish(status: DesktopPasswordsStatus): DesktopPasswordsStatus {
-    if (
-      status.availability === "available" &&
-      (status.broker.agentSignIns === "off" || status.broker.vault !== "ready")
-    ) {
-      for (const transaction of this.#transactions.values()) transaction.lifetime.abort("denied");
+    for (const transaction of this.#transactions.values()) {
+      if (status.availability === "unsupported") transaction.lifetime.abort("denied");
+      if (status.availability !== "available") continue;
+      const enabled =
+        transaction.credential === "person"
+          ? status.broker.personFill === "on"
+          : status.broker.agentSignIns === "on";
+      if (!enabled || status.broker.vault !== "ready") transaction.lifetime.abort("denied");
     }
     const key = JSON.stringify(status);
     if (key === this.#last) return status;

@@ -66,6 +66,7 @@ export type {
   PersonalRemoteAccessMode,
 } from "./personal-remote-access.js";
 import type { DesktopPasswordsStatus } from "./desktop-passwords.js";
+import { PersonFillRoleSchema, personFillMaxAccounts } from "./person-fill.js";
 export { DesktopPasswordsStatusSchema } from "./desktop-passwords.js";
 export type { DesktopPasswordsStatus } from "./desktop-passwords.js";
 
@@ -1561,6 +1562,19 @@ export const DesktopBrowserPresentationEventSchema = z.discriminatedUnion("type"
   }),
   z.strictObject({ key: DesktopForwardedKeySchema, type: z.literal("key") }),
   z.strictObject({ focused: z.boolean(), type: z.literal("window-focus") }),
+  /** The person picked an account in the autofill popup showing `sceneRevision`. */
+  z.strictObject({
+    accountId: z.uuid(),
+    presentationId: DesktopBrowserPresentationIdSchema,
+    sceneRevision: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+    type: z.literal("autofill-choice"),
+  }),
+  /** The popup closed without a choice: an outside click, the window leaving, or the page moving away. */
+  z.strictObject({
+    presentationId: DesktopBrowserPresentationIdSchema,
+    sceneRevision: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+    type: z.literal("autofill-dismiss"),
+  }),
 ]);
 export type DesktopBrowserPresentationEvent = z.infer<typeof DesktopBrowserPresentationEventSchema>;
 
@@ -1620,6 +1634,67 @@ export interface OpensteerGlassBridge {
   onScene(listener: (scene: DesktopGlassScene | null) => void): () => void;
 }
 
+/**
+ * The autofill chooser main shows under a native page's field. The renderer
+ * owns the offer and its state; main only places, draws and reports choices.
+ * `anchor` is the field's box in the page's CSS pixels.
+ */
+export const DesktopAutofillSceneSchema = z.strictObject({
+  accounts: z
+    .array(
+      z.strictObject({
+        id: z.uuid(),
+        label: z.string().min(1).max(200).nullable(),
+        username: z.string().max(1_024),
+      }),
+    )
+    .min(1)
+    .max(personFillMaxAccounts),
+  anchor: z.strictObject({
+    height: z.number().finite().nonnegative(),
+    width: z.number().finite().nonnegative(),
+    x: z.number().finite(),
+    y: z.number().finite(),
+  }),
+  highlighted: z
+    .number()
+    .int()
+    .min(0)
+    .max(personFillMaxAccounts - 1),
+  reducedMotion: z.boolean(),
+  role: PersonFillRoleSchema,
+  sceneRevision: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+});
+export type DesktopAutofillScene = z.infer<typeof DesktopAutofillSceneSchema>;
+
+export const DesktopBrowserAutofillInputSchema = z.strictObject({
+  presentationId: DesktopBrowserPresentationIdSchema,
+  revision: DesktopBrowserPresentationRevisionSchema,
+  scene: DesktopAutofillSceneSchema.nullable(),
+});
+export type DesktopBrowserAutofillInput = z.infer<typeof DesktopBrowserAutofillInputSchema>;
+
+/**
+ * The popup page draws its panel this many CSS pixels inside its window on
+ * every side, leaving room for the panel's shadow.
+ */
+export const desktopAutofillPopupInset = 16;
+
+/**
+ * What the autofill popup page receives and reports; it has no Desktop bridge.
+ * Main keeps the window hidden until the page has measured the scene's panel.
+ */
+export interface OpensteerAutofillPopupBridge {
+  onScene(listener: (scene: DesktopAutofillScene | null) => void): () => void;
+  /** The panel's size in CSS pixels for `sceneRevision`, without the inset. */
+  measured(input: {
+    readonly sceneRevision: number;
+    readonly width: number;
+    readonly height: number;
+  }): void;
+  choose(input: { readonly sceneRevision: number; readonly accountId: string }): void;
+}
+
 export const DesktopBrowserNavigationAvailableSchema = z.strictObject({ hardReload: z.boolean() });
 
 /** Desktop page commands and native presentation of this process's own Runtime pages. */
@@ -1646,6 +1721,12 @@ export interface DesktopBrowserPresentationBridge {
   stopFind(input: DesktopBrowserPresentationTarget): Promise<void>;
   exitFullscreen(input: DesktopBrowserPresentationTarget): Promise<void>;
   setGlass(input: DesktopBrowserGlassInput): void;
+  /**
+   * Shows, moves or (with a null scene) hides the autofill popup under the
+   * page's field. While shown, main forwards the page's keys as `key` events
+   * and keeps ↑, ↓, Return and Esc from reaching the page.
+   */
+  setAutofill(input: DesktopBrowserAutofillInput): void;
   /** Gives the page the keyboard (Shift-F6, leaving find or the address); only for the current revision in the active window. */
   focusPage(input: DesktopBrowserPresentationTarget): Promise<void>;
 }
