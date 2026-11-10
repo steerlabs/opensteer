@@ -1149,6 +1149,32 @@ describe("Electron geometry lifecycle", () => {
     },
   );
 
+  it("attaches a page remounted while its placement waited only to its latest window", async () => {
+    const { browser, native, view, serialize, drain } = await launch();
+    const [first, second] = [new BaseWindow({}), new BaseWindow({})] as unknown as Array<
+      (typeof electron.hosts)[number]
+    >;
+    const held = gate({ label: "remounted page geometry lock", deadlineMs: 1000 });
+    void serialize(() => held.enter());
+    const stage = { x: 280, y: 52, width: 800, height: 600 };
+    const placed = vi.fn();
+    try {
+      native.mount(first as unknown as BaseWindow, { ...stage, x: 10 }, vi.fn());
+      await held.entered;
+      native.unmount();
+      native.mount(second as unknown as BaseWindow, stage, placed);
+      held.release();
+      await drain();
+      expect(first!.contentView.addChildView).not.toHaveBeenCalled();
+      expect(second!.contentView.addChildView).toHaveBeenCalledExactlyOnceWith(view);
+      expect(view.getBounds()).toEqual(stage);
+      expect(placed).toHaveBeenCalledWith(expect.objectContaining({ bounds: stage }));
+    } finally {
+      held.release();
+      await browser.close();
+    }
+  });
+
   it.each(["resolve", "reject"] as const)(
     "recomputes a newer live epoch when the obsolete release barrier %ss",
     async (outcome) => {
