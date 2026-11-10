@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { LiveItem } from "@opensteer/core";
+import { createId, type LiveItem } from "@opensteer/core";
 import { LiveProgressBuffer } from "./live-progress.js";
 
 /*
@@ -9,6 +9,45 @@ import { LiveProgressBuffer } from "./live-progress.js";
  *   hole in it, with nothing to tell it so or to repair it.
  */
 describe("Run live progress under backpressure", () => {
+  it("replaces a node's progress whole, keeps tool attribution and forgets completed streams", async () => {
+    const nodeId = createId("executionNode");
+    const sent: LiveItem[][] = [];
+    const buffer = new LiveProgressBuffer({
+      flushIntervalMs: 10_000,
+      maxInFlightBytes: 1_024 * 1_024,
+      maxPendingBytes: 64 * 1_024,
+      maxSentBytes: 1_024 * 1_024,
+      send: async (items) => {
+        sent.push([...items]);
+      },
+    });
+    try {
+      buffer.replaceNode(nodeId, "Reading the source");
+      buffer.replaceNode(nodeId, "Checking the result");
+      buffer.append({ callId: "child-tool", nodeId, stream: "tool" }, "Source");
+      await buffer.flush();
+      expect(sent[0]).toEqual([
+        { nodeId, stream: "node", op: "replace", length: 19, text: "Checking the result" },
+        { callId: "child-tool", nodeId, stream: "tool", op: "append", at: 0, text: "Source" },
+      ]);
+      buffer.replaceNode(nodeId, "Done");
+      await buffer.flush();
+      expect(sent[1]).toEqual([{ nodeId, stream: "node", op: "replace", length: 4, text: "Done" }]);
+      expect(buffer.replacement()).toContainEqual({
+        callId: "child-tool",
+        nodeId,
+        stream: "tool",
+        op: "replace",
+        length: 6,
+        text: "Source",
+      });
+      buffer.complete({ nodeId, stream: "node" });
+      expect(buffer.replacement().map((item) => item.stream)).toEqual(["tool"]);
+    } finally {
+      buffer.close();
+    }
+  });
+
   it("bounds what waits behind a blocked send and repairs the stream when sending resumes", async () => {
     let release!: () => void;
     const blocked = new Promise<void>((resolve) => {

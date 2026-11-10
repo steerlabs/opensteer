@@ -15,6 +15,7 @@ export const compressedReads = new Set<keyof typeof hostApi>([
   "tasks.list",
   "thread.assignments.list",
   "thread.events.list",
+  "node.events.list",
   "thread.inputQueue.get",
   "thread.live.get",
   "thread.messages.list",

@@ -4721,6 +4721,7 @@ export function migrationProvider() {
         "0167_quiet_tasks": quietTasksMigration,
         "0168_devices": devicesMigration,
         "0169_browser_profile_homes": browserProfileHomesMigration,
+        "0170_node_detail": nodeDetailMigration,
       };
     },
   };
@@ -7812,6 +7813,28 @@ export const browserProfileHomesMigration: Migration = {
         on conflict (profile_id) do nothing;
       update browser_profile_deletions set state = 'unconfirmed',updated_at = now()
         where runner_id in (select id from runners where revoked_at is not null) and state <> 'deleted';
+    `.execute(database);
+  },
+};
+
+const nodeDetailMigration: Migration = {
+  async up(database) {
+    await sql`
+      alter table public.execution_nodes
+        add column effort text,
+        add column phase_index integer check (phase_index between 0 and 63),
+        add column phases jsonb not null default '[]'::jsonb,
+        drop constraint execution_nodes_kind_check,
+        add constraint execution_nodes_kind_check check (kind in ('subagent', 'task', 'workflow'));
+      alter table public.workspace_events add column node_detail_id text;
+      update public.workspace_events
+        set node_detail_id = data->>'nodeId'
+        where type in ('node.message', 'reasoning.completed', 'tool.started', 'tool.completed')
+          and jsonb_typeof(data->'nodeId') = 'string';
+      create index workspace_events_node_detail
+        on public.workspace_events (node_detail_id, sequence desc) where node_detail_id is not null;
+      create index workspace_events_thread_own_history
+        on public.workspace_events (thread_id, sequence) include (type) where node_detail_id is null;
     `.execute(database);
   },
 };
