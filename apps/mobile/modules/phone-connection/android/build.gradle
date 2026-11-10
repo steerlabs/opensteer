@@ -1,0 +1,23 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+group = 'com.opensteer.phoneconnection'
+version = '1.0.0'
+android {
+  namespace 'com.opensteer.phoneconnection'
+  compileOptions { coreLibraryDesugaringEnabled true }
+  defaultConfig { versionCode 1; versionName '1.0.0' }
+  testOptions {
+    unitTests.all {
+      systemProperty 'phone.vectors', file('../../../../../packages/browser-core/test-vectors').canonicalPath
+    }
+  }
+}
+dependencies {
+  coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.5'
+  implementation 'org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0'
+  implementation 'org.bouncycastle:bcprov-jdk18on:1.86'
+  implementation 'com.squareup.okhttp3:okhttp:5.5.1'
+  testImplementation 'junit:junit:4.13.2'
+}
