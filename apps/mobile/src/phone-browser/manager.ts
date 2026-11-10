@@ -33,6 +33,7 @@ import {
   type RunnerAuxiliaryFrameFence,
 } from "@opensteer/protocol/runner-auxiliary";
 import { z } from "zod";
+import { safeMessage } from "@opensteer/shared/safeMessage";
 import type { ProtocolError } from "@opensteer/protocol";
 import { PhoneCdpSession } from "./cdp.js";
 import { phoneBrowserDescriptor } from "./descriptor.js";
@@ -1270,7 +1271,7 @@ export class PhoneBrowserManager {
         requestId: message.requestId,
         error: {
           code: code === "dialog-open" && !dialog ? "outcome-unknown" : code,
-          message: safeMessage(error),
+          message: phoneBrowserMessage(error),
           ...(code === "dialog-open" && dialog ? { dialog } : {}),
         },
       });
@@ -2170,9 +2171,9 @@ function actionBinding(tab: PhoneTab): z.infer<typeof BrowserActionBindingSchema
   };
 }
 
-function safeMessage(error: unknown): string {
+function phoneBrowserMessage(error: unknown): string {
   return error instanceof PhoneBrowserError
-    ? error.message.slice(0, 1000)
+    ? safeMessage(error, { fallback: "", maximumLength: 1000 })
     : "The browser operation was refused.";
 }
 
@@ -2200,7 +2201,7 @@ function protocolError(error: unknown): ProtocolError {
   return {
     code,
     reason: error instanceof PhoneBrowserError ? error.code : "unsupported-operation",
-    message: safeMessage(error),
+    message: phoneBrowserMessage(error),
     retryable: false,
   };
 }

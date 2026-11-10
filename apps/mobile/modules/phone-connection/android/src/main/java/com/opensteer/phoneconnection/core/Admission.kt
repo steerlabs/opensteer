@@ -44,7 +44,7 @@ class Admission(private val now: () -> Long, private val primaryCurrent: () -> B
         lease.requireCurrent(expectedFence)
         if (expectedCapability != null) Wire.requireThat(capability == expectedCapability && capabilityEnd > now(), "retired-capability")
     }
-    @Synchronized fun release() { advance(); lease.release() }
+    @Synchronized fun release() { lease.release() }
 }
 
 class FrameCredit {

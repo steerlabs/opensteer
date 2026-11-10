@@ -4,10 +4,12 @@ package com.opensteer.phonebrowser
 data class PhoneBrowserCdpGrant(val attachmentId: String, val sessionId: String)
 
 interface PhoneBrowserAuthority {
-  fun requireAllocation(epoch: Int, permit: String, sessionId: String?, storeHandle: String?, binding: Map<String, Any>? = null)
+  fun requireAllocation(epoch: Int, permit: String, sessionId: String?, storeHandle: String?, binding: Map<String, Any>? = null, initialized: Boolean? = null)
   fun requireCdp(epoch: Int, channelId: String, actorToken: String): PhoneBrowserCdpGrant
   fun viewerActor(epoch: Int, channelId: String, sessionId: String): String? = null
   fun requireAttachment(epoch: Int, attachmentId: String, sessionId: String, tabId: String)
+  fun requireViewer(epoch: Int, channelId: String, sessionId: String, control: Boolean = false)
+  fun acknowledge(epoch: Int, channelId: String, token: String)
 }
 
 data class PhoneBrowserGeometry(
@@ -33,7 +35,8 @@ data class PhoneBrowserArtifact(
   val channelId: String,
   val requestId: String?,
   val attachmentId: String?,
-  val token: String?
+  val token: String?,
+  val isCurrent: () -> Boolean
 )
 
 /** The sink sends bytes directly, and must revalidate the supplied epoch before delivery. */
@@ -48,4 +51,5 @@ object PhoneBrowserNative {
     internal set
   @Volatile var authority: PhoneBrowserAuthority? = null
   @Volatile var sink: PhoneBrowserSink? = null
+  @Volatile internal var shareDownload: ((String) -> Unit)? = null
 }

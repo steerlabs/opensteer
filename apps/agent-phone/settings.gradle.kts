@@ -19,3 +19,4 @@ rootProject.name = "opensteer-agent-phone"
 include(":app", ":fixture")
 
 include(":notification-preview-tests")
+include(":phone-connection-tests", ":phone-browser-tests", ":remote-text-input-tests")

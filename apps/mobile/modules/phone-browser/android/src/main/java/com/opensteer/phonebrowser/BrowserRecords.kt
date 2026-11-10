@@ -24,6 +24,8 @@ open class DocumentRef : TabRef() {
 }
 class InitializeRecord : EpochRecord() { @Field var deploymentId = ""; @Field var runnerId = "" }
 class ForegroundRecord : EpochRecord() { @Field var active = false }
+class AgentRecord : EpochRecord() { @Field var channelId = ""; @Field var sessionId = ""; @Field var attachmentId = ""; @Field var actorToken = ""; @Field var backend = "" }
+class DetachAgentRecord : EpochRecord() { @Field var attachmentId = "" }
 class BindingRecord : Record {
   @Field var version = 0
   @Field var deploymentId = ""

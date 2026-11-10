@@ -82,6 +82,7 @@ class PhoneConnectionRuntime private constructor(context: Context) {
         Wire.requireThat(!storageUnavailable, "identity-unavailable")
         Wire.requireThat(endpoint == null || endpoint === browser, "browser-already-registered")
         endpoint = browser
+        browser.fence(admission.epoch)
         val result = CompletableFuture<PhoneConnectionRuntime>()
         val current = identity
         if (current?.get("state") == JsonPrimitive("retiring")) {
@@ -96,6 +97,14 @@ class PhoneConnectionRuntime private constructor(context: Context) {
         }
         return result
     }
+    @Synchronized fun unregisterBrowser(browser: PhoneBrowserEndpoint) {
+        if (endpoint !== browser) return
+        close("browser-unavailable")
+        endpoint = null
+        transport = null
+        publish()
+    }
+    @Synchronized fun epoch(): Int = admission.epoch
     @Synchronized fun prepare(deploymentId: String): JsonObject {
         Wire.requireThat(endpoint != null, "unsupported")
         identity = storage.prepare(deploymentId)

@@ -735,6 +735,7 @@ describe("rpc envelope", () => {
     const revokeRunner = vi.fn(async () => ({
       cancelledRequestIds: [],
       closedBrowserSessions: [],
+      deletedBrowserProfiles: [],
       events: [],
       requestEvents: [],
       revokedComputerConnectionIds: [],
@@ -747,7 +748,7 @@ describe("rpc envelope", () => {
       } as never,
       discovery: testDiscovery,
       channels: { relay: { forget: vi.fn() }, service: {} } as never,
-      browser: { abandonSession: vi.fn() } as never,
+      browser: { abandonSession: vi.fn(), profilesRemoved: vi.fn(async () => undefined) } as never,
       runners: { revoke: revokeLiveRunner } as never,
       store: { revokeRunner } as never,
     });
@@ -838,13 +839,14 @@ describe("rpc envelope", () => {
       } as never,
       discovery: testDiscovery,
       channels: { relay: { forget: vi.fn() }, service: {} } as never,
-      browser: { abandonSession: vi.fn() } as never,
+      browser: { abandonSession: vi.fn(), profilesRemoved: vi.fn(async () => undefined) } as never,
       realtime: testRealtime({ publish }),
       runners: { revoke: vi.fn(async () => undefined) } as never,
       store: {
         revokeRunner: vi.fn(async () => ({
           cancelledRequestIds: [],
           closedBrowserSessions: [],
+          deletedBrowserProfiles: [],
           events: [terminalEvent],
           requestEvents: [],
           revokedComputerConnectionIds: [],
@@ -1124,7 +1126,7 @@ describe("rpc envelope", () => {
         authenticateSession: async () => testAuthenticatedSession(ownerId),
         identity: testIdentity,
       } as never,
-      browser: { abandonSession: vi.fn() } as never,
+      browser: { abandonSession: vi.fn(), profilesRemoved: vi.fn(async () => undefined) } as never,
       channels: { relay: { forget: () => order.push("relay") }, service: {} } as never,
       computerApps: computerApps as never,
       discovery: testDiscovery,
@@ -1140,6 +1142,7 @@ describe("rpc envelope", () => {
           return {
             cancelledRequestIds: [],
             closedBrowserSessions: [],
+            deletedBrowserProfiles: [],
             events: [],
             requestEvents: [],
             revokedComputerConnectionIds: [],
