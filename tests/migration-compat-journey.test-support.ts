@@ -12,16 +12,21 @@ async function checkUpgrade(
   authority: "host" | "controlPlane",
   signal: AbortSignal,
   control?: "break-column" | "timeout",
+  deploymentKind: "personal" | "server" = "server",
 ) {
   const clone = await cloneTestDatabase(authority);
   const directory = await mkdtemp(join(tmpdir(), "opensteer-migration-fixture-"));
   const receipt = join(directory, "fixture.json");
   try {
-    await runMigrationPhase(previous, "seed", authority, clone.url, { receipt, signal }).catch(
-      (error: unknown) => {
-        throw new Error("Previous-release fixture seed failed before migration", { cause: error });
-      },
-    );
+    await runMigrationPhase(previous, "seed", authority, clone.url, {
+      receipt,
+      signal,
+      deploymentKind,
+    }).catch((error: unknown) => {
+      throw new Error("Previous-release fixture seed failed before migration", {
+        cause: error,
+      });
+    });
     const start = performance.now();
     try {
       await runMigrationPhase(current, "migrate", authority, clone.url, {
@@ -38,6 +43,7 @@ async function checkUpgrade(
     const replay = await runMigrationPhase(previous, "replay", authority, clone.url, {
       receipt,
       signal,
+      deploymentKind,
     });
     expect(replay).toContain("PREVIOUS_STORE_READ_WRITE_OK");
   } finally {
@@ -56,6 +62,10 @@ it.for(["host", "controlPlane"] as const)(
     await checkUpgrade(authority, signal);
   },
 );
+
+it("preserves the frozen Personal store and its sharing refusals", async ({ signal }) => {
+  await checkUpgrade("host", signal, undefined, "personal");
+});
 
 it.runIf(process.env.OPENSTEER_MIGRATION_COMPAT_CONTROLS === "1")(
   "rejects a migration that renames a previous-store column",

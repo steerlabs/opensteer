@@ -851,7 +851,8 @@ export async function claimSecurityEffects(
         id: row.id,
         kind: row.kind,
         membershipGeneration: safeGeneration(row.membershipGeneration),
-        membershipGenerationCutoff: safeGeneration(row.membershipGenerationCutoff),
+        membershipGenerationCutoff:
+          safeGeneration((BigInt(row.membershipGenerationCutoff) + 1n).toString()) - 1,
         userId: row.userId,
         workspaceId: row.workspaceId,
       });

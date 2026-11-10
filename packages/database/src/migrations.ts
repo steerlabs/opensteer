@@ -28,6 +28,7 @@ import {
 } from "kysely/migration";
 import { createHash } from "node:crypto";
 import { BASELINE_SCHEMA_SQL } from "./baseline-schema.js";
+import { ACCESS_MEMBERSHIP_FUNCTIONS_SQL } from "./access-membership-functions.js";
 import type { DatabaseSchema } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
 
@@ -93,8 +94,17 @@ export const accessFoundationMigration: Migration = {
       alter table public.security_effects add column membership_generation_cutoff bigint;
       update public.security_effects set membership_generation_cutoff = membership_generation - 1;
       alter table public.security_effects alter column membership_generation_cutoff set not null;
-      alter table public.security_effects add constraint security_effects_cutoff_positive check (membership_generation_cutoff >= 1);
+      alter table public.security_effects add constraint security_effects_cutoff_positive check (membership_generation_cutoff >= 0);
       alter table public.security_effects add column cause_id text;
+      create function public.opensteer_security_effect_legacy_scope() returns trigger language plpgsql as $$
+      begin
+        if new.membership_generation_cutoff is null then
+          new.membership_generation_cutoff := new.membership_generation - 1;
+        end if;
+        return new;
+      end $$;
+      create trigger security_effect_legacy_scope before insert on public.security_effects
+        for each row execute function public.opensteer_security_effect_legacy_scope();
       create unique index security_effects_cause_scope on public.security_effects(cause_id, kind, workspace_id, user_id, membership_generation_cutoff)
         where cause_id is not null;
       create function public.opensteer_security_effect_scope_immutable() returns trigger language plpgsql as $$
@@ -108,46 +118,7 @@ export const accessFoundationMigration: Migration = {
       create trigger security_effect_scope_immutable before update on public.security_effects
         for each row execute function public.opensteer_security_effect_scope_immutable();
     `.execute(database);
-    const ownerFence = await sql<{
-      definition: string;
-    }>`select pg_get_functiondef('public.opensteer_prevent_last_workspace_owner_removal()'::regprocedure) as definition`.execute(
-      database,
-    );
-    const definition = ownerFence.rows[0]!.definition;
-    const replacement = definition.replace(
-      /\bbegin\b/u,
-      `begin
-      if exists (select 1 from public.deployments where authority_model_version = 2 and deployment_shape->>'kind' = 'server')
-        and exists (select 1 from public.workspaces where id = old.workspace_id and kind = 'project') then
-        return case when tg_op = 'DELETE' then old else new end;
-      end if;`,
-    );
-    if (replacement === definition) throw new Error("Workspace owner fence definition is missing");
-    await sql.raw(replacement).execute(database);
-    const guards = await sql<{ definition: string }>`
-      select pg_get_functiondef(procedure.oid) as definition
-      from pg_proc as procedure join pg_namespace as namespace on namespace.oid = procedure.pronamespace
-      where namespace.nspname = 'public' and procedure.prokind = 'f'
-        and procedure.prosrc like '%workspace_memberships%'
-    `.execute(database);
-    for (const guard of guards.rows) {
-      let updated = guard.definition;
-      for (const match of updated.matchAll(
-        /\b(?:from|join)\s+(?:public\.)?workspace_memberships\s*(?:as\s+)?([a-z_]+)?/giu,
-      )) {
-        const alias =
-          match[1] &&
-          !["where", "on", "join", "order", "set", "for"].includes(match[1].toLowerCase())
-            ? match[1]
-            : "workspace_memberships";
-        const active = new RegExp(`\\b${alias}\\.state\\s*=\\s*'active'(?:::text)?`, "gu");
-        updated = updated.replace(
-          active,
-          `public.opensteer_membership_is_effective(${alias}.state, ${alias}.effective_until, ${alias}.user_id)`,
-        );
-      }
-      if (updated !== guard.definition) await sql.raw(updated).execute(database);
-    }
+    await sql.raw(ACCESS_MEMBERSHIP_FUNCTIONS_SQL).execute(database);
   },
 };
 
