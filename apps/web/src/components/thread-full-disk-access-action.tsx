@@ -1,3 +1,4 @@
+import { hostDeploymentPolicy } from "@opensteer/client/host";
 import { useState } from "react";
 import type { Request } from "@opensteer/core";
 import {
@@ -49,7 +50,7 @@ export function ThreadFullDiskAccessAction({
   const machine = snapshot.machines.find((candidate) => candidate.id === machineId);
   const onThatMac = fullAccessOnThisMac({
     hostsDeployment:
-      machine !== undefined && hostsDeployment(machine, snapshot.deploymentShape?.kind ?? null),
+      machine !== undefined && hostsDeployment(machine, hostDeploymentPolicy(snapshot) ?? null),
     hostsDeploymentOnThisComputer: desktopDeployment?.onThisComputer === true,
     inDesktopApp: desktopBridge !== null,
     lentByThisDesktop: localExecutionStatus?.runner.runnerId === machineId,

@@ -137,7 +137,16 @@ describe("browser profile settings", () => {
       // A device that can't hold profiles is no default, though the reader is at it.
       expect(choice(id("Pixel 7"))?.initial).toBe("Mac mini");
       const server = { ...snapshot.deploymentShape!, kind: "server" as const };
-      expect(choice(null, { ...snapshot, deploymentShape: server })?.initial).toBe("Alex's iPhone");
+      expect(
+        choice(null, { ...snapshot, deploymentShape: server, deploymentPolicy: undefined })
+          ?.initial,
+      ).toBe("Alex's iPhone");
+      expect(
+        choice(null, {
+          ...snapshot,
+          deploymentPolicy: { ...snapshot.deploymentPolicy, deploymentOwnsMainComputer: false },
+        })?.initial,
+      ).toBe("Alex's iPhone");
       // Nothing to choose: one device, or a Host that does not say.
       expect(choice(null, { ...snapshot, browserProfileHomes: [id("Mac mini")] })).toBeNull();
       expect(choice(null, { ...snapshot, browserProfileHomes: undefined })).toBeNull();

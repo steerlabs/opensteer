@@ -1,3 +1,4 @@
+import { deploymentPolicy } from "@opensteer/core";
 import { pluginDeviceFromManifest } from "@opensteer/integration-core";
 import { lockPluginOwnerConsent } from "./plugin-settings-locks.js";
 import { SpecialistStore } from "./specialist-store.js";
@@ -543,7 +544,10 @@ export class PluginSettingsStore {
           .selectFrom("deployments")
           .select("deploymentShape")
           .executeTakeFirstOrThrow();
-        if (command.personalEverywhere && deployment.deploymentShape.kind !== "personal")
+        if (
+          command.personalEverywhere &&
+          deploymentPolicy(deployment.deploymentShape).projectConsent !== "owner-wide"
+        )
           throw new OpensteerError({
             code: "forbidden",
             message: "Server Projects require explicit consent",

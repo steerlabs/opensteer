@@ -1,3 +1,4 @@
+import { deploymentPolicy } from "@opensteer/core";
 import { lockPluginOwnerConsent } from "./plugin-settings-locks.js";
 import { SpecialistStore } from "./specialist-store.js";
 import { PluginSettingsStore } from "./plugin-settings-store.js";
@@ -203,16 +204,19 @@ export async function createWorkspace(
       kind === "project"
         ? await transaction.selectFrom("deployments").select("deploymentShape").executeTakeFirst()
         : undefined;
-    const consent =
-      deployment?.deploymentShape.kind === "personal"
-        ? await transaction
-            .selectFrom("pluginOwnerSettings")
-            .select(["target", "personalEverywhereAccounts"])
-            .where("ownerUserId", "=", input.createdBy)
-            .where("personalEverywhereAccounts", "is not", null)
-            .orderBy("targetKey", "asc")
-            .execute()
-        : [];
+    const consent = (
+      deployment
+        ? deploymentPolicy(deployment.deploymentShape).projectConsent === "owner-wide"
+        : false
+    )
+      ? await transaction
+          .selectFrom("pluginOwnerSettings")
+          .select(["target", "personalEverywhereAccounts"])
+          .where("ownerUserId", "=", input.createdBy)
+          .where("personalEverywhereAccounts", "is not", null)
+          .orderBy("targetKey", "asc")
+          .execute()
+      : [];
     const accountPlacements = new Map<string, IntegrationInstallationId>();
     for (const { target } of consent) {
       if (target.kind !== "service" && target.kind !== "device-app") continue;

@@ -1,3 +1,4 @@
+import { hostDeploymentPolicy } from "@opensteer/client/host";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   mutationIdempotencyKey,
@@ -47,7 +48,7 @@ type PasswordsBridge = Pick<
 export function PasswordsSection({ view }: { readonly view: SettingsView }) {
   const { desktopBridge, hostClient, snapshot } = useShell();
   const home = useHomeComputer();
-  const personal = snapshot.deploymentShape?.kind === "personal";
+  const personal = hostDeploymentPolicy(snapshot)?.nativePasswords === true;
   const onThisMac = desktopBridge !== null && personal && view.facts.onThisComputer;
   return (
     <>

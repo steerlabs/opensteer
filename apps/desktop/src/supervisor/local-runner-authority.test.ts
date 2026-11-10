@@ -6,7 +6,8 @@ import {
   type HostDiscoveryDocument,
   type HostDiscoveryEnvelope,
 } from "@opensteer/deployment-authority";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import * as core from "@opensteer/core";
 import {
   DeploymentCatalogSchema,
   DeploymentConnectionSchema,
@@ -21,6 +22,27 @@ const loopbackOrigin = "http://127.0.0.1:4310";
 const routeOrigin = "https://studio.connect.opensteer.example";
 
 describe("DesktopLocalRunnerTargetResolver", () => {
+  it("uses agent modules rather than enrollment mode", async () => {
+    const connection = serverConnection();
+    const policy = core.deploymentPolicy({
+      kind: "server",
+      defaultWorkspaceBacking: "local-directory",
+    });
+    const mocked = vi
+      .spyOn(core, "deploymentPolicy")
+      .mockReturnValue({ ...policy, localRunnerDefaultModules: ["shell"] });
+    try {
+      const resolver = new DesktopLocalRunnerTargetResolver({
+        catalog: catalogStore([connection]),
+        supervisedDeploymentId: async () => null,
+      });
+      await expect(
+        resolver.resolve(connection.authority.document.deploymentId),
+      ).resolves.toMatchObject({ mayRunAgents: false });
+    } finally {
+      mocked.mockRestore();
+    }
+  });
   it("accepts a Personal Deployment this Mac reaches over its signed route", async () => {
     const connection = personalConnection({ route: routeOrigin });
     const deploymentId = connection.authority.document.deploymentId;

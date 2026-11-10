@@ -79,7 +79,12 @@ export function browserProfileHomeCommand(
 export function browserAccessHomeChoice(
   snapshot: Pick<
     HostSnapshot,
-    "browserProfileHomes" | "deploymentShape" | "environments" | "machines" | "threads"
+    | "browserProfileHomes"
+    | "deploymentShape"
+    | "deploymentPolicy"
+    | "environments"
+    | "machines"
+    | "threads"
   >,
   hereId: string | null,
   request: Pick<Request, "originatingThreadId">,

@@ -1,3 +1,4 @@
+import { deploymentPolicy } from "@opensteer/core";
 import { isPlaceContentPart } from "@opensteer/core";
 import { withDatabaseTransaction } from "./connection.js";
 import { createHash } from "node:crypto";
@@ -625,7 +626,11 @@ async function personalLinkSubjectForOwner(
     .select("deploymentShape")
     .where("singletonKey", "=", "primary")
     .executeTakeFirst();
-  if (deployment?.deploymentShape.kind !== "personal") return null;
+  if (
+    !deployment ||
+    deploymentPolicy(deployment.deploymentShape).integrationAccountBinding !== "personal-link"
+  )
+    return null;
   const owner = await transaction
     .selectFrom("users")
     .select("id")

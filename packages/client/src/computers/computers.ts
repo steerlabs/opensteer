@@ -1,3 +1,4 @@
+import type { DeploymentClientPolicy } from "@opensteer/core";
 import type {
   IntegrationConnectionSummary,
   IntegrationDefinitionSummaryView,
@@ -51,7 +52,7 @@ export interface ComputersOverview {
 }
 
 export function computersOverview(input: {
-  readonly deploymentKind: DeploymentKind | null;
+  readonly deploymentPolicy: DeploymentClientPolicy | null;
   readonly deploymentName: string;
   /** The machine the reader is sitting at, when a desktop can say so. */
   readonly hereId: string | null;
@@ -60,22 +61,27 @@ export function computersOverview(input: {
   readonly publicOrigin: string | null;
 }): ComputersOverview {
   const services = input.machines.filter(isServiceMachine);
+  const main =
+    input.machines.find((machine) => hostsDeployment(machine, input.deploymentPolicy)) ?? null;
+  const home: ComputersHome =
+    input.deploymentPolicy?.deploymentOwnsMainComputer === true
+      ? { kind: "mac", machine: main, name: main?.name ?? input.deploymentName }
+      : { kind: "server", address: originAddress(input.publicOrigin) ?? input.deploymentName };
   const computers = sortComputers(
-    input.machines.filter((machine) => !isServiceMachine(machine)),
+    input.machines.filter((machine) => machine !== main && !isServiceMachine(machine)),
     input.hereId,
   );
-  if (input.deploymentKind === "personal") {
-    const home = computers.find((machine) => hostsDeployment(machine, "personal")) ?? null;
+  if (input.deploymentPolicy?.ownership === "single-user") {
     return {
       addTo: "others",
       groups: [
         {
           id: "others",
-          machines: computers.filter((machine) => machine !== home),
+          machines: computers,
           title: "Other computers agents can use",
         },
       ],
-      home: { kind: "mac", machine: home, name: home?.name ?? input.deploymentName },
+      home,
       services,
     };
   }
@@ -98,7 +104,7 @@ export function computersOverview(input: {
         title: "Teammates’ computers",
       },
     ],
-    home: { kind: "server", address: originAddress(input.publicOrigin) ?? input.deploymentName },
+    home,
     services,
   };
 }
@@ -121,10 +127,10 @@ export function isServiceMachine(machine: MachineSummary): boolean {
  */
 export function hostsDeployment(
   machine: MachineSummary,
-  deploymentKind: DeploymentKind | null,
+  deploymentPolicy: DeploymentClientPolicy | null,
 ): boolean {
   return (
-    deploymentKind === "personal" &&
+    deploymentPolicy?.deploymentOwnsMainComputer === true &&
     machine.ownership === "deployment" &&
     !isServiceMachine(machine)
   );

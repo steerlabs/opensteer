@@ -42,6 +42,7 @@ export function sameStableHostSnapshot(previous: HostSnapshot, next: HostSnapsho
       previous.connection === next.connection &&
       previous.network === next.network &&
       previous.deploymentShape === next.deploymentShape &&
+      previous.deploymentPolicy === next.deploymentPolicy &&
       previous.environments === next.environments &&
       // What the person chose last drives every composer's opening choice,
       // Recent, and the options a model comes back with.

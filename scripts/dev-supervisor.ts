@@ -1,3 +1,4 @@
+import { DeploymentKindSchema, deploymentPolicy } from "../packages/core/src/index.js";
 import { setPrivateDirectoryMode } from "@opensteer/shared/privateFiles";
 import { isNodeError } from "@opensteer/shared/nodeError";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -89,7 +90,14 @@ export function developmentWorkspaceBacking(
 }
 
 export function assertDevelopmentWorkspaceEnvironment(environment: NodeJS.ProcessEnv): void {
-  if ((environment.OPENSTEER_DEPLOYMENT_KIND?.trim() || "server") !== "server") {
+  const kind = DeploymentKindSchema.safeParse(
+    environment.OPENSTEER_DEPLOYMENT_KIND?.trim() || "server",
+  );
+  if (
+    !kind.success ||
+    !deploymentPolicy({ kind: kind.data, defaultWorkspaceBacking: "local-directory" }).configuration
+      .serverTooling
+  ) {
     throw new Error("pnpm dev requires OPENSTEER_DEPLOYMENT_KIND=server");
   }
 }

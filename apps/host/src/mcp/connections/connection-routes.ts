@@ -24,7 +24,7 @@ import { connectionCredentialPrefix } from "./connection-authenticator.js";
 export interface ConnectionRoutesOptions {
   readonly oauth: ConnectionOAuth;
   readonly canonicalOrigin: string;
-  readonly personal: boolean;
+  readonly loopbackOriginAliases: boolean;
   readonly remoteOrigin?: (() => Promise<string | null>) | undefined;
 }
 
@@ -43,7 +43,7 @@ export async function connectionRequestOrigin(
   if (origin === options.canonicalOrigin) return origin;
   const canonical = new URL(options.canonicalOrigin);
   if (
-    options.personal &&
+    options.loopbackOriginAliases &&
     url.protocol === "http:" &&
     url.port === canonical.port &&
     ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)

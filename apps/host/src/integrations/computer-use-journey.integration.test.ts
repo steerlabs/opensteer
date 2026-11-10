@@ -3439,7 +3439,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     const machines = projectMachines({
       access: new Map(),
       apps: new Map(),
-      deploymentKind: "self-hosted",
+      deploymentOwnsMainComputer: false,
       localWorkspaces: [],
       pendingRunners: [],
       threadsByEnvironment: new Map(),

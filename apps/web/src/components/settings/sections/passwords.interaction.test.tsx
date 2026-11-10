@@ -47,6 +47,17 @@ afterEach(() => {
 });
 
 describe("Settings → Passwords on the Mac that keeps them", () => {
+  it.each([false, true])(
+    "keeps Passwords controls compatible with an older Host (server: %s)",
+    async (server) => {
+      const page = await mount({
+        bridge: fakeBridge(available("not-set-up")).bridge,
+        server,
+        legacy: true,
+      });
+      expect(buttons(page).includes("Set up Passwords")).toBe(!server);
+    },
+  );
   it("keeps vault management under Sign-ins", async () => {
     const page = await mount({ bridge: fakeBridge(available("not-set-up")).bridge });
     const links = [
@@ -275,6 +286,7 @@ function fakeBridge(initial: DesktopPasswordsStatus | Error) {
 }
 
 async function mount(input: {
+  readonly legacy?: boolean;
   readonly bridge?: OpensteerDesktopBridge;
   readonly client?: MockHostClient;
   readonly onThisComputer?: boolean;
@@ -295,16 +307,31 @@ async function mount(input: {
 function page(
   hostClient: MockHostClient,
   input: {
+    readonly legacy?: boolean;
     readonly bridge?: OpensteerDesktopBridge;
     readonly onThisComputer?: boolean;
     readonly server?: boolean;
   },
 ) {
   const base = hostClient.getSnapshot();
-  const snapshot: HostSnapshot = input.server
+  let snapshot: HostSnapshot = input.server
     ? {
         ...base,
         deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
+        deploymentPolicy: {
+          ownership: "members",
+          personalRemoteAccess: false,
+          nativeWebLinks: false,
+          localOwnerClaim: false,
+          deploymentOwnsMainComputer: false,
+          nativePasswords: false,
+          deploymentComputerAccess: false,
+          sharing: true,
+          serviceManagement: true,
+          runnerEnrollmentMode: "unrestricted",
+          projectConsent: "per-project",
+          localRunnerDefaultModules: ["agents", "browser", "shell"],
+        },
         identityConfig: base.identityConfig && {
           ...base.identityConfig,
           deployment: { kind: "self-hosted", name: "Design server" },
@@ -312,6 +339,7 @@ function page(
         },
       }
     : base;
+  if (input.legacy) snapshot = { ...snapshot, deploymentPolicy: undefined };
   const origin = "http://127.0.0.1:43110";
   const context: ShellContext = {
     actionError: null,
