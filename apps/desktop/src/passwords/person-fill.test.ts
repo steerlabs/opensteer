@@ -71,6 +71,14 @@ describe("person fill authority", () => {
     const { input } = fixture();
     expect(await authority.accounts(input)).toEqual([]);
     expect(await authority.fill(input)).toBe("unavailable");
+    // The service keeps its methods but answers undefined after reconnecting at protocol 7.
+    const reconnected = Object.defineProperties({} as PasswordsBrokerSession, {
+      fillAccounts: { get: () => undefined },
+      fillBegin: { get: () => undefined },
+    });
+    const downgraded = new PasswordsPersonFillAuthority(reconnected);
+    expect(await downgraded.accounts(input)).toEqual([]);
+    expect(await downgraded.fill(input)).toBe("unavailable");
   });
   it("reuses only the consumer, tab, site, login revision and presence that confirmed", async () => {
     const { authority, broker, input } = fixture();

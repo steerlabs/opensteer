@@ -13,6 +13,7 @@ import type { DesktopPasswordsStatus } from "@opensteer/protocol/desktop";
 import type { PasswordsBrokerPersonFillSession, PasswordsBrokerSession } from "./broker-session.js";
 
 type Broker = PasswordsBrokerSession & PasswordsBrokerPersonFillSession;
+type Session = PasswordsBrokerSession & Partial<PasswordsBrokerPersonFillSession>;
 interface Entry {
   readonly key: string;
   readonly transactionId: string;
@@ -22,14 +23,22 @@ interface Entry {
 }
 
 export class PasswordsPersonFillAuthority {
-  readonly #broker: Broker | undefined;
+  readonly #session: Session;
   readonly #entries = new Map<string, Entry>();
   readonly #active = new Set<Entry>();
   readonly #queues = new Map<string, Promise<PersonFillStatus>>();
   #closed = false;
 
   constructor(broker: PasswordsBrokerSession) {
-    if ("fillAccounts" in broker && "fillBegin" in broker) this.#broker = broker as Broker;
+    this.#session = broker;
+  }
+
+  /** Only a protocol 8 connection offers person fill, and a reconnect can change that. */
+  get #broker(): Broker | undefined {
+    const session = this.#session;
+    return typeof session.fillAccounts === "function" && typeof session.fillBegin === "function"
+      ? (session as Broker)
+      : undefined;
   }
 
   statusChanged(status: DesktopPasswordsStatus): void {
@@ -42,9 +51,10 @@ export class PasswordsPersonFillAuthority {
   }
 
   async accounts(scope: PersonFillScope): Promise<PersonFillAccountView[]> {
-    if (!this.#broker || this.#closed) return [];
+    const broker = this.#broker;
+    if (!broker || this.#closed) return [];
     try {
-      const result = await this.#broker.fillAccounts({ origin: scope.origin });
+      const result = await broker.fillAccounts({ origin: scope.origin });
       if (this.#closed) return [];
       if (result.fill !== "on") {
         for (const entry of this.#active) void this.#end(entry, "denied");
@@ -228,7 +238,7 @@ export class PasswordsPersonFillAuthority {
     if (this.#entries.get(entry.key) === entry) this.#entries.delete(entry.key);
     entry.ended.abort(reason);
     for (const dispose of entry.dispose.splice(0)) dispose();
-    await this.#broker?.cancel(entry.transactionId).catch(() => undefined);
+    await this.#session.cancel(entry.transactionId).catch(() => undefined);
   }
 
   async close(): Promise<void> {
