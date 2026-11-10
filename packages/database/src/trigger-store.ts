@@ -2340,7 +2340,8 @@ function triggerFromRow(row: TriggerRow): Trigger {
 }
 
 function revisionFromRow(row: TriggerRevisionRow): TriggerRevision {
-  return TriggerRevisionSchema.parse({ ...row, createdAt: row.createdAt.toISOString() });
+  const { createdByPrincipalId: _createdByPrincipalId, ...value } = row;
+  return TriggerRevisionSchema.parse({ ...value, createdAt: row.createdAt.toISOString() });
 }
 
 function occurrenceFromRow(row: TriggerOccurrenceRow): TriggerOccurrence {
@@ -2364,8 +2365,9 @@ function occurrenceFromRow(row: TriggerOccurrenceRow): TriggerOccurrence {
 }
 
 function watchActivationFromRow(row: TriggerWatchActivationRow): TriggerWatchActivation {
+  const { createdByPrincipalId: _createdByPrincipalId, ...value } = row;
   return TriggerWatchActivationSchema.parse({
-    ...row,
+    ...value,
     createdAt: row.createdAt.toISOString(),
     executionGeneration: Number(row.executionGeneration),
     healthySince: row.healthySince?.toISOString() ?? null,
