@@ -15,6 +15,7 @@ export * from "./identity.js";
 export * from "./live.js";
 export * from "./model-registry.js";
 export * from "./models.js";
+export * from "./deployment-policy.js";
 export * from "./thread-authority.js";
 export * from "./thread-status.js";
 export * from "./thread-title.js";

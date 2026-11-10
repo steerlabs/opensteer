@@ -1,4 +1,5 @@
 import { HostAccountAdoptionBundleSchema } from "@opensteer/control-plane-protocol";
+import { deploymentPolicy } from "@opensteer/core";
 import {
   allowsPlaintextRunnerTransport,
   DeploymentIdSchema,
@@ -336,14 +337,20 @@ export function assertHostConfigInvariants(config: HostConfig): void {
   if (config.workspace.shape.defaultWorkspaceBacking !== config.workspace.storage.kind) {
     throw new Error("Deployment backing and storage configuration do not match");
   }
-  if (config.workspace.shape.kind === "personal" && config.exposure !== "loopback") {
+  if (
+    deploymentPolicy(config.workspace.shape).configuration.loopbackOnly &&
+    config.exposure !== "loopback"
+  ) {
     throw new Error("A Personal Deployment must be confined to loopback");
   }
   // A Personal Host's only tenancy evidence is that the caller reached it over
   // its canonical loopback origin. Its own OAuth server would hand out bearer
   // credentials that bypass that check from anywhere its Connect route
   // reaches, so the surface stays off rather than being fenced after the fact.
-  if (config.workspace.shape.kind === "personal" && config.identity.nativeOAuth !== undefined) {
+  if (
+    !deploymentPolicy(config.workspace.shape).configuration.nativeOAuth &&
+    config.identity.nativeOAuth !== undefined
+  ) {
     throw new Error(
       "A Personal Deployment cannot serve native OAuth: set OPENSTEER_NATIVE_OAUTH_ENABLED=false",
     );
@@ -368,7 +375,10 @@ export function assertHostConfigInvariants(config: HostConfig): void {
       "A Deployment that accepts external Runners requires OPENSTEER_RUNTIME_ORIGIN to equal OPENSTEER_CANONICAL_ORIGIN",
     );
   }
-  if (config.acceptsExternalRunners && config.workspace.shape.kind !== "server") {
+  if (
+    config.acceptsExternalRunners &&
+    deploymentPolicy(config.workspace.shape).runnerEnrollment.mode === "reach-only"
+  ) {
     throw new Error("Only a Server Deployment can accept external Runners");
   }
 
@@ -385,7 +395,7 @@ export function assertHostConfigInvariants(config: HostConfig): void {
   }
   if (
     config.mode === "production" &&
-    config.workspace.shape.kind === "personal" &&
+    deploymentPolicy(config.workspace.shape).ownership === "single-user" &&
     config.exposure === "loopback" &&
     !config.webDistribution
   ) {
@@ -396,7 +406,7 @@ export function assertHostConfigInvariants(config: HostConfig): void {
   }
   if (config.personalAccountIssuer) {
     if (
-      config.workspace.shape.kind !== "personal" ||
+      deploymentPolicy(config.workspace.shape).ownership !== "single-user" ||
       config.exposure !== "loopback" ||
       config.account !== undefined
     ) {
@@ -407,14 +417,17 @@ export function assertHostConfigInvariants(config: HostConfig): void {
     assertPublicHttpsOrigin(config.personalAccountIssuer, "Personal Account issuer");
   }
   if (config.deploymentIdentity && !config.account) {
-    if (config.workspace.shape.kind !== "personal" || config.exposure !== "loopback") {
+    if (
+      deploymentPolicy(config.workspace.shape).ownership !== "single-user" ||
+      config.exposure !== "loopback"
+    ) {
       throw new Error(
         "An explicit Personal Deployment identity is allowed only for a loopback Personal Host",
       );
     }
   }
   const requiresLocalOwnerClaim =
-    config.workspace.shape.kind === "personal" &&
+    deploymentPolicy(config.workspace.shape).ownership === "single-user" &&
     config.exposure === "loopback" &&
     config.account === undefined;
   if (requiresLocalOwnerClaim !== (config.identity.localOwnerClaimToken !== undefined)) {
@@ -424,7 +437,7 @@ export function assertHostConfigInvariants(config: HostConfig): void {
         : "A local owner claim token is allowed only for an unmanaged loopback Personal Host",
     );
   }
-  if (config.account && config.workspace.shape.kind !== "server") {
+  if (config.account && !deploymentPolicy(config.workspace.shape).configuration.accountAttachment) {
     throw new Error("An attached Opensteer Account requires a Server deployment");
   }
 }
@@ -464,7 +477,8 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
   // does not serve the surface at all, and saying otherwise is refused by
   // assertHostConfigInvariants rather than quietly ignored.
   const nativeOAuthEnabled =
-    parsed.OPENSTEER_NATIVE_OAUTH_ENABLED ?? deploymentShape.kind === "server";
+    parsed.OPENSTEER_NATIVE_OAUTH_ENABLED ??
+    deploymentPolicy(deploymentShape).configuration.nativeOAuth;
   const browserRuntime = { attachKeyId: parsed.OPENSTEER_BROWSER_ATTACH_KEY_ID };
   requireProductionKeyPair(parsed.OPENSTEER_MODE, parsed);
   requireSecureServiceUrl(
@@ -473,7 +487,8 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
     "OPENSTEER_CANONICAL_ORIGIN",
     {
       allowLoopback:
-        deploymentShape.kind === "personal" && isLoopbackBindAddress(parsed.OPENSTEER_BIND_ADDRESS),
+        deploymentPolicy(deploymentShape).ownership === "single-user" &&
+        isLoopbackBindAddress(parsed.OPENSTEER_BIND_ADDRESS),
     },
   );
   const canonicalOrigin = originUrl(
@@ -489,7 +504,8 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
   );
   requireSecureServiceUrl(parsed.OPENSTEER_MODE, runtimeOrigin.origin, "OPENSTEER_RUNTIME_ORIGIN", {
     allowLoopback:
-      deploymentShape.kind === "personal" && isLoopbackBindAddress(parsed.OPENSTEER_BIND_ADDRESS),
+      deploymentPolicy(deploymentShape).ownership === "single-user" &&
+      isLoopbackBindAddress(parsed.OPENSTEER_BIND_ADDRESS),
   });
   const exposure = deriveHostExposure({
     bindAddress: parsed.OPENSTEER_BIND_ADDRESS,
@@ -903,7 +919,7 @@ function assertRunnerConfigInvariants(config: RunnerConfig): void {
   // Personal Deployment is reachable-only and connects to the signed access
   // route, which is an HTTPS origin (`docs/computers.md#membership`).
   if (
-    config.deploymentShape.kind === "personal" &&
+    deploymentPolicy(config.deploymentShape).configuration.loopbackOnly &&
     config.runnerKind === "main" &&
     !isLoopbackHostname(hostUrl.hostname)
   ) {
