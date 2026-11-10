@@ -1,5 +1,10 @@
 import { agentToolsPlanForRun } from "./agent-tools-plan.js";
-import { AgentEventSchema, BrowserSessionIdSchema, BrowserSurfaceIdSchema } from "@opensteer/core";
+import {
+  AgentEventSchema,
+  BrowserProfileIdSchema,
+  BrowserSessionIdSchema,
+  BrowserSurfaceIdSchema,
+} from "@opensteer/core";
 import { createHmac, randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -9,7 +14,14 @@ import { createId, ModelSelectionSchema, unsupportedVersionReason } from "@opens
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import { HarnessRegistry, isolatedServiceHarnessRuntimeBoundary } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
-import { HttpHostClient, taskCanBeDone, taskList } from "@opensteer/client/host";
+import {
+  HttpHostClient,
+  taskCanBeDone,
+  taskList,
+  browserProfileSettingsRows,
+} from "@opensteer/client/host";
+import { enrollTestRunner } from "@opensteer/database/test-support/store";
+import { startBrowserRuntime } from "../browser/browser-runtime.test-support.js";
 import { MockHostClient } from "@opensteer/client/mock";
 import {
   hostApiVersionHeader,
@@ -17,12 +29,13 @@ import {
   HostToRunnerMessageSchema,
   type WorkspaceSnapshot,
 } from "@opensteer/protocol";
-import type { HostClient } from "@opensteer/client/host";
+import type { HostClient, WebSocketClient } from "@opensteer/client/host";
 import { sql } from "kysely";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import {
   previousPublicRelease,
+  browserHomesPublicRelease,
   releasedClientReader,
 } from "./previous-release-reader.test-support.js";
 import { startVerticalStack, type VerticalStack } from "./vertical-stack.test-support.js";
@@ -53,6 +66,270 @@ integration.sequential("previous public release client journeys", () => {
     stack = undefined;
     for (const close of cleanups.splice(0)) await close();
   }, 60_000);
+
+  it.each([false, true])(
+    "accepts released name-only browser writes and fixes the first home (Personal=%s)",
+    async (personal) => {
+      const released = await releasedClientReader(browserHomesPublicRelease);
+      cleanups.push(released.close);
+      const harnesses = new HarnessRegistry();
+      harnesses.registerDriver(
+        new CodexHarnessDriver({
+          launch: {
+            arguments: [
+              fileURLToPath(
+                new URL(
+                  "../../../../packages/harness-codex/src/test-fixtures/fake-codex-app-server.mjs",
+                  import.meta.url,
+                ),
+              ),
+              "--scenario=notifications",
+              "--unique-threads",
+            ],
+            executable: process.execPath,
+          },
+        }),
+      );
+      stack = await startVerticalStack({
+        databaseUrl: databaseUrl!,
+        ...(personal ? { personal: {} } : {}),
+        runnerWire: {},
+        harnesses,
+        harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
+        harnessInstance: {
+          config: {},
+          driverKind: "codex",
+          sourceId: "openai",
+          stateKind: "isolated",
+        },
+        catalogTimeoutMs: 30_000,
+        runTimeoutMs: 15_000,
+      });
+      const active = stack;
+      const transport: typeof fetch = (input, init) => {
+        const request = new Request(
+          input instanceof Request ? input : new URL(String(input), active.hostOrigin),
+          init,
+        );
+        request.headers.set("cookie", active.sessionCookie);
+        request.headers.set("origin", active.hostOrigin.origin);
+        return fetch(request);
+      };
+      const options = {
+        baseUrl: active.hostOrigin,
+        fetch: transport,
+        refreshIntervalMs: 0,
+        webSocketFactory: (url: string) =>
+          new WebSocket(url, {
+            headers: { cookie: active.sessionCookie, origin: active.hostOrigin.origin },
+          }) as unknown as WebSocketClient,
+      };
+      const old = new released.reader.HttpHostClient(options);
+      clients.push(old);
+      await old.load();
+      const ownerId = old.getSnapshot().user!.id;
+      const runner = (await active.host.store.getEnvironment(active.environmentId))!;
+      if (!personal)
+        await active.host.store.database
+          .updateTable("runners")
+          .set({ allowedModules: sql`'["agents","shell"]'::jsonb` })
+          .where("id", "=", runner.runnerId!)
+          .execute();
+      if (personal)
+        await active.host.store.database
+          .updateTable("personalRemoteAccess")
+          .set({
+            generation: 1,
+            mode: "private",
+            routeOrigin: "https://personal.test.invalid",
+            updatedAt: new Date(),
+          })
+          .where("singletonKey", "=", "personal")
+          .executeTakeFirstOrThrow();
+      for (const name of ["First home", "Second home"]) {
+        const runnerId = createId("runner");
+        await enrollTestRunner(active.host.store, {
+          createdBy: ownerId,
+          environmentId: createId("environment"),
+          runnerId,
+          runnerKind: "local",
+          name,
+          tokenSuffix: runnerId,
+          allowedModules: personal
+            ? ["browser", "integrations", "messaging", "shell"]
+            : ["browser"],
+          modules: { browser: { runtimeId: runnerId, wireVersion: 2 } },
+        });
+      }
+      const current = new HttpHostClient(options);
+      clients.push(current);
+      await current.load();
+      const threadId = await active.createThread({
+        modelSelection,
+        title: "Profile request",
+        workspaceId: active.mainWorkspaceId,
+      });
+      const queued = await active.queueMessage({ threadId, text: "[[hold]]" });
+      await vi.waitFor(
+        async () =>
+          expect(
+            (
+              await active.host.store.database
+                .selectFrom("runs")
+                .select("status")
+                .where("id", "=", queued.runId!)
+                .executeTakeFirst()
+            )?.status,
+            "requesting Run never acquired its tool authority",
+          ).toBe("running"),
+        { timeout: 5_000 },
+      );
+      const request = await active.host.browser.requestAccess({
+        ownerId,
+        runId: queued.runId!,
+        threadId,
+        callId: "released-profile",
+        originatingWorkspaceId: active.mainWorkspaceId,
+        workspaceId: active.mainWorkspaceId,
+        reason: "Work identity",
+        suggestion: { kind: "new", suggestedName: "Approved" },
+      });
+      if (!personal) {
+        await expect(
+          current.dispatch({
+            type: "browser.profile.create",
+            idempotencyKey: "current-create",
+            input: { name: "Current" },
+          }),
+        ).rejects.toMatchObject({ reason: "browser-placement-ambiguous" });
+        await expect(
+          current.dispatch({
+            type: "request.respond",
+            idempotencyKey: "current-approve",
+            requestId: request.requestId,
+            response: {
+              kind: "external",
+              value: { decision: "fulfilled", createProfile: { name: "Approved" } },
+            },
+          }),
+        ).rejects.toMatchObject({ reason: "browser-placement-ambiguous" });
+      }
+      const created = await old.dispatch({
+        type: "browser.profile.create",
+        idempotencyKey: "released-create",
+        input: { name: "Created" },
+      });
+      if (created.type !== "browser.profile.create") throw new Error("Profile command mismatch");
+      await old.dispatch({
+        type: "request.respond",
+        idempotencyKey: "released-approve",
+        requestId: request.requestId,
+        response: {
+          kind: "external",
+          value: { decision: "fulfilled", createProfile: { name: "Approved" } },
+        },
+      });
+      await current.refresh();
+      const profiles = current
+        .getSnapshot()
+        .browserProfiles.filter(({ name }) => name === "Created" || name === "Approved");
+      expect(profiles).toHaveLength(2);
+      expect(profiles.map(({ homeRunnerId }) => homeRunnerId)).toEqual([
+        personal ? runner.runnerId : null,
+        personal ? runner.runnerId : null,
+      ]);
+      if (!personal) {
+        expect(
+          browserProfileSettingsRows(current.getSnapshot(), null)
+            .filter(({ profile }) => profiles.some(({ id }) => id === profile.id))
+            .map(({ device, unopened }) => ({ device, unopened })),
+        ).toEqual([
+          { device: null, unopened: true },
+          { device: null, unopened: true },
+        ]);
+        const enrollment = await current.dispatch({
+          type: "runner.enrollment.createLocal",
+          allowedModules: ["browser"],
+          name: "Online home",
+          idempotencyKey: "online-home",
+        });
+        if (enrollment.type !== "runner.enrollment.createLocal")
+          throw new Error("Enrollment command mismatch");
+        const browser = await startBrowserRuntime(
+          Number(active.hostOrigin.port),
+          enrollment.token,
+          { agentReady: true, navigation: true },
+        );
+        cleanups.push(browser.close);
+        for (const profile of profiles) {
+          const opened = await current.dispatch({
+            type: "browser.tab.open",
+            identity: { kind: "profile", profileId: profile.id },
+            idempotencyKey: `open:${profile.id}`,
+          });
+          expect(opened.type).toBe("browser.tab.open");
+          expect(
+            await active.host.store.getBrowserProfile(
+              BrowserProfileIdSchema.parse(profile.id),
+              ownerId,
+            ),
+          ).toMatchObject({
+            homeRunnerId: browser.runnerId,
+          });
+          expect(
+            await active.host.store.getBrowserProfileStorage(
+              BrowserProfileIdSchema.parse(profile.id),
+            ),
+          ).toMatchObject({
+            kind: "local",
+            binding: { runnerId: browser.runnerId },
+          });
+        }
+        await expect(
+          old.dispatch({
+            type: "browser.profile.create",
+            idempotencyKey: "released-create",
+            input: { name: "Created" },
+          }),
+        ).resolves.toMatchObject({
+          profile: { id: created.profile.id, name: "Created" },
+        });
+        expect(
+          await active.host.browser.createProfile({
+            ownerId,
+            name: "Created",
+            idempotencyKey: "released-create",
+          }),
+        ).toMatchObject({ id: created.profile.id, homeRunnerId: browser.runnerId });
+        await current.refresh();
+        expect(
+          browserProfileSettingsRows(current.getSnapshot(), null)
+            .filter(({ profile }) => profiles.some(({ id }) => id === profile.id))
+            .map(({ device, unopened }) => ({ name: device?.name, unopened })),
+        ).toEqual([
+          { name: "Online home", unopened: false },
+          { name: "Online home", unopened: false },
+        ]);
+        await browser.close();
+        await vi.waitFor(
+          async () =>
+            expect(
+              (await active.host.browser.bootstrap(ownerId)).available,
+              "closed browser home remained available",
+            ).toBe(false),
+          { timeout: 5_000 },
+        );
+        for (const profile of profiles)
+          await expect(
+            current.dispatch({
+              type: "browser.tab.open",
+              identity: { kind: "profile", profileId: profile.id },
+              idempotencyKey: `offline:${profile.id}`,
+            }),
+          ).rejects.toMatchObject({ reason: "browser-profile-home-unavailable" });
+      }
+    },
+  );
 
   it("keeps the released Runner's strict plan boundary visible", async () => {
     const released = await releasedClientReader(previousPublicRelease);

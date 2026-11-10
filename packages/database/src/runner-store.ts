@@ -1879,28 +1879,6 @@ export async function enrollRunnerConnection(
 
     await bindRunnerEnvironments(transaction, input.descriptor, enrollment.name);
     const connection = await activateRunnerConnection(transaction, input.descriptor);
-    if (input.descriptor.runnerKind === "main") {
-      await transaction
-        .selectFrom("browserProfiles")
-        .select("id")
-        .where("homeRunnerId", "is", null)
-        .where("storageState", "=", "unbound")
-        .where(
-          sql<boolean>`exists (select 1 from deployments where deployment_shape->>'kind' = 'personal')`,
-        )
-        .orderBy("id")
-        .forNoKeyUpdate()
-        .execute(databaseOperationOptions());
-      await transaction
-        .updateTable("browserProfiles")
-        .set({ homeRunnerId: input.descriptor.runnerId })
-        .where("homeRunnerId", "is", null)
-        .where("storageState", "=", "unbound")
-        .where(
-          sql<boolean>`exists (select 1 from deployments where deployment_shape->>'kind' = 'personal')`,
-        )
-        .execute(databaseOperationOptions());
-    }
     return connection;
   });
 }

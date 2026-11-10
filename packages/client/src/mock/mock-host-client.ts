@@ -1,4 +1,5 @@
-import { AppTabSchema } from "@opensteer/protocol";
+import { AppTabSchema, CreateBrowserProfileBodySchema } from "@opensteer/protocol";
+import { browserProfileHomeCommand } from "../host/browser-access.js";
 import {
   mockDevicePlugins,
   mockDeviceTasks,
@@ -4896,7 +4897,9 @@ export class MockHostClient implements HostClient {
   }
 
   async dispatch(command: HostApiCommandInput): Promise<HostApiCommandOutput> {
-    const result = await this.rpc["commands.dispatch"](command);
+    const result = await this.rpc["commands.dispatch"](
+      browserProfileHomeCommand(command, this.getSnapshot().browserProfileHomes),
+    );
     if (result.ok) return result.data;
     // The same typed refusal the real client raises, so a surface branches on
     // the code here exactly as it would against a Host.
@@ -10002,26 +10005,41 @@ class MockHostState {
 
   async createBrowserProfile(
     name: string,
-    homeRunnerId?: string,
+    homeRunnerId?: string | null,
+    preferredRunnerId?: string | null,
   ): Promise<import("../host/client.js").BrowserProfileSummary> {
     const homes = this.snapshot.browserProfileHomes;
-    if (homeRunnerId !== undefined && !homes?.includes(homeRunnerId))
-      throw mockConflict("This computer can't keep browser profiles.");
-    // As the Host does: unnamed, a profile lives on the only device that can
-    // hold it, else on the Deployment's main computer.
+    if (homeRunnerId != null && !homes?.includes(homeRunnerId))
+      throw new HostClientRequestError({
+        code: "forbidden",
+        status: 403,
+        message: "This computer can't keep browser profiles.",
+      });
     const home =
       homeRunnerId ??
-      (homes?.length === 1
-        ? homes[0]!
-        : homes?.find((id) =>
+      homes?.find((id) => id === preferredRunnerId) ??
+      (this.snapshot.deploymentShape?.kind === "personal"
+        ? homes?.find((id) =>
             this.snapshot.machines.some(
-              (machine) =>
-                machine.id === id &&
-                machine.ownership === "deployment" &&
-                machine.allowedModules.includes("agents"),
+              (machine) => machine.id === id && machine.ownership === "deployment",
             ),
-          )) ??
-      null;
+          )
+        : undefined) ??
+      (homes?.length === 1 ? homes[0]! : null);
+    if (homes?.length === 0)
+      throw new HostClientRequestError({
+        code: "workspace_unavailable",
+        reason: "browser-placement-unavailable",
+        status: rpcErrorStatus("workspace_unavailable"),
+        message: "No computer can hold your browser profiles.",
+      });
+    if (home === null && homeRunnerId === null && homes !== undefined)
+      throw new HostClientRequestError({
+        code: "conflict",
+        reason: "browser-placement-ambiguous",
+        status: 409,
+        message: "Choose a computer for this browser profile.",
+      });
     const profile = { homeRunnerId: home, id: createId("browserProfile"), name };
     this.update({ ...this.snapshot, browserProfiles: [...this.snapshot.browserProfiles, profile] });
     return profile;
@@ -11842,6 +11860,40 @@ class MockHostState {
       if (response.value.decision === "fulfilled") {
         this.#verifyMockIntegrationAccessFulfillment(request, response.value.connectionId);
       }
+    }
+    if (request.kind === "browser.access") {
+      const response = input.response;
+      if (request.requestedBy !== this.snapshot.user?.id)
+        throw mockConflict("This Request belongs to someone else.");
+      if (response.kind !== "external") throw mockConflict("Browser Request response is invalid.");
+      const value = response.value;
+      if (value?.["decision"] === "fulfilled") {
+        let profileId: string;
+        if (typeof value["profileId"] === "string") {
+          profileId = value["profileId"];
+          if (!this.snapshot.browserProfiles.some(({ id }) => id === profileId))
+            throw mockConflict("Browser Profile is unavailable.");
+        } else {
+          const creation = CreateBrowserProfileBodySchema.parse(
+            value["createProfile"] ?? { name: value["name"] },
+          );
+          const environmentId = this.snapshot.threads.find(
+            ({ id }) => id === request.originatingThreadId,
+          )?.environmentId;
+          const preferred = this.snapshot.environments.find(
+            ({ id }) => id === environmentId,
+          )?.runnerId;
+          profileId = (
+            await this.createBrowserProfile(creation.name, creation.homeRunnerId, preferred)
+          ).id;
+        }
+        if (
+          this.snapshot.workspaces.find(({ id }) => id === request.targetWorkspaceId)?.kind ===
+          "project"
+        )
+          await this.grantBrowserProfile({ profileId, workspaceId: request.targetWorkspaceId });
+      } else if (value?.["decision"] !== "declined")
+        throw mockConflict("Browser Request decision is invalid.");
     }
     const resolved = this.#resolvedRequest(request, input.response);
     const timestamp = resolved.resolvedAt;

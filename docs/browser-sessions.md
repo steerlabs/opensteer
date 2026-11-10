@@ -170,8 +170,8 @@ Removing a computer deletes its homed profiles in the same transaction. Their st
 terminal `unconfirmed`, not pending work and never a claim that files were erased. The removed device
 clears its own storage when it learns of removal; a phone also clears it at sign-out.
 
-A current Host assigns a profile's home at creation; it never changes. Unplaced profiles
-created by a previous Host, including during an upgrade, adopt a home on first open. The
+A profile created by a caller that knows about homes always has one. A previous-release
+caller that cannot choose gets a profile that takes its home on first open; from then on it is fixed. The
 database also adopts a previous store's first storage binding as its home and enforces the same
 home/storage match for both writers. Offline homes refuse opens by name, without falling back.
 The first signed attach binds its storage root and engine on that home and publishes empty native files atomically; an engine-owned directory is never

@@ -209,9 +209,11 @@ jobs:
       - name: Fetch the previous public release for compatibility journeys
         shell: bash
         run: |
-          revision="$(sed -nE 's/^export const previousPublicRelease = "([0-9a-f]{40})";$/\1/p' apps/host/src/agents/previous-release-reader.test-support.ts)"
-          test -n "$revision"
-          git fetch --no-tags --depth=1 origin "$revision"
+          revisions="$(sed -nE 's/^export const (previousPublicRelease|browserHomesPublicRelease) = "([0-9a-f]{40})";$/\2/p' apps/host/src/agents/previous-release-reader.test-support.ts)"
+          test -n "$revisions"
+          for revision in $revisions; do
+            git fetch --no-tags --depth=1 origin "$revision"
+          done
       - name: Pull the integration PostgreSQL image
         # Pulled here so a registry problem fails this step, not the launcher's 60 s bound.
         run: docker pull "$(node -p 'require("yaml").parse(require("node:fs").readFileSync("deploy/compose/compose.yaml", "utf8")).services.postgres.image')"

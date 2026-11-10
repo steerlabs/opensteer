@@ -325,7 +325,7 @@ export interface BrowserSessionRepository {
     }>;
   };
   createBrowserProfile(input: {
-    readonly homeRunnerId?: RunnerId;
+    readonly homeRunnerId?: RunnerId | null;
     readonly idempotencyKey: string;
     readonly name: string;
     readonly ownerId: UserId;
@@ -1230,7 +1230,7 @@ export class BrowserService {
 
   /** Only people create profiles; every device of theirs learns of it, not just the one that asked. */
   async createProfile(input: {
-    readonly homeRunnerId?: RunnerId;
+    readonly homeRunnerId?: RunnerId | null;
     readonly name: string;
     readonly ownerId: UserId;
     readonly idempotencyKey: string;
@@ -1244,20 +1244,23 @@ export class BrowserService {
         .executeTakeFirst();
       if (previous) {
         const request = z
-          .object({ request: z.object({ homeRunnerId: z.string().optional() }) })
+          .object({ request: z.object({ homeRunnerId: z.string().nullable().optional() }) })
           .safeParse(previous.payload);
-        const homeRunnerId =
-          request.success && request.data.request.homeRunnerId
-            ? RunnerIdSchema.parse(request.data.request.homeRunnerId)
-            : undefined;
+        const homeRunnerId = request.success ? request.data.request.homeRunnerId : undefined;
         const profile = await this.#repository.createBrowserProfile({
-          ...input,
-          ...(homeRunnerId ? { homeRunnerId } : {}),
+          ownerId: input.ownerId,
+          name: input.name,
+          idempotencyKey: input.idempotencyKey,
+          ...(homeRunnerId === undefined
+            ? {}
+            : { homeRunnerId: homeRunnerId === null ? null : RunnerIdSchema.parse(homeRunnerId) }),
         });
         return publicProfile(profile);
       }
     }
-    const homeRunnerId = input.homeRunnerId ?? (await this.#defaultProfileHome(input.ownerId));
+    const homeRunnerId =
+      input.homeRunnerId ??
+      (await this.#defaultProfileHome(input.ownerId, undefined, input.homeRunnerId === undefined));
     const profile = await this.#repository.createBrowserProfile({ ...input, homeRunnerId });
     await this.#ownerProfilesChanged(input.ownerId);
     return publicProfile(profile);
@@ -1328,7 +1331,8 @@ export class BrowserService {
   async #defaultProfileHome(
     ownerId: UserId,
     request?: { readonly runnerId: RunnerId | null },
-  ): Promise<RunnerId> {
+    legacy = false,
+  ): Promise<RunnerId | null> {
     const homes = await this.#repository.listEligibleBrowserRunners(ownerId);
     const preferred = homes.find((home) => home.id === request?.runnerId);
     const main = this.#personal ? homes.find((home) => home.kind === "main") : undefined;
@@ -1340,6 +1344,7 @@ export class BrowserService {
         reason: "browser-placement-unavailable",
         message: "No computer can hold your browser profiles.",
       });
+    if (legacy) return null;
     throw new OpensteerError({
       code: "conflict",
       reason: "browser-placement-ambiguous",
@@ -3649,7 +3654,7 @@ export class BrowserService {
           decision: z.literal("fulfilled"),
           createProfile: z.strictObject({
             name: z.string(),
-            homeRunnerId: RunnerIdSchema.optional(),
+            homeRunnerId: RunnerIdSchema.nullable().optional(),
           }),
         }),
         z.strictObject({ decision: z.literal("fulfilled"), name: z.string() }),
@@ -3662,9 +3667,13 @@ export class BrowserService {
     const preferred = request.originatingRunId
       ? await this.#profileRequestRunner?.(request.originatingRunId)
       : null;
-    const homeRunnerId = await this.#defaultProfileHome(request.requestedBy, {
-      runnerId: preferred ?? null,
-    });
+    const homeRunnerId = await this.#defaultProfileHome(
+      request.requestedBy,
+      {
+        runnerId: preferred ?? null,
+      },
+      !("homeRunnerId" in creation) || creation.homeRunnerId === undefined,
+    );
     return {
       ...response,
       value: { decision: "fulfilled", createProfile: { name: creation.name, homeRunnerId } },

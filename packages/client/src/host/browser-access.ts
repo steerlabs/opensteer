@@ -2,6 +2,7 @@ import type { BrowserAccessSuggestion, RequestResponse } from "@opensteer/core";
 import type { Request } from "@opensteer/core";
 import { profileHomeChoice, type ProfileHomeChoice } from "./browser-profile-settings.js";
 import type { HostSnapshot } from "./client.js";
+import type { HostApiCommandInput } from "@opensteer/protocol";
 
 /**
  * The owner's answer to a `browser.access` Request,
@@ -31,8 +32,41 @@ export function browserAccessResponse(
   return {
     kind: "external",
     value: {
-      createProfile: { name: name.trim(), ...(home ? { homeRunnerId: home } : {}) },
+      createProfile: { name: name.trim(), homeRunnerId: home },
       decision: "fulfilled",
+    },
+  };
+}
+
+export function browserProfileHomeCommand(
+  command: HostApiCommandInput,
+  homes: readonly string[] | undefined,
+): HostApiCommandInput {
+  const selection = <Profile extends { readonly homeRunnerId?: unknown }>(profile: Profile) => {
+    const { homeRunnerId, ...rest } = profile;
+    return homes === undefined ? rest : { ...rest, homeRunnerId: homeRunnerId ?? null };
+  };
+  if (command.type === "browser.profile.create")
+    return { ...command, input: selection(command.input) };
+  if (command.type !== "request.respond" || command.response.kind !== "external") return command;
+  const value = command.response.value;
+  const profile = value?.["createProfile"];
+  if (
+    value?.["decision"] !== "fulfilled" ||
+    !profile ||
+    typeof profile !== "object" ||
+    Array.isArray(profile)
+  )
+    return command;
+  const { homeRunnerId, ...rest } = profile;
+  return {
+    ...command,
+    response: {
+      ...command.response,
+      value: {
+        ...value,
+        createProfile: homes === undefined ? rest : { ...rest, homeRunnerId: homeRunnerId ?? null },
+      },
     },
   };
 }

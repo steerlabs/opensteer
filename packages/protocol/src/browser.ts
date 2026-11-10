@@ -1695,8 +1695,7 @@ export const CreateBrowserProfileGrantResponseSchema = z.object({
 export const BrowserProfileNameSchema = z.string().trim().min(1).max(120);
 
 export const CreateBrowserProfileBodySchema = z.strictObject({
-  /** Left out only when exactly one computer could hold the profile. */
-  homeRunnerId: RunnerIdSchema.optional(),
+  homeRunnerId: RunnerIdSchema.nullable().optional(),
   name: BrowserProfileNameSchema,
 });
 

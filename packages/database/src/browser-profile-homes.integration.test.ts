@@ -185,7 +185,7 @@ describeStore("browser profile homes", (it) => {
     });
   });
 
-  it("keeps legacy Personal profiles hidden until the main computer enrolls", async ({
+  it("lists unplaced Personal profiles without assigning their home at enrollment", async ({
     storeFixture: fixture,
   }) => {
     await fixture.store.ensureDeployment({
@@ -199,8 +199,12 @@ describeStore("browser profile homes", (it) => {
       .insertInto("browserProfiles")
       .values(profileIds.map((id) => ({ id, ownerId, name: "Legacy", archivedAt: null })))
       .execute();
-    expect(await fixture.store.listBrowserProfiles(ownerId)).toEqual([]);
-    expect(await fixture.store.getBrowserProfile(profileIds[0]!, ownerId)).toBeNull();
+    const unplaced = profileIds.map((id) => ({ id, ownerId, name: "Legacy", homeRunnerId: null }));
+    expect(await fixture.store.listBrowserProfiles(ownerId)).toEqual(unplaced);
+    expect(await fixture.store.getBrowserProfile(profileIds[0]!, ownerId)).toEqual(unplaced[0]);
+    const otherOwner = await fixture.store.createUser("Other owner");
+    expect(await fixture.store.listBrowserProfiles(otherOwner)).toEqual([]);
+    expect(await fixture.store.getBrowserProfile(profileIds[0]!, otherOwner)).toBeNull();
     const runnerId = createId("runner");
     await enrollTestRunner(fixture.store, {
       createdBy: null,
@@ -210,11 +214,14 @@ describeStore("browser profile homes", (it) => {
       name: "Main",
       tokenSuffix: "late-main",
     });
-    expect(await fixture.store.listBrowserProfiles(ownerId)).toEqual(
-      expect.arrayContaining(
-        profileIds.map((id) => expect.objectContaining({ id, homeRunnerId: runnerId })),
-      ),
-    );
+    expect(await fixture.store.listBrowserProfiles(ownerId)).toEqual(unplaced);
+    const deployment = (await fixture.store.getDeployment())!;
+    await fixture.store.bindBrowserProfile(binding(deployment.id, runnerId, profileIds[0]!));
+    expect(await fixture.store.getBrowserProfile(profileIds[0]!, ownerId)).toEqual({
+      ...unplaced[0],
+      homeRunnerId: runnerId,
+    });
+    expect(await fixture.store.getBrowserProfile(profileIds[1]!, ownerId)).toEqual(unplaced[1]);
   });
 
   it("adopts a legacy server home once and atomically refuses a competing first open", async ({

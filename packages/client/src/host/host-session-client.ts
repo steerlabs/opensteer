@@ -128,6 +128,7 @@ import type {
   WorkspaceSummary,
 } from "./client.js";
 import { HostClientRequestError, isHostRefusal, mainDoneTasks } from "./client.js";
+import { browserProfileHomeCommand } from "./browser-access.js";
 import type { ExecutionChoice, ExecutionSelection } from "./execution-preferences.js";
 import { createHttpHostApiClient } from "./host-api-client.js";
 import { threadInDirectory } from "./host-snapshot-selectors.js";
@@ -1346,7 +1347,9 @@ export class HttpHostClient {
   }
 
   async dispatch(command: HostApiCommandInput): Promise<HostApiCommandOutput> {
-    const parsedCommand = hostApi["commands.dispatch"].payload.parse(command);
+    const parsedCommand = hostApi["commands.dispatch"].payload.parse(
+      browserProfileHomeCommand(command, this.#snapshot.browserProfileHomes),
+    );
     if (parsedCommand.type === "thread.shared-done.set" && !this.#snapshot.sharedTaskDoneAvailable)
       throw new Error("This Host does not support shared task Done.");
     if (parsedCommand.type === "thread.icon.set" || parsedCommand.type === "workspace.color.set") {

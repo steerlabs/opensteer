@@ -2345,11 +2345,13 @@ export class RequestStore {
             : undefined;
         const homeRunnerId =
           creation && "createProfile" in creation
-            ? await lockBrowserHomeRunner(
-                transaction,
-                input.resolvedBy,
-                creation.createProfile.homeRunnerId,
-              )
+            ? creation.createProfile.homeRunnerId === null
+              ? null
+              : await lockBrowserHomeRunner(
+                  transaction,
+                  input.resolvedBy,
+                  creation.createProfile.homeRunnerId,
+                )
             : undefined;
         const observedRequest = requestFromRow(observed);
         await lockActiveDurableRequestAuthority(transaction, observedRequest);
@@ -2406,7 +2408,7 @@ export class RequestStore {
                 message: "Browser Profile is unavailable",
               });
             }
-          } else if ("createProfile" in decision && homeRunnerId) {
+          } else if ("createProfile" in decision && homeRunnerId !== undefined) {
             profile = await insertBrowserProfileOnLockedHome(transaction, {
               name: decision.createProfile.name,
               homeRunnerId,
@@ -4451,7 +4453,7 @@ type BrowserDecision =
   | { readonly decision: "declined" }
   | { readonly decision: "fulfilled"; readonly profileId: BrowserProfileId }
   | {
-      readonly createProfile: { readonly name: string; readonly homeRunnerId?: RunnerId };
+      readonly createProfile: { readonly name: string; readonly homeRunnerId?: RunnerId | null };
       readonly decision: "fulfilled";
     }
   | { readonly decision: "fulfilled"; readonly name: string };
@@ -4488,7 +4490,7 @@ function parseBrowserDecision(value: Readonly<Record<string, unknown>>): Browser
           name: boundedProfileName(profile.name),
           ...(profile.homeRunnerId === undefined
             ? {}
-            : { homeRunnerId: RunnerIdSchema.parse(profile.homeRunnerId) }),
+            : { homeRunnerId: RunnerIdSchema.nullable().parse(profile.homeRunnerId) }),
         },
         decision: "fulfilled",
       };
