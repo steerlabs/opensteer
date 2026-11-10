@@ -118,6 +118,7 @@ integration("the admitted corpus against the real knowledge schema", () => {
                   parameters: parameters as KnowledgeJson[],
                   operationKey: randomUUID(),
                   onlyIfUnchanged: false,
+                  suppliesBaseline: admission.suppliesBaseline,
                   keys: admission.keys,
                 },
           readTopicIds: [open],

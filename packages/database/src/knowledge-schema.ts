@@ -43,6 +43,7 @@ export interface KnowledgeTables {
 }
 
 export const knowledgeOwnerRole = "opensteer_knowledge_owner";
+export const knowledgeExecutorRolePrefix = "opensteer_knowledge_executor_";
 
 /** One LOGIN role per database: its password is the only thing that admits a session as it. */
 export async function knowledgeExecutorRole(database: Kysely<DatabaseSchema>): Promise<string> {
@@ -51,7 +52,7 @@ export async function knowledgeExecutorRole(database: Kysely<DatabaseSchema>): P
   `.execute(database);
   const oid = rows[0]?.oid;
   if (!oid || !/^\d+$/u.test(oid)) throw new Error("Cannot identify the Host database");
-  return `opensteer_knowledge_executor_${oid}`;
+  return `${knowledgeExecutorRolePrefix}${oid}`;
 }
 
 /**
@@ -276,7 +277,8 @@ const knowledgeSchemaSteps: readonly string[] = [
     language plpgsql security definer set search_path = pg_catalog, knowledge, pg_temp as $fn$
     declare
       operation text := nullif(current_setting('knowledge.operation_id', true), '');
-      conditional boolean := coalesce(current_setting('knowledge.only_if_unchanged', true) = 'true', false);
+      observed boolean := coalesce(current_setting('knowledge.only_if_unchanged', true) = 'true', false)
+        or coalesce(current_setting('knowledge.baseline_supplied', true) = 'true', false);
       built jsonb;
     begin
       perform knowledge.require_read_committed();
@@ -284,15 +286,15 @@ const knowledgeSchemaSteps: readonly string[] = [
           'id', written.id::text, 'topic', written.topic, 'thing', written.thing,
           'property', written.property, 'replacesId', written.replaces_id::text,
           'seenFactId', written.seen_fact_id::text,
-          'baseline', case when written.seen_fact_id is not null or conditional
+          'baseline', case when written.seen_fact_id is not null or observed
             then 'observed' else 'unknown' end,
-          'unseenCount', case when written.seen_fact_id is not null or conditional then (
+          'unseenCount', case when written.seen_fact_id is not null or observed then (
             select count(*) from knowledge.fact_log missed
             where missed.topic = written.topic and missed.thing = written.thing
               and missed.property = written.property and missed.operation_id <> operation
               and missed.id > coalesce(written.seen_fact_id, 0) and missed.id <= written.replaces_id
           ) end,
-          'unseen', case when written.seen_fact_id is not null or conditional then (
+          'unseen', case when written.seen_fact_id is not null or observed then (
             select coalesce(jsonb_agg(jsonb_build_object('id', missed.id::text,
               'writerKind', missed.writer_kind, 'writerId', missed.writer_id,
               'agentId', missed.agent_id, 'taskId', missed.task_id,

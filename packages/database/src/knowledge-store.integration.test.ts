@@ -134,6 +134,7 @@ function insert(
       parameters: options.parameters ?? [],
       operationKey: options.operationKey ?? randomUUID(),
       onlyIfUnchanged: options.onlyIfUnchanged ?? false,
+      suppliesBaseline: text.includes("seen_fact_id"),
       keys: options.keys ?? [],
     },
     readTopicIds: options.read ?? [context.open],
@@ -352,7 +353,7 @@ integration("knowledge storage", () => {
   it("seeds one General topic for the Personal owner and lists unarchived topics", async () => {
     const clone = await cloneTestDatabase("host");
     const { database } = await ownTestDatabaseProducer(clone.url, async () => {
-      const database = createDatabase({ connectionString: clone.url, maxConnections: 2 });
+      const database = createDatabase({ connectionString: clone.url, maxConnections: 3 });
       const { role } = await prepareKnowledgeExecutor(database);
       return {
         database,
@@ -362,7 +363,36 @@ integration("knowledge storage", () => {
         },
       };
     });
-    await ensureKnowledgeGeneralTopic(database, owner);
+    // A first call still seeding: the next waits for it rather than also finding no topic.
+    const seeding = Promise.withResolvers<void>();
+    const commit = Promise.withResolvers<void>();
+    const first = database.transaction().execute(async (transaction) => {
+      await sql`
+        insert into knowledge.topics (id, name, created_by_kind, created_by_id)
+        values (${createId("knowledgeTopic")}, 'General', 'person', ${owner})
+      `.execute(transaction);
+      seeding.resolve();
+      await commit.promise;
+    });
+    await seeding.promise;
+    const second = ensureKnowledgeGeneralTopic(database, owner);
+    try {
+      await vi.waitFor(
+        async () => {
+          const { rows } = await sql<{ waiting: string }>`
+            select count(*)::text as waiting from pg_catalog.pg_locks
+            where locktype = 'relation' and not granted
+              and relation = 'knowledge.topics'::regclass
+          `.execute(database);
+          if (rows[0]?.waiting !== "1")
+            throw new Error("The second seed never waited for the first");
+        },
+        { timeout: 10_000, interval: 20 },
+      );
+    } finally {
+      commit.resolve();
+      await Promise.all([first, second]);
+    }
     await ensureKnowledgeGeneralTopic(database, owner);
     const [general, ...rest] = await listKnowledgeTopics(database);
     expect(rest).toEqual([]);

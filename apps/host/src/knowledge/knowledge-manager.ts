@@ -186,6 +186,7 @@ export async function startKnowledgeManager(options: {
               parameters,
               operationKey: operationId(caller, call.operationKey, "sql"),
               onlyIfUnchanged: input.onlyIfUnchanged === true,
+              suppliesBaseline: admitted.suppliesBaseline,
               keys: admitted.keys,
             },
       readTopicIds,

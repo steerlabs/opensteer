@@ -338,6 +338,23 @@ integration("knowledge through the sql tool", () => {
     const unsaid = refusal(await f.call({ query: insertHotel("Hotel E"), parameters: [topic] }));
     expect(unsaid.text).toContain('INSERT needs mode "write". Nothing was saved.');
     expect(await f.count()).toBe(3);
+
+    // Saying a fact was seen absent states a baseline: the receipt names what was written meanwhile.
+    const seenAbsent = (value: string) =>
+      f.call({
+        query: `INSERT INTO facts (topic, thing, property, value, seen_fact_id)
+                VALUES ($1, 'trip/kyoto', 'guide', '${JSON.stringify(value)}', NULL)`,
+        parameters: [topic],
+        mode: "write",
+      });
+    const created = record(await seenAbsent("Aiko")).receipt!.facts[0]!;
+    expect(created).toMatchObject({ baseline: "observed", replacesId: null, unseenCount: 0 });
+    expect(record(await seenAbsent("Ben")).receipt!.facts[0]).toMatchObject({
+      baseline: "observed",
+      replacesId: created.id,
+      unseenCount: 1,
+      unseen: [expect.objectContaining({ id: created.id })],
+    });
   });
 
   it("returns a replayed operation's receipt without writing, and refuses the key for another write", async () => {

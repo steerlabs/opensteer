@@ -44,6 +44,8 @@ export type KnowledgeStatement =
       readonly parameters: readonly KnowledgeJson[];
       readonly operationKey: string;
       readonly onlyIfUnchanged: boolean;
+      /** The INSERT names seen_fact_id, so a NULL there says the fact was seen absent. */
+      readonly suppliesBaseline: boolean;
       /** Every key the INSERT writes; locked in one order first, so writers never wait on each other in a cycle. */
       readonly keys: readonly KnowledgeFactKey[];
     };
@@ -114,11 +116,15 @@ export async function ensureKnowledgeGeneralTopic(
   database: Kysely<DatabaseSchema>,
   owner: UserId,
 ): Promise<void> {
-  await sql`
-    insert into knowledge.topics (id, name, created_by_kind, created_by_id)
-    select ${createId("knowledgeTopic")}, 'General', 'person', ${owner}
-    where not exists (select from knowledge.topics)
-  `.execute(database);
+  await database.transaction().execute(async (transaction) => {
+    // Self-conflicting, so two first calls cannot both find no topic; a fact write's row lock passes.
+    await sql`lock table knowledge.topics in share row exclusive mode`.execute(transaction);
+    await sql`
+      insert into knowledge.topics (id, name, created_by_kind, created_by_id)
+      select ${createId("knowledgeTopic")}, 'General', 'person', ${owner}
+      where not exists (select from knowledge.topics)
+    `.execute(transaction);
+  });
 }
 
 export async function listKnowledgeTopics(
@@ -200,6 +206,7 @@ async function run(
       set_config('knowledge.run_id', $8, true),
       set_config('knowledge.operation_id', $9, true),
       set_config('knowledge.only_if_unchanged', $10, true),
+      set_config('knowledge.baseline_supplied', $13, true),
       set_config('search_path', 'pg_catalog, knowledge, pg_temp', true),
       set_config('standard_conforming_strings', 'on', true),
       set_config('backslash_quote', 'safe_encoding', true),
@@ -220,6 +227,7 @@ async function run(
       statement.kind === "insert" && statement.onlyIfUnchanged ? "true" : "false",
       String(input.statementTimeoutMs ?? 2_000),
       String(input.lockTimeoutMs ?? 250),
+      statement.kind === "insert" && statement.suppliesBaseline ? "true" : "false",
     ],
   });
   const parameters = statement.parameters.map((value) =>
