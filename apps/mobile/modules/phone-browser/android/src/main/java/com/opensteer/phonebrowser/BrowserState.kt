@@ -17,6 +17,14 @@ internal class BrowserFailure(val reason: String, message: String = reason) : Ru
 internal class EpochGate {
   private val value = AtomicInteger()
   val epoch: Int get() = value.get()
+  fun adopt(epoch: Int) {
+    if (epoch < 0) throw BrowserFailure("stale-epoch")
+    while (true) {
+      val previous = value.get()
+      if (epoch < previous) throw BrowserFailure("stale-epoch")
+      if (value.compareAndSet(previous, epoch)) return
+    }
+  }
   @Synchronized fun advance(): Int {
     if (value.get() == Int.MAX_VALUE) throw BrowserFailure("epoch-exhausted")
     return value.incrementAndGet()

@@ -205,7 +205,13 @@ export function decide(files, graph, baseGraph = graph, full = false, { fullMac 
     // manifest. It is the sole APK producer named by the Android lane.
     if (
       file.startsWith("apps/agent-phone/") ||
-      file.startsWith("apps/mobile/modules/notification-preview/android/")
+      file.startsWith("apps/mobile/modules/notification-preview/android/") ||
+      file.startsWith("apps/mobile/modules/phone-connection/android/") ||
+      file.startsWith("apps/mobile/modules/phone-browser/android/") ||
+      file.startsWith("apps/mobile/modules/remote-text-input/android/") ||
+      file.startsWith("packages/browser-core/test-vectors/") ||
+      file === "apps/mobile/modules/phone-browser/index.ts" ||
+      file === "apps/mobile/modules/phone-browser/types.ts"
     ) {
       androidSource = true;
       continue;

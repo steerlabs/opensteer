@@ -39,6 +39,7 @@ import kotlin.math.roundToInt
 internal data class BrowserAnchor(val marker: String?, val top: Double, val horizontal: Double, val vertical: Double, val viewportWidth: Double = 0.0, val viewportHeight: Double = 0.0)
 
 internal class NativeTab(val id: String, val profileName: String, var url: String, val width: Int, val height: Int) {
+  val pageClose = PageClose()
   var lastPicture: Bitmap? = null
   @Volatile var downloadRequestUrl = ""
   @Volatile var downloadRequestMethod = ""
