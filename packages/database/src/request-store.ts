@@ -106,7 +106,7 @@ import {
   lockRequestWorkspaces,
   withRequestWorkspaceLocks,
 } from "./request-workspace-locks.js";
-import { insertBrowserProfile } from "./browser-session-store.js";
+import { insertBrowserProfileOnLockedHome } from "./browser-session-store.js";
 import { runHasActiveGrant } from "./run-grants.js";
 import type { DatabaseSchema, RequestRow } from "./schema.js";
 import {
@@ -2406,10 +2406,10 @@ export class RequestStore {
                 message: "Browser Profile is unavailable",
               });
             }
-          } else if ("createProfile" in decision) {
-            profile = await insertBrowserProfile(transaction, {
+          } else if ("createProfile" in decision && homeRunnerId) {
+            profile = await insertBrowserProfileOnLockedHome(transaction, {
               name: decision.createProfile.name,
-              ...(homeRunnerId ? { homeRunnerId } : {}),
+              homeRunnerId,
               ownerId: input.resolvedBy,
             });
           } else {

@@ -423,15 +423,39 @@ integration.sequential("durable workspace tabs", () => {
     const replacement = createBrowserSessionId();
     await store.createBrowserSession({ ...f.session, id: replacement, tabGroupId: f.groupId });
     await tabs.bind(f.groupId, replacement, f.first.id);
-    for (let index = 0; index < 100; index++) {
-      const id = createBrowserSessionId();
-      await store.createBrowserSession({ ...f.session, id });
-      await tabs.record(
-        id,
-        [{ ...f.second, id: BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`) }],
-        [],
-      );
-    }
+    const now = Date.now();
+    const newer = Array.from({ length: 100 }, (_, index) => ({
+      id: createBrowserSessionId(),
+      createdAt: new Date(now + index + 1),
+    }));
+    await database
+      .insertInto("browserSessions")
+      .values(
+        newer.map((group) => ({
+          ...f.session,
+          ...group,
+          tabGroupId: group.id,
+          tabRevision: 1,
+          state: "starting" as const,
+          closedAt: null,
+        })),
+      )
+      .execute();
+    await database
+      .insertInto("workspaceTabs")
+      .values(
+        newer.map((group) => ({
+          ...f.second,
+          id: BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`),
+          groupId: group.id,
+          sessionId: group.id,
+          createdAt: group.createdAt,
+          order: 0,
+          state: "live" as const,
+          closedAt: null,
+        })),
+      )
+      .execute();
     expect((await tabs.list(f.ownerId)).some((group) => group.id === f.groupId)).toBe(false);
     const grouped = await new BrowserTabGroupStore(database).group(f.ownerId, {
       tabIds: [f.first.id],

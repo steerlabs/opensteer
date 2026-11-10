@@ -159,11 +159,10 @@ function inheritedMainBrowserGrantId(
  * Adds one profile within the owner's slots: the person's own command and an
  * approved browser-access Request both create profiles through here.
  */
-export async function insertBrowserProfile(
+export async function insertBrowserProfileOnLockedHome(
   transaction: Transaction<DatabaseSchema>,
-  input: { readonly name: string; readonly ownerId: UserId; readonly homeRunnerId?: RunnerId },
+  input: { readonly name: string; readonly ownerId: UserId; readonly homeRunnerId: RunnerId },
 ): Promise<BrowserProfileRecord> {
-  const homeRunnerId = await lockBrowserHomeRunner(transaction, input.ownerId, input.homeRunnerId);
   await sql`select pg_advisory_xact_lock(hashtextextended(${`browser-profile:${input.ownerId}`}, 0))`.execute(
     transaction,
     databaseOperationOptions(),
@@ -197,7 +196,7 @@ export async function insertBrowserProfile(
       id: createId("browserProfile"),
       name: input.name,
       ownerId: input.ownerId,
-      homeRunnerId,
+      homeRunnerId: input.homeRunnerId,
     })
     .returning(["id", "name", "ownerId", "homeRunnerId"])
     .executeTakeFirstOrThrow(databaseOperationOptions());
@@ -249,7 +248,12 @@ export async function createBrowserProfile(
       }
       return profile;
     }
-    const profile = await insertBrowserProfile(transaction, input);
+    const homeRunnerId = await lockBrowserHomeRunner(
+      transaction,
+      input.ownerId,
+      input.homeRunnerId,
+    );
+    const profile = await insertBrowserProfileOnLockedHome(transaction, { ...input, homeRunnerId });
     await transaction
       .insertInto("commands")
       .values({

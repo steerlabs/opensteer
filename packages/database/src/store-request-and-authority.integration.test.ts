@@ -1122,13 +1122,17 @@ describeStore("PostgreSQL store", (it) => {
       },
     });
 
-    // Approval creates profiles through the owner's one limit, like their own command.
-    for (let index = 1; index < 128; index++)
-      await store.createBrowserProfile({
-        idempotencyKey: `store.integration.test-browser-profile-main-${index}`,
-        ownerId: fixture.userId,
-        name: `Profile ${index}`,
-      });
+    await database
+      .insertInto("browserProfiles")
+      .values(
+        Array.from({ length: 127 }, (_, index) => ({
+          id: createId("browserProfile"),
+          ownerId: fixture.userId,
+          homeRunnerId: personal.homeRunnerId,
+          name: `Profile ${index + 1}`,
+        })),
+      )
+      .execute();
     await expect(
       store.requests.resolveBrowserRequest({
         requestId: opened.request.id,
