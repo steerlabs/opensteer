@@ -20,7 +20,7 @@ import {
   WorkspaceKindSchema,
   type Workspace,
 } from "@opensteer/core";
-import { BrowserProfileIdSchema, RunnerIdSchema } from "@opensteer/core";
+import { BrowserProfileIdSchema, ExecutionNodeIdSchema, RunnerIdSchema } from "@opensteer/core";
 import { z } from "zod";
 import {
   PersonShowMessageSchema,
@@ -183,6 +183,17 @@ export const ClientToHostMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("client.ping"),
     nonce: z.string().max(255),
   }),
+  /**
+   * Names the one subagent whose own events this subscriber also receives, or
+   * none. A subscriber otherwise receives only what a subagent's card shows.
+   * Requires `node-detail-v1`.
+   */
+  z.strictObject({
+    ...clientMessageBase,
+    type: z.literal("client.watch-node"),
+    nodeId: ExecutionNodeIdSchema.nullable(),
+    workspaceId: WorkspaceIdSchema,
+  }),
 ]);
 
 export const WorkspaceSnapshotSchema = z
@@ -293,6 +304,18 @@ export const ThreadEventPageSchema = z.object({
 });
 export type ThreadEventPage = z.infer<typeof ThreadEventPageSchema>;
 
+/**
+ * One subagent's own events, oldest first within a page and paged newest
+ * first: what it said, thought and called. Needs `node-detail-v1`.
+ */
+export const NodeEventPageSchema = z.object({
+  events: ThreadEventPageSchema.shape.events,
+  nodeId: ExecutionNodeIdSchema,
+  threadId: ThreadIdSchema,
+  window: DurableWindowSchema,
+});
+export type NodeEventPage = z.infer<typeof NodeEventPageSchema>;
+
 const ProtocolErrorViewSchema = z.object(ProtocolErrorSchema.shape);
 
 export const HostToClientMessageSchema = z.discriminatedUnion("type", [
@@ -339,6 +362,18 @@ export const HostToClientMessageSchema = z.discriminatedUnion("type", [
   z.object({
     ...clientMessageBase,
     type: z.literal("host.synchronized"),
+    sequence: SequenceSchema,
+    workspaceId: WorkspaceIdSchema,
+  }),
+  /**
+   * Answers `client.watch-node`. Every event of the subagent's own after
+   * `sequence` follows in `host.events`, in order with everything else;
+   * `node.events.list` reads the ones through it.
+   */
+  z.object({
+    ...clientMessageBase,
+    type: z.literal("host.node-watched"),
+    nodeId: ExecutionNodeIdSchema.nullable(),
     sequence: SequenceSchema,
     workspaceId: WorkspaceIdSchema,
   }),

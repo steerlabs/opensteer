@@ -1,0 +1,550 @@
+[
+  {
+    "method": "turn/started",
+    "params": {
+      "threadId": "$root",
+      "turn": {
+        "id": "$turn",
+        "items": [],
+        "itemsView": "notLoaded",
+        "status": "inProgress",
+        "error": null,
+        "startedAt": 1790368129,
+        "completedAt": null,
+        "durationMs": null
+      }
+    }
+  },
+  {
+    "method": "item/started",
+    "params": {
+      "item": {
+        "type": "userMessage",
+        "id": "01a0da41-ac10-7ad2-a779-d1aee58f271c",
+        "clientId": null,
+        "content": [
+          {
+            "type": "text",
+            "text": "Do not run any commands yourself. Spawn one subagent whose only task is to run this exact shell command: printf 'subagent approval fixture' > subagent-approval.txt and then reply with exactly: Written. Wait for it to finish, then reply with exactly what it said.",
+            "text_elements": []
+          }
+        ]
+      },
+      "threadId": "$root",
+      "turnId": "$turn",
+      "startedAtMs": 1790368132116
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "item": {
+        "type": "userMessage",
+        "id": "01a0da41-ac10-7ad2-a779-d1aee58f271c",
+        "clientId": null,
+        "content": [
+          {
+            "type": "text",
+            "text": "Do not run any commands yourself. Spawn one subagent whose only task is to run this exact shell command: printf 'subagent approval fixture' > subagent-approval.txt and then reply with exactly: Written. Wait for it to finish, then reply with exactly what it said.",
+            "text_elements": []
+          }
+        ]
+      },
+      "threadId": "$root",
+      "turnId": "$turn",
+      "completedAtMs": 1790368132116
+    }
+  },
+  {
+    "method": "item/started",
+    "params": {
+      "item": {
+        "type": "reasoning",
+        "id": "rs_03696b8961937e5c016ab6d985d13487d0ae3d53faf40c3669",
+        "summary": [],
+        "content": []
+      },
+      "threadId": "$root",
+      "turnId": "$turn",
+      "startedAtMs": 1790368134121
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "item": {
+        "type": "reasoning",
+        "id": "rs_03696b8961937e5c016ab6d985d13487d0ae3d53faf40c3669",
+        "summary": [],
+        "content": []
+      },
+      "threadId": "$root",
+      "turnId": "$turn",
+      "completedAtMs": 1790368136187
+    }
+  },
+  {
+    "method": "item/started",
+    "params": {
+      "item": {
+        "type": "subAgentActivity",
+        "id": "call_KrtWrCMa1IBTJ4JEr5CvdJMs",
+        "kind": "started",
+        "agentThreadId": "01a0da41-bc86-72e1-a30c-e59a4079f55a",
+        "agentPath": "/root/fixture_writer"
+      },
+      "threadId": "$root",
+      "turnId": "$turn",
+      "startedAtMs": 1790368136376
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "item": {
+        "type": "subAgentActivity",
+        "id": "call_KrtWrCMa1IBTJ4JEr5CvdJMs",
+        "kind": "started",
+        "agentThreadId": "01a0da41-bc86-72e1-a30c-e59a4079f55a",
+        "agentPath": "/root/fixture_writer"
+      },
+      "threadId": "$root",
+      "turnId": "$turn",
+      "completedAtMs": 1790368136377
+    }
+  },
+  {
+    "method": "turn/started",
+    "params": {
+      "threadId": "01a0da41-bc86-72e1-a30c-e59a4079f55a",
+      "turn": {
+        "id": "01a0da41-bcb8-7a32-ad7a-f16d41eac795",
+        "items": [],
+        "itemsView": "notLoaded",
+        "status": "inProgress",
+        "error": null,
+        "startedAt": 1790368136,
+        "completedAt": null,
+        "durationMs": null
+      }
+    }
+  },
+  {
+    "method": "item/started",
+    "params": {
+      "item": {
+        "type": "reasoning",
+        "id": "rs_03696b8961937e5c016ab6d989e28087d0ba611ea28e22e961",
+        "summary": [],
+        "content": []
+      },
+      "threadId": "$root",
+      "turnId": "$turn",
+      "startedAtMs": 1790368138194
+    }
+  },
+  {
+    "method": "item/started",
+    "params": {
+      "item": {
+        "type": "reasoning",
+        "id": "rs_0ea6a125bc4e7661016ab6d98afc1c87d08fca86b24dc3e360",
+        "summary": [],
+        "content": []
+      },
+      "threadId": "01a0da41-bc86-72e1-a30c-e59a4079f55a",
+      "turnId": "01a0da41-bcb8-7a32-ad7a-f16d41eac795",
+      "startedAtMs": 1790368139416
+    }
+  },
+  {
+    "method": "item/reasoning/summaryPartAdded",
+    "params": {
+      "threadId": "$root",
+      "turnId": "$turn",
+      "itemId": "rs_03696b8961937e5c016ab6d989e28087d0ba611ea28e22e961",
+      "summaryIndex": 0
+    }
+  },
+  {
+    "method": "item/reasoning/summaryTextDelta",
+    "params": {
+      "threadId": "$root",
+      "turnId": "$turn",
+      "itemId": "rs_03696b8961937e5c016ab6d989e28087d0ba611ea28e22e961",
+      "delta": "**Waiting for agent**",
+      "summaryIndex": 0
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "item": {
+        "type": "reasoning",
+        "id": "rs_03696b8961937e5c016ab6d989e28087d0ba611ea28e22e961",
+        "summary": [
+          "**Waiting for agent**"
+        ],
+        "content": []
+      },
+      "threadId": "$root",
+      "turnId": "$turn",
+      "completedAtMs": 1790368140127
+    }
+  },
+  {
+    "method": "item/started",
+    "params": {
+      "item": {
+        "type": "collabAgentToolCall",
+        "id": "call_XpVU6N1lxEZ9sxJ0yPNh4dl5",
+        "tool": "wait",
+        "status": "inProgress",
+        "senderThreadId": "$root",
+        "receiverThreadIds": [],
+        "prompt": null,
+        "model": null,
+        "reasoningEffort": null,
+        "agentsStates": {}
+      },
+      "threadId": "$root",
+      "turnId": "$turn",
+      "startedAtMs": 1790368140195
+    }
+  },
+  {
+    "method": "item/reasoning/summaryPartAdded",
+    "params": {
+      "threadId": "01a0da41-bc86-72e1-a30c-e59a4079f55a",
+      "turnId": "01a0da41-bcb8-7a32-ad7a-f16d41eac795",
+      "itemId": "rs_0ea6a125bc4e7661016ab6d98afc1c87d08fca86b24dc3e360",
+      "summaryIndex": 0
+    }
+  },
+  {
+    "method": "item/reasoning/summaryTextDelta",
+    "params": {
+      "threadId": "01a0da41-bc86-72e1-a30c-e59a4079f55a",
+      "turnId": "01a0da41-bcb8-7a32-ad7a-f16d41eac795",
+      "itemId": "rs_0ea6a125bc4e7661016ab6d98afc1c87d08fca86b24dc3e360",
+      "delta": "**Preparing fixture creation**",
+      "summaryIndex": 0
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "item": {
+        "type": "reasoning",
+        "id": "rs_0ea6a125bc4e7661016ab6d98afc1c87d08fca86b24dc3e360",
+        "summary": [
+          "**Preparing fixture creation**"
+        ],
+        "content": []
+      },
+      "threadId": "01a0da41-bc86-72e1-a30c-e59a4079f55a",
+      "turnId": "01a0da41-bcb8-7a32-ad7a-f16d41eac795",
+      "completedAtMs": 1790368145433
+    }
+  },
+  {
+    "method": "item/started",
+    "params": {
+      "item": {
+        "type": "commandExecution",
+        "id": "exec-27a5374a-5e64-4a9b-88ff-8e1f77aa9745",
+        "pluginId": null,
+        "scriptPath": null,
+        "command": "/bin/bash -lc \"printf 'subagent approval fixture' > subagent-approval.txt\"",
+        "cwd": "/workspace",
+        "processId": null,
+        "source": "agent",
+        "status": "inProgress",
+        "commandActions": [
+          {
+            "type": "unknown",
+            "command": "printf 'subagent approval fixture' > subagent-approval.txt"
+          }
+        ],
+        "aggregatedOutput": null,
+        "exitCode": null,
+        "durationMs": null
+      },
+      "threadId": "01a0da41-bc86-72e1-a30c-e59a4079f55a",
+      "turnId": "01a0da41-bcb8-7a32-ad7a-f16d41eac795",
+      "startedAtMs": 1790368145794
+    }
+  },
+  {
+    "method": "item/commandExecution/requestApproval",
+    "id": 0,
+    "params": {
+      "kind": "command",
+      "threadId": "01a0da41-bc86-72e1-a30c-e59a4079f55a",
+      "turnId": "01a0da41-bcb8-7a32-ad7a-f16d41eac795",
+      "itemId": "exec-27a5374a-5e64-4a9b-88ff-8e1f77aa9745",
+      "startedAtMs": 1790368145788,
+      "environmentId": "local",
+      "command": "/bin/bash -lc \"printf 'subagent approval fixture' > subagent-approval.txt\"",
+      "cwd": "/workspace",
+      "commandActions": [
+        {
+          "type": "unknown",
+          "command": "printf 'subagent approval fixture' > subagent-approval.txt"
+        }
+      ],
+      "proposedExecpolicyAmendment": [
+        "/bin/bash",
+        "-lc",
+        "printf 'subagent approval fixture' > subagent-approval.txt"
+      ],
+      "availableDecisions": [
+        "accept",
+        {
+          "acceptWithExecpolicyAmendment": {
+            "execpolicy_amendment": [
+              "/bin/bash",
+              "-lc",
+              "printf 'subagent approval fixture' > subagent-approval.txt"
+            ]
+          }
+        },
+        "cancel"
+      ]
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "item": {
+        "type": "commandExecution",
+        "id": "exec-27a5374a-5e64-4a9b-88ff-8e1f77aa9745",
+        "pluginId": null,
+        "scriptPath": null,
+        "command": "/bin/bash -lc \"printf 'subagent approval fixture' > subagent-approval.txt\"",
+        "cwd": "/workspace",
+        "processId": "47188",
+        "source": "unifiedExecStartup",
+        "status": "completed",
+        "commandActions": [
+          {
+            "type": "unknown",
+            "command": "printf 'subagent approval fixture' > subagent-approval.txt"
+          }
+        ],
+        "aggregatedOutput": null,
+        "exitCode": 0,
+        "durationMs": 0
+      },
+      "threadId": "01a0da41-bc86-72e1-a30c-e59a4079f55a",
+      "turnId": "01a0da41-bcb8-7a32-ad7a-f16d41eac795",
+      "completedAtMs": 1790368145951
+    }
+  },
+  {
+    "method": "item/started",
+    "params": {
+      "item": {
+        "type": "agentMessage",
+        "id": "msg_0ea6a125bc4e7661016ab6d993285087d0bc47d8d520fbc6a7",
+        "text": "",
+        "phase": "final_answer",
+        "memoryCitation": null,
+        "delivery": null,
+        "questions": null
+      },
+      "threadId": "01a0da41-bc86-72e1-a30c-e59a4079f55a",
+      "turnId": "01a0da41-bcb8-7a32-ad7a-f16d41eac795",
+      "startedAtMs": 1790368147365
+    }
+  },
+  {
+    "method": "item/agentMessage/delta",
+    "params": {
+      "threadId": "01a0da41-bc86-72e1-a30c-e59a4079f55a",
+      "turnId": "01a0da41-bcb8-7a32-ad7a-f16d41eac795",
+      "itemId": "msg_0ea6a125bc4e7661016ab6d993285087d0bc47d8d520fbc6a7",
+      "delta": "Written"
+    }
+  },
+  {
+    "method": "item/agentMessage/delta",
+    "params": {
+      "threadId": "01a0da41-bc86-72e1-a30c-e59a4079f55a",
+      "turnId": "01a0da41-bcb8-7a32-ad7a-f16d41eac795",
+      "itemId": "msg_0ea6a125bc4e7661016ab6d993285087d0bc47d8d520fbc6a7",
+      "delta": "."
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "item": {
+        "type": "agentMessage",
+        "id": "msg_0ea6a125bc4e7661016ab6d993285087d0bc47d8d520fbc6a7",
+        "text": "Written.",
+        "phase": "final_answer",
+        "memoryCitation": null,
+        "delivery": null,
+        "questions": null
+      },
+      "threadId": "01a0da41-bc86-72e1-a30c-e59a4079f55a",
+      "turnId": "01a0da41-bcb8-7a32-ad7a-f16d41eac795",
+      "completedAtMs": 1790368147439
+    }
+  },
+  {
+    "method": "item/started",
+    "params": {
+      "item": {
+        "type": "subAgentActivity",
+        "id": "subagent-completed-01a0da41-bcb8-7a32-ad7a-f16d41eac795",
+        "kind": "completed",
+        "agentThreadId": "01a0da41-bc86-72e1-a30c-e59a4079f55a",
+        "agentPath": "/root/fixture_writer"
+      },
+      "threadId": "$root",
+      "turnId": "$turn",
+      "startedAtMs": 1790368147526
+    }
+  },
+  {
+    "method": "turn/completed",
+    "params": {
+      "threadId": "01a0da41-bc86-72e1-a30c-e59a4079f55a",
+      "turn": {
+        "id": "01a0da41-bcb8-7a32-ad7a-f16d41eac795",
+        "items": [
+          {
+            "type": "agentMessage",
+            "id": "msg_0ea6a125bc4e7661016ab6d993285087d0bc47d8d520fbc6a7",
+            "text": "Written.",
+            "phase": "final_answer",
+            "memoryCitation": null,
+            "delivery": null,
+            "questions": null
+          }
+        ],
+        "itemsView": "summary",
+        "status": "completed",
+        "error": null,
+        "startedAt": 1790368136,
+        "completedAt": 1790368147,
+        "durationMs": 11143
+      }
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "item": {
+        "type": "subAgentActivity",
+        "id": "subagent-completed-01a0da41-bcb8-7a32-ad7a-f16d41eac795",
+        "kind": "completed",
+        "agentThreadId": "01a0da41-bc86-72e1-a30c-e59a4079f55a",
+        "agentPath": "/root/fixture_writer"
+      },
+      "threadId": "$root",
+      "turnId": "$turn",
+      "completedAtMs": 1790368147526
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "item": {
+        "type": "collabAgentToolCall",
+        "id": "call_XpVU6N1lxEZ9sxJ0yPNh4dl5",
+        "tool": "wait",
+        "status": "completed",
+        "senderThreadId": "$root",
+        "receiverThreadIds": [],
+        "prompt": null,
+        "model": null,
+        "reasoningEffort": null,
+        "agentsStates": {}
+      },
+      "threadId": "$root",
+      "turnId": "$turn",
+      "completedAtMs": 1790368147531
+    }
+  },
+  {
+    "method": "item/started",
+    "params": {
+      "item": {
+        "type": "agentMessage",
+        "id": "msg_03696b8961937e5c016ab6d995012487d099704aa73dea56e6",
+        "text": "",
+        "phase": "final_answer",
+        "memoryCitation": null,
+        "delivery": null,
+        "questions": null
+      },
+      "threadId": "$root",
+      "turnId": "$turn",
+      "startedAtMs": 1790368149292
+    }
+  },
+  {
+    "method": "item/agentMessage/delta",
+    "params": {
+      "threadId": "$root",
+      "turnId": "$turn",
+      "itemId": "msg_03696b8961937e5c016ab6d995012487d099704aa73dea56e6",
+      "delta": "Written"
+    }
+  },
+  {
+    "method": "item/agentMessage/delta",
+    "params": {
+      "threadId": "$root",
+      "turnId": "$turn",
+      "itemId": "msg_03696b8961937e5c016ab6d995012487d099704aa73dea56e6",
+      "delta": "."
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "item": {
+        "type": "agentMessage",
+        "id": "msg_03696b8961937e5c016ab6d995012487d099704aa73dea56e6",
+        "text": "Written.",
+        "phase": "final_answer",
+        "memoryCitation": null,
+        "delivery": null,
+        "questions": null
+      },
+      "threadId": "$root",
+      "turnId": "$turn",
+      "completedAtMs": 1790368149300
+    }
+  },
+  {
+    "method": "turn/completed",
+    "params": {
+      "threadId": "$root",
+      "turn": {
+        "id": "$turn",
+        "items": [
+          {
+            "type": "agentMessage",
+            "id": "msg_03696b8961937e5c016ab6d995012487d099704aa73dea56e6",
+            "text": "Written.",
+            "phase": "final_answer",
+            "memoryCitation": null,
+            "delivery": null,
+            "questions": null
+          }
+        ],
+        "itemsView": "summary",
+        "status": "completed",
+        "error": null,
+        "startedAt": 1790368129,
+        "completedAt": 1790368149,
+        "durationMs": 19500
+      }
+    }
+  }
+]

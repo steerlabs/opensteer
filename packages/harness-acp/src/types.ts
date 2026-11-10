@@ -67,6 +67,7 @@ export interface AcpPermissionOption {
 }
 
 export interface AcpPermissionRequest {
+  readonly nodeKey?: string;
   readonly options: readonly AcpPermissionOption[];
   readonly sessionId?: string;
   readonly toolCall: AcpToolCall;
@@ -91,7 +92,7 @@ export interface AcpPermissionChoice {
   readonly label: string;
 }
 
-export type AcpNormalizedUpdate =
+export type AcpNormalizedUpdate = { readonly nodeKey?: string } & (
   | {
       readonly kind: "assistant";
       readonly messageId?: string;
@@ -102,7 +103,9 @@ export type AcpNormalizedUpdate =
   | {
       readonly kind: "subagent";
       readonly key: string;
-      readonly state: "started" | "completed" | "failed";
+      readonly state: "started" | "completed" | "failed" | "interrupted";
+      readonly parentKey?: string;
+      readonly originCallId?: string;
       readonly model?: string;
       readonly prompt?: string;
       readonly result?: string;
@@ -117,7 +120,8 @@ export type AcpNormalizedUpdate =
       readonly outputTokens: number;
       readonly reasoningTokens?: number;
     }
-  | { readonly kind: "ignore" };
+  | { readonly kind: "ignore" }
+);
 
 export type AcpErrorContext =
   | {
@@ -150,6 +154,7 @@ export type AcpHeldAssistantDecision =
 export interface AcpNativeHooks {
   /** Engine-specific extensions and quirks only; standard ACP updates are normalized first. */
   normalizeUpdate?(update: unknown): readonly AcpNormalizedUpdate[] | undefined;
+  toolUpdates?(call: AcpToolCall): readonly AcpNormalizedUpdate[];
   /** Also interprets a settled prompt result when `error` is undefined. */
   classifyError(error: unknown, context: AcpErrorContext): OpensteerError;
   /** Holds a short assistant-only prefix until the prompt result can validate it. */

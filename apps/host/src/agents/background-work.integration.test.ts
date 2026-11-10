@@ -717,6 +717,7 @@ function backgroundClaudeSdk(finished: Promise<void>): ClaudeAgentSdk {
         [Symbol.asyncIterator]: () => generator as never,
         close: () => closed.abort(),
         interrupt: () => Promise.resolve(undefined),
+        stopTask: () => Promise.resolve(),
       };
       return handle;
     },

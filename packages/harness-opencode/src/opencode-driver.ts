@@ -95,6 +95,9 @@ import { z } from "zod";
 import { OpencodeHarnessConfigSchema, type OpencodeHarnessConfig } from "./config.js";
 import {
   opencodeAgentToolsServer,
+  opencodePermissionRules,
+  opencodeChildPermissionRules,
+  type OpencodePermissionRule,
   opencodeInspectionConfiguration,
   opencodeSessionConfiguration,
   opencodeToolIdentity,
@@ -748,6 +751,12 @@ interface OpencodeActiveTurn {
   readonly childMessages: Set<string>;
   /** Child sessions of this turn's subagents. */
   readonly children: Set<string>;
+  readonly parents: Map<string, string>;
+  readonly permissions: Map<string, readonly OpencodePermissionRule[]>;
+  readonly background: Set<string>;
+  readonly finishedBackground: Set<string>;
+  readonly completedParts: Set<string>;
+  rootIdle: boolean;
   /** Usage of each subagent's steps, by child session; the Run's usage includes it. */
   readonly childUsage: Map<string, OpencodeUsage>;
   readonly completion: Deferred<void>;
@@ -893,6 +902,12 @@ class OpencodeHarnessSession implements HarnessSession {
       childMessages: new Set(),
       childUsage: new Map(),
       children: new Set(),
+      parents: new Map(),
+      permissions: new Map(),
+      background: new Set(),
+      finishedBackground: new Set(),
+      completedParts: new Set(),
+      rootIdle: false,
       completion: new Deferred<void>(),
       failure: undefined,
       interruptRequested: run.signal.aborted,
@@ -916,6 +931,35 @@ class OpencodeHarnessSession implements HarnessSession {
         this.#publishTerminal(active, "interrupted");
         return;
       }
+      const permission = opencodePermissionRules(
+        this.#context.accessMode,
+        opencodeOpensteerToolIds(this.#context.agentTools.tools),
+      );
+      const previous = parseOpencode(
+        OpencodeSessionSchema,
+        await this.#requireServer().request(
+          "GET",
+          `/session/${encodeURIComponent(this.#requireSessionId())}`,
+          {
+            directory: this.#context.workspacePath,
+          },
+        ),
+        "session permissions",
+      );
+      await this.#requireServer().request(
+        "PATCH",
+        `/session/${encodeURIComponent(this.#requireSessionId())}`,
+        {
+          body: { permission },
+          directory: this.#context.workspacePath,
+        },
+      );
+      active.permissions.set(this.#requireSessionId(), permission);
+      await this.#prepareExistingChildren(
+        this.#requireSessionId(),
+        permission,
+        previous.permission ?? [],
+      );
       const selection = this.#context.modelSelection;
       const variant = selection.options.effort;
       // `prompt_async` answers 204 the moment the prompt is admitted; the turn
@@ -1203,7 +1247,7 @@ class OpencodeHarnessSession implements HarnessSession {
   ): Promise<void> {
     try {
       for await (const event of stream) {
-        this.#handleEvent(event.type, event.properties);
+        await this.#handleEvent(event.type, event.properties);
       }
       if (!this.#streamLifetime.signal.aborted) {
         this.#handleStreamFailure(
@@ -1216,20 +1260,24 @@ class OpencodeHarnessSession implements HarnessSession {
     }
   }
 
-  #handleEvent(type: string, properties: unknown): void {
+  async #handleEvent(type: string, properties: unknown): Promise<void> {
     switch (type) {
       case "session.created":
       case "session.updated": {
         // A subagent's child session names this one as its parent.
         const created = parseOpencode(OpencodeSessionEventSchema, properties, type);
         const active = this.#liveTurn();
-        if (active && created.info.parentID === this.#sessionId)
-          active.children.add(created.info.id);
+        if (active && created.info.parentID) {
+          active.parents.set(created.info.id, created.info.parentID);
+          await this.#attachChild(active, created.info.id);
+          for (const session of active.parents.keys()) await this.#attachChild(active, session);
+        }
         return;
       }
       case "message.updated": {
         const updated = parseOpencode(OpencodeMessageUpdatedSchema, properties, "message.updated");
         if (updated.info.role !== "assistant") return;
+        await this.#discoverChild(updated.info.sessionID);
         const child = this.#childSession(updated.info.sessionID);
         if (child) {
           child.active.childMessages.add(updated.info.id);
@@ -1241,6 +1289,8 @@ class OpencodeHarnessSession implements HarnessSession {
           return;
         }
         if (updated.info.sessionID !== this.#sessionId) return;
+        const active = this.#liveTurn();
+        if (active) active.rootIdle = false;
         this.#assistantMessages.add(updated.info.id);
         this.#handleAssistantMessage(updated.info);
         return;
@@ -1251,6 +1301,20 @@ class OpencodeHarnessSession implements HarnessSession {
           properties,
           "message.part.updated",
         );
+        await this.#discoverChild(updated.sessionID);
+        if (updated.part.type === "tool" && updated.part.tool === "task") {
+          const metadata = updated.part.state?.metadata;
+          const active = this.#liveTurn();
+          if (
+            active &&
+            isRecord(metadata) &&
+            typeof metadata.sessionId === "string" &&
+            (updated.sessionID === this.#sessionId || active.children.has(updated.sessionID))
+          ) {
+            active.parents.set(metadata.sessionId, updated.sessionID);
+            await this.#attachChild(active, metadata.sessionId);
+          }
+        }
         const child = this.#childSession(updated.sessionID);
         if (child) {
           this.#handleChildPart(child.active, child.session, updated.part);
@@ -1273,6 +1337,7 @@ class OpencodeHarnessSession implements HarnessSession {
           properties,
           "permission.asked",
         );
+        await this.#discoverChild(request.sessionID);
         if (request.sessionID !== this.#sessionId && !this.#childSession(request.sessionID)) return;
         this.#openApproval(request);
         return;
@@ -1287,6 +1352,7 @@ class OpencodeHarnessSession implements HarnessSession {
         // answers it with `200 true`, followed by `question.replied`. Recorded
         // in opencode-facts.md §3 under "verified by Workstream O".
         const request = parseOpencode(OpencodeQuestionRequestSchema, properties, "question.asked");
+        await this.#discoverChild(request.sessionID);
         if (request.sessionID !== this.#sessionId && !this.#childSession(request.sessionID)) return;
         this.#openQuestion(request);
         return;
@@ -1310,14 +1376,51 @@ class OpencodeHarnessSession implements HarnessSession {
       }
       case "session.error": {
         const failure = parseOpencode(OpencodeSessionErrorSchema, properties, "session.error");
-        // A subagent's failure is its `task` call's result, never the Run's own.
-        if (failure.sessionID !== undefined && failure.sessionID !== this.#sessionId) return;
+        if (failure.sessionID !== undefined && failure.sessionID !== this.#sessionId) {
+          const active = this.#liveTurn();
+          if (active?.background.has(failure.sessionID)) {
+            active.nodes.complete(
+              failure.sessionID,
+              active.interruptRequested ? "interrupted" : "failed",
+              {
+                result: failure.error?.data.message ?? null,
+                usage:
+                  opencodeRunUsage(
+                    active.childUsage.get(failure.sessionID) ?? emptyOpencodeUsage(),
+                  ) ?? null,
+              },
+            );
+          }
+          return;
+        }
         this.#latchTurnError(failure.error ?? undefined);
         return;
       }
       case "session.idle": {
         const idle = parseOpencode(OpencodeSessionIdleSchema, properties, "session.idle");
+        const active = this.#liveTurn();
+        if (!active) return;
+        if (active.background.delete(idle.sessionID)) {
+          active.finishedBackground.add(idle.sessionID);
+          active.nodes.complete(
+            idle.sessionID,
+            active.interruptRequested ? "interrupted" : "completed",
+            {
+              usage:
+                opencodeRunUsage(active.childUsage.get(idle.sessionID) ?? emptyOpencodeUsage()) ??
+                null,
+            },
+          );
+          active.childUsage.delete(idle.sessionID);
+          if (active.rootIdle && active.background.size === 0) this.#settleTurn();
+          return;
+        }
         if (idle.sessionID !== this.#sessionId) return;
+        active.rootIdle = true;
+        if (active.background.size) {
+          this.#publish({ type: "run.phase", data: { phase: "background" } });
+          return;
+        }
         this.#settleTurn();
         return;
       }
@@ -1470,6 +1573,79 @@ class OpencodeHarnessSession implements HarnessSession {
     addOpencodeStep(active.usage, part);
   }
 
+  async #discoverChild(session: string, seen = new Set<string>()): Promise<void> {
+    const active = this.#liveTurn();
+    if (!active || session === this.#sessionId || active.children.has(session) || seen.has(session))
+      return;
+    seen.add(session);
+    const native = parseOpencode(
+      OpencodeSessionSchema,
+      await this.#requireServer().request("GET", `/session/${encodeURIComponent(session)}`, {
+        directory: this.#context.workspacePath,
+      }),
+      "child ancestry",
+    );
+    if (!native.parentID) return;
+    await this.#discoverChild(native.parentID, seen);
+    active.parents.set(session, native.parentID);
+    await this.#attachChild(active, session);
+  }
+
+  async #prepareExistingChildren(
+    session: string,
+    parentRules: readonly OpencodePermissionRule[],
+    previousParentRules: readonly OpencodePermissionRule[],
+  ): Promise<void> {
+    const children = parseOpencode(
+      z.array(OpencodeSessionSchema),
+      await this.#requireServer().request(
+        "GET",
+        `/session/${encodeURIComponent(session)}/children`,
+        {
+          directory: this.#context.workspacePath,
+        },
+      ),
+      "child sessions",
+    );
+    for (const child of children) {
+      const previous = child.permission ?? [];
+      const permission = opencodeChildPermissionRules(parentRules, previous, previousParentRules);
+      await this.#requireServer().request("PATCH", `/session/${encodeURIComponent(child.id)}`, {
+        body: { permission },
+        directory: this.#context.workspacePath,
+      });
+      await this.#prepareExistingChildren(child.id, permission, previous);
+    }
+  }
+
+  async #attachChild(active: OpencodeActiveTurn, session: string): Promise<void> {
+    if (active.children.has(session)) return;
+    const parent = active.parents.get(session);
+    if (!parent || (parent !== this.#sessionId && !active.children.has(parent))) return;
+    const native = parseOpencode(
+      OpencodeSessionSchema,
+      await this.#requireServer().request("GET", `/session/${encodeURIComponent(session)}`, {
+        directory: this.#context.workspacePath,
+      }),
+      "child session",
+    );
+    const parentRules = active.permissions.get(parent);
+    if (!parentRules) throw opencodeProtocolError("OpenCode child has no parent permission policy");
+    const permission = opencodeChildPermissionRules(parentRules, native.permission ?? []);
+    await this.#requireServer().request("PATCH", `/session/${encodeURIComponent(session)}`, {
+      body: { permission },
+      directory: this.#context.workspacePath,
+    });
+    if (active.terminal) return;
+    active.permissions.set(session, permission);
+    active.children.add(session);
+    active.nodes.ensure(session, {
+      sessionRef: session,
+      parentKey: parent,
+      title: native.title ?? null,
+    });
+  }
+
   /** The live turn and child session a session id names, if it is one of this turn's subagents. */
   #childSession(
     sessionId: string,
@@ -1489,15 +1665,17 @@ class OpencodeHarnessSession implements HarnessSession {
     active: OpencodeActiveTurn,
     callId: string,
     state: NonNullable<OpencodePart["state"]>,
+    parentKey?: string,
   ) {
     const input = isRecord(state.input) ? state.input : {};
     const metadata = isRecord(state.metadata) ? state.metadata : {};
     const session = typeof metadata.sessionId === "string" ? metadata.sessionId : undefined;
     if (session && !active.taskChildren.has(callId)) {
+      active.finishedBackground.delete(session);
       active.taskChildren.set(callId, session);
-      active.children.add(session);
       const model = isRecord(metadata.model) ? metadata.model : {};
       const start = {
+        parentKey: parentKey ?? null,
         model:
           typeof model.providerID === "string" && typeof model.modelID === "string"
             ? `${model.providerID}/${model.modelID}`
@@ -1517,6 +1695,10 @@ class OpencodeHarnessSession implements HarnessSession {
       const origin = active.nodes.originCallId(session);
       if (origin === null || origin === callId) active.nodes.update(session, start);
       else active.nodes.open(session, { ...start, nativeRef: callId, sessionRef: session });
+    }
+    if (session && metadata.background === true && state.status !== "error") {
+      if (!active.finishedBackground.has(session)) active.background.add(session);
+      return;
     }
     if (state.status !== "completed" && state.status !== "error") return;
     const child = active.taskChildren.get(callId);
@@ -1539,9 +1721,22 @@ class OpencodeHarnessSession implements HarnessSession {
   /** A subagent's own part: its tools, its words, and the model calls it made. */
   #handleChildPart(active: OpencodeActiveTurn, session: string, part: OpencodePart): void {
     if (!active.childMessages.has(part.messageID)) return;
-    const nodeId = active.nodes.ensure(session, { sessionRef: session });
+    const nodeId = active.nodes.ensure(session, {
+      sessionRef: session,
+      parentKey: active.parents.get(session) ?? null,
+    });
     if (part.type === "text" && part.time?.end !== undefined && part.text) {
-      active.nodes.noteResult(session, part.text);
+      if (!active.completedParts.has(part.id)) {
+        active.completedParts.add(part.id);
+        active.nodes.message(session, part.text);
+      }
+      return;
+    }
+    if (part.type === "reasoning" && part.time?.end !== undefined && part.text) {
+      if (!active.completedParts.has(part.id)) {
+        active.completedParts.add(part.id);
+        active.nodes.reasoning(session, part.id, part.text);
+      }
       return;
     }
     if (part.type === "step-finish") {
@@ -1553,11 +1748,16 @@ class OpencodeHarnessSession implements HarnessSession {
       return;
     }
     if (part.type !== "tool" || !part.callID || !part.state) return;
+    if (part.tool === "task") this.#trackTask(active, part.callID, part.state, session);
     const key = `${session}:${part.callID}`;
     const tool = opencodeToolIdentity(part.tool ?? "unknown");
     const { state } = part;
     if (!this.#startedTools.has(key)) {
       this.#startedTools.add(key);
+      active.nodes.progress(
+        session,
+        typeof state.title === "string" ? state.title : `Using ${part.tool ?? "tool"}`,
+      );
       this.#publish({
         data: { arguments: state.input, callId: part.callID, nodeId, tool },
         type: "tool.started",
@@ -1617,6 +1817,14 @@ class OpencodeHarnessSession implements HarnessSession {
       // answers it — and waiting first would spend the whole settle budget on a
       // turn that was never going to move.
       await this.#cancelPendingRequests("run-ended");
+      await Promise.all(
+        [...active.background].map((session) =>
+          this.#requireServer().request("POST", `/session/${encodeURIComponent(session)}/abort`, {
+            body: {},
+            directory: this.#context.workspacePath,
+          }),
+        ),
+      );
       await this.#requireServer().request(
         "POST",
         `/session/${encodeURIComponent(this.#requireSessionId())}/abort`,
@@ -1770,7 +1978,10 @@ class OpencodeHarnessSession implements HarnessSession {
   /** The subagent a child session's ask comes from, opened now if nothing named it yet. */
   #askingNode(sessionId: string): ExecutionNodeId | undefined {
     const child = this.#childSession(sessionId);
-    return child?.active.nodes.ensure(child.session, { sessionRef: child.session });
+    return child?.active.nodes.ensure(child.session, {
+      sessionRef: child.session,
+      parentKey: child.active.parents.get(child.session) ?? null,
+    });
   }
 
   #pendingRequest(

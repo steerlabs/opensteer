@@ -5,6 +5,7 @@ import { cardUseTitle } from "./cards.js";
 import { passwordSignInOutcome, passwordSignInReceipt } from "./passwords.js";
 import {
   contentSaysSomething,
+  nodeDetailEventNodeId,
   threadInputIsPublished,
   type ThreadInput,
   requestOptionDeclines,
@@ -59,7 +60,27 @@ export function foldTranscriptEvent(
   entries: readonly TranscriptEntry[],
   event: AgentEvent,
 ): TranscriptEntry[] {
+  if (nodeDetailEventNodeId(event)) return [...entries];
+  return foldTranscriptOwnEvent(entries, event);
+}
+
+export function foldNodeDetailEvent(
+  entries: readonly TranscriptEntry[],
+  event: AgentEvent,
+  nodeId: string,
+): TranscriptEntry[] {
+  return nodeDetailEventNodeId(event) === nodeId
+    ? foldTranscriptOwnEvent(entries, event)
+    : [...entries];
+}
+
+function foldTranscriptOwnEvent(
+  entries: readonly TranscriptEntry[],
+  event: AgentEvent,
+): TranscriptEntry[] {
   switch (event.type) {
+    case "node.message":
+      return [...entries];
     // The person's words arrive as the `message.created` the Host made of this.
     case "voice.heard":
       return [...entries];
@@ -98,7 +119,13 @@ export function foldTranscriptEvent(
     case "run.started":
       return upsertRunEntry(entries, event, "running");
     case "run.status":
-      return upsertRunEntry(entries, event, event.data.status);
+      return upsertRunEntry(
+        isTerminalRunEntryStatus(event.data.status)
+          ? finishRunEntries(entries, event.runId, event.createdAt)
+          : entries,
+        event,
+        event.data.status,
+      );
     // The Run goes back to its queue for the attempt that takes the message.
     case "run.restarted": {
       const restarted = upsertRunEntry(
@@ -274,9 +301,15 @@ export function foldTranscriptEvent(
         id,
         kind: "node",
         model: prior?.model ?? event.data.model,
+        effort: prior?.effort ?? event.data.effort ?? null,
+        nodeKind: event.data.kind,
+        sequence: prior?.sequence ?? event.sequence,
+        phaseIndex: prior?.phaseIndex ?? event.data.phaseIndex ?? null,
+        phases: prior?.phases ?? [],
+        progress: prior?.progress ?? null,
         nodeId: event.data.nodeId,
-        originCallId: event.data.originCallId,
-        parentNodeId: event.data.parentNodeId,
+        originCallId: prior?.originCallId ?? event.data.originCallId,
+        parentNodeId: prior?.parentNodeId ?? event.data.parentNodeId,
         prompt: prior?.prompt ?? event.data.prompt,
         result: prior?.result ?? null,
         runId: event.runId,
@@ -291,6 +324,12 @@ export function foldTranscriptEvent(
       return upsertEntry(entries, {
         ...prior,
         ...(event.data.model === undefined ? {} : { model: event.data.model }),
+        ...(event.data.effort === undefined ? {} : { effort: event.data.effort }),
+        ...(event.data.parentNodeId === undefined || prior.parentNodeId !== null
+          ? {}
+          : { parentNodeId: event.data.parentNodeId }),
+        ...(event.data.phaseIndex === undefined ? {} : { phaseIndex: event.data.phaseIndex }),
+        ...(event.data.phases === undefined ? {} : { phases: event.data.phases }),
         ...(event.data.originCallId === undefined ? {} : { originCallId: event.data.originCallId }),
         ...(event.data.prompt === undefined ? {} : { prompt: event.data.prompt }),
         ...(event.data.title === undefined ? {} : { title: event.data.title }),
@@ -303,6 +342,7 @@ export function foldTranscriptEvent(
       return upsertEntry(entries, {
         ...rest,
         completedAt: event.createdAt,
+        progress: null,
         result: event.data.result,
         status: event.data.status,
         ...(event.data.usage ? { usage: event.data.usage } : {}),
@@ -695,6 +735,11 @@ export function foldLiveRun(
   for (const stream of run.streams) {
     const text = liveStreamText(stream);
     switch (stream.key.stream) {
+      case "node": {
+        const prior = findEntry(next, nodeEntryId(stream.key.nodeId), "node");
+        if (prior?.status === "running") next = upsertEntry(next, { ...prior, progress: text });
+        break;
+      }
       case "assistant": {
         const id = streamMessageId(run.runId);
         const prior = findEntry(next, id, "message");
@@ -733,6 +778,7 @@ export function foldLiveRun(
         break;
       }
       case "tool": {
+        if (stream.nodeId) break;
         const id = toolEntryId(run.runId, stream.key.callId);
         const prior = findEntry(next, id, "tool");
         if (prior && prior.state !== "running") break;
@@ -789,6 +835,13 @@ export function drawnLiveStream(entry: TranscriptEntry): DrawnLiveStream | null 
         }
       : null;
   }
+  if (entry.kind === "node" && entry.progress !== null) {
+    return {
+      key: { stream: "node", nodeId: entry.nodeId as import("@opensteer/core").ExecutionNodeId },
+      runId,
+      text: entry.progress,
+    };
+  }
   if (entry.kind === "tool") {
     return entry.state === "running" && entry.streamText !== ""
       ? { key: { callId: entry.callId, stream: "tool" }, runId, text: entry.streamText }
@@ -813,6 +866,7 @@ export function withoutClosedLiveStreams(
     if (drawn === null || open(drawn.runId, drawn.key)) return [entry];
     changed = true;
     // A call with no tool named was only ever drawn from its stream.
+    if (entry.kind === "node") return [{ ...entry, progress: null }];
     return entry.kind === "tool" && entry.tool !== null ? [{ ...entry, streamText: "" }] : [];
   });
   return changed ? next : entries;
@@ -842,6 +896,7 @@ export function finishRunEntries(
         ...entry,
         completedAt: completedAt ?? entry.completedAt,
         status: "interrupted" as const,
+        progress: null,
       };
     }
     return entry;
@@ -856,7 +911,7 @@ function stopRunNodes(
 ): TranscriptEntry[] {
   return entries.map((entry) =>
     entry.kind === "node" && entry.runId === runId && entry.status === "running"
-      ? { ...entry, completedAt: at, status: "interrupted" as const }
+      ? { ...entry, completedAt: at, status: "interrupted" as const, progress: null }
       : entry,
   );
 }

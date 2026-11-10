@@ -4,6 +4,8 @@ import {
 } from "@opensteer/shared/bootstrapDiagnostics";
 import {
   compareSequence,
+  nodeDetailEventNodeId,
+  type ExecutionNodeId,
   OpensteerError,
   zeroSequence,
   type AgentEvent,
@@ -172,9 +174,11 @@ class Subscriber {
   #queuedThrough: Sequence;
   #gapTimer: ReturnType<typeof setTimeout> | undefined;
   #filling = false;
+  #watchedNodeId: ExecutionNodeId | null = null;
+  readonly #syncWatches: (ExecutionNodeId | null)[] = [];
 
   /**
-   * For a client that did not ask for place events: the last event it was
+   * For a client that leaves out place or node detail events: the last event it was
    * sent, and the last one handed on whether sent or left out. A live frame
    * that waits only on events it left out waits on the last one it has.
    */
@@ -182,10 +186,15 @@ class Subscriber {
   #handedThrough: Sequence;
 
   #send(message: HostToClientMessage): Promise<void> {
-    if (this.#options.placeEvents) return this.sink.send(message);
     switch (message.type) {
       case "host.events": {
-        const events = message.events.filter((event) => event.type !== "place.entered");
+        const events = message.events.filter((event) => {
+          const nodeId = nodeDetailEventNodeId(event);
+          return (
+            (this.#options.placeEvents || event.type !== "place.entered") &&
+            (nodeId === undefined || nodeId === this.#watchedNodeId)
+          );
+        });
         const last = message.events.at(-1);
         const visible = events.at(-1);
         if (last) this.#handedThrough = last.sequence;
@@ -195,13 +204,22 @@ class Subscriber {
           events.length === message.events.length ? message : { ...message, events },
         );
       }
-      case "host.live":
+      case "host.live": {
+        const items = message.progress.items.filter(
+          (item) =>
+            item.stream !== "tool" ||
+            item.nodeId === undefined ||
+            item.nodeId === this.#watchedNodeId,
+        );
+        if (items.length === 0) return Promise.resolve();
+        message = { ...message, progress: { ...message.progress, items } };
         if (
           compareSequence(message.afterSequence, this.#visibleThrough) > 0 &&
           compareSequence(message.afterSequence, this.#handedThrough) <= 0
         )
           return this.sink.send({ ...message, afterSequence: this.#visibleThrough });
         return this.sink.send(message);
+      }
       case "host.synchronized":
         this.#visibleThrough = message.sequence;
         this.#handedThrough = message.sequence;
@@ -219,6 +237,31 @@ class Subscriber {
     this.sink = options.sink;
     this.userId = options.userId;
     this.workspaceId = options.workspaceId;
+  }
+
+  watchNode(nodeId: ExecutionNodeId | null): void {
+    if (this.#state === "synchronizing") {
+      if (this.#syncWatches.length >= this.#options.maxBufferedEvents) {
+        this.resync("buffer-overflow");
+        return;
+      }
+      this.#syncWatches.push(nodeId);
+      return;
+    }
+    if (this.#state !== "live") return;
+    this.#sendTail = this.#sendTail
+      .then(async () => {
+        if (this.#state !== "live") return;
+        this.#watchedNodeId = nodeId;
+        // Include detail already left out: the list through this boundary must recover it.
+        await this.#send({
+          type: "host.node-watched",
+          nodeId,
+          workspaceId: this.workspaceId,
+          sequence: this.#handedThrough,
+        });
+      })
+      .catch(() => this.#failDelivery());
   }
 
   async show(message: Extract<HostToClientMessage, { type: "host.show" }>): Promise<boolean> {
@@ -324,6 +367,7 @@ class Subscriber {
       // Going live and reading the open streams happen in one synchronous
       // step, so no progress can fall between the replacement and the appends.
       this.#state = "live";
+      for (const nodeId of this.#syncWatches.splice(0)) this.watchNode(nodeId);
       for (const frame of this.#options.liveFrames()) this.#offerLiveFrame(frame, true);
       this.#drain();
       await this.#sendTail;
@@ -792,6 +836,22 @@ export class RealtimeHub {
       subscriber.close();
       throw error;
     }
+  }
+
+  watchNode(input: {
+    readonly sinkId: string;
+    readonly workspaceId: WorkspaceId;
+    readonly nodeId: ExecutionNodeId | null;
+  }): void {
+    const subscriber = [...(this.#subscribers.get(input.workspaceId) ?? [])].find(
+      (subscriber) => subscriber.sink.id === input.sinkId,
+    );
+    if (!subscriber)
+      throw new OpensteerError({
+        code: "bad_request",
+        message: "Subscribe before watching a subagent",
+      });
+    subscriber.watchNode(input.nodeId);
   }
 
   /**

@@ -6,6 +6,7 @@ import {
   EnvironmentIdSchema,
   EventIdSchema,
   ExecutionNodeIdSchema,
+  type ExecutionNodeId,
   MessageIdSchema,
   UserIdSchema,
   RunIdSchema,
@@ -147,8 +148,22 @@ const executionNodeTitle = z.string().trim().min(1).max(240);
 const executionNodeModel = z.string().min(1).max(255);
 const executionNodeRef = z.string().min(1).max(255);
 
-/** A subagent the engine started, or a background task such as a shell it left running. */
-export const ExecutionNodeKindSchema = z.enum(["subagent", "task"]);
+export const executionNodeMessageMaxLength = 100_000;
+const executionNodeEffort = z.string().min(1).max(64);
+const executionNodePhase = z.string().trim().min(1).max(120);
+export const executionNodePhasesMax = 64;
+const executionNodePhaseIndex = z
+  .number()
+  .int()
+  .min(0)
+  .max(executionNodePhasesMax - 1);
+
+/**
+ * A subagent the engine started, a background task such as a shell it left
+ * running, or a workflow: a script of the engine's that runs subagents in
+ * phases, each of them a node whose parent is the workflow.
+ */
+export const ExecutionNodeKindSchema = z.enum(["subagent", "task", "workflow"]);
 export type ExecutionNodeKind = z.infer<typeof ExecutionNodeKindSchema>;
 
 /** How a subagent ended: by finishing, by failing, or by being stopped with its Run. */
@@ -227,6 +242,8 @@ const eventDataSchemas = {
   }),
   "reasoning.completed": z.object({
     blockId: z.string().min(1).max(255),
+    /** The subagent that thought it; absent for the Run's own agent. */
+    nodeId: ExecutionNodeIdSchema.optional(),
     text: z.string().max(300_000),
   }),
   "run.queued": z.object({
@@ -355,13 +372,13 @@ const eventDataSchemas = {
   }),
   /**
    * A subagent the Run's engine started: one invocation, under the Run's
-   * current attempt and authority. Its tools and questions name it; its own
-   * text is not a message of the Thread, and what it returned arrives with
-   * `node.completed`. A resumed child session is a new node with the same
-   * `sessionRef`.
+   * current attempt and authority. Its tools, reasoning and questions name
+   * it; what it says is a `node.message`, never a message of the Thread, and
+   * what it returned arrives with `node.completed`. A resumed child session
+   * is a new node with the same `sessionRef`.
    */
   "node.started": z.strictObject({
-    /** A subagent, or a background task such as a shell left running. */
+    effort: executionNodeEffort.nullable().optional(),
     kind: ExecutionNodeKindSchema,
     model: executionNodeModel.nullable(),
     nativeRef: executionNodeRef,
@@ -369,18 +386,31 @@ const eventDataSchemas = {
     /** The tool call of the agent that started it, when the engine names one. */
     originCallId: z.string().min(1).max(255).nullable(),
     parentNodeId: ExecutionNodeIdSchema.nullable(),
+    /** Which of its workflow's phases a member belongs to. */
+    phaseIndex: executionNodePhaseIndex.nullable().optional(),
     prompt: boundedUtf8Text(executionNodePromptMaxBytes).nullable(),
     sessionRef: executionNodeRef.nullable(),
     title: executionNodeTitle,
   }),
   /** What the engine said about a subagent after it was first seen. */
   "node.updated": z.strictObject({
+    effort: executionNodeEffort.optional(),
     model: executionNodeModel.optional(),
     nodeId: ExecutionNodeIdSchema,
     /** The call that started it, when the engine names it only after the node was seen. */
     originCallId: z.string().min(1).max(255).optional(),
+    /** The subagent that started it, when the engine proves it only after the node was seen. */
+    parentNodeId: ExecutionNodeIdSchema.optional(),
+    phaseIndex: executionNodePhaseIndex.optional(),
+    /** A workflow's phases, in order, by title. */
+    phases: z.array(executionNodePhase).max(executionNodePhasesMax).optional(),
     prompt: boundedUtf8Text(executionNodePromptMaxBytes).optional(),
     title: executionNodeTitle.optional(),
+  }),
+  /** Something a subagent said, whole. Its last one is also its result. */
+  "node.message": z.strictObject({
+    nodeId: ExecutionNodeIdSchema,
+    text: z.string().min(1).max(executionNodeMessageMaxLength),
   }),
   "node.completed": z.strictObject({
     nodeId: ExecutionNodeIdSchema,
@@ -534,6 +564,7 @@ const eventDataViewSchemas = {
   }),
   "node.started": z.object(eventDataSchemas["node.started"].shape),
   "node.updated": z.object(eventDataSchemas["node.updated"].shape),
+  "node.message": z.object(eventDataSchemas["node.message"].shape),
   "node.completed": z.object({
     ...eventDataSchemas["node.completed"].shape,
     usage: RunUsageViewSchema.nullable(),
@@ -607,6 +638,7 @@ export const AgentEventSchema = z
     makeEventVariant("run.phase"),
     makeEventVariant("node.started"),
     makeEventVariant("node.updated"),
+    makeEventVariant("node.message"),
     makeEventVariant("node.completed"),
     makeEventVariant("tool.completed"),
     makeEventVariant("tool.started"),
@@ -659,6 +691,7 @@ export const AgentEventViewSchema = z
     makeEventViewVariant("run.phase"),
     makeEventViewVariant("node.started"),
     makeEventViewVariant("node.updated"),
+    makeEventViewVariant("node.message"),
     makeEventViewVariant("node.completed"),
     makeEventViewVariant("tool.completed"),
     makeEventViewVariant("tool.started"),
@@ -680,6 +713,30 @@ export const AgentEventViewSchema = z
   );
 
 export type AgentEventView = z.infer<typeof AgentEventViewSchema>;
+
+/**
+ * The subagent whose own work an event is: a tool it called, something it
+ * thought or something it said. Such an event belongs to that subagent's
+ * transcript, which a client reads only once a person opens it; the Thread's
+ * own history and Workspace stream carry the subagent's `node.started`,
+ * `node.updated` and `node.completed`, and nothing it did in between.
+ */
+export function nodeDetailEventNodeId(event: {
+  readonly data: unknown;
+  readonly type: string;
+}): ExecutionNodeId | undefined {
+  switch (event.type) {
+    case "node.message":
+    case "reasoning.completed":
+    case "tool.completed":
+    case "tool.started": {
+      const nodeId = (event.data as { readonly nodeId?: unknown } | null)?.nodeId;
+      return typeof nodeId === "string" ? (nodeId as ExecutionNodeId) : undefined;
+    }
+    default:
+      return undefined;
+  }
+}
 
 export type AgentEvent = z.infer<typeof AgentEventSchema>;
 

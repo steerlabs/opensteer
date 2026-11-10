@@ -1,0 +1,174 @@
+[
+  {
+    "method": "turn/started",
+    "params": {
+      "threadId": "$root",
+      "turn": {
+        "id": "$turn",
+        "items": [],
+        "itemsView": "notLoaded",
+        "status": "inProgress",
+        "error": null,
+        "startedAt": 1790296673,
+        "completedAt": null,
+        "durationMs": null
+      }
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "threadId": "$root",
+      "turnId": "$turn",
+      "item": {
+        "id": "interaction",
+        "type": "subAgentActivity",
+        "kind": "interacted",
+        "agentThreadId": "01a0d5ff-5f36-77f1-afa9-cc3dd93018dc",
+        "agentPath": "/root/say_hello"
+      }
+    }
+  },
+  {
+    "method": "turn/started",
+    "params": {
+      "threadId": "01a0d5ff-5f36-77f1-afa9-cc3dd93018dc",
+      "turn": {
+        "id": "resumed-turn",
+        "status": "inProgress"
+      }
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "threadId": "01a0d5ff-5f36-77f1-afa9-cc3dd93018dc",
+      "turnId": "resumed-turn",
+      "item": {
+        "id": "resumed-message",
+        "type": "agentMessage",
+        "text": "Resumed."
+      }
+    }
+  },
+  {
+    "method": "turn/completed",
+    "params": {
+      "threadId": "01a0d5ff-5f36-77f1-afa9-cc3dd93018dc",
+      "turn": {
+        "id": "resumed-turn",
+        "status": "completed"
+      }
+    }
+  },
+  {
+    "method": "turn/started",
+    "params": {
+      "threadId": "unnamed-child",
+      "turn": {
+        "id": "unnamed-turn",
+        "status": "inProgress"
+      }
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "threadId": "unnamed-child",
+      "turnId": "unnamed-turn",
+      "item": {
+        "id": "unnamed-message",
+        "type": "agentMessage",
+        "text": "Unnamed."
+      }
+    }
+  },
+  {
+    "method": "turn/completed",
+    "params": {
+      "threadId": "unnamed-child",
+      "turn": {
+        "id": "unnamed-turn",
+        "status": "completed"
+      }
+    }
+  },
+  {
+    "method": "item/started",
+    "params": {
+      "item": {
+        "type": "agentMessage",
+        "id": "msg_034802ac4db0e789016ab5c26b3d8c87d085ee92cd13fc7288",
+        "text": "",
+        "phase": "final_answer",
+        "memoryCitation": null,
+        "delivery": null,
+        "questions": null
+      },
+      "threadId": "$root",
+      "turnId": "$turn",
+      "startedAtMs": 1790296683450
+    }
+  },
+  {
+    "method": "item/agentMessage/delta",
+    "params": {
+      "threadId": "$root",
+      "turnId": "$turn",
+      "itemId": "msg_034802ac4db0e789016ab5c26b3d8c87d085ee92cd13fc7288",
+      "delta": "Hello"
+    }
+  },
+  {
+    "method": "item/agentMessage/delta",
+    "params": {
+      "threadId": "$root",
+      "turnId": "$turn",
+      "itemId": "msg_034802ac4db0e789016ab5c26b3d8c87d085ee92cd13fc7288",
+      "delta": "."
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "item": {
+        "type": "agentMessage",
+        "id": "msg_034802ac4db0e789016ab5c26b3d8c87d085ee92cd13fc7288",
+        "text": "Hello.",
+        "phase": "final_answer",
+        "memoryCitation": null,
+        "delivery": null,
+        "questions": null
+      },
+      "threadId": "$root",
+      "turnId": "$turn",
+      "completedAtMs": 1790296683604
+    }
+  },
+  {
+    "method": "turn/completed",
+    "params": {
+      "threadId": "$root",
+      "turn": {
+        "id": "$turn",
+        "items": [
+          {
+            "type": "agentMessage",
+            "id": "msg_034802ac4db0e789016ab5c26b3d8c87d085ee92cd13fc7288",
+            "text": "Hello.",
+            "phase": "final_answer",
+            "memoryCitation": null,
+            "delivery": null,
+            "questions": null
+          }
+        ],
+        "itemsView": "summary",
+        "status": "completed",
+        "error": null,
+        "startedAt": 1790296673,
+        "completedAt": 1790296683,
+        "durationMs": 10654
+      }
+    }
+  }
+]

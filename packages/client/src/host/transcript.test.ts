@@ -1820,3 +1820,71 @@ describe("a Chrome sign-in's receipt", () => {
     ).toBeUndefined();
   });
 });
+
+describe("subagent cards", () => {
+  const nodeId = createId("executionNode");
+  const parentNodeId = createId("executionNode");
+  const start = () =>
+    event("node.started", {
+      kind: "subagent",
+      model: "gpt-6",
+      nativeRef: "child",
+      nodeId,
+      originCallId: "launch",
+      parentNodeId: null,
+      prompt: "Review",
+      sessionRef: null,
+      title: "Reviewer",
+      effort: "high",
+      phaseIndex: 1,
+    });
+  it("keeps a node's own messages, reasoning and tools out of the conversation", () => {
+    const entries = fold([start()]);
+    for (const detail of [
+      event("node.message", { nodeId, text: "Found the issue" }),
+      event("reasoning.completed", { nodeId, blockId: "thought", text: "Checking" }),
+      event("tool.started", {
+        nodeId,
+        callId: "read",
+        tool: { name: "read", namespace: "functions" },
+        arguments: {},
+      }),
+      event("tool.completed", { nodeId, callId: "read", output: { text: "file" }, isError: false }),
+    ])
+      expect(foldTranscriptEvent(entries, detail)).toEqual(entries);
+  });
+  it("replaces progress, accepts a late parent and clears progress at completion or Run end", () => {
+    let entries = fold([start()]);
+    const progress = (text: string) =>
+      foldLiveRun(
+        entries,
+        {
+          runId,
+          threadId,
+          workspaceId,
+          streams: [{ key: { stream: "node", nodeId }, length: text.length, tail: text }],
+        },
+        now,
+      );
+    entries = progress("Reading");
+    expect(entries[0]).toMatchObject({
+      progress: "Reading",
+      effort: "high",
+      phaseIndex: 1,
+      nodeKind: "subagent",
+    });
+    entries = progress("Writing review");
+    entries = foldTranscriptEvent(entries, event("node.updated", { nodeId, parentNodeId }));
+    expect(entries[0]).toMatchObject({ progress: "Writing review", parentNodeId });
+    expect(
+      foldTranscriptEvent(
+        entries,
+        event("node.completed", { nodeId, result: "Done", status: "completed", usage: null }),
+      )[0],
+    ).toMatchObject({ progress: null, status: "completed" });
+    expect(finishRunEntries(entries, runId, now)[0]).toMatchObject({
+      progress: null,
+      status: "interrupted",
+    });
+  });
+});

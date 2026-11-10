@@ -580,15 +580,20 @@ export interface DeliveryEntry {
 }
 
 /**
- * A subagent the Run's engine started. Its tool calls are entries naming it by
- * `nodeId`; its own text is not a message, and `result` is what it returned.
+ * A helper's card in the conversation. Its own work is read only through a node watch.
  */
 export interface NodeEntry {
+  sequence?: import("@opensteer/core").Sequence;
   completedAt: string | null;
   createdAt: string;
   id: string;
   kind: "node";
   model: string | null;
+  effort: string | null;
+  nodeKind: import("@opensteer/core").ExecutionNodeKind;
+  phaseIndex: number | null;
+  phases: readonly string[];
+  progress: string | null;
   nodeId: string;
   /** The tool call of the agent that started it, which the subagent stands for. */
   originCallId: string | null;
@@ -1180,6 +1185,7 @@ export interface HostClient {
    * Returns the release; holds are counted.
    */
   observeThread(threadId: string): () => void;
+  watchNode(threadId: string, nodeId: string): import("./node-detail.js").NodeDetailSubscription;
   /**
    * How far this client has applied the Workspace's durable events, in the
    * Host's own sequence; null until its channel has caught up. Later durable
