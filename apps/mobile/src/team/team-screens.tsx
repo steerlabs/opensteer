@@ -581,7 +581,7 @@ function Invite(props: { readonly hostClient: HostClient }): ReactNode {
             <SecondaryButton
               label="Revoke"
               onPress={() =>
-                team
+                void team
                   .revokeInvitation(summary.accessRevision, made.invitationId)
                   .then(() => setMade({ ...made, revoked: true }))
                   .catch((error: unknown) => showError(error, teamName))
@@ -831,7 +831,7 @@ function Group(props: {
               disabled={!renaming.trim() || renaming.trim() === group.name}
               label="Save name"
               onPress={() =>
-                team
+                void team
                   .applyAccess(group.accessRevision, [
                     { kind: "rename-group", groupId: group.id, name: renaming.trim() },
                   ])
