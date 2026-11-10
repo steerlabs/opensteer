@@ -1,3 +1,4 @@
+import { pendingAgentEventMaxSerializedBytes } from "./runner-execution.js";
 import {
   RunHarnessConfigSchema,
   ExecuteRunSchema,
@@ -234,7 +235,7 @@ function pendingEventVariant<T extends keyof typeof runnerEventDataSchemas>(type
   });
 }
 
-export const pendingAgentEventMaxSerializedBytes = 480 * 1_024;
+export { pendingAgentEventMaxSerializedBytes } from "./runner-execution.js";
 
 export const PendingAgentEventSchema = z
   .discriminatedUnion("type", [
