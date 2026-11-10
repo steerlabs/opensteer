@@ -34,6 +34,17 @@ export const projectAuthorityCutoverMigration: Migration = {
         add constraint ${sql.id(`${table}_created_by_principal_id_fkey`)} foreign key (created_by_principal_id) references public.principals(id) on delete restrict not valid
       `.execute(database);
     }
+    await sql`
+      alter table public.requests
+        alter column requested_by drop not null,
+        add column originating_grant_id text,
+        add constraint requests_requester_audience
+          check (required_actor <> 'requester' or requested_by is not null) not valid;
+      alter table public.requests
+        add constraint requests_originating_grant_id_fkey
+          foreign key (originating_grant_id) references public.grants(id)
+          on delete restrict not valid;
+    `.execute(database);
     await sql.raw(PROJECT_AUTHORITY_GUARDS_SQL).execute(database);
   },
 };
