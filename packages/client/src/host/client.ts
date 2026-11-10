@@ -131,6 +131,9 @@ export interface BrowserTabOpenOptions {
   readonly viewport?: { readonly width: number; readonly height: number };
   readonly idempotencyKey?: string;
 }
+export interface WorkspaceTabActivationOptions {
+  readonly opening: string;
+}
 export interface PendingBrowserTab extends Omit<BrowserTabOpenOptions, "idempotencyKey"> {
   readonly idempotencyKey: string;
   readonly target: BrowserTabOpenInput;
@@ -1330,6 +1333,7 @@ export interface HostClient {
   readWorkspaceTabs?(sessionId: string): Promise<WorkspaceTabLineage | null>;
   activateWorkspaceTab?(
     tabId: string,
+    options?: WorkspaceTabActivationOptions,
   ): Promise<z.infer<typeof WorkspaceTabActivateResultSchema> | null>;
   reopenWorkspaceTab?(): Promise<z.infer<typeof WorkspaceTabReopenResultSchema>>;
   groupBrowserTabs(

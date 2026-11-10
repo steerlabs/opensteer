@@ -63,6 +63,7 @@ export async function startLocalBrowserRuntime(
     downloads: options.downloads,
     localProfileRoot: profileRoot,
     pagePolicyPreloadPath: options.pagePolicyPreloadPath,
+    onLocalProfileDiagnostic: (diagnostic) => diagnostics.append(`${JSON.stringify(diagnostic)}\n`),
   });
   const preparation = launcher.prepare();
   const log = options.logPath ? new RotatingPersonalLog(options.logPath) : null;
@@ -79,6 +80,10 @@ export async function startLocalBrowserRuntime(
     onOpenTiming: (timing) =>
       diagnostics.append(
         `${JSON.stringify({ event: "browser.session.open.timing", ...timing })}\n`,
+      ),
+    onHostCleanupFailure: ({ kind, stage, error }) =>
+      diagnostics.append(
+        `${JSON.stringify({ event: "browser.host.cleanup.failed", kind, stage, error: profileFailureDiagnostic(error) })}\n`,
       ),
     onStartFailure: ({ correlationId, stage, error }) =>
       diagnostics.append(

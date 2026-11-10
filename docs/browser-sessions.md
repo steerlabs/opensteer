@@ -10,7 +10,8 @@ even when they share a profile, and a session's identity is fixed at creation. C
 The Host database owns durable tab descriptors; live sessions and CDP handles die with their
 connection. Restoring makes a new binding and never restarts a finished Run. A selected dormant tab
 restores only on its saved computer and profile, waiting rather than substitute another computer or
-Guest. Guest website state never persists, and trigger and watch browsers write no tabs. Only a
+Guest. Each opening of a tab restores it automatically at most once; after a failure it waits for
+the person's Retry, because every attempt starts a Browser Session. Guest website state never persists, and trigger and watch browsers write no tabs. Only a
 lineage's latest session can close its tabs, late updates never resurrect a closed row, and reopen
 makes a new row. Only committed navigation becomes a restore URL, except that a failed navigation
 restores to the address it tried, as browsers do, without any credentials typed into it. An overlong
@@ -139,6 +140,13 @@ failure cleanup never clear a root. Full Chromium restores session cookies itsel
 removes only tab restore records, only while no engine owns the directory. Electron keeps session
 cookies in an encrypted [mirror](../apps/desktop/src/browser/session-cookie-mirror.ts) with an
 OS-wrapped key. Engine upgrades must requalify cookie persistence.
+
+A live jar is still the browser's own, so a failed mirror save never closes pages or retires the
+profile: the mirror stays dirty and retries with backoff, and only a successful save confirms a
+cookie change. An owner retires only when its live jar cannot be trusted (Network Service loss), on
+deletion, or when its restore fails, and the next open replaces it. The runtime forgets a host once
+its engine close settles, whatever the outcome; engines guard directory reuse themselves, because
+Electron shares one Session per path and Chromium refuses a directory whose process exit is unproven.
 
 ## Passkeys
 

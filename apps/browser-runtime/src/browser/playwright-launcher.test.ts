@@ -1,6 +1,7 @@
 import { browserPagePolicyScript } from "@opensteer/browser-runtime-core/page-policy";
 import { validClaims } from "@opensteer/browser-runtime-core/test-support";
 import { withTimeout } from "@opensteer/shared/withTimeout";
+import { gate } from "@opensteer/shared/test-support/observation";
 import { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -315,6 +316,97 @@ function hostileEnvironment(
 }
 
 describe("native Chromium profiles", () => {
+  it.each(["context", "browser"] as const)(
+    "releases proven ownership after a %s protocol close failure",
+    async (stage) => {
+      const f = await nativeCloseFixture();
+      const failure = new Error("protocol close failed");
+      const protocolClose =
+        stage === "browser"
+          ? gate({ label: "protocol close after process exit", deadlineMs: 1000 })
+          : undefined;
+      if (stage === "context") f.context.close.mockRejectedValueOnce(failure);
+      f.browser.close.mockImplementationOnce(async () => {
+        f.exit();
+        if (protocolClose) {
+          await protocolClose.enter();
+          throw failure;
+        }
+      });
+      try {
+        const launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+        const closing = launched.close();
+        const failed = expect(closing).rejects.toThrow("protocol close failed");
+        if (protocolClose) {
+          await protocolClose.entered;
+          protocolClose.release();
+        }
+        await failed;
+        await expect(f.launcher.localProfiles.release(f.directory)).resolves.toBe("released");
+        const next = await f.launcher.launch(nativeProfileRequest(f.directory));
+        await next.close();
+      } finally {
+        protocolClose?.release();
+        f.exit();
+        await rm(f.directory, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("fences an unproven exit until its captured child exits, then reopens", async () => {
+    const f = await nativeCloseFixture();
+    f.browser.close.mockResolvedValueOnce(undefined);
+    try {
+      const launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+      vi.useFakeTimers();
+      const stopped = launched.close();
+      const failed = expect(stopped).rejects.toThrow("Native Chromium did not exit");
+      await vi.advanceTimersByTimeAsync(1800);
+      await failed;
+      await expect(f.launcher.localProfiles.release(f.directory)).rejects.toThrow();
+      await expect(f.launcher.launch(nativeProfileRequest(f.directory))).rejects.toThrow(
+        /already owned/,
+      );
+      f.exit();
+      await expect(launched.close()).rejects.toThrow("Native Chromium did not exit");
+      await vi.advanceTimersByTimeAsync(0);
+      await expect(f.launcher.localProfiles.release(f.directory)).resolves.toBe("released");
+      const reopened = await f.launcher.launch(nativeProfileRequest(f.directory));
+      await reopened.close();
+    } finally {
+      vi.useRealTimers();
+      f.exit();
+      await rm(f.directory, { recursive: true, force: true });
+    }
+  });
+
+  it("bounds a hung CDP detach and still joins the owner's close", async () => {
+    const f = await nativeCloseFixture();
+    const detached = Promise.withResolvers<void>();
+    try {
+      const launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+      vi.spyOn(
+        launched.cdp as typeof launched.cdp & { close(): Promise<void> },
+        "close",
+      ).mockImplementationOnce(() => detached.promise);
+      vi.useFakeTimers();
+      const stopped = launched.close();
+      const settled = vi.fn();
+      void stopped.then(settled, settled);
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(settled, "hung CDP detach prevented wrapper close from settling").toHaveBeenCalled();
+      await expect(stopped).rejects.toThrow(/CDP.*detach/);
+      expect(f.context.close).toHaveBeenCalledOnce();
+      expect(f.browser.close).toHaveBeenCalledOnce();
+      await expect(f.launcher.localProfiles.release(f.directory)).resolves.toBe("released");
+    } finally {
+      detached.resolve();
+      vi.useRealTimers();
+      f.exit();
+      await rm(f.directory, { recursive: true, force: true });
+    }
+  });
+
   it("launches the default context with explicit contained arguments and releases only after orderly close", async () => {
     const kill = vi.spyOn(process, "kill").mockImplementation(() => true);
     const directory = await mkdtemp(join(tmpdir(), "os-native-options-"));
@@ -599,3 +691,43 @@ describe("native Chromium profiles", () => {
     expect(() => assertImportedCookies([{ ...cookie, expires: 1 }], [])).not.toThrow();
   });
 });
+
+async function nativeCloseFixture() {
+  const directory = await mkdtemp(join(tmpdir(), "native-close-"));
+  const child = new ChildProcess();
+  Object.defineProperty(child, "pid", { value: 12345 });
+  child.kill = vi.fn(() => true);
+  vi.spyOn(process, "kill").mockImplementation(() => true);
+  const exit = () => {
+    Object.defineProperty(child, "exitCode", { value: 0 });
+    child.emit("exit", 0, null);
+  };
+  const cdp = {
+    send: vi.fn().mockResolvedValue({}),
+    on: vi.fn(),
+    off: vi.fn(),
+    detach: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
+  };
+  const browser = {
+    newBrowserCDPSession: vi.fn().mockResolvedValue(cdp),
+    close: vi.fn(async () => exit()),
+  };
+  const context = {
+    process: () => child,
+    browser: () => browser,
+    pages: () => [],
+    newPage: vi.fn().mockResolvedValue({ on: vi.fn(), isClosed: () => false }),
+    addInitScript: vi.fn().mockResolvedValue(undefined),
+    on: vi.fn(),
+    close: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
+  };
+  vi.spyOn(chromium, "launchPersistentContext").mockResolvedValue(
+    context as unknown as BrowserContext,
+  );
+  const launcher = new PlaywrightChromiumLauncher({
+    executablePath: process.execPath,
+    headless: true,
+    chromiumSandbox: true,
+  });
+  return { directory, launcher, context, browser, cdp, exit };
+}

@@ -201,6 +201,7 @@ function SelectedPlace({
     null,
   );
   const [retry, setRetry] = useState(0);
+  const opening = useMemo(() => crypto.randomUUID(), [nav.placeOpening, retry, selectedTab]);
   const durable = live?.workspaceTab;
   const rowState = durable?.state;
   const currentSessionId = live?.destination.kind === "browser" ? live.destination.sessionId : null;
@@ -213,23 +214,26 @@ function SelectedPlace({
   );
   const activate = hostClient.activateWorkspaceTab;
   useLayoutEffect(() => {
-    if (!selectedTab || !durable || !activate) return;
     if (rowState === "live") {
       if (
         selection.kind === "place" &&
         selection.destination.kind === "browser" &&
         currentSessionId &&
-        currentSessionId !== selection.destination.sessionId
+        currentSessionId !== selection.destination.sessionId &&
+        selectedTab
       )
         nav.succeedPlace({ kind: "browser", sessionId: currentSessionId, tabId: selectedTab });
-      return;
     }
-    if (lastingReason) return;
+  }, [currentSessionId, nav, rowState, selectedTab, selection]);
+  const canActivate = !!selectedTab && !!durable && rowState !== "live" && !lastingReason;
+  const beginPlaceOperation = nav.beginPlaceOperation;
+  useLayoutEffect(() => {
+    if (!canActivate || !selectedTab || !activate) return;
     let cancelled = false;
-    const finish = nav.beginPlaceOperation({ replace: true });
+    const finish = beginPlaceOperation({ replace: true });
     setActivationError(null);
     void activate
-      .call(hostClient, selectedTab)
+      .call(hostClient, selectedTab, { opening })
       .then((result) => {
         if (!cancelled && result)
           finish({ kind: "browser", sessionId: result.session.id, tabId: result.tabId });
@@ -244,18 +248,7 @@ function SelectedPlace({
     return () => {
       cancelled = true;
     };
-  }, [
-    activate,
-    currentSessionId,
-    durable?.lineageId,
-    hostClient,
-    lastingReason,
-    nav,
-    retry,
-    rowState,
-    selectedTab,
-    selection,
-  ]);
+  }, [activate, beginPlaceOperation, canActivate, hostClient, opening, selectedTab]);
   useEffect(() => {
     if (
       selection.kind !== "place" ||

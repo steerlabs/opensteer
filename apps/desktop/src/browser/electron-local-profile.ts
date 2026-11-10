@@ -8,6 +8,18 @@ import { ProtectedStorageUnavailableError } from "../secrets/protected-json-file
 import { VerifiedDesktopSecretCryptography } from "../secrets/verified-secret-cryptography.js";
 import { BrowserSessionRequestGate } from "./browser-session-policy.js";
 import { SessionCookieMirror } from "./session-cookie-mirror.js";
+import { profileFailureDiagnostic } from "./profile-failure-diagnostic.js";
+
+type ProfileRetirementReason = "network-service-lost" | "startup-failed" | "deleted" | "cancelled";
+export type ElectronLocalProfileDiagnostic =
+  | {
+      readonly event: "browser.profile.retired";
+      readonly reason: ProfileRetirementReason;
+      readonly error?: unknown;
+    }
+  | { readonly event: "browser.profile.save.failed"; readonly error: unknown }
+  | { readonly event: "browser.profile.save.recovered" };
+type ProfileDiagnosticSink = (diagnostic: ElectronLocalProfileDiagnostic) => void;
 
 // Electron retains Sessions by path until exit, across logical runtime/host eviction.
 const profiles = new Map<string, ElectronLocalProfile>();
@@ -58,7 +70,6 @@ export async function createEmptySessionCookieMirror(
     capture: async () => [],
     restore: async () => {},
     subscribe: () => () => {},
-    onFailure: () => {},
     publish: async (file, content, assertCurrent) => {
       signal.throwIfAborted();
       await replacePrivateFileAtomically(file, content, () => {
@@ -93,6 +104,7 @@ export function acquireElectronLocalProfile(input: {
   directory: string;
   binding: LocalProfileBinding;
   configure(session: Session, gate: BrowserSessionRequestGate): void;
+  onDiagnostic?: ProfileDiagnosticSink;
 }): ElectronLocalProfile {
   const binding = LocalProfileBindingSchema.parse(input.binding);
   if (
@@ -117,10 +129,16 @@ export function acquireElectronLocalProfile(input: {
       if (!isNetworkService(details)) return;
       // Suspend ALL owners before any recovery can provoke a capture in another Session.
       for (const profile of profiles.values()) profile.suspend();
-      for (const profile of profiles.values()) void profile.retire().catch(() => undefined);
+      for (const profile of profiles.values())
+        void profile.retire("network-service-lost").catch(() => undefined);
     });
   }
-  const profile = new ElectronLocalProfile(input.directory, binding, input.configure);
+  const profile = new ElectronLocalProfile(
+    input.directory,
+    binding,
+    input.configure,
+    input.onDiagnostic,
+  );
   profiles.set(input.directory, profile);
   profile.start();
   return profile;
@@ -152,6 +170,7 @@ export class ElectronLocalProfile {
   readonly binding: LocalProfileBinding;
   readonly mirror: SessionCookieMirror;
   readonly #contexts = new Set<() => Promise<void>>();
+  readonly #onDiagnostic: ProfileDiagnosticSink | undefined;
   #ready: Promise<unknown> = Promise.resolve();
   #failure: BrowserRuntimeError | undefined;
   #retired = false;
@@ -166,7 +185,9 @@ export class ElectronLocalProfile {
     directory: string,
     binding: LocalProfileBinding,
     configure: (session: Session, gate: BrowserSessionRequestGate) => void,
+    onDiagnostic?: ProfileDiagnosticSink,
   ) {
+    this.#onDiagnostic = onDiagnostic;
     this.binding = binding;
     this.#directory = directory;
     this.gate.dormant();
@@ -232,7 +253,12 @@ export class ElectronLocalProfile {
           this.session.cookies.off("changed", invalidate);
         };
       },
-      onFailure: (error) => this.#fail(error),
+      onSaveFailed: (error) =>
+        this.#onDiagnostic?.({
+          event: "browser.profile.save.failed",
+          error: profileFailureDiagnostic(error),
+        }),
+      onSaveRecovered: () => this.#onDiagnostic?.({ event: "browser.profile.save.recovered" }),
       onIdle: () => this.#releaseIdleCookieTarget(),
     });
   }
@@ -259,6 +285,10 @@ export class ElectronLocalProfile {
 
   get hasContexts(): boolean {
     return this.#contexts.size > 0;
+  }
+
+  get retired(): boolean {
+    return this.#retired;
   }
 
   async ready(): Promise<void> {
@@ -307,9 +337,14 @@ export class ElectronLocalProfile {
     else this.gate.dormant();
   }
 
-  retire(): Promise<void> {
+  retire(reason: ProfileRetirementReason = "cancelled", error?: unknown): Promise<void> {
     if (this.#retirement) return this.#retirement;
     this.#retired = true;
+    this.#onDiagnostic?.({
+      event: "browser.profile.retired",
+      reason,
+      ...(error === undefined ? {} : { error: profileFailureDiagnostic(error) }),
+    });
     this.#cancellation.abort(persistenceFailure());
     if (profiles.get(this.#directory) === this) profiles.delete(this.#directory);
     this.gate.fail();
@@ -325,7 +360,7 @@ export class ElectronLocalProfile {
     return this.#retirement;
   }
   async eraseLiveData(): Promise<void> {
-    await this.retire();
+    await this.retire("deleted");
     // This is explicit profile deletion, never eviction or failure cleanup.
     await this.session.clearStorageData();
     await this.session.clearCache();
@@ -343,7 +378,7 @@ export class ElectronLocalProfile {
     this.#failure ??= persistenceFailure(error);
     this.mirror.suspend();
     this.gate.fail();
-    void this.retire().catch(() => undefined);
+    void this.retire("startup-failed", this.#failure).catch(() => undefined);
   }
 }
 
