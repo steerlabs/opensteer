@@ -11,7 +11,7 @@ import type { ThreadInputSource } from "@opensteer/database";
 import type {
   ProjectCapabilityClaims,
   ProjectCapabilityScope,
-  ProjectExecuteRun,
+  ProjectExecutableCommand,
 } from "@opensteer/protocol";
 
 export interface ProjectAdmissionPort {
@@ -36,7 +36,7 @@ export interface ProjectCapabilityPort {
 }
 
 export interface ProjectDispatchPort {
-  dispatch(command: ProjectExecuteRun): Promise<void>;
+  dispatch(command: ProjectExecutableCommand): Promise<void>;
 }
 
 export interface ProjectRecoveryPort {
