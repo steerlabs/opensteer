@@ -17,6 +17,10 @@ import {
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import { z } from "zod";
 import type { AccessEntryTable, DatabaseSchema, WorkspaceMembershipTable } from "./schema.js";
+import {
+  assertProjectAuthority,
+  readDeploymentAuthority,
+} from "./deployment-execution-authority.js";
 import { withRequestWorkspaceLocks } from "./request-workspace-locks.js";
 import { jsonValue, safeGeneration } from "./store-primitives.js";
 
@@ -93,19 +97,6 @@ async function takeWriterLock(transaction: AccessTransaction): Promise<void> {
     transaction,
   );
   writerTransactions.add(transaction);
-}
-
-async function requireNewAuthority(database: Database): Promise<void> {
-  const deployment = await database
-    .selectFrom("deployments")
-    .select(["authorityModelVersion", "deploymentShape"])
-    .where("singletonKey", "=", "primary")
-    .executeTakeFirst();
-  if (deployment?.authorityModelVersion !== 2 || deployment.deploymentShape.kind !== "server")
-    throw new OpensteerError({
-      code: "forbidden",
-      message: "Project grant authority is not activated",
-    });
 }
 
 async function readGraph(database: Database, memberIds?: readonly UserId[]) {
@@ -1022,7 +1013,7 @@ export async function mutateAccess(
       },
       async (transaction) => {
         await takeWriterLock(transaction);
-        await requireNewAuthority(transaction);
+        await assertProjectAuthority(transaction);
         const state = await transaction
           .selectFrom("accessState")
           .select("revision")
@@ -1128,6 +1119,8 @@ export async function checkAccess(
   if (input.target.kind === "topic" || input.target.kind === "team-account")
     return { allowed: false };
   if (input.principal.kind === "project") {
+    const authority = await readDeploymentAuthority(database);
+    if (authority.kind !== "server" || authority.model !== 2) return { allowed: false };
     if (
       input.target.kind !== "project" ||
       input.target.workspaceId !== input.principal.workspaceId ||

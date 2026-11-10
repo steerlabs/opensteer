@@ -469,6 +469,16 @@ export async function createHostRuntime(
       ...(options.executionClock ? { executionClock: options.executionClock } : {}),
       links: { threadUrl: (threadId) => `${config.canonicalOrigin.origin}/threads/${threadId}` },
     });
+    const deployment = await store.ensureDeployment({
+      ...(config.deploymentIdentity
+        ? {
+            deploymentId: config.deploymentIdentity.deploymentId,
+          }
+        : {}),
+      canonicalOrigin: config.canonicalOrigin.origin,
+      hostInstanceId: hostInstance.hostInstanceId,
+      deploymentShape: config.workspace.shape,
+    });
 
     // What active Runs are streaming, held only in memory; it learns each Run
     // from that Run's committed durable events and forgets it at the terminal.
@@ -485,16 +495,6 @@ export async function createHostRuntime(
       (viewers) => realtime.sendToUsers(viewers, { type: "host.plugins-changed" }),
     );
     pluginChangeNotices = notices;
-    const deployment = await store.ensureDeployment({
-      ...(config.deploymentIdentity
-        ? {
-            deploymentId: config.deploymentIdentity.deploymentId,
-          }
-        : {}),
-      canonicalOrigin: config.canonicalOrigin.origin,
-      hostInstanceId: hostInstance.hostInstanceId,
-      deploymentShape: config.workspace.shape,
-    });
     const connections = new ConnectionOAuth({
       deploymentId: deployment.id,
       store: new AgentConnectionStore(database),
