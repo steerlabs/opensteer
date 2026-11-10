@@ -9,6 +9,7 @@ export interface DeploymentPolicy {
   readonly executionPrincipal: "person" | "project";
   readonly executionAccess: "administrator" | "member";
   readonly projectConsent: "owner-wide" | "per-project";
+  readonly browserHomesOnDeploymentComputers: "main-only" | "all";
   readonly nativePasswords: boolean;
   readonly nativeWebLinks: boolean;
   readonly serviceManagement: boolean;
@@ -28,20 +29,24 @@ export interface DeploymentPolicy {
     readonly insecureLoopbackOrigins: boolean;
     readonly externalRunners: boolean;
     readonly serverTooling: boolean;
+    readonly knowledgeTrial: boolean;
   };
   readonly services: {
     readonly personalRemoteAccess: boolean;
     readonly localBrowserProfileInventory: boolean;
+    readonly managedBrowserEnrollment: boolean;
   };
   readonly integrationAccountBinding: "personal-link" | "identity-provider";
   readonly runnerEnrollment:
     | {
         readonly mode: "reach-only";
-        readonly reachableModules: readonly ["integrations", "messaging", "shell"];
+        readonly reachableModules: readonly ["browser", "integrations", "messaging", "shell"];
         readonly supervisedServiceModules: readonly ["integrations", "messaging", "shell"];
       }
     | { readonly mode: "unrestricted" };
-  readonly localRunnerDefaultModules: readonly ("agents" | "browser" | "shell")[];
+  readonly localRunnerDefaultModules: readonly (
+    "agents" | "browser" | "integrations" | "messaging" | "shell"
+  )[];
   readonly harnessBoundaries: Readonly<
     Record<ExecutionEnvironmentKind, "native-user" | "isolated-service">
   >;
@@ -81,6 +86,7 @@ export function deploymentPolicy(shape: DeploymentShape): DeploymentPolicy {
       executionPrincipal: "person",
       executionAccess: "administrator",
       projectConsent: "owner-wide",
+      browserHomesOnDeploymentComputers: "main-only",
       nativePasswords: true,
       nativeWebLinks: true,
       serviceManagement: false,
@@ -100,15 +106,20 @@ export function deploymentPolicy(shape: DeploymentShape): DeploymentPolicy {
         insecureLoopbackOrigins: true,
         externalRunners: false,
         serverTooling: false,
+        knowledgeTrial: true,
       },
-      services: { personalRemoteAccess: true, localBrowserProfileInventory: true },
+      services: {
+        personalRemoteAccess: true,
+        localBrowserProfileInventory: true,
+        managedBrowserEnrollment: false,
+      },
       integrationAccountBinding: "personal-link",
       runnerEnrollment: {
         mode: "reach-only",
-        reachableModules: ["integrations", "messaging", "shell"],
+        reachableModules: ["browser", "integrations", "messaging", "shell"],
         supervisedServiceModules: ["integrations", "messaging", "shell"],
       },
-      localRunnerDefaultModules: ["shell"],
+      localRunnerDefaultModules: ["browser", "integrations", "messaging", "shell"],
       harnessBoundaries: { main: "native-user", local: "native-user", managed: "native-user" },
     };
   }
@@ -122,6 +133,7 @@ export function deploymentPolicy(shape: DeploymentShape): DeploymentPolicy {
       executionPrincipal: "person",
       executionAccess: "member",
       projectConsent: "per-project",
+      browserHomesOnDeploymentComputers: "all",
       nativePasswords: false,
       nativeWebLinks: false,
       serviceManagement: true,
@@ -141,8 +153,13 @@ export function deploymentPolicy(shape: DeploymentShape): DeploymentPolicy {
         insecureLoopbackOrigins: false,
         externalRunners: true,
         serverTooling: true,
+        knowledgeTrial: false,
       },
-      services: { personalRemoteAccess: false, localBrowserProfileInventory: false },
+      services: {
+        personalRemoteAccess: false,
+        localBrowserProfileInventory: false,
+        managedBrowserEnrollment: true,
+      },
       integrationAccountBinding: "identity-provider",
       runnerEnrollment: { mode: "unrestricted" },
       localRunnerDefaultModules: ["agents", "browser", "shell"],

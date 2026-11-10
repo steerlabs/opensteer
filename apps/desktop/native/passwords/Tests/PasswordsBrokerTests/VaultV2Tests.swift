@@ -74,6 +74,10 @@ final class VaultV2Tests: BrokerTestCase {
     let lookup = try await harness.vault.lookUp(withinSite: "https://example.com", grant: key, permissionVersion: 4)
     guard case .choose(let accounts) = lookup else { return XCTFail("passwordless login granted") }
     XCTAssertTrue(accounts.isEmpty)
+    let person = try await harness.client("person", greet: false)
+    _ = try await person.hello(version: 8)
+    same(try await person.call("fill.accounts", .object(["origin": .string("https://example.com")])).result,
+      Wire.fillAccounts(.on))
   }
 
   func testNewerManifestRequiresUpdateWithoutReset() async throws {

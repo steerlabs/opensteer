@@ -131,6 +131,7 @@ vi.mock("../client/mobile-client.js", () => ({
     error instanceof Error ? error.message : fallback,
 }));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
+vi.mock("../ui/sheet-bar.js", () => ({ SheetBarButton: () => null }));
 vi.mock("@react-navigation/native", () => ({
   StackActions: { replace: vi.fn() },
   useNavigation: () => ({ dispatch: vi.fn() }),
@@ -686,9 +687,11 @@ describe("This iPhone's apps", () => {
 
     await click(button("Remove Alex's iPhone"));
     const confirm = harness.alerts.at(-1);
-    expect(confirm?.title).toBe("Remove Alex's iPhone from Opensteer on Mac mini?");
-    expect(confirm?.message).toBe("Agents will stop using its apps. You can add it again later.");
-    await act(async () => confirm?.buttons.find(({ text }) => text === "Remove")?.onPress?.());
+    expect(confirm?.title).toBe("Remove Alex's iPhone?");
+    expect(confirm?.message).toBe("Agents lose access to this device.");
+    await act(async () =>
+      confirm?.buttons.find(({ text }) => text === "Remove device")?.onPress?.(),
+    );
 
     expect(phone.fake.device.calls).toContain("disconnect");
     await vi.waitFor(() => expect(onRemoved).toHaveBeenCalledOnce());
@@ -705,12 +708,51 @@ describe("This iPhone's apps", () => {
     expect(button("Remove Alex's iPhone").disabled).toBe(false);
     await click(button("Remove Alex's iPhone"));
     const confirm = harness.alerts.at(-1);
-    await act(async () => confirm?.buttons.find(({ text }) => text === "Remove")?.onPress?.());
+    await act(async () =>
+      confirm?.buttons.find(({ text }) => text === "Remove device")?.onPress?.(),
+    );
 
     expect(phone.fake.device.calls.at(-1)).toBe("disconnect");
     expect(phone.fake.bridge.getSnapshot().enrollment).toBeNull();
     await vi.waitFor(() => expect(onRemoved).toHaveBeenCalledOnce());
     expect(phone.controller.getState().notice?.kind).toBe("not-told");
+  });
+});
+
+describe("A phone that lends only its browser", () => {
+  it("shows no apps, and is not added again until a restart has erased it", async () => {
+    const phone = await addedIphone({ browserOnly: true });
+    const onRemoved = vi.fn();
+    await mount(<ThisIphone onRemoved={onRemoved} phone={phone} />);
+
+    expect(text()).not.toContain("Apps agents can use");
+    expect(switches()).toEqual([]);
+
+    await click(button("Remove Alex's iPhone"));
+    await act(async () =>
+      harness.alerts
+        .at(-1)
+        ?.buttons.find(({ text }) => text === "Remove device")
+        ?.onPress?.(),
+    );
+    await vi.waitFor(() => expect(onRemoved).toHaveBeenCalledOnce());
+    // The pending erasure is the device list's to show; nothing else interrupts.
+    expect(harness.alerts).toHaveLength(1);
+
+    for (const root of roots.splice(0)) act(() => root.unmount());
+    const onAdded = vi.fn();
+    await mount(
+      <AddIphoneForm
+        controller={phone.controller}
+        deploymentId={deploymentId}
+        hostClient={phone.host}
+        iphoneAppsAvailable
+        onAdded={onAdded}
+        opensteer={opensteer}
+      />,
+    );
+    expect(button("Add Alex's iPhone").disabled).toBe(true);
+    expect(phone.fake.device.calls.filter((call) => call === "prepare")).toHaveLength(1);
   });
 });
 
@@ -1010,6 +1052,8 @@ function iphone(
     /** A Host from before Location and Photos: its catalog doesn't list them. */
     readonly olderHost?: boolean;
     readonly offers?: readonly IphoneAppId[];
+    /** A phone with no apps, whose removal erases its browser only at the next launch. */
+    readonly browserOnly?: boolean;
   } = {},
 ): Phone {
   const host = new MockHostClient({ latencyMs: 0 });
@@ -1042,6 +1086,9 @@ function iphone(
     deviceName: "Alex's iPhone",
     host: () => host,
     ...(options.offers === undefined ? {} : { offers: options.offers }),
+    ...(options.browserOnly === true
+      ? { erasesOnRestart: true, offers: [], platform: "android" as const }
+      : {}),
   });
   // Record the Host decision beside OS prompts to verify their ordering.
   const dispatch = host.dispatch.bind(host);
@@ -1139,7 +1186,10 @@ async function requestFromTask(
 }
 
 /** The Computer page's own reload: what the Host says now, after every change. */
-function useAppsData(host: MockHostClient): {
+function useAppsData(
+  host: MockHostClient,
+  runnerId: string,
+): {
   readonly data: ComputerUseData | null;
   readonly machine: MachineSummary | null;
   readonly reload: () => Promise<void>;
@@ -1164,12 +1214,10 @@ function useAppsData(host: MockHostClient): {
   }, [host, reload]);
   useEffect(() => {
     const read = () =>
-      setMachine(
-        host.getSnapshot().machines.find(({ device }) => device?.platform === "ios") ?? null,
-      );
+      setMachine(host.getSnapshot().machines.find(({ id }) => id === runnerId) ?? null);
     read();
     return host.subscribe(read);
-  }, [host]);
+  }, [host, runnerId]);
   return { data, machine, reload };
 }
 
@@ -1178,7 +1226,10 @@ function ThisIphone(props: {
   readonly onRemoved?: () => void;
   readonly phone: Phone;
 }): ReactNode {
-  const { data, machine, reload } = useAppsData(props.phone.host);
+  const { data, machine, reload } = useAppsData(
+    props.phone.host,
+    props.phone.fake.device.runnerId(),
+  );
   if (machine === null) return <p>No iPhone</p>;
   return (
     <IphoneAppsBlock
@@ -1195,7 +1246,10 @@ function ThisIphone(props: {
 }
 
 function OtherDevice(props: { readonly offline?: boolean; readonly phone: Phone }): ReactNode {
-  const { data, machine, reload } = useAppsData(props.phone.host);
+  const { data, machine, reload } = useAppsData(
+    props.phone.host,
+    props.phone.fake.device.runnerId(),
+  );
   if (machine === null) return <p>No iPhone</p>;
   return (
     <RemoteIphoneAppsBlock

@@ -256,6 +256,7 @@ export const HostCapabilitySchema = z.enum([
   "chat-attachments",
   /** Browser viewers can observe a target without requesting pictures. */
   "browser-target-control-v1",
+  "browser-backend-v1",
   "browser-passkeys-v1",
   "browser-capture-region-v1",
   "browser-frame-window-v1",
@@ -313,6 +314,8 @@ export const HostCapabilitySchema = z.enum([
    * only once a team server's whole access backend is enabled.
    */
   "team-administration-v1",
+  /** The owner's own agents can query and append knowledge facts with the `sql` tool. */
+  "knowledge-sql-v1",
 ]);
 export type HostCapability = z.infer<typeof HostCapabilitySchema>;
 

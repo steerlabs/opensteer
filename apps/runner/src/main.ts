@@ -105,7 +105,7 @@ export async function runRunnerDaemon(
      */
     readonly control?: (control: { readonly recheckEngines: () => void }) => void;
     readonly onConnected?: (identity: {
-      readonly environmentId: EnvironmentId;
+      readonly environmentId: EnvironmentId | null;
       readonly runnerId: RunnerId;
     }) => void;
     readonly onDisconnected?: () => void;
@@ -143,6 +143,7 @@ export async function runRunnerDaemon(
   try {
     const identityStore = new FileRunnerIdentityStore({
       dataDirectory: config.dataDirectory,
+      environmentless: !config.modules.includes("agents"),
       ...(config.environmentId ? { environmentId: config.environmentId } : {}),
       ...(config.runnerId ? { runnerId: config.runnerId } : {}),
     });
@@ -164,6 +165,7 @@ export async function runRunnerDaemon(
     });
     connection = new ReconnectingHostConnection({
       ...(started.agents ? { agents: started.agents } : {}),
+      ...(config.browserBridge ? { browserBridge: config.browserBridge } : {}),
       bootId,
       config,
       ...(device ? { device } : {}),
@@ -199,7 +201,7 @@ export async function runRunnerDaemon(
 
 /**
  * A computer that runs agents: its work location, Workspace storage, harnesses
- * and skills, plus the browser it relays and the shell it offers.
+ * and skills, plus the shell it offers.
  *
  * Shell degrades here rather than stopping the Runner, because a machine that
  * still runs threads is worth having even when nobody can `ssh` to it.
@@ -241,8 +243,7 @@ async function startAgentsRunner(input: {
         platform: process.platform,
       })
     : undefined;
-  // This process runs agents, so its identity always names a work location;
-  // a browser- or messaging-only Runner is a different program.
+  // Execution assigns a work location once, preserving it through module changes.
   const environmentId = identity.environmentId;
   if (!environmentId) {
     throw new Error("This Runner's saved identity has no work location");
@@ -379,7 +380,8 @@ async function startAgentsRunner(input: {
   return {
     agents: {
       earlierBootsContained: earlierBoots === "proven",
-      ...(config.browserBridge ? { browserBridge: config.browserBridge } : {}),
+      // What this build can serve, whether or not a Host has the trial on; a bundle without it starts anyway.
+      ...(agentSkills.paths["opensteer:knowledge"] ? { knowledgeSkill: true as const } : {}),
       ...(localWorkspace
         ? {
             localWorkspaces: {
@@ -418,7 +420,7 @@ async function startAgentsRunner(input: {
 /**
  * A reach-only computer has only the auxiliary modules its platform can
  * actually serve. Nothing else starts — no work location, Workspace storage,
- * harnesses, skills or browser.
+ * harnesses or skills.
  *
  * Preparation cannot degrade every requested module away: that Runner would
  * connect and do nothing at all.
@@ -456,9 +458,9 @@ async function startReachOnlyRunner(input: {
         platform: process.platform,
       })
     : undefined;
-  if (!shellModule && !integrationsModule) {
+  if (!shellModule && !integrationsModule && !input.config.browserBridge) {
     throw new Error(
-      "This computer runs no agents and cannot offer shell access or apps on this platform",
+      "This computer runs no agents and cannot offer a browser, shell access or apps on this platform",
     );
   }
   return {

@@ -3,6 +3,8 @@ import { sql } from "kysely";
 import type { Migration } from "kysely/migration";
 import { PROJECT_AUTHORITY_GUARDS_SQL } from "./project-authority-guards.js";
 
+export const projectAuthorityCutoverMigrationName = "0173_project_authority_cutover";
+
 export const projectAuthorityCutoverMigration: Migration = {
   async up(database) {
     await sql`

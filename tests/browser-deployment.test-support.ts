@@ -231,9 +231,13 @@ export async function grantedProfile(
   workspaceId: WorkspaceId,
   name = "Marketplace account",
 ): Promise<string> {
+  const machines = await stack.api["machines.list"]({});
+  if (!machines.ok) throw new Error(machines.error.message);
+  const browserComputers = machines.data.machines.filter((machine) => machine.modules.browser);
+  expect(browserComputers).toHaveLength(1);
   const created = await stack.api["commands.dispatch"]({
     idempotencyKey: randomUUID(),
-    input: { name },
+    input: { name, homeRunnerId: browserComputers[0]!.id },
     type: "browser.profile.create",
   });
   if (!created.ok || created.data.type !== "browser.profile.create") {

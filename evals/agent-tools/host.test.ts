@@ -26,7 +26,9 @@ it("returns a native runtime update refusal as an MCP tool error after validatio
       isError: true,
       content: [{ type: "text", text: "Update this computer to open this profile." }],
     });
-    expect(host.calls).toEqual([{ ...call, valid: true }]);
+    expect(host.calls).toEqual([
+      { ...call, valid: true, result: { $error: "Update this computer to open this profile." } },
+    ]);
     const invalid = await client.callTool({ name: call.tool, arguments: { unexpected: true } });
     expect(invalid.isError).toBe(true);
     expect(invalid.content).not.toEqual(result.content);

@@ -4,7 +4,7 @@ import type { LocalProfileBinding } from "@opensteer/protocol";
 import { BrowserSessionIdSchema } from "@opensteer/protocol";
 import { gate } from "@opensteer/shared/test-support/observation";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import type { BaseWindow } from "electron";
+import { BaseWindow } from "electron";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readdir, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -1113,6 +1113,64 @@ describe("Electron geometry lifecycle", () => {
       await page.applyGeometry!({ person: { width: 820, height: 610 }, agent: null });
       expect(view.getBounds()).toEqual({ x: 0, y: 0, width: 820, height: 610 });
     } finally {
+      await browser.close();
+    }
+  });
+
+  it.each([
+    ["geometry lock", { x: 280, y: 52, width: 800, height: 600 }],
+    ["resize barrier", { x: 280, y: 52, width: 1000, height: 700 }],
+  ] as const)(
+    "keeps a mounted page out of its window until its %s releases placement",
+    async (wait, stage) => {
+      const { browser, native, view, serialize, drain, releaseInput } = await launch();
+      const window = new BaseWindow({}) as unknown as (typeof electron.hosts)[number];
+      const joined: Bounds[] = [];
+      window.contentView.addChildView.mockImplementation((child: typeof view) =>
+        joined.push(child.getBounds()),
+      );
+      const held = gate({ label: `mounted page ${wait}`, deadlineMs: 1000 });
+      if (wait === "geometry lock") void serialize(() => held.enter());
+      else releaseInput.mockImplementationOnce(() => held.enter());
+      const placed = vi.fn();
+      try {
+        native.mount(window as unknown as BaseWindow, stage, placed);
+        await held.entered;
+        expect(joined).toEqual([]);
+        expect(placed).not.toHaveBeenCalled();
+        held.release();
+        await drain();
+        expect(joined).toEqual([stage]);
+        expect(placed).toHaveBeenCalledWith(expect.objectContaining({ bounds: stage }));
+      } finally {
+        held.release();
+        await browser.close();
+      }
+    },
+  );
+
+  it("attaches a page remounted while its placement waited only to its latest window", async () => {
+    const { browser, native, view, serialize, drain } = await launch();
+    const [first, second] = [new BaseWindow({}), new BaseWindow({})] as unknown as Array<
+      (typeof electron.hosts)[number]
+    >;
+    const held = gate({ label: "remounted page geometry lock", deadlineMs: 1000 });
+    void serialize(() => held.enter());
+    const stage = { x: 280, y: 52, width: 800, height: 600 };
+    const placed = vi.fn();
+    try {
+      native.mount(first as unknown as BaseWindow, { ...stage, x: 10 }, vi.fn());
+      await held.entered;
+      native.unmount();
+      native.mount(second as unknown as BaseWindow, stage, placed);
+      held.release();
+      await drain();
+      expect(first!.contentView.addChildView).not.toHaveBeenCalled();
+      expect(second!.contentView.addChildView).toHaveBeenCalledExactlyOnceWith(view);
+      expect(view.getBounds()).toEqual(stage);
+      expect(placed).toHaveBeenCalledWith(expect.objectContaining({ bounds: stage }));
+    } finally {
+      held.release();
       await browser.close();
     }
   });
@@ -2653,9 +2711,13 @@ describe("native Electron profiles", () => {
   );
   it("retains the same Session when native policy setup fails", async () => {
     const f = await fixture(true);
+    const { electronProfileRootReleaseState } = await import("./electron-local-profile.js");
     try {
       await f.initialize();
       await expect(f.launch()).rejects.toThrow("policy failed");
+      f.launcher.close();
+      expect(electronProfileRootReleaseState(f.root)).toBe("retained-until-exit");
+      expect(electronProfileRootReleaseState(f.root + "-other")).toBe("released");
       expect(await f.launcher.localProfiles.release(f.directory)).toBe("retained-until-exit");
       await expect(f.launch()).rejects.toThrow();
     } finally {

@@ -74,6 +74,13 @@ export function createFakeIphoneApps(
      * permissions, has no method for them and lists no request for them.
      */
     readonly offers?: readonly IphoneAppId[];
+    /** False for a phone whose browser did not qualify, which then advertises none. */
+    readonly browser?: boolean;
+    /** Removal leaves its browser profiles to erase at the next launch, as Android's WebView must. */
+    readonly erasesOnRestart?: boolean;
+    readonly platform?: "android" | "ios";
+    /** Mock mode: what becomes of the phone once it has joined its Host. */
+    readonly scenario?: "away" | "needs-update" | null;
     readonly runnerId?: string;
     /** False on a device that cannot share its apps, which never offers to. */
     readonly supported?: boolean;
@@ -97,14 +104,7 @@ export function createFakeIphoneApps(
     issue: null,
     issueMessage: null,
     ...(offered("iphone-location") ? { locationAccuracy: null } : {}),
-    permissions: {
-      "apple-calendar": "not-determined",
-      "apple-contacts": "not-determined",
-      "apple-reminders": "not-determined",
-      ...Object.fromEntries(
-        offers.filter((app) => app.startsWith("iphone-")).map((app) => [app, "not-determined"]),
-      ),
-    },
+    permissions: Object.fromEntries(offers.map((app) => [app, "not-determined"])),
     retryAt: null,
     revision: 0,
     supported: options.supported ?? true,
@@ -157,7 +157,16 @@ export function createFakeIphoneApps(
     const host = options.host?.(input.deploymentId) ?? null;
     if (host === null) return;
     try {
-      host.mockConnectIphone({ enrollmentId: input.enrollmentId, name: input.name, runnerId });
+      host.mockConnectIphone({
+        enrollmentId: input.enrollmentId,
+        modules: [
+          ...(options.browser === false ? [] : ["browser" as const]),
+          ...(offers.length > 0 ? ["integrations" as const] : []),
+        ],
+        name: input.name,
+        platform: options.platform ?? "ios",
+        runnerId,
+      });
     } catch (error) {
       set({
         connection: "stopped",
@@ -167,6 +176,17 @@ export function createFakeIphoneApps(
       return;
     }
     connect();
+    const scenario = options.scenario ?? null;
+    if (scenario === null) return;
+    // After Add has settled, as a phone that later loses its Host would.
+    setTimeout(() => {
+      if (scenario === "away") {
+        host.mockPhoneAway(runnerId);
+        set({ connection: "retrying", issue: "host-unreachable" });
+      } else {
+        set({ connection: "stopped", issue: "needs-update" });
+      }
+    }, 3_000);
   };
 
   const bridge: IphoneAppsBridge = {
@@ -249,6 +269,8 @@ export function createFakeIphoneApps(
         runnerId: snapshot.enrollment !== null || prepared !== null ? runnerId : null,
       };
       wipe(null);
+      if (options.erasesOnRestart === true && stopped.runnerId !== null)
+        set({ pendingErasure: true });
       return stopped;
     },
 
@@ -273,7 +295,9 @@ export function createFakeIphoneApps(
 
     async chooseContacts() {
       calls.push("chooseContacts");
-      return snapshot.permissions["apple-contacts"];
+      const current = permissionOf("apple-contacts");
+      if (current === null) throw bridgeError("unsupported");
+      return current;
     },
 
     async choosePhotos() {

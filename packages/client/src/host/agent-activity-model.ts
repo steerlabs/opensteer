@@ -1041,6 +1041,17 @@ export function turnComputer(turn: Turn): TurnComputer | null {
   };
 }
 
+/** What the latest turn under way is doing, in its own live line's words; null when none is. */
+export function liveTurnWords(groups: readonly TranscriptGroup[]): string | null {
+  for (let index = groups.length - 1; index >= 0; index -= 1) {
+    const group = groups[index];
+    if (group?.kind !== "turn") continue;
+    const state = turnState(group.turn);
+    if (state !== "settled") return liveLabel(group.turn, state);
+  }
+  return null;
+}
+
 function liveLabel(turn: Turn, state: Exclude<TurnState, "settled">): string {
   if (state === "stopping") return "Stopping";
   if (state === "waiting") return "Waiting for you";
@@ -2291,6 +2302,13 @@ const opensteerSteps = new Map<string, OpensteerStep>([
     saidByAction(taskActions, ["Changing a task", "Changed a task"], "pencil", "title"),
   ],
   ["trigger_read", said(["Looking up automations", "Looked up automations"], "list")],
+  [
+    "sql",
+    (tool, args) =>
+      (stringField(args, "mode") === "write"
+        ? said(["Saving facts", "Saved facts"], "pencil")
+        : said(["Looking up facts", "Looked up facts"], "list"))(tool, args),
+  ],
   [
     "trigger_write",
     saidByAction(

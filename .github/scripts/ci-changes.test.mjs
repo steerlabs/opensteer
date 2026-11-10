@@ -569,6 +569,24 @@ test("notification preview native suites select their existing lanes", () => {
   assert.equal(fixture.lanes.android, true);
   assert.equal(fixture.lanes.tests, true);
 });
+test("phone browser Kotlin selects Android; the files its tests share keep their own lanes too", () => {
+  const graph = readGraph(process.cwd());
+  for (const file of [
+    "apps/mobile/modules/phone-connection/android/src/main/java/com/opensteer/phoneconnection/PhoneConnectionRuntime.kt",
+    "apps/mobile/modules/phone-browser/android/src/main/java/com/opensteer/phonebrowser/PhoneBrowserPool.kt",
+    "apps/mobile/modules/remote-text-input/android/src/main/java/com/opensteer/remotetextinput/RemoteInputType.kt",
+  ])
+    assert.equal(decide([file], graph).lanes.android, true, file);
+  for (const file of [
+    "packages/browser-core/test-vectors/attach-ticket.json",
+    "apps/mobile/modules/phone-browser/index.ts",
+    "apps/mobile/modules/phone-browser/types.ts",
+  ]) {
+    const shared = decide([file], graph);
+    assert.equal(shared.lanes.android, true, file);
+    assert.equal(shared.lanes.tests, true, file);
+  }
+});
 
 test("real-browser owners, dependencies, root files and deletions select browser journeys", async () => {
   const { realBrowserTests } = await import("./ci-test-files.mjs");

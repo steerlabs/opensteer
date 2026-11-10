@@ -3,11 +3,36 @@ import { createIntegrationId } from "@opensteer/integration-core";
 import { sql } from "kysely";
 import { randomUUID } from "node:crypto";
 import { expect, vi } from "vitest";
-import { createId, SpecialistManifestSchema, type HarnessInstanceId } from "@opensteer/core";
+import {
+  createId,
+  SpecialistManifestSchema,
+  type HarnessInstanceId,
+  type UserId,
+} from "@opensteer/core";
 import { AgentConnectionStore } from "./agent-connection-store.js";
 import { IntegrationPlatformStore } from "./integration-platform-store.js";
 import { assertLineageCompatibleReuse, resolveResourceAccess } from "./resource-access.js";
-import { describeStore, testReadyHarnessCatalog } from "./store.integration.test-support.js";
+import {
+  describeStore,
+  enrollTestRunner,
+  testReadyHarnessCatalog,
+  type StoreFixture,
+} from "./store.integration.test-support.js";
+
+async function browserComputer(fixture: StoreFixture, ownerId: UserId) {
+  const runnerId = createId("runner");
+  await enrollTestRunner(fixture.store, {
+    allowedModules: ["browser"],
+    createdBy: ownerId,
+    environmentId: createId("environment"),
+    modules: { browser: { runtimeId: "browser", wireVersion: 2 } },
+    name: "Browser computer",
+    runnerId,
+    runnerKind: "local",
+    tokenSuffix: runnerId,
+  });
+  return runnerId;
+}
 
 describeStore("specialist registration", (test) => {
   test("repins every owner's registration and refuses a version that drops the specialist", async ({
@@ -130,12 +155,15 @@ describeStore("specialist registration", (test) => {
       pluginVersionId: version.id,
       ownerUserId: run.userId,
     });
+    const homeRunnerId = await browserComputer(fixture, run.userId);
     const profile = await fixture.store.createBrowserProfile({
+      homeRunnerId,
       ownerId: run.userId,
       name: "Invoices",
       idempotencyKey: "specialist-profile",
     });
     const mainOnly = await fixture.store.createBrowserProfile({
+      homeRunnerId,
       ownerId: run.userId,
       name: "Main only",
       idempotencyKey: "main-only-profile",
@@ -634,10 +662,16 @@ describeStore("specialist registration", (test) => {
       title: "Research",
       workspaceId: run.workspace.id,
     });
+    const homeRunnerId = await browserComputer(f, run.userId);
     const profiles = [];
     for (const name of ["Work", "Personal"])
       profiles.push(
-        await f.store.createBrowserProfile({ ownerId: run.userId, name, idempotencyKey: name }),
+        await f.store.createBrowserProfile({
+          homeRunnerId,
+          ownerId: run.userId,
+          name,
+          idempotencyKey: name,
+        }),
       );
     const grants = () =>
       f.store.listActiveBrowserProfileGrantsForWorkspace(
@@ -900,7 +934,9 @@ describeStore("specialist registration", (test) => {
     const other = { userId: await fixture.store.createUser("Other member") };
     const workspace = await fixture.createProjectWorkspace(owner.userId, "shared-specialist");
     const platform = new IntegrationPlatformStore(fixture.database);
+    const homeRunnerId = await browserComputer(fixture, other.userId);
     const profile = await fixture.store.createBrowserProfile({
+      homeRunnerId,
       ownerId: other.userId,
       name: "Other person's profile",
       idempotencyKey: "other-profile",

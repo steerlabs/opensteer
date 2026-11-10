@@ -12,6 +12,7 @@ import { bootstrapReadDiagnostics } from "./bootstrap-diagnostics.js";
 import { BrowserPasskeys, type BrowserPasskeyPort } from "./browser-passkeys.js";
 import { emptySavedViewReadiness } from "./saved-host-view.js";
 import { BrowserEditingStore } from "./browser-editing.js";
+import { browserBasicInputAllows } from "@opensteer/protocol/browser";
 import { BrowserPreferences } from "./browser-preferences.js";
 import { WorkspaceTabActivations } from "./workspace-tab-activations.js";
 import { browserTabOrderTabs } from "./browser-tab-order.js";
@@ -129,6 +130,7 @@ import type {
   WorkspaceTabActivationOptions,
 } from "./client.js";
 import { HostClientRequestError, isHostRefusal, mainDoneTasks } from "./client.js";
+import { browserProfileHomeCommand } from "./browser-access.js";
 import type { ExecutionChoice, ExecutionSelection } from "./execution-preferences.js";
 import { createHttpHostApiClient } from "./host-api-client.js";
 import { threadInDirectory } from "./host-snapshot-selectors.js";
@@ -148,6 +150,7 @@ import { LiveStreamLedger, type LiveProgressInput } from "./live-progress.js";
 import { applyOptimisticCommandPatch, withThreadNames } from "./optimistic-command-patches.js";
 import { PlaceActivityStore } from "./place-activity.js";
 import { newerBrowserTabCatalog, placeList } from "./places.js";
+import { keepBrowserLastPictures } from "./browser-last-picture.js";
 import { isActiveRunStatus, RunQueueProjection, toRunQueueEntry } from "./run-queue-state.js";
 import { mergeTaskEntries } from "./task-entries.js";
 import { threadStopTarget } from "./thread-activity.js";
@@ -399,6 +402,7 @@ interface LiveReread {
 }
 
 interface BrowserChannelState {
+  basicInputOnly?: boolean;
   /**
    * The Watch frame this socket delivered and has not yet acknowledged. The
    * Host sends the next only after it, so it is returned exactly once: when
@@ -556,8 +560,9 @@ export class HttpHostClient {
           message.editingVersion,
           surfaceId,
           message.clipboard,
+          message.basicInput,
         );
-      else this.#browserEditing.receive(sessionId, message);
+      else this.#browserEditing.receive(sessionId, message, surfaceId);
       if (message.type === "browser.snapshot" || message.type === "browser.surfaces.changed")
         this.#patchBrowserSession(sessionId, {
           tabs: browserTabs(message.surfaces),
@@ -611,7 +616,11 @@ export class HttpHostClient {
     if (mode === "watch") url.searchParams.set("mode", mode);
     const passkeys = this.browserPasskeys.optIn(this.#capabilities);
     if (mode === "control" && passkeys) url.searchParams.set("passkeys", passkeys);
-    if (mode === "control") url.searchParams.set("popups", "1");
+    if (mode === "control") {
+      url.searchParams.set("popups", "1");
+      url.searchParams.set("basicInput", "1");
+      url.searchParams.set("autofill", "1");
+    }
     url.searchParams.set("editing", "2");
     return this.#webSocketFactory(url.toString().replace(/^http/, "ws"));
   }
@@ -1346,7 +1355,9 @@ export class HttpHostClient {
   }
 
   async dispatch(command: HostApiCommandInput): Promise<HostApiCommandOutput> {
-    const parsedCommand = hostApi["commands.dispatch"].payload.parse(command);
+    const parsedCommand = hostApi["commands.dispatch"].payload.parse(
+      browserProfileHomeCommand(command, this.#snapshot.browserProfileHomes),
+    );
     if (parsedCommand.type === "thread.shared-done.set" && !this.#snapshot.sharedTaskDoneAvailable)
       throw new Error("This Host does not support shared task Done.");
     if (parsedCommand.type === "thread.icon.set" || parsedCommand.type === "workspace.color.set") {
@@ -3198,6 +3209,7 @@ export class HttpHostClient {
       if (browserCommandNeedsNoView(command)) return;
       throw new Error("The browser view is not synchronized.");
     }
+    if (channel.basicInputOnly && !browserBasicInputAllows(command)) return;
     channel.socket.send(JSON.stringify(command));
   }
 
@@ -4329,6 +4341,7 @@ export class HttpHostClient {
       browserAvailable: payload.browser.available,
       browserPlacements: payload.browser.placements.map((placement) => ({ ...placement })),
       browserProfiles: payload.browser.profiles.map((profile) => ({ ...profile })),
+      browserProfileHomes: payload.browser.profileHomes?.slice(),
       browserProfileDeletions: payload.browser.profileDeletions?.map((deletion) => ({
         ...deletion,
       })),
@@ -5844,7 +5857,7 @@ export class HttpHostClient {
     if (this.#reconnectSuspended()) return;
     const socket = this.#webSocketFactory(
       this.#webSocketUrl(
-        `/v1/browser-sessions/${encodeURIComponent(channel.sessionId)}/connect?editing=2${channel.mode === "watch" ? "&mode=watch" : ""}`,
+        `/v1/browser-sessions/${encodeURIComponent(channel.sessionId)}/connect?editing=2${channel.mode === "watch" ? "&mode=watch" : "&basicInput=1"}`,
       ),
     );
     socket.binaryType = "arraybuffer";
@@ -5947,12 +5960,14 @@ export class HttpHostClient {
       if (message.sessionId !== sessionId) throw new Error("Browser session ID mismatch.");
       assertBrowserDialogSurface(message.dialog, message.surfaces);
       channel.synchronized = true;
+      channel.basicInputOnly = message.editingVersion === undefined && message.basicInput === 1;
       if (channel.mode === "control")
         this.#browserEditing.negotiate(
           sessionId,
           message.editingVersion,
           undefined,
           message.clipboard,
+          message.basicInput,
         );
       channel.reconnectAttempt = 0;
       this.#patchBrowserSession(sessionId, {
@@ -5976,6 +5991,13 @@ export class HttpHostClient {
       return;
     }
     if (message.type === "browser.error") {
+      if (
+        message.error.reason === "unsupported-operation" ||
+        message.error.reason === "target-suspended"
+      ) {
+        if (channel.mode === "control") this.#browserEditing.receive(sessionId, message);
+        return;
+      }
       this.#patchBrowserSession(sessionId, { error: message.error.message });
       return;
     }
@@ -6517,6 +6539,8 @@ export class HttpHostClient {
         snapshot.workspaces !== this.#snapshot.workspaces
       ) {
         const places = placeList(snapshot);
+        keepBrowserLastPictures(this.browserWatchFrames, places);
+        keepBrowserLastPictures(this.browserFrames, places);
         if (snapshot.connection === "connected")
           this.#placeActivity.reconcile(
             new Set(places.filter((place) => place.availability === "ready").map(({ key }) => key)),

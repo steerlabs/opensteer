@@ -4,6 +4,7 @@ import { browserFrameContentRect } from "@opensteer/shared/browserPresentation";
 import {
   browserViewportSize,
   normalizedBrowserFramePoint,
+  mappedBrowserBox,
   mappedBrowserCaret,
 } from "./browser-viewport.js";
 
@@ -153,5 +154,36 @@ describe("remote caret through the presented frame", () => {
       height: 12,
     });
     expect(mappedBrowserCaret(rect, picture, { x: 0.75, y: 0.25, height: 0.02 })).toBeNull();
+    // An autofill field's box takes the same path, its size scaled with it.
+    expect(mappedBrowserBox(rect, picture, { x: 0.25, y: 0.25, width: 0.2, height: 0.05 })).toEqual(
+      { left: 200, top: 150, width: 160, height: 30 },
+    );
+    expect(
+      mappedBrowserBox(rect, picture, { x: 0.75, y: 0.25, width: 0.2, height: 0.05 }),
+    ).toBeNull();
+  });
+
+  it("places a field's box in a letterboxed picture", () => {
+    const picture: BrowserFrameView = {
+      data: new ArrayBuffer(0),
+      header: {
+        encoding: "jpeg",
+        frameId: 1,
+        surfaceId:
+          "srf_00000000-0000-4000-8000-000000000001" as BrowserFrameView["header"]["surfaceId"],
+        rasterWidth: 400,
+        rasterHeight: 300,
+        viewportWidth: 800,
+        viewportHeight: 600,
+      },
+    };
+    expect(
+      mappedBrowserBox({ left: 0, top: 0, width: 800, height: 300 }, picture, {
+        x: 0.25,
+        y: 0.5,
+        width: 0.5,
+        height: 0.05,
+      }),
+    ).toEqual({ left: 300, top: 150, width: 200, height: 15 });
   });
 });

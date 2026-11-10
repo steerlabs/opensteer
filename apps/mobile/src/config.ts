@@ -10,6 +10,7 @@ const MobileEnvironmentSchema = z.object({
   EXPO_PUBLIC_OPENSTEER_MOCK_TEAM: z
     .enum(["admin", "admin-stale", "member", "guest", "suspended", "removed"])
     .optional(),
+  EXPO_PUBLIC_OPENSTEER_MOCK_PHONE: z.enum(["away", "needs-update", "no-browser"]).optional(),
 });
 
 export interface MobileConfiguration {
@@ -29,6 +30,8 @@ export interface MobileConfiguration {
   readonly mockTeam: NonNullable<
     z.infer<typeof MobileEnvironmentSchema>["EXPO_PUBLIC_OPENSTEER_MOCK_TEAM"]
   > | null;
+  /** What becomes of this phone in mock mode once it is added; null for the ordinary phone. */
+  readonly mockPhone: "away" | "needs-update" | "no-browser" | null;
   /**
    * Why this build must not start, or null. It is a state rather than a throw
    * because the answer belongs on screen in a sentence: a build that was asked
@@ -91,6 +94,7 @@ export function readMobileConfiguration(
     mock: mockEnabled,
     mockHome: emptyHomeRequested && mockEnabled ? "absent" : "seeded",
     mockTeam: mockEnabled ? (parsed.EXPO_PUBLIC_OPENSTEER_MOCK_TEAM ?? null) : null,
+    mockPhone: mockEnabled ? (parsed.EXPO_PUBLIC_OPENSTEER_MOCK_PHONE ?? null) : null,
     refusal:
       mockRequested && !mockAllowed
         ? "This build was made with Opensteer's mock mode turned on, which only development and preview builds may run. Install a build made without it."

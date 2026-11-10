@@ -162,7 +162,7 @@ async function main(): Promise<void> {
           .where("id", "=", userId)
           .execute();
       await store.createRunnerEnrollment({
-        allowedModules: ["agents"],
+        allowedModules: ["agents", "browser"],
         createdBy: deploymentKind === "personal" ? null : userId,
         expiresAt: new Date("2099-01-01"),
         id: `ren_${uuid}`,
@@ -182,6 +182,7 @@ async function main(): Promise<void> {
           runnerKind: deploymentKind === "personal" ? "main" : "managed",
           runtimeVersion: "migration-fixture",
           modules: {
+            browser: { runtimeId: "migration-browser", wireVersion: 2 },
             agents: {
               environmentIds: [environmentId],
               harnessDrivers: [
@@ -318,6 +319,32 @@ async function main(): Promise<void> {
       );
       await store.rememberExecutionChoice(userId, { accessMode: "approval-required" });
       assert.equal((await store.getExecutionPreferences(userId)).accessMode, "approval-required");
+      const profile = await store.createBrowserProfile({
+        ownerId: userId,
+        name: "Created by previous store",
+        idempotencyKey: "migration-browser-profile",
+      });
+      const binding = {
+        version: 1 as const,
+        deploymentId: core.DeploymentIdSchema.parse(`dep_${uuid}`),
+        runnerId,
+        profileId: profile.id,
+        storageInstanceId: "00000000-0000-4000-8000-000000000002",
+        bindingId: "00000000-0000-4000-8000-000000000003",
+        engine: "chromium" as const,
+      };
+      await store.bindBrowserProfile(binding);
+      assert.deepEqual(await store.getBrowserProfileStorage(profile.id), {
+        kind: "local",
+        binding,
+        initialized: false,
+      });
+      const homed = await database
+        .selectFrom("browserProfiles")
+        .select("homeRunnerId")
+        .where("id", "=", profile.id)
+        .executeTakeFirstOrThrow();
+      assert.equal(homed.homeRunnerId, runnerId);
       assert.equal((await store.workspaceSnapshot(workspaceId)).workspace.id, workspaceId);
       const memberId = core.UserIdSchema.parse("usr_00000000-0000-4000-8000-000000000002");
       const invite = async (suffix: string) => {

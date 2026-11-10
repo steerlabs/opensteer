@@ -34,6 +34,8 @@ import { AreaLink } from "./area-link.js";
 import { destinationPlaceKey, type WorkspaceNavigation } from "./navigation.js";
 import { DrawerButton } from "./place-stage.js";
 import { homeThreadKind, useTaskDirectory } from "./task-directory.js";
+import { LivePlace } from "./viewfinder.js";
+import { useBarYield } from "./bar-yield.js";
 import { useWorkspace } from "./workspace-context.js";
 
 /**
@@ -50,6 +52,9 @@ export function ConversationHeader({
   cause,
   hostClient,
   onFind,
+  onPictureYield,
+  onUnfold = null,
+  pageOpen = false,
   threadId,
   title,
   titleRef,
@@ -58,6 +63,12 @@ export function ConversationHeader({
   readonly cause: ReactNode;
   readonly hostClient: HostClient;
   readonly onFind: () => void;
+  /** Told whether the bar has had to give up the Run page's folded picture for want of room. */
+  readonly onPictureYield?: (yielded: boolean) => void;
+  /** Where the Run's page can stand above the conversation, its folded picture opens it there. */
+  readonly onUnfold?: (() => void) | null;
+  /** The Run's page stands open above the conversation, so the head carries no picture of it. */
+  readonly pageOpen?: boolean;
   readonly threadId: string;
   readonly title: string;
   readonly titleRef?: React.Ref<HTMLHeadingElement>;
@@ -94,7 +105,24 @@ export function ConversationHeader({
     [threadId],
   );
   const family = useHostSelector(hostClient, selectFamily, sameTaskFamilyGlance);
-  const menu = !home || docked;
+  const selectRunId = useCallback(
+    (snapshot: HostSnapshot) => {
+      const thread = snapshot.threads.find(({ id }) => id === threadId);
+      return thread === undefined
+        ? null
+        : (threadStopTarget({ runQueue: snapshot.runQueue, thread })?.id ?? null);
+    },
+    [threadId],
+  );
+  const runId = useHostSelector(hostClient, selectRunId);
+  const barRef = useRef<HTMLDivElement | null>(null);
+  const yielded = useBarYield(barRef, barRanks.picture);
+  // Find given up by the bar is offered under the name instead, as it is when docked.
+  const findInMenu = docked || yielded >= barRanks.find;
+  useEffect(() => {
+    onPictureYield?.(yielded >= barRanks.picture);
+  }, [onPictureYield, yielded]);
+  const menu = !home || findInMenu;
   const taskMark = threadMark(threadId, directory.snapshot);
   const projectOrb = homeKind === "project" && project;
   return (
@@ -117,10 +145,14 @@ export function ConversationHeader({
           </AreaLink>
         </nav>
       ) : null}
-      <div className="conv-header__bar">
+      <div className="conv-header__bar" ref={barRef}>
         {/* In Work the place's own bar carries the way back to the sidebar. */}
-        {work ? null : drawer ? <DrawerButton /> : <SidebarRestoreButton />}
-        <span className="conv-header__mark">
+        {work ? null : drawer ? (
+          <DrawerButton countYield={barRanks.count} />
+        ) : (
+          <SidebarRestoreButton />
+        )}
+        <span className="conv-header__mark" data-yield={barRanks.mark}>
           {home ? (
             <ChatOrb size={20} />
           ) : voice ? (
@@ -165,11 +197,17 @@ export function ConversationHeader({
                 title={title}
                 type="button"
               >
-                <span className="conv-header__name">{title}</span>
+                <span className="conv-header__name" data-yield-name>
+                  {title}
+                </span>
                 <Icon className="conv-header__chevron" name="chevron-down" />
               </button>
             ) : (
-              <span className="conv-header__name conv-header__name--static" title={title}>
+              <span
+                className="conv-header__name conv-header__name--static"
+                data-yield-name
+                title={title}
+              >
                 {title}
               </span>
             )}
@@ -200,13 +238,26 @@ export function ConversationHeader({
           {/* Only a state that asks something of the reader is said in words; the
               mark shows the rest. */}
           {tone === "needs-you" ? <span className="conv-header__state">Needs you</span> : null}
+          {runId === null || pageOpen ? null : (
+            <span className="conv-header__yield" data-yield={barRanks.picture}>
+              <LivePlace
+                hostClient={hostClient}
+                key={runId}
+                onUnfold={onUnfold}
+                runId={runId}
+                threadId={threadId}
+              />
+            </span>
+          )}
           {family ? (
-            <TaskFamilyButton
-              key={threadId}
-              hostClient={hostClient}
-              threadId={threadId}
-              glance={family}
-            />
+            <span className="conv-header__yield" data-yield={barRanks.family}>
+              <TaskFamilyButton
+                key={threadId}
+                hostClient={hostClient}
+                threadId={threadId}
+                glance={family}
+              />
+            </span>
           ) : null}
           {docked ? null : (
             <div className="conv-header__actions">
@@ -224,6 +275,7 @@ export function ConversationHeader({
               <button
                 aria-label="Find in conversation"
                 className="icon-btn"
+                data-yield={barRanks.find}
                 onClick={onFind}
                 title="Find in conversation · ⌘F"
                 type="button"
@@ -276,13 +328,15 @@ export function ConversationHeader({
           anchor={menuRef.current}
           label={title}
           view={
-            docked
+            findInMenu
               ? {
-                  expand: () => {
-                    setMenuOpen(false);
-                    nav.hideComputer();
-                    focusAfterExpand();
-                  },
+                  expand: docked
+                    ? () => {
+                        setMenuOpen(false);
+                        nav.hideComputer();
+                        focusAfterExpand();
+                      }
+                    : null,
                   find: () => {
                     setMenuOpen(false);
                     onFind();
@@ -296,6 +350,15 @@ export function ConversationHeader({
     </header>
   );
 }
+
+/**
+ * What gives way first when the bar runs out of room, after the name has
+ * truncated to its floor: the tasks' glance (the sidebar lists them), Find
+ * (offered under the name instead), the needs-you count (the sidebar shows it),
+ * the mark, and last the Run page's picture, which then stands above the
+ * conversation as its named row.
+ */
+const barRanks = { family: 1, find: 2, count: 3, mark: 4, picture: 5 } as const;
 
 function sameRequester(left: RequesterLink | null, right: RequesterLink | null): boolean {
   return left === right || (left?.threadId === right?.threadId && left?.title === right?.title);
@@ -474,8 +537,11 @@ function ConversationMenu({
   readonly anchor: HTMLElement;
   readonly label: string;
   readonly onClose: () => void;
-  /** Docked beside the computer, the header keeps only the name, so the view's own actions are here. */
-  readonly view: { readonly expand: () => void; readonly find: (() => void) | null } | null;
+  /** What the header has no room for: docked beside the computer, or on a bar too narrow to hold Find. */
+  readonly view: {
+    readonly expand: (() => void) | null;
+    readonly find: (() => void) | null;
+  } | null;
 }) {
   const [asking, setAsking] = useState(false);
   return (
@@ -489,15 +555,17 @@ function ConversationMenu({
       <div className="conversation-menu">
         {asking || !view ? null : (
           <div aria-label="This conversation" className="conversation-menu__actions" role="group">
-            <button className="picker__row" onClick={view.expand} type="button">
-              <span className="picker__glyph">
-                <Icon name="expand" />
-              </span>
-              <span className="picker__label">Expand chat</span>
-              <kbd aria-hidden className="kbd">
-                ⌘.
-              </kbd>
-            </button>
+            {view.expand ? (
+              <button className="picker__row" onClick={view.expand} type="button">
+                <span className="picker__glyph">
+                  <Icon name="expand" />
+                </span>
+                <span className="picker__label">Expand chat</span>
+                <kbd aria-hidden className="kbd">
+                  ⌘.
+                </kbd>
+              </button>
+            ) : null}
             {view.find ? (
               <button className="picker__row" onClick={view.find} type="button">
                 <span className="picker__glyph">

@@ -61,3 +61,9 @@ export * from "./personal-desktop-update-store.js";
 export * from "./agent-thread-history.js";
 export { encodeThreadHistoryCursor } from "./thread-history.js";
 export { assignmentSummaryInTransaction } from "./assignment-store.js";
+export * from "./knowledge-executor.js";
+export * from "./knowledge-store.js";
+export { personalDeploymentOwner } from "./machine-store.js";
+export { knowledgeExecutorRole } from "./knowledge-schema.js";
+
+export { listEligibleBrowserRunners } from "./browser-home-store.js";

@@ -99,14 +99,15 @@ export async function runEngine(input: {
   await cp(join(input.checkout, "apps/runner/agent-skills"), bundlePath, { recursive: true });
   const bundle = await loadAgentSkillBundle(bundlePath);
   const selected = await Promise.all(
-    planAgentSkills(bundle, c.caller === "run" ? opensteerAgentSkillsFor(caseReach(c)) : []).map(
-      async (skill) => {
-        const { fullName, path } = skill;
-        const destination = join(p.workspace, ".eval-skills", fullName);
-        await cp(path, destination, { recursive: true });
-        return { ...skill, path: destination };
-      },
-    ),
+    planAgentSkills(
+      bundle,
+      c.caller === "run" ? opensteerAgentSkillsFor(caseReach(c), { knowledge: c.knowledge }) : [],
+    ).map(async (skill) => {
+      const { fullName, path } = skill;
+      const destination = join(p.workspace, ".eval-skills", fullName);
+      await cp(path, destination, { recursive: true });
+      return { ...skill, path: destination };
+    }),
   );
   const workspaceSkills = await discoverWorkspaceSkills(p.workspace);
   const skills = resolveSkillPlan({
@@ -148,6 +149,7 @@ export async function runEngine(input: {
         kind: c.caller,
         accessMode: "full-access",
         reach: { kind: caseReach(c) },
+        knowledge: c.knowledge,
       }).map(({ name }) => name),
       toolsRevision: "eval-tools-v1",
       instructions: guide,

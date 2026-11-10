@@ -280,6 +280,13 @@ describe("configuration", () => {
     expect(() =>
       parseHostConfig({ ...personalEnvironment, OPENSTEER_NATIVE_OAUTH_ENABLED: "true" }),
     ).toThrow(/Personal Deployment cannot serve native OAuth/u);
+    expect(personal.knowledge).toBe(false);
+    expect(parseHostConfig({ ...personalEnvironment, OPENSTEER_KNOWLEDGE: "1" }).knowledge).toBe(
+      true,
+    );
+    expect(() => parseHostConfig({ ...hostEnvironment, OPENSTEER_KNOWLEDGE: "1" })).toThrow(
+      /knowledge trial runs only on a Personal Deployment/u,
+    );
     expect(
       parseHostConfig({ ...hostEnvironment, OPENSTEER_NATIVE_OAUTH_ENABLED: "true" }).identity
         .nativeOAuth?.clients,
@@ -542,13 +549,14 @@ describe("configuration", () => {
     ).toBeUndefined();
   });
 
-  it("refuses a browser relay on a computer that runs no agents", () => {
-    expect(() =>
-      parseRunnerConfig({
-        OPENSTEER_HOST_URL: "https://host.example",
-        OPENSTEER_RUNNER_MODULES: "browser,shell",
-      }),
-    ).toThrow("browser relay belongs to a computer that runs agents");
+  it("allows a browser relay without execution", () => {
+    const config = parseRunnerConfig({
+      OPENSTEER_HOST_URL: "https://host.example",
+      OPENSTEER_RUNNER_MODULES: "browser",
+    });
+    expect(config.modules).toEqual(["browser"]);
+    expect(config.workspaceBackings).toEqual([]);
+    expect(config.localWorkspaceRoot).toBeUndefined();
   });
 
   it("takes the computer use bridge as a loopback pair or not at all", () => {

@@ -1,0 +1,168 @@
+/* A float of rows. Every row is one height, so the lit highlight is one plate
+   that glides between them on transform alone. */
+.autofill-chooser {
+  --autofill-row: 34px;
+  --autofill-rise: calc(-1 * var(--space-4));
+  position: relative;
+  box-sizing: border-box;
+  /* Seven and a half rows: the half row says there are more. */
+  --autofill-cap: calc(var(--autofill-row) * 7.5 + var(--space-8) + 2px);
+  max-height: var(--autofill-cap);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--space-4);
+  border: 1px solid var(--rim-plate);
+  border-radius: var(--radius-md);
+  background: var(--sheen) var(--fill-glass);
+  -webkit-backdrop-filter: var(--blur-glass);
+  backdrop-filter: var(--blur-glass);
+  box-shadow: var(--edge-plate), var(--lift-float);
+  color: var(--text-soft);
+  cursor: default;
+  user-select: none;
+  -webkit-user-select: none;
+  /* It grows out of its field: from the left end of the edge it touches. */
+  transform-origin: var(--space-24) top;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(var(--autofill-rise)) scale(0.97);
+  transition:
+    opacity 90ms var(--ease-out),
+    visibility 0s linear 90ms;
+}
+/* Over a streamed page, held to the room on its side of the field. */
+.autofill-chooser--streamed {
+  position: absolute;
+  z-index: var(--layer-popover);
+  max-height: min(var(--autofill-cap), var(--autofill-room));
+}
+.autofill-chooser[data-side="above"] {
+  --autofill-rise: var(--space-4);
+  transform-origin: var(--space-24) bottom;
+}
+.autofill-chooser.is-detailed {
+  --autofill-row: 42px;
+}
+.autofill-chooser.is-open {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  transition:
+    opacity 120ms var(--ease-out),
+    transform 180ms var(--ease-bubble);
+}
+@starting-style {
+  .autofill-chooser.is-open {
+    opacity: 0;
+    transform: translateY(var(--autofill-rise)) scale(0.97);
+  }
+}
+.autofill-chooser:not(.is-open) {
+  pointer-events: none;
+}
+
+.autofill-chooser__highlight {
+  position: absolute;
+  top: var(--space-4);
+  right: var(--space-4);
+  left: var(--space-4);
+  height: var(--autofill-row);
+  border: 1px solid var(--rim-selected);
+  border-radius: var(--radius-sm);
+  background: var(--sheen) var(--fill-plate-hover);
+  box-shadow: var(--edge-plate);
+  transform: translateY(calc(var(--autofill-index, 0) * var(--autofill-row)));
+  transition: transform var(--duration-fast) var(--ease-out);
+  pointer-events: none;
+}
+
+.autofill-chooser__row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+  box-sizing: border-box;
+  height: var(--autofill-row);
+  padding: 0 var(--space-10) 0 var(--space-8);
+  border-radius: var(--radius-sm);
+  transition: background-color var(--duration-fast) var(--ease-out);
+}
+.autofill-chooser__row:hover:not([aria-selected="true"]) {
+  background-color: var(--fill-quiet);
+}
+.autofill-chooser__row[aria-selected="true"] {
+  color: var(--text);
+}
+.autofill-chooser__row:active {
+  background-color: var(--fill-quiet);
+  transition-duration: 0s;
+}
+
+.autofill-chooser__row .pavatar {
+  --pavatar-size: 22px;
+}
+
+.autofill-chooser__glyph {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-xs);
+  background: var(--sheen-mark) var(--surface-raised);
+  box-shadow: var(--edge-mark);
+  color: var(--ember);
+}
+.autofill-chooser__glyph svg {
+  width: 13px;
+  height: 13px;
+}
+
+.autofill-chooser__text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.autofill-chooser__name,
+.autofill-chooser__detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.autofill-chooser__name {
+  font-size: var(--text-lg);
+  font-weight: var(--weight-medium);
+  line-height: 1.3;
+}
+.autofill-chooser__detail {
+  color: var(--muted);
+  font-size: var(--text-xs);
+  line-height: 1.3;
+}
+
+@media (any-pointer: coarse) {
+  .autofill-chooser {
+    --autofill-row: var(--touch-target);
+  }
+  .autofill-chooser.is-detailed {
+    --autofill-row: 52px;
+  }
+  .autofill-chooser__row .pavatar,
+  .autofill-chooser__glyph {
+    --pavatar-size: 26px;
+    width: 26px;
+    height: 26px;
+  }
+  .autofill-chooser__name {
+    font-size: var(--text-2xl);
+  }
+}
+
+/* The popup's scene says when the person asked for less motion; base.css
+   stills everything else the same way. */
+.autofill-chooser[data-still],
+.autofill-chooser[data-still] .autofill-chooser__highlight {
+  transition: none;
+}

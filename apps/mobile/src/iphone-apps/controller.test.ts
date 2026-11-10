@@ -6,7 +6,11 @@ import type {
   IphoneAppsApproval,
   IphoneApprovalOutcome,
 } from "../platform/iphone-apps.js";
-import { IphoneAppsController, type IphoneAppsTiming } from "./controller.js";
+import {
+  IphoneAppsController,
+  type IphoneAppsTiming,
+  type NativePhoneEnrollment,
+} from "./controller.js";
 import type { ShownApproval, ShownApprovalsFile } from "./shown-approvals-file.js";
 import { createFakeIphoneApps, type FakeIphoneApps } from "./fake-bridge.js";
 
@@ -75,6 +79,47 @@ afterEach(() => {
 });
 
 describe("adding this iPhone", () => {
+  it.each(["remote-access-off", "host-mismatch"] as const)(
+    "preserves native phone enrollment's %s refusal without exposing the token",
+    async (code) => {
+      const opened = open({
+        enrollNative: async () => {
+          throw Object.assign(new Error("This phone cannot do that now."), { code });
+        },
+      });
+      const host = fakeHost();
+      await expect(
+        opened.controller.add({
+          deploymentId,
+          hostClient: host.client,
+          iphoneAppsAvailable: true,
+          name: "Android phone",
+        }),
+      ).resolves.toEqual({ kind: "failed", failure: { kind: code } });
+      expect(opened.fake.device.calls).not.toContain("enroll");
+    },
+  );
+  it("adds through the native phone issuer without receiving or dispatching an enrollment token", async () => {
+    const enrollNative: NativePhoneEnrollment = async ({ deploymentId, name }) => {
+      opened.fake.device.enrolledTo({ deploymentId, name });
+      return { enrollmentId: "ren_native" };
+    };
+    const opened = open({ enrollNative });
+    const host = fakeHost();
+    await expect(
+      opened.controller.add({
+        deploymentId,
+        hostClient: host.client,
+        iphoneAppsAvailable: true,
+        name: "Android phone",
+      }),
+    ).resolves.toMatchObject({ kind: "added" });
+    expect(host.commands).toEqual([]);
+    expect(opened.fake.device.calls).toEqual(["prepare"]);
+    await opened.controller.remove({ hostClient: host.client });
+    expect(opened.fake.device.calls).toContain("disconnect");
+    expect(host.commands).toEqual(["machine.revoke"]);
+  });
   it("J3: never mints for a Host that does not offer iPhone apps", async () => {
     const { controller, fake } = open();
     const host = fakeHost();
@@ -1252,6 +1297,7 @@ function open(
     readonly autoConnect?: boolean;
     readonly offers?: readonly IphoneAppId[];
     readonly shown?: MemoryShownFile;
+    readonly enrollNative?: NativePhoneEnrollment;
   } = {},
 ) {
   const fake = createFakeIphoneApps({
@@ -1288,6 +1334,7 @@ function open(
     bridge: fake.bridge,
     shownApprovals: options.shown ?? memoryShownFile(),
     timing: fast,
+    ...(options.enrollNative === undefined ? {} : { enrollNative: options.enrollNative }),
   });
   controllers.push(controller);
   return { controller, fake: { bridge, device } };

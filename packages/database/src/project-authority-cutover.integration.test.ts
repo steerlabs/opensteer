@@ -173,7 +173,7 @@ describeStore("additive Project authority preparation", (it) => {
       ])
         expect(locks).toContainEqual({ relname: table, mode: "AccessExclusiveLock" });
       expect(locks).toContainEqual({ relname: "agent_connections", mode: "ShareRowExclusiveLock" });
-      console.info("0172 held migration locks", locks);
+      console.info("0173 held migration locks", locks);
     });
   });
 });

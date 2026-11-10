@@ -51,7 +51,7 @@ export function prepareDesktopApplicationDirectories(privateFiles: DesktopPrivat
 }
 
 export interface DesktopDeploymentPaths {
-  /** Durable native profiles; enrollment-slot removal must never remove this tree. */
+  /** Durable native profiles outside enrollment slots; device revocation erases them explicitly. */
   readonly browserProfilesDirectory: string;
   readonly hostDataDirectory: string;
   readonly logsDirectory: string;

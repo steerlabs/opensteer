@@ -12,6 +12,7 @@ export const OpensteerAgentSkillNameSchema = z.enum([
   "opensteer:devices",
   "opensteer:skills",
   "opensteer:memory",
+  "opensteer:knowledge",
 ]);
 export type OpensteerAgentSkillName = z.infer<typeof OpensteerAgentSkillNameSchema>;
 
@@ -20,13 +21,17 @@ export const opensteerAgentSkillNames: readonly OpensteerAgentSkillName[] = Obje
   ...OpensteerAgentSkillNameSchema.options,
 ]);
 
-const withoutMemory = Object.freeze(
-  opensteerAgentSkillNames.filter((name) => name !== "opensteer:memory"),
-);
-
-/** Personal memory lives in Main; Project and specialist Runs never receive it. */
+/**
+ * Personal memory lives in Main; Project and specialist Runs never receive it.
+ * Knowledge goes with the `sql` tool, which only Main-inheriting Runs hold.
+ */
 export function opensteerAgentSkillsFor(
   reach: ThreadReachScope["kind"],
+  options: { readonly knowledge?: boolean } = {},
 ): readonly OpensteerAgentSkillName[] {
-  return reach === "user" ? opensteerAgentSkillNames : withoutMemory;
+  return opensteerAgentSkillNames.filter(
+    (name) =>
+      (name !== "opensteer:memory" || reach === "user") &&
+      (name !== "opensteer:knowledge" || (reach === "user" && options.knowledge === true)),
+  );
 }

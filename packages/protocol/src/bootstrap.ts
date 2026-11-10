@@ -109,7 +109,12 @@ export const HostBootstrapSchema = z.object({
       computerExecutionControls: z.boolean().optional().catch(undefined),
       projectConsent: z.enum(["owner-wide", "per-project"]).optional().catch(undefined),
       localRunnerDefaultModules: z
-        .array(z.enum(["agents", "browser", "shell"]).optional().catch(undefined))
+        .array(
+          z
+            .enum(["agents", "browser", "integrations", "messaging", "shell"])
+            .optional()
+            .catch(undefined),
+        )
         .transform((modules) => modules.filter((module) => module !== undefined))
         .optional()
         .catch(undefined),

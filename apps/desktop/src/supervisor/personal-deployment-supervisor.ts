@@ -121,6 +121,7 @@ interface PersonalDeploymentSupervisorOptions {
   readonly onStatus?: (status: DesktopPersonalDeploymentStatus) => void;
   readonly processes: PersonalProcessPort;
   readonly passkeys?: boolean;
+  readonly knowledge?: boolean;
   readonly portalOrigin?: URL | string | null;
   readonly release?: () => Promise<VerifiedPersonalRuntimeRelease>;
   readonly releaseDirectory: string;
@@ -203,6 +204,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
   readonly #accountIssuer: string | null;
   readonly #allocatePort: () => Promise<number>;
   readonly #passkeys: boolean;
+  readonly #knowledge: boolean;
   readonly #baseEnvironment: Readonly<Record<string, string>>;
   readonly #catalog: Pick<DeploymentCatalogStore, "upsertAndSelect">;
   readonly #computerUse: PersonalDeploymentSupervisorOptions["computerUse"];
@@ -256,6 +258,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
       : null;
     this.#allocatePort = options.allocatePort ?? allocateLoopbackPort;
     this.#passkeys = options.passkeys === true;
+    this.#knowledge = options.knowledge === true;
     this.#baseEnvironment = options.baseEnvironment ?? filterUserEnvironment(process.env);
     this.#userEnvironment =
       options.userEnvironment ??
@@ -662,6 +665,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
           bridgeToken: browser.bridgeToken,
           runtimeId: browser.runtimeId,
           signIn: browser.signIn,
+          personFill: browser.personFill,
           url: browser.url,
         },
         computerUse,
@@ -776,6 +780,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
         this.#accountIssuer,
         this.#portalOrigin,
         this.#passkeys,
+        this.#knowledge,
       ),
     );
     const origin = `http://127.0.0.1:${manifest.hostPort}`;
@@ -1676,6 +1681,7 @@ function hostSpec(
   accountIssuer: string | null,
   portalOrigin: string | null,
   passkeys: boolean,
+  knowledge: boolean,
 ): PersonalProcessSpec {
   const fingerprint = HostKeyFingerprintSchema.parse(manifest.hostKeyFingerprint);
   const origin = `http://127.0.0.1:${manifest.hostPort}`;
@@ -1700,6 +1706,7 @@ function hostSpec(
       OPENSTEER_HOST_RELEASE_VERSION: release.assets.webDistribution.hostVersion,
       OPENSTEER_LOCAL_PASSWORD_ENABLED: "false",
       OPENSTEER_PASSKEYS: passkeys ? "1" : "0",
+      OPENSTEER_KNOWLEDGE: knowledge ? "1" : "0",
       // The Host names the machine new Workspaces go to; the co-located Runner
       // owns the directories and the protected registry themselves.
       OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID: manifest.environmentId,
@@ -1768,6 +1775,7 @@ function runnerSpec(
     readonly bridgeToken: string;
     readonly runtimeId: string;
     readonly signIn: boolean;
+    readonly personFill: boolean;
     readonly url: URL;
   },
   computerUse: { readonly token: string; readonly url: URL } | null,
@@ -1785,6 +1793,7 @@ function runnerSpec(
       // The Runner advertises saved-password sign-ins only for a browser that
       // can run them, so the Host never offers one this Mac cannot finish.
       ...(browser.signIn ? { OPENSTEER_BROWSER_SIGN_IN: "1" } : {}),
+      ...(browser.personFill ? { OPENSTEER_BROWSER_PERSON_FILL: "1" } : {}),
       ...(computerUse ? { OPENSTEER_COMPUTER_USE_BRIDGE_URL: computerUse.url.toString() } : {}),
       // Only the engines whose bytes this release ships are named here; an
       // `installed` engine is found by the Runner on the person's own machine.

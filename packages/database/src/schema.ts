@@ -117,6 +117,7 @@ import type {
 } from "@opensteer/protocol";
 import type { TriggerProgram, TriggerProgramEvent, TriggerSource } from "@opensteer/triggers";
 import type { ColumnType, Generated, Selectable } from "kysely";
+import type { KnowledgeTables } from "./knowledge-schema.js";
 
 export type Timestamp = ColumnType<Date, Date | string | undefined, Date | string>;
 export type NullableTimestamp = ColumnType<
@@ -615,6 +616,7 @@ interface ExecutionEnvironmentTable {
 }
 
 interface RunnerEnrollmentTable {
+  issuanceModules: Generated<readonly RunnerModuleName[] | null>;
   deviceProfile: Generated<"iphone" | null>;
   id: string;
   name: string;
@@ -1501,6 +1503,7 @@ interface CredentialVaultCanaryTable {
 }
 
 export interface BrowserProfileTable {
+  homeRunnerId: Generated<RunnerId | null>;
   id: BrowserProfileId;
   ownerId: UserId;
   name: string;
@@ -1526,7 +1529,7 @@ export interface BrowserProfileDeletionTable {
   storageInstanceId: string;
   bindingId: string;
   engine: BrowserEngine;
-  state: "pending-computer" | "pending-restart" | "deleted";
+  state: "pending-computer" | "pending-restart" | "deleted" | "unconfirmed";
   createdAt: Timestamp;
   updatedAt: Timestamp;
   deletedAt: NullableTimestamp;
@@ -2149,7 +2152,7 @@ export interface TeamInvitationTable {
   requestFingerprint: string;
 }
 
-export interface DatabaseSchema {
+export interface DatabaseSchema extends KnowledgeTables {
   teamInvitations: TeamInvitationTable;
   accessGroups: AccessGroupTable;
   accessGroupMembers: AccessGroupMemberTable;

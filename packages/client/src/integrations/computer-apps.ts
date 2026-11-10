@@ -13,7 +13,7 @@ import type {
   MachineDevice,
   MachineSummary,
 } from "@opensteer/protocol";
-import { androidAccessibilityStep, isAndroidPhone } from "./computer-use.js";
+import { androidAccessibilityStep, isAgentPhone } from "./computer-use.js";
 
 /**
  * Apps on a computer, as every client surface reasons about them.
@@ -99,7 +99,7 @@ export function computerAppRows(input: {
     );
     if (!connection && !(online && entry) && !pending) return [];
     const access = connection?.computer?.access ?? null;
-    const phone = isAndroidPhone(machine);
+    const phone = isAgentPhone(machine);
     return [
       {
         access,
@@ -299,7 +299,7 @@ export function computerAppTargets(input: {
           integrationsAdvertised: machine.modules.integrations !== undefined,
           name: input.definition.name,
           online: true,
-          phone: isAndroidPhone(machine),
+          phone: isAgentPhone(machine),
         }),
       },
     ];
@@ -326,7 +326,7 @@ export function computerConnectionState(input: {
     integrationsAdvertised: machine.modules.integrations !== undefined,
     name: input.definition.name,
     online: machine.status === "online",
-    phone: isAndroidPhone(machine),
+    phone: isAgentPhone(machine),
   });
 }
 

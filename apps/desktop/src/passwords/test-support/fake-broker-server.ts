@@ -16,6 +16,7 @@ import {
   passwordsBrokerMaxFrameBytes,
   type PasswordsBrokerStatus,
 } from "@opensteer/protocol/passwords-broker";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
   encodeLengthPrefixedJson,
   LengthPrefixedJsonReader,
@@ -272,10 +273,24 @@ export class FakePasswordsBroker {
 
   /** Resolves once a frame for `method` has arrived. */
   async waitFor(method: string): Promise<FakeBrokerFrame> {
-    for (;;) {
-      const found = this.received(method)[0];
-      if (found) return found;
-      await new Promise<void>((resolvePromise) => this.#arrivals.add(resolvePromise));
+    let wake: (() => void) | undefined;
+    try {
+      return await withTimeout(
+        (async () => {
+          for (;;) {
+            const found = this.received(method)[0];
+            if (found) return found;
+            await new Promise<void>((resolvePromise) => {
+              wake = resolvePromise;
+              this.#arrivals.add(resolvePromise);
+            });
+          }
+        })(),
+        2_000,
+        { timeoutError: () => new Error(`The fake broker never received ${method}.`) },
+      );
+    } finally {
+      if (wake) this.#arrivals.delete(wake);
     }
   }
 
@@ -404,7 +419,13 @@ export class FakePasswordsBroker {
     switch (method) {
       case "hello": {
         const requested = params.protocolVersion;
-        if (requested !== 4 && requested !== 5 && requested !== 6 && requested !== 7)
+        if (
+          requested !== 4 &&
+          requested !== 5 &&
+          requested !== 6 &&
+          requested !== 7 &&
+          requested !== 8
+        )
           throw new Error("Unsupported protocol");
         const negotiated =
           this.#options.protocolVersion ??
@@ -439,6 +460,7 @@ export class FakePasswordsBroker {
       case "signin.commit":
         this.#write(socket, connection, { id, result: { committed: true } });
         return;
+      case "fill.begin":
       case "signin.request":
       case "signin.approve":
         this.#held.push({ connection, id, method, params, socket });

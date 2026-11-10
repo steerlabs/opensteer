@@ -2,6 +2,7 @@
 import { act } from "react";
 import { expect, it, vi } from "vitest";
 import { placeList } from "@opensteer/client/host";
+import { BrowserSessionIdSchema, BrowserSurfaceIdSchema } from "@opensteer/core";
 import {
   click,
   client,
@@ -28,14 +29,14 @@ function taskBrowser() {
 
 const shownTab = () => element<HTMLElement>(".browser-view").dataset.browserTab;
 const following = () => document.querySelector('[aria-label="Following the agent"]');
-const band = () => document.querySelector(".browser-follow-band");
+const liveCard = () => document.querySelector(".conv-header .viewfinder");
 
-it("follows the docked task's agent in place, pauses for the person's tab and resumes on Follow", async () => {
+it("follows the docked task's agent in place, stops for the person's tab and follows again from its live card", async () => {
   await mount(() => {
     const { session, threadId, acting } = taskBrowser();
     return `/threads/${threadId}?panel=browser&browser=${session.id}&browserTab=${acting.id}`;
   });
-  const { threadId, reading, acting, confirm, placeKey } = taskBrowser();
+  const { session, threadId, reading, acting, confirm, placeKey } = taskBrowser();
   expect(following(), "The agent's own tab never started following").not.toBeNull();
   const stage = element(".browser-view");
   const composer = element("[data-composer-input]");
@@ -53,21 +54,41 @@ it("follows the docked task's agent in place, pauses for the person's tab and re
   expect(history).toHaveLength(entries + 1);
   expect(history.at(-1)!.type).toBe("REPLACE");
   expect(following()).not.toBeNull();
-  expect(band()).toBeNull();
+  expect(liveCard(), "The live card repeated the page already in front").toBeNull();
 
   await click(element(`.side-tab[data-place-key="${placeKey(confirm.id)}"] .side-tab__main`));
   expect(shownTab()).toBe(confirm.id);
   expect(following()).toBeNull();
-  expect(band()?.textContent).toContain(`Agent is on ${reading.title}`);
+
+  // The Run's place reaches the live card before the tab catalog's occupancy does.
+  const run = client
+    .getSnapshot()
+    .runQueue.find((entry) => entry.threadId === threadId && entry.status === "running")!;
+  await act(async () =>
+    client.enterPlace(run.id, threadId, {
+      place: {
+        kind: "browser",
+        sessionId: BrowserSessionIdSchema.parse(session.id),
+        surfaceId: BrowserSurfaceIdSchema.parse(acting.id),
+      },
+      title: acting.title,
+      site: null,
+    }),
+  );
+  expect(shownTab(), "A stage the person took over followed the agent").toBe(confirm.id);
+  expect(liveCard()?.getAttribute("aria-label")).toBe(`Show ${acting.title}`);
+
+  await click(liveCard()!);
+  expect(shownTab()).toBe(acting.id);
+  expect(following(), "The live card did not start following").not.toBeNull();
+  expect(liveCard()).toBeNull();
 
   await act(async () => client.actInPlace(threadId, placeKey(acting.id)));
-  expect(shownTab(), "A paused stage followed the agent").toBe(confirm.id);
-  expect(band()?.textContent).toContain(`Agent is on ${acting.title}`);
-
-  await click(element('button[aria-label="Follow the agent"]'));
-  expect(shownTab()).toBe(acting.id);
-  expect(following()).not.toBeNull();
-  expect(band()).toBeNull();
+  await act(async () => client.actInPlace(threadId, placeKey(reading.id)));
+  await vi.waitFor(
+    () => expect(shownTab(), "The live card never started following again").toBe(reading.id),
+    { timeout: 3_000 },
+  );
 });
 
 it("leaves the stage alone with the conversation put away", async () => {
@@ -75,9 +96,9 @@ it("leaves the stage alone with the conversation put away", async () => {
     const { session, threadId, acting } = taskBrowser();
     return `/threads/${threadId}?panel=browser&browser=${session.id}&browserTab=${acting.id}`;
   });
-  const { threadId, reading, placeKey } = taskBrowser();
+  const { threadId, reading, acting, placeKey } = taskBrowser();
   await click(element('button[aria-label="Hide the conversation"]'));
   expect(following()).toBeNull();
   await act(async () => client.actInPlace(threadId, placeKey(reading.id)));
-  expect(band()).toBeNull();
+  expect(shownTab()).toBe(acting.id);
 });

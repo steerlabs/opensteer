@@ -225,6 +225,11 @@ export class BrowserRuntime implements NativePresentationSource {
   private shuttingDown = false;
   private readonly attempts = new Set<AbortController>();
   private shutdownResult: Promise<void> | undefined;
+  private readonly nativePresentations = new Set<{
+    sessionId: string;
+    surfaceId: BrowserSurfaceId;
+    consumerToken: string | null;
+  }>();
   private readonly loginAuthority: BrowserLoginAuthority | undefined;
   private state: BrowserRuntimeState = "idle";
   private readonly ticketVerifier: AttachTicketVerifier;
@@ -392,9 +397,12 @@ export class BrowserRuntime implements NativePresentationSource {
     if (this.shuttingDown || !session || !binding || binding.page.isClosed()) return null;
     const listeners = new Set<(event: PresentedSurfaceEvent) => void>();
     let released = false;
+    const native = { sessionId, surfaceId, consumerToken: null as string | null };
+    this.nativePresentations.add(native);
     const release = () => {
       if (released) return;
       released = true;
+      this.nativePresentations.delete(native);
       unsubscribe();
       session.presentations.delete(closed);
       binding.page.offClose(closed);
@@ -433,7 +441,10 @@ export class BrowserRuntime implements NativePresentationSource {
           );
       },
       viewerInput: (consumerToken) => {
-        if (!released) session.ledger.recordViewerInput(surfaceId, consumerToken);
+        if (!released) {
+          native.consumerToken = consumerToken;
+          session.ledger.recordViewerInput(surfaceId, consumerToken, true);
+        }
       },
       page: binding.page,
       sessionId,
@@ -687,7 +698,7 @@ export class BrowserRuntime implements NativePresentationSource {
         const sessionGeneration = ++this.generation;
         let stage = "profile-state";
         try {
-          const acquired = await wait(this.acquireHost(claims, hostKey, ticket, signal));
+          const acquired = await this.acquireHost(claims, hostKey, ticket, signal);
           if (!acquired.host) throw new Error("Browser acquisition returned no host.");
           host = acquired.host;
           createdHost = acquired.createdHost;
@@ -754,6 +765,15 @@ export class BrowserRuntime implements NativePresentationSource {
           const stateImports = host.stateImports;
           const stateHost = host;
           controller = new BrowserController({
+            loginAuthority: this.loginAuthority,
+            nativePresentation: (surfaceId, consumerToken) => {
+              const live = [...this.nativePresentations].filter(
+                (presentation) =>
+                  presentation.sessionId === claims.sessionId &&
+                  presentation.surfaceId === surfaceId,
+              );
+              return live.length === 1 && live[0]?.consumerToken === consumerToken;
+            },
             passkeys: claims.passkeys === 1 ? host.passkeys : undefined,
             verifyOpenAuthority: (ticket) =>
               this.ticketVerifier.verify(ticket, { runtimeId: this.runtimeId }),
@@ -910,14 +930,12 @@ export class BrowserRuntime implements NativePresentationSource {
         let localDirectory: string | undefined;
         if (claims.identity.kind === "profile-local") {
           const identity = claims.identity;
-          localDirectory = await wait(
-            this.localStore!.provision(
-              identity.binding,
-              identity.initialized,
-              (directory) =>
-                this.launcher.localProfiles!.createFiles(directory, identity.binding, signal),
-              signal,
-            ),
+          localDirectory = await this.localStore!.provision(
+            identity.binding,
+            identity.initialized,
+            (directory) =>
+              this.launcher.localProfiles!.createFiles(directory, identity.binding, signal),
+            signal,
           );
           if (!identity.initialized)
             await wait(this.acknowledgeProfileReady(identity, ticket, signal));

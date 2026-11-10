@@ -51,6 +51,7 @@ import {
   DesktopBrowserOverlayInputSchema,
   DesktopBrowserFindInputSchema,
   DesktopBrowserGlassInputSchema,
+  DesktopBrowserAutofillInputSchema,
   DesktopBrowserPresentationEventSchema,
   type DesktopBrowserPresentationBridge,
 } from "@opensteer/protocol/desktop";
@@ -279,6 +280,12 @@ const browserPresentation: DesktopBrowserPresentationBridge =
         desktopBridgeChannels.browserFocusPage,
         DesktopBrowserPresentationTargetSchema.parse(input),
       );
+    },
+    setAutofill: (input) => {
+      void invokePresentation(
+        desktopBridgeChannels.browserSetAutofill,
+        DesktopBrowserAutofillInputSchema.parse(input),
+      ).catch((error: unknown) => console.error(error));
     },
     setGlass: (input) => {
       void invokePresentation(

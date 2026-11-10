@@ -472,7 +472,7 @@ describeStore("Project runtime settings", (it) => {
       alter table public.auth_sessions drop column member_generation;
       alter table public.agent_connections drop column member_generation, drop column membership_generation;
       drop table public.project_runtime_settings; drop function public.opensteer_project_runtime_settings_scope();
-      delete from kysely_migration where name >= '0170_project_execution_preparation'`.execute(
+      delete from kysely_migration where name >= '0171_project_execution_preparation'`.execute(
       storeFixture.database,
     );
     const objects = () =>
@@ -499,7 +499,7 @@ describeStore("Project runtime settings", (it) => {
     const result = await new Migrator({
       db: storeFixture.database,
       provider: migrationProvider(),
-    }).migrateTo("0170_project_execution_preparation");
+    }).migrateTo("0171_project_execution_preparation");
     if (result.error) throw result.error;
     expect(
       (await objects()).rows.filter((row) => before.some((previous) => previous.name === row.name)),

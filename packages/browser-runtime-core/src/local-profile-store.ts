@@ -219,6 +219,8 @@ export class LocalProfileStore {
     await rm(this.profile(binding), { force: true, recursive: true });
     if (await realDirectoryIfPresent(path.join(this.root, "profiles")))
       await syncDirectory(path.join(this.root, "profiles"));
+    if (await realDirectoryIfPresent(this.profile(binding)))
+      throw invalid("The browser profile directory still exists after erasure.");
     await replacePrivateFileAtomically(
       path.join(this.root, "tombstones", `${binding.profileId}.json`),
       JSON.stringify({ phase: "deleted", binding, deletionId, erasure: "deleted" }),

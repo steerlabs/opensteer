@@ -423,15 +423,39 @@ integration.sequential("durable workspace tabs", () => {
     const replacement = createBrowserSessionId();
     await store.createBrowserSession({ ...f.session, id: replacement, tabGroupId: f.groupId });
     await tabs.bind(f.groupId, replacement, f.first.id);
-    for (let index = 0; index < 100; index++) {
-      const id = createBrowserSessionId();
-      await store.createBrowserSession({ ...f.session, id });
-      await tabs.record(
-        id,
-        [{ ...f.second, id: BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`) }],
-        [],
-      );
-    }
+    const now = Date.now();
+    const newer = Array.from({ length: 100 }, (_, index) => ({
+      id: createBrowserSessionId(),
+      createdAt: new Date(now + index + 1),
+    }));
+    await database
+      .insertInto("browserSessions")
+      .values(
+        newer.map((group) => ({
+          ...f.session,
+          ...group,
+          tabGroupId: group.id,
+          tabRevision: 1,
+          state: "starting" as const,
+          closedAt: null,
+        })),
+      )
+      .execute();
+    await database
+      .insertInto("workspaceTabs")
+      .values(
+        newer.map((group) => ({
+          ...f.second,
+          id: BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`),
+          groupId: group.id,
+          sessionId: group.id,
+          createdAt: group.createdAt,
+          order: 0,
+          state: "live" as const,
+          closedAt: null,
+        })),
+      )
+      .execute();
     expect((await tabs.list(f.ownerId)).some((group) => group.id === f.groupId)).toBe(false);
     const grouped = await new BrowserTabGroupStore(database).group(f.ownerId, {
       tabIds: [f.first.id],
@@ -475,22 +499,60 @@ integration.sequential("durable workspace tabs", () => {
   it("lists the newest 100 groups without refusing new dormant groups", async ({
     storeFixture,
   }) => {
-    const { fixture, store, tabs } = storeFixture;
+    const { fixture, store, tabs, database } = storeFixture;
     const f = await fixture();
-    for (let index = 0; index < 101; index++) {
-      const id = createBrowserSessionId();
-      await store.createBrowserSession({ ...f.session, id });
-      expect(
-        await tabs.record(
-          id,
-          [{ ...f.first, id: BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`) }],
-          [],
-        ),
-      ).toBe(true);
-      await tabs.suspend(id);
-    }
+    const now = Date.now();
+    const dormant = Array.from({ length: 100 }, (_, index) => ({
+      id: createBrowserSessionId(),
+      createdAt: new Date(now - (100 - index) * 1_000),
+    }));
+    await database
+      .insertInto("browserSessions")
+      .values(
+        dormant.map((group) => ({
+          ...f.session,
+          ...group,
+          tabGroupId: group.id,
+          tabRevision: 2,
+          opener: null,
+          state: "starting" as const,
+          closedAt: null,
+        })),
+      )
+      .execute();
+    await database
+      .insertInto("workspaceTabs")
+      .values(
+        dormant.map((group) => ({
+          ...f.first,
+          id: BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`),
+          groupId: group.id,
+          sessionId: group.id,
+          createdAt: group.createdAt,
+          state: "suspended" as const,
+          closedAt: null,
+        })),
+      )
+      .execute();
+    const id = createBrowserSessionId();
+    await store.createBrowserSession({ ...f.session, id });
+    expect(
+      await tabs.record(
+        id,
+        [{ ...f.first, id: BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`) }],
+        [],
+      ),
+    ).toBe(true);
+    await tabs.suspend(id);
     const listed = await tabs.list(f.ownerId);
     expect(listed).toHaveLength(100);
+    expect(listed.map((group) => group.id)).toEqual([
+      id,
+      ...dormant
+        .slice(1)
+        .reverse()
+        .map((group) => group.id),
+    ]);
     expect(listed.every((group) => group.tabs?.[0]?.state === "suspended")).toBe(true);
     expect(listed.map((group) => group.createdAt)).toEqual(
       listed

@@ -39,6 +39,7 @@ export default defineConfig(({ mode }) => {
         input: {
           main: resolve(import.meta.dirname, "index.html"),
           glass: resolve(import.meta.dirname, "glass.html"),
+          autofill: resolve(import.meta.dirname, "autofill.html"),
         },
       },
       sourcemap: true,

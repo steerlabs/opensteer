@@ -354,6 +354,13 @@ const sqlExceptions: Record<
         "deployment.deployment_shape->>'kind' = 'server'": 1,
         "deployment.deployment_shape->>'kind' = 'personal'": 1,
       },
+      "browserDeviceGrantsMigration/unclassified": {
+        "deployment_shape->>'kind' = 'personal')": 2,
+        "deployment_shape->>'kind' = 'personal'))": 2,
+      },
+      "browserProfileHomesMigration/browser_profile_deletions_state_check": {
+        "deployment_shape->>'kind' = 'personal')": 1,
+      },
       "projectExecutionPreparationMigration/public.opensteer_project_runtime_settings_scope": {
         "d.deployment_shape->>'kind' = 'server'": 1,
       },

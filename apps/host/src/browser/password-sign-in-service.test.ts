@@ -115,6 +115,7 @@ function harness() {
     profileName: null,
     profileId: null,
     live: true,
+    main: true,
   } satisfies BrowserSignInTarget;
   const site = "https://example.test";
   let emit: (
@@ -931,6 +932,14 @@ describe("card Workspace lifecycle", () => {
   });
   it("refuses capability and different-computer mismatches before sending a card command", async () => {
     const h = harness();
+    expect(
+      await h.service.requestCard({
+        ...h.call,
+        site: h.site,
+        cardRunnerId: createId("runner"),
+        admitStart: () => true,
+      }),
+    ).toMatchObject({ status: "unavailable", reason: "main-browser-required" });
     h.hub.cardUseSupported.mockReturnValue(false);
     expect(
       await h.service.requestCard({

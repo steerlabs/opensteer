@@ -1,6 +1,7 @@
 import { readInitializedDeploymentAuthority } from "./deployment-execution-authority.js";
 import { readTeamRealtimeAuthority, type TeamRealtimeAuthority } from "./access-store.js";
 import { claimAccessSecurityEffects } from "./access-effects.js";
+import { listEligibleBrowserRunners } from "./browser-home-store.js";
 import * as backgroundModelStore from "./background-model-store.js";
 import * as voiceStore from "./voice-store.js";
 import * as workspaceSkillInventoryStore from "./workspace-skill-inventory-store.js";
@@ -554,6 +555,10 @@ export class OpensteerStore {
       readonly allowOtherOwners?: boolean;
     } = {},
   ): Promise<{
+    readonly deletedBrowserProfiles: readonly {
+      readonly id: BrowserProfileId;
+      readonly ownerId: UserId;
+    }[];
     readonly cancelledRequestIds: readonly RequestId[];
     readonly closedBrowserSessions: readonly BrowserSessionId[];
     readonly events: readonly AgentEvent[];
@@ -704,6 +709,8 @@ export class OpensteerStore {
   }
 
   async createRunnerEnrollment(input: {
+    readonly issuanceModules?: readonly RunnerModuleName[];
+    readonly deviceProfile?: import("@opensteer/protocol").RunnerDeviceProfile;
     /**
      * The exact modules the computer redeeming this token may advertise.
      * Issuance chooses the grant; installing newer software cannot widen it.
@@ -764,6 +771,7 @@ export class OpensteerStore {
   }
 
   async createBrowserProfile(input: {
+    readonly homeRunnerId?: RunnerId | null;
     readonly idempotencyKey: string;
     readonly name: string;
     readonly ownerId: UserId;
@@ -776,6 +784,10 @@ export class OpensteerStore {
     ownerId: UserId,
   ): Promise<BrowserProfileRecord | null> {
     return browserSessionStore.getBrowserProfile(this.#database, profileId, ownerId);
+  }
+
+  listEligibleBrowserRunners(ownerId: UserId) {
+    return listEligibleBrowserRunners(this.#database, ownerId);
   }
 
   async listBrowserProfiles(ownerId: UserId): Promise<readonly BrowserProfileRecord[]> {
@@ -2281,7 +2293,7 @@ export { runnerIdentityRevokedReason } from "./runner-store.js";
 
 export { runnerEnrollmentExpiredReason } from "./runner-store.js";
 
-export { phoneRunnerGrant } from "./runner-store.js";
+export { personalReachableGrant, phoneRunnerGrant } from "./runner-store.js";
 
 export type { MachineAccessTargetRecord } from "./machine-store.js";
 

@@ -17,7 +17,9 @@ it.each(["personal", "server"] as const)(
   "keeps local enrollment modules for an older %s bootstrap",
   (kind) => {
     expect(localEnrollmentModules({ deploymentShape: { kind } })).toEqual(
-      kind === "personal" ? ["shell"] : ["agents", "browser", "shell"],
+      kind === "personal"
+        ? ["browser", "integrations", "messaging", "shell"]
+        : ["agents", "browser", "shell"],
     );
   },
 );

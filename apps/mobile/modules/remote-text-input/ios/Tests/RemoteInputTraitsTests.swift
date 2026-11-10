@@ -20,4 +20,24 @@ final class RemoteInputTraitsTests: XCTestCase {
     XCTAssertFalse(RemoteInputTraits(nil, softKeyboard: true).showsKeyboard)
     XCTAssertFalse(RemoteInputTraits(["field": ["inputMode": "none"]], softKeyboard: true).showsKeyboard)
   }
+  func testReplacementPermissionOnlyChangesReplacementTraits() {
+    for sensitive in [false, true] {
+      for mode in ["text", "email", "url", "numeric", "decimal", "tel", "search", "none"] {
+        let context: [String: Any] = ["field": ["sensitive": sensitive, "inputMode": mode, "enterKeyHint": "send", "autocapitalize": "words"]]
+        let full = RemoteInputTraits(context, softKeyboard: true)
+        let basic = RemoteInputTraits(context, softKeyboard: true, keyboardMayReplaceText: false)
+        XCTAssertTrue(full.keyboardMayReplaceText)
+        XCTAssertEqual(full.allowsSuggestions, !sensitive)
+        XCTAssertFalse(basic.keyboardMayReplaceText)
+        XCTAssertFalse(basic.allowsSuggestions)
+        XCTAssertNotEqual(full, basic)
+        XCTAssertEqual(full.editable, basic.editable)
+        XCTAssertEqual(full.sensitive, basic.sensitive)
+        XCTAssertEqual(full.inputMode, basic.inputMode)
+        XCTAssertEqual(full.enterKeyHint, basic.enterKeyHint)
+        XCTAssertEqual(full.autocapitalize, basic.autocapitalize)
+        XCTAssertEqual(full.showsKeyboard, basic.showsKeyboard)
+      }
+    }
+  }
 }

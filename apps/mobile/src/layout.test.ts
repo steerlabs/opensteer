@@ -403,6 +403,17 @@ describe("fit, judged on the room a pane can use", () => {
     ).toEqual({ mode: "stacked" });
   });
 
+  it("gives a conversation beside a page its share clear of the vertical bar at its edge", () => {
+    // iPhone Duo's inner screen: 364 of the 910 left of the bar, and the bar's 90 on top.
+    const duo = { bounds: { height: 700, width: 1000 }, insets: { ...noInsets, right: 90 } };
+    expect(pair(duo)).toEqual({ gap: 0, mode: "side", pageWidth: 546 });
+    expect(pair({ ...duo, insets: { ...noInsets, left: 90 }, rtl: true })).toEqual({
+      gap: 0,
+      mode: "side",
+      pageWidth: 546,
+    });
+  });
+
   it("follows the reader's text size all the way up", () => {
     const landscape = { height: 744, width: 1133 };
     expect(shell({ bounds: landscape, fontScale: 2 }).sidebar.mode).toBe("column");

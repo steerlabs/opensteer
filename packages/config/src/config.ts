@@ -35,6 +35,7 @@ import {
 } from "node:fs";
 import { isAbsolute } from "node:path";
 import { z } from "zod";
+import { KnowledgeEnvironmentSchema } from "./knowledge.js";
 import { PasskeysEnvironmentSchema } from "./passkeys.js";
 
 export const hostEnvironmentKeys = {
@@ -170,6 +171,7 @@ const HostEnvironmentSchema = z.object({
   OPENSTEER_LOCAL_OWNER_CLAIM_TOKEN: optionalLocalOwnerClaimToken,
   OPENSTEER_LOCAL_PASSWORD_ENABLED: booleanValue(true),
   OPENSTEER_PASSKEYS: PasskeysEnvironmentSchema.shape.OPENSTEER_PASSKEYS,
+  OPENSTEER_KNOWLEDGE: KnowledgeEnvironmentSchema.shape.OPENSTEER_KNOWLEDGE,
   OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID: EnvironmentIdSchema.optional(),
   OPENSTEER_NATIVE_OAUTH_ENABLED: optionalBooleanValue,
   OPENSTEER_DEPLOYMENT_KIND: DeploymentKindSchema.optional(),
@@ -233,6 +235,8 @@ export interface HostConfig {
    * the machine comes to the Host, not the other way round.
    */
   readonly passkeys?: boolean;
+  /** Agents' `sql` tool over the knowledge base; only ever true on a Personal Deployment. */
+  readonly knowledge?: boolean;
   readonly browserRuntime: { readonly attachKeyId: string };
   readonly databaseUrl: string;
   readonly credentialKeyPath: string | undefined;
@@ -353,6 +357,14 @@ export function assertHostConfigInvariants(config: HostConfig): void {
   ) {
     throw new Error(
       "A Personal Deployment cannot serve native OAuth: set OPENSTEER_NATIVE_OAUTH_ENABLED=false",
+    );
+  }
+  if (
+    config.knowledge === true &&
+    !deploymentPolicy(config.workspace.shape).configuration.knowledgeTrial
+  ) {
+    throw new Error(
+      "The knowledge trial runs only on a Personal Deployment: unset OPENSTEER_KNOWLEDGE",
     );
   }
   // A loopback Host mints its own first-owner code; only a networked Host
@@ -565,6 +577,7 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
     canonicalOrigin,
     browserRuntime,
     passkeys: parsed.OPENSTEER_PASSKEYS,
+    knowledge: parsed.OPENSTEER_KNOWLEDGE,
     databaseUrl: parsed.OPENSTEER_DATABASE_URL,
     credentialKeyPath: parsed.OPENSTEER_CREDENTIAL_KEY_PATH,
     dataDirectory: parsed.OPENSTEER_HOST_DATA_DIR,
@@ -812,6 +825,7 @@ const RunnerEnvironmentSchema = z.object({
   OPENSTEER_BROWSER_BRIDGE_URL: z.url().optional(),
   OPENSTEER_BROWSER_RUNTIME_ID: z.string().trim().min(1).max(255).optional(),
   OPENSTEER_BROWSER_SIGN_IN: z.literal("1").optional(),
+  OPENSTEER_BROWSER_PERSON_FILL: z.literal("1").optional(),
   // The same bounds as `ComputerUseBridgeTokenSchema` in `@opensteer/protocol`,
   // written out because this package parses environments for every runtime and
   // does not depend on the wire schemas.
@@ -857,6 +871,8 @@ export interface RunnerConfig {
         readonly runtimeId: string;
         /** The browser runs saved-password sign-ins with Opensteer Passwords on this Mac. */
         readonly signIn: boolean;
+        /** Its pages offer and fill the person's own saved logins. */
+        readonly personFill: boolean;
         readonly url: URL;
       }
     | undefined;
@@ -1047,8 +1063,7 @@ function runnerWorkspaceStorage(
 
 /**
  * What this Runner process runs. `browser` names a relay that reaches the Host
- * through this Runner's own identity and serves the agents on this computer, so
- * a browser without agents is a machine nobody can use.
+ * through this Runner's own identity, independently of where agents run.
  */
 function parseRunnerModules(value: string): readonly RunnerProcessModule[] {
   const values = value.split(",").map((entry) => entry.trim());
@@ -1057,9 +1072,6 @@ function parseRunnerModules(value: string): readonly RunnerProcessModule[] {
     throw new Error(
       "OPENSTEER_RUNNER_MODULES must be a unique comma-separated list of agents, browser, integrations, messaging and shell",
     );
-  }
-  if (selection.includes("browser") && !selection.includes("agents")) {
-    throw new Error("browser relay belongs to a computer that runs agents");
   }
   // A Mac's own transports reach its Messages through the helper the
   // integrations module's bridge connects to.
@@ -1081,6 +1093,7 @@ function runnerBrowserBridge(parsed: {
   readonly OPENSTEER_BROWSER_BRIDGE_URL?: string | undefined;
   readonly OPENSTEER_BROWSER_RUNTIME_ID?: string | undefined;
   readonly OPENSTEER_BROWSER_SIGN_IN?: "1" | undefined;
+  readonly OPENSTEER_BROWSER_PERSON_FILL?: "1" | undefined;
 }): RunnerConfig["browserBridge"] {
   const configured = [
     parsed.OPENSTEER_BROWSER_BRIDGE_TOKEN,
@@ -1088,9 +1101,9 @@ function runnerBrowserBridge(parsed: {
     parsed.OPENSTEER_BROWSER_RUNTIME_ID,
   ].filter((value) => value !== undefined);
   if (configured.length === 0) {
-    if (parsed.OPENSTEER_BROWSER_SIGN_IN !== undefined) {
-      throw new Error("OPENSTEER_BROWSER_SIGN_IN needs the Runner's browser bridge settings");
-    }
+    for (const name of ["OPENSTEER_BROWSER_SIGN_IN", "OPENSTEER_BROWSER_PERSON_FILL"] as const)
+      if (parsed[name] !== undefined)
+        throw new Error(`${name} needs the Runner's browser bridge settings`);
     return undefined;
   }
   if (
@@ -1107,6 +1120,7 @@ function runnerBrowserBridge(parsed: {
     bridgeToken: parsed.OPENSTEER_BROWSER_BRIDGE_TOKEN,
     runtimeId: parsed.OPENSTEER_BROWSER_RUNTIME_ID,
     signIn: parsed.OPENSTEER_BROWSER_SIGN_IN === "1",
+    personFill: parsed.OPENSTEER_BROWSER_PERSON_FILL === "1",
     url: new URL(parsed.OPENSTEER_BROWSER_BRIDGE_URL),
   };
 }

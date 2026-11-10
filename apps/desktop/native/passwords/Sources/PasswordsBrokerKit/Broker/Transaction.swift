@@ -21,17 +21,35 @@ final class Transaction {
   }
 
   struct Pending {
-    enum Kind { case lookup, approve, release }
+    enum Kind { case lookup, approve, release, fillBegin }
     let serial: Int
     let kind: Kind
     let call: HeldCall
     var task: Task<Void, Never>?
   }
 
-  enum Kind { case login, card }
-  let kind: Kind
+  enum Kind: Sendable { case login, card, person }
+  enum Context {
+    case agent(Wire.SignInRequestParams, Kind)
+    case person(Wire.FillBeginParams)
+  }
+  let context: Context
+  var kind: Kind {
+    switch context { case .agent(_, let kind): return kind; case .person: return .person }
+  }
   var isCard: Bool { kind == .card }
-  let request: Wire.SignInRequestParams
+  var isPerson: Bool { kind == .person }
+  var request: Wire.SignInRequestParams? {
+    if case .agent(let request, _) = context { return request }
+    return nil
+  }
+  var person: Wire.FillBeginParams? {
+    if case .person(let params) = context { return params }
+    return nil
+  }
+  var site: String {
+    switch context { case .agent(let request, _): return request.site; case .person(let params): return params.site }
+  }
   let connectionID: Int
   let permissionVersion: Int64
   let expiresAt: Date
@@ -44,15 +62,29 @@ final class Transaction {
   var expiry: DispatchWorkItem?
 
   init(request: Wire.SignInRequestParams, connectionID: Int, expiresAt: Date, kind: Kind = .login) {
-    self.kind = kind
-    self.request = request
+    precondition(kind != .person)
+    self.context = .agent(request, kind)
     self.connectionID = connectionID
     self.permissionVersion = kind == .card ? 7 : request.permissionVersion
     self.expiresAt = expiresAt
   }
 
-  var id: String { request.transactionId }
-  var key: [String] { [isCard ? "card" : "login"] + request.transactionKey }
+  init(person: Wire.FillBeginParams, connectionID: Int, expiresAt: Date) {
+    context = .person(person)
+    self.connectionID = connectionID
+    permissionVersion = 8
+    self.expiresAt = expiresAt
+  }
+
+  var id: String {
+    switch context { case .agent(let request, _): return request.transactionId; case .person(let params): return params.transactionId }
+  }
+  var key: [String] {
+    switch context {
+    case .agent(let request, _): return [isCard ? "card" : "login"] + request.transactionKey
+    case .person(let params): return ["person", params.transactionId]
+    }
+  }
   var waitsForThePerson: Bool {
     if case .choosing = stage { return true }
     if case .choosingCards = stage { return true }

@@ -129,7 +129,7 @@ it("keeps the card and its watch lease across independent inventories, Request w
     store.accept(entry("3", sessionId, "srf_00000000-0000-4000-8000-000000000002")),
   );
   expect(node.querySelector(".viewfinder")).toBe(card);
-  expect(card!.textContent).toContain("Page 3");
+  expect(card!.getAttribute("aria-label")).toContain("Page 3");
   expect(node.querySelector("canvas")).not.toBe(canvas);
   await act(async () =>
     store.accept(
@@ -144,8 +144,10 @@ it("keeps the card and its watch lease across independent inventories, Request w
     ),
   );
   expect(node.querySelector(".viewfinder--native")).toBe(card);
-  expect(card!.textContent).toContain("Notes");
-  expect(node.querySelector(".viewfinder__frame")!.children).toHaveLength(0);
+  expect(card!.getAttribute("aria-label")).toContain("Notes");
+  // No session to show yet: the frame names the kind of place, never an empty box.
+  expect(node.querySelector(".viewfinder__native")).toBeNull();
+  expect(node.querySelector(".viewfinder__frame > .viewfinder__glyph")).not.toBeNull();
   await act(async () => store.end(runId));
   expect(node.querySelector(".viewfinder")).toBeNull();
 });

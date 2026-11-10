@@ -51,6 +51,7 @@ export interface IphoneAppsApproval {
   readonly expiresAt: string;
 }
 export interface IphoneAppsSnapshot {
+  readonly pendingErasure?: boolean;
   readonly revision: number;
   readonly supported: boolean;
   readonly unsupportedReason: "not-ios" | "not-iphone" | "ios-version" | null;
@@ -60,9 +61,8 @@ export interface IphoneAppsSnapshot {
   readonly retryAt: string | null;
   readonly issue: IphoneAppsIssue | null;
   readonly issueMessage: string | null;
-  readonly permissions: Readonly<
-    Record<IphoneBaseAppId, IphonePermission> & Partial<Record<IphoneAddedAppId, IphonePermission>>
-  >;
+  /** The apps this device can share, each as iOS answers for it; a phone with none has none. */
+  readonly permissions: Readonly<Partial<Record<IphoneAppId, IphonePermission>>>;
   /** Whether iPhone Settings gives Location precisely; null unless it is granted. Older builds omit it. */
   readonly locationAccuracy?: "approximate" | "precise" | null;
   readonly working: number;

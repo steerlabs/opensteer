@@ -5,6 +5,7 @@ import { act } from "react";
 import { describe, expect, it, vi, type MockInstance } from "vitest";
 
 import {
+  browserTabSections,
   browserTabStrip,
   placeList,
   type HostSnapshot,
@@ -172,10 +173,12 @@ describe("personal browser tab groups", () => {
     await settle();
     await click(header());
     expect(document.querySelector(`.side-tab[data-place-key="${first.key}"]`)).toBeNull();
-    const expected = browserTabStrip(
-      placeList(client.getSnapshot()),
-      client.getSnapshot().browserTabGroups,
-    )
+    const snapshot = client.getSnapshot();
+    const expected = browserTabSections({
+      strip: browserTabStrip(placeList(snapshot), snapshot.browserTabGroups),
+      machines: snapshot.machines,
+      hereId: null,
+    })
       .ordered.filter((place) => place.availability !== "unavailable")
       .map((place) => place.title);
     const field = element<HTMLTextAreaElement>("[data-composer-input]");

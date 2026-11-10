@@ -10,7 +10,10 @@ const { deriveReleaseVersion } = createRequire(import.meta.url)(
 );
 const repo = "steerlabs/opensteer";
 const insiderPattern = /^v(\d+\.\d+\.\d+)-insider$/u;
+const stablePattern = /^desktop-v(\d+\.\d+\.\d+)$/u;
 const exactSha = /^[a-f0-9]{40}$/u;
+const releaseIdQuery =
+  "query($owner:String!,$name:String!,$tag:String!){repository(owner:$owner,name:$name){release(tagName:$tag){databaseId}}}";
 function execute(executable, args, root) {
   return execFileSync(executable, args, {
     cwd: root,
@@ -19,11 +22,48 @@ function execute(executable, args, root) {
     timeout: 90_000,
   }).trim();
 }
+function isNewer(version, than) {
+  const [a, b] = [version, than].map((value) => value.split(".").map(BigInt));
+  return (a.map((value, index) => value - b[index]).find((value) => value !== 0n) ?? 0n) > 0n;
+}
+// Releases and main's CI runs grow with every push, so neither is ever read whole:
+// a release is found by its tag, and a run list is read newest first, one page.
 function client(root, run) {
   const git = (...args) => run("git", args, root).trim();
-  const api = (url) =>
-    JSON.parse(run("gh", ["api", "--paginate", "--slurp", `repos/${repo}/${url}`], root));
-  const pages = (url, field) => api(url).flatMap((page) => (field ? page[field] : page));
+  const api = (url, flags = []) =>
+    JSON.parse(run("gh", ["api", ...flags, `repos/${repo}/${url}`], root));
+  // Only for lists bounded by what they name: one source's runs, one run's jobs.
+  const pages = (url, field) => api(url, ["--paginate", "--slurp"]).flatMap((page) => page[field]);
+  const newest = (url, field) => api(url)[field];
+  // GitHub's by-tag endpoint hides drafts; GraphQL names a draft's id as well. An
+  // empty answer means no release, while a failed request throws.
+  const findRelease = (tag) => {
+    const [owner, name] = repo.split("/");
+    const id = run(
+      "gh",
+      [
+        "api",
+        "graphql",
+        "-f",
+        `query=${releaseIdQuery}`,
+        "-f",
+        `owner=${owner}`,
+        "-f",
+        `name=${name}`,
+        "-f",
+        `tag=${tag}`,
+        "--jq",
+        ".data.repository.release.databaseId",
+      ],
+      root,
+    ).trim();
+    return id ? api(`releases/${id}`) : undefined;
+  };
+  // A draft gets its tag only when published, so a channel's tags are its published releases.
+  const publishedVersions = (pattern, glob) =>
+    run("git", ["ls-remote", "--tags", "--refs", `https://github.com/${repo}.git`, glob], root)
+      .split("\n")
+      .flatMap((line) => pattern.exec(line.split("\trefs/tags/")[1] ?? "")?.[1] ?? []);
   const manifest = (tag) => {
     const dir = mkdtempSync(path.join(tmpdir(), "opensteer-release-manifest-"));
     try {
@@ -37,7 +77,7 @@ function client(root, run) {
       rmSync(dir, { recursive: true, force: true });
     }
   };
-  return { git, pages, manifest };
+  return { git, pages, newest, findRelease, publishedVersions, manifest };
 }
 function sameManifest(manifest, source) {
   if (
@@ -51,7 +91,8 @@ export function preflight(
   { root = process.cwd(), channel, event, insiderTag = "" },
   run = execute,
 ) {
-  const { git, pages, manifest } = client(root, run);
+  const github = client(root, run);
+  const { git, findRelease, manifest } = github;
   git("fetch", "origin", "main", "--tags");
   let sha;
   let version;
@@ -60,8 +101,7 @@ export function preflight(
     sha = git("rev-parse", "--verify", "refs/remotes/origin/main^{commit}");
     version = deriveReleaseVersion({ repositoryRoot: root, revision: sha });
   } else if (channel === "stable" && insiderPattern.test(insiderTag)) {
-    const releases = pages("releases");
-    const release = releases.find((item) => item.tag_name === insiderTag);
+    const release = findRelease(insiderTag);
     if (
       !release ||
       release.draft !== false ||
@@ -92,7 +132,7 @@ export function preflight(
   if (git("tag", "--list", tag) && git("rev-parse", `${tag}^{commit}`) !== sha)
     throw Error("Existing tag points to another source");
   const source = { sha, version, channel, tag };
-  return requireSourceChecks(source, pages, git) ?? source;
+  return requireSourceChecks(source, github) ?? source;
 }
 
 class SourceChecksPending extends Error {
@@ -101,7 +141,7 @@ class SourceChecksPending extends Error {
     this.source = source;
   }
 }
-function requireSourceChecks(source, pages, git) {
+function requireSourceChecks(source, { git, pages, newest }) {
   // A PR run is not main qualification, and an older success cannot hide a newer failure.
   const sha = source.sha;
   const runs = pages(
@@ -118,7 +158,7 @@ function requireSourceChecks(source, pages, git) {
     git("fetch", "origin", "main", "--no-tags");
     const main = git("rev-list", "refs/remotes/origin/main").split("\n");
     if (main[0] !== sha && main.includes(sha)) {
-      const newer = pages(
+      const newer = newest(
         "actions/workflows/ci.yml/runs?branch=main&event=push&per_page=100",
         "workflow_runs",
       )
@@ -142,14 +182,17 @@ function requireSourceChecks(source, pages, git) {
     )
   )
     throw Error("Check must succeed for the exact release source");
-  if (source.channel === "stable") requireFullChecks(source, pages, git);
+  if (source.channel === "stable") requireFullChecks(source, { git, pages, newest });
 }
-function requireFullChecks(source, pages, git) {
+function requireFullChecks(source, { git, pages, newest }) {
   // Full runs cover native tasks that push CI may select out.
-  const latest = pages(
-    "actions/workflows/ci.yml/runs?branch=main&status=completed&per_page=100",
-    "workflow_runs",
-  )
+  const latest = ["schedule", "workflow_dispatch"]
+    .flatMap((event) =>
+      newest(
+        `actions/workflows/ci.yml/runs?branch=main&status=completed&event=${event}&per_page=1`,
+        "workflow_runs",
+      ),
+    )
     .filter(
       (item) =>
         item.head_branch === "main" &&
@@ -191,11 +234,11 @@ export async function qualifiedPreflight(
     source = error.source;
   }
   const deadline = now() + timeoutMs;
-  const { pages, git } = client(options.root ?? process.cwd(), run);
+  const github = client(options.root ?? process.cwd(), run);
   while (now() < deadline) {
     await sleep(Math.min(15_000, deadline - now()));
     try {
-      return requireSourceChecks(source, pages, git) ?? source;
+      return requireSourceChecks(source, github) ?? source;
     } catch (error) {
       if (!(error instanceof SourceChecksPending)) throw error;
     }
@@ -203,40 +246,29 @@ export async function qualifiedPreflight(
   throw Error("Main CI did not qualify the selected source within its release wait budget");
 }
 export function discover(source, run = execute, root = process.cwd()) {
-  const { pages, manifest } = client(root, run);
-  const releases = pages("releases");
-  if (source.channel === "stable") {
-    for (const release of releases) {
-      if (release.draft || release.prerelease || !release.tag_name.startsWith("desktop-v"))
-        continue;
-      const previous = release.tag_name.slice(9).split(".").map(BigInt);
-      const next = source.version.split(".").map(BigInt);
-      const difference = next.map((v, i) => v - previous[i]).find((v) => v !== 0n) ?? 0n;
-      if (difference <= 0n) throw Error("Stable version must be newer than published Stable");
-    }
+  const { findRelease, publishedVersions, manifest } = client(root, run);
+  const existing = findRelease(source.tag);
+  if (source.channel === "beta" && existing?.draft === false) {
+    if (existing.prerelease !== true || existing.target_commitish !== source.sha)
+      throw Error("Published insider version disagrees with source");
+    sameManifest(manifest(source.tag), source);
+    return { skip: true, reuse: false };
   }
-  if (source.channel === "beta") {
-    const latest = releases
-      .filter(
-        (item) =>
-          item.draft === false && item.prerelease === true && insiderPattern.test(item.tag_name),
-      )
-      .sort((a, b) => String(b.published_at).localeCompare(String(a.published_at)))[0];
-    if (latest?.target_commitish === source.sha) {
-      if (latest.tag_name !== source.tag)
-        throw Error("Published insider version disagrees with source");
-      sameManifest(manifest(latest.tag_name), source);
-      return { skip: true, reuse: false };
-    }
-    if (latest) {
-      const previous = insiderPattern.exec(latest.tag_name)[1].split(".").map(Number);
-      const next = source.version.split(".").map(Number);
-      const difference =
-        next.map((value, index) => value - previous[index]).find((value) => value !== 0) ?? 0;
-      if (difference <= 0) throw Error("Never backfill an older insider release");
-    }
-  }
-  const existing = releases.find((item) => item.tag_name === source.tag);
+  // An insider's own published tag was skipped above; a Stable is never republished.
+  if (
+    source.channel === "beta"
+      ? publishedVersions(insiderPattern, "refs/tags/v*-insider").some((version) =>
+          isNewer(version, source.version),
+        )
+      : publishedVersions(stablePattern, "refs/tags/desktop-v*").some(
+          (version) => !isNewer(source.version, version),
+        )
+  )
+    throw Error(
+      source.channel === "beta"
+        ? "Never backfill an older insider release"
+        : "Stable version must be newer than published Stable",
+    );
   if (!existing) return { skip: false, reuse: false };
   if (existing.draft !== true || existing.target_commitish !== source.sha)
     throw Error("Existing release is published or targets another source");

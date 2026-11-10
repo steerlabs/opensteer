@@ -1,6 +1,18 @@
+import { DesktopBrowserProfileErasure } from "./browser-profile-erasure.js";
+import { desktopDeploymentPaths } from "../app/application-paths.js";
 import { EventEmitter } from "node:events";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { chmod, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -91,7 +103,7 @@ describe("LocalRunnerService", () => {
         (child) => postedSecrets(child).OPENSTEER_RUNNER_ENROLLMENT_TOKEN === undefined,
       ),
     ).toBe(true);
-    relaunched.children.forEach(connect);
+    relaunched.children.forEach((child) => connect(child));
     await restoring;
   });
 
@@ -106,7 +118,7 @@ describe("LocalRunnerService", () => {
       running.service.start(startInput(second.deploymentId)),
     ];
     await eventually(() => running.children.length === 2);
-    running.children.forEach(connect);
+    running.children.forEach((child) => connect(child));
     await Promise.all(starts);
 
     targets.notify();
@@ -142,7 +154,7 @@ describe("LocalRunnerService", () => {
       running.service.start(startInput(second.deploymentId)),
     ];
     await eventually(() => running.children.length === 2);
-    running.children.forEach(connect);
+    running.children.forEach((child) => connect(child));
     await Promise.all(starts);
 
     const firstChild = childFor(running.children, first.hostUrl);
@@ -176,7 +188,7 @@ describe("LocalRunnerService", () => {
       running.service.start(startInput(second.deploymentId)),
     ];
     await eventually(() => running.children.length === 2);
-    running.children.forEach(connect);
+    running.children.forEach((child) => connect(child));
     await Promise.all(starts);
 
     const firstChild = childFor(running.children, first.hostUrl);
@@ -237,7 +249,7 @@ describe("LocalRunnerService", () => {
       running.service.start(startInput(second.deploymentId)),
     ];
     await eventually(() => running.children.length === 2);
-    running.children.forEach(connect);
+    running.children.forEach((child) => connect(child));
     await Promise.all(starts);
 
     const shutdown = running.service.shutdown();
@@ -297,6 +309,7 @@ describe("LocalRunnerService", () => {
     const running = fixture(await configuration(directory), targets, undefined, async (input) => ({
       bridgeToken: "t".repeat(43),
       signIn: false,
+      personFill: false,
       runtimeId: input.runtimeId,
       stop,
       url: new URL("http://127.0.0.1:7777/"),
@@ -323,6 +336,7 @@ describe("LocalRunnerService", () => {
       return {
         bridgeToken: "t".repeat(43),
         signIn: false,
+        personFill: false,
         runtimeId: input.runtimeId,
         stop: async () => undefined,
         url: new URL("http://127.0.0.1:7777/"),
@@ -333,7 +347,7 @@ describe("LocalRunnerService", () => {
       running.service.start(startInput(deploymentId)),
     );
     await eventually(() => running.children.length === 2);
-    running.children.forEach(connect);
+    running.children.forEach((child) => connect(child));
     await Promise.all(starts);
 
     expect(inputs.map(({ profileRoot }) => profileRoot).sort()).toEqual(
@@ -356,26 +370,34 @@ describe("LocalRunnerService", () => {
     );
   });
 
-  it("starts a reach-only Runner without any execution assets", async () => {
+  it("starts a browser with agents off and without any execution assets", async () => {
     const directory = await temporaryDirectory();
     const targets = mutableTargetAuthority();
     const personal = targets.add("https://studio.connect.opensteer.test", "personal");
     // A Mac that is only reachable never looks for the agent runtime.
     await rm(path.join(directory, "agent-skills"), { force: true, recursive: true });
     await rm(path.join(directory, "browser-harness"), { force: true });
-    const running = fixture(await configuration(directory), targets);
+    const browser = vi.fn(async (input: { runtimeId: string }) => ({
+      bridgeToken: "t".repeat(43),
+      signIn: false,
+      personFill: false,
+      runtimeId: input.runtimeId,
+      stop: async () => {},
+      url: new URL("http://127.0.0.1:7788/"),
+    }));
+    const running = fixture(await configuration(directory), targets, undefined, browser);
 
     const start = running.service.start(startInput(personal.deploymentId, "Studio Mac", false));
     await eventually(() => running.children.length === 1);
     const child = childAt(running.children, 0);
-    connect(child);
+    connect(child, null);
     await expect(start).resolves.toMatchObject({
       mayRunAgents: false,
       runAgents: false,
       runner: { detail: "This Mac is connected.", state: "running" },
     });
 
-    expect(child.environment.OPENSTEER_RUNNER_MODULES).toBe("integrations,shell");
+    expect(child.environment.OPENSTEER_RUNNER_MODULES).toBe("browser,integrations,shell");
     expect(child.environment.OPENSTEER_HOST_URL).toBe("https://studio.connect.opensteer.test/");
     expect(child.environment.OPENSTEER_NATIVE_FS_HELPER).toBe(
       path.join(directory, "opensteer-native-fs"),
@@ -410,7 +432,7 @@ describe("LocalRunnerService", () => {
     await stopping;
     running.service.dispose();
 
-    const relaunched = fixture(await configuration(directory), targets);
+    const relaunched = fixture(await configuration(directory), targets, undefined, browser);
     await expect(relaunched.service.status(personal.deploymentId)).resolves.toMatchObject({
       mayRunAgents: false,
       runAgents: false,
@@ -421,7 +443,7 @@ describe("LocalRunnerService", () => {
     await restoring;
 
     expect(childAt(relaunched.children, 0).environment.OPENSTEER_RUNNER_MODULES).toBe(
-      "integrations,shell",
+      "browser,integrations,shell",
     );
   });
 
@@ -442,20 +464,42 @@ describe("LocalRunnerService", () => {
     const directory = await temporaryDirectory();
     const targets = mutableTargetAuthority();
     const target = targets.add("https://modules.opensteer.test");
-    const running = fixture(await configuration(directory), targets);
+    const browser = vi.fn(async (input: { runtimeId: string; profileRoot: string }) => {
+      await mkdir(input.profileRoot, { recursive: true });
+      return {
+        bridgeToken: "t".repeat(43),
+        signIn: false,
+        personFill: false,
+        runtimeId: input.runtimeId,
+        stop: async () => {},
+        url: new URL("http://127.0.0.1:7788/"),
+      };
+    });
+    const running = fixture(await configuration(directory), targets, undefined, browser);
 
     const start = running.service.start(startInput(target.deploymentId, "Studio Mac", true));
     await eventually(() => running.children.length === 1);
     const withAgents = childAt(running.children, 0);
     connect(withAgents);
     await start;
-    expect(withAgents.environment.OPENSTEER_RUNNER_MODULES).toBe("agents,integrations,shell");
+    expect(withAgents.environment.OPENSTEER_RUNNER_MODULES).toBe(
+      "agents,browser,integrations,shell",
+    );
     const identity = await readFile(
       path.join(directory, "runner", "deployments", target.deploymentId, "runner-identity.json"),
       "utf8",
     );
 
-    const switching = running.service.start(startInput(target.deploymentId, "Studio Mac", false));
+    const profileRoot = desktopDeploymentPaths(
+      directory,
+      target.deploymentId,
+    ).browserProfilesDirectory;
+    await writeFile(path.join(profileRoot, "sign-ins"), "unchanged");
+    const switching = running.service.start({
+      deploymentId: target.deploymentId,
+      runnerName: "Studio Mac",
+      runAgents: false,
+    });
     await eventually(() => hasStopMessage(withAgents));
     withAgents.emit("exit", 0);
     await eventually(() => running.children.length === 2);
@@ -463,7 +507,11 @@ describe("LocalRunnerService", () => {
     connect(reachOnly);
     await expect(switching).resolves.toMatchObject({ runAgents: false });
 
-    expect(reachOnly.environment.OPENSTEER_RUNNER_MODULES).toBe("integrations,shell");
+    expect(reachOnly.environment.OPENSTEER_RUNNER_MODULES).toBe("browser,integrations,shell");
+    expect(browser).toHaveBeenCalledTimes(2);
+    expect(browser.mock.calls[1]?.[0].profileRoot).toBe(profileRoot);
+    await expect(readFile(path.join(profileRoot, "sign-ins"), "utf8")).resolves.toBe("unchanged");
+    expect(postedSecrets(reachOnly).OPENSTEER_RUNNER_ENROLLMENT_TOKEN).toBeUndefined();
     // The identity, its data directory and its host key are untouched.
     expect(reachOnly.environment.OPENSTEER_RUNNER_DATA_DIR).toBe(
       withAgents.environment.OPENSTEER_RUNNER_DATA_DIR,
@@ -572,15 +620,24 @@ describe("LocalRunnerService", () => {
     const targets = mutableTargetAuthority();
     const target = targets.add("https://ordered-removal.opensteer.test");
     const dataDirectory = path.join(directory, "runner", "deployments", target.deploymentId);
+    const profileRoot = desktopDeploymentPaths(
+      directory,
+      target.deploymentId,
+    ).browserProfilesDirectory;
+    await mkdir(profileRoot, { recursive: true });
+    await writeFile(path.join(profileRoot, "sign-ins"), "removed");
+    const stopped = Promise.withResolvers<void>();
     // Proves the order rather than the pair of facts: the profiles are still
     // on disk while the browser is being told to stop.
     let filesPresentAtBrowserStop: boolean | undefined;
     const stop = vi.fn(async () => {
-      filesPresentAtBrowserStop = existsSync(dataDirectory);
+      filesPresentAtBrowserStop = existsSync(profileRoot);
+      await stopped.promise;
     });
     const running = fixture(await configuration(directory), targets, undefined, async (input) => ({
       bridgeToken: "t".repeat(43),
       signIn: false,
+      personFill: false,
       runtimeId: input.runtimeId,
       stop,
       url: new URL("http://127.0.0.1:7788/"),
@@ -592,10 +649,12 @@ describe("LocalRunnerService", () => {
     await start;
 
     const removing = running.service.remove(target.deploymentId);
+    await eventually(() => stop.mock.calls.length === 1);
+    expect(existsSync(profileRoot)).toBe(true);
+    stopped.resolve();
     await eventually(() => hasStopMessage(child));
     // The worker has been asked to stop but has not exited: its identity and
     // host key are still its own.
-    await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 20));
     await expect(lstat(dataDirectory)).resolves.toBeDefined();
     expect(stop).toHaveBeenCalledOnce();
 
@@ -605,6 +664,7 @@ describe("LocalRunnerService", () => {
     expect(stop).toHaveBeenCalledOnce();
     expect(filesPresentAtBrowserStop).toBe(true);
     await expect(lstat(dataDirectory)).rejects.toThrow();
+    expect(existsSync(profileRoot)).toBe(false);
   });
 
   it("ends a launch in flight when this Mac is removed mid-start", async () => {
@@ -619,6 +679,7 @@ describe("LocalRunnerService", () => {
     const running = fixture(await configuration(directory), targets, undefined, async (input) => ({
       bridgeToken: "t".repeat(43),
       signIn: false,
+      personFill: false,
       runtimeId: input.runtimeId,
       stop: async () => {
         await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 50));
@@ -736,36 +797,154 @@ describe("LocalRunnerService", () => {
     await expect(running.service.hasEnrolledRunners()).resolves.toBe(true);
   });
 
-  it("forgets a slot the Host refuses as revoked, without retrying", async () => {
+  it.each([false, true])(
+    "erases a revoked slot after its browser stops (retained: %s)",
+    async (retained) => {
+      const directory = await temporaryDirectory();
+      const targets = mutableTargetAuthority();
+      const target = targets.add("https://revoked.opensteer.test");
+      const other = targets.add("https://other.opensteer.test");
+      const root = desktopDeploymentPaths(directory, target.deploymentId).browserProfilesDirectory;
+      const otherRoot = desktopDeploymentPaths(
+        directory,
+        other.deploymentId,
+      ).browserProfilesDirectory;
+      await mkdir(root, { recursive: true });
+      await mkdir(otherRoot, { recursive: true });
+      await writeFile(path.join(root, "sign-ins"), "removed");
+      await writeFile(path.join(otherRoot, "sign-ins"), "preserved");
+      const canonicalRoot = await realpath(root);
+      let stopped = false;
+      const erasure = new DesktopBrowserProfileErasure(directory, (releasedRoot) => {
+        expect(releasedRoot).toBe(canonicalRoot);
+        expect(stopped).toBe(true);
+        return retained ? "retained-until-exit" : "released";
+      });
+      const running = fixture(
+        await configuration(directory),
+        targets,
+        () => 0,
+        async (input) => ({
+          bridgeToken: "t".repeat(43),
+          runtimeId: input.runtimeId,
+          signIn: false,
+          personFill: false,
+          url: new URL("http://127.0.0.1:7788/"),
+          stop: async () => {
+            await expect(readFile(path.join(root, "sign-ins"), "utf8")).resolves.toBe("removed");
+            stopped = true;
+          },
+        }),
+        { profileErasure: erasure },
+      );
+      const start = running.service.start(startInput(target.deploymentId));
+      await eventually(() => running.children.length === 1);
+      const child = childAt(running.children, 0);
+      connect(child);
+      await start;
+      const dataDirectory = path.join(directory, "runner", "deployments", target.deploymentId);
+
+      child.emit("message", { type: "runner.worker.revoked" });
+      await eventually(() => hasStopMessage(child));
+      expect(existsSync(root)).toBe(true);
+      child.emit("exit", 0);
+      await eventually(
+        async () =>
+          (await running.service.status(target.deploymentId)).runner.detail ===
+          "This Mac was removed from this Deployment.",
+      );
+      await expect(lstat(dataDirectory)).rejects.toThrow();
+      await expect(running.service.hasEnrolledRunners()).resolves.toBe(false);
+      expect(existsSync(root)).toBe(retained);
+      if (retained) {
+        await erasure.finishPending();
+        expect(existsSync(root)).toBe(true);
+        await expect(erasure.prepare(target.deploymentId)).rejects.toThrow("Restart Opensteer");
+        // A fresh process has no retained Electron Sessions, even after membership was forgotten.
+        await new DesktopBrowserProfileErasure(directory).finishPending();
+        expect(existsSync(root)).toBe(false);
+      }
+      await expect(readFile(path.join(otherRoot, "sign-ins"), "utf8")).resolves.toBe("preserved");
+      await running.service.reconcile();
+      expect(running.fork).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("removes this Mac when its browser engine cannot stop, and erases its profiles at the next start", async () => {
     const directory = await temporaryDirectory();
     const targets = mutableTargetAuthority();
-    const target = targets.add("https://revoked.opensteer.test");
-    const running = fixture(await configuration(directory), targets, () => 0);
-    const start = running.service.start(startInput(target.deploymentId));
+    const target = targets.add("https://failed-stop.opensteer.test");
+    const root = desktopDeploymentPaths(directory, target.deploymentId).browserProfilesDirectory;
+    await mkdir(root, { recursive: true });
+    await writeFile(path.join(root, "sign-ins"), "held");
+    const erasure = new DesktopBrowserProfileErasure(directory);
+    const running = fixture(
+      await configuration(directory),
+      targets,
+      undefined,
+      async (input) => ({
+        bridgeToken: "t".repeat(43),
+        runtimeId: input.runtimeId,
+        signIn: false,
+        personFill: false,
+        url: new URL("http://127.0.0.1:7788/"),
+        stop: async () => {
+          throw new Error("engine did not stop");
+        },
+      }),
+      { profileErasure: erasure },
+    );
+    const starting = running.service.start(startInput(target.deploymentId));
     await eventually(() => running.children.length === 1);
     const child = childAt(running.children, 0);
     connect(child);
-    await start;
-    const dataDirectory = path.join(directory, "runner", "deployments", target.deploymentId);
-
-    // The web revoked at the Host and this app never got the removal call.
-    child.emit("message", { type: "runner.worker.revoked" });
+    await starting;
+    const removing = running.service.remove(target.deploymentId);
     await eventually(() => hasStopMessage(child));
     child.emit("exit", 0);
-    await eventually(
-      async () =>
-        (await running.service.status(target.deploymentId)).runner.detail ===
-        "This Mac was removed from this Deployment.",
-    );
-
-    await expect(running.service.status(target.deploymentId)).resolves.toMatchObject({
-      runAgents: false,
-      runner: { enrolled: false, state: "disabled" },
-    });
-    await expect(lstat(dataDirectory)).rejects.toThrow();
+    await removing;
     await expect(running.service.hasEnrolledRunners()).resolves.toBe(false);
-    await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 100));
-    expect(running.fork).toHaveBeenCalledTimes(1);
+    // The engine may still hold these files, so this process never deletes them.
+    await expect(readFile(path.join(root, "sign-ins"), "utf8")).resolves.toBe("held");
+    await expect(erasure.prepare(target.deploymentId)).rejects.toThrow("Restart Opensteer");
+    await new DesktopBrowserProfileErasure(directory).finishPending();
+    expect(existsSync(root)).toBe(false);
+  });
+
+  it("refuses erasure through a replaced profile root", async () => {
+    const directory = await temporaryDirectory();
+    const outside = await temporaryDirectory();
+    const deploymentId = createId("deployment");
+    const root = desktopDeploymentPaths(directory, deploymentId).browserProfilesDirectory;
+    await mkdir(path.dirname(root), { recursive: true });
+    await writeFile(path.join(outside, "sign-ins"), "preserved");
+    await symlink(outside, root, process.platform === "win32" ? "junction" : "dir");
+    await expect(new DesktopBrowserProfileErasure(directory).erase(deploymentId)).rejects.toThrow(
+      "real app-owned storage",
+    );
+    await expect(readFile(path.join(outside, "sign-ins"), "utf8")).resolves.toBe("preserved");
+  });
+
+  it("keeps a disconnected Deployment's browser storage", async () => {
+    const directory = await temporaryDirectory();
+    const targets = mutableTargetAuthority();
+    const target = targets.add("https://disconnected.opensteer.test");
+    const root = desktopDeploymentPaths(directory, target.deploymentId).browserProfilesDirectory;
+    await mkdir(root, { recursive: true });
+    await writeFile(path.join(root, "sign-ins"), "preserved");
+    const running = fixture(await configuration(directory), targets);
+    const starting = running.service.start(startInput(target.deploymentId));
+    await eventually(() => running.children.length === 1);
+    const child = childAt(running.children, 0);
+    connect(child);
+    await starting;
+    targets.remove(target.deploymentId);
+    const reconciling = running.service.reconcile();
+    await eventually(() => hasStopMessage(child));
+    child.emit("exit", 0);
+    await reconciling;
+    await new DesktopBrowserProfileErasure(directory).finishPending();
+    await expect(readFile(path.join(root, "sign-ins"), "utf8")).resolves.toBe("preserved");
   });
 
   it("forgets the slot and its identity when this Mac is removed", async () => {
@@ -1108,6 +1287,7 @@ function fixture(
   browser?: LocalRunnerServiceDependencies["browser"],
   options: {
     readonly computerUse?: LocalRunnerServiceDependencies["computerUse"];
+    readonly profileErasure?: DesktopBrowserProfileErasure;
     /** A worker that answers neither the stop message nor the kill. */
     readonly stubborn?: boolean;
     readonly stopTimeouts?: LocalRunnerServiceDependencies["stopTimeouts"];
@@ -1133,6 +1313,7 @@ function fixture(
     service: new LocalRunnerService(config, {
       ...(browser ? { browser } : {}),
       computerName: async () => "Studio Mac",
+      ...(options.profileErasure ? { profileErasure: options.profileErasure } : {}),
       ...(options.computerUse ? { computerUse: options.computerUse } : {}),
       fork,
       inspectIdentity: async (dataDirectory: string) => readTestIdentity(dataDirectory),
@@ -1166,7 +1347,7 @@ function mutableTargetAuthority(): DesktopLocalRunnerTargetAuthority & {
         deploymentShape: { defaultWorkspaceBacking, kind },
         hostUrl,
         key: `${deploymentId}:1`,
-        // Personal grants every computer but the Main exactly `shell`.
+        // Only server Deployments may run agents on a connecting computer.
         mayRunAgents: kind === "server",
       };
       targets.set(deploymentId, target);
@@ -1204,12 +1385,12 @@ function startInput(deploymentId: DeploymentId, runnerName = "Studio Mac", runAg
 }
 
 /** The Host's welcome is what marks a persisted identity enrolled. */
-function connect(child: FakeUtilityProcess): void {
+function connect(child: FakeUtilityProcess, environmentId?: null): void {
   const identity = readTestIdentity(child.dataDirectory);
   if (!identity) throw new Error("The test Runner has no persisted identity.");
   writeTestIdentity(child.dataDirectory, true, identity);
   child.emit("message", {
-    environmentId: identity.environmentId,
+    environmentId: environmentId === null ? null : identity.environmentId,
     runnerId: identity.runnerId,
     type: "runner.worker.connected",
   });
@@ -1393,12 +1574,10 @@ async function temporaryDirectory(): Promise<string> {
 }
 
 async function eventually(predicate: () => boolean | Promise<boolean>): Promise<void> {
-  // A wall-clock budget, not an attempt count: a loaded CI runner stretches
-  // each timer far past the millisecond it asks for.
-  const deadline = Date.now() + 5_000;
-  while (Date.now() < deadline) {
-    if (await predicate()) return;
-    await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 2));
-  }
-  throw new Error("Condition was not reached.");
+  await vi.waitFor(
+    async () => {
+      expect(await predicate(), "The expected Runner state was not reached").toBe(true);
+    },
+    { timeout: 2_000, interval: 5 },
+  );
 }

@@ -62,6 +62,7 @@ describe("local browser composition", () => {
       runtimeId: "test",
     });
     expect(order).toEqual(["prepare", "advertise"]);
+    expect(handle.personFill).toBe(false);
     expect(fakes.launcher).toHaveBeenCalledWith(
       expect.objectContaining({ localProfileRoot: canonical }),
     );

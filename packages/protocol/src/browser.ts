@@ -32,6 +32,16 @@ import {
   type BrowserSessionId,
 } from "@opensteer/core";
 import { z } from "zod";
+import {
+  BrowserAgentAttachSchema,
+  BrowserAgentDetachSchema,
+  BrowserAgentActionSchema,
+  BrowserAgentResultSchema,
+  BrowserAgentErrorSchema,
+  BrowserAgentEventSchema,
+} from "./browser-actions.js";
+export * from "./browser-actions.js";
+export * from "./browser-basic-input.js";
 import { browserBase } from "./browser-message-base.js";
 import {
   LocalProfileBindingSchema,
@@ -68,6 +78,13 @@ import {
   PasswordSignInCancelReasonSchema,
   PasswordSignInRequesterSchema,
 } from "./password-sign-in.js";
+import {
+  PersonFillAccountViewSchema,
+  PersonFillAnchorSchema,
+  PersonFillRoleSchema,
+  PersonFillStatusSchema,
+  personFillMaxAccounts,
+} from "./person-fill.js";
 import { PlaceOccupantSchema } from "./places.js";
 export * from "./browser-profile-storage.js";
 export const BrowserRasterDensitySchema = z.union([
@@ -173,6 +190,10 @@ export const BrowserBridgeAttachedSchema = createBrowserBridgeAttachedSchema();
 export type BrowserBridgeAttached = z.infer<typeof BrowserBridgeAttachedSchema>;
 
 export const browserWorkspaceTabUrlMaxLength = 16_384;
+/** How many tabs one browser session holds; its whole tab list travels in one message. */
+export const browserSessionTabLimit = 64;
+/** The runtime's refusal reason when a session already holds `browserSessionTabLimit` tabs. */
+export const browserSessionTabsFullReason = "session-tabs-full";
 
 export const BrowserWorkspaceTabDescriptorSchema = z.object({
   id: BrowserSurfaceIdSchema,
@@ -201,13 +222,25 @@ export const BrowserAttachTicketClaimsSchema = z
      * editing kinds. Issued only to a runtime advertising `modules.browser.editing`.
      */
     editingVersion: z.union([z.literal(1), z.literal(2)]).optional(),
+    basicInput: z.literal(1).optional(),
+    surfaceState: z.literal(1).optional(),
     /** V2 makes the isolated engine clipboard explicit; v1 implies true. */
     clipboard: z.boolean().optional(),
     workspaceTabRestoreVersion: z.literal(1).optional(),
     /** The Host relays `browser.popup.opened`, so the runtime may send it. */
     popupFollowVersion: z.literal(1).optional(),
+    /**
+     * The Host relays person autofill (`person-fill.ts`): the runtime may put
+     * `personFillVersion` in its snapshot, emit `browser.autofill.*` and accept
+     * `autofill.fill`. Issued only on a Personal Deployment to a runtime
+     * advertising `modules.browser.personFill`.
+     */
+    personFillVersion: z.literal(1).optional(),
     initialSurfaceId: BrowserSurfaceIdSchema.optional(),
-    dormantSurfaceIds: z.array(BrowserSurfaceIdSchema).max(63).optional(),
+    dormantSurfaceIds: z
+      .array(BrowserSurfaceIdSchema)
+      .max(browserSessionTabLimit - 1)
+      .optional(),
     expiresAt: IsoDateTimeSchema,
     identity: BrowserAttachTicketIdentitySchema,
     issuedAt: IsoDateTimeSchema,
@@ -253,6 +286,7 @@ export const BrowserFaviconSchema = z
   .regex(/^data:image\/(?:png|x-icon|gif|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/);
 
 export const BrowserSurfaceSchema = z.strictObject({
+  state: z.enum(["live", "suspended"]).optional(),
   canGoBack: z.boolean().optional(),
   canGoForward: z.boolean().optional(),
   active: z.boolean(),
@@ -283,7 +317,7 @@ export type BrowserSurface = z.infer<typeof BrowserSurfaceSchema>;
 
 export const BrowserSurfacesSchema = z
   .array(BrowserSurfaceSchema)
-  .max(64)
+  .max(browserSessionTabLimit)
   .superRefine((surfaces, context) => {
     const ids = new Set<string>();
     for (const [index, surface] of surfaces.entries()) {
@@ -401,6 +435,9 @@ const cursorSequence = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGE
 
 const BaselineBrowserClientMessageSchema = z
   .discriminatedUnion("type", [
+    BrowserAgentAttachSchema.extend(browserBase),
+    BrowserAgentDetachSchema.extend(browserBase),
+    BrowserAgentActionSchema.extend(browserBase),
     z.strictObject({
       ...browserBase,
       type: z.literal("cursor.query"),
@@ -669,6 +706,7 @@ const BaselineBrowserClientMessageSchema = z
       ...browserRequestBase,
       command: BrowserCdpCommandSchema,
       actorToken: z.uuid().optional(),
+      attachmentId: z.uuid().optional(),
       /** Host-only attribution for Page.navigate and Opensteer.openTab. */
       navigationId: z.uuid().optional(),
       type: z.literal("cdp.command"),
@@ -714,6 +752,19 @@ const BaselineBrowserClientMessageSchema = z
       reason: PasswordSignInCancelReasonSchema,
       type: z.literal("login.cancel"),
     }),
+    /**
+     * A person's choice in an autofill offer. Only the offer's viewer may send
+     * it; the Host stamps `producerId` and never trusts one a viewer supplies.
+     */
+    z.strictObject({
+      ...browserBase,
+      type: z.literal("autofill.fill"),
+      surfaceId: BrowserSurfaceIdSchema,
+      offerId: z.uuid(),
+      loginId: z.uuid(),
+      revision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+      producerId: z.uuid().optional(),
+    }),
   ])
   .superRefine((message, context) => {
     const viewport =
@@ -752,8 +803,12 @@ const BrowserSnapshotSchema = z
     navigationAttributionVersion: z.literal(1).optional(),
     /** Present only when the attach ticket claimed it, and projected only to viewers that opted in. */
     editingVersion: z.union([z.literal(1), z.literal(2)]).optional(),
+    basicInput: z.literal(1).optional(),
+    surfaceState: z.literal(1).optional(),
     /** Only v2 carries this flag; v1 implies an isolated engine clipboard. */
     clipboard: z.boolean().optional(),
+    /** Present only when the attach ticket claimed it, and projected only to viewers that opted in. */
+    personFillVersion: z.literal(1).optional(),
     inventoryRevision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
     surfaces: BrowserSurfacesSchema,
     type: z.literal("browser.snapshot"),
@@ -800,6 +855,9 @@ export const BrowserNavigationCommittedSchema = z.strictObject({
 export type BrowserNavigationCommitted = z.infer<typeof BrowserNavigationCommittedSchema>;
 
 const BaselineBrowserServerMessageSchema = z.discriminatedUnion("type", [
+  BrowserAgentResultSchema,
+  BrowserAgentErrorSchema,
+  BrowserAgentEventSchema,
   z.strictObject({
     ...browserBase,
     type: z.literal("browser.cursor"),
@@ -819,8 +877,8 @@ const BaselineBrowserServerMessageSchema = z.discriminatedUnion("type", [
   BrowserSnapshotSchema,
   z.strictObject({
     type: z.literal("browser.workspace-tabs"),
-    tabs: z.array(BrowserWorkspaceTabDescriptorSchema).max(64),
-    closed: z.array(BrowserSurfaceIdSchema).max(64),
+    tabs: z.array(BrowserWorkspaceTabDescriptorSchema).max(browserSessionTabLimit),
+    closed: z.array(BrowserSurfaceIdSchema).max(browserSessionTabLimit),
   }),
   z.strictObject({
     ...browserBase,
@@ -898,6 +956,37 @@ const BaselineBrowserServerMessageSchema = z.discriminatedUnion("type", [
     editable: z.boolean(),
     selection: z.boolean(),
     linkUrl: z.string().max(browserWorkspaceTabUrlMaxLength).optional(),
+  }),
+  /**
+   * Saved logins for a login field the named viewer just activated. Sent only
+   * to that viewer and never stored. The same `offerId` again moves its anchor.
+   */
+  z.strictObject({
+    ...browserBase,
+    type: z.literal("browser.autofill.offer"),
+    consumerToken: z.uuid(),
+    surfaceId: BrowserSurfaceIdSchema,
+    offerId: z.uuid(),
+    role: PersonFillRoleSchema,
+    geometryRevision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    anchor: PersonFillAnchorSchema,
+    accounts: z.array(PersonFillAccountViewSchema).min(1).max(personFillMaxAccounts),
+  }),
+  /** The offer's field lost its place: another field, a navigation, an agent, or a fill. */
+  z.strictObject({
+    ...browserBase,
+    type: z.literal("browser.autofill.withdrawn"),
+    consumerToken: z.uuid(),
+    surfaceId: BrowserSurfaceIdSchema,
+    offerId: z.uuid(),
+  }),
+  z.strictObject({
+    ...browserBase,
+    type: z.literal("browser.autofill.result"),
+    consumerToken: z.uuid(),
+    surfaceId: BrowserSurfaceIdSchema,
+    offerId: z.uuid(),
+    status: PersonFillStatusSchema,
   }),
   z.strictObject({
     ...browserBase,
@@ -1022,8 +1111,13 @@ export const browserViewerCloseCodes = {
   accessEnded: 4003,
 } as const;
 
-/** A profile is portable identity state. It is not owned by any execution location. */
+/**
+ * A profile lives on one computer, its home, chosen when it is made and never
+ * changed: its sign-ins exist only there. Null for a profile from before homes
+ * that has not been opened yet, and from a Host older than this field.
+ */
 export const BrowserProfileSchema = z.object({
+  homeRunnerId: RunnerIdSchema.nullable().default(null),
   id: BrowserProfileIdSchema,
   name: z.string().min(1).max(120),
 });
@@ -1223,7 +1317,7 @@ export const BrowserTabCatalogSchema = z
     generation: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
     revision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
     inventoryRevision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
-    tabs: z.array(BrowserTabSummarySchema).max(64),
+    tabs: z.array(BrowserTabSummarySchema).max(browserSessionTabLimit),
   })
   .superRefine(refineBrowserTabCatalog);
 export type BrowserTabCatalog = z.infer<typeof BrowserTabCatalogSchema>;
@@ -1236,7 +1330,7 @@ export const BrowserTabSummaryViewSchema = z.object({
 export const BrowserTabCatalogViewSchema = z
   .object({
     ...BrowserTabCatalogSchema.shape,
-    tabs: z.array(BrowserTabSummaryViewSchema).max(64),
+    tabs: z.array(BrowserTabSummaryViewSchema).max(browserSessionTabLimit),
   })
   .superRefine(refineBrowserTabCatalog);
 export const BrowserTabsChangedSchema = z.object({
@@ -1295,9 +1389,11 @@ export const BrowserHistoryIconsSchema = z.object({
 });
 export type BrowserHistoryIcons = z.infer<typeof BrowserHistoryIconsSchema>;
 
+/** Host-only operations use the command channel with or without CDP; resume requires surfaceState. */
 export const browserHostMethods = {
   openTab: "Opensteer.openTab",
   closeTab: "Opensteer.closeTab",
+  resumeTab: "Opensteer.resumeTab",
   contextCandidate: "Opensteer.contextCandidate",
 } as const;
 export const browserBootstrapSessionsMaxBytes = 768 * 1024;
@@ -1440,7 +1536,7 @@ export const WorkspaceTabLineageSchema = z.object({
         createdAt: IsoDateTimeSchema.optional(),
       }),
     )
-    .max(64)
+    .max(browserSessionTabLimit)
     .optional(),
 });
 export type WorkspaceTabLineage = z.infer<typeof WorkspaceTabLineageSchema>;
@@ -1642,6 +1738,11 @@ export const HostedBrowserBootstrapSchema = z.object({
   profileGrants: z.array(BrowserProfileGrantSchema).max(100),
   available: z.boolean(),
   placements: z.array(BrowserPlacementSchema).max(129),
+  /**
+   * The computers this person may make a profile on, connected or not. Absent
+   * from a Host older than profile homes, which is offered no choice.
+   */
+  profileHomes: z.array(RunnerIdSchema).max(129).optional(),
   profiles: z.array(BrowserProfileSchema).max(128),
   sessions: z
     .array(HostedBrowserSessionSchema)
@@ -1662,6 +1763,7 @@ export const CreateBrowserProfileGrantResponseSchema = z.object({
 export const BrowserProfileNameSchema = z.string().trim().min(1).max(120);
 
 export const CreateBrowserProfileBodySchema = z.strictObject({
+  homeRunnerId: RunnerIdSchema.nullable().optional(),
   name: BrowserProfileNameSchema,
 });
 
@@ -1892,6 +1994,7 @@ export const BrowserTabOpenRefusalReasonSchema = z.enum([
   browserTabOpenClosedReason,
   "browser-session-unavailable",
   "browser-profile-unavailable",
+  "browser-profile-home-unavailable",
   "browser-placement-unavailable",
   "browser-placement-ambiguous",
   "browser-tab-open-outcome-unknown",

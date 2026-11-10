@@ -5,6 +5,8 @@ import { browserSiteFromUrl } from "@opensteer/browser-profile/source-state";
 import type {
   BrowserLoginAuthority,
   BrowserLoginAuthorizeInput,
+  PersonFillInput,
+  PersonFillScope,
 } from "@opensteer/browser-runtime-core";
 import {
   CardFieldSchema,
@@ -31,6 +33,8 @@ import {
   type PasswordsBrokerSession,
   type PasswordsBrokerCardSession,
 } from "./broker-session.js";
+import { PasswordsPersonFillAuthority } from "./person-fill.js";
+import type { DesktopPasswordsStatus } from "@opensteer/protocol/desktop";
 import { sealLoginEnvelope } from "./login-envelope.js";
 
 type ModernAuthorizeInput = Omit<BrowserLoginAuthorizeInput, "runtimeId" | "sessionId"> & {
@@ -62,6 +66,8 @@ interface Operation {
 
 export class PasswordsLoginAuthority implements BrowserLoginAuthority {
   readonly #broker: PasswordsBrokerSession;
+  readonly #personFill: PasswordsPersonFillAuthority;
+  readonly #unobserveStatus: (() => void) | undefined;
   readonly #cardBroker: (PasswordsBrokerSession & PasswordsBrokerCardSession) | undefined;
   readonly #epochs = new WeakMap<Electron.WebContents, { value: number }>();
   readonly #legacyBroker: PasswordsBrokerSession;
@@ -74,8 +80,13 @@ export class PasswordsLoginAuthority implements BrowserLoginAuthority {
     broker: PasswordsBrokerSession;
     legacyBroker?: PasswordsBrokerSession;
     ownOrigins: () => readonly string[];
+    observeStatus?: (listener: (status: DesktopPasswordsStatus) => void) => () => void;
   }) {
     this.#broker = options.broker;
+    this.#personFill = new PasswordsPersonFillAuthority(options.broker);
+    this.#unobserveStatus = options.observeStatus?.((status) =>
+      this.#personFill.statusChanged(status),
+    );
     if (
       "cardRequest" in options.broker &&
       "cardRelease" in options.broker &&
@@ -85,6 +96,14 @@ export class PasswordsLoginAuthority implements BrowserLoginAuthority {
       this.#cardBroker = options.broker as PasswordsBrokerSession & PasswordsBrokerCardSession;
     this.#legacyBroker = options.legacyBroker ?? options.broker;
     this.#ownOrigins = options.ownOrigins;
+  }
+
+  personFillAccounts(input: PersonFillScope) {
+    return this.#personFill.accounts(input);
+  }
+
+  personFill(input: PersonFillInput) {
+    return this.#personFill.fill(input);
   }
 
   async probe(input: { site: string }) {
@@ -912,6 +931,8 @@ export class PasswordsLoginAuthority implements BrowserLoginAuthority {
   }
 
   async close(): Promise<void> {
+    this.#unobserveStatus?.();
+    await this.#personFill.close();
     await Promise.all([...this.#operations.keys()].map((id) => this.end(id)));
   }
 
