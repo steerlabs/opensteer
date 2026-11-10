@@ -64,21 +64,5 @@ export function agentsPillSelector(
  * engines' subagents and workflows alone.
  */
 export function aroundAgentsSelector(threadId: string): (snapshot: HostSnapshot) => AgentRoster {
-  return heldSelector((snapshot) => {
-    const roster = conversationSubagents(snapshot, threadId);
-    const now = roster.now.filter(({ origin }) => origin === "subagent");
-    const earlier = roster.earlier.filter(({ origin }) => origin === "subagent");
-    return {
-      earlier,
-      now,
-      pill:
-        now.length === 0
-          ? null
-          : {
-              live: now.length,
-              needsYou: now.filter(({ tone }) => tone === "needs-you").length,
-              total: now.length + earlier.length,
-            },
-    };
-  });
+  return heldSelector((snapshot) => conversationSubagents(snapshot, threadId, { tasks: false }));
 }

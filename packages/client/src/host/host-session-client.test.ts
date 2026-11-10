@@ -17843,34 +17843,29 @@ it("hydrates older running helper cards and routes a watched node's work only to
           window: { ...window, threadId: thread.id },
           readState: { ...defaultReadState(thread.id), asOfSequence: "10" },
         });
+      const node = {
+        id: nodeId,
+        attemptId: createId("runAttempt"),
+        runId,
+        kind: "subagent",
+        title: "Older reviewer",
+        status: "running",
+        model: "gpt-6.1-sol",
+        effort: "high",
+        parentNodeId: null,
+        phaseIndex: null,
+        phases: [],
+        prompt: "Review",
+        result: null,
+        startedAt: "2026-08-09T19:00:00.000Z",
+        endedAt: null,
+        usage: null,
+      };
       if (url.pathname === "/v1/rpc/run.attempts.list")
-        return json({
-          runId,
-          attempts: [],
-          nodes: [
-            {
-              id: nodeId,
-              attemptId: createId("runAttempt"),
-              runId,
-              kind: "subagent",
-              title: "Older reviewer",
-              status: "running",
-              model: "gpt-6.1-sol",
-              effort: "high",
-              parentNodeId: null,
-              phaseIndex: null,
-              phases: [],
-              prompt: "Review",
-              result: null,
-              startedAt: "2026-08-09T19:00:00.000Z",
-              endedAt: null,
-              usage: null,
-            },
-          ],
-        });
+        return json({ runId, attempts: [], nodes: [node] });
       if (url.pathname === "/v1/rpc/node.events.list") {
         nodeReads.push(payload);
-        return json({ nodeId, threadId: thread.id, events: [], window });
+        return json({ nodeId, threadId: thread.id, node, events: [], window });
       }
       if (url.pathname === "/v1/rpc/thread.requests.list")
         return json({ threadId: thread.id, requests: [], window });

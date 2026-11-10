@@ -93,7 +93,9 @@ export const AroundButton = memo(function AroundButton(props: {
       {props.glance.agents === null ? null : (
         <View style={styles.part}>
           <Symbol name="person.2" size={15} tint={color.text} />
-          <Count>{props.glance.agents.live}</Count>
+          <Count muted={props.glance.agents.live === 0}>
+            {props.glance.agents.live === 0 ? props.glance.agents.total : props.glance.agents.live}
+          </Count>
           {props.glance.agents.needsYou > 0 ? <View style={styles.attention} /> : null}
         </View>
       )}

@@ -17,6 +17,7 @@ import { isRecord } from "@opensteer/shared/isRecord";
 import {
   StackActions,
   useIsFocused,
+  useNavigationState,
   useNavigation,
   type StaticScreenProps,
 } from "@react-navigation/native";
@@ -107,7 +108,21 @@ function AttachedSubagent(props: {
   const navigation = useNavigation();
   const focused = useIsFocused();
   const foreground = useAppForeground();
-  const watched = useNodeWatch(hostClient, threadId, nodeId, focused && foreground);
+  // Its own step sheet covers this screen without leaving the subagent, so the watch stays
+  // and the sheet shares what is loaded, earlier steps included.
+  const ownStepOpen = useNavigationState((state) => {
+    const top = state.routes[state.index];
+    return (
+      top?.name === "ThreadStep" &&
+      (top.params as { readonly nodeId?: string } | undefined)?.nodeId === nodeId
+    );
+  });
+  const watched = useNodeWatch(
+    hostClient,
+    threadId,
+    nodeId,
+    (focused || ownStepOpen) && foreground,
+  );
   const snapshot = watched.snapshot;
   const select = useCallback(
     (host: HostSnapshot): SubagentDetail | null => {

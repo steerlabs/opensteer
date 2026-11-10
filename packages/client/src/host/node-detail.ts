@@ -1,4 +1,5 @@
 import {
+  executionNodeEntry,
   nodeSubagentCard,
   type AgentCard,
   type SubagentReader,
@@ -43,7 +44,11 @@ export interface NodeDetailSnapshot {
   readonly error: string | null;
 }
 
-/** Hold while the read-only transcript is visible; a new watch replaces the old one. */
+/**
+ * Hold while the read-only transcript is visible. Two holders of the same
+ * subagent share one watch and what it has loaded; another subagent's watch
+ * replaces it.
+ */
 export interface NodeDetailSubscription {
   getSnapshot(): NodeDetailSnapshot;
   subscribe(listener: () => void): () => void;
@@ -63,7 +68,8 @@ export interface NodeDetailOptions {
     limit: number;
   }) => Promise<NodeEventPage>;
   readonly nodes: (threadId: string) => readonly NodeEntry[];
-  readonly readNodes?: (threadId: string, nodeId: string) => Promise<readonly NodeEntry[]>;
+  /** The other subagents of a Run, which hold the ones this subagent started. */
+  readonly readNodes?: (runId: string) => Promise<readonly NodeEntry[]>;
 }
 
 interface Watch {
@@ -76,6 +82,7 @@ interface Watch {
   nodes: readonly NodeEntry[];
   sourceNodes: readonly NodeEntry[];
   snapshot: NodeDetailSnapshot;
+  holders: number;
   epoch: number;
   sent: boolean;
   through: Sequence | null;
@@ -93,6 +100,16 @@ export class NodeDetailStore {
   }
 
   open(threadId: string, nodeId: string, workspaceId: string): NodeDetailSubscription {
+    const held = this.#current;
+    if (
+      held &&
+      held.workspaceId === workspaceId &&
+      held.snapshot.threadId === threadId &&
+      held.snapshot.nodeId === nodeId
+    ) {
+      held.holders += 1;
+      return this.#subscription(held);
+    }
     this.clear();
     const watch: Watch = {
       workspaceId,
@@ -103,6 +120,7 @@ export class NodeDetailStore {
       bufferedLive: [],
       nodes: [],
       sourceNodes: [],
+      holders: 1,
       epoch: 0,
       sent: false,
       through: null,
@@ -121,6 +139,11 @@ export class NodeDetailStore {
     };
     this.#current = watch;
     this.#send(watch);
+    return this.#subscription(watch);
+  }
+
+  #subscription(watch: Watch): NodeDetailSubscription {
+    let released = false;
     return {
       getSnapshot: () => watch.snapshot,
       subscribe: (listener) => {
@@ -137,7 +160,10 @@ export class NodeDetailStore {
         this.#send(watch);
       },
       release: () => {
-        if (this.#current === watch) this.clear();
+        if (released) return;
+        released = true;
+        watch.holders -= 1;
+        if (watch.holders === 0 && this.#current === watch) this.clear();
       },
     };
   }
@@ -329,18 +355,24 @@ export class NodeDetailStore {
       let before: string | undefined;
       const received: AgentEvent[] = [];
       const cursors = new Set<string>();
-      const [firstPage, nodes] = await Promise.all([
+      const knownRun = this.#options
+        .nodes(watch.snapshot.threadId)
+        .find((node) => node.nodeId === watch.snapshot.nodeId)?.runId;
+      const [firstPage, ahead] = await Promise.all([
         this.#options.read({
           threadId: watch.snapshot.threadId,
           nodeId: watch.snapshot.nodeId,
           through,
           limit: 100,
         }),
-        this.#options.readNodes?.(watch.snapshot.threadId, watch.snapshot.nodeId) ??
-          Promise.resolve([]),
+        knownRun ? this.#options.readNodes?.(knownRun) : undefined,
       ]);
       if (watch !== this.#current || epoch !== watch.epoch) return;
-      watch.nodes = nodes;
+      // Its own record comes with the page, so it shows however little of its conversation is loaded.
+      const own = executionNodeEntry(firstPage.node);
+      const run = ahead ?? (await this.#options.readNodes?.(firstPage.node.runId)) ?? [];
+      if (watch !== this.#current || epoch !== watch.epoch) return;
+      watch.nodes = run.some((node) => node.nodeId === own.nodeId) ? run : [own, ...run];
       let page = firstPage;
       for (;;) {
         if (before)

@@ -239,7 +239,11 @@ class Subscriber {
     this.workspaceId = options.workspaceId;
   }
 
-  watchNode(nodeId: ExecutionNodeId | null): void {
+  /**
+   * `streams` is false only as a subscriber goes live, which sends every open
+   * stream it may see anyway.
+   */
+  watchNode(nodeId: ExecutionNodeId | null, streams = true): void {
     if (this.#state === "synchronizing") {
       if (this.#syncWatches.length >= this.#options.maxBufferedEvents) {
         this.resync("buffer-overflow");
@@ -260,6 +264,16 @@ class Subscriber {
           workspaceId: this.workspaceId,
           sequence: this.#handedThrough,
         });
+        if (nodeId === null || !streams) return;
+        // What its running tools have printed so far was left out until now, and their next
+        // appends continue offsets this reader lacks: send each of those streams whole.
+        for (const frame of this.#options.liveFrames()) {
+          const items = frame.progress.items.filter(
+            (item) => item.stream === "tool" && item.nodeId === nodeId,
+          );
+          if (items.length > 0)
+            this.#offerLiveFrame({ ...frame, progress: { ...frame.progress, items } }, true);
+        }
       })
       .catch(() => this.#failDelivery());
   }
@@ -367,7 +381,7 @@ class Subscriber {
       // Going live and reading the open streams happen in one synchronous
       // step, so no progress can fall between the replacement and the appends.
       this.#state = "live";
-      for (const nodeId of this.#syncWatches.splice(0)) this.watchNode(nodeId);
+      for (const nodeId of this.#syncWatches.splice(0)) this.watchNode(nodeId, false);
       for (const frame of this.#options.liveFrames()) this.#offerLiveFrame(frame, true);
       this.#drain();
       await this.#sendTail;

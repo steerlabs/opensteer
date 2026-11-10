@@ -2520,10 +2520,10 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
       );
     },
     "node.events.list": async ({ threadId, nodeId, through, before, limit = 100 }) => {
-      const own = (client.getSnapshot().transcripts[threadId] ?? []).some(
+      const own = (client.getSnapshot().transcripts[threadId] ?? []).find(
         (entry) => entry.kind === "node" && entry.nodeId === nodeId,
       );
-      if (!own)
+      if (own?.kind !== "node" || !own.runId)
         return mockRefusal(
           new HostClientRequestError({
             code: "not_found",
@@ -2544,6 +2544,24 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
         hostApi["node.events.list"].success.parse({
           threadId,
           nodeId,
+          node: {
+            attemptId: createId("runAttempt"),
+            effort: own.effort,
+            endedAt: own.completedAt,
+            id: own.nodeId,
+            kind: own.nodeKind,
+            model: own.model,
+            parentNodeId: own.parentNodeId,
+            phaseIndex: own.phaseIndex,
+            phases: own.phases,
+            prompt: own.prompt,
+            result: own.result,
+            runId: own.runId,
+            startedAt: own.createdAt,
+            status: own.status,
+            title: own.title,
+            usage: own.usage ?? null,
+          },
           events,
           window: {
             ...mockWindow(events.length),

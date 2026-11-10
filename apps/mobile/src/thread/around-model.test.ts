@@ -171,7 +171,10 @@ describe("around a conversation", () => {
         ),
       },
     };
-    expect(glance(settled, threadId)?.agents ?? null).toBeNull();
+    // Nothing is live, and the roster of the ones that finished is still one press away.
+    const after = glance(settled, threadId)?.agents;
+    expect(after).toMatchObject({ live: 0, needsYou: 0 });
+    expect(after!.total).toBeGreaterThan(0);
   });
 
   // Failure: a streamed token publishes a snapshot that reads as a new glance.

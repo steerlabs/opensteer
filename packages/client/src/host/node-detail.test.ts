@@ -10,6 +10,24 @@ const runId = createId("run");
 const nodeId = createId("executionNode");
 const now = "2026-11-10T14:00:00.000Z";
 const seq = (value: number) => SequenceSchema.parse(String(value));
+const node: NodeEventPage["node"] = {
+  attemptId: createId("runAttempt"),
+  effort: null,
+  endedAt: null,
+  id: nodeId,
+  kind: "subagent",
+  model: null,
+  parentNodeId: null,
+  phaseIndex: null,
+  phases: [],
+  prompt: "Check the parser",
+  result: null,
+  runId,
+  startedAt: now,
+  status: "running",
+  title: "Check the parser",
+  usage: null,
+};
 function event<Type extends AgentEvent["type"]>(
   type: Type,
   sequence: number,
@@ -31,6 +49,7 @@ function page(events: AgentEvent[], nextBefore: string | null = null): NodeEvent
   return {
     nodeId,
     threadId,
+    node,
     events,
     window: {
       byteCount: 0,
@@ -122,6 +141,55 @@ describe("node detail watch", () => {
     detail.release();
     expect(sends).toEqual([nodeId, null]);
     expect(detail.getSnapshot()).toMatchObject({ status: "closed", entries: [] });
+  });
+
+  it("shows a subagent its conversation has not loaded, and reads the ones it started from its Run", async () => {
+    const readNodes = vi.fn(async () => []);
+    const store = new NodeDetailStore({
+      available: () => true,
+      read: async () => page([event("node.message", 1, { nodeId, text: "Done" })]),
+      nodes: () => [],
+      readNodes,
+      sendWatch: () => true,
+    });
+    const detail = store.open(threadId, nodeId, workspaceId);
+    store.watched(workspaceId, nodeId, seq(1));
+    await vi.waitFor(() => expect(detail.getSnapshot().status).toBe("ready"));
+    expect(detail.getSnapshot().node).toMatchObject({ nodeId, title: "Check the parser" });
+    expect(readNodes).toHaveBeenCalledWith(runId);
+  });
+
+  it("lets a second holder of the same subagent share what the first loaded", async () => {
+    const sends: (string | null)[] = [];
+    const read = vi.fn(async (input: { before?: string }) =>
+      input.before
+        ? page([event("node.message", 1, { nodeId, text: "Earlier" })])
+        : page([event("node.message", 2, { nodeId, text: "Later" })], "2"),
+    );
+    const store = new NodeDetailStore({
+      available: () => true,
+      read,
+      nodes: () => [],
+      sendWatch: (_workspace, id) => {
+        sends.push(id);
+        return true;
+      },
+    });
+    const screen = store.open(threadId, nodeId, workspaceId);
+    store.watched(workspaceId, nodeId, seq(2));
+    await vi.waitFor(() => expect(screen.getSnapshot().status).toBe("ready"));
+    await screen.loadOlder();
+    const step = store.open(threadId, nodeId, workspaceId);
+    expect(sends).toEqual([nodeId]);
+    expect(
+      step.getSnapshot().entries.flatMap((entry) => ("text" in entry ? [entry.text] : [])),
+    ).toEqual(["Earlier", "Later"]);
+    step.release();
+    step.release();
+    expect(screen.getSnapshot().status).toBe("ready");
+    expect(sends).toEqual([nodeId]);
+    screen.release();
+    expect(sends).toEqual([nodeId, null]);
   });
 
   it("rewatches on reconnect and fills a gap larger than a page without losing older history", async () => {

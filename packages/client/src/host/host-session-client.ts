@@ -1062,12 +1062,7 @@ export class HttpHostClient {
     available: () => this.#capabilities?.includes("node-detail-v1") === true,
     nodes: (threadId) =>
       (this.#snapshot.transcripts[threadId] ?? []).filter((entry) => entry.kind === "node"),
-    readNodes: async (threadId, nodeId) => {
-      const node = this.#snapshot.transcripts[threadId]?.find(
-        (entry) => entry.kind === "node" && entry.nodeId === nodeId,
-      );
-      return node?.kind === "node" && node.runId ? this.#readRunNodes(node.runId) : [];
-    },
+    readNodes: (runId) => this.#readRunNodes(runId),
     read: async (input) => {
       const page = unwrapRpcResult(
         await this.rpc["node.events.list"]({

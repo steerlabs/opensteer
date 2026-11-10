@@ -264,8 +264,8 @@ export interface AroundGlance {
   /** The symbol every open place shares, or null when they are of more than one kind. */
   readonly placeGlyph: SurfaceGlyph | null;
   readonly family: TaskFamilyGlance | null;
-  /** The conversation's helpers while any is live; the roster stays reachable after the pill leaves. */
-  readonly agents: AgentRoster["pill"];
+  /** The conversation's helpers, live or settled: the roster stays reachable after the pill leaves. */
+  readonly agents: NonNullable<AgentRoster["pill"]> | null;
   readonly from: RequesterLink | null;
 }
 
@@ -300,7 +300,10 @@ export function aroundGlanceSelector(
     }
     const family = taskFamilyGlance(snapshot, threadId);
     const from = aroundFrom(snapshot, threadId);
-    const agents = aroundAgents(snapshot).pill;
+    const roster = aroundAgents(snapshot);
+    const total = roster.now.length + roster.earlier.length;
+    const agents =
+      total === 0 ? null : { live: roster.now.length, needsYou: roster.pill?.needsYou ?? 0, total };
     if (held.places.places === 0 && family === null && agents === null && from === null)
       return null;
     return { ...held.places, agents, family, from };
@@ -344,12 +347,14 @@ export function aroundLabel(glance: AroundGlance): string {
           : []),
     ...(glance.agents === null
       ? []
-      : [
-          `${glance.agents.live} ${glance.agents.live === 1 ? "agent" : "agents"} working` +
-            (glance.agents.needsYou > 0
-              ? `, ${glance.agents.needsYou} ${glance.agents.needsYou === 1 ? "needs" : "need"} you`
-              : ""),
-        ]),
+      : glance.agents.live === 0
+        ? [`${glance.agents.total} earlier ${glance.agents.total === 1 ? "agent" : "agents"}`]
+        : [
+            `${glance.agents.live} ${glance.agents.live === 1 ? "agent" : "agents"} working` +
+              (glance.agents.needsYou > 0
+                ? `, ${glance.agents.needsYou} ${glance.agents.needsYou === 1 ? "needs" : "need"} you`
+                : ""),
+          ]),
     ...(family === null || family.automations === 0
       ? []
       : [`${family.automations} ${family.automations === 1 ? "schedule" : "schedules"}`]),

@@ -382,6 +382,7 @@ export const AgentCardRow = memo(function AgentCardRow(props: AgentCardRowProps)
 
 function sameRowProps(left: AgentCardRowProps, right: AgentCardRowProps): boolean {
   return (
+    left.owner === right.owner &&
     left.live === right.live &&
     left.ended === right.ended &&
     left.onOpen === right.onOpen &&

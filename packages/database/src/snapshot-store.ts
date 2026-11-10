@@ -60,6 +60,7 @@ import {
   messageFromRow,
   threadRunQueueEntriesFromRows,
   threadFromRow,
+  executionNodeFromRow,
 } from "./thread-row-mappers.js";
 import { requestFromRow } from "./request-store.js";
 import { workspaceFromRow } from "./store-primitives.js";
@@ -1045,7 +1046,7 @@ export async function nodeEventPageForOwner(
           "workspaceMemberships.workspaceId",
           "threads.workspaceId",
         )
-        .select("executionNodes.id")
+        .selectAll("executionNodes")
         .where("executionNodes.id", "=", input.nodeId)
         .where("threads.id", "=", input.threadId)
         .where("workspaceMemberships.userId", "=", input.ownerId)
@@ -1096,6 +1097,7 @@ export async function nodeEventPageForOwner(
       return {
         threadId: input.threadId,
         nodeId: input.nodeId,
+        node: executionNodeFromRow(node),
         events,
         window: {
           byteCount: window.byteCount,

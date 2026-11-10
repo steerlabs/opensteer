@@ -20,7 +20,12 @@ import {
   WorkspaceKindSchema,
   type Workspace,
 } from "@opensteer/core";
-import { BrowserProfileIdSchema, ExecutionNodeIdSchema, RunnerIdSchema } from "@opensteer/core";
+import {
+  BrowserProfileIdSchema,
+  ExecutionNodeIdSchema,
+  ExecutionNodeViewSchema,
+  RunnerIdSchema,
+} from "@opensteer/core";
 import { z } from "zod";
 import {
   PersonShowMessageSchema,
@@ -310,6 +315,8 @@ export type ThreadEventPage = z.infer<typeof ThreadEventPageSchema>;
  */
 export const NodeEventPageSchema = z.object({
   events: ThreadEventPageSchema.shape.events,
+  /** The subagent itself, so its view never depends on how much of its conversation is loaded. */
+  node: ExecutionNodeViewSchema,
   nodeId: ExecutionNodeIdSchema,
   threadId: ThreadIdSchema,
   window: DurableWindowSchema,

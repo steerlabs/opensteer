@@ -273,6 +273,71 @@ describe("snapshot-before-live synchronization", () => {
     }
   });
 
+  it("sends a running tool's output so far to a reader that starts watching its subagent", async () => {
+    const workspaceId = createId("workspace");
+    const userId = createId("user");
+    const nodeId = createId("executionNode");
+    const liveRuns = new LiveRunRegistry();
+    const seed = event(workspaceId, "1");
+    liveRuns.observeCommitted([seed]);
+    const hub = new RealtimeHub({
+      liveRuns,
+      store: {
+        notificationState: viewerState(),
+        workspaceMembershipForUser: async () => activeMembership(workspaceId, userId),
+        workspaceSnapshot: async () => snapshot(workspaceId, "1"),
+      } as unknown as OpensteerStore,
+    });
+    const sink = new MemorySink();
+    const release = await hub.subscribe({
+      afterSequence: sequence("0"),
+      sink,
+      workspaceId,
+      userId,
+    });
+    try {
+      const progress = {
+        runId: seed.runId!,
+        threadId: seed.threadId,
+        workspaceId,
+        items: [
+          {
+            callId: "child-tool",
+            nodeId,
+            stream: "tool" as const,
+            op: "append" as const,
+            at: 0,
+            text: "so far",
+          },
+        ],
+      };
+      const frame = liveRuns.apply(progress);
+      if (frame) hub.publishLive(frame);
+      hub.watchNode({ sinkId: sink.id, workspaceId, nodeId });
+      await vi.waitFor(
+        () =>
+          expect(sink.messages.filter((message) => message.type === "host.live")).toHaveLength(1),
+        { timeout: 1_000 },
+      );
+      expect(sink.messages.find((message) => message.type === "host.live")).toMatchObject({
+        progress: {
+          items: [
+            {
+              callId: "child-tool",
+              nodeId,
+              stream: "tool",
+              op: "replace",
+              length: 6,
+              text: "so far",
+            },
+          ],
+        },
+      });
+    } finally {
+      release();
+    }
+  });
+
   it("acknowledges a watch requested during synchronization after its replay boundary", async () => {
     const workspaceId = createId("workspace");
     const userId = createId("user");

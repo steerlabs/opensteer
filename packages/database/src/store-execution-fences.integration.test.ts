@@ -1924,6 +1924,8 @@ describeStore("PostgreSQL store", (it) => {
     }
     const page = await store.nodeEventPageForOwner({ ...read, nodeId });
     expect(page!.events.map((event) => ({ type: event.type, data: event.data }))).toEqual(detail);
+    // The subagent itself comes with its page, whatever its conversation's history holds.
+    expect(page!.node.id).toBe(nodeId);
     expect(page!.window).toMatchObject({
       itemCount: 4,
       totalItems: 4,
