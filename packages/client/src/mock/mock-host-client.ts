@@ -1,4 +1,5 @@
-import { AppTabSchema } from "@opensteer/protocol";
+import { AppTabSchema, CreateBrowserProfileBodySchema } from "@opensteer/protocol";
+import { browserProfileHomeCommand } from "../host/browser-access.js";
 import {
   mockDevicePlugins,
   mockDeviceTasks,
@@ -36,6 +37,7 @@ import type { PersonShowMessage, PluginRow } from "@opensteer/protocol";
 import { RunPlaceStore } from "../host/run-place.js";
 import { compareTaskOrder } from "../host/task-entries.js";
 import { sharedDisplayStreams } from "../integrations/phone-display-stream.js";
+import { isAgentPhone } from "../integrations/computer-use.js";
 import { PendingBrowserTabs } from "../host/pending-browser-tabs.js";
 import { BrowserPasskeys } from "../host/browser-passkeys.js";
 import { BrowserPreferences } from "../host/browser-preferences.js";
@@ -56,6 +58,7 @@ import {
   AssignmentViewSchema,
   AttachmentSchema,
   BrowserSurfaceIdSchema,
+  BrowserTabGroupIdSchema,
   CHAT_THREAD_TITLE,
   DEFAULT_THREAD_ACCESS_MODE,
   DeploymentIdSchema,
@@ -1910,6 +1913,15 @@ const mockMachines: readonly MachineSummary[] = [
   },
 ];
 
+export interface MockPhoneJoin {
+  readonly enrollmentId: string;
+  /** What the phone advertises; an iPhone's apps alone when omitted. */
+  readonly modules?: readonly ("browser" | "integrations")[];
+  readonly name: string;
+  readonly platform?: "android" | "ios";
+  readonly runnerId: string;
+}
+
 export interface MockHostClientOptions {
   desktopUpdates?: MockDesktopUpdateScenario;
   specialistPlugins?: { id: string; name: string; manifest: SpecialistManifest }[];
@@ -3286,7 +3298,10 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
       return rpcSuccess(
         hostApi["commands.dispatch"].success.parse({
           type: command.type,
-          profile: await client.createBrowserProfile(command.input.name),
+          profile: await client.createBrowserProfile(
+            command.input.name,
+            command.input.homeRunnerId,
+          ),
         }),
       );
     case "browser.source.pair":
@@ -3772,6 +3787,7 @@ function mockBootstrap(
       placements: snapshot.browserPlacements,
       profileGrants: snapshot.browserProfileGrants,
       profiles: snapshot.browserProfiles,
+      ...(snapshot.browserProfileHomes ? { profileHomes: snapshot.browserProfileHomes } : {}),
       profileDeletions: snapshot.browserProfileDeletions,
       // The catalog names each browser's conversations, as the Host's does.
       sessions: snapshot.browserSessions.map((session) => ({
@@ -4009,7 +4025,11 @@ export class MockHostClient implements HostClient {
           listener,
         ),
     };
-    this.browserFrames = { ...frames, cursor: this.#browserCursor };
+    this.browserFrames = {
+      ...frames,
+      cursor: this.#browserCursor,
+      editing: this.#places.input.editing,
+    };
     this.browserWatchFrames = frames;
     this.rpc = createInMemoryHostApiClient(mockHostApiHandlers(this.#state), mockRpcContext());
     this.#tabGroups = new BrowserTabGroupClient(
@@ -4092,6 +4112,25 @@ export class MockHostClient implements HostClient {
     deletions: NonNullable<HostSnapshot["browserProfileDeletions"]>,
   ): void {
     this.#state.updatePlaces({ ...this.getSnapshot(), browserProfileDeletions: deletions });
+  }
+
+  /**
+   * Where profiles live, as another Host would say it: `profileHomes`
+   * undefined is a Host older than homes, and a profile mapped to null has
+   * not been opened yet.
+   */
+  setBrowserProfileHomes(
+    profileHomes: readonly string[] | undefined,
+    homes: Readonly<Record<string, string | null>> = {},
+  ): void {
+    const snapshot = this.getSnapshot();
+    this.#state.updatePlaces({
+      ...snapshot,
+      browserProfileHomes: profileHomes,
+      browserProfiles: snapshot.browserProfiles.map((profile) =>
+        profile.name in homes ? { ...profile, homeRunnerId: homes[profile.name]! } : profile,
+      ),
+    });
   }
 
   setSearchSuggestionsAvailable(available: boolean): void {
@@ -4595,8 +4634,14 @@ export class MockHostClient implements HostClient {
   }
 
   /** Scripted bridge hooks: device reports and taps never enter the production Host API. */
-  mockConnectIphone(input: { enrollmentId: string; runnerId: string; name: string }): void {
+  /** This phone joins as what it advertises: an iPhone its apps and, once qualified, its browser. */
+  mockConnectIphone(input: MockPhoneJoin): void {
     this.#state.mockConnectIphone(input);
+  }
+
+  /** The phone stopped reaching this Host, as a closed or cut-off app does. */
+  mockPhoneAway(runnerId: string): void {
+    this.#state.mockPhoneAway(runnerId);
   }
 
   activateWorkspace(workspaceId: string): void {
@@ -4870,7 +4915,9 @@ export class MockHostClient implements HostClient {
   }
 
   async dispatch(command: HostApiCommandInput): Promise<HostApiCommandOutput> {
-    const result = await this.rpc["commands.dispatch"](command);
+    const result = await this.rpc["commands.dispatch"](
+      browserProfileHomeCommand(command, this.getSnapshot().browserProfileHomes),
+    );
     if (result.ok) return result.data;
     // The same typed refusal the real client raises, so a surface branches on
     // the code here exactly as it would against a Host.
@@ -6587,6 +6634,23 @@ class MockHostState {
   }
   seedPlaces(world: MockPlacesWorld = "seeded"): void {
     this.update(seedMockPlaces(this.snapshot, this.now(), world));
+    // A trip planned on two Macs: one group whose tabs run on both.
+    if (world !== "seeded")
+      this.setTabGroups({
+        ...this.tabGroups,
+        revision: this.tabGroups.revision + 1,
+        groups: [
+          {
+            id: BrowserTabGroupIdSchema.parse("btg_00000000-0000-4000-8000-000000000101"),
+            title: "Lisbon trip",
+            color: "cyan",
+            collapsed: false,
+            tabIds: ["mock-tab-0-4", "mock-tab-9-0", "mock-tab-9-1"].map((id) =>
+              BrowserSurfaceIdSchema.parse(id),
+            ),
+          },
+        ],
+      });
     this.#recentMarkColors.delete(`${this.snapshot.user?.id ?? mockUserId}:thread`);
     const template = this.integrations.connections.find(
       (connection) => connection.definitionId === "macos-app" && connection.status === "connected",
@@ -7936,8 +8000,13 @@ class MockHostState {
   }
 
   async revokeMachine(machineId: string): Promise<void> {
+    // The profiles that live on it go with it, as the Host deletes them.
     this.update({
       ...this.snapshot,
+      browserProfileHomes: this.snapshot.browserProfileHomes?.filter((id) => id !== machineId),
+      browserProfiles: this.snapshot.browserProfiles.filter(
+        (profile) => profile.homeRunnerId !== machineId,
+      ),
       machines: this.snapshot.machines.filter((machine) => machine.id !== machineId),
     });
   }
@@ -8429,7 +8498,7 @@ class MockHostState {
       input.definitionId === androidPhoneDefinitionId &&
       input.app === null &&
       machine.device?.form === "phone" &&
-      machine.device?.platform === "android";
+      isAgentPhone(machine);
     if (input.definitionId === androidPhoneDefinitionId && !phone) {
       throw new Error("That is not an Android phone connection.");
     }
@@ -9241,7 +9310,16 @@ class MockHostState {
     return result;
   }
 
-  mockConnectIphone(input: { enrollmentId: string; runnerId: string; name: string }): void {
+  mockPhoneAway(runnerId: string): void {
+    this.update({
+      ...this.snapshot,
+      machines: this.snapshot.machines.map((machine) =>
+        machine.id === runnerId ? { ...machine, status: "offline" } : machine,
+      ),
+    });
+  }
+
+  mockConnectIphone(input: MockPhoneJoin): void {
     const enrollment = [...this.phoneEnrollments.values()].find(
       ({ result }) => result.enrollmentId === input.enrollmentId,
     );
@@ -9257,34 +9335,45 @@ class MockHostState {
     const runnerId = RunnerIdSchema.parse(input.runnerId);
     this.update({
       ...this.snapshot,
+      // A phone holds browsers too, as every device does.
+      browserProfileHomes: this.snapshot.browserProfileHomes && [
+        ...this.snapshot.browserProfileHomes,
+        runnerId,
+      ],
       machines: this.snapshot.machines.map((machine) =>
         machine.id === input.enrollmentId
           ? {
               ...machine,
+              allowedModules: ["browser", "integrations"],
               id: runnerId,
               name: input.name,
               status: "online",
               expiresAt: null,
               revocable: true,
-              device: { form: "phone", platform: "ios" },
+              device: {
+                form: "phone",
+                platform: input.platform ?? "ios",
+                ...(input.platform === "android" ? { app: "opensteer" as const } : {}),
+              },
               computerUse: null,
               lastSeenAt: this.now().toISOString(),
-              apps: mockIphoneAppDefinitions.map((definition) => ({
-                definitionId: definition.id,
-                operations: definition.computerApp!.operations.map(({ name }) => ({
-                  operation: name,
-                  state: "ready",
-                  detail: null,
-                  remedy: null,
-                })),
-              })),
-              modules: {
-                integrations: {
-                  checkedAt: this.now().toISOString(),
-                  detail: null,
-                  readiness: "ready",
-                },
-              },
+              apps: !(input.modules ?? ["integrations"]).includes("integrations")
+                ? null
+                : mockIphoneAppDefinitions.map((definition) => ({
+                    definitionId: definition.id,
+                    operations: definition.computerApp!.operations.map(({ name }) => ({
+                      operation: name,
+                      state: "ready",
+                      detail: null,
+                      remedy: null,
+                    })),
+                  })),
+              modules: Object.fromEntries(
+                (input.modules ?? ["integrations"]).map((module) => [
+                  module,
+                  { checkedAt: this.now().toISOString(), detail: null, readiness: "ready" },
+                ]),
+              ),
             }
           : machine,
       ),
@@ -9948,8 +10037,42 @@ class MockHostState {
 
   async createBrowserProfile(
     name: string,
+    homeRunnerId?: string | null,
+    preferredRunnerId?: string | null,
   ): Promise<import("../host/client.js").BrowserProfileSummary> {
-    const profile = { id: createId("browserProfile"), name };
+    const homes = this.snapshot.browserProfileHomes;
+    if (homeRunnerId != null && !homes?.includes(homeRunnerId))
+      throw new HostClientRequestError({
+        code: "forbidden",
+        status: 403,
+        message: "This computer can't keep browser profiles.",
+      });
+    const home =
+      homeRunnerId ??
+      homes?.find((id) => id === preferredRunnerId) ??
+      (this.snapshot.deploymentShape?.kind === "personal"
+        ? homes?.find((id) =>
+            this.snapshot.machines.some(
+              (machine) => machine.id === id && machine.ownership === "deployment",
+            ),
+          )
+        : undefined) ??
+      (homes?.length === 1 ? homes[0]! : null);
+    if (homes?.length === 0)
+      throw new HostClientRequestError({
+        code: "workspace_unavailable",
+        reason: "browser-placement-unavailable",
+        status: rpcErrorStatus("workspace_unavailable"),
+        message: "No computer can hold your browser profiles.",
+      });
+    if (home === null && homeRunnerId === null && homes !== undefined)
+      throw new HostClientRequestError({
+        code: "conflict",
+        reason: "browser-placement-ambiguous",
+        status: 409,
+        message: "Choose a computer for this browser profile.",
+      });
+    const profile = { homeRunnerId: home, id: createId("browserProfile"), name };
     this.update({ ...this.snapshot, browserProfiles: [...this.snapshot.browserProfiles, profile] });
     return profile;
   }
@@ -11485,7 +11608,7 @@ class MockHostState {
           },
           {
             author: mockAgentAuthor(pictureRun, home.id),
-            body: "Picked a tiger charging through snow and downloaded the full HD photo to your Downloads folder: [tiger-in-snow.jpg](/Users/person/Downloads/tiger-in-snow.jpg). 🐅",
+            body: "Picked a tiger charging through snow and downloaded the full HD photo to your Downloads folder: [tiger-in-snow.jpg](/Users/person/Downloads/tiger-in-snow.jpg). 🐅\n\n[unsplash.com/photos/tiger-in-snow](https://unsplash.com/photos/tiger-in-snow)\n\n[localhost:5173/tiger](http://localhost:5173/tiger)",
             createdAt: at(-60),
             id: pictureReplyId,
             kind: "message",
@@ -11769,6 +11892,40 @@ class MockHostState {
       if (response.value.decision === "fulfilled") {
         this.#verifyMockIntegrationAccessFulfillment(request, response.value.connectionId);
       }
+    }
+    if (request.kind === "browser.access") {
+      const response = input.response;
+      if (request.requestedBy !== this.snapshot.user?.id)
+        throw mockConflict("This Request belongs to someone else.");
+      if (response.kind !== "external") throw mockConflict("Browser Request response is invalid.");
+      const value = response.value;
+      if (value?.["decision"] === "fulfilled") {
+        let profileId: string;
+        if (typeof value["profileId"] === "string") {
+          profileId = value["profileId"];
+          if (!this.snapshot.browserProfiles.some(({ id }) => id === profileId))
+            throw mockConflict("Browser Profile is unavailable.");
+        } else {
+          const creation = CreateBrowserProfileBodySchema.parse(
+            value["createProfile"] ?? { name: value["name"] },
+          );
+          const environmentId = this.snapshot.threads.find(
+            ({ id }) => id === request.originatingThreadId,
+          )?.environmentId;
+          const preferred = this.snapshot.environments.find(
+            ({ id }) => id === environmentId,
+          )?.runnerId;
+          profileId = (
+            await this.createBrowserProfile(creation.name, creation.homeRunnerId, preferred)
+          ).id;
+        }
+        if (
+          this.snapshot.workspaces.find(({ id }) => id === request.targetWorkspaceId)?.kind ===
+          "project"
+        )
+          await this.grantBrowserProfile({ profileId, workspaceId: request.targetWorkspaceId });
+      } else if (value?.["decision"] !== "declined")
+        throw mockConflict("Browser Request decision is invalid.");
     }
     const resolved = this.#resolvedRequest(request, input.response);
     const timestamp = resolved.resolvedAt;
@@ -13147,6 +13304,8 @@ function createInitialSnapshot(): HostSnapshot {
           "- Saved the command output with the run for audit",
           "",
           "The [expense policy](https://example.com/finance/expense-policy) explains which cost center to use. Related request: [Review the remaining charges](opensteer://requests/req_0192f4a1-2222-4000-8000-000000000002).",
+          "",
+          "[example.com/finance/expense-policy](https://example.com/finance/expense-policy)",
           "",
           "```text",
           "review_items=2",

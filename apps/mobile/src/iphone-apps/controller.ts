@@ -25,6 +25,12 @@ import type { IphoneAppsOwner, IphoneAppsStopped } from "./owner.js";
 
 export type { IphoneAppsOwner, IphoneAppsStopped } from "./owner.js";
 
+export type NativePhoneEnrollment = (input: {
+  readonly deploymentId: string;
+  readonly hostClient: HostClient;
+  readonly name: string;
+}) => Promise<{ readonly enrollmentId: string }>;
+
 /**
  * This iPhone's apps, as the mobile app drives them.
  *
@@ -39,6 +45,7 @@ export class IphoneAppsController {
   readonly owner: IphoneAppsOwner;
 
   readonly #bridge: IphoneAppsBridge;
+  readonly #enrollNative: NativePhoneEnrollment | undefined;
   readonly #listeners = new Set<() => void>();
   readonly #shownFile: ShownApprovalsFile;
   readonly #timing: IphoneAppsTiming;
@@ -82,8 +89,10 @@ export class IphoneAppsController {
     readonly bridge: IphoneAppsBridge;
     readonly shownApprovals: ShownApprovalsFile;
     readonly timing?: Partial<IphoneAppsTiming>;
+    readonly enrollNative?: NativePhoneEnrollment;
   }) {
     this.#bridge = options.bridge;
+    this.#enrollNative = options.enrollNative;
     this.#shownFile = options.shownApprovals;
     this.#timing = { ...defaultTiming, ...options.timing };
     this.#state = this.#derive(options.bridge.getSnapshot());
@@ -555,26 +564,35 @@ export class IphoneAppsController {
     }
     for (let attempt = 1; ; attempt += 1) {
       if (!current()) return superseded;
-      let minted: Minted;
+      let minted: Pick<Minted, "enrollmentId">;
       try {
-        minted = await mint(input.hostClient, { mintKey, name: input.name });
+        if (this.#enrollNative !== undefined) {
+          minted = await this.#enrollNative(input);
+        } else {
+          const enrollment = await mint(input.hostClient, { mintKey, name: input.name });
+          if (!current()) return superseded;
+          if (enrollment.pairing.deploymentId !== input.deploymentId)
+            return failed("host-mismatch");
+          try {
+            await this.#bridge.enroll({
+              enrollmentId: enrollment.enrollmentId,
+              enrollmentToken: enrollment.token,
+              expiresAt: enrollment.expiresAt,
+              name: input.name,
+              pairing: enrollment.pairing,
+            });
+          } catch (error) {
+            if (!current()) return superseded;
+            return failed(
+              bridgeErrorCode(error) === "wrong-deployment" ? "host-mismatch" : "failed",
+            );
+          }
+          minted = enrollment;
+        }
       } catch (error) {
         return current() ? { failure: mintFailure(error), kind: "failed" } : superseded;
       }
       if (!current()) return superseded;
-      if (minted.pairing.deploymentId !== input.deploymentId) return failed("host-mismatch");
-      try {
-        await this.#bridge.enroll({
-          enrollmentId: minted.enrollmentId,
-          enrollmentToken: minted.token,
-          expiresAt: minted.expiresAt,
-          name: input.name,
-          pairing: minted.pairing,
-        });
-      } catch (error) {
-        if (!current()) return superseded;
-        return failed(bridgeErrorCode(error) === "wrong-deployment" ? "host-mismatch" : "failed");
-      }
       const settled = await this.#waitFor(
         (snapshot): "added" | IphoneAppsIssue | undefined =>
           snapshot.issue ??
@@ -1302,6 +1320,15 @@ async function mint(
 }
 
 function mintFailure(error: unknown): IphoneAddFailure {
+  const nativeCode = bridgeErrorCode(error);
+  if (
+    nativeCode === "remote-access-off" ||
+    nativeCode === "host-mismatch" ||
+    nativeCode === "host-unreachable"
+  ) {
+    return { kind: nativeCode };
+  }
+  if (nativeCode === "enrollment-refused") return { kind: "failed" };
   if (error instanceof HostClientRequestError && error.reason === "personal-remote-access-off") {
     return { kind: "remote-access-off" };
   }

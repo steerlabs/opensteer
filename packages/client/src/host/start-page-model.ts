@@ -9,6 +9,7 @@ import {
   newOwnerViewReadiness,
   type ComputerNotReady,
 } from "../integrations/computer-reasons.js";
+import { deviceElsewhere, type DeviceElsewhere } from "../computers/computers.js";
 import type { HostSnapshot } from "./client.js";
 import type { BrowserHistoryEntry } from "@opensteer/protocol";
 import { placeList, placeSearchFields, type PlaceItem } from "./places.js";
@@ -120,11 +121,22 @@ export interface StartPageGroup {
 export interface StartPageProfileChoice {
   readonly identity: BrowserIdentityChoice;
   readonly presentation: PlaceBrowserIdentity;
-  readonly placement: { readonly kind: "runner"; readonly runnerId: string } | null;
-  readonly computerLabel: string;
+  /** The device the profile lives on, named only when it is not the one the reader is at. */
+  readonly device: DeviceElsewhere | null;
+  /**
+   * The device the profile lives on, here or not, while it is away: opening
+   * waits for it rather than browse anywhere else. Null for Guest, a profile
+   * with no home yet, and a home that is there.
+   */
+  readonly away: string | null;
   readonly available: boolean;
-  /** A ready browser this person opened with this identity: opening adds a tab to it. */
-  readonly yours: boolean;
+}
+
+/** Why a profile can't open now, naming where it lives: "Work is on Mac mini, which is offline." */
+export function profileAwayWords(profile: StartPageProfileChoice): string | null {
+  return profile.away === null
+    ? null
+    : `${profile.presentation.name} is on ${profile.away}, which is offline.`;
 }
 export interface StartPageModel {
   readonly choice: BrowserIdentityChoice;
@@ -207,45 +219,31 @@ export function startPageIndex(input: {
     !snapshot.browserProfiles.some((profile) => profile.id === choice.profileId)
   )
     identities.unshift(choice);
+  const anyBrowser = snapshot.browserPlacements.some((placement) => placement.available);
   const profiles = identities.map((identity): StartPageProfileChoice => {
     const presentation = browserIdentity(
       identity.kind === "profile" ? identity.profileId : null,
       snapshot.browserProfiles,
     );
-    const holder =
+    const homeId =
       identity.kind === "profile"
-        ? snapshot.browserSessions.find(
-            (session) =>
-              session.profileId === identity.profileId &&
-              ["ready", "starting", "closing"].includes(session.state),
-          )
-        : undefined;
-    const placement = holder
-      ? snapshot.browserPlacements.find(
-          (placement) => placement.runnerId === holder.placement.runnerId,
-        )
-      : snapshot.browserPlacements.filter((placement) => placement.available).length === 1
-        ? snapshot.browserPlacements.find((placement) => placement.available)
-        : undefined;
-    const profileId = identity.kind === "profile" ? identity.profileId : null;
+        ? (snapshot.browserProfiles.find(({ id }) => id === identity.profileId)?.homeRunnerId ??
+          null)
+        : null;
+    const home =
+      homeId === null ? undefined : snapshot.machines.find((machine) => machine.id === homeId);
+    const away = home && home.status !== "online" ? home.name : null;
     return {
       identity,
       presentation,
-      placement: placement ? { kind: "runner", runnerId: placement.runnerId } : null,
-      computerLabel: placement?.label ?? (holder ? "Computer unavailable" : "Choose a computer"),
+      device: deviceElsewhere(snapshot.machines, homeId, input.localMachineId ?? null),
+      away,
+      // A profile with a home opens only there; Guest and a profile with no
+      // home yet open wherever the Host places them.
       available:
         connected &&
         (presentation.kind === "guest" || presentation.available) &&
-        (holder
-          ? placement?.available === true
-          : snapshot.browserPlacements.some((placement) => placement.available)),
-      yours: snapshot.browserSessions.some(
-        (session) =>
-          session.opener?.kind === "you" &&
-          session.state === "ready" &&
-          session.profileId === profileId &&
-          session.workspaceId === snapshot.homeWorkspaceId,
-      ),
+        (home ? away === null : anyBrowser),
     };
   });
   const groups: StartPageGroup[] = [];

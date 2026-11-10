@@ -23,6 +23,7 @@ import {
 } from "../apps/host/src/runtime/machine-access.test-support.js";
 import { testRpcData } from "../apps/host/src/server/test-host-api-request.js";
 import { integrationBundleEntrySync } from "@opensteer/shared/test-support/integrationRunnerBuild";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 
 const identityReadGate = vi.hoisted(() => ({
   current: undefined as { path: string; reached: () => void; resume: Promise<void> } | undefined,
@@ -138,9 +139,15 @@ integration("local Runner startup with a real credentialed worker", () => {
         await mkdir(path.join(root, "skills"));
         service = new LocalRunnerService(config, {
           browser: async ({ runtimeId }) => {
-            const browser = await resource("browser");
+            const browser = await resource("browser", runtimeId);
             resources.push(browser);
-            return { bridgeToken: "b".repeat(43), runtimeId, signIn: false, ...browser };
+            return {
+              bridgeToken: "b".repeat(43),
+              runtimeId,
+              signIn: false,
+              personFill: false,
+              ...browser,
+            };
           },
           computerName: async () => "Startup E2E Mac",
           computerUse: {
@@ -242,7 +249,9 @@ integration("local Runner startup with a real credentialed worker", () => {
         expect(diagnostics).toHaveLength(1);
         expect(events.indexOf("worker-exited")).toBeLessThan(events.indexOf("start-rejected"));
         inject = false;
-        const retry = await service.start({ ...input, runAgents: false });
+        const retry = await withTimeout(service.start({ ...input, runAgents: false }), 15_000, {
+          timeoutError: () => new Error("The replacement Runner never connected."),
+        });
         expect(retry.runner.state).toBe("running");
         const machines = await testRpcData(
           host.origin,
@@ -272,7 +281,9 @@ integration("local Runner startup with a real credentialed worker", () => {
         };
         unsubscribe = service.subscribe(observeStatus);
         await service.shutdown();
-        await identityReadReached.promise;
+        await withTimeout(identityReadReached.promise, 5_000, {
+          timeoutError: () => new Error("The status observer never read the Runner identity."),
+        });
         await service.remove(input.deploymentId);
         events.push("slot-removed-before-observer-open");
         unsubscribe();
@@ -330,10 +341,15 @@ integration("local Runner startup with a real credentialed worker", () => {
         if (artifactDirectory !== root) await rm(root, { recursive: true, force: true });
       }
 
-      async function resource(name: string) {
-        const server = createServer((_request, response) => {
-          response.writeHead(503);
-          response.end();
+      async function resource(name: string, runtimeId?: string) {
+        const server = createServer((request, response) => {
+          if (runtimeId && request.url === "/health") {
+            response.writeHead(200, { "content-type": "application/json" });
+            response.end(JSON.stringify({ runtimeId, state: "idle", wireVersion: 1 }));
+          } else {
+            response.writeHead(503);
+            response.end();
+          }
         });
         server.listen(0, "127.0.0.1");
         await once(server, "listening");

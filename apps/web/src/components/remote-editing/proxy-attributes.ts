@@ -1,6 +1,8 @@
 import type { EditingTargetAbilities } from "@opensteer/client/editing";
 import type { EditingContext } from "@opensteer/protocol/editing";
 
+const noWritingSuggestions = { writingsuggestions: "false" };
+
 /** Native replacements require a non-sensitive mirror that the target can verify. */
 export function editingProxyAttributes(
   abilities: EditingTargetAbilities,
@@ -9,6 +11,7 @@ export function editingProxyAttributes(
   const field = context?.field;
   const suggestions = abilities.rangeEdits && field != null && !field.sensitive;
   return {
+    ...(abilities.rangeEdits ? undefined : noWritingSuggestions),
     ...(suggestions ? {} : { autoComplete: "off" }),
     autoCorrect: suggestions ? "on" : "off",
     spellCheck: suggestions,

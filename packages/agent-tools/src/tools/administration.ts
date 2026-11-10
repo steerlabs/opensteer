@@ -20,6 +20,7 @@ import {
 } from "@opensteer/integration-core";
 import { defineAgentTool } from "../registry.js";
 import { OperationKeySchema } from "./inputs.js";
+import { BrowserProfileOutputSchema } from "./outputs.js";
 
 const operationKey = OperationKeySchema.optional();
 const callers = ["run", "connection"] as const;
@@ -357,7 +358,7 @@ export const browser_profile_write = defineAgentTool({
   output: z.object({
     ...ok,
     profile: z.object({ id: BrowserProfileIdSchema, name: z.string() }).optional(),
-    profiles: z.array(z.object({ id: BrowserProfileIdSchema, name: z.string() })).optional(),
+    profiles: z.array(BrowserProfileOutputSchema).optional(),
     grants: z
       .array(
         z.object({

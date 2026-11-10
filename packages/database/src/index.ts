@@ -56,3 +56,5 @@ export * from "./knowledge-executor.js";
 export * from "./knowledge-store.js";
 export { personalDeploymentOwner } from "./machine-store.js";
 export { knowledgeExecutorRole } from "./knowledge-schema.js";
+
+export { listEligibleBrowserRunners } from "./browser-home-store.js";

@@ -15,6 +15,7 @@ import {
   PasswordSignInAvailabilitySchema,
   PasswordSignInRequesterSchema,
 } from "./password-sign-in.js";
+import { PersonFillPresenceSchema } from "./person-fill.js";
 
 /**
  * The wire between Electron main and "Opensteer Passwords", the signed Swift
@@ -26,14 +27,18 @@ import {
  * field release revalidates the live transaction, login, grant and origin.
  */
 export const passwordsBrokerProtocolVersion = 4;
-/** Current authorities explicitly negotiate 7; legacy read/release callers retain their scope. */
-export const passwordsBrokerLatestProtocolVersion = 7;
-export const passwordsBrokerSupportedProtocolVersions = [7, 6, 5, 4] as const;
+/**
+ * Current authorities explicitly negotiate 8, and 7 with a broker that has no
+ * person fill; legacy read/release callers retain their scope.
+ */
+export const passwordsBrokerLatestProtocolVersion = 8;
+export const passwordsBrokerSupportedProtocolVersions = [8, 7, 6, 5, 4] as const;
 export const PasswordsBrokerProtocolVersionSchema = z.union([
   z.literal(4),
   z.literal(5),
   z.literal(6),
   z.literal(7),
+  z.literal(8),
 ]);
 export const PasswordsPermissionVersionSchema = z.union([z.literal(4), z.literal(5)]);
 export const passwordsBrokerMaxFrameBytes = 256 * 1_024;
@@ -43,6 +48,8 @@ export const PasswordsBrokerMethodSchema = z.enum([
   "card.request",
   "card.approve",
   "card.release",
+  "fill.accounts",
+  "fill.begin",
   "hello",
   "status",
   "window.open",
@@ -108,8 +115,10 @@ export const PasswordsVaultStateSchema = z.enum([
 ]);
 export type PasswordsVaultState = z.infer<typeof PasswordsVaultStateSchema>;
 
+/** `personFill` is sent only on protocol 8 connections; absent, the broker has no person fill. */
 export const PasswordsBrokerStatusSchema = z.strictObject({
   agentSignIns: z.enum(["on", "off"]),
+  personFill: z.enum(["on", "off"]).optional(),
   vault: PasswordsVaultStateSchema,
 });
 export type PasswordsBrokerStatus = z.infer<typeof PasswordsBrokerStatusSchema>;
@@ -333,12 +342,63 @@ export const PasswordsBrokerCardReleaseResultSchema = z.discriminatedUnion("rele
   }),
 ]);
 
+/** A saved login a person may fill on a site, as the broker lists it: never its password. */
+export const PasswordsBrokerFillAccountSchema = z.strictObject({
+  id: z.uuid(),
+  revision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  username: z.string().max(1_024),
+  label: z.string().min(1).max(200).nullable(),
+  hasCode: z.boolean(),
+});
+export type PasswordsBrokerFillAccount = z.infer<typeof PasswordsBrokerFillAccountSchema>;
+
+/** The logins whose saved websites are within `origin`'s site. Never prompts. */
+export const PasswordsBrokerFillAccountsParamsSchema = z.strictObject({
+  origin: PasswordsOriginSchema,
+});
+/** `accounts` is empty unless `fill` is `on`. */
+export const PasswordsBrokerFillAccountsResultSchema = z.strictObject({
+  fill: z.enum(["on", "off", "not-set-up"]),
+  accounts: z.array(PasswordsBrokerFillAccountSchema).max(100),
+});
+
+/**
+ * Opens a person transaction pinned to the login, its revision and
+ * `origin`'s site. With `here` the broker asks Touch ID or the Mac password
+ * itself first; `elsewhere` never prompts. Fields are released with
+ * `signin.release` (kind browser) and the transaction ends with
+ * `signin.cancel` or at `expiresAt`.
+ */
+export const PasswordsBrokerFillBeginParamsSchema = z.strictObject({
+  transactionId: z.uuid(),
+  loginId: z.uuid(),
+  revision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  origin: PasswordsOriginSchema,
+  presence: PersonFillPresenceSchema,
+});
+export const PasswordsBrokerFillBeginResultSchema = z.discriminatedUnion("decision", [
+  z.strictObject({
+    decision: z.literal("authorized"),
+    expiresAt: z.iso.datetime({ offset: true }),
+  }),
+  /** The login is gone, changed revision, or is not saved for this site. */
+  z.strictObject({ decision: z.literal("changed") }),
+  /** The person cancelled or failed the check, or it was withdrawn. */
+  z.strictObject({ decision: z.literal("cancelled") }),
+  z.strictObject({
+    decision: z.literal("unavailable"),
+    reason: z.enum(["fill-off", "not-set-up", "busy"]),
+  }),
+]);
+
 /** Each method's parameters, as Electron main sends them. */
 export const passwordsBrokerRequests = {
   "card.probe": PasswordsBrokerEmptySchema,
   "card.request": PasswordsBrokerCardRequestParamsSchema,
   "card.approve": PasswordsBrokerCardApproveParamsSchema,
   "card.release": PasswordsBrokerCardReleaseParamsSchema,
+  "fill.accounts": PasswordsBrokerFillAccountsParamsSchema,
+  "fill.begin": PasswordsBrokerFillBeginParamsSchema,
   hello: PasswordsBrokerHelloParamsSchema,
   "signin.approve": PasswordsBrokerSignInApproveParamsSchema,
   "signin.commit": PasswordsBrokerTransactionParamsSchema,
@@ -362,6 +422,8 @@ export const passwordsBrokerResults = {
   "card.request": PasswordsBrokerCardRequestResultSchema,
   "card.approve": PasswordsBrokerCardApproveResultSchema,
   "card.release": PasswordsBrokerCardReleaseResultSchema,
+  "fill.accounts": PasswordsBrokerFillAccountsResultSchema,
+  "fill.begin": PasswordsBrokerFillBeginResultSchema,
   hello: PasswordsBrokerHelloResultSchema,
   "signin.approve": PasswordsBrokerSignInApproveResultSchema,
   "signin.commit": z.strictObject({ committed: z.boolean() }),

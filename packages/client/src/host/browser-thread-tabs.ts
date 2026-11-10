@@ -10,6 +10,13 @@ export interface BrowserThreadTab extends BrowserTabDestination {
   readonly tab: BrowserTabSummary;
 }
 
+export function sameBrowserTab(
+  a: BrowserTabDestination | null,
+  b: BrowserTabDestination | null,
+): boolean {
+  return a !== null && b !== null && a.sessionId === b.sessionId && a.tabId === b.tabId;
+}
+
 type TabSession = Pick<BrowserSessionSummary, "id" | "tabCatalog">;
 
 /** Occupancy is Host-authorized; this only ranks the supplied catalog. */

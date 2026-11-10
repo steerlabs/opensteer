@@ -95,14 +95,21 @@ vi.mock(
   "react-native-reanimated",
   async () => (await import("../../../test-support/native-chrome.js")).reanimated,
 );
-vi.mock("../../../src/browser/pair-chrome.js", () => ({ FollowBand: () => null }));
 vi.mock("../../../src/browser/agent-marks.js", () => ({ AgentMarks: () => null }));
+vi.mock("../../../src/browser/place-foot.js", () => ({
+  PlaceVoiceDock: () => null,
+  usePlaceStatus: () => ({ height: 0, reserve: { value: 0 }, row: null }),
+}));
+vi.mock("../../../src/ui/task-mark.js", () => ({ TaskMark: () => null }));
+vi.mock("../../../src/ui/chat-orb.js", () => ({ ChatOrb: () => null }));
 vi.mock("../../../src/ui/motion.js", () => ({
   appear: undefined,
   duration: { enter: 0, exit: 0 },
   exit: undefined,
+  move: undefined,
 }));
 vi.mock("expo-clipboard", () => ({ setStringAsync: vi.fn(async () => true) }));
+vi.mock("expo-haptics", () => ({}));
 vi.mock("../../../src/client/mobile-client.js", () => ({ operationDetail: () => "error" }));
 vi.mock("../../../src/ui/action-review.js", () => ({ ActionReviewSheet: () => null }));
 vi.mock("../../../src/ui/sheet.js", () => ({ Sheet: () => null }));

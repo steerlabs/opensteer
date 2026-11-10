@@ -6,6 +6,7 @@ import { z } from "zod";
 import { sha256File } from "@opensteer/shared/fileDigest";
 import {
   assetsFor,
+  findRelease,
   manifestSchema,
   releaseSchema,
   releaseManifest,
@@ -65,21 +66,9 @@ export async function validateDraft(directory: string, api: unknown, expectation
   return manifest;
 }
 async function releaseByTag(tag: string, run: typeof runBounded) {
-  const releases = z
-    .array(z.array(releaseSchema))
-    .parse(
-      JSON.parse(
-        await run(
-          "gh",
-          ["api", "--paginate", "--slurp", "repos/steerlabs/opensteer/releases?per_page=100"],
-          { timeoutMs: 60_000 },
-        ),
-      ),
-    )
-    .flat()
-    .filter((r) => r.tag_name === tag);
-  assert.equal(releases.length, 1, "Expected exactly one accessible release for this tag");
-  return releases[0];
+  const release = await findRelease("steerlabs/opensteer", tag, run);
+  assert(release, "Expected an accessible release for this tag");
+  return release;
 }
 export async function intakeDraft(work: string, expectation: unknown, run = runBounded) {
   const expected = draftExpectation.parse(expectation);

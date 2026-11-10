@@ -276,18 +276,17 @@ describe("tabs that read like a browser's", () => {
     await settle(60);
   }
 
-  it("web tabs first, a hairline, then Mac apps and phones, each in authoritative order, and + New tab last", async () => {
+  it("a device's web tabs, then its apps with no line between, each in authoritative order, and + New tab last", async () => {
     await mount("/");
-    const places = placeList(client.getSnapshot());
+    const places = tabOrder(placeList(client.getSnapshot()));
     const web = places.filter((place) => place.kind === "browser").map((place) => place.key);
     const native = places.filter((place) => place.kind !== "browser").map((place) => place.key);
     expect(web.length).toBeGreaterThan(1);
     expect(native.length).toBeGreaterThan(0);
-    expect(rowKeys()).toEqual([...web, ...native]);
+    expect(rowKeys()).toEqual(places.map(({ key }) => key));
     const items = [...element(".side-section--tabs .side-list").children];
     const lastWeb = items.indexOf(row(web.at(-1)!));
-    expect(items[lastWeb + 1]?.classList.contains("side-divider")).toBe(true);
-    expect(items[lastWeb + 2]).toBe(row(native[0]!));
+    expect(items[lastWeb + 1]).toBe(row(native[0]!));
     expect(items.at(-1)?.classList.contains("side-new")).toBe(true);
     const webPlaces = places.filter((place) => place.kind === "browser");
     const boundary = webPlaces.findIndex((place, index) => {
@@ -358,7 +357,7 @@ describe("tabs that read like a browser's", () => {
         (place) => place.kind === "browser" && isMockPage(place, source) && !placeHasAgents(place),
       )!;
     await mount((source) => `/${tabSearch(quietOf(source))}`);
-    const places = placeList(client.getSnapshot());
+    const places = tabOrder(placeList(client.getSnapshot()));
     const quiet = quietOf(client);
     const busy = places.filter(placeHasAgents).map((place) => place.key);
     expect(busy.length).toBeGreaterThan(0);

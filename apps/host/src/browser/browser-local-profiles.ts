@@ -33,7 +33,7 @@ export class BrowserLocalProfiles {
     deploymentId: DeploymentId;
     repository: BrowserLocalProfileRepository;
     baseUrl: URL;
-    beforeProfileOpen?: () => void;
+    beforeProfileOpen?: (runnerId: RunnerId) => void;
     onReconciled?: (profileId: BrowserProfileId) => Promise<void>;
   };
   constructor(options: BrowserLocalProfiles["options"]) {
@@ -60,7 +60,7 @@ export class BrowserLocalProfiles {
     runnerId: RunnerId,
     target: BrowserRuntimeTarget,
   ): Promise<Extract<BrowserAttachTicketIdentity, { kind: "profile-local" }>> {
-    this.options.beforeProfileOpen?.();
+    this.options.beforeProfileOpen?.(runnerId);
     if (!target.localProfileStorage) refuse("Update this computer to open browser profiles.");
     let storage = await this.storage(profileId);
     if (storage.kind === "unbound")

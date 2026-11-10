@@ -22,6 +22,11 @@ export function useIphoneApps(): IphoneAppsController {
   return controller;
 }
 
+/** The controller where this phone has one; a screen drawn outside the app root has none. */
+export function useOptionalIphoneApps(): IphoneAppsController | null {
+  return useContext(IphoneAppsContext);
+}
+
 export function useIphoneAppsState(controller: IphoneAppsController): IphoneAppsState {
   return useSyncExternalStore(controller.subscribe, controller.getState, controller.getState);
 }

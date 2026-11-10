@@ -1,4 +1,11 @@
-import { turnState, type TranscriptGroup } from "./agent-activity-model.js";
+import type { WaitingRequest } from "@opensteer/core";
+import {
+  groupTranscriptEntries,
+  liveTurnWords,
+  turnState,
+  type TranscriptGroup,
+} from "./agent-activity-model.js";
+import { requestsWaitingOn } from "./waiting-requests.js";
 import type {
   EnvironmentSummary,
   RunQueueEntry,
@@ -85,6 +92,61 @@ function nextQueuedRun(input: ThreadStopTargetInput): RunQueueEntry | null {
   if (inputQueuePaused || (status !== "running" && status !== "waiting")) return null;
   const runs = threadRuns(input.runQueue, input.thread.id);
   return runs.some((run) => run.status !== "queued") ? null : (runs[0] ?? null);
+}
+
+/**
+ * What a place opened from a Thread says of that Thread, while there is
+ * something to say: that it needs its reader, who answers it in the Thread, or
+ * what its Run is doing, with the Run its Stop reaches. Null otherwise.
+ */
+export type ThreadWatch =
+  | { readonly kind: "needs-you" }
+  | {
+      readonly kind: "working";
+      readonly runId: string;
+      readonly stopping: boolean;
+      /** The Thread's live line, as its transcript says it. */
+      readonly words: string;
+    };
+
+export function threadWatch(
+  input: ThreadActivityInput & {
+    readonly thread: Pick<ThreadSummary, "id" | "inputQueuePaused" | "status">;
+    readonly waitingRequests: readonly WaitingRequest[];
+  },
+): ThreadWatch | null {
+  if (requestsWaitingOn(input.waitingRequests, input.thread.id).length > 0)
+    return { kind: "needs-you" };
+  const target = threadStopTarget(input);
+  if (target === null) return null;
+  const activity = threadActivity(input);
+  const live = liveWords(input.entries, input.thread.inputQueuePaused ?? false);
+  return {
+    kind: "working",
+    runId: target.id,
+    stopping: activity === "stopping",
+    // A question someone else is to answer: this reader has nothing to answer.
+    words:
+      activity === "waiting_for_you"
+        ? "Waiting on someone"
+        : activity === "stopping"
+          ? activityLabels.stopping
+          : (live ?? activityLabels[activity === "idle" ? "working" : activity]),
+  };
+}
+
+// A screen asks on every snapshot; a transcript is regrouped only when it changes.
+const liveWordsMemo = new WeakMap<
+  readonly TranscriptEntry[],
+  { readonly paused: boolean; readonly words: string | null }
+>();
+
+function liveWords(entries: readonly TranscriptEntry[], paused: boolean): string | null {
+  const held = liveWordsMemo.get(entries);
+  if (held?.paused === paused) return held.words;
+  const words = liveTurnWords(groupTranscriptEntries(entries, { inputQueuePaused: paused }));
+  liveWordsMemo.set(entries, { paused, words });
+  return words;
 }
 
 export type ThreadActivityIndicator =

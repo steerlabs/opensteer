@@ -1,10 +1,15 @@
 import {
   HostClientRequestError,
+  mutationIdempotencyKey,
+  newTabProfiles,
+  newTabTarget,
+  profileAwayWords,
   startPageIndex,
   type HostClient,
   type HostSnapshot,
   type PlaceItem,
   type StartPageGroup,
+  type StartPageProfileChoice,
   type WorkspaceSurfaceDestination,
 } from "@opensteer/client/host";
 import { computerNotReadyStatus, computerReasonWords } from "@opensteer/client/integrations";
@@ -13,22 +18,26 @@ import type { ApprovedComputerApp, ComputerViewTarget, OwnerWindowInfo } from "@
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ActivityIndicator, Pressable, SectionList, StyleSheet, View } from "react-native";
+import { showPendingBrowserTab } from "../browser/pending-tab-route.js";
 import { workspaceRoute } from "../browser/surface-route.js";
 import { operationDetail } from "../client/mobile-client.js";
 import { MacAppIcon } from "../computers/app-mark.js";
+import { useHereDeviceId } from "../computers/here-device.js";
 import { openOwnerView } from "../computers/open-owner-view.js";
-import { color, controlFontScaleLimit, radius, space, touchTarget } from "../theme.js";
+import { color, controlFontScaleLimit, material, radius, space, touchTarget } from "../theme.js";
 import { NativeMenu } from "../thread/composer-menu.js";
 import { useMobileState } from "../ui/mobile-client-context.js";
 import { useContentInsets } from "../ui/pane.js";
 import { AppText, Notice, StatusDot } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
+import { computerSymbols } from "./settings-model.js";
 
 export type OpenAppScreenProps = StaticScreenProps<{ readonly deploymentId: string }>;
 
 /**
- * Open: the person's own Mac apps and Agent Phones, from the phone, the way
- * the new-tab page offers them on a computer. Each Mac lists the apps it lets
+ * Open: a new tab in any profile the person may use, then their own Mac apps
+ * and Agent Phones, from the phone, the way the new-tab page offers them on a
+ * computer. A profile opens on the device it lives on. Each Mac lists the apps it lets
  * Opensteer use, by their own icons, and how many windows each has open. A
  * choice opens the person's own view of exactly that app or window over the
  * screen this sheet came from; one already open is switched to, never opened
@@ -57,6 +66,10 @@ interface Section {
 
 const selectMachines = (snapshot: HostSnapshot) => snapshot.machines;
 const selectConnected = (snapshot: HostSnapshot) => snapshot.connection === "connected";
+const selectConnection = (snapshot: HostSnapshot) => snapshot.connection;
+const selectProfiles = (snapshot: HostSnapshot) => snapshot.browserProfiles;
+const selectHomes = (snapshot: HostSnapshot) => snapshot.browserProfileHomes;
+const selectBrowsing = (snapshot: HostSnapshot) => snapshot.browserAvailable;
 
 function OpenApp(props: { readonly deploymentId: string; readonly hostClient: HostClient }) {
   const { deploymentId, hostClient } = props;
@@ -65,6 +78,11 @@ function OpenApp(props: { readonly deploymentId: string; readonly hostClient: Ho
   const machines = useHostSelector(hostClient, selectMachines);
   const connected = useHostSelector(hostClient, selectConnected);
   const places = usePlaceList(hostClient);
+  const browserProfiles = useHostSelector(hostClient, selectProfiles);
+  const browserProfileHomes = useHostSelector(hostClient, selectHomes);
+  const browsing = useHostSelector(hostClient, selectBrowsing);
+  const connection = useHostSelector(hostClient, selectConnection);
+  const hereId = useHereDeviceId(deploymentId);
   const [approved, setApproved] = useState<Approved>({ kind: "loading" });
   const [windows, setWindows] = useState<Windows>(new Map());
   const [opening, setOpening] = useState<string | null>(null);
@@ -128,6 +146,32 @@ function OpenApp(props: { readonly deploymentId: string; readonly hostClient: Ho
       current = false;
     };
   }, [groups, hostClient]);
+
+  // Every profile the Host lists, and Guest: this device's first.
+  const profiles = useMemo(() => {
+    if (!browsing) return [];
+    const snapshot = {
+      ...hostClient.getSnapshot(),
+      browserProfileHomes,
+      browserProfiles,
+      connection,
+      machines,
+    };
+    const index = startPageIndex({ snapshot, places: [], localMachineId: hereId });
+    return newTabProfiles(snapshot, index.profiles, hereId);
+  }, [browserProfileHomes, browserProfiles, browsing, connection, hereId, hostClient, machines]);
+  const openTab = useCallback(
+    (profile: StartPageProfileChoice) => {
+      const target = newTabTarget({ browserProfileHomes, machines }, profile, hereId);
+      const opening = hostClient.beginBrowserTabOpen(target, {
+        idempotencyKey: mutationIdempotencyKey("new-tab"),
+      });
+      // The sheet goes first, so the tab opens over the screen it came from.
+      navigation.goBack();
+      showPendingBrowserTab(navigation, { deploymentId, scope: "workspace" }, opening, {});
+    },
+    [browserProfileHomes, deploymentId, hereId, hostClient, machines, navigation],
+  );
 
   const sections = useMemo(
     (): readonly Section[] =>
@@ -244,11 +288,37 @@ function OpenApp(props: { readonly deploymentId: string; readonly hostClient: Ho
           )
         }
         ListHeaderComponent={
-          failure === null ? undefined : (
-            <View style={styles.notice}>
-              <Notice detail={failure} title="That didn’t open" />
-            </View>
-          )
+          <>
+            {failure === null ? null : (
+              <View style={styles.notice}>
+                <Notice detail={failure} title="That didn’t open" />
+              </View>
+            )}
+            {profiles.length === 0 ? null : (
+              <View>
+                <View accessibilityRole="header" style={styles.groupHead}>
+                  <AppText
+                    maxFontSizeMultiplier={controlFontScaleLimit}
+                    numberOfLines={1}
+                    role="caption"
+                    style={styles.groupTitle}
+                    tone="muted"
+                  >
+                    New tab
+                  </AppText>
+                </View>
+                {profiles.map((profile, index) => (
+                  <ProfileRow
+                    first={index === 0}
+                    key={profile.identity.kind === "guest" ? "guest" : profile.identity.profileId}
+                    last={index === profiles.length - 1}
+                    onOpen={openTab}
+                    profile={profile}
+                  />
+                ))}
+              </View>
+            )}
+          </>
         }
         renderItem={renderItem}
         renderSectionHeader={({ section }) => <GroupHead group={section.group} />}
@@ -457,6 +527,75 @@ const AppRow = memo(function AppRow(props: {
   );
 });
 
+/**
+ * A profile to open a new tab in, as Settings lists it: its mark and name,
+ * and the device it lives on only when that is not this one.
+ */
+const ProfileRow = memo(function ProfileRow(props: {
+  readonly first: boolean;
+  readonly last: boolean;
+  readonly onOpen: (profile: StartPageProfileChoice) => void;
+  readonly profile: StartPageProfileChoice;
+}): ReactNode {
+  const { profile } = props;
+  const { device, presentation } = profile;
+  const away = profileAwayWords(profile);
+  const disabled = !profile.available;
+  const detail = device === null ? null : device.online ? device.name : `${device.name} · Offline`;
+  return (
+    <Pressable
+      accessibilityHint={away ?? `Opens a new tab as ${presentation.name}`}
+      accessibilityLabel={detail === null ? presentation.name : `${presentation.name}, ${detail}`}
+      accessibilityRole="button"
+      accessibilityState={{ disabled }}
+      disabled={disabled}
+      onPress={() => props.onOpen(profile)}
+      style={({ pressed }) => [
+        styles.row,
+        props.first && styles.rowFirst,
+        props.last && styles.rowLast,
+        !props.first && styles.rowSeparated,
+        pressed && styles.pressed,
+      ]}
+    >
+      {presentation.kind === "profile" ? (
+        <View
+          style={[
+            styles.identity,
+            material.mark,
+            { backgroundColor: presentation.tint },
+            disabled && styles.dimmed,
+          ]}
+        >
+          <AppText maxFontSizeMultiplier={1} role="bodyMedium">
+            {presentation.initial}
+          </AppText>
+        </View>
+      ) : (
+        <View style={[styles.glyph, styles.identity]}>
+          <Symbol name="person.crop.circle" size={17} tint={color.muted} />
+        </View>
+      )}
+      <View style={styles.words}>
+        <AppText numberOfLines={1} role="bodyMedium" tone={disabled ? "muted" : "default"}>
+          {presentation.name}
+        </AppText>
+        {device === null ? null : (
+          <View style={styles.home}>
+            <Symbol name={computerSymbols[device.glyph]} size={13} tint={color.muted} />
+            <AppText numberOfLines={1} role="caption" style={styles.homeName} tone="muted">
+              {detail}
+            </AppText>
+          </View>
+        )}
+      </View>
+      {disabled ? null : (
+        <Symbol name="chevron.right" size={13} tint={color.muted} weight="semibold" />
+      )}
+    </Pressable>
+  );
+});
+
 function noop(): void {}
 
 const styles = StyleSheet.create({
@@ -494,6 +633,15 @@ const styles = StyleSheet.create({
     paddingTop: space[16],
   },
   groupStatus: { alignItems: "center", flexDirection: "row", gap: space[4] },
+  home: { alignItems: "center", flexDirection: "row", gap: space[4] },
+  homeName: { flexShrink: 1 },
+  identity: {
+    alignItems: "center",
+    borderRadius: 16,
+    height: 32,
+    justifyContent: "center",
+    width: 32,
+  },
   groupTitle: { flexShrink: 1, fontWeight: "600" },
   head: { paddingBottom: space[4], paddingHorizontal: space[20], paddingTop: space[20] },
   list: { paddingHorizontal: space[16] },

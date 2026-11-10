@@ -173,7 +173,7 @@ const config: ExpoConfig = {
     "expo-secure-store",
     [
       "expo-local-authentication",
-      { faceIDPermission: "Opensteer uses Face ID to confirm saved-login approvals." },
+      { faceIDPermission: "Opensteer uses Face ID to confirm using your saved logins and cards." },
     ],
     ["@config-plugins/react-native-webrtc", { cameraPermission }],
     // Listed so prebuild does not apply it with defaults. The microphone is

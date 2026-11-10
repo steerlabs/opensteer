@@ -59,6 +59,7 @@ export const RunnerDevicePlatformSchema = z.enum(["macos", "linux", "windows", "
 export type RunnerDevicePlatform = z.infer<typeof RunnerDevicePlatformSchema>;
 
 export const RunnerDeviceSchema = z.object({
+  app: z.literal("opensteer").optional().catch(undefined),
   form: RunnerDeviceFormSchema.nullable(),
   platform: RunnerDevicePlatformSchema,
 });

@@ -94,6 +94,7 @@ export interface EditingStep {
 
 /** What the target can apply; the core never emits an operation outside it. */
 export interface EditingTargetAbilities {
+  readonly basicInput?: boolean;
   /** The target shows compositions live (`compose`); otherwise the viewer draws the preedit. */
   readonly composition: boolean;
   /** The target verifies and applies range edits; otherwise the proxy keeps no mirror. */

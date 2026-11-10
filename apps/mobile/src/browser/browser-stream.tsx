@@ -371,11 +371,28 @@ function BrowserStreamView({
   const restored = liveDisplayed === null ? cached : null;
   const displayed = liveDisplayed ?? (restored ? { source: restored.frame } : null);
   const cacheInvalidation = useRef(invalidation);
+  // An opened page keeps one picture as it leaves the screen, not one per frame.
+  const leaving = useRef<{
+    readonly source: BrowserFrameView;
+    readonly invalidation: string | number;
+  } | null>(null);
   useEffect(() => {
-    if (preserve && liveDisplayed && cacheInvalidation.current === invalidation)
-      rememberBrowserLastPicture(frames, session.id, tabId, liveDisplayed.source);
+    const unchanged = cacheInvalidation.current === invalidation;
     cacheInvalidation.current = invalidation;
-  }, [preserve, liveDisplayed?.source, frames, invalidation, session.id, tabId]);
+    if (!unchanged) leaving.current = null;
+    if (!liveDisplayed || !unchanged) return;
+    if (preserve) rememberBrowserLastPicture(frames, session.id, tabId, liveDisplayed.source);
+    else if (interactive) leaving.current = { source: liveDisplayed.source, invalidation };
+  }, [interactive, preserve, liveDisplayed?.source, frames, invalidation, session.id, tabId]);
+  useEffect(() => {
+    if (!interactive || !active) return;
+    return () => {
+      const last = leaving.current;
+      leaving.current = null;
+      if (last && frames.invalidationKey?.(session.id, tabId) === last.invalidation)
+        rememberBrowserLastPicture(frames, session.id, tabId, last.source);
+    };
+  }, [active, frames, interactive, session.id, tabId]);
   const decoding =
     visible &&
     !native &&

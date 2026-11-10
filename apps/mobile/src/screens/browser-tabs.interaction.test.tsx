@@ -75,6 +75,7 @@ vi.mock("../ui/mobile-client-context.js", () => ({
   useMobileState: () => ({ selection: { deploymentId: "deployment", hostClient: {} } }),
 }));
 vi.mock("../ui/pane.js", () => ({ useContentInsets: () => ({ bottom: 0 }) }));
+vi.mock("../computers/here-device.js", () => ({ useHereDeviceId: () => null }));
 vi.mock("../ui/primitives.js", () => ({
   AppText: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
 }));

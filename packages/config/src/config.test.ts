@@ -549,13 +549,14 @@ describe("configuration", () => {
     ).toBeUndefined();
   });
 
-  it("refuses a browser relay on a computer that runs no agents", () => {
-    expect(() =>
-      parseRunnerConfig({
-        OPENSTEER_HOST_URL: "https://host.example",
-        OPENSTEER_RUNNER_MODULES: "browser,shell",
-      }),
-    ).toThrow("browser relay belongs to a computer that runs agents");
+  it("allows a browser relay without execution", () => {
+    const config = parseRunnerConfig({
+      OPENSTEER_HOST_URL: "https://host.example",
+      OPENSTEER_RUNNER_MODULES: "browser",
+    });
+    expect(config.modules).toEqual(["browser"]);
+    expect(config.workspaceBackings).toEqual([]);
+    expect(config.localWorkspaceRoot).toBeUndefined();
   });
 
   it("takes the computer use bridge as a loopback pair or not at all", () => {

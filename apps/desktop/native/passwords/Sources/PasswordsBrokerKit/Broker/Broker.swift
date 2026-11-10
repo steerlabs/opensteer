@@ -30,7 +30,7 @@ public enum BrokerEvent: Sendable {
 }
 
 /// The broker's state machine: connections, sign-in transactions, the
-/// vault's condition, the agent sign-in setting and the Passwords window's
+/// vault's condition, the sign-in settings and the Passwords window’s
 /// visit. It is where the authentication policy lives: the owner keys never
 /// need the person, so every action the design lists asks here first.
 ///
@@ -74,11 +74,13 @@ public final class Broker: IPCServerDelegate {
   private let vault: VaultService
   private let presence: any PresenceChecker
   private let activity: ActivityLog
+  public let personActivity: PersonActivityLog
   public weak var windows: PasswordsWindowPresenter?
 
   public private(set) var condition: VaultCondition = .notSetUp
   /// The stored setting; agents can sign in only when the vault is also ready.
   public private(set) var agentSignInsSetting = false
+  public private(set) var personFillSetting = false
   /// Whether a ready vault holds nothing yet, which the window answers with its first step.
   public private(set) var vaultIsEmpty = false
   private var connections: [Int: Connection] = [:]
@@ -97,18 +99,20 @@ public final class Broker: IPCServerDelegate {
 
   public init(
     configuration: BrokerConfiguration, vault: VaultService, presence: any PresenceChecker,
-    activity: ActivityLog
+    activity: ActivityLog, personActivity: PersonActivityLog
   ) {
     self.configuration = configuration
     self.vault = vault
     self.presence = presence
     self.activity = activity
+    self.personActivity = personActivity
   }
 
   /// Reads the vault's condition and the setting. Call before serving.
   public func load() async {
     condition = await vault.examine()
     agentSignInsSetting = await vault.agentSignIns()
+    personFillSetting = await vault.personFill()
     await readContents()
     publish()
   }
@@ -119,7 +123,8 @@ public final class Broker: IPCServerDelegate {
   /// states describe the vault, and nothing is known about it yet.
   public var status: Wire.Status? {
     condition.wire.map {
-      Wire.Status(vault: $0, agentSignIns: condition == .ready && agentSignInsSetting)
+      Wire.Status(vault: $0, agentSignIns: condition == .ready && agentSignInsSetting,
+        personFill: condition == .ready && personFillSetting)
     }
   }
 
@@ -209,7 +214,16 @@ public final class Broker: IPCServerDelegate {
     if method.rawValue.hasPrefix("card."), version < 7 {
       throw Wire.Failure.invalid("Card use needs version 7.")
     }
+    if method.rawValue.hasPrefix("fill."), version < 8 {
+      throw Wire.Failure.invalid("Password filling needs version 8.")
+    }
     switch method {
+    case .fillAccounts:
+      let params = try Wire.FillAccountsParams(json: params)
+      whenExamined(call) { self.fillAccounts(params, call: call) }
+    case .fillBegin:
+      let params = try Wire.FillBeginParams(json: params)
+      whenExamined(call) { try self.fillBegin(params, call: call) }
     case .cardProbe:
       try Wire.empty(params)
       whenExamined(call) { self.cardProbe(call) }
@@ -226,7 +240,7 @@ public final class Broker: IPCServerDelegate {
       try Wire.empty(params)
       whenExamined(call) {
         guard let status = self.status else { throw self.unavailableFailure }
-        self.reply(call, status.json)
+        self.reply(call, status.json(protocolVersion: version))
       }
     case .windowOpen:
       try Wire.empty(params)
@@ -279,6 +293,123 @@ public final class Broker: IPCServerDelegate {
     }
   }
 
+  // MARK: Person filling
+
+  private var fillRefusal: Wire.FillUnavailableReason? {
+    guard condition == .ready else { return .notSetUp }
+    return personFillSetting ? nil : .off
+  }
+
+  private func fillAccounts(_ params: Wire.FillAccountsParams, call: HeldCall) {
+    guard condition == .ready else { return reply(call, Wire.fillAccounts(.notSetUp)) }
+    guard personFillSetting else { return reply(call, Wire.fillAccounts(.off)) }
+    guard let host = URL(string: params.origin)?.host,
+      let domain = Origins.registrableDomain(host) else { return reply(call, Wire.fillAccounts(.on)) }
+    let site = "https://" + domain
+    Task {
+      do {
+        let logins = try await vault.fillAccounts(withinSite: site)
+        guard connections[call.connectionID] != nil else { return }
+        guard condition == .ready else { return reply(call, Wire.fillAccounts(.notSetUp)) }
+        guard personFillSetting else { return reply(call, Wire.fillAccounts(.off)) }
+        let ranked = logins.sorted {
+          let a = $0.origins.contains { URL(string: $0)?.host == host }
+          let b = $1.origins.contains { URL(string: $0)?.host == host }
+          if a != b { return a }
+          if $0.username.lowercased() != $1.username.lowercased() { return $0.username.lowercased() < $1.username.lowercased() }
+          if $0.updatedAt != $1.updatedAt { return $0.updatedAt > $1.updatedAt }
+          return $0.id < $1.id
+        }
+        let accounts = ranked.prefix(Wire.maxAccounts).map {
+          Wire.FillAccount(id: $0.id, revision: $0.revision, username: $0.username,
+            label: Self.accountLabel($0, siteHost: domain), hasCode: $0.hasTOTP)
+        }
+        let result = Wire.fillAccounts(.on, accounts)
+        guard Wire.result(id: call.requestID, result).count <= Frame.maxBytes else {
+          return reply(call, failure: .invalid("The saved account list is too large to display."))
+        }
+        reply(call, result)
+      } catch {
+        reply(call, Wire.fillAccounts(.notSetUp))
+        await reload()
+      }
+    }
+  }
+
+  private func fillBegin(_ params: Wire.FillBeginParams, call: HeldCall) throws {
+    guard connections[call.connectionID] != nil else { return }
+    guard transactions[params.transactionId] == nil else { throw Wire.Failure.invalid(Copy.signInMovedOn) }
+    if let reason = fillRefusal { return reply(call, Wire.FillDecision.unavailable(reason).json) }
+    guard transactions.values.filter({ !$0.waitsForThePerson && $0.pending != nil }).count < Self.maxUnderWay else {
+      return reply(call, Wire.FillDecision.unavailable(.busy).json)
+    }
+    let transaction = Transaction(person: params, connectionID: call.connectionID,
+      expiresAt: Date().addingTimeInterval(5 * 60))
+    transactions[transaction.id] = transaction
+    scheduleExpiry(transaction)
+    hold(transaction, .fillBegin, call) { serial in
+      @MainActor func finish(_ decision: Wire.FillDecision) {
+        transaction.pending = nil
+        self.reply(call, decision.json)
+        self.end(transaction, outcome: nil, failure: nil)
+      }
+      do {
+        guard self.isCurrent(transaction, serial) else { return }
+        if let reason = self.fillRefusal { return finish(.unavailable(reason)) }
+        // Validate before prompting, then recheck the pinned login after authentication.
+        let found = try await self.vault.authorizePerson(params, authority: transaction.authority, expiresAt: transaction.expiresAt)
+        guard self.isCurrent(transaction, serial) else { return }
+        if let reason = self.fillRefusal { return finish(.unavailable(reason)) }
+        guard case .authorized = found else {
+          return finish(self.personDecision(found))
+        }
+        var checked = found
+        if params.presence == .here {
+          _ = try await self.presence.authenticate(reason: Copy.fillReason(params.siteHost))
+          guard self.isCurrent(transaction, serial), !Task.isCancelled else { return }
+          if let reason = self.fillRefusal { return finish(.unavailable(reason)) }
+          checked = try await self.vault.authorizePerson(params, authority: transaction.authority, expiresAt: transaction.expiresAt)
+          guard self.isCurrent(transaction, serial) else { return }
+          if let reason = self.fillRefusal { return finish(.unavailable(reason)) }
+        }
+        guard case .authorized(let login) = checked else { return finish(self.personDecision(checked)) }
+        guard transaction.expiresAt > Date() else { return finish(.cancelled) }
+        transaction.pending = nil
+        transaction.stage = .authorized(login: login, remembered: false)
+        transaction.account = login.account
+        self.reply(call, Wire.FillDecision.authorized(transaction.expiresAt).json)
+      } catch is PresenceError {
+        guard self.isCurrent(transaction, serial) else { return }
+        if let reason = self.fillRefusal { return finish(.unavailable(reason)) }
+        finish(.cancelled)
+      } catch {
+        guard self.isCurrent(transaction, serial) else { return }
+        if let reason = self.fillRefusal { return finish(.unavailable(reason)) }
+        finish(.unavailable(.notSetUp))
+        await self.reload()
+      }
+    }
+  }
+
+  private func personDecision(_ found: VaultService.PersonAuthorization?) -> Wire.FillDecision {
+    switch found {
+    case .off: return .unavailable(.off)
+    case .changed: return .changed
+    case .authorized, nil: return .cancelled
+    }
+  }
+
+  private static func accountLabel(_ login: LoginSummary, siteHost: String) -> String? {
+    let label = login.label?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let repeated = label.map { text in
+      let lower = text.lowercased()
+      return lower == siteHost || login.origins.contains {
+        lower == $0.lowercased() || lower == URL(string: $0)?.host?.lowercased()
+      }
+    } ?? false
+    return repeated || label?.isEmpty == true ? nil : label
+  }
+
   // MARK: Probe and request
 
   private func probe(_ params: Wire.ProbeParams, call: HeldCall) {
@@ -327,7 +458,7 @@ public final class Broker: IPCServerDelegate {
   /// Authorizes the granted login, or offers the site's accounts. No one is
   /// asked either way.
   private func lookUp(_ transaction: Transaction, serial: Int, call: HeldCall) async {
-    let request = transaction.request
+    guard let request = transaction.request else { return }
     let found: SiteLookup
     do {
       found = try await vault.lookUp(
@@ -366,22 +497,13 @@ public final class Broker: IPCServerDelegate {
         let origin = login.origins.first(where: { Origins.isWithinSite($0, site: request.site) }),
         let host = URL(string: origin)?.host
       else { return nil }
-      let label = login.label?.trimmingCharacters(in: .whitespacesAndNewlines)
-      let repeated =
-        label.map { text in
-          let lower = text.lowercased()
-          return lower == request.siteHost
-            || login.origins.contains {
-              lower == $0.lowercased() || lower == URL(string: $0)?.host?.lowercased()
-            }
-        } ?? false
       return (
         Wire.Account(
           host: host, onPage: onPage,
           updatedAt: formatter.string(
             from: Date(timeIntervalSince1970: Double(login.updatedAt) / 1000)),
           id: login.id, revision: login.revision, username: login.username,
-          label: repeated || label?.isEmpty == true ? nil : label), login.updatedAt
+          label: Self.accountLabel(login, siteHost: request.siteHost)), login.updatedAt
       )
     }.sorted {
       let left = $0.0
@@ -399,7 +521,8 @@ public final class Broker: IPCServerDelegate {
   private func offerAccounts(
     _ logins: [LoginSummary], transaction: Transaction, call: HeldCall, changedID: String? = nil
   ) {
-    let accounts = Self.accounts(logins, request: transaction.request)
+    guard let request = transaction.request else { return }
+    let accounts = Self.accounts(logins, request: request)
     let message = changedID.map { id in
       accounts.contains { $0.id == id } ? Copy.accountChanged : Copy.accountGone
     }
@@ -443,7 +566,7 @@ public final class Broker: IPCServerDelegate {
   ) async {
     guard isCurrent(transaction, serial) else { return }
     if let refusal = releaseRefusal { return refuse(transaction, refusal, call) }
-    let request = transaction.request
+    guard let request = transaction.request else { return }
     let approval: Approval?
     do {
       approval = try await vault.approve(
@@ -478,6 +601,7 @@ public final class Broker: IPCServerDelegate {
   /// Until then no grant exists and release refuses the prepared transaction.
   private func commit(_ params: Wire.TransactionParams, call: HeldCall) throws {
     let transaction = try owned(params.transactionId, by: call.connectionID)
+    guard !transaction.isPerson else { throw Wire.Failure.invalid(Copy.signInMovedOn) }
     if transaction.isCard { return try commitCard(transaction, call: call) }
     if case .authorized = transaction.stage {
       return reply(call, .object(["committed": .bool(true)]))
@@ -486,7 +610,7 @@ public final class Broker: IPCServerDelegate {
     else {
       throw Wire.Failure.invalid(Copy.signInMovedOn)
     }
-    let request = transaction.request
+    guard let request = transaction.request else { return }
     let names = Self.grantNames(request)
     let grant =
       remember
@@ -536,7 +660,7 @@ public final class Broker: IPCServerDelegate {
       reply(call, failure: Wire.Failure(.unavailable, "This sign-in expired."))
       return end(transaction, outcome: .expired, failure: nil)
     }
-    guard item.origins.contains(where: { Origins.isWithinSite($0, site: transaction.request.site) })
+    guard item.origins.contains(where: { Origins.isWithinSite($0, site: transaction.site) })
     else {
       return reply(call, failure: .invalid(Copy.accountChanged))
     }
@@ -560,23 +684,22 @@ public final class Broker: IPCServerDelegate {
     }
     guard transaction.pending == nil else { throw Wire.Failure.invalid(Copy.signInMovedOn) }
     guard condition == .ready else { return reply(call, Wire.ReleaseResult.refused(.revoked).json) }
-    guard agentSignInsSetting else {
+    guard transaction.isPerson ? personFillSetting : agentSignInsSetting else {
       return reply(call, Wire.ReleaseResult.refused(.passwordsOff).json)
     }
-    guard params.destination != .app || transaction.permissionVersion == 5 else {
+    guard params.destination != .app || (!transaction.isPerson && transaction.permissionVersion == 5) else {
       return reply(call, Wire.ReleaseResult.refused(.revoked).json)
     }
-    let request = transaction.request
     let authority = transaction.authority
     let expiresAt = transaction.expiresAt
     hold(transaction, .release, call) { serial in
       let result: Wire.ReleaseResult
       do {
         result = try await self.vault.release(
-          params, login: login, site: request.site,
-          grant: remembered ? request.grantKey : nil,
+          params, login: login, site: transaction.site,
+          grant: remembered ? transaction.request?.grantKey : nil,
           permissionVersion: transaction.permissionVersion,
-          authority: authority, expiresAt: expiresAt)
+          authority: authority, expiresAt: expiresAt, kind: transaction.kind)
       } catch {
         guard self.isCurrent(transaction, serial) else { return }
         transaction.pending = nil
@@ -593,12 +716,18 @@ public final class Broker: IPCServerDelegate {
       guard self.condition == .ready else {
         return self.reply(call, Wire.ReleaseResult.refused(.revoked).json)
       }
-      guard self.agentSignInsSetting else {
+      guard transaction.isPerson ? self.personFillSetting : self.agentSignInsSetting else {
         return self.reply(call, Wire.ReleaseResult.refused(.passwordsOff).json)
       }
-      if case .released = result, params.field == .password, !transaction.used {
+      if case .released = result, !transaction.used,
+        params.field == .password || (transaction.isPerson && params.field == .totp) {
         transaction.used = true
-        self.record(transaction, outcome: .used)
+        if let person = transaction.person {
+          self.personActivity.append(PersonActivityEntry(at: Date(), site: person.siteHost,
+            account: login.account, kind: params.field == .totp ? .code : .password,
+            presence: person.presence))
+          self.notify(.changed)
+        } else { self.record(transaction, outcome: .used) }
       }
       self.reply(call, result.json)
     }
@@ -622,12 +751,12 @@ public final class Broker: IPCServerDelegate {
   }
 
   private func requestCard(_ request: Wire.SignInRequestParams, call: HeldCall) throws {
-    guard connections[call.connectionID]?.protocolVersion == 7 else { return }
+    guard let version = connections[call.connectionID]?.protocolVersion, version >= 7 else { return }
     guard transactions[request.transactionId] == nil else { throw Wire.Failure.invalid(Copy.signInMovedOn) }
     if let refusal = releaseRefusal { return answer(call, refusal) }
     let now = Date()
     guard request.expiresAt > now else { throw Wire.Failure.invalid(Copy.signInEnded) }
-    guard !transactions.values.contains(where: { $0.isCard && $0.request.transactionKey == request.transactionKey }),
+    guard !transactions.values.contains(where: { $0.isCard && $0.request?.transactionKey == request.transactionKey }),
       transactions.values.filter({ !$0.waitsForThePerson && $0.pending != nil }).count < Self.maxUnderWay,
       transactions.values.filter(\.waitsForThePerson).count < Self.maxWaitingForThePerson
     else { return reply(call, Wire.Decision.unavailable(.busy).json) }
@@ -717,7 +846,7 @@ public final class Broker: IPCServerDelegate {
     guard agentSignInsSetting else { return reply(call, Wire.cardRefused("passwords-off")) }
     hold(transaction, .release, call) { serial in
       do {
-        let result = try await self.vault.releaseCard(params, card: card, site: transaction.request.site,
+        let result = try await self.vault.releaseCard(params, card: card, site: transaction.site,
           authority: transaction.authority, expiresAt: transaction.expiresAt)
         guard self.isCurrent(transaction, serial) else { return }
         transaction.pending = nil
@@ -839,8 +968,7 @@ public final class Broker: IPCServerDelegate {
   }
 
   /// After a wake: deadlines that passed while the Mac slept end now.
-  public func sweepExpired() {
-    let now = Date()
+  public func sweepExpired(now: Date = Date()) {
     for transaction in transactions.values where transaction.expiresAt <= now {
       expire(transaction)
     }
@@ -879,6 +1007,8 @@ public final class Broker: IPCServerDelegate {
         if connections[transaction.connectionID] != nil {
           reply(pending.call, Wire.ReleaseResult.refused(.ended).json)
         }
+      } else if case .fillBegin = pending.kind {
+        reply(pending.call, Wire.FillDecision.cancelled.json)
       } else if let failure {
         reply(pending.call, failure: failure)
       }
@@ -889,8 +1019,8 @@ public final class Broker: IPCServerDelegate {
   }
 
   private func record(_ transaction: Transaction, outcome: ActivityOutcome) {
-    if transaction.isCard && outcome != .used { return }
-    let request = transaction.request
+    if transaction.isPerson || (transaction.isCard && outcome != .used) { return }
+    guard let request = transaction.request else { return }
     let card: Wire.CardChoice?
     if case .authorizedCard(let chosen) = transaction.stage { card = chosen } else { card = nil }
     activity.append(
@@ -910,9 +1040,10 @@ public final class Broker: IPCServerDelegate {
     if current != lastStatus {
       lastStatus = current
       if let current {
-        let event = Wire.statusChanged(current)
-        for state in connections.values where state.protocolVersion != nil {
-          state.connection.send(event)
+        for state in connections.values {
+          if let version = state.protocolVersion {
+            state.connection.send(Wire.statusChanged(current, protocolVersion: version))
+          }
         }
       }
     }
@@ -944,6 +1075,7 @@ public final class Broker: IPCServerDelegate {
     endImport()
     apply(await vault.examine())
     agentSignInsSetting = await vault.agentSignIns()
+    personFillSetting = await vault.personFill()
     await readContents()
     publish()
   }
@@ -973,6 +1105,7 @@ public final class Broker: IPCServerDelegate {
     let next = try await vault.setUp(authentication)
     apply(next)
     agentSignInsSetting = await vault.agentSignIns()
+    personFillSetting = await vault.personFill()
     if next == .ready { beginVisit(authentication) }
     await readContents()
     publish()
@@ -985,12 +1118,31 @@ public final class Broker: IPCServerDelegate {
     publish()
   }
 
+  public func setPersonFill(_ on: Bool) async throws {
+    if !on {
+      personFillSetting = false
+      for transaction in transactions.values where transaction.isPerson {
+        if let pending = transaction.pending, case .fillBegin = pending.kind {
+          reply(pending.call, Wire.FillDecision.unavailable(.off).json)
+          pending.task?.cancel()
+          transaction.pending = nil
+        }
+        end(transaction, outcome: nil, failure: nil)
+      }
+      publish()
+    }
+    try await vault.setPersonFill(on)
+    personFillSetting = on
+    publish()
+  }
+
   public func startFresh() async throws {
     guard case .needsReset = condition else { throw VaultServiceError.notReady }
     let authentication = try await authenticateForWindow(Copy.startFreshReason)
     endImport()
     apply(try await vault.startFresh(authentication))
     agentSignInsSetting = await vault.agentSignIns()
+    personFillSetting = await vault.personFill()
     await readContents()
     publish()
   }

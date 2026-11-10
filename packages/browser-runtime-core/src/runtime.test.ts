@@ -224,3 +224,113 @@ it.each([
     }
   },
 );
+
+it.each(["live", "released", "ambiguous", "other-consumer"] as const)(
+  "binds native autofill presence to a live, unambiguous presentation (%s)",
+  async (state) => {
+    const root = new FakePage({ url: "https://example.test" });
+    const cdp = root.cdpSession;
+    const targetId = await root.targetId();
+    const claims = freshClaims({ personFillVersion: 1, editingVersion: 2, clipboard: false });
+    const account = {
+      id: crypto.randomUUID(),
+      revision: 1,
+      username: "fixture",
+      label: null,
+      ready: false,
+    };
+    const fill = vi.fn(async () => "filled" as const);
+    const runtime = new BrowserRuntime({
+      launcher: new FakeLauncher(new FakeLaunchedBrowser(new FakeContext([root]))),
+      runtimeId: "runtime_test",
+      sessionFilesRoot: testSessionFilesRoot(),
+      ticketVerifier: new FakeTicketVerifier(claims),
+      loginAuthority: {
+        probe: async () => "unavailable",
+        authorize: async () => ({ kind: "ended", outcome: { kind: "declined" } }),
+        fill: async () => "unavailable",
+        end: async () => {},
+        personFillAccounts: async () => [account],
+        personFill: fill,
+      },
+    });
+    const sink = new FakeSink();
+    const attachment = await runtime.attach("fresh-ticket", sink);
+    try {
+      await flushMicrotasks();
+      const snapshot = sink.messages.find((message) => message.type === "browser.snapshot");
+      if (snapshot?.type !== "browser.snapshot" || !snapshot.surfaces[0])
+        throw new Error("Missing browser surface");
+      const surfaceId = snapshot.surfaces[0].id;
+      const presentation = runtime.presentSurface(
+        BrowserSessionIdSchema.parse(claims.sessionId),
+        surfaceId,
+      );
+      if (!presentation) throw new Error("Missing native presentation");
+      const consumerToken = crypto.randomUUID();
+      presentation.viewerInput?.(consumerToken);
+      cdp.responses.set("Page.getFrameTree", {
+        frameTree: { frame: { id: targetId, securityOrigin: "https://example.test" } },
+      });
+      const world = cdp.sent.find(
+        (entry) =>
+          entry.method === "Runtime.addBinding" &&
+          String(entry.parameters?.executionContextName).startsWith("opensteer-editing-"),
+      )!.parameters!;
+      cdp.emit("Runtime.executionContextCreated", {
+        context: {
+          id: 7,
+          uniqueId: crypto.randomUUID(),
+          name: world.executionContextName,
+          origin: "https://example.test",
+          auxData: { frameId: targetId, isDefault: false },
+        },
+      });
+      cdp.emit("Runtime.bindingCalled", {
+        name: world.name,
+        executionContextId: 7,
+        payload: JSON.stringify({
+          kind: "person-fill",
+          activated: true,
+          bindingId: crypto.randomUUID(),
+          role: "password",
+          box: { x: 10, y: 20, width: 120, height: 30 },
+          slots: { partner: false, group: false },
+        }),
+      });
+      await vi.waitFor(() =>
+        expect(
+          sink.messages.some((message) => message.type === "browser.autofill.offer"),
+          "Native activation never offered accounts",
+        ).toBe(true),
+      );
+      const offer = sink.messages.find((message) => message.type === "browser.autofill.offer")!;
+      if (offer.type !== "browser.autofill.offer") throw new Error("Missing autofill offer");
+      if (state === "released") presentation.release();
+      if (state === "ambiguous")
+        runtime.presentSurface(BrowserSessionIdSchema.parse(claims.sessionId), surfaceId);
+      if (state === "other-consumer") presentation.viewerInput?.(crypto.randomUUID());
+      await attachment.handle(
+        JSON.stringify({
+          type: "autofill.fill",
+          surfaceId,
+          offerId: offer.offerId,
+          loginId: account.id,
+          revision: 1,
+          producerId: consumerToken,
+        }),
+      );
+      expect(fill).toHaveBeenCalledTimes(state === "live" ? 1 : 0);
+      expect(sink.messages).toContainEqual({
+        type: "browser.autofill.result",
+        surfaceId,
+        offerId: offer.offerId,
+        consumerToken,
+        status: state === "live" ? "filled" : "unavailable",
+      });
+    } finally {
+      await attachment.close();
+      await runtime.shutdown();
+    }
+  },
+);

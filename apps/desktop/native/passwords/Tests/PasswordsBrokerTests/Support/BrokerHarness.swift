@@ -29,10 +29,15 @@ final class ScriptedPresence: PresenceChecker, @unchecked Sendable {
   private var confirmations = 0
   private var holding = 0
   private var released = false
+  private var held: [UUID: CheckedContinuation<Void, Never>] = [:]
+  private var withdrawn: Set<UUID> = []
+  var onHolding: (@Sendable () -> Void)?
+  var onFinished: (@Sendable () -> Void)?
+  var onWithdrawn: (@Sendable () -> Void)?
 
   /// Outcomes for the next checks, in order; once used up, checks confirm.
   func next(_ outcome: Outcome...) {
-    lock.withLock { outcomes.append(contentsOf: outcome) }
+    lock.withLock { outcomes.append(contentsOf: outcome); released = false }
   }
 
   /// Every reason asked for, in order.
@@ -44,10 +49,17 @@ final class ScriptedPresence: PresenceChecker, @unchecked Sendable {
   var holdingCount: Int { lock.withLock { holding } }
 
   func releaseHeld() {
-    lock.withLock { released = true }
+    let continuations = lock.withLock {
+      released = true
+      let all = Array(held.values)
+      held = [:]
+      return all
+    }
+    for continuation in continuations { continuation.resume() }
   }
 
   func authenticate(reason: String) async throws -> Authentication {
+    defer { onFinished?() }
     let outcome = lock.withLock { () -> Outcome in
       asked.append(reason)
       return outcomes.isEmpty ? .confirm : outcomes.removeFirst()
@@ -62,18 +74,38 @@ final class ScriptedPresence: PresenceChecker, @unchecked Sendable {
     case .unavailable:
       throw PresenceError.unavailable
     case .holdUntilWithdrawn:
-      lock.withLock { holding += 1 }
-      defer { lock.withLock { holding -= 1 } }
-      while !Task.isCancelled { try? await Task.sleep(nanoseconds: 5_000_000) }
+      await waitHeld(untilWithdrawn: true)
       throw PresenceError.cancelled
     case .holdThenConfirm:
-      lock.withLock { holding += 1 }
-      defer { lock.withLock { holding -= 1 } }
-      while !lock.withLock({ released }) { try? await Task.sleep(nanoseconds: 5_000_000) }
+      await waitHeld(untilWithdrawn: false)
     }
     lock.withLock { confirmations += 1 }
     return Authentication(reason: reason)
   }
+  private func waitHeld(untilWithdrawn: Bool) async {
+    let id = UUID()
+    lock.withLock { holding += 1 }
+    defer { lock.withLock { holding -= 1; _ = withdrawn.remove(id) } }
+    await withTaskCancellationHandler {
+      await withCheckedContinuation { continuation in
+        let resume = lock.withLock {
+          if released || (untilWithdrawn && withdrawn.contains(id)) { return true }
+          held[id] = continuation
+          return false
+        }
+        onHolding?()
+        if resume { continuation.resume() }
+      }
+    } onCancel: {
+      let continuation = self.lock.withLock {
+        self.withdrawn.insert(id)
+        return untilWithdrawn ? self.held.removeValue(forKey: id) : nil
+      }
+      self.onWithdrawn?()
+      continuation?.resume()
+    }
+  }
+
 }
 
 @MainActor
@@ -93,6 +125,7 @@ final class BrokerHarness {
   let presence = ScriptedPresence()
   let windows = RecordingWindows()
   let activity: ActivityLog
+  let personActivity: PersonActivityLog
   let vault: VaultService
   let broker: Broker
   private(set) var server: IPCServer!
@@ -114,6 +147,7 @@ final class BrokerHarness {
     protected = try FileProtectedStore(directory: paths.protectedFiles)
     keys = SoftwareOwnerKeys(isAvailable: secureEnclave)
     activity = ActivityLog(url: paths.activity)
+    personActivity = PersonActivityLog(url: paths.personActivity)
     controlled = controlledStore ? try ControlledStore(directory: paths.protectedFiles) : nil
     vault = VaultService(
       root: paths.vault, protectedStore: controlled ?? protected, keys: keys, deviceName: "Test Mac"
@@ -121,7 +155,7 @@ final class BrokerHarness {
     broker = Broker(
       configuration: BrokerConfiguration(
         development: true, brokerVersion: "9.9.9-test", windowIdleLimit: windowIdleLimit),
-      vault: vault, presence: presence, activity: activity)
+      vault: vault, presence: presence, activity: activity, personActivity: personActivity)
     broker.windows = windows
   }
 
@@ -155,6 +189,7 @@ final class BrokerHarness {
     server?.stop()
     for client in clients { client.close() }
     await activity.flush()
+    await personActivity.flush()
     try? FileManager.default.removeItem(at: directory)
   }
 

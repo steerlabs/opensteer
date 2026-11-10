@@ -42,6 +42,12 @@ final class WireFixtureTests: XCTestCase {
       "frameOrigin": .string("https://js.stripe.com"), "field": .string(field.rawValue)])
   }
 
+  private static func fillBegin(_ presence: Wire.FillPresence) throws -> Wire.FillBeginParams {
+    try Wire.FillBeginParams(json: .object(["transactionId": .string(transactionId),
+      "loginId": .string(loginId), "revision": .integer(3), "origin": .string("https://github.com"),
+      "presence": .string(presence.rawValue)]))
+  }
+
   private static func requests() throws -> [String: [JSONValue]] {
     let request = try Wire.SignInRequestParams(
       json: .object([
@@ -86,7 +92,10 @@ final class WireFixtureTests: XCTestCase {
         Wire.HelloParams(clientVersion: "0.1.117", protocolVersion: 5).json,
         Wire.HelloParams(clientVersion: "0.1.117", protocolVersion: 6).json,
         Wire.HelloParams(clientVersion: "0.1.117", protocolVersion: 7).json,
+        Wire.HelloParams(clientVersion: "0.1.117", protocolVersion: 8).json,
       ],
+      Wire.Method.fillAccounts.rawValue: [try Wire.FillAccountsParams(json: .object(["origin": .string("https://github.com")])).json],
+      Wire.Method.fillBegin.rawValue: [try fillBegin(.here).json, try fillBegin(.elsewhere).json],
       Wire.Method.cardProbe.rawValue: [.object([:])],
       Wire.Method.cardRequest.rawValue: [try Wire.CardRequestParams(json: cardRequest).json],
       Wire.Method.cardApprove.rawValue: [cardApproval],
@@ -127,7 +136,15 @@ final class WireFixtureTests: XCTestCase {
         Wire.HelloResult(brokerVersion: "0.1.117", development: false, protocolVersion: 6).json,
         Wire.HelloResult(brokerVersion: "0.1.117", development: true).json,
         Wire.HelloResult(brokerVersion: "0.1.117", development: false, protocolVersion: 7).json,
+        Wire.HelloResult(brokerVersion: "0.1.117", development: false, protocolVersion: 8).json,
       ],
+      Wire.Method.fillAccounts.rawValue: [
+        Wire.fillAccounts(.on, [Wire.FillAccount(id: loginId, revision: 3, username: "sam@example.com", label: "Work", hasCode: true)]),
+        Wire.fillAccounts(.on), Wire.fillAccounts(.off), Wire.fillAccounts(.notSetUp)],
+      Wire.Method.fillBegin.rawValue: [Wire.FillDecision.authorized(Date(timeIntervalSince1970: 1_800_000_000)).json,
+        Wire.FillDecision.changed.json, Wire.FillDecision.cancelled.json,
+        Wire.FillDecision.unavailable(.off).json, Wire.FillDecision.unavailable(.notSetUp).json,
+        Wire.FillDecision.unavailable(.busy).json],
       Wire.Method.cardProbe.rawValue: ["has-card", "no-card", "off", "not-set-up", "unavailable"].map { .object(["cards": .string($0)]) },
       Wire.Method.cardRequest.rawValue: [Wire.cardChoices([card]), Wire.cardChoices([]), Wire.Decision.unavailable(.busy).json],
       Wire.Method.cardApprove.rawValue: [
@@ -140,6 +157,8 @@ final class WireFixtureTests: XCTestCase {
         Wire.Status(vault: .notSetUp, agentSignIns: false).json,
         Wire.Status(vault: .unsupported, agentSignIns: false).json,
         Wire.Status(vault: .needsReset, agentSignIns: false).json,
+        Wire.Status(vault: .ready, agentSignIns: true, personFill: true).json(protocolVersion: 8),
+        Wire.Status(vault: .ready, agentSignIns: false, personFill: false).json(protocolVersion: 8),
       ],
       Wire.Method.windowOpen.rawValue: [Wire.emptyResult],
       Wire.Method.signInProbe.rawValue: Wire.Availability.allCases.map(\.json),
@@ -174,12 +193,17 @@ final class WireFixtureTests: XCTestCase {
       Wire.statusChanged(Wire.Status(vault: .ready, agentSignIns: true)))
     let fixture = JSONValue.object([
       "rejected": .array([
+        .object(["method": .string("fill.begin"), "params": cardApproval]),
+        .object(["method": .string("fill.accounts"), "params": Fixtures.probe()]),
+        .object(["method": .string("signin.approve"), "params": try fillBegin(.here).json]),
+        .object(["method": .string("card.approve"), "params": try fillBegin(.elsewhere).json]),
         .object(["method": .string("card.approve"), "params": Fixtures.approve(transactionId, .object(["id": .string(loginId), "revision": .integer(3)]), remember: true)]),
         .object(["method": .string("card.release"), "params": Fixtures.release(transactionId)]),
         .object(["method": .string("signin.release"), "params": cardRelease(.number)]),
       ]),
       "error": error,
       "event": event,
+      "eventV8": try CanonicalJSON.parse(Wire.statusChanged(Wire.Status(vault: .ready, agentSignIns: false, personFill: true), protocolVersion: 8)),
       "requests": .object(try requests().mapValues(JSONValue.array)),
       "results": .object(results().mapValues(JSONValue.array)),
     ])
@@ -214,7 +238,11 @@ final class WireFixtureTests: XCTestCase {
       switch sample["method"]?.string {
       case "card.approve": XCTAssertThrowsError(try Wire.CardApproveParams(json: params))
       case "card.release": XCTAssertThrowsError(try Wire.CardReleaseParams(json: params))
-      case "signin.release": XCTAssertThrowsError(try Wire.ReleaseParams(json: params, protocolVersion: 7))
+      case "signin.release":
+        for version: Int64 in [4, 5, 6, 7, 8] { XCTAssertThrowsError(try Wire.ReleaseParams(json: params, protocolVersion: version)) }
+      case "signin.approve": XCTAssertThrowsError(try Wire.ApproveParams(json: params))
+      case "fill.begin": XCTAssertThrowsError(try Wire.FillBeginParams(json: params))
+      case "fill.accounts": XCTAssertThrowsError(try Wire.FillAccountsParams(json: params))
       default: XCTFail("unknown rejection")
       }
     }
@@ -238,16 +266,21 @@ final class WireFixtureTests: XCTestCase {
       }
       for params in entries {
         switch known {
+        case .fillAccounts: XCTAssertNoThrow(try Wire.FillAccountsParams(json: params))
+        case .fillBegin: XCTAssertNoThrow(try Wire.FillBeginParams(json: params))
         case .cardProbe: XCTAssertNoThrow(try Wire.empty(params))
         case .cardRequest: XCTAssertNoThrow(try Wire.CardRequestParams(json: params))
         case .cardApprove: XCTAssertNoThrow(try Wire.CardApproveParams(json: params))
         case .cardRelease: XCTAssertNoThrow(try Wire.CardReleaseParams(json: params))
         case .hello:
-          XCTAssertTrue([4, 5, 6, 7].contains(try Wire.HelloParams(json: params).protocolVersion))
+          XCTAssertTrue([4, 5, 6, 7, 8].contains(try Wire.HelloParams(json: params).protocolVersion))
         case .status, .windowOpen: XCTAssertNoThrow(try Wire.empty(params))
         case .signInProbe:
           XCTAssertEqual(try Wire.ProbeParams(json: params).site, "https://github.com")
         case .signInRequest:
+          if params["protocolVersion"] == .integer(6) {
+            for version: Int64 in [6, 7, 8] { XCTAssertNoThrow(try Wire.SignInRequestParams(json: params, protocolVersion: version)) }
+          }
           XCTAssertEqual(try Wire.SignInRequestParams(json: params).siteHost, "github.com")
         case .signInApprove: XCTAssertNoThrow(try Wire.ApproveParams(json: params))
         case .signInCancel, .signInCommit:

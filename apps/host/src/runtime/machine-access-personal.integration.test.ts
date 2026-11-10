@@ -98,7 +98,7 @@ integration("Personal computer membership", () => {
     // Nothing was revoked: the computer is still a member, merely offline. The
     // computer the Deployment runs on never travelled that route and stays.
     expect(machines.find((machine) => machine.id === target.runnerId)).toMatchObject({
-      allowedModules: ["integrations", "messaging", "shell"],
+      allowedModules: ["browser", "integrations", "messaging", "shell"],
       status: "offline",
     });
     expect(machines.find((machine) => machine.id === caller.runnerId)).toMatchObject({

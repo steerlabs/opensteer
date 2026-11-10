@@ -1739,7 +1739,7 @@ describe("agent CDP boundary", () => {
 
   it("infers the same Meta editing commands as the standalone harness's Playwright table", () => {
     const [core, harness] = [
-      new URL("./session-cdp-router.ts", import.meta.url),
+      new URL("./portable-session-cdp-router.ts", import.meta.url),
       new URL("../../../apps/runner/browser-harness/keyboard-layout.mjs", import.meta.url),
     ].map((url) => {
       const source = readFileSync(url, "utf8");

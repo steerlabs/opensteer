@@ -117,6 +117,11 @@ vi.mock("react-native", () => ({
   StyleSheet: { create: (styles: object) => styles, hairlineWidth: 1 },
   useWindowDimensions: () => ({ fontScale: 1, height: 844, scale: 3, width: 390 }),
 }));
+vi.mock("react-native-safe-area-context", () => ({
+  SafeAreaProvider: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  useSafeAreaFrame: () => ({ height: 844, width: 390, x: 0, y: 0 }),
+  useSafeAreaInsets: () => ({ bottom: 0, left: 0, right: 0, top: 0 }),
+}));
 vi.mock("react-native-reanimated", () => ({
   default: {
     View: ({

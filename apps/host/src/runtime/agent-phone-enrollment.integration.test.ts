@@ -17,7 +17,7 @@ import {
   createRunnerAuthenticationSignature,
   createRunnerEnrollmentSignature,
 } from "@opensteer/runner-auth";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { phoneUpdateRelease } from "../agent-phone/update-release.js";
 import { RunnerAuthenticator } from "../agents/runner-authenticator.js";
@@ -80,6 +80,78 @@ integration.sequential("An Android phone joining a Deployment", () => {
   });
   afterAll(async () => {
     await isolated?.drop();
+  }, 120_000);
+
+  it("retains an Opensteer phone's signed identity through enrollment, reconnect and update refusal", async () => {
+    host = await startMachineAccessHost(isolated!.url);
+    const active = host;
+    const runnerId = createId("runner");
+    const device = { app: "opensteer", form: "phone", platform: "android" } as const;
+    const descriptor = RunnerDescriptorSchema.parse({
+      ...phoneDescriptor(runnerId),
+      device,
+      modules: { browser: { runtimeId: runnerId, wireVersion: 1 } },
+    });
+    const machine = async () => {
+      const result = await testRpcData(
+        active.origin,
+        "machines.list",
+        {},
+        {
+          headers: active.ownerHeaders,
+        },
+      );
+      return result.machines.find(({ id }) => id === runnerId);
+    };
+    const minted = await mintPhone(active, "opensteer-android");
+    const enrolled = await presentPhone(
+      active,
+      descriptor,
+      { token: minted.token },
+      undefined,
+      async () => {
+        expect(await machine()).toMatchObject({ device, status: "online", computerUse: null });
+      },
+    );
+    expect(enrolled.welcome).not.toBeNull();
+    await vi.waitFor(
+      async () => expect(await machine()).toMatchObject({ device, status: "offline" }),
+      {
+        timeout: 5_000,
+      },
+    );
+    expect(
+      await active.store.database
+        .selectFrom("runners")
+        .select("device")
+        .where("id", "=", runnerId)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ device });
+    const olderDescriptor = { ...descriptor, device: { form: "phone", platform: "android" } };
+    const reconnected = await presentPhone(active, olderDescriptor, {
+      privateKey: enrolled.privateKey,
+    });
+    expect(reconnected.welcome).not.toBeNull();
+    await vi.waitFor(
+      async () => expect(await machine()).toMatchObject({ device, status: "offline" }),
+      {
+        timeout: 5_000,
+      },
+    );
+    const identity = await active.store.runnerForAuthentication(runnerId);
+    expect(
+      await active.store.recordRunnerUpdateRequired({
+        runnerId,
+        connectionGeneration: identity!.connectionGeneration,
+        reason: "runner-outdated",
+      }),
+    ).toBe(true);
+    expect(await machine()).toMatchObject({
+      device,
+      status: "needs-update",
+      detail: "Update Opensteer on Pixel 8.",
+      computerUse: null,
+    });
   }, 120_000);
 
   it("admits whole signed v2 advertisements and refuses mixed formats without consuming enrollment", async () => {
@@ -517,6 +589,55 @@ integration.sequential("An Android phone joining a Deployment", () => {
       enrollmentId: stored.id,
       token,
     });
+    for (const profile of [undefined, "iphone"] as const) {
+      const purpose = profile === "iphone" ? "iphone" : "phone";
+      const phoneRequest = {
+        createdBy: host.ownerId,
+        idempotencyKey: `old-${purpose}`,
+        lifetimeSeconds: 600,
+        name: "Phone",
+        ...(profile ? { profile } : {}),
+      };
+      const historicalTranscript = Buffer.from(
+        JSON.stringify([
+          "opensteer-runner-enrollment-issuance-v2",
+          "allowedModules",
+          ["integrations"],
+          "createdBy",
+          host.ownerId,
+          "idempotencyKey",
+          phoneRequest.idempotencyKey,
+          "purpose",
+          purpose,
+          "runnerKind",
+          "local",
+          "lifetimeSeconds",
+          600,
+          "name",
+          "Phone",
+        ]),
+      );
+      const historicalToken = sign(null, historicalTranscript, keys.privateKey).toString(
+        "base64url",
+      );
+      const previous = await host.store.createRunnerEnrollment({
+        allowedModules: ["browser", "integrations"],
+        issuanceModules: ["integrations"],
+        createdBy: host.ownerId,
+        ...(profile ? { deviceProfile: profile } : {}),
+        expiresAt: new Date(Date.now() + 600_000),
+        id: `ren_${randomUUID()}`,
+        idempotencyKey: phoneRequest.idempotencyKey,
+        name: "Phone",
+        runnerKind: "local",
+        requestFingerprint: `sha256:${createHash("sha256").update(historicalTranscript).digest("base64url")}`,
+        tokenHash: `sha256:${createHash("sha256").update(historicalToken).digest("base64url")}`,
+      });
+      expect(await issuer.createPhoneEnrollment(phoneRequest)).toMatchObject({
+        enrollmentId: previous.id,
+        token: historicalToken,
+      });
+    }
     await issuer.createEnrollment({
       ...request,
       idempotencyKey: "managed",
@@ -557,7 +678,7 @@ integration.sequential("An Android phone joining a Deployment", () => {
     });
   }, 120_000);
 
-  it("mints exactly the integrations grant with the Host's own address, and admits nothing but the screen", async () => {
+  it("mints the phone grant with the Host's own address and refuses shell and execution", async () => {
     host = await startMachineAccessHost(isolated!.url, { deploymentName: "Acme Research" });
     const minted = await mintPhone(host, "pixel-1");
     const authority = await hostAuthority(host);
@@ -596,7 +717,7 @@ integration.sequential("An Android phone joining a Deployment", () => {
         .where("id", "=", minted.enrollmentId)
         .executeTakeFirstOrThrow(),
     ).toEqual({
-      allowedModules: ["integrations"],
+      allowedModules: ["browser", "integrations"],
       ownerKind: "user",
       ownerUserId: host.ownerId,
       runnerKind: "local",
@@ -635,7 +756,10 @@ integration.sequential("An Android phone joining a Deployment", () => {
     expect(widened.close?.code).toBe(4003);
 
     const enrolled = await presentPhone(host, phoneDescriptor(runnerId), { token: minted.token });
-    expect(enrolled.welcome).toMatchObject({ allowedModules: ["integrations"], runnerId });
+    expect(enrolled.welcome).toMatchObject({
+      allowedModules: ["browser", "integrations"],
+      runnerId,
+    });
     expect(
       await host.store.database
         .selectFrom("runners")
@@ -643,7 +767,7 @@ integration.sequential("An Android phone joining a Deployment", () => {
         .where("id", "=", runnerId)
         .executeTakeFirstOrThrow(),
     ).toEqual({
-      allowedModules: ["integrations"],
+      allowedModules: ["browser", "integrations"],
       device: { form: "phone", platform: "android" },
       kind: "local",
       ownerUserId: host.ownerId,
@@ -710,7 +834,10 @@ integration.sequential("An Android phone joining a Deployment", () => {
     const enrolled = await presentPhone(personal, phoneDescriptor(runnerId), {
       token: minted.token,
     });
-    expect(enrolled.welcome).toMatchObject({ allowedModules: ["integrations"], runnerId });
+    expect(enrolled.welcome).toMatchObject({
+      allowedModules: ["browser", "integrations"],
+      runnerId,
+    });
 
     await configurePersonalRemoteAccess(personal, { mode: "off", routeOrigin: null });
     await waitForCondition(async () => {

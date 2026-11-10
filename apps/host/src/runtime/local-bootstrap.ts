@@ -20,8 +20,8 @@ import type { RunnerAuthenticator } from "../agents/runner-authenticator.js";
  * Nothing else is minted here. A pending enrollment is a promise that some
  * computer will redeem it, and this route cannot know which other computers
  * its caller supervises. A supervisor that runs a browser or messaging
- * computer mints that token itself and configures the Host with it, exactly as
- * a self-hosted Deployment does — the packaged Personal stack does precisely that
+ * computer on a server Deployment mints that token itself and configures the Host
+ * with it. Personal's Main owns its browser; the packaged Personal stack does this
  * for the messaging service it supervises, through
  * `OPENSTEER_INITIAL_MESSAGING_RUNNER_ENROLLMENT_TOKEN`.
  */

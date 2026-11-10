@@ -2,6 +2,7 @@ import {
   browserAccessChoices,
   browserAccessGrantable,
   browserAccessGrantLabel,
+  browserAccessHomeChoice,
   browserAccessInitialName,
   browserAccessInitialSelection,
   browserAccessProfileNote,
@@ -57,6 +58,7 @@ import {
   StyleSheet,
   TextInput,
   View,
+  type TextInputProps,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
@@ -65,6 +67,8 @@ import {
   useChromeInspection,
 } from "../browser/chrome-sign-in-parts.js";
 import { useComputerAppApproval } from "../computers/computer-app-approval.js";
+import { useHereDeviceId } from "../computers/here-device.js";
+import { HomeMenu } from "../screens/profile-home-menu.js";
 import { color, controlFontScaleLimit, radius, space, touchTarget, type } from "../theme.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import { AppText, Chip, monoFontFamily, Notice, StatusDot } from "../ui/primitives.js";
@@ -678,9 +682,9 @@ function RequestBody(props: {
           canRespond={canRespond}
           failure={session.failure}
           hostClient={props.hostClient}
-          onRespond={(selection, name) =>
+          onRespond={(selection, name, home) =>
             void responder.submit(
-              browserAccessResponse(selection, name),
+              browserAccessResponse(selection, name, home),
               selection === null ? "browser-access-decline" : "browser-access-grant",
             )
           }
@@ -728,7 +732,11 @@ function BrowserAccessBody(props: {
   readonly canRespond: boolean;
   readonly failure: string | null;
   readonly hostClient: HostClient;
-  readonly onRespond: (selection: BrowserAccessSelection | null, name: string) => void;
+  readonly onRespond: (
+    selection: BrowserAccessSelection | null,
+    name: string,
+    home: string | null,
+  ) => void;
   readonly pendingId: string | null;
   readonly reason: string | null;
   readonly request: Request;
@@ -747,6 +755,12 @@ function BrowserAccessBody(props: {
         : null;
   const name = session.browserName ?? (suggestion ? browserAccessInitialName(suggestion) : "");
   const choices = browserAccessChoices(snapshot, props.request.targetWorkspaceId);
+  const hereId = useHereDeviceId(snapshot.deploymentId ?? "");
+  const homes = browserAccessHomeChoice(snapshot, hereId, props.request);
+  // The person's pick stands while it is still on offer; the default follows the list.
+  const home = homes
+    ? (homes.options.find(({ id }) => id === session.browserHome)?.id ?? homes.initial)
+    : null;
   const busy = props.pendingId !== null;
   const disabled = !props.canRespond || busy;
   const choose = (next: BrowserAccessSelection): void => {
@@ -783,20 +797,29 @@ function BrowserAccessBody(props: {
       </View>
       {selection?.kind === "new" ? (
         <View style={styles.nameField}>
-          <TextInput
-            accessibilityLabel="Profile name"
-            autoCapitalize="words"
-            cursorColor={color.ember}
-            editable={!busy}
-            maxFontSizeMultiplier={controlFontScaleLimit}
-            maxLength={120}
-            onChangeText={changeName}
-            placeholder="Personal, Work, Finance…"
-            placeholderTextColor={color.muted}
-            selectionColor={color.ember}
-            style={[type.secondary, styles.input, busy && styles.disabled]}
-            value={name}
-          />
+          {homes && home ? (
+            <View style={styles.inputWithHome}>
+              <ProfileNameInput
+                busy={busy}
+                onChangeText={changeName}
+                style={[styles.inputBeforeHome, busy && styles.disabled]}
+                value={name}
+              />
+              <HomeMenu
+                disabled={busy}
+                home={home}
+                homes={homes}
+                onChoose={(browserHome) => updateRequestSession(session, { browserHome })}
+              />
+            </View>
+          ) : (
+            <ProfileNameInput
+              busy={busy}
+              onChangeText={changeName}
+              style={[styles.input, busy && styles.disabled]}
+              value={name}
+            />
+          )}
           {choices.nameSuggestions.length > 0 ? (
             <View accessibilityLabel="Suggested names" style={styles.nameSuggestions}>
               {choices.nameSuggestions.map((suggestion) => (
@@ -824,18 +847,42 @@ function BrowserAccessBody(props: {
           busy={props.pendingId === "browser-access-decline"}
           disabled={disabled}
           label="Not now"
-          onPress={() => props.onRespond(null, name)}
+          onPress={() => props.onRespond(null, name, null)}
           tone="secondary"
         />
         <AnswerPill
           busy={props.pendingId === "browser-access-grant"}
           disabled={disabled || !browserAccessGrantable(selection, name, profiles)}
           label={browserAccessGrantLabel(selection, choices)}
-          onPress={() => props.onRespond(selection, name)}
+          onPress={() => props.onRespond(selection, name, home)}
           tone="primary"
         />
       </AnswerRow>
     </View>
+  );
+}
+
+function ProfileNameInput(props: {
+  readonly busy: boolean;
+  readonly onChangeText: (name: string) => void;
+  readonly style: TextInputProps["style"];
+  readonly value: string;
+}): ReactNode {
+  return (
+    <TextInput
+      accessibilityLabel="Profile name"
+      autoCapitalize="words"
+      cursorColor={color.ember}
+      editable={!props.busy}
+      maxFontSizeMultiplier={controlFontScaleLimit}
+      maxLength={120}
+      onChangeText={props.onChangeText}
+      placeholder="Personal, Work, Finance…"
+      placeholderTextColor={color.muted}
+      selectionColor={color.ember}
+      style={[type.secondary, props.style]}
+      value={props.value}
+    />
   );
 }
 
@@ -1503,6 +1550,22 @@ const styles = StyleSheet.create({
     paddingHorizontal: space[14],
     paddingVertical: space[10],
     textAlignVertical: "top",
+  },
+  // The same field as `input`, with the device a new profile lives on at its end.
+  inputWithHome: {
+    alignItems: "center",
+    backgroundColor: "rgba(255, 255, 255, 0.05)",
+    borderRadius: radius.lg,
+    flexDirection: "row",
+    gap: space[8],
+    minHeight: touchTarget,
+    paddingStart: space[14],
+  },
+  inputBeforeHome: {
+    color: color.text,
+    flex: 1,
+    minHeight: touchTarget,
+    paddingVertical: space[10],
   },
   moreGlyph: {
     alignItems: "center",

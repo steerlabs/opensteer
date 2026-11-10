@@ -1,3 +1,4 @@
+import { encodeFrameEnvelope, decodeFrameEnvelope } from "@opensteer/browser-core/bytes";
 import { IsoDateTimeSchema } from "@opensteer/core";
 import { z } from "zod";
 import {
@@ -239,49 +240,57 @@ export class BrowserRelayFrameError extends Error {
   }
 }
 
-export function encodeBrowserRelayFrame(header: BrowserRelayFrameHeader, frame: Buffer): Buffer {
-  validateBrowserRuntimeFrame(frame);
-  const headerBytes = Buffer.from(
-    JSON.stringify(BrowserRelayFrameHeaderSchema.parse(header)),
-    "utf8",
-  );
-  if (headerBytes.byteLength > maxHeaderBytes) throw invalidFrame();
-  const output = Buffer.allocUnsafe(4 + headerBytes.byteLength + frame.byteLength);
-  output.writeUInt32BE(headerBytes.byteLength, 0);
-  headerBytes.copy(output, 4);
-  frame.copy(output, 4 + headerBytes.byteLength);
+export function encodeBrowserRelayFrameBytes(
+  header: BrowserRelayFrameHeader,
+  frame: Uint8Array,
+): Uint8Array {
+  validateBrowserRuntimeFrameBytes(frame);
+  const output = encodeFrameEnvelope(BrowserRelayFrameHeaderSchema.parse(header), frame);
+  if (output.byteLength - frame.byteLength - 4 > maxHeaderBytes) throw invalidFrame();
   return output;
 }
 
+export function decodeBrowserRelayFrameBytes(value: Uint8Array): {
+  readonly frame: Uint8Array;
+  readonly header: BrowserRelayFrameHeader;
+} {
+  if (value.byteLength > maxBrowserRelayEnvelopeBytes) throw invalidFrame();
+  try {
+    const split = decodeFrameEnvelope(value);
+    const header = BrowserRelayFrameHeaderSchema.parse(split.header);
+    validateBrowserRuntimeFrameBytes(split.payload);
+    return { frame: split.payload, header };
+  } catch (error) {
+    throw invalidFrame(error);
+  }
+}
+
+export function validateBrowserRuntimeFrameBytes(value: Uint8Array): void {
+  if (value.byteLength > maxRelayedBrowserFrameBytes) throw invalidFrame();
+  try {
+    const split = decodeFrameEnvelope(value);
+    BrowserBinaryFrameHeaderSchema.parse(split.header);
+  } catch (error) {
+    throw invalidFrame(error);
+  }
+}
+
+export function encodeBrowserRelayFrame(header: BrowserRelayFrameHeader, frame: Buffer): Buffer {
+  const encoded = encodeBrowserRelayFrameBytes(header, frame);
+  return Buffer.from(encoded.buffer, encoded.byteOffset, encoded.byteLength);
+}
 export function decodeBrowserRelayFrame(value: Buffer): {
   readonly frame: Buffer;
   readonly header: BrowserRelayFrameHeader;
 } {
-  if (value.byteLength > maxBrowserRelayEnvelopeBytes) throw invalidFrame();
-  const split = splitEnvelope(value);
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(split.header.toString("utf8"));
-  } catch (error) {
-    throw invalidFrame(error);
-  }
-  const header = BrowserRelayFrameHeaderSchema.safeParse(parsed);
-  if (!header.success) throw invalidFrame(header.error);
-  validateBrowserRuntimeFrame(split.payload);
-  return { frame: split.payload, header: header.data };
+  const decoded = decodeBrowserRelayFrameBytes(value);
+  return {
+    frame: Buffer.from(decoded.frame.buffer, decoded.frame.byteOffset, decoded.frame.byteLength),
+    header: decoded.header,
+  };
 }
-
 export function validateBrowserRuntimeFrame(value: Buffer): void {
-  if (value.byteLength > maxRelayedBrowserFrameBytes) throw invalidFrame();
-  const split = splitEnvelope(value);
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(split.header.toString("utf8"));
-  } catch (error) {
-    throw invalidFrame(error);
-  }
-  const header = BrowserBinaryFrameHeaderSchema.safeParse(parsed);
-  if (!header.success || split.payload.byteLength < 1) throw invalidFrame(header.error);
+  validateBrowserRuntimeFrameBytes(value);
 }
 
 export function sameBrowserCapability(
@@ -304,18 +313,6 @@ export function browserRelayFrameFence(header: BrowserRelayFrameHeader): RunnerA
     connectionLeaseId: header.connectionLeaseId,
     module: header.module,
     runnerId: header.runnerId,
-  };
-}
-
-function splitEnvelope(value: Buffer): { readonly header: Buffer; readonly payload: Buffer } {
-  if (value.byteLength < 7) throw invalidFrame();
-  const headerLength = value.readUInt32BE(0);
-  if (headerLength < 2 || headerLength > maxHeaderBytes || 4 + headerLength >= value.byteLength) {
-    throw invalidFrame();
-  }
-  return {
-    header: value.subarray(4, 4 + headerLength),
-    payload: value.subarray(4 + headerLength),
   };
 }
 

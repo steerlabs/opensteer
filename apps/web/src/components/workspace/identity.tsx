@@ -40,6 +40,7 @@ export function ProfileAvatar({
 export interface BrowserPresentation {
   readonly identity: PlaceBrowserIdentity;
   readonly computer: string;
+  readonly computerId: string;
 }
 
 export interface BrowserPresentations {
@@ -63,6 +64,7 @@ export function browserPresentations(places: readonly PlaceItem[]): BrowserPrese
     bySession.set(place.browser.sessionId, {
       identity: place.identity,
       computer: place.device.name,
+      computerId: place.device.machineId,
     });
   }
   return { bySession, badges: profileBadgesVisible(places) };
@@ -89,10 +91,12 @@ export function useBrowserPresentations(places: readonly PlaceItem[]): BrowserPr
   }, [places]);
 }
 
-/** The destination in words, for names and tooltips: "Personal · Mac mini". */
-export function browserWords(presentation: BrowserPresentation): string {
-  return `${presentation.identity.name} · ${presentation.computer}`;
+/**
+ * The destination in words, for names and tooltips: "Personal · Mac mini". A
+ * reader who says where they are hears the computer only when it is elsewhere.
+ */
+export function browserWords(presentation: BrowserPresentation, hereId?: string | null): string {
+  return presentation.computerId === hereId
+    ? presentation.identity.name
+    : `${presentation.identity.name} · ${presentation.computer}`;
 }
-
-/** What Guest means, said once wherever it is chosen or worn. */
-export const guestDetail = "Starts without saved sign-ins. Tabs reopen; sign-ins aren’t saved.";

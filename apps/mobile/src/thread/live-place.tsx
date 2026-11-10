@@ -1,136 +1,213 @@
-import { layoutRoute } from "../navigation-presentations.js";
-import { pageSiteLabel, type HostClient } from "@opensteer/client/host";
-import { useHostSelector, useRunPlace, useRunPlaceBinding } from "@opensteer/client/react";
-import { useNavigationState } from "@react-navigation/native";
-import { memo } from "react";
-import { Pressable, StyleSheet, View } from "react-native";
-import Animated from "react-native-reanimated";
-import { placeIdentityKey } from "@opensteer/protocol";
-import { BrowserStream } from "../browser/browser-stream.js";
-import { paramsDestination, sameDestination } from "../browser/surface-route.js";
+import {
+  browserTabPicture,
+  runPlaceActing,
+  type HostClient,
+  type SurfaceDestination,
+} from "@opensteer/client/host";
+import { useHostSelector } from "@opensteer/client/react";
+import type { PlaceEnteredEventView } from "@opensteer/core";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { Image, StyleSheet, View } from "react-native";
+import { BrowserStream, useBrowserFeedState } from "../browser/browser-stream.js";
 import { ComputerDisplay } from "../computers/phone-display.js";
-import { color, material, radius, space } from "../theme.js";
-import { useAppForeground } from "../ui/foreground.js";
-import { appear, exit } from "../ui/motion.js";
-import { AppText } from "../ui/primitives.js";
+import { color, radius } from "../theme.js";
 import { Symbol } from "../ui/symbol.js";
-import type { SurfaceDestination } from "@opensteer/client/host";
 
-/** The Run owns the card; independent inventories only supply its picture binding. */
-export const LivePlace = memo(function LivePlace(props: {
+/**
+ * Whether a place's picture is live: a picture arriving now, still waiting for
+ * the next, or none to be had, such as a tab still restoring, a closed place,
+ * an offline computer or no picture credit.
+ */
+export type PictureState = "live" | "waiting" | "none";
+
+interface SurfaceProps {
   readonly active: boolean;
+  readonly destination: SurfaceDestination | null;
+  readonly entry: PlaceEnteredEventView;
   readonly hostClient: HostClient;
-  readonly onOpen: (destination: SurfaceDestination) => void;
-  readonly runId: string;
-}) {
-  const { hostClient } = props;
-  const entry = useRunPlace(hostClient, props.runId);
-  const { destination, sessionId } = useRunPlaceBinding(hostClient, entry);
-  const authorized = useHostSelector(
-    hostClient,
-    (snapshot) => snapshot.session === "authenticated" && snapshot.user !== null,
+  readonly onPageSize?: (size: { readonly height: number; readonly width: number }) => void;
+  readonly onPicture: (state: PictureState) => void;
+  /** The Run's session in a Mac app or phone. */
+  readonly sessionId: string | null;
+}
+
+/**
+ * What draws each kind of place. Each draws at the size it is laid out at, so
+ * the pictures it asks for are only as large as what is drawn. Every one is
+ * watch-only today; a tab that runs on this phone will bring its own here.
+ */
+const surfaces: Record<
+  PlaceEnteredEventView["data"]["place"]["kind"],
+  (props: SurfaceProps) => ReactNode
+> = { browser: BrowserSurface, app: ComputerSurface, phone: ComputerSurface };
+
+/** The live picture of the place a conversation's Run is in, by the kind of place. */
+export function PlaceSurface(props: SurfaceProps): ReactNode {
+  const Surface = surfaces[props.entry.data.place.kind];
+  return <Surface {...props} />;
+}
+
+function BrowserSurface(props: SurfaceProps): ReactNode {
+  const { active, destination, hostClient, onPicture } = props;
+  const place = props.entry.data.place;
+  const tabId = place.kind === "browser" ? place.surfaceId : "";
+  const sessionId =
+    destination?.kind === "browser"
+      ? destination.sessionId
+      : place.kind === "browser"
+        ? place.sessionId
+        : "";
+  const feed = useBrowserFeedState(hostClient, sessionId, tabId, false);
+  // A feed can be live before anything is drawn; only a drawn picture reports a size.
+  const [drawn, setDrawn] = useState(false);
+  const { onPageSize } = props;
+  const sized = useCallback(
+    (size: { readonly height: number; readonly width: number }) => {
+      setDrawn(true);
+      onPageSize?.(size);
+    },
+    [onPageSize],
   );
-  const foreground = useAppForeground();
-  const current = useNavigationState(layoutRoute);
-  if (entry === null || !authorized) return null;
-  if (
-    current?.name === "WorkspaceBrowser" &&
-    destination !== null &&
-    sameDestination(paramsDestination(current.params), destination)
-  )
-    return null;
-  const { place, title, site } = entry.data;
-  const active = props.active && foreground;
-  const siteLabel = site ? pageSiteLabel(site) : null;
+  useEffect(() => {
+    // A stream that is not watched draws nothing, so its picture is not live.
+    if (!active) setDrawn(false);
+    onPicture(
+      !active
+        ? "waiting"
+        : feed.error !== null || feed.status === "unavailable"
+          ? "none"
+          : feed.status === "live" && drawn
+            ? "live"
+            : "waiting",
+    );
+  }, [active, drawn, feed.error, feed.status, onPicture]);
+  const kept = active ? null : browserTabPicture(hostClient, sessionId, tabId);
   return (
-    <Animated.View entering={appear} exiting={exit}>
-      <Pressable
-        accessibilityLabel={`Open ${title}`}
-        accessibilityRole="button"
-        disabled={destination === null}
-        onPress={() => {
-          if (destination) props.onOpen(destination);
-        }}
-        style={({ pressed }) => [styles.card, pressed && styles.pressed]}
-        testID="live-place"
-      >
-        <View pointerEvents="none" style={styles.picture}>
-          {place.kind === "browser" ? (
-            <BrowserStream
-              key={place.surfaceId}
-              active={active}
-              hostClient={hostClient}
-              label={title}
-              preserveLastFrame
-              previewSessionId={place.sessionId}
-              session={{
-                id: destination?.kind === "browser" ? destination.sessionId : place.sessionId,
-                state: "ready",
-              }}
-              tabId={place.surfaceId}
-            />
-          ) : sessionId !== null ? (
-            <ComputerDisplay
-              key={placeIdentityKey(place)}
-              active={active}
-              preserveLastFrame
-              hostClient={hostClient}
-              label={title}
-              machineId={place.machineId}
-              phone={place.kind === "phone"}
-              source={{
-                kind: "task-session",
-                sessionId,
-                ...(place.kind === "app" ? { appKey: place.appKey } : {}),
-              }}
-            />
-          ) : (
-            <Symbol
-              name={place.kind === "phone" ? "smartphone" : "laptopcomputer"}
-              size={22}
-              tint={color.muted}
-            />
-          )}
-        </View>
-        <View style={styles.words}>
-          <AppText numberOfLines={1} role="secondaryMedium">
-            {title}
-          </AppText>
-          {siteLabel && siteLabel !== title ? (
-            <AppText numberOfLines={1} role="caption" tone="muted">
-              {siteLabel}
-            </AppText>
-          ) : null}
-        </View>
-        <Symbol name="chevron.right" size={12} tint={color.muted} />
-      </Pressable>
-    </Animated.View>
+    <>
+      {kept ? (
+        <Image
+          accessibilityIgnoresInvertColors
+          fadeDuration={0}
+          source={{ uri: kept.uri }}
+          style={StyleSheet.absoluteFill}
+        />
+      ) : null}
+      <BrowserStream
+        active={active}
+        hostClient={hostClient}
+        label={props.entry.data.title}
+        onPageSize={sized}
+        preserveLastFrame
+        previewSessionId={place.kind === "browser" ? place.sessionId : sessionId}
+        session={{ id: sessionId, state: "ready" }}
+        tabId={tabId}
+      />
+    </>
   );
-});
+}
+
+function ComputerSurface(props: SurfaceProps): ReactNode {
+  const { onPicture, sessionId } = props;
+  const place = props.entry.data.place;
+  const shown = useCallback(
+    (picture: boolean) => onPicture(picture ? "live" : "none"),
+    [onPicture],
+  );
+  useEffect(() => {
+    if (sessionId === null) onPicture("none");
+  }, [onPicture, sessionId]);
+  if (sessionId === null || place.kind === "browser") return null;
+  return (
+    <ComputerDisplay
+      active={props.active}
+      hostClient={props.hostClient}
+      label={props.entry.data.title}
+      machineId={place.machineId}
+      onPageSize={props.onPageSize}
+      onShown={shown}
+      phone={place.kind === "phone"}
+      preserveLastFrame
+      source={{
+        kind: "task-session",
+        sessionId,
+        ...(place.kind === "app" ? { appKey: place.appKey } : {}),
+      }}
+    />
+  );
+}
+
+/**
+ * Whether the picture may stand for the place now. Until it has been live it
+ * may not: a picture kept from earlier never stands for the page as it is.
+ * Once live, a moment's wait keeps it; a place with no picture to give drops it.
+ * Hold one per place: key its owner by the place.
+ */
+export function usePicture(): readonly [
+  { readonly state: PictureState; readonly seen: boolean },
+  (state: PictureState) => void,
+] {
+  const [value, setValue] = useState({ state: "none" as PictureState, seen: false });
+  const report = useCallback(
+    (state: PictureState) =>
+      setValue((current) => {
+        const seen = state === "live" || (state === "waiting" && current.seen);
+        return current.state === state && current.seen === seen ? current : { state, seen };
+      }),
+    [],
+  );
+  return [value, report] as const;
+}
+
+/** Whether this conversation's agent acts in its Run's place right now. */
+export function useRunPlaceActing(
+  hostClient: HostClient,
+  entry: PlaceEnteredEventView | null,
+  threadId: string,
+): boolean {
+  return useHostSelector(hostClient, (snapshot) =>
+    entry === null ? false : runPlaceActing(entry, snapshot, threadId),
+  );
+}
+
+/** What stands for a place with no picture to show: its kind, never an empty frame. */
+export function PlaceGlyph(props: {
+  readonly kind: PlaceEnteredEventView["data"]["place"]["kind"];
+  readonly size: number;
+}): ReactNode {
+  return (
+    <View pointerEvents="none" style={styles.glyph}>
+      <Symbol
+        name={
+          props.kind === "browser"
+            ? "globe"
+            : props.kind === "phone"
+              ? "smartphone"
+              : "laptopcomputer"
+        }
+        size={props.size}
+        tint={color.muted}
+      />
+    </View>
+  );
+}
+
+/** Green says an agent is acting here, as everywhere else in the app. */
+export function ActingRing(props: { readonly radius: number }): ReactNode {
+  return <View pointerEvents="none" style={[styles.ring, { borderRadius: props.radius }]} />;
+}
 
 const styles = StyleSheet.create({
-  card: {
-    ...material.control,
-    height: 64,
-    width: "100%",
-    maxWidth: 384,
-    borderRadius: radius.md,
-    flexDirection: "row",
+  glyph: {
+    ...StyleSheet.absoluteFill,
     alignItems: "center",
-    gap: space[10],
-    padding: space[4],
-    paddingRight: space[12],
-    overflow: "hidden",
-  },
-  pressed: { backgroundColor: color.surfacePressed },
-  picture: {
-    width: 88,
-    height: 54,
-    borderRadius: radius.sm,
-    overflow: "hidden",
-    backgroundColor: color.surfaceCode,
-    alignItems: "center",
+    backgroundColor: color.surfaceRaised,
     justifyContent: "center",
   },
-  words: { flex: 1, minWidth: 0, gap: space[2] },
+  ring: {
+    ...StyleSheet.absoluteFill,
+    borderColor: color.green,
+    borderWidth: 1.5,
+  },
 });
+
+export const pictureRadius = radius.xs;

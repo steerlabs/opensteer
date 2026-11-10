@@ -215,30 +215,12 @@ export interface RunnerLogger {
   error(message: string, details?: Readonly<Record<string, unknown>>): void;
 }
 
-/**
- * Everything a computer that runs agents brings to its Host connection.
- *
- * These parts travel as one value because they exist together or not at all: a
- * reach-only computer has no Runtime to hand a command to, no Workspace storage
- * to advertise, and no browser of its own to relay (`docs/computers.md#runner-and-desktop`).
- */
+/** Execution dependencies exist only when this Runner advertises agents. */
 export interface RunnerAgentsConnection {
   /** This Runner loaded the `opensteer:knowledge` skill, so the Host may plan it. */
   readonly knowledgeSkill?: true;
   readonly runFileOptions?: { readonly dataDirectory: string; readonly helperBinary: string };
   readonly earlierBootsContained?: boolean;
-  /**
-   * Present when this computer also relays a browser. The Personal Desktop
-   * stack puts the relay in the Runner process precisely so the Runner key
-   * never has to be copied anywhere else: the relay reaches its Chromium over
-   * a loopback bridge and reaches the Host over this Runner's own identity.
-   */
-  readonly browserBridge?: {
-    readonly bridgeToken: string;
-    readonly runtimeId: string;
-    readonly signIn: boolean;
-    readonly url: URL;
-  };
   /** Present exactly when this Runner holds directories of its own. */
   readonly localWorkspaces?: {
     readonly inventory: () => Promise<RunnerLocalStorageInventory>;
@@ -252,6 +234,7 @@ export interface ReconnectingHostConnectionOptions {
   readonly executionClock?: Pick<import("@opensteer/shared/clock").Clock, "now">;
   /** Present exactly when this Runner advertises the agents module. */
   readonly agents?: RunnerAgentsConnection;
+  readonly browserBridge?: RunnerConfig["browserBridge"];
   readonly bootId: RunnerDescriptor["bootId"];
   readonly config: RunnerConfig;
   /** The computer this Runner runs on, read once at start. */
@@ -268,7 +251,7 @@ export interface ReconnectingHostConnectionOptions {
   readonly identityStore: Pick<FileRunnerIdentityStore, "acceptHostConnection">;
   readonly logger: RunnerLogger;
   readonly onConnected?: (identity: {
-    readonly environmentId: NonNullable<RunnerIdentity["environmentId"]>;
+    readonly environmentId: RunnerIdentity["environmentId"];
     readonly runnerId: RunnerIdentity["runnerId"];
   }) => Promise<void> | void;
   readonly onDisconnected?: () => Promise<void> | void;
@@ -280,6 +263,7 @@ export interface ReconnectingHostConnectionOptions {
 
 export class ReconnectingHostConnection {
   readonly #agents: RunnerAgentsConnection | undefined;
+  readonly #browserBridge: RunnerConfig["browserBridge"];
   readonly #bootId: RunnerDescriptor["bootId"];
   readonly #config: Omit<RunnerConfig, "enrollmentToken">;
   readonly #device: RunnerDescriptor["device"];
@@ -347,6 +331,7 @@ export class ReconnectingHostConnection {
       options.executionClock ? { now: options.executionClock.now } : {},
     );
     this.#agents = options.agents;
+    this.#browserBridge = options.browserBridge;
     this.#bootId = options.bootId;
     const { enrollmentToken, ...config } = options.config;
     this.#config = config;
@@ -376,8 +361,14 @@ export class ReconnectingHostConnection {
     this.#onRevoked = options.onRevoked;
     this.#runtimeVersion = options.runtimeVersion;
     this.#shellModule = options.shellModule;
-    if (!options.agents && !options.shellModule && !options.integrationsModule) {
-      throw new Error("A Runner that runs no agents must offer shell or integrations");
+    if (
+      !options.agents &&
+      !options.browserBridge &&
+      !options.shellModule &&
+      !options.integrationsModule &&
+      !options.messagingModule
+    ) {
+      throw new Error("A Runner must offer at least one module");
     }
     if (this.#config.maxConcurrentRuns > 1_000) {
       throw new Error("OPENSTEER_MAX_CONCURRENT_RUNS cannot exceed 1000");
@@ -696,13 +687,10 @@ export class ReconnectingHostConnection {
       environmentId: this.#identity.environmentId,
       runnerId: this.#identity.runnerId,
     });
-    // A supervisor watches this to learn the Runner is up. A reach-only
-    // computer that never held a work location has nothing to name here, so it
-    // reports nothing rather than inventing an environment.
-    const environmentId = this.#identity.environmentId;
-    if (environmentId) {
-      await this.#onConnected?.({ environmentId, runnerId: this.#identity.runnerId });
-    }
+    await this.#onConnected?.({
+      environmentId: this.#agents ? this.#identity.environmentId : null,
+      runnerId: this.#identity.runnerId,
+    });
     // Only a module that is actually running is reported ready. A reach-only
     // computer says nothing here; its shell module reports itself once its own
     // stream is open.
@@ -721,8 +709,9 @@ export class ReconnectingHostConnection {
     const agents = this.#agents;
     const harnessDrivers = agents ? await agents.runtime.harnessDrivers() : [];
     await this.#computerUse?.permissions().catch(() => undefined);
-    const browserCapabilities = agents?.browserBridge
-      ? await new LocalBrowserRuntimeBridge(agents.browserBridge).capabilities()
+    const bridge = this.#browserBridge;
+    const browserCapabilities = bridge
+      ? await new LocalBrowserRuntimeBridge(bridge).capabilities()
       : {};
     return {
       bootId: this.#bootId,
@@ -736,10 +725,10 @@ export class ReconnectingHostConnection {
       ...(this.#device ? { device: this.#device } : {}),
       modules: {
         ...(agents ? { agents: await this.#agentsModule(agents, harnessDrivers) } : {}),
-        ...(agents?.browserBridge
+        ...(bridge
           ? {
               browser: {
-                runtimeId: agents.browserBridge.runtimeId,
+                runtimeId: bridge.runtimeId,
                 ...browserCapabilities,
                 // The loopback browser runtime ships in the same release as
                 // this Runner, so it parses every frame this Runner relays.
@@ -757,7 +746,8 @@ export class ReconnectingHostConnection {
                 rasterDemand: 1,
                 editing: 2,
                 clipboard: false,
-                ...(agents.browserBridge.signIn ? { signIn: { version: 3 }, cardFill: 1 } : {}),
+                ...(bridge.signIn ? { signIn: { version: 3 }, cardFill: 1 } : {}),
+                ...(bridge.personFill ? { personFill: 1 } : {}),
               },
             }
           : {}),
@@ -1048,7 +1038,7 @@ export class ReconnectingHostConnection {
 
   /** Present only on a computer that also relays a browser. */
   #browserModuleHandler(): RunnerModuleHandler | undefined {
-    const bridge = this.#agents?.browserBridge;
+    const bridge = this.#browserBridge;
     if (!bridge) return undefined;
     const relay = new BrowserModuleRelay(
       new LocalBrowserRuntimeBridge({

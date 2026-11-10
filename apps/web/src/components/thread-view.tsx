@@ -66,6 +66,8 @@ import { BrandMark } from "./brand.js";
 import { useVisualViewportKeyboardInset } from "./visual-viewport-keyboard.js";
 import { ConversationHeader } from "./workspace/conversation-header.js";
 import { WorkspaceOrb } from "./workspace-orb.js";
+import { useBarYield } from "./workspace/bar-yield.js";
+import { RunPage, useRunPage } from "./workspace/run-page.js";
 import { LivePlace } from "./workspace/viewfinder.js";
 import { useWorkspace } from "./workspace/workspace-context.js";
 import { TaskMark, TaskState, ChatOrb, taskStateWords } from "./workspace/task-mark.js";
@@ -898,6 +900,22 @@ function ThreadView({
   }, [snapshot, thread.id]);
   const cause = connectionStatus ?? historyStatus ?? waitingReason?.label ?? assignmentBlock;
 
+  // On a phone with the conversation alone, its Run's page can stand above it.
+  const threadRef = useRef<HTMLDivElement | null>(null);
+  // Where the head has no room for the page's folded picture, folded is a row above the thread.
+  const [pictureYielded, setPictureYielded] = useState(false);
+  const runPage = useRunPage(
+    hostClient,
+    thread.id,
+    phone && !work ? (stopTarget?.id ?? null) : null,
+    () => ({
+      scrolledUp: !followsTailRef.current,
+      typing:
+        keyboardInset > 0 ||
+        (composerInputRef.current !== null && document.activeElement === composerInputRef.current),
+    }),
+  );
+
   // On a phone with a page open, the conversation is a sheet under it: the
   // composer and the latest reply, opened to the whole conversation on request.
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -919,6 +937,7 @@ function ThreadView({
       ]
         .filter(Boolean)
         .join(" ")}
+      ref={threadRef}
     >
       {phoneStage ? (
         <ConversationSheetHandle
@@ -926,6 +945,7 @@ function ThreadView({
           hostClient={hostClient}
           onToggle={setSheetOpen}
           open={sheetOpen}
+          runId={stopTarget?.id ?? null}
           threadId={thread.id}
           title={title}
         />
@@ -935,6 +955,9 @@ function ThreadView({
         cause={cause}
         hostClient={hostClient}
         onFind={() => setFinding(true)}
+        onPictureYield={setPictureYielded}
+        onUnfold={runPage.unfold}
+        pageOpen={runPage.shown === "open"}
         threadId={thread.id}
         title={title}
         titleRef={headerTitleRef}
@@ -949,6 +972,23 @@ function ThreadView({
           threadId={thread.id}
         />
       ) : null}
+
+      {runPage.placeRunId === null ? null : (
+        <RunPage
+          focusPage={runPage.focusPage}
+          foldedHere={pictureYielded}
+          hostClient={hostClient}
+          key={`${thread.id}:${runPage.placeRunId}`}
+          onFits={runPage.setFits}
+          onFold={runPage.fold}
+          onUnfold={runPage.unfold}
+          open={runPage.shown === "open"}
+          runId={runPage.placeRunId}
+          scrollRef={scrollRef}
+          threadId={thread.id}
+          threadRef={threadRef}
+        />
+      )}
 
       <div
         className="thread__body"
@@ -1120,14 +1160,6 @@ function ThreadView({
       ) : null}
 
       <div className="composer-dock">
-        {stopTarget ? (
-          <LivePlace
-            hostClient={hostClient}
-            key={stopTarget.id}
-            runId={stopTarget.id}
-            threadId={thread.id}
-          />
-        ) : null}
         {voiceThread ? (
           <VoiceStart
             dockHidden={phoneStage && !sheetOpen}
@@ -1349,6 +1381,7 @@ function ConversationSheetHandle({
   hostClient,
   onToggle,
   open,
+  runId,
   threadId,
   title,
 }: {
@@ -1356,6 +1389,8 @@ function ConversationSheetHandle({
   readonly hostClient: HostClient;
   readonly onToggle: (open: boolean) => void;
   readonly open: boolean;
+  /** The conversation's working Run, whose page stands beside the handle when it is not the one shown. */
+  readonly runId: string | null;
   readonly threadId: string;
   readonly title: string;
 }) {
@@ -1368,8 +1403,12 @@ function ConversationSheetHandle({
   const start = useRef<number | null>(null);
   const dragged = useRef(false);
   const words = taskStateWords(tone);
+  const rowRef = useRef<HTMLDivElement | null>(null);
+  // The name truncates first; then the chevron, the mark, the state and the
+  // picture give way. Hide computer never does: it leads back to the page above.
+  useBarYield(rowRef, 4);
   return (
-    <div className="thread__sheet-row">
+    <div className="thread__sheet-row" ref={rowRef}>
       <button
         aria-expanded={open}
         aria-label={`${title}${words ? ` — ${words}` : ""}. ${open ? "Show less of the conversation" : "Show the conversation"}`}
@@ -1393,7 +1432,7 @@ function ConversationSheetHandle({
         type="button"
       >
         <span aria-hidden className="thread__sheet-grip" />
-        <span aria-hidden className="thread__sheet-mark">
+        <span aria-hidden className="thread__sheet-mark" data-yield={2}>
           {home ? (
             <ChatOrb size={20} />
           ) : projectHome ? (
@@ -1407,13 +1446,24 @@ function ConversationSheetHandle({
             <TaskMark size={20} mark={threadMark(threadId, directory.snapshot)} />
           )}
         </span>
-        <span className="thread__sheet-name">{title}</span>
-        <TaskState state={tone} />
-        <Icon
-          className={open ? "thread__sheet-chevron" : "thread__sheet-chevron is-up"}
-          name="chevron-down"
-        />
+        <span className="thread__sheet-name" data-yield-name>
+          {title}
+        </span>
+        <span className="conv-header__yield" data-yield={3}>
+          <TaskState state={tone} />
+        </span>
+        <span className="conv-header__yield" data-yield={1}>
+          <Icon
+            className={open ? "thread__sheet-chevron" : "thread__sheet-chevron is-up"}
+            name="chevron-down"
+          />
+        </span>
       </button>
+      {runId === null ? null : (
+        <span className="conv-header__yield" data-yield={4}>
+          <LivePlace hostClient={hostClient} key={runId} runId={runId} threadId={threadId} />
+        </span>
+      )}
       <button
         aria-label="Hide computer"
         className="icon-btn thread__sheet-hide"

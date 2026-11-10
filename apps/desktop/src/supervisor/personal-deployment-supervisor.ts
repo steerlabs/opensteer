@@ -665,6 +665,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
           bridgeToken: browser.bridgeToken,
           runtimeId: browser.runtimeId,
           signIn: browser.signIn,
+          personFill: browser.personFill,
           url: browser.url,
         },
         computerUse,
@@ -1774,6 +1775,7 @@ function runnerSpec(
     readonly bridgeToken: string;
     readonly runtimeId: string;
     readonly signIn: boolean;
+    readonly personFill: boolean;
     readonly url: URL;
   },
   computerUse: { readonly token: string; readonly url: URL } | null,
@@ -1791,6 +1793,7 @@ function runnerSpec(
       // The Runner advertises saved-password sign-ins only for a browser that
       // can run them, so the Host never offers one this Mac cannot finish.
       ...(browser.signIn ? { OPENSTEER_BROWSER_SIGN_IN: "1" } : {}),
+      ...(browser.personFill ? { OPENSTEER_BROWSER_PERSON_FILL: "1" } : {}),
       ...(computerUse ? { OPENSTEER_COMPUTER_USE_BRIDGE_URL: computerUse.url.toString() } : {}),
       // Only the engines whose bytes this release ships are named here; an
       // `installed` engine is found by the Runner on the person's own machine.

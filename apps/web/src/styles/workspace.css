@@ -161,6 +161,11 @@
   font-weight: var(--weight-medium);
 }
 
+.place-state .btn svg {
+  width: 14px;
+  height: 14px;
+}
+
 .place-state__detail {
   max-width: 36rem;
   font-size: var(--text-md);
@@ -1339,23 +1344,121 @@ button.side-needs:hover {
   padding-right: var(--space-6);
 }
 
-/* Between a browser's tabs and the Mac apps and phones: a hairline in the
-   rows' own 1px gap, so every tab row stays one pitch from the next and a
-   window of whole rows stays whole as the list scrolls. */
-.side-divider {
+/* A device's heading in Tabs: its shape in the marks' column and its name in
+   the titles' column, quiet as the Tabs heading itself. It folds what it heads;
+   its chevron shows while it is pointed at, and always once folded. */
+.side-device {
   position: relative;
-  flex: none;
-  height: 0;
-  margin: -1px var(--space-10) 0;
-  scroll-snap-align: none;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  margin-top: var(--space-8);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
 }
 
-.side-divider::before {
+.side-device.holds-open {
+  border-color: var(--rim-selected);
+}
+
+.side-device__main {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--space-10);
+  min-width: 0;
+  min-height: var(--control-height-sm);
+  padding: var(--space-4) var(--space-6) var(--space-4) var(--space-8);
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-strong);
+  letter-spacing: 0.005em;
+  text-align: left;
+}
+
+.side-list > .side-device:first-child {
+  margin-top: 0;
+}
+
+/* The whole heading folds it: its button reaches under everything but the marks. */
+.side-device__main::after {
   position: absolute;
-  inset: 0 0 auto;
-  height: 1px;
-  background: var(--line);
+  inset: 0;
+  border-radius: inherit;
   content: "";
+}
+
+.side-device:hover .side-device__main,
+.side-device__main:focus-visible {
+  color: var(--text-soft);
+}
+
+.side-device__main:focus-visible {
+  outline-offset: -2px;
+}
+
+.side-device__glyph {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 20px;
+}
+
+.side-device__glyph svg {
+  width: 14px;
+  height: 14px;
+}
+
+.side-device__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.side-device__away,
+.side-device__count {
+  flex: none;
+  margin-left: calc(var(--space-6) * -1);
+  font-weight: var(--weight-normal);
+  white-space: nowrap;
+}
+
+.side-device__count {
+  margin-left: auto;
+}
+
+.side-device__marks {
+  position: relative;
+  z-index: 1;
+}
+
+.side-device__chevron {
+  display: grid;
+  flex: none;
+  place-items: center;
+  align-self: stretch;
+  padding: 0 var(--space-10) 0 var(--space-4);
+  color: var(--muted);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
+
+.side-device__chevron svg {
+  width: 12px;
+  height: 12px;
+}
+
+.side-device.is-folded .side-device__chevron,
+.side-device:is(:hover, :focus-within) .side-device__chevron {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .side-device__chevron {
+    opacity: 1;
+  }
 }
 
 /* A place that ended keeps its row, dimmed, until it is closed or unlisted. */
@@ -1679,110 +1782,80 @@ button.side-needs:hover {
   transition: opacity 220ms var(--ease-out);
 }
 
-/* ---- The live place, over the composer ----
-   A conversation's one live spot: a small picture of where its working Run
-   acts now, and what that place is. It keeps one height, so nothing under it
+/* ---- The live place, in the conversation's head ----
+   A conversation's live page, folded small: a picture of where its working
+   Run acts now, ringed in green while it acts. Its name is its label and
+   tooltip; the head already has the words. One size, so nothing beside it
    moves while the Run streams. */
 
-.live-place {
-  display: flex;
-  width: 100%;
-  max-width: var(--composer-max-width);
-  margin: 0 auto var(--space-8);
-  animation: live-place-in var(--duration-med) var(--ease-out) both;
+.viewfinder {
+  display: grid;
+  flex: none;
+  place-items: center;
+  height: var(--control-height);
+  padding: 0 var(--space-4);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  animation: viewfinder-in var(--duration-med) var(--ease-out) both;
+  transition: transform var(--duration-fast) var(--ease-out);
 }
 
-@keyframes live-place-in {
+@keyframes viewfinder-in {
   from {
     opacity: 0;
-    transform: translateY(4px);
+    transform: scale(0.92);
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .live-place {
+  .viewfinder {
     animation: none;
   }
 }
 
-.viewfinder {
-  display: flex;
-  align-items: center;
-  gap: var(--space-10);
-  width: fit-content;
-  max-width: min(100%, 24rem);
-  padding: var(--space-4) var(--space-14) var(--space-4) var(--space-4);
-  border: 1px solid var(--rim-plate);
-  border-radius: var(--radius-md);
-  background: var(--sheen) var(--fill-plate);
-  color: inherit;
-  text-align: left;
-  transition:
-    border-color var(--duration-fast) var(--ease-out),
-    transform var(--duration-fast) var(--ease-out);
-  box-shadow: var(--edge-plate);
-}
-
 .viewfinder:hover {
-  border-color: var(--line-hover);
-  background-color: var(--fill-plate-hover);
+  background: var(--fill-plate-hover);
 }
 
 .viewfinder:active {
-  box-shadow: none;
-  transform: scale(0.97);
+  transform: scale(0.95);
 }
 
 .viewfinder__frame {
   position: relative;
-  display: block;
-  flex: none;
-  width: 76px;
+  display: grid;
+  place-items: center;
+  width: 42px;
   aspect-ratio: 16 / 10;
   overflow: hidden;
-  border-radius: calc(var(--radius-md) - var(--space-4));
+  border-radius: var(--radius-xs);
   background: var(--surface-elevated);
+  box-shadow: 0 0 0 1px var(--rim-plate);
+  transition: box-shadow var(--duration-fast) var(--ease-out);
 }
 
-.viewfinder__words {
-  display: grid;
-  gap: 1px;
-  min-width: 0;
+/* Green says an agent is acting here, as it does everywhere else. */
+.viewfinder--acting .viewfinder__frame {
+  box-shadow: 0 0 0 1.5px var(--green);
 }
 
-.viewfinder__title {
-  display: flex;
-  align-items: center;
-  gap: var(--space-6);
-  min-width: 0;
-  color: var(--text-soft);
-  font-size: var(--text-md);
-  font-weight: var(--weight-medium);
+/* A picture kept from earlier never stands for the page as it is now. */
+.viewfinder--still .viewfinder__picture,
+.viewfinder--still .viewfinder__native {
+  opacity: 0.45;
 }
 
-.viewfinder:hover .viewfinder__title {
-  color: var(--text);
+.viewfinder__glyph {
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
 }
 
-.viewfinder__name,
-.viewfinder__site {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* The frame is too small for a cursor's name tag, and the words beside it
-   already say where the agent is. */
+/* The frame is too small for a cursor's name tag; the tooltip names the place. */
 .cursor-layer--viewfinder .acur__name {
   display: none;
-}
-
-/* Under the name, past the dot. */
-.viewfinder__site {
-  padding-left: calc(6px + var(--space-6));
-  color: var(--muted-dim);
-  font-size: var(--text-sm);
 }
 
 .viewfinder__picture {
@@ -1822,6 +1895,180 @@ button.side-needs:hover {
 
 .viewfinder__native .computer-watch--compact {
   height: 100%;
+}
+
+/* ---- The live place, above the conversation ----
+   On a phone-width screen, the same picture unfolded: the page at its own
+   shape between the head and the transcript, watch-only, with the handle that
+   folds it back into the head. Without a picture yet it is a named row. */
+
+.run-page {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  background: var(--ground);
+  animation: run-page-in var(--duration-med) var(--ease-out) both;
+}
+
+@keyframes run-page-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
+
+.run-page__view {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.run-page__view:focus-visible {
+  outline-offset: -2px;
+}
+
+.run-page__frame {
+  position: relative;
+  display: grid;
+  flex: none;
+  place-items: center;
+  overflow: hidden;
+  background: var(--surface-elevated);
+}
+
+.run-page__view--page .run-page__frame {
+  border-radius: var(--radius-md);
+  animation: run-page-grow var(--duration-slow) var(--ease-out) both;
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
+
+/* Edge to edge, a page has no corners to round. */
+.run-page__view--full .run-page__frame {
+  border-radius: 0;
+}
+
+@keyframes run-page-grow {
+  from {
+    clip-path: inset(0 0 60% 0);
+  }
+}
+
+.run-page__view--page:active .run-page__frame {
+  opacity: 0.85;
+}
+
+.run-page__view--row {
+  justify-content: flex-start;
+  gap: var(--space-10);
+  min-height: 52px;
+  padding: var(--space-8) var(--space-16);
+}
+
+.run-page__view--row:active {
+  background: var(--fill-quiet);
+}
+
+.run-page__view--row .run-page__frame {
+  width: 46px;
+  aspect-ratio: 16 / 10;
+  border-radius: var(--radius-xs);
+  box-shadow: 0 0 0 1px var(--rim-plate);
+}
+
+/* Green says an agent is acting here, as on the folded picture. */
+.run-page__view--acting .run-page__frame::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 1.5px var(--green);
+  pointer-events: none;
+}
+
+.run-page__picture {
+  position: absolute;
+  inset: 0;
+  display: block;
+}
+
+.run-page__picture--still {
+  opacity: 0.45;
+}
+
+.run-page__words {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.run-page__title,
+.run-page__site {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-page__title {
+  font-size: var(--text-lg);
+  font-weight: var(--weight-medium);
+}
+
+.run-page__site {
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.run-page__chevron {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+}
+
+.run-page__handle {
+  position: relative;
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  width: 100%;
+  height: 20px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  touch-action: none;
+}
+
+/* A thumb's worth to land on, reaching into the transcript's top padding. */
+.run-page__handle::before {
+  content: "";
+  position: absolute;
+  inset: -6px 0 -18px;
+}
+
+.run-page__grip {
+  width: 36px;
+  height: 4px;
+  border-radius: var(--radius-full);
+  background: var(--line-hover);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .run-page,
+  .run-page__view--page .run-page__frame {
+    animation: none;
+  }
 }
 
 /* ---- Conversation header ---- */
@@ -1870,19 +2117,20 @@ button.side-needs:hover {
   bottom: -1px;
 }
 
+/* The name truncates first; past its floor the bar's other items give way in
+   rank order (bar-yield.ts) rather than spilling past its end. */
 .conv-header__text {
   display: flex;
   align-items: center;
   gap: var(--space-8);
   flex: 1;
-  /* However much the bar holds, the name keeps a readable floor. */
-  min-width: min(96px, 40%);
+  min-width: 0;
 }
 
 .conv-header__title {
   display: flex;
   flex: 0 1 auto;
-  min-width: min(120px, 60%);
+  min-width: 0;
   margin: 0;
   font-size: inherit;
   outline: none;
@@ -1944,6 +2192,15 @@ button.side-needs:hover {
   line-height: 1.35;
 }
 
+.conv-header__yield {
+  display: contents;
+}
+
+/* Given way for room: the bar says where it went instead. */
+[data-yielded] {
+  display: none !important;
+}
+
 /* What the bar says about the conversation and its controls hold the end. */
 .conv-header__end {
   display: flex;
@@ -1958,6 +2215,11 @@ button.side-needs:hover {
   flex: none;
   align-items: center;
   gap: var(--space-2);
+}
+
+/* With everything in it given way, it takes no gap either. */
+.conv-header__actions:not(:has(> :not([data-yielded]))) {
+  display: none;
 }
 
 /* Work handed out by another conversation leads back to it, one quiet row
@@ -2919,6 +3181,10 @@ button.start-apps__row--away:focus-visible {
     min-height: var(--touch-target);
   }
 
+  .side-device__main {
+    min-height: var(--touch-target);
+  }
+
   .occupant-mark,
   .context-chip__remove {
     width: var(--touch-target);
@@ -3488,7 +3754,8 @@ html[data-tab-sorting] * {
   --ring-bg: var(--surface-raised);
 }
 
-.tab-menu__identity span:last-child {
+.tab-menu__name,
+.tab-menu__identity .device-label {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3508,16 +3775,37 @@ html[data-tab-sorting] * {
   color: var(--muted);
 }
 
+/* A profile row is one line: who, then where when that is not here, then the
+   tick's slot, kept empty so every row's device lines up. */
 .picker__tick {
+  display: grid;
+  place-items: center;
   flex: none;
   width: 14px;
   height: 14px;
-  margin-left: auto;
+  margin-inline-start: auto;
   color: var(--text-soft);
 }
 
-.picker__detail--wrap {
-  white-space: normal;
+.picker__tick svg {
+  width: 14px;
+  height: 14px;
+}
+
+.picker__device {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 70%;
+  margin-inline-start: auto;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker__device + .picker__tick {
+  margin-inline-start: 0;
 }
 
 .popover--profiles,

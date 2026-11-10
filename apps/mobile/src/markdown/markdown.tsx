@@ -13,6 +13,7 @@ import {
   type TextStyle,
 } from "react-native";
 import { color, radius, space, type } from "../theme.js";
+import { LinkHoldContext, useConversationLinks } from "../thread/link-context.js";
 import { CopyMark } from "../ui/copy-mark.js";
 import { monoFontFamily } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
@@ -76,9 +77,11 @@ function Node(props: { readonly look: MarkdownLook; readonly node: RootContent }
   switch (node.type) {
     case "paragraph":
       return (
-        <Prose look={look}>
-          <Spans nodes={node.children} />
-        </Prose>
+        <LinkHold look={look} nodes={node.children}>
+          <Prose look={look}>
+            <Spans nodes={node.children} />
+          </Prose>
+        </LinkHold>
       );
     case "html":
       return <Prose look={look}>{node.value}</Prose>;
@@ -300,24 +303,59 @@ function Span(props: { readonly node: PhrasingContent }): ReactNode {
     case "link": {
       const words = <Spans nodes={node.children} />;
       if (!transcriptLinkUrl(node.url)) return words;
-      const { url } = node;
-      return (
-        <Text
-          accessibilityRole="link"
-          onPress={() => {
-            // A link the agent wrote goes to the system, which is the only
-            // thing that can decide what opens it.
-            void Linking.openURL(url).catch(() => Alert.alert("Link could not be opened", url));
-          }}
-          style={styles.link}
-        >
-          {words}
-        </Text>
-      );
+      return <Link url={node.url}>{words}</Link>;
     }
     default:
       return null;
   }
+}
+
+/**
+ * Words read in place are selected by a hold, so only a paragraph holding a
+ * link takes a hold of its own: one that begins on the link offers its places.
+ * A bubble is held whole already.
+ */
+function LinkHold(props: {
+  readonly children: ReactNode;
+  readonly look: MarkdownLook;
+  readonly nodes: readonly PhrasingContent[];
+}): ReactNode {
+  const links = useConversationLinks();
+  if (props.look !== "reading" || links === null || !holdsLink(props.nodes)) return props.children;
+  return <links.Hold>{props.children}</links.Hold>;
+}
+
+function holdsLink(nodes: readonly PhrasingContent[]): boolean {
+  return nodes.some(
+    (node) =>
+      (node.type === "link" && transcriptLinkUrl(node.url) !== null) ||
+      ("children" in node && holdsLink(node.children as readonly PhrasingContent[])),
+  );
+}
+
+/**
+ * A link an agent wrote. In a conversation it opens where the conversation
+ * says; anywhere else it goes to the system, as it always has.
+ */
+function Link(props: { readonly children: ReactNode; readonly url: string }): ReactNode {
+  const { url } = props;
+  const links = useConversationLinks();
+  const hold = useContext(LinkHoldContext);
+  return (
+    <Text
+      accessibilityRole="link"
+      onLongPress={hold ? () => hold.hold(url) : undefined}
+      onPress={() => {
+        if (links) links.open(url);
+        // Outside a conversation a link goes to the system, which decides what opens it.
+        else void Linking.openURL(url).catch(() => Alert.alert("Link could not be opened", url));
+      }}
+      onPressIn={hold ? (event) => hold.press(url, event.nativeEvent.timestamp) : undefined}
+      style={styles.link}
+    >
+      {props.children}
+    </Text>
+  );
 }
 
 /**

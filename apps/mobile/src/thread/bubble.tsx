@@ -7,8 +7,11 @@ import {
   type TextLayoutEvent,
   type ViewStyle,
 } from "react-native";
+import { useSafeAreaFrame } from "react-native-safe-area-context";
 import { TextLines } from "../markdown/text-lines.js";
 import { color } from "../theme.js";
+import { useContentInsets } from "../ui/pane.js";
+import { useGutter } from "../ui/screen.js";
 
 /** Messages' bubble, measured from its screenshots on iOS 26, in points at the default text size. */
 export const bubble = {
@@ -36,15 +39,20 @@ const fitted = new Map<string, number>();
 
 /**
  * A bubble's width from its longest line, as Messages sizes it: a Text left to
- * itself takes all the width it may. Measured once per text and text size, and
- * kept, so a row scrolled back into view lands at its width on its first frame.
+ * itself takes all the width it may. Measured once per text, text size and
+ * column, and kept, so a row scrolled back into view lands at its width on its
+ * first frame. The column is the pane's, not the window's: beside a page the
+ * same words wrap narrower than in Chat alone.
  */
 function useFit(words: string | null): {
   readonly onTextLayout: (event: TextLayoutEvent) => void;
   readonly width: number | undefined;
 } {
-  const { fontScale, width: screen } = useWindowDimensions();
-  const key = words === null ? null : `${fontScale}:${screen}:${words}`;
+  const { fontScale } = useWindowDimensions();
+  const { width: pane } = useSafeAreaFrame();
+  const { left, right } = useContentInsets();
+  const column = pane - left - right - useGutter() * 2;
+  const key = words === null ? null : `${fontScale}:${column}:${words}`;
   const [measured, setMeasured] = useState<{ key: string; width: number } | null>(null);
   const width = key === null ? undefined : measured?.key === key ? measured.width : fitted.get(key);
   const onTextLayout = useCallback(

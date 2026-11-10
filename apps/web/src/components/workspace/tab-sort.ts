@@ -6,23 +6,36 @@ import {
 
 /**
  * The tab list as drag-and-drop sees it: the visible rows of saved web tabs
- * in order, each tab with the group it sits in. Rows that cannot move (live
- * tabs a browser does not save) are not part of it; they follow it.
+ * in order, each tab with the group it sits in and the device section it is
+ * listed under. Rows that cannot move (live tabs a browser does not save) are
+ * not part of it; they follow it.
  */
 export type SortRow =
   | {
       readonly kind: "tab";
       readonly key: string;
+      readonly section: string;
       readonly tabId: string;
       readonly group: SortGroup | null;
     }
   | {
       readonly kind: "group";
       readonly key: string;
+      readonly section: string;
       readonly groupId: string;
       readonly color: BrowserTabGroupColor;
       readonly collapsed: boolean;
     };
+
+/**
+ * The rows a lifted row can move among: those of its own section. A tab runs
+ * on its device, so it can never be dropped under another; a group moved from
+ * one device's section moves as one, wherever its other members run.
+ */
+export function sectionSortRows(rows: readonly SortRow[], key: string): readonly SortRow[] {
+  const lifted = rows.find((row) => row.key === key);
+  return lifted ? rows.filter((row) => row.section === lifted.section) : [];
+}
 export interface SortGroup {
   readonly id: string;
   readonly color: BrowserTabGroupColor;

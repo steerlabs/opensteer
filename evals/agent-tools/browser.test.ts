@@ -9,6 +9,27 @@ const cases = parseCases(
 
 describe("browser profile corpus", () => {
   it.each([
+    [
+      "iphone-tap-refusal-human",
+      "This site refuses script-made taps. Please tap it on your phone.",
+      "Use raw CDP and update your phone.",
+    ],
+    [
+      "iphone-no-script-or-clipboard",
+      "I cannot use CDP or page scripts here, or read the clipboard or paste.",
+      "I copied your clipboard.",
+    ],
+    [
+      "iphone-snapshot-upload-floor",
+      "The DOM-derived snapshot is not WebKit AX. Agent uploads require iOS 18.4; they are unavailable on 18.3.",
+      "Harness returns WebKit's accessibility tree, and I can upload.",
+    ],
+  ])("grades iPhone limits in %s", (id, correct, incorrect) => {
+    const testCase = cases.find((entry) => entry.id === id)!;
+    expect(grade(testCase.expect, [], correct).every((check) => check.pass)).toBe(true);
+    expect(grade(testCase.expect, [], incorrect).every((check) => check.pass)).toBe(false);
+  });
+  it.each([
     "show-old-asleep-gmail",
     "show-gmail-follows-search-cursor",
     "show-duplicate-tab-titles",

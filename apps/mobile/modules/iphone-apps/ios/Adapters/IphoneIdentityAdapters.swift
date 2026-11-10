@@ -56,12 +56,11 @@ final class IphoneSandboxRecord: IdentityRecordStore {
     do { return try Data(contentsOf: url) }
     catch CocoaError.fileReadNoSuchFile { return nil }
     catch CocoaError.fileReadNoPermission { throw IphoneStorageError.protectedDataUnavailable }
-    // A present but corrupt/unreadable marker must take the same cleanup path
-    // as a malformed record. Protected data unavailability is distinct above.
+    // A present but unreadable marker is corruption, never evidence of absence.
     catch { return Data() }
   }
   func write(_ value: Data) throws {
-    try value.write(to: url, options: .atomic)
+    try PhoneBrowserDurableFile.write(value, to: url)
     var resource = URLResourceValues()
     resource.isExcludedFromBackup = true
     var markedURL = url
