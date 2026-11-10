@@ -499,6 +499,7 @@ export const PendingAgentEventSchema = z
     pendingEventVariant("node.started"),
     pendingEventVariant("node.updated"),
     pendingEventVariant("node.completed"),
+    pendingEventVariant("node.message"),
     pendingEventVariant("tool.completed"),
     pendingEventVariant("tool.started"),
   ])
