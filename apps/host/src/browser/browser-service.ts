@@ -1682,9 +1682,11 @@ export class BrowserService {
               );
             record = null;
             for (const candidate of candidates) {
+              const saved = (await this.#workspaceTabs?.tabIds(candidate.id)) ?? [];
+              // Read together after the await: an open is reserved until its page is listed.
+              const listed = this.#brokers.get(candidate.id)?.surfaceIds ?? [];
               const held =
-                ((await this.#workspaceTabs?.heldBy(candidate.id)) ?? 0) +
-                (this.#reservedTabs.get(candidate.id) ?? 0);
+                new Set([...saved, ...listed]).size + (this.#reservedTabs.get(candidate.id) ?? 0);
               if (held < browserSessionTabLimit) {
                 record = candidate;
                 reserved = candidate.id;
@@ -4494,6 +4496,11 @@ class HostedBrowserBroker {
   #durableTabs: BrowserWorkspaceTabDescriptor[] = [];
   readonly #durableClosed = new Set<BrowserSurfaceId>();
   #durableRevision = 0;
+  /** The pages the Runtime listed last; it lists a new tab before answering its open. */
+  get surfaceIds(): readonly BrowserSurfaceId[] {
+    return this.#snapshot?.surfaces.map((surface) => surface.id) ?? [];
+  }
+
   get workspaceTabRestoreVersion(): 1 | undefined {
     return this.#durableRevision > 0 ? 1 : undefined;
   }

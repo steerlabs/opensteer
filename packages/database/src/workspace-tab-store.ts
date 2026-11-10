@@ -191,15 +191,15 @@ export class WorkspaceTabStore {
   ): Promise<WorkspaceTabLineage | null> {
     return (await this.#read(ownerId, groupId, database))[0] ?? null;
   }
-  /** How many open tabs a session holds, with a page or asleep. */
-  async heldBy(sessionId: BrowserSessionId): Promise<number> {
-    const { count } = await this.database
+  /** The open tabs a session holds, with a page or asleep. */
+  async tabIds(sessionId: BrowserSessionId): Promise<string[]> {
+    const rows = await this.database
       .selectFrom("workspaceTabs")
-      .select((eb) => eb.fn.countAll<string>().as("count"))
+      .select("id")
       .where("sessionId", "=", sessionId)
       .where("closedAt", "is", null)
-      .executeTakeFirstOrThrow(databaseOperationOptions());
-    return Number(count);
+      .execute(databaseOperationOptions());
+    return rows.map((row) => row.id);
   }
   async get(ownerId: UserId, id: string) {
     const row = await this.database

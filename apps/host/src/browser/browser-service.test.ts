@@ -491,14 +491,14 @@ describe("BrowserService", () => {
     const ownerId = createId("user"),
       workspaceId = createId("workspace");
     const repository = new MemoryBrowserRepository(ownerId, workspaceId, "main");
-    const held = new Map<string, number>();
+    const saved = new Map<string, string[]>();
     const service = freshService({
       keys,
       repository,
       runtime,
       workspaceTabs: new Proxy(
-        { heldBy: async (sessionId: string) => held.get(sessionId) ?? 0 },
-        { get: (store, key) => (key === "heldBy" ? store.heldBy : async () => undefined) },
+        { tabIds: async (sessionId: string) => saved.get(sessionId) ?? [] },
+        { get: (store, key) => (key === "tabIds" ? store.tabIds : async () => undefined) },
       ) as unknown as WorkspaceTabStore,
     });
     const open = () =>
@@ -508,7 +508,11 @@ describe("BrowserService", () => {
         idempotencyKey: randomUUID(),
       });
     const first = await open();
-    held.set(first.sessionId, browserSessionTabLimit - 1);
+    // Its listed page is also saved; asleep tabs fill the rest but one place.
+    saved.set(first.sessionId, [
+      first.tabId,
+      ...Array.from({ length: browserSessionTabLimit - 2 }, (_, index) => `bsf_asleep-${index}`),
+    ]);
     const reused = open();
     const request = await runtime.nextCommand();
     // The open still in flight holds the last place, so a concurrent one goes elsewhere.
