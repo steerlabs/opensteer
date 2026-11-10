@@ -99,7 +99,9 @@ resent. Cross-boot dispatch waits until reaping proves old processes gone. Event
 until acknowledged ([`execution-recovery.ts`](../packages/database/src/execution-recovery.ts)).
 Restart steering makes a new attempt of the same Run; revocation stops the old attempt's tools, and
 its interrupt cannot kill the replacement. Native subagents are nodes of the current attempt and
-cannot outlive it. Engine background work stays with its Run, since one engine process cannot
+cannot outlive it. Their own messages, reasoning and tools are retained separately from the
+parent transcript and delivered only while a client watches that node; the parent carries the
+node's lifecycle and a short live progress line. Engine background work stays with its Run, since one engine process cannot
 attribute later tool calls to another task. Warm engines are reused only after a successful Run
 released every turn, Request, grant and terminal, with all processes proven one contained tree;
 Windows cannot prove that and keeps none. Idle engines have no authority. Reuse needs the same

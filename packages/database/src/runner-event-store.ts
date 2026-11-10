@@ -16,6 +16,7 @@ import {
   IntegrationCallSubjectSchema,
   createId,
   runBackgroundMaxMs,
+  nodeDetailEventNodeId,
 } from "@opensteer/core";
 import { isDeepStrictEqual } from "node:util";
 import { type Transaction, sql, type Kysely } from "kysely";
@@ -627,6 +628,8 @@ async function applyEventProjection(
       break;
     case "tool.started":
     case "tool.completed":
+    case "node.message":
+    case "reasoning.completed":
       if (event.data.nodeId) await requireRunNode(transaction, event.runId, event.data.nodeId);
       break;
     case "run.usage":
@@ -1133,6 +1136,7 @@ export async function commitRunnerEvent(
       .insertInto("workspaceEvents")
       .values({
         createdAt: new Date(event.emittedAt),
+        nodeDetailId: nodeDetailEventNodeId(event) ?? null,
         data: jsonValue(await stampRunContext(transaction, event.type, event.runId, stored)),
         environmentId: input.environmentId,
         eventId,
