@@ -209,7 +209,9 @@ export class ActionsClient {
       surfaceId: binding.surfaceId,
       timeoutMs,
       action,
-      ...(!["session.tabs", "surface.attach", "surface.resume"].includes(action.type)
+      ...(!["session.tabs", "surface.open", "surface.attach", "surface.resume"].includes(
+        action.type,
+      )
         ? { documentId: binding.documentId }
         : {}),
       ...(["pointer.tap", "scroll"].includes(action.type) ||
@@ -335,10 +337,7 @@ export function createActionsHarness(client, initialTargetId) {
     if (event.type === "dialog.changed") dialogs.set(event.surfaceId, event.dialog);
   });
   const listTabs = async () => {
-    const result = await client.request(
-      { surfaceId: selected ?? "session" },
-      { type: "session.tabs" },
-    );
+    const result = await client.request({}, { type: "session.tabs" });
     inventory = result.tabs;
     for (const binding of inventory) bindings.set(binding.surfaceId, binding);
     return inventory.map(publicTab);
@@ -402,6 +401,16 @@ export function createActionsHarness(client, initialTargetId) {
     return send({ type: "text.key", key });
   };
   const typeText = (value) => send({ type: "text.insert", text: inputText(value) });
+  const focusThen = async (description, action, options, selection) => {
+    optionsFor(options, ["timeout"]);
+    const binding = await bind();
+    await sendOn(
+      binding,
+      { type: "dom.act", locator: description, kind: "focus", ...(selection ? { selection } : {}) },
+      options,
+    );
+    await sendOn(binding, action, options);
+  };
   const selectors = (scope) => ({
     locator: (value) => locator({ by: "css", value: text(value), ...(scope ? { scope } : {}) }),
     getByRole: (value, options = {}) => {
@@ -507,6 +516,7 @@ export function createActionsHarness(client, initialTargetId) {
       dblclick: (options = {}) => act("click", {}, { ...options, clickCount: 2 }),
       fill: (value, options) => act("fill", { value: inputText(value) }, options),
       clear: (options) => act("clear", {}, options),
+      focus: (options) => act("focus", {}, options),
       check: (options) => act("check", {}, options),
       uncheck: (options) => act("uncheck", {}, options),
       setChecked: (value, options) => {
@@ -527,10 +537,12 @@ export function createActionsHarness(client, initialTargetId) {
       },
       press: (key, options = {}) => {
         optionsFor(options, ["timeout"]);
-        unsupported(
-          "locator.press",
-          "the action wire has no focus-only action; fill the field then use page.keyboard.press(Enter or Backspace)",
-        );
+        if (!["Enter", "Backspace"].includes(key))
+          unsupported(
+            "locator.press",
+            "only Enter and Backspace exist; no modifiers, Tab, arrows or paste",
+          );
+        return focusThen(description, { type: "text.key", key }, options);
       },
       waitFor: async (options = {}) => {
         optionsFor(options, ["state", "timeout"]);
@@ -685,10 +697,14 @@ export function createActionsHarness(client, initialTargetId) {
       return publicTab(result.binding);
     },
     newTab: async (url = "about:blank") => {
-      const result = await send({
-        type: "surface.open",
-        ...(url === "about:blank" ? {} : { url: address(url) }),
-      });
+      const result = await client.request(
+        {},
+        {
+          type: "surface.open",
+          ...(url === "about:blank" ? {} : { url: address(url) }),
+        },
+      );
+      bindings.set(result.binding.surfaceId, result.binding);
       selected = result.binding.surfaceId;
       return selected;
     },
@@ -713,9 +729,11 @@ export function createActionsHarness(client, initialTargetId) {
     fillInput: (selector, value, options = {}) => {
       optionsFor(options, ["clear", "timeout"]);
       if (options.clear === false)
-        unsupported(
-          "fillInput(clear:false)",
-          "the action wire has no focus-only action for appending; fill or insert into an already focused field",
+        return focusThen(
+          { by: "css", value: text(selector), position: "first" },
+          { type: "text.insert", text: inputText(value) },
+          options.timeout ? { timeout: options.timeout } : {},
+          "end",
         );
       return page
         .locator(selector)

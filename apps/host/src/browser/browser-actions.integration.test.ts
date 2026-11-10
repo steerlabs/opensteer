@@ -1,7 +1,10 @@
 import {
   BrowserActionRequestSchema,
   BrowserActionResponseSchema,
+  BrowserActionBindingSchema,
+  BrowserAgentActionSchema,
   type BrowserAction,
+  type BrowserActionResult,
 } from "@opensteer/protocol/browser-actions";
 import { createBrowserSessionId } from "@opensteer/protocol/browser";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -152,6 +155,103 @@ async function setup() {
 }
 
 integration("session-scoped browser agent backends", () => {
+  it("admits focus, empty-session actions and suspended close without resuming or loosening other fences", async () => {
+    const f = await setup();
+    const socket = await f.actions();
+    const viewer = await connect(
+      `ws://127.0.0.1:${f.host.hostPort}/v1/browser-sessions/${f.sessionId}/connect?surfaceState=1`,
+      f.host.ownerHeaders,
+    );
+    const forward = async (action: BrowserAction, result: BrowserActionResult, overrides = {}) => {
+      const start = f.phone.receivedCommands().length;
+      const pending = f.act(socket, action, overrides);
+      const command = await vi.waitFor(
+        () => {
+          const received = f.phone
+            .receivedCommands()
+            .slice(start)
+            .find((message) => message.type === "agent.action");
+          expect(received, `${action.type} never reached the phone`).toBeDefined();
+          return BrowserAgentActionSchema.parse(received);
+        },
+        { timeout: 1_000 },
+      );
+      f.phone.sendServer({
+        type: "agent.result",
+        attachmentId: command.attachmentId,
+        requestId: command.requestId,
+        result,
+      });
+      expect(await pending).toEqual({ id: command.request.id, result });
+      return command.request;
+    };
+    const focused = await forward(
+      { type: "dom.act", kind: "focus", locator: { by: "css", value: "input" } },
+      { type: "dom.act", outcome: "acted", trusted: false },
+    );
+    expect(focused.documentId).toBe("document-integration");
+    const publish = async (surfaces: readonly Record<string, unknown>[]) => {
+      const changed = waitForMessage(
+        viewer,
+        (message) => message.type === "browser.surfaces.changed",
+        2_000,
+      );
+      f.phone.sendServer({ type: "browser.surfaces.changed", surfaces });
+      await changed;
+    };
+    await publish([]);
+    const noTarget = { surfaceId: undefined, documentId: undefined, geometryRevision: undefined };
+    const tabs = await forward(
+      { type: "session.tabs" },
+      { type: "session.tabs", tabs: [] },
+      noTarget,
+    );
+    expect(tabs).not.toHaveProperty("surfaceId");
+    const binding = BrowserActionBindingSchema.parse({
+      surfaceId: "first-tab",
+      documentId: "first-document",
+      geometryRevision: 1,
+      state: "live" as const,
+      title: "First",
+      url: "about:blank",
+    });
+    const opened = await forward(
+      { type: "surface.open" },
+      { type: "surface.open", binding },
+      noTarget,
+    );
+    expect(opened).not.toHaveProperty("surfaceId");
+    await publish([
+      {
+        id: binding.surfaceId,
+        active: true,
+        title: binding.title,
+        url: binding.url,
+        state: "suspended",
+        documentId: binding.documentId,
+        geometryRevision: 1,
+      },
+    ]);
+    const target = { surfaceId: binding.surfaceId, documentId: binding.documentId };
+    expect(await f.act(socket, { type: "page.info" }, target)).toMatchObject({
+      error: { code: "target-suspended" },
+    });
+    expect(
+      await f.act(socket, { type: "surface.close" }, { ...target, documentId: "stale" }),
+    ).toMatchObject({ error: { code: "stale-document" } });
+    await forward({ type: "surface.close" }, { type: "surface.close", outcome: "closed" }, target);
+    expect(
+      f.phone
+        .receivedCommands()
+        .some(
+          (message) =>
+            message.type === "agent.action" &&
+            BrowserAgentActionSchema.parse(message).request.action.type === "surface.resume",
+        ),
+    ).toBe(false);
+    expect(f.phone.protocolErrors()).toEqual([]);
+  });
+
   it("negotiates the exact authorized session, pins CDP first, and refuses wrong Runs, sessions, expiry and revoked grants", async () => {
     const f = await setup();
     const response = await f.backend();

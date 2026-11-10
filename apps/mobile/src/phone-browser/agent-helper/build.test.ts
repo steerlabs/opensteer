@@ -12,9 +12,15 @@ it("bundles one document-start script without imports or a code-execution entry 
     platform: "browser",
     target: "safari17",
     write: false,
+    minify: true,
+    metafile: true,
     legalComments: "none",
   });
   expect(built.outputFiles).toHaveLength(1);
+  expect(built.outputFiles![0]!.contents.byteLength).toBeLessThanOrEqual(32 * 1_024);
+  expect(
+    Object.keys(built.metafile!.inputs).every((input) => input.includes("agent-helper/")),
+  ).toBe(true);
   const context: Record<string, unknown> = {
     crypto: { getRandomValues: webcrypto.getRandomValues.bind(webcrypto) },
     TextEncoder,

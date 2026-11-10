@@ -1,27 +1,19 @@
-import {
-  BrowserActionLocatorSchema,
-  BrowserActionSchema,
-  BrowserActionResultSchema,
-  browserActionMaxBytes,
-  type BrowserActionLocator,
-} from "@opensteer/protocol/browser-actions";
-import { z } from "zod";
+import type { BrowserAction, BrowserActionLocator } from "@opensteer/protocol/browser-actions";
 
 const MAX_NODES = 10_000;
 const MAX_DEPTH = 128;
-const envelope = z.strictObject({
-  documentId: z.string().min(1).max(255),
-  operationId: z.string().min(1).max(255).optional(),
-  name: z.string().max(32),
-  args: z.unknown(),
-});
-const waitArguments = z.strictObject({
-  id: z.string().min(1).max(255),
-  locator: BrowserActionLocatorSchema,
-  state: z.enum(["attached", "detached", "visible", "hidden"]),
-});
-const cancellation = z.strictObject({ id: z.string().min(1).max(255) });
-const focusArguments = z.strictObject({ locator: BrowserActionLocatorSchema });
+const browserActionMaxBytes = 432 * 1_024;
+type HelperAction = Extract<
+  BrowserAction,
+  {
+    type: "dom.query" | "dom.snapshot" | "dom.act" | "pointer.tap" | "scroll";
+  }
+>;
+interface WaitArguments {
+  id: string;
+  locator: BrowserActionLocator;
+  state: "attached" | "detached" | "visible" | "hidden";
+}
 type ErrorCode =
   | "unsupported-operation"
   | "stale-document"
@@ -43,6 +35,164 @@ export class PhoneHelperError extends Error {
 
 function fail(code: ErrorCode, message: string): never {
   throw new PhoneHelperError(code, message);
+}
+function fields(value: unknown, allowed: readonly string[]): Record<string, unknown> {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    ![Object.prototype, null].includes(Object.getPrototypeOf(value))
+  )
+    fail("unsupported-operation", "Expected a fixed argument object");
+  if (Object.keys(value).some((key) => !allowed.includes(key)))
+    fail("unsupported-operation", "Unknown helper argument");
+  return value as Record<string, unknown>;
+}
+function string(value: unknown, min: number, max: number): asserts value is string {
+  if (typeof value !== "string" || value.length < min || value.length > max)
+    fail("unsupported-operation", `Expected a string of ${min} to ${max} characters`);
+}
+function oneOf(value: unknown, allowed: readonly unknown[]) {
+  if (!allowed.includes(value)) fail("unsupported-operation", "Unsupported helper argument");
+}
+function number(value: unknown, min: number, max: number, integer = false) {
+  if (
+    typeof value !== "number" ||
+    !Number.isFinite(value) ||
+    value < min ||
+    value > max ||
+    (integer && !Number.isInteger(value))
+  )
+    fail("unsupported-operation", "Number is outside the helper bounds");
+}
+function checkLocator(value: unknown, depth = 0): asserts value is BrowserActionLocator {
+  if (depth >= 8) fail("unsupported-operation", "Locator scope exceeds eight levels");
+  const target = fields(value, [
+    "by",
+    "value",
+    "name",
+    "exact",
+    "scope",
+    "position",
+    "hasText",
+    "hasNotText",
+    "visible",
+  ]);
+  oneOf(target.by, ["css", "role", "text", "label"]);
+  string(target.value, 1, 4096);
+  for (const key of ["name", "hasText", "hasNotText"])
+    if (target[key] !== undefined) string(target[key], 0, 4096);
+  for (const key of ["exact", "visible"])
+    if (target[key] !== undefined) oneOf(target[key], [true, false]);
+  if (target.position !== undefined && target.position !== "first" && target.position !== "last")
+    number(target.position, 0, 10_000, true);
+  if (target.scope !== undefined) checkLocator(target.scope, depth + 1);
+}
+function checkAction(value: unknown): HelperAction {
+  const action = fields(value, [
+    "type",
+    "locator",
+    "scope",
+    "frameId",
+    "read",
+    "attribute",
+    "kind",
+    "value",
+    "values",
+    "button",
+    "clickCount",
+    "selection",
+    "x",
+    "y",
+    "count",
+    "deltaX",
+    "deltaY",
+  ]);
+  switch (action.type) {
+    case "dom.query":
+      fields(value, ["type", "locator", "read", "attribute"]);
+      checkLocator(action.locator);
+      oneOf(action.read, [
+        "count",
+        "textContent",
+        "innerText",
+        "allInnerTexts",
+        "inputValue",
+        "attribute",
+        "visible",
+        "checked",
+        "enabled",
+      ]);
+      if (action.read === "attribute") string(action.attribute, 1, 255);
+      else if (action.attribute !== undefined)
+        fail("unsupported-operation", "Only attribute reads accept an attribute");
+      break;
+    case "dom.snapshot":
+      fields(value, ["type", "scope", "frameId"]);
+      if (action.scope !== undefined) checkLocator(action.scope);
+      if (action.frameId !== undefined) string(action.frameId, 1, 255);
+      break;
+    case "dom.act":
+      fields(value, [
+        "type",
+        "locator",
+        "kind",
+        "value",
+        "values",
+        "button",
+        "clickCount",
+        "selection",
+      ]);
+      checkLocator(action.locator);
+      oneOf(action.kind, [
+        "click",
+        "focus",
+        "fill",
+        "clear",
+        "check",
+        "uncheck",
+        "setChecked",
+        "selectOption",
+      ]);
+      if (action.selection !== undefined) {
+        if (action.kind !== "focus")
+          fail("unsupported-operation", "Only focus accepts a selection");
+        oneOf(action.selection, ["end"]);
+      }
+      if (action.kind === "fill") string(action.value, 0, 10_000);
+      else if (action.kind === "setChecked") oneOf(action.value, [true, false]);
+      else if (action.value !== undefined)
+        fail("unsupported-operation", "This action does not accept a value");
+      if (action.kind === "selectOption") {
+        if (!Array.isArray(action.values) || action.values.length > 100)
+          fail("unsupported-operation", "Select accepts at most 100 values");
+        for (const option of action.values) string(option, 0, 10_000);
+      } else if (action.values !== undefined)
+        fail("unsupported-operation", "Only select accepts values");
+      if (action.kind === "click") {
+        if (action.button !== undefined) oneOf(action.button, ["left"]);
+        if (action.clickCount !== undefined) oneOf(action.clickCount, [1, 2]);
+      } else if (action.button !== undefined || action.clickCount !== undefined)
+        fail("unsupported-operation", "Only clicks accept button and count");
+      break;
+    case "pointer.tap":
+      fields(value, ["type", "x", "y", "count"]);
+      number(action.x, 0, 32_768);
+      number(action.y, 0, 32_768);
+      oneOf(action.count, [1, 2]);
+      break;
+    case "scroll":
+      fields(value, ["type", "locator", "x", "y", "deltaX", "deltaY"]);
+      checkLocator(action.locator);
+      number(action.deltaX, -100_000, 100_000);
+      number(action.deltaY, -100_000, 100_000);
+      for (const coordinate of ["x", "y"])
+        if (action[coordinate] !== undefined) number(action[coordinate], 0, 32_768);
+      break;
+    default:
+      fail("unsupported-operation", "Invalid fixed helper action");
+  }
+  return value as HelperAction;
 }
 const normalize = (value: string | null | undefined) => (value ?? "").replace(/\s+/gu, " ").trim();
 const matches = (value: string, pattern: string, exact = false) =>
@@ -432,16 +582,18 @@ export function createAgentHelper(documentId: string) {
       if (signal.aborted || disposed) aborted();
       else check(false);
     });
-  const focus = (element: Element) => {
+  const focus = (element: Element, editable = true) => {
     if (
       !(element instanceof HTMLElement) ||
-      (!(element instanceof HTMLInputElement) &&
+      (editable &&
+        !(element instanceof HTMLInputElement) &&
         !(element instanceof HTMLTextAreaElement) &&
         !element.isContentEditable)
     )
       fail("not-actionable", "Native text insertion requires an editable field");
     if (
       (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) &&
+      editable &&
       element.readOnly
     )
       fail("not-actionable", "The field is read-only");
@@ -506,11 +658,18 @@ export function createAgentHelper(documentId: string) {
       }
     return { type: "dom.snapshot" as const, text: lines.join("\n") };
   };
-  const query = (action: Extract<z.infer<typeof BrowserActionSchema>, { type: "dom.query" }>) => {
+  const query = (action: Extract<BrowserAction, { type: "dom.query" }>) => {
     const found = resolve(action.locator);
     if (action.read === "count") return { type: "dom.query" as const, value: found.length };
     if (action.read === "allInnerTexts")
-      return { type: "dom.query" as const, value: found.map((element) => renderedText(element)) };
+      return {
+        type: "dom.query" as const,
+        value: found.map((element) => {
+          const value = renderedText(element);
+          if (value.length > 10_000) fail("too-large", "A text item exceeds 10000 characters");
+          return value;
+        }),
+      };
     if (action.read === "visible" && !found.length)
       return { type: "dom.query" as const, value: false };
     const element = single(action.locator);
@@ -562,12 +721,29 @@ export function createAgentHelper(documentId: string) {
     }
     return { type: "dom.query" as const, value };
   };
-  const act = async (
-    action: Extract<z.infer<typeof BrowserActionSchema>, { type: "dom.act" }>,
-    signal: AbortSignal,
-  ) => {
+  const act = async (action: Extract<BrowserAction, { type: "dom.act" }>, signal: AbortSignal) => {
     const { element, x, y } = await prepare(action.locator, signal);
     if (signal.aborted || disposed) fail("timeout", "Native canceled input before submission");
+    if (action.kind === "focus") {
+      focus(element, action.selection === "end");
+      if (action.selection === "end") {
+        if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+          if (element.selectionStart === null)
+            fail("not-actionable", "This input does not support positioning its caret for append");
+          const end = element.value.length;
+          element.setSelectionRange(end, end);
+        } else {
+          const range = document.createRange();
+          range.selectNodeContents(element);
+          range.collapse(false);
+          const selection = getSelection();
+          if (!selection) fail("not-actionable", "The field selection is unavailable");
+          selection.removeAllRanges();
+          selection.addRange(range);
+        }
+      }
+      return { type: "dom.act" as const, outcome: "acted" as const, trusted: false };
+    }
     if (action.kind === "fill" || action.kind === "clear") {
       const value = action.kind === "clear" ? "" : String(action.value);
       if (
@@ -709,7 +885,7 @@ export function createAgentHelper(documentId: string) {
     }
   };
   const tap = async (
-    action: Extract<z.infer<typeof BrowserActionSchema>, { type: "pointer.tap" }>,
+    action: Extract<BrowserAction, { type: "pointer.tap" }>,
     signal: AbortSignal,
   ) => {
     const element = hitAt(action.x, action.y);
@@ -733,7 +909,7 @@ export function createAgentHelper(documentId: string) {
     click(element, action.x, action.y, action.count);
     return { kind: "untrusted-tap" as const, trusted: false };
   };
-  const wait = (args: z.infer<typeof waitArguments>) => {
+  const wait = (args: WaitArguments) => {
     if (pending.size >= 32 || pending.has(args.id))
       fail("too-large", "Too many waits or duplicate wait ID");
     return new Promise<{ type: "dom.wait" }>((resolveWait, reject) => {
@@ -800,15 +976,17 @@ export function createAgentHelper(documentId: string) {
     });
   };
 
-  const invoke = async (input: unknown): Promise<unknown> => {
-    if (bytes(input) > browserActionMaxBytes) fail("too-large", "Helper arguments exceed 432 KiB");
-    const parsed = envelope.safeParse(input);
-    if (!parsed.success) fail("unsupported-operation", "Expected a bounded helper invocation");
-    if (disposed || parsed.data.documentId !== documentId)
+  const invokeChecked = async (input: unknown): Promise<unknown> => {
+    const request = fields(input, ["documentId", "operationId", "name", "args"]);
+    string(request.documentId, 1, 255);
+    string(request.name, 1, 32);
+    oneOf(request.name, ["query", "snapshot", "act", "tap", "focus", "scroll", "wait", "cancel"]);
+    if (request.operationId !== undefined) string(request.operationId, 1, 255);
+    if (disposed || request.documentId !== documentId)
       fail("stale-document", "The helper belongs to another document");
-    const { name: functionName, args } = parsed.data;
+    const { name: functionName, args } = request;
     const controller = new AbortController();
-    const operationId = parsed.data.operationId;
+    const operationId = request.operationId;
     const mutating = functionName === "act" || functionName === "focus" || functionName === "tap";
     if (mutating) {
       if (!operationId)
@@ -820,48 +998,52 @@ export function createAgentHelper(documentId: string) {
     try {
       let result: unknown;
       if (functionName === "cancel") {
-        const cancel = cancellation.safeParse(args);
-        if (!cancel.success) fail("unsupported-operation", "Invalid cancellation");
-        pending.get(cancel.data.id)?.(
+        const cancel = fields(args, ["id"]);
+        string(cancel.id, 1, 255);
+        if (bytes(input) > browserActionMaxBytes)
+          fail("too-large", "Helper arguments exceed 432 KiB");
+        pending.get(cancel.id)?.(
           new PhoneHelperError("timeout", "Native deadline or cancellation ended the wait"),
         );
-        operations.get(cancel.data.id)?.abort();
+        operations.get(cancel.id)?.abort();
         result = { canceled: true };
       } else if (functionName === "wait") {
-        const waiting = waitArguments.safeParse(args);
-        if (!waiting.success) fail("unsupported-operation", "Invalid wait arguments");
-        result = await wait(waiting.data);
+        const waiting = fields(args, ["id", "locator", "state"]);
+        string(waiting.id, 1, 255);
+        checkLocator(waiting.locator);
+        oneOf(waiting.state, ["attached", "detached", "visible", "hidden"]);
+        if (bytes(input) > browserActionMaxBytes)
+          fail("too-large", "Helper arguments exceed 432 KiB");
+        result = await wait(args as WaitArguments);
       } else if (functionName === "focus") {
-        const focusing = focusArguments.safeParse(args);
-        if (!focusing.success) fail("unsupported-operation", "Invalid focus arguments");
-        focus((await prepare(focusing.data.locator, controller.signal)).element);
+        const focusing = fields(args, ["locator"]);
+        checkLocator(focusing.locator);
+        if (bytes(input) > browserActionMaxBytes)
+          fail("too-large", "Helper arguments exceed 432 KiB");
+        focus((await prepare(focusing.locator, controller.signal)).element);
         result = { focused: true };
       } else {
-        const action = BrowserActionSchema.safeParse(args);
-        if (!action.success) fail("unsupported-operation", "Invalid fixed helper action");
-        if (functionName === "query" && action.data.type === "dom.query")
-          result = query(action.data);
-        else if (functionName === "snapshot" && action.data.type === "dom.snapshot") {
-          if (action.data.frameId !== undefined)
+        const action = checkAction(args);
+        if (bytes(input) > browserActionMaxBytes)
+          fail("too-large", "Helper arguments exceed 432 KiB");
+        if (functionName === "query" && action.type === "dom.query") result = query(action);
+        else if (functionName === "snapshot" && action.type === "dom.snapshot") {
+          if (action.frameId !== undefined)
             fail(
               "unsupported-operation",
               "Native must invoke the helper in the registered frame; locators never enter frames",
             );
-          result = snapshot(action.data.scope);
-        } else if (functionName === "act" && action.data.type === "dom.act")
-          result = await act(action.data, controller.signal);
-        else if (functionName === "tap" && action.data.type === "pointer.tap")
-          result = await tap(action.data, controller.signal);
-        else if (
-          functionName === "scroll" &&
-          action.data.type === "scroll" &&
-          action.data.locator
-        ) {
-          const element = single(action.data.locator);
+          result = snapshot(action.scope);
+        } else if (functionName === "act" && action.type === "dom.act")
+          result = await act(action, controller.signal);
+        else if (functionName === "tap" && action.type === "pointer.tap")
+          result = await tap(action, controller.signal);
+        else if (functionName === "scroll" && action.type === "scroll" && action.locator) {
+          const element = single(action.locator);
           if (!visible(element)) fail("not-actionable", "Scroll target is hidden");
           element.scrollBy({
-            left: action.data.deltaX,
-            top: action.data.deltaY,
+            left: action.deltaX,
+            top: action.deltaY,
             behavior: "instant",
           });
           result = { type: "scroll", x: element.scrollLeft, y: element.scrollTop, source: "dom" };
@@ -873,19 +1055,37 @@ export function createAgentHelper(documentId: string) {
       }
       if (bytes(result) > browserActionMaxBytes - 128)
         fail("too-large", "Helper result exceeds 432 KiB; narrow the scope");
+      if (result && typeof result === "object" && "values" in result) {
+        const values = result.values;
+        if (
+          !Array.isArray(values) ||
+          values.length > 100 ||
+          values.some((value) => typeof value !== "string" || value.length > 10_000)
+        )
+          fail("too-large", "Selected values exceed the result bounds");
+      }
       if (
         result &&
         typeof result === "object" &&
         "type" in result &&
-        !BrowserActionResultSchema.safeParse(result).success
+        result.type === "scroll" &&
+        (!("x" in result) ||
+          !("y" in result) ||
+          !Number.isFinite(result.x) ||
+          !Number.isFinite(result.y))
       )
-        fail(
-          "too-large",
-          "Helper result exceeds the action's bounded result shape; narrow the scope",
-        );
+        fail("not-actionable", "Scroll position is unavailable");
       return result;
     } finally {
       if (mutating && operationId) operations.delete(operationId);
+    }
+  };
+  const invoke = async (input: unknown): Promise<unknown> => {
+    try {
+      return await invokeChecked(input);
+    } catch (error) {
+      if (error instanceof PhoneHelperError) throw error;
+      throw new PhoneHelperError("not-actionable", "The fixed helper operation failed");
     }
   };
   const dispose = () => {

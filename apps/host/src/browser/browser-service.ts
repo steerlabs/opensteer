@@ -5209,13 +5209,13 @@ class HostedBrowserBroker {
   }
 
   assertActionTarget(request: BrowserActionRequest): void {
-    if (request.action.type === "session.tabs") return;
+    if (["session.tabs", "surface.open"].includes(request.action.type)) return;
     const surface = this.#snapshot?.surfaces.find(
       (candidate) => candidate.id === request.surfaceId,
     );
     if (!surface) throw browserActionFailure("target-closed", "The tab no longer exists.");
     if (request.action.type === "surface.resume") return;
-    if (surface.state === "suspended")
+    if (surface.state === "suspended" && request.action.type !== "surface.close")
       throw browserActionFailure("target-suspended", "The tab is suspended.");
     if (request.documentId !== undefined && request.documentId !== surface.documentId)
       throw browserActionFailure("stale-document", "The tab has another document.");

@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createAgentHelper } from "./helper.js";
+import { createAgentHelper, PhoneHelperError } from "./helper.js";
 
 let helper: ReturnType<typeof createAgentHelper>;
 beforeEach(() => {
@@ -39,6 +39,120 @@ const query = (target: ReturnType<typeof locator>, read = "count", fields = {}) 
   invoke("query", { type: "dom.query", locator: target, read, ...fields });
 
 describe("isolated phone page helper", () => {
+  it("refuses malformed and oversized arguments for every fixed function with typed errors", async () => {
+    const target = locator("css", "input");
+    const actions: Record<string, Record<string, unknown>> = {
+      query: { type: "dom.query", locator: target, read: "count" },
+      snapshot: { type: "dom.snapshot", scope: target },
+      act: { type: "dom.act", locator: target, kind: "fill", value: "text" },
+      tap: { type: "pointer.tap", x: 1, y: 1, count: 1 },
+      focus: { locator: target },
+      scroll: { type: "scroll", locator: target, deltaX: 0, deltaY: 1 },
+      wait: { id: "waiting", locator: target, state: "visible" },
+      cancel: { id: "waiting" },
+    };
+    for (const [name, valid] of Object.entries(actions)) {
+      for (const args of [null, [], "script", 1, true, {}, { ...valid, script: "eval()" }])
+        await expect(invoke(name, args), `${name}: ${JSON.stringify(args)}`).rejects.toBeInstanceOf(
+          PhoneHelperError,
+        );
+      for (const key of Object.keys(valid)) {
+        await expect(
+          invoke(name, { ...valid, [key]: {} }),
+          `${name}.${key} object`,
+        ).rejects.toBeInstanceOf(PhoneHelperError);
+        await expect(
+          invoke(name, { ...valid, [key]: "x".repeat(450_000) }),
+          `${name}.${key} size`,
+        ).rejects.toBeInstanceOf(PhoneHelperError);
+      }
+    }
+    const cyclic: Record<string, unknown> = {};
+    cyclic.scope = cyclic;
+    for (const input of [
+      undefined,
+      null,
+      1n,
+      cyclic,
+      {
+        toJSON: () => {
+          throw Error("raw");
+        },
+      },
+    ])
+      await expect(helper.invoke(input)).rejects.toBeInstanceOf(PhoneHelperError);
+  });
+
+  it("bounds primitive fields, locator recursion and select arrays before touching the DOM", async () => {
+    const target = locator("css", "input");
+    for (const fields of [
+      { by: "evaluate" },
+      { value: "" },
+      { value: "x".repeat(4097) },
+      { name: "x".repeat(4097) },
+      { exact: 1 },
+      { visible: "true" },
+      { position: -1 },
+      { position: 10_001 },
+      { position: 0.5 },
+      { hasText: 1 },
+      { hasNotText: "x".repeat(4097) },
+      { scope: null },
+      { unknown: true },
+    ])
+      await expect(query({ ...target, ...fields } as typeof target)).rejects.toBeInstanceOf(
+        PhoneHelperError,
+      );
+    const cyclic = { ...target, scope: target };
+    cyclic.scope = cyclic;
+    await expect(query(cyclic)).rejects.toBeInstanceOf(PhoneHelperError);
+    for (const values of [Array(101).fill("a"), [1], ["x".repeat(10_001)]])
+      await expect(
+        invoke("act", { type: "dom.act", locator: target, kind: "selectOption", values }),
+      ).rejects.toBeInstanceOf(PhoneHelperError);
+    for (const args of [
+      { type: "dom.act", locator: target, kind: "fill", value: true },
+      { type: "dom.act", locator: target, kind: "clear", value: "text" },
+      { type: "dom.act", locator: target, kind: "setChecked", value: "true" },
+      { type: "dom.act", locator: target, kind: "click", button: "right" },
+      { type: "dom.act", locator: target, kind: "click", clickCount: 3 },
+      { type: "dom.act", locator: target, kind: "focus", selection: "all" },
+      { type: "dom.act", locator: target, kind: "fill", value: "text", selection: "end" },
+      { type: "dom.query", locator: target, read: "attribute" },
+      { type: "dom.query", locator: target, read: "count", attribute: "value" },
+      { type: "pointer.tap", x: -1, y: 0, count: 1 },
+      { type: "pointer.tap", x: Infinity, y: 0, count: 1 },
+      { type: "scroll", locator: target, deltaX: 100_001, deltaY: 0 },
+    ])
+      await expect(
+        invoke(
+          args.type === "dom.act"
+            ? "act"
+            : args.type === "dom.query"
+              ? "query"
+              : args.type === "pointer.tap"
+                ? "tap"
+                : "scroll",
+          args,
+        ),
+      ).rejects.toBeInstanceOf(PhoneHelperError);
+  });
+
+  it("enforces aggregate bytes and per-item output bounds beyond valid primitive limits", async () => {
+    await expect(
+      invoke("act", {
+        type: "dom.act",
+        locator: locator("css", "select"),
+        kind: "selectOption",
+        values: Array(16).fill("界".repeat(10_000)),
+      }),
+    ).rejects.toMatchObject({ code: "too-large" });
+    document.body.innerHTML = `<button>${"x".repeat(10_001)}</button>`;
+    await expect(query(locator("css", "button"), "allInnerTexts")).rejects.toMatchObject({
+      code: "too-large",
+    });
+  });
+
   it("resolves realistic roles, names, labels and scoped shadow controls", async () => {
     document.body.innerHTML =
       '<section role="dialog" aria-labelledby="title"><h2 id="title">Checkout</h2><label for="email">Email address</label><input id="email"><button aria-label="Pay now">Buy</button><img alt="Receipt"><a href="/help">Help</a></section><div id="shadow"></div>';
@@ -186,6 +300,35 @@ describe("isolated phone page helper", () => {
         values: ["b"],
       }),
     ).toMatchObject({ values: ["b"], trusted: false });
+  });
+
+  it("focuses without clicking or clearing, and explicitly collapses append selections to the end", async () => {
+    document.body.innerHTML = '<input value="existing" data-hit>';
+    const input = document.querySelector("input")!;
+    input.focus();
+    input.setSelectionRange(1, 3);
+    const events = vi.fn();
+    input.addEventListener("click", events);
+    input.addEventListener("input", events);
+    const action = { type: "dom.act", locator: locator("css", "input"), kind: "focus" };
+    await expect(invoke("act", action)).resolves.toEqual({
+      type: "dom.act",
+      outcome: "acted",
+      trusted: false,
+    });
+    expect([input.selectionStart, input.selectionEnd]).toEqual([1, 3]);
+    await invoke("act", { ...action, selection: "end" });
+    expect([input.selectionStart, input.selectionEnd]).toEqual([8, 8]);
+    expect(input.value).toBe("existing");
+    expect(events).not.toHaveBeenCalled();
+    document.body.innerHTML = "<button data-hit>Search</button>";
+    await invoke("act", { ...action, locator: locator("css", "button") });
+    expect(document.activeElement).toBe(document.querySelector("button"));
+    document.body.innerHTML = '<input type="email" value="keep@test.com" data-hit>';
+    await expect(invoke("act", { ...action, selection: "end" })).rejects.toMatchObject({
+      code: "not-actionable",
+    });
+    expect(document.querySelector("input")!.value).toBe("keep@test.com");
   });
 
   it("waits for mutation and cancels without a page-owned deadline", async () => {
