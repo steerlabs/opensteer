@@ -105,8 +105,4 @@ create or replace function public.opensteer_refresh_account_directory_user(
           end loop;
         end
       $$;
-DROP TRIGGER users_account_directory_projection_update ON public.users;
-CREATE TRIGGER users_account_directory_projection_update
-AFTER UPDATE OF disabled_at, instance_role, admitted_at, member_state ON public.users
-FOR EACH ROW EXECUTE FUNCTION public.opensteer_project_user_change();
 `;
