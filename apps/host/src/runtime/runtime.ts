@@ -2,6 +2,7 @@ import { RequestHold } from "../mcp/request-hold.js";
 import { ThreadNaming } from "../agents/thread-naming.js";
 import { QuietTasks } from "../threads/quiet-tasks.js";
 import { AdministrationService } from "../administration/administration-service.js";
+import { TeamAdministrationService } from "../team/team-administration-service.js";
 import { AdministrationToolHandlers } from "../mcp/handlers/administration.js";
 import {
   HarnessCatalogReconciliationOwner,
@@ -2484,6 +2485,16 @@ export async function createHostRuntime(
     });
     const app = await createHostServer(
       {
+        teamAdministration: new TeamAdministrationService({
+          database,
+          identity,
+          teamName: config.deploymentName ?? new URL(config.runtimeOrigin).hostname,
+          runnerIsConnected: (runnerId) =>
+            requiredService(runnerRegistry, "Runner registry").isRunnerConnected(runnerId),
+          invalidate: (userIds) => {
+            for (const userId of userIds) realtime.publishViewerTasksChanged(userId);
+          },
+        }),
         connections,
         passkeys: config.passkeys === true,
         ...(notificationPreviews ? { notificationPreviews } : {}),

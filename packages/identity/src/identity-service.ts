@@ -36,7 +36,7 @@ import {
   identityPasswordMaxLength,
   identityPasswordMinLength,
 } from "@opensteer/core";
-import { OpensteerStore, type DatabaseSchema } from "@opensteer/database";
+import { OpensteerStore, readTeamInvitation, type DatabaseSchema } from "@opensteer/database";
 import { describeSessionDevice } from "./session-device.js";
 import { sso } from "@better-auth/sso";
 import {
@@ -1981,6 +1981,41 @@ export class IdentityService {
       },
       headers: admission.headers,
       status: 200,
+    };
+  }
+
+  async exchangeTeamInvitation(selector: string, verifier: string, headers: Headers) {
+    const invitation = await readTeamInvitation(this.#database, selector, verifier);
+    if (!invitation)
+      throw new OpensteerError({
+        code: "forbidden",
+        reason: "invite-unavailable",
+        message: "This invitation is unavailable.",
+      });
+    return this.#createOrReuseAdmission(
+      {
+        purpose: "invitation",
+        reservedEmail: invitation.intendedEmail,
+        subjectSelector: invitation.selector,
+      },
+      headers,
+    );
+  }
+
+  async teamInvitationAdmission(headers: Headers, session: AuthenticatedSession) {
+    const proof = await this.#admissionFromHeaders(headers);
+    const cookie = readCookie(headers.get("cookie"), admissionCookieName);
+    if (!proof || proof.purpose !== "invitation" || !cookie)
+      throw new OpensteerError({
+        code: "forbidden",
+        reason: "invite-unavailable",
+        message: "This invitation is unavailable.",
+      });
+    return {
+      admissionId: proof.id,
+      browserNonce: cookie.slice(cookie.indexOf(".") + 1),
+      userId: session.user.id,
+      sessionId: session.id,
     };
   }
 

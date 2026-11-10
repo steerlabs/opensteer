@@ -150,12 +150,12 @@ function registerHostApiMember<Name extends keyof typeof hostApi>(
       // than escaping to the global handler, which answers in a different shape.
       try {
         requireNegotiatedVersion(request);
-        const authenticated = await authenticateScope(authenticator, hostApiScopes[name], request);
+        let authenticated = await authenticateScope(authenticator, hostApiScopes[name], request);
         if (
           (name === "team.invitation.preview" || name === "team.invitation.exchange") &&
           request.headers.authorization !== undefined
         ) {
-          await authenticator.authenticateSessionContext(request.headers);
+          authenticated = await authenticator.authenticateSessionContext(request.headers);
         }
         if (binaryRequest && request.headers["content-type"] !== "application/octet-stream") {
           throw new OpensteerError({

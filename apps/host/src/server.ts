@@ -356,6 +356,7 @@ const WorkspaceFileContentQuerySchema = z.strictObject({ file: WorkspaceFileKeyS
 const machinePageLimit = 100;
 
 export interface HostServerDependencies {
+  readonly teamAdministration?: import("./team/team-administration-service.js").TeamAdministrationService;
   readonly connections?: ConnectionOAuth;
   readonly notificationPreviews?: import("./notifications/notification-preview-service.js").NotificationPreviewService;
   readonly passkeys?: boolean;
@@ -2602,6 +2603,7 @@ export async function createHostServer(
       handleCoreCommand,
       dependencies.computerViews,
       dependencies.phoneTabs,
+      dependencies.teamAdministration,
     ),
     ...(dependencies.connections
       ? createConnectionRpcHandlers(dependencies.connections)
