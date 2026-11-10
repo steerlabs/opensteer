@@ -51,6 +51,8 @@ import { SetupPage } from "./components/first-run/setup-page.js";
 import { ToastProvider } from "./components/toast.js";
 import { DesktopUpdateFeedback } from "./components/desktop-update-button.js";
 import { actionErrorMessage } from "./ui-utils.js";
+import { TeamJoinRoute, isTeamJoinPath } from "./components/team/team-join.js";
+import { TeamSettingsRoute } from "./components/team/team-settings.js";
 import { shouldAutoStartOidc } from "./account/auto-oidc.js";
 import { IntegrationAuthorizationCompletion } from "./components/integration-authorization-completion.js";
 
@@ -151,6 +153,8 @@ export function App({
   const [setupExchangeAttempt, setSetupExchangeAttempt] = useState(0);
   const [setupExchangeError, setSetupExchangeError] = useState<string | null>(null);
   const invitationRoute = isInvitationPath(window.location.pathname);
+  const teamJoinRoute =
+    snapshot.teamAdministrationAvailable === true && isTeamJoinPath(window.location.pathname);
   const recoveryRoute = window.location.pathname === "/recover";
   const autoOidcProvider =
     snapshot.session === "authentication-required" &&
@@ -345,6 +349,17 @@ export function App({
 
   // Workspace invitations handle their own authentication, so they render in
   // every session state. The URL stays put through sign-in and OIDC returns.
+  if (teamJoinRoute) {
+    return (
+      <BrowserRouter>
+        <Routes>
+          <Route path="/join/:selector" element={<TeamJoinRoute hostClient={hostClient} />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </BrowserRouter>
+    );
+  }
+
   if (invitationRoute) {
     return (
       <BrowserRouter>
@@ -576,6 +591,10 @@ export function App({
                   element={<SettingsSectionRoute section={section} />}
                 />
               ))}
+              <Route path="team/people" element={<TeamSettingsRoute page="people" />} />
+              <Route path="team/people/:userId" element={<TeamSettingsRoute page="person" />} />
+              <Route path="team/groups" element={<TeamSettingsRoute page="groups" />} />
+              <Route path="team/groups/:groupId" element={<TeamSettingsRoute page="group" />} />
               <Route path="devices" element={<SettingsSectionRoute section="devices" />} />
               <Route path="devices/computers" element={<ComputersPage />} />
               <Route path="devices/computers/:computerId" element={<ComputerDetailPage />} />

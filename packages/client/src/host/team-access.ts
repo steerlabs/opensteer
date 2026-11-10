@@ -36,6 +36,7 @@ interface ReadOptions {
 export type TeamSummaryView = Exclude<TeamReadOutput<"team.summary.get">, { notModified: true }>;
 export type ProjectRuntimeChoices = TeamReadOutput<"team.project.runtimeChoices">;
 export type ProjectSettingsRead = TeamReadOutput<"team.project.settings.get">;
+export type ProjectAccessView = TeamReadOutput<"team.project.access.get">;
 export type GroupDetail = TeamReadOutput<"team.group.get">;
 export type PeoplePage = TeamReadOutput<"team.people.list">;
 export type GroupsPage = TeamReadOutput<"team.groups.list">;
@@ -88,11 +89,24 @@ export class TeamAccess {
   ) {
     return unwrapRpcResult(await this.#port.rpc["team.people.list"](input, options));
   }
-  async member(input: TeamReadInput<"team.member.get">, options: ReadOptions = {}) {
-    return unwrapRpcResult(await this.#port.rpc["team.member.get"](input, options));
+  async member(
+    input: { userId: string; entryPage?: Page; connectionPage?: Page; groupPage?: Page },
+    options: ReadOptions = {},
+  ) {
+    return unwrapRpcResult(
+      await this.#port.rpc["team.member.get"]({ ...input, userId: UserIdSchema.parse(input.userId) }, options),
+    );
   }
-  async directory(input: TeamReadInput<"team.directory.search">, options: ReadOptions = {}) {
-    return unwrapRpcResult(await this.#port.rpc["team.directory.search"](input, options));
+  async directory(
+    input: { workspaceId: string; query: string; limit?: number },
+    options: ReadOptions = {},
+  ) {
+    return unwrapRpcResult(
+      await this.#port.rpc["team.directory.search"](
+        { ...input, workspaceId: WorkspaceIdSchema.parse(input.workspaceId) },
+        options,
+      ),
+    );
   }
   async groups(input: TeamReadInput<"team.groups.list">, options: ReadOptions = {}) {
     return unwrapRpcResult(await this.#port.rpc["team.groups.list"](input, options));
@@ -100,11 +114,24 @@ export class TeamAccess {
   async group(input: TeamReadInput<"team.group.get">, options: ReadOptions = {}) {
     return unwrapRpcResult(await this.#port.rpc["team.group.get"](input, options));
   }
-  async projectAccess(input: TeamReadInput<"team.project.access.get">, options: ReadOptions = {}) {
-    return unwrapRpcResult(await this.#port.rpc["team.project.access.get"](input, options));
+  async projectAccess(input: Page & { workspaceId: string }, options: ReadOptions = {}) {
+    return unwrapRpcResult(
+      await this.#port.rpc["team.project.access.get"](
+        { ...input, workspaceId: WorkspaceIdSchema.parse(input.workspaceId) },
+        options,
+      ),
+    );
   }
-  async explain(input: TeamReadInput<"team.access.explain">, options: ReadOptions = {}) {
-    return unwrapRpcResult(await this.#port.rpc["team.access.explain"](input, options));
+  async explain(
+    input: { workspaceId: string; subject: Subject; cursor?: string },
+    options: ReadOptions = {},
+  ) {
+    return unwrapRpcResult(
+      await this.#port.rpc["team.access.explain"](
+        { ...input, workspaceId: WorkspaceIdSchema.parse(input.workspaceId) },
+        options,
+      ),
+    );
   }
   async previewAccess(
     expectedRevision: number,
