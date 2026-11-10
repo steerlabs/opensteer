@@ -1,3 +1,4 @@
+import type { RealtimeSink } from "@opensteer/orchestration";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { createId, DeclinedRequestSchema, SequenceSchema, zeroSequence } from "@opensteer/core";
 import { hostApiVersion } from "@opensteer/deployment-authority";
@@ -254,6 +255,7 @@ async function realtimeSocket(
       realtime: {
         broadcast: () => undefined,
         registerConnection: () => () => undefined,
+        fenceConnectionSink: (_user: unknown, _session: unknown, sink: RealtimeSink) => sink,
         subscribe,
       } as never,
       workspaces: {} as never,
