@@ -1,7 +1,7 @@
 import Fastify from "fastify";
-import { createId, type AuthenticatedSession } from "@opensteer/core";
+import { createId, OpensteerError, type AuthenticatedSession } from "@opensteer/core";
 import { createIntegrationId } from "@opensteer/integration-core";
-import { rpcSuccess, type HostApiHandlers } from "@opensteer/protocol";
+import { hostApi, rpcFailure, rpcSuccess, type HostApiHandlers } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { HostAuthenticator } from "../identity/auth.js";
 import { registerHostApi } from "./host-api-registration.js";
@@ -102,6 +102,42 @@ describe("credential-aware command origin protection", () => {
         expect(response.statusCode, response.body).toBe(403);
       }
       expect(dispatch).toHaveBeenCalledTimes(5);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe("pending invitation registration", () => {
+  it("reserves the identity exception for exactly team.invitation.accept", async () => {
+    const authenticator = new HostAuthenticator({
+      identity: {
+        requireSession: async () => {
+          throw new OpensteerError({ code: "unauthorized", message: "Authentication required" });
+        },
+        userSessionProfile: async () => session.user,
+        authenticateNativeAccessToken: async () => {
+          throw new OpensteerError({ code: "unauthorized", message: "Authentication required" });
+        },
+        requireTeamInvitationSession: async () => session,
+      } as never,
+      publicUrl: new URL(canonical),
+    });
+    const invitation = vi.spyOn(authenticator, "authenticateTeamInvitationSessionContext");
+    const handlers = Object.fromEntries(
+      Object.keys(hostApi).map((name) => [
+        name,
+        async () => rpcFailure({ code: "bad_request", message: "Test handler" }),
+      ]),
+    ) as unknown as HostApiHandlers;
+    const app = Fastify();
+    registerHostApi(app, authenticator, handlers);
+    try {
+      for (const name of Object.keys(hostApi) as (keyof typeof hostApi)[]) {
+        invitation.mockClear();
+        await injectRpcRequest(app, name, {} as never, { origin: canonical, cookie: "pending=x" });
+        expect(invitation.mock.calls.length, name).toBe(name === "team.invitation.accept" ? 1 : 0);
+      }
     } finally {
       await app.close();
     }
