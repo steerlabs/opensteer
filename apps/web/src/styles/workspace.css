@@ -1897,6 +1897,180 @@ button.side-needs:hover {
   height: 100%;
 }
 
+/* ---- The live place, above the conversation ----
+   On a phone-width screen, the same picture unfolded: the page at its own
+   shape between the head and the transcript, watch-only, with the handle that
+   folds it back into the head. Without a picture yet it is a named row. */
+
+.run-page {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  background: var(--ground);
+  animation: run-page-in var(--duration-med) var(--ease-out) both;
+}
+
+@keyframes run-page-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
+
+.run-page__view {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.run-page__view:focus-visible {
+  outline-offset: -2px;
+}
+
+.run-page__frame {
+  position: relative;
+  display: grid;
+  flex: none;
+  place-items: center;
+  overflow: hidden;
+  background: var(--surface-elevated);
+}
+
+.run-page__view--page .run-page__frame {
+  border-radius: var(--radius-md);
+  animation: run-page-grow var(--duration-slow) var(--ease-out) both;
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
+
+/* Edge to edge, a page has no corners to round. */
+.run-page__view--full .run-page__frame {
+  border-radius: 0;
+}
+
+@keyframes run-page-grow {
+  from {
+    clip-path: inset(0 0 60% 0);
+  }
+}
+
+.run-page__view--page:active .run-page__frame {
+  opacity: 0.85;
+}
+
+.run-page__view--row {
+  justify-content: flex-start;
+  gap: var(--space-10);
+  min-height: 52px;
+  padding: var(--space-8) var(--space-16);
+}
+
+.run-page__view--row:active {
+  background: var(--fill-quiet);
+}
+
+.run-page__view--row .run-page__frame {
+  width: 46px;
+  aspect-ratio: 16 / 10;
+  border-radius: var(--radius-xs);
+  box-shadow: 0 0 0 1px var(--rim-plate);
+}
+
+/* Green says an agent is acting here, as on the folded picture. */
+.run-page__view--acting .run-page__frame::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 1.5px var(--green);
+  pointer-events: none;
+}
+
+.run-page__picture {
+  position: absolute;
+  inset: 0;
+  display: block;
+}
+
+.run-page__picture--still {
+  opacity: 0.45;
+}
+
+.run-page__words {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.run-page__title,
+.run-page__site {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-page__title {
+  font-size: var(--text-lg);
+  font-weight: var(--weight-medium);
+}
+
+.run-page__site {
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.run-page__chevron {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+}
+
+.run-page__handle {
+  position: relative;
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  width: 100%;
+  height: 20px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  touch-action: none;
+}
+
+/* A thumb's worth to land on, reaching into the transcript's top padding. */
+.run-page__handle::before {
+  content: "";
+  position: absolute;
+  inset: -6px 0 -18px;
+}
+
+.run-page__grip {
+  width: 36px;
+  height: 4px;
+  border-radius: var(--radius-full);
+  background: var(--line-hover);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .run-page,
+  .run-page__view--page .run-page__frame {
+    animation: none;
+  }
+}
+
 /* ---- Conversation header ---- */
 
 /* The head is a bar of one fixed height on every surface, set once through

@@ -51,6 +51,8 @@ export function ConversationHeader({
   cause,
   hostClient,
   onFind,
+  onUnfold = null,
+  pageOpen = false,
   threadId,
   title,
   titleRef,
@@ -59,6 +61,10 @@ export function ConversationHeader({
   readonly cause: ReactNode;
   readonly hostClient: HostClient;
   readonly onFind: () => void;
+  /** Where the Run's page can stand above the conversation, its folded picture opens it there. */
+  readonly onUnfold?: (() => void) | null;
+  /** The Run's page stands open above the conversation, so the head carries no picture of it. */
+  readonly pageOpen?: boolean;
   readonly threadId: string;
   readonly title: string;
   readonly titleRef?: React.Ref<HTMLHeadingElement>;
@@ -211,8 +217,14 @@ export function ConversationHeader({
           {/* Only a state that asks something of the reader is said in words; the
               mark shows the rest. */}
           {tone === "needs-you" ? <span className="conv-header__state">Needs you</span> : null}
-          {runId === null ? null : (
-            <LivePlace hostClient={hostClient} key={runId} runId={runId} threadId={threadId} />
+          {runId === null || pageOpen ? null : (
+            <LivePlace
+              hostClient={hostClient}
+              key={runId}
+              onUnfold={onUnfold}
+              runId={runId}
+              threadId={threadId}
+            />
           )}
           {family ? (
             <TaskFamilyButton

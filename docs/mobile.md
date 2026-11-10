@@ -184,8 +184,10 @@ navigation model. It takes the page's own shape and never resizes the page, for 
 happens by itself, and takes at most half the room between the bar and the dock, so a docked
 Request or the keyboard folds it rather than crowding the conversation. A streamed page only
 watches: a tap opens the full tab. Until a picture arrives it is a named row, because a kept
-picture must never stand for the page as it is now. Web shows the same picture in the conversation
-header, or in the sheet's handle at phone width.
+picture must never stand for the page as it is now. Phone-width web (700px and narrower) follows the
+same rules with the page under the conversation header, folding into the header's picture; under
+another page the picture stands in the sheet's handle and opens the full tab. Wider web has only the
+header picture, which opens the place in the middle.
 
 ## The sidebar's ends
 

@@ -66,6 +66,7 @@ import { BrandMark } from "./brand.js";
 import { useVisualViewportKeyboardInset } from "./visual-viewport-keyboard.js";
 import { ConversationHeader } from "./workspace/conversation-header.js";
 import { WorkspaceOrb } from "./workspace-orb.js";
+import { RunPage, useRunPage } from "./workspace/run-page.js";
 import { LivePlace } from "./workspace/viewfinder.js";
 import { useWorkspace } from "./workspace/workspace-context.js";
 import { TaskMark, TaskState, ChatOrb, taskStateWords } from "./workspace/task-mark.js";
@@ -898,6 +899,20 @@ function ThreadView({
   }, [snapshot, thread.id]);
   const cause = connectionStatus ?? historyStatus ?? waitingReason?.label ?? assignmentBlock;
 
+  // On a phone with the conversation alone, its Run's page can stand above it.
+  const threadRef = useRef<HTMLDivElement | null>(null);
+  const runPage = useRunPage(
+    hostClient,
+    thread.id,
+    phone && !work ? (stopTarget?.id ?? null) : null,
+    () => ({
+      scrolledUp: !followsTailRef.current,
+      typing:
+        keyboardInset > 0 ||
+        (composerInputRef.current !== null && document.activeElement === composerInputRef.current),
+    }),
+  );
+
   // On a phone with a page open, the conversation is a sheet under it: the
   // composer and the latest reply, opened to the whole conversation on request.
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -919,6 +934,7 @@ function ThreadView({
       ]
         .filter(Boolean)
         .join(" ")}
+      ref={threadRef}
     >
       {phoneStage ? (
         <ConversationSheetHandle
@@ -936,6 +952,8 @@ function ThreadView({
         cause={cause}
         hostClient={hostClient}
         onFind={() => setFinding(true)}
+        onUnfold={runPage.unfold}
+        pageOpen={runPage.shown === "open"}
         threadId={thread.id}
         title={title}
         titleRef={headerTitleRef}
@@ -950,6 +968,21 @@ function ThreadView({
           threadId={thread.id}
         />
       ) : null}
+
+      {runPage.placeRunId === null ? null : (
+        <RunPage
+          focusPage={runPage.focusPage}
+          hostClient={hostClient}
+          key={`${thread.id}:${runPage.placeRunId}`}
+          onFits={runPage.setFits}
+          onFold={runPage.fold}
+          open={runPage.shown === "open"}
+          runId={runPage.placeRunId}
+          scrollRef={scrollRef}
+          threadId={thread.id}
+          threadRef={threadRef}
+        />
+      )}
 
       <div
         className="thread__body"
