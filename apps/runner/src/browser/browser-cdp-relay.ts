@@ -71,13 +71,10 @@ export class BrowserCdpRelay {
       const controller = new AbortController();
       this.#negotiations.add(controller);
       response.once("close", () => controller.abort());
-      const upstreamUrl = this.#endpoint("backend", sessionId);
-      upstreamUrl.protocol = upstreamUrl.protocol === "wss:" ? "https:" : "http:";
-      void fetch(upstreamUrl, {
-        headers: { authorization: `Bearer ${this.#upstreamToken()}` },
-        redirect: "error",
-        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]),
-      })
+      void this.#backendResponse(
+        sessionId,
+        AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]),
+      )
         .then(async (upstream) => {
           if (this.#suspended || this.#closed) {
             response.writeHead(403).end();
@@ -196,6 +193,26 @@ export class BrowserCdpRelay {
     const url = new URL(this.#upstreamUrl);
     url.pathname = `${url.pathname.replace(/\/$/u, "").replace(/browser-cdp$/u, `browser-${kind}`)}/${sessionId}`;
     return url;
+  }
+
+  async #backendResponse(sessionId: string, signal: AbortSignal): Promise<Response> {
+    const url = this.#endpoint("backend", sessionId);
+    url.protocol = url.protocol === "wss:" ? "https:" : "http:";
+    const discovery = await fetch(new URL("/.well-known/opensteer", url), {
+      redirect: "error",
+      signal,
+    });
+    if (!discovery.ok) throw new Error("Host discovery failed");
+    const { capabilities } = z
+      .object({ capabilities: z.array(z.string()) })
+      .parse(await readBoundedJson(discovery, { maximumBytes: 65_536 }));
+    if (!capabilities.includes("browser-backend-v1"))
+      return Response.json({ sessionId, backend: "cdp", version: 1 });
+    return fetch(url, {
+      headers: { authorization: `Bearer ${this.#upstreamToken()}` },
+      redirect: "error",
+      signal,
+    });
   }
 
   #attach(downstream: WebSocket, sessionId: string, kind: "actions" | "cdp"): void {

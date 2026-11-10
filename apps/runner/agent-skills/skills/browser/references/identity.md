@@ -18,7 +18,7 @@ To continue work, reuse the session ID from earlier in the Thread or find it wit
 
 Several Runs may share a session; `activeAttachmentCount` is not a lock. Sessions outlive Runs. Close a session only when asked or when it is deliberately disposable. Main sees the owner's sessions across Workspaces. Delegated Runs and specialists use the same tools within their inherited reach.
 
-A profile's home is chosen at creation and never changes. The listing's `home` gives its name and reachability; null means a legacy server profile not yet placed. A homed profile ignores `environmentId` and opens only on its home, even on a device running no agents. Guest and legacy-unplaced agent opens require an eligible device currently running agents; `environmentId` can choose among those.
+A profile's home never changes. The listing's `home` names it and its reachability; null means an unplaced legacy profile. Homed profiles ignore `environmentId` and open only at home, even without agents there. Guest and unplaced opens require an eligible agent computer or the server's managed browser service; `environmentId` chooses among those, never someone's browser-only device.
 
 ## Failures
 

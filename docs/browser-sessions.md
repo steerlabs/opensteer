@@ -32,7 +32,9 @@ home and admits only what that browser advertises; it never substitutes another 
 abilities from a phone engine name. Host tab open, close, resume and context operations use the
 ordinary command channel even when the browser does not speak CDP; resume requires `surfaceState`.
 
-A Run negotiates its backend for one exact session: `cdpBoundary` selects CDP first, otherwise
+When Host discovery advertises `browser-backend-v1`, a Run negotiates its backend for one exact
+session; without it, the Run uses CDP. An advertised negotiation error never falls back.
+`cdpBoundary` selects CDP first, otherwise
 `agentActions` selects typed actions. Both require `sharedControl`. An attachment pins that choice,
 reaches only that session's pages and popups, and rechecks Run access and grants on every command.
 Requesting the other backend refuses `unsupported-operation`, not an upgrade request. Agent target
@@ -168,8 +170,10 @@ Removing a computer deletes its homed profiles in the same transaction. Their st
 terminal `unconfirmed`, not pending work and never a claim that files were erased. The removed device
 clears its own storage when it learns of removal; a phone also clears it at sign-out.
 
-A profile's home computer is chosen at creation and never changes. Legacy unplaced server profiles
-adopt an eligible home on first open. Offline homes refuse opens by name, without falling back.
+A current Host assigns a profile's home at creation; it never changes. Unplaced profiles
+created by a previous Host, including during an upgrade, adopt a home on first open. The
+database also adopts a previous store's first storage binding as its home and enforces the same
+home/storage match for both writers. Offline homes refuse opens by name, without falling back.
 The first signed attach binds its storage root and engine on that home and publishes empty native files atomically; an engine-owned directory is never
 moved. The Host records initialization so missing established storage is distinguishable from
 never-created storage. A missing directory, root identity, sentinel or cookie mirror refuses to open

@@ -8,10 +8,25 @@ import {
   type BrowserFrame,
 } from "./frame.js";
 import { LatestFrameStream } from "./latest-frame-stream.js";
+import * as bytes from "@opensteer/browser-core/bytes";
 
 const surfaceId = BrowserSurfaceIdSchema.parse("surface_test");
 
 describe("browser frame envelope", () => {
+  it("views the portable encoder's fresh backing memory", () => {
+    const encoded = bytes.encodeFrameEnvelope({}, new Uint8Array([1, 2, 3]));
+    const encode = vi.spyOn(bytes, "encodeFrameEnvelope").mockReturnValueOnce(encoded);
+    try {
+      const envelope = encodeBrowserFrame(browserFrame(1));
+      expect(envelope.buffer === encoded.buffer).toBe(true);
+      expect(envelope.byteOffset).toBe(encoded.byteOffset);
+      encoded[encoded.length - 1] = 42;
+      expect(envelope.at(-1)).toBe(42);
+    } finally {
+      encode.mockRestore();
+    }
+  });
+
   it("round-trips a validated length-prefixed header and payload", () => {
     const frame = browserFrame(7, jpeg(640, 360));
     expect(decodeBrowserFrame(encodeBrowserFrame(frame))).toEqual(frame);
