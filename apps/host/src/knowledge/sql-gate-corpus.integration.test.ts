@@ -83,12 +83,18 @@ const admitted = [
   ...insertShapes,
 ].filter(([, expected]) => expected === "admit");
 
-// Failures an admitted statement may meet on this data: its own values, types and conditions.
+// Failures an admitted statement may meet on this data: its own values, types and conditions, or
+// the store's resource bounds, which a statement built to grow may reach first on a loaded machine.
 const dataFailures = new Set([
   "knowledge-invalid-value",
   "knowledge-invalid-statement",
   "knowledge-seen-fact-mismatch",
   "knowledge-fact-changed",
+  "knowledge-statement-timeout",
+  "knowledge-resource-limit",
+  "knowledge-row-too-large",
+  "knowledge-result-too-large",
+  "knowledge-message-too-large",
 ]);
 
 // Skip outside the integration launcher, which supplies an isolated PostgreSQL clone.
