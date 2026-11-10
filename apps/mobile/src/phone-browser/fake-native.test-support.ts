@@ -311,6 +311,12 @@ export class FakePhoneBrowserNative implements PhoneBrowserNativePort {
     const action = input.request.action;
     this.submitted.push(action.type);
     switch (action.type) {
+      case "dom.act":
+        if (action.kind === "focus") return { type: action.type, outcome: "acted", trusted: false };
+        throw new PhoneBrowserError(
+          "unsupported-operation",
+          "The fake DOM action is not implemented.",
+        );
       case "text.insert":
         this.tabs.get(input.tabId)!.form += action.text;
         return { type: action.type };

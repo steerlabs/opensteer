@@ -218,6 +218,7 @@ export class PhoneCdpSession {
         if (this.#closed || tab.metadata.generation !== reference.generation)
           throw new PhoneBrowserError("target-closed", "The native target was replaced.");
         if (method === "Page.bringToFront") return Promise.resolve({});
+        // Agent screencast stays unsupported; people use native capture and agents take one-shot screenshots.
         if (method === "Page.startScreencast")
           throw new PhoneBrowserError(
             "unsupported-operation",
