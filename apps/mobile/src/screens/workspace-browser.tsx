@@ -2,7 +2,6 @@ import { contactSupport } from "../report-mail.js";
 import { PendingBrowserTabView, showPendingBrowserTab } from "../browser/pending-browser-tab.js";
 import {
   browserPlaceUnavailableReason,
-  browserThreadAgentTab,
   canRespondToRequests,
   describeHostConnection,
   mainWorkspace,
@@ -12,7 +11,6 @@ import {
   samePlaceAgents,
   type BrowserTabDestination,
   type BrowserTabOpenHandle,
-  type BrowserThreadTab,
   type HostClient,
   type HostSnapshot,
   type PlaceItem,
@@ -24,6 +22,7 @@ import {
   useHostSelector,
   useHostSnapshot,
   usePlaceList,
+  useThreadAgentTab,
 } from "@opensteer/client/react";
 import type { BrowserPageContentPart } from "@opensteer/core";
 import { isRecord } from "@opensteer/shared/isRecord";
@@ -466,12 +465,6 @@ function Focused(props: {
    * whichever tab it is on, until the person moves the page themselves. It
    * waits while something is over the page, such as the tab sheet.
    */
-  const selectAgentTab = useCallback(
-    (current: HostSnapshot) =>
-      besideId === null ? null : browserThreadAgentTab(current.browserSessions, besideId),
-    [besideId],
-  );
-  const agentTab = useHostSelector(hostClient, selectAgentTab, sameAgentTab);
   const shownTab = destination.kind === "browser" ? destination : null;
   const showTab = useCallback(
     (tab: BrowserTabDestination) => {
@@ -484,6 +477,7 @@ function Focused(props: {
     },
     [navigation],
   );
+  const agentTab = useThreadAgentTab(hostClient, besideId);
   const follow = useBrowserAgentFollow({
     agentTab,
     held: !props.active,
@@ -621,23 +615,10 @@ function Focused(props: {
       : [],
   ];
   const pair: PagePairChrome | null = pairedChrome ? { menu: pairMenu } : null;
-  const following: PageFollowing | null =
-    !follow.following || agentTab === null
-      ? null
-      : {
-          agent:
-            placeAgents(
-              {
-                destination: {
-                  kind: "browser",
-                  sessionId: agentTab.sessionId,
-                  tabId: agentTab.tabId,
-                },
-                occupants: agentTab.tab.occupants.filter(({ threadId }) => threadId === besideId),
-              },
-              snapshot,
-            ).agents[0] ?? null,
-        };
+  // Following, the page is the agent's tab, so the agent is among those here.
+  const following: PageFollowing | null = follow.following
+    ? { agent: agents.agents.find(({ threadId }) => threadId === besideId) ?? null }
+    : null;
   const body =
     destination.kind === "opensteer-app" ? (
       <AppTab
@@ -778,20 +759,6 @@ function Focused(props: {
 
 /** Wide enough for a task's name, never wider than a pane beside a page leaves it. */
 const companionPillWidth = 320;
-
-/** The agent's tab is the same one, under the same name: nothing to follow or redraw. */
-function sameAgentTab(left: BrowserThreadTab | null, right: BrowserThreadTab | null): boolean {
-  return (
-    left === right ||
-    (left !== null &&
-      right !== null &&
-      left.sessionId === right.sessionId &&
-      left.tabId === right.tabId &&
-      left.tab.title === right.tab.title &&
-      left.tab.site === right.tab.site &&
-      left.tab.occupants === right.tab.occupants)
-  );
-}
 
 /** Whether a place is the one a route names: a tab by its own id, else exactly. */
 function samePlace(place: PlaceItem, destination: WorkspaceSurfaceDestination): boolean {

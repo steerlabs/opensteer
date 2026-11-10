@@ -135,6 +135,17 @@ describe("browser agent following", () => {
     update(c, c);
     expect(controller.state.following).toBe(true);
   });
+  it("takes a late report of an earlier switch as its own, after it has switched again", () => {
+    const { controller, update, onFollow } = setup();
+    update(b);
+    vi.advanceTimersByTime(1000);
+    update(c);
+    expect(onFollow.mock.calls.map(([tab]) => tab)).toEqual([b, c]);
+    update(c, b);
+    expect(controller.state.following).toBe(true);
+    update(c, c);
+    expect(controller.state).toMatchObject({ following: true, steering: false, pending: [] });
+  });
   it("ends quietly when the agent leaves the browser, forgetting that the person steered", () => {
     const { controller, update, onFollow } = setup();
     update(b);

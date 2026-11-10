@@ -1,11 +1,6 @@
-import {
-  browserThreadAgentTab,
-  type BrowserTabDestination,
-  type HostClient,
-  type HostSnapshot,
-} from "@opensteer/client/host";
-import { useBrowserAgentFollow, useHostSelector } from "@opensteer/client/react";
-import { useCallback, useMemo, type ReactNode } from "react";
+import type { BrowserTabDestination, HostClient } from "@opensteer/client/host";
+import { useBrowserAgentFollow, useThreadAgentTab } from "@opensteer/client/react";
+import { useCallback, type ReactNode } from "react";
 
 /**
  * The conversation docked beside a browser tab, following its agent. Where the
@@ -18,8 +13,6 @@ export interface BrowserThreadPair {
   /** The person moved the page themselves, within its tab: following stops. */
   readonly steer: () => void;
 }
-
-const selectSessions = (snapshot: HostSnapshot) => snapshot.browserSessions;
 
 /**
  * Pairs the stage's browser tab with the docked conversation. A null thread
@@ -39,15 +32,11 @@ export function useBrowserThreadPair({
   readonly shown: BrowserTabDestination | null;
   readonly threadId: string | null;
 }): BrowserThreadPair | null {
-  const sessions = useHostSelector(hostClient, selectSessions);
-  const agentTab = useMemo(
-    () => (threadId ? browserThreadAgentTab(sessions, threadId) : null),
-    [sessions, threadId],
-  );
   const onFollow = useCallback(
     (tab: BrowserTabDestination) => onShow(tab, { replace: true }),
     [onShow],
   );
+  const agentTab = useThreadAgentTab(hostClient, threadId);
   const { following, steer } = useBrowserAgentFollow({
     threadId,
     shownTab: shown,

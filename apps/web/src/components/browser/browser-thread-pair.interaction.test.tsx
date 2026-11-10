@@ -2,6 +2,7 @@
 import { act } from "react";
 import { expect, it, vi } from "vitest";
 import { placeList } from "@opensteer/client/host";
+import { BrowserSessionIdSchema, BrowserSurfaceIdSchema } from "@opensteer/core";
 import {
   click,
   client,
@@ -35,7 +36,7 @@ it("follows the docked task's agent in place, stops for the person's tab and fol
     const { session, threadId, acting } = taskBrowser();
     return `/threads/${threadId}?panel=browser&browser=${session.id}&browserTab=${acting.id}`;
   });
-  const { threadId, reading, acting, confirm, placeKey } = taskBrowser();
+  const { session, threadId, reading, acting, confirm, placeKey } = taskBrowser();
   expect(following(), "The agent's own tab never started following").not.toBeNull();
   const stage = element(".browser-view");
   const composer = element("[data-composer-input]");
@@ -59,15 +60,30 @@ it("follows the docked task's agent in place, stops for the person's tab and fol
   expect(shownTab()).toBe(confirm.id);
   expect(following()).toBeNull();
 
-  await act(async () => client.actInPlace(threadId, placeKey(acting.id)));
+  // The Run's place reaches the live card before the tab catalog's occupancy does.
+  const run = client
+    .getSnapshot()
+    .runQueue.find((entry) => entry.threadId === threadId && entry.status === "running")!;
+  await act(async () =>
+    client.enterPlace(run.id, threadId, {
+      place: {
+        kind: "browser",
+        sessionId: BrowserSessionIdSchema.parse(session.id),
+        surfaceId: BrowserSurfaceIdSchema.parse(acting.id),
+      },
+      title: acting.title,
+      site: null,
+    }),
+  );
   expect(shownTab(), "A stage the person took over followed the agent").toBe(confirm.id);
   expect(liveCard()?.getAttribute("aria-label")).toBe(`Open ${acting.title}`);
 
   await click(liveCard()!);
   expect(shownTab()).toBe(acting.id);
-  expect(following()).not.toBeNull();
+  expect(following(), "The live card did not start following").not.toBeNull();
   expect(liveCard()).toBeNull();
 
+  await act(async () => client.actInPlace(threadId, placeKey(acting.id)));
   await act(async () => client.actInPlace(threadId, placeKey(reading.id)));
   await vi.waitFor(
     () => expect(shownTab(), "The live card never started following again").toBe(reading.id),

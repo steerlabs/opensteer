@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   BrowserEditingStore,
+  browserThreadAgentTab,
   placeList,
   type BrowserSessionSummary,
   type HostSnapshot,
@@ -146,6 +147,9 @@ vi.mock("@opensteer/client/react", async () => {
       if (state.snapshot === null) throw new Error("Missing snapshot fixture");
       return placeList(state.snapshot);
     },
+    // No Run place in these fixtures: the agent's tab is the one its Thread occupies.
+    useThreadAgentTab: (_client: unknown, threadId: string | null) =>
+      threadId === null ? null : browserThreadAgentTab(state.snapshot!.browserSessions, threadId),
   };
 });
 vi.mock("../ui/mobile-client-context.js", () => ({

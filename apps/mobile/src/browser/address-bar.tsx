@@ -6,6 +6,7 @@ import Animated, {
   cancelAnimation,
   Easing,
   FadeIn,
+  LayoutAnimationConfig,
   useAnimatedStyle,
   useReducedMotion,
   useSharedValue,
@@ -78,6 +79,18 @@ export const AddressCapsule = memo(function AddressCapsule(props: {
   const site = props.site ?? "Search or enter address";
   const following = props.following ?? null;
   const address = props.site === null ? "Address" : `Address, ${props.site}`;
+  const fade = reduceMotion ? {} : { entering: appear, exiting: exit };
+  const glyph = following?.agent ? (
+    <AgentMarks agents={[following.agent]} size={16} />
+  ) : props.favicon !== null ? (
+    <Image
+      accessibilityIgnoresInvertColors
+      source={{ uri: props.favicon }}
+      style={styles.favicon}
+    />
+  ) : props.secure ? (
+    <Symbol name="lock" size={12} tint={color.muted} weight="semibold" />
+  ) : null;
   return (
     <GestureDetector gesture={swipe}>
       <View style={styles.slot}>
@@ -111,17 +124,14 @@ export const AddressCapsule = memo(function AddressCapsule(props: {
               {...(props.arriving === true && !reduceMotion ? { entering: arrive } : {})}
               style={[styles.site, moved]}
             >
-              {following?.agent ? (
-                <AgentMarks agents={[following.agent]} size={16} />
-              ) : props.favicon !== null ? (
-                <Image
-                  accessibilityIgnoresInvertColors
-                  source={{ uri: props.favicon }}
-                  style={styles.favicon}
-                />
-              ) : props.secure ? (
-                <Symbol name="lock" size={12} tint={color.muted} weight="semibold" />
-              ) : null}
+              {/* Following fades the agent's mark in over the site's, and back; a page draws its own at once. */}
+              <LayoutAnimationConfig skipEntering>
+                {glyph === null ? null : (
+                  <Animated.View key={following?.agent ? "agent" : "site"} {...fade}>
+                    {glyph}
+                  </Animated.View>
+                )}
+              </LayoutAnimationConfig>
               <AppText
                 maxFontSizeMultiplier={controlFontScaleLimit}
                 numberOfLines={1}
@@ -133,13 +143,11 @@ export const AddressCapsule = memo(function AddressCapsule(props: {
               </AppText>
             </Animated.View>
           </Pressable>
-          {following === null ? null : (
-            <Animated.View
-              {...(reduceMotion ? {} : { entering: appear, exiting: exit })}
-              pointerEvents="none"
-              style={styles.ring}
-            />
-          )}
+          <LayoutAnimationConfig skipEntering>
+            {following === null ? null : (
+              <Animated.View {...fade} pointerEvents="none" style={styles.ring} />
+            )}
+          </LayoutAnimationConfig>
           {props.loading ? (
             <ActivityLine tone="loading" />
           ) : props.acting ? (

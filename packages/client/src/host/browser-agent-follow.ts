@@ -1,7 +1,9 @@
-import type { BrowserTabDestination } from "./browser-thread-tabs.js";
+import { sameBrowserTab, type BrowserTabDestination } from "./browser-thread-tabs.js";
 
 /** A busy agent never moves the page more than once a second. */
 const switchInterval = 1000;
+/** Moves the page never reported, such as one its navigation dropped, are forgotten after this many. */
+const pendingLimit = 4;
 
 export interface BrowserAgentFollowInput {
   readonly threadId: string | null;
@@ -19,8 +21,8 @@ export interface BrowserAgentFollowState {
   readonly held: boolean;
   /** The page's tab as last reported, which tells the person's moves from following's own. */
   readonly observedTab: BrowserTabDestination | null;
-  /** Where following last sent the page, until the page reports being there. */
-  readonly lastFollow: BrowserTabDestination | null;
+  /** Where following has sent the page and the page has not yet reported, oldest first. */
+  readonly pending: readonly BrowserTabDestination[];
   readonly following: boolean;
   /** The person took the page over; only their own return to the agent's tab follows again. */
   readonly steering: boolean;
@@ -44,16 +46,12 @@ export function initialBrowserAgentFollowState(): BrowserAgentFollowState {
     agentTab: null,
     held: false,
     observedTab: null,
-    lastFollow: null,
+    pending: [],
     following: false,
     steering: false,
     deadline: null,
     lastSwitch: null,
   };
-}
-
-function sameTab(a: BrowserTabDestination | null, b: BrowserTabDestination | null): boolean {
-  return a !== null && b !== null && a.sessionId === b.sessionId && a.tabId === b.tabId;
 }
 
 /**
@@ -69,18 +67,18 @@ function updated(
   const { threadId, shownTab, agentTab, held = false } = input;
   if (threadId === null) return initialBrowserAgentFollowState();
   const base = previous.threadId === threadId ? previous : initialBrowserAgentFollowState();
-  const meets = sameTab(shownTab, agentTab);
-  // Following's own move, now in the page; a later visit there is the person's.
-  const arrived = sameTab(shownTab, base.lastFollow);
+  const meets = sameBrowserTab(shownTab, agentTab);
+  // Following's own move, now in the page, ending the ones before it; a later visit is the person's.
+  const arrival = base.pending.findIndex((tab) => sameBrowserTab(shownTab, tab));
   const moved =
     base.threadId !== null &&
-    !arrived &&
-    !(shownTab === null ? base.observedTab === null : sameTab(shownTab, base.observedTab));
+    arrival < 0 &&
+    !(shownTab === null ? base.observedTab === null : sameBrowserTab(shownTab, base.observedTab));
   let { following, steering } = base;
   if (moved) {
     following = meets;
     steering = !meets;
-  } else if (meets && !steering && !sameTab(base.shownTab, base.agentTab)) following = true;
+  } else if (meets && !steering && !sameBrowserTab(base.shownTab, base.agentTab)) following = true;
   if (agentTab === null) {
     following = false;
     steering = false;
@@ -92,7 +90,7 @@ function updated(
     agentTab,
     held,
     observedTab: shownTab,
-    lastFollow: arrived ? null : base.lastFollow,
+    pending: arrival < 0 ? base.pending : base.pending.slice(arrival + 1),
     following,
     steering,
   };
@@ -114,12 +112,18 @@ export function transitionBrowserAgentFollow(
     state.following &&
     !state.held &&
     state.agentTab !== null &&
-    !sameTab(state.shownTab, state.agentTab)
+    !sameBrowserTab(state.shownTab, state.agentTab)
   ) {
     const deadline = state.lastSwitch === null ? now : state.lastSwitch + switchInterval;
     if (now >= deadline) {
       follow = state.agentTab;
-      state = { ...state, shownTab: follow, lastFollow: follow, lastSwitch: now, deadline: null };
+      state = {
+        ...state,
+        shownTab: follow,
+        pending: [...state.pending, follow].slice(-pendingLimit),
+        lastSwitch: now,
+        deadline: null,
+      };
     } else state = { ...state, deadline };
   } else state = { ...state, deadline: null };
   return { state, follow };
