@@ -2,7 +2,8 @@ import type { VoiceSnapshot } from "@opensteer/client/voice";
 import { useEffect, type ReactNode } from "react";
 import { StyleSheet, useWindowDimensions, View } from "react-native";
 import Animated, { useSharedValue, withTiming, type SharedValue } from "react-native-reanimated";
-import { controlFontScaleLimit, space, type as textType, touchTarget } from "../theme.js";
+import { color, controlFontScaleLimit, space, type as textType, touchTarget } from "../theme.js";
+import { GlassSurface } from "../ui/glass.js";
 import { appear, duration, exit } from "../ui/motion.js";
 import { VoiceDock } from "../voice/controls.js";
 import { useVoiceValue } from "../voice/use-voice-value.js";
@@ -54,6 +55,27 @@ export function usePlaceStatus(hidden: boolean): {
   };
 }
 
+/**
+ * The status row over a page on this phone, which runs under its controls: on the bar's own
+ * glass, so its words stay legible over whatever the page shows there.
+ */
+export function FloatingPlaceStatus(): ReactNode {
+  const status = usePlaceBarStatus();
+  const { fontScale } = useWindowDimensions();
+  if (status === null) return null;
+  return (
+    <Animated.View entering={appear} exiting={exit} style={styles.floating}>
+      <GlassSurface
+        shape="capsule"
+        style={[styles.glass, { height: statusRowHeight(fontScale) }]}
+        tint={color.floatTint}
+      >
+        {status}
+      </GlassSurface>
+    </Animated.View>
+  );
+}
+
 const selectShowing = ({ notice, phase }: VoiceSnapshot) => phase !== "idle" || notice !== null;
 
 /**
@@ -71,6 +93,8 @@ export function PlaceVoiceDock(): ReactNode {
 }
 
 const styles = StyleSheet.create({
+  floating: { paddingHorizontal: space[12] },
+  glass: { flexDirection: "row" },
   slot: { bottom: 0, end: 0, position: "absolute", start: 0 },
   voice: { paddingHorizontal: space[12], paddingTop: space[8] },
 });

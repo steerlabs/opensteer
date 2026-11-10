@@ -85,7 +85,10 @@ import { ChromeSignInAction } from "./chrome-sign-in-action.js";
 import { FollowBand, TaskTabChips } from "./pair-chrome.js";
 import { pageSite, viewedPage } from "./surface-route.js";
 import { ToolbarAsk, ToolbarLeave, useNativeBarAway } from "./place-bar.js";
-import { PlaceVoiceDock, usePlaceStatus } from "./place-foot.js";
+import { FloatingPlaceStatus, PlaceVoiceDock, usePlaceStatus } from "./place-foot.js";
+import { barFloats } from "./floating-bar.js";
+import { PageChromeProvider, PageEdge, useFloatingBar, type PageChrome } from "./floating-page.js";
+import { useContentInsets } from "../ui/pane.js";
 import { Toolbar, ToolbarButton, ToolbarCapsule, ToolbarMenu } from "./toolbar.js";
 import { systemBrowserLabel } from "./system-browser.js";
 
@@ -534,9 +537,43 @@ export function BrowserPage(props: {
   const follow = props.follow ?? null;
   // The bar is over the page where it is wide, and always while a Thread is beside it.
   const top = regular || pair !== null;
-  const { fontScale } = useWindowDimensions();
+  const { fontScale, height: windowHeight } = useWindowDimensions();
   const reduceMotion = useReducedMotion();
   const arrival = props.arrival ?? 0;
+  // A page on this phone runs under its own controls, as Safari's does: they float over it and
+  // the bar shrinks as it is read. A streamed page cannot leave room for them, so its bar stands.
+  const local = props.nativeContent !== undefined && props.nativeContent !== null;
+  const edge = top ? "top" : "bottom";
+  const floats = local && barFloats({ edge, height: windowHeight, paired: pair !== null });
+  const floating = useFloatingBar(edge, !floats || addressOpen || dialog !== null || signingIn);
+  const insets = useContentInsets();
+  // Under the home indicator too, where the bar floats over the page's foot.
+  const bleed = floats && edge === "bottom" ? insets.bottom : 0;
+  const [footHeight, setFootHeight] = useState(0);
+  const [headHeight, setHeadHeight] = useState(0);
+  // The editor stands where the bar was without moving the page's own edges.
+  const onFootHeight = useCallback(
+    (height: number) => {
+      if (!addressOpen) setFootHeight(height);
+    },
+    [addressOpen],
+  );
+  const onHeadHeight = useCallback(
+    (height: number) => {
+      if (!addressOpen) setHeadHeight(height);
+    },
+    [addressOpen],
+  );
+  const chrome = useMemo(
+    (): PageChrome | null =>
+      local
+        ? {
+            barInsets: { bottom: footHeight, top: floats && edge === "top" ? headHeight : 0 },
+            onPageScroll: floats ? floating.onPageScroll : null,
+          }
+        : null,
+    [edge, floating.onPageScroll, floats, footHeight, headHeight, local],
+  );
   // A phone's bar has room for what it is used for most; Drag/select waits in More.
   const dragButtonFits = regular && pair === null;
   const menu: NativeMenuSection[] = [
@@ -754,6 +791,66 @@ export function BrowserPage(props: {
   }));
 
   const label = site === null ? title : `${title}, ${site}`;
+  if (local)
+    return (
+      <View
+        onLayout={(event) => setWidth(event.nativeEvent.layout.width)}
+        style={styles.page}
+        testID="browser-page"
+      >
+        <ActionReviewSheet
+          review={closeReview}
+          title="Close this tab?"
+          detail="An agent is working here. This tab closes for you and for the agent."
+          confirmLabel="Close tab"
+          cancelLabel="Cancel"
+          onClose={dismissClose}
+          onConfirmed={props.onClosed}
+          onError={(error) => setProblem(operationDetail(error, "This tab could not be closed."))}
+        />
+        {top && !floats ? (addressOpen ? editor : bar) : null}
+        {top && !floats ? band : null}
+        <View style={[styles.native, { marginBottom: -bleed }]} testID="local-page">
+          <PageChromeProvider value={chrome}>{props.nativeContent}</PageChromeProvider>
+          {addressOpen ? (
+            <Pressable
+              accessibilityLabel="Keep this page"
+              accessibilityRole="button"
+              onPress={() => {
+                setAddressDraft(null);
+                setAddressOpen(false);
+              }}
+              style={styles.dim}
+            />
+          ) : null}
+          {floats && top ? (
+            <PageEdge
+              bar={addressOpen ? editor : bar}
+              edge="top"
+              floating={addressOpen ? null : floating}
+              label={label}
+              onHeight={onHeadHeight}
+              outset={0}
+            />
+          ) : null}
+          <PageEdge
+            bar={top ? null : addressOpen ? editor : bar}
+            edge="bottom"
+            floating={floats && !top && !addressOpen ? floating : null}
+            label={label}
+            lead={
+              <>
+                <FloatingPlaceStatus />
+                {top ? null : band}
+                <PlaceVoiceDock />
+              </>
+            }
+            onHeight={onFootHeight}
+            outset={bleed}
+          />
+        </View>
+      </View>
+    );
   return (
     <View
       onLayout={(event) => setWidth(event.nativeEvent.layout.width)}
@@ -1438,6 +1535,7 @@ const styles = StyleSheet.create({
     width: touchTarget + space[4],
   },
   arrival: { ...StyleSheet.absoluteFill },
+  native: { flex: 1, minHeight: 0 },
   page: { flex: 1, minHeight: 0 },
   // Zoom grows the picture from its top-leading corner, where its offset is measured from.
   picture: { position: "absolute", top: 0, transformOrigin: "left top" },
