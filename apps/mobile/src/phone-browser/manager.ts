@@ -194,7 +194,7 @@ export class PhoneBrowserManager {
     this.#foreground = active;
     if (!active) {
       if (this.#connection) this.#retiredConnections.add(connectionKey(this.#connection.fence));
-      this.#invalidate("inactive");
+      await this.#invalidate("inactive");
       this.#connection = null;
     }
     await this.#native.setForeground({ epoch: this.#epoch, active });
@@ -234,7 +234,7 @@ export class PhoneBrowserManager {
           this.#publishTab(tab);
           await this.#publish(session);
         } catch (error) {
-          if (epoch === this.#epoch) this.#invalidate("presentation-failed", error);
+          if (epoch === this.#epoch) await this.#invalidate("presentation-failed", error);
           throw error;
         }
       });
@@ -251,7 +251,7 @@ export class PhoneBrowserManager {
   }
 
   async eraseDeployment(): Promise<readonly HeldLocalProfile[]> {
-    this.#invalidate("deployment-removed");
+    await this.#invalidate("deployment-removed");
     this.#connection = null;
     this.#foreground = false;
     await this.#native.setForeground({ epoch: this.#epoch, active: false });
@@ -273,7 +273,7 @@ export class PhoneBrowserManager {
 
   async dispose(): Promise<void> {
     if (this.#disposed) return;
-    this.#invalidate("disposed");
+    await this.#invalidate("disposed");
     this.#disposed = true;
     this.#unsubscribe();
     await this.#native.setForeground({ epoch: this.#epoch, active: false });
@@ -286,7 +286,7 @@ export class PhoneBrowserManager {
         if (!this.#connection || !sameRunnerAuxiliaryFence(this.#connection.fence, event.fence))
           return;
         if (this.#connection) this.#retiredConnections.add(connectionKey(this.#connection.fence));
-        this.#invalidate("connection-lost");
+        await this.#invalidate("connection-lost");
         this.#connection = null;
         return;
       }
@@ -302,7 +302,7 @@ export class PhoneBrowserManager {
         this.#connection.deadline = event.leaseDeadline;
       } else {
         if (this.#connection) this.#retiredConnections.add(connectionKey(this.#connection.fence));
-        this.#invalidate("connection-replaced");
+        await this.#invalidate("connection-replaced");
         this.#capabilityHighWater = 0;
         this.#connection = { fence: { ...event.fence }, deadline: event.leaseDeadline };
       }
@@ -490,7 +490,7 @@ export class PhoneBrowserManager {
         if (!this.#sameCapability(lease, this.#capability)) {
           if (lease.capabilityGeneration <= this.#capabilityHighWater)
             throw new PhoneBrowserError("forbidden", "The capability grant is retired.");
-          this.#invalidate("capability-replaced");
+          await this.#invalidate("capability-replaced");
         }
         this.#capability = lease;
         this.#capabilityHighWater = lease.capabilityGeneration;
@@ -504,7 +504,7 @@ export class PhoneBrowserManager {
       } else {
         this.#assertCapability(message.capability);
         if (message.type === "capability.revoke") {
-          this.#invalidate("capability-revoked");
+          await this.#invalidate("capability-revoked");
           await this.#sendRelay({
             ...connection.fence,
             requestId: message.requestId,
@@ -1378,7 +1378,7 @@ export class PhoneBrowserManager {
     try {
       await this.#makeLive(tab, "live-covered");
     } catch (error) {
-      if (isLive(tab)) this.#invalidate("resume-failed");
+      if (isLive(tab)) await this.#invalidate("resume-failed");
       else if (this.#covered === tab.id) this.#covered = null;
       throw error;
     }
@@ -1840,13 +1840,14 @@ export class PhoneBrowserManager {
     if (Number.isFinite(deadline))
       this.#cancelLease = this.#clock.schedule(deadline, () => {
         if (this.#connection) this.#retiredConnections.add(connectionKey(this.#connection.fence));
-        this.#invalidate("lease-expired");
+        void this.#invalidate("lease-expired").catch(() => undefined);
         this.#connection = null;
       });
   }
 
-  #invalidate(reason: string, cause?: unknown): void {
+  async #invalidate(reason: string, cause?: unknown): Promise<void> {
     this.#epoch = this.#native.fence(reason);
+    const epoch = this.#epoch;
     this.#abort.abort(cause);
     this.#abort = new AbortController();
     this.#cancelLease?.();
@@ -1865,10 +1866,15 @@ export class PhoneBrowserManager {
     this.#covered = null;
     for (const session of this.#sessions.values()) session.channels.clear();
     for (const tab of this.#tabs.values()) {
-      if (isLive(tab)) tab.state = "retained";
+      if (isLive(tab)) {
+        tab.state = "retained";
+        tab.lastUsed = ++this.#lru;
+      }
       tab.dialog = null;
       this.#publishTab(tab);
     }
+    await this.#trimRetained();
+    this.#assertEpoch(epoch);
   }
 }
 

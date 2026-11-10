@@ -373,6 +373,12 @@ describe("phone browser manager", () => {
       [...fixture.native.tabs.values()].filter((tab) => tab.state === "retained"),
     ).toHaveLength(0);
     expect(fixture.presentation("second").state).toBe("live-visible");
+    for (let index = 0; index < 4; index++) await fixture.open(`background-${index}`);
+    await fixture.manager.setForeground(false);
+    expect(
+      [...fixture.native.tabs.values()].filter((tab) => tab.state === "retained"),
+    ).toHaveLength(4);
+    expect(fixture.presentation("background-0").state).toBe("discarded");
   });
 
   test("renderer loss suspends only exact native generations; resume receives a fresh document", async () => {
