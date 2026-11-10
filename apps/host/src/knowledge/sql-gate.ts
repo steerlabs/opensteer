@@ -1417,7 +1417,10 @@ function select(value: unknown, outer: Scope): void {
       limitOffset: "expr",
       limitCount: "expr",
       limitOption: ["LIMIT_OPTION_DEFAULT", "LIMIT_OPTION_COUNT", "LIMIT_OPTION_WITH_TIES"],
-      lockingClause: refuseWith("form", "Row locks such as FOR UPDATE aren't allowed."),
+      lockingClause: refuseWith(
+        "form",
+        "Row-locking clauses aren't allowed; a plain SELECT reads without them.",
+      ),
       withClause: () => undefined,
       op: ["SETOP_NONE", "SETOP_UNION", "SETOP_INTERSECT", "SETOP_EXCEPT"],
       all: "bool",
