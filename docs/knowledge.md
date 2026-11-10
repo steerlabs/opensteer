@@ -9,9 +9,7 @@ With the trial off, nothing about knowledge exists in the database. The schema, 
 the restricted login come from a versioned ensure step that the manager runs at each start with the
 trial on, in one transaction under an advisory lock. Add a step to change the schema; never edit
 one that shipped. The Host's PostgreSQL user must be allowed to create roles, or turning the trial
-on fails at start. An earlier trial build recorded the schema as migration `0169_knowledge`; start
-forgets that record and the ensure step resumes from it. Turning the trial off leaves the schema
-and its facts in place.
+on fails at start. Turning the trial off leaves the schema and its facts in place.
 
 ## Who holds the tool
 

@@ -106,11 +106,7 @@ const factColumns = `id, topic, thing, property, value, value #>> '{}' as text,
   writer_kind, writer_id, initiator_id, agent_id, task_id, run_id, written_at,
   replaces_id, seen_fact_id, operation_id, operation_row`;
 
-/**
- * Each step moves the knowledge schema up one version. Version 1 is what the
- * first trial build created through a migration, so a database it prepared
- * resumes at step 2. Add a step; never edit one that has shipped.
- */
+/** Each step moves the knowledge schema up one version. Add a step; never edit one that has shipped. */
 const knowledgeSchemaSteps: readonly string[] = [
   `create schema knowledge authorization ${knowledgeOwnerRole};
 
@@ -318,6 +314,12 @@ const knowledgeSchemaSteps: readonly string[] = [
       raise exception using errcode = 'KB007', message = 'A result row is over 512 KB.';
     end $fn$;
 
+    create function knowledge.result_too_large() returns boolean
+    language plpgsql volatile set search_path = pg_catalog, pg_temp as $fn$
+    begin
+      raise exception using errcode = 'KB009', message = 'A result is over 1 MB.';
+    end $fn$;
+
     alter table knowledge.topics owner to ${knowledgeOwnerRole};
     alter table knowledge.operations owner to ${knowledgeOwnerRole};
     alter table knowledge.fact_log owner to ${knowledgeOwnerRole};
@@ -328,16 +330,10 @@ const knowledgeSchemaSteps: readonly string[] = [
     alter function knowledge.append_fact() owner to ${knowledgeOwnerRole};
     alter function knowledge.complete_operation() owner to ${knowledgeOwnerRole};
     alter function knowledge.result_row_too_large() owner to ${knowledgeOwnerRole};
-    revoke all on function knowledge.require_read_committed(), knowledge.begin_operation(text),
-      knowledge.append_fact(), knowledge.complete_operation(), knowledge.result_row_too_large()
-      from public;`,
-  `create function knowledge.result_too_large() returns boolean
-    language plpgsql volatile set search_path = pg_catalog, pg_temp as $fn$
-    begin
-      raise exception using errcode = 'KB009', message = 'A result is over 1 MB.';
-    end $fn$;
     alter function knowledge.result_too_large() owner to ${knowledgeOwnerRole};
-    revoke all on function knowledge.result_too_large() from public;`,
+    revoke all on function knowledge.require_read_committed(), knowledge.begin_operation(text),
+      knowledge.append_fact(), knowledge.complete_operation(), knowledge.result_row_too_large(),
+      knowledge.result_too_large() from public;`,
 ];
 
 const versionComment = "opensteer knowledge schema ";
@@ -361,11 +357,9 @@ export async function ensureKnowledge(
   const found = rows[0];
   const version = !found
     ? 0
-    : found.comment === null
-      ? 1
-      : found.comment.startsWith(versionComment)
-        ? Number(found.comment.slice(versionComment.length))
-        : Number.NaN;
+    : found.comment?.startsWith(versionComment)
+      ? Number(found.comment.slice(versionComment.length))
+      : Number.NaN;
   if (!Number.isInteger(version) || version > knowledgeSchemaSteps.length)
     throw new Error("A different Opensteer build prepared this database's knowledge schema");
   // The owner role is shared by every database in the cluster, which the advisory lock does not

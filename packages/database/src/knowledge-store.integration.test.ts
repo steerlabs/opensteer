@@ -4,7 +4,6 @@ import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { describe, expect, it, vi } from "vitest";
 import { createDatabase } from "./connection.js";
-import { migrateToLatest } from "./migrations.js";
 import {
   createKnowledgeExecutorPool,
   prepareKnowledgeExecutor,
@@ -234,7 +233,7 @@ integration("knowledge storage", () => {
     expect(prepared.map(({ status }) => status)).toEqual(["fulfilled", "fulfilled"]);
   });
 
-  it("creates knowledge only when asked, once under concurrent starts, and upgrades a trial build's", async () => {
+  it("creates knowledge only when asked, once under concurrent starts, and refuses a newer version", async () => {
     const clone = await cloneTestDatabase("host");
     const state = { role: "" };
     const { database } = await ownTestDatabaseProducer(clone.url, async () => {
@@ -264,36 +263,13 @@ integration("knowledge storage", () => {
     ]);
     state.role = first.role;
     expect(second.role).toBe(first.role);
-    expect(await version()).toEqual([{ version: "opensteer knowledge schema 2" }]);
-    await sql`
-      drop function knowledge.result_too_large();
-      comment on schema knowledge is null;
-      insert into kysely_migration (name, timestamp) values ('0169_knowledge', '2026-11-01T00:00:00.000Z');
-    `.execute(database);
-    await migrateToLatest(database);
-    expect(
-      (await sql`select name from kysely_migration where name = '0169_knowledge'`.execute(database))
-        .rows,
-    ).toEqual([]);
-    const upgraded = await prepareKnowledgeExecutor(database);
-    expect(await version()).toEqual([{ version: "opensteer knowledge schema 2" }]);
-    const pool = createKnowledgeExecutorPool(clone.url, upgraded);
-    try {
-      await expect(
-        runKnowledgeStatement(pool, {
-          statement: {
-            kind: "select",
-            text: "select repeat('x', 400000) from facts, (values (1), (2), (3)) v(n)",
-            parameters: [],
-          },
-          readTopicIds: [],
-          writeTopicIds: [],
-          writer,
-        }),
-      ).resolves.toMatchObject({ rows: [] });
-    } finally {
-      await pool.end();
-    }
+    expect(await version()).toEqual([{ version: "opensteer knowledge schema 1" }]);
+    await prepareKnowledgeExecutor(database);
+    expect(await version()).toEqual([{ version: "opensteer knowledge schema 1" }]);
+    await sql`comment on schema knowledge is 'opensteer knowledge schema 2'`.execute(database);
+    await expect(prepareKnowledgeExecutor(database)).rejects.toThrow(
+      "A different Opensteer build prepared this database's knowledge schema",
+    );
   });
 
   it("refuses to turn the trial on for a database user that may not create roles", async () => {
