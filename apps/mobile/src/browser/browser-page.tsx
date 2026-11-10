@@ -14,7 +14,7 @@ import {
   type BrowserCommand,
   type BrowserSessionSummary,
   type HostClient,
-  type PlaceAgent,
+  type TaskMark,
 } from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema, type BrowserPageContentPart } from "@opensteer/core";
 import { browserPromptTextMaxLength, browserViewportFits } from "@opensteer/protocol";
@@ -86,7 +86,6 @@ import { BrowserStream, submitBrowserCommand, useBrowserFeedState } from "./brow
 import { ChromeSignInAction } from "./chrome-sign-in-action.js";
 import { LoginChips } from "./login-chips.js";
 import { createPageAutofill } from "./page-autofill.js";
-import { FollowBand } from "./pair-chrome.js";
 import { pageSite, viewedPage } from "./surface-route.js";
 import { ToolbarAsk, ToolbarLeave, useNativeBarAway } from "./place-bar.js";
 import { FloatingPlaceStatus, PlaceVoiceDock, usePlaceStatus } from "./place-foot.js";
@@ -110,14 +109,13 @@ export interface PagePairChrome {
   readonly menu: readonly NativeMenuSection[];
 }
 
-/** Keeping up with the Thread's agent as it moves between tabs. */
-export interface PageFollow {
-  /** The agent's mark; null for a Thread the reader cannot name. */
-  readonly agent: PlaceAgent | null;
-  /** The agent's tab, while the person is not following it there. */
-  readonly away: { readonly title: string } | null;
-  readonly following: boolean;
-  readonly onResume: () => void;
+/**
+ * The Thread's agent, while the page keeps up with it from tab to tab. Where
+ * the agent is otherwise is the Thread's live card.
+ */
+export interface PageFollowing {
+  /** The Thread's task mark; null for Chat, which wears the orb. */
+  readonly mark: TaskMark | null;
 }
 /** Room left beside or under a page that is worth offering Fit for, as a share of its place. */
 const fitBand = 0.15;
@@ -169,7 +167,7 @@ export function BrowserPage(props: {
   readonly arrival?: -1 | 0 | 1;
   /** The device the page runs on, where that is not this one. */
   readonly device?: PageDevice | null;
-  readonly follow?: PageFollow | null;
+  readonly following?: PageFollowing | null;
   readonly pair?: PagePairChrome | null;
   /** The person moved this page themselves: back, forward, an address, a new tab. */
   readonly onSteer?: () => void;
@@ -567,7 +565,6 @@ export function BrowserPage(props: {
   };
 
   const pair = props.pair ?? null;
-  const follow = props.follow ?? null;
   // The bar is over the page where it is wide, and always while a Thread is beside it.
   const top = regular || pair !== null;
   const { height: windowHeight } = useWindowDimensions();
@@ -721,7 +718,7 @@ export function BrowserPage(props: {
       }
       device={props.device ?? null}
       favicon={liveTab?.favicon ?? null}
-      following={follow?.following === true ? { agent: follow.agent } : null}
+      following={props.following ?? null}
       forward={
         regular
           ? {
@@ -764,10 +761,6 @@ export function BrowserPage(props: {
       {more}
     </Toolbar>
   );
-  const band =
-    follow?.away == null || addressOpen ? null : (
-      <FollowBand agent={follow.agent} onFollow={follow.onResume} title={follow.away.title} />
-    );
   const editor = (
     <AddressEditor
       draft={addressDraft ?? (tab?.url === "about:blank" ? "" : tab?.url) ?? ""}
@@ -852,7 +845,6 @@ export function BrowserPage(props: {
           onError={(error) => setProblem(operationDetail(error, "This tab could not be closed."))}
         />
         {top && !floats ? (addressOpen ? editor : bar) : null}
-        {top && !floats ? band : null}
         <View style={[styles.native, { marginBottom: -bleed }]} testID="local-page">
           <PageChromeProvider value={chrome}>{props.nativeContent}</PageChromeProvider>
           {addressOpen ? (
@@ -885,7 +877,6 @@ export function BrowserPage(props: {
             lead={
               <>
                 <FloatingPlaceStatus />
-                {top ? null : band}
                 <PlaceVoiceDock />
               </>
             }
@@ -921,7 +912,6 @@ export function BrowserPage(props: {
         onError={(error) => setProblem(operationDetail(error, "This tab could not be closed."))}
       />
       {top ? (addressOpen ? editor : bar) : null}
-      {top ? band : null}
       {dragSelect ? (
         <AppText role="caption" tone="muted">
           Drag/select · Drag once to select or move content
@@ -1139,7 +1129,6 @@ export function BrowserPage(props: {
         editor
       ) : (
         <>
-          {band}
           <PlaceVoiceDock />
           {bar}
         </>

@@ -216,14 +216,12 @@ function computerPage(machineId: string): string {
  * and what opens is exactly what the row said.
  */
 export const StartPage = memo(function StartPage({
-  band,
   from,
   hostClient,
   leading,
   link,
   trailing,
 }: {
-  readonly band?: ReactNode;
   /** The place query this page was opened over, where Esc and × return. */
   readonly from: string | null;
   readonly hostClient: HostClient;
@@ -543,7 +541,6 @@ export const StartPage = memo(function StartPage({
         <span className="launcher__spacer" />
         {trailing}
       </div>
-      {band}
       <div className="start-page" onKeyDown={onPageKey} ref={stageRef}>
         <div className="start-page__column">
           <form

@@ -2,7 +2,6 @@ import { contactSupport } from "../report-mail.js";
 import { PendingBrowserTabView, showPendingBrowserTab } from "../browser/pending-browser-tab.js";
 import {
   browserPlaceUnavailableReason,
-  browserThreadAgentTab,
   canRespondToRequests,
   describeHostConnection,
   mainWorkspace,
@@ -10,9 +9,9 @@ import {
   placeAgentState,
   placeDestinationEnded,
   samePlaceAgents,
+  threadMark,
   type BrowserTabDestination,
   type BrowserTabOpenHandle,
-  type BrowserThreadTab,
   type HostClient,
   type HostSnapshot,
   type PlaceItem,
@@ -24,6 +23,7 @@ import {
   useHostSelector,
   useHostSnapshot,
   usePlaceList,
+  useThreadAgentTab,
 } from "@opensteer/client/react";
 import { deviceElsewhere } from "@opensteer/client/computers";
 import type { BrowserPageContentPart } from "@opensteer/core";
@@ -67,7 +67,7 @@ import {
   type ReservedRegion,
 } from "react-native-reserved-regions";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { BrowserPage, type PageFollow, type PagePairChrome } from "../browser/browser-page.js";
+import { BrowserPage, type PageFollowing, type PagePairChrome } from "../browser/browser-page.js";
 import {
   AppPill,
   appMenuSections,
@@ -89,7 +89,6 @@ import {
 } from "../browser/place-bar.js";
 import { Toolbar, ToolbarButton, ToolbarCapsule, ToolbarMenu } from "../browser/toolbar.js";
 import {
-  pageSite,
   paramsDestination,
   routeDestination,
   sameDestination,
@@ -473,16 +472,11 @@ function Focused(props: {
   );
   /**
    * Keeping up with the beside Thread's agent: the route moves in place to
-   * whichever tab it is on, until the person moves the page themselves.
+   * whichever tab it is on, until the person moves the page themselves. It
+   * waits while something is over the page, such as the tab sheet.
    */
-  const selectAgentTab = useCallback(
-    (current: HostSnapshot) =>
-      besideId === null ? null : browserThreadAgentTab(current.browserSessions, besideId),
-    [besideId],
-  );
-  const agentTab = useHostSelector(hostClient, selectAgentTab, sameAgentTab);
   const shownTab = destination.kind === "browser" ? destination : null;
-  const onFollow = useCallback(
+  const showTab = useCallback(
     (tab: BrowserTabDestination) => {
       navigation.setParams({
         editAddress: false,
@@ -493,8 +487,14 @@ function Focused(props: {
     },
     [navigation],
   );
-  const follow = useBrowserAgentFollow({ agentTab, onFollow, shownTab, threadId: besideId });
-  const { pause } = follow;
+  const agentTab = useThreadAgentTab(hostClient, besideId);
+  const follow = useBrowserAgentFollow({
+    agentTab,
+    held: !props.active,
+    onFollow: showTab,
+    shownTab,
+    threadId: besideId,
+  });
   // Over the page that opened it, so Back and its ending both return there.
   const onPopup = useCallback(
     (tabId: string) => {
@@ -506,8 +506,6 @@ function Focused(props: {
   );
   const onShowTabs = useCallback(() => {
     if (destination.kind !== "browser") return;
-    // The sheet marks the tab shown when it opened; following must not move it underneath.
-    pause();
     navigation.dispatch(
       StackActions.push("BrowserTabs", {
         deploymentId,
@@ -516,7 +514,7 @@ function Focused(props: {
         ...(besideId === null ? {} : { threadId: besideId }),
       }),
     );
-  }, [besideId, deploymentId, destination, navigation, pause]);
+  }, [besideId, deploymentId, destination, navigation]);
   const [paired, setPaired] = useState(false);
   const title =
     place?.title ??
@@ -641,40 +639,11 @@ function Focused(props: {
       : [],
   ];
   const pair: PagePairChrome | null = pairedChrome ? { menu: pairMenu } : null;
-  const agentAway =
-    besideId === null ||
-    agentTab === null ||
-    follow.following ||
-    (shownTab !== null &&
-      agentTab.tabId === shownTab.tabId &&
-      agentTab.sessionId === shownTab.sessionId)
-      ? null
-      : agentTab;
-  const followAgent =
-    besideId === null || agentTab === null
-      ? null
-      : (placeAgents(
-          {
-            destination: { kind: "browser", sessionId: agentTab.sessionId, tabId: agentTab.tabId },
-            occupants: agentTab.tab.occupants.filter(({ threadId }) => threadId === besideId),
-          },
-          snapshot,
-        ).agents[0] ?? null);
-  const pageFollow: PageFollow | null =
-    besideId === null
-      ? null
-      : {
-          agent: followAgent,
-          away:
-            agentAway === null
-              ? null
-              : {
-                  title:
-                    agentAway.tab.title.trim() || pageSite(agentAway.tab.site) || "another tab",
-                },
-          following: follow.following,
-          onResume: () => void follow.resume(),
-        };
+  // The Thread's own mark, as web draws it: the page's occupants can lag the agent arriving.
+  const following: PageFollowing | null =
+    follow.following && besideId !== null
+      ? { mark: besideId === homeThreadId ? null : threadMark(besideId, snapshot) }
+      : null;
   const body =
     destination.kind === "opensteer-app" ? (
       <AppTab
@@ -705,13 +674,13 @@ function Focused(props: {
         deploymentId={deploymentId}
         hereId={hereId}
         editAddress={route.editAddress === true}
-        follow={pageFollow}
+        following={following}
         hostClient={hostClient}
         onClosed={onClosed}
         onOpenTab={onOpenTab}
         onPopup={onPopup}
         onShowTabs={onShowTabs}
-        onSteer={pause}
+        onSteer={follow.steer}
         onSwitchTab={onSwitchTab}
         onTyping={setTyping}
         onViewing={setPage}
@@ -765,7 +734,7 @@ function Focused(props: {
                   navigation.dispatch(StackActions.push("Thread", { deploymentId, threadId: id }))
                 }
                 requestId={null}
-                withPage={{ page: shownPage }}
+                withPage={{ page: shownPage, showTab: shownTab === null ? null : showTab }}
                 threadId={companion.threadId}
               />
             ),
@@ -818,20 +787,6 @@ function Focused(props: {
 /** Wide enough for a task's name, never wider than a pane beside a page leaves it. */
 const companionPillWidth = 320;
 
-/** The agent's tab is the same one, under the same name: nothing to follow or redraw. */
-function sameAgentTab(left: BrowserThreadTab | null, right: BrowserThreadTab | null): boolean {
-  return (
-    left === right ||
-    (left !== null &&
-      right !== null &&
-      left.sessionId === right.sessionId &&
-      left.tabId === right.tabId &&
-      left.tab.title === right.tab.title &&
-      left.tab.site === right.tab.site &&
-      left.tab.occupants === right.tab.occupants)
-  );
-}
-
 /** Whether a place is the one a route names: a tab by its own id, else exactly. */
 function samePlace(place: PlaceItem, destination: WorkspaceSurfaceDestination): boolean {
   if (destination.kind === "browser")
@@ -874,7 +829,7 @@ function BrowserTab(props: {
   /** This phone's own device in the Deployment, which needs no name beside a page. */
   readonly hereId: string | null;
   readonly editAddress: boolean;
-  readonly follow: PageFollow | null;
+  readonly following: PageFollowing | null;
   readonly hostClient: HostClient;
   readonly onClosed: () => void;
   readonly onOpenTab: (opening: BrowserTabOpenHandle) => void;
@@ -1001,7 +956,7 @@ function BrowserTab(props: {
         arrival={shown.current.arrival}
         connected={props.connected}
         device={device}
-        follow={props.follow}
+        following={props.following}
         hostClient={hostClient}
         key={pageKey}
         editAddress={props.editAddress}

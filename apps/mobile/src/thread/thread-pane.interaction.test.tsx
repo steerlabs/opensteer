@@ -1412,7 +1412,9 @@ describe("a conversation with a page", () => {
       threadId: workId,
     });
     const host = fakeHost(source);
-    const { container } = await mount(host, workId, { withPage: { page: included } });
+    const { container } = await mount(host, workId, {
+      withPage: { page: included, showTab: null },
+    });
     // Beside a page it is the real conversation, not a summary of it.
     expect(text(container)).toContain("An earlier message");
     expect(text(container)).toContain("Latest answer");
@@ -1501,7 +1503,9 @@ describe("a conversation with a page", () => {
     });
     const activate = vi.mocked(host.client.activateThread);
     const markRead = vi.mocked(host.client.markThreadRead);
-    const { container, root, pane } = await mount(host, workId, { withPage: { page: included } });
+    const { container, root, pane } = await mount(host, workId, {
+      withPage: { page: included, showTab: null },
+    });
     expect(activate).toHaveBeenCalledWith(workId);
     expect(markRead).toHaveBeenCalled();
     await type(container, "Message", "Half a thought");
@@ -2611,7 +2615,7 @@ describe("a conversation's own title in its bar", () => {
     const beside = await mount(
       fakeHost(snapshotFor({ entries: [], run: null, threadId: workId })),
       workId,
-      { withPage: { page: null } },
+      { withPage: { page: null, showTab: null } },
     );
     expect(hasButton(beside.container, "Find in conversation…")).toBe(true);
     expect(hasButton(beside.container, "Copy thread link")).toBe(true);
@@ -4743,6 +4747,26 @@ describe("the Run's page above the conversation", () => {
     await press(container, "Fold page");
     expect(card(container)).toBeNull();
     expect(host.watchRelease).toHaveBeenCalledTimes(3);
+  });
+
+  it("shows its tab in the browser page beside the conversation, in place", async () => {
+    const runId = createId("run");
+    const initial = snapshotFor({
+      entries: [ran(runId)],
+      run: { id: runId, status: "running" },
+      threadId: workId,
+    });
+    const host = fakeHost(initial);
+    host.runPlaces.accept(entered(runId, workId));
+    const showTab = vi.fn();
+    const { container } = await mount(host, workId, { withPage: { page: null, showTab } });
+    await press(container, "Live page 1, example.com");
+    expect(showTab).toHaveBeenCalledExactlyOnceWith({
+      kind: "browser",
+      sessionId,
+      tabId: surfaceId,
+    });
+    expect(harness.dispatch).not.toHaveBeenCalled();
   });
 });
 
