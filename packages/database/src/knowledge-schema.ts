@@ -81,6 +81,8 @@ export async function ensureKnowledgeExecutor(
       alter role ${name} with login nosuperuser nocreatedb nocreaterole noinherit noreplication nobypassrls
         password ${passwordVerifier === undefined ? "null" : `'${passwordVerifier}'`};
       alter role ${name} set search_path = pg_catalog, knowledge, pg_temp;
+      alter role ${name} set standard_conforming_strings = on;
+      alter role ${name} set backslash_quote = safe_encoding;
       alter role ${name} set temp_file_limit = '32MB';
       alter role ${name} set work_mem = '4MB';
       alter role ${name} set log_min_messages = 'fatal';

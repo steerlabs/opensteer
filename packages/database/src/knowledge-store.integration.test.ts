@@ -707,6 +707,33 @@ integration("knowledge storage", () => {
     expect(await context.count("thing = 'big'")).toBe(1);
   });
 
+  it("lexes statement text as the validator does when the database defaults to legacy strings", async () => {
+    const context = await fixture();
+    const name = new URL(context.url).pathname.slice(1);
+    await sql`alter database ${sql.id(name)} set standard_conforming_strings = off`.execute(
+      context.database,
+    );
+    const scope = `{${context.open},${context.hidden}}`;
+    const forged = await select(
+      context,
+      `select '\\' as a, ' as b, (with s as materialized (select set_config($q$knowledge.read_topics$q$,
+        $q$${scope}$q$, true) x)
+        select (select x from s) || (select string_agg(value::text, $q$,$q$) from facts)) as c --'`,
+    );
+    expect(forged).toMatchObject({ columns: [{ name: "a" }, { name: "?column?" }] });
+    expect(JSON.stringify(forged)).not.toContain("HIDDEN");
+    expect(rowsOf(forged)[0]![0]).toBe("\\");
+    await sql`alter database ${sql.id(name)} set backslash_quote = off`.execute(context.database);
+    const pool = createKnowledgeExecutorPool(context.url, context.credentials);
+    const quoted = await runKnowledgeStatement(pool, {
+      statement: { kind: "select", text: "select 'it''s', E'\\'' || 'x'", parameters: [] },
+      readTopicIds: [context.open],
+      writeTopicIds: [],
+      writer,
+    }).finally(() => pool.end());
+    expect(rowsOf(quoted)).toEqual([["it's", "'x"]]);
+  });
+
   it("drops a connection that receives a message over 1 MB before the driver parses it", async () => {
     const context = await fixture();
     await expect(
