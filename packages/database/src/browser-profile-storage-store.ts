@@ -297,15 +297,6 @@ export async function bindBrowserProfile(
     if (!row || row.archivedAt)
       throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
     await validateBindingOwner(transaction, binding, row.ownerId);
-    if (row.homeRunnerId === null) {
-      const deployment = await transaction
-        .selectFrom("deployments")
-        .select("deploymentShape")
-        .where("id", "=", binding.deploymentId)
-        .executeTakeFirst(databaseOperationOptions());
-      if (deployment?.deploymentShape.kind === "personal")
-        conflict("This browser profile is waiting for its main computer to enroll.");
-    }
     if (row.homeRunnerId !== null && row.homeRunnerId !== binding.runnerId)
       conflict("Open this browser profile on its home computer.");
     const storage = profileStorage(row);

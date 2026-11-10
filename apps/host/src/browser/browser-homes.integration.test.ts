@@ -68,6 +68,147 @@ function service(fixture: StoreFixture, options: { personal?: boolean; runnerId?
 }
 
 describeStore("Host browser homes", (it) => {
+  it("replays an unplaced Personal profile before and after its first binding", async ({
+    storeFixture: fixture,
+  }) => {
+    const run = await setup(fixture, true);
+    await fixture.database
+      .updateTable("runners")
+      .set({ allowedModules: sql`'["agents","integrations","messaging","shell"]'::jsonb` })
+      .where("id", "=", run.runnerId)
+      .execute();
+    const home = await computer(fixture, run.userId, true);
+    await computer(fixture, run.userId, true);
+    const { browser } = service(fixture, { personal: true });
+    const input = { ownerId: run.userId, name: "Legacy", idempotencyKey: "legacy-personal" };
+    try {
+      const profile = await browser.createProfile(input);
+      expect(profile.homeRunnerId).toBeNull();
+      expect(await browser.createProfile(input)).toEqual(profile);
+      await expect(
+        browser.createProfile({ ...input, homeRunnerId: null, idempotencyKey: "aware-personal" }),
+      ).rejects.toMatchObject({ reason: "browser-placement-ambiguous" });
+      await fixture.store.bindBrowserProfile({
+        version: 1,
+        deploymentId: (await fixture.store.getDeployment())!.id,
+        runnerId: home,
+        profileId: profile.id,
+        storageInstanceId: randomUUID(),
+        bindingId: randomUUID(),
+        engine: "chromium",
+      });
+      expect(await browser.createProfile(input)).toEqual({ ...profile, homeRunnerId: home });
+    } finally {
+      await browser.close();
+    }
+  });
+  it.for(
+    [0, 1, 2].flatMap((count) =>
+      (["absent", "null", "id"] as const).flatMap((presence) =>
+        (["create", "approve"] as const).map((mode) => ({ count, presence, mode })),
+      ),
+    ),
+  )(
+    "resolves $mode with $count homes and $presence",
+    async ({ count, presence, mode }, { storeFixture: fixture }) => {
+      const run = await setup(fixture);
+      await fixture.database
+        .updateTable("runners")
+        .set({ allowedModules: sql`'["agents"]'::jsonb` })
+        .where("id", "=", run.runnerId)
+        .execute();
+      const homes: RunnerId[] = [];
+      for (let index = 0; index < count; index++) homes.push(await computer(fixture, run.userId));
+      const { browser } = service(fixture, { runnerId: run.runnerId });
+      const selection =
+        presence === "absent"
+          ? {}
+          : { homeRunnerId: presence === "null" ? null : (homes[0] ?? run.runnerId) };
+      const expected = presence === "id" ? homes[0] : count === 1 ? homes[0] : null;
+      const verify = async (result: Promise<{ homeRunnerId: RunnerId | null } | null>) => {
+        if (count === 0)
+          await expect(result).rejects.toMatchObject({
+            code: presence === "id" ? "forbidden" : "workspace_unavailable",
+          });
+        else if (count === 2 && presence === "null")
+          await expect(result).rejects.toMatchObject({ reason: "browser-placement-ambiguous" });
+        else await expect(result).resolves.toMatchObject({ homeRunnerId: expected });
+      };
+      try {
+        if (mode === "create") {
+          await verify(
+            browser.createProfile({
+              ...selection,
+              ownerId: run.userId,
+              name: "Created",
+              idempotencyKey: "presence",
+            }),
+          );
+          return;
+        }
+        const turn = await fixture.enqueueHumanTrigger({
+          content: [{ type: "text", text: "Start work" }],
+          idempotencyKey: "presence-run",
+          requestedBy: run.userId,
+          threadId: run.thread.id,
+        });
+        await fixture.store.claimCommand(turn.command.id, "presence-dispatcher");
+        const binding = await fixture.store.acquireExecutionBinding({
+          bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
+          continuationIdentity: testContinuationIdentity,
+          harnessInstanceId: run.harnessInstance.id,
+          leaseTokenHash: "presence-lease",
+          membershipGeneration: 1,
+          runnerBootId: "presence-boot",
+          runnerId: run.runnerId,
+          runId: turn.run.id,
+          threadId: run.thread.id,
+        });
+        await fixture.store.commitRunnerEvent({
+          environmentId: run.environmentId,
+          event: pendingEvent({
+            bindingGeneration: binding.bindingGeneration,
+            data: { status: "running" },
+            environmentId: run.environmentId,
+            ordinal: 0,
+            runId: turn.run.id,
+            threadId: run.thread.id,
+            type: "run.started",
+            workspaceId: run.workspace.id,
+          }),
+          runnerBootId: "presence-boot",
+          runnerId: run.runnerId,
+        });
+        const request = await browser.requestAccess({
+          callId: "presence",
+          ownerId: run.userId,
+          runId: turn.run.id,
+          threadId: run.thread.id,
+          originatingWorkspaceId: run.workspace.id,
+          workspaceId: run.workspace.id,
+          reason: "Separate work identity",
+          suggestion: { kind: "new", suggestedName: "Approved" },
+        });
+        await verify(
+          browser
+            .resolveRequest({
+              requestId: request.requestId,
+              resolvedBy: run.userId,
+              response: {
+                kind: "external",
+                value: { decision: "fulfilled", createProfile: { name: "Approved", ...selection } },
+              },
+            })
+            .then(({ profile }) =>
+              profile ? { homeRunnerId: profile.homeRunnerId ?? null } : null,
+            ),
+        );
+      } finally {
+        await browser.close();
+      }
+    },
+  );
+
   it.for([false, true])(
     "defaults older profile creation and preserves the first home on replay (Personal=%s)",
     async (personal, { storeFixture: fixture }) => {
@@ -88,7 +229,7 @@ describeStore("Host browser homes", (it) => {
           ).toBe(run.runnerId);
         } else {
           await expect(
-            browser.createProfile({ ...input, idempotencyKey: "new" }),
+            browser.createProfile({ ...input, homeRunnerId: null, idempotencyKey: "new" }),
           ).rejects.toMatchObject({ reason: "browser-placement-ambiguous" });
         }
         expect(

@@ -622,7 +622,7 @@ describe("RequestSheetContent browser profile requests", () => {
       requestId: request.id,
       response: {
         kind: "external",
-        value: { createProfile: { name: "Finance" }, decision: "fulfilled" },
+        value: { createProfile: { name: "Finance", homeRunnerId: null }, decision: "fulfilled" },
       },
       type: "request.respond",
     });

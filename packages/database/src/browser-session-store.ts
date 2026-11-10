@@ -161,7 +161,11 @@ function inheritedMainBrowserGrantId(
  */
 export async function insertBrowserProfileOnLockedHome(
   transaction: Transaction<DatabaseSchema>,
-  input: { readonly name: string; readonly ownerId: UserId; readonly homeRunnerId: RunnerId },
+  input: {
+    readonly name: string;
+    readonly ownerId: UserId;
+    readonly homeRunnerId: RunnerId | null;
+  },
 ): Promise<BrowserProfileRecord> {
   await sql`select pg_advisory_xact_lock(hashtextextended(${`browser-profile:${input.ownerId}`}, 0))`.execute(
     transaction,
@@ -206,7 +210,7 @@ export async function createBrowserProfile(
   database: Kysely<DatabaseSchema>,
   input: {
     readonly idempotencyKey: string;
-    readonly homeRunnerId?: RunnerId;
+    readonly homeRunnerId?: RunnerId | null;
     readonly name: string;
     readonly ownerId: UserId;
   },
@@ -222,7 +226,7 @@ export async function createBrowserProfile(
       const recorded = z
         .object({
           profileId: BrowserProfileIdSchema,
-          request: z.object({ name: z.string(), homeRunnerId: z.string().optional() }),
+          request: z.object({ name: z.string(), homeRunnerId: z.string().nullable().optional() }),
         })
         .safeParse(command.payload);
       if (
@@ -235,9 +239,6 @@ export async function createBrowserProfile(
       const profile = await transaction
         .selectFrom("browserProfiles")
         .select(["id", "name", "ownerId", "homeRunnerId"])
-        .where(
-          sql<boolean>`(home_runner_id is not null or not exists (select 1 from deployments where deployment_shape->>'kind' = 'personal'))`,
-        )
         .where("id", "=", recorded.data.profileId)
         .where("ownerId", "=", input.ownerId)
         .where("archivedAt", "is", null)
@@ -248,11 +249,10 @@ export async function createBrowserProfile(
       }
       return profile;
     }
-    const homeRunnerId = await lockBrowserHomeRunner(
-      transaction,
-      input.ownerId,
-      input.homeRunnerId,
-    );
+    const homeRunnerId =
+      input.homeRunnerId === null
+        ? null
+        : await lockBrowserHomeRunner(transaction, input.ownerId, input.homeRunnerId);
     const profile = await insertBrowserProfileOnLockedHome(transaction, { ...input, homeRunnerId });
     await transaction
       .insertInto("commands")
@@ -269,7 +269,7 @@ export async function createBrowserProfile(
           profileId: profile.id,
           request: {
             name: input.name,
-            ...(input.homeRunnerId ? { homeRunnerId: input.homeRunnerId } : {}),
+            ...(input.homeRunnerId !== undefined ? { homeRunnerId: input.homeRunnerId } : {}),
           },
         }),
         requestedBy: input.ownerId,
@@ -291,9 +291,6 @@ export async function getBrowserProfile(
   const row = await database
     .selectFrom("browserProfiles")
     .select(["id", "name", "ownerId", "homeRunnerId"])
-    .where(
-      sql<boolean>`(home_runner_id is not null or not exists (select 1 from deployments where deployment_shape->>'kind' = 'personal'))`,
-    )
     .where("id", "=", profileId)
     .where("ownerId", "=", ownerId)
     .where("archivedAt", "is", null)
@@ -308,9 +305,6 @@ export async function listBrowserProfiles(
   return database
     .selectFrom("browserProfiles")
     .select(["id", "name", "ownerId", "homeRunnerId"])
-    .where(
-      sql<boolean>`(home_runner_id is not null or not exists (select 1 from deployments where deployment_shape->>'kind' = 'personal'))`,
-    )
     .where("ownerId", "=", ownerId)
     .where("archivedAt", "is", null)
     .orderBy("createdAt", "asc")

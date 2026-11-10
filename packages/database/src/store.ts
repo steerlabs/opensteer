@@ -728,7 +728,7 @@ export class OpensteerStore {
   }
 
   async createBrowserProfile(input: {
-    readonly homeRunnerId?: RunnerId;
+    readonly homeRunnerId?: RunnerId | null;
     readonly idempotencyKey: string;
     readonly name: string;
     readonly ownerId: UserId;

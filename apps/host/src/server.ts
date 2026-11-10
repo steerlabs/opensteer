@@ -2486,7 +2486,9 @@ export async function createHostServer(
       case "browser.profile.create":
         return {
           profile: await dependencies.browser.createProfile({
-            ...(command.input.homeRunnerId ? { homeRunnerId: command.input.homeRunnerId } : {}),
+            ...(command.input.homeRunnerId !== undefined
+              ? { homeRunnerId: command.input.homeRunnerId }
+              : {}),
             name: command.input.name,
             idempotencyKey: command.idempotencyKey,
             ownerId: userId,
