@@ -7,6 +7,47 @@ import { expect } from "vitest";
 import { describeStore } from "./store.integration.test-support.js";
 
 describeStore("additive Project authority preparation", (it) => {
+  it("reads the stored selector through one trackable stable helper with a pinned search path", async ({
+    storeFixture,
+  }) => {
+    const database = storeFixture.database;
+    await database
+      .insertInto("deployments")
+      .values({
+        id: createId("deployment"),
+        singletonKey: "primary",
+        activeHostInstanceId: createId("hostInstance"),
+        authorityModelVersion: 2,
+        canonicalOrigin: "https://project.test.invalid",
+        lifecycle: "active",
+        deploymentShape: { kind: "server", defaultWorkspaceBacking: "local-directory" },
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .execute();
+    await database.transaction().execute(async (transaction) => {
+      await sql`set local track_functions = 'all'`.execute(transaction);
+      const result = await sql<{
+        model: number;
+        kind: string;
+      }>`select * from public.opensteer_stored_execution_authority()`.execute(transaction);
+      expect(result.rows).toEqual([{ model: 2, kind: "server" }]);
+      const metadata = await sql<{
+        provolatile: string;
+        proconfig: string[];
+      }>`select provolatile, proconfig from pg_proc where oid = 'public.opensteer_stored_execution_authority()'::regprocedure`.execute(
+        transaction,
+      );
+      expect(metadata.rows).toEqual([{ provolatile: "s", proconfig: ["search_path=pg_catalog"] }]);
+      const statistics = await sql<{
+        calls: string;
+      }>`select calls from pg_stat_xact_user_functions where funcid = 'public.opensteer_stored_execution_authority()'::regprocedure`.execute(
+        transaction,
+      );
+      expect(statistics.rows).toEqual([{ calls: "1" }]);
+    });
+  });
+
   it("keeps legacy work shapes and writers while adding nullable metadata", async ({
     storeFixture,
   }) => {
