@@ -262,6 +262,7 @@ function failure(error: unknown): OpensteerError {
       code: "internal",
       reason: "knowledge-failed",
       message: "The knowledge statement failed.",
+      next: "Call sql again once; if it fails again, tell the person knowledge failed.",
     });
   if (error.next !== undefined) return error;
   const again = (
@@ -306,6 +307,39 @@ function failure(error: unknown): OpensteerError {
       );
     case "knowledge-topic-not-writable":
       return again("Call sql without query for the topics you can use.");
+    case "knowledge-invalid-value":
+      return again(
+        "Compare text to text, cast text only where every row holds that type (filter by topic and property first), pass values as parameters, and call sql again.",
+      );
+    case "knowledge-invalid-statement":
+      return again(
+        "Call sql without query for the columns of facts and fact_history, rewrite the statement, and call sql again.",
+      );
+    case "knowledge-invalid-fact":
+      return again(
+        "Give a topic id from sql without query, a thing up to 256 bytes, a property up to 128 bytes and a JSON value, and call sql again.",
+      );
+    case "knowledge-value-too-large":
+      return again("Split the value across properties of under 64 KB each and call sql again.");
+    case "knowledge-too-many-facts":
+      return again("Split the write into INSERTs of at most 25 rows and call sql once for each.");
+    case "knowledge-seen-fact-mismatch":
+      return again(
+        "Read facts for the same topic, thing and property, and call sql again with its id as seen_fact_id.",
+      );
+    case "knowledge-operation-key-reused":
+      return again(
+        "Read facts to see what that earlier write saved before you call sql to write again.",
+      );
+    case "knowledge-busy":
+      return again("Call sql again with the same statement shortly.");
+    case "knowledge-read-only":
+    case "knowledge-not-permitted":
+      return again(
+        'Call sql with one SELECT on facts or fact_history, or one INSERT INTO facts with mode "write".',
+      );
+    case "knowledge-failed":
+      return again("Call sql again once; if it fails again, tell the person knowledge failed.");
     default:
       return error;
   }

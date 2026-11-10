@@ -385,11 +385,21 @@ integration("knowledge through the sql tool", () => {
         },
         "bad_request",
       ],
+      [
+        {
+          query: "INSERT INTO facts (topic, thing, property, value) VALUES ($1, '', 'b', '1')",
+          parameters: [topic],
+          mode: "write",
+        },
+        "bad_request",
+      ],
+      [{ query: "SELECT thing FROM facts WHERE thing = 1" }, "bad_request"],
     ] as const;
     for (const [args, code] of cases) {
       const refused = refusal(await f.call(args));
       expect(refused.code, args.query).toBe(code);
       expect(refused.text, args.query).not.toMatch(/SECRET|invalid input|syntax for type|email/u);
+      expect(refused.text, args.query).toMatch(/[Cc]all sql|Read facts/u);
     }
     expect(f.onToolError).not.toHaveBeenCalled();
     expect(await f.count()).toBe(1);
