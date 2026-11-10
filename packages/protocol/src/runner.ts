@@ -1295,6 +1295,13 @@ export const RunnerBrowserModuleSchema = z
       .positive()
       .transform((version) => (version === 1 ? version : undefined))
       .optional(),
+    /** Its pages can offer and fill a person's saved logins (`person-fill.ts`). */
+    personFill: z
+      .number()
+      .int()
+      .positive()
+      .transform((version) => (version === 1 ? (1 as const) : undefined))
+      .optional(),
     // Older signed Runner descriptors have no version. Keep them admissible so
     // their agents, shell and integrations modules continue to work; browser
     // placement checks the capability version before it can be used.
