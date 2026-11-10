@@ -540,7 +540,7 @@ describe("SurfaceLedger", () => {
       reason: browserSessionTabsFullReason,
     });
     await ledger.close();
-    expect(() => new SurfaceLedger(context, { maxSurfaces: 1_025 })).toThrow(/1 through 1024/);
+    expect(() => new SurfaceLedger(context, { maxSurfaces: 65 })).toThrow(/1 through 64/);
   });
 
   it("adopts only openerless targets created through the scoped session router", async () => {

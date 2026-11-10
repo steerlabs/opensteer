@@ -72,7 +72,7 @@ const erasureTimeoutMs = 120_000;
 const maxPendingRequests = 64;
 const maxQueuedControlBytes = 2 * 1_024 * 1_024;
 const maxQueuedControlItems = 256;
-const maxChannelsPerRunnerRuntime = 1_024;
+const maxChannelsPerRunnerRuntime = 32;
 const maxQueuedFrameBytes = 32 * 1_024 * 1_024;
 const maxQueuedFrameSurfaces = 128;
 

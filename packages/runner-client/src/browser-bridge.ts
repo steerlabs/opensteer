@@ -23,7 +23,7 @@ import { withTimeout } from "@opensteer/shared/withTimeout";
 import { WebSocket, type RawData } from "ws";
 import { z } from "zod";
 
-const maxBrowserRelayChannels = 1_024;
+const maxBrowserRelayChannels = 32;
 
 const LocalHealthSchema = z.object({
   wireVersion: z.number().int().optional(),

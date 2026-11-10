@@ -173,12 +173,7 @@ export const BrowserBridgeAttachedSchema = createBrowserBridgeAttachedSchema();
 export type BrowserBridgeAttached = z.infer<typeof BrowserBridgeAttachedSchema>;
 
 export const browserWorkspaceTabUrlMaxLength = 16_384;
-/** How many tabs one browser session's lists may carry when read. */
-export const browserSessionTabsMax = 1024;
-/**
- * How many tabs one session holds. It stays below `browserSessionTabsMax` until
- * the previous public release reads that many; past it the Host opens another session.
- */
+/** How many tabs one browser session holds; its whole tab list travels in one message. */
 export const browserSessionTabLimit = 64;
 /** The runtime's refusal reason when a session already holds `browserSessionTabLimit` tabs. */
 export const browserSessionTabsFullReason = "session-tabs-full";
@@ -218,7 +213,7 @@ export const BrowserAttachTicketClaimsSchema = z
     initialSurfaceId: BrowserSurfaceIdSchema.optional(),
     dormantSurfaceIds: z
       .array(BrowserSurfaceIdSchema)
-      .max(browserSessionTabsMax - 1)
+      .max(browserSessionTabLimit - 1)
       .optional(),
     expiresAt: IsoDateTimeSchema,
     identity: BrowserAttachTicketIdentitySchema,
@@ -295,7 +290,7 @@ export type BrowserSurface = z.infer<typeof BrowserSurfaceSchema>;
 
 export const BrowserSurfacesSchema = z
   .array(BrowserSurfaceSchema)
-  .max(browserSessionTabsMax)
+  .max(browserSessionTabLimit)
   .superRefine((surfaces, context) => {
     const ids = new Set<string>();
     for (const [index, surface] of surfaces.entries()) {
@@ -831,8 +826,8 @@ const BaselineBrowserServerMessageSchema = z.discriminatedUnion("type", [
   BrowserSnapshotSchema,
   z.strictObject({
     type: z.literal("browser.workspace-tabs"),
-    tabs: z.array(BrowserWorkspaceTabDescriptorSchema).max(browserSessionTabsMax),
-    closed: z.array(BrowserSurfaceIdSchema).max(browserSessionTabsMax),
+    tabs: z.array(BrowserWorkspaceTabDescriptorSchema).max(browserSessionTabLimit),
+    closed: z.array(BrowserSurfaceIdSchema).max(browserSessionTabLimit),
   }),
   z.strictObject({
     ...browserBase,
@@ -1235,7 +1230,7 @@ export const BrowserTabCatalogSchema = z
     generation: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
     revision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
     inventoryRevision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
-    tabs: z.array(BrowserTabSummarySchema).max(browserSessionTabsMax),
+    tabs: z.array(BrowserTabSummarySchema).max(browserSessionTabLimit),
   })
   .superRefine(refineBrowserTabCatalog);
 export type BrowserTabCatalog = z.infer<typeof BrowserTabCatalogSchema>;
@@ -1248,7 +1243,7 @@ export const BrowserTabSummaryViewSchema = z.object({
 export const BrowserTabCatalogViewSchema = z
   .object({
     ...BrowserTabCatalogSchema.shape,
-    tabs: z.array(BrowserTabSummaryViewSchema).max(browserSessionTabsMax),
+    tabs: z.array(BrowserTabSummaryViewSchema).max(browserSessionTabLimit),
   })
   .superRefine(refineBrowserTabCatalog);
 export const BrowserTabsChangedSchema = z.object({
@@ -1452,7 +1447,7 @@ export const WorkspaceTabLineageSchema = z.object({
         createdAt: IsoDateTimeSchema.optional(),
       }),
     )
-    .max(browserSessionTabsMax)
+    .max(browserSessionTabLimit)
     .optional(),
 });
 export type WorkspaceTabLineage = z.infer<typeof WorkspaceTabLineageSchema>;

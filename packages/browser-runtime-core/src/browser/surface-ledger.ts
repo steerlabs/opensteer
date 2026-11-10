@@ -7,7 +7,6 @@ import {
   BrowserSurfaceIdSchema,
   browserSessionTabLimit,
   browserSessionTabsFullReason,
-  browserSessionTabsMax,
   browserWorkspaceTabUrlMaxLength,
   type BrowserDialog,
   type BrowserNavigationCommitted,
@@ -326,10 +325,10 @@ export class SurfaceLedger {
     if (
       !Number.isInteger(this.maxSurfaces) ||
       this.maxSurfaces < 1 ||
-      this.maxSurfaces > browserSessionTabsMax
+      this.maxSurfaces > browserSessionTabLimit
     ) {
       throw new Error(
-        `Surface maxSurfaces must be an integer from 1 through ${browserSessionTabsMax}.`,
+        `Surface maxSurfaces must be an integer from 1 through ${browserSessionTabLimit}.`,
       );
     }
   }

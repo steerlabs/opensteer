@@ -808,7 +808,6 @@ function validateCommand(command: CdpCommand, maxBytes: number): void {
 
 function validateLimits(limits: SessionCdpRouterLimits): SessionCdpRouterLimits {
   for (const [name, value] of Object.entries(limits)) {
-    if (name === "maxSessions" && value === Infinity) continue;
     if (!Number.isSafeInteger(value) || value < 1) {
       throw new TypeError(`${name} must be a positive safe integer.`);
     }
