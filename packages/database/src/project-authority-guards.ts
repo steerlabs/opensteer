@@ -79,8 +79,10 @@ export const PROJECT_AUTHORITY_GUARDS_SQL = String.raw`
   begin
     if row(new.id, new.run_id, new.attempt_id, new.binding_generation, new.runner_id, new.runner_boot_id)
        is distinct from row(old.id, old.run_id, old.attempt_id, old.binding_generation, old.runner_id, old.runner_boot_id)
-       and exists (select 1 from public.requests q where q.originating_grant_id = old.id) then
-      raise exception 'A Request retains its original grant identity' using errcode = '23514';
+       then
+      if exists (select 1 from public.requests q where q.originating_grant_id = old.id) then
+        raise exception 'A Request retains its original grant identity' using errcode = '23514';
+      end if;
     end if;
     return new;
   end $$;
