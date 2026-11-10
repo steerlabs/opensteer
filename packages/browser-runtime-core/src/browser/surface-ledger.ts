@@ -5,6 +5,9 @@ import {
 } from "@opensteer/browser-core";
 import {
   BrowserSurfaceIdSchema,
+  browserSessionTabLimit,
+  browserSessionTabsFullReason,
+  browserSessionTabsMax,
   browserWorkspaceTabUrlMaxLength,
   type BrowserDialog,
   type BrowserNavigationCommitted,
@@ -319,9 +322,13 @@ export class SurfaceLedger {
       width: initialViewport.width,
     };
     this.rootPages = options.rootPages ? [...options.rootPages] : null;
-    this.maxSurfaces = options.maxSurfaces ?? 64;
-    if (!Number.isInteger(this.maxSurfaces) || this.maxSurfaces < 1 || this.maxSurfaces > 64) {
-      throw new Error("Surface maxSurfaces must be an integer from 1 through 64.");
+    this.maxSurfaces = options.maxSurfaces ?? browserSessionTabLimit;
+    if (
+      !Number.isInteger(this.maxSurfaces) ||
+      this.maxSurfaces < 1 ||
+      this.maxSurfaces > browserSessionTabsMax
+    ) {
+      throw new Error(`Surface maxSurfaces must be an integer from 1 through ${browserSessionTabsMax}.`);
     }
   }
 
@@ -790,7 +797,9 @@ export class SurfaceLedger {
       return this.toSurface(this.records.get(options.surfaceId)!);
     if (options.viewport) assertViewport(options.viewport);
     if (this.atCapacity(options.surfaceId)) {
-      throw new BrowserRuntimeError("conflict", "The browser cannot open more tabs.");
+      throw new BrowserRuntimeError("conflict", "This browser session holds all the tabs it can.", {
+        reason: browserSessionTabsFullReason,
+      });
     }
     // Discovery waits until the creator has assigned the requested identity.
     await withTimeout(Promise.resolve(this.creatingPage), 18_000, {

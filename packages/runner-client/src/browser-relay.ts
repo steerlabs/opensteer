@@ -20,7 +20,7 @@ import {
 } from "./browser-bridge.js";
 import type { RunnerModuleStream } from "./module-connection.js";
 
-const maxBrowserRelayChannels = 32;
+const maxBrowserRelayChannels = 1_024;
 
 interface ActiveChannel {
   capability: BrowserCapabilityReference;

@@ -4,6 +4,7 @@ import {
   BrowserSurfaceIdSchema,
   BrowserTabGroupIdSchema,
   browserPageSite,
+  browserSessionTabLimit,
   browserTabGroupMaxTabs,
   browserTabOpenReplayWindowMs,
   projectBrowserSessionOpener,
@@ -190,6 +191,16 @@ export class WorkspaceTabStore {
   ): Promise<WorkspaceTabLineage | null> {
     return (await this.#read(ownerId, groupId, database))[0] ?? null;
   }
+  /** How many open tabs a session holds, with a page or asleep. */
+  async heldBy(sessionId: BrowserSessionId): Promise<number> {
+    const { count } = await this.database
+      .selectFrom("workspaceTabs")
+      .select((eb) => eb.fn.countAll<string>().as("count"))
+      .where("sessionId", "=", sessionId)
+      .where("closedAt", "is", null)
+      .executeTakeFirstOrThrow(databaseOperationOptions());
+    return Number(count);
+  }
   async get(ownerId: UserId, id: string) {
     const row = await this.database
       .selectFrom("workspaceTabs")
@@ -341,7 +352,7 @@ export class WorkspaceTabStore {
             .where("closedAt", "is", null)
             .execute(databaseOperationOptions());
         } else {
-          if (previous.filter((row) => !row.closedAt).length >= 64)
+          if (previous.filter((row) => !row.closedAt).length >= browserSessionTabLimit)
             throw new OpensteerError({
               code: "conflict",
               message: "Browser tab limit reached.",
@@ -504,7 +515,7 @@ export class WorkspaceTabStore {
           .where("groupId", "=", source.groupId)
           .where("closedAt", "is", null)
           .execute(databaseOperationOptions());
-        if (open.length >= 64)
+        if (open.length >= browserSessionTabLimit)
           throw new OpensteerError({ code: "conflict", message: "Browser tab limit reached." });
         const groups = new BrowserTabGroupStore(tx);
         const { arrangement } = await groups.orderedTabs(ownerId, tx);

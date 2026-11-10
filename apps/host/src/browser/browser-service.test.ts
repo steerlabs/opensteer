@@ -23,6 +23,7 @@ import {
   browserHostMethods,
   BrowserServerMessageSchema,
   browserSessionMaxThreads,
+  browserSessionTabLimit,
   BrowserSurfaceIdSchema,
   BrowserSurfaceSchema,
   BrowserTabSummaryViewSchema,
@@ -480,6 +481,42 @@ describe("BrowserService", () => {
     });
     await retried;
     expect(runtime.receivedCommands()).toHaveLength(2);
+  });
+
+  it("opens a person's link in another browser once theirs holds all the tabs it can", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
+    const ownerId = createId("user"),
+      workspaceId = createId("workspace");
+    const repository = new MemoryBrowserRepository(ownerId, workspaceId, "main");
+    const held = new Map<string, number>();
+    const service = freshService({
+      keys,
+      repository,
+      runtime,
+      workspaceTabs: new Proxy(
+        { heldBy: async (sessionId: string) => held.get(sessionId) ?? 0 },
+        { get: (store, key) => (key === "heldBy" ? store.heldBy : async () => undefined) },
+      ) as unknown as WorkspaceTabStore,
+    });
+    const open = () =>
+      service.openTab(ownerId, {
+        type: "browser.tab.open",
+        identity: { kind: "guest" },
+        idempotencyKey: randomUUID(),
+      });
+    const first = await open();
+    held.set(first.sessionId, browserSessionTabLimit - 1);
+    const reused = open();
+    const request = await runtime.nextCommand();
+    runtime.sendServer({ type: "cdp.result", requestId: request.requestId, result: { tabId: "bsf_reused" } });
+    expect((await reused).sessionId).toBe(first.sessionId);
+    held.set(first.sessionId, browserSessionTabLimit);
+    const next = await open();
+    expect(next.browserStarted).toBe(true);
+    expect(next.sessionId).not.toBe(first.sessionId);
   });
 
   it("keeps an unanswered additional tab recoverable by its original key", async () => {
@@ -5183,8 +5220,10 @@ function freshService(options: {
   readonly onWorkspaceEvent?: (event: AgentEvent) => void;
   readonly repository: MemoryBrowserRepository;
   readonly runtime: { readonly url: URL };
+  readonly workspaceTabs?: WorkspaceTabStore;
 }): BrowserService {
   const service = new BrowserService({
+    ...(options.workspaceTabs ? { workspaceTabs: options.workspaceTabs } : {}),
     ...nativeProfileOptions(),
     passkeys: options.passkeysEnabled === true,
     ...profileStateOptions,
@@ -5780,6 +5819,7 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
     readonly placementKey: string;
     readonly runnerId: RunnerId;
     readonly origin: "agent" | "trigger" | "workspace";
+    readonly opener?: BrowserSessionRecord["opener"];
     readonly profileId: BrowserProfileId | null;
     readonly runtimeId: string;
     readonly workspaceId: WorkspaceId;
@@ -5788,6 +5828,7 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
     const record: BrowserSessionRecord = {
       createdAt: now,
       id: input.id,
+      opener: input.opener ?? null,
       origin: input.origin,
       placementKey: input.placementKey,
       profileId: input.profileId,

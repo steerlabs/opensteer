@@ -90,6 +90,9 @@ export async function startLocalBrowserRuntime(
         `${JSON.stringify({ event: "browser.session.start.failed", correlationId, stage, error: profileFailureDiagnostic(error) })}\n`,
       ),
     launcher,
+    // An Electron host is a storage partition; its pages are what cost memory.
+    maxProfileHosts: Infinity,
+    maxSessionsPerProfile: Infinity,
     // Native data and its exclusive root ownership outlive enrollment slots.
     ...profileStorage,
     runtimeId: options.runtimeId,

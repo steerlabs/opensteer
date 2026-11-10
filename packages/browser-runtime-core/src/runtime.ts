@@ -47,6 +47,7 @@ const shutdownTimeoutMs = 5_000;
 export interface BrowserRuntimeOptions {
   initialViewport?: Viewport;
   launcher: BrowserLauncher;
+  /** Infinity leaves hosts and sessions bounded only by the machine. */
   maxProfileHosts?: number;
   maxSessionsPerProfile?: number;
   /**
@@ -291,16 +292,13 @@ export class BrowserRuntime implements NativePresentationSource {
             diagnostic.error instanceof BrowserRuntimeError ? diagnostic.error.code : "internal",
         });
       });
-    for (const [name, value, maximum] of [
-      ["maxProfileHosts", this.maxProfileHosts, 64],
-      ["maxSessionsPerProfile", this.maxSessionsPerProfile, 128],
+    for (const [name, value] of [
+      ["maxProfileHosts", this.maxProfileHosts],
+      ["maxSessionsPerProfile", this.maxSessionsPerProfile],
     ] as const) {
-      if (!Number.isSafeInteger(value) || value < 0 || value > maximum) {
-        throw new TypeError(`${name} is outside its supported range.`);
+      if (value !== Infinity && (!Number.isSafeInteger(value) || value < 1)) {
+        throw new TypeError(`${name} must be a positive integer or Infinity.`);
       }
-    }
-    if (this.maxProfileHosts < 1 || this.maxSessionsPerProfile < 1) {
-      throw new TypeError("Browser Runtime capacities must be positive.");
     }
   }
 

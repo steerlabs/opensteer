@@ -508,24 +508,18 @@ export async function createBrowserSession(
           message: "Open this browser profile on its owning computer with an updated runtime.",
         });
       }
-      const placementHolders = await transaction
+      const elsewhere = await transaction
         .selectFrom("browserSessions")
-        .select(["id", "placementKey", "state"])
+        .select("id")
         .where("profileId", "=", profileId)
         .where("state", "in", ["starting", "ready", "closing"])
-        .limit(65)
-        .execute(databaseOperationOptions());
-      if (placementHolders.some((session) => session.placementKey !== input.placementKey)) {
+        .where("placementKey", "!=", input.placementKey)
+        .limit(1)
+        .executeTakeFirst(databaseOperationOptions());
+      if (elsewhere) {
         throw new OpensteerError({
           code: "conflict",
           message: "This browser profile is already active on another placement",
-        });
-      }
-      const active = placementHolders.filter((session) => session.state !== "closed");
-      if (active.length >= 32) {
-        throw new OpensteerError({
-          code: "conflict",
-          message: "Browser profile session limit reached",
         });
       }
     }

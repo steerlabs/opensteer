@@ -40,6 +40,8 @@ import {
   BrowserHistoryUrlSchema,
   browserHostMethods,
   browserPageSite,
+  browserSessionTabLimit,
+  browserSessionTabsFullReason,
   BrowserProfileAccessSchema,
   BrowserServerMessageSchema,
   browserStateImportHostTimeoutMs,
@@ -1658,24 +1660,31 @@ export class BrowserService {
             identityKey = resolved.identityKey;
             runnerId = placement.runnerId;
             const sessions = await this.#repository.listBrowserSessions(ownerId);
-            record =
-              sessions
-                .filter(
-                  (candidate) =>
-                    candidate.workspaceId === workspace.id &&
-                    candidate.state === "ready" &&
-                    candidate.origin === "workspace" &&
-                    candidate.opener?.kind === "person" &&
-                    candidate.opener.userId === ownerId &&
-                    candidate.profileId === profileId &&
-                    samePlacement(placement, placementOf(candidate)) &&
-                    this.#brokers.get(candidate.id)?.live,
-                )
-                .sort(
-                  (left, right) =>
-                    left.createdAt.getTime() - right.createdAt.getTime() ||
-                    left.id.localeCompare(right.id),
-                )[0] ?? null;
+            const candidates = sessions
+              .filter(
+                (candidate) =>
+                  candidate.workspaceId === workspace.id &&
+                  candidate.state === "ready" &&
+                  candidate.origin === "workspace" &&
+                  candidate.opener?.kind === "person" &&
+                  candidate.opener.userId === ownerId &&
+                  candidate.profileId === profileId &&
+                  samePlacement(placement, placementOf(candidate)) &&
+                  this.#brokers.get(candidate.id)?.live,
+              )
+              .sort(
+                (left, right) =>
+                  left.createdAt.getTime() - right.createdAt.getTime() ||
+                  left.id.localeCompare(right.id),
+              );
+            record = null;
+            for (const candidate of candidates) {
+              const held = (await this.#workspaceTabs?.heldBy(candidate.id)) ?? 0;
+              if (held < browserSessionTabLimit) {
+                record = candidate;
+                break;
+              }
+            }
             if (!record)
               opening = {
                 ownerId,
@@ -1762,19 +1771,23 @@ export class BrowserService {
             outcome: { kind: "failed", reason: "failed" },
           });
           const settled = await this.#repository.getBrowserTabOpen(ownerId, command.idempotencyKey);
-          if (settled?.outcome.kind === "failed") throw this.#tabOpenFailure(settled);
+          if (settled?.outcome.kind === "failed") throw this.#tabOpenFailure(settled, error);
         }
         throw error;
       }
     });
   }
 
-  #tabOpenFailure(binding: BrowserTabOpenBinding): OpensteerError {
+  #tabOpenFailure(binding: BrowserTabOpenBinding, cause?: unknown): OpensteerError {
+    const full = cause instanceof OpensteerError && cause.reason === browserSessionTabsFullReason;
     return this.#tabOpenRefusal(
       "browser-tab-open-failed",
       binding.outcome.kind === "failed" && binding.outcome.reason === "interrupted"
         ? "Opening was interrupted by a Host restart. Retry to open a new page."
-        : "The browser could not open this page. Retry to open a new page.",
+        : full
+          ? "This browser holds all the tabs it can. Retry to open the page in another browser."
+          : "The browser could not open this page. Retry to open a new page.",
+      cause,
     );
   }
 
@@ -1791,8 +1804,13 @@ export class BrowserService {
     );
   }
 
-  #tabOpenRefusal(reason: BrowserTabOpenRefusalReason, message: string): OpensteerError {
+  #tabOpenRefusal(
+    reason: BrowserTabOpenRefusalReason,
+    message: string,
+    cause?: unknown,
+  ): OpensteerError {
     return new OpensteerError({
+      ...(cause === undefined ? {} : { cause }),
       code: "conflict",
       reason,
       message,
