@@ -1,3 +1,4 @@
+import { deploymentPolicy } from "@opensteer/core";
 import {
   OpensteerError,
   type EnvironmentId,
@@ -245,7 +246,7 @@ export async function deploymentOwnedExecutionIsAvailableToUser(
     .where("singletonKey", "=", "primary")
     .executeTakeFirst();
   if (!deployment) return false;
-  if (deployment.deploymentShape.kind === "server") return true;
+  if (deploymentPolicy(deployment.deploymentShape).ownership === "members") return true;
   const user = await database
     .selectFrom("users")
     .select("instanceRole")

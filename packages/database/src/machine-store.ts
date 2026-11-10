@@ -1,3 +1,4 @@
+import { deploymentPolicy } from "@opensteer/core";
 import { withDatabaseTransaction } from "./connection.js";
 import { type CommandRow, type DatabaseSchema } from "./schema.js";
 import {
@@ -803,7 +804,9 @@ async function isPersonalDeployment(database: Kysely<DatabaseSchema>): Promise<b
     .select("deploymentShape")
     .where("singletonKey", "=", "primary")
     .executeTakeFirst();
-  return deployment?.deploymentShape.kind === "personal";
+  return deployment
+    ? deploymentPolicy(deployment.deploymentShape).ownership === "single-user"
+    : false;
 }
 
 /** A Personal Deployment has exactly one established owner. */
