@@ -328,7 +328,9 @@ export class SurfaceLedger {
       this.maxSurfaces < 1 ||
       this.maxSurfaces > browserSessionTabsMax
     ) {
-      throw new Error(`Surface maxSurfaces must be an integer from 1 through ${browserSessionTabsMax}.`);
+      throw new Error(
+        `Surface maxSurfaces must be an integer from 1 through ${browserSessionTabsMax}.`,
+      );
     }
   }
 

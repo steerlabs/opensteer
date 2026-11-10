@@ -216,7 +216,10 @@ export const BrowserAttachTicketClaimsSchema = z
     /** The Host relays `browser.popup.opened`, so the runtime may send it. */
     popupFollowVersion: z.literal(1).optional(),
     initialSurfaceId: BrowserSurfaceIdSchema.optional(),
-    dormantSurfaceIds: z.array(BrowserSurfaceIdSchema).max(browserSessionTabsMax - 1).optional(),
+    dormantSurfaceIds: z
+      .array(BrowserSurfaceIdSchema)
+      .max(browserSessionTabsMax - 1)
+      .optional(),
     expiresAt: IsoDateTimeSchema,
     identity: BrowserAttachTicketIdentitySchema,
     issuedAt: IsoDateTimeSchema,
