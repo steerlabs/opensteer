@@ -60,3 +60,5 @@ export * from "./personal-desktop-update-store.js";
 export * from "./agent-thread-history.js";
 export { encodeThreadHistoryCursor } from "./thread-history.js";
 export { assignmentSummaryInTransaction } from "./assignment-store.js";
+
+export { requireHumanRequester, requireHumanMembershipGeneration } from "./execution-authority.js";
