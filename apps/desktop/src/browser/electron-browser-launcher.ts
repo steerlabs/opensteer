@@ -103,7 +103,6 @@ interface ElectronBrowserLauncherOptions {
   readonly authenticator?: PasskeyAuthenticator;
   readonly clipboard?: EngineClipboard;
   readonly downloads: Pick<DesktopDownloads, "accept">;
-  readonly maxWebContents?: number;
   readonly localProfileRoot?: string;
   /** Absolute path of the bundled `browser-page-preload.cjs`. */
   readonly pagePolicyPreloadPath: string;
@@ -157,7 +156,7 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
     this.#pagePolicyPreloadPath = options.pagePolicyPreloadPath;
     this.#clipboard = options.clipboard;
     this.#downloads = options.downloads;
-    this.#views = new ElectronBrowserViewPool(options.maxWebContents ?? 64);
+    this.#views = new ElectronBrowserViewPool();
   }
 
   prepare(): Promise<void> {
@@ -394,7 +393,6 @@ export function electronPagePresentation(page: BrowserPage): ElectronPagePresent
 
 class ElectronBrowserViewPool {
   #closed = false;
-  readonly #maxWebContents: number;
   readonly #views = new Map<WebContentsView, BaseWindow>();
   /**
    * Storage helpers never draw and live for one save or restore, at most
@@ -402,13 +400,6 @@ class ElectronBrowserViewPool {
    * fails or crowds out pages because many pages are open.
    */
   readonly #helpers = new Set<WebContentsView>();
-
-  constructor(maxWebContents: number) {
-    if (!Number.isSafeInteger(maxWebContents) || maxWebContents < 1 || maxWebContents > 256) {
-      throw new TypeError("Electron browser maxWebContents must be an integer from 1 through 256.");
-    }
-    this.#maxWebContents = maxWebContents;
-  }
 
   close(): void {
     this.#closed = true;
@@ -438,9 +429,6 @@ class ElectronBrowserViewPool {
     startRenderer = false,
   ): ElectronBrowserView {
     if (this.#closed) throw new Error("The Electron browser is stopping.");
-    if (this.#views.size >= this.#maxWebContents) {
-      throw new Error("Electron Browser Runtime WebContents capacity is full.");
-    }
     const view = new WebContentsView(options);
     timing?.("web-contents-view-created");
     const size = opener?.getBounds() ?? restingBounds;

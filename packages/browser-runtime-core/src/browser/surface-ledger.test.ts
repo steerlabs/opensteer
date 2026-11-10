@@ -1,5 +1,8 @@
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { browserWorkspaceTabUrlMaxLength } from "@opensteer/protocol/browser";
+import {
+  browserSessionTabsFullReason,
+  browserWorkspaceTabUrlMaxLength,
+} from "@opensteer/protocol/browser";
 import { describe, expect, it, vi } from "vitest";
 import {
   FakeContext,
@@ -532,6 +535,10 @@ describe("SurfaceLedger", () => {
     await flushMicrotasks();
     expect(ledger.snapshot()).toHaveLength(1);
     expect(excess.closeCount).toBe(1);
+    await expect(ledger.openSurface()).rejects.toMatchObject({
+      code: "conflict",
+      reason: browserSessionTabsFullReason,
+    });
     await ledger.close();
     expect(() => new SurfaceLedger(context, { maxSurfaces: 65 })).toThrow(/1 through 64/);
   });
