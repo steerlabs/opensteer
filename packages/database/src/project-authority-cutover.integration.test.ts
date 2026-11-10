@@ -408,7 +408,7 @@ describeStore("additive Project authority preparation", (it) => {
         alter table principals add constraint principals_kind_shape_check check ((kind = 'user' and user_id is not null) or (kind in ('channel-identity', 'system') and user_id is null));
         alter table runs drop column initiator_generation, drop column origin_connection_id;
         alter table thread_inputs drop column initiator_generation, drop column origin_connection_id;
-        alter table commands drop column initiator_generation, drop column origin_connection_id, drop column membership_generation;
+        alter table commands drop column initiator_generation, drop column origin_connection_id, drop column membership_generation, drop column originating_grant_id;
         alter table triggers drop column created_by_principal_id;
         alter table trigger_revisions drop column created_by_principal_id;
         alter table trigger_watch_activations drop column created_by_principal_id;
