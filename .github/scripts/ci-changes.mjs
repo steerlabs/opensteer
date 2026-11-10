@@ -208,16 +208,19 @@ export function decide(files, graph, baseGraph = graph, full = false, { fullMac 
       file.startsWith("apps/mobile/modules/notification-preview/android/") ||
       file.startsWith("apps/mobile/modules/phone-connection/android/") ||
       file.startsWith("apps/mobile/modules/phone-browser/android/") ||
-      file.startsWith("apps/mobile/modules/remote-text-input/android/") ||
-      file.startsWith("packages/browser-core/test-vectors/") ||
-      file === "apps/mobile/modules/phone-browser/index.ts" ||
-      file === "apps/mobile/modules/phone-browser/types.ts"
+      file.startsWith("apps/mobile/modules/remote-text-input/android/")
     ) {
       androidSource = true;
       continue;
     }
-    // The preview vector is also read by the Android tests; its package still owns it.
-    if (file === "packages/core/src/fixtures/notification-preview-v1.json") androidSource = true;
+    // The Android tests read these too; their packages still own them.
+    if (
+      file === "packages/core/src/fixtures/notification-preview-v1.json" ||
+      file.startsWith("packages/browser-core/test-vectors/") ||
+      file === "apps/mobile/modules/phone-browser/index.ts" ||
+      file === "apps/mobile/modules/phone-browser/types.ts"
+    )
+      androidSource = true;
     const owners = [...baseGraph, ...graph].filter((p) => file.startsWith(p.dir + "/"));
     if (!owners.length) {
       all = true;
