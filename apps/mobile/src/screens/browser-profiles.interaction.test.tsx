@@ -31,6 +31,10 @@ vi.mock("react-native", () => ({
     },
   },
   AppState: { addEventListener: () => ({ remove: () => undefined }), currentState: "active" },
+  KeyboardAvoidingView: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  Platform: { OS: "ios" },
+  useWindowDimensions: () => ({ fontScale: 1, height: 844, scale: 3, width: 390 }),
+  Text: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
   Pressable: ({
     accessibilityLabel,
     children,
@@ -60,10 +64,12 @@ vi.mock("../client/mobile-client.js", () => ({
 }));
 vi.mock("../theme.js", () => ({
   color: {},
+  controlFontScaleLimit: 1.5,
   material: { mark: {} },
   radius: {},
   space: {},
   touchTarget: 44,
+  type: {},
 }));
 vi.mock("../ui/screen.js", () => ({
   Screen: ({ children }: { children?: ReactNode }) => <main>{children}</main>,
@@ -71,6 +77,10 @@ vi.mock("../ui/screen.js", () => ({
   useReadingColumn: () => ({}),
 }));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
+vi.mock("../computers/here-device.js", () => ({ useHereDeviceId: () => null }));
+vi.mock("@expo/ui/community/menu", () => ({
+  MenuView: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+}));
 vi.mock("../ui/workspace-mark.js", () => ({ WorkspaceDot: () => null }));
 vi.mock("../ui/mobile-client-context.js", () => ({
   useMobileClient: () => ({ openDeployment: vi.fn() }),

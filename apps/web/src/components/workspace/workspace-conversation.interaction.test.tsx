@@ -194,9 +194,9 @@ it("dismisses a close review when another client closes its target", async () =>
 });
 
 describe("a reply's live picture belongs to its working Run", () => {
-  /** The thread's one live picture above the composer. */
+  /** The thread's one live picture folded into its header. */
   const pictures = () => [
-    ...document.querySelectorAll<HTMLButtonElement>(".live-place .viewfinder"),
+    ...document.querySelectorAll<HTMLButtonElement>(".conv-header .viewfinder"),
   ];
   const picture = () => pictures()[0] ?? null;
   const chipTitles = (row: Element) =>
@@ -285,11 +285,12 @@ describe("a reply's live picture belongs to its working Run", () => {
     ).toContain(place.title);
   });
 
-  it("shows one live picture above the composer, hides it for the same stage and restores it", async () => {
+  it("shows one live picture in the header, hides it for the same stage and restores it", async () => {
     await mount("/");
     const { place } = await chatWorkingIn("Weekend ideas");
     expect(pictures()).toHaveLength(1);
     expect(picture()!.closest(".turn")).toBeNull();
+    expect(document.querySelector(".composer-dock .viewfinder")).toBeNull();
     expect(document.querySelector(".transcript .surface-chips")).toBeNull();
     await click(picture()!);
     expect(element(".place").getAttribute("data-place-key")).toBe(place.key);
@@ -422,7 +423,7 @@ describe("a reply's live picture belongs to its working Run", () => {
     const place = browserPlaces()[0]!;
     await act(async () => client.actInPlace(waiting, place.key));
     await pictureShows(place.key);
-    expect(picture()!.closest(".live-place")).not.toBeNull();
+    expect(picture()!.closest(".conv-header")).not.toBeNull();
   });
 });
 
@@ -779,4 +780,154 @@ it("opens Chat with a whole-turn page in one read", async () => {
   );
   expect(fixture.requests).toHaveLength(1);
   expect(fixture.requests[0]).toMatchObject({ turns: 10 });
+});
+
+describe("a conversation's page above it at phone width", () => {
+  /** A task whose Run is in no place yet. */
+  const waiting = "thr_00000000-0000-4000-8000-000000000902";
+  const page = () => document.querySelector<HTMLElement>(".run-page");
+  const folded = () => document.querySelector<HTMLButtonElement>(".conv-header .viewfinder");
+  /** A 390-pixel phone: the thread has room, its transcript scrolls. */
+  function phoneGeometry() {
+    const size = (element: Element, key: "clientHeight" | "clientWidth" | "scrollHeight") => {
+      if (element.classList.contains("thread"))
+        return { clientHeight: 844, clientWidth: 390, scrollHeight: 844 }[key];
+      if (element.classList.contains("transcript-scroll"))
+        return { clientHeight: 400, clientWidth: 390, scrollHeight: 2000 }[key];
+      return 0;
+    };
+    for (const key of ["clientHeight", "clientWidth", "scrollHeight"] as const)
+      vi.spyOn(HTMLElement.prototype, key, "get").mockImplementation(function (this: HTMLElement) {
+        return size(this, key);
+      });
+  }
+  async function opened() {
+    await mount(`/threads/${waiting}`, { width: 390 });
+    phoneGeometry();
+    expect(page() ?? folded(), "The Run was already in a place").toBeNull();
+  }
+  function browserPlace(title: string) {
+    return placeList(client.getSnapshot()).find(
+      (item) => item.kind === "browser" && item.availability === "ready" && item.title === title,
+    )!;
+  }
+  async function acts(title = "Weekend ideas") {
+    const place = browserPlace(title);
+    await act(async () => client.actInPlace(waiting, place.key));
+    await vi.waitFor(
+      () => expect(page() ?? folded(), "The Run's page never showed").not.toBeNull(),
+      { timeout: 1500 },
+    );
+    return place;
+  }
+
+  it("opens on the first action, folds into the head, unfolds, shows the full tab and ends with the Run", async () => {
+    await opened();
+    const place = await acts();
+    expect(page()).not.toBeNull();
+    expect(folded(), "The head kept a picture of the open page").toBeNull();
+
+    await click(element(".run-page__handle"));
+    expect(page()).toBeNull();
+    expect(folded()?.getAttribute("aria-expanded")).toBe("false");
+
+    await click(folded()!);
+    expect(page()).not.toBeNull();
+    // Folding and unfolding never navigate.
+    expect(history.at(-1)).toMatchObject({ path: `/threads/${waiting}`, search: "" });
+
+    // The Run moving to another page keeps it open, on that page.
+    const next = browserPlace("Your reading list");
+    await act(async () => client.actInPlace(waiting, next.key));
+    expect(element(".run-page__view").getAttribute("aria-label")).toContain(next.title);
+    await act(async () => client.actInPlace(waiting, place.key));
+
+    await click(element(".run-page__view"));
+    expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
+    await act(async () => goTo!(`/threads/${waiting}`));
+    expect(page(), "Coming back, the page was no longer open").not.toBeNull();
+
+    await act(async () => client.stopRun(waiting));
+    expect(page() ?? folded(), "The page outlived its Run").toBeNull();
+  });
+
+  it("a head with no room for the folded picture leaves the page its row, and Find under the name", async () => {
+    // A bar so narrow that only its sidebar button and name fit: whatever else
+    // is still drawn at its end runs past it.
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: Element,
+    ) {
+      const end = this.classList.contains("conv-header__end")
+        ? [...this.querySelectorAll("[data-yield]")].filter(
+            (item) => item.closest("[data-yielded]") === null,
+          ).length * 50
+        : 0;
+      return DOMRect.fromRect({ x: 0, y: 0, width: 160 + end, height: 44 });
+    });
+    await opened();
+    const place = await acts();
+    await click(element(".run-page__handle"));
+    await vi.waitFor(
+      () => expect(folded()?.closest("[data-yielded]"), "The head kept the picture").not.toBeNull(),
+      { timeout: 1500 },
+    );
+    // Folded, the page stands above the conversation as its row, without a handle.
+    expect(document.querySelector(".run-page__handle")).toBeNull();
+    expect(element(".run-page__view").getAttribute("aria-expanded")).toBe("false");
+    expect(
+      element('.conv-header [aria-label="Find in conversation"]').closest("[data-yielded]"),
+    ).not.toBeNull();
+    await click(element(".conv-header__menu"));
+    expect(document.body.textContent).toContain("Find in conversation");
+    await act(async () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })));
+
+    // The row opens the page where it fits, and the page still shows the full tab.
+    await click(element(".run-page__view"));
+    expect(document.querySelector(".run-page__handle")).not.toBeNull();
+    await click(element(".run-page__view"));
+    expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
+  });
+
+  it.each([
+    [
+      "reading back",
+      async () => {
+        const scroller = element<HTMLElement>(".transcript-scroll");
+        // The first scroll after a resize only takes the new geometry in.
+        for (const _ of [1, 2])
+          await act(async () => {
+            scroller.scrollTop = 0;
+            scroller.dispatchEvent(new Event("scroll"));
+          });
+        expect(element(".transcript__jump"), "The reader never left the tail").not.toBeNull();
+      },
+    ],
+    [
+      "typing",
+      async () => {
+        await act(async () => element<HTMLTextAreaElement>(".composer-dock textarea").focus());
+      },
+    ],
+    [
+      "on cellular",
+      async () => {
+        Object.defineProperty(navigator, "connection", {
+          configurable: true,
+          value: { type: "cellular" },
+        });
+      },
+    ],
+  ])("starts folded while the reader is %s", async (_case, moment) => {
+    await opened();
+    try {
+      await moment();
+      await acts();
+      expect(page()).toBeNull();
+      expect(folded()).not.toBeNull();
+      await click(folded()!);
+      expect(page(), "The reader could not open it themselves").not.toBeNull();
+    } finally {
+      Reflect.deleteProperty(navigator, "connection");
+    }
+  });
 });

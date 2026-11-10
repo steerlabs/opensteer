@@ -12,6 +12,8 @@ import {
 import { useHostSelector } from "@opensteer/client/react";
 import { actionErrorMessage } from "../../ui-utils.js";
 import { browserTargetViewport } from "../browser/browser-viewport.js";
+import { DeviceLabel } from "../computers/device-label.js";
+import { useHereId } from "../computers/here.js";
 import { SurfaceSubmenuRow } from "../surface-submenu-row.js";
 import { useToast } from "../toast.js";
 import { ProfileAvatar, type BrowserPresentation } from "./identity.js";
@@ -80,12 +82,13 @@ export function useOpenInChoices(
   presentation: BrowserPresentation | null,
 ): readonly StartPageProfileChoice[] {
   const snapshot = useHostSelector(hostClient, selectProfiles, sameProfiles);
+  const hereId = useHereId();
   return useMemo(() => {
     const identity = presentation?.identity ?? null;
-    return startPageIndex({ snapshot, places: [] }).profiles.filter(
+    return startPageIndex({ snapshot, places: [], localMachineId: hereId }).profiles.filter(
       (profile) => !identity || !sameIdentity(profile.identity, identity),
     );
-  }, [presentation, snapshot]);
+  }, [hereId, presentation, snapshot]);
 }
 
 /**
@@ -128,16 +131,12 @@ export function OpenInRow({
             type="button"
           >
             <ProfileAvatar identity={profile.presentation} size={18} />
-            <span className="picker__label-stack">
-              <span className="picker__label" title={profile.presentation.name}>
-                {profile.presentation.name}
-              </span>
-              <span className="picker__detail">
-                {profile.identity.kind === "guest"
-                  ? "Without saved sign-ins"
-                  : profile.computerLabel}
-              </span>
+            <span className="picker__label" title={profile.presentation.name}>
+              {profile.presentation.name}
             </span>
+            {profile.device ? (
+              <DeviceLabel className="picker__device" device={profile.device} />
+            ) : null}
           </button>
         ))}
       </div>

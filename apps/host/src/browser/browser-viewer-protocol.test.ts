@@ -1,6 +1,40 @@
 import { expect, it } from "vitest";
 import { BrowserServerMessageSchema } from "@opensteer/protocol/browser";
 import { browserViewerMessage } from "./browser-viewer-protocol.js";
+it("projects basic input and tab suspension only to viewers that negotiated them", () => {
+  const snapshot = BrowserServerMessageSchema.parse({
+    type: "browser.snapshot",
+    access: "read-write",
+    dialog: null,
+    sessionId: "bsn_e2799da2-9fe9-438e-a160-47e275ee2703",
+    state: "ready",
+    basicInput: 1,
+    surfaceState: 1,
+    surfaces: [
+      { id: "phone-page", title: "Phone", url: "about:blank", active: true, state: "suspended" },
+    ],
+  });
+  const legacy = browserViewerMessage(snapshot);
+  expect(legacy).not.toHaveProperty("basicInput");
+  expect(legacy).not.toHaveProperty("surfaceState");
+  expect(legacy).not.toHaveProperty("surfaces.0.state");
+  const modern = browserViewerMessage(snapshot, undefined, undefined, undefined, false, {
+    basicInput: true,
+    surfaceState: true,
+  });
+  expect(modern).toMatchObject({
+    basicInput: 1,
+    surfaceState: 1,
+    surfaces: [{ state: "suspended" }],
+  });
+  expect(modern).not.toHaveProperty("editingVersion");
+  expect(modern).not.toHaveProperty("clipboard");
+  const changed = BrowserServerMessageSchema.parse({
+    type: "browser.surfaces.changed",
+    surfaces: snapshot.type === "browser.snapshot" ? snapshot.surfaces : [],
+  });
+  expect(browserViewerMessage(changed)).not.toHaveProperty("surfaces.0.state");
+});
 it("projects passkey fields only to opted-in viewers while preserving old snapshots", () => {
   const snapshot = BrowserServerMessageSchema.parse({
     type: "browser.snapshot",

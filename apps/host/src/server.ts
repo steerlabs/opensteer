@@ -516,8 +516,11 @@ export async function createHostServer(
       readonly session: AuthenticatedSession;
       readonly mode: "control" | "watch";
       readonly editing: 1 | 2 | undefined;
+      readonly basicInput: 1 | undefined;
+      readonly surfaceState: 1 | undefined;
       readonly passkeys: "native" | "notice" | undefined;
       readonly popups: boolean;
+      readonly autofill: boolean;
     }
   >();
   const realtimeSocketSessions = new WeakMap<object, AuthenticatedSession>();
@@ -2485,6 +2488,9 @@ export async function createHostServer(
       case "browser.profile.create":
         return {
           profile: await dependencies.browser.createProfile({
+            ...(command.input.homeRunnerId !== undefined
+              ? { homeRunnerId: command.input.homeRunnerId }
+              : {}),
             name: command.input.name,
             idempotencyKey: command.idempotencyKey,
             ownerId: userId,
@@ -2862,7 +2868,15 @@ export async function createHostServer(
 
   app.get<{
     Params: { sessionId: string };
-    Querystring: { mode?: string; editing?: string; passkeys?: string; popups?: string };
+    Querystring: {
+      mode?: string;
+      editing?: string;
+      passkeys?: string;
+      popups?: string;
+      basicInput?: string;
+      surfaceState?: string;
+      autofill?: string;
+    };
   }>(
     "/v1/browser-sessions/:sessionId/connect",
     {
@@ -2888,6 +2902,9 @@ export async function createHostServer(
           editing:
             request.query.editing === "2" ? 2 : request.query.editing === "1" ? 1 : undefined,
           popups: request.query.popups === "1",
+          basicInput: request.query.basicInput === "1" ? 1 : undefined,
+          surfaceState: request.query.surfaceState === "1" ? 1 : undefined,
+          autofill: mode === "control" && request.query.autofill === "1",
         });
       },
       websocket: true,
@@ -2904,6 +2921,11 @@ export async function createHostServer(
         admitted.editing,
         admitted.passkeys,
         admitted.popups,
+        {
+          basicInput: admitted.basicInput,
+          surfaceState: admitted.surfaceState,
+          autofill: admitted.autofill,
+        },
         async () => {
           try {
             const current = await dependencies.authenticator.authenticateSession(request.headers, {
@@ -2989,6 +3011,7 @@ export function advertisedCapabilities(
     "iphone-apps-v1",
     "ownerViewWindows",
     "browser-target-control-v1",
+    "browser-backend-v1",
     "integration-app-finish-v1",
     "integration-app-return-port-v1",
     ...(dependencies.passkeys === true ? ["browser-passkeys-v1" as const] : []),
@@ -3018,6 +3041,11 @@ function attachBrowserSocket(
   editing: 1 | 2 | undefined,
   passkeys: "native" | "notice" | undefined,
   popups: boolean,
+  negotiation: {
+    readonly basicInput: 1 | undefined;
+    readonly surfaceState: 1 | undefined;
+    readonly autofill: boolean;
+  },
   signedIn: () => Promise<boolean>,
 ): void {
   installWebSocketLiveness(socket);
@@ -3070,6 +3098,7 @@ function attachBrowserSocket(
       authSessionId: session.id,
       mode,
       editing,
+      ...negotiation,
       passkeys,
       popups,
       signedIn,

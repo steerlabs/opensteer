@@ -173,6 +173,17 @@ function registerHostApiMember<Name extends keyof typeof hostApi>(
       } catch (error) {
         const normalized = normalizeHostError(error);
         if (normalized.status >= 500) request.log.error({ err: error }, "rpc failed");
+        else if (normalized.error.reason)
+          // Reasons are stable codes; messages and payloads can carry addresses.
+          request.log.info(
+            {
+              rpc: name,
+              code: normalized.error.code,
+              reason: normalized.error.reason,
+              cause: refusalCause(error),
+            },
+            "rpc refused",
+          );
         return reply
           .status(normalized.status)
           .header("cache-control", "no-store")
@@ -188,6 +199,11 @@ function registerHostApiMember<Name extends keyof typeof hostApi>(
       : {}),
     url: `/v1/rpc/${name}`,
   });
+}
+
+function refusalCause(error: unknown): string | undefined {
+  const cause = error instanceof Error ? error.cause : undefined;
+  return cause instanceof OpensteerError ? cause.reason : undefined;
 }
 
 function rpcInput<Declaration extends RpcDeclaration>(

@@ -150,14 +150,14 @@ it.skipIf(process.platform !== "darwin").each(["stable", "beta"] as const)(
         assets: [...Object.keys(manifest.assets), "release.json"].map((name) => ({ name })),
       };
       const promotionRun: typeof runBounded = async (exe, args, options) => {
-        if (exe !== "gh") return run(exe, args, options);
+        if (exe !== "gh" && args[0] !== "ls-remote") return run(exe, args, options);
         if (args[1] === "download") {
           const dest = args[args.indexOf("--dir") + 1]!;
           for (const name of [...Object.keys(manifest.assets), "release.json"])
             await copyFile(path.join(input.out, name), path.join(dest, name));
           return "";
         }
-        return JSON.stringify([[published]]);
+        return releaseApi(published, args);
       };
       const stableRun: typeof runBounded = (exe, args, options) =>
         exe === "/usr/libexec/PlistBuddy" && args.includes("Print :CFBundleName")
@@ -273,11 +273,32 @@ async function releaseFixture(channel: "stable" | "beta" = "stable") {
   return { dir, manifest, release };
 }
 
-// GitHub's by-tag endpoint returns only published releases; a draft is found by listing.
-function releaseApi(release: { draft: boolean }, args: readonly string[]): string {
-  if (args.includes("--paginate")) return JSON.stringify([[release]]);
-  if (release.draft && args.some((arg) => arg.includes("/releases/tags/")))
-    throw new Error("gh: Not Found (HTTP 404)");
+interface FakeRelease {
+  readonly id: number;
+  readonly draft: boolean;
+  readonly tag_name: string;
+}
+
+// GitHub as the publisher asks it: a release by tag through GraphQL (drafts too) and
+// then by id, and the tags of published releases. Listing every release is refused:
+// the list grows with every push.
+function releaseApi(releases: FakeRelease | readonly FakeRelease[], args: readonly string[]) {
+  const all = [releases].flat();
+  if (args.includes("--paginate")) throw new Error("Listed every release");
+  if (args[0] === "ls-remote") {
+    const prefix = args.at(-1)!.replace(/^refs\/tags\/|\*$/gu, "");
+    return all
+      .filter((release) => !release.draft && release.tag_name.startsWith(prefix))
+      .map((release) => `${sourceSha}\trefs/tags/${release.tag_name}`)
+      .join("\n");
+  }
+  if (args[1] === "graphql") {
+    const tag = args.find((arg) => arg.startsWith("tag="))!.slice("tag=".length);
+    return String(all.find((release) => release.tag_name === tag)?.id ?? "");
+  }
+  const id = Number(/\/releases\/(\d+)$/u.exec(args.at(-1)!)?.[1]);
+  const release = all.find((candidate) => candidate.id === id);
+  if (!release) throw new Error("gh: Not Found (HTTP 404)");
   return JSON.stringify(release);
 }
 
@@ -291,7 +312,7 @@ it("creates alpha drafts beside legacy releases, reuses exact assets, refuses dr
     if (args[1] === "create" || args[1] === "download")
       expect(options?.timeoutMs).toBeGreaterThanOrEqual(600_000);
     if (args[0] === "api")
-      return JSON.stringify([[exists ? release : { ...release, tag_name: "v0.11.2" }]]);
+      return releaseApi(exists ? release : { ...release, tag_name: "v0.11.2" }, args);
     if (args[1] === "create") {
       uploads++;
       expect(args).toContain("--draft");
@@ -339,7 +360,7 @@ it("creates alpha drafts beside legacy releases, reuses exact assets, refuses dr
 
 async function withInsider(run: typeof runBounded): Promise<typeof runBounded> {
   const insider = await releaseFixture("beta");
-  Object.assign(insider.release, { draft: false, immutable: true });
+  Object.assign(insider.release, { id: 456, draft: false, immutable: true });
   return async (exe, args, options) => {
     if (exe === "gh" && args[1] === "download" && args[2] === insider.manifest.tag) {
       const dest = args[args.indexOf("--dir") + 1]!;
@@ -347,18 +368,12 @@ async function withInsider(run: typeof runBounded): Promise<typeof runBounded> {
         await copyFile(path.join(insider.dir, name), path.join(dest, name));
       return "";
     }
-    const result = await run(exe, args, options);
     if (
       exe === "gh" &&
-      args[0] === "api" &&
-      !args.includes("PATCH") &&
-      args.at(-1)?.startsWith("repos/steerlabs/opensteer/releases?")
-    ) {
-      const pages = JSON.parse(result) as unknown[][];
-      pages.push([insider.release]);
-      return JSON.stringify(pages);
-    }
-    return result;
+      (args.includes(`tag=${insider.manifest.tag}`) || args.at(-1)?.endsWith("/releases/456"))
+    )
+      return releaseApi(insider.release, args);
+    return run(exe, args, options);
   };
 }
 
@@ -454,7 +469,7 @@ it("publishes only verified drafts through a fake provider and rechecks anonymou
             ? "tampered"
             : await readFile(path.join(dir, name)),
         );
-    } else if (exe === "gh") return releaseApi(release, args);
+    } else if (exe === "gh" || exe === "git") return releaseApi(release, args);
     else if (exe === "curl") {
       expect(args).not.toContain("Authorization");
       const dest = args[args.indexOf("-o") + 1]!;
@@ -538,8 +553,7 @@ it("beta drafts and publication never mark Latest", async () => {
     } else if (exe === "curl") {
       const dest = args[args.indexOf("-o") + 1]!;
       await writeFile(dest, await readFile(path.join(dir, path.basename(dest))));
-    } else if (args.includes("--paginate") && !created) return "[[]]";
-    else return releaseApi(release, args);
+    } else return releaseApi(created ? release : [], args);
     return "";
   };
   await draft(dir, "steerlabs/opensteer", run, "beta");
@@ -747,17 +761,13 @@ describe.skipIf(process.platform !== "darwin" || process.arch !== "arm64")(
   },
 );
 
-it("refuses older/equal Stable, permits the first Stable and ignores concurrent insiders", async () => {
-  const { release } = await releaseFixture();
+it("refuses older/equal Stable, permits the first Stable and ignores concurrent insiders", () => {
+  const tag = `desktop-v${version}`;
   expect(() => requireNewerStable(version, [])).not.toThrow();
-  expect(() => requireNewerStable(version, [{ ...release, draft: false }])).toThrow(/newer/);
-  expect(() => requireNewerStable("0.1.219", [{ ...release, draft: false }])).toThrow(/newer/);
-  expect(() => requireNewerStable("0.1.221", [{ ...release, draft: false }])).not.toThrow();
-  expect(() =>
-    requireNewerStable(version, [
-      { ...release, tag_name: "v99.0.0-insider", draft: false, prerelease: true },
-    ]),
-  ).not.toThrow();
+  expect(() => requireNewerStable(version, [tag])).toThrow(/newer/);
+  expect(() => requireNewerStable("0.1.219", [tag])).toThrow(/newer/);
+  expect(() => requireNewerStable("0.1.221", [tag])).not.toThrow();
+  expect(() => requireNewerStable(version, ["v99.0.0-insider"])).not.toThrow();
 });
 
 it("Stable refuses a draft, mutable or incomplete insider and mismatched source evidence", async () => {
@@ -779,7 +789,7 @@ it("Stable refuses a draft, mutable or incomplete insider and mismatched source 
       }
       return "";
     }
-    return JSON.stringify([[fixture.release]]);
+    return releaseApi(fixture.release, args);
   };
   await expect(verifyInsiderProvenance(input, run)).rejects.toThrow(/published immutable insider/);
   fixture.release.draft = false;

@@ -354,6 +354,7 @@ export function startMachineAccessHost(
     readonly integrationFetch?: typeof globalThis.fetch;
     /** Shortens Run tokens' lifetime, so a journey sees them refreshed and expire. */
     readonly runCapabilityLifetimeSeconds?: number;
+    readonly runCapabilityNow?: () => number;
     readonly signupPolicy?: "closed" | "invite-only" | "open";
   } = {},
 ): Promise<MachineAccessHost> {
@@ -408,6 +409,9 @@ async function createMachineAccessHost(
       ...(options.integrationFetch === undefined
         ? {}
         : { integrationFetch: options.integrationFetch }),
+      ...(options.runCapabilityNow === undefined
+        ? {}
+        : { runCapabilityNow: options.runCapabilityNow }),
       ...(options.runCapabilityLifetimeSeconds === undefined
         ? {}
         : { runCapabilityLifetimeSeconds: options.runCapabilityLifetimeSeconds }),

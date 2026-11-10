@@ -4,6 +4,11 @@ Agent Phone is a dedicated Android 11+ phone whose whole display is one computer
 not the [mobile client](mobile.md), never runs agents and offers no SSH. [Computers](computers.md)
 owns membership. Procedures are in the [agent-phone skill](../.agents/skills/agent-phone/SKILL.md).
 
+An Android phone running the mobile client is not an Agent Phone: it declares `device.app:
+"opensteer"` in its signed descriptor. The Host retains that identity across reconnects, independent
+of live modules. Unmarked Android devices keep the Agent Phone meaning so existing phones need no
+update; older descriptor and machine readers ignore the optional marker.
+
 The connection caps Workspace access; a Workspace grant cannot widen it. Read-write access reaches
 every app and account on the phone, not an app sandbox, so use dedicated hardware and accounts. A
 USB phone without Agent Phone stays a peripheral reachable through its attached computer's shell.

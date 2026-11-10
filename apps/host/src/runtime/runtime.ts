@@ -757,7 +757,10 @@ export async function createHostRuntime(
       repository: store,
       baseUrl: config.canonicalOrigin,
       ...(deployment.deploymentShape.kind === "personal"
-        ? { beforeProfileOpen: () => runnerBrowsers.requirePersonalProfileInventory() }
+        ? {
+            beforeProfileOpen: (runnerId: RunnerId) =>
+              runnerBrowsers.requirePersonalProfileInventory(runnerId),
+          }
         : {}),
       onReconciled: async (profileId) => {
         await browser.fenceLocalProfile(profileId);
@@ -805,6 +808,15 @@ export async function createHostRuntime(
       onMissingActor: (sessionId, bindingId) => logMissingBrowserActor(sessionId, bindingId),
       hostOrigin: config.canonicalOrigin,
       personal: deployment.deploymentShape.kind === "personal",
+      profileRequestRunner: async (runId) =>
+        (
+          await database
+            .selectFrom("runAttempts")
+            .select("runnerId")
+            .where("runId", "=", runId)
+            .where("status", "=", "current")
+            .executeTakeFirst()
+        )?.runnerId ?? null,
       localProfiles,
       eraseLocalProfiles: (runnerId) => runnerBrowsers.resumeDeletions(runnerId),
       passkeys: config.passkeys === true,
@@ -1569,7 +1581,11 @@ export async function createHostRuntime(
         token: config.initialMessagingRunnerEnrollmentToken,
       },
     ]) {
-      if (!service.token) continue;
+      if (
+        !service.token ||
+        (deployment.deploymentShape.kind === "personal" && service.allowedModules[0] === "browser")
+      )
+        continue;
       await runnerAuthenticator.ensureConfiguredDeploymentEnrollment({
         allowedModules: [...service.allowedModules],
         idempotencyKey: service.idempotencyKey,

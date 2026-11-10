@@ -43,6 +43,80 @@ const requestParams = {
 
 // Unix sockets and the kernel's peer credentials: this runs in the macOS job.
 describe.runIf(process.platform === "darwin")("PasswordsBrokerClient", () => {
+  it("negotiates v8 and validates person fill without changing v7 card payloads", async () => {
+    const harness = await clientHarness({ clientProtocolVersion: 8 });
+    const account = {
+      id: transactionId,
+      revision: 3,
+      username: "person@example.com",
+      label: null,
+      hasCode: true,
+    };
+    harness.broker.reply("fill.accounts", () => ({ fill: "on", accounts: [account] }));
+    harness.broker.reply("card.probe", () => ({ cards: "has-card" }));
+    await expect(
+      harness.client.call("fill.accounts", { origin: "https://example.com" }),
+    ).resolves.toEqual({ fill: "on", accounts: [account] });
+    expect(harness.client.connection?.protocolVersion).toBe(8);
+    await expect(
+      harness.client.call("fill.accounts", { origin: "http://example.com" }),
+    ).rejects.toMatchObject({ code: "invalid" });
+    expect(harness.broker.received("fill.accounts")).toHaveLength(1);
+    await expect(harness.client.call("card.probe", {})).resolves.toEqual({ cards: "has-card" });
+    harness.broker.reply("fill.accounts", () => ({
+      fill: "on",
+      accounts: [{ ...account, hasCode: "bad" }],
+    }));
+    await expect(
+      harness.client.call("fill.accounts", { origin: "https://example.com" }),
+    ).rejects.toMatchObject({ code: "malformed" });
+  });
+
+  it("reconnects at v7 after a lower supported hello before sending a transaction", async () => {
+    const harness = await clientHarness({ clientProtocolVersion: 8, protocolVersion: 7 });
+    const connection = await harness.client.connect();
+    expect(connection.protocolVersion).toBe(7);
+    expect(harness.broker.received("hello").map((frame) => frame.params)).toEqual([
+      { client: { version: "9.9.9" }, protocolVersion: 8 },
+      { client: { version: "9.9.9" }, protocolVersion: 7 },
+    ]);
+    harness.broker.reply("card.request", () => ({ decision: "approve", cards: [] }));
+    const { runtimeId: _runtime, sessionId: _session, ...request } = requestParams;
+    await expect(
+      harness.client.call("card.request", { ...request, protocolVersion: 7, permissionVersion: 7 }),
+    ).resolves.toEqual({ decision: "approve", cards: [] });
+    await expect(
+      harness.client.call("fill.accounts", { origin: "https://example.com" }),
+    ).rejects.toMatchObject({ code: "invalid" });
+    expect(harness.broker.received("fill.accounts")).toEqual([]);
+    const requests = harness.broker.transcript.filter((entry) => entry.direction === "in");
+    expect(requests.map((entry) => entry.connection)).toEqual([1, 2, 2]);
+  });
+
+  it("withdraws a v8 presence check on abort on its original connection", async () => {
+    const harness = await clientHarness({ clientProtocolVersion: 8 });
+    const controller = new AbortController();
+    const result = harness.client
+      .call(
+        "fill.begin",
+        {
+          transactionId,
+          loginId: transactionId,
+          revision: 1,
+          origin: "https://example.com",
+          presence: "here",
+        },
+        { signal: controller.signal },
+      )
+      .catch((error: unknown) => error);
+    await harness.broker.waitFor("fill.begin");
+    controller.abort();
+    await expect(result).resolves.toMatchObject({ code: "aborted" });
+    await harness.broker.waitFor("signin.cancel");
+    expect(harness.broker.received("signin.cancel")[0]?.params).toEqual({ transactionId });
+    expect(harness.broker.received("hello")).toHaveLength(1);
+  });
+
   it("never sends a card command on a legacy connection", async () => {
     const harness = await clientHarness();
     await expect(harness.client.call("card.probe", {})).rejects.toMatchObject({ code: "invalid" });
@@ -572,7 +646,7 @@ async function clientHarness(
     readonly peerUid?: number;
     readonly peerVerificationTimeoutMs?: number;
     readonly protocolVersion?: number;
-    readonly clientProtocolVersion?: 4 | 5 | 6 | 7;
+    readonly clientProtocolVersion?: 4 | 5 | 6 | 7 | 8;
     readonly requestTimeoutMs?: number;
     readonly signedIdentifier?: string;
     readonly startListening?: boolean;

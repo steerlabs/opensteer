@@ -642,6 +642,7 @@ export class AdministrationService {
         for (const sessionId of revoked.closedBrowserSessions) {
           dependencies.browser.abandonSession(sessionId);
         }
+        await dependencies.browser.profilesRemoved(revoked.deletedBrowserProfiles);
         // The queued work this machine will now never claim has been failed
         // durably; these are the terminal events its Threads are waiting on.
         for (const event of revoked.events) publishWorkspaceEvent(event);

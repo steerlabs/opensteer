@@ -256,6 +256,7 @@ export const HostCapabilitySchema = z.enum([
   "chat-attachments",
   /** Browser viewers can observe a target without requesting pictures. */
   "browser-target-control-v1",
+  "browser-backend-v1",
   "browser-passkeys-v1",
   "browser-capture-region-v1",
   "browser-frame-window-v1",

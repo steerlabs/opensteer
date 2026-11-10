@@ -815,7 +815,7 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
   /**
    * A phone sharing Android's screen or iPhone data apps. The Host fixes the
    * integrations grant and pairing target; the optional iPhone profile pins
-   * its integrations-only native descriptor at redemption and authentication.
+   * its phone native descriptor at redemption and authentication.
    */
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,

@@ -1,6 +1,8 @@
 # Agent Phones
 
-An Android phone added to Opensteer is used whole: its entire screen, like a person's finger.
+An Agent Phone, set up over USB with the Agent Phone app, lends its whole screen. An Android phone
+added from the Opensteer mobile app lends only its browser, not its other apps or screen; use
+opensteer:browser for that. `phones()` lists only Agent Phones.
 `const p = await phone("Pixel")`; `await p.observe()` says whether the screen is on and locked,
 which app is in front, and gives the tree. Actions — `tap`, `longPress`, `swipe`, `drag`, `type`,
 `clear`, `navigate("back" | "home" | "recents" | "notifications" | "quickSettings")`,

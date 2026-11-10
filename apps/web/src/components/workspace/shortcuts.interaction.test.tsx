@@ -102,6 +102,9 @@ it("number and cycle commands select exactly their tab while editing chords leav
   const field = element<HTMLTextAreaElement>("[data-composer-input]");
   field.focus();
   const places = tabOrder(placeList(client.getSnapshot()));
+  expect(places.map((place) => place.key)).toEqual(
+    [...document.querySelectorAll(".side-tab")].map((row) => row.getAttribute("data-place-key")),
+  );
   const threads = client.getSnapshot().threads.map((thread) => thread.id);
   for (let index = 1; index <= 9; index++) {
     if (index === 5) element<HTMLElement>(".side-tab__main").focus();

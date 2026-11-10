@@ -11,6 +11,7 @@ public enum ProtectedName: String, CaseIterable, Sendable {
   case checkpoint
   /// Broker settings; the broker owns the format.
   case settings
+  case personFill = "person-fill"
   /// How the owner keys were made (`OwnerKeyPolicy`).
   case ownerKeyPolicy = "owner-key-policy"
 }

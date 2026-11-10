@@ -42,6 +42,7 @@ export default defineConfig([
     clean: false,
     esbuildPlugins: [signingBuildPlugin()],
     entry: {
+      "autofill-preload": "src/browser/autofill-preload.ts",
       "glass-preload": "src/browser/glass-preload.ts",
       "browser-page-preload": "src/browser/browser-page-preload.ts",
       preload: "src/preload.ts",

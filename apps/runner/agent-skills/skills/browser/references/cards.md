@@ -7,7 +7,8 @@ needs a fresh request if the purchase is still wanted. For no-saved-card, passwo
 on their Mac, add a card or enable agent use, then ask again. Never ask for card values in chat.
 
 Approval is not permission to buy: the person's request must cover the purchase. Cards are browser
-only, on Personal Mac Electron pages; refuse native apps and other unsupported runtimes.
+only, in the Personal main computer's browser; refuse native apps and other devices.
+`main-browser-required` names this restriction, not an update the person needs.
 
 With a ready `crd_` reference, focus each checkout field, then call
 `await fillCard(cardRef, field)`. Payment fields often live in a payment provider's iframe embedded

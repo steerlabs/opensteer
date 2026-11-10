@@ -267,18 +267,18 @@ class RemoteInputEditText(context: Context) : EditText(context) {
     }
     gate.notify(mapOf("type" to "paste", "items" to if (total <= 16 * 1024 * 1024) items else emptyList<Map<String, Any>>()))
   }
-  fun configure(context: Map<String, Any?>?, focused: Boolean, softKeyboard: Boolean = true) {
+  fun configure(context: Map<String, Any?>?, focused: Boolean, softKeyboard: Boolean = true, keyboardMayReplaceText: Boolean = true) {
     gate.enqueue {
       if (context?.get("contextId") as? String != contextId) {
         finishComposition()
         // The ending's acknowledgement precedes the reset and new-context input.
-        gate.enqueue { applyConfiguration(context, focused, softKeyboard) }
+        gate.enqueue { applyConfiguration(context, focused, softKeyboard, keyboardMayReplaceText) }
       } else {
-        applyConfiguration(context, focused, softKeyboard)
+        applyConfiguration(context, focused, softKeyboard, keyboardMayReplaceText)
       }
     }
   }
-  private fun applyConfiguration(context: Map<String, Any?>?, focused: Boolean, softKeyboard: Boolean) {
+  private fun applyConfiguration(context: Map<String, Any?>?, focused: Boolean, softKeyboard: Boolean, keyboardMayReplaceText: Boolean) {
     val nextContext = context?.get("contextId") as? String
     if (nextContext != contextId) {
       contextId = nextContext
@@ -292,25 +292,7 @@ class RemoteInputEditText(context: Context) : EditText(context) {
     sensitive = field?.get("sensitive") == true
     multiline = field?.get("multiline") == true
     val mode = field?.get("inputMode") as? String
-    var type = when (mode) {
-      "numeric" -> InputType.TYPE_CLASS_NUMBER
-      "decimal" -> InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
-      "tel" -> InputType.TYPE_CLASS_PHONE
-      "email" -> InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
-      "url" -> InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
-      else -> InputType.TYPE_CLASS_TEXT
-    }
-    if (sensitive) type = if (mode == "numeric" || mode == "decimal") type or InputType.TYPE_NUMBER_VARIATION_PASSWORD else InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-    else if (type and InputType.TYPE_MASK_CLASS == InputType.TYPE_CLASS_TEXT) {
-      type = type or InputType.TYPE_TEXT_FLAG_AUTO_CORRECT
-      if (multiline) type = type or InputType.TYPE_TEXT_FLAG_MULTI_LINE
-      type = type or when (field?.get("autocapitalize")) {
-        "characters" -> InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
-        "words" -> InputType.TYPE_TEXT_FLAG_CAP_WORDS
-        "on", "sentences" -> InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-        else -> 0
-      }
-    }
+    val type = remoteInputType(field, keyboardMayReplaceText)
     if (inputType != type) { mutating = true; inputType = type; mutating = false }
     imeOptions = when (field?.get("enterKeyHint")) {
       "done" -> EditorInfo.IME_ACTION_DONE

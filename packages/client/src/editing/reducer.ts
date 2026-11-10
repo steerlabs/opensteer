@@ -590,7 +590,10 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
         break;
       }
       const binding = resolveEditingBinding(event, state.platform);
-      if (binding && (state.context?.field || binding.kind !== "command")) {
+      if (
+        binding &&
+        (state.context?.field || state.abilities.basicInput || binding.kind !== "command")
+      ) {
         if (binding.kind === "command") {
           reset();
           prevent();
@@ -625,6 +628,11 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
     }
     case "beforeinput": {
       if (state.composition) break;
+      if (state.abilities.basicInput && event.inputType === "insertReplacementText") {
+        prevent();
+        reset();
+        break;
+      }
       nativeKeyInput(event.inputType, event.data);
       if (isReturn(event.inputType)) {
         prevent();
@@ -643,6 +651,14 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
       break;
     }
     case "input": {
+      if (
+        state.abilities.basicInput &&
+        event.inputType === "insertReplacementText" &&
+        !state.composition
+      ) {
+        reset();
+        break;
+      }
       const native = state.nativeKey;
       if (native && typeof native !== "string" && !state.composition && !event.composing) {
         const expected = insert(state.proxy, native.key);
@@ -749,12 +765,20 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
     case "cut": {
       prevent();
       interrupt();
+      if (event.type === "cut" && state.abilities.basicInput) break;
       emit({ kind: event.type });
       break;
     }
     case "paste": {
       prevent();
       interrupt();
+      if (state.abilities.basicInput) {
+        const text = event.items.find(
+          (item) => item.type === "text/plain" && item.name === undefined,
+        );
+        if (text) emit({ kind: "paste", items: [text] });
+        break;
+      }
       if (
         state.abilities.clipboard === "text" &&
         event.items.some((item) => item.type !== "text/plain")
@@ -766,5 +790,10 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
       break;
     }
   }
-  return { state, operations, instruction, ...(refusal ? { refusal } : {}) };
+  return {
+    state,
+    operations,
+    instruction,
+    ...(refusal && (!state.abilities.basicInput || refusal === "too-large") ? { refusal } : {}),
+  };
 }

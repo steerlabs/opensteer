@@ -9,7 +9,10 @@ import { z } from "zod";
 import type { BrowserFrameView, BrowserCommand, BrowserRasterDemand } from "./client.js";
 import type { WebSocketClient } from "./host-session-client.js";
 import { healthySocketMs } from "./realtime-frames.js";
+import { browserBasicInputAllows } from "@opensteer/protocol/browser";
+import { browserInputMode, type BrowserInputMode } from "./browser-input.js";
 export interface BrowserWatchState {
+  readonly input?: BrowserInputMode;
   /** The current socket has received its first authorized snapshot. */
   readonly admitted?: boolean;
   /** Identity of this authorized socket, including reconnects React may batch together. */
@@ -144,6 +147,7 @@ export class BrowserWatchStore {
       if (browserCommandNeedsNoView(command)) return;
       throw new Error("The targeted browser control is not synchronized.");
     }
+    if (target.state.input === "basic" && !browserBasicInputAllows(command)) return;
     if (
       target.state.inputError &&
       command.type !== "input.wheel" &&
@@ -532,6 +536,7 @@ export class BrowserWatchStore {
               ...this.#kept(target),
               admitted: true,
               admissionId,
+              input: browserInputMode(message.editingVersion, message.basicInput),
               status: target.pictureHolds ? "connecting" : "live",
             });
           } else if (!synchronized) throw new Error("Browser event arrived before its snapshot.");
@@ -556,6 +561,13 @@ export class BrowserWatchStore {
                 status: "connecting",
               });
           } else if (message.type === "browser.error") {
+            if (
+              message.error.reason === "unsupported-operation" ||
+              message.error.reason === "target-suspended"
+            ) {
+              this.onMessage?.(target.sessionId, message, target.surfaceId);
+              return;
+            }
             if (message.error.reason === "browser-target-control-unsupported")
               throw new Error(message.error.message);
             if (
@@ -627,6 +639,7 @@ export class BrowserWatchStore {
         this.#set(target, {
           admitted: true,
           admissionId,
+          ...(target.state.input ? { input: target.state.input } : {}),
           error: target.state.error,
           inputError: target.state.inputError ?? null,
           status: "live",
@@ -714,7 +727,11 @@ export class BrowserWatchStore {
    * replaces it; nothing about it is current, so it takes no input.
    */
   #kept(target: Watch): BrowserWatchState {
-    return { ...empty, frame: target.state.frame };
+    return {
+      ...empty,
+      frame: target.state.frame,
+      ...(target.state.input ? { input: target.state.input } : {}),
+    };
   }
   #set(target: Watch, state: BrowserWatchState): void {
     const before = target.state;
@@ -738,6 +755,7 @@ export class BrowserWatchStore {
       before.status !== state.status ||
       before.error !== state.error ||
       before.inputError !== state.inputError ||
+      before.input !== state.input ||
       before.frame?.header.surfaceId !== state.frame?.header.surfaceId ||
       before.frame?.header.geometryRevision !== state.frame?.header.geometryRevision
     ) {

@@ -1,6 +1,6 @@
 interface:
   display_name: "Opensteer Computer Use"
-  short_description: "See and operate Mac apps and Android phones with code"
+  short_description: "See and operate Mac apps and Agent Phones with code"
   default_prompt: "Use $opensteer:computer-use to see and operate an approved Mac app or phone with the computer tool."
 dependencies:
   tools:

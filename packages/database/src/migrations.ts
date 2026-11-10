@@ -4840,9 +4840,10 @@ export function migrationProvider() {
         "0166_memory_pass_activity": memoryPassActivityMigration,
         "0167_quiet_tasks": quietTasksMigration,
         "0168_devices": devicesMigration,
-        "0169_access_foundation": accessFoundationMigration,
-        "0170_project_execution_preparation": projectExecutionPreparationMigration,
-        "0171_team_administration": teamAdministrationMigration,
+        "0169_browser_profile_homes": browserProfileHomesMigration,
+        "0170_access_foundation": accessFoundationMigration,
+        "0171_project_execution_preparation": projectExecutionPreparationMigration,
+        "0172_team_administration": teamAdministrationMigration,
       };
     },
   };
@@ -7792,5 +7793,148 @@ export const devicesMigration: Migration = {
       await sql.raw(`alter table public.requests drop constraint ${name}`).execute(database);
       await sql.raw(`alter table public.requests add constraint ${name} ${next}`).execute(database);
     }
+  },
+};
+
+export const browserDeviceGrantsMigration: Migration = {
+  async up(database) {
+    await sql`alter table runner_enrollments add column if not exists issuance_modules jsonb;
+      update runner_enrollments set issuance_modules = allowed_modules where issuance_modules is null;`.execute(
+      database,
+    );
+    const candidates = await sql<{
+      id: string;
+      createdBy: string;
+      idempotencyKey: string;
+      name: string;
+      requestFingerprint: string;
+      createdAt: Date;
+      expiresAt: Date;
+    }>`select id,created_by,idempotency_key,name,request_fingerprint,created_at,expires_at
+      from runner_enrollments where owner_kind = 'user' and runner_kind = 'local'
+        and allowed_modules = '["integrations"]'::jsonb and device_profile is null`.execute(
+      database,
+    );
+    const phoneEnrollmentIds: string[] = [];
+    for (const row of candidates.rows) {
+      const matches = (seconds: number) =>
+        row.requestFingerprint ===
+        `sha256:${createHash("sha256")
+          .update(
+            JSON.stringify([
+              "opensteer-runner-enrollment-issuance-v2",
+              "allowedModules",
+              ["integrations"],
+              "createdBy",
+              row.createdBy,
+              "idempotencyKey",
+              row.idempotencyKey,
+              "purpose",
+              "phone",
+              "runnerKind",
+              "local",
+              "lifetimeSeconds",
+              seconds,
+              "name",
+              row.name,
+            ]),
+          )
+          .digest("base64url")}`;
+      const estimated = Math.round((row.expiresAt.getTime() - row.createdAt.getTime()) / 1000);
+      let phone = estimated >= 60 && estimated <= 86_400 && matches(estimated);
+      // Issuance time precedes the database write; a delayed write cannot change signed intent.
+      for (let seconds = 60; !phone && seconds <= 86_400; seconds++) phone = matches(seconds);
+      if (phone) phoneEnrollmentIds.push(row.id);
+    }
+    await sql`create temporary table browser_phone_enrollments (id text primary key) on commit drop`.execute(
+      database,
+    );
+    if (phoneEnrollmentIds.length)
+      await sql`insert into browser_phone_enrollments select unnest(${phoneEnrollmentIds}::text[])`.execute(
+        database,
+      );
+    await sql`
+      alter table runner_enrollments drop constraint runner_enrollments_device_profile_check;
+      alter table runners drop constraint runners_device_profile_check;
+      update runner_enrollments set allowed_modules = '["browser","integrations"]'::jsonb
+        where owner_kind = 'user' and runner_kind = 'local' and allowed_modules = '["integrations"]'::jsonb
+          and (device_profile = 'iphone' or id in (select id from browser_phone_enrollments)
+            or exists (select 1 from deployments where deployment_shape->>'kind' = 'personal'));
+      update runners set allowed_modules = '["browser","integrations"]'::jsonb
+        where owner_kind = 'user' and kind = 'local' and allowed_modules = '["integrations"]'::jsonb
+          and (device_profile = 'iphone' or enrollment_token_hash in (
+            select token_hash from runner_enrollments where id in (select id from browser_phone_enrollments))
+            or exists (select 1 from deployments where deployment_shape->>'kind' = 'personal'));
+      update runner_enrollments set allowed_modules = '["browser","integrations","messaging","shell"]'::jsonb
+        where owner_kind = 'user' and runner_kind = 'local'
+          and allowed_modules @> '["integrations","messaging","shell"]'::jsonb and jsonb_array_length(allowed_modules) = 3
+          and exists (select 1 from deployments where deployment_shape->>'kind' = 'personal');
+      update runners set allowed_modules = '["browser","integrations","messaging","shell"]'::jsonb
+        where owner_kind = 'user' and kind = 'local'
+          and allowed_modules @> '["integrations","messaging","shell"]'::jsonb and jsonb_array_length(allowed_modules) = 3
+          and exists (select 1 from deployments where deployment_shape->>'kind' = 'personal');
+      alter table runner_enrollments add constraint runner_enrollments_device_profile_check check (
+        device_profile is null or (device_profile = 'iphone' and runner_kind = 'local'
+          and owner_kind = 'user' and allowed_modules = '["browser","integrations"]'::jsonb));
+      alter table runners add constraint runners_device_profile_check check (
+        device_profile is null or (device_profile = 'iphone' and kind = 'local'
+          and owner_kind = 'user' and allowed_modules = '["browser","integrations"]'::jsonb));
+    `.execute(database);
+  },
+};
+
+export const browserProfileHomesMigration: Migration = {
+  async up(database) {
+    await browserDeviceGrantsMigration.up(database);
+    await sql`
+      alter table browser_profiles add column home_runner_id text references runners(id),
+        drop constraint browser_profiles_storage_engine_check,
+        add constraint browser_profiles_storage_engine_check check (storage_engine in ('electron','chromium','wkwebview','android-webview'));
+      alter table browser_profile_deletions drop constraint browser_profile_deletions_engine_check,
+        add constraint browser_profile_deletions_engine_check check (engine in ('electron','chromium','wkwebview','android-webview')),
+        drop constraint browser_profile_deletions_state_check,
+        add constraint browser_profile_deletions_state_check check (state in ('pending-computer','pending-restart','deleted','unconfirmed'));
+      drop index browser_profile_deletions_pending;
+      create index browser_profile_deletions_pending on browser_profile_deletions (runner_id,storage_instance_id)
+        where state in ('pending-computer','pending-restart');
+      update browser_profiles set home_runner_id = storage_runner_id where storage_runner_id is not null;
+      update browser_profiles set home_runner_id = (
+        select id from runners where kind = 'main' and owner_kind = 'deployment' and owner_user_id is null and revoked_at is null
+      ) where home_runner_id is null and exists (select 1 from deployments where deployment_shape->>'kind' = 'personal');
+      create index browser_profiles_home_runner on browser_profiles(home_runner_id);
+      alter table browser_profiles add constraint browser_profiles_home_storage_check
+        check (storage_state <> 'local' or (home_runner_id is not null and storage_runner_id = home_runner_id));
+      create function adopt_browser_profile_storage_home() returns trigger language plpgsql as $$
+      begin
+        if new.storage_state = 'local' and new.home_runner_id is null then
+          new.home_runner_id := new.storage_runner_id;
+        end if;
+        return new;
+      end;
+      $$;
+      create trigger browser_profiles_adopt_storage_home before insert or update on browser_profiles
+        for each row execute function adopt_browser_profile_storage_home();
+      create temporary table removed_browser_homes on commit drop as
+        select p.id from browser_profiles p join runners r on r.id = p.home_runner_id where r.revoked_at is not null;
+      update workspace_tabs set closed_at = coalesce(closed_at,now()) where group_id in (
+        select session.tab_group_id from browser_sessions session where session.profile_id in (select id from removed_browser_homes)
+          and not exists (select 1 from browser_sessions newer where newer.tab_group_id = session.tab_group_id
+            and (newer.created_at,newer.id) > (session.created_at,session.id)));
+      update browser_sessions set state = 'failed',closed_at = now(),updated_at = now()
+        where profile_id in (select id from removed_browser_homes) and state in ('starting','ready','closing');
+      delete from browser_session_attachments where session_id in (
+        select id from browser_sessions where profile_id in (select id from removed_browser_homes));
+      update browser_profiles set archived_at = coalesce(archived_at,now()),updated_at = now()
+        where id in (select id from removed_browser_homes);
+      delete from browser_history_entries where profile_id in (select id from removed_browser_homes);
+      delete from browser_history_icons where profile_id in (select id from removed_browser_homes);
+      update browser_profile_grants set revoked_at = coalesce(revoked_at,now()) where profile_id in (select id from removed_browser_homes);
+      insert into browser_profile_deletions (deletion_id,profile_id,binding_version,deployment_id,runner_id,storage_instance_id,binding_id,engine,state)
+        select gen_random_uuid(),id,storage_binding_version,storage_deployment_id,storage_runner_id,storage_instance_id,storage_binding_id,storage_engine,'unconfirmed'
+        from browser_profiles where id in (select id from removed_browser_homes) and storage_state = 'local'
+        on conflict (profile_id) do nothing;
+      update browser_profile_deletions set state = 'unconfirmed',updated_at = now()
+        where runner_id in (select id from runners where revoked_at is not null) and state <> 'deleted';
+    `.execute(database);
   },
 };

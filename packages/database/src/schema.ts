@@ -615,6 +615,7 @@ interface ExecutionEnvironmentTable {
 }
 
 interface RunnerEnrollmentTable {
+  issuanceModules: Generated<readonly RunnerModuleName[] | null>;
   deviceProfile: Generated<"iphone" | null>;
   id: string;
   name: string;
@@ -1475,6 +1476,7 @@ interface CredentialVaultCanaryTable {
 }
 
 export interface BrowserProfileTable {
+  homeRunnerId: Generated<RunnerId | null>;
   id: BrowserProfileId;
   ownerId: UserId;
   name: string;
@@ -1500,7 +1502,7 @@ export interface BrowserProfileDeletionTable {
   storageInstanceId: string;
   bindingId: string;
   engine: BrowserEngine;
-  state: "pending-computer" | "pending-restart" | "deleted";
+  state: "pending-computer" | "pending-restart" | "deleted" | "unconfirmed";
   createdAt: Timestamp;
   updatedAt: Timestamp;
   deletedAt: NullableTimestamp;

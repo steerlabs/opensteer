@@ -783,6 +783,9 @@ importers:
       '@opensteer/apple-data':
         specifier: workspace:*
         version: link:../../packages/apple-data
+      '@opensteer/browser-core':
+        specifier: workspace:*
+        version: link:../../packages/browser-core
       '@opensteer/client':
         specifier: workspace:*
         version: link:../../packages/client
@@ -1335,6 +1338,9 @@ importers:
 
   packages/browser-core:
     devDependencies:
+      '@opensteer/protocol':
+        specifier: workspace:*
+        version: link:../protocol
       '@types/node':
         specifier: 'catalog:'
         version: 26.2.0
@@ -1400,6 +1406,9 @@ importers:
       esbuild:
         specifier: 0.28.2
         version: 0.28.2
+      happy-dom:
+        specifier: 21.0.4
+        version: 21.0.4
       react:
         specifier: 'catalog:'
         version: 19.3.0

@@ -6,16 +6,31 @@ import {
   browserProfileProjects,
   canRespondToRequests,
   mutationIdempotencyKey,
+  profileHomeChoice,
   type BrowserProfileSettingsRow,
   type HostClient,
   type HostSnapshot,
 } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
-import { useState, type ReactNode } from "react";
-import { Alert, Pressable, ScrollView, StyleSheet, View } from "react-native";
+import { useRef, useState, type ReactNode } from "react";
+import {
+  Alert,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  View,
+  useWindowDimensions,
+  type ScrollViewInstance,
+} from "react-native";
 import { operationDetail } from "../client/mobile-client.js";
-import { material, space, touchTarget } from "../theme.js";
+import { useHereDeviceId } from "../computers/here-device.js";
+import { HomeMenu } from "./profile-home-menu.js";
+import { color, material, space, touchTarget } from "../theme.js";
+import { Symbol } from "../ui/symbol.js";
+import { computerSymbols } from "./settings-model.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import { AppText, Field, Notice, RowGroup, SecondaryButton, SwitchRow } from "../ui/primitives.js";
 import { Screen, useListContentInsets, useReadingColumn } from "../ui/screen.js";
@@ -105,11 +120,19 @@ function BrowserProfilesSettings({
   const navigation = useNavigation();
   const snapshot = useHostSelector(hostClient, selectSnapshot);
   const online = canRespondToRequests(snapshot);
-  const rows = browserProfileSettingsRows(snapshot);
+  const hereId = useHereDeviceId(deploymentId);
+  const rows = browserProfileSettingsRows(snapshot, hereId);
+  const homes = profileHomeChoice(snapshot, hereId);
   const deletions = browserProfileDeletionRows(snapshot);
   const column = useReadingColumn();
   const insets = useListContentInsets(space[32]);
   const [draft, setDraft] = useState<string | null>(null);
+  const scroll = useRef<ScrollViewInstance>(null);
+  const [chosenHome, setHome] = useState<string | null>(null);
+  // The person's pick stands while it is still on offer; the default follows the list.
+  const home = homes
+    ? (homes.options.find(({ id }) => id === chosenHome)?.id ?? homes.initial)
+    : null;
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const create = () => {
@@ -121,7 +144,7 @@ function BrowserProfilesSettings({
       .dispatch({
         type: "browser.profile.create",
         idempotencyKey: mutationIdempotencyKey("browser-profile"),
-        input: { name },
+        input: { name, ...(home ? { homeRunnerId: home } : {}) },
       })
       .then(() => setDraft(null))
       .catch((error: unknown) =>
@@ -131,90 +154,148 @@ function BrowserProfilesSettings({
   };
   return (
     <Screen edgeToEdge>
-      <ScrollView
-        contentContainerStyle={[styles.content, column, insets]}
-        contentInsetAdjustmentBehavior="automatic"
-        keyboardShouldPersistTaps="handled"
+      {/* Android ignores the scroll view's keyboard insets; it gives up the keyboard's height. */}
+      <KeyboardAvoidingView
+        behavior="height"
+        enabled={Platform.OS === "android"}
+        style={styles.fill}
       >
-        {online ? null : (
-          <Notice
-            title="Not connected"
-            detail="Reconnect to manage browser profiles."
-            tone="neutral"
-          />
-        )}
-        {rows.length === 0 && deletions.length === 0 ? (
-          <AppText role="secondary" tone="muted">
-            No profiles yet.
-          </AppText>
-        ) : (
-          <RowGroup>
-            {rows.map((row) => (
-              <ProfileRow
-                key={row.profile.id}
-                row={row}
-                snapshot={snapshot}
-                hostClient={hostClient}
-                online={online}
-                onHistory={() =>
-                  navigation.navigate("BrowserHistory", { deploymentId, profileId: row.profile.id })
-                }
-              />
-            ))}
-          </RowGroup>
-        )}
-        {deletions.map((deletion) => (
-          <Notice
-            key={deletion.profileId}
-            title="Deleted profile"
-            detail={deletion.status}
-            tone="neutral"
-          />
-        ))}
-        {draft === null ? (
-          <SecondaryButton
-            label="New profile"
-            disabled={!online}
-            onPress={() => {
-              setDraft("");
-              setFailure(null);
-            }}
-          />
-        ) : (
-          <>
-            <Field
-              label="Name"
-              input={{
-                autoFocus: true,
-                maxLength: 120,
-                value: draft,
-                onChangeText: setDraft,
-                onSubmitEditing: create,
-                returnKeyType: "done",
+        <ScrollView
+          automaticallyAdjustKeyboardInsets
+          contentContainerStyle={[styles.content, column, insets]}
+          contentInsetAdjustmentBehavior="automatic"
+          keyboardShouldPersistTaps="handled"
+          // The new profile's field and its buttons end the page: keep them above the keyboard.
+          onLayout={() => {
+            if (draft !== null) scroll.current?.scrollToEnd();
+          }}
+          ref={scroll}
+        >
+          {online ? null : (
+            <Notice
+              title="Not connected"
+              detail="Reconnect to manage browser profiles."
+              tone="neutral"
+            />
+          )}
+          {rows.length === 0 && deletions.length === 0 ? (
+            <AppText role="secondary" tone="muted">
+              No profiles yet.
+            </AppText>
+          ) : (
+            <RowGroup>
+              {rows.map((row) => (
+                <ProfileRow
+                  key={row.profile.id}
+                  row={row}
+                  snapshot={snapshot}
+                  hostClient={hostClient}
+                  online={online}
+                  onHistory={() =>
+                    navigation.navigate("BrowserHistory", {
+                      deploymentId,
+                      profileId: row.profile.id,
+                    })
+                  }
+                />
+              ))}
+            </RowGroup>
+          )}
+          {deletions.map((deletion) => (
+            <Notice
+              key={deletion.profileId}
+              title="Deleted profile"
+              detail={deletion.status}
+              tone="neutral"
+            />
+          ))}
+          {draft === null ? (
+            <SecondaryButton
+              label="New profile"
+              disabled={!online}
+              onPress={() => {
+                setDraft("");
+                setFailure(null);
               }}
             />
-            <View style={styles.actions}>
-              <SecondaryButton
-                label="Create profile"
-                busy={busy}
-                disabled={!online || draft.trim() === ""}
-                onPress={create}
+          ) : (
+            <>
+              <Field
+                label="Name"
+                input={{
+                  autoFocus: true,
+                  maxLength: 120,
+                  value: draft,
+                  onChangeText: setDraft,
+                  onSubmitEditing: create,
+                  returnKeyType: "done",
+                }}
+                {...(homes && home
+                  ? {
+                      trailing: (
+                        <HomeMenu disabled={busy} home={home} homes={homes} onChoose={setHome} />
+                      ),
+                    }
+                  : {})}
               />
-              <SecondaryButton label="Cancel" disabled={busy} onPress={() => setDraft(null)} />
-            </View>
-          </>
-        )}
-        {failure === null ? null : (
-          <AppText role="caption" tone="danger">
-            {failure}
+              <View style={styles.actions}>
+                <SecondaryButton
+                  label="Create profile"
+                  busy={busy}
+                  disabled={!online || draft.trim() === ""}
+                  onPress={create}
+                />
+                <SecondaryButton label="Cancel" disabled={busy} onPress={() => setDraft(null)} />
+              </View>
+            </>
+          )}
+          {failure === null ? null : (
+            <AppText role="caption" tone="danger">
+              {failure}
+            </AppText>
+          )}
+          <AppText role="caption" tone="muted">
+            Opensteer can use every profile. A project can only use the profiles you choose for it.
           </AppText>
-        )}
-        <AppText role="caption" tone="muted">
-          Opensteer can use every profile. A project can only use the profiles you choose for it.
-        </AppText>
-      </ScrollView>
+        </ScrollView>
+      </KeyboardAvoidingView>
     </Screen>
   );
+}
+
+/**
+ * Where a profile lives, said only when that is not this phone. At the
+ * accessibility text sizes it stands under the name, as a system list's value
+ * does, rather than squeeze it.
+ */
+function ProfileHome({
+  row,
+  stacked,
+}: {
+  readonly row: BrowserProfileSettingsRow;
+  readonly stacked: boolean;
+}): ReactNode {
+  if (row.device)
+    return (
+      <View style={[styles.home, stacked && styles.homeStacked]}>
+        <Symbol name={computerSymbols[row.device.glyph]} size={13} tint={color.muted} />
+        <AppText numberOfLines={1} role="caption" style={styles.homeName} tone="muted">
+          {row.device.name}
+        </AppText>
+        {row.device.online ? null : (
+          <AppText numberOfLines={1} role="caption" tone="muted">
+            · Offline
+          </AppText>
+        )}
+      </View>
+    );
+  if (row.unopened)
+    return (
+      <AppText numberOfLines={1} role="caption" style={!stacked && styles.home} tone="muted">
+        Not opened yet
+      </AppText>
+    );
+  return null;
 }
 
 function ProfileRow({
@@ -231,6 +312,7 @@ function ProfileRow({
   readonly onHistory: () => void;
 }): ReactNode {
   const [expanded, setExpanded] = useState(false);
+  const stacked = useWindowDimensions().fontScale > accessibilityTextScale;
   const [projectsShown, setProjectsShown] = useState(false);
   const [draft, setDraft] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -281,14 +363,26 @@ function ProfileRow({
     <View style={styles.row}>
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={`${row.profile.name}, ${browserProfileAccessSummary(row)}`}
+        accessibilityLabel={[
+          row.profile.name,
+          row.device
+            ? `on ${row.device.name}${row.device.online ? "" : ", offline"}`
+            : row.unopened
+              ? "not opened yet"
+              : null,
+          browserProfileAccessSummary(row),
+        ]
+          .filter(Boolean)
+          .join(", ")}
         accessibilityState={{ expanded }}
         onPress={() => setExpanded(!expanded)}
         style={styles.rowHead}
       >
         {row.identity.kind === "profile" ? (
           <View style={[styles.identity, material.mark, { backgroundColor: row.identity.tint }]}>
-            <AppText role="bodyMedium">{row.identity.initial}</AppText>
+            <AppText maxFontSizeMultiplier={1} role="bodyMedium">
+              {row.identity.initial}
+            </AppText>
           </View>
         ) : null}
         <View style={styles.rowText}>
@@ -296,7 +390,9 @@ function ProfileRow({
           <AppText role="caption" tone="muted">
             {browserProfileAccessSummary(row)}
           </AppText>
+          {stacked ? <ProfileHome row={row} stacked /> : null}
         </View>
+        {stacked ? null : <ProfileHome row={row} stacked={false} />}
       </Pressable>
       {!expanded ? null : (
         <>
@@ -412,6 +508,8 @@ function ProfileRow({
   );
 }
 
+/** Past the largest standard size, iOS's accessibility sizes begin. */
+const accessibilityTextScale = 1.35;
 const selectSnapshot = (snapshot: HostSnapshot) => snapshot;
 const selectUserId = (snapshot: HostSnapshot) =>
   snapshot.session === "authenticated" ? (snapshot.user?.id ?? null) : null;
@@ -419,9 +517,20 @@ const styles = StyleSheet.create({
   actions: { flexDirection: "row", flexWrap: "wrap", gap: space[8] },
   away: { gap: space[12], paddingTop: space[24] },
   content: { gap: space[24], paddingTop: space[12] },
+  fill: { flex: 1 },
   row: { gap: space[10], paddingHorizontal: space[16], paddingVertical: space[12] },
   rowHead: { alignItems: "center", flexDirection: "row", gap: space[10], minHeight: touchTarget },
   rowText: { flex: 1, gap: space[2] },
+  disabled: { opacity: 0.5 },
+  home: {
+    alignItems: "center",
+    flexDirection: "row",
+    flexShrink: 1,
+    gap: space[4],
+    maxWidth: "55%",
+  },
+  homeStacked: { maxWidth: "100%" },
+  homeName: { color: color.muted, flexShrink: 1 },
   identity: {
     width: 28,
     height: 28,

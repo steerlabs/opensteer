@@ -4,6 +4,7 @@ import {
   FadeInUp,
   FadeOut,
   LinearTransition,
+  withDelay,
   withSpring,
   withTiming,
 } from "react-native-reanimated";
@@ -71,5 +72,27 @@ export function bubblePop() {
       transform: [{ scale: withSpring(1, bubbleSpring) }],
     },
     initialValues: { opacity: 0.2, transform: [{ scale: 0.88 }] },
+  };
+}
+
+/**
+ * One of a row of choices arriving together, such as saved logins above the
+ * keyboard: each rises a little and settles a beat after the one before it,
+ * so the row reads as offered rather than switched on.
+ */
+export function enterInTurn(index: number) {
+  const delay = Math.min(index, 4) * 45;
+  return () => {
+    "worklet";
+    return {
+      animations: {
+        opacity: withDelay(delay, withTiming(1, { duration: 140 })),
+        transform: [
+          { translateY: withDelay(delay, withSpring(0, bubbleSpring)) },
+          { scale: withDelay(delay, withSpring(1, bubbleSpring)) },
+        ],
+      },
+      initialValues: { opacity: 0, transform: [{ translateY: 10 }, { scale: 0.9 }] },
+    };
   };
 }

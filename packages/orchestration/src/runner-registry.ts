@@ -36,6 +36,7 @@ import {
   type RunnerAuxiliaryTicketClaims,
   type RunnerConnectionFence,
   type RunnerConnectionLeaseId,
+  advertisedRunnerModules,
   type RunnerModuleName,
   type RunnerModuleReadiness,
   type RunnerModuleReadinessReport,
@@ -620,7 +621,12 @@ export class RunnerRegistry {
     try {
       await peer.send({
         ...identity.fence,
-        allowedModules: [...identity.allowedModules],
+        allowedModules:
+          identity.device?.platform === "ios"
+            ? identity.allowedModules.filter((module) =>
+                advertisedRunnerModules(identity.modules).includes(module),
+              )
+            : [...identity.allowedModules],
         connectionLeaseExpiresAt: new Date(connection.leaseExpiresAt).toISOString(),
         environmentIds: [...identity.environmentIds],
         // Several renewals fit in one execution lease, so one lost heartbeat

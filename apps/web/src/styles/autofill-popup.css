@@ -1,0 +1,16 @@
+/* A transparent window with no shadow of its own: the panel draws its lift
+   inside the window's inset. It stays opaque, as a blur here would have only
+   this empty document to blur, and the page would show through as words. */
+:root {
+  --fill-glass: var(--fill-float);
+  --blur-glass: none;
+}
+html,
+body,
+#root {
+  background: transparent;
+  overflow: hidden;
+}
+.autofill-popup {
+  width: max-content;
+}

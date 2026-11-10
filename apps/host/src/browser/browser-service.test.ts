@@ -23,6 +23,7 @@ import {
   browserHostMethods,
   BrowserServerMessageSchema,
   browserSessionMaxThreads,
+  browserSessionTabLimit,
   BrowserSurfaceIdSchema,
   BrowserSurfaceSchema,
   BrowserTabSummaryViewSchema,
@@ -65,6 +66,7 @@ const editingEvidenceRoot =
   `/tmp/opensteer-browser-service-${randomUUID()}`;
 
 const cleanups: Array<() => Promise<void>> = [];
+const eligibleRunners = new Map<RunnerId, string>();
 
 /**
  * One computer's browser, reachable at a test runtime's socket. Every browser
@@ -76,6 +78,7 @@ function runnerTarget(options: {
   readonly navigationAttributionVersion?: boolean;
   readonly passkeysEnabled?: boolean;
   readonly passkeys?: boolean;
+  readonly personFill?: boolean;
   readonly sharedControl?: boolean;
   readonly targetControl?: boolean;
   readonly rasterDemand?: boolean;
@@ -89,12 +92,14 @@ function runnerTarget(options: {
   readonly url: URL;
 }): BrowserRuntimeTargetResolver & { readonly runnerId: RunnerId } {
   const runnerId = options.runnerId ?? createId("runner");
+  eligibleRunners.set(runnerId, options.label ?? "Test computer");
   const runtimeId = options.runtimeId ?? "runtime-1";
   const url = browserRuntimeSocketUrl(options.url);
   return {
     placements: () => [
       {
         available: true,
+        agents: true,
         environmentIds: [...(options.environmentIds ?? [])],
         kind: "runner" as const,
         label: options.label ?? "Test computer",
@@ -129,9 +134,11 @@ function runnerTarget(options: {
               return socket;
             },
             localProfileStorage: fixtureStorage,
+            main: true,
             navigationVersion: options.navigationVersion ?? false,
             navigationAttributionVersion: options.navigationAttributionVersion ?? false,
             passkeys: options.passkeys === true,
+            personFill: options.personFill === true,
             cdpBoundary: true,
             workspaceTabRestoreVersion: options.workspaceTabRestoreVersion ?? false,
             sharedControl: options.sharedControl ?? true,
@@ -187,6 +194,7 @@ const profileStateOptions = {
 
 afterEach(async () => {
   await Promise.allSettled(cleanups.splice(0).map((cleanup) => cleanup()));
+  eligibleRunners.clear();
   vi.unstubAllEnvs();
 });
 
@@ -482,6 +490,50 @@ describe("BrowserService", () => {
     expect(runtime.receivedCommands()).toHaveLength(2);
   });
 
+  it("opens a person's link in another browser once theirs holds all the tabs it can", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
+    const ownerId = createId("user"),
+      workspaceId = createId("workspace");
+    const repository = new MemoryBrowserRepository(ownerId, workspaceId, "main");
+    const saved = new Map<string, string[]>();
+    const service = freshService({
+      keys,
+      repository,
+      runtime,
+      workspaceTabs: new Proxy(
+        { tabIds: async (sessionId: string) => saved.get(sessionId) ?? [] },
+        { get: (store, key) => (key === "tabIds" ? store.tabIds : async () => undefined) },
+      ) as unknown as WorkspaceTabStore,
+    });
+    const open = () =>
+      service.openTab(ownerId, {
+        type: "browser.tab.open",
+        identity: { kind: "guest" },
+        idempotencyKey: randomUUID(),
+      });
+    const first = await open();
+    // Its listed page is also saved; asleep tabs fill the rest but one place.
+    saved.set(first.sessionId, [
+      first.tabId,
+      ...Array.from({ length: browserSessionTabLimit - 2 }, (_, index) => `bsf_asleep-${index}`),
+    ]);
+    const reused = open();
+    const request = await runtime.nextCommand();
+    // The open still in flight holds the last place, so a concurrent one goes elsewhere.
+    const concurrent = await open();
+    expect(concurrent.browserStarted).toBe(true);
+    expect(concurrent.sessionId).not.toBe(first.sessionId);
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: request.requestId,
+      result: { tabId: "bsf_reused" },
+    });
+    expect((await reused).sessionId).toBe(first.sessionId);
+  });
+
   it("keeps an unanswered additional tab recoverable by its original key", async () => {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
@@ -601,9 +653,12 @@ describe("BrowserService", () => {
         type: "browser.tab.open",
         idempotencyKey: randomUUID(),
         identity: { kind: "profile", profileId: profile.id },
-        placement: { kind: "runner", runnerId: createId("runner") },
+        placement: { kind: "runner", runnerId: relay.runnerId },
       }),
-    ).rejects.toThrow("owning computer");
+    ).rejects.toMatchObject({
+      reason: "browser-tab-open-failed",
+      code: "conflict",
+    });
     expect(runtime.connectionCount()).toBe(0);
     const offline = new BrowserService({
       ...nativeProfileOptions(),
@@ -620,7 +675,10 @@ describe("BrowserService", () => {
         idempotencyKey: randomUUID(),
         identity: { kind: "profile", profileId: profile.id },
       }),
-    ).rejects.toThrow("Waiting for this computer");
+    ).rejects.toMatchObject({
+      reason: "browser-profile-home-unavailable",
+      details: { runnerId: relay.runnerId },
+    });
   });
 
   it.each([false, true])(
@@ -4297,6 +4355,7 @@ describe("BrowserService", () => {
   });
 
   it("deduplicates browser access only by Run call identity and returns one uniform result", async () => {
+    const home = testRunner({});
     const keys = generateKeyPairSync("ed25519");
     const ownerId = createId("user");
     const workspaceId = createId("workspace");
@@ -4355,7 +4414,10 @@ describe("BrowserService", () => {
 
     const response = {
       kind: "external",
-      value: { createProfile: { name: "Client portal" }, decision: "fulfilled" },
+      value: {
+        createProfile: { name: "Client portal", homeRunnerId: home.runnerId },
+        decision: "fulfilled",
+      },
     } as const;
     const resolved = await service.resolveRequest({
       requestId: requested.requestId,
@@ -4391,6 +4453,7 @@ describe("BrowserService", () => {
         grantId: resolved.grant?.id,
         id: resolved.profile?.id,
         name: "Client portal",
+        home: null,
       },
     ]);
     await expect(
@@ -4768,6 +4831,306 @@ describe("BrowserService", () => {
     });
   });
 
+  it.each(["guest", "legacy"] as const)(
+    "refuses an agent %s on the only browser when it runs no agents",
+    async (identity) => {
+      const keys = generateKeyPairSync("ed25519");
+      const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+        targetedStreaming: true,
+      });
+      const ownerId = createId("user");
+      const workspaceId = createId("workspace");
+      const runner = testRunner({ agents: false });
+      const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+      const profile = repository.addHostedProfile("Legacy");
+      await repository.grant(profile.id, "read-write");
+      const service = placementService({
+        keys,
+        ownerId,
+        workspaceId,
+        runtime,
+        repository,
+        runners: [runner],
+      });
+      await expect(
+        service.openAgentSession({
+          agentBindingId: "run:guest",
+          ownerId,
+          workspaceId,
+          ...(identity === "guest" ? { fresh: true as const } : { profileId: profile.id }),
+        }),
+      ).rejects.toMatchObject({ code: "workspace_unavailable" });
+      expect(runtime.connectionCount()).toBe(0);
+    },
+  );
+
+  it.each(["server", "personal"] as const)(
+    "admits an agent guest through a deployment-owned browser-only service only on a server: %s",
+    async (deployment) => {
+      const keys = generateKeyPairSync("ed25519");
+      const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+        targetedStreaming: true,
+      });
+      const ownerId = createId("user");
+      const workspaceId = createId("workspace");
+      const runner = testRunner({ agents: false });
+      const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+      vi.spyOn(repository, "listEligibleBrowserRunners").mockResolvedValue([
+        {
+          id: runner.runnerId,
+          name: "Browser service",
+          kind: "managed",
+          ownerKind: "deployment",
+          ownerUserId: null,
+          allowedModules: ["browser"],
+        },
+      ]);
+      const service = placementService({
+        keys,
+        ownerId,
+        workspaceId,
+        runtime,
+        repository,
+        personal: deployment === "personal",
+        runners: [runner],
+      });
+      const opening = service.openAgentSession({
+        agentBindingId: "run:browser-service",
+        ownerId,
+        workspaceId,
+        fresh: true,
+      });
+      if (deployment === "personal") {
+        await expect(opening).rejects.toMatchObject({ code: "workspace_unavailable" });
+        expect(runtime.connectionCount()).toBe(0);
+      } else {
+        expect((await opening).session.placement).toEqual({
+          kind: "runner",
+          runnerId: runner.runnerId,
+        });
+      }
+    },
+  );
+
+  it.each(["person", "agent"] as const)(
+    "opens a homed profile on a browser-only device for a %s",
+    async (caller) => {
+      const keys = generateKeyPairSync("ed25519");
+      const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+        targetedStreaming: true,
+      });
+      const ownerId = createId("user");
+      const workspaceId = createId("workspace");
+      const environmentId = createId("environment");
+      const home = testRunner({ agents: false });
+      const agent = testRunner({ environmentIds: [environmentId] });
+      const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+      const profile = repository.addHostedProfile("Work", home.runnerId);
+      await repository.grant(profile.id, "read-write");
+      const service = placementService({
+        keys,
+        ownerId,
+        workspaceId,
+        repository,
+        runtime,
+        runners: [home, agent],
+      });
+      const opened =
+        caller === "agent"
+          ? await service.openAgentSession({
+              agentBindingId: "run:home",
+              ownerId,
+              workspaceId,
+              profileId: profile.id,
+              chosenEnvironmentId: environmentId,
+            })
+          : await service.openTab(ownerId, {
+              type: "browser.tab.open",
+              identity: { kind: "profile", profileId: profile.id },
+              idempotencyKey: "home",
+              placement: { kind: "runner", runnerId: agent.runnerId },
+            });
+      expect(opened.session.placement).toEqual({ kind: "runner", runnerId: home.runnerId });
+      if (caller === "agent") {
+        const attachment = await service.attachCdpForAgent(
+          { agentBindingId: "run:home", ownerId, workspaceId },
+          () => undefined,
+        );
+        for (const method of ["Opensteer.fillLogin", "Opensteer.fillCard"]) {
+          await expect(
+            withTimeout(
+              attachment.request({ method, parameters: { loginRef: "ref", cardRef: "ref" } }),
+              1_000,
+              { timeoutError: () => new Error("Off-main fill was not refused") },
+            ),
+          ).resolves.toEqual({ status: "unavailable", reason: "main-browser-required" });
+        }
+        attachment.close();
+      }
+    },
+  );
+
+  it("names an offline profile home without falling back to a connected browser", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
+    const ownerId = createId("user");
+    const workspaceId = createId("workspace");
+    const home = testRunner({});
+    const other = testRunner({});
+    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+    const profile = repository.addHostedProfile("Work", home.runnerId);
+    await repository.grant(profile.id, "read-write");
+    const service = placementService({
+      keys,
+      ownerId,
+      workspaceId,
+      repository,
+      runtime,
+      runners: [other],
+    });
+    const refusal = {
+      reason: "browser-profile-home-unavailable",
+      message: expect.stringContaining(`Computer ${home.runnerId}`),
+      details: { runnerId: home.runnerId, name: `Computer ${home.runnerId}` },
+    };
+    await expect(
+      service.openAgentSession({
+        agentBindingId: "run:offline",
+        ownerId,
+        workspaceId,
+        profileId: profile.id,
+      }),
+    ).rejects.toMatchObject(refusal);
+    await expect(
+      service.openTab(ownerId, {
+        type: "browser.tab.open",
+        identity: { kind: "profile", profileId: profile.id },
+        idempotencyKey: "offline",
+      }),
+    ).rejects.toMatchObject(refusal);
+    expect(runtime.connectionCount()).toBe(0);
+  });
+
+  it("never offers or places a Workspace member on another member's browser computer", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
+    const ownerId = createId("user");
+    const workspaceId = createId("workspace");
+    const other = testRunner({});
+    const service = placementService({ keys, ownerId, workspaceId, runtime, runners: [other] });
+    eligibleRunners.delete(other.runnerId);
+    expect((await service.bootstrap(ownerId)).placements).toEqual([]);
+    await expect(
+      service.openTab(ownerId, {
+        type: "browser.tab.open",
+        identity: { kind: "guest" },
+        idempotencyKey: "foreign",
+        placement: { kind: "runner", runnerId: other.runnerId },
+      }),
+    ).rejects.toMatchObject({ reason: "browser-placement-unavailable" });
+    await expect(
+      service.openAgentSession({
+        agentBindingId: "run:foreign",
+        ownerId,
+        workspaceId,
+        fresh: true,
+      }),
+    ).rejects.toMatchObject({ code: "workspace_unavailable" });
+    expect(runtime.connectionCount()).toBe(0);
+  });
+
+  it("uses Personal Main for a person's Guest unless they choose an eligible browser device", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
+    const ownerId = createId("user");
+    const workspaceId = createId("workspace");
+    const main = testRunner({});
+    const phone = testRunner({ agents: false });
+    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+    repository.mainRunnerId = main.runnerId;
+    const runners = [main, phone];
+    const service = placementService({
+      keys,
+      ownerId,
+      workspaceId,
+      runtime,
+      repository,
+      runners,
+      personal: true,
+    });
+    const open = (idempotencyKey: string, runnerId?: RunnerId) =>
+      service.openTab(ownerId, {
+        type: "browser.tab.open",
+        identity: { kind: "guest" },
+        idempotencyKey,
+        ...(runnerId ? { placement: { kind: "runner" as const, runnerId } } : {}),
+      });
+    expect((await open("main-guest")).session.placement).toEqual({
+      kind: "runner",
+      runnerId: main.runnerId,
+    });
+    expect((await open("phone-guest", phone.runnerId)).session.placement).toEqual({
+      kind: "runner",
+      runnerId: phone.runnerId,
+    });
+    runners.splice(0, 1);
+    await expect(open("offline-main")).rejects.toMatchObject({
+      reason: "browser-placement-unavailable",
+    });
+    expect(runtime.connectionCount()).toBe(2);
+  });
+
+  it("asks for a person's Guest computer on a server instead of treating remembered placement as a choice", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
+    const ownerId = createId("user");
+    const workspaceId = createId("workspace");
+    const first = testRunner({});
+    const second = testRunner({});
+    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+    repository.rememberedPlacement = second.runnerId;
+    const multiple = placementService({
+      keys,
+      ownerId,
+      workspaceId,
+      runtime,
+      repository,
+      runners: [first, second],
+    });
+    await expect(
+      multiple.openTab(ownerId, {
+        type: "browser.tab.open",
+        identity: { kind: "guest" },
+        idempotencyKey: "choose",
+      }),
+    ).rejects.toMatchObject({ reason: "browser-placement-ambiguous" });
+    const single = placementService({
+      keys,
+      ownerId,
+      workspaceId,
+      runtime,
+      repository,
+      runners: [first],
+    });
+    expect(
+      (
+        await single.openTab(ownerId, {
+          type: "browser.tab.open",
+          identity: { kind: "guest" },
+          idempotencyKey: "only",
+        })
+      ).session.placement,
+    ).toEqual({ kind: "runner", runnerId: first.runnerId });
+  });
+
   it("falls back to the only connected computer and refuses to guess between many", async () => {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
@@ -4879,7 +5242,7 @@ describe("BrowserService", () => {
     expect(runtime.connectionCount()).toBe(0);
   });
 
-  it("keeps established session and profile placement ahead of environment defaults", async () => {
+  it("keeps established session and profile placement ahead of explicit environments", async () => {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
       targetedStreaming: true,
@@ -4901,14 +5264,23 @@ describe("BrowserService", () => {
       workspaceId,
     });
 
-    await service.start({
+    const initial = await service.start({
       ownerId,
       placement: { kind: "runner", runnerId: established.runnerId },
       profileId: profile.id,
       workspaceId,
     });
+    const reused = await service.start({
+      ownerId,
+      workspaceId,
+      profileId: profile.id,
+      reuseExisting: true,
+      placement: { kind: "runner", runnerId: bound.runnerId },
+    });
+    expect(reused.session.id).toBe(initial.session.id);
     const profileOpen = await service.openAgentSession({
       agentBindingId: "run:profile-affinity",
+      chosenEnvironmentId: environmentId,
       environmentId,
       ownerId,
       profileId: profile.id,
@@ -5172,6 +5544,8 @@ function freshService(options: {
   readonly onError?: (error: unknown) => void;
   readonly passkeysEnabled?: boolean;
   readonly passkeys?: boolean;
+  readonly personFill?: boolean;
+  readonly personal?: boolean;
   readonly sharedControl?: boolean;
   readonly targetControl?: boolean;
   readonly rasterDemand?: boolean;
@@ -5183,10 +5557,13 @@ function freshService(options: {
   readonly onWorkspaceEvent?: (event: AgentEvent) => void;
   readonly repository: MemoryBrowserRepository;
   readonly runtime: { readonly url: URL };
+  readonly workspaceTabs?: WorkspaceTabStore;
 }): BrowserService {
   const service = new BrowserService({
+    ...(options.workspaceTabs ? { workspaceTabs: options.workspaceTabs } : {}),
     ...nativeProfileOptions(),
     passkeys: options.passkeysEnabled === true,
+    personal: options.personal === true,
     ...profileStateOptions,
     ...(options.history ? { history: options.history } : {}),
     ...(options.onHistoryChanged ? { onHistoryChanged: options.onHistoryChanged } : {}),
@@ -5211,6 +5588,7 @@ function freshService(options: {
       targetControl: options.targetControl ?? false,
       rasterDemand: options.rasterDemand ?? false,
       passkeys: options.passkeys === true,
+      personFill: options.personFill === true,
       editing: options.editing,
       clipboard: options.clipboard,
     }),
@@ -5220,6 +5598,7 @@ function freshService(options: {
 }
 
 interface TestBrowserRunner {
+  readonly agents?: boolean;
   readonly environmentIds: readonly EnvironmentId[];
   readonly runnerId: RunnerId;
   readonly runtimeId: string;
@@ -5228,11 +5607,14 @@ interface TestBrowserRunner {
 
 /** One enrolled computer offering a browser, bound to the work locations it runs. */
 function testRunner(input: {
+  readonly agents?: boolean;
   readonly environmentIds?: readonly EnvironmentId[];
   readonly unavailableReason?: string;
 }): TestBrowserRunner {
   const runnerId = createId("runner");
+  eligibleRunners.set(runnerId, `Computer ${runnerId}`);
   return {
+    agents: input.agents ?? true,
     environmentIds: [...(input.environmentIds ?? [])],
     runnerId,
     runtimeId: `browser-${runnerId}`,
@@ -5241,6 +5623,7 @@ function testRunner(input: {
 }
 
 function placementService(options: {
+  readonly personal?: boolean;
   readonly keys: { readonly privateKey: KeyObject };
   readonly ownerId: UserId;
   readonly repository?: MemoryBrowserRepository;
@@ -5254,6 +5637,7 @@ function placementService(options: {
   const targetResolver: BrowserRuntimeTargetResolver = {
     placements: () =>
       options.runners.map((runner) => ({
+        agents: runner.agents === true,
         available: runner.unavailableReason === undefined,
         environmentIds: [...runner.environmentIds],
         kind: "runner" as const,
@@ -5284,6 +5668,7 @@ function placementService(options: {
   const service = new BrowserService({
     ...nativeProfileOptions(),
     ...profileStateOptions,
+    personal: options.personal === true,
     repository:
       options.repository ?? new MemoryBrowserRepository(options.ownerId, options.workspaceId),
     signer: new BrowserAttachTicketSigner({
@@ -5371,6 +5756,20 @@ async function attachedSessionIds(
 }
 
 class MemoryBrowserRepository implements BrowserSessionRepository {
+  mainRunnerId: RunnerId | undefined;
+  rememberedPlacement: RunnerId | null = null;
+  async listEligibleBrowserRunners(): ReturnType<
+    BrowserSessionRepository["listEligibleBrowserRunners"]
+  > {
+    return [...eligibleRunners].map(([id, name]) => ({
+      id,
+      name,
+      kind: id === this.mainRunnerId ? ("main" as const) : ("local" as const),
+      ownerKind: "user" as const,
+      ownerUserId: null,
+      allowedModules: ["browser" as const],
+    }));
+  }
   readonly tabOpens = new Map<string, import("@opensteer/protocol").BrowserTabOpenBinding>();
   async findMainWorkspaceForOwner(ownerId: UserId) {
     return this.getWorkspaceForOwner(this.#workspaceId, ownerId);
@@ -5396,7 +5795,7 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
       this.tabOpens.set(key, binding);
   }
   async rememberedBrowserPlacement() {
-    return null;
+    return this.rememberedPlacement;
   }
   async browserSessionOpenerForBinding() {
     return null;
@@ -5632,11 +6031,12 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
     },
   };
 
-  addHostedProfile(name: string): BrowserProfileRecord {
+  addHostedProfile(name: string, homeRunnerId?: RunnerId): BrowserProfileRecord {
     const profile = {
       id: createId("browserProfile"),
       name,
       ownerId: this.#ownerId,
+      ...(homeRunnerId ? { homeRunnerId } : {}),
     };
     this.#profiles.set(profile.id, profile);
     return profile;
@@ -5780,6 +6180,7 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
     readonly placementKey: string;
     readonly runnerId: RunnerId;
     readonly origin: "agent" | "trigger" | "workspace";
+    readonly opener?: BrowserSessionRecord["opener"];
     readonly profileId: BrowserProfileId | null;
     readonly runtimeId: string;
     readonly workspaceId: WorkspaceId;
@@ -5788,6 +6189,7 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
     const record: BrowserSessionRecord = {
       createdAt: now,
       id: input.id,
+      opener: input.opener ?? null,
       origin: input.origin,
       placementKey: input.placementKey,
       profileId: input.profileId,
@@ -6123,6 +6525,7 @@ async function startFakeRuntime(
           ...(claims.navigationAttributionVersion === 1 && options.navigationAttribution !== false
             ? { navigationAttributionVersion: 1 }
             : {}),
+          ...(claims.personFillVersion === 1 ? { personFillVersion: 1 } : {}),
           ...(options.inputLanes ? { inputLanesVersion: 1 } : {}),
           ...(options.targetedStreaming ? { targetedStreamingVersion: 1 } : {}),
           ...(options.editing && claims.editingVersion
@@ -6722,4 +7125,163 @@ it("delivers cursor hints only to their controller and refuses Watch cursor quer
     other.close();
     watching.close();
   }
+});
+
+it.each([
+  [false, false],
+  [false, true],
+  [true, false],
+  [true, true],
+] as const)(
+  "negotiates autofill only for Personal with an advertising runtime (personal=%s, advertised=%s)",
+  async (personal, personFill) => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const ownerId = createId("user"),
+      workspaceId = createId("workspace");
+    const service = freshService({
+      keys,
+      runtime,
+      repository: new MemoryBrowserRepository(ownerId, workspaceId),
+      personal,
+      personFill,
+    });
+    const opened = await service.openAgentSession({
+      ownerId,
+      workspaceId,
+      agentBindingId: "autofill",
+      fresh: true,
+    });
+    expect(runtime.lastClaims()?.personFillVersion).toBe(personal && personFill ? 1 : undefined);
+    const peer = new RecordingPeer("autofill-negotiation");
+    const attachment = await service.attach(ownerId, opened.session.id, peer, {
+      ...consumerOptions(),
+      autofill: true,
+    });
+    expect(peer.text()[0]).toMatchObject(personal && personFill ? { personFillVersion: 1 } : {});
+    if (!(personal && personFill)) {
+      expect(peer.text()[0]).not.toHaveProperty("personFillVersion");
+      await expect(
+        attachment.handle(
+          Buffer.from(
+            JSON.stringify({
+              type: "autofill.fill",
+              surfaceId: "page-1",
+              offerId: randomUUID(),
+              loginId: randomUUID(),
+              revision: 1,
+            }),
+          ),
+          false,
+        ),
+      ).rejects.toThrow("autofill was not negotiated");
+    }
+  },
+);
+
+it("routes ephemeral autofill only to its opted-in controlling consumer and stamps choices", async () => {
+  const keys = generateKeyPairSync("ed25519");
+  const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+    targetedStreaming: true,
+  });
+  const ownerId = createId("user"),
+    workspaceId = createId("workspace");
+  const service = freshService({
+    keys,
+    runtime,
+    repository: new MemoryBrowserRepository(ownerId, workspaceId),
+    personal: true,
+    personFill: true,
+  });
+  const opened = await service.openAgentSession({
+    ownerId,
+    workspaceId,
+    agentBindingId: "autofill",
+    fresh: true,
+  });
+  const attach = async (id: string, autofill: boolean, mode: "control" | "watch" = "control") => {
+    const peer = new RecordingPeer(id);
+    const attachment = await service.attach(ownerId, opened.session.id, peer, {
+      ...consumerOptions(),
+      mode,
+      autofill,
+      popups: true,
+    });
+    const snapshot = BrowserServerMessageSchema.parse(peer.text()[0]);
+    if (snapshot.type !== "browser.snapshot") throw new Error("Missing snapshot");
+    return { peer, attachment, token: snapshot.consumerToken };
+  };
+  const actor = await attach("actor", true),
+    bystander = await attach("bystander", true),
+    old = await attach("old", false),
+    watch = await attach("watch", true, "watch");
+  expect(old.peer.text()[0]).not.toHaveProperty("personFillVersion");
+  expect(watch.peer.text()[0]).not.toHaveProperty("personFillVersion");
+  const offerId = randomUUID(),
+    loginId = randomUUID();
+  const offer = {
+    type: "browser.autofill.offer",
+    surfaceId: "page-1",
+    consumerToken: actor.token,
+    offerId,
+    role: "username",
+    geometryRevision: 0,
+    anchor: { x: 0.2, y: 0.3, width: 0.1, height: 0.05 },
+    accounts: [{ id: loginId, revision: 1, username: "fixture", label: null, ready: false }],
+  };
+  runtime.sendServer(offer);
+  runtime.sendServer({
+    type: "browser.autofill.result",
+    surfaceId: "page-1",
+    consumerToken: actor.token,
+    offerId,
+    status: "filled",
+  });
+  runtime.sendServer({
+    type: "browser.autofill.withdrawn",
+    surfaceId: "page-1",
+    consumerToken: actor.token,
+    offerId,
+  });
+  runtime.sendServer({
+    type: "browser.error",
+    error: { code: "conflict", message: "autofill-route-marker", retryable: false },
+  });
+  for (const viewer of [actor, bystander, old, watch]) {
+    await vi.waitFor(() =>
+      expect(viewer.peer.text(), "Viewer never received the routing barrier").toContainEqual(
+        expect.objectContaining({ type: "browser.error" }),
+      ),
+    );
+  }
+  const messages = (viewer: typeof actor) =>
+    viewer.peer.text().filter((message) => message.type.startsWith("browser.autofill."));
+  expect(messages(actor)).toHaveLength(3);
+  expect(messages(bystander)).toEqual([]);
+  expect(messages(old)).toEqual([]);
+  expect(messages(watch)).toEqual([]);
+  const late = await attach("late", true);
+  expect(messages(late)).toEqual([]);
+  const fill = {
+    type: "autofill.fill",
+    surfaceId: "page-1",
+    offerId,
+    loginId,
+    revision: 1,
+    producerId: randomUUID(),
+  };
+  const send = (viewer: typeof actor) =>
+    viewer.attachment.handle(Buffer.from(JSON.stringify(fill)), false);
+  await expect(send(old)).rejects.toThrow("autofill was not negotiated");
+  await expect(send(watch)).rejects.toThrow("autofill was not negotiated");
+  await send(actor);
+  await vi.waitFor(() =>
+    expect(
+      runtime.receivedCommands().some((command) => command.type === "autofill.fill"),
+      "Runtime never received the chosen account",
+    ).toBe(true),
+  );
+  expect(runtime.receivedCommands().filter((command) => command.type === "autofill.fill")).toEqual([
+    expect.objectContaining({ ...fill, producerId: actor.token }),
+  ]);
 });

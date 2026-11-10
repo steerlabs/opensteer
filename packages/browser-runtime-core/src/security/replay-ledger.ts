@@ -1,3 +1,8 @@
+import {
+  transitionReplayLedger,
+  AttachTicketReplayLedgerError,
+} from "@opensteer/browser-core/attach-ticket-policy";
+export { AttachTicketReplayLedgerError } from "@opensteer/browser-core/attach-ticket-policy";
 import { setPrivateHandleMode } from "@opensteer/shared/privateFiles";
 import { noFollowFlag, readBounded } from "@opensteer/shared/privateFiles";
 import { setPrivateDirectoryMode } from "@opensteer/shared/privateFiles";
@@ -29,16 +34,6 @@ type ReplayEntry = z.infer<typeof ReplayEntrySchema>;
 type ReplayLedgerFile = z.infer<typeof ReplayLedgerFileSchema>;
 
 export type AttachTicketReplayLedgerErrorCode = "already-used" | "full" | "unavailable";
-
-export class AttachTicketReplayLedgerError extends Error {
-  readonly code: AttachTicketReplayLedgerErrorCode;
-
-  constructor(code: AttachTicketReplayLedgerErrorCode, message: string, cause?: unknown) {
-    super(message, cause === undefined ? undefined : { cause });
-    this.code = code;
-    this.name = "AttachTicketReplayLedgerError";
-  }
-}
 
 export interface DurableAttachTicketReplayLedgerOptions {
   readonly filePath: string;
@@ -132,18 +127,8 @@ export class DurableAttachTicketReplayLedger {
     try {
       await ensureReplayDirectory(path.dirname(this.#filePath));
       const state = await this.#read();
-      assertClockDidNotRollBack(now, state.highWaterAt);
-      const active = prune(state.entries, now);
-      if (active.some((entry) => entry.nonce === nonce)) {
-        throw new AttachTicketReplayLedgerError(
-          "already-used",
-          "Attach ticket nonce was already consumed",
-        );
-      }
-      if (active.length >= this.#maxEntries) {
-        throw new AttachTicketReplayLedgerError("full", "Attach ticket replay ledger is full");
-      }
-      await this.#write([...active, { expiresAt, nonce }], now);
+      const next = transitionReplayLedger(state, nonce, expiresAt, now, this.#maxEntries);
+      await this.#write(next.entries, next.highWaterAt);
     } catch (error) {
       if (error instanceof AttachTicketReplayLedgerError) throw error;
       throw unavailable(error);

@@ -1041,6 +1041,17 @@ export function turnComputer(turn: Turn): TurnComputer | null {
   };
 }
 
+/** What the latest turn under way is doing, in its own live line's words; null when none is. */
+export function liveTurnWords(groups: readonly TranscriptGroup[]): string | null {
+  for (let index = groups.length - 1; index >= 0; index -= 1) {
+    const group = groups[index];
+    if (group?.kind !== "turn") continue;
+    const state = turnState(group.turn);
+    if (state !== "settled") return liveLabel(group.turn, state);
+  }
+  return null;
+}
+
 function liveLabel(turn: Turn, state: Exclude<TurnState, "settled">): string {
   if (state === "stopping") return "Stopping";
   if (state === "waiting") return "Waiting for you";

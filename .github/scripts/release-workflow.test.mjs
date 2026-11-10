@@ -182,8 +182,31 @@ function fixture() {
     fullJobs: [{ name: "Check", status: "completed", conclusion: "success" }],
     fullQueries: 0,
   };
+  const releases = () =>
+    state.releases.filter(
+      (item) => !item.draft || workflow.jobs.discover.permissions.contents === "write",
+    );
+  // GitHub filters runs by these parameters and lists them newest first.
+  const listRuns = (url, runs) => {
+    const query = new URL(url, "https://api.github.com/").searchParams;
+    const field = { branch: "head_branch" };
+    return runs
+      .filter((item) =>
+        ["head_sha", "branch", "event", "status"].every(
+          (key) => !query.has(key) || item[field[key] ?? key] === query.get(key),
+        ),
+      )
+      .sort((a, b) => b.run_number - a.run_number)
+      .slice(0, Number(query.get("per_page") ?? 30));
+  };
   const run = (exe, args) => {
-    if (exe === "git") return args[0] === "fetch" ? "" : git(...args);
+    if (exe === "git") {
+      if (args[0] === "fetch") return "";
+      // Only a published release has its tag, which this repository's tags stand for.
+      if (args[0] === "ls-remote")
+        return git("for-each-ref", "--format=%(objectname)%09%(refname)", args.at(-1));
+      return git(...args);
+    }
     assert.equal(exe, "gh");
     if (state.apiFailure) throw Error("API unavailable");
     if (args[0] === "release") {
@@ -193,21 +216,26 @@ function fixture() {
       );
       return "";
     }
+    if (args[1] === "graphql") {
+      const tag = args.find((arg) => arg.startsWith("tag=")).slice("tag=".length);
+      return String(releases().find((item) => item.tag_name === tag)?.id ?? "");
+    }
     const url = args.at(-1);
+    const paged = args.includes("--paginate");
+    // Releases and main's CI runs grow with every push; a whole one outgrows any buffer.
+    if (paged) assert.match(url, /[?&]head_sha=|\/actions\/runs\/\d+\/jobs\?/, `paged ${url}`);
     if (url.includes("/actions/workflows/ci.yml/runs?")) {
-      if (url.includes("event=push")) return JSON.stringify([{ workflow_runs: state.runs }]);
-      state.fullQueries++;
-      assert.ok(url.includes("branch=main") && url.includes("status=completed"));
-      return JSON.stringify([{ workflow_runs: state.fullRuns }]);
+      const push = url.includes("event=push");
+      if (!push) state.fullQueries++;
+      const runs = listRuns(url, push ? state.runs : state.fullRuns);
+      return JSON.stringify(paged ? [{ workflow_runs: runs }] : { workflow_runs: runs });
     }
     if (url.includes("/actions/runs/43/jobs?")) return JSON.stringify([{ jobs: state.fullJobs }]);
     if (url.includes("/actions/runs/42/jobs?")) return JSON.stringify([{ jobs: state.jobs }]);
-    assert.ok(url.endsWith("/releases"));
-    return JSON.stringify([
-      state.releases.filter(
-        (item) => !item.draft || workflow.jobs.discover.permissions.contents === "write",
-      ),
-    ]);
+    const id = Number(/\/releases\/(\d+)$/.exec(url)?.[1]);
+    const release = releases().find((item) => item.id === id);
+    if (!release) throw Error(`gh: Not Found (HTTP 404): ${url}`);
+    return JSON.stringify(release);
   };
   return {
     root,
@@ -220,6 +248,7 @@ function fixture() {
 }
 function published(source) {
   return {
+    id: 1,
     tag_name: source.tag,
     target_commitish: source.sha,
     immutable: true,
@@ -487,10 +516,10 @@ test("discovery skips unchanged published insiders and reuses only matching draf
     f.state.manifest.sourceSha = "b".repeat(40);
     assert.throws(() => discover(f.source, f.run, f.root));
     f.state.manifest.sourceSha = f.source.sha;
-    f.state.releases = [
-      { ...published(f.source), tag_name: "v1.2.5-insider", target_commitish: "b".repeat(40) },
-    ];
+    f.state.releases = [];
+    f.git("tag", "--no-sign", "v1.2.5-insider");
     assert.throws(() => discover(f.source, f.run, f.root), /backfill/);
+    f.git("tag", "-d", "v1.2.5-insider");
     f.state.releases = [{ ...published(f.source), draft: true }];
     assert.deepEqual(discover(f.source, f.run, f.root), { skip: false, reuse: true });
     for (const mutation of [
@@ -852,13 +881,14 @@ test("stable discovery refuses equal/older published Stable and tolerates first 
   const f = fixture();
   try {
     const stable = { ...f.source, channel: "stable", tag: "desktop-v1.2.4" };
+    f.git("tag", "--no-sign", "desktop-v1.2.3");
+    f.git("tag", "--no-sign", "v99.0.0-insider");
     assert.deepEqual(discover(stable, f.run, f.root), { skip: false, reuse: false });
-    f.state.releases = [{ ...published(f.source), tag_name: "desktop-v1.2.4", prerelease: false }];
-    assert.throws(() => discover(stable, f.run, f.root), /newer/);
-    f.state.releases[0].tag_name = "desktop-v1.2.5";
-    assert.throws(() => discover(stable, f.run, f.root), /newer/);
-    f.state.releases[0] = { ...published(f.source), tag_name: "v99.0.0-insider" };
-    assert.deepEqual(discover(stable, f.run, f.root), { skip: false, reuse: false });
+    for (const tag of ["desktop-v1.2.4", "desktop-v1.2.5"]) {
+      f.git("tag", "--no-sign", tag);
+      assert.throws(() => discover(stable, f.run, f.root), /newer/);
+      f.git("tag", "-d", tag);
+    }
   } finally {
     f.close();
   }

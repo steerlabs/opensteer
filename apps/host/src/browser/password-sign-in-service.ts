@@ -226,11 +226,10 @@ export class PasswordSignInService {
     if (!(await this.#requests.hasActiveRunPasswordSignInAuthority(authority(input))))
       return { status: "unavailable", site: input.site, reason: "stopped" };
     const target = await this.#resolveAuthority(input.ownerId);
-    if (
-      !target ||
-      target.runnerId !== input.cardRunnerId ||
-      !this.#authority.cardUseSupported?.(target.runnerId)
-    )
+    if (target && target.runnerId !== input.cardRunnerId)
+      return { status: "unavailable", site: input.site, reason: "main-browser-required" };
+    if (!target) return { status: "unavailable", site: input.site, reason: "unsupported" };
+    if (!this.#authority.cardUseSupported?.(target.runnerId))
       return { status: "unavailable", site: input.site, reason: "runtime-outdated" };
     const result = await this.request({ ...input, credential: "card" });
     if (result.status === "ready") {
@@ -461,11 +460,9 @@ export class PasswordSignInService {
       const target = await this.#resolveAuthority(input.ownerId);
       if (this.#closed || !target || !this.#authority.passwordSignInSupported(target.runnerId))
         return unavailable(input.site, "unsupported");
-      if (
-        input.credential === "card" &&
-        (input.cardRunnerId !== target.runnerId ||
-          !this.#authority.cardUseSupported?.(target.runnerId))
-      )
+      if (input.credential === "card" && input.cardRunnerId !== target.runnerId)
+        return unavailable(input.site, "main-browser-required");
+      if (input.credential === "card" && !this.#authority.cardUseSupported?.(target.runnerId))
         return unavailable(input.site, "runtime-outdated");
       if (!input.admitStart()) return unavailable(input.site, "rate-limited");
       if (!(await this.#requests.hasActiveRunPasswordSignInAuthority(authority(input))))

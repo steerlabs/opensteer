@@ -1,8 +1,11 @@
 import { copyText } from "@opensteer/shared/clipboard";
 import type { BrowserCommand, HostClient, PlaceItem } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
+import { deviceElsewhere } from "@opensteer/client/computers";
 import { BrowserSurfaceIdSchema } from "@opensteer/core";
 import { actionErrorMessage } from "../../ui-utils.js";
+import { DeviceLabel } from "../computers/device-label.js";
+import { useHereId } from "../computers/here.js";
 import { Popover } from "../popover.js";
 import { SurfaceMenuRow, type SurfaceMenuItem } from "../surface-menu.js";
 import { SurfaceSubmenuRow } from "../surface-submenu-row.js";
@@ -40,6 +43,8 @@ export function TabMenu({
 }) {
   const { nav } = useWorkspace();
   const layout = useHostSelector(hostClient, (snapshot) => snapshot.browserTabGroups);
+  const machines = useHostSelector(hostClient, (snapshot) => snapshot.machines);
+  const hereId = useHereId();
   const reopenAvailable = useHostSelector(
     hostClient,
     (snapshot) => snapshot.workspaceTabReopenAvailable,
@@ -129,7 +134,8 @@ export function TabMenu({
     anchor.focus();
     item.onSelect?.();
   };
-  const words = presentation ? browserWords(presentation) : null;
+  const words = presentation ? browserWords(presentation, hereId) : null;
+  const device = presentation ? deviceElsewhere(machines, presentation.computerId, hereId) : null;
   return (
     <Popover
       anchor={anchor}
@@ -141,7 +147,8 @@ export function TabMenu({
       {presentation && words ? (
         <div aria-hidden className="tab-menu__identity">
           <ProfileAvatar identity={presentation.identity} size={14} />
-          <span>{words}</span>
+          <span className="tab-menu__name">{presentation.identity.name}</span>
+          {device ? <DeviceLabel device={device} /> : null}
         </div>
       ) : null}
       <div className="picker__section">

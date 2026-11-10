@@ -1,3 +1,10 @@
+import { OpensteerError } from "@opensteer/core";
+import {
+  BrowserActionRequestSchema,
+  BrowserActionErrorCodeSchema,
+  BrowserActionDialogSchema,
+  browserActionMaxBytes,
+} from "@opensteer/protocol/browser-actions";
 import { safeMessage } from "@opensteer/shared/safeMessage";
 import type { IncomingHttpHeaders } from "node:http";
 import type { EnvironmentId, UserId, WorkspaceId } from "@opensteer/core";
@@ -44,7 +51,11 @@ interface CdpRouteOptions<Scope> {
   readonly authority: (scope: Scope) => CdpAuthority;
   readonly browser: Pick<
     BrowserService,
-    "attachCdpForAgent" | "closeTriggerSessionsForBinding" | "openAgentSession"
+    | "attachCdpForAgent"
+    | "attachActionsForAgent"
+    | "agentBackend"
+    | "closeTriggerSessionsForBinding"
+    | "openAgentSession"
   >;
   readonly expiresAt?: (scope: Scope) => number;
   /**
@@ -59,6 +70,7 @@ interface CdpRouteOptions<Scope> {
    */
   readonly ownsSession: boolean;
   readonly path: string;
+  readonly backend?: "actions";
 }
 
 export function registerAgentCdpBridge(
@@ -79,6 +91,22 @@ export function registerAgentCdpBridge(
     // long Run outlives its first token by.
     reauthorize: (scope: RunToolScope) => tokens.reauthorize(scope),
   };
+  registerCdpRoute<RunToolScope>(app, {
+    ...route,
+    backend: "actions",
+    path: hostInternalRoutePaths.browserSessionActions,
+  });
+  app.get(hostInternalRoutePaths.browserSessionBackend, async (request) => {
+    const connection = await authenticateConnection(request, route);
+    const sessionId = BrowserSessionIdSchema.parse(connection.sessionId);
+    try {
+      return await browser.agentBackend({ ...route.authority(connection.scope), sessionId });
+    } catch (error) {
+      if (error instanceof BrowserCdpConnectionEnded)
+        throw new OpensteerError({ code: "forbidden", message: error.message });
+      throw error;
+    }
+  });
   registerCdpRoute<RunToolScope>(app, {
     ...route,
     path: hostInternalRoutePaths.browserSessionCdp,
@@ -128,6 +156,17 @@ export function registerWatchCdpBridge(
   });
 }
 
+async function authenticateConnection<Scope>(
+  request: { readonly headers: IncomingHttpHeaders; readonly params: unknown },
+  options: Pick<CdpRouteOptions<Scope>, "authenticate">,
+) {
+  const token = bearerToken(request.headers);
+  const scope = await options.authenticate(token);
+  const parameters = request.params as { readonly sessionId?: unknown };
+  const sessionId = typeof parameters.sessionId === "string" ? parameters.sessionId : undefined;
+  return { scope, sessionId, token };
+}
+
 function registerCdpRoute<Scope>(app: FastifyInstance, options: CdpRouteOptions<Scope>): void {
   const connections = new WeakMap<
     object,
@@ -137,12 +176,7 @@ function registerCdpRoute<Scope>(app: FastifyInstance, options: CdpRouteOptions<
     options.path,
     {
       preValidation: async (request) => {
-        const token = bearerToken(request.headers);
-        const scope = await options.authenticate(token);
-        const parameters = request.params as { readonly sessionId?: unknown };
-        const sessionId =
-          typeof parameters.sessionId === "string" ? parameters.sessionId : undefined;
-        connections.set(request.raw, { scope, sessionId, token });
+        connections.set(request.raw, await authenticateConnection(request, options));
       },
       websocket: true,
     },
@@ -197,7 +231,20 @@ function attachCdpSocket<Scope>(
       ownedSessionOpened = true;
       sessionId = opened.session.id;
     }
-    return options.browser.attachCdpForAgent(
+    if (options.backend === "actions") {
+      if (!sessionId)
+        throw new BrowserCdpConnectionEnded("Actions require an exact Browser Session.");
+      const attached = await options.browser.attachActionsForAgent(
+        { ...authority, sessionId },
+        (event) => sendJson(socket, { event }),
+        () => closeSocket(socket, new Error("The Browser Session ended."), 1000),
+      );
+      return {
+        close: () => attached.close(),
+        dispatch: (value: unknown) => attached.dispatch(BrowserActionRequestSchema.parse(value)),
+      };
+    }
+    const attached = await options.browser.attachCdpForAgent(
       { ...authority, ...(sessionId ? { sessionId } : {}) },
       (event) => {
         sendJson(socket, {
@@ -208,6 +255,17 @@ function attachCdpSocket<Scope>(
       },
       () => closeSocket(socket, new Error("The Browser Session ended."), 1000),
     );
+    return {
+      close: () => attached.close(),
+      dispatch: (value: unknown) => {
+        const request = CdpRequestSchema.parse(value);
+        return attached.dispatch({
+          method: request.method,
+          ...(request.params ? { parameters: request.params } : {}),
+          ...(request.sessionId ? { sessionId: request.sessionId } : {}),
+        });
+      },
+    };
   })();
   // A client that never sends a command still learns why it cannot connect.
   let refusalTimer: NodeJS.Timeout | undefined;
@@ -245,7 +303,10 @@ function attachCdpSocket<Scope>(
       return;
     }
     const frame = rawDataBuffer(raw);
-    if (frame.byteLength > maximumCdpMessageBytes) {
+    if (
+      frame.byteLength >
+      (options.backend === "actions" ? browserActionMaxBytes : maximumCdpMessageBytes)
+    ) {
       closeSocket(socket, new Error("CDP message is too large"));
       return;
     }
@@ -263,11 +324,24 @@ function attachCdpSocket<Scope>(
       queuedCommands -= 1;
       queuedBytes -= frame.byteLength;
     };
-    const refuse = (id: number, error: unknown) =>
-      sendJson(socket, {
-        error: { code: -32_000, message: safeMessage(error, safeMessageOptions) },
-        id,
-      });
+    const refuse = (id: number, error: unknown) => {
+      const reason =
+        error instanceof OpensteerError
+          ? BrowserActionErrorCodeSchema.safeParse(error.reason).data
+          : undefined;
+      const message = safeMessage(error, safeMessageOptions);
+      if (options.backend === "actions") {
+        const dialog =
+          error instanceof OpensteerError
+            ? BrowserActionDialogSchema.safeParse(error.details?.dialog).data
+            : undefined;
+        sendJson(socket, {
+          id,
+          error: { code: reason ?? "forbidden", message, ...(dialog ? { dialog } : {}) },
+        });
+      } else
+        sendJson(socket, { id, error: { code: -32_000, message, ...(reason ? { reason } : {}) } });
+    };
     // Commands are admitted and dispatched one at a time, in the order they
     // arrived; each is answered whenever the browser answers it. A command
     // that a dialog blocks therefore never holds up the dialog's answer or a
@@ -276,7 +350,9 @@ function attachCdpSocket<Scope>(
     commands = commands
       .then(async () => {
         if (disconnected || socket.readyState !== socket.OPEN) return;
-        const request = CdpRequestSchema.parse(JSON.parse(frame.toString("utf8")) as unknown);
+        const request = (
+          options.backend === "actions" ? BrowserActionRequestSchema : CdpRequestSchema
+        ).parse(JSON.parse(frame.toString("utf8")) as unknown);
         let attached = false;
         try {
           const attachment = await attachmentPromise;
@@ -295,11 +371,7 @@ function attachCdpSocket<Scope>(
             throw new Error("CDP authorization scope changed");
           }
           if (disconnected || socket.readyState !== socket.OPEN) return;
-          const { result } = await attachment.dispatch({
-            method: request.method,
-            ...(request.params ? { parameters: request.params } : {}),
-            ...(request.sessionId ? { sessionId: request.sessionId } : {}),
-          });
+          const { result } = await attachment.dispatch(request);
           answering = true;
           void result
             .then(

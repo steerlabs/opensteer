@@ -2,6 +2,7 @@ import { SettingsDeviceCapabilities } from "./settings-device-capabilities.js";
 import { ComputerSetupApprovals } from "../computers/computer-app-approval.js";
 import { ActivityIndicator, ScrollView, View } from "react-native";
 import { ComputerUseBlock, PhoneUseBlock } from "../computers/computer-use-block.js";
+import { DeviceBrowserRow } from "../computers/device-browser-row.js";
 import { IphoneAppsBlock } from "../iphone-apps/iphone-apps-block.js";
 import { RemoteIphoneAppsBlock } from "../iphone-apps/remote-iphone-apps-block.js";
 import { AppText, Notice, SecondaryButton, StatusDot } from "../ui/primitives.js";
@@ -187,10 +188,18 @@ function ComputerDetail(props: {
         contentContainerStyle={[styles.content, column, insets]}
         contentInsetAdjustmentBehavior="automatic"
       >
-        {machine === null ? null : (
-          <ComputerSummary apps={data.data} machine={machine} status={!thisIphone} />
+        {/* This phone's own block says whether it is connected, and removes it from here. */}
+        {machine === null || thisIphone ? null : (
+          <>
+            <ComputerSummary apps={data.data} machine={machine} />
+            <DeviceBrowserRow
+              deploymentId={props.deploymentId}
+              hostClient={props.hostClient}
+              machine={machine}
+            />
+          </>
         )}
-        {machine ? (
+        {machine && !thisIphone ? (
           <SettingsDeviceCapabilities
             host={props.hostClient}
             machine={machine}
@@ -203,6 +212,13 @@ function ComputerDetail(props: {
           </AppText>
         ) : thisIphone ? (
           <IphoneAppsBlock
+            browser={
+              <DeviceBrowserRow
+                deploymentId={props.deploymentId}
+                hostClient={props.hostClient}
+                machine={machine}
+              />
+            }
             canRespond={canRespond}
             controller={iphoneApps}
             data={data.data}
@@ -284,26 +300,20 @@ function ComputerDetail(props: {
 function ComputerSummary(props: {
   readonly apps: Parameters<typeof computerUses>[1];
   readonly machine: MachineSummary;
-  /** False for this iPhone, whose own block says whether it is sharing right now. */
-  readonly status: boolean;
 }): ReactNode {
   const uses = computerUses(props.machine, props.apps);
   const role = computerRole(props.machine, uses, props.apps !== null);
   const status = computerStatus(props.machine);
   return (
     <View style={styles.summary}>
-      {props.status ? (
-        <View style={styles.status}>
-          <StatusDot
-            tone={
-              status.tone === "online" ? "green" : status.tone === "waiting" ? "amber" : "muted"
-            }
-          />
-          <AppText role="secondary" tone="soft">
-            {status.label}
-          </AppText>
-        </View>
-      ) : null}
+      <View style={styles.status}>
+        <StatusDot
+          tone={status.tone === "online" ? "green" : status.tone === "waiting" ? "amber" : "muted"}
+        />
+        <AppText role="secondary" tone="soft">
+          {status.label}
+        </AppText>
+      </View>
       {role ? <AppText role="bodyMedium">{computerRoleLabel[role]}</AppText> : null}
       {uses.length > 0 ? (
         <AppText

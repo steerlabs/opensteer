@@ -219,3 +219,96 @@ describe("browser editing transport", () => {
     store.dispose();
   });
 });
+
+describe("browser autofill offers", () => {
+  const consumerToken = crypto.randomUUID();
+  const account = (username: string) => ({
+    id: crypto.randomUUID(),
+    revision: 3,
+    username,
+    label: null,
+    ready: false,
+  });
+  const offer = (offerId: string, accounts: ReturnType<typeof account>[], y = 0.2) =>
+    ({
+      type: "browser.autofill.offer",
+      consumerToken,
+      surfaceId,
+      offerId,
+      role: "username",
+      geometryRevision: 1,
+      anchor: { x: 0.1, y, width: 0.3, height: 0.05 },
+      accounts,
+    }) as const;
+
+  it("keeps an offer's place across anchor moves, fills once, and ends on withdrawal", () => {
+    const { store, target, commands } = setup();
+    const first = crypto.randomUUID();
+    const accounts = [account("alex@acme.co"), account("alex.admin@acme.co")];
+    store.receive(sessionId, offer(first, accounts));
+    target.moveAutofill(1);
+    target.dismissAutofill();
+    store.receive(sessionId, offer(first, accounts, 0.4));
+    expect(target.get().autofill).toMatchObject({
+      open: false,
+      highlighted: 1,
+      offer: { anchor: { y: 0.4 } },
+    });
+
+    target.fillAutofill(accounts[1]!.id);
+    target.fillAutofill(accounts[0]!.id);
+    target.fillAutofill(crypto.randomUUID());
+    expect(commands).toEqual([
+      { type: "autofill.fill", surfaceId, offerId: first, loginId: accounts[1]!.id, revision: 3 },
+    ]);
+
+    store.receive(sessionId, {
+      type: "browser.autofill.result",
+      consumerToken,
+      surfaceId,
+      offerId: crypto.randomUUID(),
+      status: "filled",
+    });
+    expect(target.get().autofill?.pending).toBe(accounts[1]!.id);
+    store.receive(sessionId, {
+      type: "browser.autofill.result",
+      consumerToken,
+      surfaceId,
+      offerId: first,
+      status: "cancelled",
+    });
+    expect(target.get().autofill).toMatchObject({ pending: null, result: "cancelled" });
+
+    const second = crypto.randomUUID();
+    store.receive(sessionId, offer(second, [accounts[0]!]));
+    expect(target.get().autofill).toMatchObject({ open: true, highlighted: 0, result: null });
+    store.receive(sessionId, {
+      type: "browser.autofill.withdrawn",
+      consumerToken,
+      surfaceId,
+      offerId: first,
+    });
+    expect(target.get().autofill?.offer.offerId).toBe(second);
+    store.receive(sessionId, {
+      type: "browser.autofill.withdrawn",
+      consumerToken,
+      surfaceId,
+      offerId: second,
+    });
+    expect(target.get().autofill).toBeNull();
+    store.dispose();
+  });
+
+  it("lets the person choose again when the choice never left this viewer", () => {
+    const store = new BrowserEditingStore(() => {
+      throw new Error("The browser socket is closed.");
+    });
+    const target = store.target(sessionId, surfaceId);
+    const offerId = crypto.randomUUID();
+    const only = account("alex@acme.co");
+    store.receive(sessionId, offer(offerId, [only]));
+    target.fillAutofill(only.id);
+    expect(target.get().autofill).toMatchObject({ pending: null, result: "unavailable" });
+    store.dispose();
+  });
+});

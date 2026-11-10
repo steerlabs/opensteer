@@ -567,7 +567,7 @@ integration("Machine access session lifecycle", () => {
       // Enrolled reach-only: nothing to bind yet, and nowhere to place work.
       expect(await bound()).toEqual([]);
       expect(await row()).toMatchObject({
-        allowedModules: ["agents", "integrations", "messaging", "shell"],
+        allowedModules: ["agents", "browser", "integrations", "messaging", "shell"],
         status: "online",
       });
       expect(Object.keys((await row()).modules)).toEqual(["shell"]);

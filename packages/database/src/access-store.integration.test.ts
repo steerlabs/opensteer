@@ -318,7 +318,7 @@ describeStore("dormant Project access", (it) => {
       const previous = await new Migrator({
         db: database,
         provider: { getMigrations: async () => migrations },
-      }).migrateTo("0168_devices");
+      }).migrateTo("0169_browser_profile_homes");
       if (previous.error) throw previous.error;
       const disabledAt = new Date("2026-01-02T03:04:05.000Z");
       const disabledId = createId("user");

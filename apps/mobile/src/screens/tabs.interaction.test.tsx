@@ -6,6 +6,8 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  browserTabSections,
+  browserTabStrip,
   placeHasAgents,
   placeList,
   type HostClient,
@@ -119,6 +121,7 @@ vi.mock("../voice/cursor-mark.js", () => ({ PillMic: () => null, VoiceCursor: ()
 vi.mock("react-native-webview", () => ({ WebView: () => null }));
 vi.mock("../dictation/context.js", () => ({ useDictation: () => dictation }));
 
+vi.mock("../phone-browser/runtime.js", () => ({ usePhoneBrowserManager: () => null }));
 vi.mock("react-native", async () => {
   const React = await vi.importActual<typeof import("react")>("react");
   const flatten = (style: unknown): Record<string, unknown> =>
@@ -324,13 +327,14 @@ vi.mock("react-native-reanimated", () => {
     LayoutAnimationConfig: (props: Children) => <>{props.children}</>,
     LinearTransition: transition,
     useAnimatedStyle: () => ({}),
+    useEvent: () => () => undefined,
     useReducedMotion: () => true,
     useSharedValue: <T,>(value: T) => ({ value }),
     withRepeat: <T,>(value: T) => value,
     withSpring: <T,>(value: T) => value,
     withTiming: <T,>(value: T) => value,
     cancelAnimation: () => undefined,
-    Easing: { inOut: () => () => 0, quad: () => 0 },
+    Easing: { cubic: () => 0, inOut: () => () => 0, out: () => () => 0, quad: () => 0 },
   };
 });
 vi.mock("react-native-gesture-handler/ReanimatedDrawerLayout", async () => {
@@ -448,6 +452,8 @@ vi.mock("expo-haptics", () => ({
   selectionAsync: vi.fn(async () => undefined),
 }));
 vi.mock("expo-application", () => ({ nativeApplicationVersion: "1.0.0" }));
+vi.mock("../ui/cellular.js", () => ({ useCellular: () => false }));
+vi.mock("../computers/here-device.js", () => ({ useHereDeviceId: () => null }));
 vi.mock("../ui/ai-sharing.js", () => import("../../test-support/ai-sharing.js"));
 vi.mock("expo-clipboard", () => ({ setStringAsync: vi.fn(async () => true) }));
 vi.mock("expo-web-browser", () => ({ openAuthSessionAsync: vi.fn(), openBrowserAsync: vi.fn() }));
@@ -498,6 +504,7 @@ vi.mock("../ui/motion.js", () => ({
   appear: undefined,
   bubblePop: undefined,
   bubbleRise: undefined,
+  descend: undefined,
   duration: { enter: 0, exit: 0 },
   enter: undefined,
   exit: undefined,
@@ -506,6 +513,7 @@ vi.mock("../ui/motion.js", () => ({
 vi.mock("../ui/screen.js", () => ({
   Screen: (props: Children) => <main>{props.children}</main>,
   useGutter: () => 16,
+  useLayout: () => ({ readingWidth: 560 }),
   useListContentInsets: () => ({}),
   useReadingColumn: () => ({}),
 }));
@@ -680,7 +688,7 @@ const { SidebarShell } = await import("../sidebar/sidebar-shell.js");
 const { useSidebarMenu } = await import("../navigation-header.js");
 const { ThreadPane } = await import("../thread/thread-pane.js");
 const { ThreadScreen } = await import("./thread.js");
-const { placeGroups, TabsScreen } = await import("./tabs.js");
+const { TabsScreen } = await import("./tabs.js");
 const { WorkspaceBrowserScreen } = await import("./workspace-browser.js");
 const ScreenContext = harness.contexts.screen!;
 
@@ -1370,36 +1378,22 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
     // the person's own Notes view, opened last, sits with the Mac mini's apps.
     expect(
       placeRows(screen).map((button) => button.getAttribute("aria-label")!.split(", ")[0]),
-    ).toEqual([
-      "Your reading list",
-      "Confirm your reservation",
-      "Le Petit Jardin",
-      "Friday dinner",
-      "storage documentation",
-      "Launch brief",
-      "Coffee shortlist",
-      "Weekend ideas",
-      "Flight award alerts",
-      "Q4 roadmap – Linear",
-      "Slack — #launch",
-      "Notes — Shopping list",
-      "Notes — Shopping list",
-      "Pixel 7",
-      "Keynote",
-    ]);
+    ).toEqual(
+      browserTabSections({
+        strip: browserTabStrip(places, snapshot.browserTabGroups),
+        machines: snapshot.machines,
+        hereId: null,
+      }).ordered.map(({ title }) => title),
+    );
     expect(placeRows(screen)).toHaveLength(places.length);
-    // Grouped by computer, a Mac's apps apart from its tabs.
-    expect(groupHeads(screen)).toEqual([
-      "Mac mini · Browser",
-      "Mac mini · Apps",
-      "Agent Phone · Pixel 7",
-      "Studio Mac · Apps",
-    ]);
+    // One section per device, its tabs then its apps; this phone is none of them, so all are named.
+    expect(groupHeads(screen)).toEqual(["Alex's iPhone", "Mac mini", "Pixel 7", "Studio Mac"]);
     for (const title of [
       "Q4 roadmap – Linear", // opened by hand on the desktop
       "Friday dinner", // a task's
       "Flight award alerts", // a delegated worker acting there
       "Your reading list", // saved, waiting to be restored
+      "Running shoes – Allbirds",
       "Slack — #launch", // a task's Mac app, titled by the window it works in
     ])
       expect(row(screen, title)).toBeDefined();
@@ -1441,29 +1435,15 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
     w.record("J1 global list", { groups: groupHeads(screen) });
   });
 
-  // Failure: an app on no computer reads as a computer that went missing.
-  it("groups app tabs under Apps, with no computer named or missed", () => {
-    const appTabs = ["1", "2"].map((digit) => ({
-      appId: `app_${digit.repeat(8)}-1111-4111-8111-111111111111`,
-      latestVersion: 1,
-      openedAt: "2026-11-04T10:00:00.000Z",
-      threadId: "thread",
-      title: `App ${digit}`,
-      workspaceId: "workspace",
-    }));
-    const groups = placeGroups(
-      placeList({
-        ...new MockHostClient().getSnapshot(),
-        appTabs: appTabs as unknown as NonNullable<HostSnapshot["appTabs"]>,
-      }).filter(({ kind }) => kind === "opensteer-app"),
-    );
-    expect(groups.map(({ data, title }) => [title, data.length])).toEqual([["Apps", 2]]);
-  });
-
   it("narrows to the tabs agents are in from the bar's filter, titled so, and back to every tab", async () => {
     const w = await world();
     await openSidebarTabs(w);
-    const places = placeList(w.host.getSnapshot());
+    const snapshot = w.host.getSnapshot();
+    const places = browserTabSections({
+      strip: browserTabStrip(placeList(snapshot), snapshot.browserTabGroups),
+      machines: snapshot.machines,
+      hereId: null,
+    }).ordered;
     const busy = places.filter(placeHasAgents).map(({ title }) => title);
     expect(busy.length).toBeGreaterThan(0);
     expect(busy.length).toBeLessThan(places.length);
@@ -1514,7 +1494,7 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
     });
     const drawn = () => [
       harness.draws.get("Keynote") ?? 0,
-      harness.draws.get("Studio Mac · Apps") ?? 0,
+      harness.draws.get("Studio Mac") ?? 0,
       harness.draws.get("Q4 roadmap – Linear") ?? 0,
     ];
     const before = drawn();
@@ -2094,6 +2074,8 @@ it.each(["mac", "phone", "personal", "other", "no-computer-use"])(
       )!;
       return {
         ...snapshot,
+        // Without a browser to start a tab in, Open is only for the person's own computer.
+        browserAvailable: false,
         browserSessions: [],
         workspaceTabs: [],
         deploymentShape: {

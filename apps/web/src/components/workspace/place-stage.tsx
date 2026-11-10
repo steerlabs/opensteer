@@ -1,9 +1,5 @@
 import { PendingBrowserTabView } from "./pending-browser-tab.js";
-import {
-  browserPlaceUnavailableReason,
-  browserThreadAgentTab,
-  threadMark,
-} from "@opensteer/client/host";
+import { browserPlaceUnavailableReason, threadMark } from "@opensteer/client/host";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "react-router";
 import type { ReactNode } from "react";
@@ -12,7 +8,7 @@ import { BrowserSurfaceIdSchema, CHAT_THREAD_TITLE } from "@opensteer/core";
 import { useHostSelector, usePhoneTabView, usePlaceList } from "@opensteer/client/react";
 import { usePageVisible } from "../../ui-utils.js";
 import { PlaceBrowserView, type BrowserChromeSignIn } from "../browser/browser-view.js";
-import { BrowserFollowBand, useBrowserThreadPair } from "../browser/browser-thread-pair.js";
+import { useBrowserThreadPair } from "../browser/browser-thread-pair.js";
 import { ComputerWatchView } from "../computer-watch.js";
 import { Icon } from "../icon.js";
 import { useToastToolbar } from "../toast.js";
@@ -168,25 +164,6 @@ function SelectedPlace({
     shown: shownBrowser,
     threadId: shownBrowser ? dockedThread : null,
   });
-  const browserSessions = useHostSelector(hostClient, (snapshot) => snapshot.browserSessions);
-  const launcherAgentTab = useMemo(
-    () => (dockedThread ? browserThreadAgentTab(browserSessions, dockedThread) : null),
-    [browserSessions, dockedThread],
-  );
-  const launcherBand = launcherAgentTab ? (
-    <BrowserFollowBand
-      pair={{
-        elsewhere: launcherAgentTab,
-        mark:
-          dockedThread === directory.homeThreadId ? (
-            <ChatOrb size={16} />
-          ) : dockedThread ? (
-            <TaskMark mark={threadMark(dockedThread, directory.snapshot)} size={16} />
-          ) : null,
-        resume: () => showBrowserTab(launcherAgentTab, { replace: false }),
-      }}
-    />
-  ) : null;
   const live = placeKey
     ? (places.find(
         (item) =>
@@ -308,12 +285,7 @@ function SelectedPlace({
   if (selection.kind === "launcher") {
     return (
       <section aria-label="New tab" className="place place--launcher">
-        <StartPageSlot
-          band={launcherBand}
-          hostClient={hostClient}
-          leading={leading}
-          trailing={trailing}
-        />
+        <StartPageSlot hostClient={hostClient} leading={leading} trailing={trailing} />
       </section>
     );
   }
@@ -498,7 +470,6 @@ function PhoneTab({
 }
 
 function StartPageSlot({
-  band,
   hostClient,
   leading,
   trailing,
@@ -506,7 +477,6 @@ function StartPageSlot({
   readonly hostClient: HostClient;
   readonly leading: ReactNode;
   readonly trailing: ReactNode;
-  readonly band: ReactNode;
 }) {
   const { state } = useLocation();
   const opening = useRef<{
@@ -519,7 +489,6 @@ function StartPageSlot({
     opening.current = { id, from: startPageOrigin(state), link: startPageLink(state) };
   return (
     <StartPage
-      band={band}
       link={opening.current.link}
       from={opening.current.from}
       hostClient={hostClient}
@@ -538,7 +507,8 @@ function leaveToComposer() {
 }
 
 /** Below 1200px: the sidebar's way in, carrying how many tasks need the reader. */
-export function DrawerButton() {
+/** `countYield` is the rank at which a bar may give up the count for room; the sidebar shows it too. */
+export function DrawerButton({ countYield }: { readonly countYield?: number } = {}) {
   const { attention: count, openDrawer } = useWorkspace();
   return (
     <button
@@ -550,7 +520,7 @@ export function DrawerButton() {
     >
       <Icon name="panel" />
       {count > 0 ? (
-        <span aria-hidden className="side-needs side-needs--inline">
+        <span aria-hidden className="side-needs side-needs--inline" data-yield={countYield}>
           <span className="side-needs__bang">!</span>
           {count}
         </span>

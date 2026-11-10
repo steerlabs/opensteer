@@ -13,6 +13,7 @@ import {
   detectStartPageInput,
   profileTint,
   profileBadgesVisible,
+  profileAwayWords,
 } from "./start-page-model.js";
 const now = () => new Date("2026-10-19T12:00:00.000Z");
 describe("start page projection", () => {
@@ -56,6 +57,61 @@ describe("start page projection", () => {
       expect(profileBadgesVisible(web.filter((place) => place.identity?.kind === "guest"))).toBe(
         false,
       );
+    } finally {
+      client.dispose();
+    }
+  });
+  it("says where each profile lives from its home, and refuses one whose home is away by name", () => {
+    const client = new MockHostClient({ latencyMs: 0, now });
+    try {
+      const snapshot: HostSnapshot = { ...client.getSnapshot(), connection: "connected" };
+      const id = (name: string) => snapshot.machines.find((machine) => machine.name === name)!.id;
+      const rows = (localMachineId: string | null, source: HostSnapshot = snapshot) =>
+        Object.fromEntries(
+          startPageIndex({ snapshot: source, localMachineId }).profiles.map((profile) => [
+            profile.presentation.name,
+            {
+              device: profile.device?.name ?? null,
+              available: profile.available,
+              refusal: profileAwayWords(profile),
+            },
+          ]),
+        );
+      const here = rows(id("Mac mini"));
+      expect(here.Work).toEqual({ device: null, available: true, refusal: null });
+      expect(here.Shopping).toEqual({ device: "Alex's iPhone", available: true, refusal: null });
+      expect(here.Travel).toEqual({
+        device: "Studio iMac",
+        available: false,
+        refusal: "Travel is on Studio iMac, which is offline.",
+      });
+      expect(here.Guest).toEqual({ device: null, available: true, refusal: null });
+      // A browser tab is at no device, so it names every one.
+      expect(rows(null).Work?.device).toBe("Mac mini");
+      // A profile from before homes names nothing until its first open chooses.
+      const old = {
+        ...snapshot,
+        browserProfiles: snapshot.browserProfiles.map((profile) =>
+          profile.name === "Travel" ? { ...profile, homeRunnerId: null } : profile,
+        ),
+      };
+      expect(rows(id("Mac mini"), old).Travel).toEqual({
+        device: null,
+        available: true,
+        refusal: null,
+      });
+      // Its own device being away refuses a profile too, named, though no label shows it.
+      const asleep = {
+        ...snapshot,
+        machines: snapshot.machines.map((machine) =>
+          machine.name === "Mac mini" ? { ...machine, status: "offline" as const } : machine,
+        ),
+      };
+      expect(rows(id("Mac mini"), asleep).Work).toEqual({
+        device: null,
+        available: false,
+        refusal: "Work is on Mac mini, which is offline.",
+      });
     } finally {
       client.dispose();
     }

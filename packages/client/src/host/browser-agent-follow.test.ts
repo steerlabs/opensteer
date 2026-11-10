@@ -22,8 +22,12 @@ function setup() {
   const onFollow = vi.fn<(tab: BrowserTabDestination) => void>();
   const controller = new BrowserAgentFollow(onFollow, undefined, timers);
   controllers.push(controller);
-  const update = (agentTab: BrowserTabDestination | null, shownTab = a, threadId = "thread") =>
-    controller.update({ threadId, shownTab, agentTab });
+  const update = (
+    agentTab: BrowserTabDestination | null,
+    shownTab = a,
+    threadId = "thread",
+    held = false,
+  ) => controller.update({ threadId, shownTab, agentTab, held });
   update(a);
   return { controller, update, onFollow };
 }
@@ -64,24 +68,7 @@ describe("browser agent following", () => {
     vi.advanceTimersByTime(1000);
     expect(onFollow).toHaveBeenCalledExactlyOnceWith(b);
   });
-  it("person action cancels pending follow and stays paused until immediate resume", () => {
-    const { controller, update, onFollow } = setup();
-    update(b);
-    update(c, b);
-    controller.pause();
-    onFollow.mockClear();
-    update(b);
-    vi.advanceTimersByTime(5000);
-    update(a);
-    update(c);
-    vi.advanceTimersByTime(5000);
-    expect(controller.state.following).toBe(false);
-    expect(onFollow).not.toHaveBeenCalled();
-    expect(controller.resume()).toEqual(c);
-    expect(controller.state.following).toBe(true);
-    expect(onFollow).toHaveBeenCalledExactlyOnceWith(c);
-  });
-  it("pauses on navigation, cancels a pending switch, and follows when the person returns", () => {
+  it("stops when the person moves the page, and follows again when they go to the agent's tab", () => {
     const { controller, update, onFollow } = setup();
     update(b);
     update(c, b);
@@ -89,12 +76,55 @@ describe("browser agent following", () => {
     vi.advanceTimersByTime(2000);
     expect(controller.state.following).toBe(false);
     expect(onFollow).toHaveBeenCalledExactlyOnceWith(b);
-    update(c, c);
+    // The agent arriving in the person's page does not take it back from them.
+    update(a, a);
+    update(b, a);
+    vi.advanceTimersByTime(2000);
+    expect(controller.state.following).toBe(false);
+    expect(onFollow).toHaveBeenCalledOnce();
+    // Their own return to the agent's tab, such as from its live card, does.
+    update(b, b);
     expect(controller.state.following).toBe(true);
-    update(b, c);
-    expect(onFollow.mock.calls.map(([tab]) => tab)).toEqual([b, b]);
+    update(c, b);
+    expect(onFollow.mock.calls.map(([tab]) => tab)).toEqual([b, c]);
   });
-  it("accepts delayed acknowledgements of its own destination without pausing", () => {
+  it("follows again after steering within the tab once the person returns to it", () => {
+    const { controller, update, onFollow } = setup();
+    update(b);
+    update(b, b);
+    controller.steer();
+    expect(controller.state.following).toBe(false);
+    update(c, b);
+    vi.advanceTimersByTime(2000);
+    expect(onFollow).toHaveBeenCalledExactlyOnceWith(b);
+    update(c, a);
+    // The tab following last moved to is still the person's own return.
+    update(b, a);
+    update(b, b);
+    expect(controller.state.following).toBe(true);
+    update(c, b);
+    expect(onFollow.mock.calls.map(([tab]) => tab)).toEqual([b, c]);
+  });
+  it("waits while the page is held and catches up once it is not", () => {
+    const { controller, update, onFollow } = setup();
+    update(a, a, "thread", true);
+    update(b, a, "thread", true);
+    vi.advanceTimersByTime(5000);
+    expect(onFollow).not.toHaveBeenCalled();
+    expect(controller.state.following).toBe(true);
+    update(b, a);
+    expect(onFollow).toHaveBeenCalledExactlyOnceWith(b);
+  });
+  it("lets the person's choice under a held page stop following", () => {
+    const { controller, update, onFollow } = setup();
+    update(b, a, "thread", true);
+    update(b, c, "thread", true);
+    update(b, c);
+    vi.advanceTimersByTime(5000);
+    expect(controller.state.following).toBe(false);
+    expect(onFollow).not.toHaveBeenCalled();
+  });
+  it("accepts delayed acknowledgements of its own destination without stopping", () => {
     const { controller, update, onFollow } = setup();
     update(b);
     update(c);
@@ -105,24 +135,48 @@ describe("browser agent following", () => {
     update(c, c);
     expect(controller.state.following).toBe(true);
   });
-  it("run end cancels pending switches and following quietly", () => {
+  it("takes a late report of an earlier switch as its own, after it has switched again", () => {
+    const { controller, update, onFollow } = setup();
+    update(b);
+    vi.advanceTimersByTime(1000);
+    update(c);
+    expect(onFollow.mock.calls.map(([tab]) => tab)).toEqual([b, c]);
+    update(c, b);
+    expect(controller.state.following).toBe(true);
+    update(c, c);
+    expect(controller.state).toMatchObject({ following: true, steering: false, pending: [] });
+  });
+  it("forgets its unreported switches once the person takes over", () => {
+    const d = { sessionId: "session", tabId: "d" };
+    const { controller, update } = setup();
+    update(b);
+    vi.advanceTimersByTime(1000);
+    update(c);
+    update(c, d);
+    expect(controller.state).toMatchObject({ following: false, steering: true, pending: [] });
+    update(b, d);
+    // The person opens the agent's tab from its live card: a switch following once asked for.
+    update(b, b);
+    expect(controller.state.following).toBe(true);
+  });
+  it("ends quietly when the agent leaves the browser, forgetting that the person steered", () => {
     const { controller, update, onFollow } = setup();
     update(b);
     update(c, b);
-    update(null, b);
+    update(c, a);
+    expect(controller.state.steering).toBe(true);
+    update(null, a);
     vi.advanceTimersByTime(2000);
     expect(onFollow).toHaveBeenCalledExactlyOnceWith(b);
-    onFollow.mockClear();
-    expect(controller.state.following).toBe(false);
-    expect(controller.state.waitingForMatch).toBe(true);
+    expect(controller.state).toMatchObject({ following: false, steering: false });
     update(b);
     expect(controller.state.following).toBe(false);
     update(a);
     expect(controller.state.following).toBe(true);
     update(b);
-    expect(onFollow).toHaveBeenCalledExactlyOnceWith(b);
+    expect(onFollow.mock.calls.map(([tab]) => tab)).toEqual([b, b]);
   });
-  it("starts only on a matching destination, resets on Thread changes, and cancels on unmount", () => {
+  it("starts only where the page and the agent meet, resets on Thread changes, and cancels on unmount", () => {
     const { controller, update, onFollow } = setup();
     update(b, a, "next-thread");
     vi.advanceTimersByTime(2000);
@@ -136,28 +190,17 @@ describe("browser agent following", () => {
     expect(onFollow).toHaveBeenCalledExactlyOnceWith(c);
   });
   it("pure transitions ignore early timer events and missing companion Threads", () => {
-    const start = transitionBrowserAgentFollow(
-      initialBrowserAgentFollowState(),
-      { type: "update", input: { threadId: "thread", shownTab: a, agentTab: a } },
-      0,
-    ).state;
-    const switched = transitionBrowserAgentFollow(
-      start,
-      { type: "update", input: { threadId: "thread", shownTab: a, agentTab: b } },
-      0,
-    ).state;
-    const pending = transitionBrowserAgentFollow(
-      switched,
-      { type: "update", input: { threadId: "thread", shownTab: b, agentTab: c } },
-      0,
-    ).state;
-    expect(transitionBrowserAgentFollow(pending, { type: "settle" }, 999).follow).toBeNull();
+    const update = (shownTab: BrowserTabDestination, agentTab: BrowserTabDestination) =>
+      ({ type: "update", input: { threadId: "thread", shownTab, agentTab } }) as const;
+    const start = transitionBrowserAgentFollow(initialBrowserAgentFollowState(), update(a, a), 0);
+    const switched = transitionBrowserAgentFollow(start.state, update(a, b), 0);
+    const pending = transitionBrowserAgentFollow(switched.state, update(b, c), 0);
+    expect(transitionBrowserAgentFollow(pending.state, { type: "settle" }, 999).follow).toBeNull();
     const removed = transitionBrowserAgentFollow(
-      pending,
+      pending.state,
       { type: "update", input: { threadId: null, shownTab: a, agentTab: b } },
       1000,
-    ).state;
-    expect(removed.following).toBe(false);
-    expect(transitionBrowserAgentFollow(removed, { type: "resume" }, 1000).follow).toBeNull();
+    );
+    expect(removed).toEqual({ state: initialBrowserAgentFollowState(), follow: null });
   });
 });

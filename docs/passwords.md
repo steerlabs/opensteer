@@ -1,7 +1,10 @@
 # Opensteer Passwords
 
-Saved logins let agents fill websites or type into permitted Mac and Android apps; saved cards
-work only in websites. The Personal Mac
+Saved logins let agents fill websites or type into permitted Mac and Android apps, and let the
+person fill Opensteer browser pages themselves ([Filling for people](#filling-for-people)); saved
+cards work only in websites. Website fills work only in the Personal main computer's browser, never
+a browser on another computer or phone; the Host refuses an agent's fill there with
+`main-browser-required`. The Personal Mac
 owns the vault; the requester can approve a sign-in from any signed-in device. Cookie reuse is
 [Chrome sign-ins](browser-sessions.md#chrome-sign-ins); passkeys use the [OS passkey
 manager](browser-sessions.md#passkeys). Checks live in the [browser-and-passwords
@@ -100,6 +103,34 @@ provider frame with a committed HTTPS origin while the top-level site remains ap
 document and input before release, rechecks authority, focus and origin before dispatch, and the
 main-world setter rechecks identity. The Host checks lease and session access on every fill.
 
+## Filling for people
+
+A person fills their own saved login into an Opensteer browser page from any viewer, through one
+path: the runtime binds the field the person activated, offers that site's logins to that viewer
+only, accepts the choice only from that viewer, and desktop main releases each value from the broker
+into the bound elements. The saved value travels only broker → desktop main → page on the vault
+Mac; the Host, Runners and viewers carry IDs, usernames and status. After insertion the page and
+any agent JavaScript in it can read the value, exactly as if the person had typed it. Agents have no
+tool for this; they keep `sign_in`.
+
+An offer needs a trusted activation (a pointer press or ↓) on that element and viewer input newer
+than the page's latest agent command; that routes the offer, it does not prove who focused the field,
+so the person's explicit choice is the act, and any agent command withdraws the offer. The runtime
+binds the target, its partner field and any one-digit code boxes in its private world when the
+offer is made and never reselects: a changed document, origin, or element ends the fill.
+
+Presence follows where the activation came from. Native input on the vault Mac's own page makes the
+broker ask Touch ID or the Mac password itself, and such an offer is refused rather than downgraded
+if that native view is gone. Every other viewer is trusted as it is to approve agent sign-ins: the
+phone asks for device-owner authentication, and on the web the click is the consent.
+
+A confirmed choice opens a person transaction: its own kind with its own setting (on by default),
+never a grant, app release, approval or agent reference. It stays reusable for one viewer, tab,
+site, login revision and presence until the broker's deadline (at most five minutes), so a code page
+after a password page needs no second check on that device. The setting and the person activity
+log live apart from the agent records so an older broker after a channel downgrade neither loses
+them nor misreads agent sign-ins. Activity records a release, not a successful sign-in.
+
 ## Typing in apps
 
 The Host resolves saved references for the calling Workspace and seals every field before any action
@@ -154,9 +185,9 @@ signature, checked by audit token before reading any byte; desktop verifies the 
 and live peer too. Development uses a separate bundle, socket and vault, and its file protection
 cannot resist same-user rollback, so it must never ship.
 
-Setup, Start Fresh, opening saved logins and changing a login's websites, login page or username
-each need fresh device-owner authentication (Touch ID or the Mac password), never an earlier unlock.
-Sign-in consent never prompts on the vault Mac. An authenticated window visit covers adding,
+Setup, Start Fresh, opening saved logins, changing a login's websites, login page or username, and a
+person's own fill from the Mac's page each need fresh device-owner authentication (Touch ID or the
+Mac password), never an earlier unlock. Agent sign-in consent never prompts on the vault Mac. An authenticated window visit covers adding,
 editing, deleting and importing, and ends on close, lock, sleep or idle; every change checks the
 live visit. Prompts use the broker's own wording, never agent text. Unreadable settings fail off.
 Transactions belong to their connection, and queued work rechecks after every wait.

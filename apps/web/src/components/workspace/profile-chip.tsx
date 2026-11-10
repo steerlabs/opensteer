@@ -1,5 +1,9 @@
 import { useRef, useState } from "react";
-import type { HostClient, PlaceItem } from "@opensteer/client/host";
+import { deviceElsewhere } from "@opensteer/client/computers";
+import type { HostClient, HostSnapshot, PlaceItem } from "@opensteer/client/host";
+import { useHostSelector } from "@opensteer/client/react";
+import { DeviceLabel } from "../computers/device-label.js";
+import { useHereId } from "../computers/here.js";
 import { Icon } from "../icon.js";
 import { Popover } from "../popover.js";
 import { ProfileAvatar, browserWords, type BrowserPresentation } from "./identity.js";
@@ -24,7 +28,10 @@ export function ProfileChip({
 }) {
   const [open, setOpen] = useState(false);
   const chipRef = useRef<HTMLButtonElement | null>(null);
-  const whole = browserWords(presentation);
+  const hereId = useHereId();
+  const machines = useHostSelector(hostClient, selectMachines);
+  const device = deviceElsewhere(machines, presentation.computerId, hereId);
+  const whole = browserWords(presentation, hereId);
   const guest = presentation.identity.kind === "guest";
   return (
     <>
@@ -56,10 +63,7 @@ export function ProfileChip({
               <span className="chip-menu__using" title={presentation.identity.name}>
                 Using {presentation.identity.name}
               </span>
-              <span className="chip-menu__where">
-                <Icon name="laptop" />
-                {presentation.computer}
-              </span>
+              {device ? <DeviceLabel className="chip-menu__where" device={device} /> : null}
             </span>
           </div>
           {guest ? (
@@ -97,3 +101,5 @@ export function ProfileChip({
     </>
   );
 }
+
+const selectMachines = (snapshot: HostSnapshot) => snapshot.machines;

@@ -82,6 +82,8 @@
     "apps/desktop/src/passwords/passwords-service.test.ts",
     "apps/desktop/src/passwords/passwords-service.ts",
     "apps/desktop/src/passwords/paths.ts",
+    "apps/desktop/src/passwords/person-fill.test.ts",
+    "apps/desktop/src/passwords/person-fill.ts",
     "apps/desktop/src/passwords/release-identity.ts",
     "apps/desktop/src/passwords/test-support/fake-broker-server.ts",
     "apps/desktop/src/passwords/test-support/fake-broker-session.ts",

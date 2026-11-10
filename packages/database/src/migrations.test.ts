@@ -176,9 +176,10 @@ const releasedMigrationNames = [
   "0166_memory_pass_activity",
   "0167_quiet_tasks",
   "0168_devices",
-  "0169_access_foundation",
-  "0170_project_execution_preparation",
-  "0171_team_administration",
+  "0169_browser_profile_homes",
+  "0170_access_foundation",
+  "0171_project_execution_preparation",
+  "0172_team_administration",
 ];
 
 describe("migration names", () => {
