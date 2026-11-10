@@ -43,6 +43,7 @@ export * from "./run-files.js";
 
 export * from "./agent-connections.js";
 export * from "./settings.js";
+export * from "./team-access.js";
 export * from "./runner-skill-metadata.js";
 
 export * from "./automatic-models.js";
