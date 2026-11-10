@@ -94,6 +94,9 @@ async function setup(fixture: StoreFixture) {
       },
     ],
   });
+  await sql`update auth_sessions s set member_generation = u.authority_generation from users u where u.id = s.user_id`.execute(
+    database,
+  );
   const service = new TeamAdministrationService({
     database,
     identity,
@@ -405,6 +408,16 @@ describeStore("team administration Host boundary", (it) => {
       await expect(service.read("team.summary.get", {}, acceptedContext)).rejects.toMatchObject({
         reason: "membership-lost",
       });
+      for (const procedure of ["bootstrap.get", "team.summary.get"] as const) {
+        const response = await injectRpcRequest(app, procedure, {}, acceptedContext.headers);
+        expect(response.statusCode, response.body).toBe(401);
+      }
+      const realtime = await app.inject({
+        method: "GET",
+        url: "/v1/realtime",
+        headers: acceptedContext.headers,
+      });
+      expect(realtime.statusCode, realtime.body).toBe(401);
       const proof = await identity.teamInvitationAdmission(
         new Headers(acceptedContext.headers),
         pending.session,
@@ -528,14 +541,23 @@ describeStore("team administration Host boundary", (it) => {
         verifier,
         new Headers({ origin }),
       );
+      const freshLogin = await identity.signInPassword(
+        { email: pending.session.user.email, password: "a correct test password" },
+        new Headers({ origin }),
+      );
+      const freshCookie = freshLogin.headers
+        .getSetCookie()
+        .map((value) => value.split(";", 1)[0]!)
+        .join("; ");
       const rejoined = await service.read(
         "team.invitation.accept",
         {},
         {
           ...context(pending),
+          session: freshLogin.data.session,
           headers: {
             origin,
-            cookie: `${pending.cookie}; ${replacementProof.headers
+            cookie: `${freshCookie}; ${replacementProof.headers
               .getSetCookie()
               .map((value) => value.split(";", 1)[0]!)
               .join("; ")}`,

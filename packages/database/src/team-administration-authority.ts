@@ -50,6 +50,18 @@ export async function requireTeamHuman(
     actor.authorityGeneration !== safeGeneration(user.authorityGeneration)
   )
     teamRefusal("member-generation-changed", "unauthorized");
+  if (actor.sessionId) {
+    const session = await database
+      .selectFrom("authSessions")
+      .select("id")
+      .where("id", "=", actor.sessionId)
+      .where("userId", "=", user.id)
+      .where("memberGeneration", "=", String(user.authorityGeneration))
+      .where("expiresAt", ">", new Date())
+      .where("absoluteExpiresAt", ">", new Date())
+      .executeTakeFirst();
+    if (!session) teamRefusal("member-generation-changed", "unauthorized");
+  }
   if (administrator && user.instanceRole !== "administrator") teamRefusal("team-admin-required");
   return user;
 }

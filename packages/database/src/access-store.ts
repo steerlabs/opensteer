@@ -1415,11 +1415,13 @@ async function requireActor(
       "memberState",
       "admittedAt",
       "authorityGeneration",
+      "disabledAt",
     ])
     .where("id", "=", input.actor.userId)
     .executeTakeFirst();
   if (
     !actor ||
+    actor.disabledAt ||
     actor.memberState !== "active" ||
     !actor.admittedAt ||
     (input.actor.authorityGeneration !== undefined &&
@@ -1437,6 +1439,23 @@ async function requireActor(
               : "member-generation-changed",
       message: "Active admitted human is required",
     });
+  if (input.actor.sessionId) {
+    const session = await transaction
+      .selectFrom("authSessions")
+      .select("id")
+      .where("id", "=", input.actor.sessionId)
+      .where("userId", "=", actor.id)
+      .where("memberGeneration", "=", String(actor.authorityGeneration))
+      .where("expiresAt", ">", new Date())
+      .where("absoluteExpiresAt", ">", new Date())
+      .executeTakeFirst();
+    if (!session)
+      throw new OpensteerError({
+        code: "unauthorized",
+        reason: "member-generation-changed",
+        message: "Authentication required",
+      });
+  }
   return {
     id: actor.id,
     administrator: actor.instanceRole === "administrator",

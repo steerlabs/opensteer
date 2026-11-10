@@ -533,6 +533,9 @@ integration("IdentityService", () => {
         deploymentShape: { kind: "server", defaultWorkspaceBacking: "local-directory" },
       });
       await database.updateTable("deployments").set({ authorityModelVersion: 2 }).execute();
+      await sql`update auth_sessions s set member_generation = u.authority_generation from users u where u.id = s.user_id`.execute(
+        database,
+      );
       const selector = "oidc-team-selector-123456789";
       const verifier = "v".repeat(43);
       await database
@@ -578,7 +581,11 @@ integration("IdentityService", () => {
       const teamHeaders = new Headers({
         cookie: `${cookieHeader(exchange.headers)}; ${sessionCookieHeader(teamCallback.headers)}`,
       });
-      const teamSession = await identity.requireSession(teamHeaders);
+      await expect(identity.requireSession(teamHeaders)).rejects.toMatchObject({
+        code: "unauthorized",
+      });
+      const teamSession = await identity.requireTeamInvitationSession(teamHeaders);
+      if (!teamSession) throw new Error("Pending invitation identity was not authenticated");
       const proof = await identity.teamInvitationAdmission(teamHeaders, teamSession);
       expect(
         await database
@@ -1987,6 +1994,9 @@ integration("IdentityService", () => {
       deploymentShape: { kind: "server", defaultWorkspaceBacking: "local-directory" },
     });
     await database.updateTable("deployments").set({ authorityModelVersion: 2 }).execute();
+    await sql`update auth_sessions s set member_generation = u.authority_generation from users u where u.id = s.user_id`.execute(
+      database,
+    );
     const selector = "team-invitation-selector-12345";
     const verifier = "v".repeat(43);
     await database
