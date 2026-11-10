@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 import type { WebViewProps } from "react-native-webview";
-import { Linking } from "react-native";
+import { AccessibilityInfo, Linking } from "react-native";
 import { act, useState, type ComponentProps, type ReactNode } from "react";
 import { createId } from "@opensteer/core";
 import { createRoot, type Root } from "react-dom/client";
@@ -9,7 +9,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   groupTranscriptEntries,
   type DelegationEntry,
+  type HostClient,
+  type HostSnapshot,
   type MessageEntry,
+  type NodeEntry,
   type PlaceEntry,
   type BrowserSessionSummary,
   type ReasoningEntry,
@@ -29,6 +32,8 @@ import {
   type TranscriptSurfaces,
 } from "./surface-chips.js";
 import { TranscriptGroupRow, replyActivityKeys } from "./transcript.js";
+import { AgentMemoryContext } from "./agent-cards.js";
+import { TaskScopeContext } from "./task-line.js";
 import { AppCard } from "./app-card.js";
 import { TranscriptHostClientContext } from "./attachment-views.js";
 
@@ -75,6 +80,7 @@ vi.mock("react-native-webview", () => ({
   },
 }));
 vi.mock("react-native", () => ({
+  AccessibilityInfo: { announceForAccessibility: vi.fn() },
   Platform: { OS: "ios", Version: "26" },
   Linking: { openURL: vi.fn(async () => undefined) },
   ActivityIndicator: () => <span>Loading app</span>,
@@ -142,7 +148,9 @@ vi.mock("../ui/motion.js", () => ({
   appear: undefined,
   bubblePop: undefined,
   bubbleRise: undefined,
+  enter: undefined,
   exit: undefined,
+  move: undefined,
 }));
 vi.mock("../ui/sheet.js", () => ({ Sheet: () => null }));
 vi.mock("../ui/primitives.js", () => ({
@@ -641,6 +649,153 @@ function statusLine(container: HTMLElement): HTMLElement {
 // Ways an old delegation's line can fail: it opens the conversation that
 // handed the work out instead of the one that did it, where the task, its
 // result and the pages it used are; or a failure reads like a finish.
+describe("a turn's subagents", () => {
+  const threadId = "thread_subagents";
+  const node = (title: string, minute: number, patch: Partial<NodeEntry> = {}): NodeEntry => {
+    const nodeId = createId("executionNode");
+    return {
+      id: `node:${nodeId}`,
+      kind: "node",
+      nodeKind: "subagent",
+      nodeId,
+      title,
+      runId: "a",
+      status: "running",
+      createdAt: `2026-08-16T10:0${minute}:00.000Z`,
+      completedAt: null,
+      model: null,
+      effort: null,
+      originCallId: null,
+      parentNodeId: null,
+      phaseIndex: null,
+      phases: [],
+      prompt: `Please ${title.toLowerCase()}.`,
+      result: null,
+      progress: null,
+      ...patch,
+    };
+  };
+
+  /** A pane's row over a Host whose transcript is the entries drawn. */
+  async function pane() {
+    const loaded = new MockHostClient({ latencyMs: 0, subagents: "absent" });
+    await loaded.load();
+    let current: HostSnapshot = { ...loaded.getSnapshot(), connection: "connected" };
+    loaded.dispose();
+    const listeners = new Set<() => void>();
+    const hostClient = {
+      getSnapshot: () => current,
+      subscribe: (listener: () => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    } as unknown as HostClient;
+    const onOpenSubagent = vi.fn();
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const memory = new Map<string, boolean>();
+    return {
+      container,
+      onOpenSubagent,
+      draw(entries: TranscriptEntry[]) {
+        current = { ...current, transcripts: { ...current.transcripts, [threadId]: entries } };
+        const [group] = groupTranscriptEntries(entries);
+        act(() => {
+          for (const listener of listeners) listener();
+          root.render(
+            <TaskScopeContext
+              value={{
+                focused: true,
+                hostClient,
+                onOpenSubagent,
+                onViewWork: () => undefined,
+                threadId,
+              }}
+            >
+              <AgentMemoryContext value={memory}>
+                <PaneRow
+                  group={group!}
+                  highlightRequestId={null}
+                  homeThreadId={null}
+                  onOpenStep={() => undefined}
+                  onOpenThread={() => undefined}
+                  spacingTop={0}
+                  viewerUserId={null}
+                  workspaces={[]}
+                />
+              </AgentMemoryContext>
+            </TaskScopeContext>,
+          );
+        });
+      },
+    };
+  }
+
+  const cards = (container: HTMLElement) =>
+    [...container.querySelectorAll("button[aria-label]")]
+      .map((button) => button.getAttribute("aria-label")!)
+      .filter((label) => label.includes(", subagent, "))
+      .map((label) => label.split(",")[0]);
+
+  // Failure: adjacent subagents read as loose cards, one started later joins a
+  // group a step stands between, a live one disappears into the folded turn or
+  // vanishes the moment it finishes, or opening the fold draws a card twice.
+  it("stand where they started, grouped while adjacent, and keep a live one outside the fold", async () => {
+    const { container, draw, onOpenSubagent } = await pane();
+    const mapper = node("Map the parser", 1);
+    const reader = node("Read the protocol", 2, {
+      completedAt: "2026-08-16T10:03:00.000Z",
+      result: "Read it.",
+      status: "completed",
+    });
+    const tests = node("Check the tests", 4);
+    const answer = { ...note, id: "answer", body: "The final answer." };
+    draw([run, note, mapper, reader, command, tests]);
+    const head = container.querySelector('button[aria-label^="2 subagents"]')!;
+    expect(head.getAttribute("aria-label")).toBe("2 subagents · 1 working · 1 finished");
+    expect(head.getAttribute("aria-expanded")).toBe("true");
+    expect(cards(container)).toEqual(["Map the parser", "Read the protocol", "Check the tests"]);
+    const text = container.textContent!;
+    // The rows, after the status line that names what is under way.
+    const step = text.lastIndexOf("Ran a command");
+    expect(text.lastIndexOf("Read the protocol")).toBeLessThan(step);
+    expect(step).toBeLessThan(text.lastIndexOf("Check the tests"));
+    press(
+      container,
+      container
+        .querySelector('button[aria-label^="Check the tests,"]')!
+        .getAttribute("aria-label")!,
+    );
+    expect(onOpenSubagent).toHaveBeenCalledWith(threadId, tests.nodeId);
+
+    const done = (entry: NodeEntry): NodeEntry => ({
+      ...entry,
+      completedAt: "2026-08-16T10:09:00.000Z",
+      status: "completed",
+    });
+    const ended = { ...run, endedAt: "2026-08-16T10:08:00.000Z", status: "completed" as const };
+    const announce = vi.mocked(AccessibilityInfo.announceForAccessibility);
+    announce.mockClear();
+    draw([ended, note, done(mapper), reader, command, tests, answer]);
+    expect(announce.mock.calls).toEqual([["Map the parser finished"]]);
+    expect(statusLine(container).getAttribute("aria-expanded")).toBe("false");
+    expect(statusLine(container).textContent).toContain("· 3 subagents");
+    expect(cards(container)).toEqual(["Check the tests"]);
+
+    draw([ended, note, done(mapper), reader, command, done(tests), answer]);
+    expect(cards(container)).toEqual(["Check the tests"]);
+
+    act(() => statusLine(container).click());
+    expect(cards(container)).toEqual(["Check the tests"]);
+    act(() =>
+      container.querySelector<HTMLButtonElement>('button[aria-label^="2 subagents"]')!.click(),
+    );
+    expect(cards(container)).toEqual(["Map the parser", "Read the protocol", "Check the tests"]);
+  });
+});
+
 describe("a delegation's line", () => {
   it("opens exactly the delegated conversation, in the words a task's line uses", () => {
     const { container, render, onOpenThread } = setup();

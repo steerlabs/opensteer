@@ -32,7 +32,6 @@ import {
   type ThreadActivityIndicator,
   type TranscriptGroup,
   type TranscriptVoice,
-  type Turn,
   type WorkspaceSummary,
   type ThreadSummary,
 } from "@opensteer/client/host";
@@ -90,7 +89,6 @@ import {
 } from "./task-status.js";
 import { WaitingQuestions } from "./waiting-questions.js";
 import { ThreadServerApprovals } from "../computers/computer-app-approval.js";
-import { waitingQuestion } from "./docked-requests.js";
 import {
   TranscriptAppTabsContext,
   TranscriptSurfacesContext,
@@ -101,6 +99,8 @@ import { TranscriptHostClientContext } from "./attachment-views.js";
 import { Composer } from "./composer.js";
 import { ConversationLinksProvider } from "./conversation-links.js";
 import { ComposerDockLayout } from "./composer-dock.js";
+import { AgentListNestedContext, AgentMemoryContext } from "./agent-cards.js";
+import { AgentsPill } from "./agents-pill.js";
 import { RunPageSlot } from "./run-page.js";
 import { PasswordsSuggestion } from "./passwords-suggestion.js";
 import { QueuedMessages } from "./queued-messages.js";
@@ -873,16 +873,6 @@ function ThreadPaneForUser(
         : incomingMessages.filter((message) => BigInt(message.sequence) > BigInt(seen)).length,
     );
   }, [atTail, incomingMessages, observed]);
-  // The question docked above the composer, folded or not: a task held up by
-  // it does not repeat it.
-  const dockedRequestId = useMemo(
-    () =>
-      snapshot.user === null
-        ? null
-        : (waitingQuestion(snapshot.waitingRequests, threadId, snapshot.user)?.surface.request.id ??
-          null),
-    [snapshot.user, snapshot.waitingRequests, threadId],
-  );
   const dockableWaiting = useMemo(
     () =>
       askedRequestId === null
@@ -896,16 +886,28 @@ function ThreadPaneForUser(
   );
   const taskScope = useMemo<TaskScope>(
     () => ({
-      dockedRequestId,
+      focused,
       hostClient,
+      threadId,
       // Pushed, not navigated: navigating to the Thread route from a Thread
       // replaces this one's params, and back would skip past the conversation.
       onViewWork: (workerThreadId: string) =>
         navigation.dispatch(
           StackActions.push("Thread", { deploymentId, threadId: workerThreadId }),
         ),
+      onOpenSubagent: (parentThreadId: string, nodeId: string) =>
+        navigation.dispatch(
+          StackActions.push("Subagent", { deploymentId, nodeId, threadId: parentThreadId }),
+        ),
     }),
-    [deploymentId, dockedRequestId, hostClient, navigation],
+    [deploymentId, focused, hostClient, navigation, threadId],
+  );
+  // Which helper groups and phases the reader opened or closed, and which
+  // cards stood outside a fold, for as long as this pane lives.
+  const agentMemory = useRef(new Map<string, boolean>()).current;
+  const openAgents = useCallback(
+    () => navigation.navigate("ThreadAround", { deploymentId, section: "agents", threadId }),
+    [deploymentId, navigation, threadId],
   );
   // What the jump pill says while the reader is away from a turn at work on
   // their Mac: that is where its Stop is.
@@ -1362,6 +1364,9 @@ function ThreadPaneForUser(
   );
   const dock = (
     <>
+      {snapshot.user === null || voiceThread ? null : (
+        <AgentsPill hostClient={hostClient} onOpen={openAgents} threadId={threadId} />
+      )}
       {failure !== null ? (
         <Notice
           action={{ label: "Dismiss", onPress: () => setFailure(null) }}
@@ -1503,26 +1508,30 @@ function ThreadPaneForUser(
   );
   return (
     <TaskScopeContext.Provider value={taskScope}>
-      <TranscriptComputersContext.Provider value={computers}>
-        <TranscriptSurfacesContext.Provider value={surfaces}>
-          <TranscriptAppTabsContext.Provider value={appTabs}>
-            {/* Beside a page, the screen already keeps the keyboard clear. */}
-            <ConversationLinksProvider
-              deploymentId={deploymentId}
-              hostClient={hostClient}
-              threadId={threadId}
-            >
-              <ComposerDockLayout
-                avoidKeyboard={companion === null}
-                dock={dock}
-                keyboardVerticalOffset={props.keyboardVerticalOffset ?? 0}
-              >
-                {transcript}
-              </ComposerDockLayout>
-            </ConversationLinksProvider>
-          </TranscriptAppTabsContext.Provider>
-        </TranscriptSurfacesContext.Provider>
-      </TranscriptComputersContext.Provider>
+      <AgentMemoryContext value={agentMemory}>
+        <AgentListNestedContext value>
+          <TranscriptComputersContext.Provider value={computers}>
+            <TranscriptSurfacesContext.Provider value={surfaces}>
+              <TranscriptAppTabsContext.Provider value={appTabs}>
+                {/* Beside a page, the screen already keeps the keyboard clear. */}
+                <ConversationLinksProvider
+                  deploymentId={deploymentId}
+                  hostClient={hostClient}
+                  threadId={threadId}
+                >
+                  <ComposerDockLayout
+                    avoidKeyboard={companion === null}
+                    dock={dock}
+                    keyboardVerticalOffset={props.keyboardVerticalOffset ?? 0}
+                  >
+                    {transcript}
+                  </ComposerDockLayout>
+                </ConversationLinksProvider>
+              </TranscriptAppTabsContext.Provider>
+            </TranscriptSurfacesContext.Provider>
+          </TranscriptComputersContext.Provider>
+        </AgentListNestedContext>
+      </AgentMemoryContext>
     </TaskScopeContext.Provider>
   );
 }
@@ -1667,7 +1676,7 @@ function sameGroup(left: TranscriptGroup, right: TranscriptGroup): boolean {
       left.turn.inputQueuePaused === right.turn.inputQueuePaused &&
       left.turn.startHold === right.turn.startHold &&
       sameEntries(left.turn.work, right.turn.work) &&
-      sameSubagentWork(left.turn.subagentWork, right.turn.subagentWork) &&
+      sameEntries(left.turn.nodes ?? [], right.turn.nodes ?? []) &&
       left.turn.reply === right.turn.reply &&
       sameEntries(left.turn.assignments, right.turn.assignments)
     );
@@ -1682,18 +1691,6 @@ function sameGroup(left: TranscriptGroup, right: TranscriptGroup): boolean {
 
 function sameEntries(left: readonly object[], right: readonly object[]): boolean {
   return left.length === right.length && left.every((entry, index) => entry === right[index]);
-}
-
-/** A subagent's steps are outside the turn's work, so a step it streams changes only these. */
-function sameSubagentWork(left: Turn["subagentWork"], right: Turn["subagentWork"]): boolean {
-  const nodeIds = Object.keys(left);
-  return (
-    nodeIds.length === Object.keys(right).length &&
-    nodeIds.every((nodeId) => {
-      const work = right[nodeId];
-      return work !== undefined && sameEntries(left[nodeId] ?? [], work);
-    })
-  );
 }
 
 /** Only a workspace's name and its mark ever reach a transcript row. */

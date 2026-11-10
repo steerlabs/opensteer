@@ -1,3 +1,5 @@
+import { seedMockSubagents } from "./mock-subagents.js";
+import { NodeDetailStore, type NodeDetailSubscription } from "../host/node-detail.js";
 import { hostDeploymentPolicy } from "../host/deployment-policy.js";
 import { deploymentPolicy, deploymentClientPolicy } from "@opensteer/core";
 import { AppTabSchema, CreateBrowserProfileBodySchema } from "@opensteer/protocol";
@@ -104,6 +106,9 @@ import {
   sameProviderContinuationIdentity,
   ungroupBrowserTabs,
   type AgentEvent,
+  nodeDetailEventNodeId,
+  ExecutionNodeIdSchema,
+  compareSequence,
   type AssignmentSummary,
   type AssignmentView,
   type Attachment,
@@ -1926,6 +1931,7 @@ export interface MockPhoneJoin {
 }
 
 export interface MockHostClientOptions {
+  subagents?: "seeded" | "absent";
   desktopUpdates?: MockDesktopUpdateScenario;
   specialistPlugins?: { id: string; name: string; manifest: SpecialistManifest }[];
   /** Plugins an agent made in Main, from a folder in that Workspace. */
@@ -2438,17 +2444,42 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
           new HostClientRequestError({ code: "not_found", message: "Run not found", status: 404 }),
         );
       }
+      const attemptId = createId("runAttempt");
       const ended =
         entry.status === "completed" || entry.status === "failed" || entry.status === "interrupted";
       return rpcSuccess(
         hostApi["run.attempts.list"].success.parse({
+          nodes: Object.values(client.getSnapshot().transcripts)
+            .flat()
+            .filter((node) => node.kind === "node" && node.runId === runId)
+            .map((node) => {
+              if (node.kind !== "node") throw new Error("Node expected.");
+              return {
+                id: node.nodeId,
+                attemptId,
+                kind: node.nodeKind,
+                model: node.model,
+                effort: node.effort,
+                parentNodeId: node.parentNodeId,
+                phaseIndex: node.phaseIndex,
+                phases: node.phases,
+                prompt: node.prompt,
+                result: node.result,
+                runId,
+                startedAt: node.createdAt,
+                endedAt: node.completedAt,
+                status: node.status,
+                title: node.title,
+                usage: node.usage ?? null,
+              };
+            }),
           attempts: [
             {
               createdAt: entry.createdAt,
               dispatchedAt: entry.status === "queued" ? null : entry.createdAt,
               endedAt: ended ? entry.createdAt : null,
               engineStart: entry.status === "queued" ? null : "cold",
-              id: createId("runAttempt"),
+              id: attemptId,
               modelSelection: null,
               ordinal: 1,
               outcome: ended ? entry.status : null,
@@ -2485,6 +2516,58 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
           events: [],
           threadId,
           window: { ...mockWindow(0), threadId },
+        }),
+      );
+    },
+    "node.events.list": async ({ threadId, nodeId, through, before, limit = 100 }) => {
+      const own = (client.getSnapshot().transcripts[threadId] ?? []).find(
+        (entry) => entry.kind === "node" && entry.nodeId === nodeId,
+      );
+      if (own?.kind !== "node" || !own.runId)
+        return mockRefusal(
+          new HostClientRequestError({
+            code: "not_found",
+            message: "Subagent not found",
+            status: 404,
+          }),
+        );
+      const all = client.nodeEvents.filter(
+        (event) =>
+          event.threadId === threadId &&
+          nodeDetailEventNodeId(event) === nodeId &&
+          (!through || compareSequence(event.sequence, through) <= 0) &&
+          (!before || compareSequence(event.sequence, SequenceSchema.parse(before)) < 0),
+      );
+      const events = all.slice(-limit);
+      const hasMore = all.length > events.length;
+      return rpcSuccess(
+        hostApi["node.events.list"].success.parse({
+          threadId,
+          nodeId,
+          node: {
+            attemptId: createId("runAttempt"),
+            effort: own.effort,
+            endedAt: own.completedAt,
+            id: own.nodeId,
+            kind: own.nodeKind,
+            model: own.model,
+            parentNodeId: own.parentNodeId,
+            phaseIndex: own.phaseIndex,
+            phases: own.phases,
+            prompt: own.prompt,
+            result: own.result,
+            runId: own.runId,
+            startedAt: own.createdAt,
+            status: own.status,
+            title: own.title,
+            usage: own.usage ?? null,
+          },
+          events,
+          window: {
+            ...mockWindow(events.length),
+            hasMore,
+            nextBefore: hasMore ? events[0]?.sequence : null,
+          },
         }),
       );
     },
@@ -3902,6 +3985,7 @@ export class MockHostClient implements HostClient {
   }
   readonly #tabGroups: BrowserTabGroupClient;
   readonly #workspaceTabActivations: WorkspaceTabActivations;
+  readonly #nodeDetails: NodeDetailStore;
   readonly #state: MockHostState;
   readonly #places: MockPlaceWorld;
   readonly #worldSubscription: () => void;
@@ -4052,6 +4136,23 @@ export class MockHostClient implements HostClient {
     };
     this.browserWatchFrames = frames;
     this.rpc = createInMemoryHostApiClient(mockHostApiHandlers(this.#state), mockRpcContext());
+    this.#nodeDetails = new NodeDetailStore({
+      available: () => true,
+      nodes: (threadId) =>
+        (this.getSnapshot().transcripts[threadId] ?? []).filter((entry) => entry.kind === "node"),
+      read: async (input) =>
+        unwrapRpcResult(
+          await this.rpc["node.events.list"]({
+            ...input,
+            nodeId: ExecutionNodeIdSchema.parse(input.nodeId),
+          }),
+        ),
+      sendWatch: (workspaceId, nodeId) => {
+        const sequence = this.#state.nodeEvents.at(-1)?.sequence ?? SequenceSchema.parse("0");
+        queueMicrotask(() => this.#nodeDetails.watched(workspaceId, nodeId, sequence));
+        return true;
+      },
+    });
     this.#tabGroups = new BrowserTabGroupClient(
       this.rpc,
       (browserTabGroups) =>
@@ -4608,6 +4709,12 @@ export class MockHostClient implements HostClient {
     return null;
   }
 
+  watchNode(threadId: string, nodeId: string): NodeDetailSubscription {
+    const thread = this.getSnapshot().threads.find((entry) => entry.id === threadId);
+    if (!thread) throw new Error("Conversation not found.");
+    return this.#nodeDetails.open(threadId, nodeId, thread.workspaceId);
+  }
+
   observeThread(_threadId: string): () => void {
     return () => undefined;
   }
@@ -4950,6 +5057,7 @@ export class MockHostClient implements HostClient {
   }
 
   dispose(): void {
+    this.#nodeDetails.clear();
     this.#personShowListeners.clear();
     this.#pendingBrowserTabs.dispose();
     this.#workspaceTabActivations.dispose();
@@ -5256,6 +5364,7 @@ interface MockPlugin {
   updatedAt: string;
 }
 class MockHostState {
+  nodeEvents: readonly import("@opensteer/core").AgentEventView[] = [];
   openPhoneTab(machineId: string) {
     this.update({
       ...this.snapshot,
@@ -6531,6 +6640,22 @@ class MockHostState {
           steered: [],
         });
       }
+    }
+    if (!firstRun && options.initialHome !== "absent" && options.subagents !== "absent") {
+      const fixture = seedMockSubagents(this.snapshot);
+      this.snapshot = fixture.snapshot;
+      this.nodeEvents = fixture.events;
+      this.assignments.set(fixture.assignment.id, fixture.assignment);
+      const worker = this.snapshot.threads.find(
+        (thread) => thread.id === fixture.assignment.workerThreadId,
+      )!;
+      const parent = this.snapshot.threads.find(
+        (thread) => thread.id === fixture.assignment.parentThreadId,
+      )!;
+      this.assignmentModels.set(fixture.assignment.id, {
+        modelSelection: worker.modelSelection,
+        parentModelSelection: parent.modelSelection,
+      });
     }
     // The rendered transcript and messages API must name the same published
     // positions: opening a seeded result can only mark what was actually seen.

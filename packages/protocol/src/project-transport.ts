@@ -129,6 +129,7 @@ export const ProjectPendingRunEventSchema = z
     event("run.phase"),
     event("node.started"),
     event("node.updated"),
+    event("node.message"),
     event("node.completed"),
     event("tool.started"),
     event("tool.completed"),

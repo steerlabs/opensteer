@@ -15,8 +15,8 @@ const options = process.env.OPENSTEER_MOBILE_BENCH_OPTIONS
   ? z
       .object({
         profile: z.enum(["all", "lan", "4g", "weak-cell", "edge"]),
-        seed: z.enum(["all", "light", "heavy"]),
-        scenario: z.enum(["all", ...scenarios]),
+        seed: z.enum(["all", "light", "heavy", "busy-subagents"]),
+        scenario: z.enum(["all", "busy-subagents", ...scenarios]),
         runs: z.coerce.number().int().positive(),
         out: z.string(),
         "stall-every": z.coerce.number().int().positive().optional(),
@@ -53,6 +53,8 @@ function summary(samples: readonly ScenarioResult[]) {
       ]),
     ),
     bytesDown: median(group.map((sample) => sample.bytesDown)),
+    nodeDetailEvents: median(group.map((sample) => sample.nodeDetailEvents)),
+    nodeDetailBytes: median(group.map((sample) => sample.nodeDetailBytes)),
     bytesUp: median(group.map((sample) => sample.bytesUp)),
     tcpConnections: median(group.map((sample) => sample.tcpConnections)),
     modeledTls13AdditionalMs: median(group.map((sample) => sample.modeledTls13AdditionalMs)),
@@ -117,7 +119,7 @@ integration("phone network performance using the real shared client", () => {
       };
       try {
         for (const seed of (options?.seed === "all"
-          ? ["light", "heavy"]
+          ? ["light", "heavy", "busy-subagents"]
           : [options?.seed ?? "light"]) as SeedName[]) {
           for (const profile of (options?.profile === "all"
             ? Object.keys(linkProfiles)
@@ -133,8 +135,13 @@ integration("phone network performance using the real shared client", () => {
                 onResult: (sample) => samples.push(sample),
                 scenarios: options
                   ? options.scenario === "all"
-                    ? scenarios
-                    : [options.scenario]
+                    ? scenarios.filter(
+                        (scenario) =>
+                          seed === "busy-subagents" || !scenario.startsWith("open-subagent"),
+                      )
+                    : options.scenario === "busy-subagents"
+                      ? ["open-subagent-parent", "open-subagent"]
+                      : [options.scenario]
                   : ["cold-attach", "reconnect"],
                 link: {
                   ...linkProfiles[profile],
@@ -188,8 +195,16 @@ integration("phone network performance using the real shared client", () => {
             RPC: row.rpcCount,
             waves: row.requestWaves,
             failed: row.requestFailures,
+            detailEvents: row.nodeDetailEvents,
+            detailBytes: row.nodeDetailBytes,
           })),
         );
+        for (const manifest of manifests) {
+          if (manifest.busySubagents)
+            console.info(
+              `Stored node detail: ${manifest.busySubagents.detailEvents} events, ${manifest.busySubagents.detailBytes} serialized JSON bytes`,
+            );
+        }
         console.info(`JSON report: ${options.out}`);
       }
     },

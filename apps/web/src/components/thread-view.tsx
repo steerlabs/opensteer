@@ -51,7 +51,7 @@ import {
   reviewFreshStart,
   type ReviewedChoice,
 } from "./execution-review.js";
-import { TaskLines } from "./task-line.js";
+import { TaskCards } from "./agent-cards.js";
 import { UsageNotice } from "./usage-notice.js";
 import { PasswordsSuggestion } from "./passwords-suggestion.js";
 import { Icon } from "./icon.js";
@@ -1080,9 +1080,10 @@ function ThreadView({
                     }
                   : {})}
                 onReply={replyWith}
-                renderTask={(entries) => <TaskLines entries={entries} />}
+                renderTask={(entries) => <TaskCards entries={entries} />}
                 requestShown={dockedRequests.length > 0}
                 startHold={startHold}
+                subagentReader={snapshot}
                 threadId={thread.id}
                 viewerUserId={snapshot.user?.id ?? null}
                 workspaces={snapshot.workspaces}
@@ -1156,6 +1157,8 @@ function ThreadView({
           returnFocusTo={activityView.opener}
           reveal={activityView.reveal}
           selection={activityView.selection}
+          subagentReader={snapshot}
+          threadId={thread.id}
         />
       ) : null}
 

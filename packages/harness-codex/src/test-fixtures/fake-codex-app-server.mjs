@@ -776,6 +776,14 @@ function handleClientMethod(message) {
       send({ id: message.id, result: {} });
       send({ method: "thread/realtime/closed", params: { threadId } });
       break;
+    case "thread/read":
+      send({
+        id: message.id,
+        result: {
+          thread: { id: message.params.threadId, model: "gpt-6-luna", reasoningEffort: "high" },
+        },
+      });
+      break;
     case "turn/interrupt":
       send({ id: message.id, result: {} });
       // A child agent's thread is interrupted on its own, as Codex requires.
@@ -867,6 +875,34 @@ function handleTurnStart(message) {
     return;
   }
   if (scenario === "request-timeout") return;
+  if (scenario.startsWith("recorded-")) {
+    send({ id: message.id, result: { turn: { id: turnId, status: "inProgress" } } });
+    const name = scenario.slice("recorded-".length).replace(/-perturbed$/, "");
+    // Reduced Codex app-server recordings from T3 Code (MIT).
+    const frames = JSON.parse(
+      readFileSync(new URL(`./${name}.json`, import.meta.url), "utf8")
+        .replaceAll("$root", threadId)
+        .replaceAll("$turn", turnId),
+    );
+    if (scenario.endsWith("-perturbed")) {
+      const activity = frames.findIndex((frame) => frame.params?.item?.type === "subAgentActivity");
+      const childStart = frames.findIndex(
+        (frame) => frame.method === "turn/started" && frame.params.threadId !== threadId,
+      );
+      if (activity >= 0 && childStart > activity)
+        frames.splice(activity, 0, frames.splice(childStart, 1)[0]);
+      const childItem = frames.find(
+        (frame) => frame.method === "item/completed" && frame.params.threadId !== threadId,
+      );
+      if (childItem) frames.splice(frames.indexOf(childItem) + 1, 0, childItem);
+      const approval = frames.findIndex((frame) => frame.id !== undefined);
+      const rootStarted = frames.findIndex((frame) => frame.method === "turn/started");
+      if (approval > rootStarted) frames.splice(rootStarted + 1, 0, frames.splice(approval, 1)[0]);
+    }
+    replayFrames = frames;
+    replayNext();
+    return;
+  }
   if (scenario === "background-children") {
     backgroundTurn(message);
     return;
@@ -1780,7 +1816,20 @@ function finishSubagents() {
   sendTurnCompleted("completed");
 }
 
+let replayFrames = [];
+function replayNext() {
+  while (replayFrames.length) {
+    const frame = replayFrames.shift();
+    send(frame);
+    if (frame.id !== undefined) return;
+  }
+}
+
 function handleServerResponse(message) {
+  if (scenario.startsWith("recorded-")) {
+    replayNext();
+    return;
+  }
   if (message.id === "child-approval-1") {
     capture({ childApproval: message.result });
     finishSubagents();

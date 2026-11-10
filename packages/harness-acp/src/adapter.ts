@@ -64,6 +64,13 @@ type OpenMode =
   { readonly type: "start" } | { readonly type: "resume"; readonly reference: string };
 
 interface ActiveTurn {
+  readonly nodeResults: Map<string, string>;
+  readonly settledNodes: Set<string>;
+  readonly childSessions: Map<string, string>;
+  readonly childText: Map<
+    string,
+    { nodeKey: string; kind: "assistant" | "thought"; blockId: string; text: string }
+  >;
   readonly assistant: Map<string, string>;
   readonly completion: Deferred<void>;
   readonly heldAssistant: {
@@ -259,6 +266,10 @@ class AcpHarnessSession implements HarnessSession {
     }
     assertSameEnvironment(this.#context.environment, run.environment);
     const active: ActiveTurn = {
+      nodeResults: new Map(),
+      settledNodes: new Set(),
+      childSessions: new Map(),
+      childText: new Map(),
       assistant: new Map(),
       assistantHoldActive: this.#options.hooks.holdAssistant !== undefined,
       completion: new Deferred<void>(),
@@ -526,14 +537,33 @@ class AcpHarnessSession implements HarnessSession {
 
   #handleUpdate(sessionId: string, update: unknown): void {
     if (this.#replaying) return;
-    if (this.#providerSessionReference && sessionId !== this.#providerSessionReference) return;
     const active = this.#active;
     if (!active || active.terminal) return;
+    const foreign = sessionId !== this.#providerSessionReference;
+    const sessionKey = active.childSessions.get(sessionId);
+    if (foreign && !sessionKey) return;
     const normalized = this.#options.hooks.normalizeUpdate?.(update) ?? normalizeAcpUpdate(update);
-    for (const entry of normalized) this.#applyUpdate(active, entry);
+    for (const entry of normalized) {
+      const nodeKey = foreign ? sessionKey : entry.nodeKey;
+      if (nodeKey && !active.nodes.nodeId(nodeKey)) continue;
+      this.#applyUpdate(active, { ...entry, ...(nodeKey ? { nodeKey } : {}) });
+    }
   }
 
   #applyUpdate(active: ActiveTurn, update: AcpNormalizedUpdate): void {
+    if ((update.kind === "assistant" || update.kind === "thought") && update.nodeKey) {
+      const blockId = update.messageId ?? update.kind;
+      const key = JSON.stringify([update.nodeKey, update.kind, blockId]);
+      const previous = active.childText.get(key);
+      active.childText.set(key, {
+        nodeKey: update.nodeKey,
+        kind: update.kind,
+        blockId,
+        text: (previous?.text ?? "") + update.text,
+      });
+      if (update.kind === "assistant") active.nodes.progress(update.nodeKey, update.text);
+      return;
+    }
     if (active.assistantHoldActive && update.kind !== "assistant") {
       this.#flushHeldAssistant(active);
       active.assistantHoldActive = false;
@@ -568,23 +598,37 @@ class AcpHarnessSession implements HarnessSession {
         return;
       }
       case "tool":
-        this.#applyTool(active, update.toolCall);
+        if (update.nodeKey) this.#flushChild(active, update.nodeKey);
+        this.#applyTool(active, update.toolCall, update.nodeKey);
         return;
       case "subagent": {
+        update = { ...update, key: active.childSessions.get(update.key) ?? update.key };
+        if (active.settledNodes.has(update.key)) return;
         if (update.state === "started") {
-          active.nodes.open(update.key, {
+          active.nodes.ensure(update.key, {
+            parentKey: update.parentKey ?? null,
+            originCallId: update.originCallId ?? null,
             nativeRef: update.key,
             ...(update.model ? { model: update.model } : {}),
             ...(update.prompt ? { prompt: update.prompt } : {}),
             ...(update.sessionReference ? { sessionRef: update.sessionReference } : {}),
             ...(update.title ? { title: update.title } : {}),
           });
+          active.nodes.update(update.key, {
+            ...update,
+            originCallId: active.nodes.originCallId(update.key) ?? update.originCallId ?? null,
+          });
+          if (update.sessionReference)
+            active.childSessions.set(update.sessionReference, update.key);
+          if (update.result) {
+            active.nodes.noteResult(update.key, update.result);
+            active.nodeResults.set(update.key, update.result);
+          }
         } else {
-          active.nodes.complete(
-            update.key,
-            update.state === "failed" ? "failed" : "completed",
-            update.result ? { result: update.result } : {},
-          );
+          this.#flushChild(active, update.key);
+          active.settledNodes.add(update.key);
+          const result = update.result ?? active.nodeResults.get(update.key);
+          active.nodes.complete(update.key, update.state, result ? { result } : {});
         }
         return;
       }
@@ -596,14 +640,28 @@ class AcpHarnessSession implements HarnessSession {
     }
   }
 
-  #applyTool(active: ActiveTurn, call: AcpToolCall): void {
-    const earlier = active.tools.get(call.id);
+  #flushChild(active: ActiveTurn, nodeKey: string): void {
+    for (const [key, block] of active.childText) {
+      if (block.nodeKey !== nodeKey) continue;
+      if (block.kind === "assistant") active.nodes.message(nodeKey, block.text);
+      else active.nodes.reasoning(nodeKey, block.blockId, block.text);
+      active.childText.delete(key);
+    }
+  }
+
+  #applyTool(active: ActiveTurn, call: AcpToolCall, nodeKey?: string): void {
+    const nodeId = nodeKey ? active.nodes.nodeId(nodeKey) : undefined;
+    if (nodeKey && !nodeId) return;
+    const toolKey = JSON.stringify([nodeKey ?? null, call.id]);
+    const earlier = active.tools.get(toolKey);
     const merged = { ...earlier, ...call };
-    active.tools.set(call.id, merged);
+    active.tools.set(toolKey, merged);
     const terminal = ["completed", "failed", "cancelled"].includes(merged.status ?? "");
     if (!earlier) {
+      if (nodeKey) active.nodes.progress(nodeKey, merged.title ?? merged.name ?? "Running tool");
       this.#publish({
         data: {
+          ...(nodeId ? { nodeId } : {}),
           arguments: merged.rawInput,
           callId: merged.id,
           tool: { name: merged.name ?? merged.title ?? "tool", namespace: "acp" },
@@ -615,13 +673,19 @@ class AcpHarnessSession implements HarnessSession {
       this.#publish({
         data: {
           callId: merged.id,
+          ...(nodeId ? { nodeId } : {}),
           isError: merged.status === "failed",
           output: normalizeToolOutput(merged.rawOutput ?? merged.content),
         },
         type: "tool.completed",
       });
-      active.tools.delete(call.id);
+      active.tools.delete(toolKey);
     }
+    for (const update of this.#options.hooks.toolUpdates?.(merged) ?? [])
+      this.#applyUpdate(
+        active,
+        update.kind === "subagent" && nodeKey ? { ...update, parentKey: nodeKey } : update,
+      );
   }
 
   /**
@@ -630,6 +694,7 @@ class AcpHarnessSession implements HarnessSession {
    * turn would otherwise lose the partial reply the person already saw.
    */
   #flushTurn(active: ActiveTurn): void {
+    for (const key of active.nodes.liveKeys()) this.#flushChild(active, key);
     for (const text of active.assistant.values()) {
       if (!text) continue;
       this.#publish({
@@ -744,11 +809,20 @@ class AcpHarnessSession implements HarnessSession {
     this.#expectedProcessExit = true;
     await this.#process.terminate().catch(() => undefined);
     await this.#process.exited.catch(() => undefined);
+    for (const key of active.nodes.liveKeys()) this.#flushChild(active, key);
+    active.nodes.endAll("interrupted");
   }
 
   async #permission(request: AcpPermissionRequest, signal: AbortSignal): Promise<string | null> {
     const active = this.#active;
     if (!active || active.terminal || active.interruptRequested) return null;
+    const nodeKey =
+      request.nodeKey ??
+      (request.sessionId ? active.childSessions.get(request.sessionId) : undefined);
+    if (request.sessionId && request.sessionId !== this.#providerSessionReference && !nodeKey)
+      return null;
+    const nodeId = nodeKey ? active.nodes.nodeId(nodeKey) : undefined;
+    if (nodeKey && !nodeId) return null;
     const offered = new Set(request.options.map((option) => option.id));
     const choices = this.#options.hooks
       .permissionChoices(request)
@@ -759,13 +833,16 @@ class AcpHarnessSession implements HarnessSession {
     this.#pending.set(requestId, { kind: "choice", offered, settlement });
     this.#publish({
       data: {
-        request: pendingRequest(requestId, active, this.#context, request.toolCall.id, {
-          detail: permissionDetail(request.toolCall),
-          kind: "choice",
-          options: choices.map(requestChoice),
-          risk: "medium",
-          title: request.toolCall.title ?? request.toolCall.name ?? "Allow this action?",
-        }),
+        request: {
+          ...pendingRequest(requestId, active, this.#context, request.toolCall.id, {
+            detail: permissionDetail(request.toolCall),
+            kind: "choice",
+            options: choices.map(requestChoice),
+            risk: "medium",
+            title: request.toolCall.title ?? request.toolCall.name ?? "Allow this action?",
+          }),
+          ...(nodeId ? { originatingNodeId: nodeId } : {}),
+        },
       },
       type: "request.opened",
     });
@@ -961,6 +1038,7 @@ class AcpHarnessSession implements HarnessSession {
     this.#client.close();
     await this.#process.terminate().catch(() => undefined);
     await this.#process.exited.catch(() => undefined);
+
     this.#publisher.closeStream();
     if (notifyOwner && this.#providerSessionReference) this.#onClose(this);
   }

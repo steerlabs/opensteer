@@ -63,6 +63,7 @@ import {
   BrowserSourceIdSchema,
   BrowserSurfaceIdSchema,
   EnvironmentIdSchema,
+  ExecutionNodeIdSchema,
   ExecutionNodeViewSchema,
   ExecutionPreferencesViewSchema,
   ExecutionSelectionSchema,
@@ -224,6 +225,7 @@ import {
   DurableWindowCursorSchema,
   DurableWindowSchema,
   TaskPageSchema,
+  NodeEventPageSchema,
   ThreadEventPageSchema,
   ThreadMessagePageSchema,
   WorkspaceCatalogPageSchema,
@@ -2078,6 +2080,21 @@ export const hostApi = defineRpc({
         "A turn page sets its own size",
       ),
     ThreadEventPageSchema,
+  ),
+  /**
+   * One subagent's own events through `through`, the sequence its watch
+   * began after. Needs `node-detail-v1`.
+   */
+  "node.events.list": declaration(
+    "GET",
+    z
+      .strictObject({
+        nodeId: ExecutionNodeIdSchema,
+        threadId: ThreadIdSchema,
+        through: SequenceSchema.optional(),
+      })
+      .extend(durablePageInputSchema.shape),
+    NodeEventPageSchema,
   ),
   "thread.assignments.list": declaration(
     "GET",

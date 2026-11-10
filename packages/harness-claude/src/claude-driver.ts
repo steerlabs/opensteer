@@ -13,8 +13,14 @@ import {
 import type { HarnessExecutionAuthority } from "@opensteer/core";
 import { type ModelSelection, backgroundLightModels } from "@opensteer/core";
 import { type HarnessModelDescriptor, resolveLightModel } from "@opensteer/harness";
+import { ClaudeWorkflowNodes } from "./workflow-nodes.js";
+import {
+  CLAUDE_WORKFLOW_TASK_TYPE,
+  hasClaudeWorkflowSnapshot,
+  parseClaudeWorkflowRunHandles,
+} from "./workflow-progress.js";
+import { workflowSessionRoot } from "./workflow-transcript.js";
 import { type ClaudeExecutableInspection } from "./executable.js";
-import { delay } from "@opensteer/shared/delay";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -136,7 +142,7 @@ const claudeBuiltinTools = [
   "ToolSearch",
   "Write",
 ] as const;
-const claudeDelegationTools = ["Agent", "Task"] as const;
+const claudeDelegationTools = ["Agent", "Task", "Workflow"] as const;
 /** The subagent tool Claude Code runs in the foreground; `Task` is its older name. */
 const claudeSubagentTool = "Agent";
 /** Stops a background task, which runs on after its turn inside the same Run. */
@@ -166,7 +172,6 @@ const claudeManagedBoundarySettings = Object.freeze({
   disableBundledSkills: true,
   disableClaudeAiConnectors: true,
   disableRemoteControl: true,
-  disableWorkflows: true,
 }) satisfies NonNullable<Options["managedSettings"]>;
 
 export function managedClaudeSettings(
@@ -273,6 +278,7 @@ type SessionMode =
 export interface ClaudeQueryHandle extends AsyncIterable<SDKMessage> {
   close(): void;
   interrupt(): Promise<unknown>;
+  stopTask(taskId: string): Promise<void>;
 }
 
 export interface ClaudeAgentSdk {
@@ -357,6 +363,7 @@ interface ActiveTurn {
   readonly abortController: AbortController;
   /** Live background tasks, by task id: the roster Claude replaces on every change. */
   readonly background: Set<string>;
+  readonly backgroundSeen: Set<string>;
   /** Ends the Run once a woken turn did not come. */
   endTimer?: NodeJS.Timeout;
   /** Between turns: the engine answered and only background work may still run. */
@@ -383,9 +390,21 @@ interface ActiveTurn {
   turnDeadline?: (armed: boolean) => void;
   /** Each subagent's id, as Claude names it to `canUseTool`, mapped to the call that started it. */
   readonly agentCalls: Map<string, string>;
+  readonly knownNodes: Set<string>;
+  readonly knownTasks: Set<string>;
+  readonly pendingChildFrames: Map<string, SDKMessage[]>;
+  readonly pendingTaskFrames: Map<string, SDKMessage[]>;
+  readonly pendingParents: Map<string, string>;
+  readonly attributionListeners: Set<() => void>;
+  readonly childItems: Set<string>;
+  readonly childOpenTools: Map<string, ExecutionNodeId>;
+  readonly childStreamText: Map<string, string>;
+  readonly workflowTasks: Map<string, string>;
+  readonly workflows: ClaudeWorkflowNodes;
   /** A subagent's own tool calls, mapped to the call that started that subagent. */
   readonly childToolCalls: Map<string, string>;
   readonly completion: Deferred<void>;
+  stopping?: Promise<void>;
   /** This turn's subagents, keyed by the Agent call that started each. */
   readonly nodes: SubagentNodes;
   readonly environment: Readonly<Record<string, string>>;
@@ -1586,10 +1605,50 @@ class ClaudeHarnessSession implements EngineHarnessSession {
       });
     }
     const environment = mergeEnvironments(this.#context.environment, run.environment);
+    const nodes = new SubagentNodes((event) => {
+      if (event.type === "node.completed") {
+        for (const [callId, nodeId] of active.childOpenTools) {
+          if (nodeId !== event.data.nodeId) continue;
+          active.childOpenTools.delete(callId);
+          this.#publish({
+            data: {
+              callId,
+              nodeId,
+              isError: true,
+              output: normalizeToolOutput("Claude subagent ended before this tool returned"),
+            },
+            type: "tool.completed",
+          });
+        }
+      }
+      this.#publish(event);
+    });
+    const workflows = new ClaudeWorkflowNodes(
+      nodes,
+      (key, line) => this.#projectChildLine(line, key, active),
+      () => !active.terminal && !active.interrupted && !active.abortController.signal.aborted,
+      async (agentId, key) => {
+        active.agentCalls.set(agentId, key);
+        active.knownNodes.add(key);
+        await this.#correlated(active, key);
+      },
+    );
     const active: ActiveTurn = {
       abortController: new AbortController(),
       agentCalls: new Map(),
+      knownNodes: new Set(),
+      knownTasks: new Set(),
+      pendingChildFrames: new Map(),
+      pendingTaskFrames: new Map(),
+      pendingParents: new Map(),
+      attributionListeners: new Set(),
+      childItems: new Set(),
+      childOpenTools: new Map(),
+      childStreamText: new Map(),
+      workflowTasks: new Map(),
+      workflows,
       background: new Set(),
+      backgroundSeen: new Set(),
       idle: false,
       wakePending: false,
       unanswered: new Set(),
@@ -1597,7 +1656,7 @@ class ClaudeHarnessSession implements EngineHarnessSession {
       queuedTurns: false,
       childToolCalls: new Map(),
       completion: new Deferred<void>(),
-      nodes: new SubagentNodes((event) => this.#publish(event)),
+      nodes,
       environment,
       input: new ClaudeTurnInput(),
       interrupted: run.signal.aborted,
@@ -1733,6 +1792,15 @@ class ClaudeHarnessSession implements EngineHarnessSession {
         this.#config.provider,
         this.#context.providerState,
       );
+      const profile =
+        environment.CLAUDE_CONFIG_DIR ??
+        (environment.HOME ? join(environment.HOME, ".claude") : undefined);
+      if (profile)
+        active.workflows.sessionRoot = workflowSessionRoot(
+          resolve(this.#context.workspacePath, profile),
+          await realpath(this.#context.workspacePath),
+          this.providerSessionReference,
+        );
       const options = this.#queryOptions(environment, active);
       const query = this.#dependencies.sdk.query({ options, prompt: active.input });
       active.query = query;
@@ -1760,7 +1828,7 @@ class ClaudeHarnessSession implements EngineHarnessSession {
       active.turnDeadline(true);
 
       for await (const message of query) {
-        this.#handleMessage(message, active);
+        await this.#handleMessage(message, active);
         if (active.sawInit && startupTimer) {
           clearTimeout(startupTimer);
           startupTimer = undefined;
@@ -1839,6 +1907,7 @@ class ClaudeHarnessSession implements EngineHarnessSession {
       if (startupTimer) clearTimeout(startupTimer);
       if (turnTimer) clearTimeout(turnTimer);
       if (active.endTimer) clearTimeout(active.endTimer);
+      if (active.stopping) await active.stopping;
       active.input.end();
       active.query?.close();
       delete active.query;
@@ -2054,7 +2123,7 @@ class ClaudeHarnessSession implements EngineHarnessSession {
         preset: "claude_code",
         type: "preset",
       },
-      tools: [...claudeBuiltinTools, claudeSubagentTool, claudeTaskStopTool],
+      tools: [...claudeBuiltinTools, claudeSubagentTool, "Workflow", claudeTaskStopTool],
       stderr: (chunk) => active.stderr.append(chunk),
       // The Runner's sandbox has to enclose the whole harness process tree, and
       // a custom spawn is the SDK's only seam for that. The SDK reads nothing
@@ -2102,7 +2171,12 @@ class ClaudeHarnessSession implements EngineHarnessSession {
 
   #canUseTool(active: ActiveTurn): CanUseTool {
     return async (toolName, input, options) => {
-      if (active.abortController.signal.aborted || options.signal.aborted) {
+      if (
+        active.terminal ||
+        active.interrupted ||
+        active.abortController.signal.aborted ||
+        options.signal.aborted
+      ) {
         return { behavior: "deny", interrupt: true, message: "Opensteer interrupted the turn" };
       }
       if (
@@ -2127,13 +2201,17 @@ class ClaudeHarnessSession implements EngineHarnessSession {
       this.#ensureRunStarted(active);
       // Starting a subagent is not itself an action: everything it does asks.
       // A plugin safety check can still require approval of the launch itself.
-      if (
-        (claudeDelegationTools as readonly string[]).includes(toolName) &&
-        !options.decisionReason
-      ) {
+      if ((toolName === "Agent" || toolName === "Task") && !options.decisionReason) {
         return { behavior: "allow", updatedInput: { ...input } };
       }
       const nodeId = await this.#requestingNode(active, options);
+      if (
+        active.terminal ||
+        active.interrupted ||
+        active.abortController.signal.aborted ||
+        options.signal.aborted
+      )
+        return { behavior: "deny", interrupt: true, message: "Opensteer interrupted the turn" };
       if (toolName === "AskUserQuestion") {
         return this.#requestInput(input, options, nodeId);
       }
@@ -2141,31 +2219,35 @@ class ClaudeHarnessSession implements EngineHarnessSession {
     };
   }
 
-  /**
-   * The subagent a permission check comes from. Claude names the subagent by
-   * its own id, which reaches the driver only with the subagent's report, and
-   * the check can overtake that report; it waits a moment for it. One that
-   * never comes is asked as the Run's own when no single subagent is running.
-   */
   async #requestingNode(
     active: ActiveTurn,
     options: Parameters<CanUseTool>[2],
   ): Promise<ExecutionNodeId | undefined> {
-    const agentId = options.agentID;
-    if (!agentId) return undefined;
     const lookup = () => {
-      const callId = active.agentCalls.get(agentId) ?? active.childToolCalls.get(options.toolUseID);
-      return callId === undefined ? undefined : active.nodes.nodeId(callId);
+      const key =
+        (options.agentID ? active.agentCalls.get(options.agentID) : undefined) ??
+        active.childToolCalls.get(options.toolUseID);
+      return key === undefined ? undefined : active.nodes.nodeId(key);
     };
-    const deadline = Date.now() + subagentAttributionWaitMs;
-    let nodeId = lookup();
-    while (nodeId === undefined && Date.now() < deadline && !options.signal.aborted) {
-      await delay(25);
-      nodeId = lookup();
-    }
-    if (nodeId !== undefined) return nodeId;
-    const live = active.nodes.liveKeys();
-    return live.length === 1 ? active.nodes.nodeId(live[0]!) : undefined;
+    const known = lookup();
+    if (known || !options.agentID || options.signal.aborted) return known;
+    return new Promise((resolveNode) => {
+      const finish = () => {
+        clearTimeout(timer);
+        active.attributionListeners.delete(changed);
+        options.signal.removeEventListener("abort", finish);
+        active.abortController.signal.removeEventListener("abort", finish);
+        resolveNode(lookup());
+      };
+      const changed = () => {
+        if (lookup()) finish();
+      };
+      const timer = setTimeout(finish, subagentAttributionWaitMs);
+      active.attributionListeners.add(changed);
+      options.signal.addEventListener("abort", finish, { once: true });
+      active.abortController.signal.addEventListener("abort", finish, { once: true });
+      changed();
+    });
   }
 
   #requestApproval(
@@ -2359,7 +2441,8 @@ class ClaudeHarnessSession implements EngineHarnessSession {
     });
   }
 
-  #handleMessage(message: SDKMessage, active: ActiveTurn): void {
+  async #handleMessage(message: SDKMessage, active: ActiveTurn): Promise<void> {
+    if (active.terminal || active.interrupted) return;
     this.#assertMessageSession(message);
     // Claude reports where each uuid-stamped message is in its queue in a frame
     // the SDK does not type. Results already say which messages a turn consumed.
@@ -2406,8 +2489,17 @@ class ClaudeHarnessSession implements EngineHarnessSession {
       return;
     }
     if (message.type === "system" && message.subtype === "background_tasks_changed") {
+      const previous = new Set(active.background);
       active.background.clear();
-      for (const task of message.tasks) if (!task.ambient) active.background.add(task.task_id);
+      for (const task of message.tasks)
+        if (!task.ambient) {
+          active.background.add(task.task_id);
+          active.backgroundSeen.add(task.task_id);
+        }
+      for (const taskId of previous) {
+        const key = active.agentCalls.get(taskId) ?? `task:${taskId}`;
+        if (!active.background.has(taskId) && active.nodes.nodeId(key)) active.wakePending = true;
+      }
       this.#endIfSettled(active);
       return;
     }
@@ -2424,6 +2516,18 @@ class ClaudeHarnessSession implements EngineHarnessSession {
       return;
     }
     if (message.type === "system" && message.subtype === "task_notification") {
+      const key = active.agentCalls.get(message.task_id) ?? message.tool_use_id;
+      if (
+        !message.ambient &&
+        !active.knownTasks.has(message.task_id) &&
+        !(key && active.knownNodes.has(key)) &&
+        !active.nodes.nodeId(`task:${message.task_id}`)
+      ) {
+        this.#bufferFrame(active.pendingTaskFrames, message.task_id, message);
+        return;
+      }
+      const workflowKey = active.workflowTasks.get(message.task_id);
+      if (workflowKey) await active.workflows.update(workflowKey, message);
       this.#settleBackgroundTask(active, message);
       return;
     }
@@ -2432,12 +2536,40 @@ class ClaudeHarnessSession implements EngineHarnessSession {
     }
 
     if (message.type === "system" && message.subtype === "task_started") {
-      // Names the subagent the way `canUseTool` will: its id is the task's.
+      active.knownTasks.add(message.task_id);
       if (message.tool_use_id && message.task_type !== "local_bash") {
-        active.agentCalls.set(message.task_id, message.tool_use_id);
-        active.nodes.update(message.tool_use_id, { title: message.description });
+        const key = message.tool_use_id;
+        active.agentCalls.set(message.task_id, key);
+        const workflow = message.task_type === CLAUDE_WORKFLOW_TASK_TYPE;
+        if (!active.knownNodes.has(key)) {
+          active.nodes.ensure(key, {
+            kind: workflow ? "workflow" : "subagent",
+            nativeRef: message.task_id,
+            originCallId: key,
+            title: message.workflow_name ?? message.description,
+            prompt: message.prompt ?? null,
+            parentKey: message.parent_task_id
+              ? (active.agentCalls.get(message.parent_task_id) ?? null)
+              : null,
+          });
+          active.knownNodes.add(key);
+        }
+        active.nodes.update(key, {
+          title: message.workflow_name ?? message.description,
+          prompt: message.prompt ?? null,
+        });
+        if (message.parent_task_id) active.pendingParents.set(key, message.parent_task_id);
+        if (workflow) {
+          active.workflowTasks.set(message.task_id, key);
+          active.background.add(message.task_id);
+          active.backgroundSeen.add(message.task_id);
+          await active.workflows.update(key, message, {
+            name: message.workflow_name ?? message.description,
+          });
+        }
+        await this.#correlated(active, key);
       }
-      if (message.is_backgrounded === true) {
+      if (message.is_backgrounded === true)
         this.#backgroundTask(
           active,
           message.task_id,
@@ -2445,16 +2577,44 @@ class ClaudeHarnessSession implements EngineHarnessSession {
           message.tool_use_id ?? null,
           message.task_type ?? null,
         );
+      const pending = active.pendingTaskFrames.get(message.task_id) ?? [];
+      active.pendingTaskFrames.delete(message.task_id);
+      for (const frame of pending) await this.#handleMessage(frame, active);
+      return;
+    }
+    if (message.type === "system" && message.subtype === "task_progress") {
+      const taskKey = `task:${message.task_id}`;
+      const key =
+        active.agentCalls.get(message.task_id) ??
+        (active.nodes.nodeId(taskKey) ? taskKey : message.tool_use_id);
+      if (!key || (!active.knownNodes.has(key) && !active.nodes.nodeId(key))) {
+        if (!active.knownTasks.has(message.task_id))
+          this.#bufferFrame(active.pendingTaskFrames, message.task_id, message);
+        return;
       }
+      if (active.workflowTasks.has(message.task_id) || hasClaudeWorkflowSnapshot(message))
+        await active.workflows.update(key, message);
+      active.nodes.progress(
+        key,
+        message.summary ??
+          [message.description, message.last_tool_name].filter(Boolean).join(" · "),
+      );
       return;
     }
     // A subagent's messages are its own steps and result: they never become
     // Opensteer Thread messages or the root answer's text.
     if ("parent_tool_use_id" in message && message.parent_tool_use_id) {
-      this.#handleSubagentMessage(message, message.parent_tool_use_id, active);
+      await this.#handleSubagentMessage(message, message.parent_tool_use_id, active);
       return;
     }
 
+    if (active.idle && (message.type === "stream_event" || message.type === "assistant")) {
+      active.idle = false;
+      active.wakePending = false;
+      active.turnDeadline?.(true);
+      if (active.endTimer) clearTimeout(active.endTimer);
+      this.#publish({ data: { phase: "turn" }, type: "run.phase" });
+    }
     if (message.type === "stream_event") {
       this.#ensureRunStarted(active);
       this.#handleStreamEvent(message.event);
@@ -2464,13 +2624,17 @@ class ClaudeHarnessSession implements EngineHarnessSession {
       this.#ensureRunStarted(active);
       if (message.error) this.#lastAssistantError = message.error;
       this.#handleAssistantContent(message.message.content);
-      this.#openSubagents(message.message.content, null, active);
+      await this.#openSubagents(message.message.content, null, active);
       return;
     }
     if (message.type === "user") {
       if (!("isReplay" in message && message.isReplay === true)) this.#ensureRunStarted(active);
-      this.#handleUserContent(message.message.content);
-      this.#settleSubagents(message.message.content, message.tool_use_result, active);
+      this.#handleUserContent(
+        message.message.content,
+        isRecord(message.tool_use_result) &&
+          message.tool_use_result.taskType === CLAUDE_WORKFLOW_TASK_TYPE,
+      );
+      await this.#settleSubagents(message.message.content, message.tool_use_result, active);
       return;
     }
     // Claude states a subscription's remaining capacity rather than describing
@@ -2510,6 +2674,7 @@ class ClaudeHarnessSession implements EngineHarnessSession {
         // and so does a steered message Claude runs as a turn of its own.
         if (
           active.background.size > 0 ||
+          this.#workflowRunning(active) ||
           active.wakePending ||
           active.unanswered.size > 0 ||
           active.queuedTurns
@@ -2571,7 +2736,13 @@ class ClaudeHarnessSession implements EngineHarnessSession {
    * the Run waits the CLI's own grace for one first.
    */
   #endIfSettled(active: ActiveTurn): void {
-    if (!active.idle || active.terminal || active.background.size > 0) return;
+    if (
+      !active.idle ||
+      active.terminal ||
+      active.background.size > 0 ||
+      this.#workflowRunning(active)
+    )
+      return;
     // A message Claude has not answered yet starts a turn of its own.
     if (active.unanswered.size > 0 || active.queuedTurns) return;
     if (!active.wakePending) {
@@ -2583,6 +2754,7 @@ class ClaudeHarnessSession implements EngineHarnessSession {
       if (
         active.idle &&
         active.background.size === 0 &&
+        !this.#workflowRunning(active) &&
         active.unanswered.size === 0 &&
         !active.queuedTurns
       )
@@ -2600,6 +2772,7 @@ class ClaudeHarnessSession implements EngineHarnessSession {
     taskType: string | null,
   ): void {
     active.background.add(taskId);
+    active.backgroundSeen.add(taskId);
     if (active.agentCalls.has(taskId) || (toolUseId && active.nodes.nodeId(toolUseId))) return;
     if (taskType !== null && taskType !== "local_bash") return;
     active.nodes.ensure(`task:${taskId}`, {
@@ -2616,17 +2789,21 @@ class ClaudeHarnessSession implements EngineHarnessSession {
     message: Extract<SDKMessage, { type: "system"; subtype: "task_notification" }>,
   ): void {
     active.background.delete(message.task_id);
-    if (!message.ambient && !message.skip_transcript) active.wakePending = true;
+    if (active.backgroundSeen.has(message.task_id) && !message.ambient && !message.skip_transcript)
+      active.wakePending = true;
     const outcome =
       message.status === "completed"
         ? "completed"
         : message.status === "failed"
           ? "failed"
           : "interrupted";
-    const callId = active.agentCalls.get(message.task_id);
-    active.nodes.complete(callId ?? `task:${message.task_id}`, outcome, {
-      result: message.summary || null,
-    });
+    const callId = active.agentCalls.get(message.task_id) ?? message.tool_use_id;
+    if (callId && active.workflowTasks.has(message.task_id))
+      active.workflows.complete(callId, outcome, message.summary || undefined);
+    else
+      active.nodes.complete(callId ?? `task:${message.task_id}`, outcome, {
+        result: message.summary || null,
+      });
     this.#endIfSettled(active);
   }
 
@@ -2742,7 +2919,7 @@ class ClaudeHarnessSession implements EngineHarnessSession {
     if (text) this.#latestAssistantText = text;
   }
 
-  #handleUserContent(content: unknown): void {
+  #handleUserContent(content: unknown, workflowLaunch = false): void {
     if (!Array.isArray(content)) return;
     for (const block of content) {
       if (!isRecord(block) || block.type !== "tool_result") continue;
@@ -2751,15 +2928,58 @@ class ClaudeHarnessSession implements EngineHarnessSession {
         data: {
           callId,
           isError: block.is_error === true,
-          output: normalizeToolOutput(block.content ?? null),
+          output: normalizeToolOutput(
+            workflowLaunch ? "Workflow launch acknowledged" : (block.content ?? null),
+          ),
         },
         type: "tool.completed",
       });
     }
   }
 
-  /** Opens a node for each Agent call, under the subagent that made it when one did. */
-  #openSubagents(content: unknown, parentCallId: string | null, active: ActiveTurn): void {
+  #workflowRunning(active: ActiveTurn): boolean {
+    return [...active.workflowTasks.values()].some((key) => active.nodes.nodeId(key) !== undefined);
+  }
+
+  #bufferFrame(buffer: Map<string, SDKMessage[]>, key: string, message: SDKMessage): void {
+    if (
+      (!buffer.has(key) && buffer.size >= 64) ||
+      [...buffer.values()].reduce((count, frames) => count + frames.length, 0) >= 256
+    ) {
+      throw new OpensteerError({
+        code: "harness_error",
+        message: "Claude subagent correlation buffer exceeded its limit",
+      });
+    }
+    const frames = buffer.get(key) ?? [];
+    frames.push(message);
+    buffer.set(key, frames);
+  }
+
+  async #correlated(active: ActiveTurn, key: string): Promise<void> {
+    for (const [child, parentTask] of active.pendingParents) {
+      const parentKey = active.agentCalls.get(parentTask);
+      if (!parentKey) continue;
+      active.nodes.update(child, { parentKey });
+      active.pendingParents.delete(child);
+    }
+    const refs = [
+      key,
+      ...[...active.agentCalls].filter(([, call]) => call === key).map(([ref]) => ref),
+    ];
+    for (const ref of refs) {
+      const pending = active.pendingChildFrames.get(ref) ?? [];
+      active.pendingChildFrames.delete(ref);
+      for (const message of pending) await this.#handleSubagentMessage(message, key, active);
+    }
+    for (const changed of active.attributionListeners) changed();
+  }
+
+  async #openSubagents(
+    content: unknown,
+    parentCallId: string | null,
+    active: ActiveTurn,
+  ): Promise<void> {
     if (!Array.isArray(content)) return;
     for (const block of content) {
       if (!isRecord(block) || block.type !== "tool_use") continue;
@@ -2767,69 +2987,163 @@ class ClaudeHarnessSession implements EngineHarnessSession {
       if (!(claudeDelegationTools as readonly string[]).includes(name)) continue;
       const callId = requireNonEmptyString(block.id, "Claude tool call id");
       const input = isRecord(block.input) ? block.input : {};
-      active.nodes.ensure(callId, {
-        model: typeof input.model === "string" ? input.model : null,
-        nativeRef: callId,
+      const metadata = {
+        model: typeof input.model === "string" && input.model !== "inherit" ? input.model : null,
+        effort: typeof input.effort === "string" ? input.effort : null,
         originCallId: callId,
         parentKey: parentCallId,
         prompt: typeof input.prompt === "string" ? input.prompt : null,
         title: typeof input.description === "string" ? input.description : null,
-      });
+      };
+      if (active.knownNodes.has(callId)) active.nodes.update(callId, metadata);
+      else {
+        active.nodes.ensure(callId, {
+          ...metadata,
+          kind: name === "Workflow" ? "workflow" : "subagent",
+          nativeRef: callId,
+        });
+        active.knownNodes.add(callId);
+      }
+      await this.#correlated(active, callId);
     }
   }
 
-  /** Ends the node of each Agent call whose result arrived, with what it returned. */
-  #settleSubagents(content: unknown, toolUseResult: unknown, active: ActiveTurn): void {
+  async #settleSubagents(
+    content: unknown,
+    toolUseResult: unknown,
+    active: ActiveTurn,
+  ): Promise<void> {
     if (!Array.isArray(content)) return;
     for (const block of content) {
       if (!isRecord(block) || block.type !== "tool_result") continue;
       const callId = typeof block.tool_use_id === "string" ? block.tool_use_id : "";
       if (!active.nodes.nodeId(callId)) continue;
       const output = isRecord(toolUseResult) ? toolUseResult : {};
-      // A background subagent's call returns at launch; it ends with its task.
-      if (output.status === "async_launched") continue;
-      if (typeof output.resolvedModel === "string") {
-        active.nodes.update(callId, { model: output.resolvedModel });
+      if (typeof output.agentId === "string") {
+        active.agentCalls.set(output.agentId, callId);
+        await this.#correlated(active, callId);
       }
-      // Claude states only its last model call's usage for a subagent, which
-      // is not what the subagent consumed; the Run's own usage includes it.
+      const handles = parseClaudeWorkflowRunHandles(output);
+      if (handles || active.workflows.has(callId)) {
+        if (output.taskType === CLAUDE_WORKFLOW_TASK_TYPE && typeof output.taskId === "string") {
+          active.agentCalls.set(output.taskId, callId);
+          active.workflowTasks.set(output.taskId, callId);
+          active.background.add(output.taskId);
+          active.backgroundSeen.add(output.taskId);
+        }
+        await active.workflows.update(
+          callId,
+          {},
+          {
+            ...(handles ? { handles } : {}),
+            ...(typeof output.workflowName === "string" ? { name: output.workflowName } : {}),
+          },
+        );
+        continue;
+      }
+      active.nodes.update(callId, {
+        model: typeof output.resolvedModel === "string" ? output.resolvedModel : null,
+        effort: typeof output.effort === "string" ? output.effort : null,
+      });
+      if (output.status === "async_launched") {
+        if (typeof output.agentId === "string") {
+          active.background.add(output.agentId);
+          active.backgroundSeen.add(output.agentId);
+        }
+        continue;
+      }
       active.nodes.complete(callId, block.is_error === true ? "failed" : "completed", {
         result: claudeTextContent(output.content) ?? claudeTextContent(block.content),
       });
     }
   }
 
-  /** A subagent's own message: its tool calls and results, attributed to its node. */
-  #handleSubagentMessage(message: SDKMessage, parentCallId: string, active: ActiveTurn): void {
-    if (message.type !== "assistant" && message.type !== "user") return;
+  async #handleSubagentMessage(
+    message: SDKMessage,
+    parentRef: string,
+    active: ActiveTurn,
+  ): Promise<void> {
+    const key = active.agentCalls.get(parentRef) ?? parentRef;
+    if (!active.knownNodes.has(key)) {
+      this.#bufferFrame(active.pendingChildFrames, parentRef, message);
+      return;
+    }
+    if (!active.nodes.nodeId(key)) return;
     this.#ensureRunStarted(active);
-    const nodeId = active.nodes.ensure(parentCallId, {
-      nativeRef: parentCallId,
-      originCallId: parentCallId,
-    });
-    const content: unknown = message.message.content;
+    if (message.type === "stream_event") {
+      const event: unknown = message.event;
+      if (!isRecord(event)) return;
+      if (event.type === "message_start") {
+        active.childStreamText.set(key, "");
+        const header = isRecord(event.message) ? event.message : {};
+        active.nodes.update(key, { model: typeof header.model === "string" ? header.model : null });
+      }
+      const delta = isRecord(event.delta) ? event.delta : {};
+      if (delta.type === "text_delta" && typeof delta.text === "string") {
+        const text = (active.childStreamText.get(key) ?? "") + delta.text;
+        active.childStreamText.set(key, text.slice(-240));
+        active.nodes.progress(key, text);
+      }
+      return;
+    }
+    if (message.type !== "assistant" && message.type !== "user") return;
+    this.#projectChildLine(message, key, active);
+    await this.#openSubagents(message.message.content, key, active);
+    if (message.type === "user")
+      await this.#settleSubagents(message.message.content, message.tool_use_result, active);
+  }
+
+  #projectChildLine(line: unknown, key: string, active: ActiveTurn): void {
+    const nodeId = active.nodes.nodeId(key);
+    if (!nodeId || active.terminal || !isRecord(line)) return;
+    const message = isRecord(line.message) ? line.message : {};
+    const content = message.content;
     if (!Array.isArray(content)) return;
-    if (message.type === "assistant") {
+    if (line.type === "assistant") {
+      active.nodes.update(key, {
+        model: typeof message.model === "string" ? message.model : null,
+        effort: typeof line.effort === "string" ? line.effort : null,
+      });
       let text = "";
-      for (const block of content) {
+      for (const [index, block] of content.entries()) {
         if (!isRecord(block)) continue;
         if (block.type === "text" && typeof block.text === "string") text += block.text;
+        if (block.type === "thinking" && typeof block.thinking === "string") {
+          const blockId = `${String(line.uuid)}:thinking:${index}`.slice(0, 255);
+          const item = `${key}:${blockId}`;
+          if (!active.childItems.has(item)) {
+            active.childItems.add(item);
+            active.nodes.reasoning(key, blockId, block.thinking);
+          }
+        }
         if (block.type !== "tool_use") continue;
         const callId = requireNonEmptyString(block.id, "Claude tool call id");
         const name = requireNonEmptyString(block.name, "Claude tool name");
-        active.childToolCalls.set(callId, parentCallId);
+        const item = `${key}:tool:${callId}`;
+        active.childToolCalls.set(callId, key);
+        for (const changed of active.attributionListeners) changed();
+        if (active.childItems.has(item)) continue;
+        active.childItems.add(item);
+        active.childOpenTools.set(callId, nodeId);
         this.#publish({
           data: { arguments: block.input ?? {}, callId, nodeId, tool: claudeToolIdentity(name) },
           type: "tool.started",
         });
       }
-      if (text) active.nodes.noteResult(parentCallId, text);
-      this.#openSubagents(content, parentCallId, active);
+      const item = `${key}:${String(line.uuid)}:text`;
+      if (text && !active.childItems.has(item)) {
+        active.childItems.add(item);
+        active.nodes.message(key, text);
+      }
       return;
     }
     for (const block of content) {
       if (!isRecord(block) || block.type !== "tool_result") continue;
       const callId = requireNonEmptyString(block.tool_use_id, "Claude tool result id");
+      const item = `${key}:result:${callId}`;
+      if (active.childItems.has(item)) continue;
+      active.childItems.add(item);
+      active.childOpenTools.delete(callId);
       this.#publish({
         data: {
           callId,
@@ -2840,7 +3154,6 @@ class ClaudeHarnessSession implements EngineHarnessSession {
         type: "tool.completed",
       });
     }
-    this.#settleSubagents(content, message.tool_use_result, active);
   }
 
   #toolCallIdAtIndex(index: number): string | undefined {
@@ -2952,10 +3265,26 @@ class ClaudeHarnessSession implements EngineHarnessSession {
   }
 
   #abortActive(active: ActiveTurn, reason: unknown): void {
-    if (!active.abortController.signal.aborted) active.abortController.abort(reason);
-    active.input.end();
-    active.query?.close();
-    this.#cancelPendingRequests("Opensteer cancelled the pending Claude request", "run-ended");
+    active.stopping ??= (async () => {
+      const tasks = [...active.workflowTasks].filter(([, key]) => active.nodes.nodeId(key));
+      if (active.query && tasks.length > 0) {
+        let timer: NodeJS.Timeout | undefined;
+        try {
+          await Promise.race([
+            Promise.allSettled(tasks.map(([taskId]) => active.query!.stopTask(taskId))),
+            new Promise<void>((resolveStop) => {
+              timer = setTimeout(resolveStop, 5_000);
+            }),
+          ]);
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+      if (!active.abortController.signal.aborted) active.abortController.abort(reason);
+      active.input.end();
+      active.query?.close();
+      this.#cancelPendingRequests("Opensteer cancelled the pending Claude request", "run-ended");
+    })();
   }
 
   #cancelPendingRequests(message: string, reason: "run-ended" | "source-closed"): void {

@@ -1,12 +1,10 @@
-import { Fragment, useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import type { AssignmentSummary } from "@opensteer/core";
 import {
   assignmentTitle,
-  assignmentMark,
   assignmentPresentation,
   assignmentRequester,
-  assignmentStatusLine,
   currentAssignment,
   delegationPresentation,
   taskRowNote,
@@ -25,26 +23,6 @@ import { Popover } from "./popover.js";
 import { AreaLink } from "./workspace/area-link.js";
 import { TaskMark } from "./workspace/task-mark.js";
 import { useOptionalWorkspace } from "./workspace/workspace-context.js";
-
-/**
- * Another Thread's work, where it was handed out: one quiet line per task —
- * its mark, its title, a dot and a word for where it stands — that opens the
- * task. Only the dot and the word change as the task moves, and a task
- * waiting on the reader says what it asks under its title.
- */
-export function TaskLines({ entries }: { entries: readonly AssignmentEntry[] }) {
-  if (entries.length === 0) return null;
-  return (
-    <div className="task-lines">
-      {entries.map((entry) => (
-        <Fragment key={entry.id}>
-          <ObservedWorker entry={entry} />
-          <AssignmentLine entry={entry} />
-        </Fragment>
-      ))}
-    </div>
-  );
-}
 
 function taskHref(assignment: AssignmentSummary): string {
   return `/threads/${assignment.workerThread.id}`;
@@ -74,7 +52,7 @@ function useObservedWorker(entry: AssignmentEntry): void {
  * observed, and a change in where it stands is said to a screen reader. One
  * per task, so a closed group still speaks and an opened one never twice.
  */
-function ObservedWorker({ entry }: { entry: AssignmentEntry }) {
+export function ObservedWorker({ entry }: { entry: AssignmentEntry }) {
   const { snapshot } = useShell();
   useObservedWorker(entry);
   const presentation = assignmentPresentation(
@@ -85,95 +63,19 @@ function ObservedWorker({ entry }: { entry: AssignmentEntry }) {
 }
 
 /**
- * Who does a task, when it says something: the reader's own Opensteer or a
- * project. The line keeps it to its name and tooltip; null while the
- * Workspace is not loaded, rather than a guess.
- */
-function taskOwner(assignment: AssignmentSummary, snapshot: HostSnapshot): string | null {
-  const workspace = snapshot.workspaces.find(
-    ({ id }) => id === assignment.workerThread.workspaceId,
-  );
-  return workspace ? (workspace.kind === "main" ? "Opensteer" : workspace.name) : null;
-}
-
-/**
- * One task as a line. It reads the Host's newest summary. Its menu — a right
- * click, or the button beside it — opens it or stops it; its mark never does.
- * What the line leaves out, who does it, the model and how long it took,
- * stays in its name and tooltip.
- */
-function AssignmentLine({ entry }: { entry: AssignmentEntry }) {
-  const { snapshot } = useShell();
-  const workspace = useOptionalWorkspace();
-  const assignment = currentAssignment(entry, snapshot.assignments);
-  const presentation = assignmentPresentation(assignment, snapshot);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const moreRef = useRef<HTMLButtonElement | null>(null);
-  const title = assignmentTitle(assignment, snapshot);
-  const owner = taskOwner(assignment, snapshot);
-  const status = assignmentStatusLine(assignment, presentation);
-  const workerThreadId = assignment.workerThread.id;
-  return (
-    <TaskLine
-      label={`${title}${owner ? `, ${owner}` : ""}, ${status}. Open task`}
-      mark={assignmentMark(assignment, snapshot)}
-      menuOpen={menuOpen}
-      more={
-        <button
-          aria-expanded={menuOpen}
-          aria-haspopup="menu"
-          aria-label={`More for ${title}`}
-          className="task-line__more"
-          onClick={() => setMenuOpen((value) => !value)}
-          ref={moreRef}
-          type="button"
-        >
-          <Icon name="more" />
-        </button>
-      }
-      onContextMenu={(event) => {
-        event.preventDefault();
-        setMenuOpen(true);
-      }}
-      presentation={presentation}
-      title={title}
-      to={workspace ? workspace.nav.threadPath(workerThreadId) : taskHref(assignment)}
-      tooltip={[title, owner, status].filter(Boolean).join(" · ")}
-    >
-      {menuOpen && moreRef.current ? (
-        <TaskMenu
-          anchor={moreRef.current}
-          assignment={assignment}
-          onClose={() => setMenuOpen(false)}
-          presentation={presentation}
-        />
-      ) : null}
-    </TaskLine>
-  );
-}
-
-/**
  * The line every task shares. The link covers the whole line, so the line
- * and anything under it open the task; the button beside it sits above.
+ * and anything under it open the task.
  */
 function TaskLine({
-  children,
   label,
   mark,
-  menuOpen = false,
-  more = null,
-  onContextMenu,
   presentation,
   title,
   to,
   tooltip,
 }: {
-  children?: ReactNode;
   label: string;
   mark: ResolvedTaskMark;
-  menuOpen?: boolean;
-  more?: ReactNode;
-  onContextMenu?: (event: MouseEvent) => void;
   presentation: AssignmentPresentation;
   title: string;
   /** The task's conversation path; inside the workspace it keeps the place in the middle. */
@@ -182,11 +84,7 @@ function TaskLine({
 }) {
   const note = taskRowNote(presentation);
   return (
-    <div
-      className={menuOpen ? "task-line task-line--menu" : "task-line"}
-      data-tone={presentation.tone}
-      onContextMenu={onContextMenu}
-    >
+    <div className="task-line" data-tone={presentation.tone}>
       <div className="task-line__row">
         <AreaLink aria-label={label} className="task-line__open" title={tooltip} to={to}>
           <TaskMark size={20} mark={mark} />
@@ -197,7 +95,6 @@ function TaskLine({
             word={presentation.word}
           />
         </AreaLink>
-        {more}
         <Icon className="task-line__chevron" name="chevron-right" />
       </div>
       {note ? (
@@ -205,7 +102,6 @@ function TaskLine({
           {note.text}
         </p>
       ) : null}
-      {children}
     </div>
   );
 }
@@ -282,7 +178,7 @@ export function DelegationLine({
  * can still change, and said to be unavailable, with why, while it cannot be
  * sent.
  */
-function TaskMenu({
+export function TaskMenu({
   anchor,
   assignment,
   onClose,
@@ -388,7 +284,7 @@ function TaskMenu({
  * announces a line when it arrives; one that changes in place does not,
  * so its region stays empty until the word actually moves.
  */
-function LifecycleNews({ text }: { text: string }) {
+export function LifecycleNews({ text }: { text: string }) {
   const [news, setNews] = useState("");
   const said = useRef(text);
   useEffect(() => {

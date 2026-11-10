@@ -62,6 +62,7 @@ import { TaskSearchScreen } from "./screens/task-search.js";
 import { ThreadFindScreen } from "./screens/thread-find.js";
 import { RequestSheetScreen } from "./thread/request-sheet.js";
 import { NewThreadScreen, ThreadSettingsScreen } from "./screens/thread-settings.js";
+import { SubagentScreen } from "./screens/subagent.js";
 import { ThreadStepScreen } from "./screens/thread-step.js";
 import { ThreadScreen } from "./screens/thread.js";
 import { WorkspaceBrowserScreen } from "./screens/workspace-browser.js";
@@ -195,6 +196,9 @@ const RootStack = createNativeStackNavigator({
         title: "Thread",
       }),
     },
+    // A subagent's own read-only conversation, pushed over the one that started
+    // it; its own header names it, and Back returns to the parent.
+    Subagent: { screen: SubagentScreen, options: { title: "Subagent" } },
     // A task before it exists: the first message makes it, then the task's
     // own screen replaces this one.
     NewTask: { screen: NewTaskScreen, options: { title: "New task" } },
@@ -663,7 +667,17 @@ type OpensteerRootParamList = {
     readonly started?: boolean;
     readonly threadId: string;
   };
-  readonly ThreadAround: { readonly deploymentId: string; readonly threadId: string };
+  readonly ThreadAround: {
+    readonly deploymentId: string;
+    /** The page to open on, when the reader came for it. */
+    readonly section?: import("./thread/around-model.js").AroundSection;
+    readonly threadId: string;
+  };
+  readonly Subagent: {
+    readonly deploymentId: string;
+    readonly nodeId: string;
+    readonly threadId: string;
+  };
   readonly RequestSheet: {
     readonly deploymentId: string;
     readonly full?: boolean;
@@ -676,6 +690,8 @@ type OpensteerRootParamList = {
   readonly ThreadStep: {
     readonly deploymentId: string;
     readonly entryId: string;
+    /** A subagent's step, read from that subagent's own steps rather than the conversation's. */
+    readonly nodeId?: string;
     readonly threadId: string;
   };
   readonly WorkspaceBrowser: SurfacesRoute;

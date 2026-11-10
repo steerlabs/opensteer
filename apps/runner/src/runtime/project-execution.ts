@@ -6,7 +6,11 @@ import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import { replacePrivateFileAtomically } from "@opensteer/shared/atomicPrivateFile";
-import { ProjectRunBindingSchema, type ProjectRunBinding } from "@opensteer/core";
+import {
+  ProjectRunBindingSchema,
+  type ProjectRunBinding,
+  type ExecutionNodeId,
+} from "@opensteer/core";
 import {
   RunnerAuxiliaryRequestIdSchema,
   ProjectExecutableCommandSchema,
@@ -216,6 +220,7 @@ export class ProjectExecution {
     let cleanup: (() => Promise<void>) | undefined;
     const binding = ProjectRunBindingSchema.parse(commandBinding(entry));
     let terminalSeen = false;
+    const toolNodeIds = new Map<string, ExecutionNodeId>();
     const live = new LiveProgressBuffer({
       flushIntervalMs: 50,
       maxInFlightBytes: 512 * 1024,
@@ -262,18 +267,23 @@ export class ProjectExecution {
               live.append({ stream: "assistant" }, event.data.text);
             else if (event.type === "reasoning.delta")
               live.append({ stream: "reasoning", blockId: event.data.blockId }, event.data.text);
-            else if (event.type === "tool.delta")
-              live.append({ stream: "tool", callId: event.data.callId }, event.data.text);
+            else if (event.type === "tool.delta") {
+              const nodeId = toolNodeIds.get(event.data.callId);
+              live.append(
+                { stream: "tool", callId: event.data.callId, ...(nodeId ? { nodeId } : {}) },
+                event.data.text,
+              );
+            } else if (event.type === "node.progress")
+              live.replaceNode(event.data.nodeId, event.data.text);
+            else {
+              void (event satisfies never);
+              throw new Error("Unsupported Project live progress event");
+            }
             continue;
           }
           if (["run.completed", "run.failed", "run.interrupted"].includes(event.type))
             terminalSeen = true;
           await live.flush();
-          if (event.type === "assistant.message") live.complete({ stream: "assistant" });
-          if (event.type === "reasoning.completed")
-            live.complete({ stream: "reasoning", blockId: event.data.blockId });
-          if (event.type === "tool.completed")
-            live.complete({ stream: "tool", callId: event.data.callId });
           const pending = ProjectPendingRunEventSchema.parse({
             ...event,
             binding,
@@ -281,6 +291,17 @@ export class ProjectExecution {
             emittedAt: new Date().toISOString(),
           });
           await this.emit(entry, { type: "runner.project.event", event: pending });
+          if (event.type === "tool.started" && event.data.nodeId)
+            toolNodeIds.set(event.data.callId, event.data.nodeId);
+          if (event.type === "node.completed")
+            live.complete({ stream: "node", nodeId: event.data.nodeId });
+          if (event.type === "assistant.message") live.complete({ stream: "assistant" });
+          if (event.type === "reasoning.completed" && !event.data.nodeId)
+            live.complete({ stream: "reasoning", blockId: event.data.blockId });
+          if (event.type === "tool.completed") {
+            toolNodeIds.delete(event.data.callId);
+            live.complete({ stream: "tool", callId: event.data.callId });
+          }
         }
       })();
       const execution = opened.session.execute({

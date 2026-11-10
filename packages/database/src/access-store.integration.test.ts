@@ -389,16 +389,33 @@ describeStore("dormant Project access", (it) => {
           connection,
         );
       const originalObjects = (await legacyObjects(database)).rows;
-      await migrateToLatest(database);
+      // The access migrations alone must leave what was there alone; later ones may change it.
+      const access = await new Migrator({
+        db: database,
+        provider: { getMigrations: async () => migrations },
+      }).migrateTo("0172_team_administration");
+      if (access.error) throw access.error;
       const upgradedObjects = new Map(
+        (await legacyObjects(database)).rows.map((row) => [row.name, row.definition]),
+      );
+      for (const original of originalObjects)
+        expect(upgradedObjects.get(original.name), original.name).toBe(original.definition);
+      const detail = await new Migrator({
+        db: database,
+        provider: { getMigrations: async () => migrations },
+      }).migrateTo("0173_node_detail");
+      if (detail.error) throw detail.error;
+      const beforeCutover = (await legacyObjects(database)).rows;
+      await migrateToLatest(database);
+      const cutoverObjects = new Map(
         (await legacyObjects(database)).rows.map((row) => [row.name, row.definition]),
       );
       const extendedPrincipalChecks = new Set([
         "constraint:principals:principals_kind_check",
         "constraint:principals:principals_kind_shape_check",
       ]);
-      for (const original of originalObjects) {
-        const definition = upgradedObjects.get(original.name);
+      for (const original of beforeCutover) {
+        const definition = cutoverObjects.get(original.name);
         if (extendedPrincipalChecks.has(original.name))
           expect(definition, original.name).toContain("'project'");
         else if (
@@ -413,6 +430,7 @@ describeStore("dormant Project access", (it) => {
           expect(definition, original.name).toContain("'server'");
         } else expect(definition, original.name).toBe(original.definition);
       }
+
       const upgraded = await legacyMembershipLifecycle(
         database,
         source.userId,

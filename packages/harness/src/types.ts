@@ -8,6 +8,7 @@ import type {
 } from "@opensteer/core";
 import { deploymentPolicy, OpensteerError } from "@opensteer/core";
 import type {
+  ExecutionNodeId,
   AgentEventType,
   AssignmentRunContext,
   DelegationModelChoice,
@@ -236,6 +237,7 @@ export type HarnessDurableEventType = Extract<
   | "voice.heard"
   | "message.injected"
   | "node.completed"
+  | "node.message"
   | "node.started"
   | "node.updated"
   | "reasoning.completed"
@@ -273,6 +275,11 @@ export type HarnessLiveEvent =
   | {
       readonly data: { readonly callId: string; readonly text: string };
       readonly type: "tool.delta";
+    }
+  /** The one line that says what a running subagent is doing now, whole. */
+  | {
+      readonly data: { readonly nodeId: ExecutionNodeId; readonly text: string };
+      readonly type: "node.progress";
     };
 
 export type HarnessEvent = HarnessDurableEvent | HarnessLiveEvent;
@@ -282,6 +289,7 @@ const harnessLiveEventTypes: ReadonlySet<HarnessEventType> = new Set([
   "assistant.delta",
   "reasoning.delta",
   "tool.delta",
+  "node.progress",
 ]);
 
 export function isHarnessLiveEvent(event: HarnessEvent): event is HarnessLiveEvent {

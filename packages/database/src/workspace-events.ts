@@ -3,6 +3,7 @@ import { assertRequestWorkspacesLocked } from "./request-workspace-locks.js";
 import { markThreadStatePending } from "./thread-status.js";
 import {
   AgentEventSchema,
+  nodeDetailEventNodeId,
   MessageAuthorSchema,
   createId,
   type AgentEvent,
@@ -239,6 +240,7 @@ export async function appendHostWorkspaceEvent(
     .insertInto("workspaceEvents")
     .values({
       createdAt,
+      nodeDetailId: nodeDetailEventNodeId(event) ?? null,
       data: sql`${JSON.stringify(event.data)}::jsonb`,
       environmentId: event.environmentId,
       eventId,

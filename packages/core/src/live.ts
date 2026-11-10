@@ -1,5 +1,11 @@
 import { z } from "zod";
-import { RunIdSchema, ThreadIdSchema, WorkspaceIdSchema } from "./ids.js";
+import {
+  ExecutionNodeIdSchema,
+  RunIdSchema,
+  ThreadIdSchema,
+  WorkspaceIdSchema,
+  type ExecutionNodeId,
+} from "./ids.js";
 
 /**
  * Live progress is what a turn is saying before it has said it: the text of an
@@ -12,17 +18,35 @@ import { RunIdSchema, ThreadIdSchema, WorkspaceIdSchema } from "./ids.js";
  * a transcript shows while a turn streams. `length` counts every unit a stream
  * has ever received, so an append names the offset it continues and a reader
  * that missed part of a stream can tell instead of drawing a gap.
+ *
+ * A `node` stream is the one line a running subagent's card shows: what it is
+ * doing now. It is only ever replaced whole, and it ends with its
+ * `node.completed`.
  */
 export const liveStreamTextMaxLength = 120_000;
 export const liveAppendTextMaxLength = 64 * 1_024;
 export const liveProgressMaxItems = 256;
+export const liveNodeProgressMaxLength = 240;
 
 const LiveStreamLengthSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 
 const liveStreamKeys = {
   assistant: { stream: z.literal("assistant") },
   reasoning: { blockId: z.string().min(1).max(255), stream: z.literal("reasoning") },
-  tool: { callId: z.string().min(1).max(255), stream: z.literal("tool") },
+  tool: {
+    callId: z.string().min(1).max(255),
+    /** The subagent whose tool it is; absent for the Run's own agent. */
+    nodeId: ExecutionNodeIdSchema.optional(),
+    stream: z.literal("tool"),
+  },
+} as const;
+
+const liveNodeProgressShape = {
+  length: LiveStreamLengthSchema,
+  nodeId: ExecutionNodeIdSchema,
+  op: z.literal("replace"),
+  stream: z.literal("node"),
+  text: z.string().max(liveNodeProgressMaxLength),
 } as const;
 
 function liveItemShapes<Key extends keyof typeof liveStreamKeys>(key: Key) {
@@ -70,6 +94,7 @@ export const LiveItemSchema = z
     z.strictObject(liveItemShape.reasoning.replace),
     z.strictObject(liveItemShape.tool.append),
     z.strictObject(liveItemShape.tool.replace),
+    z.strictObject(liveNodeProgressShape),
   ])
   .superRefine(replaceFitsLength);
 export type LiveItem = z.infer<typeof LiveItemSchema>;
@@ -83,13 +108,15 @@ export const LiveItemViewSchema = z
     z.object(liveItemShape.reasoning.replace),
     z.object(liveItemShape.tool.append),
     z.object(liveItemShape.tool.replace),
+    z.object(liveNodeProgressShape),
   ])
   .superRefine(replaceFitsLength);
 
 export type LiveStreamKey =
   | { readonly stream: "assistant" }
   | { readonly blockId: string; readonly stream: "reasoning" }
-  | { readonly callId: string; readonly stream: "tool" };
+  | { readonly callId: string; readonly stream: "tool" }
+  | { readonly nodeId: ExecutionNodeId; readonly stream: "node" };
 
 const liveRunProgressShape = {
   runId: RunIdSchema,
@@ -117,6 +144,8 @@ export function liveStreamKeyId(key: LiveStreamKey): string {
       return `reasoning:${key.blockId}`;
     case "tool":
       return `tool:${key.callId}`;
+    case "node":
+      return `node:${key.nodeId}`;
   }
 }
 
@@ -128,6 +157,8 @@ export function liveStreamKeyOf(item: LiveItem): LiveStreamKey {
       return { blockId: item.blockId, stream: "reasoning" };
     case "tool":
       return { callId: item.callId, stream: "tool" };
+    case "node":
+      return { nodeId: item.nodeId, stream: "node" };
   }
 }
 

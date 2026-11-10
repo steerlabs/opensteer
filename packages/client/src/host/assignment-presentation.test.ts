@@ -6,6 +6,7 @@ import {
   assignmentPresentation,
   assignmentReturnText,
   delegationPresentation,
+  taskOwner,
   taskRowNote,
   tasksUnderWay,
   type AssignmentPresentation,
@@ -147,5 +148,19 @@ describe("assignment return text", () => {
     expect(
       assignmentReturnText({ ...settled("cancelled"), returnStatus: "delivered" }, "Chat"),
     ).toBe("Chat was told");
+  });
+});
+
+describe("who does a task", () => {
+  const assignment = { workerThread: { workspaceId: "wsp_travel" } } as Parameters<
+    typeof taskOwner
+  >[0];
+  const workspace = (kind: "main" | "project", name: string) =>
+    ({ id: "wsp_travel", kind, name }) as Parameters<typeof taskOwner>[1]["workspaces"][number];
+
+  it("names a project, names Opensteer only for a known Main Workspace, and never guesses", () => {
+    expect(taskOwner(assignment, { workspaces: [workspace("project", "Travel")] })).toBe("Travel");
+    expect(taskOwner(assignment, { workspaces: [workspace("main", "Main")] })).toBe("Opensteer");
+    expect(taskOwner(assignment, { workspaces: [] })).toBeNull();
   });
 });

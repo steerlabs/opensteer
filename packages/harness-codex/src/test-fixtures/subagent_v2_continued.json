@@ -1,0 +1,399 @@
+[
+  {
+    "method": "turn/started",
+    "params": {
+      "threadId": "$root",
+      "turn": {
+        "id": "$turn",
+        "items": [],
+        "itemsView": "notLoaded",
+        "status": "inProgress",
+        "error": null,
+        "startedAt": 1790296673,
+        "completedAt": null,
+        "durationMs": null
+      }
+    }
+  },
+  {
+    "method": "item/started",
+    "params": {
+      "item": {
+        "type": "userMessage",
+        "id": "01a0d5ff-5318-7432-9a18-58c8869987b1",
+        "clientId": null,
+        "content": [
+          {
+            "type": "text",
+            "text": "Spawn one subagent whose only task is to reply with exactly: Hello. Wait for it to finish, then reply with exactly what it said.",
+            "text_elements": []
+          }
+        ]
+      },
+      "threadId": "$root",
+      "turnId": "$turn",
+      "startedAtMs": 1790296675099
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "item": {
+        "type": "userMessage",
+        "id": "01a0d5ff-5318-7432-9a18-58c8869987b1",
+        "clientId": null,
+        "content": [
+          {
+            "type": "text",
+            "text": "Spawn one subagent whose only task is to reply with exactly: Hello. Wait for it to finish, then reply with exactly what it said.",
+            "text_elements": []
+          }
+        ]
+      },
+      "threadId": "$root",
+      "turnId": "$turn",
+      "completedAtMs": 1790296675099
+    }
+  },
+  {
+    "method": "item/started",
+    "params": {
+      "item": {
+        "type": "subAgentActivity",
+        "id": "call_opQacJbIfXWqOZb5gT9hd9Mv",
+        "kind": "started",
+        "agentThreadId": "01a0d5ff-5f36-77f1-afa9-cc3dd93018dc",
+        "agentPath": "/root/say_hello"
+      },
+      "threadId": "$root",
+      "turnId": "$turn",
+      "startedAtMs": 1790296678247
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "item": {
+        "type": "subAgentActivity",
+        "id": "call_opQacJbIfXWqOZb5gT9hd9Mv",
+        "kind": "started",
+        "agentThreadId": "01a0d5ff-5f36-77f1-afa9-cc3dd93018dc",
+        "agentPath": "/root/say_hello"
+      },
+      "threadId": "$root",
+      "turnId": "$turn",
+      "completedAtMs": 1790296678247
+    }
+  },
+  {
+    "method": "turn/started",
+    "params": {
+      "threadId": "01a0d5ff-5f36-77f1-afa9-cc3dd93018dc",
+      "turn": {
+        "id": "01a0d5ff-5f66-70b2-b95d-b1332881e91d",
+        "items": [],
+        "itemsView": "notLoaded",
+        "status": "inProgress",
+        "error": null,
+        "startedAt": 1790296678,
+        "completedAt": null,
+        "durationMs": null
+      }
+    }
+  },
+  {
+    "method": "item/started",
+    "params": {
+      "item": {
+        "type": "collabAgentToolCall",
+        "id": "call_90ICrpbuqsWj4Q3wJB3q10HO",
+        "tool": "wait",
+        "status": "inProgress",
+        "senderThreadId": "$root",
+        "receiverThreadIds": [],
+        "prompt": null,
+        "model": null,
+        "reasoningEffort": null,
+        "agentsStates": {}
+      },
+      "threadId": "$root",
+      "turnId": "$turn",
+      "startedAtMs": 1790296680441
+    }
+  },
+  {
+    "method": "item/started",
+    "params": {
+      "item": {
+        "type": "agentMessage",
+        "id": "msg_004d0750968f87b0016ab5c26956e887d098ae49f514e634b8",
+        "text": "",
+        "phase": "final_answer",
+        "memoryCitation": null,
+        "delivery": null,
+        "questions": null
+      },
+      "threadId": "01a0d5ff-5f36-77f1-afa9-cc3dd93018dc",
+      "turnId": "01a0d5ff-5f66-70b2-b95d-b1332881e91d",
+      "startedAtMs": 1790296681643
+    }
+  },
+  {
+    "method": "item/agentMessage/delta",
+    "params": {
+      "threadId": "01a0d5ff-5f36-77f1-afa9-cc3dd93018dc",
+      "turnId": "01a0d5ff-5f66-70b2-b95d-b1332881e91d",
+      "itemId": "msg_004d0750968f87b0016ab5c26956e887d098ae49f514e634b8",
+      "delta": "Hello"
+    }
+  },
+  {
+    "method": "item/agentMessage/delta",
+    "params": {
+      "threadId": "01a0d5ff-5f36-77f1-afa9-cc3dd93018dc",
+      "turnId": "01a0d5ff-5f66-70b2-b95d-b1332881e91d",
+      "itemId": "msg_004d0750968f87b0016ab5c26956e887d098ae49f514e634b8",
+      "delta": "."
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "item": {
+        "type": "agentMessage",
+        "id": "msg_004d0750968f87b0016ab5c26956e887d098ae49f514e634b8",
+        "text": "Hello.",
+        "phase": "final_answer",
+        "memoryCitation": null,
+        "delivery": null,
+        "questions": null
+      },
+      "threadId": "01a0d5ff-5f36-77f1-afa9-cc3dd93018dc",
+      "turnId": "01a0d5ff-5f66-70b2-b95d-b1332881e91d",
+      "completedAtMs": 1790296681643
+    }
+  },
+  {
+    "method": "turn/completed",
+    "params": {
+      "threadId": "01a0d5ff-5f36-77f1-afa9-cc3dd93018dc",
+      "turn": {
+        "id": "01a0d5ff-5f66-70b2-b95d-b1332881e91d",
+        "items": [
+          {
+            "type": "agentMessage",
+            "id": "msg_004d0750968f87b0016ab5c26956e887d098ae49f514e634b8",
+            "text": "Hello.",
+            "phase": "final_answer",
+            "memoryCitation": null,
+            "delivery": null,
+            "questions": null
+          }
+        ],
+        "itemsView": "summary",
+        "status": "completed",
+        "error": null,
+        "startedAt": 1790296678,
+        "completedAt": 1790296681,
+        "durationMs": 3408
+      }
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "threadId": "$root",
+      "turnId": "$turn",
+      "item": {
+        "id": "interaction",
+        "type": "subAgentActivity",
+        "kind": "interacted",
+        "agentThreadId": "01a0d5ff-5f36-77f1-afa9-cc3dd93018dc",
+        "agentPath": "/root/say_hello"
+      }
+    }
+  },
+  {
+    "method": "turn/started",
+    "params": {
+      "threadId": "01a0d5ff-5f36-77f1-afa9-cc3dd93018dc",
+      "turn": {
+        "id": "continued-turn",
+        "status": "inProgress"
+      }
+    }
+  },
+  {
+    "method": "thread/settings/updated",
+    "params": {
+      "threadId": "01a0d5ff-5f36-77f1-afa9-cc3dd93018dc",
+      "threadSettings": {
+        "model": "gpt-6.1-sol",
+        "effort": "low"
+      }
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "threadId": "01a0d5ff-5f36-77f1-afa9-cc3dd93018dc",
+      "turnId": "continued-turn",
+      "item": {
+        "id": "continued-thought",
+        "type": "reasoning",
+        "content": ["Check the answer."],
+        "summary": []
+      }
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "threadId": "01a0d5ff-5f36-77f1-afa9-cc3dd93018dc",
+      "turnId": "continued-turn",
+      "item": {
+        "id": "continued-message",
+        "type": "agentMessage",
+        "text": "Confirmed."
+      }
+    }
+  },
+  {
+    "method": "turn/completed",
+    "params": {
+      "threadId": "01a0d5ff-5f36-77f1-afa9-cc3dd93018dc",
+      "turn": {
+        "id": "continued-turn",
+        "status": "completed"
+      }
+    }
+  },
+  {
+    "method": "item/started",
+    "params": {
+      "item": {
+        "type": "subAgentActivity",
+        "id": "subagent-completed-01a0d5ff-5f66-70b2-b95d-b1332881e91d",
+        "kind": "completed",
+        "agentThreadId": "01a0d5ff-5f36-77f1-afa9-cc3dd93018dc",
+        "agentPath": "/root/say_hello"
+      },
+      "threadId": "$root",
+      "turnId": "$turn",
+      "startedAtMs": 1790296681663
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "item": {
+        "type": "subAgentActivity",
+        "id": "subagent-completed-01a0d5ff-5f66-70b2-b95d-b1332881e91d",
+        "kind": "completed",
+        "agentThreadId": "01a0d5ff-5f36-77f1-afa9-cc3dd93018dc",
+        "agentPath": "/root/say_hello"
+      },
+      "threadId": "$root",
+      "turnId": "$turn",
+      "completedAtMs": 1790296681663
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "item": {
+        "type": "collabAgentToolCall",
+        "id": "call_90ICrpbuqsWj4Q3wJB3q10HO",
+        "tool": "wait",
+        "status": "completed",
+        "senderThreadId": "$root",
+        "receiverThreadIds": [],
+        "prompt": null,
+        "model": null,
+        "reasoningEffort": null,
+        "agentsStates": {}
+      },
+      "threadId": "$root",
+      "turnId": "$turn",
+      "completedAtMs": 1790296681667
+    }
+  },
+  {
+    "method": "item/started",
+    "params": {
+      "item": {
+        "type": "agentMessage",
+        "id": "msg_034802ac4db0e789016ab5c26b3d8c87d085ee92cd13fc7288",
+        "text": "",
+        "phase": "final_answer",
+        "memoryCitation": null,
+        "delivery": null,
+        "questions": null
+      },
+      "threadId": "$root",
+      "turnId": "$turn",
+      "startedAtMs": 1790296683450
+    }
+  },
+  {
+    "method": "item/agentMessage/delta",
+    "params": {
+      "threadId": "$root",
+      "turnId": "$turn",
+      "itemId": "msg_034802ac4db0e789016ab5c26b3d8c87d085ee92cd13fc7288",
+      "delta": "Hello"
+    }
+  },
+  {
+    "method": "item/agentMessage/delta",
+    "params": {
+      "threadId": "$root",
+      "turnId": "$turn",
+      "itemId": "msg_034802ac4db0e789016ab5c26b3d8c87d085ee92cd13fc7288",
+      "delta": "."
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "item": {
+        "type": "agentMessage",
+        "id": "msg_034802ac4db0e789016ab5c26b3d8c87d085ee92cd13fc7288",
+        "text": "Hello.",
+        "phase": "final_answer",
+        "memoryCitation": null,
+        "delivery": null,
+        "questions": null
+      },
+      "threadId": "$root",
+      "turnId": "$turn",
+      "completedAtMs": 1790296683604
+    }
+  },
+  {
+    "method": "turn/completed",
+    "params": {
+      "threadId": "$root",
+      "turn": {
+        "id": "$turn",
+        "items": [
+          {
+            "type": "agentMessage",
+            "id": "msg_034802ac4db0e789016ab5c26b3d8c87d085ee92cd13fc7288",
+            "text": "Hello.",
+            "phase": "final_answer",
+            "memoryCitation": null,
+            "delivery": null,
+            "questions": null
+          }
+        ],
+        "itemsView": "summary",
+        "status": "completed",
+        "error": null,
+        "startedAt": 1790296673,
+        "completedAt": 1790296683,
+        "durationMs": 10654
+      }
+    }
+  }
+]

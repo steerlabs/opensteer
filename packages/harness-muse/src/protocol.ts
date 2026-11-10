@@ -128,6 +128,7 @@ export const MuseItemSchema = z.looseObject({
         failureKind: z.string().optional(),
         failureReason: z.string().optional(),
         label: z.string().optional(),
+        phase: z.string().optional(),
         resultRef: z.string().optional(),
         status: z.string(),
         terminal: z.string().optional(),
@@ -154,6 +155,14 @@ export const MuseItemSchema = z.looseObject({
   tool: z.string().optional(),
   turnId: z.string().nullable().optional(),
   visibleOutput: z.string().optional(),
+  workflowRunId: z.string().optional(),
+  scriptId: z.string().optional(),
+  message: z.string().optional(),
+});
+
+export const MuseItemReadOutputSchema = z.object({
+  content: z.string(),
+  encoding: z.enum(["utf8", "base64"]),
 });
 
 export const MuseItemEventSchema = z.looseObject({ item: MuseItemSchema });

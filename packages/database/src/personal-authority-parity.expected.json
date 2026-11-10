@@ -145,9 +145,10 @@
       "parameters": ["<time>", "id-3"]
     },
     {
-      "sql": "insert into \"workspace_events\" (\"created_at\", \"data\", \"environment_id\", \"event_id\", \"run_id\", \"runner_binding_generation\", \"runner_boot_id\", \"runner_id\", \"runner_ordinal\", \"sequence\", \"thread_id\", \"type\", \"workspace_id\") values ($1, $2::jsonb, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+      "sql": "insert into \"workspace_events\" (\"created_at\", \"node_detail_id\", \"data\", \"environment_id\", \"event_id\", \"run_id\", \"runner_binding_generation\", \"runner_boot_id\", \"runner_id\", \"runner_ordinal\", \"sequence\", \"thread_id\", \"type\", \"workspace_id\") values ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
       "parameters": [
         "<time>",
+        null,
         "{\"input\":{\"assignmentId\":null,\"cancelReason\":null,\"causalChainId\":\"id-5\",\"createdAt\":\"<time>\",\"deliveredAt\":null,\"messageId\":\"id-6\",\"policy\":\"queue\",\"replyTarget\":null,\"runId\":null,\"state\":\"pending\",\"threadId\":\"id-2\",\"updatedAt\":\"<time>\"},\"message\":{\"author\":{\"displayName\":\"Alex\",\"kind\":\"human\",\"principalId\":\"id-7\",\"userId\":\"id-1\"},\"content\":[{\"type\":\"text\",\"text\":\"Run parity\"}],\"createdAt\":\"<time>\",\"id\":\"id-6\",\"kind\":\"input\",\"runId\":null,\"sequence\":\"0\",\"threadId\":\"id-2\"}}",
         "id-4",
         "id-8",
@@ -307,9 +308,10 @@
       "parameters": ["<time>", "id-3"]
     },
     {
-      "sql": "insert into \"workspace_events\" (\"created_at\", \"data\", \"environment_id\", \"event_id\", \"run_id\", \"runner_binding_generation\", \"runner_boot_id\", \"runner_id\", \"runner_ordinal\", \"sequence\", \"thread_id\", \"type\", \"workspace_id\") values ($1, $2::jsonb, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+      "sql": "insert into \"workspace_events\" (\"created_at\", \"node_detail_id\", \"data\", \"environment_id\", \"event_id\", \"run_id\", \"runner_binding_generation\", \"runner_boot_id\", \"runner_id\", \"runner_ordinal\", \"sequence\", \"thread_id\", \"type\", \"workspace_id\") values ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
       "parameters": [
         "<time>",
+        null,
         "{\"message\":{\"author\":{\"displayName\":\"Alex\",\"kind\":\"human\",\"principalId\":\"id-7\",\"userId\":\"id-1\"},\"content\":[{\"type\":\"text\",\"text\":\"Run parity\"}],\"createdAt\":\"<time>\",\"id\":\"id-6\",\"kind\":\"input\",\"runId\":null,\"sequence\":\"0\",\"threadId\":\"id-2\"}}",
         "id-4",
         "id-13",
@@ -329,9 +331,10 @@
       "parameters": ["<time>", "id-3"]
     },
     {
-      "sql": "insert into \"workspace_events\" (\"created_at\", \"data\", \"environment_id\", \"event_id\", \"run_id\", \"runner_binding_generation\", \"runner_boot_id\", \"runner_id\", \"runner_ordinal\", \"sequence\", \"thread_id\", \"type\", \"workspace_id\") values ($1, $2::jsonb, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+      "sql": "insert into \"workspace_events\" (\"created_at\", \"node_detail_id\", \"data\", \"environment_id\", \"event_id\", \"run_id\", \"runner_binding_generation\", \"runner_boot_id\", \"runner_id\", \"runner_ordinal\", \"sequence\", \"thread_id\", \"type\", \"workspace_id\") values ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
       "parameters": [
         "<time>",
+        null,
         "{\"run\":{\"createdAt\":\"<time>\",\"id\":\"id-10\",\"status\":\"queued\",\"threadId\":\"id-2\",\"runOrdinal\":0}}",
         "id-4",
         "id-14",
@@ -379,9 +382,10 @@
       "parameters": ["<time>", "id-3"]
     },
     {
-      "sql": "insert into \"workspace_events\" (\"created_at\", \"data\", \"environment_id\", \"event_id\", \"run_id\", \"runner_binding_generation\", \"runner_boot_id\", \"runner_id\", \"runner_ordinal\", \"sequence\", \"thread_id\", \"type\", \"workspace_id\") values ($1, $2::jsonb, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+      "sql": "insert into \"workspace_events\" (\"created_at\", \"node_detail_id\", \"data\", \"environment_id\", \"event_id\", \"run_id\", \"runner_binding_generation\", \"runner_boot_id\", \"runner_id\", \"runner_ordinal\", \"sequence\", \"thread_id\", \"type\", \"workspace_id\") values ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
       "parameters": [
         "<time>",
+        null,
         "{\"status\":\"running\",\"inputQueuePaused\":false,\"pendingRequests\":0,\"title\":\"Thread parity\",\"icon\":null,\"doneAt\":null,\"doneReason\":null}",
         "id-4",
         "id-15",
@@ -463,9 +467,10 @@
       "parameters": ["<time>", "id-3"]
     },
     {
-      "sql": "insert into \"workspace_events\" (\"created_at\", \"data\", \"environment_id\", \"event_id\", \"run_id\", \"runner_binding_generation\", \"runner_boot_id\", \"runner_id\", \"runner_ordinal\", \"sequence\", \"thread_id\", \"type\", \"workspace_id\") values ($1, $2::jsonb, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+      "sql": "insert into \"workspace_events\" (\"created_at\", \"node_detail_id\", \"data\", \"environment_id\", \"event_id\", \"run_id\", \"runner_binding_generation\", \"runner_boot_id\", \"runner_id\", \"runner_ordinal\", \"sequence\", \"thread_id\", \"type\", \"workspace_id\") values ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
       "parameters": [
         "<time>",
+        null,
         "{\"request\":{\"settlementProvenance\":null,\"callId\":\"parity-request\",\"createdAt\":\"<time>\",\"id\":\"id-16\",\"kind\":\"browser.access\",\"mode\":\"durable\",\"originatingOccurrenceId\":null,\"originatingRunId\":\"id-10\",\"originatingThreadId\":\"id-2\",\"originatingWorkspaceId\":\"id-3\",\"payload\":{\"kind\":\"browser.access\",\"reason\":\"Choose access\",\"suggestion\":{\"kind\":\"user_choice\"}},\"presentation\":{\"kind\":\"external\",\"subject\":{\"id\":\"id-3\",\"kind\":\"workspace\"},\"title\":\"Choose access\"},\"requestedBy\":\"id-1\",\"requiredActor\":\"requester\",\"targetWorkspaceId\":\"id-3\",\"cancellationReason\":null,\"resolvedAt\":\"<time>\",\"resolvedBy\":\"id-1\",\"response\":{\"kind\":\"external\",\"value\":{\"decision\":\"declined\"}},\"status\":\"declined\"}}",
         "id-4",
         "id-17",

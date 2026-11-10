@@ -219,6 +219,71 @@ it("executes schema-valid Project work with no person input and rejects mismatch
   await f.runtime.announce();
   expect(f.frames.some((frame) => frame.type === "runner.project.executions.attach")).toBe(true);
 });
+it("keeps workflow detail and subagent progress on the Project binding", async () => {
+  const f = await fixture();
+  await f.runtime.dispatch(f.command);
+  await vi.waitFor(() => expect(f.session.execute).toHaveBeenCalled(), { timeout: 1000 });
+  const nodeId = createId("executionNode");
+  const events: ProjectHarnessEvent[] = [
+    {
+      type: "node.started",
+      data: {
+        nodeId,
+        kind: "workflow",
+        model: null,
+        nativeRef: "workflow",
+        originCallId: null,
+        parentNodeId: null,
+        prompt: null,
+        sessionRef: null,
+        title: "Inspect",
+        effort: "medium",
+      },
+    },
+    { type: "node.updated", data: { nodeId, phases: ["Inspect", "Check"] } },
+    { type: "node.progress", data: { nodeId, text: "Inspecting files" } },
+    {
+      type: "tool.started",
+      data: {
+        nodeId,
+        callId: "child-tool",
+        tool: { namespace: "codex", name: "shell" },
+        arguments: {},
+      },
+    },
+    { type: "tool.delta", data: { callId: "child-tool", text: "child output" } },
+    { type: "node.message", data: { nodeId, text: "Found the cause" } },
+  ];
+  for (const event of events) f.stream.publish(event, { delivery: "must-deliver" });
+  await vi.waitFor(
+    () =>
+      expect(f.frames).toContainEqual(
+        expect.objectContaining({
+          type: "runner.project.event",
+          event: expect.objectContaining({
+            type: "node.message",
+            binding: f.binding,
+            data: { nodeId, text: "Found the cause" },
+          }),
+        }),
+      ),
+    { timeout: 1000 },
+  );
+  const progress = f.frames.flatMap((frame) =>
+    frame.type === "runner.project.live" ? frame.progress.items : [],
+  );
+  expect(progress).toContainEqual(
+    expect.objectContaining({ stream: "node", nodeId, op: "replace", text: "Inspecting files" }),
+  );
+  expect(progress).toContainEqual(
+    expect.objectContaining({ stream: "tool", nodeId, callId: "child-tool", text: "child output" }),
+  );
+  expect(
+    f.frames
+      .filter((frame) => frame.type === "runner.project.live")
+      .every((frame) => JSON.stringify(frame.binding) === JSON.stringify(f.binding)),
+  ).toBe(true);
+});
 it("renews only an exact binding and an emitted heartbeat, and never revives an expired binding", async () => {
   const f = await fixture();
   await f.runtime.dispatch(f.command);

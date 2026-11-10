@@ -12,6 +12,7 @@ import {
 import {
   AcpHarnessAdapter,
   createAcpProtocolClient,
+  normalizeAcpUpdate,
   type AcpInspectionSnapshot,
   type AcpNormalizedUpdate,
   type AcpPermissionRequest,
@@ -415,6 +416,7 @@ class GrokHarnessAdapter implements HarnessAdapter {
           ),
         classifyError: grokAcpError,
         normalizeUpdate: normalizeGrokUpdate,
+        toolUpdates: grokToolSubagents,
         permissionChoices: grokPermissionChoices,
         rewritePromptText: rewriteGrokSkillInvocation,
       },
@@ -536,6 +538,93 @@ export function grokPermissionChoices(request: AcpPermissionRequest) {
   });
 }
 
+// Adapted from T3 Code's xaiAcpExtension.ts (MIT).
+function grokToolSubagents(
+  call: import("@opensteer/harness-acp").AcpToolCall,
+): AcpNormalizedUpdate[] {
+  const input = isRecord(call.rawInput) ? call.rawInput : {};
+  const raw = isRecord(call.rawOutput) ? call.rawOutput : {};
+  const result = isRecord(raw.Result) ? raw.Result : isRecord(raw.result) ? raw.result : raw;
+  const output =
+    typeof call.rawOutput === "string"
+      ? call.rawOutput
+      : (stringValue(result.output) ??
+        stringValue(result.text) ??
+        call.content
+          ?.flatMap((part) => {
+            if (!isRecord(part)) return [];
+            const content = isRecord(part.content) ? part.content : part;
+            return typeof content.text === "string" ? [content.text] : [];
+          })
+          .join("\n") ??
+        "");
+  const name = (call.name ?? call.title ?? "").toLowerCase();
+  const variant = stringValue(input.variant)?.toLowerCase();
+  const poll =
+    name.includes("get_command_or_subagent_output") ||
+    name === "wait_commands_or_subagents" ||
+    variant === "taskoutput" ||
+    variant === "task_output";
+  const spawn =
+    name === "task" ||
+    name.includes("spawn_subagent") ||
+    name.includes("spawn subagent") ||
+    ["task", "cursortask", "spawn_subagent"].includes(variant ?? "") ||
+    Boolean(input.subagent_type ?? input.subagentType);
+  if (!poll && !spawn) return [];
+  const uuid = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+  const key =
+    stringValue(result.task_id) ??
+    stringValue(result.taskId) ??
+    output.match(new RegExp(`(?:Agent ID:|subagent_id:|===\\s*Task)\\s*(${uuid})`, "i"))?.[1] ??
+    (poll
+      ? (stringValue(input.task_id) ??
+        stringValue(input.taskId) ??
+        (Array.isArray(input.task_ids) && input.task_ids.length === 1
+          ? stringValue(input.task_ids[0])
+          : undefined))
+      : undefined);
+  if (!key || !new RegExp(`^${uuid}$`, "i").test(key)) return [];
+  const ack =
+    /subagent started in background/i.test(output) ||
+    (/subagent_id:/i.test(output) && /get_command_or_subagent_output/i.test(output));
+  const status =
+    stringValue(result.status)?.toLowerCase() ??
+    output.match(/Status:\s*(\w+)/i)?.[1]?.toLowerCase();
+  const state: "started" | "completed" | "failed" | "interrupted" =
+    status === "cancelled" || status === "canceled"
+      ? "interrupted"
+      : call.status === "failed" ||
+          status === "failed" ||
+          status === "error" ||
+          (typeof result.exit_code === "number" && result.exit_code !== 0)
+        ? "failed"
+        : ack
+          ? "started"
+          : status === "completed" ||
+              status === "success" ||
+              result.exit_code === 0 ||
+              (!poll && call.status === "completed")
+            ? "completed"
+            : "started";
+  const text = ack
+    ? undefined
+    : (output.match(/=== Output ===\s*([\s\S]*)$/i)?.[1] ?? output).trim();
+  const metadata = {
+    key,
+    kind: "subagent" as const,
+    sessionReference: key,
+    ...(!poll ? { originCallId: call.id } : {}),
+    ...(stringValue(input.description) ? { title: stringValue(input.description)! } : {}),
+    ...(stringValue(input.prompt) ? { prompt: stringValue(input.prompt)! } : {}),
+    ...(stringValue(input.model) ? { model: stringValue(input.model)! } : {}),
+  };
+  return [
+    { ...metadata, state: "started", ...(text ? { result: text } : {}) },
+    ...(state === "started" ? [] : [{ ...metadata, state, ...(text ? { result: text } : {}) }]),
+  ];
+}
+
 export function normalizeGrokUpdate(update: unknown): readonly AcpNormalizedUpdate[] | undefined {
   if (!isRecord(update) || typeof update.sessionUpdate !== "string") return undefined;
   if (update.sessionUpdate === "subagent_spawned") {
@@ -545,7 +634,7 @@ export function normalizeGrokUpdate(update: unknown): readonly AcpNormalizedUpda
       {
         key,
         kind: "subagent",
-        ...(stringValue(update.subagent_type) ? { model: stringValue(update.subagent_type)! } : {}),
+        ...(stringValue(update.model) ? { model: stringValue(update.model)! } : {}),
         ...(stringValue(update.description) ? { prompt: stringValue(update.description)! } : {}),
         ...(stringValue(update.child_session_id)
           ? { sessionReference: stringValue(update.child_session_id)! }
@@ -566,10 +655,49 @@ export function normalizeGrokUpdate(update: unknown): readonly AcpNormalizedUpda
         ...(stringValue(update.output) || stringValue(update.error)
           ? { result: stringValue(update.output) ?? stringValue(update.error)! }
           : {}),
-        state: status === "failed" || status === "cancelled" ? "failed" : "completed",
+        state:
+          status === "cancelled" ? "interrupted" : status === "failed" ? "failed" : "completed",
       },
     ];
   }
+  if (
+    update.sessionUpdate === "agent_message_chunk" &&
+    isRecord(update.content) &&
+    typeof update.content.text === "string"
+  ) {
+    const text = update.content.text;
+    const match =
+      /Background subagent\s+["']?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})["']?/i.exec(
+        text,
+      );
+    if (match) {
+      let tail = text.slice((match.index ?? 0) + match[0].length).trimStart();
+      if (tail.startsWith("(")) {
+        let depth = 0;
+        for (let i = 0; i < tail.length; i++) {
+          if (tail[i] === "(") depth++;
+          if (tail[i] === ")" && --depth === 0) {
+            tail = tail.slice(i + 1);
+            break;
+          }
+        }
+      }
+      tail = tail.trimStart().split("\n")[0] ?? "";
+      const state = /completed successfully/i.test(tail)
+        ? "completed"
+        : /cancelled|canceled|interrupted/i.test(tail)
+          ? "interrupted"
+          : /failed|errored|error|crashed|timed out/i.test(tail)
+            ? "failed"
+            : /completed|finished|ended/i.test(tail)
+              ? "completed"
+              : undefined;
+      if (state)
+        return [...normalizeAcpUpdate(update), { key: match[1]!, kind: "subagent", state }];
+    }
+  }
+  const nodeKey = stringValue(update.subagent_id) ?? stringValue(update.child_session_id);
+  if (nodeKey) return normalizeAcpUpdate(update).map((entry) => ({ ...entry, nodeKey }));
   return undefined;
 }
 

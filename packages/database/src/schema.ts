@@ -1079,7 +1079,10 @@ export interface ExecutionNodeTable {
   runId: RunId;
   attemptId: RunAttemptId;
   parentNodeId: ExecutionNodeId | null;
-  kind: "subagent" | "task";
+  kind: "subagent" | "task" | "workflow";
+  effort: string | null;
+  phaseIndex: number | null;
+  phases: JsonColumn<string[]>;
   title: string;
   prompt: string | null;
   model: string | null;
@@ -1436,6 +1439,11 @@ export const legacyLiveEventTypes = ["assistant.delta", "reasoning.delta", "tool
 export type LegacyLiveEventType = (typeof legacyLiveEventTypes)[number];
 
 export interface WorkspaceEventTable {
+  nodeDetailId: ColumnType<
+    ExecutionNodeId | null,
+    ExecutionNodeId | null | undefined,
+    ExecutionNodeId | null
+  >;
   sequence: string;
   eventId: EventId;
   workspaceId: WorkspaceId;
