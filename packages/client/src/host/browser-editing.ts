@@ -202,13 +202,23 @@ export class BrowserEditingStore {
           ...target.state,
           autofill: { ...autofill, open: false, pending: loginId, result: null },
         });
-        this.sendCommand(target.sessionId, target.surfaceId, {
-          type: "autofill.fill",
-          surfaceId: BrowserSurfaceIdSchema.parse(target.surfaceId),
-          offerId: autofill.offer.offerId,
-          loginId,
-          revision: account.revision,
-        });
+        try {
+          this.sendCommand(target.sessionId, target.surfaceId, {
+            type: "autofill.fill",
+            surfaceId: BrowserSurfaceIdSchema.parse(target.surfaceId),
+            offerId: autofill.offer.offerId,
+            loginId,
+            revision: account.revision,
+          });
+        } catch {
+          // Nothing reached the page, so no result will come: let the person try again.
+          const current = target.state.autofill;
+          if (current?.offer.offerId === autofill.offer.offerId && current.pending === loginId)
+            this.#set(target, {
+              ...target.state,
+              autofill: { ...current, pending: null, result: "unavailable" },
+            });
+        }
       },
     };
   }

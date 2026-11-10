@@ -298,4 +298,17 @@ describe("browser autofill offers", () => {
     expect(target.get().autofill).toBeNull();
     store.dispose();
   });
+
+  it("lets the person choose again when the choice never left this viewer", () => {
+    const store = new BrowserEditingStore(() => {
+      throw new Error("The browser socket is closed.");
+    });
+    const target = store.target(sessionId, surfaceId);
+    const offerId = crypto.randomUUID();
+    const only = account("alex@acme.co");
+    store.receive(sessionId, offer(offerId, [only]));
+    target.fillAutofill(only.id);
+    expect(target.get().autofill).toMatchObject({ pending: null, result: "unavailable" });
+    store.dispose();
+  });
 });
