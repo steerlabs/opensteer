@@ -794,8 +794,8 @@ describe("OpenCode sessions", () => {
 
     const entry = (await fixture.capture()).find((row) => row.kind === "config");
     expect(entry?.configMode).toBe(0o600);
-    expect((entry?.config as Record<string, unknown>).subagent_depth).toBeUndefined();
     const config = entry?.config as Record<string, unknown>;
+    expect(config.subagent_depth).toBeUndefined();
     expect(config.autoupdate).toBe(false);
     expect(config.share).toBe("disabled");
     expect(config.lsp).toBe(false);
