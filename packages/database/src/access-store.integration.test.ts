@@ -388,8 +388,16 @@ describeStore("dormant Project access", (it) => {
       const upgradedObjects = new Map(
         (await legacyObjects(database)).rows.map((row) => [row.name, row.definition]),
       );
-      for (const original of originalObjects)
-        expect(upgradedObjects.get(original.name), original.name).toBe(original.definition);
+      const extendedPrincipalChecks = new Set([
+        "constraint:principals:principals_kind_check",
+        "constraint:principals:principals_kind_shape_check",
+      ]);
+      for (const original of originalObjects) {
+        const definition = upgradedObjects.get(original.name);
+        if (extendedPrincipalChecks.has(original.name))
+          expect(definition, original.name).toContain("'project'");
+        else expect(definition, original.name).toBe(original.definition);
+      }
       const upgraded = await legacyMembershipLifecycle(
         database,
         source.userId,

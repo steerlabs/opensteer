@@ -804,6 +804,9 @@ function fakeStore(command: PendingCommandRow, event: AgentEvent | null) {
 function pendingCommand(overrides: Partial<PendingCommandRow> = {}): PendingCommandRow {
   const now = new Date();
   return {
+    initiatorGeneration: null,
+    membershipGeneration: null,
+    originConnectionId: null,
     requestResponseKeyVersion: null,
     actorPrincipalId: "pri_00000000-0000-4000-8000-000000000099" as CommandRow["actorPrincipalId"],
     attempts: 0,

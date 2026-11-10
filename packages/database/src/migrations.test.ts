@@ -179,6 +179,7 @@ const releasedMigrationNames = [
   "0169_access_foundation",
   "0170_project_execution_preparation",
   "0171_team_administration",
+  "0172_project_authority_cutover",
 ];
 
 describe("migration names", () => {

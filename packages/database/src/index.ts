@@ -23,6 +23,7 @@ export * from "./notification-state.js";
 export * from "./notification-store.js";
 export * from "./request-store.js";
 export * from "./schema.js";
+export { projectAuthorityCutoverMigration } from "./project-authority-migration.js";
 export * from "./store.js";
 export * from "./trigger-store.js";
 

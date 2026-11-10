@@ -272,6 +272,15 @@ const sqlExceptions: Record<
   string,
   { reason: string; decisions: Record<string, Record<string, number>> }
 > = {
+  "packages/database/src/project-authority-guards.ts": {
+    reason:
+      "Cold Project-principal creation requires persisted server/model-2 authority; Personal inserts return before querying Deployment state.",
+    decisions: {
+      "baseline/public.opensteer_project_principal_scope": {
+        "d.deployment_shape->>'kind' = 'server'": 1,
+      },
+    },
+  },
   "packages/database/src/baseline-schema.ts": {
     reason:
       "Historical installed SQL; replace each named function, shape constraint or conversion through a new cutover migration, never by editing history.",

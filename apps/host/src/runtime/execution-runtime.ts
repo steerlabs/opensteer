@@ -1,3 +1,10 @@
+export type {
+  ProjectRuntimePorts,
+  ProjectAdmissionPort,
+  ProjectCapabilityPort,
+  ProjectDispatchPort,
+  ProjectRecoveryPort,
+} from "./project-runtime-ports.js";
 import { deploymentPolicy, OpensteerError, type Deployment } from "@opensteer/core";
 import { OpensteerStore, readDeploymentAuthority, type DatabaseSchema } from "@opensteer/database";
 import type { Kysely } from "kysely";
