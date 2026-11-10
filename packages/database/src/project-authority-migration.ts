@@ -2,6 +2,23 @@ import { sql } from "kysely";
 import type { Migration } from "kysely/migration";
 import { PROJECT_AUTHORITY_GUARDS_SQL } from "./project-authority-guards.js";
 
+export const projectRequestStorageSql = sql`
+      alter table public.requests
+        alter column requested_by drop not null,
+        add column originating_grant_id text,
+        add constraint requests_requester_audience
+          check (required_actor <> 'requester' or requested_by is not null) not valid;
+      alter table public.requests
+        drop constraint requests_cancellation_reason_check,
+        add constraint requests_cancellation_reason_check check (cancellation_reason is null or cancellation_reason in (
+          'run-ended', 'process-lost', 'source-closed', 'thread-archived', 'workspace-deleted',
+          'membership-revoked', 'resource-deleted', 'authority-revoked', 'no-eligible-manager')) not valid;
+      alter table public.requests
+        add constraint requests_originating_grant_id_fkey
+          foreign key (originating_grant_id) references public.grants(id)
+          on delete restrict not valid;
+`;
+
 export const projectAuthorityCutoverMigration: Migration = {
   async up(database) {
     await sql`
@@ -34,22 +51,7 @@ export const projectAuthorityCutoverMigration: Migration = {
         add constraint ${sql.id(`${table}_created_by_principal_id_fkey`)} foreign key (created_by_principal_id) references public.principals(id) on delete restrict not valid
       `.execute(database);
     }
-    await sql`
-      alter table public.requests
-        alter column requested_by drop not null,
-        add column originating_grant_id text,
-        add constraint requests_requester_audience
-          check (required_actor <> 'requester' or requested_by is not null) not valid;
-      alter table public.requests
-        drop constraint requests_cancellation_reason_check,
-        add constraint requests_cancellation_reason_check check (cancellation_reason is null or cancellation_reason in (
-          'run-ended', 'process-lost', 'source-closed', 'thread-archived', 'workspace-deleted',
-          'membership-revoked', 'resource-deleted', 'authority-revoked', 'no-eligible-manager')) not valid;
-      alter table public.requests
-        add constraint requests_originating_grant_id_fkey
-          foreign key (originating_grant_id) references public.grants(id)
-          on delete restrict not valid;
-    `.execute(database);
+    await projectRequestStorageSql.execute(database);
     await sql.raw(PROJECT_AUTHORITY_GUARDS_SQL).execute(database);
   },
 };
