@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { DesktopAutofillScene } from "@opensteer/protocol/desktop";
-import { AutofillSceneState, autofillKey, autofillPlacement } from "./autofill-state.js";
+import { AutofillKeys, AutofillSceneState, autofillPlacement } from "./autofill-state.js";
 
 const scene: DesktopAutofillScene = {
   sceneRevision: 1,
@@ -27,23 +27,29 @@ describe("native autofill scene", () => {
     expect(state.set({ ...scene, sceneRevision: 3 })).toBe(true);
   });
   it("forwards each keyDown while shown and focused, consuming navigation keys only", () => {
+    const keys = new AutofillKeys();
     for (const key of ["ArrowUp", "ArrowDown", "Enter", "Escape", "a", "Tab", "F6"])
-      expect(autofillKey({ type: "keyDown", key }, true, true)).toEqual({
+      expect(keys.decide({ type: "keyDown", key, code: key }, true, true)).toEqual({
         forward: true,
         prevent: ["ArrowUp", "ArrowDown", "Enter", "Escape"].includes(key),
       });
-    expect(autofillKey({ type: "keyUp", key: "Enter" }, true, true)).toEqual({
+    expect(keys.decide({ type: "keyDown", key: "Enter", code: "Enter" }, false, true)).toEqual({
       forward: false,
       prevent: false,
     });
-    expect(autofillKey({ type: "keyDown", key: "Enter" }, false, true)).toEqual({
+    expect(keys.decide({ type: "keyDown", key: "Enter", code: "Enter" }, true, false)).toEqual({
       forward: false,
       prevent: false,
     });
-    expect(autofillKey({ type: "keyDown", key: "Enter" }, true, false)).toEqual({
-      forward: false,
-      prevent: false,
-    });
+  });
+  it("keeps a taken key's release from the page, even after the chooser closes", () => {
+    const keys = new AutofillKeys();
+    keys.decide({ type: "keyDown", key: "Enter", code: "NumpadEnter" }, true, true);
+    keys.decide({ type: "keyDown", key: "a", code: "KeyA" }, true, true);
+    const up = (code: string) => keys.decide({ type: "keyUp", key: "", code }, false, true);
+    expect(up("KeyA")).toEqual({ forward: false, prevent: false });
+    expect(up("NumpadEnter")).toEqual({ forward: false, prevent: true });
+    expect(up("NumpadEnter")).toEqual({ forward: false, prevent: false });
   });
 });
 

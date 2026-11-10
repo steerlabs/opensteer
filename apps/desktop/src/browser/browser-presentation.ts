@@ -47,7 +47,7 @@ import {
 } from "./electron-browser-launcher.js";
 import { PageGlass } from "./page-glass.js";
 import { PageAutofill } from "./page-autofill.js";
-import { AutofillSceneState, autofillKey } from "./autofill-state.js";
+import { AutofillKeys, AutofillSceneState } from "./autofill-state.js";
 
 interface Authority {
   sockets: Set<string>;
@@ -620,10 +620,11 @@ export class DesktopBrowserPresentationManager {
       }
     });
     const gone = () => this.#end(presentation, "page-closed");
+    const autofillKeys = new AutofillKeys();
     const key = (event: Electron.Event, input: Input) => {
       const outstanding = page.native.inputOutstanding();
       contents.setIgnoreMenuShortcuts(outstanding);
-      const autofill = autofillKey(
+      const autofill = autofillKeys.decide(
         input,
         current() && !outstanding && !!presentation.owner.autofill?.shown,
         contents.isFocused(),

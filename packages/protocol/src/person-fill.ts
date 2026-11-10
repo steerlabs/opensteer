@@ -21,7 +21,10 @@ export type PersonFillRole = z.infer<typeof PersonFillRoleSchema>;
 export const PersonFillPresenceSchema = z.enum(["here", "elsewhere"]);
 export type PersonFillPresence = z.infer<typeof PersonFillPresenceSchema>;
 
-/** The bound field's box, normalized to the surface like an editing caret. */
+/**
+ * The bound field's visible box, normalized to the page's viewport: unlike an
+ * editing caret it is not mapped to the frame capture, which viewers apply.
+ */
 export const PersonFillAnchorSchema = z.strictObject({
   x: z.number().min(0).max(1),
   y: z.number().min(0).max(1),

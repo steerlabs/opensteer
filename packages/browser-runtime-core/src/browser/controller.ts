@@ -2470,20 +2470,12 @@ export class BrowserController {
   private async publishPersonOffer(surfaceId: BrowserSurfaceId, offer: PersonOffer): Promise<void> {
     const measuring = offer.anchor;
     const box = await measuring;
-    if (
-      this.personOffers.get(surfaceId) !== offer ||
-      offer.anchor !== measuring ||
-      !offer.accounts.length ||
-      !box
-    )
-      return;
-    const start = this.editingCoordinates(surfaceId, box);
-    const end = this.editingCoordinates(surfaceId, {
-      x: box.x + box.width,
-      y: box.y,
-      height: box.height,
-    });
-    if (!start || !end) return;
+    if (this.personOffers.get(surfaceId) !== offer || offer.anchor !== measuring) return;
+    // A field scrolled out of view takes its offer with it; a new activation offers again.
+    if (!box) return this.withdrawPersonOffer(surfaceId);
+    if (!offer.accounts.length) return;
+    // Viewport-relative, unlike carets: native pages place it in page CSS pixels and
+    // streamed viewers map it through the frame's capture themselves.
     await this.send({
       type: "browser.autofill.offer",
       surfaceId,
@@ -2492,7 +2484,7 @@ export class BrowserController {
       role: offer.binding.role,
       accounts: offer.accounts,
       geometryRevision: this.ledger.binding(surfaceId)?.surface.geometryRevision ?? 0,
-      anchor: { ...start, width: Math.max(0, end.x - start.x) },
+      anchor: box,
     });
   }
 

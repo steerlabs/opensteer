@@ -277,6 +277,10 @@ it("distributes a bound code in order with leading zeros, rechecking after each 
     if (event?.type !== "binding") throw new Error("Missing code binding");
     expect(event.binding.role).toBe("code");
     expect(event.binding.slots.group).toBe(true);
+    // Code widgets move focus to the next box as each digit arrives.
+    world.window.eval(
+      'document.querySelectorAll("input").forEach((input, index, all) => input.addEventListener("input", () => all[index + 1]?.focus()))',
+    );
     expect(await event.binding.write("group", "001234", "https://accounts.example.test")).toBe(
       true,
     );
@@ -380,7 +384,7 @@ it("routes cross-process bindings and writes through their owning private world,
       x: 110 / 1280,
       y: 70 / 720,
       width: 120 / 1280,
-      height: 30 / 720,
+      height: expect.closeTo(30 / 720),
     });
     expect(await event.binding.origin()).toBe("https://frame.example.test");
     expect(await event.binding.write("target", "fixture", "https://frame.example.test")).toBe(true);

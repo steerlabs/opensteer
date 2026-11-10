@@ -532,9 +532,10 @@ export class PageEditingObserver {
       this.#geometry(frame, box),
       this.#geometry(frame, { x: box.x + box.width, y: box.y + box.height, height: 0 }),
     ])
+      // Corners clamp to the viewport, so a field scrolled out of view has no visible area.
       .then(([start, end]) =>
-        start && end
-          ? { x: start.x, y: start.y, width: Math.max(0, end.x - start.x), height: start.height }
+        start && end && end.x > start.x && end.y > start.y
+          ? { x: start.x, y: start.y, width: end.x - start.x, height: end.y - start.y }
           : null,
       )
       .catch(() => null);
@@ -822,8 +823,12 @@ function editingObserverSource(binding: string, personFill: boolean): string {
     on(document, "keydown", event => {
       if (event.isTrusted && event.key === "ArrowDown") activatePerson(active());
     });
+    // Focus moving among the bound fields keeps the binding: code widgets advance
+    // to the next box as each digit is written.
     on(document, "focusin", () => {
-      if (active() !== personBindings.get(personBinding)?.target.deref()) {
+      const bound = personBindings.get(personBinding);
+      const fields = bound ? [bound.target, bound.partner, ...(bound.group ?? [])] : [];
+      if (!fields.some(field => field?.deref() === active())) {
         if (personBinding) release(personBinding);
         globalThis[${JSON.stringify(binding)}](JSON.stringify({kind:"person-focus",bindingId:null}));
       }

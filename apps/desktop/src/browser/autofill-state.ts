@@ -39,16 +39,24 @@ export class AutofillSceneState {
   }
 }
 
-export function autofillKey(
-  input: { type: string; key: string },
-  shown: boolean,
-  focused: boolean,
-): { forward: boolean; prevent: boolean } {
-  const forward = shown && focused && input.type === "keyDown";
-  return {
-    forward,
-    prevent: forward && ["ArrowUp", "ArrowDown", "Enter", "Escape"].includes(input.key),
-  };
+/**
+ * Which page keys the chooser takes. A key it took keeps its release from the
+ * page too, even after the chooser has closed, or a keyup handler would act on it.
+ */
+export class AutofillKeys {
+  readonly #taken = new Set<string>();
+
+  decide(
+    input: { type: string; key: string; code: string },
+    shown: boolean,
+    focused: boolean,
+  ): { forward: boolean; prevent: boolean } {
+    if (input.type === "keyUp") return { forward: false, prevent: this.#taken.delete(input.code) };
+    const forward = shown && focused && input.type === "keyDown";
+    const prevent = forward && ["ArrowUp", "ArrowDown", "Enter", "Escape"].includes(input.key);
+    if (prevent) this.#taken.add(input.code);
+    return { forward, prevent };
+  }
 }
 
 /** All rectangles are DIPs except the page anchor and the popup's measured CSS size. */

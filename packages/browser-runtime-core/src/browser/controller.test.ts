@@ -3304,7 +3304,11 @@ describe("BrowserController", () => {
     });
     const producer = crypto.randomUUID(),
       surfaceId = activeSurfaceId();
-    const report = (bindingId = crypto.randomUUID(), activated = true) => {
+    const report = (
+      bindingId = crypto.randomUUID(),
+      activated = true,
+      box = { x: 100, y: 100, width: 200, height: 30 },
+    ) => {
       cdp.emit("Runtime.bindingCalled", {
         name: world.name,
         executionContextId: 7,
@@ -3313,7 +3317,7 @@ describe("BrowserController", () => {
           bindingId,
           role: "username",
           activated,
-          box: { x: 100, y: 100, width: 200, height: 30 },
+          box,
           slots: { partner: true, group: false },
         }),
       });
@@ -3368,6 +3372,13 @@ describe("BrowserController", () => {
 
   it("offers only after attributed activation newer than agent commands and upserts its anchor", async () => {
     const fixture = await autofillController();
+    // A page laid out wider than the stage is captured cropped; the anchor stays viewport-relative.
+    Object.defineProperty(page, "capture", {
+      value: {
+        read: () => ({ width: 800, height: 450, revision: 1, rasterScale: 1 }),
+        subscribe: () => () => undefined,
+      },
+    });
     try {
       fixture.report();
       await flushMicrotasks();
@@ -3390,13 +3401,22 @@ describe("BrowserController", () => {
         x: 100 / 1280,
         y: 100 / 720,
         width: 200 / 1280,
-        height: 30 / 720,
+        height: expect.closeTo(30 / 720),
       });
       fixture.report(binding, false);
       await vi.waitFor(() =>
         expect(fixture.offers(), "The bound anchor never updated").toHaveLength(2),
       );
       expect(fixture.offers()[1]?.offerId).toBe(offer.offerId);
+      fixture.report(binding, false, { x: 100, y: -100, width: 200, height: 30 });
+      await vi.waitFor(() =>
+        expect(sink.messages, "A field scrolled out of view kept its offer").toContainEqual({
+          type: "browser.autofill.withdrawn",
+          surfaceId: fixture.surfaceId,
+          consumerToken: fixture.producer,
+          offerId: offer.offerId,
+        }),
+      );
     } finally {
       await fixture.controller.close();
     }
