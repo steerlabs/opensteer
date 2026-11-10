@@ -166,6 +166,7 @@ describe("PersonalDeploymentSupervisor", () => {
     expect(runner.environment.OPENSTEER_BROWSER_BRIDGE_URL).toBe("http://127.0.0.1:4399/");
     expect(runner.environment.OPENSTEER_BROWSER_RUNTIME_ID).toBe("desktop-browser");
     expect(runner.environment.OPENSTEER_BROWSER_SIGN_IN).toBe("1");
+    expect(runner.environment.OPENSTEER_BROWSER_PERSON_FILL).toBe("1");
     expect(runner.secretInput?.OPENSTEER_BROWSER_BRIDGE_TOKEN).toBe("bridge-token");
     expect(runner.environment).not.toHaveProperty("OPENSTEER_BROWSER_BRIDGE_TOKEN");
     // Computer use reaches the Main Runner too: it is this Mac's own Runner.
@@ -1599,6 +1600,7 @@ class TestLocalBrowserHandle implements PersonalLocalBrowserHandle {
   readonly bridgeToken = "bridge-token";
   readonly runtimeId: string;
   readonly signIn = true;
+  readonly personFill = true;
   readonly url = new URL("http://127.0.0.1:4399");
   readonly #lifecycle: string[];
   readonly stop = vi.fn(async () => {

@@ -8,6 +8,7 @@ export class PageGlass {
   readonly #window: BaseWindow;
   readonly #view: WebContentsView;
   readonly #parent: BaseWindow;
+  readonly #onOrdered: () => void;
   readonly #dispose: (() => void)[] = [];
   #bounds: DesktopWindowRect | null = null;
   #scene: DesktopGlassScene | null = null;
@@ -19,8 +20,14 @@ export class PageGlass {
   /** Whether the shown glass is its parent's child, ordering and moving with it. */
   #attached = false;
 
-  constructor(parent: BaseWindow, preload: string, onError: (error: unknown) => void) {
+  constructor(
+    parent: BaseWindow,
+    preload: string,
+    onError: (error: unknown) => void,
+    onOrdered: () => void = () => {},
+  ) {
     this.#parent = parent;
+    this.#onOrdered = onOrdered;
     this.#window = new BaseWindow({
       parent,
       transparent: true,
@@ -136,9 +143,15 @@ export class PageGlass {
     // its parent is focused, and so already in front, the glass is ordered in
     // just above the parent instead of becoming its child.
     if (process.platform !== "darwin" || this.#parent.isFocused()) {
-      if (!this.#attached) this.#window.showInactive();
+      if (!this.#attached) {
+        this.#window.showInactive();
+        this.#onOrdered();
+      }
       this.#attached = true;
-    } else if (!this.#visible) this.#window.moveAbove(this.#parent.getMediaSourceId());
+    } else if (!this.#visible) {
+      this.#window.moveAbove(this.#parent.getMediaSourceId());
+      this.#onOrdered();
+    }
     this.#visible = true;
   }
 }
