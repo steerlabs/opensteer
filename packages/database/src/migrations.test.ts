@@ -177,7 +177,10 @@ const releasedMigrationNames = [
   "0167_quiet_tasks",
   "0168_devices",
   "0169_browser_profile_homes",
-  "0170_node_detail",
+  "0170_access_foundation",
+  "0171_project_execution_preparation",
+  "0172_team_administration",
+  "0173_node_detail",
 ];
 
 describe("migration names", () => {

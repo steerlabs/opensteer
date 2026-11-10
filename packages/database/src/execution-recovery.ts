@@ -97,6 +97,7 @@ type AbandonedRunRecovery =
   | {
       readonly code: "workspace_access_revoked";
       readonly kind: "membership-revocation";
+      readonly membershipGenerationCutoff?: number;
       readonly message: string;
       readonly userId: UserId;
       readonly workspaceId: WorkspaceId;
@@ -131,6 +132,13 @@ async function recoverAbandonedRuns(
           .distinct()
           .where("runs.status", "in", activeStatuses)
           .where("runs.requestedBy", "=", recovery.userId)
+          .$if(recovery.membershipGenerationCutoff !== undefined, (query) =>
+            query.where(
+              "runs.membershipGeneration",
+              "<=",
+              String(recovery.membershipGenerationCutoff!),
+            ),
+          )
           .where("threads.workspaceId", "=", recovery.workspaceId)
           .orderBy("runs.id", "asc")
           .execute()
@@ -1242,6 +1250,23 @@ export async function failActiveRunsForMembershipRevocation(
     message: "Workspace access was revoked before the Run reached a terminal event",
     userId: input.userId,
     workspaceId: input.workspaceId,
+  });
+}
+
+export async function failActiveRunsForAccessRevocation(
+  database: Kysely<DatabaseSchema>,
+  links: ChannelLinks,
+  input: {
+    readonly userId: UserId;
+    readonly workspaceId: WorkspaceId;
+    readonly membershipGenerationCutoff: number;
+  },
+): Promise<RunRecoveryOutcome> {
+  return recoverAbandonedRuns(database, links, {
+    code: "workspace_access_revoked",
+    kind: "membership-revocation",
+    message: "Workspace access was revoked before the Run reached a terminal event",
+    ...input,
   });
 }
 

@@ -1,3 +1,4 @@
+import { consumeAnonymousRateLimit } from "../identity/anonymous-rate-limit.js";
 import { PersonalDesktopUpdate } from "./personal-desktop-update.js";
 import { PersonalDesktopUpdateStore } from "@opensteer/database";
 import {
@@ -90,7 +91,6 @@ type AccountOperationInput = AccountOperation extends infer Operation
 const pairingCodeLifetimeMilliseconds = 10 * 60 * 1_000;
 const maximumPendingPairingCodes = 64;
 const sessionGrantReplayRetentionMilliseconds = 10 * 60 * 1_000;
-const sessionExchangeRateWindowMilliseconds = 60_000;
 const maximumSessionExchangesPerAccount = 30;
 const maximumSessionExchangesPerIp = 60;
 
@@ -881,33 +881,7 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     now: Date,
   ): Promise<void> {
     const key = `account-host-session:${createHash("sha256").update(rawKey).digest("hex")}`;
-    const allowed = await this.#database.transaction().execute(async (transaction) => {
-      await sql`select pg_advisory_xact_lock(hashtextextended(${key}, 0))`.execute(transaction);
-      const current = await transaction
-        .selectFrom("authRateLimits")
-        .selectAll()
-        .where("key", "=", key)
-        .executeTakeFirst();
-      const nowMilliseconds = now.getTime();
-      const count =
-        current &&
-        nowMilliseconds - Number(current.lastRequest) < sessionExchangeRateWindowMilliseconds
-          ? current.count + 1
-          : 1;
-      if (current) {
-        await transaction
-          .updateTable("authRateLimits")
-          .set({ count, lastRequest: nowMilliseconds })
-          .where("id", "=", current.id)
-          .executeTakeFirstOrThrow();
-      } else {
-        await transaction
-          .insertInto("authRateLimits")
-          .values({ id: randomUUID(), key, count, lastRequest: nowMilliseconds })
-          .executeTakeFirstOrThrow();
-      }
-      return count <= maximum;
-    });
+    const allowed = await consumeAnonymousRateLimit(this.#database, key, maximum, now);
     if (!allowed) {
       throw new OpensteerError({
         code: "resource_exhausted",

@@ -130,6 +130,7 @@ export type JsonColumn<T> = ColumnType<T, T, T>;
 /** Threads never hold the Trigger profile, which belongs to Trigger occurrences. */
 
 export interface DeploymentTable {
+  authorityModelVersion: Generated<number>;
   id: DeploymentId;
   singletonKey: "primary";
   activeHostInstanceId: HostInstanceId;
@@ -141,6 +142,12 @@ export interface DeploymentTable {
 }
 
 export interface UserTable {
+  memberKind: Generated<"full" | "guest">;
+  memberState: Generated<"active" | "suspended" | "removed">;
+  authorityGeneration: ColumnType<string, number | string | undefined, number | string>;
+  admittedAt: NullableTimestamp;
+  memberStateChangedAt: Timestamp;
+  memberStateChangedBy: Generated<UserId | null>;
   id: UserId;
   displayName: string;
   email: string;
@@ -185,6 +192,7 @@ export interface NotificationPreviewKeyTable {
 }
 
 export interface AuthSessionTable {
+  memberGeneration: ColumnType<string | null, string | null | undefined, string | null>;
   id: AuthSessionId;
   userId: UserId;
   token: string;
@@ -680,6 +688,18 @@ interface UserExecutionPreferenceTable {
   updatedAt: Timestamp;
 }
 
+export interface ProjectRuntimeSettingsTable {
+  workspaceId: WorkspaceId;
+  harnessInstanceId: HarnessInstanceId;
+  modelSelection: JsonColumn<ModelSelection>;
+  accessMode: ThreadAccessMode;
+  instructions: Generated<string>;
+  timeZone: Generated<string>;
+  revision: ColumnType<string, number | string | undefined, number | string>;
+  updatedBy: UserId;
+  updatedAt: Timestamp;
+}
+
 export interface WorkspaceTable {
   slug: Generated<string | null>;
   color: MarkColor;
@@ -732,6 +752,41 @@ export interface WorkspaceMembershipTable {
   updatedAt: Timestamp;
 }
 
+export interface AccessGroupTable {
+  id: string;
+  name: string;
+  builtin: "everyone" | null;
+  createdBy: UserId;
+  createdAt: Timestamp;
+  deletedAt: NullableTimestamp;
+}
+
+export interface AccessGroupMemberTable {
+  groupId: string;
+  memberKind: "user" | "group";
+  memberId: string;
+  addedBy: UserId;
+  addedAt: Timestamp;
+}
+
+export interface AccessEntryTable {
+  id: string;
+  subjectKind: "user" | "group" | "project";
+  subjectId: string;
+  targetKind: "project" | "topic" | "team-account";
+  targetId: string;
+  level: "use" | "manage" | "read" | "write";
+  grantedBy: UserId;
+  grantedAt: Timestamp;
+  revokedAt: NullableTimestamp;
+  revokedBy: UserId | null;
+}
+
+export interface AccessStateTable {
+  singletonKey: "primary";
+  revision: ColumnType<string, number | string, number | string>;
+}
+
 export interface WorkspaceInvitationTable {
   id: WorkspaceInvitationId;
   workspaceId: WorkspaceId;
@@ -765,6 +820,8 @@ interface SecurityAuditTable {
 }
 
 interface SecurityEffectTable {
+  membershipGenerationCutoff: ColumnType<string, number | string | undefined, number | string>;
+  causeId: Generated<string | null>;
   id: SecurityEffectId;
   workspaceId: WorkspaceId;
   userId: UserId;
@@ -2042,6 +2099,8 @@ export interface AppVersionTable {
 }
 
 export interface AgentConnectionTable {
+  memberGeneration: ColumnType<string | null, string | null | undefined, string | null>;
+  membershipGeneration: ColumnType<string | null, string | null | undefined, string | null>;
   id: string;
   userId: UserId;
   label: string;
@@ -2056,7 +2115,29 @@ export interface AgentConnectionTable {
   revokedAt: NullableTimestamp;
 }
 
+export interface TeamInvitationTable {
+  id: string;
+  selector: string;
+  tokenHash: string;
+  intendedEmail: string;
+  memberKind: "full" | "guest";
+  createdBy: UserId;
+  createdAt: Timestamp;
+  expiresAt: Timestamp;
+  acceptedAt: NullableTimestamp;
+  acceptedBy: UserId | null;
+  revokedAt: NullableTimestamp;
+  revokedBy: UserId | null;
+  commandId: string;
+  requestFingerprint: string;
+}
+
 export interface DatabaseSchema extends KnowledgeTables {
+  teamInvitations: TeamInvitationTable;
+  accessGroups: AccessGroupTable;
+  accessGroupMembers: AccessGroupMemberTable;
+  accessEntries: AccessEntryTable;
+  accessState: AccessStateTable;
   agentConnections: AgentConnectionTable;
   apps: AppTable;
   appVersions: AppVersionTable;
@@ -2130,6 +2211,7 @@ export interface DatabaseSchema extends KnowledgeTables {
   executionEnvironments: ExecutionEnvironmentTable;
   harnessInstances: HarnessInstanceTable;
   harnessCatalogs: HarnessCatalogTable;
+  projectRuntimeSettings: ProjectRuntimeSettingsTable;
   userBackgroundModelPreferences: {
     userId: UserId;
     preferences: JsonColumn<AutomaticModelConfig>;

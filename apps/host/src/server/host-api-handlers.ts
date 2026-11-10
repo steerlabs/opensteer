@@ -1,4 +1,6 @@
 import { createSettingsReadHandlers } from "./settings-read-handlers.js";
+import { createTeamAccessHandlers, handleTeamCommand } from "./team-access-handlers.js";
+import type { TeamAdministrationService } from "../team/team-administration-service.js";
 import type { ComputerViewService } from "../computer-use/computer-view-service.js";
 import type { PhoneTabs } from "../computer-use/phone-tabs.js";
 import { OpensteerError, RunnerIdSchema } from "@opensteer/core";
@@ -10,6 +12,7 @@ import {
   type HostApiCommandOutput,
   type HostApiHandlers,
   type HostApiServerContext,
+  type TeamCommand,
 } from "@opensteer/protocol";
 import { listedPluginRow } from "../integrations/catalog-presentation.js";
 import type { IdentityRpcHandlers } from "../identity/identity-routes.js";
@@ -126,6 +129,7 @@ export function createHostApiHandlers(
   ) => Promise<HostApiCommandOutput>,
   computerViews?: ComputerViewService,
   phoneTabs?: PhoneTabs,
+  teamAdministration?: TeamAdministrationService,
 ): Omit<
   HostApiHandlers,
   "personal.remoteAccess.get" | "connections.list" | "connections.authorization.get"
@@ -223,7 +227,9 @@ export function createHostApiHandlers(
     ...channelHandlers,
     ...browserSourceHandlers,
     ...coreHandlers,
+    ...createTeamAccessHandlers(teamAdministration),
     "commands.dispatch": async (command, context) => {
+      if (isTeamCommand(command)) return handleTeamCommand(command, context, teamAdministration);
       if (
         command.type === "computer.view.open" ||
         command.type === "computer.view.close" ||
@@ -309,7 +315,12 @@ export type CoreCommand = Exclude<
   | IntegrationPlatformCommand
   | ChannelCommand
   | BrowserSourceCommand
+  | TeamCommand
 >;
+
+function isTeamCommand(command: HostApiCommand): command is TeamCommand {
+  return command.type.startsWith("team.");
+}
 
 function isTriggerCommand(command: HostApiCommand): command is TriggerCommand {
   return command.type.startsWith("trigger.");

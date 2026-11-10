@@ -7,6 +7,9 @@ const MobileEnvironmentSchema = z.object({
   EXPO_PUBLIC_OPENSTEER_BUILD_PROFILE: z.enum(["development", "preview", "production"]).optional(),
   EXPO_PUBLIC_OPENSTEER_MOCK: z.enum(["0", "1"]).optional(),
   EXPO_PUBLIC_OPENSTEER_MOCK_HOME: z.literal("absent").optional(),
+  EXPO_PUBLIC_OPENSTEER_MOCK_TEAM: z
+    .enum(["admin", "admin-stale", "member", "guest", "suspended", "removed"])
+    .optional(),
   EXPO_PUBLIC_OPENSTEER_MOCK_PHONE: z.enum(["away", "needs-update", "no-browser"]).optional(),
 });
 
@@ -23,6 +26,10 @@ export interface MobileConfiguration {
   readonly mock: boolean;
   /** Explicit first-message fixture; the ordinary mock keeps its seeded Chat. */
   readonly mockHome: "seeded" | "absent";
+  /** The team the in-memory Host plays; null is today's Hosts, with no team. */
+  readonly mockTeam: NonNullable<
+    z.infer<typeof MobileEnvironmentSchema>["EXPO_PUBLIC_OPENSTEER_MOCK_TEAM"]
+  > | null;
   /** What becomes of this phone in mock mode once it is added; null for the ordinary phone. */
   readonly mockPhone: "away" | "needs-update" | "no-browser" | null;
   /**
@@ -86,6 +93,7 @@ export function readMobileConfiguration(
         : bareServiceOrigin(accountOrigin, "Opensteer Account origin"),
     mock: mockEnabled,
     mockHome: emptyHomeRequested && mockEnabled ? "absent" : "seeded",
+    mockTeam: mockEnabled ? (parsed.EXPO_PUBLIC_OPENSTEER_MOCK_TEAM ?? null) : null,
     mockPhone: mockEnabled ? (parsed.EXPO_PUBLIC_OPENSTEER_MOCK_PHONE ?? null) : null,
     refusal:
       mockRequested && !mockAllowed

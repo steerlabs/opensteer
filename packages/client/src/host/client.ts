@@ -946,6 +946,8 @@ export interface HostSnapshot {
   ownerViewWindowsAvailable?: boolean;
   /** The Host advertises voice-run-v1: a call's agent runs as a Run with Opensteer's tools. */
   voiceAvailable?: boolean;
+  /** The Host advertises team-administration-v1; every team screen and entry point waits for it. */
+  teamAdministrationAvailable?: boolean;
   threads: ThreadSummary[];
   transcriptWindows: Record<string, TranscriptWindow>;
   transcripts: Record<string, TranscriptEntry[]>;

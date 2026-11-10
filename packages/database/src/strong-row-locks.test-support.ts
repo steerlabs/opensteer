@@ -104,6 +104,17 @@ export function strongRowLockViolations(
           if (source[index++] === char) break;
         }
         const literal = source.slice(start, index);
+        if (!literal.includes("\\")) {
+          chunks.push(
+            append(
+              /for/iu.test(literal)
+                ? literal[0]! + withoutSqlComments(literal.slice(1, -1)) + literal.slice(-1)
+                : literal,
+              start,
+            ),
+          );
+          continue;
+        }
         let decoded = "";
         const literalOffsets: number[] = [];
         const escapes = /\\(?:u\{([0-9a-f]+)\}|u([0-9a-f]{4})|x([0-9a-f]{2})|([\s\S]))/giu;
@@ -140,8 +151,9 @@ export function strongRowLockViolations(
         offsets.push(...literalOffsets);
         chunks.push(decoded[0]! + withoutSqlComments(decoded.slice(1, -1)) + decoded.slice(-1));
       } else {
-        chunks.push(append(char, index));
         index += 1;
+        while (index < source.length && !"/\"'`".includes(source[index]!)) index += 1;
+        chunks.push(append(source.slice(start, index), start));
       }
     }
     executable = chunks.join("");

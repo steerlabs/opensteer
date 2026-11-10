@@ -2,6 +2,7 @@ import { RequestHold } from "../mcp/request-hold.js";
 import { ThreadNaming } from "../agents/thread-naming.js";
 import { QuietTasks } from "../threads/quiet-tasks.js";
 import { AdministrationService } from "../administration/administration-service.js";
+import { TeamAdministrationService } from "../team/team-administration-service.js";
 import { AdministrationToolHandlers } from "../mcp/handlers/administration.js";
 import {
   HarnessCatalogReconciliationOwner,
@@ -472,6 +473,16 @@ export async function createHostRuntime(
       ...(options.executionClock ? { executionClock: options.executionClock } : {}),
       links: { threadUrl: (threadId) => `${config.canonicalOrigin.origin}/threads/${threadId}` },
     });
+    const deployment = await store.ensureDeployment({
+      ...(config.deploymentIdentity
+        ? {
+            deploymentId: config.deploymentIdentity.deploymentId,
+          }
+        : {}),
+      canonicalOrigin: config.canonicalOrigin.origin,
+      hostInstanceId: hostInstance.hostInstanceId,
+      deploymentShape: config.workspace.shape,
+    });
 
     // What active Runs are streaming, held only in memory; it learns each Run
     // from that Run's committed durable events and forgets it at the terminal.
@@ -488,16 +499,6 @@ export async function createHostRuntime(
       (viewers) => realtime.sendToUsers(viewers, { type: "host.plugins-changed" }),
     );
     pluginChangeNotices = notices;
-    const deployment = await store.ensureDeployment({
-      ...(config.deploymentIdentity
-        ? {
-            deploymentId: config.deploymentIdentity.deploymentId,
-          }
-        : {}),
-      canonicalOrigin: config.canonicalOrigin.origin,
-      hostInstanceId: hostInstance.hostInstanceId,
-      deploymentShape: config.workspace.shape,
-    });
     if (config.knowledge === true) {
       const { startKnowledgeManager } = await import("../knowledge/knowledge-manager.js");
       knowledge = await startKnowledgeManager({ database, databaseUrl: config.databaseUrl });
@@ -2520,6 +2521,16 @@ export async function createHostRuntime(
     });
     const app = await createHostServer(
       {
+        teamAdministration: new TeamAdministrationService({
+          database,
+          identity,
+          teamName: config.deploymentName ?? new URL(config.runtimeOrigin).hostname,
+          runnerIsConnected: (runnerId) =>
+            requiredService(runnerRegistry, "Runner registry").isRunnerConnected(runnerId),
+          invalidate: (userIds) => {
+            for (const userId of userIds) realtime.publishViewerTasksChanged(userId);
+          },
+        }),
         connections,
         passkeys: config.passkeys === true,
         knowledge: knowledge !== undefined,

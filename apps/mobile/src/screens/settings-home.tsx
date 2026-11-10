@@ -1,6 +1,9 @@
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useMobileState } from "../ui/mobile-client-context.js";
+import type { HostClient } from "@opensteer/client/host";
+import { useTeam } from "@opensteer/client/react";
 import { SettingsHomeForm } from "./settings-home-form.js";
+import type { SettingsHomeTeam } from "./settings-home-model.js";
 import { GeneralSettingsController } from "./settings-general-controller.js";
 import { AccountSettingsController } from "./settings-account-controller.js";
 import { DevicesSettingsController } from "./settings-devices-controller.js";
@@ -18,10 +21,46 @@ const pages = {
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 import type { SettingsPage } from "./settings-form.types.js";
 export function SettingsScreen() {
+  const { selection } = useMobileState();
+  const host = useAttachedHost(selection.deploymentId ?? "");
+  return host && selection.deploymentId ? (
+    <TeamSettingsHome deploymentId={selection.deploymentId} host={host} />
+  ) : (
+    <SettingsHome team={null} />
+  );
+}
+
+/** Adds the team's own rows only when its Host offers them to this person. */
+function TeamSettingsHome(props: { readonly deploymentId: string; readonly host: HostClient }) {
+  const navigation = useNavigation();
+  const { summary } = useTeam(props.host);
+  const rows = [
+    ...(summary?.can.people.allowed ? [{ title: "People", route: "TeamPeople" as const }] : []),
+    ...(summary?.can.groups.allowed ? [{ title: "Groups", route: "TeamGroups" as const }] : []),
+  ];
+  return (
+    <SettingsHome
+      team={
+        summary && rows.length
+          ? {
+              name: summary.team.name,
+              rows: rows.map((row) => ({
+                title: row.title,
+                onPress: () => navigation.navigate(row.route, { deploymentId: props.deploymentId }),
+              })),
+            }
+          : null
+      }
+    />
+  );
+}
+
+function SettingsHome(props: { readonly team: SettingsHomeTeam | null }) {
   const navigation = useNavigation();
   const { selection } = useMobileState();
   return (
     <SettingsHomeForm
+      team={props.team}
       onOpen={(route) => {
         if (route === "SettingsAiSharing") {
           navigation.navigate(route);

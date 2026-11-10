@@ -115,6 +115,7 @@ const configuration = readMobileConfiguration(
     EXPO_PUBLIC_OPENSTEER_BUILD_PROFILE: process.env.EXPO_PUBLIC_OPENSTEER_BUILD_PROFILE,
     EXPO_PUBLIC_OPENSTEER_MOCK: process.env.EXPO_PUBLIC_OPENSTEER_MOCK,
     EXPO_PUBLIC_OPENSTEER_MOCK_HOME: process.env.EXPO_PUBLIC_OPENSTEER_MOCK_HOME,
+    EXPO_PUBLIC_OPENSTEER_MOCK_TEAM: process.env.EXPO_PUBLIC_OPENSTEER_MOCK_TEAM,
     EXPO_PUBLIC_OPENSTEER_MOCK_PHONE: process.env.EXPO_PUBLIC_OPENSTEER_MOCK_PHONE,
   },
   { development: __DEV__ },
@@ -272,6 +273,7 @@ function mobileClient(): MobileRoot {
       ? createMockHostPort({
           hosts: mockHosts,
           initialHome: configuration.mockHome,
+          team: configuration.mockTeam,
         })
       : createNetworkHostPort({
           browserPreferencesStorage: createBrowsingChoiceStorage(

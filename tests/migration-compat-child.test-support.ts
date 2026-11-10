@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
 
-const [root, phase, authority, url, receipt, control] = z
+const [root, phase, authority, url, receipt, control, deploymentKind] = z
   .tuple([
     z.string().min(1),
     z.enum(["seed", "migrate", "replay"]),
@@ -12,6 +12,7 @@ const [root, phase, authority, url, receipt, control] = z
     z.url(),
     z.string(),
     z.enum(["", "break-column", "timeout"]),
+    z.enum(["personal", "server"]),
   ])
   .parse(process.argv.slice(2));
 const load = (name: string) => import(pathToFileURL(join(root, name)).href);
@@ -148,18 +149,28 @@ async function main(): Promise<void> {
         canonicalOrigin: "https://migration.invalid",
         deploymentId: core.DeploymentIdSchema.parse(`dep_${uuid}`),
         hostInstanceId: core.HostInstanceIdSchema.parse(`hst_${uuid}`),
-        deploymentShape: { kind: "server", defaultWorkspaceBacking: "local-directory" },
+        deploymentShape: {
+          kind: deploymentKind,
+          defaultWorkspaceBacking: "local-directory",
+        },
       });
       await store.createUser("Migration fixture owner", userId);
+      if (deploymentKind === "personal")
+        await database
+          .updateTable("users")
+          .set({ instanceRole: "administrator" })
+          .where("id", "=", userId)
+          .execute();
       await store.createRunnerEnrollment({
         allowedModules: ["agents", "browser"],
-        createdBy: userId,
+        createdBy: deploymentKind === "personal" ? null : userId,
         expiresAt: new Date("2099-01-01"),
         id: `ren_${uuid}`,
         idempotencyKey: "migration-runner",
         name: "Migration runner",
         requestFingerprint: "sha256:migration-fixture",
-        runnerKind: "managed",
+        runnerKind: deploymentKind === "personal" ? "main" : "managed",
+        ...(deploymentKind === "personal" ? { mainEnrollmentPurpose: "initial" as const } : {}),
         tokenHash: "sha256:migration-fixture",
       });
       await store.enrollRunnerConnection({
@@ -168,7 +179,7 @@ async function main(): Promise<void> {
           capabilities: [],
           name: "Migration runner",
           runnerId,
-          runnerKind: "managed",
+          runnerKind: deploymentKind === "personal" ? "main" : "managed",
           runtimeVersion: "migration-fixture",
           modules: {
             browser: { runtimeId: "migration-browser", wireVersion: 2 },
@@ -335,6 +346,60 @@ async function main(): Promise<void> {
         .executeTakeFirstOrThrow();
       assert.equal(homed.homeRunnerId, runnerId);
       assert.equal((await store.workspaceSnapshot(workspaceId)).workspace.id, workspaceId);
+      const memberId = core.UserIdSchema.parse("usr_00000000-0000-4000-8000-000000000002");
+      const invite = async (suffix: string) => {
+        const selector = `migration-membership-${suffix}`;
+        await store.createWorkspaceInvitation({
+          createdBy: userId,
+          expiresAt: new Date("2099-01-01"),
+          idempotencyKey: selector,
+          intendedEmail: null,
+          requestFingerprint: selector,
+          role: "collaborator",
+          selector,
+          tokenHash: selector,
+          type: "link",
+          workspaceId,
+        });
+        return store.acceptWorkspaceInvitation({
+          selector,
+          tokenHash: selector,
+          userEmail: "member@migration.invalid",
+          userEmailVerified: true,
+          userId: memberId,
+        });
+      };
+      if (deploymentKind === "personal") {
+        await assert.rejects(invite("personal-unavailable"), /Workspace sharing is unavailable/);
+        await assert.rejects(
+          store.changeWorkspaceMembership({
+            actorId: userId,
+            targetUserId: userId,
+            workspaceId,
+            state: "revoked",
+          }),
+          /owner/i,
+        );
+      } else {
+        const joined = await invite("join");
+        const revoked = await store.changeWorkspaceMembership({
+          actorId: userId,
+          targetUserId: memberId,
+          workspaceId,
+          state: "revoked",
+        });
+        assert.equal(revoked.membership.generation, joined.generation + 1);
+        const effects = await store.claimSecurityEffects({
+          now: new Date(),
+          leaseUntil: new Date(Date.now() + 60_000),
+          limit: 100,
+        });
+        assert.equal(effects.length, 6);
+        for (const effect of effects) await store.completeSecurityEffect(effect.id);
+        const rejoined = await invite("rejoin");
+        assert.equal(rejoined.id, joined.id);
+        assert.equal(rejoined.generation, revoked.membership.generation + 1);
+      }
       console.info(
         "PREVIOUS_STORE_READ_WRITE_OK host: users deployments workspaces threads runs tasks settings grants",
       );
