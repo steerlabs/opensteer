@@ -1,3 +1,4 @@
+import { withLockOrderMode } from "./lock-order-checker.test-support.js";
 import { createId } from "@opensteer/core";
 import { createTestWorkspace } from "./workspace-fixture.test-support.js";
 import { projectAuthorityCutoverMigration } from "./project-authority-migration.js";
@@ -114,10 +115,12 @@ describeStore("additive Project authority preparation", (it) => {
     storeFixture,
   }) => {
     await storeFixture.startRunFixture("cutover-ddl", "project");
-    await storeFixture.database.transaction().execute(async (transaction) => {
-      const definitions = async () =>
-        (
-          await sql`
+    // The lock checker probes tables named by newly declared functions, adding its own scans.
+    await withLockOrderMode("off", () =>
+      storeFixture.database.transaction().execute(async (transaction) => {
+        const definitions = async () =>
+          (
+            await sql`
         select 'column:' || table_name || ':' || column_name as name,
           data_type || ':' || is_nullable || ':' || coalesce(column_default, '') as definition
         from information_schema.columns where table_schema = 'public' and table_name in ('principals', 'runs', 'thread_inputs', 'commands', 'triggers', 'trigger_revisions', 'trigger_watch_activations')
@@ -128,9 +131,9 @@ describeStore("additive Project authority preparation", (it) => {
         union all select 'trigger:' || tgname, pg_get_triggerdef(oid) from pg_trigger where tgrelid = 'principals'::regclass and tgname = 'project_principal_scope'
         order by name
       `.execute(transaction)
-        ).rows;
-      const freshDefinitions = await definitions();
-      await sql`drop trigger project_principal_scope on principals; drop function opensteer_project_principal_scope();
+          ).rows;
+        const freshDefinitions = await definitions();
+        await sql`drop trigger project_principal_scope on principals; drop function opensteer_project_principal_scope();
         drop trigger request_grant_identity on grants;
         drop function opensteer_request_grant_identity();
         drop trigger project_request_scope on requests;
@@ -146,37 +149,41 @@ describeStore("additive Project authority preparation", (it) => {
         alter table trigger_watch_activations drop column created_by_principal_id;
         insert into principals (id, kind, display_name) select 'pri_ddl_' || item, 'system', 'System' from generate_series(1, 100) item
       `.execute(transaction);
-      const facts = async () =>
-        (
-          await sql`
+        const facts = async () =>
+          (
+            await sql`
         select relname, relfilenode, case when relname <> 'principals' then pg_stat_get_xact_numscans(oid) end as scans
         from pg_class where oid in ('principals'::regclass, 'runs'::regclass, 'thread_inputs'::regclass, 'commands'::regclass, 'triggers'::regclass, 'trigger_revisions'::regclass, 'trigger_watch_activations'::regclass)
         order by relname
       `.execute(transaction)
-        ).rows;
-      const before = await facts();
-      await projectAuthorityCutoverMigration.up(transaction);
-      expect(await facts()).toEqual(before);
-      expect(await definitions()).toEqual(freshDefinitions);
-      const locks = (
-        await sql<{ relname: string; mode: string }>`
+          ).rows;
+        const before = await facts();
+        await projectAuthorityCutoverMigration.up(transaction);
+        expect(await facts()).toEqual(before);
+        expect(await definitions()).toEqual(freshDefinitions);
+        const locks = (
+          await sql<{ relname: string; mode: string }>`
         select distinct c.relname, l.mode from pg_locks l join pg_class c on c.oid = l.relation
         where l.pid = pg_backend_pid() and l.granted and c.relname in ('principals', 'runs', 'thread_inputs', 'commands', 'triggers', 'trigger_revisions', 'trigger_watch_activations', 'agent_connections', 'workspaces')
         order by c.relname, l.mode
       `.execute(transaction)
-      ).rows;
-      for (const table of [
-        "principals",
-        "runs",
-        "thread_inputs",
-        "commands",
-        "triggers",
-        "trigger_revisions",
-        "trigger_watch_activations",
-      ])
-        expect(locks).toContainEqual({ relname: table, mode: "AccessExclusiveLock" });
-      expect(locks).toContainEqual({ relname: "agent_connections", mode: "ShareRowExclusiveLock" });
-      console.info("0172 held migration locks", locks);
-    });
+        ).rows;
+        for (const table of [
+          "principals",
+          "runs",
+          "thread_inputs",
+          "commands",
+          "triggers",
+          "trigger_revisions",
+          "trigger_watch_activations",
+        ])
+          expect(locks).toContainEqual({ relname: table, mode: "AccessExclusiveLock" });
+        expect(locks).toContainEqual({
+          relname: "agent_connections",
+          mode: "ShareRowExclusiveLock",
+        });
+        console.info("0172 held migration locks", locks);
+      }),
+    );
   });
 });
