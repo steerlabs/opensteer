@@ -49,9 +49,11 @@ integration("production startup migrations", () => {
           names.length - 1,
         );
       }
-      await sql`create table startup_sentinel (value text); insert into startup_sentinel values ('preserved')`.execute(
-        database,
-      );
+      if (state === "historical") {
+        await sql`create table startup_sentinel (value text); insert into startup_sentinel values ('preserved')`.execute(
+          database,
+        );
+      }
       const config = machineAccessHostConfig(
         await freePort(),
         dataDirectory,
@@ -60,6 +62,11 @@ integration("production startup migrations", () => {
         "invite-only",
       );
       runtime = await createHostRuntime(config);
+      if (state === "empty") {
+        await sql`create table startup_sentinel (value text); insert into startup_sentinel values ('preserved')`.execute(
+          database,
+        );
+      }
       const first = await sql<{
         name: string;
         timestamp: string;
