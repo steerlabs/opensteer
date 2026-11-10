@@ -34,6 +34,22 @@ const hostApiScopes = {
   "attachment.upload": "mutation",
   "attachment.content": "session",
   "auth.config": "public",
+  "team.summary.get": "session",
+  "team.people.list": "session",
+  "team.member.get": "session",
+  "team.directory.search": "session",
+  "team.groups.list": "session",
+  "team.group.get": "session",
+  "team.project.access.get": "session",
+  "team.access.explain": "session",
+  "team.access.preview": "session",
+  "team.member.preview": "session",
+  "team.audit.list": "session",
+  "team.project.settings.get": "session",
+  "team.project.runtimeChoices": "session",
+  "team.invitation.preview": "public",
+  "team.invitation.exchange": "exact-origin",
+  "team.invitation.accept": "mutation",
   "auth.invitation.accept": "mutation",
   "auth.invitation.exchange": "exact-origin",
   "auth.native.complete": "exact-origin",
@@ -135,6 +151,12 @@ function registerHostApiMember<Name extends keyof typeof hostApi>(
       try {
         requireNegotiatedVersion(request);
         const authenticated = await authenticateScope(authenticator, hostApiScopes[name], request);
+        if (
+          (name === "team.invitation.preview" || name === "team.invitation.exchange") &&
+          request.headers.authorization !== undefined
+        ) {
+          await authenticator.authenticateSessionContext(request.headers);
+        }
         if (binaryRequest && request.headers["content-type"] !== "application/octet-stream") {
           throw new OpensteerError({
             code: "bad_request",
