@@ -62,3 +62,25 @@ export { encodeThreadHistoryCursor } from "./thread-history.js";
 export { assignmentSummaryInTransaction } from "./assignment-store.js";
 
 export { requireHumanRequester, requireHumanMembershipGeneration } from "./execution-authority.js";
+
+export {
+  ProjectWorkStore,
+  ProjectRuntimeSnapshotSchema,
+  projectExchangeKey,
+  projectExchangeFromRow,
+  projectOriginFromRow,
+  ensureProjectPrincipal,
+} from "./project-work-store.js";
+export type {
+  ProjectExchange,
+  ProjectWorkAdmission,
+  ProjectWorkSource,
+  ProjectRuntimeSnapshot,
+} from "./project-work-store.js";
+export { ProjectExecutionStore, StoredProjectControlSchema } from "./project-execution-store.js";
+export type { ProjectRequestControlPort } from "./project-execution-store.js";
+export {
+  assertActiveProjectBinding,
+  readProjectRunBinding,
+  projectWorkIsCurrent,
+} from "./execution-authority.js";

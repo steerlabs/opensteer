@@ -8,7 +8,7 @@ import type {
   ThreadInput,
   ThreadInputPolicy,
 } from "@opensteer/core";
-import type { ThreadInputSource } from "@opensteer/database";
+import type { ProjectWorkSource } from "@opensteer/database";
 import type {
   ProjectCapabilityClaims,
   ProjectCapabilityScope,
@@ -20,11 +20,7 @@ export interface ProjectAdmissionPort {
   admitProjectWork(input: {
     readonly threadId: ThreadId;
     readonly origin: HumanRoot | null;
-    readonly source:
-      | Exclude<ThreadInputSource, { kind: "channel" | "automation" | "trigger" | "watch" }>
-      | (Extract<ThreadInputSource, { kind: "trigger" | "watch" }> & {
-          readonly executionGeneration: number;
-        });
+    readonly source: ProjectWorkSource;
     readonly content: readonly ContentPart[];
     readonly policy: ThreadInputPolicy;
     readonly idempotencyKey: string;
