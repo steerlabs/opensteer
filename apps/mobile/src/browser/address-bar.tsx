@@ -15,6 +15,7 @@ import Animated, {
 } from "react-native-reanimated";
 import { scheduleOnRN } from "react-native-worklets";
 import { color, controlFontScaleLimit, radius, space, touchTarget } from "../theme.js";
+import { appear, exit } from "../ui/motion.js";
 import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { AgentMarks } from "./agent-marks.js";
@@ -132,7 +133,13 @@ export const AddressCapsule = memo(function AddressCapsule(props: {
               </AppText>
             </Animated.View>
           </Pressable>
-          {following === null ? null : <View pointerEvents="none" style={styles.ring} />}
+          {following === null ? null : (
+            <Animated.View
+              {...(reduceMotion ? {} : { entering: appear, exiting: exit })}
+              pointerEvents="none"
+              style={styles.ring}
+            />
+          )}
           {props.loading ? (
             <ActivityLine tone="loading" />
           ) : props.acting ? (

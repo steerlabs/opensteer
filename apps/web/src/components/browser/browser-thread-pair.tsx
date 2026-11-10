@@ -1,24 +1,22 @@
 import {
   browserThreadAgentTab,
-  browserTabTitle,
   type BrowserTabDestination,
-  type BrowserThreadTab,
   type HostClient,
   type HostSnapshot,
 } from "@opensteer/client/host";
 import { useBrowserAgentFollow, useHostSelector } from "@opensteer/client/react";
 import { useCallback, useMemo, type ReactNode } from "react";
 
-/** The conversation docked beside a browser tab, following its agent. */
+/**
+ * The conversation docked beside a browser tab, following its agent. Where the
+ * agent is while the person looks elsewhere is the conversation's live card.
+ */
 export interface BrowserThreadPair {
   readonly following: boolean;
   /** The docked conversation's mark. */
   readonly mark: ReactNode;
-  /** Where the agent is while the person looks elsewhere; null while following or idle. */
-  readonly elsewhere: BrowserThreadTab | null;
-  /** The person drove the page themselves: stop following. */
-  readonly pause: () => void;
-  readonly resume: () => void;
+  /** The person moved the page themselves, within its tab: following stops. */
+  readonly steer: () => void;
 }
 
 const selectSessions = (snapshot: HostSnapshot) => snapshot.browserSessions;
@@ -50,42 +48,12 @@ export function useBrowserThreadPair({
     (tab: BrowserTabDestination) => onShow(tab, { replace: true }),
     [onShow],
   );
-  const follow = useBrowserAgentFollow({ threadId, shownTab: shown, agentTab, onFollow });
-  const { pause, resume } = follow;
-
+  const { following, steer } = useBrowserAgentFollow({
+    threadId,
+    shownTab: shown,
+    agentTab,
+    onFollow,
+  });
   if (!threadId || !shown) return null;
-  return {
-    following: follow.following,
-    mark,
-    elsewhere: !follow.following && agentTab && agentTab.tabId !== shown.tabId ? agentTab : null,
-    pause,
-    resume,
-  };
-}
-
-/** Under the chrome, never over the page: where the agent went while the person looked away. */
-export function BrowserFollowBand({
-  pair,
-}: {
-  readonly pair: Pick<BrowserThreadPair, "elsewhere" | "mark" | "resume">;
-}) {
-  if (!pair.elsewhere) return null;
-  const { tab } = pair.elsewhere;
-  const title = browserTabTitle({ title: tab.title, url: tab.site });
-  return (
-    <div className="browser-follow-band">
-      <span className="browser-follow-band__mark">{pair.mark}</span>
-      <span className="browser-follow-band__text" role="status">
-        Agent is on <strong>{title}</strong>
-      </span>
-      <button
-        aria-label="Follow the agent"
-        className="browser-follow-band__follow"
-        onClick={pair.resume}
-        type="button"
-      >
-        Follow
-      </button>
-    </div>
-  );
+  return { following, mark, steer };
 }

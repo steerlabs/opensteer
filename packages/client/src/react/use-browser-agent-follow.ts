@@ -4,20 +4,17 @@ import {
   type BrowserAgentFollowInput,
   type BrowserAgentFollowTimers,
 } from "../host/browser-agent-follow.js";
-import type { BrowserTabDestination, BrowserThreadTab } from "../host/browser-thread-tabs.js";
+import type { BrowserTabDestination } from "../host/browser-thread-tabs.js";
 
 export interface UseBrowserAgentFollowInput extends BrowserAgentFollowInput {
-  readonly agentTab: BrowserThreadTab | null;
   readonly onFollow: (tab: BrowserTabDestination) => void;
   readonly timers?: BrowserAgentFollowTimers;
 }
 
 export interface BrowserAgentFollowResult {
   readonly following: boolean;
-  readonly agentTab: BrowserThreadTab | null;
-  readonly pause: () => void;
-  /** Jumps immediately via onFollow and also returns that destination. */
-  readonly resume: () => BrowserTabDestination | null;
+  /** The person moved the page themselves, within its tab: following stops. */
+  readonly steer: () => void;
 }
 
 export function useBrowserAgentFollow(input: UseBrowserAgentFollowInput): BrowserAgentFollowResult {
@@ -28,7 +25,7 @@ export function useBrowserAgentFollow(input: UseBrowserAgentFollowInput): Browse
     () => new BrowserAgentFollow((tab) => onFollow.current(tab), setFollowing, input.timers),
     [input.timers],
   );
-  const { threadId, shownTab, agentTab } = input;
+  const { threadId, shownTab, agentTab, held = false } = input;
   const shownSessionId = shownTab?.sessionId;
   const shownTabId = shownTab?.tabId;
   const agentSessionId = agentTab?.sessionId;
@@ -44,8 +41,9 @@ export function useBrowserAgentFollow(input: UseBrowserAgentFollowInput): Browse
         agentSessionId !== undefined && agentTabId !== undefined
           ? { sessionId: agentSessionId, tabId: agentTabId }
           : null,
+      held,
     });
-  }, [controller, threadId, shownSessionId, shownTabId, agentSessionId, agentTabId]);
+  }, [controller, threadId, shownSessionId, shownTabId, agentSessionId, agentTabId, held]);
   useEffect(() => () => controller.dispose(), [controller]);
-  return { following, agentTab, pause: controller.pause, resume: controller.resume };
+  return { following, steer: controller.steer };
 }

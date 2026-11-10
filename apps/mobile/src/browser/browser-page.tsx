@@ -81,7 +81,6 @@ import { BrowserStream, submitBrowserCommand, useBrowserFeedState } from "./brow
 import { ChromeSignInAction } from "./chrome-sign-in-action.js";
 import { LoginChips } from "./login-chips.js";
 import { createPageAutofill } from "./page-autofill.js";
-import { FollowBand } from "./pair-chrome.js";
 import { pageSite, viewedPage } from "./surface-route.js";
 import { ToolbarAsk, ToolbarLeave, useNativeBarAway } from "./place-bar.js";
 import { Toolbar, ToolbarButton, ToolbarCapsule, ToolbarMenu } from "./toolbar.js";
@@ -100,14 +99,13 @@ export interface PagePairChrome {
   readonly menu: readonly NativeMenuSection[];
 }
 
-/** Keeping up with the Thread's agent as it moves between tabs. */
-export interface PageFollow {
+/**
+ * The Thread's agent, while the page keeps up with it from tab to tab. Where
+ * the agent is otherwise is the Thread's live card.
+ */
+export interface PageFollowing {
   /** The agent's mark; null for a Thread the reader cannot name. */
   readonly agent: PlaceAgent | null;
-  /** The agent's tab, while the person is not following it there. */
-  readonly away: { readonly title: string } | null;
-  readonly following: boolean;
-  readonly onResume: () => void;
 }
 /** Room left beside or under a page that is worth offering Fit for, as a share of its place. */
 const fitBand = 0.15;
@@ -155,7 +153,7 @@ export function BrowserPage(props: {
   readonly workspaceName: string;
   /** Which way the page came from another tab, by tab order; 0 when it opened here. */
   readonly arrival?: -1 | 0 | 1;
-  readonly follow?: PageFollow | null;
+  readonly following?: PageFollowing | null;
   readonly pair?: PagePairChrome | null;
   /** The person moved this page themselves: back, forward, an address, a new tab. */
   readonly onSteer?: () => void;
@@ -547,7 +545,6 @@ export function BrowserPage(props: {
   };
 
   const pair = props.pair ?? null;
-  const follow = props.follow ?? null;
   // The bar is over the page where it is wide, and always while a Thread is beside it.
   const top = regular || pair !== null;
   const reduceMotion = useReducedMotion();
@@ -654,7 +651,7 @@ export function BrowserPage(props: {
       arriving={arrival !== 0}
       canGoBack={ready && canGoBack}
       favicon={liveTab?.favicon ?? null}
-      following={follow?.following === true ? { agent: follow.agent } : null}
+      following={props.following ?? null}
       forward={
         regular
           ? {
@@ -698,10 +695,6 @@ export function BrowserPage(props: {
       {more}
     </Toolbar>
   );
-  const band =
-    follow?.away == null || addressOpen ? null : (
-      <FollowBand agent={follow.agent} onFollow={follow.onResume} title={follow.away.title} />
-    );
   const editor = (
     <AddressEditor
       draft={addressDraft ?? (tab?.url === "about:blank" ? "" : tab?.url) ?? ""}
@@ -766,7 +759,6 @@ export function BrowserPage(props: {
         onError={(error) => setProblem(operationDetail(error, "This tab could not be closed."))}
       />
       {top ? (addressOpen ? editor : bar) : null}
-      {top ? band : null}
       {dragSelect ? (
         <AppText role="caption" tone="muted">
           Drag/select · Drag once to select or move content
@@ -985,14 +977,7 @@ export function BrowserPage(props: {
           onChooseLogin={chooseLogin}
         />
       ) : null}
-      {keyboardOpen || top ? null : addressOpen ? (
-        editor
-      ) : (
-        <>
-          {band}
-          {bar}
-        </>
-      )}
+      {keyboardOpen || top ? null : addressOpen ? editor : bar}
     </View>
   );
 }

@@ -1,23 +1,36 @@
 import type { BrowserTabDestination } from "./browser-thread-tabs.js";
 
+/** A busy agent never moves the page more than once a second. */
+const switchInterval = 1000;
+
 export interface BrowserAgentFollowInput {
   readonly threadId: string | null;
   readonly shownTab: BrowserTabDestination | null;
   readonly agentTab: BrowserTabDestination | null;
+  /** Something is open over the page, such as its tab sheet: following waits to move it. */
+  readonly held?: boolean;
 }
 
-export interface BrowserAgentFollowState extends BrowserAgentFollowInput {
+export interface BrowserAgentFollowState {
+  readonly threadId: string | null;
+  /** The page's tab as last reported, or where following just sent it. */
+  readonly shownTab: BrowserTabDestination | null;
+  readonly agentTab: BrowserTabDestination | null;
+  readonly held: boolean;
+  /** The page's tab as last reported, which tells the person's moves from following's own. */
   readonly observedTab: BrowserTabDestination | null;
+  /** Where following last sent the page, until the page reports being there. */
   readonly lastFollow: BrowserTabDestination | null;
   readonly following: boolean;
-  readonly waitingForMatch: boolean;
+  /** The person took the page over; only their own return to the agent's tab follows again. */
+  readonly steering: boolean;
   readonly deadline: number | null;
   readonly lastSwitch: number | null;
 }
 
 export type BrowserAgentFollowEvent =
   | { readonly type: "update"; readonly input: BrowserAgentFollowInput }
-  | { readonly type: "pause" | "resume" | "settle" };
+  | { readonly type: "steer" | "settle" };
 
 export interface BrowserAgentFollowTransition {
   readonly state: BrowserAgentFollowState;
@@ -29,10 +42,11 @@ export function initialBrowserAgentFollowState(): BrowserAgentFollowState {
     threadId: null,
     shownTab: null,
     agentTab: null,
+    held: false,
     observedTab: null,
     lastFollow: null,
     following: false,
-    waitingForMatch: true,
+    steering: false,
     deadline: null,
     lastSwitch: null,
   };
@@ -42,45 +56,67 @@ function sameTab(a: BrowserTabDestination | null, b: BrowserTabDestination | nul
   return a !== null && b !== null && a.sessionId === b.sessionId && a.tabId === b.tabId;
 }
 
+/**
+ * Following starts when the page and the agent's tab meet: the page opens on
+ * it, the agent arrives in the page, or the person goes to it. It stops when
+ * the person moves the page themselves; from then until the agent leaves the
+ * browser, only their own return to the agent's tab starts it again.
+ */
+function updated(
+  previous: BrowserAgentFollowState,
+  input: BrowserAgentFollowInput,
+): BrowserAgentFollowState {
+  const { threadId, shownTab, agentTab, held = false } = input;
+  if (threadId === null) return initialBrowserAgentFollowState();
+  const base = previous.threadId === threadId ? previous : initialBrowserAgentFollowState();
+  const meets = sameTab(shownTab, agentTab);
+  // Following's own move, now in the page; a later visit there is the person's.
+  const arrived = sameTab(shownTab, base.lastFollow);
+  const moved =
+    base.threadId !== null &&
+    !arrived &&
+    !(shownTab === null ? base.observedTab === null : sameTab(shownTab, base.observedTab));
+  let { following, steering } = base;
+  if (moved) {
+    following = meets;
+    steering = !meets;
+  } else if (meets && !steering && !sameTab(base.shownTab, base.agentTab)) following = true;
+  if (agentTab === null) {
+    following = false;
+    steering = false;
+  }
+  return {
+    ...base,
+    threadId,
+    shownTab,
+    agentTab,
+    held,
+    observedTab: shownTab,
+    lastFollow: arrived ? null : base.lastFollow,
+    following,
+    steering,
+  };
+}
+
 export function transitionBrowserAgentFollow(
   previous: BrowserAgentFollowState,
   event: BrowserAgentFollowEvent,
   now: number,
 ): BrowserAgentFollowTransition {
-  let state = previous;
+  let state =
+    event.type === "update"
+      ? updated(previous, event.input)
+      : event.type === "steer"
+        ? { ...previous, following: false, steering: previous.agentTab !== null }
+        : previous;
   let follow: BrowserTabDestination | null = null;
-  if (event.type === "update") {
-    const changedThread = previous.threadId !== event.input.threadId;
-    state = { ...(changedThread ? initialBrowserAgentFollowState() : previous), ...event.input };
-    const navigated =
-      !changedThread &&
-      !sameTab(event.input.shownTab, previous.observedTab) &&
-      !(event.input.shownTab === null && previous.observedTab === null) &&
-      !sameTab(event.input.shownTab, previous.lastFollow);
-    state = { ...state, observedTab: event.input.shownTab };
-    if (navigated && (previous.following || sameTab(state.shownTab, state.agentTab)))
-      state = { ...state, following: false, waitingForMatch: true, deadline: null };
-    if (state.threadId === null) state = initialBrowserAgentFollowState();
-    else if (state.agentTab === null && state.following)
-      state = { ...state, following: false, waitingForMatch: true, deadline: null };
-    else if (state.waitingForMatch && sameTab(state.shownTab, state.agentTab))
-      state = { ...state, following: true, waitingForMatch: false };
-  } else if (event.type === "pause") {
-    state = { ...state, following: false, waitingForMatch: false, deadline: null };
-  } else if (event.type === "resume") {
-    follow = state.threadId === null ? null : state.agentTab;
-    state = {
-      ...state,
-      following: follow !== null,
-      waitingForMatch: follow === null,
-      lastSwitch: follow === null ? state.lastSwitch : now,
-      shownTab: follow ?? state.shownTab,
-      lastFollow: follow ?? state.lastFollow,
-      deadline: null,
-    };
-  }
-  if (state.following && state.agentTab !== null && !sameTab(state.shownTab, state.agentTab)) {
-    const deadline = state.lastSwitch === null ? now : state.lastSwitch + 1000;
+  if (
+    state.following &&
+    !state.held &&
+    state.agentTab !== null &&
+    !sameTab(state.shownTab, state.agentTab)
+  ) {
+    const deadline = state.lastSwitch === null ? now : state.lastSwitch + switchInterval;
     if (now >= deadline) {
       follow = state.agentTab;
       state = { ...state, shownTab: follow, lastFollow: follow, lastSwitch: now, deadline: null };
@@ -123,15 +159,15 @@ export class BrowserAgentFollow {
   update(input: BrowserAgentFollowInput): void {
     this.#dispatch({ type: "update", input });
   }
-  readonly pause = (): void => {
-    this.#dispatch({ type: "pause" });
+  /** The person moved the page themselves, within its tab: following stops. */
+  readonly steer = (): void => {
+    this.#dispatch({ type: "steer" });
   };
-  readonly resume = (): BrowserTabDestination | null => this.#dispatch({ type: "resume" });
   dispose(): void {
     this.#cancel?.();
     this.#cancel = undefined;
   }
-  #dispatch(event: BrowserAgentFollowEvent): BrowserTabDestination | null {
+  #dispatch(event: BrowserAgentFollowEvent): void {
     this.dispose();
     const { state, follow } = transitionBrowserAgentFollow(this.#state, event, this.timers.now());
     this.#state = state;
@@ -142,6 +178,5 @@ export class BrowserAgentFollow {
       );
     this.onChange(state.following);
     if (follow) this.onFollow(follow);
-    return follow;
   }
 }
