@@ -274,10 +274,13 @@ const sqlExceptions: Record<
 > = {
   "packages/database/src/project-authority-guards.ts": {
     reason:
-      "Cold Project-principal creation uses the sole stored-authority helper; Personal principal inserts return before reading the model.",
+      "Project guards use the sole stored selector. Legacy execution predicates accept its already-read kind; the original two-argument predicates remain unchanged.",
     decisions: {
       "baseline/public.opensteer_project_principal_scope": {
         "d.kind = 'server'": 1,
+      },
+      "baseline/public.opensteer_user_can_execute_environment": {
+        "stored_kind = 'server' or (stored_kind = 'personal' and exists (": 1,
       },
     },
   },
@@ -363,6 +366,16 @@ describe("deployment policy boundary", () => {
         ? { "authority.kind = 'server' then return": 1 }
         : { "d.kind = 'server'": 1 },
     );
+  });
+
+  it("tracks a kind selected beside the model into scalar guard variables", () => {
+    expect(
+      sqlKindDecisionInventory(`create function public.unlisted_scope() returns void as $$ begin
+      select model, kind into version, stored_kind from public.opensteer_stored_execution_authority();
+      if stored_kind = 'server' then return; end if; end $$;`),
+    ).toEqual({
+      "baseline/public.unlisted_scope": { "stored_kind = 'server' then return": 1 },
+    });
   });
 
   it.each([

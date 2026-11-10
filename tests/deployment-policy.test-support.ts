@@ -43,9 +43,22 @@ function sqlKindMatches(source: string): { expression: string; index: number }[]
       ),
     ].map((match) => match[1]),
   ]);
-  for (const alias of aliases) {
-    if (!alias) continue;
-    const selector = `\\b${alias}\\.kind\\b`;
+  const columns = new Set(
+    [
+      ...source.matchAll(
+        /\bselect\s+model\s*,\s*kind\s+into\s+\w+\s*,\s*(\w+)\s+from\s+public\.opensteer_stored_execution_authority\s*\(/giu,
+      ),
+    ].map((match) => match[1]),
+  );
+  const selectors = [
+    ...[...aliases]
+      .filter((alias): alias is string => Boolean(alias))
+      .map((alias) => `\\b${alias}\\.kind\\b`),
+    ...[...columns]
+      .filter((column): column is string => Boolean(column))
+      .map((column) => `\\b${column}\\b`),
+  ];
+  for (const selector of selectors) {
     const pattern = new RegExp(
       `${selector}\\s*(?:<>|!=|=|\\b(?:not\\s+)?in\\b)[^\\n;]*|'(?:personal|server)'\\s*(?:<>|!=|=)\\s*${selector}`,
       "giu",
