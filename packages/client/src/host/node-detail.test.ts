@@ -269,3 +269,97 @@ describe("node detail watch", () => {
     expect(sendWatch).toHaveBeenCalledTimes(2);
   });
 });
+
+it("presents all detail states with an immediate card, nested cards and a single result", async () => {
+  const { MockHostClient } = await import("../mock/mock-host-client.js");
+  const { subagentDetail } = await import("./node-detail.js");
+  const client = new MockHostClient({ places: "absent" });
+  try {
+    const reader = client.getSnapshot();
+    const thread = reader.threads.find((thread) => thread.title === "Subagents everywhere")!;
+    const nodes = reader.transcripts[thread.id]!.filter(
+      (entry): entry is NodeEntry => entry.kind === "node",
+    );
+    const summary = nodes.find((node) => node.title === "Trace the client")!;
+    const child = nodes.find((node) => node.parentNodeId === summary.nodeId)!;
+    const raw = {
+      nodeId: summary.nodeId,
+      threadId: thread.id,
+      node: null,
+      status: "loading" as const,
+      entries: [],
+      hasMore: false,
+      loadingOlder: false,
+      error: null,
+    };
+    for (const status of ["loading", "error", "unavailable", "missing"] as const) {
+      expect(subagentDetail({ ...raw, status }, summary, reader)).toMatchObject({
+        state: status,
+        card: { title: summary.title },
+        prompt: summary.prompt,
+        parent: { threadId: thread.id, title: thread.title },
+      });
+    }
+    const completed = { ...summary, status: "completed" as const, result: "The result" };
+    expect(subagentDetail({ ...raw, status: "ready" }, completed, reader)).toMatchObject({
+      state: "summary-only",
+      result: "The result",
+    });
+    const detail = subagentDetail(
+      {
+        ...raw,
+        status: "ready",
+        node: completed,
+        entries: [
+          { kind: "node-message", id: "message", createdAt: now, text: "The result" },
+          child,
+        ],
+        hasMore: true,
+        loadingOlder: true,
+      },
+      summary,
+      reader,
+    );
+    expect(detail).toMatchObject({
+      state: "ready",
+      card: { tone: "finished" },
+      result: null,
+      hasEarlier: true,
+      loadingEarlier: true,
+      entries: [
+        { kind: "message", text: "The result" },
+        { kind: "agent", card: { title: child.title } },
+      ],
+    });
+    expect(
+      subagentDetail({ ...raw, status: "ready", node: child }, child, reader).parent,
+    ).toMatchObject({ title: summary.title, nodeId: summary.nodeId });
+  } finally {
+    client.dispose();
+  }
+});
+it("retries a failed watch and distinguishes missing authority from a load error", async () => {
+  let failure: string | null = "forbidden";
+  const store = new NodeDetailStore({
+    available: () => true,
+    sendWatch: () => true,
+    nodes: () => [],
+    read: async () => {
+      if (failure) throw Object.assign(new Error("Cannot load"), { code: failure });
+      return page([event("node.message", 1, { nodeId, text: "Recovered" })]);
+    },
+  });
+  const detail = store.open(threadId, nodeId, workspaceId);
+  store.watched(workspaceId, nodeId, seq(1));
+  await vi.waitFor(() => expect(detail.getSnapshot().status).toBe("missing"));
+  failure = "internal";
+  detail.retry();
+  store.watched(workspaceId, nodeId, seq(1));
+  await vi.waitFor(() => expect(detail.getSnapshot().status).toBe("error"));
+  failure = null;
+  detail.retry();
+  store.watched(workspaceId, nodeId, seq(1));
+  await vi.waitFor(() => expect(detail.getSnapshot().status).toBe("ready"));
+  expect(detail.getSnapshot().entries).toMatchObject([{ text: "Recovered" }]);
+  detail.release();
+});

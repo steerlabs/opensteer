@@ -1,4 +1,4 @@
-import { foldedSubagentSummary } from "./subagent-model.js";
+import { foldedSubagentSummary, turnSubagentCount } from "./subagent-model.js";
 import { pageSiteLabel } from "./surfaces.js";
 import {
   isIntegrationGatewayTool,
@@ -110,6 +110,7 @@ export type ActivityFeedEntry = Exclude<
  * stretch is its own turn, and the Run's outcome sits with the last one.
  */
 export interface Turn {
+  readonly nodes?: readonly NodeEntry[];
   readonly personWaiting?: boolean;
   readonly startedBy?: MessageAuthor;
   readonly source?: {
@@ -378,7 +379,14 @@ function turnFrom(
     work.findLast(
       (entry): entry is MessageEntry => entry.kind === "message" && replies.has(entry.id),
     ) ?? null;
-  return { assignments, reply, run, runId, work };
+  return {
+    assignments,
+    reply,
+    run,
+    runId,
+    work,
+    nodes: all.filter((entry): entry is NodeEntry => entry.kind === "node"),
+  };
 }
 
 function turnHasContent(turn: Turn): boolean {
@@ -970,8 +978,8 @@ export function workSummary(turn: Turn): WorkSummary | null {
   return {
     label: foldedSubagentSummary(
       silent && run.endedAt ? silentRunLabel(run) : duration ? `${verb} for ${duration}` : verb,
-      turn.work.filter((entry) => entry.kind === "node" && entry.nodeKind !== "task").length +
-        turn.assignments.length,
+      turnSubagentCount(turn),
+      turn.assignments.length,
     ),
     state,
   };
