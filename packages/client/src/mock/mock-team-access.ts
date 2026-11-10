@@ -483,7 +483,11 @@ export class MockTeamAccess {
 
   #subjectView(subject: Subject): SubjectView {
     if (subject.kind === "person")
-      return { ...subject, name: this.#people.get(subject.userId)?.name ?? "Former member" };
+      return {
+        ...subject,
+        name: this.#people.get(subject.userId)?.name ?? "Former member",
+        memberKind: this.#people.get(subject.userId)?.kind ?? "guest",
+      };
     const group = this.#groups.get(subject.groupId);
     return {
       ...subject,
@@ -497,7 +501,11 @@ export class MockTeamAccess {
     return {
       id: e.id,
       subject: this.#subjectView(e.subject),
-      target: { kind: "project", workspaceId: e.workspaceId },
+      target: {
+        kind: "project",
+        workspaceId: e.workspaceId,
+        name: this.#project(e.workspaceId).name,
+      },
       level: e.level,
       grantedBy: e.grantedBy,
       grantedAt: e.grantedAt,
@@ -638,7 +646,9 @@ export class MockTeamAccess {
       accessRevision: this.#revision,
       audience: {
         people: levels.size,
-        preview: [...levels.keys()].slice(0, 5).map((id) => ({ id, name: this.#person(id).name })),
+        preview: [...levels.keys()]
+          .slice(0, 5)
+          .map((id) => ({ id, name: this.#person(id).name, kind: this.#person(id).kind })),
         groups,
         myLevel,
         managerCount: managers.length,
@@ -649,8 +659,16 @@ export class MockTeamAccess {
           .map((e) => this.#entryView(e)),
         nextCursor: null,
       },
-      managerNames: managers.map((id) => ({ id, name: this.#person(id).name })),
+      managerNames: managers.map((id) => ({
+        id,
+        name: this.#person(id).name,
+        kind: this.#person(id).kind,
+      })),
       iAmAdminNotMember: this.#admin && myLevel === null,
+      runtime:
+        project.runtime === "ready"
+          ? { state: "ready" }
+          : { state: "unavailable", reason: project.runtime },
       can: {
         use: myLevel ? allowed : denied("membership-lost"),
         manage: myLevel === "manage" ? allowed : denied("project-manage-required"),
@@ -833,6 +851,7 @@ export class MockTeamAccess {
           if (touched && a)
             surviving.push({
               userId: id,
+              name: this.#person(id).name,
               project: { kind: "project", workspaceId: project.id },
               level: a,
               entryIds: plan.entries
@@ -1172,6 +1191,37 @@ export class MockTeamAccess {
     const matches = (text: string, query: string | undefined) =>
       !query || text.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
     return {
+      "team.invitations.list": (input) =>
+        run("team.invitations.list", () => {
+          this.#requireAdmin();
+          return {
+            ...page(
+              [...this.#invitations.values()].map((invitation) => ({
+                id: invitation.id,
+                emailMasked: `${invitation.email.slice(0, 1)}***${invitation.email.slice(invitation.email.indexOf("@"))}`,
+                memberKind: invitation.kind,
+                createdBy: { id: maya, name: this.#person(maya).name },
+                createdAt: new Date(Date.UTC(2026, 10, 9, 10)).toISOString(),
+                expiresAt: invitation.expiresAt,
+                state: invitation.revoked
+                  ? "revoked"
+                  : invitation.accepted
+                    ? "used"
+                    : new Date(invitation.expiresAt) <= this.#now()
+                      ? "expired"
+                      : "open",
+                can: {
+                  revoke:
+                    invitation.revoked || invitation.accepted
+                      ? denied("invite-unavailable")
+                      : allowed,
+                },
+              })),
+              input,
+            ),
+            accessRevision: this.#revision,
+          };
+        })(),
       "team.summary.get": (input) =>
         run("team.summary.get", () => {
           const summary = this.#summary();
@@ -1209,7 +1259,7 @@ export class MockTeamAccess {
             ),
             effectiveProjects: [...this.#projects.values()].flatMap((project) => {
               const level = this.#levels(project.id).get(p.id);
-              return level ? [{ id: project.id, level }] : [];
+              return level ? [{ id: project.id, name: project.name, level }] : [];
             }),
             connections: page(
               p.connections.map((c) => ({

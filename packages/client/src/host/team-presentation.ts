@@ -117,13 +117,9 @@ export interface AccessPreviewLine {
   readonly text: string;
 }
 
-/**
- * What a previewed access change does, in words. Names for surviving paths
- * come from the caller, because the preview carries only their ids.
- */
 export function accessPreviewLines(
   preview: AccessPreview,
-  names: ReadonlyMap<string, string> = new Map(),
+  _names: ReadonlyMap<string, string> = new Map(),
   team?: string,
 ): AccessPreviewLine[] {
   if (!preview.allowed)
@@ -144,7 +140,7 @@ export function accessPreviewLines(
     };
   });
   for (const keep of preview.surviving) {
-    const name = names.get(keep.userId) ?? "Someone";
+    const name = keep.name;
     lines.push({
       tone: "keep",
       text: `${name} keeps ${levelLabel(keep.level)} another way`,

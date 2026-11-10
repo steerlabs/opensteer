@@ -1191,6 +1191,7 @@ export async function previewAccess(
             if (changes.length + surviving.length < 100)
               surviving.push({
                 userId: pair.userId,
+                name: plan.next.users.find((user) => user.id === pair.userId)!.displayName,
                 project: { kind: "project", workspaceId: pair.workspaceId },
                 level: current,
                 entryIds: after

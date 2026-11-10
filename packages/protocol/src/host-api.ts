@@ -1642,6 +1642,11 @@ export const hostApi = defineRpc({
     BrowserSourceInspectionSchema,
   ),
   "auth.config": declaration("GET", emptyInputSchema, IdentityConfigViewSchema),
+  "team.invitations.list": declaration(
+    "GET",
+    teamReadSchemas["team.invitations.list"].input,
+    teamReadSchemas["team.invitations.list"].output,
+  ),
   "team.summary.get": declaration(
     "GET",
     teamReadSchemas["team.summary.get"].input,

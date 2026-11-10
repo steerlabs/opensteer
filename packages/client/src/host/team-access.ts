@@ -89,6 +89,9 @@ export class TeamAccess {
   ) {
     return unwrapRpcResult(await this.#port.rpc["team.people.list"](input, options));
   }
+  async invitations(input: Page = {}, options: ReadOptions = {}) {
+    return unwrapRpcResult(await this.#port.rpc["team.invitations.list"](input, options));
+  }
   async member(
     input: { userId: string; entryPage?: Page; connectionPage?: Page; groupPage?: Page },
     options: ReadOptions = {},

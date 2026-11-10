@@ -197,7 +197,9 @@ describeStore("team administration Host boundary", (it) => {
       const member = MemberDetailSchema.parse(
         await service.read("team.member.get", { userId: manager.session.user.id }, context(admin)),
       );
-      expect(member.effectiveProjects).toEqual([{ id: prepared.workspace.id, level: "manage" }]);
+      expect(member.effectiveProjects).toEqual([
+        { id: prepared.workspace.id, name: prepared.workspace.name, level: "manage" },
+      ]);
       const explanation = AccessExplanationSchema.parse(
         await service.read(
           "team.access.explain",
@@ -292,6 +294,15 @@ describeStore("team administration Host boundary", (it) => {
       };
       const created = await service.command(creation, context(admin));
       expect(await service.command(creation, context(admin))).toEqual(created);
+      const listed = await service.read("team.invitations.list", { limit: 1 }, context(admin));
+      expect(listed).toMatchObject({
+        items: [{ id: invitationId, state: "open", can: { revoke: { allowed: true } } }],
+      });
+      expect(JSON.stringify(listed)).not.toMatch(/tokenHash|token_hash|selector/);
+      expect(JSON.stringify(listed)).not.toContain(pending.session.user.email);
+      await expect(
+        service.read("team.invitations.list", {}, context(prepared.manager)),
+      ).rejects.toMatchObject({ reason: "team-admin-required" });
       const preview = await service.read(
         "team.invitation.preview",
         { selector },
@@ -375,6 +386,9 @@ describeStore("team administration Host boundary", (it) => {
       ]);
       expect(concurrent).toEqual(first);
       expect(await service.read("team.invitation.accept", {}, acceptedContext)).toEqual(first);
+      expect(await service.read("team.invitations.list", {}, context(admin))).toMatchObject({
+        items: [{ id: invitationId, state: "used", can: { revoke: { allowed: false } } }],
+      });
       expect(
         await database
           .selectFrom("workspaceMemberships")

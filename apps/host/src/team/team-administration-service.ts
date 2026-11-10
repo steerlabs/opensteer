@@ -244,6 +244,8 @@ export class TeamAdministrationService {
     const { actor, user, activeAdmins } = await this.#human(context);
     const admin = user.instanceRole === "administrator";
     switch (procedure) {
+      case "team.invitations.list":
+        return this.#reads.invitations(actor, teamReadSchemas[procedure].input.parse(input));
       case "team.summary.get": {
         const parsed = teamReadSchemas[procedure].input.parse(input);
         const summary = await this.#reads.summary(actor, this.#teamName, parsed.knownRevision);
@@ -317,6 +319,7 @@ export class TeamAdministrationService {
         const result = await this.#reads.project(
           actor,
           teamReadSchemas[procedure].input.parse(input),
+          this.#runnerIsConnected,
         );
         const use = result.audience.myLevel !== null;
         const manage = result.audience.myLevel === "manage";

@@ -127,6 +127,7 @@ export const SubjectViewSchema = z.discriminatedUnion("kind", [
     kind: z.literal("person"),
     userId: UserIdSchema,
     name,
+    memberKind: MemberKindSchema,
     memberCount: count.optional(),
   }),
   z.object({ kind: z.literal("group"), groupId: uuid, name, memberCount: count.optional() }),
@@ -170,7 +171,7 @@ export const GroupSummarySchema = GroupRefSchema.extend({
 export const EntryViewSchema = z.object({
   id: uuid,
   subject: SubjectViewSchema,
-  target: projectTargetView,
+  target: projectTargetView.extend({ name }),
   level: LevelSchema,
   grantedBy: PersonRefSchema,
   grantedAt: timestamp,
@@ -183,12 +184,14 @@ export function pageResultSchema<Item extends z.ZodType>(item: Item) {
 export const MemberDetailSchema = MemberSummarySchema.extend({
   directEntries: pageResultSchema(EntryViewSchema),
   groups: pageResultSchema(GroupRefSchema),
-  effectiveProjects: z.array(z.object({ id: WorkspaceIdSchema, level: LevelSchema })).max(128),
+  effectiveProjects: z
+    .array(z.object({ id: WorkspaceIdSchema, name, level: LevelSchema }))
+    .max(128),
   connections: pageResultSchema(ConnectionViewSchema),
 });
 export const AudienceSchema = z.object({
   people: count,
-  preview: z.array(PersonRefSchema).max(5),
+  preview: z.array(PersonRefSchema.extend({ kind: MemberKindSchema })).max(5),
   groups: z.array(z.object({ id: uuid, name, count })).max(512),
   myLevel: LevelSchema.nullable(),
   managerCount: count,
@@ -198,8 +201,9 @@ export const ProjectAccessViewSchema = z.object({
   accessRevision: RevisionSchema,
   audience: AudienceSchema,
   entries: pageResultSchema(EntryViewSchema).nullable(),
-  managerNames: z.array(PersonRefSchema).max(1024),
+  managerNames: z.array(PersonRefSchema.extend({ kind: MemberKindSchema })).max(1024),
   iAmAdminNotMember: z.boolean(),
+  runtime: z.lazy(() => RuntimeStateSchema),
   can: z.object({
     use: CanSchema,
     manage: CanSchema,
@@ -304,6 +308,7 @@ export const AccessPreviewSchema = z.object({
     .array(
       z.object({
         userId: UserIdSchema,
+        name,
         project: projectTargetView,
         level: LevelSchema,
         entryIds: z.array(uuid).max(256),
@@ -427,6 +432,21 @@ export const InvitePreviewViewSchema = z.discriminatedUnion("state", [
 ]);
 
 export const teamReadSchemas = {
+  "team.invitations.list": {
+    input: PageSchema,
+    output: pageResultSchema(
+      z.object({
+        id: uuid,
+        emailMasked: z.string().min(1).max(320),
+        memberKind: MemberKindSchema,
+        createdBy: PersonRefSchema,
+        createdAt: timestamp,
+        expiresAt: timestamp,
+        state: z.enum(["open", "used", "revoked", "expired"]),
+        can: z.object({ revoke: CanSchema }),
+      }),
+    ).extend({ accessRevision: RevisionSchema }),
+  },
   "team.summary.get": {
     input: z.strictObject({ knownRevision: cursor.optional() }),
     output: z.union([

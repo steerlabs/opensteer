@@ -15,6 +15,7 @@ const viewer = "usr_0192f4a1-0000-4000-8000-000000000001";
 
 /** Every team read, with an input each scenario's fixtures can answer. */
 const reads = {
+  "team.invitations.list": {},
   "team.summary.get": {},
   "team.people.list": { limit: 3 },
   "team.member.get": { userId: sam },

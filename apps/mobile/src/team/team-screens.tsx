@@ -260,7 +260,6 @@ function Person(props: {
 }): ReactNode {
   const navigation = useNavigation();
   const { team, summary, generation } = useTeam(props.hostClient);
-  const { snapshot } = useHostSnapshot(props.hostClient);
   const teamName = summary?.team.name ?? "the team";
   const read = useHostRead(
     team ? () => team.member({ userId: props.userId }) : null,
@@ -309,10 +308,6 @@ function Person(props: {
       })
       .catch((error: unknown) => showError(error, teamName));
   };
-  const projectName = (id: string) =>
-    summary?.projects.find((project) => project.id === id)?.name ??
-    snapshot.workspaces.find((workspace) => workspace.id === id)?.name ??
-    "A project you’re not on";
   const roles: {
     title: string;
     detail: string;
@@ -410,7 +405,7 @@ function Person(props: {
                       workspaceId: project.id,
                     })
                   }
-                  title={projectName(project.id)}
+                  title={project.name}
                 />
               ))
             : [

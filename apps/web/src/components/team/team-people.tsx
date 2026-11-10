@@ -493,10 +493,6 @@ export function TeamPersonPage() {
   >(null);
   if (!team) return null;
   const person = read.data;
-  const projectName = (id: string) =>
-    summary?.projects.find((project) => project.id === id)?.name ??
-    snapshot.workspaces.find((workspace) => workspace.id === id)?.name ??
-    null;
   return (
     <>
       <Link className="page__back" to="/settings/team/people">
@@ -575,9 +571,7 @@ export function TeamPersonPage() {
                       <Icon name="folder" />
                     </span>
                     <span className="card__row-body">
-                      <span className="card__row-title">
-                        {projectName(project.id) ?? "A project you’re not on"}
-                      </span>
+                      <span className="card__row-title">{project.name}</span>
                       <span className="card__row-detail">{levelLabel(project.level)}</span>
                     </span>
                     <Icon name="chevron-right" />

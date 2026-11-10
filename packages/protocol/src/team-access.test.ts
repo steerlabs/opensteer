@@ -52,8 +52,8 @@ const member = {
 };
 const entry = {
   id: entryId,
-  subject: { ...subject, name: person.name },
-  target,
+  subject: { ...subject, name: person.name, memberKind: "full" },
+  target: { ...target, name: "Support" },
   level: "use",
   grantedBy: person,
   grantedAt: timestamp,
@@ -113,7 +113,7 @@ const accessPreview = {
   blockers: [],
   counts: { peopleGaining: 1, peopleLosing: 0, levelChanges: 0 },
   changes: [{ user: person, project: target, before: null, after: "use" }],
-  surviving: [{ userId, project: target, level: "use", entryIds: [entryId] }],
+  surviving: [{ userId, name: person.name, project: target, level: "use", entryIds: [entryId] }],
   truncated: false,
 };
 const explanation = {
@@ -140,14 +140,15 @@ const projectAccess = {
   accessRevision: 1,
   audience: {
     people: 1,
-    preview: [person],
+    preview: [{ ...person, kind: "full" }],
     groups: [{ id: groupId, name: "Support", count: 1 }],
     myLevel: "use",
     managerCount: 1,
   },
   entries: { items: [entry], nextCursor: null },
-  managerNames: [person],
+  managerNames: [{ ...person, kind: "full" }],
   iAmAdminNotMember: false,
+  runtime: { state: "unavailable", reason: "not-configured" },
   can: {
     use: allowed,
     manage: denied,
@@ -215,6 +216,7 @@ const audit = {
   ],
 };
 const reads = {
+  "team.invitations.list": { input: {}, output: { ...page, accessRevision: 1 } },
   "team.summary.get": { input: { knownRevision: "private-revision" }, output: summary },
   "team.people.list": {
     input: { cursor: "next", limit: 30, query: "Maya", state: "active" },
@@ -226,7 +228,7 @@ const reads = {
       ...member,
       directEntries: page,
       groups: page,
-      effectiveProjects: [{ id: workspaceId, level: "use" }],
+      effectiveProjects: [{ id: workspaceId, name: "Support", level: "use" }],
       connections: {
         items: [
           {
@@ -263,7 +265,10 @@ const reads = {
       directCount: 1,
       effectivePeopleCount: 1,
       parentCount: 0,
-      directMembers: { items: [{ ...subject, name: person.name }], nextCursor: null },
+      directMembers: {
+        items: [{ ...subject, name: person.name, memberKind: "full" }],
+        nextCursor: null,
+      },
       parents: [],
       accessRevision: 1,
       can: { rename: allowed, editMembers: allowed, delete: allowed },

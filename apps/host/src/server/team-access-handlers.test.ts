@@ -17,6 +17,7 @@ const base = { idempotencyKey: "dormant-team", expectedRevision: 1 };
 const procedures = {
   "team.summary.get": {},
   "team.people.list": {},
+  "team.invitations.list": {},
   "team.member.get": { userId },
   "team.directory.search": { workspaceId, query: "Maya" },
   "team.groups.list": {},

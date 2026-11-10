@@ -1,5 +1,10 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { type AuthenticatedHuman, type UserId, type WorkspaceId } from "@opensteer/core";
+import {
+  type AuthenticatedHuman,
+  type RunnerId,
+  type UserId,
+  type WorkspaceId,
+} from "@opensteer/core";
 import {
   SafeChangeSummarySchema,
   type Page,
@@ -18,6 +23,7 @@ import { requireTeamHuman, teamRefusal } from "./team-administration-authority.j
 import { requireTeamAuthority } from "./team-administration-authority.js";
 import { safeGeneration } from "./store-primitives.js";
 import { conversationUnreadPredicate } from "./message-visibility.js";
+import { resolveProjectRuntime } from "./project-runtime-settings-store.js";
 
 const groupPeople = sql`with recursive group_people(group_id, user_id) as (
   select g.id, u.id from access_groups g join access_group_members e on e.group_id = g.id and e.member_kind = 'user'
@@ -181,6 +187,68 @@ export class TeamAccessReadStore {
     });
   }
 
+  invitations(actor: AuthenticatedHuman, input: Page) {
+    return this.#snapshot(actor, true, async ({ database, accessRevision }) => {
+      const scope = this.#scope(actor, ["invitations"]);
+      const position = this.#position(input.cursor, scope);
+      const rows = await database
+        .selectFrom("teamInvitations")
+        .innerJoin("users", "users.id", "teamInvitations.createdBy")
+        .select([
+          "teamInvitations.id",
+          "teamInvitations.intendedEmail",
+          "teamInvitations.memberKind",
+          "teamInvitations.createdBy",
+          "users.displayName",
+          "teamInvitations.createdAt",
+          "teamInvitations.expiresAt",
+          "teamInvitations.acceptedAt",
+          "teamInvitations.revokedAt",
+          sql<boolean>`team_invitations.expires_at > transaction_timestamp()`.as("valid"),
+        ])
+        .where(
+          sql<boolean>`((team_invitations.revoked_at is null and team_invitations.accepted_at is null and team_invitations.expires_at > transaction_timestamp())
+          or greatest(team_invitations.created_at, team_invitations.accepted_at, team_invitations.revoked_at) >= transaction_timestamp() - interval '30 days')`,
+        )
+        .where(
+          sql<boolean>`(team_invitations.created_at, team_invitations.id::text) > (coalesce(nullif(${position.sort}, '')::timestamptz, '-infinity'::timestamptz), ${position.id})`,
+        )
+        .orderBy("teamInvitations.createdAt")
+        .orderBy("teamInvitations.id")
+        .limit((input.limit ?? 30) + 1)
+        .execute();
+      return {
+        ...this.#page(
+          rows.map((row) => ({
+            id: row.id,
+            emailMasked: `${row.intendedEmail.slice(0, 1)}***${row.intendedEmail.slice(row.intendedEmail.indexOf("@"))}`,
+            memberKind: row.memberKind,
+            createdBy: { id: row.createdBy, name: row.displayName },
+            createdAt: row.createdAt.toISOString(),
+            expiresAt: row.expiresAt.toISOString(),
+            state: row.revokedAt
+              ? ("revoked" as const)
+              : row.acceptedAt
+                ? ("used" as const)
+                : row.valid
+                  ? ("open" as const)
+                  : ("expired" as const),
+            can: {
+              revoke:
+                !row.revokedAt && !row.acceptedAt && row.valid
+                  ? { allowed: true }
+                  : { allowed: false, reason: "invite-unavailable" as const },
+            },
+          })),
+          input.limit ?? 30,
+          scope,
+          (row) => ({ sort: row.createdAt, id: row.id }),
+        ),
+        accessRevision,
+      };
+    });
+  }
+
   member(
     actor: AuthenticatedHuman,
     input: {
@@ -199,7 +267,7 @@ export class TeamAccessReadStore {
       const effective = await database
         .selectFrom("workspaceMemberships")
         .innerJoin("workspaces", "workspaces.id", "workspaceMemberships.workspaceId")
-        .select(["workspaces.id", "workspaceMemberships.role"])
+        .select(["workspaces.id", "workspaces.name", "workspaceMemberships.role"])
         .where("workspaceMemberships.userId", "=", input.userId)
         .where("workspaceMemberships.state", "=", "active")
         .where("workspaces.kind", "=", "project")
@@ -236,6 +304,7 @@ export class TeamAccessReadStore {
         accessRevision,
         effectiveProjects: effective.map((row) => ({
           id: row.id,
+          name: row.name,
           level: row.role === "owner" ? ("manage" as const) : ("use" as const),
         })),
         directEntries: await this.#entries(
@@ -327,13 +396,14 @@ export class TeamAccessReadStore {
           userId?: UserId;
           groupId?: string;
           name: string;
+          memberKind: "full" | "guest";
           id: string;
         }>`
         select * from (
-          select 'person' as kind, u.id as user_id, null::text as group_id, u.id, u.display_name as name from users u where
+          select 'person' as kind, u.id as user_id, null::text as group_id, u.id, u.display_name as name, u.member_kind from users u where
             (${group.builtin === "everyone"} and u.admitted_at is not null and u.member_state = 'active' and u.member_kind = 'full')
             or exists(select 1 from access_group_members e where e.group_id = ${group.id}::uuid and e.member_kind = 'user' and e.member_id = u.id)
-          union all select 'group', null, g.id::text, g.id::text, g.name from access_group_members e join access_groups g on e.member_kind = 'group' and e.member_id = g.id::text
+          union all select 'group', null, g.id::text, g.id::text, g.name, null::text from access_group_members e join access_groups g on e.member_kind = 'group' and e.member_id = g.id::text
             where e.group_id = ${group.id}::uuid and g.deleted_at is null
         ) member where (lower(name), id) > (${memberPosition.sort}, ${memberPosition.id}) order by lower(name), id limit ${(input.limit ?? 30) + 1}`.execute(
           context.database,
@@ -372,9 +442,9 @@ export class TeamAccessReadStore {
     const position = this.#position(page.cursor, scope);
     const rows = (
       await sql<EntryRow & { grantedAt: Date; revokedAt: Date | null }>`select e.id,
-      case when e.subject_kind = 'user' then jsonb_build_object('kind', 'person', 'userId', subject.id, 'name', subject.display_name)
+      case when e.subject_kind = 'user' then jsonb_build_object('kind', 'person', 'userId', subject.id, 'name', subject.display_name, 'memberKind', subject.member_kind)
         else jsonb_build_object('kind', 'group', 'groupId', g.id, 'name', g.name) end as subject,
-      jsonb_build_object('kind', 'project', 'workspaceId', e.target_id) as target, e.level,
+      jsonb_build_object('kind', 'project', 'workspaceId', e.target_id, 'name', w.name) as target, e.level,
       jsonb_build_object('id', granter.id, 'name', granter.display_name) as granted_by, e.granted_at, e.revoked_at
       from access_entries e left join users subject on e.subject_kind = 'user' and subject.id = e.subject_id
       left join access_groups g on e.subject_kind = 'group' and g.id::text = e.subject_id join users granter on granter.id = e.granted_by
@@ -395,13 +465,22 @@ export class TeamAccessReadStore {
     );
   }
 
-  project(actor: AuthenticatedHuman, input: Page & { workspaceId: WorkspaceId }) {
+  project(
+    actor: AuthenticatedHuman,
+    input: Page & { workspaceId: WorkspaceId },
+    runnerIsConnected: (runnerId: RunnerId) => boolean,
+  ) {
     return this.#snapshot(actor, false, async (context) => {
       const project = await this.#project(context, input.workspaceId, "use", true);
       const members = await context.database
         .selectFrom("workspaceMemberships")
         .innerJoin("users", "users.id", "workspaceMemberships.userId")
-        .select(["users.id", "users.displayName as name", "workspaceMemberships.role"])
+        .select([
+          "users.id",
+          "users.displayName as name",
+          "users.memberKind as kind",
+          "workspaceMemberships.role",
+        ])
         .where("workspaceMemberships.workspaceId", "=", project.id)
         .where("workspaceMemberships.state", "=", "active")
         .where("users.memberState", "=", "active")
@@ -419,19 +498,21 @@ export class TeamAccessReadStore {
           context.database,
         )
       ).rows;
+      const runtime = await resolveProjectRuntime(context.database, project.id, runnerIsConnected);
       return {
         project,
+        runtime: runtime.state === "ready" ? { state: "ready" as const } : runtime,
         accessRevision: context.accessRevision,
         audience: {
           people: members.length,
-          preview: members.slice(0, 5).map(({ id, name }) => ({ id, name })),
+          preview: members.slice(0, 5).map(({ id, name, kind }) => ({ id, name, kind })),
           groups,
           myLevel: mine ? (mine.role === "owner" ? ("manage" as const) : ("use" as const)) : null,
           managerCount: members.filter((member) => member.role === "owner").length,
         },
         managerNames: members
           .filter((member) => member.role === "owner")
-          .map(({ id, name }) => ({ id, name })),
+          .map(({ id, name, kind }) => ({ id, name, kind })),
         iAmAdminNotMember: context.user.instanceRole === "administrator" && !mine,
         entries: canEdit
           ? await this.#entries(
