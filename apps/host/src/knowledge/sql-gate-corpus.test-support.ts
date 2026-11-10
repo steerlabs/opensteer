@@ -61,7 +61,12 @@ export const reviewMatrix: readonly GateCase[] = [
   ["SELECT ARRAY(SELECT thing FROM facts)", "admit", "#34 array"],
   ["SELECT * FROM facts WHERE thing IN ('a','b')", "admit", "#35 in-any"],
   ["SELECT * FROM facts WHERE thing = ANY(ARRAY['a','b'])", "admit", "#36 in-any"],
-  ["SELECT * FROM facts WHERE thing = ANY($1)", "admit", "#37 in-any: param array", [["a"]]],
+  [
+    "SELECT * FROM facts WHERE thing = ANY($1)",
+    "parameter",
+    "#37 in-any: param array; parameters arrive as JSON, never as a PostgreSQL array",
+    [["a"]],
+  ],
   ["SELECT * FROM facts WHERE thing IN (SELECT thing FROM fact_history)", "admit", "#38 in-any"],
   ["SELECT * FROM facts WHERE id > ALL(SELECT id FROM fact_history)", "admit", "#39 in-any"],
   [
@@ -673,6 +678,33 @@ export const grammarDecisions: readonly GateCase[] = [
 ];
 
 export const otherDecisions: readonly GateCase[] = [
+  [
+    "SELECT * FROM facts WHERE thing IN (SELECT jsonb_array_elements_text($1::jsonb))",
+    "admit",
+    "a list parameter read as JSON",
+    [["trip/kyoto", "n"]],
+  ],
+  [
+    "SELECT * FROM facts WHERE thing = ANY(ARRAY(SELECT jsonb_array_elements_text($1::jsonb)))",
+    "admit",
+    "a list parameter read as JSON into ANY",
+    [["trip/kyoto"]],
+  ],
+  ["SELECT * FROM facts WHERE thing <> ALL($1)", "parameter", "ALL over a parameter", [["a"]]],
+  [
+    "SELECT * FROM facts WHERE thing = ANY($1::text[])",
+    "parameter",
+    "a parameter cast to an array",
+    [["a"]],
+  ],
+  ["SELECT unnest($1::text[])", "parameter", "a parameter cast to an array", ["{a}"]],
+  [
+    "SELECT * FROM facts WHERE thing = ANY(($1))",
+    "parameter",
+    "a parenthesised parameter in ANY",
+    [["a"]],
+  ],
+  ["SELECT * FROM facts WHERE id = ANY(ARRAY[$1::int8])", "admit", "an array built from one", [1]],
   ["TABLE facts", "admit", "TABLE is SELECT *"],
   ["TABLE pg_class", "relation", "TABLE of another relation"],
   ["SELECT * FROM ONLY facts", "admit", "ONLY"],

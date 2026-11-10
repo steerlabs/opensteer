@@ -12,6 +12,7 @@ Knowledge is a log of facts: one JSONB `value` per `topic`, `thing` and `propert
 - `text` is `value` as plain text (`"active"` becomes `active`). Compare and cast it: `text = 'active'`, `text::numeric > 2000`. Never `value::text`, which keeps JSON quotes and silently matches nothing.
 - Always filter by `topic`, and join two properties of one thing on `topic` and `thing`. The same thing key in another topic is a different thing.
 - Select `writer_kind`, `writer_id` and `written_at` when you say who recorded something. An aggregate has no single writer.
+- Parameters are JSON. Send a list as a JSON array and read it as JSON: `thing IN (SELECT jsonb_array_elements_text($2::jsonb))`. `= ANY($2)` and `$2::text[]` are refused.
 
 ```sql
 SELECT text, writer_id, written_at FROM facts

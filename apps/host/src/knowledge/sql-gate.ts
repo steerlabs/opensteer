@@ -674,6 +674,9 @@ function sortList(value: unknown, scope: Scope): void {
   }
 }
 
+const listParameterMessage =
+  "Parameters arrive as JSON, never as PostgreSQL arrays. Send a list as a JSON array and read it with jsonb_array_elements_text($1::jsonb), as in thing IN (SELECT jsonb_array_elements_text($1::jsonb)).";
+
 function paramRef(value: unknown, scope: Scope): void {
   fields<ParamRef>(
     value,
@@ -710,6 +713,8 @@ function aExpr(value: unknown, scope: Scope): void {
     case "AEXPR_OP_ANY":
     case "AEXPR_OP_ALL":
       checkOperator(parts);
+      if (kind !== "AEXPR_OP" && unwrap(expr.rexpr)[0] === "ParamRef")
+        refuse("parameter", listParameterMessage);
       break;
     case "AEXPR_DISTINCT":
     case "AEXPR_NOT_DISTINCT":
@@ -923,8 +928,12 @@ const expressions: Readonly<Record<string, (value: unknown, scope: Scope) => voi
       },
       scope,
     ),
-  TypeCast: (value, scope) =>
-    fields<TypeCast>(value, { arg: "expr", typeName: checkType, location: "location" }, scope),
+  TypeCast: (value, scope) => {
+    const cast = body(value);
+    if (unwrap(cast.arg)[0] === "ParamRef" && body(cast.typeName).arrayBounds !== undefined)
+      refuse("parameter", listParameterMessage);
+    fields<TypeCast>(value, { arg: "expr", typeName: checkType, location: "location" }, scope);
+  },
   FuncCall: (value, scope) => functionCall(value, scope, "expression"),
   SubLink: subLink,
   CaseExpr: (value, scope) =>
