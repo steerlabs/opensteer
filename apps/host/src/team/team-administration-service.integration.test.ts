@@ -9,7 +9,7 @@ import {
   AccessExplanationSchema,
 } from "@opensteer/protocol";
 import { sql } from "kysely";
-import { expect } from "vitest";
+import { expect, vi } from "vitest";
 import { createHostServer } from "../server.js";
 import { HostAuthenticator } from "../identity/auth.js";
 import { signHostDiscovery } from "../identity/host-keys.js";
@@ -122,6 +122,44 @@ async function setup(fixture: StoreFixture) {
 }
 
 describeStore("team administration Host boundary", (it) => {
+  it("refuses the real service on both model-1 kinds before a target lookup or read transaction", async ({
+    storeFixture,
+  }) => {
+    const run = await storeFixture.createRunFixture("team-dormancy", null, "project");
+    const database = storeFixture.database;
+    const service = new TeamAdministrationService({
+      database,
+      identity: {} as IdentityService,
+      teamName: "Dormant",
+      runnerIsConnected: () => false,
+      invalidate: () => undefined,
+    });
+    const transactions = vi.spyOn(database, "transaction");
+    const context = testHostApiContext(run.userId);
+    for (const kind of ["server", "personal"] as const) {
+      await database
+        .updateTable("deployments")
+        .set({ deploymentShape: { kind, defaultWorkspaceBacking: "local-directory" } })
+        .execute();
+      await expect(
+        service.read("team.member.get", { userId: createId("user") }, context),
+      ).rejects.toMatchObject({ reason: "team-unavailable" });
+      await expect(
+        service.command(
+          {
+            type: "team.member.change",
+            userId: createId("user"),
+            change: { kind: "set-state", value: "active" },
+            expectedRevision: 1,
+            idempotencyKey: "dormant",
+          },
+          context,
+        ),
+      ).rejects.toMatchObject({ reason: "team-unavailable" });
+      expect(transactions).not.toHaveBeenCalled();
+    }
+  });
+
   it("separates metadata and content, scopes paging and summary revisions, and refuses agent credentials at both boundaries", async ({
     storeFixture,
   }) => {
@@ -242,6 +280,20 @@ describeStore("team administration Host boundary", (it) => {
           context(admin),
         ),
       ).resolves.toMatchObject({ allowed: true });
+      const transactions = vi.spyOn(database, "transaction");
+      await expect(
+        service.command(
+          {
+            type: "team.member.change",
+            userId: prepared.pending.session.user.id,
+            change: { kind: "set-state", value: "active" },
+            expectedRevision: 2,
+            idempotencyKey: "no-admin",
+          },
+          context(manager),
+        ),
+      ).rejects.toMatchObject({ reason: "team-admin-required" });
+      expect(transactions).toHaveBeenCalledTimes(1);
     } finally {
       await app.close();
     }
