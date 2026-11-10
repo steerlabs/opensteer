@@ -4,7 +4,7 @@ kotlin { jvmToolchain(21) }
 sourceSets {
     main {
         kotlin.srcDir("../../mobile/modules/phone-browser/android/src/main/java")
-        kotlin.include("**/BrowserState.kt", "**/ProfileManifest.kt", "**/PageLifecycle.kt", "**/PhoneBrowserNative.kt", "**/PhoneBrowserServices.kt")
+        kotlin.include("**/BrowserState.kt", "**/ProfileManifest.kt", "**/PageLifecycle.kt", "**/PhoneBrowserNative.kt", "**/PhoneBrowserServices.kt", "**/PagePresentation.kt")
     }
     test { kotlin.srcDir("../../mobile/modules/phone-browser/android/src/test/java") }
 }

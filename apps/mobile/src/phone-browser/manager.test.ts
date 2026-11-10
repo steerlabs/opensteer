@@ -414,6 +414,29 @@ describe("phone browser manager", () => {
     expect(fixture.presentation().state).toBe("retained");
   });
 
+  test("the person's Back steps through the page on the screen, and only there", async () => {
+    const fixture = await setup();
+    await fixture.present();
+    const backs = () =>
+      fixture.native.calls.filter(
+        ({ method, input }) => method === "navigate" && (input as { kind: string }).kind === "back",
+      );
+    await fixture.manager.goBack(fixture.surfaceId);
+    expect(backs()).toHaveLength(0);
+    const tab = fixture.native.tabs.get(fixture.surfaceId)!;
+    tab.metadata = { ...tab.metadata, revision: tab.metadata.revision + 1, canGoBack: true };
+    await fixture.native.emit({
+      type: "tabChanged",
+      ...fixture.reference(),
+      metadata: tab.metadata,
+    });
+    await fixture.manager.goBack(fixture.surfaceId);
+    expect(backs()).toHaveLength(1);
+    await fixture.manager.hideTab(fixture.surfaceId, "native-host-1");
+    await fixture.manager.goBack(fixture.surfaceId);
+    expect(backs()).toHaveLength(1);
+  });
+
   test("a native dialog interruption includes its answer-once dialog in the typed error", async () => {
     const fixture = await setup();
     await fixture.present();

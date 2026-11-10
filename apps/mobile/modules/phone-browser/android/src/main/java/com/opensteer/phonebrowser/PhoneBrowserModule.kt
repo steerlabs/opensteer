@@ -75,8 +75,11 @@ class PhoneBrowserModule : Module() {
     AsyncFunction("cancelDownload") { input: CancelDownloadRecord, promise: Promise -> priority(input, promise) { downloads.cancel(input.sessionId, input.downloadId) } }
     View(PhoneBrowserPoolHost::class) {
       Name("PhoneBrowserHost")
-      Events("onReady")
+      Events("onReady", "onPageScroll")
       Prop("hostId") { view: PhoneBrowserPoolHost, id: String -> view.hostId = id; PhoneBrowserPool.current?.register(view) }
+      Prop("barInsets") { view: PhoneBrowserPoolHost, insets: BarInsetsRecord? -> view.barInsets = insets?.let { it.top to it.bottom } }
+      Prop("pageGestures") { view: PhoneBrowserPoolHost, on: Boolean? -> view.pageGestures = on ?: false }
+      Prop("pageScroll") { view: PhoneBrowserPoolHost, on: Boolean? -> view.pageScroll = on ?: false }
     }
     View(PhoneBrowserPicture::class) {
       Name("PhoneBrowserPicture")

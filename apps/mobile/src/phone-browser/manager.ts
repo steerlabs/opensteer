@@ -302,6 +302,17 @@ export class PhoneBrowserManager {
     });
   }
 
+  /**
+   * The person's own Back on the page this screen shows: a step through its history on the phone,
+   * with no Host round trip. A tab that is not on the screen, or has nowhere to go back to, is left.
+   */
+  async goBack(surfaceId: string): Promise<void> {
+    const tab = this.#tabs.get(surfaceId);
+    if (!tab || this.#visible !== surfaceId || !tab.metadata.canGoBack) return;
+    this.#assertLive(tab);
+    await this.#tabOperation(tab, () => this.#native.navigate({ ...this.#ref(tab), kind: "back" }));
+  }
+
   async eraseDeployment(): Promise<readonly HeldLocalProfile[]> {
     await this.#invalidate("deployment-removed");
     this.#connection = null;
