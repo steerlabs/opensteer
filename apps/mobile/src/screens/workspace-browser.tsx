@@ -9,6 +9,7 @@ import {
   placeAgentState,
   placeDestinationEnded,
   samePlaceAgents,
+  threadMark,
   type BrowserTabDestination,
   type BrowserTabOpenHandle,
   type HostClient,
@@ -615,10 +616,11 @@ function Focused(props: {
       : [],
   ];
   const pair: PagePairChrome | null = pairedChrome ? { menu: pairMenu } : null;
-  // Following, the page is the agent's tab, so the agent is among those here.
-  const following: PageFollowing | null = follow.following
-    ? { agent: agents.agents.find(({ threadId }) => threadId === besideId) ?? null }
-    : null;
+  // The Thread's own mark, as web draws it: the page's occupants can lag the agent arriving.
+  const following: PageFollowing | null =
+    follow.following && besideId !== null
+      ? { mark: besideId === homeThreadId ? null : threadMark(besideId, snapshot) }
+      : null;
   const body =
     destination.kind === "opensteer-app" ? (
       <AppTab

@@ -14,7 +14,7 @@ import {
   type BrowserCommand,
   type BrowserSessionSummary,
   type HostClient,
-  type PlaceAgent,
+  type TaskMark,
 } from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema, type BrowserPageContentPart } from "@opensteer/core";
 import { browserPromptTextMaxLength, browserViewportFits } from "@opensteer/protocol";
@@ -104,8 +104,8 @@ export interface PagePairChrome {
  * the agent is otherwise is the Thread's live card.
  */
 export interface PageFollowing {
-  /** The agent's mark; null for a Thread the reader cannot name. */
-  readonly agent: PlaceAgent | null;
+  /** The Thread's task mark; null for Chat, which wears the orb. */
+  readonly mark: TaskMark | null;
 }
 /** Room left beside or under a page that is worth offering Fit for, as a share of its place. */
 const fitBand = 0.15;

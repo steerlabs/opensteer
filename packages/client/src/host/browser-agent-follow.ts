@@ -90,7 +90,8 @@ function updated(
     agentTab,
     held,
     observedTab: shownTab,
-    pending: arrival < 0 ? base.pending : base.pending.slice(arrival + 1),
+    // The person's move outdates every move following made before it.
+    pending: moved ? [] : base.pending.slice(arrival + 1),
     following,
     steering,
   };
@@ -105,7 +106,7 @@ export function transitionBrowserAgentFollow(
     event.type === "update"
       ? updated(previous, event.input)
       : event.type === "steer"
-        ? { ...previous, following: false, steering: previous.agentTab !== null }
+        ? { ...previous, following: false, steering: previous.agentTab !== null, pending: [] }
         : previous;
   let follow: BrowserTabDestination | null = null;
   if (

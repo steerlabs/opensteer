@@ -146,6 +146,19 @@ describe("browser agent following", () => {
     update(c, c);
     expect(controller.state).toMatchObject({ following: true, steering: false, pending: [] });
   });
+  it("forgets its unreported switches once the person takes over", () => {
+    const d = { sessionId: "session", tabId: "d" };
+    const { controller, update } = setup();
+    update(b);
+    vi.advanceTimersByTime(1000);
+    update(c);
+    update(c, d);
+    expect(controller.state).toMatchObject({ following: false, steering: true, pending: [] });
+    update(b, d);
+    // The person opens the agent's tab from its live card: a switch following once asked for.
+    update(b, b);
+    expect(controller.state.following).toBe(true);
+  });
   it("ends quietly when the agent leaves the browser, forgetting that the person steered", () => {
     const { controller, update, onFollow } = setup();
     update(b);

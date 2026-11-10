@@ -1,4 +1,4 @@
-import type { PlaceAgent } from "@opensteer/client/host";
+import type { TaskMark as TaskMarkValue } from "@opensteer/client/host";
 import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Image, Pressable, StyleSheet, TextInput, View, useWindowDimensions } from "react-native";
 import { GestureDetector, usePanGesture } from "react-native-gesture-handler";
@@ -16,10 +16,11 @@ import Animated, {
 } from "react-native-reanimated";
 import { scheduleOnRN } from "react-native-worklets";
 import { color, controlFontScaleLimit, radius, space, touchTarget } from "../theme.js";
+import { ChatOrb } from "../ui/chat-orb.js";
 import { appear, exit } from "../ui/motion.js";
 import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
-import { AgentMarks } from "./agent-marks.js";
+import { TaskMark } from "../ui/task-mark.js";
 import { ToolbarCapsule } from "./toolbar.js";
 
 /** How far the address is dragged before letting go moves to the next tab. */
@@ -40,8 +41,8 @@ export const AddressCapsule = memo(function AddressCapsule(props: {
   readonly canGoBack: boolean;
   /** Arrived here from another tab, so the address fades in as the page does. */
   readonly arriving?: boolean;
-  /** Keeping up with this agent's tab; null for an agent the reader cannot name. */
-  readonly following?: { readonly agent: PlaceAgent | null } | null;
+  /** Keeping up with this Thread's agent: its task mark, or null for Chat's orb. */
+  readonly following?: { readonly mark: TaskMarkValue | null } | null;
   readonly favicon: string | null;
   /** Given where Forward has room beside Back; otherwise it is in the page's menu. */
   readonly forward: { readonly enabled: boolean; readonly onPress: () => void } | null;
@@ -80,8 +81,12 @@ export const AddressCapsule = memo(function AddressCapsule(props: {
   const following = props.following ?? null;
   const address = props.site === null ? "Address" : `Address, ${props.site}`;
   const fade = reduceMotion ? {} : { entering: appear, exiting: exit };
-  const glyph = following?.agent ? (
-    <AgentMarks agents={[following.agent]} size={16} />
+  const glyph = following ? (
+    following.mark === null ? (
+      <ChatOrb size={16} />
+    ) : (
+      <TaskMark mark={following.mark} size={16} />
+    )
   ) : props.favicon !== null ? (
     <Image
       accessibilityIgnoresInvertColors
@@ -127,7 +132,7 @@ export const AddressCapsule = memo(function AddressCapsule(props: {
               {/* Following fades the agent's mark in over the site's, and back; a page draws its own at once. */}
               <LayoutAnimationConfig skipEntering>
                 {glyph === null ? null : (
-                  <Animated.View key={following?.agent ? "agent" : "site"} {...fade}>
+                  <Animated.View key={following ? "agent" : "site"} {...fade}>
                     {glyph}
                   </Animated.View>
                 )}
