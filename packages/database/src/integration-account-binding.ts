@@ -1,3 +1,4 @@
+import { deploymentPolicy } from "@opensteer/core";
 import { OpensteerError, type UserId } from "@opensteer/core";
 import { integrationSchemaDigest } from "@opensteer/integration-core/digest";
 import type {
@@ -16,7 +17,11 @@ export async function readIntegrationAccountBinding(input: {
   readonly ownerUserId: UserId;
 }): Promise<IntegrationOAuthAccountBindingValue | null> {
   const { database, ownerUserId } = input;
-  if (input.kind === "server" && input.accountAttached) {
+  if (
+    deploymentPolicy({ kind: input.kind, defaultWorkspaceBacking: "local-directory" })
+      .integrationAccountBinding === "identity-provider" &&
+    input.accountAttached
+  ) {
     let accountQuery = database
       .selectFrom("authAccounts")
       .innerJoin(
@@ -55,7 +60,11 @@ export async function readIntegrationAccountBinding(input: {
       }),
     };
   }
-  if (input.kind !== "personal") return null;
+  if (
+    deploymentPolicy({ kind: input.kind, defaultWorkspaceBacking: "local-directory" })
+      .integrationAccountBinding !== "personal-link"
+  )
+    return null;
   let linkQuery = database
     .selectFrom("personalRemoteAccountLink")
     .select(["issuer", "linkGeneration", "subject"])

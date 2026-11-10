@@ -1,3 +1,4 @@
+import { hostDeploymentPolicy } from "@opensteer/client/host";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
 import { CHAT_THREAD_TITLE, type ThreadAccessMode } from "@opensteer/core";
@@ -70,8 +71,8 @@ export function HomeIntro({
   // On the computer it runs on, the AI is set up where the rest of setup is.
   const setupHere =
     desktopBridge !== null &&
-    desktopDeployment?.kind === "personal" &&
-    desktopDeployment.onThisComputer;
+    hostDeploymentPolicy(snapshot)?.localOwnerClaim === true &&
+    desktopDeployment?.onThisComputer;
   const [accessMode, setAccessMode] = useState<ThreadAccessMode>(executionPreferences.accessMode);
   // One channel into the composer, so a quote handed over from a task and an
   // example prompt cannot cancel each other out.

@@ -1,9 +1,17 @@
-import { OpensteerError, type RunnerId, type UserId } from "@opensteer/core";
+import { deploymentPolicy, OpensteerError, type RunnerId, type UserId } from "@opensteer/core";
 import { sql, type Kysely, type Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import { databaseOperationOptions } from "./operation-budget.js";
 
-function eligibleBrowserRunners(database: Kysely<DatabaseSchema>, ownerId: UserId) {
+async function eligibleBrowserRunners(database: Kysely<DatabaseSchema>, ownerId: UserId) {
+  const deployment = await database
+    .selectFrom("deployments")
+    .select("deploymentShape")
+    .where("singletonKey", "=", "primary")
+    .executeTakeFirst(databaseOperationOptions());
+  const mainOnly =
+    deployment !== undefined &&
+    deploymentPolicy(deployment.deploymentShape).browserHomesOnDeploymentComputers === "main-only";
   return database
     .selectFrom("runners")
     .select(["id", "name", "kind", "ownerKind", "ownerUserId", "allowedModules"])
@@ -15,25 +23,18 @@ function eligibleBrowserRunners(database: Kysely<DatabaseSchema>, ownerId: UserI
         eb.and([
           eb("ownerKind", "=", "deployment"),
           eb("ownerUserId", "is", null),
-          eb.or([
-            eb("kind", "=", "main"),
-            eb.not(
-              eb.exists(
-                eb
-                  .selectFrom("deployments")
-                  .select("id")
-                  .where(sql<string>`deployment_shape->>'kind'`, "=", "personal"),
-              ),
-            ),
-          ]),
+          eb.or([eb("kind", "=", "main"), eb.val(!mainOnly)]),
         ]),
       ]),
     );
 }
 
 /** Offline computers remain eligible; Workspace membership confers no computer authority. */
-export function listEligibleBrowserRunners(database: Kysely<DatabaseSchema>, ownerId: UserId) {
-  return eligibleBrowserRunners(database, ownerId)
+export async function listEligibleBrowserRunners(
+  database: Kysely<DatabaseSchema>,
+  ownerId: UserId,
+) {
+  return (await eligibleBrowserRunners(database, ownerId))
     .orderBy("id")
     .execute(databaseOperationOptions());
 }
@@ -43,7 +44,7 @@ export async function lockBrowserHomeRunner(
   ownerId: UserId,
   homeRunnerId?: RunnerId,
 ): Promise<RunnerId> {
-  const eligible = eligibleBrowserRunners(transaction, ownerId);
+  const eligible = await eligibleBrowserRunners(transaction, ownerId);
   const candidates = await (homeRunnerId ? eligible.where("id", "=", homeRunnerId) : eligible)
     .orderBy("id")
     .limit(2)

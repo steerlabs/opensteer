@@ -1,3 +1,4 @@
+import { hostDeploymentPolicy } from "@opensteer/client/host";
 import { Icon } from "../../icon.js";
 import { Dialog } from "../../dialog.js";
 import { AddPhoneDialog } from "../../computers/add-phone-dialog.js";
@@ -33,7 +34,7 @@ export function AgentDevicesSection() {
   );
   const localId = desktopBridge
     ? currentDeviceMachineId({
-        deploymentKind: snapshot.deploymentShape?.kind ?? null,
+        deploymentPolicy: hostDeploymentPolicy(snapshot) ?? null,
         hostsDeploymentOnThisComputer: desktopDeployment?.onThisComputer === true,
         localRunnerId: localExecutionStatus?.runner.runnerId ?? null,
         machines: snapshot.machines,
@@ -52,7 +53,7 @@ export function AgentDevicesSection() {
       {adding === "computer" ? (
         <AddComputerDialog
           client={hostClient}
-          deploymentKind={snapshot.deploymentShape?.kind ?? null}
+          deploymentPolicy={hostDeploymentPolicy(snapshot) ?? null}
           deploymentName={snapshot.identityConfig?.deployment.name ?? "Opensteer"}
           homeName={
             snapshot.machines.find((machine) => machine.ownership === "deployment")?.name ?? "Main"
@@ -62,7 +63,7 @@ export function AgentDevicesSection() {
           localExecutionError={shell.localExecutionError}
           localExecutionStatus={localExecutionStatus}
           offer={localJoinOffer({
-            deploymentKind: snapshot.deploymentShape?.kind ?? null,
+            deploymentPolicy: hostDeploymentPolicy(snapshot) ?? null,
             status: localExecutionStatus,
           })}
           onAddThisComputer={async (action) => {
@@ -100,7 +101,7 @@ export function AgentDevicesSection() {
       {adding === "phone" ? (
         <AddPhoneDialog
           client={hostClient}
-          deploymentKind={snapshot.deploymentShape?.kind ?? null}
+          deploymentPolicy={hostDeploymentPolicy(snapshot) ?? null}
           deploymentName={snapshot.identityConfig?.deployment.name ?? "Opensteer"}
           desktopBridge={desktopBridge}
           homeName={
@@ -119,7 +120,7 @@ export function AgentDevicesSection() {
             <Link className="card__row-body" to={`/settings/devices/computers/${device.id}`}>
               <span className="card__row-title">
                 {device.name}
-                {snapshot.deploymentShape?.kind === "personal" &&
+                {hostDeploymentPolicy(snapshot)?.deploymentOwnsMainComputer === true &&
                 device.ownership === "deployment" &&
                 device.allowedModules.includes("agents") ? (
                   <span className="chip">Main</span>

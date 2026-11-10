@@ -67,7 +67,7 @@ describe("Machines projection", () => {
         access: new Map(),
         apps: new Map([[phone.id, []]]),
         computerUseDisplayStreamSupported: new Map([[phone.id, displayStream === true]]),
-        deploymentKind: "personal",
+        deploymentOwnsMainComputer: true,
         localWorkspaces: [],
         pendingRunners: [],
         runners: [phone],
@@ -80,7 +80,7 @@ describe("Machines projection", () => {
     const [machine] = projectMachines({
       apps: new Map(),
       access: new Map(),
-      deploymentKind: "self-hosted",
+      deploymentOwnsMainComputer: false,
       localWorkspaces: [],
       pendingRunners: [],
       threadsByEnvironment: new Map(),
@@ -101,7 +101,7 @@ describe("Machines projection", () => {
     const machines = projectMachines({
       apps: new Map(),
       access: new Map(),
-      deploymentKind: "self-hosted",
+      deploymentOwnsMainComputer: false,
       localWorkspaces: [],
       threadsByEnvironment: new Map(),
       runners: [
@@ -142,7 +142,7 @@ describe("Machines projection", () => {
     const [machine] = projectMachines({
       apps: new Map(),
       access: new Map(),
-      deploymentKind: "self-hosted",
+      deploymentOwnsMainComputer: false,
       localWorkspaces: [],
       pendingRunners: [],
       threadsByEnvironment: new Map(),
@@ -170,7 +170,7 @@ describe("Machines projection", () => {
     const [machine] = projectMachines({
       apps: new Map(),
       access: new Map(),
-      deploymentKind: "self-hosted",
+      deploymentOwnsMainComputer: false,
       localWorkspaces: [],
       pendingRunners: [],
       threadsByEnvironment: new Map(),
@@ -185,7 +185,7 @@ describe("Machines projection", () => {
     const machines = projectMachines({
       apps: new Map(),
       access: new Map(),
-      deploymentKind: "personal",
+      deploymentOwnsMainComputer: true,
       localWorkspaces: [],
       pendingRunners: [],
       threadsByEnvironment: new Map(),
@@ -203,7 +203,7 @@ describe("Machines projection", () => {
       projectMachines({
         apps: new Map(),
         access: new Map(),
-        deploymentKind: "self-hosted",
+        deploymentOwnsMainComputer: false,
         localWorkspaces: [],
         pendingRunners: [],
         threadsByEnvironment: new Map(),
@@ -225,7 +225,7 @@ describe("Machines projection", () => {
     const [machine] = projectMachines({
       apps: new Map(),
       access: new Map(),
-      deploymentKind: "self-hosted",
+      deploymentOwnsMainComputer: false,
       localWorkspaces: [],
       pendingRunners: [pending],
       threadsByEnvironment: new Map(),
@@ -249,7 +249,7 @@ describe("Machines projection", () => {
     const machines = projectMachines({
       apps: new Map(),
       access: new Map(),
-      deploymentKind: "personal",
+      deploymentOwnsMainComputer: true,
       localWorkspaces: [],
       pendingRunners: [
         {
@@ -310,7 +310,7 @@ describe("Machines projection", () => {
     const [machine] = projectMachines({
       apps: new Map(),
       access: new Map(),
-      deploymentKind: "self-hosted",
+      deploymentOwnsMainComputer: false,
       localWorkspaces: [
         localWorkspace(environmentId),
         localWorkspace(environmentId),
@@ -348,7 +348,7 @@ describe("Machines projection", () => {
     const machines = projectMachines({
       access,
       apps: new Map(),
-      deploymentKind: "self-hosted",
+      deploymentOwnsMainComputer: false,
       localWorkspaces: [],
       pendingRunners: [
         {
@@ -401,7 +401,7 @@ describe("Machines projection", () => {
       // The caller populates this only for the computers it resolved as
       // managed, so an unmanaged one is absent exactly as it is from `access`.
       apps: new Map([[managed.id, apps]]),
-      deploymentKind: "self-hosted",
+      deploymentOwnsMainComputer: false,
       localWorkspaces: [],
       pendingRunners: [
         {
@@ -457,7 +457,7 @@ describe("Machines projection", () => {
         apps: apps === null ? new Map() : new Map([[phone.id, apps]]),
         computerUsePolicies: new Map([[phone.id, { appApproval: "ask" }]]),
         computerUseSessions: new Map([[phone.id, [session]]]),
-        deploymentKind: "self-hosted",
+        deploymentOwnsMainComputer: false,
         localWorkspaces: [],
         pendingRunners: [],
         runners: [phone],
@@ -485,7 +485,7 @@ describe("Machines projection", () => {
       const [machine] = projectMachines({
         access: new Map(),
         apps: new Map(),
-        deploymentKind: "self-hosted",
+        deploymentOwnsMainComputer: false,
         localWorkspaces: [],
         pendingRunners: [],
         runners: [phone, runner({ connected: false, runtimeVersion: null })],
@@ -498,7 +498,7 @@ describe("Machines projection", () => {
       const [machine] = projectMachines({
         access: new Map(),
         apps: new Map(),
-        deploymentKind: "self-hosted",
+        deploymentOwnsMainComputer: false,
         localWorkspaces: [],
         pendingRunners: [],
         runners: [{ ...phone, phoneUpdate: "awaiting-user" }],
@@ -554,7 +554,7 @@ describe("Machines projection", () => {
               computerUsePolicies: new Map([[mac.id, { appApproval }]]),
             }
           : {}),
-        deploymentKind: "personal",
+        deploymentOwnsMainComputer: true,
         localWorkspaces: [],
         pendingRunners: [],
         threadsByEnvironment: new Map(),
@@ -799,7 +799,7 @@ describe("Machines projection", () => {
     for (const machine of projectMachines({
       apps: new Map(),
       access: new Map(),
-      deploymentKind: "self-hosted",
+      deploymentOwnsMainComputer: false,
       localWorkspaces: [],
       pendingRunners: [
         {

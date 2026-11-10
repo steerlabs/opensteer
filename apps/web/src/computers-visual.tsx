@@ -504,6 +504,36 @@ const client = new MockHostClient({ latencyMs: 0, sessions: scenario.sessions })
 const snapshot: ShellContext["snapshot"] = {
   ...base,
   connection: "connected",
+  deploymentPolicy:
+    scenario.kind === "personal"
+      ? {
+          ownership: "single-user",
+          personalRemoteAccess: true,
+          nativeWebLinks: true,
+          localOwnerClaim: true,
+          deploymentOwnsMainComputer: true,
+          nativePasswords: true,
+          deploymentComputerAccess: true,
+          sharing: false,
+          serviceManagement: false,
+          runnerEnrollmentMode: "reach-only",
+          projectConsent: "owner-wide",
+          localRunnerDefaultModules: ["shell"],
+        }
+      : {
+          ownership: "members",
+          personalRemoteAccess: false,
+          nativeWebLinks: false,
+          localOwnerClaim: false,
+          deploymentOwnsMainComputer: false,
+          nativePasswords: false,
+          deploymentComputerAccess: false,
+          sharing: true,
+          serviceManagement: true,
+          runnerEnrollmentMode: "unrestricted",
+          projectConsent: "per-project",
+          localRunnerDefaultModules: ["agents", "browser", "shell"],
+        },
   deploymentShape: {
     defaultWorkspaceBacking: "local-directory",
     kind: scenario.kind,

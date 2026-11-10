@@ -1,3 +1,4 @@
+import { hostDeploymentPolicy } from "./deployment-policy.js";
 import {
   computerGlyph,
   deviceElsewhere,
@@ -80,7 +81,10 @@ export interface ProfileHomeChoice {
  * would put it instead: the computer that agent works on, else the main one.
  */
 export function profileHomeChoice(
-  snapshot: Pick<HostSnapshot, "browserProfileHomes" | "deploymentShape" | "machines">,
+  snapshot: Pick<
+    HostSnapshot,
+    "browserProfileHomes" | "deploymentShape" | "deploymentPolicy" | "machines"
+  >,
   hereId: string | null,
   asking?: { readonly runnerId: string | null },
 ): ProfileHomeChoice | null {
@@ -93,7 +97,7 @@ export function profileHomeChoice(
         here: machine.id === hereId,
         id: machine.id,
         name: machine.name,
-        main: hostsDeployment(machine, snapshot.deploymentShape?.kind ?? null),
+        main: hostsDeployment(machine, hostDeploymentPolicy(snapshot) ?? null),
       })),
     hereId,
   );

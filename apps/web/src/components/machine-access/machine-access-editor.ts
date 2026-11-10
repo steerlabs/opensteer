@@ -1,3 +1,4 @@
+import type { DeploymentClientPolicy } from "@opensteer/core";
 import {
   machineAccessShareIssues,
   type MachineAccessPolicy,
@@ -31,7 +32,7 @@ export interface MachineReachOption {
  * write would refuse is not a choice.
  */
 export function machineReachOptions(input: {
-  readonly deploymentKind: "personal" | "server" | null;
+  readonly deploymentPolicy: DeploymentClientPolicy | null;
   readonly deploymentName: string;
   readonly ownerReachAvailable: boolean;
   readonly ownership: MachineSummary["ownership"];
@@ -46,7 +47,10 @@ export function machineReachOptions(input: {
       reach: "owner",
     });
   }
-  if (input.ownership === "deployment" || input.deploymentKind === "server") {
+  if (
+    input.ownership === "deployment" ||
+    input.deploymentPolicy?.deploymentWideMachineReach === true
+  ) {
     options.push({
       detail: "Agents working for anyone in this deployment.",
       label: `Everyone in ${input.deploymentName}`,

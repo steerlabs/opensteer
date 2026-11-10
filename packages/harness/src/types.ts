@@ -1,4 +1,4 @@
-import { OpensteerError } from "@opensteer/core";
+import { deploymentPolicy, OpensteerError } from "@opensteer/core";
 import type {
   ExecutionNodeId,
   AgentEventType,
@@ -210,7 +210,10 @@ export function harnessRuntimeBoundaryForRunner(runner: {
   readonly deploymentKind: DeploymentKind;
   readonly runnerKind: ExecutionEnvironmentKind;
 }): HarnessRuntimeBoundary {
-  return runner.deploymentKind === "personal" || runner.runnerKind === "local"
+  return deploymentPolicy({
+    kind: runner.deploymentKind,
+    defaultWorkspaceBacking: "local-directory",
+  }).harnessBoundaries[runner.runnerKind] === "native-user"
     ? nativeUserHarnessRuntimeBoundary
     : isolatedServiceHarnessRuntimeBoundary;
 }

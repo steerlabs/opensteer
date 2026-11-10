@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { deploymentPolicy } from "./deployment-policy.js";
 import { ComputerAppIdentityViewSchema } from "./computer-app.js";
 import { IdentityEmailSchema, InstanceRoleSchema } from "./identity.js";
 import {
@@ -82,13 +83,14 @@ export const DeploymentShapeViewSchema = z.object(deploymentShape);
 export type DeploymentShape = z.infer<typeof DeploymentShapeSchema>;
 
 export function deploymentSupportsSharing(shape: Pick<DeploymentShape, "kind">): boolean {
-  return shape.kind === "server";
+  return deploymentPolicy({ defaultWorkspaceBacking: "local-directory", ...shape }).sharing;
 }
 
 export function localWorkspaceNamespace(
   shape: Pick<DeploymentShape, "kind">,
 ): "single-owner" | "owner-scoped" {
-  return deploymentSupportsSharing(shape) ? "owner-scoped" : "single-owner";
+  return deploymentPolicy({ defaultWorkspaceBacking: "local-directory", ...shape })
+    .workspaceNamespace;
 }
 
 /**

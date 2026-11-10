@@ -7,7 +7,22 @@ import {
 } from "@opensteer/protocol/desktop";
 import { describe, expect, it, vi } from "vitest";
 import type { HostClient } from "@opensteer/client/host";
-import { localRunnerSlotDeploymentId, removeLocalComputer } from "./app-shell.js";
+import {
+  localEnrollmentModules,
+  localRunnerSlotDeploymentId,
+  removeLocalComputer,
+} from "./app-shell.js";
+
+it.each(["personal", "server"] as const)(
+  "keeps local enrollment modules for an older %s bootstrap",
+  (kind) => {
+    expect(localEnrollmentModules({ deploymentShape: { kind } })).toEqual(
+      kind === "personal"
+        ? ["browser", "integrations", "messaging", "shell"]
+        : ["agents", "browser", "shell"],
+    );
+  },
+);
 
 const bridge = {} as OpensteerDesktopBridge;
 
@@ -28,11 +43,33 @@ function deployment(overrides: Partial<DesktopDeploymentSummary> = {}): DesktopD
 }
 
 describe("localRunnerSlotDeploymentId", () => {
+  it("uses Main-computer policy rather than the display alias", () => {
+    const personal = deployment({ kind: "personal", onThisComputer: true });
+    expect(
+      localRunnerSlotDeploymentId({
+        desktopBridge: bridge,
+        desktopDeployment: personal,
+        deploymentPolicy: { deploymentOwnsMainComputer: false },
+      }),
+    ).toBe(personal.id);
+    const server = deployment({ onThisComputer: true });
+    expect(
+      localRunnerSlotDeploymentId({
+        desktopBridge: bridge,
+        desktopDeployment: server,
+        deploymentPolicy: { deploymentOwnsMainComputer: true },
+      }),
+    ).toBeNull();
+  });
   it("supervises a slot for every Deployment this desktop attaches to", () => {
     const server = deployment();
-    expect(localRunnerSlotDeploymentId({ desktopBridge: bridge, desktopDeployment: server })).toBe(
-      server.id,
-    );
+    expect(
+      localRunnerSlotDeploymentId({
+        deploymentPolicy: { deploymentOwnsMainComputer: true },
+        desktopBridge: bridge,
+        desktopDeployment: server,
+      }),
+    ).toBe(server.id);
 
     // A Personal Deployment reached over its access route is joined like any
     // other: this computer can be one of its reachable computers.
@@ -42,7 +79,11 @@ describe("localRunnerSlotDeploymentId", () => {
       onThisComputer: false,
     });
     expect(
-      localRunnerSlotDeploymentId({ desktopBridge: bridge, desktopDeployment: remotePersonal }),
+      localRunnerSlotDeploymentId({
+        deploymentPolicy: { deploymentOwnsMainComputer: true },
+        desktopBridge: bridge,
+        desktopDeployment: remotePersonal,
+      }),
     ).toBe(remotePersonal.id);
   });
 
@@ -51,6 +92,7 @@ describe("localRunnerSlotDeploymentId", () => {
     // here to add, remove, or switch.
     expect(
       localRunnerSlotDeploymentId({
+        deploymentPolicy: { deploymentOwnsMainComputer: true },
         desktopBridge: bridge,
         desktopDeployment: deployment({ access: "owner", kind: "personal", onThisComputer: true }),
       }),
@@ -59,10 +101,18 @@ describe("localRunnerSlotDeploymentId", () => {
 
   it("has no slot in a browser, which supervises nothing", () => {
     expect(
-      localRunnerSlotDeploymentId({ desktopBridge: null, desktopDeployment: deployment() }),
+      localRunnerSlotDeploymentId({
+        deploymentPolicy: { deploymentOwnsMainComputer: true },
+        desktopBridge: null,
+        desktopDeployment: deployment(),
+      }),
     ).toBeNull();
     expect(
-      localRunnerSlotDeploymentId({ desktopBridge: bridge, desktopDeployment: null }),
+      localRunnerSlotDeploymentId({
+        deploymentPolicy: { deploymentOwnsMainComputer: true },
+        desktopBridge: bridge,
+        desktopDeployment: null,
+      }),
     ).toBeNull();
   });
 });

@@ -1,3 +1,4 @@
+import { deploymentPolicy } from "@opensteer/core";
 import { runnerRunsItsDeployment, type RunnerId, type UserId } from "@opensteer/core";
 import type { Kysely, Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
@@ -38,7 +39,9 @@ export async function machineOwnershipIn(
     .executeTakeFirst();
   if (
     !runnerRunsItsDeployment({
-      deploymentIsPersonal: deployment?.deploymentShape.kind === "personal",
+      deploymentIsPersonal: deployment
+        ? deploymentPolicy(deployment.deploymentShape).deploymentOwnsMainComputer
+        : false,
       ownerKind: runner.ownerKind,
       runnerKind: runner.kind,
     })

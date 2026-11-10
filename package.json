@@ -54,6 +54,7 @@
     "bench:browser-stream": "tsx scripts/bench-browser-stream.ts"
   },
   "devDependencies": {
+    "@babel/parser": "7.29.8",
     "@opensteer/shared": "workspace:*",
     "@types/node": "26.2.0",
     "@types/ws": "catalog:",

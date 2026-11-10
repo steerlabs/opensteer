@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { DeploymentKindSchema, deploymentPolicy } from "../packages/core/src/index.js";
 import { isNodeError } from "@opensteer/shared/nodeError";
 import { noFollowFlag, setPrivateHandleMode } from "@opensteer/shared/privateFiles";
 import { execFile } from "node:child_process";
@@ -49,7 +50,14 @@ export function selfHostWorkspaceBacking(environment: NodeJS.ProcessEnv): SelfHo
   if (value !== "local-directory") {
     throw new Error("init:self-host requires OPENSTEER_DEFAULT_WORKSPACE_BACKING=local-directory");
   }
-  if ((environment.OPENSTEER_DEPLOYMENT_KIND?.trim() || "server") !== "server") {
+  const kind = DeploymentKindSchema.safeParse(
+    environment.OPENSTEER_DEPLOYMENT_KIND?.trim() || "server",
+  );
+  if (
+    !kind.success ||
+    !deploymentPolicy({ kind: kind.data, defaultWorkspaceBacking: "local-directory" }).configuration
+      .serverTooling
+  ) {
     throw new Error("init:self-host requires OPENSTEER_DEPLOYMENT_KIND=server");
   }
   return value;

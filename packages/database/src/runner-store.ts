@@ -1,3 +1,4 @@
+import { deploymentPolicy } from "@opensteer/core";
 import { lockBrowserProfile } from "./browser-profile-storage-store.js";
 import {
   archiveRunnerBrowserProfiles,
@@ -473,7 +474,9 @@ async function requireRunnerIsRevocable(
   if (!runner) return;
   if (
     runnerRunsItsDeployment({
-      deploymentIsPersonal: deployment?.deploymentShape.kind === "personal",
+      deploymentIsPersonal: deployment
+        ? deploymentPolicy(deployment.deploymentShape).deploymentOwnsMainComputer
+        : false,
       ownerKind: runner.ownerKind,
       runnerKind: runner.kind,
     })
@@ -511,26 +514,12 @@ export function runnerAdvertisesItsEnvironmentBinding(
   return sameStringSet(bound, advertised);
 }
 
-/** Other computers lend browsers and reach modules; Personal agents stay on Main. */
-export const personalReachableGrant: readonly RunnerModuleName[] = [
-  "browser",
-  "integrations",
-  "messaging",
-  "shell",
-];
-
-/**
- * The Personal stack's messaging service is a Deployment-owned managed
- * process beside the Host, not a computer lent over the remote-access route.
- * The Host's computer preset also grants `integrations` and `shell`, although
- * this service advertises only messaging, so this exact grant is the one
- * supervised-service exception.
- */
-const personalSupervisedServiceGrant: readonly RunnerModuleName[] = [
-  "integrations",
-  "messaging",
-  "shell",
-];
+const personalEnrollment = deploymentPolicy({
+  kind: "personal",
+  defaultWorkspaceBacking: "local-directory",
+}).runnerEnrollment;
+export const personalReachableGrant: readonly RunnerModuleName[] =
+  personalEnrollment.mode === "reach-only" ? personalEnrollment.reachableModules : [];
 
 /** Said when a Personal Deployment is asked for a computer that would execute. */
 export const personalReachableGrantRefusal =
@@ -597,10 +586,12 @@ async function assertPersonalRunnerAdmission(
     .select("deploymentShape")
     .where("singletonKey", "=", "primary")
     .executeTakeFirst(databaseOperationOptions());
-  if (deployment?.deploymentShape.kind !== "personal") return null;
+  const policy = deployment ? deploymentPolicy(deployment.deploymentShape) : null;
+  const enrollment = policy?.runnerEnrollment;
+  if (!enrollment || enrollment.mode !== "reach-only") return null;
   if (
     runnerRunsItsDeployment({
-      deploymentIsPersonal: true,
+      deploymentIsPersonal: policy?.deploymentOwnsMainComputer === true,
       ownerKind: input.ownerKind,
       runnerKind: input.runnerKind,
     })
@@ -610,13 +601,13 @@ async function assertPersonalRunnerAdmission(
   if (
     input.ownerKind === "deployment" &&
     input.runnerKind === "managed" &&
-    sameStringSet(input.allowedModules, personalSupervisedServiceGrant)
+    sameStringSet(input.allowedModules, enrollment.supervisedServiceModules)
   ) {
     return null;
   }
   // Phones lend browsers and apps without executing the Deployment's agents.
   if (
-    !sameStringSet(input.allowedModules, personalReachableGrant) &&
+    !sameStringSet(input.allowedModules, enrollment.reachableModules) &&
     !sameStringSet(input.allowedModules, phoneRunnerGrant)
   ) {
     throw new OpensteerError({ code: "forbidden", message: personalReachableGrantRefusal });
@@ -788,7 +779,8 @@ export async function upgradeLegacyPersonalMainRunnerBrowserGrant(
       .selectFrom("deployments")
       .select("deploymentShape")
       .executeTakeFirst(databaseOperationOptions());
-    if (deployment?.deploymentShape.kind !== "personal") return false;
+    if (!deployment || !deploymentPolicy(deployment.deploymentShape).deploymentOwnsMainComputer)
+      return false;
 
     await transaction
       .selectFrom("runnerEnrollments")

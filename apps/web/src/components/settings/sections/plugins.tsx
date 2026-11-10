@@ -376,7 +376,10 @@ function PluginCatalog({
             onChanged();
           }}
         >
-          <PluginAddSheet personal={view.kind === "personal"} product={adding} />
+          <PluginAddSheet
+            personal={view.deploymentPolicy?.projectConsent === "owner-wide"}
+            product={adding}
+          />
         </Dialog>
       ) : null}
       {addingOwn ? (
@@ -510,7 +513,7 @@ function OverviewRow({
               : state.label
             : [
                 row.accountCount > 1 ? `${row.accountCount} accounts` : null,
-                pluginPlacementLabel(row, view.kind === "personal"),
+                pluginPlacementLabel(row, view.deploymentPolicy?.projectConsent === "owner-wide"),
               ]
                 .filter(Boolean)
                 .join(" · ")}
@@ -598,7 +601,11 @@ function PluginDetail({
               </ul>
             </>
           ) : null}
-          <Placement detail={data} reload={detail.reload} personal={view.kind === "personal"} />
+          <Placement
+            detail={data}
+            reload={detail.reload}
+            personal={view.deploymentPolicy?.projectConsent === "owner-wide"}
+          />
           {data.permissions.length ? (
             <section className="settings-group">
               <h2 className="settings-group__title">What agents may do</h2>

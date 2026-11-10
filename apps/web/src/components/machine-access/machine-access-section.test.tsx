@@ -37,7 +37,21 @@ describe("machineReachOptions", () => {
   it("withholds an owner only where there is no owner to reach", () => {
     expect(
       machineReachOptions({
-        deploymentKind: "server",
+        deploymentPolicy: {
+          ownership: "members",
+          personalRemoteAccess: false,
+          nativeWebLinks: false,
+          localOwnerClaim: false,
+          deploymentOwnsMainComputer: false,
+          nativePasswords: false,
+          deploymentComputerAccess: false,
+          sharing: true,
+          deploymentWideMachineReach: true,
+          serviceManagement: true,
+          runnerEnrollmentMode: "unrestricted",
+          projectConsent: "per-project",
+          localRunnerDefaultModules: ["agents", "browser", "shell"],
+        },
         deploymentName: "Acme",
         ownerReachAvailable: false,
         ownership: "deployment",
@@ -50,7 +64,21 @@ describe("machineReachOptions", () => {
     // too. Reading ownership alone is what used to hide the choice.
     expect(
       machineReachOptions({
-        deploymentKind: "personal",
+        deploymentPolicy: {
+          ownership: "single-user",
+          personalRemoteAccess: true,
+          nativeWebLinks: true,
+          localOwnerClaim: true,
+          deploymentOwnsMainComputer: true,
+          nativePasswords: true,
+          deploymentComputerAccess: true,
+          sharing: false,
+          deploymentWideMachineReach: false,
+          serviceManagement: false,
+          runnerEnrollmentMode: "reach-only",
+          projectConsent: "owner-wide",
+          localRunnerDefaultModules: ["shell"],
+        },
         deploymentName: "Acme",
         ownerReachAvailable: true,
         ownership: "deployment",
@@ -61,7 +89,12 @@ describe("machineReachOptions", () => {
   it("offers the whole Deployment only where there is more than one person", () => {
     const forKind = (deploymentKind: "personal" | "server") =>
       machineReachOptions({
-        deploymentKind,
+        deploymentPolicy: {
+          ownership: deploymentKind === "personal" ? "single-user" : "members",
+          sharing: deploymentKind === "server",
+          deploymentWideMachineReach: deploymentKind === "server",
+          localRunnerDefaultModules: [],
+        },
         deploymentName: "Acme",
         ownerReachAvailable: true,
         ownership: "mine",
@@ -70,6 +103,25 @@ describe("machineReachOptions", () => {
     expect(forKind("server")).toEqual(["nobody", "owner", "deployment"]);
     expect(forKind("personal")).toEqual(["nobody", "owner"]);
   });
+
+  it.each([true, false])(
+    "uses the machine reach audience, not Workspace sharing: %s",
+    (deploymentWideMachineReach) => {
+      const options = machineReachOptions({
+        deploymentPolicy: {
+          ownership: deploymentWideMachineReach ? "single-user" : "members",
+          sharing: !deploymentWideMachineReach,
+          deploymentWideMachineReach,
+        },
+        deploymentName: "Acme",
+        ownerReachAvailable: true,
+        ownership: "mine",
+      });
+      expect(options.some((option) => option.reach === "deployment")).toBe(
+        deploymentWideMachineReach,
+      );
+    },
+  );
 });
 
 describe("machineAccessAuditLabel", () => {
@@ -581,7 +633,21 @@ function sectionElement(input: {
     <MachineAccessSection
       access={input.access ?? accessWith([])}
       client={input.client}
-      deploymentKind="server"
+      deploymentPolicy={{
+        ownership: "members",
+        personalRemoteAccess: false,
+        nativeWebLinks: false,
+        localOwnerClaim: false,
+        deploymentOwnsMainComputer: false,
+        nativePasswords: false,
+        deploymentComputerAccess: false,
+        sharing: true,
+        deploymentWideMachineReach: true,
+        serviceManagement: true,
+        runnerEnrollmentMode: "unrestricted",
+        projectConsent: "per-project",
+        localRunnerDefaultModules: ["agents", "browser", "shell"],
+      }}
       deploymentName="Acme"
       desktopBridge={input.desktopBridge ?? null}
       machineId={machineId}
