@@ -18,6 +18,7 @@ import { IntegrationInstallReview } from "./integration-install-review.js";
 import { AgentProposedChip } from "./integrations/agent-proposed-chip.js";
 import { AreaLink } from "./workspace/area-link.js";
 import { useComposerContext } from "./workspace/composer-context.js";
+import { useOptionalWorkspace } from "./workspace/workspace-context.js";
 import { TaskMark, TaskBadge } from "./workspace/task-mark.js";
 import { sendMessageCommand, usePendingSends } from "./pending-sends.js";
 import { VoiceButton, VoiceDock } from "./voice.js";
@@ -32,6 +33,7 @@ import {
   deriveSurface,
   mutationIdempotencyKey,
   requestsWaitingOn,
+  subagentTitle,
   waitingRequestSource,
   waitingRequestPresentationSource,
   type HostSnapshot,
@@ -302,12 +304,15 @@ export function focusOpenRequest(scope: ParentNode | null) {
  * it in turn. One is open at a time.
  */
 export function RequestStack({
+  asker = true,
   disabled,
   items,
   onOpen,
   openId,
   threadId,
 }: {
+  /** Names the subagent that asked; its own view already is that subagent. */
+  readonly asker?: boolean;
   readonly disabled: boolean;
   readonly items: readonly DockedRequest[];
   readonly onOpen: (requestId: string) => void;
@@ -339,6 +344,7 @@ export function RequestStack({
               </AreaLink>
             ) : null}
             <RequestPanel
+              asker={asker}
               disabled={disabled}
               surface={item.surface}
               threadId={item.source ? item.surface.request.originatingThreadId : threadId}
@@ -417,17 +423,20 @@ function requestTitle(request: Request): string {
 /* ---- The focused Request ---- */
 
 function RequestPanel({
+  asker,
   disabled,
   surface,
   threadId,
 }: {
+  asker: boolean;
   disabled: boolean;
   surface: SurfaceModel;
   threadId: string;
 }) {
   const { snapshot } = useShell();
   const { request } = surface;
-  const subagent = askingSubagent(snapshot, request);
+  const workspace = useOptionalWorkspace();
+  const subagent = asker ? askingSubagent(snapshot, request) : null;
   // An agent's app request reads as the title and the model's own reason; the
   // card below says where it is answered.
   // A sign-in card names the site itself, whatever wording the Request carries.
@@ -459,7 +468,19 @@ function RequestPanel({
           {request.presentation.agentProposed ? <AgentProposedChip /> : null}
         </div>
       )}
-      {subagent ? <p className="action-panel__asker">Asked by subagent {subagent}</p> : null}
+      {subagent ? (
+        <AreaLink
+          className="action-panel__asker"
+          to={
+            workspace
+              ? workspace.nav.subagentPath(request.originatingThreadId, subagent.nodeId)
+              : `/threads/${encodeURIComponent(request.originatingThreadId)}/subagents/${encodeURIComponent(subagent.nodeId)}`
+          }
+        >
+          Asked by subagent {subagent.title}
+          <Icon name="chevron-right" />
+        </AreaLink>
+      ) : null}
       <div className="action-panel__content">
         {detail && !ownHead ? (
           <ActionDetail mono={request.kind === "harness.approval"}>{detail}</ActionDetail>
@@ -477,15 +498,15 @@ function RequestPanel({
 function askingSubagent(
   snapshot: Pick<HostSnapshot, "transcripts" | "waitingRequests">,
   request: Request,
-): string | null {
+): { readonly nodeId: string; readonly title: string } | null {
   const nodeId = request.originatingNodeId;
-  if (nodeId === undefined) return null;
+  if (nodeId === undefined || nodeId === null) return null;
   const waiting = snapshot.waitingRequests.find((entry) => entry.request.id === request.id);
-  if (waiting?.subagent) return waiting.subagent.title;
   const node = snapshot.transcripts[request.originatingThreadId]?.find(
     (entry): entry is NodeEntry => entry.kind === "node" && entry.nodeId === nodeId,
   );
-  return node?.title ?? null;
+  const title = waiting?.subagent?.title ?? node?.title;
+  return title === undefined ? null : { nodeId, title: subagentTitle(title) };
 }
 
 function ActionBody({

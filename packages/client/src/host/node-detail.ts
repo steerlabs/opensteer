@@ -532,7 +532,7 @@ export class NodeDetailStore {
 
 export type SubagentDetailEntry =
   | { readonly kind: "message"; readonly id: string; readonly text: string }
-  | { readonly kind: "reasoning"; readonly id: string; readonly text: string }
+  | ReasoningEntry
   | ToolEntry
   | { readonly kind: "agent"; readonly card: AgentCard };
 export interface SubagentDetail {
@@ -568,7 +568,7 @@ export function subagentDetail(
         case "node-message":
           return [{ kind: "message", id: entry.id, text: entry.text }];
         case "reasoning":
-          return [{ kind: "reasoning", id: entry.id, text: entry.text }];
+          return [entry];
         case "tool":
           return [entry];
         case "node": {

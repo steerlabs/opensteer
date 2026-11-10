@@ -27,7 +27,7 @@ import { useShell } from "../app-shell.js";
 import { Icon } from "../icon.js";
 import { Popover } from "../popover.js";
 import { SidebarRestoreButton } from "../sidebar-chrome.js";
-import { TaskFamilyButton } from "./task-family.js";
+import { helperGlance, sameHelperGlance, TaskFamilyButton } from "./task-family.js";
 import { sameTaskFamilyGlance, taskFamilyGlance } from "@opensteer/client/host";
 import { TaskBadge, TaskMark, ChatOrb, WorkingRing, taskStateWords } from "./task-mark.js";
 import { AreaLink } from "./area-link.js";
@@ -105,6 +105,11 @@ export function ConversationHeader({
     [threadId],
   );
   const family = useHostSelector(hostClient, selectFamily, sameTaskFamilyGlance);
+  const selectHelpers = useCallback(
+    (snapshot: HostSnapshot) => helperGlance(snapshot, threadId),
+    [threadId],
+  );
+  const helpers = useHostSelector(hostClient, selectHelpers, sameHelperGlance);
   const selectRunId = useCallback(
     (snapshot: HostSnapshot) => {
       const thread = snapshot.threads.find(({ id }) => id === threadId);
@@ -249,13 +254,14 @@ export function ConversationHeader({
               />
             </span>
           )}
-          {family ? (
+          {family || helpers ? (
             <span className="conv-header__yield" data-yield={barRanks.family}>
               <TaskFamilyButton
                 key={threadId}
                 hostClient={hostClient}
                 threadId={threadId}
                 glance={family}
+                helpers={helpers}
               />
             </span>
           ) : null}

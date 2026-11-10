@@ -4197,3 +4197,21 @@ html[data-tab-sorting] * {
   width: 14px;
   height: 14px;
 }
+
+/* A subagent in the family panel: its mark, title and one line, and its state. */
+.agent-roster__mark {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 20px;
+  color: var(--muted-dim);
+}
+
+.agent-roster__mark .icon {
+  width: 14px;
+  height: 14px;
+}
+
+.agent-roster__row .picker__detail[data-kind="question"] {
+  color: var(--amber-text);
+}
