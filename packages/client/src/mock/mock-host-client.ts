@@ -2626,6 +2626,22 @@ function placeMockMessage(
 
 async function executeMockCommand(client: MockHostState, command: HostApiCommand) {
   switch (command.type) {
+    case "team.project.create":
+    case "team.access.apply":
+    case "team.access.selfGrant":
+    case "team.member.change":
+    case "team.connection.revoke":
+    case "team.project.settings.set":
+    case "team.invitation.create":
+    case "team.invitation.revoke":
+      return mockRefusal(
+        new HostClientRequestError({
+          code: "forbidden",
+          reason: "team-unavailable",
+          message: "Team administration is unavailable on this Deployment.",
+          status: 403,
+        }),
+      );
     case "phone.tab.close":
       client.closePhoneTab(command.machineId);
       return rpcSuccess(hostApi["commands.dispatch"].success.parse({ type: command.type }));
