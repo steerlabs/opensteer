@@ -27,6 +27,7 @@ import { WorkspaceNotificationMute } from "./workspace-notification-mute.js";
 import { WorkspaceSharingDialog } from "./workspace-sharing-dialog.js";
 import { AreaLink, useAreaNavigate } from "./workspace/area-link.js";
 import { useProjectAccess } from "./team/project-access.js";
+import { useShellTeam } from "./team/team-ui.js";
 import { TeamProjectMarker, TeamProjectPage, TeamProjectSections } from "./team/team-project.js";
 
 /**
@@ -59,6 +60,7 @@ function ProjectSettings({ workspace }: { readonly workspace: WorkspaceSummary }
   const connected = canRespondToRequests(snapshot);
   const teamProject = snapshot.teamAdministrationAvailable === true;
   const teamAccess = useProjectAccess(workspace.id);
+  const teamName = useShellTeam().summary?.team.name ?? null;
   const members = useHostRead(
     teamProject
       ? null
@@ -89,18 +91,22 @@ function ProjectSettings({ workspace }: { readonly workspace: WorkspaceSummary }
             <WorkspaceIcon workspace={workspace} />
             <div className="project-settings__identity-copy">
               <h1 className="page__title">{workspace.name}</h1>
-              <p className="page__description">
-                {workspace.machineName
-                  ? `Its folder is in Main on ${workspace.machineName}.`
-                  : "Its folder is in Main."}{" "}
-                {teamProject
-                  ? null
-                  : owner
+              {teamProject ? (
+                teamName ? (
+                  <p className="page__description">A shared project in {teamName}.</p>
+                ) : null
+              ) : (
+                <p className="page__description">
+                  {workspace.machineName
+                    ? `Its folder is in Main on ${workspace.machineName}.`
+                    : "Its folder is in Main."}{" "}
+                  {owner
                     ? "You own this project."
                     : members.data
                       ? "An owner of this project decides who joins it and what it can use."
                       : null}
-              </p>
+                </p>
+              )}
               {teamProject ? <TeamProjectMarker access={teamAccess} /> : null}
             </div>
           </div>

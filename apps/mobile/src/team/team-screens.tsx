@@ -235,7 +235,138 @@ function People(props: {
               ]
           : [<ReadState error={read.error} key="state" onRetry={read.reload} team={teamName} />]}
       </RowGroup>
+      {team && summary?.can.invite.allowed ? (
+        <Invitations
+          deploymentId={props.deploymentId}
+          generation={generation}
+          team={team}
+          teamName={teamName}
+        />
+      ) : null}
     </>
+  );
+}
+
+/**
+ * Links this phone made while the app was open, by invitation id. The verifier
+ * is kept nowhere else, so another device, or this one after a restart, can
+ * only revoke and invite again.
+ */
+const heldLinks = new Map<string, string>();
+function heldLink(invitationId: string, url: string): string {
+  heldLinks.set(invitationId, url);
+  return url;
+}
+
+const invitationStateLabel = {
+  open: "Open",
+  used: "Joined",
+  revoked: "Revoked",
+  expired: "Expired",
+} as const;
+
+function Invitations(props: {
+  readonly deploymentId: string;
+  readonly generation: number;
+  readonly team: TeamAccess;
+  readonly teamName: string;
+}): ReactNode {
+  const navigation = useNavigation();
+  const { team, teamName } = props;
+  const read = useHostRead(
+    () => team.invitations({ limit: 30 }),
+    `team-invitations:${props.generation}`,
+  );
+  const list = read.data;
+  const day = (value: string) =>
+    new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" }).format(new Date(value));
+  return (
+    <TeamSection
+      footer="Open invitations, and those made, used or revoked in the last 30 days, from any device. A link can be shared again only on the phone that made it; anywhere else, revoke it and invite again."
+      label="Invitations"
+    >
+      <RowGroup>
+        {list
+          ? list.items.length
+            ? list.items.map((invitation) => {
+                const link = invitation.state === "open" ? heldLinks.get(invitation.id) : undefined;
+                return (
+                  <View key={invitation.id} style={styles.row}>
+                    <View style={styles.grow}>
+                      <View style={styles.titleLine}>
+                        <AppText numberOfLines={1} role="body">
+                          {invitation.emailMasked}
+                        </AppText>
+                        {invitation.memberKind === "guest" ? <Pill label="Guest" /> : null}
+                        <Pill
+                          label={invitationStateLabel[invitation.state]}
+                          tone={invitation.state === "expired" ? "warn" : undefined}
+                        />
+                      </View>
+                      <AppText role="caption" tone="muted">
+                        {`Made by ${invitation.createdBy.name}, ${day(invitation.createdAt)}${
+                          invitation.state === "open"
+                            ? link
+                              ? ""
+                              : ". Its link can’t be shown again here."
+                            : ""
+                        }`}
+                      </AppText>
+                    </View>
+                    {link ? (
+                      <SecondaryButton
+                        compact
+                        label="Share"
+                        onPress={() => void Share.share({ message: link }).catch(() => undefined)}
+                      />
+                    ) : null}
+                    {invitation.can.revoke.allowed ? (
+                      <SecondaryButton
+                        compact
+                        label="Revoke"
+                        onPress={() =>
+                          Alert.alert(
+                            `Revoke the invitation for ${invitation.emailMasked}?`,
+                            "Its link stops working at once.",
+                            [
+                              { style: "cancel", text: "Cancel" },
+                              {
+                                style: "destructive",
+                                text: "Revoke",
+                                onPress: () => {
+                                  team
+                                    .revokeInvitation(list.accessRevision, invitation.id)
+                                    .then(() => heldLinks.delete(invitation.id))
+                                    .catch((error: unknown) => showError(error, teamName));
+                                },
+                              },
+                            ],
+                          )
+                        }
+                        tone="danger"
+                      />
+                    ) : invitation.state === "revoked" || invitation.state === "expired" ? (
+                      <SecondaryButton
+                        compact
+                        label="Invite again"
+                        onPress={() =>
+                          navigation.navigate("TeamInvite", { deploymentId: props.deploymentId })
+                        }
+                      />
+                    ) : null}
+                  </View>
+                );
+              })
+            : [
+                <View key="none" style={styles.row}>
+                  <AppText role="secondary" tone="muted">
+                    No invitations in the last 30 days.
+                  </AppText>
+                </View>,
+              ]
+          : [<ReadState error={read.error} key="state" onRetry={read.reload} team={teamName} />]}
+      </RowGroup>
+    </TeamSection>
   );
 }
 
@@ -585,8 +716,8 @@ function Invite(props: { readonly hostClient: HostClient }): ReactNode {
               tone="danger"
             />
             <AppText role="caption" tone="muted">
-              This screen is the only place the link exists. Leave it and the link is gone; revoke
-              it first if it wasn’t sent.
+              You can share it again from People while this app stays open on this phone. Any device
+              can revoke it under Invitations.
             </AppText>
           </>
         )}
@@ -653,7 +784,7 @@ function Invite(props: { readonly hostClient: HostClient }): ReactNode {
             })
             .then((result) =>
               setMade({
-                url: teamInvitationUrl(origin, draft),
+                url: heldLink(result.invitationId, teamInvitationUrl(origin, draft)),
                 invitationId: result.invitationId,
                 expiresAt: result.expiresAt,
                 revoked: false,

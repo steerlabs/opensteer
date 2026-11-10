@@ -221,7 +221,7 @@ function ProjectDetail(props: {
                 )}
                 {/* Named only when the Host names the computer: an unnamed one
                     is not the same thing as shared storage. */}
-                {workspace.machineName === null ? null : (
+                {workspace.machineName === null || snapshot.teamAdministrationAvailable ? null : (
                   <AppText role="caption" tone="muted">
                     {`Its folder is in Main on ${workspace.machineName}`}
                   </AppText>

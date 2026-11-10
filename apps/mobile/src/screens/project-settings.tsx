@@ -102,7 +102,8 @@ function ProjectSettings(props: {
   const readable = project !== null && userId !== null;
   const teamProject = snapshot.teamAdministrationAvailable === true;
   const teamAccess = useTeamProjectAccess(hostClient, workspaceId);
-  const teamName = useTeam(hostClient).summary?.team.name ?? "the team";
+  const { summary } = useTeam(hostClient);
+  const teamName = summary?.team.name ?? "the team";
 
   const members = useHostRead(
     readable && !teamProject
@@ -206,9 +207,13 @@ function ProjectSettings(props: {
             <AppText role="title">{project.name}</AppText>
             <AppText role="secondary" tone="muted">
               {[
-                project.machineName === null
-                  ? "Its folder is in Main."
-                  : `Its folder is in Main on ${project.machineName}.`,
+                teamProject
+                  ? summary
+                    ? `A shared project in ${teamName}.`
+                    : null
+                  : project.machineName === null
+                    ? "Its folder is in Main."
+                    : `Its folder is in Main on ${project.machineName}.`,
                 teamProject
                   ? null
                   : owner

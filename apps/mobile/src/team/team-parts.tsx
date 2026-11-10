@@ -105,7 +105,6 @@ export async function confirmAccessChange(input: {
   readonly title: string;
   readonly confirm: string;
   readonly destructive?: boolean;
-  readonly names?: ReadonlyMap<string, string>;
   readonly onDone?: () => void;
 }): Promise<void> {
   let preview;
@@ -115,7 +114,7 @@ export async function confirmAccessChange(input: {
     showError(error, input.teamName);
     return;
   }
-  const lines = accessPreviewLines(preview, input.names, input.teamName).map(({ tone, text }) =>
+  const lines = accessPreviewLines(preview, input.teamName).map(({ tone, text }) =>
     tone === "blocked" ? text : `• ${text}`,
   );
   if (!preview.allowed) {
