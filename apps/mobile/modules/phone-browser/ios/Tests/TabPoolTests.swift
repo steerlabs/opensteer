@@ -2,6 +2,29 @@ import XCTest
 @testable import PhoneBrowserCore
 
 final class TabPoolTests: XCTestCase {
+  func testNewDocumentCanRestRetainedWithoutALiveSlot() throws {
+    var pool = TabPoolState()
+    try pool.create("person")
+    try pool.activate("person", covered: false)
+    try pool.create("agent")
+    try pool.activate("agent", covered: true)
+    try pool.create("new")
+    XCTAssertEqual(try pool.suspend("new"), [])
+    XCTAssertEqual(pool.tabs["new"], .retained)
+    XCTAssertEqual(pool.retained, ["new"])
+    XCTAssertEqual(pool.visible, "person")
+    XCTAssertEqual(pool.covered, "agent")
+    XCTAssertThrowsError(try pool.activate("new", covered: true))
+    for index in 0..<4 {
+      try pool.create("loaded-\(index)")
+      let evicted = try pool.suspend("loaded-\(index)")
+      XCTAssertEqual(evicted, index == 3 ? ["new"] : [])
+    }
+    XCTAssertEqual(pool.tabs["new"], .discarded)
+    XCTAssertEqual(pool.visible, "person")
+    XCTAssertEqual(pool.covered, "agent")
+  }
+
   func testLiveSlotsRetainedLRUAndPressure() throws {
     var pool = TabPoolState()
     for index in 0..<7 { try pool.create("tab-\(index)") }

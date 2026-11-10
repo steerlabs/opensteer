@@ -31,7 +31,7 @@ public struct TabPoolState: Sendable {
 
   public mutating func suspend(_ tab: String) throws -> [String] {
     guard let state = tabs[tab] else { throw BrowserRefusal.targetClosed }
-    guard state == .live else { return [] }
+    guard state != .retained else { return [] }
     if visible == tab { visible = nil }
     if covered == tab { covered = nil }
     tabs[tab] = .retained
