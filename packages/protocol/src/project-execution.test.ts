@@ -92,7 +92,7 @@ const command = {
 };
 
 describe("dormant Project execution", () => {
-  it("binds Project storage, roots and environments without changing the legacy command union", () => {
+  it("binds Project storage, roots and environments while retaining strict legacy command parsing", () => {
     expect(ProjectExecuteRunSchema.parse(command)).toEqual(command);
     expect(
       ProjectExecuteRunSchema.safeParse({
@@ -130,7 +130,7 @@ describe("dormant Project execution", () => {
         ProjectExecuteRunSchema.safeParse({ ...command, context: { ...context, ...changed } })
           .success,
       ).toBe(false);
-    expect(RunnerCommandSchema.safeParse(command).success).toBe(false);
+    expect(RunnerCommandSchema.safeParse(command).success).toBe(true);
     expect(RunnerCommandSchema.safeParse({ ...command, type: "run.execute" }).success).toBe(false);
     expect(
       ProjectExecuteRunSchema.safeParse({ ...command, environmentId: createId("environment") })
@@ -281,7 +281,7 @@ describe("dormant Project programs", () => {
         },
       }).success,
     ).toBe(false);
-    expect(RunnerCommandSchema.safeParse(programCommand).success).toBe(false);
+    expect(RunnerCommandSchema.safeParse(programCommand).success).toBe(true);
     expect(
       RunnerCommandSchema.safeParse({ ...programCommand, type: "trigger.execute" }).success,
     ).toBe(false);
@@ -356,7 +356,7 @@ describe("dormant Project programs", () => {
       ProjectReconcileWatchesSchema.safeParse({ ...reconcile, desired: [activation, activation] })
         .success,
     ).toBe(false);
-    expect(RunnerCommandSchema.safeParse(reconcile).success).toBe(false);
+    expect(RunnerCommandSchema.safeParse(reconcile).success).toBe(true);
     expect(RunnerCommandSchema.safeParse({ ...reconcile, type: "watch.reconcile" }).success).toBe(
       false,
     );
