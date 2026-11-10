@@ -19,13 +19,15 @@ import {
   type IntegrationConnectionSummary,
   type IntegrationDefinitionSummaryView,
 } from "@opensteer/client/integrations";
+import { deviceLendsApps, deviceRemovalConfirmation } from "@opensteer/client/computers";
 import type { MachineSummary } from "@opensteer/protocol";
 import * as Haptics from "expo-haptics";
 import { useState, type ReactNode } from "react";
-import { Alert, Linking, Platform, StyleSheet } from "react-native";
+import { Alert, Linking, StyleSheet } from "react-native";
 
 import type { IphoneAppId } from "../platform/iphone-apps.js";
 import { useBlockActions } from "../computers/block-actions.js";
+import { thisPhoneNoun } from "../computers/phone-noun.js";
 import { color, space } from "../theme.js";
 import { appear, exit } from "../ui/motion.js";
 
@@ -41,8 +43,6 @@ import {
   iphoneDefaultAccess,
   iphoneDisclosure,
   iphoneLevels,
-  iphoneRemoveMessage,
-  iphoneRemoveTitle,
   iphoneStatusLine,
   iphoneTaskScope,
   iphoneUnknownChange,
@@ -50,10 +50,11 @@ import {
 } from "./model.js";
 
 /**
- * This iPhone, on its own Computer page: whether it is sharing right now, its
- * apps with what agents can do with each now, the requests waiting for an
- * answer here, and Remove. An app the Host or this build doesn't offer is
- * listed with why, and can't be turned on.
+ * This phone, on its own device page: whether it is connected right now, its
+ * browser, its apps with what agents can do with each now when the Host lists
+ * it as lending apps, the requests waiting for an answer here, and Remove. An
+ * app the Host or this build doesn't offer is listed with why, and can't be
+ * turned on.
  *
  * Each app's switch and level act on the tap: turning on or widening asks
  * iOS when it must and stops if iOS says no, and success is the Host's answer;
@@ -61,6 +62,8 @@ import {
  * Turning off or lowering needs only the Host.
  */
 export function IphoneAppsBlock(props: {
+  /** The device's browser row, drawn under its status as every device's is. */
+  readonly browser?: ReactNode;
   /** False while the Host is unreachable; local removal still stops sharing. */
   readonly canRespond: boolean;
   readonly controller: IphoneAppsController;
@@ -78,7 +81,7 @@ export function IphoneAppsBlock(props: {
   const { controller, hostClient, machine } = props;
   const state = useIphoneAppsState(controller);
   const { snapshot } = state;
-  const browserOnly = Platform.OS === "android";
+  const sharesApps = deviceLendsApps(machine);
   const { busy, failureFor, run } = useBlockActions(props.canRespond, props.onChanged);
   // What the person just switched an app to, shown until the change settles.
   const [intent, setIntent] = useState<{ readonly app: IphoneAppId; readonly on: boolean } | null>(
@@ -86,10 +89,7 @@ export function IphoneAppsBlock(props: {
   );
   const [answers, setAnswers] = useState<ReadonlyMap<string, string>>(() => new Map());
   const [removing, setRemoving] = useState(false);
-  const status =
-    browserOnly && snapshot.connection === "online" && snapshot.issue === null
-      ? { text: "Online · Browser available while Opensteer is open", tone: "green" as const }
-      : iphoneStatusLine(snapshot, props.opensteer);
+  const status = iphoneStatusLine(snapshot, props.opensteer, sharesApps, thisPhoneNoun);
   const definitions = props.data?.definitions ?? [];
   const connected = computerConnectionsOn(props.data?.connections ?? [], machine.id);
   const rows = iphoneAppIds.flatMap((app) => {
@@ -196,35 +196,23 @@ export function IphoneAppsBlock(props: {
   };
 
   const remove = (): void => {
-    Alert.alert(
-      iphoneRemoveTitle(machine.name, props.opensteer),
-      browserOnly
-        ? "This phone stops sharing its browser and erases its browser profiles and sign-ins. Restart Opensteer to finish deleting site data."
-        : iphoneRemoveMessage,
-      [
-        { style: "cancel", text: "Cancel" },
-        {
-          onPress: () => {
-            setRemoving(true);
-            // The iPhone stops before the Host is asked anything; the controller
-            // says so if the Host could not be told.
-            void controller
-              .remove({ hostClient })
-              .then(() => {
-                if (controller.getState().snapshot.pendingErasure)
-                  Alert.alert(
-                    "Restart to finish removal",
-                    "Browser access has stopped. Restart Opensteer to finish erasing this phone’s browser profiles and site data.",
-                  );
-                props.onRemoved();
-              })
-              .finally(() => setRemoving(false));
-          },
-          style: "destructive",
-          text: "Remove",
+    const ask = deviceRemovalConfirmation(machine, hostClient.getSnapshot().browserProfiles);
+    Alert.alert(ask.title, ask.message, [
+      { style: "cancel", text: "Cancel" },
+      {
+        onPress: () => {
+          setRemoving(true);
+          // The phone stops before the Host is asked anything; the controller
+          // says so if the Host could not be told.
+          void controller
+            .remove({ hostClient })
+            .then(props.onRemoved)
+            .finally(() => setRemoving(false));
         },
-      ],
-    );
+        style: "destructive",
+        text: ask.confirm,
+      },
+    ]);
   };
 
   const openSettings = (): void => void Linking.openSettings().catch(() => undefined);
@@ -238,11 +226,9 @@ export function IphoneAppsBlock(props: {
         </AppText>
       </View>
 
-      {browserOnly ? (
-        <AppText role="secondary" tone="muted">
-          This phone lends its browser while Opensteer is open. Its profiles and sign-ins stay here.
-        </AppText>
-      ) : (
+      {props.browser}
+
+      {!sharesApps ? null : (
         <View style={styles.section}>
           <SectionLabel>Apps agents can use</SectionLabel>
           {props.data === null ? (

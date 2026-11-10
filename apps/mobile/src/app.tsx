@@ -115,6 +115,7 @@ const configuration = readMobileConfiguration(
     EXPO_PUBLIC_OPENSTEER_BUILD_PROFILE: process.env.EXPO_PUBLIC_OPENSTEER_BUILD_PROFILE,
     EXPO_PUBLIC_OPENSTEER_MOCK: process.env.EXPO_PUBLIC_OPENSTEER_MOCK,
     EXPO_PUBLIC_OPENSTEER_MOCK_HOME: process.env.EXPO_PUBLIC_OPENSTEER_MOCK_HOME,
+    EXPO_PUBLIC_OPENSTEER_MOCK_PHONE: process.env.EXPO_PUBLIC_OPENSTEER_MOCK_PHONE,
   },
   { development: __DEV__ },
 );
@@ -166,13 +167,22 @@ function mobileClient(): MobileRoot {
   const mockHosts = new Map<string, MockHostClient>();
   let fakeIphone: FakeIphoneApps | null = null;
   if (configuration.mock) {
+    const android = Platform.OS === "android";
     fakeIphone = createFakeIphoneApps({
+      browser: configuration.mockPhone !== "no-browser",
+      erasesOnRestart: android,
       host: (deploymentId) => mockHosts.get(deploymentId) ?? null,
-      runnerId: mockIphoneRunnerId,
-      supported: Platform.OS === "ios",
+      ...(android
+        ? { deviceName: "Pixel 9", offers: [], platform: "android" as const }
+        : { runnerId: mockIphoneRunnerId }),
+      scenario:
+        configuration.mockPhone === "away" || configuration.mockPhone === "needs-update"
+          ? configuration.mockPhone
+          : null,
     });
     // The mock world's own iPhone, which lends a browser there, is this phone.
-    fakeIphone.device.enrolledTo({ deploymentId: mockDeploymentId, name: "Alex's iPhone" });
+    if (!android && configuration.mockPhone === null)
+      fakeIphone.device.enrolledTo({ deploymentId: mockDeploymentId, name: "Alex's iPhone" });
   }
   const iphone = new IphoneAppsController({
     bridge: fakeIphone?.bridge ?? androidPhoneBridge ?? iphoneApps,

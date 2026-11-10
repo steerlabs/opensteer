@@ -412,12 +412,17 @@ export type ComputerSettingsDestination =
   | { readonly kind: "add-iphone" };
 
 /**
- * This iPhone, which can lend its own Calendar, Contacts and Reminders. Null
- * on a phone that cannot, which then has no row of its own.
+ * This phone, which lends its browser and, on an iPhone, its own Calendar,
+ * Contacts and more. Null on a phone that cannot be added, which then has no
+ * row of its own.
  */
 export interface ThisIphoneSettings {
-  readonly browserOnly?: boolean;
-  readonly pendingErasure?: boolean;
+  /** What it is called where its name is not enough. */
+  readonly noun: "iPhone" | "phone";
+  /** Its last removal still waits for a restart to erase its browser profiles. */
+  readonly pendingErasure: boolean;
+  /** Whether this phone has apps to share, as its own build reports them. */
+  readonly sharesApps: boolean;
   /** Requests waiting for an answer on this iPhone. */
   readonly approvals: number;
   /** Whether the open Deployment's Host can take an iPhone. */
@@ -577,12 +582,13 @@ function thisIphoneRow(
 ): ComputerSettingsRow {
   const opensteer = `Opensteer on ${here.deploymentName}`;
   const held = here.heldBy;
+  // Nothing opens until a restart has erased it: adding it again must wait for that.
   if (here.pendingErasure)
     return {
-      detail: "You're here · Restart Opensteer to finish erasing browser profiles",
+      detail: "You're here · Restart Opensteer to finish removing it",
       key: "this-iphone",
       name: here.deviceName,
-      opens: { kind: "add-iphone" },
+      opens: null,
       symbol: "smartphone",
     };
   if (held !== null && held.deploymentId !== here.selectedDeploymentId) {
@@ -617,16 +623,16 @@ function thisIphoneRow(
     ? {
         detail: here.removed
           ? `You're here · Removed from ${opensteer}`
-          : here.browserOnly
-            ? "You're here · Add this phone’s browser"
-            : "You're here · Share its Calendar, Contacts and more",
+          : here.sharesApps
+            ? "You're here · Share its Calendar, Contacts and more"
+            : "You're here · Not added",
         key: "this-iphone",
         name: here.deviceName,
         opens: { kind: "add-iphone" },
         symbol: "smartphone",
       }
     : {
-        detail: `You're here · Update ${opensteer} to add this phone`,
+        detail: `You're here · Update ${opensteer} to add this ${here.noun}`,
         key: "this-iphone",
         name: here.deviceName,
         opens: null,

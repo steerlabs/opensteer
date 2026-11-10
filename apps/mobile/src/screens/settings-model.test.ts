@@ -229,7 +229,10 @@ describe("this iPhone in settings", () => {
     deploymentName: "Studio",
     deviceName: "Alex's iPhone",
     heldBy: null,
+    noun: "iPhone" as const,
+    pendingErasure: false,
     removed: false,
+    sharesApps: true,
     selectedDeploymentId: selected,
     ...overrides,
   });
@@ -268,7 +271,7 @@ describe("this iPhone in settings", () => {
       machines: [],
     });
     expect(rows[1]).toMatchObject({
-      detail: "You're here · Update Opensteer on Studio to add this phone",
+      detail: "You're here · Update Opensteer on Studio to add this iPhone",
       opens: null,
     });
   });
@@ -301,6 +304,43 @@ describe("this iPhone in settings", () => {
       machines: [iphoneMachine],
     });
     expect(waiting[1]?.detail).toBe("You're here · 2 waiting for you");
+  });
+
+  it("lists a phone with only its browser by what it lends, and holds it while erasing", () => {
+    const pixel = { ...here({ deviceName: "Pixel 9", noun: "phone", sharesApps: false }) };
+    expect(computersSettingsRows({ ...server, here: pixel, machines: [] })[1]).toMatchObject({
+      detail: "You're here · Not added",
+      opens: { kind: "add-iphone" },
+    });
+    // Its removal waits for a restart to erase its browser: nothing opens until then.
+    expect(
+      computersSettingsRows({
+        ...server,
+        here: { ...pixel, pendingErasure: true },
+        machines: [],
+      })[1],
+    ).toMatchObject({
+      detail: "You're here · Restart Opensteer to finish removing it",
+      opens: null,
+    });
+    const heldBy = {
+      deploymentId: selected,
+      deploymentName: "Studio",
+      enrollmentId: null,
+      name: "Pixel 9",
+      runnerId,
+      state: "enrolled" as const,
+    };
+    const browserOnly = {
+      ...iphoneMachine,
+      device: { form: "phone", platform: "android" },
+      modules: { browser: { checkedAt: null, detail: null, readiness: "ready" } },
+      name: "Pixel 9",
+    } as MachineSummary;
+    expect(
+      computersSettingsRows({ ...server, here: { ...pixel, heldBy }, machines: [browserOnly] })[1]
+        ?.detail,
+    ).toBe("You're here · Agents can use it · Online");
   });
 
   it("hides this iPhone's own pending enrollment while it is being added", () => {

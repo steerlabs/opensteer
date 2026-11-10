@@ -4,8 +4,10 @@ import type { IntegrationAccess } from "@opensteer/client/integrations";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import * as Haptics from "expo-haptics";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Platform, ScrollView, StyleSheet, View } from "react-native";
-import { space } from "../theme.js";
+import { ScrollView, StyleSheet, View } from "react-native";
+import { thisPhoneNoun } from "../computers/phone-noun.js";
+import { SheetBarButton } from "../ui/sheet-bar.js";
+import { controlFontScaleLimit, space, touchTarget } from "../theme.js";
 import { useHostValue, useMobileState } from "../ui/mobile-client-context.js";
 import { AppText, Field, PrimaryButton, RowGroup, SectionLabel, Toggle } from "../ui/primitives.js";
 import { Screen, useListContentInsets, useReadingColumn } from "../ui/screen.js";
@@ -14,6 +16,7 @@ import type { IphoneAppId } from "../platform/iphone-apps.js";
 import { IphoneAppRow } from "./app-row.js";
 import { iphonePermissionOf, type IphoneAppsController } from "./controller.js";
 import {
+  addIphoneAfterRestart,
   addIphoneButton,
   addIphoneDraft,
   addIphoneFailureText,
@@ -51,11 +54,20 @@ export function AddIphoneScreen(props: AddIphoneScreenProps): ReactNode {
         contentInsetAdjustmentBehavior="automatic"
         keyboardShouldPersistTaps="handled"
       >
+        <View style={styles.bar}>
+          <View style={styles.barSide} />
+          <View accessibilityRole="header" style={styles.barTitle}>
+            <AppText maxFontSizeMultiplier={controlFontScaleLimit} numberOfLines={1} role="title">
+              {`Add this ${thisPhoneNoun}`}
+            </AppText>
+          </View>
+          <SheetBarButton icon="xmark" label="Cancel" onPress={() => navigation.goBack()} />
+        </View>
         {row === undefined || hostClient === null ? (
           <AppText role="secondary" tone="muted">
             {row === undefined
               ? "This deployment is no longer on this phone."
-              : `Open ${row.name} to add this phone to it.`}
+              : `Open ${row.name} to add this ${thisPhoneNoun} to it.`}
           </AppText>
         ) : (
           <AddIphoneForm
@@ -116,18 +128,17 @@ export function AddIphoneForm(props: {
   }, []);
   const adding = state.adding === props.deploymentId;
   const trimmed = name.trim();
-  // Only apps this build can share are offered; the iPhone's page says why the others aren't.
-  const apps =
-    Platform.OS === "android"
-      ? []
-      : iphoneAppIds.filter((app) => iphonePermissionOf(state.snapshot, app) !== null);
+  // Only apps this build can share are offered; the phone's page says why the others aren't.
+  const apps = iphoneAppIds.filter((app) => iphonePermissionOf(state.snapshot, app) !== null);
+  // Removal on this phone has not finished erasing its browser, which only a restart completes.
+  const erasing = state.snapshot.pendingErasure === true;
   const chosen = apps.flatMap((app) => {
     const access = draft[app];
     return access === undefined ? [] : [{ access, app }];
   });
 
   const add = (): void => {
-    if (adding || trimmed === "") return;
+    if (adding || erasing || trimmed === "") return;
     setFailure(null);
     void props.controller
       .add({
@@ -145,7 +156,7 @@ export function AddIphoneForm(props: {
           }
           if (mounted.current) props.onAdded(outcome.runnerId);
         } else if (outcome.kind === "failed" && mounted.current) {
-          setFailure(addIphoneFailureText(outcome.failure, props.opensteer));
+          setFailure(addIphoneFailureText(outcome.failure, props.opensteer, thisPhoneNoun));
         }
       });
   };
@@ -163,16 +174,14 @@ export function AddIphoneForm(props: {
   return (
     <View style={styles.form}>
       <AppText role="body" tone="soft">
-        {Platform.OS === "android"
-          ? `Add this phone to ${props.opensteer} to use its browser while Opensteer is open. Its profiles and sign-ins stay on this phone.`
-          : addIphoneIntro(props.opensteer)}
+        {addIphoneIntro(props.opensteer, apps.length > 0, thisPhoneNoun)}
       </AppText>
       <Field
-        hint={Platform.OS === "android" ? "A name for this phone." : addIphoneNameHint}
+        hint={addIphoneNameHint}
         input={{
           autoCapitalize: "words",
           autoCorrect: false,
-          editable: !adding,
+          editable: !adding && !erasing,
           maxLength: 120,
           onChangeText: setName,
           returnKeyType: "done",
@@ -226,8 +235,8 @@ export function AddIphoneForm(props: {
         <View style={styles.section}>
           <PrimaryButton
             busy={adding}
-            disabled={trimmed === "" || state.snapshot.pendingErasure === true}
-            label={addIphoneButton(trimmed, chosen.length)}
+            disabled={trimmed === "" || erasing}
+            label={addIphoneButton(trimmed, chosen.length, thisPhoneNoun)}
             onPress={add}
           />
           {failure === null ? null : (
@@ -235,16 +244,15 @@ export function AddIphoneForm(props: {
               {failure}
             </AppText>
           )}
-          {state.snapshot.pendingErasure ? (
+          {erasing ? (
             <AppText role="secondary" tone="muted">
-              Restart Opensteer to finish erasing this phone’s browser profiles before adding it
-              again.
+              {addIphoneAfterRestart}
             </AppText>
           ) : null}
         </View>
       ) : (
         <AppText role="secondary" tone="muted">
-          {addIphoneNeedsUpdate(props.opensteer)}
+          {addIphoneNeedsUpdate(props.opensteer, thisPhoneNoun)}
         </AppText>
       )}
     </View>
@@ -252,6 +260,9 @@ export function AddIphoneForm(props: {
 }
 
 const styles = StyleSheet.create({
+  bar: { alignItems: "center", flexDirection: "row", minHeight: touchTarget },
+  barSide: { width: touchTarget },
+  barTitle: { alignItems: "center", flex: 1, minWidth: 0 },
   content: { gap: space[20], paddingTop: space[16] },
   form: { gap: space[20] },
   section: { gap: space[8] },

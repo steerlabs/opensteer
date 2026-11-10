@@ -70,6 +70,7 @@ import { color } from "./theme.js";
 import { AroundScreen } from "./thread/around-sheet.js";
 import { QuietlyMovedScreen } from "./threads/quietly-moved-sheet.js";
 import { Pane } from "./ui/pane.js";
+import { thisPhoneNoun } from "./computers/phone-noun.js";
 
 /**
  * The whole route table, written out.
@@ -454,13 +455,14 @@ const RootStack = createNativeStackNavigator({
     },
     AddIphone: {
       screen: AddIphoneScreen,
-      options: ({ navigation }) => ({
-        ...headerActions({ left: { label: "Cancel", onPress: () => navigation.goBack() } }),
+      // Draws its own bar: Android's form sheet has no native header.
+      options: {
+        headerShown: false,
         presentation: screenPresentations.AddIphone,
         sheetAllowedDetents: [0.95],
         sheetGrabberVisible: true,
-        title: "Add this phone",
-      }),
+        title: `Add this ${thisPhoneNoun}`,
+      },
     },
     // Asked once, over Chat, the first time this phone reaches a computer. It
     // sizes to its content and is dismissed like any sheet.
