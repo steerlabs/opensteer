@@ -851,6 +851,43 @@ describe("a conversation's page above it at phone width", () => {
     expect(page() ?? folded(), "The page outlived its Run").toBeNull();
   });
 
+  it("a head with no room for the folded picture leaves the page its row, and Find under the name", async () => {
+    // A bar so narrow that only its sidebar button and name fit: whatever else
+    // is still drawn at its end runs past it.
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: Element,
+    ) {
+      const end = this.classList.contains("conv-header__end")
+        ? [...this.querySelectorAll("[data-yield]")].filter(
+            (item) => item.closest("[data-yielded]") === null,
+          ).length * 50
+        : 0;
+      return DOMRect.fromRect({ x: 0, y: 0, width: 160 + end, height: 44 });
+    });
+    await opened();
+    const place = await acts();
+    await click(element(".run-page__handle"));
+    await vi.waitFor(
+      () => expect(folded()?.closest("[data-yielded]"), "The head kept the picture").not.toBeNull(),
+      { timeout: 1500 },
+    );
+    // Folded, the page stands above the conversation as its row, without a handle.
+    expect(document.querySelector(".run-page__handle")).toBeNull();
+    expect(element(".run-page__view").getAttribute("aria-expanded")).toBe("false");
+    expect(
+      element('.conv-header [aria-label="Find in conversation"]').closest("[data-yielded]"),
+    ).not.toBeNull();
+    await click(element(".conv-header__menu"));
+    expect(document.body.textContent).toContain("Find in conversation");
+    await act(async () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })));
+
+    // The row opens the page where it fits, and the page still shows the full tab.
+    await click(element(".run-page__view"));
+    expect(document.querySelector(".run-page__handle")).not.toBeNull();
+    await click(element(".run-page__view"));
+    expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
+  });
+
   it.each([
     [
       "reading back",
