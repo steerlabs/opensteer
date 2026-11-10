@@ -94,8 +94,8 @@ function useShellContext(): ShellContext {
             deploymentComputerAccess: false,
             sharing: true,
             serviceManagement: true,
-            runnerEnrollmentMode: "unrestricted",
-            projectConsent: "per-project",
+            runnerEnrollmentMode: "unrestricted" as const,
+            projectConsent: "per-project" as const,
             localRunnerDefaultModules: ["agents", "browser", "shell"] as const,
           },
           deploymentShape: {

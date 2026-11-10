@@ -74,6 +74,12 @@ const exceptionGroups = {
     },
   },
   beforeBootstrapTransport: {
+    "scripts/verify-browser-deployment.mjs": {
+      counts: {
+        "runner.environment?.OPENSTEER_DEPLOYMENT_KIND": 1,
+      },
+      reason: "Validates cohosted Runner transport configuration before a Host/bootstrap exists.",
+    },
     "apps/desktop/src/connections/deployment-access-service.ts": {
       counts: {
         "deployment.kind": 2,
@@ -208,12 +214,6 @@ const exceptionGroups = {
         "request.kind": 1,
       },
       reason: "Integration approval discriminator, not Deployment kind.",
-    },
-    "scripts/verify-browser-deployment.mjs": {
-      counts: {
-        "runner.environment?.OPENSTEER_DEPLOYMENT_KIND": 1,
-      },
-      reason: "Deployment verification asserts the configured fixture, not runtime policy.",
     },
   },
 };
