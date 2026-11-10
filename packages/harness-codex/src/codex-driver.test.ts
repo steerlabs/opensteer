@@ -1995,6 +1995,36 @@ describe("Codex app-server harness", () => {
     }
   });
 
+  it("gives the Run a child whose spawn it never saw, and still finishes", async () => {
+    const fixture = await setup("recorded-subagent_v2_unseen_spawn");
+    const session = await fixture.adapter.startSession(fixture.context);
+    const events: HarnessEvent[] = [];
+    const done = (async () => {
+      for await (const event of session.events) events.push(event);
+    })();
+    try {
+      await session.execute(fixture.turn("Follow up with the child from before the restart"));
+      await session.stop();
+      await done;
+      const nodes = events.filter((event) => event.type === "node.started");
+      expect(nodes.map((event) => event.data.parentNodeId)).toEqual([null, null]);
+      expect(
+        events.filter((event) => event.type === "node.message").map((event) => event.data.text),
+      ).toEqual(["Resumed.", "Unnamed."]);
+      expect(
+        events.filter((event) => event.type === "node.completed").map((event) => event.data.status),
+      ).toEqual(["completed", "completed"]);
+      expect(
+        events
+          .filter((event) => event.type === "assistant.message")
+          .map((event) => event.data.content),
+      ).toEqual([[{ type: "text", text: "Hello." }]]);
+    } finally {
+      await session.stop();
+      await fixture.adapter.close();
+    }
+  });
+
   it("accepts concurrent root and native-child actions within the live Run", async () => {
     const fixture = await setup("native-child-actions");
     const session = await fixture.adapter.startSession(fixture.context);

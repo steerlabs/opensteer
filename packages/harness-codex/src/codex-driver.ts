@@ -183,6 +183,9 @@ const agentToolsTokenEnvironmentVariable = "OPENSTEER_AGENT_TOOLS_TOKEN";
 // turn that cannot accept injected input.
 const codexInvalidRequestCode = -32_600;
 
+/** Frames of a child held while nothing has yet said which agent started it. */
+const childFramesHeldMax = 64;
+
 interface CodexChildContext {
   selection?: Promise<void>;
   finishing?: boolean;
@@ -1943,8 +1946,14 @@ class CodexHarnessSession implements HarnessSession {
     if (!active || active.terminal || item.type !== "subAgentActivity") return;
     const childThreadId = optionalString(item.agentThreadId);
     const activityId = optionalString(item.id);
-    if (!childThreadId || !activityId || item.kind !== "started") return;
+    if (!childThreadId || !activityId) return;
     const context = this.#childContext(childThreadId);
+    if (item.kind !== "started") {
+      // A follow-up to a child whose spawn this process never saw, such as one
+      // resumed after a restart: it proves the child, not who started it.
+      if (context.parentKey === undefined) this.#adoptChild(context);
+      return;
+    }
     const first = context.originCallId === undefined;
     if (context.parentKey === undefined)
       context.parentKey = spawningThreadId === this.#codexThreadId ? null : spawningThreadId;
@@ -1956,8 +1965,18 @@ class CodexHarnessSession implements HarnessSession {
       this.#ensureChild(childThreadId, activityId);
       this.#readChildSelection(childThreadId);
     } else active.nodes.update(childThreadId, context);
-    const pending = context.pending.splice(0);
-    for (const frame of pending) this.#handleChildNotification(frame.method, frame.params);
+    this.#replayChild(context);
+  }
+
+  #replayChild(context: CodexChildContext): void {
+    for (const frame of context.pending.splice(0))
+      this.#handleChildNotification(frame.method, frame.params);
+  }
+
+  /** A child nothing named the spawner of belongs to the Run, never to a guessed parent. */
+  #adoptChild(context: CodexChildContext): void {
+    context.parentKey = null;
+    this.#replayChild(context);
   }
 
   /**
@@ -2008,6 +2027,8 @@ class CodexHarnessSession implements HarnessSession {
         method === "item/completed"
       )
         context.pending.push({ method, params });
+      if (method === "turn/completed" || context.pending.length >= childFramesHeldMax)
+        this.#adoptChild(context);
       return;
     }
     if (method === "turn/completed" && context.selection) {
