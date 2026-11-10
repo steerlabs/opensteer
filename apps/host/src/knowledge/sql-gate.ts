@@ -58,7 +58,15 @@ import type {
   WindowDef,
   WithClause,
 } from "@pgsql/types";
-import { loadModule, parseSync } from "libpg-query";
+
+// Imported on first use so a Host with the trial off never resolves the parser package.
+let parserModule: Promise<typeof import("libpg-query")> | undefined;
+async function loadParser(): Promise<typeof import("libpg-query")> {
+  parserModule ??= import("libpg-query");
+  const parser = await parserModule;
+  await parser.loadModule();
+  return parser;
+}
 
 export const knowledgeSqlLimits = {
   textBytes: 16_384,
@@ -119,10 +127,10 @@ export async function admitKnowledgeSql(input: KnowledgeSqlInput): Promise<Knowl
   }
   if (input.text.trim() === "") refuse("statement", statementMessage);
   if (input.text.includes("\0")) refuse("syntax", "The statement contains a NUL character.");
-  await loadModule();
+  const parser = await loadParser();
   let tree: unknown;
   try {
-    tree = parseSync(input.text);
+    tree = parser.parseSync(input.text);
   } catch (error) {
     refuse(...parseFailure(error, input.text));
   }

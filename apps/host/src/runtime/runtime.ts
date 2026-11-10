@@ -118,7 +118,7 @@ import { AgentCallerResolver } from "../mcp/agent-caller.js";
 import { ProductToolHandlers } from "../mcp/handlers/product.js";
 import { TriggerToolHandlers } from "../mcp/handlers/triggers.js";
 import { agentToolHandlers } from "../mcp/handlers/index.js";
-import { startKnowledgeManager, type KnowledgeManager } from "../knowledge/knowledge-manager.js";
+import type { KnowledgeManager } from "../knowledge/knowledge-manager.js";
 import { RunnerAgentWorkspaceMountService } from "../agents/agent-workspace-mount-service.js";
 import { ContinuationService } from "../agents/continuation-service.js";
 import { HostCommandDispatcher } from "../agents/dispatcher.js";
@@ -497,8 +497,10 @@ export async function createHostRuntime(
       hostInstanceId: hostInstance.hostInstanceId,
       deploymentShape: config.workspace.shape,
     });
-    if (config.knowledge === true)
+    if (config.knowledge === true) {
+      const { startKnowledgeManager } = await import("../knowledge/knowledge-manager.js");
       knowledge = await startKnowledgeManager({ database, databaseUrl: config.databaseUrl });
+    }
     const connections = new ConnectionOAuth({
       deploymentId: deployment.id,
       store: new AgentConnectionStore(database),
