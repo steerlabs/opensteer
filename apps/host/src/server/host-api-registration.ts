@@ -1,3 +1,4 @@
+import { bindAnonymousClientAddress } from "../identity/anonymous-client-address.js";
 import {
   HostApiErrorSchema,
   hostApi,
@@ -165,6 +166,7 @@ function registerHostApiMember<Name extends keyof typeof hostApi>(
           });
         }
         const context = createContext(authenticated, request, reply, binaryRequest);
+        bindAnonymousClientAddress(context, request);
         const input = rpcInput(declaration, request);
         const output = await handlers[name](input, context);
         return sendResult(declaration, output, request, reply);

@@ -1,3 +1,4 @@
+import { hostApiVersion } from "@opensteer/deployment-authority";
 import { createHash, generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
 import { createId } from "@opensteer/core";
 import { mutateAccess, TeamAccessReadStore } from "@opensteer/database";
@@ -122,6 +123,30 @@ async function setup(fixture: StoreFixture) {
 }
 
 describeStore("team administration Host boundary", (it) => {
+  it("isolates anonymous caller exhaustion and retains a shared invitation cap", async ({
+    storeFixture,
+  }) => {
+    const { app } = await setup(storeFixture);
+    const request = (address: string) =>
+      app.inject({
+        method: "GET",
+        url: `/v1/rpc/team.invitation.preview?input=${encodeURIComponent(JSON.stringify({ selector: "missing-selector-123456789" }))}`,
+        remoteAddress: address,
+        headers: { "x-opensteer-api-version": String(hostApiVersion) },
+      });
+    try {
+      for (let index = 0; index < 60; index++)
+        expect((await request("192.0.2.1")).statusCode).toBe(200);
+      expect((await request("192.0.2.1")).statusCode).toBe(429);
+      expect((await request("192.0.2.2")).statusCode).toBe(200);
+      for (let index = 0; index < 539; index++)
+        expect((await request(`198.51.100.${1 + Math.floor(index / 60)}`)).statusCode).toBe(200);
+      expect((await request("192.0.2.3")).statusCode).toBe(429);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("refuses the real service on both model-1 kinds before a target lookup or read transaction", async ({
     storeFixture,
   }) => {
