@@ -173,6 +173,8 @@ export class MockTeamAccess {
   readonly #projects = new Map<WorkspaceId, Project>();
   readonly #invitations = new Map<string, Invitation>();
   #admitted = false;
+  /** The selector this browser proved, standing in for the Host's HttpOnly admission cookie. */
+  #proof: string | null = null;
 
   constructor(scenario: MockTeamScenario = "absent", now: () => Date = () => new Date()) {
     this.scenario = scenario;
@@ -1440,12 +1442,13 @@ export class MockTeamAccess {
           const invitation = this.#invitations.get(input.selector);
           if (!invitation || invitation.tokenHash !== digest(input.verifier))
             return { preview: { state: "unavailable" as const } };
+          this.#proof = input.selector;
           return { preview: this.#invitePreview(input.selector) };
         })(),
       "team.invitation.accept": () =>
         run("team.invitation.accept", () => {
-          const invitation = [...this.#invitations.values()].find((i) => !i.revoked && !i.accepted);
-          if (!invitation || this.#admitted)
+          const invitation = this.#proof ? this.#invitations.get(this.#proof) : undefined;
+          if (!invitation || invitation.revoked || invitation.accepted || this.#admitted)
             throw refusal("conflict", "invite-unavailable", "This invite can't be used.");
           invitation.accepted = true;
           this.#admitted = true;
