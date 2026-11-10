@@ -3,7 +3,7 @@ import type { Kysely } from "kysely";
 import { Socket } from "node:net";
 import pg from "pg";
 import { withDatabaseTransaction } from "./connection.js";
-import { ensureKnowledgeExecutor } from "./knowledge-schema.js";
+import { ensureKnowledge } from "./knowledge-schema.js";
 import type { DatabaseSchema } from "./schema.js";
 
 export interface KnowledgeExecutorCredentials {
@@ -12,17 +12,25 @@ export interface KnowledgeExecutorCredentials {
 }
 
 /**
- * Gives the restricted role a fresh random password and returns it; call at
- * every start and keep it only in memory. The server receives a SCRAM
- * verifier, so the password itself never reaches its statement log.
+ * Creates or upgrades the knowledge schema and gives the restricted role a
+ * fresh random password; call at every start with the trial on and keep the
+ * password only in memory. The server receives a SCRAM verifier, so the
+ * password itself never reaches its statement log.
  */
 export async function prepareKnowledgeExecutor(
   database: Kysely<DatabaseSchema>,
 ): Promise<KnowledgeExecutorCredentials> {
   const password = randomBytes(32).toString("base64url");
   const role = await withDatabaseTransaction(database, (transaction) =>
-    ensureKnowledgeExecutor(transaction, scramVerifier(password)),
-  );
+    ensureKnowledge(transaction, scramVerifier(password)),
+  ).catch((error: unknown) => {
+    if (error instanceof Error && "code" in error && error.code === "42501")
+      throw new Error(
+        "The knowledge trial needs a PostgreSQL user that may create roles and schemas; turn OPENSTEER_KNOWLEDGE off or run the Host as such a user",
+        { cause: error },
+      );
+    throw error;
+  });
   return { role, password };
 }
 

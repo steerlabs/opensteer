@@ -1,4 +1,3 @@
-import { knowledgeMigration } from "./knowledge-schema.js";
 import { PLUGIN_SCHEMA_SQL } from "./plugin-schema.js";
 import { conversationUnreadPredicate } from "./message-visibility.js";
 import {
@@ -4721,7 +4720,6 @@ export function migrationProvider() {
         "0166_memory_pass_activity": memoryPassActivityMigration,
         "0167_quiet_tasks": quietTasksMigration,
         "0168_devices": devicesMigration,
-        "0169_knowledge": knowledgeMigration,
       };
     },
   };
@@ -5382,6 +5380,7 @@ export async function migrateToLatest(
   /** Another release's migrations, for a journey that upgrades from an older schema. */
   provider: MigrationProvider = migrationProvider(),
 ): Promise<MigrationResultSet> {
+  await forgetRetiredMigrations(database);
   const migrator = new Migrator({ db: database, provider });
   const result = await migrator.migrateToLatest();
   const failure = result.results?.find((entry) => entry.status === "Error");
@@ -5403,6 +5402,20 @@ export async function migrateToLatest(
     );
   }
   return result;
+}
+
+/**
+ * A trial build recorded its knowledge schema as a migration; the trial now
+ * creates that schema only when it is turned on, and leaves it in place.
+ */
+async function forgetRetiredMigrations(database: Kysely<DatabaseSchema>): Promise<void> {
+  await sql`
+    do $$ begin
+      if to_regclass('kysely_migration') is not null then
+        delete from kysely_migration where name = '0169_knowledge';
+      end if;
+    end $$
+  `.execute(database);
 }
 
 export const threadStateMigration: Migration = {

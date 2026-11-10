@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { describe, expect, it, vi } from "vitest";
 import { createDatabase } from "./connection.js";
+import { migrateToLatest } from "./migrations.js";
 import {
   createKnowledgeExecutorPool,
   prepareKnowledgeExecutor,
@@ -204,11 +205,114 @@ async function hotelId(context: Fixture): Promise<string> {
 // Skip outside the integration launcher, which supplies an isolated PostgreSQL clone.
 const integration = process.env.OPENSTEER_TEST_DATABASE_URL ? describe : describe.skip;
 integration("knowledge storage", () => {
+  it("creates knowledge only when asked, once under concurrent starts, and upgrades a trial build's", async () => {
+    const clone = await cloneTestDatabase("host");
+    const state = { role: "" };
+    const { database } = await ownTestDatabaseProducer(clone.url, async () => {
+      const database = createDatabase({ connectionString: clone.url, maxConnections: 2 });
+      return {
+        database,
+        async close() {
+          if (state.role)
+            await sql`drop owned by ${sql.id(state.role)}; drop role ${sql.id(state.role)}`.execute(
+              database,
+            );
+          await database.destroy();
+        },
+      };
+    });
+    const version = async () =>
+      (
+        await sql<{ version: string | null }>`
+          select obj_description(oid, 'pg_namespace') as version from pg_namespace
+          where nspname = 'knowledge'
+        `.execute(database)
+      ).rows;
+    expect(await version()).toEqual([]);
+    const [first, second] = await Promise.all([
+      prepareKnowledgeExecutor(database),
+      prepareKnowledgeExecutor(database),
+    ]);
+    state.role = first.role;
+    expect(second.role).toBe(first.role);
+    expect(await version()).toEqual([{ version: "opensteer knowledge schema 2" }]);
+    await sql`
+      drop function knowledge.result_too_large();
+      comment on schema knowledge is null;
+      insert into kysely_migration (name, timestamp) values ('0169_knowledge', '2026-11-01T00:00:00.000Z');
+    `.execute(database);
+    await migrateToLatest(database);
+    expect(
+      (await sql`select name from kysely_migration where name = '0169_knowledge'`.execute(database))
+        .rows,
+    ).toEqual([]);
+    const upgraded = await prepareKnowledgeExecutor(database);
+    expect(await version()).toEqual([{ version: "opensteer knowledge schema 2" }]);
+    const pool = createKnowledgeExecutorPool(clone.url, upgraded);
+    try {
+      await expect(
+        runKnowledgeStatement(pool, {
+          statement: {
+            kind: "select",
+            text: "select repeat('x', 400000) from facts, (values (1), (2), (3)) v(n)",
+            parameters: [],
+          },
+          readTopicIds: [],
+          writeTopicIds: [],
+          writer,
+        }),
+      ).resolves.toMatchObject({ rows: [] });
+    } finally {
+      await pool.end();
+    }
+  });
+
+  it("refuses to turn the trial on for a database user that may not create roles", async () => {
+    const clone = await cloneTestDatabase("host");
+    const limited = `knowledge_limited_${randomUUID().replaceAll("-", "")}`;
+    const url = new URL(clone.url);
+    url.username = limited;
+    url.password = limited;
+    const { database } = await ownTestDatabaseProducer(clone.url, async () => {
+      const administrator = createDatabase({ connectionString: clone.url, maxConnections: 1 });
+      await sql`create role ${sql.id(limited)} login password ${sql.lit(limited)}`.execute(
+        administrator,
+      );
+      await sql`grant create on database ${sql.id(url.pathname.slice(1))} to ${sql.id(limited)}`.execute(
+        administrator,
+      );
+      const database = createDatabase({ connectionString: url.toString(), maxConnections: 1 });
+      return {
+        database,
+        async close() {
+          await database.destroy();
+          await sql`drop owned by ${sql.id(limited)}; drop role ${sql.id(limited)}`.execute(
+            administrator,
+          );
+          await administrator.destroy();
+        },
+      };
+    });
+    await expect(prepareKnowledgeExecutor(database)).rejects.toThrow(
+      "The knowledge trial needs a PostgreSQL user that may create roles and schemas",
+    );
+    expect(
+      (await sql`select from pg_namespace where nspname = 'knowledge'`.execute(database)).rows,
+    ).toEqual([]);
+  });
+
   it("seeds one General topic for the Personal owner and lists unarchived topics", async () => {
     const clone = await cloneTestDatabase("host");
     const { database } = await ownTestDatabaseProducer(clone.url, async () => {
       const database = createDatabase({ connectionString: clone.url, maxConnections: 2 });
-      return { database, close: () => database.destroy() };
+      const { role } = await prepareKnowledgeExecutor(database);
+      return {
+        database,
+        async close() {
+          await sql`drop owned by ${sql.id(role)}; drop role ${sql.id(role)}`.execute(database);
+          await database.destroy();
+        },
+      };
     });
     await ensureKnowledgeGeneralTopic(database, owner);
     await ensureKnowledgeGeneralTopic(database, owner);
