@@ -15,7 +15,7 @@ import {
   type ThreadReadState,
   type WorkspaceNotificationPreference,
 } from "@opensteer/core";
-import { OpensteerStore, type WorkspaceMembershipRecord } from "@opensteer/database";
+import { OpensteerStore } from "@opensteer/database";
 import { type HostToClientMessage, type WorkspaceTabLineage } from "@opensteer/protocol";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import type { LiveFrame, LiveRunRegistry } from "./live-run-registry.js";
@@ -146,20 +146,6 @@ interface SubscriberOptions {
  * subscriber that goes live sends the Workspace's open streams whole instead.
  */
 class Subscriber {
-  #membershipGeneration: number | undefined;
-  #membershipGenerationCutoff = -1;
-
-  captureMembershipGeneration(generation: number): boolean {
-    this.#membershipGeneration = generation;
-    return generation > this.#membershipGenerationCutoff;
-  }
-
-  revokeMembershipThrough(cutoff: number): void {
-    this.#membershipGenerationCutoff = Math.max(this.#membershipGenerationCutoff, cutoff);
-    if (this.#membershipGeneration === undefined || this.#membershipGeneration > cutoff) return;
-    this.sink.close(4003, "Workspace access revoked");
-    this.close();
-  }
   readonly sink: RealtimeSink;
   readonly workspaceId: WorkspaceId;
   readonly userId: UserId;
@@ -596,64 +582,6 @@ function liveFrameBytes(frame: LiveFrame): number {
   return Buffer.byteLength(JSON.stringify(frame), "utf8");
 }
 
-class LegacySubscriber extends Subscriber {
-  #admitted = false;
-  override captureMembershipGeneration(generation: number): boolean {
-    this.#admitted = true;
-    return super.captureMembershipGeneration(generation);
-  }
-  override revokeMembershipThrough(cutoff: number): void {
-    if (!this.#admitted) {
-      this.sink.close(4003, "Workspace access revoked");
-      this.close();
-      return;
-    }
-    super.revokeMembershipThrough(cutoff);
-  }
-}
-
-type MembershipAuthorityRecord = WorkspaceMembershipRecord & {
-  readonly authorityDeadline?: number;
-};
-
-class DeadlineSink implements RealtimeSink {
-  readonly id: string;
-  readonly #sink: RealtimeSink;
-  readonly #read: () => Promise<MembershipAuthorityRecord | null>;
-  #deadline = Infinity;
-  #generation: number | undefined;
-  #expired = false;
-
-  constructor(sink: RealtimeSink, read: () => Promise<MembershipAuthorityRecord | null>) {
-    this.id = sink.id;
-    this.#sink = sink;
-    this.#read = read;
-  }
-
-  capture(membership: MembershipAuthorityRecord): void {
-    this.#generation = membership.generation;
-    this.#deadline = Math.min(this.#deadline, membership.authorityDeadline ?? Infinity);
-  }
-
-  close(code: number, reason: string): void {
-    this.#sink.close(code, reason);
-  }
-
-  async send(message: HostToClientMessage): Promise<void> {
-    const deny = () => {
-      this.#expired = true;
-      this.close(4003, "Workspace access expired");
-      throw new OpensteerError({ code: "forbidden", message: "Workspace access expired" });
-    };
-    if (this.#expired || performance.now() >= this.#deadline) deny();
-    const current = await this.#read();
-    if (!current || current.state !== "active" || current.generation !== this.#generation) deny();
-    this.#deadline = Math.min(this.#deadline, current!.authorityDeadline ?? Infinity);
-    if (performance.now() >= this.#deadline) deny();
-    return this.#sink.send(message);
-  }
-}
-
 export class RealtimeHub {
   readonly #observers = new Set<(change: AgentEvent | HostToClientMessage) => void>();
   observe(listener: (change: AgentEvent | HostToClientMessage) => void): () => void {
@@ -665,15 +593,6 @@ export class RealtimeHub {
 
   readonly bootstrapDiagnostics = new BootstrapNoticeDiagnostics();
   readonly #store: OpensteerStore;
-  readonly #membership: (
-    workspaceId: WorkspaceId,
-    userId: UserId,
-  ) => Promise<MembershipAuthorityRecord | null>;
-  readonly #deliverySink: (
-    sink: RealtimeSink,
-    read: () => Promise<MembershipAuthorityRecord | null>,
-  ) => RealtimeSink;
-  readonly #subscriber: typeof Subscriber;
   readonly #gapFillDelayMs: number;
   readonly #gapFillTimeoutMs: number;
   readonly #liveRuns: Pick<LiveRunRegistry, "workspaceFrames"> | undefined;
@@ -705,16 +624,6 @@ export class RealtimeHub {
 
   constructor(options: RealtimeHubOptions) {
     this.#store = options.store;
-    this.#membership =
-      options.store.authorityModelVersion === 2
-        ? (workspaceId, userId) =>
-            options.store.workspaceMembershipAuthorityForUser(workspaceId, userId)
-        : (workspaceId, userId) => options.store.workspaceMembershipForUser(workspaceId, userId);
-    this.#deliverySink =
-      options.store.authorityModelVersion === 2
-        ? (sink, read) => new DeadlineSink(sink, read)
-        : (sink) => sink;
-    this.#subscriber = options.store.authorityModelVersion === 2 ? Subscriber : LegacySubscriber;
     this.#gapFillDelayMs = options.gapFillDelayMs ?? 100;
     this.#gapFillTimeoutMs = options.gapFillTimeoutMs ?? 15_000;
     this.#liveRuns = options.liveRuns;
@@ -736,15 +645,12 @@ export class RealtimeHub {
     readonly workspaceId: WorkspaceId;
   }): Promise<() => void> {
     let subscriber!: Subscriber;
-    const sink = this.#deliverySink(input.sink, () =>
-      this.#membership(input.workspaceId, input.userId),
-    );
     const remove = () => {
       const set = this.#subscribers.get(input.workspaceId);
       set?.delete(subscriber);
       if (set?.size === 0) this.#subscribers.delete(input.workspaceId);
     };
-    subscriber = new this.#subscriber({
+    subscriber = new Subscriber({
       cursor: input.afterSequence,
       fill: (after, through) =>
         this.#store.eventsAfterWindow(input.workspaceId, after, {
@@ -760,7 +666,7 @@ export class RealtimeHub {
       maxLiveBytes: this.#maxLiveBytes,
       maxWireBytes: this.#maxWireBytes,
       onClose: remove,
-      sink,
+      sink: input.sink,
       placeEvents: input.placeEvents === "include",
       personShow: input.personShow === "accept",
       userId: input.userId,
@@ -771,21 +677,16 @@ export class RealtimeHub {
     this.#subscribers.set(input.workspaceId, set);
 
     try {
-      const membership = await this.#membership(input.workspaceId, input.userId);
+      const membership = await this.#store.workspaceMembershipForUser(
+        input.workspaceId,
+        input.userId,
+      );
       if (!membership || membership.state !== "active") {
         throw new OpensteerError({
           code: "forbidden",
           message: "Workspace realtime subscription is not authorized",
         });
       }
-      if (!subscriber.captureMembershipGeneration(membership.generation)) {
-        subscriber.revokeMembershipThrough(membership.generation);
-        throw new OpensteerError({
-          code: "forbidden",
-          message: "Workspace realtime subscription is not authorized",
-        });
-      }
-      if (sink instanceof DeadlineSink) sink.capture(membership);
       const messages: HostToClientMessage[] = [];
       let cursor: Sequence;
       if (compareSequence(input.afterSequence, zeroSequence) === 0) {
@@ -847,7 +748,7 @@ export class RealtimeHub {
             ...(afterThreadId ? { afterThreadId } : {}),
           });
           if (page.markers.length)
-            await sink.send({
+            await input.sink.send({
               type: "host.read-markers",
               workspaceId: input.workspaceId,
               markers: [...page.markers],
@@ -866,7 +767,7 @@ export class RealtimeHub {
             threadIds: [...replayThreads],
           });
           for (let index = 0; index < states.length; index += 100)
-            await sink.send({
+            await input.sink.send({
               type: "host.read-states",
               workspaceId: input.workspaceId,
               states: states.slice(index, index + 100),
@@ -879,7 +780,7 @@ export class RealtimeHub {
             ...(afterWorkspaceId ? { afterWorkspaceId } : {}),
           });
           if (page.preferences.length)
-            await sink.send({
+            await input.sink.send({
               type: "host.notification-preferences",
               preferences: [...page.preferences],
             });
@@ -1149,14 +1050,12 @@ export class RealtimeHub {
     }
   }
 
-  closeUserWorkspace(
-    userId: UserId,
-    workspaceId: WorkspaceId,
-    membershipGenerationCutoff = Number.MAX_SAFE_INTEGER,
-  ): void {
+  closeUserWorkspace(userId: UserId, workspaceId: WorkspaceId): void {
     for (const subscriber of this.#subscribers.get(workspaceId) ?? []) {
-      if (subscriber.userId === userId)
-        subscriber.revokeMembershipThrough(membershipGenerationCutoff);
+      if (subscriber.userId === userId) {
+        subscriber.sink.close(4003, "Workspace access revoked");
+        subscriber.close();
+      }
     }
   }
 }

@@ -1,4 +1,3 @@
-import { effectiveMembershipPredicate } from "./effective-membership.js";
 import { nonTerminalRunStatuses, type ThreadId, type UserId } from "@opensteer/core";
 import { sql, type Kysely, type RawBuilder } from "kysely";
 import { publishedMessagePredicate } from "./message-visibility.js";
@@ -11,7 +10,7 @@ import type { DatabaseSchema } from "./schema.js";
  * creator last read it, so a task never moves while someone is looking at it.
  * Reads `thread`, its creator as `person` and their read marker as `marker`.
  */
-function quietTask(database: Kysely<DatabaseSchema>, now: Date): RawBuilder<boolean> {
+function quietTask(now: Date): RawBuilder<boolean> {
   return sql<boolean>`thread.role = 'work' and thread.listed and thread.done_at is null
     and thread.status = 'idle' and not thread.input_queue_paused
     and person.disabled_at is null and person.quiet_task_days > 0
@@ -21,7 +20,7 @@ function quietTask(database: Kysely<DatabaseSchema>, now: Date): RawBuilder<bool
       select 1 from workspace_memberships membership
       join workspaces workspace on workspace.id = membership.workspace_id
       where membership.workspace_id = thread.workspace_id and membership.user_id = thread.created_by
-        and ${effectiveMembershipPredicate(database, "membership.state", true)} and workspace.status <> 'deleted')
+        and membership.state = 'active' and workspace.status <> 'deleted')
     and not exists (select 1 from workspaces where home_thread_id = thread.id)
     and not exists (
       select 1 from channel_conversation_contexts where active_thread_id = thread.id)
@@ -69,7 +68,7 @@ export async function listQuietTasks(
   const rows = await sql<QuietTaskCandidate>`
     select thread.id as thread_id, thread.created_by, thread.updated_at
     from ${quietTaskSource}
-    where ${quietTask(database, input.now)}
+    where ${quietTask(input.now)}
       -- The shortest choice, so the planner can range-scan threads_quiet_candidates.
       and thread.updated_at <= ${input.now}::timestamptz - interval '1 day'
       ${input.after ? sql`and thread.id > ${input.after}` : sql``}
@@ -85,7 +84,7 @@ export async function threadIsQuiet(
   now: Date,
 ): Promise<boolean> {
   const row = await sql<{ quiet: boolean }>`
-    select ${quietTask(database, now)} as quiet from ${quietTaskSource} where thread.id = ${threadId}
+    select ${quietTask(now)} as quiet from ${quietTaskSource} where thread.id = ${threadId}
   `.execute(database);
   return row.rows[0]?.quiet === true;
 }

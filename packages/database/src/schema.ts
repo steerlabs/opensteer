@@ -724,7 +724,6 @@ export interface WorkspaceTable {
 }
 
 export interface WorkspaceMembershipTable {
-  effectiveUntil: NullableTimestamp;
   id: WorkspaceMembershipId;
   workspaceId: WorkspaceId;
   userId: UserId;
@@ -764,7 +763,6 @@ export interface AccessEntryTable {
   level: "use" | "manage" | "read" | "write";
   grantedBy: UserId;
   grantedAt: Timestamp;
-  expiresAt: NullableTimestamp;
   revokedAt: NullableTimestamp;
   revokedBy: UserId | null;
 }
@@ -807,7 +805,7 @@ interface SecurityAuditTable {
 }
 
 interface SecurityEffectTable {
-  membershipGenerationCutoff: ColumnType<string, number | string, number | string>;
+  membershipGenerationCutoff: ColumnType<string, number | string | undefined, number | string>;
   causeId: Generated<string | null>;
   id: SecurityEffectId;
   workspaceId: WorkspaceId;

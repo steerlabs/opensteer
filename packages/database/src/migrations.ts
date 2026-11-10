@@ -28,7 +28,6 @@ import {
 } from "kysely/migration";
 import { createHash } from "node:crypto";
 import { BASELINE_SCHEMA_SQL } from "./baseline-schema.js";
-import { ACCESS_MEMBERSHIP_FUNCTIONS_SQL } from "./access-membership-functions.js";
 import type { DatabaseSchema } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
 
@@ -45,20 +44,6 @@ export const accessFoundationMigration: Migration = {
         add column member_state_changed_at timestamptz not null default now(),
         add column member_state_changed_by text references public.users(id);
       update public.users set member_state = 'suspended', member_state_changed_at = disabled_at where disabled_at is not null;
-      alter table public.workspace_memberships add column effective_until timestamptz;
-      alter table public.workspace_memberships drop constraint workspace_memberships_revocation_check;
-      alter table public.workspace_memberships add constraint workspace_memberships_revocation_check check (
-        (state = 'active' and revoked_at is null and revoked_by is null)
-        or (state = 'revoked' and revoked_at is not null)
-      );
-      create index workspace_memberships_due on public.workspace_memberships(effective_until)
-        where state = 'active' and effective_until is not null;
-      drop index public.workspace_memberships_user_active;
-      drop index public.workspace_memberships_workspace_active;
-      create index workspace_memberships_user_active on public.workspace_memberships(user_id, workspace_id)
-        include (effective_until, state) where state = 'active';
-      create index workspace_memberships_workspace_active on public.workspace_memberships(workspace_id, role, user_id)
-        include (effective_until, state) where state = 'active';
       create table public.access_groups (
         id uuid primary key, name text not null check (length(btrim(name)) between 1 and 120),
         builtin text check (builtin = 'everyone'), created_by text not null references public.users(id),
@@ -78,11 +63,10 @@ export const accessFoundationMigration: Migration = {
         subject_id text not null, target_kind text not null check (target_kind in ('project','topic','team-account')),
         target_id text not null, level text not null,
         granted_by text not null references public.users(id), granted_at timestamptz not null default now(),
-        expires_at timestamptz, revoked_at timestamptz, revoked_by text references public.users(id),
+        revoked_at timestamptz, revoked_by text references public.users(id),
         check ((target_kind = 'project' and level in ('use','manage') and subject_kind <> 'project')
           or (target_kind = 'topic' and level in ('read','write','manage'))
-          or (target_kind = 'team-account' and level = 'use')),
-        check (expires_at is null or expires_at > granted_at)
+          or (target_kind = 'team-account' and level = 'use'))
       );
       create index access_entries_target on public.access_entries(target_kind, target_id);
       create index access_entries_subject on public.access_entries(subject_kind, subject_id);
@@ -91,13 +75,6 @@ export const accessFoundationMigration: Migration = {
         revision bigint not null check (revision between 1 and 9007199254740991)
       );
       insert into public.access_state values ('primary', 1);
-      create function public.opensteer_membership_is_effective(membership_state text, deadline timestamptz, member_id text)
-      returns boolean language sql volatile parallel safe as $$
-        select membership_state = 'active' and
-          (not exists (select 1 from public.deployments where authority_model_version = 2 and deployment_shape->>'kind' = 'server')
-            or ((deadline is null or deadline > clock_timestamp())
-              and exists (select 1 from public.users where id = member_id and member_state = 'active' and admitted_at is not null)))
-      $$;
       alter table public.security_effects add column membership_generation_cutoff bigint;
       update public.security_effects set membership_generation_cutoff = membership_generation - 1;
       alter table public.security_effects alter column membership_generation_cutoff set not null;
@@ -128,7 +105,6 @@ export const accessFoundationMigration: Migration = {
       create trigger security_effect_scope_immutable before update on public.security_effects
         for each row execute function public.opensteer_security_effect_scope_immutable();
     `.execute(database);
-    await sql.raw(ACCESS_MEMBERSHIP_FUNCTIONS_SQL).execute(database);
   },
 };
 

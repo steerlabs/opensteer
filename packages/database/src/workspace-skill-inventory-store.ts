@@ -1,4 +1,3 @@
-import { effectiveMembershipPredicate } from "./effective-membership.js";
 import type { UserId, WorkspaceId } from "@opensteer/core";
 import {
   RunnerSkillMetadataReportSchema,
@@ -94,7 +93,7 @@ export async function listWorkspaceSkillInventory(
       or r.connection_generation <> i.connection_generation or r.revoked_at is not null or r.last_seen_at is null) as stale
     from workspace_skill_inventory i
     join workspaces w on w.id = i.workspace_id
-    join workspace_memberships m on m.workspace_id = w.id and m.user_id = ${viewerId} and ${effectiveMembershipPredicate(database, "m.state", true)}
+    join workspace_memberships m on m.workspace_id = w.id and m.user_id = ${viewerId} and m.state = 'active'
     left join execution_environments e on e.id = w.owner_environment_id
     left join runners r on r.id = e.runner_id
     where w.id in (${sql.join(workspaceIds)}) and w.deleted_at is null and w.deletion_requested_at is null`.execute(

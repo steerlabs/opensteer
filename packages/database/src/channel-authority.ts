@@ -1,4 +1,3 @@
-import { effectiveMembershipState } from "./effective-membership.js";
 import {
   ChannelAccessGrantSchema,
   type ChannelAccessGrant,
@@ -124,7 +123,7 @@ export async function resolveChannelAuthority(
   const linkedMembership = identity.linkedUserId
     ? await transaction
         .selectFrom("workspaceMemberships")
-        .select(["generation", effectiveMembershipState(transaction, "state")])
+        .select(["generation", "state"])
         .where("workspaceId", "=", binding.workspaceId)
         .where("userId", "=", identity.linkedUserId)
         .executeTakeFirst()
@@ -160,7 +159,7 @@ export async function resolveChannelAuthority(
 
   const ownerMembership = await transaction
     .selectFrom("workspaceMemberships")
-    .select(["generation", effectiveMembershipState(transaction, "state")])
+    .select(["generation", "state"])
     .where("workspaceId", "=", binding.workspaceId)
     .where("userId", "=", binding.createdBy)
     .executeTakeFirst();

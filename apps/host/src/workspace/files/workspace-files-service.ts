@@ -16,8 +16,7 @@ const maximumDownloadEmissionBytes = 64 * 1_024;
 type WorkspaceMembershipRepository = Pick<
   OpensteerStore,
   "onWorkspaceMembershipChanged" | "workspaceMembershipForUser"
-> &
-  Partial<Pick<OpensteerStore, "authorityModelVersion" | "workspaceMembershipAuthorityForUser">>;
+>;
 
 /**
  * Product-facing Files access through the Runner that owns the directory.
@@ -28,7 +27,6 @@ export class WorkspaceFilesService {
   readonly #local: RunnerLocalWorkspaceFilesDriver | undefined;
   readonly #memberships: WorkspaceMembershipRepository;
   readonly #unsubscribeMembershipChanges: () => void;
-  readonly #lease: typeof WorkspaceFilesLease;
 
   constructor(options: {
     readonly activity?: Pick<WorkspaceActivityService, "note">;
@@ -41,10 +39,6 @@ export class WorkspaceFilesService {
     this.#activity = options.activity;
     this.#local = options.local;
     this.#memberships = options.memberships;
-    this.#lease =
-      options.memberships.authorityModelVersion === 2
-        ? DeadlineWorkspaceFilesLease
-        : WorkspaceFilesLease;
     this.#unsubscribeMembershipChanges = options.memberships.onWorkspaceMembershipChanged(
       (membership) => this.#membershipChanged(membership),
     );
@@ -133,7 +127,7 @@ export class WorkspaceFilesService {
     const leases = this.#activeMemberships.get(scope) ?? new Set<WorkspaceFilesLease>();
     this.#activeMemberships.set(scope, leases);
     let lease!: WorkspaceFilesLease;
-    lease = new this.#lease({
+    lease = new WorkspaceFilesLease({
       admission,
       memberships: this.#memberships,
       onClose: () => {
@@ -255,39 +249,6 @@ class WorkspaceFilesLease {
       await this.revalidate();
     }
     this.assertLive();
-  }
-}
-
-class DeadlineWorkspaceFilesLease extends WorkspaceFilesLease {
-  readonly #admission: WorkspaceFilesAdmission;
-  readonly #read: NonNullable<WorkspaceMembershipRepository["workspaceMembershipAuthorityForUser"]>;
-  #deadline: number;
-
-  constructor(options: ConstructorParameters<typeof WorkspaceFilesLease>[0]) {
-    super(options);
-    this.#admission = options.admission;
-    if (!options.memberships.workspaceMembershipAuthorityForUser)
-      throw new TypeError("Timed Files requires membership authority");
-    this.#read = options.memberships.workspaceMembershipAuthorityForUser.bind(options.memberships);
-    this.#deadline = options.admission.authorityDeadline ?? Infinity;
-  }
-
-  override assertLive(): void {
-    if (performance.now() >= this.#deadline) this.abort(membershipChangedError());
-    super.assertLive();
-  }
-
-  override async revalidate(): Promise<void> {
-    this.assertLive();
-    const membership = await this.#read(this.#admission.workspace.id, this.#admission.userId);
-    if (!membership || membership.state !== "active" || membership.generation !== this.generation)
-      this.abort(membershipChangedError());
-    this.#deadline = Math.min(this.#deadline, membership?.authorityDeadline ?? Infinity);
-    this.assertLive();
-  }
-
-  override revalidateStream(_nextBytes: number): Promise<void> {
-    return this.revalidate();
   }
 }
 

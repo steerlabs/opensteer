@@ -5,7 +5,6 @@ import { lockRunProjectionRows } from "./run-projection-locks.js";
 import { withDatabaseTransaction } from "./connection.js";
 import * as commandStore from "./command-store.js";
 import { resendableControlCommandTypes } from "./command-delivery.js";
-import { effectiveMembershipState } from "./effective-membership.js";
 import {
   type EnvironmentId,
   type RunId,
@@ -404,7 +403,7 @@ export async function recoverThreadWorkQueues(
         });
         const membership = await transaction
           .selectFrom("workspaceMemberships")
-          .select(["generation", effectiveMembershipState(transaction, "state")])
+          .select(["generation", "state"])
           .where("workspaceId", "=", observed.workspaceId)
           .where("userId", "=", run.requestedBy)
           .executeTakeFirst();
@@ -1241,7 +1240,6 @@ export async function failActiveRunsForMembershipRevocation(
   database: Kysely<DatabaseSchema>,
   links: ChannelLinks,
   input: {
-    readonly membershipGenerationCutoff?: number;
     readonly userId: UserId;
     readonly workspaceId: WorkspaceId;
   },
@@ -1249,12 +1247,26 @@ export async function failActiveRunsForMembershipRevocation(
   return recoverAbandonedRuns(database, links, {
     code: "workspace_access_revoked",
     kind: "membership-revocation",
-    ...(input.membershipGenerationCutoff === undefined
-      ? {}
-      : { membershipGenerationCutoff: input.membershipGenerationCutoff }),
     message: "Workspace access was revoked before the Run reached a terminal event",
     userId: input.userId,
     workspaceId: input.workspaceId,
+  });
+}
+
+export async function failActiveRunsForAccessRevocation(
+  database: Kysely<DatabaseSchema>,
+  links: ChannelLinks,
+  input: {
+    readonly userId: UserId;
+    readonly workspaceId: WorkspaceId;
+    readonly membershipGenerationCutoff: number;
+  },
+): Promise<RunRecoveryOutcome> {
+  return recoverAbandonedRuns(database, links, {
+    code: "workspace_access_revoked",
+    kind: "membership-revocation",
+    message: "Workspace access was revoked before the Run reached a terminal event",
+    ...input,
   });
 }
 

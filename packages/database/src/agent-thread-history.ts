@@ -1,4 +1,3 @@
-import { effectiveMembershipPredicate } from "./effective-membership.js";
 import {
   MessageIdSchema,
   OpensteerError,
@@ -79,7 +78,7 @@ async function canRead(
     .select("threads.id")
     .where("threads.id", "=", threadId)
     .where("workspaceMemberships.userId", "=", ownerId)
-    .where(effectiveMembershipPredicate(transaction))
+    .where("workspaceMemberships.state", "=", "active")
     .executeTakeFirst();
 }
 

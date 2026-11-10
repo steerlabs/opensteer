@@ -1,4 +1,3 @@
-import { effectiveMembershipPredicate } from "./effective-membership.js";
 import { pluginPolicyAllows } from "./plugin-settings-store.js";
 import {
   RunIdSchema,
@@ -134,7 +133,7 @@ export async function resolveResourceAccess(
       .where("specialists.workspaceId", "=", input.workspaceId)
       .where("specialists.ownerUserId", "=", input.ownerUserId)
       .where("workspaceMemberships.userId", "=", input.ownerUserId)
-      .where(effectiveMembershipPredicate(database))
+      .where("workspaceMemberships.state", "=", "active")
       .executeTakeFirst();
     specialistAllowed =
       registration !== undefined &&

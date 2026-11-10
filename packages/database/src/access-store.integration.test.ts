@@ -10,25 +10,158 @@ import { withTimeout } from "@opensteer/shared/withTimeout";
 import { createTestWorkspace } from "./workspace-fixture.test-support.js";
 import { lockWorkspaceRow, requireActiveWorkspaceMembership } from "./store-primitives.js";
 import { testModelSelection } from "./store.integration.test-support.js";
-import { describeStore, type StoreFixture } from "./store.integration.test-support.js";
-import type { DatabaseSchema } from "./schema.js";
 import {
-  accessCapacity,
-  checkAccess,
-  expireAccessMemberships,
-  mutateAccess,
-} from "./access-store.js";
-import { createAccessExpiryScheduler } from "./access-expiry.js";
-import { loadMembershipAuthority } from "./effective-membership.js";
+  createStoreFixture,
+  describeStore,
+  type StoreFixture,
+} from "./store.integration.test-support.js";
+import type { DatabaseSchema } from "./schema.js";
+import { accessCapacity, checkAccess, mutateAccess } from "./access-store.js";
+import { claimAccessSecurityEffects } from "./access-effects.js";
+import { failActiveRunsForAccessRevocation } from "./execution-recovery.js";
+import { threadPathLinks } from "./store-primitives.js";
+import { OpensteerStore } from "./store.js";
+
+async function legacyMembershipLifecycle(
+  database: Kysely<DatabaseSchema>,
+  ownerId: UserId,
+  workspaceId: import("@opensteer/core").WorkspaceId,
+  phase: string,
+) {
+  const statements: string[] = [];
+  const observed = database.withPlugin({
+    transformQuery(args) {
+      statements.push(database.getExecutor().compileQuery(args.node, args.queryId).sql);
+      return args.node;
+    },
+    async transformResult(args) {
+      return args.result;
+    },
+  });
+  const store = new OpensteerStore(observed);
+  const memberId = await new OpensteerStore(database).createUser(`Legacy ${phase}`);
+  const invite = async (suffix: string) => {
+    const selector = `${phase}-${suffix}`;
+    await store.createWorkspaceInvitation({
+      workspaceId,
+      createdBy: ownerId,
+      role: "collaborator",
+      type: "link",
+      intendedEmail: null,
+      expiresAt: new Date("2099-01-01"),
+      selector,
+      tokenHash: selector,
+      idempotencyKey: selector,
+      requestFingerprint: selector,
+    });
+    return store.acceptWorkspaceInvitation({
+      selector,
+      tokenHash: selector,
+      userId: memberId,
+      userEmail: "legacy@fixture.invalid",
+      userEmailVerified: true,
+    });
+  };
+  const joined = await invite("join");
+  const revoked = await store.changeWorkspaceMembership({
+    actorId: ownerId,
+    targetUserId: memberId,
+    workspaceId,
+    state: "revoked",
+  });
+  const effects = await database
+    .selectFrom("securityEffects")
+    .selectAll()
+    .where("userId", "=", memberId)
+    .orderBy("kind")
+    .execute();
+  expect(effects).toHaveLength(6);
+  const projectedEffects = effects.map((row) => {
+    const {
+      id: _id,
+      userId: _user,
+      createdAt: _created,
+      updatedAt: _updated,
+      nextAttemptAt: _next,
+      membershipGenerationCutoff,
+      causeId,
+      ...effect
+    } = row;
+    if (phase === "upgraded") {
+      expect(membershipGenerationCutoff).toBe("1");
+      expect(causeId).toBeNull();
+    }
+    return effect;
+  });
+  const claimed = await store.claimSecurityEffects({
+    now: new Date("2099-01-01"),
+    leaseUntil: new Date("2099-01-02"),
+    limit: 100,
+  });
+  expect(claimed).toHaveLength(6);
+  for (const effect of claimed) {
+    expect(Object.keys(effect).sort()).toEqual([
+      "attempts",
+      "id",
+      "kind",
+      "membershipGeneration",
+      "userId",
+      "workspaceId",
+    ]);
+    await store.completeSecurityEffect(effect.id);
+  }
+  const rejoined = await invite("rejoin");
+  expect(rejoined.id).toBe(joined.id);
+  expect([joined.generation, revoked.membership.generation, rejoined.generation]).toEqual([
+    1, 2, 3,
+  ]);
+  const serverStatements = [...statements];
+  statements.length = 0;
+  await database
+    .updateTable("deployments")
+    .set({
+      deploymentShape: sql`'{"kind":"personal","defaultWorkspaceBacking":"local-directory"}'::jsonb`,
+    })
+    .execute();
+  await expect(invite("personal")).rejects.toMatchObject({ code: "forbidden" });
+  await expect(
+    store.changeWorkspaceMembership({
+      actorId: ownerId,
+      targetUserId: ownerId,
+      workspaceId,
+      state: "revoked",
+    }),
+  ).rejects.toThrow(/owner/i);
+  const personalStatements = [...statements];
+  await database
+    .updateTable("deployments")
+    .set({
+      deploymentShape: sql`'{"kind":"server","defaultWorkspaceBacking":"local-directory"}'::jsonb`,
+    })
+    .execute();
+  return { serverStatements, personalStatements, effects: projectedEffects };
+}
 
 async function setup(fixture: StoreFixture) {
   const run = await fixture.createRunFixture("access", null, "project");
   await fixture.database.updateTable("deployments").set({ authorityModelVersion: 2 }).execute();
-  await loadMembershipAuthority(fixture.database);
   await fixture.database
     .updateTable("users")
     .set({ instanceRole: "administrator", admittedAt: new Date() })
     .where("id", "=", run.userId)
+    .execute();
+  await fixture.database
+    .insertInto("accessEntries")
+    .values({
+      id: randomUUID(),
+      subjectKind: "user",
+      subjectId: run.userId,
+      targetKind: "project",
+      targetId: run.workspace.id,
+      level: "manage",
+      grantedBy: run.userId,
+      revokedBy: null,
+    })
     .execute();
   let revision = 1;
   const mutate = async (change: AccessMutation | readonly AccessMutation[]) => {
@@ -72,18 +205,20 @@ async function setup(fixture: StoreFixture) {
   return { ...run, mutate, member, membership, allowed, revision: () => revision };
 }
 
-async function advance(database: Kysely<DatabaseSchema>, milliseconds: number) {
-  await database.transaction().execute(async (transaction) => {
-    await sql`update access_entries set granted_at = granted_at - ${milliseconds} * interval '1 millisecond', expires_at = expires_at - ${milliseconds} * interval '1 millisecond'`.execute(
-      transaction,
-    );
-    await sql`update workspace_memberships set effective_until = effective_until - ${milliseconds} * interval '1 millisecond' where effective_until is not null`.execute(
-      transaction,
-    );
-  });
-}
-
 describeStore("dormant Project access", (it) => {
+  it("adds no deadline columns or authority functions", async ({ storeFixture }) => {
+    const columns = await sql`select table_name, column_name from information_schema.columns
+      where table_schema = 'public' and ((table_name = 'access_entries' and column_name = 'expires_at')
+        or (table_name = 'workspace_memberships' and column_name = 'effective_until'))`.execute(
+      storeFixture.database,
+    );
+    expect(columns.rows).toEqual([]);
+    const functions =
+      await sql`select proname from pg_proc where proname = 'opensteer_membership_is_effective'`.execute(
+        storeFixture.database,
+      );
+    expect(functions.rows).toEqual([]);
+  });
   it("derives an omitted legacy cleanup cutoff from each revoked generation", async ({
     storeFixture,
   }) => {
@@ -167,14 +302,52 @@ describeStore("dormant Project access", (it) => {
           .insertInto("workspaces")
           .values({ ...workspaceRow, homeThreadId: null, voiceThreadId: null })
           .execute();
-        const { effectiveUntil: _deadline, ...membershipRow } = membership;
-        await transaction.insertInto("workspaceMemberships").values(membershipRow).execute();
+        await transaction.insertInto("workspaceMemberships").values(membership).execute();
       });
       const before =
         await sql`select generation::double precision as generation, id, invited_by, joined_at, role, state, user_id, workspace_id from workspace_memberships where id = ${membership.id}`.execute(
           database,
         );
+      await new OpensteerStore(database).ensureDeployment({
+        canonicalOrigin: "https://legacy.fixture.invalid",
+        hostInstanceId: createId("hostInstance"),
+        deploymentShape: { kind: "server", defaultWorkspaceBacking: "local-directory" },
+      });
+      const legacy = await legacyMembershipLifecycle(
+        database,
+        source.userId,
+        source.workspace.id,
+        "previous",
+      );
+      const legacyObjects = (connection: Kysely<DatabaseSchema>) =>
+        sql<{ name: string; definition: string }>`
+        select 'function:' || oid::regprocedure::text as name, pg_get_functiondef(oid) as definition
+        from pg_proc where pronamespace = 'public'::regnamespace and proname like 'opensteer_%'
+        union all select 'index:' || indexname, indexdef from pg_indexes where schemaname = 'public'
+        union all select 'trigger:' || tgrelid::regclass::text || ':' || tgname, pg_get_triggerdef(oid)
+        from pg_trigger where tgrelid in (select oid from pg_class where relnamespace = 'public'::regnamespace)
+          and not tgisinternal
+        union all select 'constraint:' || conrelid::regclass::text || ':' || conname, pg_get_constraintdef(oid)
+        from pg_constraint where connamespace = 'public'::regnamespace order by name`.execute(
+          connection,
+        );
+      const originalObjects = (await legacyObjects(database)).rows;
       await migrateToLatest(database);
+      const upgradedObjects = new Map(
+        (await legacyObjects(database)).rows.map((row) => [row.name, row.definition]),
+      );
+      for (const original of originalObjects)
+        expect(upgradedObjects.get(original.name), original.name).toBe(original.definition);
+      const upgraded = await legacyMembershipLifecycle(
+        database,
+        source.userId,
+        source.workspace.id,
+        "upgraded",
+      );
+      expect(upgraded).toEqual(legacy);
+      console.info(
+        `legacy lifecycle parity: server=${legacy.serverStatements.length} statements personal=${legacy.personalStatements.length} statements effects=6 generations=1,2,3; SQL and public effect DTOs identical`,
+      );
       const { workspaceMembershipForUser } = await import("./workspace-membership-store.js");
       expect(
         JSON.stringify(
@@ -214,6 +387,19 @@ describeStore("dormant Project access", (it) => {
       .updateTable("users")
       .set({ instanceRole: "administrator", admittedAt: new Date() })
       .where("id", "=", run.userId)
+      .execute();
+    const otherOwner = await store.createUser("Retained owner");
+    await database
+      .insertInto("workspaceMemberships")
+      .values({
+        id: createId("workspaceMembership"),
+        workspaceId: run.workspace.id,
+        userId: otherOwner,
+        role: "owner",
+        state: "active",
+        generation: 1,
+        invitedBy: null,
+      })
       .execute();
     const entryId = randomUUID();
     await database
@@ -273,12 +459,20 @@ describeStore("dormant Project access", (it) => {
           .executeTakeFirstOrThrow()
       ).membershipGeneration,
     ).toBe("3");
-    const effects = await store.claimSecurityEffects({
-      now: new Date(),
-      leaseUntil: new Date(Date.now() + 60_000),
+    const effects = await claimAccessSecurityEffects(database, {
+      now: new Date("2099-01-01"),
+      leaseUntil: new Date("2099-01-02"),
       limit: 100,
     });
-    const effect = effects.find((candidate) => candidate.kind === "stop-runs")!;
+    expect(
+      effects
+        .filter((candidate) => candidate.kind === "stop-runs")
+        .map((candidate) => candidate.membershipGenerationCutoff)
+        .sort(),
+    ).toEqual([1, 2]);
+    const effect = effects.find(
+      (candidate) => candidate.kind === "stop-runs" && candidate.membershipGenerationCutoff === 1,
+    )!;
     expect(effect).toMatchObject({ membershipGenerationCutoff: 1 });
     await expect(
       database
@@ -287,7 +481,7 @@ describeStore("dormant Project access", (it) => {
         .where("id", "=", effect.id)
         .execute(),
     ).rejects.toMatchObject({ code: "P0001" });
-    const recovery = await store.failActiveRunsForMembershipRevocation({
+    const recovery = await failActiveRunsForAccessRevocation(database, threadPathLinks, {
       userId: run.userId,
       workspaceId: run.workspace.id,
       membershipGenerationCutoff: effect.membershipGenerationCutoff,
@@ -365,20 +559,21 @@ describeStore("dormant Project access", (it) => {
     expect(await access.allowed(userId, 1)).toEqual({ allowed: false });
   });
 
-  const statementCounts = new Map<string, number>();
   for (const operation of ["delete-group", "suspend"] as const)
-    for (const projectCount of [2, 128])
-      it(`measures ${operation} on ${projectCount} Projects and a competing writer`, async ({
-        storeFixture,
-      }) => {
-        const access = await setup(storeFixture);
+    it(`measures ${operation} on 128 Projects independently of other tests`, async ({
+      storeFixture,
+    }) => {
+      const counts: number[] = [];
+      for (const projectCount of [2, 128]) {
+        const measuredFixture = projectCount === 2 ? storeFixture : await createStoreFixture();
+        const access = await setup(measuredFixture);
         const groupId = randomUUID();
-        await access.mutate({ kind: "create-group", id: groupId, name: "Scale" });
+        await access.mutate({ kind: "create-group", id: groupId, name: `Scale ${projectCount}` });
         const users: UserId[] = [];
         const peopleCount = operation === "delete-group" ? accessCapacity.effectivePairs / 128 : 64;
         for (let index = 0; index < peopleCount; index++)
-          users.push(await storeFixture.store.createUser(`Scale ${index}`));
-        await storeFixture.database
+          users.push(await measuredFixture.store.createUser(`Scale ${index}`));
+        await measuredFixture.database
           .updateTable("users")
           .set({ admittedAt: new Date() })
           .where("id", "in", users)
@@ -387,7 +582,7 @@ describeStore("dormant Project access", (it) => {
           access.workspace.id,
           ...Array.from({ length: projectCount - 1 }, () => createId("workspace")),
         ];
-        await storeFixture.database.transaction().execute(async (transaction) => {
+        await measuredFixture.database.transaction().execute(async (transaction) => {
           await sql`insert into workspaces(id, name, color, kind, created_by, backing, status)
           select project.id, 'Scale', 'blue', 'project', ${access.userId},
             jsonb_set(backing, '{bindingId}', to_jsonb(replace(project.id, 'wsp_', 'wbd_'))), 'ready'
@@ -451,7 +646,7 @@ describeStore("dormant Project access", (it) => {
         });
         const fenced = Promise.withResolvers<void>();
         let statements = 0;
-        const measured = storeFixture.database.withPlugin({
+        const measured = measuredFixture.database.withPlugin({
           transformQuery(args) {
             statements++;
             if (
@@ -481,11 +676,13 @@ describeStore("dormant Project access", (it) => {
           timeoutError: () => new Error("Measured writer never acquired its authority fence"),
         });
         const waiting = performance.now();
-        const competitor = mutateAccess(storeFixture.database, {
+        const competitor = mutateAccess(measuredFixture.database, {
           actor: { userId: access.userId },
           commandIdentity: createId("command"),
           expectedRevision: revision + 1,
-          changes: [{ kind: "create-group", id: randomUUID(), name: "Competing writer" }],
+          changes: [
+            { kind: "create-group", id: randomUUID(), name: `Competing writer ${projectCount}` },
+          ],
         });
         const competitorResult = competitor.then(
           () => ({ elapsed: performance.now() - waiting, accepted: true }),
@@ -504,10 +701,11 @@ describeStore("dormant Project access", (it) => {
         console.info(
           `access maximum: operation=${operation} pairs=${pairs} statements=${statements} elapsedMs=${elapsed.toFixed(2)} competingMs=${waited.elapsed.toFixed(2)} competingAccepted=${waited.accepted}`,
         );
-        if (projectCount === 2) statementCounts.set(operation, statements);
-        else expect(statements).toBe(statementCounts.get(operation));
+        counts.push(statements);
         expect(waited.accepted).toBe(true);
-      });
+      }
+      expect(counts[1]).toBe(counts[0]);
+    });
   it("does not activate authority writers on an existing Deployment", async ({ storeFixture }) => {
     const { database, createRunFixture } = storeFixture;
     const fixture = await createRunFixture("access-legacy", null, "project");
@@ -573,100 +771,6 @@ describeStore("dormant Project access", (it) => {
     ).toMatchObject({ allowed: true, membershipGeneration: 1 });
   });
 
-  it("drains overdue memberships on explicit startup and earlier-deadline notification", async ({
-    storeFixture,
-  }) => {
-    const access = await setup(storeFixture);
-    const userId = await access.member();
-    await access.mutate({
-      kind: "grant",
-      id: randomUUID(),
-      subject: { kind: "person", userId },
-      target: { kind: "project", workspaceId: access.workspace.id },
-      level: "use",
-      expiresAt: new Date(Date.now() + 60_000),
-    });
-    const expired = Promise.withResolvers<void>();
-    const scheduler = createAccessExpiryScheduler({
-      database: storeFixture.database,
-      committed: (transitions) => {
-        if (transitions.length) expired.resolve();
-      },
-      failed: expired.reject,
-    });
-    try {
-      await scheduler.start();
-      await advance(storeFixture.database, 120_000);
-      expect(await access.allowed(userId, 1)).toEqual({ allowed: false });
-      await scheduler.changed();
-      await withTimeout(expired.promise, 3000, {
-        timeoutError: () => new Error("Expiry scheduler never committed the overdue membership"),
-      });
-      expect(await access.membership(userId)).toMatchObject({ state: "revoked", generation: "2" });
-    } finally {
-      await scheduler.close();
-    }
-  });
-
-  it("denies expired membership in the SQL Thread guard before expiry cleanup", async ({
-    storeFixture,
-  }) => {
-    const access = await setup(storeFixture);
-    await access.mutate({
-      kind: "grant",
-      id: randomUUID(),
-      subject: { kind: "person", userId: access.userId },
-      target: { kind: "project", workspaceId: access.workspace.id },
-      level: "manage",
-      expiresAt: new Date(Date.now() + 60_000),
-    });
-    await advance(storeFixture.database, 120_000);
-    expect(await access.membership(access.userId)).toMatchObject({ state: "active" });
-    const threadId = createId("thread");
-    await expect(
-      sql`insert into threads (
-      id, workspace_id, title, environment_id, harness_instance_id, created_by,
-      created_by_principal_id, model_selection, lineage_root_thread_id, inherits_main, listed, color, icon_source
-    ) select ${threadId}, workspace_id, title, environment_id, harness_instance_id, created_by,
-      created_by_principal_id, model_selection, ${threadId}, inherits_main, listed, color, icon_source
-      from threads where id = ${access.thread.id}`.execute(storeFixture.database),
-    ).rejects.toThrow("thread creator must be an active workspace member");
-  });
-
-  it("denies an expired parent while the child Workspace remains effective", async ({
-    storeFixture,
-  }) => {
-    const access = await setup(storeFixture);
-    const child = await createTestWorkspace(storeFixture.store, {
-      createdBy: access.userId,
-      kind: "project",
-      name: "Child",
-      idempotencyKey: "expired-parent-child",
-      status: "ready",
-      backing: {
-        kind: "local-directory",
-        generation: 1,
-        bindingId: createId("workspaceBinding"),
-        ownerEnvironmentId: access.environmentId,
-        storageAuthorityId: createId("storageAuthority"),
-      },
-    });
-    await storeFixture.database
-      .updateTable("workspaceMemberships")
-      .set({ effectiveUntil: new Date("2020-01-01") })
-      .where("workspaceId", "=", access.workspace.id)
-      .execute();
-    const threadId = createId("thread");
-    await expect(
-      sql`insert into threads (
-      id, workspace_id, title, environment_id, harness_instance_id, created_by,
-      created_by_principal_id, model_selection, lineage_root_thread_id, inherits_main, listed, color, icon_source, parent_thread_id
-    ) select ${threadId}, ${child.id}, title, environment_id, harness_instance_id, created_by,
-      created_by_principal_id, model_selection, lineage_root_thread_id, false, listed, color, icon_source, id
-      from threads where id = ${access.thread.id}`.execute(storeFixture.database),
-    ).rejects.toThrow("thread creator must be a member of both parent and child workspaces");
-  });
-
   it("refuses unsupported targets and a ninth nesting level without partial writes", async ({
     storeFixture,
   }) => {
@@ -723,12 +827,12 @@ describeStore("dormant Project access", (it) => {
     ).rejects.toMatchObject({ code: "bad_request" });
   });
 
-  it("keeps stable tombstones, rejects old handles, and settles expiry before a replacement", async ({
+  it("keeps stable tombstones and refuses old handles after remove and re-add", async ({
     storeFixture,
   }) => {
     const access = await setup(storeFixture);
     const userId = await access.member();
-    const grant = async (expiresAt?: Date) => {
+    const grant = async () => {
       const id = randomUUID();
       await access.mutate({
         kind: "grant",
@@ -736,45 +840,32 @@ describeStore("dormant Project access", (it) => {
         subject: { kind: "person", userId },
         target: { kind: "project", workspaceId: access.workspace.id },
         level: "use",
-        ...(expiresAt === undefined ? {} : { expiresAt }),
       });
       return id;
     };
     const first = await grant();
     const original = (await access.membership(userId))!;
     await access.mutate({ kind: "revoke", entryId: first });
-    const second = await grant(new Date(Date.now() + 60_000));
+    await grant();
     expect(await access.membership(userId)).toMatchObject({
       id: original.id,
       generation: "3",
       state: "active",
     });
     expect(await access.allowed(userId, 1)).toEqual({ allowed: false });
-    await advance(storeFixture.database, 120_000);
-    expect(await access.allowed(userId, 3)).toEqual({ allowed: false });
-    await grant();
-    expect(await access.membership(userId)).toMatchObject({
-      id: original.id,
-      generation: "5",
-      state: "active",
-      effectiveUntil: null,
-    });
-    expect(await access.allowed(userId, 3)).toEqual({ allowed: false });
-    await access.mutate({ kind: "revoke", entryId: second });
-    expect((await access.membership(userId))!.generation).toBe("5");
-    const effects = await storeFixture.store.claimSecurityEffects({
-      now: new Date(),
-      leaseUntil: new Date(Date.now() + 60_000),
+    const effects = await claimAccessSecurityEffects(storeFixture.database, {
+      now: new Date("2099-01-01"),
+      leaseUntil: new Date("2099-01-02"),
       limit: 100,
     });
     expect(
       effects
         .filter((effect) => effect.userId === userId)
         .map((effect) => effect.membershipGenerationCutoff),
-    ).toEqual(expect.arrayContaining([1, 2, 3, 4]));
+    ).toEqual(expect.arrayContaining([1, 2]));
   });
 
-  it("collapses nested diamonds and Everyone, ignoring guests and redundant expiries", async ({
+  it("collapses nested diamonds and Everyone, ignoring guests and redundant grants", async ({
     storeFixture,
   }) => {
     const access = await setup(storeFixture);
@@ -818,21 +909,19 @@ describeStore("dormant Project access", (it) => {
       subject: { kind: "person", userId: full },
       target,
       level: "use",
-      expiresAt: new Date(Date.now() + 60_000),
     });
-    await advance(storeFixture.database, 120_000);
-    expect(await expireAccessMemberships(storeFixture.database)).toEqual([]);
-    expect(await access.membership(full)).toMatchObject({ generation: "1", effectiveUntil: null });
+    await access.mutate({ kind: "revoke", entryId: shorter });
+    expect(await access.membership(full)).toMatchObject({ generation: "1" });
+    const manager = randomUUID();
     await access.mutate({
       kind: "grant",
-      id: randomUUID(),
+      id: manager,
       subject: { kind: "person", userId: full },
       target,
       level: "manage",
-      expiresAt: new Date(Date.now() + 60_000),
     });
     expect((await access.membership(full))!.generation).toBe("2");
-    await advance(storeFixture.database, 120_000);
+    await access.mutate({ kind: "revoke", entryId: manager });
     expect(await access.allowed(full, 2)).toEqual({ allowed: false });
     await access.mutate({
       kind: "remove-group-member",
@@ -842,7 +931,6 @@ describeStore("dormant Project access", (it) => {
     expect(await access.membership(full)).toMatchObject({
       generation: "3",
       role: "collaborator",
-      effectiveUntil: null,
     });
   });
 
@@ -924,57 +1012,6 @@ describeStore("dormant Project access", (it) => {
           .executeTakeFirstOrThrow()
       ).revision,
     ).toBe(String(access.revision()));
-  });
-
-  it("does not charge expired grant history against live pair capacity or offboarding", async ({
-    storeFixture,
-  }) => {
-    const access = await setup(storeFixture);
-    const userId = await access.member();
-    const prefix = `usr_history_${randomUUID()}_`;
-    await sql`insert into users (id, display_name, email, email_verified, image, instance_role, admitted_at)
-      select ${prefix} || ordinal::text, 'Historical member', ${prefix} || ordinal::text || '@fixture.invalid', true, null, 'user', clock_timestamp()
-      from generate_series(1, 16385) as ordinal`.execute(storeFixture.database);
-    await sql`insert into access_entries (id, subject_kind, subject_id, target_kind, target_id, level, granted_by, granted_at, expires_at, revoked_by)
-      select gen_random_uuid(), 'user', id, 'project', ${access.workspace.id}, 'use', ${access.userId},
-        clock_timestamp() - interval '2 days', clock_timestamp() - interval '1 day', null
-      from users where id like ${`${prefix}%`}`.execute(storeFixture.database);
-    await access.mutate({
-      kind: "create-group",
-      id: randomUUID(),
-      name: "History does not occupy capacity",
-    });
-    await access.mutate({ kind: "member", userId, memberState: "removed" });
-    expect(await access.membership(userId)).toBeUndefined();
-    await sql`insert into workspace_memberships(id, workspace_id, user_id, role, state, generation, invited_by, effective_until)
-      select 'wmb_' || gen_random_uuid(), ${access.workspace.id}, id, 'collaborator', 'active', 1, null, clock_timestamp() - interval '1 day'
-      from users where id like ${`${prefix}%`} limit ${accessCapacity.effectivePairs}`.execute(
-      storeFixture.database,
-    );
-    const groupId = randomUUID();
-    await access.mutate({
-      kind: "create-group",
-      id: groupId,
-      name: "Live admission beside overdue authority",
-    });
-    await access.mutate({
-      kind: "grant",
-      id: randomUUID(),
-      subject: { kind: "group", groupId },
-      target: { kind: "project", workspaceId: access.workspace.id },
-      level: "use",
-    });
-    const candidate = await storeFixture.store.createUser("New full member");
-    await access.mutate({
-      kind: "add-group-member",
-      groupId,
-      member: { kind: "person", userId: candidate },
-    });
-    await access.mutate({ kind: "member", userId: candidate, admit: true });
-    expect(await access.allowed(candidate)).toMatchObject({
-      allowed: true,
-      membershipGeneration: 1,
-    });
   });
 
   it("refuses capacity growth atomically but permits reductions above a bound", async ({
@@ -1059,7 +1096,7 @@ describeStore("dormant Project access", (it) => {
     ).resolves.toBeDefined();
   });
 
-  it("refuses Request-scope growth but permits revocation and expiry of an oversized inherited scope", async ({
+  it("refuses Request-scope growth but permits revocation of an oversized inherited scope", async ({
     storeFixture,
   }) => {
     const access = await setup(storeFixture);
@@ -1071,7 +1108,6 @@ describeStore("dormant Project access", (it) => {
       subject: { kind: "person", userId },
       target: { kind: "project", workspaceId: access.workspace.id },
       level: "use",
-      expiresAt: new Date(Date.now() + 60_000),
     });
     const turn = await storeFixture.enqueueHumanTrigger({
       content: [{ type: "text", text: "Request origin" }],
@@ -1136,24 +1172,6 @@ describeStore("dormant Project access", (it) => {
       details: { limit: "requestWorkspaces" },
     });
     await expect(access.mutate({ kind: "revoke", entryId })).resolves.toBeDefined();
-    await storeFixture.database
-      .updateTable("accessEntries")
-      .set({ revokedAt: null, revokedBy: null })
-      .where("id", "=", entryId)
-      .execute();
-    await storeFixture.database
-      .updateTable("workspaceMemberships")
-      .set({
-        state: "active",
-        revokedAt: null,
-        revokedBy: null,
-        effectiveUntil: new Date(Date.now() + 60_000),
-      })
-      .where("workspaceId", "=", access.workspace.id)
-      .where("userId", "=", userId)
-      .execute();
-    await advance(storeFixture.database, 120_000);
-    await expect(expireAccessMemberships(storeFixture.database)).resolves.toHaveLength(1);
   });
 
   it("atomically replaces immutable grants without interrupting an unchanged effective level", async ({
@@ -1169,7 +1187,6 @@ describeStore("dormant Project access", (it) => {
       subject: { kind: "person", userId },
       target: { kind: "project", workspaceId: access.workspace.id },
       level: "manage",
-      expiresAt: new Date(Date.now() + 60_000),
     });
     const before = await access.membership(userId);
     const result = await mutateAccess(storeFixture.database, {
@@ -1184,7 +1201,6 @@ describeStore("dormant Project access", (it) => {
           subject: { kind: "person", userId },
           target: { kind: "project", workspaceId: access.workspace.id },
           level: "manage",
-          expiresAt: new Date(Date.now() + 120_000),
         },
       ],
     });
@@ -1194,9 +1210,6 @@ describeStore("dormant Project access", (it) => {
       generation: before!.generation,
       state: "active",
     });
-    expect((await access.membership(userId))!.effectiveUntil!.getTime()).toBeGreaterThan(
-      before!.effectiveUntil!.getTime(),
-    );
     expect(await access.allowed(userId, 1)).toMatchObject({ allowed: true });
     await expect(
       access.mutate([
@@ -1291,13 +1304,10 @@ describeStore("dormant Project access", (it) => {
           name: `Trace group ${index}`,
           ...(index === 0 ? { builtin: "everyone" as const } : {}),
         });
-      const grants = new Map<
-        string,
-        { subject: string; level: "use" | "manage"; expiresAt: Date | null }
-      >();
+      const grants = new Map<string, { subject: string; level: "use" | "manage" }>();
       const history = new Map<
         UserId,
-        { id: string; generation: number; state: string; role: string; until: Date | null }
+        { id: string; generation: number; state: string; role: string }
       >();
       const creatorEntry = randomUUID();
       await access.mutate({
@@ -1307,16 +1317,15 @@ describeStore("dormant Project access", (it) => {
         target: { kind: "project", workspaceId: access.workspace.id },
         level: "manage",
       });
-      grants.set(creatorEntry, { subject: access.userId, level: "manage", expiresAt: null });
+      grants.set(creatorEntry, { subject: access.userId, level: "manage" });
       const creatorMembership = (await access.membership(access.userId))!;
       history.set(access.userId, {
         id: creatorMembership.id,
         generation: Number(creatorMembership.generation),
         state: "active",
         role: "owner",
-        until: null,
       });
-      const interpret = (userId: UserId, now: Date) => {
+      const interpret = (userId: UserId) => {
         if (!active.get(userId)) return null;
         const subjects = new Set<string>([userId]);
         const contains = (group: string, visited: Set<string>): boolean => {
@@ -1329,29 +1338,23 @@ describeStore("dormant Project access", (it) => {
           );
         };
         for (const group of groups) if (contains(group, new Set())) subjects.add(group);
-        const matching = [...grants.values()].filter(
-          (grant) => subjects.has(grant.subject) && (!grant.expiresAt || grant.expiresAt > now),
-        );
+        const matching = [...grants.values()].filter((grant) => subjects.has(grant.subject));
         const top = matching.some((grant) => grant.level === "manage")
           ? matching.filter((grant) => grant.level === "manage")
           : matching;
         if (!top.length) return null;
         return {
           role: top[0]!.level === "manage" ? "owner" : "collaborator",
-          until: top.some((grant) => !grant.expiresAt)
-            ? null
-            : new Date(Math.max(...top.map((grant) => grant.expiresAt!.getTime()))),
         };
       };
       for (let step = 0; step < steps; step++) {
         const userId = people[choose(people.length)]!;
         const groupId = groups[1 + choose(groups.length - 1)]!;
-        const operation = choose(9);
+        const operation = choose(8);
         if (operation === 0) {
           const id = randomUUID();
           const subject = choose(2) ? userId : groupId;
           const level = choose(2) ? "use" : "manage";
-          const expiresAt = choose(2) ? new Date(Date.now() + 60_000) : null;
           if (!active.get(userId) && subject === userId) continue;
           await access.mutate({
             kind: "grant",
@@ -1361,11 +1364,11 @@ describeStore("dormant Project access", (it) => {
               : { kind: "person", userId },
             target: { kind: "project", workspaceId: access.workspace.id },
             level,
-            expiresAt,
           });
-          grants.set(id, { subject, level, expiresAt });
-        } else if (operation === 1 && grants.size) {
-          const id = [...grants.keys()][choose(grants.size)]!;
+          grants.set(id, { subject, level });
+        } else if (operation === 1 && grants.size > 1) {
+          const removable = [...grants.keys()].filter((id) => id !== creatorEntry);
+          const id = removable[choose(removable.length)]!;
           await access.mutate({ kind: "revoke", entryId: id });
           grants.delete(id);
         } else if (operation === 2) {
@@ -1399,17 +1402,7 @@ describeStore("dormant Project access", (it) => {
           });
           if (present) children.get(parent)!.delete(child);
           else children.get(parent)!.add(child);
-        } else if (operation === 6) {
-          await advance(storeFixture.database, 120_000);
-          for (const grant of grants.values())
-            if (grant.expiresAt) grant.expiresAt = new Date(grant.expiresAt.getTime() - 120_000);
-          for (const prior of history.values())
-            if (prior.until) prior.until = new Date(prior.until.getTime() - 120_000);
-          for (const [person, prior] of history)
-            if (prior.until && prior.until <= new Date())
-              expect(await access.allowed(person, prior.generation)).toEqual({ allowed: false });
-          await expireAccessMemberships(storeFixture.database);
-        } else if (operation === 7 || !active.get(userId)) {
+        } else if (operation === 6 || !active.get(userId)) {
           const id = randomUUID();
           await expect(
             mutateAccess(storeFixture.database, {
@@ -1456,7 +1449,7 @@ describeStore("dormant Project access", (it) => {
           for (const [index, result] of results.entries()) {
             if (result.status === "fulfilled") {
               const grant = changes[index]!;
-              grants.set(grant.id, { subject: userId, level: grant.level, expiresAt: null });
+              grants.set(grant.id, { subject: userId, level: grant.level });
             } else expect(result.reason).toMatchObject({ code: "conflict" });
           }
         }
@@ -1468,39 +1461,20 @@ describeStore("dormant Project access", (it) => {
         const memberships = new Map(rows.map((row) => [row.userId, row]));
         for (const person of observedPeople) {
           const previous = history.get(person);
-          const now = new Date();
-          const times =
-            operation === 6 && previous?.until && previous.state === "active"
-              ? [
-                  ...new Set([
-                    previous.until.getTime(),
-                    ...[...grants.values()].flatMap((grant) =>
-                      grant.expiresAt &&
-                      grant.expiresAt >= previous.until! &&
-                      grant.expiresAt <= now
-                        ? [grant.expiresAt.getTime()]
-                        : [],
-                    ),
-                    now.getTime(),
-                  ]),
-                ].sort((first, second) => first - second)
-              : [now.getTime()];
-          let expected = previous;
-          for (const time of times) {
-            const value = interpret(person, new Date(time));
-            if (!expected && !value) continue;
-            const state = value ? "active" : "revoked";
-            expected = {
-              id: expected?.id ?? "",
-              generation: expected
-                ? expected.generation +
-                  Number(expected.state !== state || (!!value && expected.role !== value.role))
-                : 1,
-              state,
-              role: value?.role ?? expected!.role,
-              until: value?.until ?? null,
-            };
-          }
+          const value = interpret(person);
+          const state = value ? "active" : "revoked";
+          const expected =
+            !previous && !value
+              ? undefined
+              : {
+                  id: previous?.id ?? "",
+                  generation: previous
+                    ? previous.generation +
+                      Number(previous.state !== state || (!!value && previous.role !== value.role))
+                    : 1,
+                  state,
+                  role: value?.role ?? previous!.role,
+                };
           const row = memberships.get(person);
           if (!expected) {
             expect(row).toBeUndefined();
@@ -1510,27 +1484,26 @@ describeStore("dormant Project access", (it) => {
             state: expected.state,
             role: expected.role,
             generation: String(expected.generation),
-            effectiveUntil: expected.until,
             ...(previous ? { id: previous.id } : {}),
           });
           history.set(person, { ...expected, id: row!.id });
         }
         expect(rows).toHaveLength(history.size);
       }
-      await access.mutate({
-        kind: "delete-project",
-        workspaceId: access.workspace.id,
-        purgeAfter: new Date(Date.now() + 86_400_000),
-      });
-      for (const [person, previous] of history) {
+      await expect(
+        access.mutate({
+          kind: "delete-project",
+          workspaceId: access.workspace.id,
+          purgeAfter: new Date(Date.now() + 86_400_000),
+        }),
+      ).rejects.toThrow("workspace must retain at least one active owner");
+      for (const [person, previous] of history)
         expect(await access.membership(person)).toMatchObject({
           id: previous.id,
-          state: "revoked",
+          state: previous.state,
           role: previous.role,
-          generation: String(previous.generation + Number(previous.state === "active")),
-          effectiveUntil: null,
+          generation: String(previous.generation),
         });
-      }
     } catch (error) {
       throw new Error(`Access invariant seed=${seed}`, { cause: error });
     }

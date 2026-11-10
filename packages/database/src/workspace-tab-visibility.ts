@@ -40,6 +40,6 @@ export function visibleWorkspaceTabLineages(
       "lineages.createdAt as lineageCreatedAt",
       "runners.revokedAt as retiredAt",
     ])
-    .where((eb) => ownedBrowserSession(database, eb, ownerId))
+    .where((eb) => ownedBrowserSession(eb, ownerId))
     .where("workspaces.status", "not in", ["deleting", "deleted"]);
 }

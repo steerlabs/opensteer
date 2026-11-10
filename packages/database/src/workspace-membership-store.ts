@@ -1,4 +1,3 @@
-import { effectiveMembershipPredicate, effectiveMembershipState } from "./effective-membership.js";
 import { withDatabaseTransaction } from "./connection.js";
 import {
   type WorkspaceMembershipId,
@@ -33,7 +32,6 @@ export interface WorkspaceMembershipRecord {
 export type WorkspaceMembershipChangeListener = (membership: WorkspaceMembershipRecord) => void;
 
 export interface SecurityEffectRecord {
-  readonly membershipGenerationCutoff: number;
   readonly attempts: number;
   readonly id: SecurityEffectId;
   readonly kind:
@@ -105,13 +103,6 @@ function workspaceMembershipFromRow(row: {
   return { ...row, generation };
 }
 
-function workspaceMembershipFromStoredRow(
-  row: Parameters<typeof workspaceMembershipFromRow>[0] & { readonly effectiveUntil?: Date | null },
-): WorkspaceMembershipRecord {
-  const { effectiveUntil: _effectiveUntil, ...membership } = row;
-  return workspaceMembershipFromRow(membership);
-}
-
 function workspaceInvitationFromRow(row: {
   readonly acceptedAt: Date | null;
   readonly acceptedBy: UserId | null;
@@ -151,7 +142,7 @@ async function appendSecurityAudit(
     .executeTakeFirstOrThrow();
 }
 
-export async function legacyWorkspaceMembershipForUser(
+export async function workspaceMembershipForUser(
   database: Kysely<DatabaseSchema>,
   workspaceId: WorkspaceId,
   userId: UserId,
@@ -163,66 +154,6 @@ export async function legacyWorkspaceMembershipForUser(
     .where("userId", "=", userId)
     .executeTakeFirst();
   return row ? workspaceMembershipFromRow(row) : null;
-}
-
-export async function workspaceMembershipForUser(
-  database: Kysely<DatabaseSchema>,
-  workspaceId: WorkspaceId,
-  userId: UserId,
-): Promise<WorkspaceMembershipRecord | null> {
-  const row = await database
-    .selectFrom("workspaceMemberships")
-    .select([
-      "generation",
-      "id",
-      "invitedBy",
-      "joinedAt",
-      "role",
-      effectiveMembershipState(database),
-      "userId",
-      "workspaceId",
-    ])
-    .where("workspaceId", "=", workspaceId)
-    .where("userId", "=", userId)
-    .executeTakeFirst();
-  return row ? workspaceMembershipFromRow(row) : null;
-}
-
-export async function workspaceMembershipAuthorityForUser(
-  database: Kysely<DatabaseSchema>,
-  workspaceId: WorkspaceId,
-  userId: UserId,
-): Promise<(WorkspaceMembershipRecord & { readonly authorityDeadline?: number }) | null> {
-  const started = performance.now();
-  const row = await database
-    .selectFrom("workspaceMemberships")
-    .select([
-      "generation",
-      "id",
-      "invitedBy",
-      "joinedAt",
-      "role",
-      "userId",
-      "workspaceId",
-      "effectiveUntil",
-      effectiveMembershipState(database),
-      sql<Date | null>`case when effective_until is not null then clock_timestamp() end`.as(
-        "checkedAt",
-      ),
-    ])
-    .where("workspaceId", "=", workspaceId)
-    .where("userId", "=", userId)
-    .executeTakeFirst();
-  if (!row) return null;
-  const { checkedAt, effectiveUntil, ...membership } = row;
-  return {
-    ...workspaceMembershipFromRow(membership),
-    ...(effectiveUntil && checkedAt
-      ? {
-          authorityDeadline: started + effectiveUntil.getTime() - checkedAt.getTime(),
-        }
-      : {}),
-  };
 }
 
 export async function listWorkspaceMembers(
@@ -251,7 +182,7 @@ export async function listWorkspaceMembers(
       "workspaceMemberships.workspaceId",
     ])
     .where("workspaceMemberships.workspaceId", "=", workspaceId)
-    .where(effectiveMembershipPredicate(database))
+    .where("workspaceMemberships.state", "=", "active")
     .orderBy("workspaceMemberships.role", "asc")
     .orderBy("workspaceMemberships.joinedAt", "asc")
     .limit(1_001)
@@ -318,7 +249,7 @@ export async function createWorkspaceInvitation(
       .executeTakeFirstOrThrow();
     const actor = await transaction
       .selectFrom("workspaceMemberships")
-      .select(["role", effectiveMembershipState(transaction, "state")])
+      .select(["role", "state"])
       .where("workspaceId", "=", input.workspaceId)
       .where("userId", "=", input.createdBy)
       .forNoKeyUpdate()
@@ -418,7 +349,7 @@ export async function revokeWorkspaceInvitation(
       .executeTakeFirstOrThrow();
     const actor = await transaction
       .selectFrom("workspaceMemberships")
-      .select(["role", effectiveMembershipState(transaction, "state")])
+      .select(["role", "state"])
       .where("workspaceId", "=", input.workspaceId)
       .where("userId", "=", input.actorId)
       .forNoKeyUpdate()
@@ -647,7 +578,7 @@ export async function acceptWorkspaceInvitation(
         workspaceId: invitation.workspaceId,
       });
     }
-    return workspaceMembershipFromStoredRow(membership);
+    return workspaceMembershipFromRow(membership);
   });
   emitWorkspaceMembershipChanged(workspaceMembershipChangeListeners, membership);
   return membership;
@@ -706,7 +637,7 @@ export async function changeWorkspaceMembership(
       const nextRole = input.role ?? target.role;
       const nextState = input.state ?? target.state;
       if (nextRole === target.role && nextState === target.state) {
-        return { membership: workspaceMembershipFromStoredRow(target), requestEvents: [] };
+        return { membership: workspaceMembershipFromRow(target), requestEvents: [] };
       }
       if (target.state === "revoked" && nextState === "active") {
         throw new OpensteerError({
@@ -810,7 +741,6 @@ export async function changeWorkspaceMembership(
               kind,
               lastError: null,
               membershipGeneration: row.generation,
-              membershipGenerationCutoff: safeGeneration(row.generation) - 1,
               nextAttemptAt: now,
               status: "pending",
               userId: input.targetUserId,
@@ -828,7 +758,7 @@ export async function changeWorkspaceMembership(
         targetType: "user",
         workspaceId: input.workspaceId,
       });
-      return { membership: workspaceMembershipFromStoredRow(row), requestEvents };
+      return { membership: workspaceMembershipFromRow(row), requestEvents };
     },
   );
   emitWorkspaceMembershipChanged(workspaceMembershipChangeListeners, mutation.membership);
@@ -867,25 +797,23 @@ export async function claimSecurityEffects(
       .execute();
     const claimed: SecurityEffectRecord[] = [];
     for (const row of rows) {
-      if (row.kind === "revoke-browser" || row.kind === "revoke-triggers") {
-        const membership = await transaction
-          .selectFrom("workspaceMemberships")
-          .select(["generation", "state"])
-          .where("workspaceId", "=", row.workspaceId)
-          .where("userId", "=", row.userId)
-          .executeTakeFirst();
-        if (
-          !membership ||
-          membership.state !== "revoked" ||
-          membership.generation !== row.membershipGeneration
-        ) {
-          await transaction
-            .updateTable("securityEffects")
-            .set({ lastError: null, status: "completed", updatedAt: input.now })
-            .where("id", "=", row.id)
-            .execute();
-          continue;
-        }
+      const membership = await transaction
+        .selectFrom("workspaceMemberships")
+        .select(["generation", "state"])
+        .where("workspaceId", "=", row.workspaceId)
+        .where("userId", "=", row.userId)
+        .executeTakeFirst();
+      if (
+        !membership ||
+        membership.state !== "revoked" ||
+        safeGeneration(membership.generation) !== safeGeneration(row.membershipGeneration)
+      ) {
+        await transaction
+          .updateTable("securityEffects")
+          .set({ lastError: null, status: "completed", updatedAt: input.now })
+          .where("id", "=", row.id)
+          .executeTakeFirstOrThrow();
+        continue;
       }
       const attempts = row.attempts + 1;
       await transaction
@@ -904,8 +832,6 @@ export async function claimSecurityEffects(
         id: row.id,
         kind: row.kind,
         membershipGeneration: safeGeneration(row.membershipGeneration),
-        membershipGenerationCutoff:
-          safeGeneration((BigInt(row.membershipGenerationCutoff) + 1n).toString()) - 1,
         userId: row.userId,
         workspaceId: row.workspaceId,
       });

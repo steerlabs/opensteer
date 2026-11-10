@@ -465,7 +465,7 @@ export async function createHostRuntime(
     });
     // Only the Host knows the origin its own web app answers on, so it is the
     // Host that teaches the store how to name a Thread in a channel message.
-    const store = await OpensteerStore.create(database, {
+    const store = new OpensteerStore(database, {
       ...(options.executionClock ? { executionClock: options.executionClock } : {}),
       links: { threadUrl: (threadId) => `${config.canonicalOrigin.origin}/threads/${threadId}` },
     });

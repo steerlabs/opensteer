@@ -1,4 +1,3 @@
-import { effectiveMembershipPredicate } from "./effective-membership.js";
 import {
   OpensteerError,
   type EnvironmentId,
@@ -205,7 +204,7 @@ export async function admitThreadExecution(
     .select(["threads.environmentId", "threads.workspaceId", "workspaceMemberships.generation"])
     .where("threads.id", "=", threadId)
     .where("workspaceMemberships.userId", "=", userId)
-    .where(effectiveMembershipPredicate(database))
+    .where("workspaceMemberships.state", "=", "active")
     .executeTakeFirst();
   if (!row) return null;
   const membershipGeneration = safeGeneration(row.generation);

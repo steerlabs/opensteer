@@ -1,4 +1,3 @@
-import { effectiveMembershipPredicate } from "./effective-membership.js";
 import {
   OpensteerError,
   lineageCompatibleForReuse,
@@ -109,7 +108,7 @@ export async function assertThreadCaller(
         .where("workspaceMemberships.workspaceId", "=", connection.workspaceId)
         .where("workspaceMemberships.userId", "=", caller.userId)
         .where("workspaceMemberships.role", "=", "owner")
-        .where(effectiveMembershipPredicate(tx))
+        .where("workspaceMemberships.state", "=", "active")
         .where("workspaces.deletedAt", "is", null)
         .executeTakeFirst();
       if (!membership) throw forbidden("Connected agent Workspace authority is unavailable");

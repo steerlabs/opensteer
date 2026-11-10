@@ -14,87 +14,15 @@ integration("Workspace Files membership generation", () => {
     connectionString: databaseUrl ?? "postgres://unconfigured",
     maxConnections: 2,
   });
-  let store = new OpensteerStore(database);
+  const store = new OpensteerStore(database);
 
   beforeAll(async () => migrateToLatest(database));
 
   beforeEach(async () => {
     await sql`truncate table deployments, users restart identity cascade`.execute(database);
-    store = await OpensteerStore.create(database);
   });
 
   afterAll(async () => database.destroy());
-
-  it("keeps an expired file admission closed when a replacement grant is already effective", async () => {
-    await store.ensureDeployment({
-      canonicalOrigin: "https://files-expiry.fixture.invalid",
-      hostInstanceId: createId("hostInstance"),
-      deploymentShape: {
-        kind: "server",
-        defaultWorkspaceBacking: "local-directory",
-      },
-    });
-    const userId = await store.createUser("File owner");
-    const environmentId = await store.createEnvironment({
-      kind: "local",
-      name: "File computer",
-    });
-    const workspace = await createTestWorkspace(store, {
-      createdBy: userId,
-      idempotencyKey: "file-deadline",
-      kind: "project",
-      name: "File deadline",
-      status: "ready",
-      backing: {
-        kind: "local-directory",
-        generation: 1,
-        bindingId: createId("workspaceBinding"),
-        ownerEnvironmentId: environmentId,
-        storageAuthorityId: createId("storageAuthority"),
-      },
-    });
-    await database.updateTable("deployments").set({ authorityModelVersion: 2 }).execute();
-    store = await OpensteerStore.create(database);
-    await database
-      .updateTable("users")
-      .set({ admittedAt: new Date() })
-      .where("id", "=", userId)
-      .execute();
-    await database
-      .updateTable("workspaceMemberships")
-      .set({ effectiveUntil: new Date(Date.now() + 60_000) })
-      .where("workspaceId", "=", workspace.id)
-      .execute();
-    const admission = await store.admitWorkspaceFiles(workspace.id, userId);
-    expect(admission?.authorityDeadline).toBeTypeOf("number");
-    const clock = vi.spyOn(performance, "now");
-    const files = new WorkspaceFilesService({
-      memberships: store,
-      local: {
-        list: async () => {
-          await database
-            .updateTable("workspaceMemberships")
-            .set({ effectiveUntil: null })
-            .where("workspaceId", "=", workspace.id)
-            .execute();
-          clock.mockReturnValue(admission!.authorityDeadline! + 1);
-          return { entries: [], nextCursor: null };
-        },
-      } as never,
-    });
-    try {
-      await expect(files.list(admission!, { limit: 200, parentKey: "" })).rejects.toMatchObject({
-        code: "not_found",
-      });
-      expect(await store.workspaceMembershipForUser(workspace.id, userId)).toMatchObject({
-        state: "active",
-        generation: 1,
-      });
-    } finally {
-      files.close();
-      clock.mockRestore();
-    }
-  });
 
   it.each(["local-directory"] as const)(
     "stops an in-flight %s download when the admitted member is revoked",

@@ -1,4 +1,3 @@
-import { effectiveMembershipPredicate } from "./effective-membership.js";
 import {
   createId,
   MessageAuthorSchema,
@@ -48,7 +47,7 @@ export async function publishPersonMessage(
         .select("users.id")
         .where("workspaceMemberships.workspaceId", "=", admission.workspaceId)
         .where("workspaceMemberships.userId", "=", run.requestedBy)
-        .where(effectiveMembershipPredicate(transaction))
+        .where("workspaceMemberships.state", "=", "active")
         .where("users.disabledAt", "is", null)
         .forShare("workspaceMemberships")
         .executeTakeFirst();

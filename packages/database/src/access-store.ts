@@ -17,8 +17,7 @@ import {
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import { z } from "zod";
 import type { AccessEntryTable, DatabaseSchema, WorkspaceMembershipTable } from "./schema.js";
-import { projectMembershipAuthority } from "./effective-membership.js";
-import { discoverRequestWorkspaces, withRequestWorkspaceLocks } from "./request-workspace-locks.js";
+import { withRequestWorkspaceLocks } from "./request-workspace-locks.js";
 import { jsonValue, safeGeneration } from "./store-primitives.js";
 
 export const accessCapacity = {
@@ -42,14 +41,13 @@ type Membership = Omit<Selectable<WorkspaceMembershipTable>, "generation"> & {
 };
 type Graph = Awaited<ReturnType<typeof readGraph>>;
 type Level = "use" | "manage" | null;
-type Effective = { readonly level: Level; readonly until: Date | null };
+type Effective = { readonly level: Level };
 
 export interface MembershipTransition extends Pair {
   readonly generation: number;
   readonly previousGeneration: number | null;
   readonly state: "active" | "revoked";
   readonly role: "owner" | "collaborator";
-  readonly effectiveUntil: Date | null;
 }
 
 export interface AccessMutationResult {
@@ -71,7 +69,6 @@ const resultSchema = z.object({
       previousGeneration: z.number().int().positive().safe().nullable(),
       state: z.enum(["active", "revoked"]),
       role: z.enum(["owner", "collaborator"]),
-      effectiveUntil: z.coerce.date().nullable(),
     }),
   ),
 });
@@ -111,11 +108,7 @@ async function requireNewAuthority(database: Database): Promise<void> {
     });
 }
 
-async function readGraph(
-  database: Database,
-  memberIds?: readonly UserId[],
-  retainedEntryIds: readonly string[] = [],
-) {
+async function readGraph(database: Database, memberIds?: readonly UserId[]) {
   let userQuery = database
     .selectFrom("users")
     .select(["id", "memberKind", "memberState", "admittedAt"]);
@@ -154,22 +147,7 @@ async function readGraph(
       ]),
     );
   const edges = await edgeQuery.execute();
-  let entryQuery = database
-    .selectFrom("accessEntries")
-    .selectAll()
-    .where("revokedAt", "is", null)
-    .where((eb) =>
-      eb.or([
-        ...(retainedEntryIds.length ? [eb("id", "in", retainedEntryIds)] : []),
-        eb("expiresAt", "is", null),
-        eb("expiresAt", ">", sql<Date>`clock_timestamp()`),
-        sql<boolean>`exists (select 1 from workspace_memberships membership
-        where membership.state = 'active' and membership.effective_until is not null
-          and membership.workspace_id = access_entries.target_id and membership.effective_until <= access_entries.expires_at
-          and (access_entries.subject_kind <> 'user' or membership.user_id = access_entries.subject_id)
-          ${memberIds ? sql`and membership.user_id in (${sql.join(memberIds)})` : sql``})`,
-      ]),
-    );
+  let entryQuery = database.selectFrom("accessEntries").selectAll().where("revokedAt", "is", null);
   if (memberIds)
     entryQuery = entryQuery.where((eb) =>
       eb.or([
@@ -232,11 +210,7 @@ function groupPeople(graph: Graph): { people: Map<string, Set<UserId>>; depth: n
 
 function entriesByPair(
   graph: Graph,
-  input: {
-    readonly asOf: Date;
-    readonly includeExpiredFor?: ReadonlySet<string>;
-    readonly onlyPairs?: ReadonlySet<string>;
-  },
+  input: { readonly onlyPairs?: ReadonlySet<string> } = {},
 ): Map<string, { pair: Pair; entries: Entry[] }> {
   const { people } = groupPeople(graph);
   const users = new Map(graph.users.map((user) => [user.id, user]));
@@ -244,9 +218,6 @@ function entriesByPair(
   const pairs = new Map<string, { pair: Pair; entries: Entry[] }>();
   for (const entry of graph.entries) {
     if (entry.targetKind !== "project" || !projects.has(entry.targetId as WorkspaceId)) continue;
-    const live =
-      entry.grantedAt <= input.asOf && (!entry.expiresAt || entry.expiresAt > input.asOf);
-    if (!live && !input.includeExpiredFor?.size) continue;
     const ids =
       entry.subjectKind === "group"
         ? (people.get(entry.subjectId) ?? [])
@@ -259,7 +230,6 @@ function entriesByPair(
       const pair = { userId, workspaceId: entry.targetId as WorkspaceId };
       const key = pairKey(pair);
       if (input.onlyPairs && !input.onlyPairs.has(key)) continue;
-      if (!live && !input.includeExpiredFor?.has(key)) continue;
       let value = pairs.get(key);
       if (!value) {
         value = { pair, entries: [] };
@@ -271,22 +241,13 @@ function entriesByPair(
   return pairs;
 }
 
-function effective(entries: readonly Entry[], asOf: Date): Effective {
-  const live = entries.filter(
-    (entry) => entry.grantedAt <= asOf && (!entry.expiresAt || entry.expiresAt > asOf),
-  );
-  const level = live.some((entry) => entry.level === "manage")
-    ? "manage"
-    : live.length
-      ? "use"
-      : null;
-  const top = live.filter((entry) => entry.level === level);
+function effective(entries: readonly Entry[]): Effective {
   return {
-    level,
-    until:
-      !top.length || top.some((entry) => !entry.expiresAt)
-        ? null
-        : new Date(Math.max(...top.map((entry) => entry.expiresAt!.getTime()))),
+    level: entries.some((entry) => entry.level === "manage")
+      ? "manage"
+      : entries.length
+        ? "use"
+        : null,
   };
 }
 
@@ -299,16 +260,9 @@ function capacityError(limit: keyof typeof accessCapacity, count: number): never
   });
 }
 
-function checkCapacity(old: Graph, next: Graph, asOf: Date): void {
+function checkCapacity(old: Graph, next: Graph): void {
   const measure = (graph: Graph) => {
-    const pairs = entriesByPair(graph, { asOf });
-    let effectivePairs = 0;
-    for (const { entries } of pairs.values()) {
-      const count = entries.filter(
-        (entry) => entry.grantedAt <= asOf && (!entry.expiresAt || entry.expiresAt > asOf),
-      ).length;
-      if (count) effectivePairs++;
-    }
+    const effectivePairs = entriesByPair(graph).size;
     return {
       projects: graph.projects.length,
       groups: graph.groups.filter((group) => !group.builtin).length,
@@ -322,8 +276,8 @@ function checkCapacity(old: Graph, next: Graph, asOf: Date): void {
   for (const key of Object.keys(after) as (keyof typeof after)[])
     if (after[key] > accessCapacity[key] && after[key] > before[key])
       capacityError(key, after[key]);
-  const oldPairs = entriesByPair(old, { asOf });
-  for (const [key, value] of entriesByPair(next, { asOf }))
+  const oldPairs = entriesByPair(old);
+  for (const [key, value] of entriesByPair(next))
     if (
       value.entries.length > accessCapacity.matchingEntries &&
       value.entries.length > (oldPairs.get(key)?.entries.length ?? 0)
@@ -356,7 +310,6 @@ function propose(graph: Graph, change: AccessMutation, actorId: UserId, now: Dat
         level: "manage",
         grantedBy: actorId,
         grantedAt: now,
-        expiresAt: null,
         revokedAt: null,
         revokedBy: null,
       });
@@ -427,11 +380,6 @@ function propose(graph: Graph, change: AccessMutation, actorId: UserId, now: Dat
       const workspaceId = change.target.workspaceId;
       if (!next.projects.some((project) => project.id === workspaceId))
         refuse("Live Project is required");
-      if (
-        change.expiresAt &&
-        (!Number.isFinite(change.expiresAt.getTime()) || change.expiresAt <= now)
-      )
-        refuse("Grant expiry must be in the future");
       const subjectKind = change.subject.kind === "person" ? "user" : "group";
       const subjectId =
         change.subject.kind === "person" ? change.subject.userId : change.subject.groupId;
@@ -451,7 +399,6 @@ function propose(graph: Graph, change: AccessMutation, actorId: UserId, now: Dat
         level: change.level,
         grantedBy: actorId,
         grantedAt: now,
-        expiresAt: change.expiresAt ?? null,
         revokedAt: null,
         revokedBy: null,
       });
@@ -487,11 +434,9 @@ function affectedPairs(
   next: Graph,
   memberships: readonly Membership[],
   change: AccessMutation,
-  asOf: Date,
 ): Pair[] {
-  const activePairs = new Set(memberships.filter((row) => row.state === "active").map(pairKey));
-  const before = entriesByPair(old, { asOf, includeExpiredFor: activePairs });
-  const after = entriesByPair(next, { asOf, includeExpiredFor: activePairs });
+  const before = entriesByPair(old);
+  const after = entriesByPair(next);
   const result = new Map<string, Pair>();
   const signature = (entries: readonly Entry[] | undefined) =>
     entries
@@ -499,14 +444,13 @@ function affectedPairs(
       .sort()
       .join(",") ?? "";
   for (const [key, value] of new Map([...before, ...after]))
-    if (!change || signature(before.get(key)?.entries) !== signature(after.get(key)?.entries))
+    if (signature(before.get(key)?.entries) !== signature(after.get(key)?.entries))
       result.set(key, value.pair);
   for (const row of memberships)
     if (
       row.state === "active" &&
-      ((!change && row.effectiveUntil) ||
-        (change?.kind === "member" && change.userId === row.userId) ||
-        (change?.kind === "delete-project" && change.workspaceId === row.workspaceId))
+      ((change.kind === "member" && change.userId === row.userId) ||
+        (change.kind === "delete-project" && change.workspaceId === row.workspaceId))
     )
       result.set(pairKey(row), { userId: row.userId, workspaceId: row.workspaceId });
   if (
@@ -558,8 +502,8 @@ function affectedPairs(
       (pair) =>
         live.has(pair.workspaceId) &&
         (stored.has(pairKey(pair)) ||
-          effective(before.get(pairKey(pair))?.entries ?? [], asOf).level ||
-          effective(after.get(pairKey(pair))?.entries ?? [], asOf).level),
+          effective(before.get(pairKey(pair))?.entries ?? []).level ||
+          effective(after.get(pairKey(pair))?.entries ?? []).level),
     )
     .sort((first, second) => pairKey(first).localeCompare(pairKey(second)));
 }
@@ -596,6 +540,7 @@ export async function recomputeProjectMemberships(
   input: {
     readonly pairs: readonly Pair[];
     readonly asOf: Date;
+    readonly actorId: UserId;
     readonly causeId: CommandId;
     readonly graph?: Graph;
   },
@@ -610,11 +555,7 @@ export async function recomputeProjectMemberships(
     input.graph ??
     (await readGraph(transaction, [...new Set(input.pairs.map((pair) => pair.userId))]));
   const pairs = new Set(input.pairs.map(pairKey));
-  const entries = entriesByPair(graph, {
-    asOf: input.asOf,
-    includeExpiredFor: pairs,
-    onlyPairs: pairs,
-  });
+  const entries = entriesByPair(graph, { onlyPairs: pairs });
   const memberships = new Map<string, Membership>(
     (
       await transaction
@@ -630,68 +571,37 @@ export async function recomputeProjectMemberships(
   for (const pair of input.pairs) {
     const grants = entries.get(pairKey(pair))?.entries ?? [];
     let row = memberships.get(pairKey(pair));
-    const times =
-      row?.state === "active" && row.effectiveUntil && row.effectiveUntil <= input.asOf
-        ? [
-            ...new Set([
-              row.effectiveUntil.getTime(),
-              ...grants.flatMap((entry) =>
-                entry.expiresAt &&
-                entry.expiresAt >= row!.effectiveUntil! &&
-                entry.expiresAt <= input.asOf
-                  ? [entry.expiresAt.getTime()]
-                  : [],
-              ),
-            ]),
-          ].sort((first, second) => first - second)
-        : [];
-    times.push(input.asOf.getTime());
-    for (const milliseconds of new Set(times)) {
-      const now = new Date(milliseconds);
-      const next = effective(grants, now);
-      const state = next.level ? "active" : "revoked";
-      const role =
-        next.level === "manage"
-          ? "owner"
-          : next.level === "use"
-            ? "collaborator"
-            : (row?.role ?? "collaborator");
-      if (!row && state === "revoked") continue;
-      const changed = !row || row.state !== state || (state === "active" && row.role !== role);
-      if (!changed && row && row.effectiveUntil?.getTime() === next.until?.getTime()) continue;
-      const previousGeneration = row ? safeGeneration(row.generation) : null;
-      const generation =
-        previousGeneration === null ? 1 : changed ? previousGeneration + 1 : previousGeneration;
-      if (!Number.isSafeInteger(generation)) throw new Error("Membership generation exhausted");
-      const values = {
-        state,
-        role,
-        generation,
-        effectiveUntil: next.until,
-        updatedAt: now,
-        joinedAt: row?.state === "active" ? row.joinedAt : now,
-        revokedAt: state === "revoked" ? (row?.revokedAt ?? now) : null,
-        revokedBy: null,
-      } as const;
-      row = {
-        ...row,
-        ...values,
-        ...pair,
-        id: row?.id ?? createId("workspaceMembership"),
-        invitedBy: row?.invitedBy ?? null,
-      };
-      changedRows.set(pairKey(pair), row);
-      if (changed) {
-        transitions.push({
-          ...pair,
-          generation,
-          previousGeneration,
-          state,
-          role,
-          effectiveUntil: next.until,
-        });
-      }
-    }
+    const next = effective(grants);
+    const state = next.level ? "active" : "revoked";
+    const role =
+      next.level === "manage"
+        ? "owner"
+        : next.level === "use"
+          ? "collaborator"
+          : (row?.role ?? "collaborator");
+    if (
+      (!row && state === "revoked") ||
+      (row && row.state === state && (state !== "active" || row.role === role))
+    )
+      continue;
+    const previousGeneration = row ? safeGeneration(row.generation) : null;
+    const generation = previousGeneration === null ? 1 : previousGeneration + 1;
+    if (!Number.isSafeInteger(generation)) throw new Error("Membership generation exhausted");
+    const now = input.asOf;
+    row = {
+      ...pair,
+      id: row?.id ?? createId("workspaceMembership"),
+      invitedBy: row?.invitedBy ?? null,
+      state,
+      role,
+      generation,
+      updatedAt: now,
+      joinedAt: row?.state === "active" ? row.joinedAt : now,
+      revokedAt: state === "revoked" ? now : null,
+      revokedBy: state === "revoked" ? input.actorId : null,
+    };
+    changedRows.set(pairKey(pair), row);
+    transitions.push({ ...pair, generation, previousGeneration, state, role });
   }
   const rows = [...changedRows.values()];
   const inserts = rows.filter((row) => !memberships.has(pairKey(row)));
@@ -707,7 +617,6 @@ export async function recomputeProjectMemberships(
       state: row.state,
       role: row.role,
       generation: row.generation,
-      effective_until: row.effectiveUntil,
       updated_at: row.updatedAt,
       joined_at: row.joinedAt,
       revoked_at: row.revokedAt,
@@ -716,10 +625,10 @@ export async function recomputeProjectMemberships(
   if (updates.length)
     await sql`update workspace_memberships membership set
     state = change.state, role = change.role, generation = change.generation,
-    effective_until = change.effective_until, updated_at = change.updated_at,
+    updated_at = change.updated_at,
     joined_at = change.joined_at, revoked_at = change.revoked_at, revoked_by = change.revoked_by
     from jsonb_to_recordset(${JSON.stringify(updates)}::jsonb) as change (
-      id text, state text, role text, generation bigint, effective_until timestamptz,
+      id text, state text, role text, generation bigint,
       updated_at timestamptz, joined_at timestamptz, revoked_at timestamptz, revoked_by text
     ) where membership.id = change.id`.execute(transaction);
   const effects = transitions
@@ -761,20 +670,6 @@ async function applySource(
   input: AccessMutationInput,
   now: Date,
 ): Promise<void> {
-  for (const change of input.changes)
-    if (change.kind === "create-project")
-      await transaction
-        .insertInto("workspaces")
-        .values({
-          id: change.workspaceId,
-          kind: "project",
-          createdBy: input.actor.userId,
-          name: change.name.trim(),
-          color: change.color,
-          backing: jsonValue(change.backing),
-          status: "provisioning",
-        })
-        .execute();
   const oldGroups = new Set(old.groups.map((group) => group.id));
   const nextGroups = new Set(next.groups.map((group) => group.id));
   const deletedGroups = old.groups
@@ -824,7 +719,8 @@ async function applySource(
       .orderBy("groupId")
       .orderBy("memberKind")
       .orderBy("memberId")
-      .forNoKeyUpdate()
+      // Deleted edges need the deletion-strength fence.
+      .forUpdate()
       .execute();
     await transaction.deleteFrom("accessGroupMembers").where(matches).execute();
   }
@@ -878,6 +774,20 @@ async function applySource(
   }
   if (addedEntries.length)
     await transaction.insertInto("accessEntries").values(addedEntries).execute();
+  for (const change of input.changes)
+    if (change.kind === "create-project")
+      await transaction
+        .insertInto("workspaces")
+        .values({
+          id: change.workspaceId,
+          kind: "project",
+          createdBy: input.actor.userId,
+          name: change.name.trim(),
+          color: change.color,
+          backing: jsonValue(change.backing),
+          status: "provisioning",
+        })
+        .execute();
   for (const change of input.changes)
     if (change.kind === "delete-project")
       await transaction
@@ -988,32 +898,6 @@ async function authorizeMutation(
   });
 }
 
-async function clampExecutionLeases(
-  transaction: AccessTransaction,
-  pairs: readonly Pair[],
-): Promise<void> {
-  if (!pairs.length) return;
-  const result = await sql<{
-    id: string;
-    deadline: Date;
-  }>`select session.id, membership.effective_until as deadline
-    from provider_sessions session
-    join runs run on run.provider_session_id = session.id and run.binding_generation = session.binding_generation
-    join threads thread on thread.id = run.thread_id
-    join workspace_memberships membership on membership.workspace_id = thread.workspace_id
-      and membership.user_id = run.requested_by and membership.generation = run.membership_generation
-    join jsonb_to_recordset(${JSON.stringify(pairs)}::jsonb) as pair("workspaceId" text, "userId" text)
-      on pair."workspaceId" = membership.workspace_id and pair."userId" = membership.user_id
-    where session.active and membership.effective_until is not null
-      and session.lease_expires_at > membership.effective_until
-    order by session.id for no key update of session`.execute(transaction);
-  if (result.rows.length)
-    await sql`update provider_sessions session
-    set lease_expires_at = least(session.lease_expires_at, change.deadline)
-    from jsonb_to_recordset(${JSON.stringify(result.rows)}::jsonb) as change(id text, deadline timestamptz)
-    where session.id = change.id`.execute(transaction);
-}
-
 export async function mutateAccess(
   database: Database,
   input: AccessMutationInput,
@@ -1054,11 +938,22 @@ export async function mutateAccess(
       async (transaction) => {
         const plan = plans.get(transaction)!;
         const ids = new Set(plan.pairs.map((pair) => pair.workspaceId));
-        for (const id of await discoverRequestWorkspaces(transaction, {
-          membershipPairs: plan.pairs,
-          pending: true,
-        }))
-          ids.add(id);
+        if (plan.pairs.length) {
+          const requests = await sql<{
+            originatingWorkspaceId: WorkspaceId;
+            targetWorkspaceId: WorkspaceId;
+          }>`
+            select distinct request.originating_workspace_id, request.target_workspace_id
+            from requests request join jsonb_to_recordset(${JSON.stringify(plan.pairs)}::jsonb)
+              as pair("workspaceId" text, "userId" text)
+              on request.requested_by = pair."userId"
+                and (request.originating_workspace_id = pair."workspaceId" or request.target_workspace_id = pair."workspaceId")
+            where request.status = 'pending'`.execute(transaction);
+          for (const request of requests.rows) {
+            ids.add(request.originatingWorkspaceId);
+            ids.add(request.targetWorkspaceId);
+          }
+        }
         for (const id of ids) requestScope.add(id);
         if (plan.growing && requestScope.size > accessCapacity.requestWorkspaces)
           capacityError("requestWorkspaces", requestScope.size);
@@ -1081,28 +976,18 @@ export async function mutateAccess(
         const plan = plans.get(transaction)!;
         if (plan.revision !== input.expectedRevision) conflict("Access preview is stale");
         const now = await databaseTime(transaction);
-        const transitions = [
-          ...(await recomputeProjectMemberships(transaction, {
-            pairs: plan.pairs,
-            asOf: now,
-            causeId: input.commandIdentity,
-            graph: plan.old,
-          })),
-        ];
         const next = input.changes.reduce(
           (graph, change) => propose(graph, change, input.actor.userId, now),
           plan.old,
         );
         await applySource(transaction, plan.old, next, input, now);
-        transitions.push(
-          ...(await recomputeProjectMemberships(transaction, {
-            pairs: plan.pairs,
-            asOf: now,
-            causeId: input.commandIdentity,
-            graph: next,
-          })),
-        );
-        await clampExecutionLeases(transaction, plan.pairs);
+        const transitions = await recomputeProjectMemberships(transaction, {
+          actorId: input.actor.userId,
+          pairs: plan.pairs,
+          asOf: now,
+          causeId: input.commandIdentity,
+          graph: next,
+        });
         const revision = plan.revision + 1;
         if (!Number.isSafeInteger(revision)) throw new Error("Access revision exhausted");
         await transaction
@@ -1136,11 +1021,7 @@ export async function mutateAccess(
           .where("singletonKey", "=", "primary")
           .forNoKeyUpdate()
           .executeTakeFirstOrThrow();
-        const old = await readGraph(
-          transaction,
-          memberIds,
-          input.changes.flatMap((change) => (change.kind === "revoke" ? [change.entryId] : [])),
-        );
+        const old = await readGraph(transaction, memberIds);
         const now = await databaseTime(transaction);
         const receipt = await transaction
           .selectFrom("securityAudit")
@@ -1171,7 +1052,7 @@ export async function mutateAccess(
           (graph, change) => propose(graph, change, input.actor.userId, now),
           old,
         );
-        checkCapacity(old, next, now);
+        checkCapacity(old, next);
         let membershipQuery = transaction
           .selectFrom("workspaceMemberships")
           .selectAll()
@@ -1179,15 +1060,15 @@ export async function mutateAccess(
         if (memberIds) membershipQuery = membershipQuery.where("userId", "in", memberIds);
         const memberships = await membershipQuery.execute();
         if (memberIds) {
-          const projected = entriesByPair(next, { asOf: now }).size;
-          const current = entriesByPair(old, { asOf: now }).size;
+          const projected = entriesByPair(next).size;
+          const current = entriesByPair(old).size;
           const delta = projected - current;
           if (delta > 0) {
             const total = await transaction
               .selectFrom("workspaceMemberships")
               .innerJoin("workspaces", "workspaces.id", "workspaceMemberships.workspaceId")
               .select(sql<string>`count(*)`.as("count"))
-              .where(projectMembershipAuthority.predicate("workspaceMemberships.state", false))
+              .where("workspaceMemberships.state", "=", "active")
               .where("workspaces.kind", "=", "project")
               .where("workspaces.deletedAt", "is", null)
               .where("workspaces.status", "not in", ["deleting", "deleted"])
@@ -1200,18 +1081,17 @@ export async function mutateAccess(
         let intermediate = old;
         for (const change of input.changes) {
           const proposed = propose(intermediate, change, input.actor.userId, now);
-          for (const pair of affectedPairs(intermediate, proposed, memberships, change, now))
+          for (const pair of affectedPairs(intermediate, proposed, memberships, change))
             pairs.set(pairKey(pair), pair);
           intermediate = proposed;
         }
-        const beforePairs = entriesByPair(old, { asOf: now });
-        const afterPairs = entriesByPair(next, { asOf: now });
+        const beforePairs = entriesByPair(old);
+        const afterPairs = entriesByPair(next);
         const growing = [...afterPairs].some(([key, value]) => {
           const before = beforePairs.get(key)?.entries ?? [];
           return (
             value.entries.length > before.length ||
-            (effective(value.entries, now).level === "manage" &&
-              effective(before, now).level !== "manage")
+            (effective(value.entries).level === "manage" && effective(before).level !== "manage")
           );
         });
         if (growing && pairs.size > accessCapacity.affectedPairs)
@@ -1300,7 +1180,6 @@ export async function checkAccess(
     .select([
       "workspaceMemberships.generation",
       "workspaceMemberships.role",
-      "workspaceMemberships.effectiveUntil",
       "users.authorityGeneration as currentMemberGeneration",
     ])
     .where("workspaceMemberships.userId", "=", user.id)
@@ -1311,11 +1190,7 @@ export async function checkAccess(
     .$if(input.expectedMemberGeneration !== undefined, (query) =>
       query.where("users.authorityGeneration", "=", String(input.expectedMemberGeneration!)),
     )
-    .where(
-      isNew
-        ? projectMembershipAuthority.predicate("workspaceMemberships.state", false)
-        : sql<boolean>`workspace_memberships.state = 'active'`,
-    )
+    .where("workspaceMemberships.state", "=", "active")
     .executeTakeFirst();
   if (
     !membership ||
@@ -1328,91 +1203,5 @@ export async function checkAccess(
     allowed: true,
     memberGeneration: safeGeneration(membership.currentMemberGeneration),
     membershipGeneration: safeGeneration(membership.generation),
-    effectiveUntil: membership.effectiveUntil,
   };
-}
-
-export async function expireAccessMemberships(
-  database: Database,
-): Promise<readonly MembershipTransition[]> {
-  const scopes = new WeakMap<AccessTransaction, Pair[]>();
-  const revisions = new WeakMap<AccessTransaction, number>();
-  return withRequestWorkspaceLocks(
-    database,
-    async (transaction) => {
-      const pairs = scopes.get(transaction)!;
-      const ids = new Set(pairs.map((pair) => pair.workspaceId));
-      for (const id of await discoverRequestWorkspaces(transaction, {
-        membershipPairs: pairs,
-        pending: true,
-      }))
-        ids.add(id);
-      return [...ids];
-    },
-    async (transaction) => {
-      const pairs = scopes.get(transaction)!;
-      await lockMemberships(transaction, pairs);
-      const causeId = createId("command");
-      const transitions = await recomputeProjectMemberships(transaction, {
-        pairs,
-        asOf: await databaseTime(transaction),
-        causeId,
-      });
-      await clampExecutionLeases(transaction, pairs);
-      if (transitions.length) {
-        const revision = revisions.get(transaction)! + 1;
-        if (!Number.isSafeInteger(revision)) throw new Error("Access revision exhausted");
-        await transaction
-          .updateTable("accessState")
-          .set({ revision })
-          .where("singletonKey", "=", "primary")
-          .execute();
-        await transaction
-          .insertInto("securityAudit")
-          .values({
-            id: createId("securityAudit"),
-            action: "access.expired",
-            actorUserId: null,
-            actorSessionId: null,
-            workspaceId: null,
-            requestId: causeId,
-            targetId: null,
-            targetType: "access",
-            metadata: jsonValue({ revision, transitionCount: transitions.length }),
-          })
-          .execute();
-      }
-      return transitions;
-    },
-    async (transaction) => {
-      await takeWriterLock(transaction);
-      await requireNewAuthority(transaction);
-      const state = await transaction
-        .selectFrom("accessState")
-        .select("revision")
-        .where("singletonKey", "=", "primary")
-        .forNoKeyUpdate()
-        .executeTakeFirstOrThrow();
-      revisions.set(transaction, safeGeneration(state.revision));
-      const due = await transaction
-        .selectFrom("workspaceMemberships")
-        .select(["userId", "workspaceId"])
-        .where("state", "=", "active")
-        .where("effectiveUntil", "<=", sql<Date>`clock_timestamp()`)
-        .execute();
-      scopes.set(transaction, due);
-    },
-  );
-}
-
-export async function nextAccessDeadline(database: Database): Promise<Date | null> {
-  const row = await database
-    .selectFrom("workspaceMemberships")
-    .select("effectiveUntil")
-    .where("state", "=", "active")
-    .where("effectiveUntil", "is not", null)
-    .orderBy("effectiveUntil", "asc")
-    .limit(1)
-    .executeTakeFirst();
-  return row?.effectiveUntil ?? null;
 }

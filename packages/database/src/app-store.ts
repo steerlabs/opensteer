@@ -1,4 +1,3 @@
-import { effectiveMembershipPredicate } from "./effective-membership.js";
 import { randomUUID } from "node:crypto";
 import {
   AppIdSchema,
@@ -59,7 +58,7 @@ export class AppStore {
         "apps.tabOpenedAt",
       ])
       .where("workspaceMemberships.userId", "=", userId)
-      .where(effectiveMembershipPredicate(this.#database))
+      .where("workspaceMemberships.state", "=", "active")
       .where("workspaces.status", "not in", ["deleting", "deleted"])
       .where("apps.tabOpenedAt", "is not", null)
       .orderBy("apps.tabOpenedAt", "desc")
@@ -92,7 +91,7 @@ export class AppStore {
           .select(["apps.workspaceId", "apps.tabOpenedAt", "workspaces.status"])
           .where("apps.id", "=", id)
           .where("workspaceMemberships.userId", "=", userId)
-          .where(effectiveMembershipPredicate(transaction))
+          .where("workspaceMemberships.state", "=", "active")
           .executeTakeFirst();
         if (!row) throw missing();
         if (open && (row.status === "deleting" || row.status === "deleted"))
@@ -139,7 +138,7 @@ export class AppStore {
       .selectAll("apps")
       .where("apps.id", "=", AppIdSchema.parse(appId))
       .where("workspaceMemberships.userId", "=", userId)
-      .where(effectiveMembershipPredicate(this.#database))
+      .where("workspaceMemberships.state", "=", "active")
       .executeTakeFirst();
     if (!row) throw missing();
     return AppSchema.parse({
@@ -183,7 +182,7 @@ export class AppStore {
       .select("workspaceId")
       .where("workspaceId", "=", input.workspaceId)
       .where("userId", "=", input.userId)
-      .where(effectiveMembershipPredicate(this.#database, "state"))
+      .where("state", "=", "active")
       .executeTakeFirst();
     if (!membership) throw missing();
     const publisher = await this.#database
@@ -255,7 +254,7 @@ export class AppStore {
         "appVersions.server",
       ])
       .where("workspaceMemberships.userId", "=", input.userId)
-      .where(effectiveMembershipPredicate(this.#database))
+      .where("workspaceMemberships.state", "=", "active")
       .execute();
     return rows
       .filter((row) => threadInReach(input.reach, row))

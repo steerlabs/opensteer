@@ -194,7 +194,6 @@ import {
 } from "./workspace-membership-store.js";
 import { ensureProjectChat } from "./project-chat.js";
 import * as workspaceStore from "./workspace-store.js";
-import { loadMembershipAuthority, membershipAuthority } from "./effective-membership.js";
 import { type CreateWorkspaceInput, type WorkspaceFilesAdmission } from "./workspace-store.js";
 
 /** Told, after commit, which grants a write revoked. */
@@ -202,20 +201,6 @@ export type RunGrantRevocationListener = (grants: readonly RevokedRunGrant[]) =>
 
 export class OpensteerStore {
   readonly #database: Kysely<DatabaseSchema>;
-  readonly authorityModelVersion: 1 | 2;
-  readonly #renewBinding: typeof executionStore.renewExecutionBinding;
-  readonly #renewBindings: typeof executionStore.renewActiveExecutionBindings;
-  readonly #admitFiles: typeof workspaceStore.admitWorkspaceFiles;
-  readonly #membershipForUser: typeof workspaceMembershipStore.workspaceMembershipForUser;
-  readonly #leaseExpiry: Parameters<typeof executionStore.acquireExecutionBinding>[2];
-
-  static async create(
-    database: Kysely<DatabaseSchema>,
-    options: ConstructorParameters<typeof OpensteerStore>[1] = {},
-  ) {
-    await loadMembershipAuthority(database);
-    return new OpensteerStore(database, options);
-  }
 
   // The Deployment authority lease permits one mutating Host process. These
   // post-commit listeners therefore form the immediate local revocation path;
@@ -238,25 +223,6 @@ export class OpensteerStore {
     options: { readonly links?: ChannelLinks; readonly executionClock?: Pick<Clock, "now"> } = {},
   ) {
     this.#database = database;
-    this.authorityModelVersion = membershipAuthority(database).version;
-    this.#renewBinding =
-      this.authorityModelVersion === 2
-        ? executionStore.renewExecutionBindingWithAuthority
-        : executionStore.renewExecutionBinding;
-    this.#renewBindings =
-      this.authorityModelVersion === 2
-        ? executionStore.renewActiveExecutionBindingsWithAuthority
-        : executionStore.renewActiveExecutionBindings;
-    this.#admitFiles =
-      this.authorityModelVersion === 2
-        ? workspaceStore.admitWorkspaceFilesWithAuthority
-        : workspaceStore.admitWorkspaceFiles;
-    this.#membershipForUser =
-      this.authorityModelVersion === 2
-        ? workspaceMembershipStore.workspaceMembershipForUser
-        : workspaceMembershipStore.legacyWorkspaceMembershipForUser;
-    this.#leaseExpiry =
-      this.authorityModelVersion === 2 ? executionStore.membershipLeaseExpiry : undefined;
     this.#links = options.links ?? threadPathLinks;
     this.#executionNow = options.executionClock?.now ?? (() => Date.now());
     this.requests = new RequestStore(database, this.#links, this.#executionNow);
@@ -374,15 +340,7 @@ export class OpensteerStore {
     workspaceId: WorkspaceId,
     userId: UserId,
   ): Promise<WorkspaceMembershipRecord | null> {
-    return this.#membershipForUser(this.#database, workspaceId, userId);
-  }
-
-  async workspaceMembershipAuthorityForUser(workspaceId: WorkspaceId, userId: UserId) {
-    return workspaceMembershipStore.workspaceMembershipAuthorityForUser(
-      this.#database,
-      workspaceId,
-      userId,
-    );
+    return workspaceMembershipStore.workspaceMembershipForUser(this.#database, workspaceId, userId);
   }
 
   async listWorkspaceMembers(
@@ -1036,7 +994,7 @@ export class OpensteerStore {
     readonly runnerBootId: string;
     readonly runnerId: RunnerId;
   }): Promise<readonly RunId[]> {
-    return this.#renewBindings(this.#database, input, this.#executionNow);
+    return executionStore.renewActiveExecutionBindings(this.#database, input, this.#executionNow);
   }
 
   async createHarnessInstance(input: CreateHarnessInstanceInput): Promise<HarnessInstanceRecord> {
@@ -1388,7 +1346,7 @@ export class OpensteerStore {
     workspaceId: WorkspaceId,
     userId: UserId,
   ): Promise<WorkspaceFilesAdmission | null> {
-    return this.#admitFiles(this.#database, workspaceId, userId);
+    return workspaceStore.admitWorkspaceFiles(this.#database, workspaceId, userId);
   }
 
   completeWorkspaceStorageRetry(identity: AdministrationCommandIdentity, workspaceId: WorkspaceId) {
@@ -1862,7 +1820,7 @@ export class OpensteerStore {
     }
   > {
     return this.#announceRevokedGrants(
-      await executionStore.acquireExecutionBinding(this.#database, input, this.#leaseExpiry),
+      await executionStore.acquireExecutionBinding(this.#database, input),
     );
   }
 
@@ -1875,7 +1833,7 @@ export class OpensteerStore {
     readonly runId: RunId;
     readonly threadId: ThreadId;
   }): Promise<boolean> {
-    return this.#renewBinding(this.#database, input, this.#executionNow);
+    return executionStore.renewExecutionBinding(this.#database, input, this.#executionNow);
   }
 
   async runRequester(input: {
@@ -2061,7 +2019,6 @@ export class OpensteerStore {
   }
 
   async failActiveRunsForMembershipRevocation(input: {
-    readonly membershipGenerationCutoff?: number;
     readonly userId: UserId;
     readonly workspaceId: WorkspaceId;
   }): Promise<RunRecoveryOutcome> {

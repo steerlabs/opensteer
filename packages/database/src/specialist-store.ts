@@ -1,4 +1,3 @@
-import { effectiveMembershipState } from "./effective-membership.js";
 import {
   administrationCommand,
   type AdministrationCommandIdentity,
@@ -25,7 +24,7 @@ export class SpecialistStore {
   private async authorize(workspaceId: WorkspaceId, actorUserId: UserId) {
     const member = await this.database
       .selectFrom("workspaceMemberships")
-      .select(effectiveMembershipState(this.database, "state"))
+      .select("state")
       .where("workspaceId", "=", workspaceId)
       .where("userId", "=", actorUserId)
       .executeTakeFirst();

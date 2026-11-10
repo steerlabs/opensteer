@@ -1,4 +1,3 @@
-import { effectiveMembershipPredicate } from "./effective-membership.js";
 import {
   OpensteerError,
   type MessageId,
@@ -39,7 +38,7 @@ export function readThreadWaitSnapshot(
         .select("threads.id")
         .where("threads.id", "=", input.threadId)
         .where("workspaceMemberships.userId", "=", input.userId)
-        .where(effectiveMembershipPredicate(tx))
+        .where("workspaceMemberships.state", "=", "active")
         .executeTakeFirst();
       if (!thread)
         throw new OpensteerError({ code: "forbidden", message: "Thread is unavailable" });

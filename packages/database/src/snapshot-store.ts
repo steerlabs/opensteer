@@ -1,4 +1,3 @@
-import { effectiveMembershipPredicate } from "./effective-membership.js";
 import { withDatabaseTransaction } from "./connection.js";
 import {
   type UserId,
@@ -228,7 +227,7 @@ export async function workspaceSnapshot(
                         .select("workspaceMemberships.id")
                         .whereRef("workspaceMemberships.workspaceId", "=", "threads.workspaceId")
                         .where("workspaceMemberships.userId", "=", options.viewerId!)
-                        .where(effectiveMembershipPredicate(transaction)),
+                        .where("workspaceMemberships.state", "=", "active"),
                     ),
                   ),
                 )
@@ -499,7 +498,7 @@ export async function taskPageForUser(
         )
         .innerJoin("users", "users.id", "workspaceMemberships.userId")
         .where("workspaceMemberships.userId", "=", input.userId)
-        .where(effectiveMembershipPredicate(transaction))
+        .where("workspaceMemberships.state", "=", "active")
         .where("users.disabledAt", "is", null)
         .where("workspaces.status", "!=", "deleted")
         .where("threads.listed", "=", true)
@@ -517,7 +516,7 @@ export async function taskPageForUser(
           .select("workspaceMemberships.workspaceId")
           .where("workspaceMemberships.workspaceId", "=", input.workspaceId)
           .where("workspaceMemberships.userId", "=", input.userId)
-          .where(effectiveMembershipPredicate(transaction))
+          .where("workspaceMemberships.state", "=", "active")
           .where("users.disabledAt", "is", null)
           .where("workspaces.status", "!=", "deleted")
           .executeTakeFirst();
@@ -770,7 +769,7 @@ export async function threadEventPageForOwner(
         ])
         .where("threads.id", "=", input.threadId)
         .where("workspaceMemberships.userId", "=", input.ownerId)
-        .where(effectiveMembershipPredicate(transaction))
+        .where("workspaceMemberships.state", "=", "active")
         .executeTakeFirst();
       if (!thread) return null;
       const [page, countRow] = await Promise.all([

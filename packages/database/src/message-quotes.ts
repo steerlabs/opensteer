@@ -1,4 +1,3 @@
-import { effectiveMembershipPredicate } from "./effective-membership.js";
 import { isPlaceContentPart } from "@opensteer/core";
 import { publishedMessagePredicate } from "./message-visibility.js";
 import {
@@ -26,7 +25,7 @@ export async function resolveMessageQuote(
     .selectAll("messages")
     .where("messages.id", "=", messageId)
     .where("workspaceMemberships.userId", "=", userId)
-    .where(effectiveMembershipPredicate(transaction))
+    .where("workspaceMemberships.state", "=", "active")
     .where(publishedMessagePredicate("threadInputs"))
     .executeTakeFirst();
   if (!row)

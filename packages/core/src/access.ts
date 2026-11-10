@@ -45,7 +45,6 @@ export type AccessMutation =
       readonly subject: AccessSubject;
       readonly target: AccessTarget;
       readonly level: ProjectAccessLevel | TopicAccessLevel;
-      readonly expiresAt?: Date | null;
     }
   | { readonly kind: "revoke"; readonly entryId: string }
   | {
@@ -79,5 +78,4 @@ export type AccessDecision =
       readonly allowed: true;
       readonly memberGeneration?: number;
       readonly membershipGeneration?: number;
-      readonly effectiveUntil?: Date | null;
     };

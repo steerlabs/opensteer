@@ -1,4 +1,3 @@
-import { effectiveMembershipPredicate, effectiveMembershipState } from "./effective-membership.js";
 import { lockPluginOwnerConsent } from "./plugin-settings-locks.js";
 import { SpecialistStore } from "./specialist-store.js";
 import { PluginSettingsStore } from "./plugin-settings-store.js";
@@ -83,7 +82,6 @@ export interface CreateWorkspaceInput {
 }
 
 export interface WorkspaceFilesAdmission {
-  readonly authorityDeadline?: number;
   readonly membershipGeneration: number;
   readonly userId: UserId;
   readonly workspace: Workspace;
@@ -378,7 +376,7 @@ export async function setWorkspaceIcon(
     const membership = workspace
       ? await transaction
           .selectFrom("workspaceMemberships")
-          .select(["role", effectiveMembershipState(transaction, "state")])
+          .select(["role", "state"])
           .where("workspaceId", "=", input.workspaceId)
           .where("userId", "=", input.requestedBy)
           .executeTakeFirst(databaseOperationOptions())
@@ -475,7 +473,7 @@ export async function setWorkspaceColor(
     const membership = workspace
       ? await transaction
           .selectFrom("workspaceMemberships")
-          .select(["role", effectiveMembershipState(transaction, "state")])
+          .select(["role", "state"])
           .where("workspaceId", "=", input.workspaceId)
           .where("userId", "=", input.requestedBy)
           .executeTakeFirst(databaseOperationOptions())
@@ -573,7 +571,7 @@ export async function requestWorkspaceDeletion(
         }
         const membership = await transaction
           .selectFrom("workspaceMemberships")
-          .select(["role", effectiveMembershipState(transaction, "state")])
+          .select(["role", "state"])
           .where("workspaceId", "=", input.workspaceId)
           .where("userId", "=", input.requestedBy)
           .executeTakeFirst(databaseOperationOptions());
@@ -667,7 +665,7 @@ export async function recoverWorkspaceDeletion(
     }
     const membership = await transaction
       .selectFrom("workspaceMemberships")
-      .select(["role", effectiveMembershipState(transaction, "state")])
+      .select(["role", "state"])
       .where("workspaceId", "=", input.workspaceId)
       .where("userId", "=", input.requestedBy)
       .executeTakeFirst(databaseOperationOptions());
@@ -879,7 +877,7 @@ export async function workspacePageForOwner(
         .innerJoin("workspaceMemberships", "workspaceMemberships.workspaceId", "workspaces.id")
         .selectAll("workspaces")
         .where("workspaceMemberships.userId", "=", input.ownerId)
-        .where(effectiveMembershipPredicate(transaction))
+        .where("workspaceMemberships.state", "=", "active")
         .where("workspaces.status", "!=", "deleted");
       if (anchor) {
         query = query.where((expressions) =>
@@ -903,7 +901,7 @@ export async function workspacePageForOwner(
           .innerJoin("workspaceMemberships", "workspaceMemberships.workspaceId", "workspaces.id")
           .select(({ fn }) => fn.countAll<string>().as("count"))
           .where("workspaceMemberships.userId", "=", input.ownerId)
-          .where(effectiveMembershipPredicate(transaction))
+          .where("workspaceMemberships.state", "=", "active")
           .where("workspaces.status", "!=", "deleted")
           .executeTakeFirstOrThrow(databaseOperationOptions()),
       ]);
@@ -952,7 +950,7 @@ export async function listWorkspacesForOwner(
     .innerJoin("workspaceMemberships", "workspaceMemberships.workspaceId", "workspaces.id")
     .selectAll("workspaces")
     .where("workspaceMemberships.userId", "=", ownerId)
-    .where(effectiveMembershipPredicate(database))
+    .where("workspaceMemberships.state", "=", "active")
     .where("workspaces.status", "!=", "deleted")
     .orderBy("updatedAt", "desc")
     .limit(boundedLimit(limit, 1_000))
@@ -1007,7 +1005,7 @@ export async function getWorkspaceForOwner(
     .selectAll("workspaces")
     .where("workspaces.id", "=", workspaceId)
     .where("workspaceMemberships.userId", "=", ownerId)
-    .where(effectiveMembershipPredicate(database))
+    .where("workspaceMemberships.state", "=", "active")
     .executeTakeFirst(databaseOperationOptions());
   return row ? workspaceFromRow(row) : null;
 }
@@ -1040,48 +1038,6 @@ export async function admitWorkspaceFiles(
     });
   }
   return {
-    membershipGeneration: safeGeneration(row.membershipGeneration),
-    userId,
-    workspace: workspaceFromRow(row),
-  };
-}
-
-export async function admitWorkspaceFilesWithAuthority(
-  database: Kysely<DatabaseSchema>,
-  workspaceId: WorkspaceId,
-  userId: UserId,
-): Promise<WorkspaceFilesAdmission | null> {
-  const started = performance.now();
-  const row = await database
-    .selectFrom("workspaces")
-    .innerJoin("workspaceMemberships", "workspaceMemberships.workspaceId", "workspaces.id")
-    .selectAll("workspaces")
-    .select("workspaceMemberships.generation as membershipGeneration")
-    .select("workspaceMemberships.effectiveUntil")
-    .select(
-      sql<Date | null>`case when workspace_memberships.effective_until is not null then clock_timestamp() end`.as(
-        "checkedAt",
-      ),
-    )
-    .where("workspaces.id", "=", workspaceId)
-    .where("workspaceMemberships.userId", "=", userId)
-    .where(effectiveMembershipPredicate(database))
-    .executeTakeFirst(databaseOperationOptions());
-  if (!row) return null;
-  if (row.status === "deleted") return null;
-  if (row.status === "deleting") {
-    throw new OpensteerError({
-      code: "workspace_unavailable",
-      message: "Workspace is awaiting deletion",
-      reason: "workspace-deleting",
-    });
-  }
-  return {
-    ...(row.effectiveUntil && row.checkedAt
-      ? {
-          authorityDeadline: started + row.effectiveUntil.getTime() - row.checkedAt.getTime(),
-        }
-      : {}),
     membershipGeneration: safeGeneration(row.membershipGeneration),
     userId,
     workspace: workspaceFromRow(row),
