@@ -26,6 +26,8 @@ import { useHostRead } from "@opensteer/client/react";
 import { WorkspaceNotificationMute } from "./workspace-notification-mute.js";
 import { WorkspaceSharingDialog } from "./workspace-sharing-dialog.js";
 import { AreaLink, useAreaNavigate } from "./workspace/area-link.js";
+import { useProjectAccess } from "./team/project-access.js";
+import { TeamProjectMarker, TeamProjectPage, TeamProjectSections } from "./team/team-project.js";
 
 /**
  * A Project's settings: who is in it, what it may use beyond its own folder,
@@ -41,7 +43,12 @@ export function ProjectSettingsRoute() {
   useEffect(() => {
     if (activeWorkspaceId) hostClient.activateWorkspace(activeWorkspaceId);
   }, [activeWorkspaceId, hostClient]);
-  if (!workspace || workspace.kind !== "project") return <Navigate replace to="/projects" />;
+  if (!workspace || workspace.kind !== "project")
+    return snapshot.teamAdministrationAvailable && workspaceId ? (
+      <TeamProjectPage workspaceId={workspaceId} />
+    ) : (
+      <Navigate replace to="/projects" />
+    );
   return <ProjectSettings key={workspace.id} workspace={workspace} />;
 }
 
@@ -50,9 +57,15 @@ function ProjectSettings({ workspace }: { readonly workspace: WorkspaceSummary }
   const userId = snapshot.user?.id ?? null;
   const administrator = snapshot.user?.instanceRole === "administrator";
   const connected = canRespondToRequests(snapshot);
+  const teamProject = snapshot.teamAdministrationAvailable === true;
+  const teamAccess = useProjectAccess(workspace.id);
   const members = useHostRead(
-    () =>
-      hostClient.rpc["workspace.members.list"]({ workspaceId: workspace.id }).then(unwrapRpcResult),
+    teamProject
+      ? null
+      : () =>
+          hostClient.rpc["workspace.members.list"]({ workspaceId: workspace.id }).then(
+            unwrapRpcResult,
+          ),
     `members:${workspace.id}`,
   );
   const owner =
@@ -80,12 +93,15 @@ function ProjectSettings({ workspace }: { readonly workspace: WorkspaceSummary }
                 {workspace.machineName
                   ? `Its folder is in Main on ${workspace.machineName}.`
                   : "Its folder is in Main."}{" "}
-                {owner
-                  ? "You own this project."
-                  : members.data
-                    ? "An owner of this project decides who joins it and what it can use."
-                    : null}
+                {teamProject
+                  ? null
+                  : owner
+                    ? "You own this project."
+                    : members.data
+                      ? "An owner of this project decides who joins it and what it can use."
+                      : null}
               </p>
+              {teamProject ? <TeamProjectMarker access={teamAccess} /> : null}
             </div>
           </div>
         </header>
@@ -113,13 +129,17 @@ function ProjectSettings({ workspace }: { readonly workspace: WorkspaceSummary }
           </div>
         ) : null}
 
-        <PeopleSection
-          connected={connected}
-          members={members.data?.members ?? null}
-          membersError={members.error}
-          onChanged={members.reload}
-          workspace={workspace}
-        />
+        {teamProject ? (
+          <TeamProjectSections access={teamAccess} />
+        ) : (
+          <PeopleSection
+            connected={connected}
+            members={members.data?.members ?? null}
+            membersError={members.error}
+            onChanged={members.reload}
+            workspace={workspace}
+          />
+        )}
         <AccessSection workspace={workspace} />
         <PluginsSection
           administrator={administrator}

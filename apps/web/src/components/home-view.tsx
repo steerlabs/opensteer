@@ -58,6 +58,7 @@ import { WorkspaceIconChooser } from "./workspace-icon-picker.js";
 import { AccessModeControl } from "./access-mode-control.js";
 import { LoadingRows } from "./loading-rows.js";
 import { TaskGroup, TaskRowLink, useTaskSnapshot } from "./task-rows.js";
+import { TeamProjectHomeMarker } from "./team/team-project.js";
 
 /**
  * Home: the one conversation the app opens into.
@@ -498,6 +499,9 @@ function WorkspaceHome({
               <div className="hero__workspace-copy">
                 <h1>{workspace.name}</h1>
                 {workspace.description ? <p>{workspace.description}</p> : null}
+                {snapshot.teamAdministrationAvailable ? (
+                  <TeamProjectHomeMarker workspaceId={workspace.id} />
+                ) : null}
               </div>
               <AreaLink
                 aria-label={`${workspace.name} settings`}

@@ -2,10 +2,11 @@ import {
   canRespondToRequests,
   mutationIdempotencyKey,
   sameStableHostSnapshot,
+  teamErrorText,
   type HostClient,
 } from "@opensteer/client/host";
-import { useHostSnapshot } from "@opensteer/client/react";
-import { type MarkColor, type WorkspaceIconName } from "@opensteer/core";
+import { useHostSnapshot, useTeam } from "@opensteer/client/react";
+import { markColorAllocationOrder, type MarkColor, type WorkspaceIconName } from "@opensteer/core";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useRef, useState, type ReactNode } from "react";
 import { Pressable, ScrollView, StyleSheet, View } from "react-native";
@@ -60,6 +61,7 @@ function NewProjectForm(props: {
   const attempt = useRef<string | null>(null);
   const inFlight = useRef(false);
 
+  const { team, summary } = useTeam(props.hostClient);
   const connected = canRespondToRequests(snapshot);
   const submittable = name.trim().length > 0 && !creating && connected;
   // While a create is in flight nothing here changes, so the form never shows
@@ -78,6 +80,27 @@ function NewProjectForm(props: {
     attempt.current ??= mutationIdempotencyKey("workspace");
     setCreating(true);
     setFailure(null);
+    if (team && summary) {
+      void team
+        .createProject(summary.accessRevision, {
+          name: name.trim(),
+          color: markColor ?? markColorAllocationOrder[0]!,
+        })
+        .then((result) => {
+          if (!navigation.isFocused()) return;
+          navigation.goBack();
+          navigation.navigate("ProjectSettings", {
+            deploymentId: props.deploymentId,
+            workspaceId: result.projectId,
+          });
+        })
+        .catch((error: unknown) => setFailure(teamErrorText(error, summary.team.name)))
+        .finally(() => {
+          inFlight.current = false;
+          setCreating(false);
+        });
+      return;
+    }
     void props.hostClient
       .dispatch({
         ...(icon === null ? {} : { icon }),
@@ -110,8 +133,9 @@ function NewProjectForm(props: {
   return (
     <Sheet onClose={() => navigation.goBack()}>
       <AppText role="secondary" tone="muted">
-        An agent with its own files, browsers and sign-ins. Opensteer can hand it work, and you can
-        start tasks in it yourself.
+        {summary
+          ? `A shared project in ${summary.team.name}. You’ll manage it: who can use it, and how it runs on ${summary.team.name}’s computer.`
+          : "An agent with its own files, browsers and sign-ins. Opensteer can hand it work, and you can start tasks in it yourself."}
       </AppText>
       <Field
         input={{
@@ -127,21 +151,23 @@ function NewProjectForm(props: {
         }}
         label="Name"
       />
-      <View style={styles.group}>
-        <AppText role="secondaryMedium" tone="soft">
-          Icon
-        </AppText>
-        <IconChoices
-          horizontal
-          color={markColor}
-          disabled={creating}
-          name={name}
-          onChange={change(setIcon)}
-          value={icon}
-        />
-      </View>
+      {summary ? null : (
+        <View style={styles.group}>
+          <AppText role="secondaryMedium" tone="soft">
+            Icon
+          </AppText>
+          <IconChoices
+            horizontal
+            color={markColor}
+            disabled={creating}
+            name={name}
+            onChange={change(setIcon)}
+            value={icon}
+          />
+        </View>
+      )}
 
-      {snapshot.taskMarksAvailable ? (
+      {snapshot.taskMarksAvailable || summary ? (
         <View style={styles.group}>
           <AppText role="secondaryMedium" tone="soft">
             Colour

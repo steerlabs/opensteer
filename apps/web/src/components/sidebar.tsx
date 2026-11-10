@@ -132,7 +132,8 @@ export interface SidebarProps {
   mobile?: boolean;
   onCloseMobile: () => void;
   onLoadEarlierTasks: () => Promise<void>;
-  onNewProject: () => void;
+  /** Null when the Host does not let this person create a project. */
+  onNewProject: (() => void) | null;
   onNewTab: () => void;
   onSetTaskDone: (threadId: string, done: boolean) => void;
   onToggleCollapsed: () => void;
@@ -831,18 +832,20 @@ export function Sidebar({
                                   Projects
                                 </Link>
                               </h3>
-                              <button
-                                aria-label="New project"
-                                className="icon-btn icon-btn--small side-head__action"
-                                onClick={() => {
-                                  onCloseMobile();
-                                  onNewProject();
-                                }}
-                                title="New project"
-                                type="button"
-                              >
-                                <Icon name="plus" />
-                              </button>
+                              {onNewProject ? (
+                                <button
+                                  aria-label="New project"
+                                  className="icon-btn icon-btn--small side-head__action"
+                                  onClick={() => {
+                                    onCloseMobile();
+                                    onNewProject();
+                                  }}
+                                  title="New project"
+                                  type="button"
+                                >
+                                  <Icon name="plus" />
+                                </button>
+                              ) : null}
                             </li>,
                           ]
                         : []),
