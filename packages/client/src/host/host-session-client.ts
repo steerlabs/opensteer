@@ -1,3 +1,4 @@
+import { hostDeploymentPolicy } from "./deployment-policy.js";
 import { AppTabSchema } from "@opensteer/protocol";
 import { KeyedMutationQueue } from "@opensteer/shared/mutationQueue";
 import { invalidateScheduleAnchor } from "./schedule-anchor-invalidation.js";
@@ -4336,7 +4337,7 @@ export class HttpHostClient {
       browserSessions,
       connection: workspaces.length ? this.#snapshot.connection : "connected",
       deploymentShape: payload.deploymentShape,
-      deploymentPolicy: payload.deploymentPolicy,
+      deploymentPolicy: hostDeploymentPolicy(payload),
       deploymentId: payload.deploymentId,
       environments,
       // Absence is the older Host saying nothing is remembered, not a gap to

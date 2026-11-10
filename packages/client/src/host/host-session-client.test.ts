@@ -262,8 +262,20 @@ function preferencesForWorkspaces(value: unknown) {
 
 describe("saved-view readiness", () => {
   it.each([
-    undefined,
-    { ownership: "members" as const, localRunnerDefaultModules: ["agents", "browser", "shell"] },
+    {
+      ownership: "members" as const,
+      personalRemoteAccess: false,
+      nativeWebLinks: false,
+      localOwnerClaim: false,
+      deploymentOwnsMainComputer: false,
+      nativePasswords: false,
+      deploymentComputerAccess: false,
+      sharing: true,
+      serviceManagement: true,
+      runnerEnrollmentMode: "unrestricted",
+      projectConsent: "per-project",
+      localRunnerDefaultModules: ["agents", "browser", "shell"],
+    },
     { ownership: "future-model", localRunnerDefaultModules: ["future-module"] },
   ])("retains the Host policy projection without deriving it from shape: %j", async (policy) => {
     const client = createHttpHostClient({
@@ -273,8 +285,93 @@ describe("saved-view readiness", () => {
     await client.load();
     expect(client.getSnapshot().deploymentShape?.kind).toBe("personal");
     expect(client.getSnapshot().deploymentPolicy).toEqual(
-      policy?.ownership === "future-model" ? undefined : policy,
+      policy?.ownership === "future-model"
+        ? { ownership: undefined, localRunnerDefaultModules: [] }
+        : policy,
     );
+    client.dispose();
+  });
+
+  it.each(["personal", "server"] as const)(
+    "adapts a previous-release %s bootstrap",
+    async (kind) => {
+      const client = createHttpHostClient({
+        refreshIntervalMs: 0,
+        fetch: async () =>
+          json({
+            ...bootstrap([]),
+            deploymentShape: { kind, defaultWorkspaceBacking: "local-directory" },
+          }),
+      });
+      await client.load();
+      expect(client.getSnapshot().deploymentPolicy).toMatchObject({
+        ownership: kind === "personal" ? "single-user" : "members",
+        localRunnerDefaultModules: kind === "personal" ? ["shell"] : ["agents", "browser", "shell"],
+      });
+      client.dispose();
+    },
+  );
+
+  it("keeps understood policy facts and modules when a Host adds a module", async () => {
+    const client = createHttpHostClient({
+      refreshIntervalMs: 0,
+      fetch: async () =>
+        json({
+          ...bootstrap([]),
+          deploymentPolicy: {
+            ownership: "members",
+            personalRemoteAccess: false,
+            nativeWebLinks: false,
+            localOwnerClaim: false,
+            deploymentOwnsMainComputer: false,
+            nativePasswords: false,
+            deploymentComputerAccess: false,
+            sharing: true,
+            serviceManagement: true,
+            runnerEnrollmentMode: "unrestricted",
+            projectConsent: "per-project",
+            localRunnerDefaultModules: ["agents", "future-module", "shell"],
+          },
+        }),
+    });
+    await client.load();
+    expect(client.getSnapshot().deploymentPolicy).toMatchObject({
+      ownership: "members",
+      personalRemoteAccess: false,
+      nativeWebLinks: false,
+      localOwnerClaim: false,
+      deploymentOwnsMainComputer: false,
+      nativePasswords: false,
+      deploymentComputerAccess: false,
+      sharing: true,
+      serviceManagement: true,
+      runnerEnrollmentMode: "unrestricted",
+      projectConsent: "per-project",
+      localRunnerDefaultModules: ["agents", "shell"],
+    });
+    client.dispose();
+  });
+
+  it.each([
+    {
+      policy: {
+        ownership: "future-owner",
+        localRunnerDefaultModules: ["shell"],
+        nativePasswords: true,
+      },
+      expected: { localRunnerDefaultModules: ["shell"], nativePasswords: true },
+    },
+    {
+      policy: { ownership: "members", localRunnerDefaultModules: "future-module-list" },
+      expected: { ownership: "members" },
+    },
+  ])("keeps other understood facts when one fact is unknown: %j", async ({ policy, expected }) => {
+    const client = createHttpHostClient({
+      refreshIntervalMs: 0,
+      fetch: async () => json({ ...bootstrap([]), deploymentPolicy: policy }),
+    });
+    await client.load();
+    expect(client.getSnapshot().deploymentPolicy).toMatchObject(expected);
     client.dispose();
   });
 
