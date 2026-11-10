@@ -141,6 +141,10 @@ together. Enrollment is not execution admission: a Runner missing a mandatory ex
 visible but cannot execute, and an outdated module gets an update refusal while the computer's other
 modules stay available. A refused durable event ends only its still-bound Run.
 
+Browser tab lists are read up to `browserSessionTabsMax` but a session holds only
+`browserSessionTabLimit` tabs; raise that limit only once the previous public release reads the
+larger lists, because older readers refuse the whole list.
+
 Ship the Account's notification preview reader on every replica before phone builds that register
 preview keys. An older Account rejects previews and the Host resends a generic alert, so the wrong
 order costs previews, not alerts. Privacy rules are in [Mobile](mobile.md).
