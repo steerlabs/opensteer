@@ -1,7 +1,7 @@
 import { parse } from "@babel/parser";
 
 type SyntaxNode = Record<string, unknown>;
-const sqlKindSelector = String.raw`(?:(?:\w+\.)?deployment_shape\s*(?:->>?\s*'(?:kind|tenancy|ownerEstablishment)'|#>>?\s*'\{(?:kind|tenancy|ownerEstablishment)\}'|\[\s*'(?:kind|tenancy|ownerEstablishment)'\s*\])|jsonb_extract_path_text\(\s*(?:\w+\.)?deployment_shape\s*,\s*'(?:kind|tenancy|ownerEstablishment)'\s*\))`;
+const sqlKindSelector = String.raw`(?:(?:\w+\.)?(?:deployment_shape|workspace_profile)\s*(?:->>?\s*'(?:kind|mode|tenancy|ownerEstablishment)'|#>>?\s*'\{(?:kind|mode|tenancy|ownerEstablishment)\}'|\[\s*'(?:kind|mode|tenancy|ownerEstablishment)'\s*\])|jsonb_extract_path_text\(\s*(?:\w+\.)?(?:deployment_shape|workspace_profile)\s*,\s*'(?:kind|mode|tenancy|ownerEstablishment)'\s*\))`;
 const sqlKindDecisionPattern = new RegExp(
   `${sqlKindSelector}\\s*\\)*\\s*(?:<>|!=|=|\\b(?:not\\s+)?in\\b)[^\\n;]*`,
   "giu",
@@ -33,19 +33,85 @@ export function sqlKindComparisons(source: string): string[] {
 
 export function kindComparisons(file: string, source: string): string[] {
   if (file.endsWith(".sql")) return sqlKindComparisons(source);
-  if (!/["'`](?:personal|server)["'`]/u.test(source)) return [];
-  const syntax = parse(source, { sourceType: "unambiguous", plugins: ["typescript", "jsx"] });
+  if (
+    !/["'`](?:personal|server)["'`]/u.test(source) ||
+    !/(?:[!=]={1,2}|\bswitch\s*\(|\b(?:includes|has|indexOf|is\w*|has\w*|matches\w*)\s*\()/u.test(
+      source,
+    )
+  )
+    return [];
+  const syntax = parse(source, {
+    sourceType: "unambiguous",
+    plugins: ["typescript", "jsx"],
+    attachComment: false,
+  });
   const declarations = new Map<string, unknown>();
+  const decisions: SyntaxNode[] = [];
   walk(syntax, (entry) => {
     const identifier = node(entry["id"]);
     if (entry["type"] === "VariableDeclarator" && identifier?.["type"] === "Identifier")
       declarations.set(String(identifier["name"]), entry["init"]);
+    if (
+      ["BinaryExpression", "SwitchStatement", "CallExpression", "OptionalCallExpression"].includes(
+        String(entry["type"]),
+      )
+    )
+      decisions.push(entry);
   });
+  const constantValue = (value: unknown, seen: Set<string>): SyntaxNode | null => {
+    const entry = node(value);
+    if (!entry) return null;
+    const identity = `node:${String(entry["type"])}:${String(entry["start"])}:${String(entry["end"])}`;
+    if (seen.has(identity)) return null;
+    seen = new Set([...seen, identity]);
+    if (
+      [
+        "TSAsExpression",
+        "TSSatisfiesExpression",
+        "TSNonNullExpression",
+        "ParenthesizedExpression",
+      ].includes(String(entry["type"]))
+    )
+      return constantValue(entry["expression"], seen);
+    if (entry["type"] === "Identifier") {
+      const name = String(entry["name"]);
+      return seen.has(name)
+        ? null
+        : constantValue(declarations.get(name), new Set([...seen, name]));
+    }
+    if (["MemberExpression", "OptionalMemberExpression"].includes(String(entry["type"]))) {
+      const object = constantValue(entry["object"], seen);
+      const property = node(entry["property"]);
+      if (object?.["type"] !== "ObjectExpression") return null;
+      const member = (object["properties"] as SyntaxNode[]).find((candidate) => {
+        const key = node(candidate["key"]);
+        return (
+          String(key?.["name"] ?? key?.["value"]) ===
+          String(property?.["name"] ?? property?.["value"])
+        );
+      });
+      return constantValue(member?.["value"], seen);
+    }
+    return entry;
+  };
   const hasKind = (value: unknown, seen = new Set<string>()): boolean => {
     const entry = node(value);
     if (!entry) return false;
     if (entry["type"] === "StringLiteral")
       return ["personal", "server"].includes(String(entry["value"]));
+    if (entry["type"] === "TemplateLiteral" && !(entry["expressions"] as unknown[]).length)
+      return (entry["quasis"] as SyntaxNode[]).some((quasi) =>
+        ["personal", "server"].includes(String((quasi["value"] as SyntaxNode)["cooked"])),
+      );
+    if (
+      [
+        "TSAsExpression",
+        "TSSatisfiesExpression",
+        "TSNonNullExpression",
+        "ParenthesizedExpression",
+      ].includes(String(entry["type"]))
+    )
+      return hasKind(entry["expression"], seen);
     if (entry["type"] === "Identifier") {
       const name = String(entry["name"]);
       if (seen.has(name)) return false;
@@ -55,6 +121,9 @@ export function kindComparisons(file: string, source: string): string[] {
       return (entry["elements"] as unknown[]).some((element) => hasKind(element, seen));
     if (entry["type"] === "NewExpression")
       return (entry["arguments"] as unknown[]).some((argument) => hasKind(argument, seen));
+    if (["MemberExpression", "OptionalMemberExpression"].includes(String(entry["type"]))) {
+      return hasKind(constantValue(entry, seen), seen);
+    }
     return false;
   };
   const expression = (value: unknown): string => {
@@ -62,7 +131,7 @@ export function kindComparisons(file: string, source: string): string[] {
     return source.slice(Number(entry["start"]), Number(entry["end"])).replace(/\s+/gu, "");
   };
   const comparisons: string[] = [];
-  walk(syntax, (entry) => {
+  for (const entry of decisions) {
     if (
       entry["type"] === "BinaryExpression" &&
       ["===", "==", "!==", "!="].includes(String(entry["operator"]))
@@ -90,7 +159,7 @@ export function kindComparisons(file: string, source: string): string[] {
           );
       }
     }
-  });
+  }
   return comparisons;
 }
 
@@ -116,7 +185,7 @@ export function sqlKindDecisionInventory(source: string): Record<string, Record<
         ),
       ];
       const declaration = declarations.at(-1);
-      const name = `${scope}/${declaration?.[1] ?? declaration?.[2] ?? (declaration?.[3] ? "deployment-shape-conversion" : "unclassified")}`;
+      const name = `${scope}/${expression.startsWith("workspace_profile") ? "legacy-cloud-refusal" : (declaration?.[1] ?? declaration?.[2] ?? (declaration?.[3] ? "deployment-shape-conversion" : "unclassified"))}`;
       const counts = (inventory[name] ??= {});
       counts[expression] = (counts[expression] ?? 0) + 1;
     }

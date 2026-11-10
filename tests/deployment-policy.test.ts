@@ -10,8 +10,27 @@ import {
 } from "./deployment-policy.test-support.js";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "..");
+const clientPolicyDerivations: Record<string, { count: number; reason: string }> = {
+  "packages/client/src/host/deployment-policy.ts": {
+    count: 1,
+    reason: "Compatibility adapter for Hosts whose bootstrap predates the projection.",
+  },
+  "packages/client/src/mock/mock-host-client.ts": {
+    count: 2,
+    reason: "Mock Host authors its bootstrap projection.",
+  },
+  "apps/desktop/src/supervisor/local-runner-authority.ts": {
+    count: 2,
+    reason:
+      "Pre-bootstrap Runner launch authority from signed discovery; post-attachment capabilities must use the Host projection.",
+  },
+};
 const exceptionGroups = {
   displayAlias: {
+    "apps/host/src/runtime/runtime.ts": {
+      counts: { "config.workspace.shape.kind": 1 },
+      reason: "Projects the Deployment kind into the existing presentation alias only.",
+    },
     "apps/control-plane/src/portal/pages.ts": {
       counts: {
         "input.kind": 1,
@@ -242,6 +261,13 @@ const sqlExceptions: Record<
     reason:
       "Historical installed SQL; replace each named function, shape constraint or conversion through a new cutover migration, never by editing history.",
     decisions: {
+      "ownedNativeOAuthCallbackMigration/legacy-cloud-refusal": {
+        "workspace_profile->>'mode' = 'cloud'": 1,
+      },
+      "ownedNativeOAuthCallbackMigration/deployment-shape-conversion": {
+        "deployment_shape->>'mode' in ('personal', 'development') then 'self-claim'": 1,
+        "deployment_shape->>'mode' = 'personal' then 'single-user'": 1,
+      },
       "ownedNativeOAuthCallbackMigration/deployments_shape_check": {
         "deployment_shape->>'ownerEstablishment' = any (array['self-claim', 'enrollment'])": 1,
         "deployment_shape->>'tenancy' = any (array['single-user', 'multi-user'])": 1,
@@ -285,6 +311,8 @@ describe("deployment policy boundary", () => {
   });
   it.each([
     "deployment_shape->>'kind' = 'server'",
+    "deployment_shape->>'mode' in ('personal', 'development')",
+    "workspace_profile->>'mode' = 'cloud'",
     "deployment_shape['kind'] = '\"server\"'::jsonb",
     "(deployment_shape #>> '{kind}') = 'server'",
     "jsonb_extract_path_text(deployment_shape, 'kind') = 'server'",
@@ -295,6 +323,11 @@ describe("deployment policy boundary", () => {
   });
   it.each([
     'shape["kind"] === "personal"',
+    "shape.kind === `personal`",
+    'shape.kind === ("personal" as const)',
+    'const kinds = { personal: "personal" }; shape.kind === kinds.personal',
+    'const kinds = { personal: "personal" } as const; shape.kind === kinds.personal',
+    'const kinds = { deployment: { personal: "personal" } }; shape.kind === kinds.deployment.personal',
     'const personalKind = "personal"; const kind = shape.kind; kind === personalKind',
     '["personal", "server"].includes(shape.kind)',
     'new Set(["personal"]).has(shape.kind)',
@@ -314,6 +347,9 @@ describe("deployment policy boundary", () => {
       ),
     ).not.toEqual({ "shape.kind": 1 });
   });
+  it("does not build a syntax tree without a possible kind comparison", () => {
+    expect(kindComparisons("fixture.ts", 'const kind: = "personal";')).toEqual([]);
+  });
   it("compares Deployment kinds only in the policy, with explicit non-policy exceptions", () => {
     const files = execFileSync(
       "git",
@@ -327,7 +363,6 @@ describe("deployment policy boundary", () => {
         "*.tsx",
         "*.js",
         "*.mjs",
-        "*.sql",
       ],
       { cwd: repositoryRoot, encoding: "utf8" },
     )
@@ -346,20 +381,24 @@ describe("deployment policy boundary", () => {
     for (const file of files) {
       if (file === "packages/core/src/deployment-policy.ts") continue;
       const text = readFileSync(path.join(repositoryRoot, file), "utf8");
-      if (
-        /^(?:apps\/(?:web|mobile)\/src|packages\/client\/src)\//u.test(file) &&
-        file !== "packages/client/src/mock/mock-host-client.ts" &&
-        file !== "packages/client/src/host/deployment-policy.ts" &&
-        (/\bdeploymentPolicy\s*\(/u.test(text) ||
-          /import\s*\{[^}]*\b(?:deploymentPolicy|deploymentSupportsSharing|localWorkspaceNamespace)\b[^}]*\}\s*from\s*["']@opensteer\/core["']/u.test(
-            text,
-          ))
-      )
-        violations.push(`${file}: clients must read the Host projection`);
-      expect(
-        sqlKindDecisionInventory(text),
-        `${file}: installed SQL needs a named cutover exception`,
-      ).toEqual(sqlExceptions[file]?.decisions ?? {});
+      if (/^(?:apps\/(?:web|mobile|desktop)\/src|packages\/client\/src)\//u.test(file)) {
+        const expected = clientPolicyDerivations[file]?.count ?? 0;
+        if (
+          [...text.matchAll(/\bdeploymentPolicy\s*\(/gu)].length !== expected ||
+          (expected === 0 &&
+            /import\s*\{[^}]*\b(?:deploymentPolicy|deploymentSupportsSharing|localWorkspaceNamespace)\b[^}]*\}\s*from\s*["']@opensteer\/core["']/u.test(
+              text,
+            ))
+        )
+          violations.push(
+            `${file}: clients must read the Host projection; derivations need a named pre-bootstrap/compatibility exception`,
+          );
+      }
+      if (sqlExceptions[file])
+        expect(
+          sqlKindDecisionInventory(text),
+          `${file}: installed SQL needs a named cutover exception`,
+        ).toEqual(sqlExceptions[file]!.decisions);
       const comparisons = file.endsWith(".sql") ? [] : kindComparisons(file, text);
       const actual = comparisonCounts(comparisons);
       const expected = exceptions[file]?.counts ?? {};

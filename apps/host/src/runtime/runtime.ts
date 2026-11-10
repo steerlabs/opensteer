@@ -561,7 +561,7 @@ export async function createHostRuntime(
     const identity = new IdentityService(database, {
       deployment: {
         kind:
-          deploymentPolicy(config.workspace.shape).ownership === "single-user"
+          config.workspace.shape.kind === "personal"
             ? "personal"
             : config.mode === "development" && config.exposure === "loopback"
               ? "development"
