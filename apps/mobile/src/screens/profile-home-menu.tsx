@@ -61,7 +61,7 @@ export function HomeMenu(props: {
 const styles = StyleSheet.create({
   disabled: { opacity: 0.5 },
   homeName: { color: color.muted, flexShrink: 1 },
-  homeMenu: { alignSelf: "stretch", flexShrink: 1, maxWidth: "50%" },
+  homeMenu: { alignSelf: "stretch", flexShrink: 1, justifyContent: "center", maxWidth: "50%" },
   homeTrigger: {
     alignItems: "center",
     flexDirection: "row",

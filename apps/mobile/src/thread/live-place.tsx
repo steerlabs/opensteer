@@ -1,8 +1,13 @@
-import { runPlaceActing, type HostClient, type SurfaceDestination } from "@opensteer/client/host";
+import {
+  browserTabPicture,
+  runPlaceActing,
+  type HostClient,
+  type SurfaceDestination,
+} from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
 import type { PlaceEnteredEventView } from "@opensteer/core";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { StyleSheet, View } from "react-native";
+import { Image, StyleSheet, View } from "react-native";
 import { BrowserStream, useBrowserFeedState } from "../browser/browser-stream.js";
 import { ComputerDisplay } from "../computers/phone-display.js";
 import { color, radius } from "../theme.js";
@@ -64,26 +69,40 @@ function BrowserSurface(props: SurfaceProps): ReactNode {
     [onPageSize],
   );
   useEffect(() => {
-    if (!active) return;
+    // A stream that is not watched draws nothing, so its picture is not live.
+    if (!active) setDrawn(false);
     onPicture(
-      feed.error !== null || feed.status === "unavailable"
-        ? "none"
-        : feed.status === "live" && drawn
-          ? "live"
-          : "waiting",
+      !active
+        ? "waiting"
+        : feed.error !== null || feed.status === "unavailable"
+          ? "none"
+          : feed.status === "live" && drawn
+            ? "live"
+            : "waiting",
     );
   }, [active, drawn, feed.error, feed.status, onPicture]);
+  const kept = active ? null : browserTabPicture(hostClient, sessionId, tabId);
   return (
-    <BrowserStream
-      active={active}
-      hostClient={hostClient}
-      label={props.entry.data.title}
-      onPageSize={sized}
-      preserveLastFrame
-      previewSessionId={place.kind === "browser" ? place.sessionId : sessionId}
-      session={{ id: sessionId, state: "ready" }}
-      tabId={tabId}
-    />
+    <>
+      {kept ? (
+        <Image
+          accessibilityIgnoresInvertColors
+          fadeDuration={0}
+          source={{ uri: kept.uri }}
+          style={StyleSheet.absoluteFill}
+        />
+      ) : null}
+      <BrowserStream
+        active={active}
+        hostClient={hostClient}
+        label={props.entry.data.title}
+        onPageSize={sized}
+        preserveLastFrame
+        previewSessionId={place.kind === "browser" ? place.sessionId : sessionId}
+        session={{ id: sessionId, state: "ready" }}
+        tabId={tabId}
+      />
+    </>
   );
 }
 

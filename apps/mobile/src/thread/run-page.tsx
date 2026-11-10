@@ -143,6 +143,9 @@ export const RunPageSlot = memo(function RunPageSlot(props: {
           width: Math.min(size.width, column),
         });
   const fits = page !== null;
+  // The size is whole points; Android lays out in fractions, so a page as wide as the pane
+  // falls short of it by less than one.
+  const fullWidth = page !== null && page.width >= Math.floor(size.width);
   const shown = beside
     ? placeRunId === null
       ? "none"
@@ -182,14 +185,14 @@ export const RunPageSlot = memo(function RunPageSlot(props: {
           destination={binding.destination}
           entry={entry}
           column={column}
-          fullWidth={page !== null && page.width >= size.width}
+          fullWidth={fullWidth}
           hostClient={hostClient}
           onFold={beside ? null : fold}
           onInset={onInset}
           onOpen={props.onOpen}
           onPageSize={onPageSize}
           pageHeight={beside || page === null ? null : page.height}
-          pageWidth={page?.width ?? 0}
+          pageWidth={fullWidth ? size.width : (page?.width ?? 0)}
           sessionId={binding.sessionId}
           threadId={threadId}
           top={top}

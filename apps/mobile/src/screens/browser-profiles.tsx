@@ -13,8 +13,18 @@ import {
 } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
-import { useState, type ReactNode } from "react";
-import { Alert, Pressable, ScrollView, StyleSheet, View, useWindowDimensions } from "react-native";
+import { useRef, useState, type ReactNode } from "react";
+import {
+  Alert,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  View,
+  useWindowDimensions,
+  type ScrollViewInstance,
+} from "react-native";
 import { operationDetail } from "../client/mobile-client.js";
 import { useHereDeviceId } from "../computers/here-device.js";
 import { HomeMenu } from "./profile-home-menu.js";
@@ -117,6 +127,7 @@ function BrowserProfilesSettings({
   const column = useReadingColumn();
   const insets = useListContentInsets(space[32]);
   const [draft, setDraft] = useState<string | null>(null);
+  const scroll = useRef<ScrollViewInstance>(null);
   const [chosenHome, setHome] = useState<string | null>(null);
   // The person's pick stands while it is still on offer; the default follows the list.
   const home = homes
@@ -143,96 +154,111 @@ function BrowserProfilesSettings({
   };
   return (
     <Screen edgeToEdge>
-      <ScrollView
-        automaticallyAdjustKeyboardInsets
-        contentContainerStyle={[styles.content, column, insets]}
-        contentInsetAdjustmentBehavior="automatic"
-        keyboardShouldPersistTaps="handled"
+      {/* Android ignores the scroll view's keyboard insets; it gives up the keyboard's height. */}
+      <KeyboardAvoidingView
+        behavior="height"
+        enabled={Platform.OS === "android"}
+        style={styles.fill}
       >
-        {online ? null : (
-          <Notice
-            title="Not connected"
-            detail="Reconnect to manage browser profiles."
-            tone="neutral"
-          />
-        )}
-        {rows.length === 0 && deletions.length === 0 ? (
-          <AppText role="secondary" tone="muted">
-            No profiles yet.
-          </AppText>
-        ) : (
-          <RowGroup>
-            {rows.map((row) => (
-              <ProfileRow
-                key={row.profile.id}
-                row={row}
-                snapshot={snapshot}
-                hostClient={hostClient}
-                online={online}
-                onHistory={() =>
-                  navigation.navigate("BrowserHistory", { deploymentId, profileId: row.profile.id })
-                }
-              />
-            ))}
-          </RowGroup>
-        )}
-        {deletions.map((deletion) => (
-          <Notice
-            key={deletion.profileId}
-            title="Deleted profile"
-            detail={deletion.status}
-            tone="neutral"
-          />
-        ))}
-        {draft === null ? (
-          <SecondaryButton
-            label="New profile"
-            disabled={!online}
-            onPress={() => {
-              setDraft("");
-              setFailure(null);
-            }}
-          />
-        ) : (
-          <>
-            <Field
-              label="Name"
-              input={{
-                autoFocus: true,
-                maxLength: 120,
-                value: draft,
-                onChangeText: setDraft,
-                onSubmitEditing: create,
-                returnKeyType: "done",
-              }}
-              {...(homes && home
-                ? {
-                    trailing: (
-                      <HomeMenu disabled={busy} home={home} homes={homes} onChoose={setHome} />
-                    ),
-                  }
-                : {})}
+        <ScrollView
+          automaticallyAdjustKeyboardInsets
+          contentContainerStyle={[styles.content, column, insets]}
+          contentInsetAdjustmentBehavior="automatic"
+          keyboardShouldPersistTaps="handled"
+          // The new profile's field and its buttons end the page: keep them above the keyboard.
+          onLayout={() => {
+            if (draft !== null) scroll.current?.scrollToEnd();
+          }}
+          ref={scroll}
+        >
+          {online ? null : (
+            <Notice
+              title="Not connected"
+              detail="Reconnect to manage browser profiles."
+              tone="neutral"
             />
-            <View style={styles.actions}>
-              <SecondaryButton
-                label="Create profile"
-                busy={busy}
-                disabled={!online || draft.trim() === ""}
-                onPress={create}
+          )}
+          {rows.length === 0 && deletions.length === 0 ? (
+            <AppText role="secondary" tone="muted">
+              No profiles yet.
+            </AppText>
+          ) : (
+            <RowGroup>
+              {rows.map((row) => (
+                <ProfileRow
+                  key={row.profile.id}
+                  row={row}
+                  snapshot={snapshot}
+                  hostClient={hostClient}
+                  online={online}
+                  onHistory={() =>
+                    navigation.navigate("BrowserHistory", {
+                      deploymentId,
+                      profileId: row.profile.id,
+                    })
+                  }
+                />
+              ))}
+            </RowGroup>
+          )}
+          {deletions.map((deletion) => (
+            <Notice
+              key={deletion.profileId}
+              title="Deleted profile"
+              detail={deletion.status}
+              tone="neutral"
+            />
+          ))}
+          {draft === null ? (
+            <SecondaryButton
+              label="New profile"
+              disabled={!online}
+              onPress={() => {
+                setDraft("");
+                setFailure(null);
+              }}
+            />
+          ) : (
+            <>
+              <Field
+                label="Name"
+                input={{
+                  autoFocus: true,
+                  maxLength: 120,
+                  value: draft,
+                  onChangeText: setDraft,
+                  onSubmitEditing: create,
+                  returnKeyType: "done",
+                }}
+                {...(homes && home
+                  ? {
+                      trailing: (
+                        <HomeMenu disabled={busy} home={home} homes={homes} onChoose={setHome} />
+                      ),
+                    }
+                  : {})}
               />
-              <SecondaryButton label="Cancel" disabled={busy} onPress={() => setDraft(null)} />
-            </View>
-          </>
-        )}
-        {failure === null ? null : (
-          <AppText role="caption" tone="danger">
-            {failure}
+              <View style={styles.actions}>
+                <SecondaryButton
+                  label="Create profile"
+                  busy={busy}
+                  disabled={!online || draft.trim() === ""}
+                  onPress={create}
+                />
+                <SecondaryButton label="Cancel" disabled={busy} onPress={() => setDraft(null)} />
+              </View>
+            </>
+          )}
+          {failure === null ? null : (
+            <AppText role="caption" tone="danger">
+              {failure}
+            </AppText>
+          )}
+          <AppText role="caption" tone="muted">
+            Opensteer can use every profile. A project can only use the profiles you choose for it.
           </AppText>
-        )}
-        <AppText role="caption" tone="muted">
-          Opensteer can use every profile. A project can only use the profiles you choose for it.
-        </AppText>
-      </ScrollView>
+        </ScrollView>
+      </KeyboardAvoidingView>
     </Screen>
   );
 }
@@ -491,6 +517,7 @@ const styles = StyleSheet.create({
   actions: { flexDirection: "row", flexWrap: "wrap", gap: space[8] },
   away: { gap: space[12], paddingTop: space[24] },
   content: { gap: space[24], paddingTop: space[12] },
+  fill: { flex: 1 },
   row: { gap: space[10], paddingHorizontal: space[16], paddingVertical: space[12] },
   rowHead: { alignItems: "center", flexDirection: "row", gap: space[10], minHeight: touchTarget },
   rowText: { flex: 1, gap: space[2] },
