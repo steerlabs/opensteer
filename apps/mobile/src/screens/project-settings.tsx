@@ -75,11 +75,27 @@ export function ProjectSettingsScreen(props: ProjectSettingsScreenProps): ReactN
   const hostClient = useAttachedHost(deploymentId);
   if (hostClient === null) return <DeploymentGate deploymentId={deploymentId} />;
   return (
-    <ProjectSettings
+    <ProjectSettingsForViewer
       deploymentId={deploymentId}
       hostClient={hostClient}
-      key={`${deploymentId}:${workspaceId}`}
       workspaceId={workspaceId}
+    />
+  );
+}
+
+/** Remounts for whoever is signed in, so no team read survives a change of person. */
+function ProjectSettingsForViewer(props: {
+  readonly deploymentId: string;
+  readonly hostClient: HostClient;
+  readonly workspaceId: string;
+}): ReactNode {
+  const { identity } = useTeam(props.hostClient);
+  return (
+    <ProjectSettings
+      deploymentId={props.deploymentId}
+      hostClient={props.hostClient}
+      key={`${props.deploymentId}:${props.workspaceId}:${identity ?? ""}`}
+      workspaceId={props.workspaceId}
     />
   );
 }

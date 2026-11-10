@@ -223,13 +223,6 @@ export function TeamPeoplePage() {
   );
 }
 
-/**
- * Links this tab made, by invitation id. The verifier exists nowhere else: a
- * reload forgets it rather than storing a bearer secret, and another device
- * never had it.
- */
-const heldLinks = new Map<string, string>();
-
 const invitationState: Record<
   "open" | "used" | "revoked" | "expired",
   { readonly label: string; readonly chip: string }
@@ -249,7 +242,7 @@ function Invitations({
   readonly team: TeamAccess;
   readonly teamName: string;
 }) {
-  const { generation } = useShellTeam();
+  const { generation, links, forgetLink } = useShellTeam();
   const read = useHostRead(() => team.invitations({ limit: 30 }), `team-invitations:${generation}`);
   const [more, setMore] = useState<NonNullable<typeof read.data>["items"]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
@@ -281,7 +274,7 @@ function Invitations({
         ) : (
           items.map((invitation) => {
             const state = invitationState[invitation.state];
-            const link = invitation.state === "open" ? heldLinks.get(invitation.id) : undefined;
+            const link = invitation.state === "open" ? links.get(invitation.id) : undefined;
             return (
               <div className="card__row team-invitation" key={invitation.id}>
                 <span className="card__row-glyph">
@@ -317,7 +310,7 @@ function Invitations({
                         setError(null);
                         void team
                           .revokeInvitation(list.accessRevision, invitation.id)
-                          .then(() => heldLinks.delete(invitation.id))
+                          .then(() => forgetLink(invitation.id))
                           .catch(setError)
                           .finally(() => setPending(null));
                       }}
@@ -388,6 +381,7 @@ function InviteDialog({
   readonly teamName: string;
 }) {
   const { snapshot } = useShell();
+  const { holdLink } = useShellTeam();
   const [email, setEmail] = useState("");
   const [kind, setKind] = useState<MemberKind>("full");
   const [validFor, setValidFor] = useState<"1d" | "7d">("7d");
@@ -451,7 +445,7 @@ function InviteDialog({
             .createInvitation(revision, draft, { email: intended, kind, validFor })
             .then((result) => {
               const url = teamInvitationUrl(origin, draft);
-              heldLinks.set(result.invitationId, url);
+              holdLink(result.invitationId, url);
               setMade({ email: intended, expiresAt: result.expiresAt, url });
             })
             .catch(setError)

@@ -33,6 +33,7 @@ import {
   AppText,
   CodeBlock,
   Field,
+  Notice,
   PrimaryButton,
   RowGroup,
   SecondaryButton,
@@ -57,13 +58,62 @@ type DeploymentProps<Extra = object> = StaticScreenProps<{ readonly deploymentId
 function TeamScreen(props: {
   readonly deploymentId: string;
   readonly title: string;
+  /** The Host's permission this screen needs; null for screens a Project read gates itself. */
+  readonly requires: "people" | "groups" | "invite" | null;
   readonly children: (hostClient: HostClient) => ReactNode;
 }): ReactNode {
   const hostClient = useAttachedHost(props.deploymentId);
   const navigation = useNavigation();
   useLayoutEffect(() => navigation.setOptions({ title: props.title }), [navigation, props.title]);
   if (hostClient === null) return <DeploymentGate deploymentId={props.deploymentId} />;
-  return <TeamScroll>{props.children(hostClient)}</TeamScroll>;
+  return (
+    <TeamBody hostClient={hostClient} requires={props.requires}>
+      {props.children}
+    </TeamBody>
+  );
+}
+
+/**
+ * Remounts with whoever is signed in, so nothing read or made for the
+ * previous person survives, and renders only what the Host allows them.
+ */
+function TeamBody(props: {
+  readonly hostClient: HostClient;
+  readonly requires: "people" | "groups" | "invite" | null;
+  readonly children: (hostClient: HostClient) => ReactNode;
+}): ReactNode {
+  const { identity, summary, error, refresh } = useTeam(props.hostClient);
+  const teamName = summary?.team.name ?? "the team";
+  const can = props.requires === null ? null : (summary?.can[props.requires] ?? null);
+  return (
+    <TeamScroll key={identity ?? "signed-out"}>
+      {identity === null ? (
+        <Notice
+          detail="Sign in to this Host to see its team."
+          title="Not signed in"
+          tone="neutral"
+        />
+      ) : props.requires === null ? (
+        props.children(props.hostClient)
+      ) : !summary ? (
+        <RowGroup>
+          {[<ReadState error={error} key="state" onRetry={refresh} team={teamName} />]}
+        </RowGroup>
+      ) : can?.allowed ? (
+        props.children(props.hostClient)
+      ) : (
+        <Notice
+          detail={
+            can?.reason
+              ? teamReasonText(can.reason, teamName)
+              : `Only an admin of ${teamName} can open this.`
+          }
+          title="Not available to you"
+          tone="neutral"
+        />
+      )}
+    </TeamScroll>
+  );
 }
 
 function TeamScroll(props: { readonly children: ReactNode }): ReactNode {
@@ -141,7 +191,7 @@ function MemberPills(props: {
 
 export function TeamPeopleScreen({ route }: DeploymentProps) {
   return (
-    <TeamScreen deploymentId={route.params.deploymentId} title="People">
+    <TeamScreen deploymentId={route.params.deploymentId} requires="people" title="People">
       {(hostClient) => <People deploymentId={route.params.deploymentId} hostClient={hostClient} />}
     </TeamScreen>
   );
@@ -152,7 +202,7 @@ function People(props: {
   readonly hostClient: HostClient;
 }): ReactNode {
   const navigation = useNavigation();
-  const { team, summary, generation } = useTeam(props.hostClient);
+  const { team, summary, generation, links, forgetLink } = useTeam(props.hostClient);
   const [query, setQuery] = useState("");
   const [state, setState] = useState<"all" | "active" | "suspended" | "removed">("all");
   const debounced = useDebounced(query);
@@ -238,24 +288,15 @@ function People(props: {
       {team && summary?.can.invite.allowed ? (
         <Invitations
           deploymentId={props.deploymentId}
+          forgetLink={forgetLink}
           generation={generation}
+          links={links}
           team={team}
           teamName={teamName}
         />
       ) : null}
     </>
   );
-}
-
-/**
- * Links this phone made while the app was open, by invitation id. The verifier
- * is kept nowhere else, so another device, or this one after a restart, can
- * only revoke and invite again.
- */
-const heldLinks = new Map<string, string>();
-function heldLink(invitationId: string, url: string): string {
-  heldLinks.set(invitationId, url);
-  return url;
 }
 
 const invitationStateLabel = {
@@ -268,6 +309,8 @@ const invitationStateLabel = {
 function Invitations(props: {
   readonly deploymentId: string;
   readonly generation: number;
+  readonly links: ReadonlyMap<string, string>;
+  readonly forgetLink: (invitationId: string) => void;
   readonly team: TeamAccess;
   readonly teamName: string;
 }): ReactNode {
@@ -289,7 +332,8 @@ function Invitations(props: {
         {list
           ? list.items.length
             ? list.items.map((invitation) => {
-                const link = invitation.state === "open" ? heldLinks.get(invitation.id) : undefined;
+                const link =
+                  invitation.state === "open" ? props.links.get(invitation.id) : undefined;
                 return (
                   <View key={invitation.id} style={styles.row}>
                     <View style={styles.grow}>
@@ -336,7 +380,7 @@ function Invitations(props: {
                                 onPress: () => {
                                   team
                                     .revokeInvitation(list.accessRevision, invitation.id)
-                                    .then(() => heldLinks.delete(invitation.id))
+                                    .then(() => props.forgetLink(invitation.id))
                                     .catch((error: unknown) => showError(error, teamName));
                                 },
                               },
@@ -372,7 +416,7 @@ function Invitations(props: {
 
 export function TeamPersonScreen({ route }: DeploymentProps<{ readonly userId: string }>) {
   return (
-    <TeamScreen deploymentId={route.params.deploymentId} title="Person">
+    <TeamScreen deploymentId={route.params.deploymentId} requires="people" title="Person">
       {(hostClient) => (
         <Person
           deploymentId={route.params.deploymentId}
@@ -663,14 +707,18 @@ function Person(props: {
 
 export function TeamInviteScreen({ route }: DeploymentProps) {
   return (
-    <TeamScreen deploymentId={route.params.deploymentId} title="Invite">
+    <TeamScreen deploymentId={route.params.deploymentId} requires="invite" title="Invite">
       {(hostClient) => <Invite hostClient={hostClient} />}
     </TeamScreen>
   );
 }
 
 function Invite(props: { readonly hostClient: HostClient }): ReactNode {
-  const { team, summary } = useTeam(props.hostClient);
+  const { team, summary, holdLink } = useTeam(props.hostClient);
+  const holdInviteLink = (invitationId: string, url: string) => {
+    holdLink(invitationId, url);
+    return url;
+  };
   const { snapshot } = useHostSnapshot(props.hostClient);
   const teamName = summary?.team.name ?? "the team";
   const [email, setEmail] = useState("");
@@ -784,7 +832,7 @@ function Invite(props: { readonly hostClient: HostClient }): ReactNode {
             })
             .then((result) =>
               setMade({
-                url: heldLink(result.invitationId, teamInvitationUrl(origin, draft)),
+                url: holdInviteLink(result.invitationId, teamInvitationUrl(origin, draft)),
                 invitationId: result.invitationId,
                 expiresAt: result.expiresAt,
                 revoked: false,
@@ -802,7 +850,7 @@ function Invite(props: { readonly hostClient: HostClient }): ReactNode {
 
 export function TeamGroupsScreen({ route }: DeploymentProps) {
   return (
-    <TeamScreen deploymentId={route.params.deploymentId} title="Groups">
+    <TeamScreen deploymentId={route.params.deploymentId} requires="groups" title="Groups">
       {(hostClient) => <Groups deploymentId={route.params.deploymentId} hostClient={hostClient} />}
     </TeamScreen>
   );
@@ -882,7 +930,7 @@ function Groups(props: {
 
 export function TeamGroupScreen({ route }: DeploymentProps<{ readonly groupId: string }>) {
   return (
-    <TeamScreen deploymentId={route.params.deploymentId} title="Group">
+    <TeamScreen deploymentId={route.params.deploymentId} requires="groups" title="Group">
       {(hostClient) => (
         <Group
           deploymentId={route.params.deploymentId}
@@ -1077,6 +1125,7 @@ export function TeamAddScreen({
   return (
     <TeamScreen
       deploymentId={route.params.deploymentId}
+      requires={target === "group" ? "groups" : null}
       title={target === "project" ? "Add people" : "Add to group"}
     >
       {(hostClient) => (
@@ -1108,16 +1157,21 @@ function Add(props: {
     team && debounced ? () => search(team, props.target, props.id, debounced) : null,
     `team-add:${props.target}:${props.id}:${debounced}`,
   );
-  const revision = useHostRead(
+  // The target's own read says whether this person may add here, and at which revision.
+  const target = useHostRead(
     team
       ? () =>
-          (props.target === "project"
-            ? team.projectAccess({ workspaceId: props.id, limit: 1 })
-            : team.group({ groupId: props.id, limit: 1 })
-          ).then((view) => view.accessRevision)
+          props.target === "project"
+            ? team
+                .projectAccess({ workspaceId: props.id, limit: 1 })
+                .then((view) => ({ revision: view.accessRevision, can: view.can.addPeople }))
+            : team
+                .group({ groupId: props.id, limit: 1 })
+                .then((view) => ({ revision: view.accessRevision, can: view.can.editMembers }))
       : null,
-    `team-add-revision:${props.target}:${props.id}`,
+    `team-add-target:${props.target}:${props.id}`,
   );
+  const revision = { data: target.data?.can.allowed ? target.data.revision : null };
   const keys = new Set(picked.map(({ subject }) => subjectKey(subject)));
   const toggle = (subject: Subject, name: string) =>
     setPicked((current) =>
@@ -1126,6 +1180,24 @@ function Add(props: {
         : [...current, { subject, name }],
     );
   if (!team) return null;
+  if (!target.data)
+    return (
+      <RowGroup>
+        {[<ReadState error={target.error} key="state" onRetry={target.reload} team={teamName} />]}
+      </RowGroup>
+    );
+  if (!target.data.can.allowed)
+    return (
+      <Notice
+        detail={
+          target.data.can.reason
+            ? teamReasonText(target.data.can.reason, teamName)
+            : "You can’t add anyone here."
+        }
+        title="Not available to you"
+        tone="neutral"
+      />
+    );
   const changes: AccessChange[] =
     props.target === "project"
       ? grantChanges(
@@ -1302,7 +1374,7 @@ export function TeamProjectRuntimeScreen({
   route,
 }: DeploymentProps<{ readonly workspaceId: string }>) {
   return (
-    <TeamScreen deploymentId={route.params.deploymentId} title="How it runs">
+    <TeamScreen deploymentId={route.params.deploymentId} requires={null} title="How it runs">
       {(hostClient) => <Runtime hostClient={hostClient} workspaceId={route.params.workspaceId} />}
     </TeamScreen>
   );

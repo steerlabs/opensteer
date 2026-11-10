@@ -39,6 +39,7 @@ import { TeamProjectMarker, TeamProjectPage, TeamProjectSections } from "./team/
 export function ProjectSettingsRoute() {
   const { workspaceId } = useParams();
   const { hostClient, snapshot } = useShell();
+  const { identity } = useShellTeam();
   const workspace = snapshot.workspaces.find((candidate) => candidate.id === workspaceId) ?? null;
   const activeWorkspaceId = workspace?.id ?? null;
   useEffect(() => {
@@ -46,11 +47,11 @@ export function ProjectSettingsRoute() {
   }, [activeWorkspaceId, hostClient]);
   if (!workspace || workspace.kind !== "project")
     return snapshot.teamAdministrationAvailable && workspaceId ? (
-      <TeamProjectPage workspaceId={workspaceId} />
+      <TeamProjectPage key={identity ?? "signed-out"} workspaceId={workspaceId} />
     ) : (
       <Navigate replace to="/projects" />
     );
-  return <ProjectSettings key={workspace.id} workspace={workspace} />;
+  return <ProjectSettings key={`${workspace.id}:${identity ?? ""}`} workspace={workspace} />;
 }
 
 function ProjectSettings({ workspace }: { readonly workspace: WorkspaceSummary }) {
