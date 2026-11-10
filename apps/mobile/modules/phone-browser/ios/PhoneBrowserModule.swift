@@ -19,6 +19,11 @@ extension BrowserRefusal: CodedError {
   public var description: String { rawValue }
 }
 
+struct BrowserBarInsets: Record {
+  @Field var top: Double = 0
+  @Field var bottom: Double = 0
+}
+
 struct BrowserViewport: Record {
   @Field var width: Double = 390
   @Field var height: Double = 600
@@ -264,8 +269,13 @@ public final class PhoneBrowserModule: Module {
     }
     View(PhoneBrowserHostView.self) {
       ViewName("PhoneBrowserHost")
-      Events("onReady")
+      Events("onReady", "onPageScroll")
       Prop("hostId") { (view: PhoneBrowserHostView, value: String) in view.hostId = value }
+      Prop("barInsets") { (view: PhoneBrowserHostView, value: BrowserBarInsets?) in
+        view.barInsets = value.map { UIEdgeInsets(top: $0.top, left: 0, bottom: $0.bottom, right: 0) }
+      }
+      Prop("pageGestures") { (view: PhoneBrowserHostView, value: Bool?) in view.pageGestures = value ?? false }
+      Prop("pageScroll") { (view: PhoneBrowserHostView, value: Bool?) in view.pageScroll = value ?? false }
     }
     View(PhoneBrowserPictureView.self) {
       ViewName("PhoneBrowserPicture")

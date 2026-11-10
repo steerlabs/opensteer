@@ -248,9 +248,24 @@ export interface PhoneBrowserNativePort extends Pick<
   cancelDownload(input: Epoch & { sessionId: string; downloadId: string }): Promise<void>;
 }
 
+/** Where the presented page is scrolled, from its top: `end` is the furthest it scrolls. */
+export interface PhoneBrowserPageScroll {
+  readonly y: number;
+  readonly end: number;
+  /** The person's finger moved it, or its fling is still carrying it. */
+  readonly person: boolean;
+}
+
 export type PhoneBrowserHostProps = ViewProps & {
   hostId: string;
   onReady?: (event: NativeSyntheticEvent<{ hostId: string }>) => void;
+  /** The page's own controls float over these edges: the page lays out clear of them without changing size. */
+  barInsets?: { readonly top: number; readonly bottom: number } | null;
+  /** Pull to refresh and edge swipes through the page's history, while its page is here. */
+  pageGestures?: boolean;
+  /** Whether `onPageScroll` is sent; nothing crosses per frame otherwise. */
+  pageScroll?: boolean;
+  onPageScroll?: (event: NativeSyntheticEvent<PhoneBrowserPageScroll>) => void;
 };
 export type PhoneBrowserPictureProps = ViewProps & { tabId: string };
 export type PhoneBrowserDownloadProps = ViewProps & { downloadId: string };

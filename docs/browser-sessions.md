@@ -46,7 +46,9 @@ records keys or text.
 
 Typed actions expose bounded navigation, DOM-derived semantic reads, locators, native input,
 dialogs, viewport captures and optional staged-file selection, not CDP or arbitrary JavaScript.
-Document and geometry IDs fence stale actions; a dialog has its own one-use identity. A lost answer
+Document and geometry IDs fence stale actions; a dialog has its own one-use identity. Geometry
+advances with size, zoom, insets and the keyboard, never with scrolling, on every browser device:
+counting scrolls would send a message per frame and refuse agents' points mid-scroll. A lost answer
 after submission is `outcome-unknown`, never permission to retry a click or insertion. The wire is
 defined in [browser-actions](../packages/protocol/src/browser-actions.ts).
 

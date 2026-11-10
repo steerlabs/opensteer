@@ -244,9 +244,6 @@ import WebKit
       view.observe(\.canGoForward) { [weak self, weak tab] _, _ in
         MainActor.assumeIsolated { if let self, let tab { self.changed(tab) } }
       },
-      view.scrollView.observe(\.contentOffset) { [weak self, weak tab] _, _ in
-        MainActor.assumeIsolated { if let self, let tab { _ = self.geometry(tab) } }
-      },
       view.scrollView.observe(\.zoomScale) { [weak self, weak tab] _, _ in
         MainActor.assumeIsolated { if let self, let tab { _ = self.geometry(tab) } }
       },
@@ -598,7 +595,7 @@ import WebKit
       "inset": ["top": inset.top, "left": inset.left, "bottom": inset.bottom, "right": inset.right],
       "keyboard": ["x": keyboard.isNull ? 0 : keyboard.minX, "y": keyboard.isNull ? 0 : keyboard.minY,
         "width": keyboard.isNull ? 0 : keyboard.width, "height": keyboard.isNull ? 0 : keyboard.height]]
-    let fingerprint = result as NSDictionary
+    let fingerprint = GeometryFingerprint.of(result)
     let changed = tab.geometryFingerprint != fingerprint
     if changed { tab.captureGate.advance(); tab.geometryRevision += 1; tab.revision += 1; tab.geometryFingerprint = fingerprint }
     result["revision"] = tab.geometryRevision
