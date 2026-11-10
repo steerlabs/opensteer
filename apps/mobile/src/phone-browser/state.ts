@@ -1,4 +1,8 @@
-import type { BrowserAttachTicketClaims, BrowserDialog } from "@opensteer/protocol/browser";
+import type {
+  BrowserAttachTicketClaims,
+  BrowserDialog,
+  BrowserServerMessage,
+} from "@opensteer/protocol/browser";
 import type {
   BrowserCapabilityReference,
   BrowserChannelId,
@@ -39,6 +43,8 @@ export interface PhoneChannel {
   readonly epoch: number;
   readonly claims: BrowserAttachTicketClaims;
   readonly subscriptions: Map<string, { density: number; frames: boolean; frameWindow?: 1 }>;
+  /** What native reported before this channel's snapshot went out; null once it has. */
+  held: BrowserServerMessage[] | null;
 }
 export function isLive(tab: PhoneTab): boolean {
   return tab.state === "live-visible" || tab.state === "live-covered";

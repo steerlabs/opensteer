@@ -650,6 +650,40 @@ describe("phone browser manager", () => {
     );
   });
 
+  test("a new channel hears its snapshot first, then what native reported while it attached", async () => {
+    const fixture = await setup();
+    const tab = fixture.native.tabs.get(fixture.surfaceId)!;
+    const send = fixture.native.sendRelay.bind(fixture.native);
+    let attaching = true;
+    fixture.native.sendRelay = async (input) => {
+      await send(input);
+      if (!attaching || input.message.type !== "browser.attached") return;
+      attaching = false;
+      await fixture.native.emit({
+        ...fixture.reference(),
+        type: "navigationCommitted",
+        navigationId: uuid(),
+        metadata: { ...tab.metadata, title: "Loaded", revision: tab.metadata.revision + 1 },
+      });
+    };
+    await fixture.attach();
+    const heard = fixture.native.output.flatMap((entry) =>
+      entry.type === "browser.server-message" && entry.channelId === fixture.channelId()
+        ? [entry.message]
+        : [],
+    );
+    expect(heard[0]).toMatchObject({
+      type: "browser.snapshot",
+      surfaces: [expect.objectContaining({ title: "Loaded" })],
+    });
+    expect(heard.map((message) => message.type)).toEqual([
+      "browser.snapshot",
+      "navigation.committed",
+      "browser.surfaces.changed",
+      "browser.workspace-tabs",
+    ]);
+  });
+
   test("watching suspended tabs never resumes, captures, or enables debugging", async () => {
     const fixture = await setup("android");
     await fixture.client({

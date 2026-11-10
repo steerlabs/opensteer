@@ -694,6 +694,7 @@ export class PhoneBrowserManager {
       epoch,
       claims,
       subscriptions: new Map(),
+      held: [],
     };
     this.#channels.set(channel.id, channel);
     session.channels.add(channel.id);
@@ -728,6 +729,9 @@ export class PhoneBrowserManager {
       ...(claims.basicInput ? { basicInput: 1 } : {}),
       ...(claims.surfaceState ? { surfaceState: 1 } : {}),
     });
+    for (let held = channel.held?.shift(); held; held = channel.held?.shift())
+      await this.#send(channel, held, true);
+    channel.held = null;
     await this.#publish(session);
     await this.#inventory();
     const selected = this.#selected;
@@ -1881,7 +1885,7 @@ export class PhoneBrowserManager {
     }
   }
 
-  async #send(channel: PhoneChannel, message: BrowserServerMessage): Promise<void> {
+  async #send(channel: PhoneChannel, message: BrowserServerMessage, held = false): Promise<void> {
     if (message.type === "browser.workspace-tabs" && !channel.claims.workspaceTabRestoreVersion)
       return;
     if (message.type === "browser.editing" && !channel.claims.basicInput) return;
@@ -1891,6 +1895,13 @@ export class PhoneBrowserManager {
       !this.#connection
     )
       return;
+    // The Host refuses a stream whose first message is not its snapshot.
+    if (channel.held && !held && message.type !== "browser.snapshot") {
+      // The snapshot and the publication after it carry both of these whole.
+      if (message.type !== "browser.surfaces.changed" && message.type !== "browser.workspace-tabs")
+        channel.held.push(message);
+      return;
+    }
     if (message.type === "browser.snapshot" || message.type === "browser.surfaces.changed") {
       message = {
         ...message,
