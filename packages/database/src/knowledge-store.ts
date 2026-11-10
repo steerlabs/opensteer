@@ -148,6 +148,10 @@ export async function runKnowledgeStatement(
     throw internal("A writable topic must also be readable");
   if (statement.kind === "insert" && !/^[\x21-\x7e]{1,128}$/u.test(statement.operationKey))
     throw internal("An operation key is 1 to 128 visible ASCII characters");
+  // Before any key lock, so a caller cannot wait on, or learn about, a topic it cannot write.
+  const writable = new Set<string>(input.writeTopicIds);
+  if (statement.kind === "insert" && statement.keys.some((key) => !writable.has(key.topic)))
+    throw notWritable(insertNothingSaved);
   const client = await pool.connect().catch(() => {
     throw new OpensteerError({
       code: "resource_exhausted",
@@ -380,8 +384,7 @@ const ChangedSchema = z.object({
 
 function knowledgeError(error: unknown, kind: KnowledgeStatement["kind"]): OpensteerError {
   if (error instanceof OpensteerError) return error;
-  const nothingSaved =
-    kind === "insert" ? " No facts were saved; read facts and decide again." : "";
+  const nothingSaved = kind === "insert" ? insertNothingSaved : "";
   const refuse = (
     code: OpensteerError["code"],
     reason: string,
@@ -502,6 +505,8 @@ function knowledgeError(error: unknown, kind: KnowledgeStatement["kind"]): Opens
     );
   return refuse("internal", "knowledge-failed", "The knowledge statement failed.");
 }
+
+const insertNothingSaved = " No facts were saved; read facts and decide again.";
 
 function notWritable(suffix = ""): OpensteerError {
   return new OpensteerError({

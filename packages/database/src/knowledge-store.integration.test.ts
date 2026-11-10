@@ -275,6 +275,21 @@ integration("knowledge storage", () => {
     expect(unknown).toMatchObject({ code: "forbidden", reason: "knowledge-topic-not-writable" });
     expect(unwritable).toEqual(unknown);
     expect((unwritable as Error).message).toBe((unknown as Error).message);
+    const holder = await context.executorClient();
+    await scoped(holder, context);
+    await holder.query(
+      `select pg_advisory_xact_lock(hashtextextended(
+         'knowledge:' || jsonb_build_array($1::text, 'x', 'p')::text, 0))`,
+      [context.hidden],
+    );
+    const held = await insert(context, statement, {
+      parameters: [context.hidden],
+      read: [context.open, context.hidden],
+      keys: [{ topic: context.hidden, thing: "x", property: "p" }],
+      lockTimeoutMs: 2_000,
+    }).catch((error: unknown) => error);
+    await holder.query("rollback");
+    expect(held).toEqual(unknown);
     expect(await context.count()).toBe(5);
   });
 
