@@ -17,7 +17,7 @@ import {
   passwordsSettingsLabel,
   passwordsSettingsSubtitle,
 } from "@opensteer/client/host";
-import { computerUseMachineLine, isAndroidPhone } from "@opensteer/client/integrations";
+import { computerUseMachineLine, isAgentPhone } from "@opensteer/client/integrations";
 import { otherDeviceLine, type OtherDeviceLine } from "@opensteer/client/settings";
 import { maximumNotificationDevicesPerAccount } from "@opensteer/core";
 import type { HarnessInstallation, MachineSummary, OtherDevice } from "@opensteer/protocol";
@@ -300,17 +300,17 @@ function computerUseNow(machine: MachineSummary, hostConnected: boolean): string
   if (!report || machine.status !== "online") return null;
   return report.sessions.length > 0 ||
     report.state === "permission-required" ||
-    (report.state === "unavailable" && isAndroidPhone(machine))
+    (report.state === "unavailable" && isAgentPhone(machine))
     ? computerUseMachineLine(machine, hostConnected)
     : null;
 }
 
 /**
- * A computer is added from itself and an Android phone from a computer it is
+ * A computer is added from itself and an Agent Phone from a computer it is
  * plugged into — never from this app — so the section says where.
  */
 export const computersSettingsFooter =
-  "To add a computer, open Opensteer on it and choose Add. To add an Android phone, plug it into a computer and choose Add a phone.";
+  "To add a computer, open Opensteer on it and choose Add. To add an Agent Phone, plug it into a computer and choose Add a phone.";
 
 export const browserProfilesSettingsRow = {
   detail: "Separate browsers with their own sign-ins",
@@ -413,10 +413,17 @@ export type ComputerSettingsDestination =
   | { readonly kind: "add-iphone" };
 
 /**
- * This iPhone, which can lend its own Calendar, Contacts and Reminders. Null
- * on a phone that cannot, which then has no row of its own.
+ * This phone, which lends its browser and, on an iPhone, its own Calendar,
+ * Contacts and more. Null on a phone that cannot be added, which then has no
+ * row of its own.
  */
 export interface ThisIphoneSettings {
+  /** What it is called where its name is not enough. */
+  readonly noun: "iPhone" | "phone";
+  /** Its last removal still waits for a restart to erase its browser profiles. */
+  readonly pendingErasure: boolean;
+  /** Whether this phone has apps to share, as its own build reports them. */
+  readonly sharesApps: boolean;
   /** Requests waiting for an answer on this iPhone. */
   readonly approvals: number;
   /** Whether the open Deployment's Host can take an iPhone. */
@@ -437,7 +444,8 @@ export interface ThisIphoneSettings {
   readonly selectedDeploymentId: string;
 }
 
-const computerSymbols: Readonly<Record<ComputerGlyph, ComputerSymbol>> = {
+/** Each computer's shape as the symbol it is drawn with. */
+export const computerSymbols: Readonly<Record<ComputerGlyph, ComputerSymbol>> = {
   compact: "macmini",
   computer: "desktopcomputer",
   desktop: "desktopcomputer",
@@ -575,6 +583,15 @@ function thisIphoneRow(
 ): ComputerSettingsRow {
   const opensteer = `Opensteer on ${here.deploymentName}`;
   const held = here.heldBy;
+  // Nothing opens until a restart has erased it: adding it again must wait for that.
+  if (here.pendingErasure)
+    return {
+      detail: "You're here · Restart Opensteer to finish removing it",
+      key: "this-iphone",
+      name: here.deviceName,
+      opens: null,
+      symbol: "smartphone",
+    };
   if (held !== null && held.deploymentId !== here.selectedDeploymentId) {
     const machineId = held.state === "pending" ? held.enrollmentId : held.runnerId;
     return {
@@ -607,14 +624,16 @@ function thisIphoneRow(
     ? {
         detail: here.removed
           ? `You're here · Removed from ${opensteer}`
-          : "You're here · Share its Calendar, Contacts and more",
+          : here.sharesApps
+            ? "You're here · Share its Calendar, Contacts and more"
+            : "You're here · Not added",
         key: "this-iphone",
         name: here.deviceName,
         opens: { kind: "add-iphone" },
         symbol: "smartphone",
       }
     : {
-        detail: `You're here · Update ${opensteer} to add this iPhone`,
+        detail: `You're here · Update ${opensteer} to add this ${here.noun}`,
         key: "this-iphone",
         name: here.deviceName,
         opens: null,

@@ -89,6 +89,7 @@ integration("Reopen closed workspace tab through the Host", () => {
     );
     await tabs.close(ownerId, first);
     const profile = await host.store.createBrowserProfile({
+      homeRunnerId: runtime.runnerId,
       idempotencyKey: randomUUID(),
       name: "Removed",
       ownerId,

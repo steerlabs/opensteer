@@ -1,10 +1,44 @@
-import { memo, type ReactNode } from "react";
-import { Pressable, StyleSheet, View, type StyleProp, type ViewStyle } from "react-native";
+import { createContext, memo, useContext, useRef, type ReactNode, type RefObject } from "react";
+import {
+  Pressable,
+  StyleSheet,
+  View,
+  type HostInstance,
+  type StyleProp,
+  type ViewStyle,
+} from "react-native";
+import Animated, { useAnimatedStyle, type SharedValue } from "react-native-reanimated";
 import { color, controlFontScaleLimit, radius, space, touchTarget } from "../theme.js";
 import { NativeMenu, type NativeMenuSection } from "../thread/composer-menu.js";
 import { GlassSurface } from "../ui/glass.js";
 import { AppText } from "../ui/primitives.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
+
+/**
+ * A bar floating over a page on this phone, shrunk by `progress` (0 to 1) as the page is read:
+ * the round controls fade away and the capsule draws in to a small pill at the bar's middle,
+ * toward the screen's edge, as Safari's does.
+ */
+export interface ToolbarShrink {
+  readonly edge: "bottom" | "top";
+  readonly progress: SharedValue<number>;
+  /** The bar, which the capsule measures itself against. */
+  readonly bar: RefObject<HostInstance | null>;
+  /** How far the capsule's middle is from the bar's, measured as it is laid out. */
+  readonly capsuleShift: SharedValue<number>;
+  readonly onCapsule: (capsule: { readonly width: number; readonly x: number }) => void;
+}
+
+const ToolbarShrinkContext = createContext<ToolbarShrink | null>(null);
+export const ToolbarShrinkProvider = ToolbarShrinkContext.Provider;
+export function useToolbarShrink(): ToolbarShrink | null {
+  return useContext(ToolbarShrinkContext);
+}
+
+/** The shrunk capsule's size against the full one, and how far it settles toward the edge. */
+export const shrunkCapsule = { scale: 0.78, sink: 8 } as const;
+/** How far the bar's inner edge moves as it shrinks, for what stands on it to follow. */
+export const shrunkTravel = shrunkCapsule.sink + (touchTarget * (1 - shrunkCapsule.scale)) / 2;
 
 /**
  * The one bar a page, Mac app or phone is used through, as Safari's and
@@ -14,9 +48,10 @@ import { Symbol, type SFSymbolName } from "../ui/symbol.js";
  * reaches it; where the page has a regular width it sits over it, as Safari's
  * does on iPad.
  *
- * It never floats over the page. A streamed page cannot leave room for chrome
- * it does not know about, so anything drawn over it would hide the page's own
- * sticky header or pinned button out of reach.
+ * It never floats over a streamed page, which cannot leave room for chrome it
+ * does not know about: anything drawn over it would hide the page's own sticky
+ * header or pinned button out of reach. A page on this phone can, so there it
+ * floats and shrinks (`ToolbarShrink`).
  */
 export function Toolbar(props: {
   readonly children: ReactNode;
@@ -118,16 +153,38 @@ function ToolbarRound(props: {
   readonly children: ReactNode;
   readonly selected?: boolean;
 }): ReactNode {
-  return (
+  const shrink = useToolbarShrink();
+  const round = (
     <GlassSurface
       interactive
       shape="capsule"
       style={styles.round}
-      {...(props.selected === true ? { tint: color.ember } : {})}
+      {...(props.selected === true
+        ? { tint: color.ember }
+        : shrink === null
+          ? {}
+          : { tint: color.floatTint })}
     >
       {props.children}
     </GlassSurface>
   );
+  return shrink === null ? round : <ShrinkingRound shrink={shrink}>{round}</ShrinkingRound>;
+}
+
+function ShrinkingRound(props: {
+  readonly children: ReactNode;
+  readonly shrink: ToolbarShrink;
+}): ReactNode {
+  const { edge, progress } = props.shrink;
+  const toward = edge === "bottom" ? 1 : -1;
+  const style = useAnimatedStyle(() => ({
+    opacity: Math.max(0, 1 - progress.value * 1.6),
+    transform: [
+      { translateY: toward * shrunkCapsule.sink * progress.value },
+      { scale: 1 - 0.4 * progress.value },
+    ],
+  }));
+  return <Animated.View style={style}>{props.children}</Animated.View>;
 }
 
 /**
@@ -138,10 +195,47 @@ export function ToolbarCapsule(props: {
   readonly children: ReactNode;
   readonly style?: StyleProp<ViewStyle>;
 }): ReactNode {
-  return (
-    <GlassSurface interactive shape="capsule" style={[styles.capsule, props.style]}>
+  const shrink = useToolbarShrink();
+  const capsule = (
+    <GlassSurface
+      interactive
+      shape="capsule"
+      style={[styles.capsule, props.style]}
+      {...(shrink === null ? {} : { tint: color.floatTint })}
+    >
       {props.children}
     </GlassSurface>
+  );
+  return shrink === null ? capsule : <ShrinkingCapsule shrink={shrink}>{capsule}</ShrinkingCapsule>;
+}
+
+function ShrinkingCapsule(props: {
+  readonly children: ReactNode;
+  readonly shrink: ToolbarShrink;
+}): ReactNode {
+  const { bar, capsuleShift, edge, onCapsule, progress } = props.shrink;
+  const toward = edge === "bottom" ? 1 : -1;
+  const measured = useRef<HostInstance>(null);
+  const measure = () => {
+    const base = bar.current;
+    if (base !== null)
+      measured.current?.measureLayout(base, (x: number, _y: number, width: number) =>
+        onCapsule({ width, x }),
+      );
+  };
+  const style = useAnimatedStyle(() => ({
+    transform: [
+      { translateX: capsuleShift.value * progress.value },
+      { translateY: toward * shrunkCapsule.sink * progress.value },
+      { scale: 1 - (1 - shrunkCapsule.scale) * progress.value },
+    ],
+  }));
+  return (
+    <Animated.View style={[styles.shrinking, style]}>
+      <View onLayout={measure} ref={measured} style={styles.shrinking}>
+        {props.children}
+      </View>
+    </Animated.View>
   );
 }
 
@@ -179,6 +273,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     width: touchTarget,
   },
+  shrinking: { flex: 1, minWidth: 0 },
   slot: { flexShrink: 0 },
   top: { paddingBottom: space[8], paddingTop: space[4] },
 });

@@ -344,6 +344,8 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
   let routeFault: Error | null = null;
   let ingressOrigin = sourceOrigin;
   const runtime = {
+    main: true,
+    engine: "electron" as import("@opensteer/protocol").BrowserEngine,
     connections: [] as FakeRuntimeConnection[],
     runnerId: null as RunnerId | null,
     signIn: false,
@@ -409,6 +411,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
           ? [
               {
                 available: true,
+                agents: true,
                 environmentIds: [],
                 kind: "runner" as const,
                 label: "Test Mac",
@@ -418,6 +421,11 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
             ]
           : [],
       resolve: (placement) => ({
+        main: runtime.main,
+        localProfileStorage: {
+          storageInstanceId: "20000000-0000-4000-8000-000000000001",
+          engine: runtime.engine,
+        },
         connect: (ticket) => {
           const connection = new FakeRuntimeConnection(ticket);
           connection.hasPasswordAuthority = runtime.signIn;
@@ -519,6 +527,8 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     routeFault = null;
     ingressOrigin = sourceOrigin;
     runtime.supportsImport = true;
+    runtime.main = true;
+    runtime.engine = "electron";
     openFault = false;
     beforeOpen = null;
     description = {
@@ -634,7 +644,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     const enrollmentTokenHash = `sha256:${createHash("sha256").update(suffix).digest("base64url")}`;
     if (!existingRunnerId)
       await store.createRunnerEnrollment({
-        allowedModules: ["agents"],
+        allowedModules: ["agents", "browser"],
         createdBy: ownerId,
         expiresAt: new Date(Date.now() + 60_000),
         id: `ren_${randomUUID()}`,
@@ -979,6 +989,54 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       site: "https://autonomous.test",
     });
   });
+
+  it.each([true, false])(
+    "refuses off-main saved logins and cards without asking or suggesting an update (stateImport=%s)",
+    async (stateImport) => {
+      runtime.main = false;
+      runtime.supportsImport = stateImport;
+      const ready = await scene();
+      const input = { ...ready.agent, callId: randomUUID(), site: "https://remote-checkout.test" };
+      expect(await service.agentSignIn(input)).toEqual({
+        status: "unavailable",
+        site: input.site,
+        reason: "main-browser-required",
+      });
+      expect(await service.agentUseCard({ ...input, callId: randomUUID() })).toEqual({
+        status: "unavailable",
+        site: input.site,
+        reason: "main-browser-required",
+      });
+      expect(ready.connection.signInStarts()).toEqual([]);
+      expect(await pendingSignIns(ready.ownerId)).toEqual([]);
+    },
+  );
+
+  it.each(["wkwebview", "android-webview"] as const)(
+    "refuses Chrome import as unsupported on %s, not as an update",
+    async (engine) => {
+      runtime.engine = engine;
+      runtime.supportsImport = false;
+      const ready = await scene();
+      const site = "https://phone-signin.test";
+      expect(
+        await service.sessionSignIn({
+          idempotencyKey: randomUUID(),
+          ownerId: ready.ownerId,
+          sessionId: ready.sessionId,
+          sourceId: null,
+          url: site,
+        }),
+      ).toEqual({ status: "problem", site, sourceName: null, problem: "unsupported-operation" });
+      expect(await service.agentSignIn({ ...ready.agent, callId: randomUUID(), site })).toEqual({
+        status: "unavailable",
+        site,
+        reason: "unsupported-operation",
+      });
+      expect(ready.connection.imports()).toEqual([]);
+      expect(await pendingSignIns(ready.ownerId)).toEqual([]);
+    },
+  );
 
   it("allows unattended sign-in", async () => {
     const ready = await passwordScene();

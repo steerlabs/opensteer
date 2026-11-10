@@ -1,4 +1,5 @@
 import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
+import { enrollTestRunner } from "@opensteer/database/test-support/store";
 import { describe } from "vitest";
 import { sealOAuthBrokerPayload } from "@opensteer/integration-auth";
 import { slackChannelProviderManifest } from "@opensteer/channel-core";
@@ -1630,32 +1631,43 @@ integration("Host vertical slice", () => {
     });
     // Somebody else's signed-in browser in the same Workspace: its owner's alone.
     const stranger = await runtime.store.createUser("Browser stranger");
+    const strangerRunnerId = createId("runner");
+    await enrollTestRunner(runtime.store, {
+      allowedModules: ["browser"],
+      createdBy: stranger,
+      environmentId: createId("environment"),
+      modules: { browser: { runtimeId: "browser", wireVersion: 2 } },
+      name: "Stranger's computer",
+      runnerId: strangerRunnerId,
+      runnerKind: "local",
+      tokenSuffix: strangerRunnerId,
+    });
     const strangerProfile = await runtime.store.createBrowserProfile({
+      homeRunnerId: strangerRunnerId,
       idempotencyKey: "runtime.integration.test-browser-profile-1",
       name: "Stranger's bank",
       ownerId: stranger,
     });
-    await runtime.store.database
-      .updateTable("browserProfiles")
-      .set({
-        storageState: "local",
-        storageBindingVersion: 1,
-        storageDeploymentId: sql`(select id from deployments limit 1)`,
-        storageRunnerId: runnerId,
-        storageInstanceId: randomUUID(),
-        storageBindingId: randomUUID(),
-        storageEngine: "chromium",
-        initialized: true,
-      })
-      .where("id", "=", strangerProfile.id)
-      .execute();
+    const deployment = await runtime.store.getDeployment();
+    if (!deployment) throw new Error("Test Deployment missing");
+    const strangerBinding = {
+      version: 1 as const,
+      deploymentId: deployment.id,
+      profileId: strangerProfile.id,
+      runnerId: strangerRunnerId,
+      storageInstanceId: randomUUID(),
+      bindingId: randomUUID(),
+      engine: "chromium" as const,
+    };
+    await runtime.store.bindBrowserProfile(strangerBinding);
+    await runtime.store.acknowledgeBrowserProfileReady(strangerBinding);
     const hiddenBrowserId = createBrowserSessionId();
     await runtime.store.createBrowserSession({
       id: hiddenBrowserId,
       origin: "workspace",
-      placementKey: `runner:${runnerId}:browser`,
+      placementKey: `runner:${strangerRunnerId}:browser`,
       profileId: strangerProfile.id,
-      runnerId,
+      runnerId: strangerRunnerId,
       runtimeId: "browser",
       workspaceId: workspace.id,
     });

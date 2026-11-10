@@ -210,6 +210,27 @@ describe("computers in settings", () => {
  * - the footer never says this iPhone can be added.
  */
 describe("this iPhone in settings", () => {
+  it("names Opensteer when another Android phone needs an update", () => {
+    const rows = computersSettingsRows({
+      ...server,
+      here: null,
+      machines: [
+        {
+          ...iphoneMachine,
+          device: { app: "opensteer", form: "phone", platform: "android" },
+          name: "Pixel 9",
+          status: "needs-update",
+          modules: {},
+        },
+      ],
+    });
+    expect(rows.at(-1)).toMatchObject({
+      name: "Pixel 9",
+      symbol: "smartphone",
+      detail: "Nothing shared yet · Update Opensteer on Pixel 9.",
+    });
+  });
+
   const selected = "dep_0192f4a1-1111-4000-8000-000000000001";
   const other = "dep_0192f4a1-4444-4000-8000-000000000004";
   const runnerId = "rnr_77777777-7777-4777-8777-777777777777";
@@ -229,7 +250,10 @@ describe("this iPhone in settings", () => {
     deploymentName: "Studio",
     deviceName: "Alex's iPhone",
     heldBy: null,
+    noun: "iPhone" as const,
+    pendingErasure: false,
     removed: false,
+    sharesApps: true,
     selectedDeploymentId: selected,
     ...overrides,
   });
@@ -301,6 +325,43 @@ describe("this iPhone in settings", () => {
       machines: [iphoneMachine],
     });
     expect(waiting[1]?.detail).toBe("You're here · 2 waiting for you");
+  });
+
+  it("lists a phone with only its browser by what it lends, and holds it while erasing", () => {
+    const pixel = { ...here({ deviceName: "Pixel 9", noun: "phone", sharesApps: false }) };
+    expect(computersSettingsRows({ ...server, here: pixel, machines: [] })[1]).toMatchObject({
+      detail: "You're here · Not added",
+      opens: { kind: "add-iphone" },
+    });
+    // Its removal waits for a restart to erase its browser: nothing opens until then.
+    expect(
+      computersSettingsRows({
+        ...server,
+        here: { ...pixel, pendingErasure: true },
+        machines: [],
+      })[1],
+    ).toMatchObject({
+      detail: "You're here · Restart Opensteer to finish removing it",
+      opens: null,
+    });
+    const heldBy = {
+      deploymentId: selected,
+      deploymentName: "Studio",
+      enrollmentId: null,
+      name: "Pixel 9",
+      runnerId,
+      state: "enrolled" as const,
+    };
+    const browserOnly = {
+      ...iphoneMachine,
+      device: { form: "phone", platform: "android" },
+      modules: { browser: { checkedAt: null, detail: null, readiness: "ready" } },
+      name: "Pixel 9",
+    } as MachineSummary;
+    expect(
+      computersSettingsRows({ ...server, here: { ...pixel, heldBy }, machines: [browserOnly] })[1]
+        ?.detail,
+    ).toBe("You're here · Agents can use it · Online");
   });
 
   it("hides this iPhone's own pending enrollment while it is being added", () => {

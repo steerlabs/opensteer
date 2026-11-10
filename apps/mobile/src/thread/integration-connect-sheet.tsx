@@ -25,7 +25,7 @@ import {
   integrationAccountDetail,
   integrationAuthorizationError,
   integrationRequestStillPending,
-  isAndroidPhone,
+  isAgentPhone,
   repositoryAccountStep,
   resolveIntegrationAccess,
   type AccessPlan,
@@ -565,7 +565,7 @@ export function IntegrationConnectCard(props: {
       if (generation !== operationGeneration.current) return;
       const computer = snapshot.machines.find((machine) => machine.id === input.runnerId);
       setNotice(
-        phone && computer && isAndroidPhone(computer)
+        phone && computer && isAgentPhone(computer)
           ? `Agents can now use ${computer.name} at the access you chose.`
           : `Setup requested. On ${computer?.name ?? "that computer"}, open Opensteer → Settings → Computers to approve ${plan.definition.name}.`,
       );

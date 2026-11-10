@@ -41,6 +41,8 @@ import {
  * - A keyframe request goes out while one is already pending, is lost with a
  *   socket that could not carry it, is never sent again once answered, or is
  *   asked once and then waited on forever though the Host rate-limits it.
+ * - A view joining an open stream waits for the screen to change before it
+ *   has a picture.
  * - A replay that restarts at the cache's original sequences, as the Host
  *   sends it, is taken for out-of-order frames and kills the socket.
  * - Cached frames older than `replayThrough` are offered for display, or the
@@ -465,6 +467,17 @@ describe("recovery", () => {
     const next = opened();
     lease.requestKeyframe();
     expect(next.messages("display.keyframe")).toHaveLength(1);
+  });
+
+  it("asks for a keyframe when a view joins an open stream, which sends a still screen no frames", () => {
+    const first = streams.retain(target);
+    const socket = opened();
+    socket.frame({ sequence: 1, key: true });
+    expect(socket.messages("display.keyframe")).toEqual([]);
+    const second = streams.retain(target);
+    expect(socket.messages("display.keyframe")).toEqual([{ type: "display.keyframe" }]);
+    second.release();
+    first.release();
   });
 
   it("marks cached frames before replayThrough to be decoded but never shown", () => {

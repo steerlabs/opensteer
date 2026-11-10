@@ -580,6 +580,95 @@ html.electron-shell .settings-navigation__header :is(a, button) {
   background: none;
 }
 
+.browser-profile-settings__device {
+  flex: 0 1 auto;
+  max-width: 60%;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--text-md);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A new profile's name field holds the device it keeps its sign-ins on, as a
+   quiet control at its end that never outweighs the name. */
+.profile-name-field {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  padding-block: 0;
+  padding-inline-end: var(--space-4);
+  cursor: text;
+}
+
+.profile-name-field:focus-within {
+  border-color: var(--ember);
+  box-shadow: var(--edge-plate), var(--ring-ember);
+}
+
+.profile-name-field input {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  outline: none;
+}
+
+.profile-name-field input::placeholder {
+  color: var(--muted-dim);
+}
+
+.profile-name-field__home {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: var(--space-4);
+  min-width: 0;
+  max-width: 45%;
+  min-height: calc(var(--control-height) - 8px);
+  padding: 0 var(--space-6);
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: none;
+  color: var(--muted);
+  font-size: var(--text-md);
+  cursor: pointer;
+}
+
+.profile-name-field__home:hover:not(:disabled),
+.profile-name-field__home.is-open {
+  background: var(--fill-quiet);
+  color: var(--text-soft);
+}
+
+.profile-name-field__home svg {
+  flex: none;
+  width: 1.05em;
+  height: 1.05em;
+}
+
+.profile-name-field__home .profile-name-field__chevron {
+  width: 0.8em;
+  height: 0.8em;
+  color: var(--muted-dim);
+}
+
+.profile-name-field__home-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.popover--profile-home {
+  width: min(260px, calc(100vw - 20px));
+  --ring-bg: var(--surface-raised);
+}
+
 /* Projects hang under their profile, aligned with its name. */
 .browser-profile-settings__projects {
   display: flex;

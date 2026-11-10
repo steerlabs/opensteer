@@ -86,11 +86,14 @@ public enum IphoneProofs {
     return result + "\""
   }
 
-  public static func descriptor(bootId: String, runnerId: String, name: String, runtimeVersion: String) -> [String: Any] {
+  public static func descriptor(bootId: String, runnerId: String, name: String, runtimeVersion: String, browser: [String: Any]? = nil) -> [String: Any] {
+    var modules: [String: Any] = ["integrations": ["platform": "ios", "protocolVersion": 2] as [String: Any]]
+    if let browser { modules["browser"] = browser }
+    return
     [
       "bootId": bootId, "capabilities": [String](),
       "device": ["form": "phone", "platform": "ios"],
-      "modules": ["integrations": ["platform": "ios", "protocolVersion": 2] as [String: Any]],
+      "modules": modules,
       "name": name, "runnerId": runnerId, "runnerKind": "local", "runtimeVersion": runtimeVersion,
     ]
   }
@@ -114,12 +117,12 @@ public enum IphoneProofs {
       ["publicKeyFingerprint", keyId(key), "enrollmentTokenHash", tokenDigest(token)])
   }
 
-  public static func auxiliary(_ key: Curve25519.Signing.PrivateKey, challenge: ProofChallenge, runnerId: String, bootId: String, ticket: String) throws -> String {
+  public static func auxiliary(_ key: Curve25519.Signing.PrivateKey, challenge: ProofChallenge, runnerId: String, bootId: String, ticket: String, module: String = "integrations") throws -> String {
     try sign(key, domain: "opensteer-runner-auxiliary-v1", payload: [
       "challengeId", challenge.challengeId, "challengeNonce", challenge.nonce,
       "hostSessionId", challenge.hostSessionId, "challengeExpiresAt", challenge.expiresAt,
-      "challengeModule", "integrations", "runnerId", runnerId, "bootId", bootId,
-      "module", "integrations", "ticketDigest", tokenDigest(ticket),
+      "challengeModule", module, "runnerId", runnerId, "bootId", bootId,
+      "module", module, "ticketDigest", tokenDigest(ticket),
     ])
   }
 

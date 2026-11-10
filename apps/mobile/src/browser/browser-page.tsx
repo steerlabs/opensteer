@@ -34,11 +34,11 @@ import {
   Alert,
   I18nManager,
   Linking,
-  Platform,
   Pressable,
   Share,
   StyleSheet,
   TextInput,
+  useWindowDimensions,
   View,
   type LayoutChangeEvent,
 } from "react-native";
@@ -76,14 +76,24 @@ import { GlassSurface } from "../ui/glass.js";
 import { appear, duration, exit, move } from "../ui/motion.js";
 import { AppText, Notice } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
-import { AddressCapsule, AddressEditor, type OpenTabSuggestion } from "./address-bar.js";
+import {
+  AddressCapsule,
+  AddressEditor,
+  type OpenTabSuggestion,
+  type PageDevice,
+} from "./address-bar.js";
 import { BrowserStream, submitBrowserCommand, useBrowserFeedState } from "./browser-stream.js";
 import { ChromeSignInAction } from "./chrome-sign-in-action.js";
 import { LoginChips } from "./login-chips.js";
 import { createPageAutofill } from "./page-autofill.js";
 import { pageSite, viewedPage } from "./surface-route.js";
 import { ToolbarAsk, ToolbarLeave, useNativeBarAway } from "./place-bar.js";
+import { FloatingPlaceStatus, PlaceVoiceDock, usePlaceStatus } from "./place-foot.js";
+import { barFloats } from "./floating-bar.js";
+import { PageChromeProvider, PageEdge, useFloatingBar, type PageChrome } from "./floating-page.js";
+import { useContentInsets } from "../ui/pane.js";
 import { Toolbar, ToolbarButton, ToolbarCapsule, ToolbarMenu } from "./toolbar.js";
+import { systemBrowserLabel } from "./system-browser.js";
 
 /** The shape a page takes before its first picture says otherwise. */
 const defaultPageAspect = 16 / 9;
@@ -117,9 +127,10 @@ const maxZoom = 4;
 /**
  * One browser page, used as Safari is used on a phone: the page as large as
  * its place allows, with one bar and nothing else around it: the way out, the
- * page's history and address, the tabs, Ask and ⋯. It sits under the page; where
- * the page has a regular width it sits over it instead and Forward joins the
- * history, as Safari on iPad has it.
+ * page's address, the tabs, Ask and ⋯, which holds its history. It sits under
+ * the page; where the page has a regular width it sits over it instead, with
+ * Back and Forward beside the address, as Safari on iPad has it. Opened from a
+ * conversation, the page's foot says what that conversation is doing.
  *
  * The page is drawn at its own shape, as wide as its place and pinned to the
  * top; a page taller than the room fits by its height. It is never resized by
@@ -132,6 +143,7 @@ const maxZoom = 4;
  * from either.
  */
 export function BrowserPage(props: {
+  readonly nativeContent?: ReactNode;
   /** In front of the reader, with the app in the foreground. */
   readonly active: boolean;
   readonly connected: boolean;
@@ -153,6 +165,8 @@ export function BrowserPage(props: {
   readonly workspaceName: string;
   /** Which way the page came from another tab, by tab order; 0 when it opened here. */
   readonly arrival?: -1 | 0 | 1;
+  /** The device the page runs on, where that is not this one. */
+  readonly device?: PageDevice | null;
   readonly following?: PageFollowing | null;
   readonly pair?: PagePairChrome | null;
   /** The person moved this page themselves: back, forward, an address, a new tab. */
@@ -246,7 +260,7 @@ export function BrowserPage(props: {
     }
   }, [editable]);
   useEffect(() => {
-    if (!props.active || !props.connected) {
+    if (!props.active || !props.connected || props.nativeContent) {
       setTyping(false);
       return;
     }
@@ -254,7 +268,7 @@ export function BrowserPage(props: {
       setProblem(message);
       if (!editing.get().negotiated) setTyping(false);
     });
-  }, [editing, props.active, props.connected]);
+  }, [editing, props.active, props.connected, props.nativeContent]);
   const [confirmingLogin, setConfirmingLogin] = useState<string | null>(null);
   const [fillNotice, setFillNotice] = useState<string | null>(null);
   useEffect(() => {
@@ -347,7 +361,13 @@ export function BrowserPage(props: {
         : { height, width: stageWidth },
     );
   };
-  const picture = pictureBox(room, aspect);
+  const status = usePlaceStatus(lifted);
+  // Where the page rests: its place, less the status row's room at its foot.
+  const rested = useMemo(
+    () => ({ height: Math.max(0, room.height - status.height), width: room.width }),
+    [room.height, room.width, status.height],
+  );
+  const picture = pictureBox(rested, aspect);
 
   // A refusal belongs to the feed admission it met; the next admission has recovered.
   const [refusedAdmission, setRefusedAdmission] = useState<string | null>(null);
@@ -371,7 +391,7 @@ export function BrowserPage(props: {
   };
   latestSend.current = send;
   const viewport = () => {
-    const size = { height: Math.round(room.height), width: Math.round(room.width) };
+    const size = { height: Math.round(rested.height), width: Math.round(rested.width) };
     return size.width > 0 && size.height > 0 && browserViewportFits(size.width, size.height)
       ? size
       : null;
@@ -477,8 +497,8 @@ export function BrowserPage(props: {
     position >= 0 && (tabs[position - 1] !== undefined || tabs[position + 1] !== undefined);
   const fitted =
     picture.height > 0 &&
-    Math.abs(picture.width - room.width) <= 2 &&
-    Math.abs(picture.height - room.height) <= 2;
+    Math.abs(picture.width - rested.width) <= 2 &&
+    Math.abs(picture.height - rested.height) <= 2;
   const navigationKey = `${inputEpoch}:${catalogTab?.documentId ?? ""}:${tab?.url ?? ""}:${loading}`;
   useEffect(() => {
     setDragSelect(false);
@@ -547,8 +567,43 @@ export function BrowserPage(props: {
   const pair = props.pair ?? null;
   // The bar is over the page where it is wide, and always while a Thread is beside it.
   const top = regular || pair !== null;
+  const { height: windowHeight } = useWindowDimensions();
   const reduceMotion = useReducedMotion();
   const arrival = props.arrival ?? 0;
+  // A page on this phone runs under its own controls, as Safari's does: they float over it and
+  // the bar shrinks as it is read. A streamed page cannot leave room for them, so its bar stands.
+  const local = props.nativeContent !== undefined && props.nativeContent !== null;
+  const edge = top ? "top" : "bottom";
+  const floats = local && barFloats({ edge, height: windowHeight, paired: pair !== null });
+  const floating = useFloatingBar(edge, !floats || addressOpen || dialog !== null || signingIn);
+  const insets = useContentInsets();
+  // Under the home indicator too, where the bar floats over the page's foot.
+  const bleed = floats && edge === "bottom" ? insets.bottom : 0;
+  const [footHeight, setFootHeight] = useState(0);
+  const [headHeight, setHeadHeight] = useState(0);
+  // The editor stands where the bar was without moving the page's own edges.
+  const onFootHeight = useCallback(
+    (height: number) => {
+      if (!addressOpen) setFootHeight(height);
+    },
+    [addressOpen],
+  );
+  const onHeadHeight = useCallback(
+    (height: number) => {
+      if (!addressOpen) setHeadHeight(height);
+    },
+    [addressOpen],
+  );
+  const chrome = useMemo(
+    (): PageChrome | null =>
+      local
+        ? {
+            barInsets: { bottom: footHeight, top: floats && edge === "top" ? headHeight : 0 },
+            onPageScroll: floats ? floating.onPageScroll : null,
+          }
+        : null,
+    [edge, floating.onPageScroll, floats, footHeight, headHeight, local],
+  );
   // A phone's bar has room for what it is used for most; Drag/select waits in More.
   const dragButtonFits = regular && pair === null;
   const menu: NativeMenuSection[] = [
@@ -563,6 +618,13 @@ export function BrowserPage(props: {
       ...(regular
         ? []
         : [
+            {
+              disabled: !ready || !canGoBack,
+              icon: "chevron.backward",
+              id: "back",
+              label: "Back",
+              onPress: () => void send({ type: "navigation.back" }),
+            } satisfies NativeMenuOption,
             {
               disabled: !ready || !canGoForward,
               icon: "chevron.forward",
@@ -618,7 +680,7 @@ export function BrowserPage(props: {
           {
             icon: "safari",
             id: "open",
-            label: Platform.OS === "ios" ? "Open in Safari" : "Open in browser",
+            label: systemBrowserLabel,
             onPress: () => void Linking.openURL(pageUrl).catch(noop),
           },
         ],
@@ -649,7 +711,12 @@ export function BrowserPage(props: {
     <AddressCapsule
       acting={acting}
       arriving={arrival !== 0}
-      canGoBack={ready && canGoBack}
+      back={
+        regular
+          ? { enabled: ready && canGoBack, onPress: () => void send({ type: "navigation.back" }) }
+          : null
+      }
+      device={props.device ?? null}
       favicon={liveTab?.favicon ?? null}
       following={props.following ?? null}
       forward={
@@ -661,7 +728,6 @@ export function BrowserPage(props: {
           : null
       }
       loading={loading}
-      onBack={() => void send({ type: "navigation.back" })}
       onEdit={() => setAddressOpen(true)}
       onSwitch={canSwitch ? switchBy : null}
       secure={tab?.url.startsWith("https://") === true}
@@ -724,7 +790,16 @@ export function BrowserPage(props: {
   }, [slide, slideTo]);
   const zoom = usePageZoom(picture, keyboardOpen || addressOpen);
   const offer =
-    ready && tab !== undefined && !lifted && !zoom.zoomed ? fitOffer(room, picture) : null;
+    ready && tab !== undefined && !lifted && !zoom.zoomed ? fitOffer(rested, picture) : null;
+  // The page's box follows the status row's room on the UI thread, so the
+  // page eases into the room it leaves rather than jumping when it comes or goes.
+  const { reserve } = status;
+  const roomHeight = room.height;
+  const roomWidth = room.width;
+  const box = useAnimatedStyle(() => {
+    const next = pictureBox({ height: roomHeight - reserve.value, width: roomWidth }, aspect);
+    return { height: next.height, left: next.left, width: next.width };
+  });
   const placed = useAnimatedStyle(() => ({
     transform: [
       { translateX: zoom.x.value },
@@ -734,6 +809,83 @@ export function BrowserPage(props: {
   }));
 
   const label = site === null ? title : `${title}, ${site}`;
+  const pageDialog =
+    dialog === null ? null : (
+      <PageDialog
+        channelReady={channelReady}
+        dialog={dialog}
+        onAnswer={(accept) =>
+          send({
+            type: "dialog.respond",
+            accept,
+            dialogId: dialog.id,
+            ...(accept && dialog.type === "prompt" ? { promptText } : {}),
+          })
+        }
+        onPrompt={(text) => setPrompt({ id: dialog.id, text })}
+        promptText={promptText}
+        site={site}
+      />
+    );
+  if (local)
+    return (
+      <View
+        onLayout={(event) => setWidth(event.nativeEvent.layout.width)}
+        style={styles.page}
+        testID="browser-page"
+      >
+        <ActionReviewSheet
+          review={closeReview}
+          title="Close this tab?"
+          detail="An agent is working here. This tab closes for you and for the agent."
+          confirmLabel="Close tab"
+          cancelLabel="Cancel"
+          onClose={dismissClose}
+          onConfirmed={props.onClosed}
+          onError={(error) => setProblem(operationDetail(error, "This tab could not be closed."))}
+        />
+        {top && !floats ? (addressOpen ? editor : bar) : null}
+        <View style={[styles.native, { marginBottom: -bleed }]} testID="local-page">
+          <PageChromeProvider value={chrome}>{props.nativeContent}</PageChromeProvider>
+          {addressOpen ? (
+            <Pressable
+              accessibilityLabel="Keep this page"
+              accessibilityRole="button"
+              onPress={() => {
+                setAddressDraft(null);
+                setAddressOpen(false);
+              }}
+              style={styles.dim}
+            />
+          ) : null}
+          {pageDialog}
+          {floats && top ? (
+            <PageEdge
+              bar={addressOpen ? editor : bar}
+              edge="top"
+              floating={addressOpen ? null : floating}
+              label={label}
+              onHeight={onHeadHeight}
+              outset={0}
+            />
+          ) : null}
+          <PageEdge
+            bar={top ? null : addressOpen ? editor : bar}
+            edge="bottom"
+            floating={floats && !top && !addressOpen ? floating : null}
+            label={label}
+            lead={
+              <>
+                <FloatingPlaceStatus />
+                <PlaceVoiceDock />
+              </>
+            }
+            onHeight={onFootHeight}
+            outset={bleed}
+          />
+        </View>
+      </View>
+    );
   return (
     <View
       onLayout={(event) => setWidth(event.nativeEvent.layout.width)}
@@ -742,6 +894,7 @@ export function BrowserPage(props: {
     >
       {pageMenu ? (
         <BrowserPageMenu
+          basicInput={editingState.input === "basic"}
           menu={pageMenu}
           sensitive={editingState.context?.field?.sensitive === true}
           onAction={pageAction}
@@ -764,197 +917,192 @@ export function BrowserPage(props: {
           Drag/select · Drag once to select or move content
         </AppText>
       ) : null}
-      <GestureDetector gesture={zoom.gesture}>
-        <View onLayout={onStage} style={styles.stage}>
-          <Animated.View
-            {...(arrival === 0 || reduceMotion ? {} : { entering: arriveFrom(arrival) })}
-            pointerEvents="box-none"
-            style={styles.arrival}
-          >
+      {props.nativeContent ?? (
+        <GestureDetector gesture={zoom.gesture}>
+          <View onLayout={onStage} style={styles.stage}>
             <Animated.View
-              style={[
-                styles.picture,
-                { height: picture.height, left: picture.left, width: picture.width },
-                placed,
-              ]}
-            >
-              <BrowserStream
-                // The device check takes the app inactive; keeping the stream keeps
-                // its connection, and with it the offer the person chose from.
-                active={props.active || confirmingLogin !== null}
-                tabId={tabId}
-                documentId={liveTab?.documentId}
-                hostClient={hostClient}
-                interactive
-                inputEnabled={closeReview === null && !addressOpen && pageMenu === null}
-                inputEpoch={`${navigationKey}:${keyboardOpen}:${slideTo}`}
-                dragSelect={dragSelect}
-                onDragEnd={() => setDragSelect(false)}
-                label={label}
-                onPageSize={onPageSize}
-                onPresentedGeometry={setDrawnGeometry}
-                onPointerDown={() => {
-                  setPageFocused(true);
-                  menuInteraction.current++;
-                  editing.dismissMenu();
-                  proxy.current?.interrupt();
-                }}
-                zoom={zoom.scale}
-                onScroll={() => setMayType(false)}
-                onTap={() => {
-                  setAddressOpen(false);
-                  setAddressDraft(null);
-                  setPageFocused(true);
-                  // A page that reports its fields keeps the keyboard up from one
-                  // field to the next and puts it away when nothing has focus.
-                  if (!editing.get().negotiated) setTyping(false);
-                  setMayType(true);
-                }}
-                session={session}
-              />
-            </Animated.View>
-          </Animated.View>
-          {offer !== null ? (
-            <Animated.View
-              entering={appear}
-              exiting={exit}
+              {...(arrival === 0 || reduceMotion ? {} : { entering: arriveFrom(arrival) })}
               pointerEvents="box-none"
-              style={[
-                styles.fitBand,
-                offer.place === "below"
-                  ? { bottom: 0, height: room.height - picture.height, left: 0, right: 0 }
-                  : { bottom: 0, right: 0, top: 0, width: picture.left },
-              ]}
+              style={styles.arrival}
             >
-              <Pressable
-                accessibilityHint="Resizes the page to fill your screen"
-                accessibilityLabel="Fit to screen"
-                accessibilityRole="button"
-                onPress={fit}
-                style={({ pressed }) => pressed && styles.pressed}
-              >
-                <GlassSurface
+              <Animated.View style={[styles.picture, box, placed]}>
+                <BrowserStream
+                  // The device check takes the app inactive; keeping the stream keeps
+                  // its connection, and with it the offer the person chose from.
+                  active={props.active || confirmingLogin !== null}
+                  tabId={tabId}
+                  documentId={liveTab?.documentId}
+                  hostClient={hostClient}
                   interactive
-                  shape="capsule"
-                  style={offer.words ? styles.fitChip : styles.fitGlyph}
-                >
-                  <Symbol
-                    name="arrow.up.left.and.arrow.down.right"
-                    size={14}
-                    tint={color.ember}
-                    weight="semibold"
-                  />
-                  {offer.words ? <AppText role="secondaryMedium">Fit to screen</AppText> : null}
-                </GlassSurface>
-              </Pressable>
+                  inputEnabled={closeReview === null && !addressOpen && pageMenu === null}
+                  inputEpoch={`${navigationKey}:${keyboardOpen}:${slideTo}`}
+                  dragSelect={dragSelect}
+                  onDragEnd={() => setDragSelect(false)}
+                  label={label}
+                  onPageSize={onPageSize}
+                  onPresentedGeometry={setDrawnGeometry}
+                  onPointerDown={() => {
+                    setPageFocused(true);
+                    menuInteraction.current++;
+                    editing.dismissMenu();
+                    proxy.current?.interrupt();
+                  }}
+                  zoom={zoom.scale}
+                  onScroll={() => setMayType(false)}
+                  onTap={() => {
+                    setAddressOpen(false);
+                    setAddressDraft(null);
+                    setPageFocused(true);
+                    // A page that reports its fields keeps the keyboard up from one
+                    // field to the next and puts it away when nothing has focus.
+                    if (!editing.get().negotiated) setTyping(false);
+                    setMayType(true);
+                  }}
+                  session={session}
+                />
+              </Animated.View>
             </Animated.View>
-          ) : null}
-          {addressOpen ? (
-            <Pressable
-              accessibilityLabel="Keep this page"
-              accessibilityRole="button"
-              onPress={() => {
-                setAddressDraft(null);
-                setAddressOpen(false);
-              }}
-              style={styles.dim}
-            />
-          ) : null}
-          {pageProblem === null &&
-          !refused &&
-          !feed.inputError &&
-          !passkey &&
-          !fillNotice ? null : (
-            <View pointerEvents="box-none" style={styles.top}>
-              {passkey ? (
-                <View style={styles.card}>
-                  <AppText role="secondary">{passkeyNotice}</AppText>
-                </View>
-              ) : null}
-              {pageProblem !== null || refused ? (
-                <Notice
-                  detail={pageProblem ?? refusedNotice}
-                  title="Page unavailable"
-                  tone="neutral"
-                />
-              ) : feed.inputError ? (
-                // The page refused a touch or key, and says why; the next one clears it.
-                <Notice
-                  detail={feed.inputError}
-                  title="That didn’t reach the page"
-                  tone="neutral"
-                />
-              ) : fillNotice !== null ? (
-                <Animated.View entering={appear} exiting={exit}>
-                  <Notice detail={fillNotice} title="Your login wasn’t filled" tone="neutral" />
-                </Animated.View>
-              ) : null}
-            </View>
-          )}
-          {dialog === null ? null : (
-            <PageDialog
-              channelReady={channelReady}
-              dialog={dialog}
-              onAnswer={(accept) =>
-                send({
-                  type: "dialog.respond",
-                  accept,
-                  dialogId: dialog.id,
-                  ...(accept && dialog.type === "prompt" ? { promptText } : {}),
-                })
-              }
-              onPrompt={(text) => setPrompt({ id: dialog.id, text })}
-              promptText={promptText}
-              site={site}
-            />
-          )}
-          {signingIn && signInSite !== null && tab !== undefined ? (
-            <View style={[styles.card, styles.bottom]}>
-              <View style={styles.row}>
-                <View style={styles.grow}>
-                  <ChromeSignInAction
-                    connected={props.connected}
-                    hostClient={hostClient}
-                    key={`${session.id}:${signInSite}`}
-                    sessionId={session.id}
-                    tabId={tabId}
-                    site={signInSite}
-                    url={tab.url}
-                    workspaceName={props.workspaceName}
-                  />
-                </View>
+            {offer !== null ? (
+              <Animated.View
+                entering={appear}
+                exiting={exit}
+                pointerEvents="box-none"
+                style={[
+                  styles.fitBand,
+                  offer.place === "below"
+                    ? {
+                        bottom: status.height,
+                        height: rested.height - picture.height,
+                        left: 0,
+                        right: 0,
+                      }
+                    : { bottom: status.height, right: 0, top: 0, width: picture.left },
+                ]}
+              >
                 <Pressable
-                  accessibilityLabel="Close"
+                  accessibilityHint="Resizes the page to fill your screen"
+                  accessibilityLabel="Fit to screen"
                   accessibilityRole="button"
-                  hitSlop={space[8]}
-                  onPress={() => setSigningIn(false)}
-                  style={styles.iconButton}
+                  onPress={fit}
+                  style={({ pressed }) => pressed && styles.pressed}
                 >
-                  <Symbol name="xmark" size={13} tint={color.muted} weight="semibold" />
+                  <GlassSurface
+                    interactive
+                    shape="capsule"
+                    style={offer.words ? styles.fitChip : styles.fitGlyph}
+                  >
+                    <Symbol
+                      name="arrow.up.left.and.arrow.down.right"
+                      size={14}
+                      tint={color.ember}
+                      weight="semibold"
+                    />
+                    {offer.words ? <AppText role="secondaryMedium">Fit to screen</AppText> : null}
+                  </GlassSurface>
                 </Pressable>
-              </View>
-            </View>
-          ) : !keyboardOpen && mayType && ready && editable && !editingState.negotiated ? (
-            <Animated.View entering={appear} exiting={exit} style={styles.keyboard}>
+              </Animated.View>
+            ) : null}
+            {addressOpen ? (
               <Pressable
-                accessibilityHint="Types into the page"
-                accessibilityLabel="Keyboard"
+                accessibilityLabel="Keep this page"
                 accessibilityRole="button"
                 onPress={() => {
-                  setPageFocused(true);
-                  setTyping(true);
+                  setAddressDraft(null);
+                  setAddressOpen(false);
                 }}
-                style={({ pressed }) => pressed && styles.pressed}
+                style={styles.dim}
+              />
+            ) : null}
+            {pageProblem === null &&
+            !refused &&
+            !feed.inputError &&
+            !passkey &&
+            !fillNotice ? null : (
+              <View pointerEvents="box-none" style={styles.top}>
+                {passkey ? (
+                  <View style={styles.card}>
+                    <AppText role="secondary">{passkeyNotice}</AppText>
+                  </View>
+                ) : null}
+                {pageProblem !== null || refused ? (
+                  <Notice
+                    detail={pageProblem ?? refusedNotice}
+                    title="Page unavailable"
+                    tone="neutral"
+                  />
+                ) : feed.inputError ? (
+                  // The page refused a touch or key, and says why; the next one clears it.
+                  <Notice
+                    detail={feed.inputError}
+                    title="That didn’t reach the page"
+                    tone="neutral"
+                  />
+                ) : fillNotice !== null ? (
+                  <Animated.View entering={appear} exiting={exit}>
+                    <Notice detail={fillNotice} title="Your login wasn’t filled" tone="neutral" />
+                  </Animated.View>
+                ) : null}
+              </View>
+            )}
+            {pageDialog}
+            {signingIn && signInSite !== null && tab !== undefined ? (
+              <View style={[styles.card, styles.bottom, { bottom: space[12] + status.height }]}>
+                <View style={styles.row}>
+                  <View style={styles.grow}>
+                    <ChromeSignInAction
+                      connected={props.connected}
+                      hostClient={hostClient}
+                      key={`${session.id}:${signInSite}`}
+                      sessionId={session.id}
+                      tabId={tabId}
+                      site={signInSite}
+                      url={tab.url}
+                      workspaceName={props.workspaceName}
+                    />
+                  </View>
+                  <Pressable
+                    accessibilityLabel="Close"
+                    accessibilityRole="button"
+                    hitSlop={space[8]}
+                    onPress={() => setSigningIn(false)}
+                    style={styles.iconButton}
+                  >
+                    <Symbol name="xmark" size={13} tint={color.muted} weight="semibold" />
+                  </Pressable>
+                </View>
+              </View>
+            ) : !keyboardOpen && mayType && ready && editable && !editingState.negotiated ? (
+              <Animated.View
+                entering={appear}
+                exiting={exit}
+                style={[styles.keyboard, { bottom: space[12] + status.height }]}
               >
-                <GlassSurface interactive shape="capsule" style={styles.keyboardFace}>
-                  <Symbol name="keyboard" size={19} tint={color.text} />
-                </GlassSurface>
-              </Pressable>
-            </Animated.View>
-          ) : null}
-        </View>
-      </GestureDetector>
-      {ready && tab !== undefined && !addressOpen && !dialog && !signingIn ? (
+                <Pressable
+                  accessibilityHint="Types into the page"
+                  accessibilityLabel="Keyboard"
+                  accessibilityRole="button"
+                  onPress={() => {
+                    setPageFocused(true);
+                    setTyping(true);
+                  }}
+                  style={({ pressed }) => pressed && styles.pressed}
+                >
+                  <GlassSurface interactive shape="capsule" style={styles.keyboardFace}>
+                    <Symbol name="keyboard" size={19} tint={color.text} />
+                  </GlassSurface>
+                </Pressable>
+              </Animated.View>
+            ) : null}
+            {status.row}
+          </View>
+        </GestureDetector>
+      )}
+      {!props.nativeContent &&
+      ready &&
+      tab !== undefined &&
+      !addressOpen &&
+      !dialog &&
+      !signingIn ? (
         <PageTyping
           ref={proxy}
           focused={pageFocused}
@@ -977,7 +1125,15 @@ export function BrowserPage(props: {
           onChooseLogin={chooseLogin}
         />
       ) : null}
-      {keyboardOpen || top ? null : addressOpen ? editor : bar}
+      {keyboardOpen || top ? null : addressOpen ? (
+        editor
+      ) : (
+        <>
+          <PlaceVoiceDock />
+          {bar}
+        </>
+      )}
+      {top && !keyboardOpen ? <PlaceVoiceDock /> : null}
     </View>
   );
 }
@@ -1140,6 +1296,7 @@ export function pictureBox(
   room: { readonly height: number; readonly width: number },
   aspect: number,
 ): { readonly height: number; readonly left: number; readonly width: number } {
+  "worklet";
   if (room.width <= 0 || room.height <= 0 || !(aspect > 0)) return { height: 0, left: 0, width: 0 };
   const byWidth = room.width / aspect;
   if (byWidth <= room.height) return { height: byWidth, left: 0, width: room.width };
@@ -1427,6 +1584,7 @@ const styles = StyleSheet.create({
     width: touchTarget + space[4],
   },
   arrival: { ...StyleSheet.absoluteFill },
+  native: { flex: 1, minHeight: 0 },
   page: { flex: 1, minHeight: 0 },
   // Zoom grows the picture from its top-leading corner, where its offset is measured from.
   picture: { position: "absolute", top: 0, transformOrigin: "left top" },

@@ -286,6 +286,7 @@ export function RemoteEditingProxy({
             const payload: EditingClipboardPayloadItem[] = [];
             for (const item of items)
               for (const type of item.types) {
+                if (current.current.abilities.basicInput && type !== "text/plain") continue;
                 const blob = await item.getType(type);
                 payload.push({ type, bytes: new Uint8Array(await blob.arrayBuffer()) });
               }
@@ -485,10 +486,13 @@ export function RemoteEditingProxy({
           const scope = current.current.context?.contextId;
           const items: EditingClipboardPayloadItem[] = [];
           for (const type of ["text/plain", "text/html"])
-            if (data.types.includes(type))
+            if (
+              data.types.includes(type) &&
+              (!current.current.abilities.basicInput || type === "text/plain")
+            )
               items.push({ type, bytes: new TextEncoder().encode(data.getData(type)) });
           const files = [...data.files];
-          if (!files.length) {
+          if (!files.length || current.current.abilities.basicInput) {
             feed({ type: "paste", items }, event);
             return;
           }

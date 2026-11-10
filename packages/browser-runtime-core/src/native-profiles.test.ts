@@ -1,6 +1,6 @@
 import { BrowserSessionIdSchema, LocalProfileBindingSchema } from "@opensteer/protocol";
 import { gate } from "@opensteer/shared/test-support/observation";
-import { mkdtemp, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -8,6 +8,8 @@ import type { LocalProfileEngine } from "./browser/backend.js";
 import { sessionFilesRoot } from "./browser/session-files.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { BrowserRuntime, type BrowserRuntimeOptions, type BrowserOpenTiming } from "./runtime.js";
+import { LocalProfileStore } from "./local-profile-store.js";
+import { LifecycleLanes } from "./async.js";
 import {
   FakeContext,
   FakeLaunchedBrowser,
@@ -20,12 +22,37 @@ import {
 
 const runtimes: BrowserRuntime[] = [];
 const roots: string[] = [];
+const profileIo = vi.hoisted(() => ({
+  publish: undefined as { destination: string; enter: () => Promise<void> } | undefined,
+  remove: undefined as
+    { directory: string; enter?: () => Promise<void>; after?: () => Promise<void> } | undefined,
+}));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const filesystem = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...filesystem,
+    rename: async (...args: Parameters<typeof filesystem.rename>) => {
+      if (args[1] === profileIo.publish?.destination) await profileIo.publish.enter();
+      return filesystem.rename(...args);
+    },
+    rm: async (...args: Parameters<typeof filesystem.rm>) => {
+      const fault = args[0] === profileIo.remove?.directory ? profileIo.remove : undefined;
+      await fault?.enter?.();
+      await filesystem.rm(...args);
+      await fault?.after?.();
+    },
+  };
+});
 afterEach(async () => {
+  profileIo.publish = undefined;
+  profileIo.remove = undefined;
   for (const runtime of runtimes.splice(0)) await runtime.shutdown();
   for (const root of roots.splice(0)) await rm(root, { force: true, recursive: true });
 });
 async function fixture(maxProfileHosts = 8, existingRoot?: string) {
-  const root = existingRoot ?? (await mkdtemp(path.join(tmpdir(), "native-runtime-")));
+  const root = await realpath(
+    existingRoot ?? (await mkdtemp(path.join(tmpdir(), "native-runtime-"))),
+  );
   if (!existingRoot) roots.push(root);
   const launcher = Object.assign(new FakeIsolatingLauncher(), {
     localProfiles: {
@@ -463,4 +490,110 @@ describe("native profile runtime", () => {
     ]);
     await a.close();
   });
+  it("does not acknowledge erasure while its filesystem removal is unfinished", async () => {
+    const fixtureState = await fixture();
+    await (await fixtureState.open(1, 1)).close();
+    const directory = path.join(fixtureState.root, "profiles", fixtureState.binding(1).profileId);
+    const removing = gate({ label: "profile directory removal", deadlineMs: 2000 });
+    profileIo.remove = { directory, enter: removing.enter };
+    const acknowledged = vi.fn();
+    const deletion = fixtureState.runtime
+      .deleteLocalProfile(fixtureState.binding(1), "00000000-0000-4000-8000-000000000006")
+      .then(acknowledged);
+    try {
+      await removing.entered;
+      await access(directory);
+      expect(acknowledged).not.toHaveBeenCalled();
+      expect(await fixtureState.runtime.localProfileInventory()).toEqual([
+        expect.objectContaining({ phase: "deleted", erasure: "pending-restart" }),
+      ]);
+    } finally {
+      removing.release();
+      await deletion;
+    }
+    expect(acknowledged).toHaveBeenCalledWith("deleted");
+    await expect(access(directory)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+  it("drains an already issued profile publication before acknowledging deletion", async () => {
+    const fixtureState = await fixture();
+    const directory = path.join(fixtureState.root, "profiles", fixtureState.binding(1).profileId);
+    const publishing = gate({ label: "native profile publication", deadlineMs: 2000 });
+    profileIo.publish = { destination: directory, enter: publishing.enter };
+    const provision = LocalProfileStore.prototype.provision;
+    let publication: Promise<string> | undefined;
+    vi.spyOn(LocalProfileStore.prototype, "provision").mockImplementation(function (
+      this: LocalProfileStore,
+      ...args
+    ) {
+      publication = provision.apply(this, args);
+      return publication;
+    });
+    const cancellation = new AbortController();
+    const laneOperations = vi.spyOn(LifecycleLanes.prototype, "run");
+    const opening = fixtureState.open(1, 1, false, cancellation.signal);
+    const refused = expect(opening).rejects.toThrow("cancel native profile opening");
+    const acknowledged = vi.fn();
+    let deletion: Promise<unknown> | undefined;
+    try {
+      await publishing.entered;
+      cancellation.abort(new Error("cancel native profile opening"));
+      await refused;
+      const acquisitionSettled = vi.fn();
+      void laneOperations.mock.results[0]!.value.then(acquisitionSettled, acquisitionSettled);
+      await fixtureState.runtime.localProfileInventory();
+      expect(
+        acquisitionSettled,
+        "Cancellation released the profile lane before its already issued publication finished",
+      ).not.toHaveBeenCalled();
+      deletion = fixtureState.runtime
+        .deleteLocalProfile(fixtureState.binding(1), "00000000-0000-4000-8000-000000000008")
+        .then(acknowledged);
+      publishing.release();
+      await publication;
+      await deletion;
+      expect(acknowledged).toHaveBeenCalledWith("deleted");
+      await expect(access(directory)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(fixtureState.launcher.launchCount).toBe(0);
+    } finally {
+      publishing.release();
+      await opening.catch(() => undefined);
+      await publication;
+      await deletion;
+    }
+  });
+  it.each(["failed", "recreated"] as const)(
+    "keeps %s physical erasure pending and retries it without reopening the profile",
+    async (fault) => {
+      const fixtureState = await fixture();
+      await (await fixtureState.open(1, 1)).close();
+      const binding = fixtureState.binding(1);
+      const directory = path.join(fixtureState.root, "profiles", binding.profileId);
+      const deletionId = "00000000-0000-4000-8000-000000000009";
+      profileIo.remove = {
+        directory,
+        ...(fault === "failed"
+          ? {
+              enter: async () => {
+                throw new Error("Injected profile removal failure");
+              },
+            }
+          : {
+              after: async () => {
+                await mkdir(directory, { recursive: true });
+              },
+            }),
+      };
+      await expect(fixtureState.runtime.deleteLocalProfile(binding, deletionId)).rejects.toThrow(
+        fault === "failed" ? "Injected profile removal failure" : /still exists after erasure/,
+      );
+      await access(directory);
+      expect(await fixtureState.runtime.localProfileInventory()).toEqual([
+        expect.objectContaining({ phase: "deleted", erasure: "pending-restart" }),
+      ]);
+      await expect(fixtureState.open(1, 2)).rejects.toThrow(/deleted/);
+      profileIo.remove = undefined;
+      expect(await fixtureState.runtime.deleteLocalProfile(binding, deletionId)).toBe("deleted");
+      await expect(access(directory)).rejects.toMatchObject({ code: "ENOENT" });
+    },
+  );
 });

@@ -695,7 +695,7 @@ integration("computer apps", () => {
       },
     );
     expect(machines.machines.find(({ id }) => id === computer.runnerId)).toMatchObject({
-      allowedModules: ["integrations", "messaging", "shell"],
+      allowedModules: ["browser", "integrations", "messaging", "shell"],
       status: "online",
     });
     const personalSetup = await requestComputerAppSetup(

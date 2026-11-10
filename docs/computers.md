@@ -5,9 +5,9 @@
 A computer is one Runner identity in one Deployment. Its enrollment grant caps modules on every
 reconnect, and advertising fewer does not reduce it; ordinary grants use
 [computerRunnerGrant](../apps/host/src/agents/runner-enrollment-grant.ts), phones an exact
-integrations-only grant. Enabling execution or changing reach policy must not replace identity.
-Personal Deployments execute only on Main; other user-owned computers are reach-only (integrations,
-messaging, shell) or phones. The supervised messaging service is Deployment-owned, not a lent
+browser-and-integrations grant. Enabling execution or changing reach policy must not replace identity.
+Personal Deployments execute only on Main; other user-owned computers offer browser, integrations,
+messaging and shell, while phones offer browser and integrations. The supervised messaging service is Deployment-owned, not a lent
 computer. Personal Main cannot be removed. An iPhone's enrollment profile is fixed and rechecked on
 every authentication, so a phone-shaped descriptor cannot claim Android's authority ([This iPhone's
 apps](mobile.md#this-iphones-apps)).
@@ -24,17 +24,17 @@ membership and retry, so keep this terminal signal distinct from transient refus
 
 ## Runner and desktop
 
-A reach-only Runner must not initialize execution dependencies or read execution inputs, and a
-browser relay requires agents. Keep the work-location identity while execution is off so enabling it
+A Runner that runs no agents must not initialize execution dependencies or read execution inputs;
+its browser relay starts independently. Keep the work-location identity while execution is off so enabling it
 reuses that identity; the environment binding is immutable after its first advertisement. Signed
-device shape is presentation, never authority or routing. Android phones offer no shell, and Windows
-shell endpoints are unsupported, so there is no reach-only Personal enrollment there.
+device shape is presentation, never authority or routing. Android phones offer no shell. Windows
+shell endpoints remain unsupported, but this does not prevent a browser-only connection.
 
 Desktop persists membership before starting the Runner so an exit during join cannot strand a Host
 row. Turning execution off restarts the same identity, data directory and SSH host key. Removal
-deletes the enrollment slot; adding again creates a new computer. Browser profiles live outside that
-slot and survive removal, but cannot be rebound to a new identity ([profile
-state](browser-sessions.md#profile-state)). The owner-session Host chooses the enrollment grant and
+deletes the enrollment slot and every browser profile homed there; adding again creates a new computer.
+The removed device erases its profile storage when it learns of removal. If it never returns, erasure
+is unconfirmed, not claimed complete ([profile state](browser-sessions.md#profile-state)). The owner-session Host chooses the enrollment grant and
 origin, never the desktop. Only the supervising desktop can establish that a computer is local; a
 browser cannot claim it. Administrators may remove another member's machine but cannot inspect or
 change its private app settings.

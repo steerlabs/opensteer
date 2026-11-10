@@ -339,6 +339,9 @@ export class DisplayStreams {
     current.leases.add(lease);
     if (!current.connection && !current.timer && current.snapshot.connection !== "closed")
       this.#open(current);
+    // A new socket starts with the Host's replay; a joining view only sees frames
+    // still to come, and a still screen sends none.
+    else if (current.leases.size > 1) this.#requestKeyframe(current);
     let released = false;
     return {
       getSnapshot: () => current.snapshot,

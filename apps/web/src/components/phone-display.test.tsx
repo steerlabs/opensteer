@@ -1336,7 +1336,7 @@ it.each([
     expect(node.querySelector("canvas")).toBe(canvas);
     expect(node.querySelector(".phone-display__picture--hidden")).toBeNull();
     expect(sockets.at(-1)?.closed).toBe(true);
-    expect(node.querySelector(".live-dot")).toBeNull();
+    expect(node.querySelector(".viewfinder--still")).not.toBeNull();
   }
   if (refusal === "denial-after-release") {
     await move([denied]);
@@ -1354,7 +1354,7 @@ it.each([
   await vi.waitFor(async () => {
     await act(async () => {});
     expect(node.querySelector(".phone-display__picture--hidden")).toBeNull();
-    expect(node.querySelector(".live-dot")).not.toBeNull();
+    expect(node.querySelector(".viewfinder--still")).toBeNull();
   });
   await move([{ ...machine, ownership: "other", computerUse: null }]);
   expect(node.querySelector(".phone-display__picture--hidden")).not.toBeNull();

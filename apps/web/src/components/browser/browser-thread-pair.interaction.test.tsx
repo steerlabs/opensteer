@@ -29,7 +29,7 @@ function taskBrowser() {
 
 const shownTab = () => element<HTMLElement>(".browser-view").dataset.browserTab;
 const following = () => document.querySelector('[aria-label="Following the agent"]');
-const liveCard = () => document.querySelector(".live-place .viewfinder");
+const liveCard = () => document.querySelector(".conv-header .viewfinder");
 
 it("follows the docked task's agent in place, stops for the person's tab and follows again from its live card", async () => {
   await mount(() => {
@@ -76,7 +76,7 @@ it("follows the docked task's agent in place, stops for the person's tab and fol
     }),
   );
   expect(shownTab(), "A stage the person took over followed the agent").toBe(confirm.id);
-  expect(liveCard()?.getAttribute("aria-label")).toBe(`Open ${acting.title}`);
+  expect(liveCard()?.getAttribute("aria-label")).toBe(`Show ${acting.title}`);
 
   await click(liveCard()!);
   expect(shownTab()).toBe(acting.id);

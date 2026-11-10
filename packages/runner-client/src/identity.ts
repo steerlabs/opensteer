@@ -150,6 +150,23 @@ export class FileRunnerIdentityStore {
     await securePrivateDirectory(this.#directory);
     const existing = await readIdentity(this.#identityPath, true);
     if (existing) {
+      assertConfiguredIdentity(existing, this.#runnerId ? { runnerId: this.#runnerId } : {});
+      if (!this.#environmentless && existing.environmentId === null) {
+        const file = IdentityFileSchema.parse({
+          createdAt: existing.createdAt,
+          lastConnectionGeneration: existing.lastConnectionGeneration,
+          publicKeyPem: existing.publicKeyPem,
+          runnerId: existing.runnerId,
+          version: 3,
+          environmentId: this.#environmentId ?? createId("environment"),
+          privateKeyPem: existing.privateKey.export({ format: "pem", type: "pkcs8" }).toString(),
+        });
+        await replacePrivateFileAtomically(
+          this.#identityPath,
+          `${JSON.stringify(file, undefined, 2)}\n`,
+        );
+        return this.loadOrCreate();
+      }
       assertConfiguredIdentity(existing, {
         ...(this.#environmentId ? { environmentId: this.#environmentId } : {}),
         ...(this.#runnerId ? { runnerId: this.#runnerId } : {}),

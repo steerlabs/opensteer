@@ -3,19 +3,22 @@ import { createServer, type Server as HttpServer } from "node:http";
 import { once } from "node:events";
 import type { RunnerConfig } from "@opensteer/config";
 import { allowsPlaintextRunnerTransport } from "@opensteer/core";
-import { BrowserSessionIdSchema } from "@opensteer/protocol";
+import { BrowserSessionIdSchema, HostApiErrorSchema } from "@opensteer/protocol";
+import { readBoundedJson } from "@opensteer/shared/boundedJson";
+import { z } from "zod";
 import WebSocket, { WebSocketServer, type RawData } from "ws";
 import { closeHttpServerNow, refuseConnection } from "@opensteer/shared/httpServer";
 import { rawDataBuffer } from "@opensteer/shared/webSocketFrame";
+import { BrowserAgentBackendSchema } from "@opensteer/protocol/browser-actions";
 
 const maximumFrameBytes = 1_024 * 1_024;
 const maximumBufferedBytes = 8 * 1_024 * 1_024;
 const maximumConnections = 16;
 
 /**
- * A Run-local byte relay. Browser Harness sees an ordinary loopback CDP
- * WebSocket at `<base>/<Browser Session ID>`; the bearer capability never
- * enters the model-visible process environment.
+ * A Run-local relay. CDP stays at `<base>/<sessionId>`, actions use
+ * `<base>/actions/<sessionId>`, and GET `<base>/backend/<sessionId>` negotiates.
+ * The bearer capability never enters the model-visible process environment.
  *
  * Each client connection gets its own Host connection bound to the session its
  * path names, and the two live and close together. Nothing outlives the client
@@ -25,6 +28,7 @@ const maximumConnections = 16;
  */
 export class BrowserCdpRelay {
   readonly #connections = new Set<RelayedConnection>();
+  readonly #negotiations = new Set<AbortController>();
   readonly #http: HttpServer;
   readonly #path: string;
   readonly #upstreamToken: () => string;
@@ -49,12 +53,73 @@ export class BrowserCdpRelay {
     this.#path = `/devtools/browser/${randomBytes(24).toString("base64url")}`;
     this.#upstreamToken = options.token;
     this.#upstreamUrl = validateUpstream(new URL(options.url), options.transport);
-    this.#http = createServer((_request, response) => {
-      response.writeHead(404, { "content-type": "application/json" });
-      response.end('{"error":"not_found"}');
+    this.#http = createServer((request, response) => {
+      const pathname = safePathname(request.url);
+      const sessionId = this.#sessionIdFromPath(pathname, "backend");
+      if (request.method !== "GET" || !sessionId) {
+        response.writeHead(404).end();
+        return;
+      }
+      if (this.#suspended || this.#closed) {
+        response.writeHead(403).end();
+        return;
+      }
+      if (this.#negotiations.size >= maximumConnections) {
+        response.writeHead(503).end();
+        return;
+      }
+      const controller = new AbortController();
+      this.#negotiations.add(controller);
+      response.once("close", () => controller.abort());
+      void this.#backendResponse(
+        sessionId,
+        AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]),
+      )
+        .then(async (upstream) => {
+          if (this.#suspended || this.#closed) {
+            response.writeHead(403).end();
+            return;
+          }
+          if (!upstream.ok) {
+            const refusal = await readBoundedJson(upstream, { maximumBytes: 16_384 })
+              .then((body) => z.object({ error: HostApiErrorSchema }).safeParse(body))
+              .catch(() => undefined);
+            if (controller.signal.aborted || this.#suspended || this.#closed) {
+              response.writeHead(403).end();
+              return;
+            }
+            response.writeHead(upstream.status, {
+              "content-type": "application/json",
+              "cache-control": "no-store",
+            });
+            response.end(
+              refusal?.success
+                ? JSON.stringify({ error: { message: refusal.data.error.message } })
+                : undefined,
+            );
+            return;
+          }
+          const backend = BrowserAgentBackendSchema.parse(await upstream.json());
+          if (controller.signal.aborted || this.#suspended || this.#closed) {
+            response.writeHead(403).end();
+            return;
+          }
+          if (backend.sessionId !== sessionId) throw new Error("Backend session mismatch");
+          response.writeHead(200, {
+            "content-type": "application/json",
+            "cache-control": "no-store",
+          });
+          response.end(JSON.stringify(backend));
+        })
+        .catch(() => {
+          if (!response.destroyed) response.writeHead(502).end();
+        })
+        .finally(() => this.#negotiations.delete(controller));
     });
     this.#http.on("upgrade", (request, socket, head) => {
-      const sessionId = this.#sessionIdFromPath(safePathname(request.url));
+      const pathname = safePathname(request.url);
+      const actionsSessionId = this.#sessionIdFromPath(pathname, "actions");
+      const sessionId = actionsSessionId ?? this.#sessionIdFromPath(pathname);
       if (!sessionId) {
         refuseConnection(socket, 404, "Not Found");
         return;
@@ -68,7 +133,7 @@ export class BrowserCdpRelay {
         return;
       }
       this.#websockets.handleUpgrade(request, socket, head, (downstream) => {
-        this.#attach(downstream, sessionId);
+        this.#attach(downstream, sessionId, actionsSessionId ? "actions" : "cdp");
       });
     });
   }
@@ -88,6 +153,7 @@ export class BrowserCdpRelay {
   /** A warm engine went idle: its connections end and none opens until the next Run. */
   suspend(): void {
     this.#suspended = true;
+    for (const negotiation of this.#negotiations) negotiation.abort();
     for (const connection of this.#connections) connection.dispose();
   }
 
@@ -100,6 +166,7 @@ export class BrowserCdpRelay {
   /** Ends every connection and the listener; every call settles when all of it has closed. */
   close(): Promise<void> {
     this.#closed = true;
+    for (const negotiation of this.#negotiations) negotiation.abort();
     this.#closing ??= this.#dispose();
     return this.#closing;
   }
@@ -115,20 +182,46 @@ export class BrowserCdpRelay {
     await Promise.all(closed);
   }
 
-  #sessionIdFromPath(pathname: string | null): string | null {
-    if (!pathname?.startsWith(`${this.#path}/`)) return null;
-    const segment = pathname.slice(this.#path.length + 1);
+  #sessionIdFromPath(pathname: string | null, kind?: "backend" | "actions"): string | null {
+    const prefix = `${this.#path}/${kind ? `${kind}/` : ""}`;
+    if (!pathname?.startsWith(prefix)) return null;
+    const segment = pathname.slice(prefix.length);
     return BrowserSessionIdSchema.safeParse(segment).success ? segment : null;
   }
 
-  #attach(downstream: WebSocket, sessionId: string): void {
+  #endpoint(kind: "backend" | "actions" | "cdp", sessionId: string): URL {
+    const url = new URL(this.#upstreamUrl);
+    url.pathname = `${url.pathname.replace(/\/$/u, "").replace(/browser-cdp$/u, `browser-${kind}`)}/${sessionId}`;
+    return url;
+  }
+
+  async #backendResponse(sessionId: string, signal: AbortSignal): Promise<Response> {
+    const url = this.#endpoint("backend", sessionId);
+    url.protocol = url.protocol === "wss:" ? "https:" : "http:";
+    const discovery = await fetch(new URL("/.well-known/opensteer", url), {
+      redirect: "error",
+      signal,
+    });
+    if (!discovery.ok) throw new Error("Host discovery failed");
+    const { capabilities } = z
+      .object({ capabilities: z.array(z.string()) })
+      .parse(await readBoundedJson(discovery, { maximumBytes: 65_536 }));
+    if (!capabilities.includes("browser-backend-v1"))
+      return Response.json({ sessionId, backend: "cdp", version: 1 });
+    return fetch(url, {
+      headers: { authorization: `Bearer ${this.#upstreamToken()}` },
+      redirect: "error",
+      signal,
+    });
+  }
+
+  #attach(downstream: WebSocket, sessionId: string, kind: "actions" | "cdp"): void {
     if (this.#closed) {
       downstream.close(1001, "Run ended");
       downstream.terminate();
       return;
     }
-    const upstreamUrl = new URL(this.#upstreamUrl);
-    upstreamUrl.pathname = `${upstreamUrl.pathname.replace(/\/$/u, "")}/${sessionId}`;
+    const upstreamUrl = this.#endpoint(kind, sessionId);
     const connection = new RelayedConnection(
       downstream,
       new WebSocket(upstreamUrl, {

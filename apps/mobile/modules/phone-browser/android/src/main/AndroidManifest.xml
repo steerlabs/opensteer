@@ -1,0 +1,8 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <application android:usesCleartextTraffic="true">
+    <provider android:name="com.opensteer.phonebrowser.PhoneBrowserStartupProvider" android:authorities="${applicationId}.phonebrowser.startup" android:exported="false" android:initOrder="2147483647" />
+    <provider android:name="androidx.core.content.FileProvider" android:authorities="${applicationId}.phonebrowser.downloads" android:exported="false" android:grantUriPermissions="true">
+      <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/phone_browser_downloads" />
+    </provider>
+  </application>
+</manifest>

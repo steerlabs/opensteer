@@ -32,6 +32,16 @@ import {
   type BrowserSessionId,
 } from "@opensteer/core";
 import { z } from "zod";
+import {
+  BrowserAgentAttachSchema,
+  BrowserAgentDetachSchema,
+  BrowserAgentActionSchema,
+  BrowserAgentResultSchema,
+  BrowserAgentErrorSchema,
+  BrowserAgentEventSchema,
+} from "./browser-actions.js";
+export * from "./browser-actions.js";
+export * from "./browser-basic-input.js";
 import { browserBase } from "./browser-message-base.js";
 import {
   LocalProfileBindingSchema,
@@ -212,6 +222,8 @@ export const BrowserAttachTicketClaimsSchema = z
      * editing kinds. Issued only to a runtime advertising `modules.browser.editing`.
      */
     editingVersion: z.union([z.literal(1), z.literal(2)]).optional(),
+    basicInput: z.literal(1).optional(),
+    surfaceState: z.literal(1).optional(),
     /** V2 makes the isolated engine clipboard explicit; v1 implies true. */
     clipboard: z.boolean().optional(),
     workspaceTabRestoreVersion: z.literal(1).optional(),
@@ -274,6 +286,7 @@ export const BrowserFaviconSchema = z
   .regex(/^data:image\/(?:png|x-icon|gif|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/);
 
 export const BrowserSurfaceSchema = z.strictObject({
+  state: z.enum(["live", "suspended"]).optional(),
   canGoBack: z.boolean().optional(),
   canGoForward: z.boolean().optional(),
   active: z.boolean(),
@@ -422,6 +435,9 @@ const cursorSequence = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGE
 
 const BaselineBrowserClientMessageSchema = z
   .discriminatedUnion("type", [
+    BrowserAgentAttachSchema.extend(browserBase),
+    BrowserAgentDetachSchema.extend(browserBase),
+    BrowserAgentActionSchema.extend(browserBase),
     z.strictObject({
       ...browserBase,
       type: z.literal("cursor.query"),
@@ -690,6 +706,7 @@ const BaselineBrowserClientMessageSchema = z
       ...browserRequestBase,
       command: BrowserCdpCommandSchema,
       actorToken: z.uuid().optional(),
+      attachmentId: z.uuid().optional(),
       /** Host-only attribution for Page.navigate and Opensteer.openTab. */
       navigationId: z.uuid().optional(),
       type: z.literal("cdp.command"),
@@ -786,6 +803,8 @@ const BrowserSnapshotSchema = z
     navigationAttributionVersion: z.literal(1).optional(),
     /** Present only when the attach ticket claimed it, and projected only to viewers that opted in. */
     editingVersion: z.union([z.literal(1), z.literal(2)]).optional(),
+    basicInput: z.literal(1).optional(),
+    surfaceState: z.literal(1).optional(),
     /** Only v2 carries this flag; v1 implies an isolated engine clipboard. */
     clipboard: z.boolean().optional(),
     /** Present only when the attach ticket claimed it, and projected only to viewers that opted in. */
@@ -836,6 +855,9 @@ export const BrowserNavigationCommittedSchema = z.strictObject({
 export type BrowserNavigationCommitted = z.infer<typeof BrowserNavigationCommittedSchema>;
 
 const BaselineBrowserServerMessageSchema = z.discriminatedUnion("type", [
+  BrowserAgentResultSchema,
+  BrowserAgentErrorSchema,
+  BrowserAgentEventSchema,
   z.strictObject({
     ...browserBase,
     type: z.literal("browser.cursor"),
@@ -1089,8 +1111,13 @@ export const browserViewerCloseCodes = {
   accessEnded: 4003,
 } as const;
 
-/** A profile is portable identity state. It is not owned by any execution location. */
+/**
+ * A profile lives on one computer, its home, chosen when it is made and never
+ * changed: its sign-ins exist only there. Null for a profile from before homes
+ * that has not been opened yet, and from a Host older than this field.
+ */
 export const BrowserProfileSchema = z.object({
+  homeRunnerId: RunnerIdSchema.nullable().default(null),
   id: BrowserProfileIdSchema,
   name: z.string().min(1).max(120),
 });
@@ -1362,9 +1389,11 @@ export const BrowserHistoryIconsSchema = z.object({
 });
 export type BrowserHistoryIcons = z.infer<typeof BrowserHistoryIconsSchema>;
 
+/** Host-only operations use the command channel with or without CDP; resume requires surfaceState. */
 export const browserHostMethods = {
   openTab: "Opensteer.openTab",
   closeTab: "Opensteer.closeTab",
+  resumeTab: "Opensteer.resumeTab",
   contextCandidate: "Opensteer.contextCandidate",
 } as const;
 export const browserBootstrapSessionsMaxBytes = 768 * 1024;
@@ -1709,6 +1738,11 @@ export const HostedBrowserBootstrapSchema = z.object({
   profileGrants: z.array(BrowserProfileGrantSchema).max(100),
   available: z.boolean(),
   placements: z.array(BrowserPlacementSchema).max(129),
+  /**
+   * The computers this person may make a profile on, connected or not. Absent
+   * from a Host older than profile homes, which is offered no choice.
+   */
+  profileHomes: z.array(RunnerIdSchema).max(129).optional(),
   profiles: z.array(BrowserProfileSchema).max(128),
   sessions: z
     .array(HostedBrowserSessionSchema)
@@ -1729,6 +1763,7 @@ export const CreateBrowserProfileGrantResponseSchema = z.object({
 export const BrowserProfileNameSchema = z.string().trim().min(1).max(120);
 
 export const CreateBrowserProfileBodySchema = z.strictObject({
+  homeRunnerId: RunnerIdSchema.nullable().optional(),
   name: BrowserProfileNameSchema,
 });
 
@@ -1959,6 +1994,7 @@ export const BrowserTabOpenRefusalReasonSchema = z.enum([
   browserTabOpenClosedReason,
   "browser-session-unavailable",
   "browser-profile-unavailable",
+  "browser-profile-home-unavailable",
   "browser-placement-unavailable",
   "browser-placement-ambiguous",
   "browser-tab-open-outcome-unknown",

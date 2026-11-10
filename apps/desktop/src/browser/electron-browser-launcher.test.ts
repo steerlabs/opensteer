@@ -2711,9 +2711,13 @@ describe("native Electron profiles", () => {
   );
   it("retains the same Session when native policy setup fails", async () => {
     const f = await fixture(true);
+    const { electronProfileRootReleaseState } = await import("./electron-local-profile.js");
     try {
       await f.initialize();
       await expect(f.launch()).rejects.toThrow("policy failed");
+      f.launcher.close();
+      expect(electronProfileRootReleaseState(f.root)).toBe("retained-until-exit");
+      expect(electronProfileRootReleaseState(f.root + "-other")).toBe("released");
       expect(await f.launcher.localProfiles.release(f.directory)).toBe("retained-until-exit");
       await expect(f.launch()).rejects.toThrow();
     } finally {

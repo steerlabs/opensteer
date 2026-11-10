@@ -186,6 +186,33 @@ describe("Runner identity", () => {
     ).rejects.toThrow(/did not advance/);
   });
 
+  it("assigns a work location once when an enrolled browser computer starts agents", async () => {
+    const directory = await temporaryDirectory();
+    const browserStore = new FileRunnerIdentityStore({
+      dataDirectory: directory,
+      environmentless: true,
+    });
+    const browser = await browserStore.loadOrCreate();
+    expect(browser.environmentId).toBeNull();
+    await browserStore.acceptHostConnection({
+      connectionGeneration: 1,
+      environmentIds: [],
+      reenrolled: true,
+      runnerId: browser.runnerId,
+    });
+    const agents = await new FileRunnerIdentityStore({ dataDirectory: directory }).loadOrCreate();
+    expect(agents.environmentId).not.toBeNull();
+    expect(agents.runnerId).toBe(browser.runnerId);
+    expect(agents.publicKeyPem).toBe(browser.publicKeyPem);
+    expect(agents.lastConnectionGeneration).toBe(1);
+    const offAgain = await browserStore.loadOrCreate();
+    expect(offAgain.environmentId).toBe(agents.environmentId);
+    expect(
+      (await new FileRunnerIdentityStore({ dataDirectory: directory }).loadOrCreate())
+        .environmentId,
+    ).toBe(agents.environmentId);
+  });
+
   it("keeps a saved work location through a connection that advertises no agents", async () => {
     // A reach-only computer advertises shell alone, so the Host acknowledges no
     // environment. The same computer runs agents again the moment its owner

@@ -78,7 +78,7 @@ export const reanimated = {
     ),
   },
   cancelAnimation: () => undefined,
-  Easing: { inOut: () => () => 0, quad: () => 0 },
+  Easing: { cubic: () => 0, inOut: () => () => 0, out: () => () => 0, quad: () => 0 },
   FadeIn: transition,
   FadeInDown: transition,
   FadeInUp: transition,
@@ -86,6 +86,7 @@ export const reanimated = {
   LayoutAnimationConfig: (props: Children) => <>{props.children}</>,
   LinearTransition: transition,
   useAnimatedStyle: () => ({}),
+  useEvent: () => () => undefined,
   useReducedMotion: () => true,
   // One object for a component's life, as Reanimated's is: effects may depend on it.
   useSharedValue: <T,>(value: T) => useRef({ value }).current,

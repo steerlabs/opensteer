@@ -7,7 +7,13 @@ import {
   computerStatus,
   computerUses,
   computerUsesPhrase,
+  deviceBrowser,
+  deviceBrowserDetail,
+  deviceElsewhere,
+  deviceLendsApps,
   isServiceMachine,
+  orderDevices,
+  phoneNoun,
   type ComputerAppsData,
 } from "./computers.js";
 
@@ -16,6 +22,7 @@ afterEach(() => {
 });
 
 const macId = "rnr_11111111-1111-4111-8111-111111111111";
+const ready = { checkedAt: null, detail: null, readiness: "ready" } as const;
 
 function machine(overrides: Partial<MachineSummary> = {}): MachineSummary {
   return {
@@ -236,6 +243,8 @@ describe("what agents can use on a computer", () => {
     ).toBe("works");
     expect(computerRole(machine(), [{ kind: "commands" }], true)).toBe("uses");
     expect(computerRole(machine(), [], true)).toBe("idle");
+    // Its browser is lent with no app on: it has shared something.
+    expect(computerRole(machine({ modules: { browser: ready } }), [], true)).toBe("uses");
     // Its apps have not loaded: saying "nothing shared" would be a guess.
     expect(computerRole(machine(), [], false)).toBeNull();
     // A teammate's sharing is theirs, and nobody else is told it.
@@ -302,6 +311,21 @@ describe("an Android phone in the list", () => {
 });
 
 describe("computerStatus", () => {
+  it.each(["needs-update", "updating", "update-pending"] as const)(
+    "names the installed app for an Android device that is %s",
+    (status) => {
+      const android = { form: "phone", platform: "android" } as const;
+      expect(computerStatus(machine({ device: android, name: "Pixel 7", status })).label).toBe(
+        "Update Agent Phone on Pixel 7.",
+      );
+      expect(
+        computerStatus(
+          machine({ device: { ...android, app: "opensteer" }, name: "Pixel 9", status }),
+        ).label,
+      ).toBe("Update Opensteer on Pixel 9.");
+    },
+  );
+
   it("counts down a pending computer's code, and dates an absent one", () => {
     const now = new Date("2026-09-13T12:00:00.000Z");
 
@@ -322,5 +346,97 @@ describe("computerStatus", () => {
       tone: "offline",
     });
     expect(computerStatus(machine(), now)).toEqual({ label: "Online", tone: "online" });
+  });
+});
+
+describe("what a device lends besides running agents", () => {
+  const phone = (modules: MachineSummary["modules"], status: MachineSummary["status"] = "online") =>
+    machine({ allowedModules: ["browser", "integrations"], modules, status });
+  const profiles = [{ homeRunnerId: macId }, { homeRunnerId: macId }, { homeRunnerId: null }];
+
+  it("takes apps and the browser from what the device advertises, never its platform", () => {
+    expect(deviceLendsApps(phone({ browser: ready }))).toBe(false);
+    expect(deviceLendsApps(phone({ browser: ready, integrations: ready }))).toBe(true);
+    expect(deviceBrowser(phone({ browser: ready }), profiles)).toEqual({
+      kind: "lent",
+      profiles: 2,
+    });
+    // Granted but not advertised: an iPhone whose browser did not qualify.
+    expect(deviceBrowser(phone({ integrations: ready }), profiles)).toEqual({
+      kind: "not-offered",
+    });
+    expect(deviceBrowser(machine({ allowedModules: ["shell"] }), profiles)).toBeNull();
+  });
+
+  it("names why a browser that is there does not work, and keeps an away device's profiles", () => {
+    const broken = {
+      checkedAt: null,
+      detail: "Update Opensteer on Pixel.",
+      readiness: "unavailable",
+    } as const;
+    expect(deviceBrowser(phone({ browser: broken }), profiles)).toEqual({
+      detail: "Update Opensteer on Pixel.",
+      kind: "unavailable",
+    });
+    expect(deviceBrowser(phone({ browser: broken }, "offline"), [])).toEqual({
+      kind: "lent",
+      profiles: 0,
+    });
+    expect(
+      [0, 1, 3].map((count) => deviceBrowserDetail({ kind: "lent", profiles: count })),
+    ).toEqual(["No profiles", "1 profile", "3 profiles"]);
+  });
+
+  it("calls a phone by Apple's word only on an iPhone", () => {
+    expect([phoneNoun("ios"), phoneNoun("android"), phoneNoun(null)]).toEqual([
+      "iPhone",
+      "phone",
+      "phone",
+    ]);
+  });
+});
+
+describe("a device, as what lives on it names it", () => {
+  const miniId = "rnr_22222222-2222-4222-8222-222222222222";
+  const phoneId = "rnr_33333333-3333-4333-8333-333333333333";
+  const machines = [
+    machine({ device: { form: "laptop", platform: "macos" }, name: "MacBook" }),
+    machine({
+      device: { form: "compact", platform: "macos" },
+      id: miniId,
+      name: "Mac mini",
+      status: "offline",
+    }),
+  ];
+
+  it("names a device only when it is not the one the reader is at", () => {
+    expect(deviceElsewhere(machines, macId, macId)).toBeNull();
+    expect(deviceElsewhere(machines, miniId, macId)).toEqual({
+      glyph: "compact",
+      id: miniId,
+      name: "Mac mini",
+      online: false,
+    });
+    // A browser cannot say which computer it is on, so it is at none of them.
+    expect(deviceElsewhere(machines, macId, null)?.name).toBe("MacBook");
+    expect(deviceElsewhere(machines, null, macId)).toBeNull();
+  });
+
+  it("lists the device the reader is at first, then the rest by name whoever is online", () => {
+    const devices = [
+      { id: miniId, name: "mac mini" },
+      { id: phoneId, name: "Tim’s iPhone" },
+      { id: macId, name: "MacBook" },
+      { id: "rnr_0", name: "Mac 10" },
+      { id: "rnr_1", name: "Mac 9" },
+    ];
+    expect(orderDevices(devices, phoneId).map(({ name }) => name)).toEqual([
+      "Tim’s iPhone",
+      "Mac 9",
+      "Mac 10",
+      "mac mini",
+      "MacBook",
+    ]);
+    expect(orderDevices(devices, null)[0]?.name).toBe("Mac 9");
   });
 });

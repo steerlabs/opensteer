@@ -8,6 +8,7 @@ import { MachineComputerUseSchema } from "./computer-use.js";
 import { RunnerModuleReadinessSchema } from "./runner.js";
 import {
   RunnerDeviceFormSchema,
+  RunnerDeviceSchema,
   RunnerDevicePlatformSchema,
   RunnerModuleNameSchema,
 } from "./runner-identity.js";
@@ -46,6 +47,7 @@ const MachineDevicePlatformViewSchema = RunnerDevicePlatformSchema;
 // fields before dropping a device so malformed fields still fail.
 export const MachineDeviceSchema = z
   .object({
+    app: RunnerDeviceSchema.shape.app,
     form: z
       .string()
       .nullable()
@@ -57,7 +59,7 @@ export const MachineDeviceSchema = z
   })
   .transform((device) => {
     const platform = MachineDevicePlatformViewSchema.safeParse(device.platform);
-    return platform.success ? { form: device.form, platform: platform.data } : null;
+    return platform.success ? { ...device, platform: platform.data } : null;
   });
 export type MachineDevice = z.infer<typeof MachineDeviceSchema>;
 

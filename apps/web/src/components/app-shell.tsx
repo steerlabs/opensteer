@@ -494,10 +494,15 @@ export function AppShell({
     viewedLocalExecutionStatus?.computerName ??
     null;
   // The grant this computer would join under. A Personal Deployment admits
-  // other computers only to be reached, so its grant is exactly `shell`.
-  const localGrant = useMemo<readonly ["agents", "browser", "shell"] | readonly ["shell"]>(
+  // other computers with browser, integrations, messaging and shell.
+  const localGrant = useMemo<
+    | readonly ["agents", "browser", "shell"]
+    | readonly ["browser", "integrations", "messaging", "shell"]
+  >(
     () =>
-      snapshot.deploymentShape?.kind === "server" ? ["agents", "browser", "shell"] : ["shell"],
+      snapshot.deploymentShape?.kind === "server"
+        ? ["agents", "browser", "shell"]
+        : ["browser", "integrations", "messaging", "shell"],
     [snapshot.deploymentShape?.kind],
   );
   // Every navigation closes the drawer; the destination is on screen now.
@@ -929,11 +934,8 @@ export function AppShell({
         let status: DesktopLocalExecutionStatus;
         switch (action.kind) {
           case "add": {
-            // The web app mints the grant, as this person's session: the
-            // desktop never chooses one. Both facts normally start off — the
-            // computer joins, and then a switch says what it may do — but a
-            // Windows computer has no `shell` module to join with, so the
-            // offer that reached here decided what it starts running.
+            // The person's Host session chooses the grant; the desktop
+            // receives only the enrollment token.
             const enrollment = await hostClient.dispatch({
               allowedModules: [...localGrant],
               idempotencyKey: mutationIdempotencyKey("local-runner"),

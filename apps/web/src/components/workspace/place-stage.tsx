@@ -507,7 +507,8 @@ function leaveToComposer() {
 }
 
 /** Below 1200px: the sidebar's way in, carrying how many tasks need the reader. */
-export function DrawerButton() {
+/** `countYield` is the rank at which a bar may give up the count for room; the sidebar shows it too. */
+export function DrawerButton({ countYield }: { readonly countYield?: number } = {}) {
   const { attention: count, openDrawer } = useWorkspace();
   return (
     <button
@@ -519,7 +520,7 @@ export function DrawerButton() {
     >
       <Icon name="panel" />
       {count > 0 ? (
-        <span aria-hidden className="side-needs side-needs--inline">
+        <span aria-hidden className="side-needs side-needs--inline" data-yield={countYield}>
           <span className="side-needs__bang">!</span>
           {count}
         </span>

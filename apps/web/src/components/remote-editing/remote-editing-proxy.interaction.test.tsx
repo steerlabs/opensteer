@@ -226,6 +226,7 @@ describe("real shared proxy element", () => {
       expect(element().getAttribute("spellcheck")).toBe(spellcheck);
       expect(element().getAttribute("autocorrect")).toBe(autocorrect);
       expect(element().getAttribute("autocapitalize")).toBe(capitalization);
+      expect(element().getAttribute("writingsuggestions")).toBe(target.rangeEdits ? null : "false");
       expect(element().getAttribute("inputmode")).toBe(
         fieldContext?.field ? (fieldContext.field.inputMode ?? null) : "none",
       );

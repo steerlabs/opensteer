@@ -980,6 +980,7 @@ export function BrowserViewport({
         ) : null}
         {menu && menuPoint ? (
           <StreamedContextMenu
+            basicInput={editingState?.input === "basic"}
             editable={menu.editable}
             selection={menu.selection && !editingContext?.field?.sensitive}
             left={Math.max(

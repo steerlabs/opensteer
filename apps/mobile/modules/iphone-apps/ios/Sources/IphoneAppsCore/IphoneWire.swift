@@ -31,20 +31,23 @@ public struct PrimaryFence: Equatable {
 public struct AuxiliaryFence: Equatable {
   public let primary: PrimaryFence
   public let streamId: String
+  public let module: String
   public init(_ frame: [String: Any]) throws {
     primary = try PrimaryFence(frame)
     streamId = try WireField.string(frame, "auxiliaryStreamId")
-    guard try WireField.string(frame, "module") == "integrations" else {
+    module = try WireField.string(frame, "module")
+    guard ["integrations", "browser"].contains(module) else {
       throw IphoneWireError.invalid("module")
     }
   }
   public var fields: [String: Any] {
-    primary.fields.merging(["auxiliaryStreamId": streamId, "module": "integrations"]) { _, new in new }
+    primary.fields.merging(["auxiliaryStreamId": streamId, "module": module]) { _, new in new }
   }
   public var tag: String { primary.tag + ":" + streamId }
 }
 
 public struct PrimaryWelcome {
+  public let allowedModules: [String]
   public let fence: PrimaryFence
   public let serverTime: Date
   public let leaseExpiresAt: Date
@@ -97,10 +100,10 @@ public enum WireField {
 }
 
 public enum IphoneWire {
-  public static func challenge(_ frame: [String: Any], auxiliary: Bool = false) throws -> ProofChallenge {
+  public static func challenge(_ frame: [String: Any], auxiliary: Bool = false, module: String = "integrations") throws -> ProofChallenge {
     try WireField.type(frame, auxiliary ? "host.auxiliary.challenge" : "host.challenge")
     if auxiliary {
-      guard try WireField.string(frame, "module") == "integrations" else { throw IphoneWireError.invalid("module") }
+      guard try WireField.string(frame, "module") == module else { throw IphoneWireError.invalid("module") }
     } else {
       guard try WireField.int(frame, "proofFormatVersion", range: 2...2) == 2 else {
         throw IphoneWireError.invalid("proofFormatVersion")
@@ -117,18 +120,20 @@ public enum IphoneWire {
     try WireField.type(frame, "host.welcome")
     let fence = try PrimaryFence(frame)
     guard fence.runnerId == runnerId, fence.bootId == bootId,
-      let modules = frame["allowedModules"] as? [String], modules == ["integrations"] else {
+      let modules = frame["allowedModules"] as? [String],
+      Set(modules) == Set(["integrations"]) || Set(modules) == Set(["browser", "integrations"]),
+      Set(modules).count == modules.count else {
       throw IphoneWireError.invalid("allowedModules")
     }
-    return PrimaryWelcome(fence: fence, serverTime: try WireField.date(frame, "serverTime"),
+    return PrimaryWelcome(allowedModules: modules, fence: fence, serverTime: try WireField.date(frame, "serverTime"),
       leaseExpiresAt: try WireField.date(frame, "connectionLeaseExpiresAt"),
       heartbeatIntervalMs: try WireField.int(frame, "heartbeatIntervalMs", range: 1_000...300_000))
   }
 
-  public static func auxiliaryWelcome(_ frame: [String: Any], primary: PrimaryFence) throws -> AuxiliaryWelcome {
+  public static func auxiliaryWelcome(_ frame: [String: Any], primary: PrimaryFence, module: String = "integrations") throws -> AuxiliaryWelcome {
     try WireField.type(frame, "host.auxiliary.welcome")
     let fence = try AuxiliaryFence(frame)
-    guard fence.primary == primary else { throw IphoneWireError.staleFence }
+    guard fence.primary == primary, fence.module == module else { throw IphoneWireError.staleFence }
     return AuxiliaryWelcome(fence: fence, serverTime: try WireField.date(frame, "serverTime"),
       leaseExpiresAt: try WireField.date(frame, "streamLeaseExpiresAt"),
       heartbeatIntervalMs: try WireField.int(frame, "heartbeatIntervalMs", range: 1_000...300_000))
@@ -151,10 +156,10 @@ public enum IphoneWire {
   }
 
   public static func auxiliaryAuthenticateFrame(challenge: ProofChallenge, key: Curve25519.Signing.PrivateKey,
-    runnerId: String, bootId: String, ticket: String) throws -> [String: Any] {
+    runnerId: String, bootId: String, ticket: String, module: String = "integrations") throws -> [String: Any] {
     ["type": "runner.auxiliary.authenticate", "challengeId": challenge.challengeId,
-     "runnerId": runnerId, "bootId": bootId, "module": "integrations", "ticket": ticket,
-     "signature": try IphoneProofs.auxiliary(key, challenge: challenge, runnerId: runnerId, bootId: bootId, ticket: ticket)]
+     "runnerId": runnerId, "bootId": bootId, "module": module, "ticket": ticket,
+     "signature": try IphoneProofs.auxiliary(key, challenge: challenge, runnerId: runnerId, bootId: bootId, ticket: ticket, module: module)]
   }
 
   public static func heartbeat(_ fence: PrimaryFence, sentAt: String) -> [String: Any] {
@@ -163,13 +168,14 @@ public enum IphoneWire {
       "activeWatchActivationIds": [String]()]) { _, new in new }
   }
 
-  public static func modulesReport(_ fence: PrimaryFence, checkedAt: String) -> [String: Any] {
-    fence.fields.merging(["type": "runner.modules.report", "modules": [[
-      "module": "integrations", "readiness": "ready", "detail": NSNull(), "checkedAt": checkedAt]]]) { _, new in new }
+  public static func modulesReport(_ fence: PrimaryFence, checkedAt: String, browser: String? = nil) -> [String: Any] {
+    var modules: [[String: Any]] = [["module": "integrations", "readiness": "ready", "detail": NSNull(), "checkedAt": checkedAt]]
+    if let browser { modules.append(["module": "browser", "readiness": browser, "detail": NSNull(), "checkedAt": checkedAt]) }
+    return fence.fields.merging(["type": "runner.modules.report", "modules": modules]) { _, new in new }
   }
 
-  public static func ticketRequest(_ fence: PrimaryFence, requestId: String) -> [String: Any] {
-    fence.fields.merging(["type": "runner.auxiliary.ticket-request", "module": "integrations", "requestId": requestId]) { _, new in new }
+  public static func ticketRequest(_ fence: PrimaryFence, requestId: String, module: String = "integrations") -> [String: Any] {
+    fence.fields.merging(["type": "runner.auxiliary.ticket-request", "module": module, "requestId": requestId]) { _, new in new }
   }
 
   public static func auxiliaryHeartbeat(_ fence: AuxiliaryFence, sentAt: String) -> [String: Any] {

@@ -10,6 +10,7 @@ export type BrowserPageMenuAction =
 export function BrowserPageMenu({
   menu,
   sensitive,
+  basicInput = false,
   onAction,
   onDismiss,
 }: {
@@ -19,11 +20,20 @@ export function BrowserPageMenu({
     readonly linkUrl?: string | undefined;
   };
   readonly sensitive: boolean;
+  readonly basicInput?: boolean;
   readonly onAction: (action: BrowserPageMenuAction) => void;
   readonly onDismiss: () => void;
 }) {
   const items: { label: string; action: BrowserPageMenuAction; disabled?: boolean }[] = [
-    { label: "Cut", action: "cut", disabled: sensitive || !menu.editable || !menu.selection },
+    ...(basicInput
+      ? []
+      : [
+          {
+            label: "Cut",
+            action: "cut" as const,
+            disabled: sensitive || !menu.editable || !menu.selection,
+          },
+        ]),
     { label: "Copy", action: "copy", disabled: sensitive || !menu.selection },
     { label: "Paste", action: "paste", disabled: !menu.editable },
     { label: "Select all", action: "select-all" },

@@ -1,6 +1,6 @@
 import type { PersonFillAccountView } from "@opensteer/protocol";
 import type { BrowserCommand } from "../host/client.js";
-import { BrowserEditingStore } from "../host/browser-editing.js";
+import type { BrowserEditingStore } from "../host/browser-editing.js";
 
 /** The Chat's mock page, whose fields act as a sign-in form so clients can show filling without a Mac. */
 export const mockSignInPageTitle = "Weekend ideas";
@@ -27,15 +27,13 @@ const logins: readonly Omit<PersonFillAccountView, "ready">[] = [
  * runtime is.
  */
 export class MockSignInPage {
-  readonly editing = new BrowserEditingStore((sessionId, _surfaceId, command) =>
-    this.#send(sessionId, command),
-  );
   /** Logins this phone already confirmed, which fill again without asking. */
   readonly #confirmed = new Set<string>();
-  readonly #send: (sessionId: string, command: BrowserCommand) => void;
 
-  constructor(send: (sessionId: string, command: BrowserCommand) => void) {
-    this.#send = send;
+  readonly editing: BrowserEditingStore;
+
+  constructor(editing: BrowserEditingStore) {
+    this.editing = editing;
   }
 
   /** Answers a command meant for the sign-in page; false leaves it to the browser. */

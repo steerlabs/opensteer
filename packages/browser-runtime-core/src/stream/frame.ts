@@ -1,3 +1,4 @@
+import { encodeFrameEnvelope, decodeFrameEnvelope } from "@opensteer/browser-core/bytes";
 import {
   BrowserBinaryFrameHeaderSchema,
   type BrowserBinaryFrameHeader,
@@ -10,28 +11,24 @@ export interface BrowserFrame {
 }
 
 export function encodeBrowserFrame(frame: BrowserFrame): Buffer {
-  const header = Buffer.from(
-    JSON.stringify(BrowserBinaryFrameHeaderSchema.parse(frame.header)),
-    "utf8",
+  const encoded = encodeFrameEnvelope(
+    BrowserBinaryFrameHeaderSchema.parse(frame.header),
+    frame.data,
   );
-  const envelope = Buffer.allocUnsafe(4 + header.byteLength + frame.data.byteLength);
-  envelope.writeUInt32BE(header.byteLength, 0);
-  header.copy(envelope, 4);
-  frame.data.copy(envelope, 4 + header.byteLength);
-  return envelope;
+  return Buffer.from(encoded.buffer, encoded.byteOffset, encoded.byteLength);
 }
 
 export function decodeBrowserFrame(envelope: Buffer): BrowserFrame {
-  if (envelope.byteLength < 5) throw badFrame();
-  const headerLength = envelope.readUInt32BE(0);
-  if (headerLength < 2 || headerLength > 16_384 || 4 + headerLength >= envelope.byteLength) {
-    throw badFrame();
-  }
   try {
-    const header = BrowserBinaryFrameHeaderSchema.parse(
-      JSON.parse(envelope.subarray(4, 4 + headerLength).toString("utf8")),
-    );
-    return { data: envelope.subarray(4 + headerLength), header };
+    const decoded = decodeFrameEnvelope(envelope);
+    return {
+      data: Buffer.from(
+        decoded.payload.buffer,
+        decoded.payload.byteOffset,
+        decoded.payload.byteLength,
+      ),
+      header: BrowserBinaryFrameHeaderSchema.parse(decoded.header),
+    };
   } catch (error) {
     throw new BrowserRuntimeError("bad_message", "The binary browser frame is invalid.", {
       cause: error,
@@ -101,8 +98,4 @@ function isStartOfFrame(marker: number): boolean {
 
 function validDimensions(width: number, height: number): boolean {
   return width > 0 && height > 0 && width <= 32_768 && height <= 32_768;
-}
-
-function badFrame(): BrowserRuntimeError {
-  return new BrowserRuntimeError("bad_message", "The binary browser frame is invalid.");
 }

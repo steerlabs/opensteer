@@ -15,6 +15,11 @@ import { DeploymentIdSchema, HostInstanceIdSchema } from "@opensteer/core";
  */
 
 const mockOrigin = "https://mock.opensteer.example";
+
+/** The in-memory Host's own Deployment: the one this phone is signed in to, and a device of. */
+export const mockDeploymentId = DeploymentIdSchema.parse(
+  "dep_00000000-0000-4000-8000-000000000001",
+);
 const mockSignedOutOrigin = "https://signed-out.opensteer.example";
 
 /** The Deployment mock mode holds no credential for, so its row needs one. */
@@ -34,7 +39,7 @@ export function mockDeploymentConnections(): readonly DeploymentConnectionInput[
     // The in-memory Host's own identity, which the pairing target it hands an
     // iPhone being added names.
     mockConnection({
-      deploymentId: "dep_00000000-0000-4000-8000-000000000001",
+      deploymentId: mockDeploymentId,
       hostInstanceId: "hst_00000000-0000-4000-8000-000000000001",
       name: "Mock deployment",
       origin: mockOrigin,

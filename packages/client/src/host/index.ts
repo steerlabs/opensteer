@@ -47,11 +47,13 @@ export * from "./task-marks.js";
 export * from "./place-activity.js";
 export * from "./browser-watch.js";
 export * from "./start-page-model.js";
+export * from "./link-places.js";
 export * from "./browser-history.js";
 export * from "./navigation-input.js";
 export * from "./computer-view-retention.js";
 export * from "./action-review.js";
 export * from "./browser-tab-strip.js";
+export * from "./browser-tab-sections.js";
 
 export * from "./browser-preferences.js";
 
@@ -67,6 +69,8 @@ export * from "./automation-presentation.js";
 export * from "./schedules.js";
 export * from "./app-icons.js";
 export * from "./run-place.js";
+export * from "./run-page.js";
+export * from "./run-page-memory.js";
 
 export * from "./request-settlement.js";
 export * from "./personal-remote-access.js";

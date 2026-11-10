@@ -158,6 +158,10 @@ export class PasswordsOffers {
     this.#schedule();
   }
 
+  isCurrent(offer: PasswordsOffer): boolean {
+    return this.#offers.get(`${offer.threadId}\0${offer.site}`) === offer;
+  }
+
   async #withLogins(): Promise<readonly (readonly [string, Offer])[]> {
     const found: (readonly [string, Offer])[] = [];
     for (const [key, offer] of this.#offers) {

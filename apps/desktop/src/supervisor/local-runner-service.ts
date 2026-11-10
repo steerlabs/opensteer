@@ -1,3 +1,4 @@
+import { DesktopBrowserProfileErasure } from "./browser-profile-erasure.js";
 import { logShutdownError, type ShutdownLog } from "../app/desktop-shutdown.js";
 import { RestartPolicy } from "@opensteer/shared/restartPolicy";
 import { MutationQueue } from "@opensteer/shared/mutationQueue";
@@ -86,7 +87,7 @@ export class LocalRunnerNeverEnrolledError extends Error {}
 
 const WorkerMessageSchema = z.discriminatedUnion("type", [
   z.strictObject({
-    environmentId: EnvironmentIdSchema,
+    environmentId: EnvironmentIdSchema.nullable(),
     runnerId: RunnerIdSchema,
     type: z.literal("runner.worker.connected"),
   }),
@@ -149,8 +150,9 @@ export interface UtilityProcessLike {
 
 export interface LocalRunnerServiceDependencies {
   readonly log?: ShutdownLog;
+  readonly profileErasure?: DesktopBrowserProfileErasure;
   /**
-   * Starts this computer's browser for one Deployment it runs agents for. It
+   * Starts this computer's browser for one enrolled Deployment. It
    * is optional because a headless desktop build runs agents without a
    * browser; when it is present the Runner carries the browser as one of its
    * modules rather than a second machine appearing beside it.
@@ -162,7 +164,7 @@ export interface LocalRunnerServiceDependencies {
   }) => Promise<PersonalLocalBrowserHandle>;
   /**
    * The computer-use bridge for one slot, or null where computer use does not
-   * exist. Unlike the browser it is started for **every** enrolled slot,
+   * exist. It is started for every enrolled slot,
    * agents or not: computer use reaches a Mac through the `integrations`
    * module, which a reach-only Runner has, so gating it on `runAgents` would
    * tie the feature to a switch about something else.
@@ -213,6 +215,8 @@ interface RunnerSlot {
   browser: PersonalLocalBrowserHandle | undefined;
   /** Every browser shutdown asked for so far, chained; never dropped. */
   browserShutdown: Promise<void> | undefined;
+  /** A browser whose stop failed may still hold its profiles open. */
+  browserHeld: boolean;
   child: UtilityProcessLike | undefined;
   /**
    * The Deployment whose computer-use bridge this slot holds, while it holds
@@ -247,6 +251,7 @@ interface RunnerSlot {
 
 export class LocalRunnerService {
   readonly #log: ShutdownLog;
+  readonly #profileErasure: DesktopBrowserProfileErasure;
   readonly #config: DesktopConfiguration;
   readonly #browser: LocalRunnerServiceDependencies["browser"];
   readonly #computerUse: LocalRunnerServiceDependencies["computerUse"];
@@ -275,6 +280,8 @@ export class LocalRunnerService {
       dependencies.log ?? ((event, fields) => console.info(JSON.stringify({ event, ...fields })));
     this.#config = config;
     this.#browser = dependencies.browser;
+    this.#profileErasure =
+      dependencies.profileErasure ?? new DesktopBrowserProfileErasure(config.dataDirectory);
     this.#computerUse = dependencies.computerUse;
     this.#computerName = dependencies.computerName ?? computerName;
     this.#fork = dependencies.fork;
@@ -441,6 +448,7 @@ export class LocalRunnerService {
   }
 
   async startIfEnabled(): Promise<void> {
+    await this.#profileErasure.finishPending();
     await this.reconcile();
   }
 
@@ -689,15 +697,15 @@ export class LocalRunnerService {
     this.#emit();
     // The browser starts before the Runner that relays it, and belongs to the
     // same machine identity: one computer, two modules.
-    const browser =
-      runAgents && this.#browser
-        ? await this.#browser({
-            logPath: path.join(runnerDataDirectory, "browser.log"),
-            profileRoot: desktopDeploymentPaths(this.#config.dataDirectory, target.deploymentId)
-              .browserProfilesDirectory,
-            runtimeId: `desktop-browser:${target.deploymentId}`,
-          })
-        : undefined;
+    await this.#profileErasure.prepare(target.deploymentId);
+    const browser = this.#browser
+      ? await this.#browser({
+          logPath: path.join(runnerDataDirectory, "browser.log"),
+          profileRoot: desktopDeploymentPaths(this.#config.dataDirectory, target.deploymentId)
+            .browserProfilesDirectory,
+          runtimeId: `desktop-browser:${target.deploymentId}`,
+        })
+      : undefined;
     slot.browser = browser;
     // Computer use is started for this slot whether or not it runs agents:
     // the `integrations` module a reach-only Runner already has is what
@@ -1071,6 +1079,7 @@ export class LocalRunnerService {
     }
     await slot.browserShutdown;
     await slot.computerUseShutdown;
+    await this.#profileErasure.erase(deploymentId, slot.browserHeld ? "held" : "stopped");
     await this.#removePreference(deploymentId);
     await rm(this.#deploymentDataDirectory(deploymentId), { force: true, recursive: true });
     this.#resetIdentity(slot);
@@ -1088,6 +1097,7 @@ export class LocalRunnerService {
       activeTarget: undefined,
       browser: undefined,
       browserShutdown: undefined,
+      browserHeld: false,
       child: undefined,
       childExit: undefined,
       computerUseShutdown: undefined,
@@ -1241,8 +1251,7 @@ export function electronUtilityProcessFork(
  * The two shapes of a desktop Runner. Without `execution` the process is
  * reach-only: it holds the identity, the Host connection, the `shell` module
  * and the filesystem helper, and is told about no work location, no workspace
- * backings, no harnesses, no agent skills and no browser, because it starts
- * none of them.
+ * backings, no harnesses or agent skills. The browser is independent of execution.
  */
 interface RunnerExecutionEnvironment {
   readonly agentSkillsDirectory: string;
@@ -1342,7 +1351,7 @@ function runnerEnvironment(input: {
 }
 
 /**
- * What this process runs, in the spec's order; `browser` implies `agents`.
+ * What this process runs, independently of its fixed enrollment grant.
  * `messaging` carries the transports only this Mac can hold, through the
  * helper computer use already runs; a Host this desktop reaches speaks its
  * protocol epoch exactly, so it accepts the module.
@@ -1350,7 +1359,7 @@ function runnerEnvironment(input: {
 function runnerModules(runAgents: boolean, hasBrowser: boolean, hasComputerUse: boolean): string {
   const modules = [
     ...(runAgents ? ["agents"] : []),
-    ...(runAgents && hasBrowser ? ["browser"] : []),
+    ...(hasBrowser ? ["browser"] : []),
     "integrations",
     ...(hasComputerUse ? ["messaging"] : []),
     "shell",
@@ -1370,9 +1379,10 @@ function stopSlotBrowser(slot: RunnerSlot, log: ShutdownLog): Promise<void> {
   const previous = slot.browserShutdown ?? Promise.resolve();
   if (!browser) return previous;
   const shutdown = previous.then(() =>
-    browser
-      .stop()
-      .catch((error: unknown) => logShutdownError(log, "local-browser", browser.runtimeId, error)),
+    browser.stop().catch((error: unknown) => {
+      slot.browserHeld = true;
+      logShutdownError(log, "local-browser", browser.runtimeId, error);
+    }),
   );
   slot.browserShutdown = shutdown;
   return shutdown;

@@ -74,7 +74,7 @@ export class DesktopLocalRunnerTargetResolver implements DesktopLocalRunnerTarge
       },
       hostUrl: resolved.origin,
       key: resolved.key,
-      // Personal grants every computer but the Main exactly `shell`.
+      // Only server Deployments may execute agents on a connecting computer.
       mayRunAgents: kind === "server",
     };
   }

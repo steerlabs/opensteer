@@ -18,7 +18,7 @@ export class CdpProtocolError extends Error {}
 export class DialogOpenedError extends Error {
   constructor(dialog) {
     super(
-      `A ${dialog.type} dialog opened: ${JSON.stringify(dialog.message)}. Action outcome is not verified; answer with cdp("Page.handleJavaScriptDialog", { accept: true or false }).`,
+      `A ${dialog.type} dialog opened: ${JSON.stringify(dialog.message)}. Action outcome is not verified; answer with respondDialog({ accept: true or false }).`,
     );
     this.name = "DialogOpenedError";
     this.dialog = dialog;

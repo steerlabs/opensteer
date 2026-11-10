@@ -1,3 +1,4 @@
+import { lockBrowserHomeRunner } from "./browser-home-store.js";
 import {
   administrationCommand,
   type AdministrationCommandIdentity,
@@ -89,6 +90,7 @@ export interface RevokedBrowserProfileGrantRecord {
 }
 
 export interface BrowserProfileRecord {
+  readonly homeRunnerId: RunnerId | null;
   readonly id: BrowserProfileId;
   readonly name: string;
   readonly ownerId: UserId;
@@ -157,9 +159,13 @@ function inheritedMainBrowserGrantId(
  * Adds one profile within the owner's slots: the person's own command and an
  * approved browser-access Request both create profiles through here.
  */
-export async function insertBrowserProfile(
+export async function insertBrowserProfileOnLockedHome(
   transaction: Transaction<DatabaseSchema>,
-  input: { readonly name: string; readonly ownerId: UserId },
+  input: {
+    readonly name: string;
+    readonly ownerId: UserId;
+    readonly homeRunnerId: RunnerId | null;
+  },
 ): Promise<BrowserProfileRecord> {
   await sql`select pg_advisory_xact_lock(hashtextextended(${`browser-profile:${input.ownerId}`}, 0))`.execute(
     transaction,
@@ -169,7 +175,7 @@ export async function insertBrowserProfile(
     .selectFrom("browserProfiles")
     .select("id")
     .where("ownerId", "=", input.ownerId)
-    // Deletion transfers a slot until the owning computer confirms erasure.
+    // Pending erasure retains a slot until the owning computer confirms it.
     .where((eb) =>
       eb.or([
         eb("archivedAt", "is", null),
@@ -178,7 +184,7 @@ export async function insertBrowserProfile(
             .selectFrom("browserProfileDeletions")
             .select("profileId")
             .whereRef("profileId", "=", "browserProfiles.id")
-            .where("state", "!=", "deleted"),
+            .where("state", "in", ["pending-computer", "pending-restart"]),
         ),
       ]),
     )
@@ -194,8 +200,9 @@ export async function insertBrowserProfile(
       id: createId("browserProfile"),
       name: input.name,
       ownerId: input.ownerId,
+      homeRunnerId: input.homeRunnerId,
     })
-    .returning(["id", "name", "ownerId"])
+    .returning(["id", "name", "ownerId", "homeRunnerId"])
     .executeTakeFirstOrThrow(databaseOperationOptions());
 }
 
@@ -203,6 +210,7 @@ export async function createBrowserProfile(
   database: Kysely<DatabaseSchema>,
   input: {
     readonly idempotencyKey: string;
+    readonly homeRunnerId?: RunnerId | null;
     readonly name: string;
     readonly ownerId: UserId;
   },
@@ -216,17 +224,21 @@ export async function createBrowserProfile(
     );
     if (command) {
       const recorded = z
-        .object({ profileId: BrowserProfileIdSchema, request: z.object({ name: z.string() }) })
+        .object({
+          profileId: BrowserProfileIdSchema,
+          request: z.object({ name: z.string(), homeRunnerId: z.string().nullable().optional() }),
+        })
         .safeParse(command.payload);
       if (
         command.type !== "browser.profile.create" ||
         !recorded.success ||
-        recorded.data.request.name !== input.name
+        recorded.data.request.name !== input.name ||
+        recorded.data.request.homeRunnerId !== input.homeRunnerId
       )
         throw idempotencyConflict(input.idempotencyKey);
       const profile = await transaction
         .selectFrom("browserProfiles")
-        .select(["id", "name", "ownerId"])
+        .select(["id", "name", "ownerId", "homeRunnerId"])
         .where("id", "=", recorded.data.profileId)
         .where("ownerId", "=", input.ownerId)
         .where("archivedAt", "is", null)
@@ -237,7 +249,11 @@ export async function createBrowserProfile(
       }
       return profile;
     }
-    const profile = await insertBrowserProfile(transaction, input);
+    const homeRunnerId =
+      input.homeRunnerId === null
+        ? null
+        : await lockBrowserHomeRunner(transaction, input.ownerId, input.homeRunnerId);
+    const profile = await insertBrowserProfileOnLockedHome(transaction, { ...input, homeRunnerId });
     await transaction
       .insertInto("commands")
       .values({
@@ -251,7 +267,10 @@ export async function createBrowserProfile(
         payload: jsonValue({
           type: "browser.profile.create",
           profileId: profile.id,
-          request: { name: input.name },
+          request: {
+            name: input.name,
+            ...(input.homeRunnerId !== undefined ? { homeRunnerId: input.homeRunnerId } : {}),
+          },
         }),
         requestedBy: input.ownerId,
         runId: null,
@@ -271,7 +290,7 @@ export async function getBrowserProfile(
 ): Promise<BrowserProfileRecord | null> {
   const row = await database
     .selectFrom("browserProfiles")
-    .select(["id", "name", "ownerId"])
+    .select(["id", "name", "ownerId", "homeRunnerId"])
     .where("id", "=", profileId)
     .where("ownerId", "=", ownerId)
     .where("archivedAt", "is", null)
@@ -285,7 +304,7 @@ export async function listBrowserProfiles(
 ): Promise<readonly BrowserProfileRecord[]> {
   return database
     .selectFrom("browserProfiles")
-    .select(["id", "name", "ownerId"])
+    .select(["id", "name", "ownerId", "homeRunnerId"])
     .where("ownerId", "=", ownerId)
     .where("archivedAt", "is", null)
     .orderBy("createdAt", "asc")
@@ -311,7 +330,7 @@ export async function renameBrowserProfile(
         .where("id", "=", input.profileId)
         .where("ownerId", "=", input.ownerId)
         .where("archivedAt", "is", null)
-        .returning(["id", "name", "ownerId"])
+        .returning(["id", "name", "ownerId", "homeRunnerId"])
         .executeTakeFirst(databaseOperationOptions());
       if (!row)
         throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
@@ -486,23 +505,30 @@ export async function createBrowserSession(
 ): Promise<BrowserSessionRecord> {
   const profileId = input.profileId;
   return withDatabaseTransaction(database, async (transaction) => {
-    // A fresh session holds no profile, so no placement affinity or profile
-    // session budget applies to it.
+    if (profileId !== null) await lockBrowserProfile(transaction, profileId);
+    const runner = await transaction
+      .selectFrom("runners")
+      .select("revokedAt")
+      .where("id", "=", input.runnerId)
+      .forShare()
+      .executeTakeFirst(databaseOperationOptions());
+    if (!runner || runner.revokedAt)
+      throw new OpensteerError({ code: "conflict", message: "This computer was removed." });
     if (profileId !== null) {
-      await sql`select pg_advisory_xact_lock(hashtextextended(${`browser-profile-session:${profileId}`}, 0))`.execute(
-        transaction,
-        databaseOperationOptions(),
-      );
       // Under the lock a deletion takes, so a session cannot outlive its profile.
       const profile = await transaction
         .selectFrom("browserProfiles")
-        .select(["archivedAt", "storageState", "storageRunnerId"])
+        .select(["archivedAt", "storageState", "storageRunnerId", "homeRunnerId"])
         .where("id", "=", profileId)
         .executeTakeFirst(databaseOperationOptions());
       if (!profile || profile.archivedAt) {
         throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
       }
-      if (profile.storageState !== "local" || profile.storageRunnerId !== input.runnerId) {
+      if (
+        profile.storageState !== "local" ||
+        profile.storageRunnerId !== input.runnerId ||
+        profile.homeRunnerId !== input.runnerId
+      ) {
         throw new OpensteerError({
           code: "conflict",
           message: "Open this browser profile on its owning computer with an updated runtime.",
@@ -1838,17 +1864,17 @@ export async function createBrowserProfileGrant(
       .where("userId", "=", input.createdBy)
       .forNoKeyUpdate()
       .executeTakeFirst(databaseOperationOptions());
+    const profile = await transaction
+      .selectFrom("browserProfiles")
+      .select(["archivedAt", "ownerId"])
+      .where("id", "=", input.profileId)
+      .forShare()
+      .executeTakeFirst(databaseOperationOptions());
     await sql`select pg_advisory_xact_lock(hashtextextended(${`browser-grants:${input.createdBy}`}, 0))`.execute(
       transaction,
       databaseOperationOptions(),
     );
-    const [profile, existing, activeOwnerGrants] = await Promise.all([
-      // Read under the grant lock a deletion also takes, so a deleted profile is never granted.
-      transaction
-        .selectFrom("browserProfiles")
-        .select(["archivedAt", "ownerId"])
-        .where("id", "=", input.profileId)
-        .executeTakeFirst(databaseOperationOptions()),
+    const [existing, activeOwnerGrants] = await Promise.all([
       transaction
         .selectFrom("browserProfileGrants")
         .select("id")
