@@ -151,6 +151,7 @@ vi.mock("../thread/computer-use-line.js", () => ({
   useComputerLine: () => null,
 }));
 vi.mock("../thread/thread-pane.js", () => ({ sameThreadHeader: () => false }));
+vi.mock("../thread/folded-page.js", () => ({ FoldedPage: () => null }));
 vi.mock("../navigation-header.js", () => ({ browserHeaderActions: () => ({}) }));
 
 const { ConversationActivityScreen } = await import("./conversation-activity.js");

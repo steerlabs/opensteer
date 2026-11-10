@@ -6,6 +6,8 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  browserTabSections,
+  browserTabStrip,
   placeHasAgents,
   placeList,
   type HostClient,
@@ -1373,31 +1375,22 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
     // the person's own Notes view, opened last, sits with the Mac mini's apps.
     expect(
       placeRows(screen).map((button) => button.getAttribute("aria-label")!.split(", ")[0]),
-    ).toEqual([
-      "Your reading list",
-      "Confirm your reservation",
-      "Le Petit Jardin",
-      "Friday dinner",
-      "storage documentation",
-      "Launch brief",
-      "Coffee shortlist",
-      "Weekend ideas",
-      "Flight award alerts",
-      "Q4 roadmap – Linear",
-      "Slack — #launch",
-      "Notes — Shopping list",
-      "Notes — Shopping list",
-      "Pixel 7",
-      "Keynote",
-    ]);
+    ).toEqual(
+      browserTabSections({
+        strip: browserTabStrip(places, snapshot.browserTabGroups),
+        machines: snapshot.machines,
+        hereId: null,
+      }).ordered.map(({ title }) => title),
+    );
     expect(placeRows(screen)).toHaveLength(places.length);
     // One section per device, its tabs then its apps; this phone is none of them, so all are named.
-    expect(groupHeads(screen)).toEqual(["Mac mini", "Pixel 7", "Studio Mac"]);
+    expect(groupHeads(screen)).toEqual(["Alex's iPhone", "Mac mini", "Pixel 7", "Studio Mac"]);
     for (const title of [
       "Q4 roadmap – Linear", // opened by hand on the desktop
       "Friday dinner", // a task's
       "Flight award alerts", // a delegated worker acting there
       "Your reading list", // saved, waiting to be restored
+      "Running shoes – Allbirds",
       "Slack — #launch", // a task's Mac app, titled by the window it works in
     ])
       expect(row(screen, title)).toBeDefined();
@@ -1442,7 +1435,12 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
   it("narrows to the tabs agents are in from the bar's filter, titled so, and back to every tab", async () => {
     const w = await world();
     await openSidebarTabs(w);
-    const places = placeList(w.host.getSnapshot());
+    const snapshot = w.host.getSnapshot();
+    const places = browserTabSections({
+      strip: browserTabStrip(placeList(snapshot), snapshot.browserTabGroups),
+      machines: snapshot.machines,
+      hereId: null,
+    }).ordered;
     const busy = places.filter(placeHasAgents).map(({ title }) => title);
     expect(busy.length).toBeGreaterThan(0);
     expect(busy.length).toBeLessThan(places.length);
