@@ -235,6 +235,7 @@ export interface RunnerAgentsConnection {
     readonly bridgeToken: string;
     readonly runtimeId: string;
     readonly signIn: boolean;
+    readonly personFill: boolean;
     readonly url: URL;
   };
   /** Present exactly when this Runner holds directories of its own. */
@@ -756,6 +757,7 @@ export class ReconnectingHostConnection {
                 editing: 2,
                 clipboard: false,
                 ...(agents.browserBridge.signIn ? { signIn: { version: 3 }, cardFill: 1 } : {}),
+                ...(agents.browserBridge.personFill ? { personFill: 1 } : {}),
               },
             }
           : {}),
