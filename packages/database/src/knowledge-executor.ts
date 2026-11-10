@@ -1,5 +1,6 @@
 import { createHash, createHmac, pbkdf2Sync, randomBytes } from "node:crypto";
 import type { Kysely } from "kysely";
+import { Socket } from "node:net";
 import pg from "pg";
 import { withDatabaseTransaction } from "./connection.js";
 import { ensureKnowledgeExecutor } from "./knowledge-schema.js";
@@ -52,6 +53,7 @@ export function createKnowledgeExecutorPool(
     user: credentials.role,
     password: credentials.password,
     ssl: false,
+    stream: () => new FramedSocket(),
     application_name: "opensteer-knowledge",
     connectionTimeoutMillis: 5_000,
     idleTimeoutMillis: 30_000,
@@ -69,4 +71,52 @@ export function createKnowledgeExecutorPool(
   // An idle connection that dies is dropped from the pool; nothing else needs to hear about it.
   pool.on("error", () => undefined);
   return pool;
+}
+
+/** The largest message a knowledge connection accepts; rows are at most 512 KB. */
+export const knowledgeMessageBytes = 1_048_576;
+
+export class KnowledgeMessageTooLarge extends Error {
+  constructor() {
+    super("PostgreSQL sent a knowledge connection a message over 1 MB");
+  }
+}
+
+/**
+ * Reads each backend message's header (type byte, then a length that counts
+ * itself) as bytes arrive, and destroys the socket on one over the bound,
+ * before the driver buffers it or turns it into a string where no catch reaches.
+ */
+class FramedSocket extends Socket {
+  #header = Buffer.alloc(5);
+  #headerBytes = 0;
+  #bodyBytes = 0;
+
+  override push(chunk: unknown, encoding?: BufferEncoding): boolean {
+    if (!Buffer.isBuffer(chunk) || this.#accepts(chunk)) return super.push(chunk, encoding);
+    this.destroy(new KnowledgeMessageTooLarge());
+    return false;
+  }
+
+  #accepts(chunk: Buffer): boolean {
+    let offset = 0;
+    while (offset < chunk.length) {
+      if (this.#bodyBytes > 0) {
+        const taken = Math.min(this.#bodyBytes, chunk.length - offset);
+        this.#bodyBytes -= taken;
+        offset += taken;
+        continue;
+      }
+      const taken = Math.min(5 - this.#headerBytes, chunk.length - offset);
+      chunk.copy(this.#header, this.#headerBytes, offset, offset + taken);
+      this.#headerBytes += taken;
+      offset += taken;
+      if (this.#headerBytes < 5) break;
+      const length = this.#header.readUInt32BE(1);
+      if (length < 4 || length - 4 > knowledgeMessageBytes) return false;
+      this.#headerBytes = 0;
+      this.#bodyBytes = length - 4;
+    }
+    return true;
+  }
 }

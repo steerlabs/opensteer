@@ -342,7 +342,8 @@ integration("knowledge storage", () => {
       `select session_user::text as session, current_user::text as current,
         r.rolsuper, r.rolinherit, r.rolcreaterole, r.rolcreatedb, r.rolbypassrls, r.rolreplication,
         (select count(*)::int from pg_auth_members where member = r.oid) as memberships,
-        current_setting('search_path') as search_path
+        current_setting('search_path') as search_path,
+        current_setting('log_min_messages') as log_min_messages
        from pg_roles r where r.rolname = current_user`,
     );
     expect(rows).toEqual([
@@ -357,6 +358,7 @@ integration("knowledge storage", () => {
         rolreplication: false,
         memberships: 0,
         search_path: "pg_catalog, knowledge, pg_temp",
+        log_min_messages: "fatal",
       },
     ]);
     for (const attempt of [
@@ -364,6 +366,7 @@ integration("knowledge storage", () => {
       `set session authorization "${host}"`,
       `select set_config('role', '${host}', false)`,
       `select set_config('session_authorization', '${host}', false)`,
+      "set log_min_messages = 'error'",
       `set role ${context.credentials.role.replace("executor", "owner").replace(/_\d+$/u, "")}`,
     ])
       expect(await sqlState(client.query(attempt)), attempt).toBe("42501");
@@ -702,6 +705,22 @@ integration("knowledge storage", () => {
       }),
     ).rejects.toMatchObject({ code: "bad_request", reason: "knowledge-value-too-large" });
     expect(await context.count("thing = 'big'")).toBe(1);
+  });
+
+  it("drops a connection that receives a message over 1 MB before the driver parses it", async () => {
+    const context = await fixture();
+    await expect(
+      select(context, "select (repeat('x', 4000000) || 'y')::int4 as a"),
+    ).rejects.toMatchObject({ code: "resource_exhausted", reason: "knowledge-message-too-large" });
+    await expect(
+      select(context, "select 1 as q, repeat('x', 524000) as a, repeat('y', 524000) as b"),
+    ).rejects.toMatchObject({ code: "resource_exhausted", reason: "knowledge-row-too-large" });
+    const after = await Promise.all([
+      select(context, "select count(*) from facts"),
+      select(context, "select count(*) from facts"),
+    ]);
+    expect(after.map(rowsOf)).toEqual([[["2"]], [["2"]]]);
+    expect(context.pool.totalCount).toBeLessThanOrEqual(2);
   });
 
   it("returns typed array rows, at most 200, and stops a statement at its timeout", async () => {

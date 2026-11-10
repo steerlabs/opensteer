@@ -3,6 +3,7 @@ import { sql, type Kysely, type Selectable } from "kysely";
 import { createHash } from "node:crypto";
 import type { FieldDef, Pool, PoolClient, QueryArrayConfig, QueryArrayResult } from "pg";
 import { z } from "zod";
+import { KnowledgeMessageTooLarge } from "./knowledge-executor.js";
 import type { KnowledgeTables, KnowledgeWriterKind } from "./knowledge-schema.js";
 import type { DatabaseSchema } from "./schema.js";
 
@@ -153,6 +154,9 @@ export async function runKnowledgeStatement(
       retryable: true,
     });
   });
+  // A dropped connection fails the running query; the client's own error event has no one else to hear it.
+  const dropped = () => undefined;
+  client.on("error", dropped);
   let names = typeNames.get(pool);
   if (!names) typeNames.set(pool, (names = new Map()));
   let clean = false;
@@ -165,6 +169,7 @@ export async function runKnowledgeStatement(
     throw knowledgeError(error, statement.kind);
   } finally {
     if (clean) clean = await discard(client);
+    client.off("error", dropped);
     client.release(!clean);
   }
 }
@@ -371,6 +376,12 @@ function knowledgeError(error: unknown, kind: KnowledgeStatement["kind"]): Opens
     message: string,
     options: { retryable?: boolean; details?: Record<string, unknown> } = {},
   ) => new OpensteerError({ code, reason, message: message + nothingSaved, ...options });
+  if (error instanceof KnowledgeMessageTooLarge)
+    return refuse(
+      "resource_exhausted",
+      "knowledge-message-too-large",
+      "PostgreSQL's answer to the statement, a row or an error, was over 1 MB.",
+    );
   if (error instanceof UncertainCommit)
     return new OpensteerError({
       code: "internal",

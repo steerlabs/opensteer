@@ -299,6 +299,7 @@ function failure(error: unknown): OpensteerError {
     case "knowledge-statement-timeout":
     case "knowledge-resource-limit":
     case "knowledge-row-too-large":
+    case "knowledge-message-too-large":
       return again(
         "Filter by topic and key, select fewer or smaller columns, or aggregate, and call sql again.",
       );
