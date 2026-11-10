@@ -3,7 +3,7 @@ import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import type { AddressInfo } from "node:net";
-import type { RunnerConfig } from "@opensteer/config";
+import { parseRunnerConfig, type RunnerConfig } from "@opensteer/config";
 import {
   createId,
   HarnessIdSchema,
@@ -540,6 +540,127 @@ describe("runnerWebSocketUrl", () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   }, 20_000);
+
+  it("keeps advertising execution and browser abilities together", async () => {
+    const runtimeId = "browser-with-agents";
+    const server = createServer((_request, response) => {
+      response.end(JSON.stringify({ runtimeId, wireVersion: 1, state: "ready" }));
+    });
+    const webSockets = new WebSocketServer({ path: "/internal/v1/runners", server });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address() as AddressInfo;
+    const runnerId = createId("runner");
+    const environmentId = createId("environment");
+    const bootId = RunnerBootIdSchema.parse(`rbt_${randomUUID()}`);
+    const pair = generateKeyPairSync("ed25519");
+    const identity = {
+      createdAt: new Date().toISOString(),
+      environmentId,
+      runnerId,
+      lastConnectionGeneration: 0,
+      privateKey: pair.privateKey,
+      publicKey: pair.publicKey,
+      publicKeyPem: pair.publicKey.export({ format: "pem", type: "spki" }).toString(),
+      version: 3 as const,
+    };
+    const descriptor = Promise.withResolvers<unknown>();
+    const abort = new AbortController();
+    webSockets.on("connection", (socket) => {
+      socket.send(
+        JSON.stringify({
+          challengeId: `rch_${randomUUID()}`,
+          expiresAt: new Date(Date.now() + 30_000).toISOString(),
+          hostSessionId: randomUUID(),
+          nonce: randomUUID(),
+          proofFormatVersion: 2,
+          type: "host.challenge",
+        }),
+      );
+      socket.once("message", (raw) => {
+        const message = RunnerToHostMessageSchema.safeParse(JSON.parse(raw.toString()));
+        if (!message.success) {
+          descriptor.reject(message.error);
+          return;
+        }
+        if (message.data.type === "runner.enroll") descriptor.resolve(message.data.descriptor);
+      });
+    });
+    const config = parseRunnerConfig({
+      OPENSTEER_HOST_URL: `http://127.0.0.1:${address.port}`,
+      OPENSTEER_RUNNER_MODULES: "agents,browser",
+      OPENSTEER_MAX_CONCURRENT_RUNS: "1",
+      OPENSTEER_LOCAL_WORKSPACE_ROOT: "/tmp/opensteer-browser-agents-test/workspaces",
+      OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH: "/tmp/opensteer-browser-agents-test/workspaces.json",
+      OPENSTEER_RUNNER_ENROLLMENT_TOKEN: "e".repeat(32),
+      OPENSTEER_BROWSER_BRIDGE_URL: `http://127.0.0.1:${address.port}`,
+      OPENSTEER_BROWSER_BRIDGE_TOKEN: "b".repeat(32),
+      OPENSTEER_BROWSER_RUNTIME_ID: runtimeId,
+      OPENSTEER_BROWSER_SIGN_IN: "1",
+    });
+    const runtime = new RunnerRuntime({
+      nodeExecutable: process.execPath,
+      agentSkills: testAgentSkills,
+      plugins: noPlugins,
+      bootId,
+      deploymentShape: serverDeploymentShape,
+      environmentId,
+      harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
+      harnesses: new HarnessRegistry(),
+      maxConcurrentRuns: 1,
+      dataDirectory: "/tmp/opensteer-browser-agents-test",
+      privateStateDirectory: "/tmp/opensteer-browser-agents-test/state",
+      browserHarnessExecutable: "/opt/opensteer/browser-harness",
+      projectContinuationIdentity,
+      workspaceManager: {
+        prepare: async () => {
+          throw new Error("not used");
+        },
+        writableRoots: () => [],
+      },
+    });
+    const connection = new ReconnectingHostConnection({
+      bootId,
+      config,
+      identity,
+      identityStore: { acceptHostConnection: async () => identity },
+      logger: { info: () => {}, error: () => {} },
+      runtimeVersion: "test",
+      agents: {
+        runtime,
+        workspaceBackings: ["local-directory"],
+        localWorkspaces: localStorageFixture(environmentId),
+      },
+      browserBridge: config.browserBridge,
+    });
+    const running = connection.run(abort.signal);
+    try {
+      await expect(
+        withTimeout(descriptor.promise, 2_000, {
+          timeoutError: () => new Error("The combined Runner never advertised its modules"),
+        }),
+      ).resolves.toMatchObject({
+        modules: {
+          agents: { environmentIds: [environmentId], maxConcurrentRuns: 1 },
+          browser: {
+            runtimeId,
+            wireVersion: 1,
+            cdpBoundary: 1,
+            sharedControl: 1,
+            signIn: { version: 3 },
+            cardFill: 1,
+          },
+        },
+      });
+    } finally {
+      abort.abort();
+      connection.close();
+      await running;
+      await runtime.close();
+      for (const client of webSockets.clients) client.terminate();
+      await new Promise<void>((resolve) => webSockets.close(() => resolve()));
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
 
   it("keeps processing control messages while a catalog lifecycle operation is pending", async () => {
     const server = createServer();

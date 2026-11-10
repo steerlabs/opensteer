@@ -46,6 +46,11 @@ import { HostClientRequestError } from "../host/client.js";
 import { PlaceActivityStore } from "../host/place-activity.js";
 import { placeList } from "../host/places.js";
 import { mockBrowserPageImage } from "./mock-browser-frames.js";
+import { MockBrowserInput } from "./mock-browser-input.js";
+import { MockSignInPage } from "./mock-sign-in-page.js";
+
+/** The person's iPhone in the mock world: a device that holds browser profiles. */
+export const mockIphoneRunnerId = "rnr_55555555-5555-4555-8555-555555555555";
 
 const iconData =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==";
@@ -74,6 +79,7 @@ function decodedPageImage(title: string): Uint8Array<ArrayBuffer> {
 }
 const sessionId = (index: number) =>
   `bsn_00000000-0000-4000-8000-${String(800 + index).padStart(12, "0")}`;
+const sessionIdForBasicInput = sessionId(11);
 /**
  * `busy` is the decisive world of the approved design: 21 tabs over two
  * computers, two Work browsers and two separate Guest browsers. `stress`
@@ -303,6 +309,26 @@ export function seedMockPlaces(
       placement: { kind: "runner", runnerId: "rnr_88888888-8888-4888-8888-888888888888" },
     };
   }
+  add(11, "workspace", [
+    { title: "Running shoes – Allbirds", site: "https://www.allbirds.com", occupants: [] },
+    ...(busy ? [{ title: "Cart – Target", site: "https://www.target.com", occupants: [] }] : []),
+  ]);
+  sessions[sessions.length - 1] = {
+    ...sessions[sessions.length - 1]!,
+    placement: { kind: "runner", runnerId: mockIphoneRunnerId },
+    profileId: "bpr_00000000-0000-4000-8000-000000000003",
+  };
+  if (busy) {
+    add(12, "workspace", [
+      { title: "Lisbon itinerary – TripIt", site: "https://www.tripit.com", occupants: [] },
+    ]);
+    sessions[sessions.length - 1] = {
+      ...sessions[sessions.length - 1]!,
+      placement: { kind: "runner", runnerId: "rnr_44444444-4444-4444-8444-444444444444" },
+      profileId: "bpr_00000000-0000-4000-8000-000000000005",
+      state: "failed",
+    };
+  }
   if (world === "stress")
     add(
       10,
@@ -414,20 +440,60 @@ export function seedMockPlaces(
             : session,
         ),
       };
+  // Every device can hold browsers: the person's iPhone too, while Opensteer is open on it.
+  machines.push({
+    tabOpenedAt: null,
+    access: null,
+    apps: null,
+    allowedModules: ["browser", "integrations"],
+    detail: null,
+    device: { form: "phone", platform: "ios" },
+    enrollmentId: "ren_runner_iphone",
+    expiresAt: null,
+    computerUse: null,
+    fullDiskAccess: null,
+    id: mockIphoneRunnerId,
+    lastSeenAt: at,
+    localWorkspaces: 0,
+    modules: {
+      browser: { checkedAt: null, detail: null, readiness: "ready" },
+      integrations: { checkedAt: null, detail: null, readiness: "ready" },
+    },
+    name: "Alex's iPhone",
+    ownership: "mine",
+    ownerName: null,
+    pinnedThreads: 0,
+    revocable: true,
+    status: "online",
+    runtimeVersion: null,
+    unlinkedLocalFolders: 0,
+  });
+  const main = machines[0]!.id;
+  const studio = machines.find((machine) => machine.name === "Studio Mac")?.id ?? main;
+  const profileHomes = machines
+    .filter(
+      (machine) =>
+        machine.allowedModules.includes("browser") ||
+        (machine.device?.platform === "macos" && machine.ownership !== "other"),
+    )
+    .map((machine) => machine.id);
+  const profile = (id: number, name: string, homeRunnerId: string | null) =>
+    BrowserProfileSchema.parse({
+      homeRunnerId,
+      id: `bpr_00000000-0000-4000-8000-00000000000${id}`,
+      name,
+    });
   return {
     ...snapshot,
     browserAvailable: true,
+    browserProfileHomes: profileHomes,
     browserProfiles: [
-      BrowserProfileSchema.parse({
-        id: "bpr_00000000-0000-4000-8000-000000000001",
-        name: "Personal",
-        revision: 1,
-      }),
-      BrowserProfileSchema.parse({
-        id: "bpr_00000000-0000-4000-8000-000000000002",
-        name: "Work",
-        revision: 1,
-      }),
+      profile(1, "Personal", main),
+      profile(2, "Work", main),
+      profile(3, "Shopping", mockIphoneRunnerId),
+      profile(4, "Design", studio),
+      // A Mac that is asleep, with the profile that lives on it.
+      profile(5, "Travel", "rnr_44444444-4444-4444-8444-444444444444"),
     ],
     browserPlacements: machines
       .filter(
@@ -521,6 +587,8 @@ export interface MockPlaceScript {
 
 /** All animation derives from elapsed injected-clock time and stable fixture IDs. */
 export class MockPlaceWorld {
+  readonly input = new MockBrowserInput((sessionId, command) => this.command(sessionId, command));
+  readonly #signInPage = new MockSignInPage(this.input.editing);
   readonly #history = new Map<string, BrowserHistory>();
   readonly #historyChanged: (profileId: string) => void;
   readonly #entered: (runId: string, threadId: string, data: EventData<"place.entered">) => void;
@@ -819,6 +887,7 @@ export class MockPlaceWorld {
     };
   };
   retain(sessionId: string, surfaceId: string): () => void {
+    if (sessionId === sessionIdForBasicInput) this.input.retain(sessionId, surfaceId);
     const key = this.#key(sessionId, surfaceId);
     const watch = this.#watches.get(key) ?? { holds: 0, state: emptyWatch, awaiting: null };
     watch.holds++;
@@ -844,6 +913,15 @@ export class MockPlaceWorld {
   command(sessionId: string, command: BrowserCommand): void {
     const snapshot = this.#snapshot();
     const session = snapshot.browserSessions.find((session) => session.id === sessionId);
+    const surfaceId = "surfaceId" in command ? command.surfaceId : undefined;
+    if (
+      this.#signInPage.command(
+        sessionId,
+        command,
+        session?.tabs.find((tab) => tab.id === surfaceId)?.title,
+      )
+    )
+      return;
     if (!session?.tabCatalog || session.state !== "ready") {
       // As the Host client: a view's cleanup after its browser has gone needs no error.
       if (
@@ -853,6 +931,13 @@ export class MockPlaceWorld {
       )
         return;
       throw new Error("The browser is unavailable.");
+    }
+    if (
+      sessionId === sessionIdForBasicInput &&
+      (command.type.startsWith("input.") || command.type.startsWith("clipboard."))
+    ) {
+      this.input.command(sessionId, command);
+      return;
     }
     if (command.type === "surface.close") {
       void this.close(sessionId, command.surfaceId, session.tabCatalog, false);
@@ -1047,13 +1132,42 @@ export class MockPlaceWorld {
         reason: "browser-placement-unavailable",
         message: "The selected computer does not hold this live profile.",
       });
-    const desired = exact ?? holder?.runnerId ?? this.#rememberedPlacements.get(rememberedKey);
+    // A profile opens only on the device it lives on, never anywhere else.
+    const home = profileId
+      ? (snapshot.browserProfiles.find(({ id }) => id === profileId)?.homeRunnerId ?? null)
+      : null;
+    if (home && exact && home !== exact)
+      throw new HostClientRequestError({
+        code: "conflict",
+        status: 409,
+        reason: "browser-placement-unavailable",
+        message: "This profile lives on another computer.",
+      });
+    const desired =
+      exact ?? home ?? holder?.runnerId ?? this.#rememberedPlacements.get(rememberedKey);
     const eligible = snapshot.browserPlacements.filter((placement) => placement.available);
+    const homeMachine = snapshot.machines.find((machine) => machine.id === desired);
     const placement = desired
-      ? snapshot.browserPlacements.find((placement) => placement.runnerId === desired)
+      ? (snapshot.browserPlacements.find((placement) => placement.runnerId === desired) ??
+        (homeMachine && {
+          kind: "runner" as const,
+          runnerId: homeMachine.id,
+          label: homeMachine.name,
+          available: homeMachine.status === "online",
+          runtimeId: "mock-targeted-runtime",
+          environmentIds: [],
+        }))
       : eligible.length === 1
         ? eligible[0]
         : undefined;
+    // As the Host refuses a profile whose device is away: by name, never elsewhere.
+    if (home && placement && !placement.available)
+      throw new HostClientRequestError({
+        code: "conflict",
+        status: 409,
+        reason: "browser-profile-home-unavailable",
+        message: `${snapshot.browserProfiles.find(({ id }) => id === profileId)?.name ?? "This profile"} is on ${placement.label}, which is offline.`,
+      });
     if (!placement?.available)
       throw new HostClientRequestError({
         code: "conflict",
@@ -1310,7 +1424,7 @@ export class MockPlaceWorld {
       revision: session.tabCatalog.revision + 1,
       tabs: [
         ...session.tabCatalog.tabs.filter((held) => held.id !== tabId),
-        {
+        session.tabCatalog.tabs.find((held) => held.id === tabId) ?? {
           id: tab.id,
           title: tab.title,
           site: tab.site,
@@ -1329,7 +1443,14 @@ export class MockPlaceWorld {
       tabCatalog: catalog,
       tabs: [
         ...session.tabs.filter((held) => held.id !== tabId),
-        { id: tab.id, title: tab.title, url, active: true },
+        {
+          ...(session.tabs.find((held) => held.id === tabId) ?? {
+            id: tab.id,
+            title: tab.title,
+            url,
+          }),
+          active: true,
+        },
       ],
     };
     this.#update({
@@ -1572,6 +1693,7 @@ export class MockPlaceWorld {
       const capture = this.#crops.get(key);
       const picture = ++this.#pictures;
       watch.state = {
+        ...(sessionId === sessionIdForBasicInput ? { input: "basic" as const } : {}),
         status: "live",
         error: null,
         frame: {
@@ -1742,6 +1864,7 @@ export class MockPlaceWorld {
     this.#frames();
   }
   dispose(): void {
+    this.input.dispose();
     if (this.#timer !== null) clearInterval(this.#timer);
     for (const load of this.#loads.values()) clearTimeout(load);
     this.#loads.clear();

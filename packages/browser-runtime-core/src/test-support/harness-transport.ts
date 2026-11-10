@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { createServer } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import { z } from "zod";
 import type { CdpParameters } from "@opensteer/browser-core";
@@ -12,8 +13,14 @@ export async function startHarnessBridge(
   subscribe?: (listener: (message: BrowserServerMessage) => void) => () => void,
 ): Promise<{ readonly url: string; close(): Promise<void> }> {
   const requestInTest = AsyncLocalStorage.bind(request);
-  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
-  await once(server, "listening");
+  const http = createServer((request, response) => {
+    const sessionId = request.url?.split("/").at(-1);
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ sessionId, backend: "cdp", version: 1 }));
+  });
+  const server = new WebSocketServer({ server: http });
+  http.listen(0, "127.0.0.1");
+  await once(http, "listening");
   const unsubscribe = subscribe?.((message) => {
     if (message.type !== "cdp.event") return;
     const event = message.event;
@@ -73,7 +80,9 @@ export async function startHarnessBridge(
       (closing ??= new Promise<void>((resolve, reject) => {
         unsubscribe?.();
         for (const client of server.clients) client.terminate();
-        server.close((error) => (error ? reject(error) : resolve()));
+        server.close((error) => {
+          http.close((httpError) => (error || httpError ? reject(error ?? httpError) : resolve()));
+        });
       })),
     url: `ws://127.0.0.1:${address.port}/internal/v1/browser-cdp`,
   };

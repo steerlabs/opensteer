@@ -992,6 +992,44 @@ it("filters the mock task catalog to active listed work before paging", async ()
   expect(ids).toEqual(expected.map(({ thread }) => thread.id));
 });
 
+it("keeps a browser-only Android Opensteer phone distinct from the mock Agent Phone", async () => {
+  const client = createClient();
+  try {
+    const minted = await client.dispatch({
+      type: "runner.enrollment.createPhone",
+      profile: "iphone",
+      idempotencyKey: "mock-android-opensteer",
+      name: "Pixel 9",
+    });
+    if (minted.type !== "runner.enrollment.createPhone") throw new Error("Expected enrollment");
+    const runnerId = createId("runner");
+    client.mockConnectIphone({
+      enrollmentId: minted.enrollmentId,
+      runnerId,
+      name: "Pixel 9",
+      platform: "android",
+      modules: ["browser"],
+    });
+    expect(client.getSnapshot().machines.find(({ id }) => id === runnerId)).toMatchObject({
+      device: { app: "opensteer", form: "phone", platform: "android" },
+      computerUse: null,
+      apps: null,
+      modules: { browser: { readiness: "ready" } },
+    });
+    expect(client.getSnapshot().machines.find(({ name }) => name === "Pixel 7")?.device).toEqual({
+      form: "phone",
+      platform: "android",
+    });
+    client.mockPhoneAway(runnerId);
+    expect(client.getSnapshot().machines.find(({ id }) => id === runnerId)).toMatchObject({
+      device: { app: "opensteer", form: "phone", platform: "android" },
+      status: "offline",
+    });
+  } finally {
+    client.dispose();
+  }
+});
+
 it("models iPhone capability, pairing, pending enrollment, owner-session approvals and removal", async () => {
   const client = createClient();
   try {

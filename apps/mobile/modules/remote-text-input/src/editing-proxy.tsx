@@ -22,6 +22,7 @@ import { AppText } from "../../../src/ui/primitives.js";
 const RemoteTextInput = lazy(async () => ({
   default: (await import("./remote-text-input.js")).RemoteTextInput,
 }));
+const noKeyboardReplacements = { keyboardMayReplaceText: false } as const;
 
 const nativeBrowserAbilities: EditingTargetAbilities = {
   composition: true,
@@ -113,6 +114,7 @@ export function NativeEditingProxy({
           context={context}
           focused={focused}
           softKeyboard={softKeyboard}
+          {...(abilities.rangeEdits ? undefined : noKeyboardReplacements)}
           instruction={instruction}
           finishCompositionRequest={finishCompositionRequest}
           onError={() => setRefusal("Native input unavailable. Reopen the keyboard to retry.")}

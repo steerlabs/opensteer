@@ -275,6 +275,14 @@ export function browserSignInProblemCopy(
             ? "This page can’t take a Chrome sign-in yet"
             : "This browser can’t take a Chrome sign-in yet",
       };
+    case "unsupported-operation":
+      return {
+        fix: `Sign in to ${domain} on the page itself.`,
+        title:
+          input.context === "page"
+            ? "This page can’t take a Chrome sign-in"
+            : "This browser can’t take a Chrome sign-in",
+      };
     case "no-state":
       return input.sourceName
         ? {

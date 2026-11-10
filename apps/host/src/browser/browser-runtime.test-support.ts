@@ -7,6 +7,8 @@ import {
   RunnerBootIdSchema,
   RunnerDescriptorSchema,
   type RunnerAuxiliaryFrameFence,
+  type BrowserEngine,
+  type RunnerDescriptor,
 } from "@opensteer/protocol";
 import {
   BrowserRelayFrameHeaderSchema,
@@ -39,6 +41,11 @@ export async function startBrowserRuntime(
   options: {
     /** Advertise the agent CDP boundary and shared tab identity, as a current Runtime does. */
     readonly agentReady?: boolean;
+    readonly browserEngine?: BrowserEngine;
+    readonly device?: RunnerDescriptor["device"];
+    readonly agentActions?: boolean;
+    readonly basicInput?: boolean;
+    readonly surfaceState?: boolean;
     readonly navigation?: boolean;
     readonly navigationAttribution?: boolean;
     readonly editing?: boolean;
@@ -73,6 +80,7 @@ export async function startBrowserRuntime(
   const descriptor = RunnerDescriptorSchema.parse({
     bootId,
     capabilities: [],
+    ...(options.device ? { device: options.device } : {}),
     modules: {
       browser: {
         wireVersion: 1,
@@ -80,10 +88,13 @@ export async function startBrowserRuntime(
           ? {
               localProfileStorage: {
                 storageInstanceId: "20000000-0000-4000-8000-000000000001",
-                engine: "chromium",
+                engine: options.browserEngine ?? "chromium",
               },
             }
           : {}),
+        ...(options.agentActions ? { agentActions: 1, sharedControl: 1, targetControl: 1 } : {}),
+        ...(options.basicInput ? { basicInput: 1 } : {}),
+        ...(options.surfaceState ? { surfaceState: 1 } : {}),
         ...(options.editing ? { editing: 1, targetControl: 1 } : {}),
         ...(options.navigation ? { navigationVersion: 1 } : {}),
         ...(options.navigationAttribution ? { navigationAttributionVersion: 1 } : {}),
@@ -296,6 +307,10 @@ export async function startBrowserRuntime(
             ...(latestClaims.navigationAttributionVersion === 1
               ? { navigationAttributionVersion: 1 }
               : {}),
+            ...(latestClaims.basicInput
+              ? { basicInput: latestClaims.basicInput, inputLanesVersion: 1 }
+              : {}),
+            ...(latestClaims.surfaceState ? { surfaceState: latestClaims.surfaceState } : {}),
             ...(options.targetedStreaming ? { targetedStreamingVersion: 1 } : {}),
             access: latestClaims.access,
             dialog: options.initialDialog ?? null,
@@ -304,6 +319,10 @@ export async function startBrowserRuntime(
             surfaces: [
               {
                 active: true,
+                ...(options.agentActions
+                  ? { documentId: "document-integration", geometryRevision: 1 }
+                  : {}),
+                ...(latestClaims.surfaceState ? { state: "live" } : {}),
                 ...(options.navigation && latestClaims.navigationVersion === 1
                   ? { canGoBack: false, canGoForward: false }
                   : {}),
@@ -359,7 +378,7 @@ export async function startBrowserRuntime(
     send({
       type: "browser.profile.inventory",
       storageInstanceId: "20000000-0000-4000-8000-000000000001",
-      engine: "chromium",
+      engine: options.browserEngine ?? "chromium",
       profiles: [],
       complete: true,
     });

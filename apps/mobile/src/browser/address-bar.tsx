@@ -16,6 +16,8 @@ import Animated, {
 } from "react-native-reanimated";
 import { scheduleOnRN } from "react-native-worklets";
 import { color, controlFontScaleLimit, radius, space, touchTarget } from "../theme.js";
+import type { ComputerSymbol } from "../screens/settings-model.js";
+import { NativeMenu } from "../thread/composer-menu.js";
 import { ChatOrb } from "../ui/chat-orb.js";
 import { appear, exit } from "../ui/motion.js";
 import { AppText } from "../ui/primitives.js";
@@ -27,27 +29,32 @@ import { ToolbarCapsule } from "./toolbar.js";
 const switchDistance = 56;
 
 /**
- * The page itself, in the bar: the way back through its history, then its
- * address as Safari's bar shows it, the site alone with its icon. Tapping the
- * site edits the address; dragging it sideways moves to the browser's next or
- * previous tab, as Safari's does. A line along its bottom edge says what is
- * happening in the page: the page loading, or an agent acting in it.
+ * The page itself, in the bar: where the page is wide, the way back through its
+ * history, then its address as Safari's bar shows it, the site alone with its
+ * icon. Tapping the site edits the address; dragging it sideways moves to the
+ * browser's next or previous tab, as Safari's does. A line along its bottom
+ * edge says what is happening in the page: the page loading, or an agent
+ * acting in it.
  *
  * While the page keeps up with an agent's tab, a green ring and the agent's
- * mark say so: the one sign that this is what the agent sees.
+ * mark say so: the one sign that this is what the agent sees. A page that runs
+ * on another device ends with that device's shape, which names it when tapped;
+ * the site keeps every other point.
  */
 export const AddressCapsule = memo(function AddressCapsule(props: {
   readonly acting: boolean;
-  readonly canGoBack: boolean;
+  /** Given where the page's history has room beside the address; otherwise it is in the page's menu. */
+  readonly back: { readonly enabled: boolean; readonly onPress: () => void } | null;
   /** Arrived here from another tab, so the address fades in as the page does. */
   readonly arriving?: boolean;
+  /** The device the page runs on, where that is not this one; tapping it names it. */
+  readonly device?: PageDevice | null;
   /** Keeping up with this Thread's agent: its task mark, or null for Chat's orb. */
   readonly following?: { readonly mark: TaskMarkValue | null } | null;
   readonly favicon: string | null;
   /** Given where Forward has room beside Back; otherwise it is in the page's menu. */
   readonly forward: { readonly enabled: boolean; readonly onPress: () => void } | null;
   readonly loading: boolean;
-  readonly onBack: () => void;
   readonly onEdit: () => void;
   /** Given while there is a tab that way to move to. */
   readonly onSwitch: ((direction: -1 | 1) => void) | null;
@@ -79,6 +86,7 @@ export const AddressCapsule = memo(function AddressCapsule(props: {
   const reduceMotion = useReducedMotion();
   const site = props.site ?? "Search or enter address";
   const following = props.following ?? null;
+  const device = props.device ?? null;
   const address = props.site === null ? "Address" : `Address, ${props.site}`;
   const fade = reduceMotion ? {} : { entering: appear, exiting: exit };
   const glyph = following ? (
@@ -100,12 +108,14 @@ export const AddressCapsule = memo(function AddressCapsule(props: {
     <GestureDetector gesture={swipe}>
       <View style={styles.slot}>
         <ToolbarCapsule>
-          <PageHistoryButton
-            enabled={props.canGoBack}
-            label="Previous page"
-            onPress={props.onBack}
-            symbol="chevron.left"
-          />
+          {props.back === null ? null : (
+            <PageHistoryButton
+              enabled={props.back.enabled}
+              label="Previous page"
+              onPress={props.back.onPress}
+              symbol="chevron.left"
+            />
+          )}
           {props.forward === null ? null : (
             <PageHistoryButton
               enabled={props.forward.enabled}
@@ -123,7 +133,12 @@ export const AddressCapsule = memo(function AddressCapsule(props: {
             accessibilityLabel={following === null ? address : `${address}. Following the agent`}
             accessibilityRole="button"
             onPress={props.onEdit}
-            style={({ pressed }) => [styles.address, pressed && styles.pressed]}
+            style={({ pressed }) => [
+              styles.address,
+              props.back === null && styles.addressLeading,
+              device !== null && styles.addressBeforeDevice,
+              pressed && styles.pressed,
+            ]}
           >
             <Animated.View
               {...(props.arriving === true && !reduceMotion ? { entering: arrive } : {})}
@@ -148,6 +163,7 @@ export const AddressCapsule = memo(function AddressCapsule(props: {
               </AppText>
             </Animated.View>
           </Pressable>
+          {device === null ? null : <DeviceGlyph device={device} />}
           <LayoutAnimationConfig skipEntering>
             {following === null ? null : (
               <Animated.View {...fade} pointerEvents="none" style={styles.ring} />
@@ -165,6 +181,37 @@ export const AddressCapsule = memo(function AddressCapsule(props: {
 });
 
 const arrive = FadeIn.duration(180);
+
+/** Where a page runs, when that is another device than the one in the person's hand. */
+export interface PageDevice {
+  readonly glyph: ComputerSymbol;
+  readonly name: string;
+  readonly online: boolean;
+  /** That device's own page. */
+  readonly onOpen: () => void;
+}
+
+/**
+ * The device's shape alone, at the address's far end: the capsule has no room
+ * for its name, so the name, and whether the device is offline, are what
+ * tapping it says, with the way to that device's page.
+ */
+function DeviceGlyph(props: { readonly device: PageDevice }): ReactNode {
+  const { glyph, name, online, onOpen } = props.device;
+  const where = online ? name : `${name} · Offline`;
+  return (
+    <NativeMenu
+      accessibilityHint="Shows the device this tab runs on"
+      accessibilityLabel={`Runs on ${where}`}
+      options={[{ icon: glyph, id: "device", label: where, onPress: onOpen }]}
+      style={styles.device}
+      title="This tab runs on"
+      triggerStyle={styles.deviceFace}
+    >
+      <Symbol name={glyph} size={15} tint={online ? color.muted : color.amber} weight="medium" />
+    </NativeMenu>
+  );
+}
 
 function PageHistoryButton(props: {
   readonly enabled: boolean;
@@ -363,7 +410,17 @@ const styles = StyleSheet.create({
     minWidth: 0,
     paddingEnd: space[8],
   },
+  addressBeforeDevice: { paddingEnd: 0 },
+  addressLeading: { paddingStart: space[14] },
   cancel: { justifyContent: "center", minHeight: touchTarget, paddingHorizontal: space[4] },
+  device: { alignSelf: "stretch" },
+  deviceFace: {
+    alignItems: "center",
+    height: touchTarget,
+    justifyContent: "center",
+    paddingEnd: space[14],
+    paddingStart: space[8],
+  },
   editRow: { alignItems: "center", flexDirection: "row", gap: space[8] },
   editor: {
     gap: space[8],

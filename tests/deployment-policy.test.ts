@@ -295,6 +295,13 @@ const sqlExceptions: Record<
         "deployment.deployment_shape->>'kind' = 'server'": 1,
         "deployment.deployment_shape->>'kind' = 'personal'": 1,
       },
+      "browserDeviceGrantsMigration/unclassified": {
+        "deployment_shape->>'kind' = 'personal')": 2,
+        "deployment_shape->>'kind' = 'personal'))": 2,
+      },
+      "browserProfileHomesMigration/browser_profile_deletions_state_check": {
+        "deployment_shape->>'kind' = 'personal')": 1,
+      },
       "runnerOwnedLocalWorkspacesMigration/deployments_shape_check": {
         "deployment_shape->>'kind' = any (array['personal', 'server'])": 1,
       },

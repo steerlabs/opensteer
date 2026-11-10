@@ -27,6 +27,7 @@ import {
   computersOverview,
   computerStatus,
   computerUses,
+  deviceRemovalProfiles,
   hostsDeployment,
   serviceGlyph,
   serviceLabel,
@@ -58,7 +59,7 @@ import type { ComputerAppSetupSummary as ComputerAppSetupRequest } from "@openst
 import { computerIcon, type PlaceArt } from "./computers/device-art.js";
 import {
   computerAppRows,
-  isAndroidPhone,
+  isAgentPhone,
   isIphone,
   ownsComputerApps,
   phoneUseIntroduction,
@@ -103,9 +104,13 @@ export function machineRemovalStakes(machine: MachineSummary): string | null {
 }
 
 /** The stakes, asked as the question the browser puts before the command. */
-export function machineRemovalPrompt(machine: MachineSummary): string {
+export function machineRemovalPrompt(
+  machine: MachineSummary,
+  profiles: Parameters<typeof deviceRemovalProfiles>[1],
+): string {
+  const deleted = deviceRemovalProfiles(machine, profiles);
   const stakes = machineRemovalStakes(machine);
-  return `Remove ${machine.name}? Agents will no longer be able to use it.${stakes ? ` ${stakes}` : ""}\n\nAgent access: apps, Terminal, screen control and shared folders stop being available here.\nFiles and saved browser profiles: stay on the computer.\nSigned-in sessions: remain signed in. Manage those in Account.`;
+  return `Remove ${machine.name}?${deleted ? ` ${deleted}` : ""} Agents will no longer be able to use it.${stakes ? ` ${stakes}` : ""}\n\nAgent access: apps, Terminal, screen control and shared folders stop being available here.\nFiles: stay on the computer.\nOpensteer on it: stays signed in. Manage that in Account.`;
 }
 
 /**
@@ -557,7 +562,7 @@ function ComputerRow({
   readonly role: ReturnType<typeof computerRole>;
   readonly uses: readonly ComputerUse[];
 }) {
-  const status = isAndroidPhone(machine) ? phoneStatus(machine) : computerStatus(machine);
+  const status = isAgentPhone(machine) ? phoneStatus(machine) : computerStatus(machine);
   return (
     <Link
       className={`computer-row${status.tone === "offline" ? " computer-row--away" : ""}`}
@@ -604,6 +609,7 @@ function Services({
   readonly client: ReturnType<typeof useShell>["hostClient"];
   readonly services: readonly MachineSummary[];
 }) {
+  const profiles = useShell().snapshot.browserProfiles;
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
@@ -631,7 +637,7 @@ function Services({
   }
 
   async function remove(machine: MachineSummary) {
-    if (!window.confirm(machineRemovalPrompt(machine))) return;
+    if (!window.confirm(machineRemovalPrompt(machine, profiles))) return;
     setBusy(machine.id);
     setError(null);
     try {
@@ -771,7 +777,7 @@ export function computerDetailLead(input: {
       ? `Waiting for ${machine.name} to connect. Open Opensteer on it to finish adding it.`
       : `Waiting for ${machine.name} to connect. Finish setting it up on that computer.`;
   }
-  if (isAndroidPhone(machine)) return phoneUseIntroduction;
+  if (isAgentPhone(machine)) return phoneUseIntroduction;
   if (isIphone(machine) && machine.ownership !== "other") {
     return `Agents can use only the apps turned on for ${machine.name}, and only while Opensteer is open on it.`;
   }
@@ -827,6 +833,7 @@ function ComputerDetail({ machine }: { readonly machine: MachineSummary }) {
     setName(machine.name);
   }, [machine.name]);
   const here = hereId !== null && machine.id === hereId;
+  const profiles = snapshot.browserProfiles;
   const mainRunner = hostsDeployment(machine, deploymentPolicy);
   // Whether this page runs in the desktop app on this very Mac — a lent one,
   // or the one hosting this Personal Deployment, which has no lent slot. It is
@@ -844,7 +851,7 @@ function ComputerDetail({ machine }: { readonly machine: MachineSummary }) {
   const approval = useComputerAppApproval(hostClient);
   // A phone lends only its screen: agents never work on it, it has no files or
   // commands to share, and no Mac permissions to give.
-  const phone = isAndroidPhone(machine);
+  const phone = isAgentPhone(machine);
   // An iPhone lends only its own apps, which its apps section covers.
   const iphone = isIphone(machine);
   const homeName =
@@ -951,7 +958,7 @@ function ComputerDetail({ machine }: { readonly machine: MachineSummary }) {
    * and names what went wrong instead, and Remove can be tried again.
    */
   async function remove() {
-    if (!window.confirm(machineRemovalPrompt(machine))) return;
+    if (!window.confirm(machineRemovalPrompt(machine, profiles))) return;
     setRemoving(true);
     setError(null);
     try {

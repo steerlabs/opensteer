@@ -468,6 +468,33 @@
   font-size: var(--text-lg);
 }
 
+/* Where a profile or tab lives, said only when that is not here. Its size
+   comes from where it stands; the glyph follows the text. */
+.device-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3em;
+  min-width: 0;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.device-label svg {
+  flex: none;
+  width: 1.05em;
+  height: 1.05em;
+}
+
+.device-label__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.device-label__away {
+  flex: none;
+}
+
 .card__row-mono {
   font-family: var(--font-mono);
   font-size: var(--text-md);

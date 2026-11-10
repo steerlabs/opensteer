@@ -204,6 +204,7 @@ vi.mock("./thread-subtitle.js", () => ({
   ThreadSubtitle: () => null,
 }));
 vi.mock("./thread-pane.js", () => ({ sameThreadHeader: () => false }));
+vi.mock("./folded-page.js", () => ({ FoldedPage: () => null }));
 
 const { useThreadHeader } = await import("../screens/thread-header.js");
 const { AroundScreen } = await import("./around-sheet.js");

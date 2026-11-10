@@ -14,7 +14,7 @@ import type {
   BrowserFrameView,
   BrowserSessionSummary,
 } from "@opensteer/client/host";
-import { BrowserCursorStore } from "@opensteer/client/host";
+import { BrowserCursorStore, browserTabPicture } from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema, TargetedBrowserClientMessageSchema } from "@opensteer/protocol";
 import type { PictureMetadata, PictureOutcome } from "../computers/phone-display-native.js";
 import { BrowserStream, type BrowserStreamProps } from "./browser-stream.js";
@@ -683,6 +683,33 @@ describe.each(["image", "picture"] as const)(
         "00000000-0000-4000-8000-000000000001",
         surfaceId,
       );
+    });
+
+    it("keeps one picture for the tab's row as it leaves, never per frame or from before a revocation", async () => {
+      const { decode, emit, gap, hostClient, render } = setup();
+      const kept = () => browserTabPicture(hostClient, sessionId, surfaceId)?.uri ?? null;
+      render("synchronized");
+      emit();
+      await decode();
+      emit(surfaceId, { frameId: 2 }, new Uint8Array([0xff, 0xd8, 0x00]));
+      await decode();
+      expect(kept()).toBeNull();
+      render("synchronized", false);
+      expect(kept()).toBe("data:image/jpeg;base64,/9gA");
+
+      render("synchronized");
+      emit(surfaceId, { frameId: 3 });
+      await decode();
+      gap(true);
+      render("synchronized", false);
+      expect(kept()).toBeNull();
+
+      render("synchronized");
+      emit(surfaceId, { frameId: 4 });
+      await decode();
+      act(() => root?.unmount());
+      root = null;
+      expect(kept()).toBe("data:image/jpeg;base64,/9j/");
     });
 
     it("uses only the passive feed for a preview", async () => {

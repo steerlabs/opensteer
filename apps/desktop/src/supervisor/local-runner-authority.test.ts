@@ -58,7 +58,7 @@ describe("DesktopLocalRunnerTargetResolver", () => {
       deploymentShape: { kind: "personal" },
       // The signed access route, never the Host's own unreachable loopback.
       hostUrl: routeOrigin,
-      // A Personal Deployment grants every computer but its Main exactly shell.
+      // Only server Deployments may execute agents on a connecting computer.
       mayRunAgents: false,
     });
     await expect(resolver.isCurrent(target)).resolves.toBe(true);

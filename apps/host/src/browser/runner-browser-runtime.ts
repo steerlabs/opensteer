@@ -177,6 +177,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       return [
         {
           available: incompatibility === null,
+          agents: stream.identity.modules.agents !== undefined,
           environmentIds: [...stream.identity.environmentIds],
           kind: "runner" as const,
           label: stream.identity.name,
@@ -213,6 +214,9 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       personFill: browser.personFill === 1,
       signIn: browser.signIn?.version === 3,
       cdpBoundary: browser.cdpBoundary === 1,
+      agentActions: browser.agentActions === 1,
+      basicInput: browser.basicInput,
+      surfaceState: browser.surfaceState,
       sharedControl: browser.sharedControl === 1,
       passkeys: browser.passkeys === 1,
       editing: browser.editing,
@@ -441,17 +445,15 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     return null;
   }
 
-  requirePersonalProfileInventory(): void {
-    const main = this.#registry
-      .browserStreams()
-      .find((stream) => stream.identity.runnerKind === "main");
+  requirePersonalProfileInventory(runnerId: RunnerId): void {
+    const stream = this.#registry.stream(runnerId);
     if (
-      !main ||
-      (main.identity.modules.browser?.localProfileStorage !== undefined &&
-        this.#admissionReason(main))
+      !stream ||
+      (stream.identity.modules.browser?.localProfileStorage !== undefined &&
+        this.#admissionReason(stream))
     )
       throw relayError(
-        "Waiting for this Main computer to reconcile its browser profile storage.",
+        "Waiting for this profile's home computer to reconcile its browser profile storage.",
         true,
       );
   }

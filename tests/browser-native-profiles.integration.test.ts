@@ -469,9 +469,16 @@ it("advertises exact prepared storage through the standalone browser-only Runner
     },
     { timeout: 15_000 },
   );
+  const machines = await stack.api["machines.list"]({});
+  if (!machines.ok) throw new Error(machines.error.message);
+  const browserComputers = machines.data.machines.filter((machine) => machine.modules.browser);
+  expect(browserComputers).toHaveLength(1);
   const created = await stack.api["commands.dispatch"]({
     type: "browser.profile.create",
-    input: { name: "Standalone" },
+    input: {
+      name: "Standalone",
+      homeRunnerId: browserComputers[0]!.id,
+    },
     idempotencyKey: randomUUID(),
   });
   if (!created.ok || created.data.type !== "browser.profile.create")

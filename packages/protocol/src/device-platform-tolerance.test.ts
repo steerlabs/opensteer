@@ -106,6 +106,33 @@ const descriptor = {
 };
 
 describe("device platform presentation compatibility", () => {
+  it("carries an optional app identity without changing older descriptors or readers", () => {
+    const device = { form: "phone", platform: "android", app: "opensteer" } as const;
+    const phone = RunnerDescriptorSchema.parse({
+      ...descriptor,
+      device,
+      modules: { browser: { runtimeId: "phone", wireVersion: 1 } },
+    });
+    expect(phone.device).toEqual(device);
+    expect(RunnerDeviceSchema.omit({ app: true }).parse(device)).toEqual({
+      form: "phone",
+      platform: "android",
+    });
+    expect(RunnerDescriptorSchema.parse(descriptor)).toMatchObject({ device: knownMachine.device });
+    expect(
+      hostApi["machines.list"].success.parse({ machines: [{ ...knownMachine, device }] })
+        .machines[0]?.device,
+    ).toEqual(device);
+    expect(
+      RunnerDescriptorSchema.parse({ ...descriptor, device: { ...device, app: "future" } }).device
+        ?.app,
+    ).toBeUndefined();
+    expect(
+      MachineSummarySchema.parse({ ...knownMachine, device: { ...device, app: "future" } }).device
+        ?.app,
+    ).toBeUndefined();
+  });
+
   it("keeps the computer list in bootstrap readable beside a future platform", () => {
     const machines = HostBootstrapSchema.shape.machines.parse([knownMachine, futureMachine]);
     expect(machines[0]).toEqual(knownMachine);

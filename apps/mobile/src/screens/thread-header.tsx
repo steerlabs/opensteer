@@ -1,5 +1,5 @@
-import { useHostSelector } from "@opensteer/client/react";
-import type { HostClient } from "@opensteer/client/host";
+import { useHostSelector, useRunPageView } from "@opensteer/client/react";
+import { runPageOpened, type HostClient, type SurfaceDestination } from "@opensteer/client/host";
 import { StackActions, useNavigation } from "@react-navigation/native";
 import { useCallback, useLayoutEffect, useMemo, useState, type ReactNode } from "react";
 import { Platform, StyleSheet, View } from "react-native";
@@ -10,6 +10,8 @@ import {
   barOverContentOptions,
 } from "../thread/around-button.js";
 import { aroundGlanceSelector, sameAroundGlance } from "../thread/around-model.js";
+import { FoldedPage } from "../thread/folded-page.js";
+import { surfaceRoute } from "../browser/surface-route.js";
 import { sameThreadHeader, type ThreadHeaderState } from "../thread/thread-pane.js";
 import { TaskStateIndicator } from "../thread/task-status.js";
 import type { NativeMenuOption } from "../thread/composer-menu.js";
@@ -172,26 +174,66 @@ function ThreadTitle(
   const navigation = useNavigation();
   const selectAround = useMemo(() => aroundGlanceSelector(props.threadId), [props.threadId]);
   const glance = useHostSelector(props.hostClient, selectAround, sameAroundGlance);
-  // Around grows with what it counts, and the title takes only what it leaves.
+  // A folded page stands beside Around; the title takes only what they leave.
+  const [page, updatePage] = useRunPageView(props.hostClient, props.threadId);
+  const foldedRunId = page.shown === "folded" ? page.runId : null;
+  const room = page.room;
+  const hasEnd = glance !== null || foldedRunId !== null;
   const glass = useLiquidGlass();
-  const [aroundWidth, setAroundWidth] = useState(0);
-  const maxWidth = useBarTitleWidth(
-    glance === null ? 0 : aroundWidth + (glass ? 2 * barGlassInset : 0),
-  );
-  const { deploymentId, threadId } = props;
+  const [endWidth, setEndWidth] = useState(0);
+  const maxWidth = useBarTitleWidth(hasEnd ? endWidth + (glass ? 2 * barGlassInset : 0) : 0);
+  const { deploymentId, hostClient, threadId } = props;
   useLayoutEffect(() => {
     navigation.setOptions(
       aroundHeaderOptions(
-        glance === null ? null : (
-          <AroundButton
-            glance={glance}
-            onPress={() => navigation.navigate("ThreadAround", { deploymentId, threadId })}
-            onWidth={setAroundWidth}
-          />
+        !hasEnd ? null : (
+          <View
+            onLayout={(event) => setEndWidth(event.nativeEvent.layout.width)}
+            style={styles.end}
+          >
+            {foldedRunId === null ? null : (
+              <FoldedPage
+                hostClient={hostClient}
+                onOpen={(destination: SurfaceDestination) =>
+                  navigation.dispatch(
+                    StackActions.push(
+                      "WorkspaceBrowser",
+                      surfaceRoute(deploymentId, threadId, destination),
+                    ),
+                  )
+                }
+                onUnfold={() =>
+                  updatePage((value) => ({
+                    ...value,
+                    memory: runPageOpened(foldedRunId),
+                  }))
+                }
+                room={room}
+                runId={foldedRunId}
+                threadId={threadId}
+              />
+            )}
+            {glance === null ? null : (
+              <AroundButton
+                glance={glance}
+                onPress={() => navigation.navigate("ThreadAround", { deploymentId, threadId })}
+              />
+            )}
+          </View>
         ),
       ),
     );
-  }, [deploymentId, glance, navigation, threadId]);
+  }, [
+    deploymentId,
+    foldedRunId,
+    glance,
+    hasEnd,
+    hostClient,
+    navigation,
+    room,
+    threadId,
+    updatePage,
+  ]);
   return (
     <ThreadTitlePill
       {...props}
@@ -307,6 +349,7 @@ const capsuleInset = space[12];
 
 const styles = StyleSheet.create({
   capsule: { paddingHorizontal: capsuleInset },
+  end: { alignItems: "center", flexDirection: "row" },
   title: { alignItems: "center", flexDirection: "row", gap: space[4] },
   // Material's title leads; iOS centres it in the bar.
   words: { alignItems: Platform.OS === "android" ? "flex-start" : "center", flexShrink: 1 },

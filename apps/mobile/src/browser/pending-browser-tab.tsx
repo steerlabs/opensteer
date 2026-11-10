@@ -1,64 +1,17 @@
 import { browserAddressParts } from "@opensteer/client/host";
+import { showPendingBrowserTab } from "./pending-tab-route.js";
 import { memo } from "react";
 import { ActivityIndicator, StyleSheet, View } from "react-native";
-import {
-  StackActions,
-  useNavigation,
-  type NavigationProp,
-  type ParamListBase,
-} from "@react-navigation/native";
-import type { BrowserTabOpenHandle, BrowserTabOpenInput, HostClient } from "@opensteer/client/host";
+import { StackActions, useNavigation } from "@react-navigation/native";
+import type { BrowserTabOpenInput, HostClient } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
-import { isRecord } from "@opensteer/shared/isRecord";
 import { space } from "../theme.js";
 import { AppText, Notice, SecondaryButton } from "../ui/primitives.js";
 import type { SurfacesRoute } from "./surface-route.js";
+
+export { showPendingBrowserTab };
 import { ToolbarLeave, useNativeBarAway } from "./place-bar.js";
 import { Toolbar, ToolbarCapsule, ToolbarMenu } from "./toolbar.js";
-
-export function showPendingBrowserTab(
-  navigation: Pick<NavigationProp<ParamListBase>, "dispatch"> & {
-    readonly getState: () => ReturnType<NavigationProp<ParamListBase>["getState"]> | undefined;
-  },
-  route: SurfacesRoute,
-  opening: BrowserTabOpenHandle,
-): void {
-  const scope =
-    route.scope === "workspace" ? { scope: "workspace" as const } : { threadId: route.threadId };
-  navigation.dispatch(
-    StackActions.replace("WorkspaceBrowser", {
-      deploymentId: route.deploymentId,
-      ...scope,
-      pendingBrowserTab: opening.idempotencyKey,
-    }),
-  );
-  void opening.result.then(
-    (opened) => {
-      const state = navigation.getState();
-      const current = state?.routes[state.index];
-      if (
-        current?.name !== "WorkspaceBrowser" ||
-        !isRecord(current.params) ||
-        current.params["pendingBrowserTab"] !== opening.idempotencyKey ||
-        current.params["deploymentId"] !== route.deploymentId
-      )
-        return;
-      navigation.dispatch({
-        ...StackActions.replace("WorkspaceBrowser", {
-          deploymentId: route.deploymentId,
-          ...(current.params["scope"] === "workspace"
-            ? { scope: "workspace" }
-            : { threadId: current.params["threadId"] }),
-          sessionId: opened.sessionId,
-          tabId: opened.tabId,
-          editAddress: true,
-        }),
-        ...(current.key ? { source: current.key } : {}),
-      });
-    },
-    () => undefined,
-  );
-}
 
 export const PendingBrowserTabView = memo(function PendingBrowserTabView({
   hostClient,

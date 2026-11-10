@@ -1050,8 +1050,7 @@ function runnerWorkspaceStorage(
 
 /**
  * What this Runner process runs. `browser` names a relay that reaches the Host
- * through this Runner's own identity and serves the agents on this computer, so
- * a browser without agents is a machine nobody can use.
+ * through this Runner's own identity, independently of where agents run.
  */
 function parseRunnerModules(value: string): readonly RunnerProcessModule[] {
   const values = value.split(",").map((entry) => entry.trim());
@@ -1060,9 +1059,6 @@ function parseRunnerModules(value: string): readonly RunnerProcessModule[] {
     throw new Error(
       "OPENSTEER_RUNNER_MODULES must be a unique comma-separated list of agents, browser, integrations, messaging and shell",
     );
-  }
-  if (selection.includes("browser") && !selection.includes("agents")) {
-    throw new Error("browser relay belongs to a computer that runs agents");
   }
   // A Mac's own transports reach its Messages through the helper the
   // integrations module's bridge connects to.

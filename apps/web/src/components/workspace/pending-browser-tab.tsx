@@ -2,7 +2,10 @@ import { BrowserAddressDisplay } from "../browser/browser-chrome.js";
 import { memo, useEffect, useRef, type ReactNode } from "react";
 import { useLocation } from "react-router";
 import type { BrowserTabOpenInput, HostClient, PendingBrowserTab } from "@opensteer/client/host";
+import { computerGlyph, orderDevices } from "@opensteer/client/computers";
 import { useHostSelector } from "@opensteer/client/react";
+import { computerIcon } from "../computers/device-art.js";
+import { useHereId } from "../computers/here.js";
 import { Icon } from "../icon.js";
 import { useWorkspace } from "./workspace-context.js";
 import { startPageLink } from "./navigation.js";
@@ -22,6 +25,8 @@ export const PendingBrowserTabView = memo(function PendingBrowserTabView(props: 
   );
   const missingOnArrival = useRef(!pending);
   const placements = useHostSelector(hostClient, (snapshot) => snapshot.browserPlacements);
+  const machines = useHostSelector(hostClient, (snapshot) => snapshot.machines);
+  const hereId = useHereId();
   useEffect(() => {
     if (missingOnArrival.current && !pending && address)
       nav.showLauncher({ replace: true, address, open: false });
@@ -109,9 +114,18 @@ export const PendingBrowserTabView = memo(function PendingBrowserTabView(props: 
             {pending?.state === "failed" &&
             pending.error?.code === "browser-placement-ambiguous" &&
             "identity" in pending.target
-              ? placements
-                  .filter((placement) => placement.available)
-                  .map((placement) => (
+              ? orderDevices(
+                  placements
+                    .filter((placement) => placement.available)
+                    .map((placement) => ({
+                      ...placement,
+                      id: placement.runnerId,
+                      name: placement.label,
+                    })),
+                  hereId,
+                ).map((placement) => {
+                  const machine = machines.find(({ id }) => id === placement.runnerId);
+                  return (
                     <button
                       className="btn"
                       type="button"
@@ -124,9 +138,11 @@ export const PendingBrowserTabView = memo(function PendingBrowserTabView(props: 
                           });
                       }}
                     >
+                      <Icon name={computerIcon(machine ? computerGlyph(machine) : "computer")} />
                       Open on {placement.label}
                     </button>
-                  ))
+                  );
+                })
               : null}
           </div>
         </div>
@@ -135,15 +151,17 @@ export const PendingBrowserTabView = memo(function PendingBrowserTabView(props: 
   );
 });
 
+/** Openings still on their way, each under the device it opens on. */
 export function PendingBrowserTabRows({
   hostClient,
   onOpen,
+  rows,
 }: {
   readonly hostClient: HostClient;
   readonly onOpen: () => void;
+  readonly rows: readonly PendingBrowserTab[];
 }) {
-  const rows = useHostSelector(hostClient, (snapshot) => snapshot.pendingBrowserTabs);
-  return rows?.map((pending) => (
+  return rows.map((pending) => (
     <PendingRow
       key={pending.idempotencyKey}
       hostClient={hostClient}

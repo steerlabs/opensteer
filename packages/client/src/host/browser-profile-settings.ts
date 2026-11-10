@@ -1,3 +1,12 @@
+import { hostDeploymentPolicy } from "./deployment-policy.js";
+import {
+  computerGlyph,
+  deviceElsewhere,
+  hostsDeployment,
+  orderDevices,
+  type ComputerGlyph,
+  type DeviceElsewhere,
+} from "../computers/computers.js";
 import type { BrowserProfileSummary, HostSnapshot, WorkspaceSummary } from "./client.js";
 import { placeList, type PlaceListSource } from "./places.js";
 import { browserIdentity, type PlaceBrowserIdentity } from "./start-page-model.js";
@@ -13,13 +22,18 @@ export interface BrowserProfileSettingsRow {
   }[];
   /** Its tabs, waiting ones included: deleting the profile closes them. */
   readonly tabs: number;
+  /** The device it lives on, named only when that is not the one the reader is at. */
+  readonly device: DeviceElsewhere | null;
+  /** An old profile with no device yet: the first open chooses one. */
+  readonly unopened: boolean;
 }
 
 export type BrowserProfileSettingsSource = PlaceListSource &
-  Pick<HostSnapshot, "browserProfileGrants" | "workspaces">;
+  Pick<HostSnapshot, "browserProfileGrants" | "browserProfileHomes" | "workspaces">;
 
 export function browserProfileSettingsRows(
   snapshot: BrowserProfileSettingsSource,
+  hereId: string | null,
 ): BrowserProfileSettingsRow[] {
   const places = placeList(snapshot);
   return [...snapshot.browserProfiles]
@@ -27,6 +41,9 @@ export function browserProfileSettingsRows(
     .map((profile) => ({
       profile,
       identity: browserIdentity(profile.id, snapshot.browserProfiles),
+      device: deviceElsewhere(snapshot.machines, profile.homeRunnerId, hereId),
+      // An older Host says nothing of homes, so its profiles are not "unopened".
+      unopened: profile.homeRunnerId === null && snapshot.browserProfileHomes !== undefined,
       projects: snapshot.browserProfileGrants.flatMap((grant) => {
         const workspace = snapshot.workspaces.find(
           (candidate) => candidate.id === grant.workspaceId && candidate.kind === "project",
@@ -39,6 +56,62 @@ export function browserProfileSettingsRows(
         (place) => place.identity?.kind === "profile" && place.identity.profileId === profile.id,
       ).length,
     }));
+}
+
+/** A device a new profile can live on, as its menu lists it. */
+export interface ProfileHomeOption {
+  readonly glyph: ComputerGlyph;
+  /** The device the reader is at. */
+  readonly here: boolean;
+  readonly id: string;
+  readonly name: string;
+}
+
+/** Where a new profile can live, and where it lives unless the person says otherwise. */
+export interface ProfileHomeChoice {
+  readonly initial: string;
+  readonly options: readonly ProfileHomeOption[];
+}
+
+/**
+ * The devices a new profile can be kept on, in the one device order, or null
+ * when there is nothing to choose: one device, or a Host that does not say.
+ * It starts on the device the reader is at, else the Deployment's main
+ * computer, else the first. One an agent asked for starts where the Host
+ * would put it instead: the computer that agent works on, else the main one.
+ */
+export function profileHomeChoice(
+  snapshot: Pick<
+    HostSnapshot,
+    "browserProfileHomes" | "deploymentShape" | "deploymentPolicy" | "machines"
+  >,
+  hereId: string | null,
+  asking?: { readonly runnerId: string | null },
+): ProfileHomeChoice | null {
+  const homes = snapshot.browserProfileHomes ?? [];
+  const options = orderDevices(
+    snapshot.machines
+      .filter(({ id }) => homes.includes(id))
+      .map((machine) => ({
+        glyph: computerGlyph(machine),
+        here: machine.id === hereId,
+        id: machine.id,
+        name: machine.name,
+        main: hostsDeployment(machine, hostDeploymentPolicy(snapshot) ?? null),
+      })),
+    hereId,
+  );
+  if (options.length < 2) return null;
+  const initial =
+    (asking
+      ? options.find(({ id }) => id === asking.runnerId)
+      : options.find(({ here }) => here)) ??
+    options.find(({ main }) => main) ??
+    options[0]!;
+  return {
+    initial: initial.id,
+    options: options.map(({ glyph, here, id, name }) => ({ glyph, here, id, name })),
+  };
 }
 
 /** The projects a profile can be given to, by name. */

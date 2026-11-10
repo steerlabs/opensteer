@@ -3,12 +3,12 @@ import type {
   IntegrationConnectionSummary,
   IntegrationDefinitionSummaryView,
 } from "@opensteer/integration-core";
-import type { MachineSummary } from "@opensteer/protocol";
+import type { MachineSummary, RunnerDevicePlatform } from "@opensteer/protocol";
 import { formatRelativeTime } from "../host/thread-list-model.js";
 import { computerAppRows } from "../integrations/computer-apps.js";
 import {
   computerUseView,
-  isAndroidPhone,
+  isAgentPhone,
   isIphone,
   phoneUseView,
 } from "../integrations/computer-use.js";
@@ -150,6 +150,91 @@ export function sortComputers(
 }
 
 /* ------------------------------------------------------------------------- *
+ * A device, as what lives on it names it
+ * ------------------------------------------------------------------------- */
+
+/** The device a tab or a profile is on, when that is not the one you are at. */
+export interface DeviceElsewhere {
+  readonly glyph: ComputerGlyph;
+  readonly id: string;
+  readonly name: string;
+  /** Its tabs and profiles wait while it is away. */
+  readonly online: boolean;
+}
+
+/**
+ * The device to name beside something that lives on `deviceId`, or null when
+ * that is where the reader is: what is here needs no label. A reader that
+ * cannot say where it is, as a browser cannot, is at none of them.
+ */
+export function deviceElsewhere(
+  machines: readonly MachineSummary[],
+  deviceId: string | null,
+  hereId: string | null,
+): DeviceElsewhere | null {
+  if (deviceId === null || deviceId === hereId) return null;
+  const machine = machines.find(({ id }) => id === deviceId);
+  if (!machine) return null;
+  return {
+    glyph: computerGlyph(machine),
+    id: machine.id,
+    name: machine.name,
+    online: machine.status === "online",
+  };
+}
+
+/**
+ * The one order devices are listed in wherever tabs and profiles are sorted by
+ * device: the one you are at, then the rest by name. Never by who is online or
+ * busy, so a list does not move while agents work.
+ */
+export function orderDevices<Device extends { readonly id: string; readonly name: string }>(
+  devices: readonly Device[],
+  hereId: string | null,
+): readonly Device[] {
+  return [...devices].sort(
+    (left, right) =>
+      Number(right.id === hereId) - Number(left.id === hereId) ||
+      left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: "base" }) ||
+      (left.id < right.id ? -1 : left.id > right.id ? 1 : 0),
+  );
+}
+
+/**
+ * What removing a device deletes: the browser profiles that live on it and
+ * their sign-ins, or null when none do. A device that is away erases its files
+ * only when it next learns it was removed, so that is all it is promised.
+ */
+export function deviceRemovalProfiles(
+  machine: Pick<MachineSummary, "id" | "name" | "status">,
+  profiles: readonly { readonly homeRunnerId: string | null; readonly name: string }[],
+): string | null {
+  const held = profiles.filter(({ homeRunnerId }) => homeRunnerId === machine.id);
+  if (held.length === 0) return null;
+  const deleted =
+    held.length === 1
+      ? `Its browser profile ${held[0]!.name} and its sign-ins are deleted.`
+      : `Its ${held.length} browser profiles and their sign-ins are deleted.`;
+  return machine.status === "online"
+    ? deleted
+    : `${deleted} ${machine.name} erases ${held.length === 1 ? "it" : "them"} the next time it connects.`;
+}
+
+/** The question asked before a device is removed, the same for every device. */
+export function deviceRemovalConfirmation(
+  machine: Pick<MachineSummary, "id" | "name" | "status">,
+  profiles: Parameters<typeof deviceRemovalProfiles>[1],
+): { readonly confirm: string; readonly message: string; readonly title: string } {
+  return {
+    confirm: "Remove device",
+    message: [deviceRemovalProfiles(machine, profiles), "Agents lose access to this device."]
+      .filter((part): part is string => part !== null)
+      .join(" "),
+    title: `Remove ${machine.name}?`,
+  };
+}
+
+/* ------------------------------------------------------------------------- *
  * One computer
  * ------------------------------------------------------------------------- */
 
@@ -158,6 +243,61 @@ export type ComputerGlyph = "laptop" | "desktop" | "compact" | "server" | "phone
 
 export function computerGlyph(machine: MachineSummary): ComputerGlyph {
   return machine.device?.form ?? "computer";
+}
+
+/**
+ * What a phone is called where its name is not enough. The platform decides
+ * only the word: an iPhone is Apple's own, any other phone a phone.
+ */
+export function phoneNoun(platform: RunnerDevicePlatform | null): "iPhone" | "phone" {
+  return platform === "ios" ? "iPhone" : "phone";
+}
+
+/** Whether a device lends its apps, as the Host last heard it advertise them. */
+export function deviceLendsApps(machine: Pick<MachineSummary, "modules">): boolean {
+  return machine.modules.integrations !== undefined;
+}
+
+/**
+ * A device's browser, as its page lists it: the profiles that live there, why
+ * it is not working while the device is there, or that the device has never
+ * offered one although it may. Null where it may not hold browsers at all.
+ */
+export type DeviceBrowser =
+  | { readonly kind: "lent"; readonly profiles: number }
+  | { readonly kind: "unavailable"; readonly detail: string }
+  | { readonly kind: "not-offered" };
+
+export function deviceBrowser(
+  machine: Pick<MachineSummary, "allowedModules" | "id" | "modules" | "status">,
+  profiles: readonly { readonly homeRunnerId: string | null }[],
+): DeviceBrowser | null {
+  if (!machine.allowedModules.includes("browser")) return null;
+  const module = machine.modules.browser;
+  if (module === undefined) return { kind: "not-offered" };
+  // An away device says nothing fresh about its browser; its profiles still live there.
+  if (machine.status === "online" && module.readiness === "unavailable" && module.detail !== null)
+    return { detail: module.detail, kind: "unavailable" };
+  return {
+    kind: "lent",
+    profiles: profiles.filter(({ homeRunnerId }) => homeRunnerId === machine.id).length,
+  };
+}
+
+/** The browser row's value: how many profiles live there, or why there are none to use. */
+export function deviceBrowserDetail(browser: DeviceBrowser): string {
+  switch (browser.kind) {
+    case "lent":
+      return browser.profiles === 0
+        ? "No profiles"
+        : browser.profiles === 1
+          ? "1 profile"
+          : `${browser.profiles} profiles`;
+    case "unavailable":
+      return browser.detail;
+    case "not-offered":
+      return "Not available";
+  }
 }
 
 export type ServiceGlyph = "browser" | "messaging";
@@ -173,7 +313,7 @@ export function serviceLabel(machine: MachineSummary): string {
 
 /**
  * One thing agents can use on a computer, as its row and its page draw it.
- * `screen` is an Android phone's whole screen, the one thing a phone lends.
+ * `screen` is an Agent Phone's whole screen.
  */
 export type ComputerUse =
   | { readonly definitionId: string; readonly kind: "app"; readonly name: string }
@@ -261,7 +401,8 @@ export function computerRole(
 ): ComputerRole | null {
   if (machine.status === "pending") return "waiting";
   if (machine.modules.agents) return "works";
-  if (uses.length > 0) return "uses";
+  // A device that lends its browser has shared something even with no app on.
+  if (uses.length > 0 || machine.modules.browser !== undefined) return "uses";
   if (machine.ownership === "other" || !appsLoaded) return null;
   return "idle";
 }
@@ -282,7 +423,7 @@ export function computerStatus(machine: MachineSummary, now = new Date()): Compu
     return {
       label:
         machine.detail ??
-        `Update ${isAndroidPhone(machine) ? "Agent Phone" : "Opensteer"} on ${machine.name}.`,
+        `Update ${isAgentPhone(machine) ? "Agent Phone" : "Opensteer"} on ${machine.name}.`,
       tone: "waiting",
     };
   if (machine.status === "online") return { label: "Online", tone: "online" };

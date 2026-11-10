@@ -14,6 +14,7 @@ const NativeInput = requireNativeView<
     context: EditingContext | null;
     focused: boolean;
     softKeyboard: boolean;
+    keyboardMayReplaceText?: boolean;
     onProxyEvent: (event: { nativeEvent: unknown }) => void;
   }
 >("RemoteTextInput");
@@ -22,6 +23,7 @@ export function RemoteTextInput(
     readonly context: EditingContext | null;
     readonly focused: boolean;
     readonly softKeyboard?: boolean;
+    readonly keyboardMayReplaceText?: boolean;
     readonly onEvent: (event: EditingProxyEvent) => EditingProxyInstruction;
     readonly onError: () => void;
     readonly instruction?: EditingProxyInstruction;

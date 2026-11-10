@@ -95,6 +95,11 @@ vi.mock(
   "react-native-reanimated",
   async () => (await import("../../../test-support/native-chrome.js")).reanimated,
 );
+vi.mock("../../../src/browser/agent-marks.js", () => ({ AgentMarks: () => null }));
+vi.mock("../../../src/browser/place-foot.js", () => ({
+  PlaceVoiceDock: () => null,
+  usePlaceStatus: () => ({ height: 0, reserve: { value: 0 }, row: null }),
+}));
 vi.mock("../../../src/ui/task-mark.js", () => ({ TaskMark: () => null }));
 vi.mock("../../../src/ui/chat-orb.js", () => ({ ChatOrb: () => null }));
 vi.mock("../../../src/ui/motion.js", () => ({

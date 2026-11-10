@@ -80,7 +80,7 @@ export class DesktopLocalRunnerTargetResolver implements DesktopLocalRunnerTarge
       },
       hostUrl: resolved.origin,
       key: resolved.key,
-      // Personal grants every computer but the Main exactly `shell`.
+      // Personal agents stay on the Main computer.
       mayRunAgents: deploymentPolicy({
         kind: connection.authority.document.deploymentShape.kind,
         defaultWorkspaceBacking: "local-directory",

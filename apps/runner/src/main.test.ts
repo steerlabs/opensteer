@@ -1,16 +1,19 @@
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import { inspectRunnerIdentity } from "@opensteer/runner-client";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { closeSync, openSync } from "node:fs";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
+import { generateKeyPairSync, randomUUID } from "node:crypto";
 import {
   RunnerChallengeIdSchema,
   RunnerToHostMessageSchema,
   type RunnerDescriptor,
+  type RunnerConnectionFence,
 } from "@opensteer/protocol";
-import { WebSocketServer } from "ws";
+import { WebSocketServer, type WebSocket } from "ws";
 import { afterEach, describe, expect, it } from "vitest";
 import { consumeRunnerConfig, machineAccessRuntimeOptions, runRunnerDaemon } from "./main.js";
 import { harnessLaunchValidationHook } from "./shell/machine-access-setup.js";
@@ -133,8 +136,180 @@ describe("Runner configuration", () => {
 });
 
 describe("reach-only Runner startup", () => {
-  // The shell module is deferred on Windows, so there is no reach-only Runner
-  // to start there at all.
+  it("advertises and relays a browser without execution dependencies or an environment", async () => {
+    const directory = await temporaryDirectory();
+    const runtimeId = "browser-without-agents";
+    const server = createServer((_request, response) => {
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ wireVersion: 1, runtimeId, state: "ready" }));
+    });
+    const webSockets = new WebSocketServer({ perMessageDeflate: false, server });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address() as AddressInfo;
+    const abort = new AbortController();
+    const relayed = Promise.withResolvers<unknown>();
+    let descriptor: RunnerDescriptor | undefined;
+    let connected: { environmentId: unknown; runnerId: unknown } | undefined;
+    let fence: RunnerConnectionFence;
+    let browserSocket: WebSocket | undefined;
+    let browserStreamId: string | undefined;
+    const attachKey = {
+      keyId: "test",
+      publicKeyPem: generateKeyPairSync("ed25519")
+        .publicKey.export({ format: "pem", type: "spki" })
+        .toString(),
+    };
+    webSockets.on("connection", (socket, request) => {
+      if (request.url !== "/internal/v1/runners") {
+        // A pong proves the client's socket opened before the auxiliary challenge.
+        socket.once("pong", () =>
+          socket.send(
+            JSON.stringify({
+              challengeId: `rch_${randomUUID()}`,
+              expiresAt: new Date(Date.now() + 30_000).toISOString(),
+              hostSessionId: randomUUID(),
+              module: "browser",
+              nonce: randomUUID(),
+              type: "host.auxiliary.challenge",
+            }),
+          ),
+        );
+        socket.ping();
+        const auxiliaryStreamId = `rax_${randomUUID()}`;
+        browserSocket = socket;
+        browserStreamId = auxiliaryStreamId;
+        socket.on("message", (raw) => {
+          const message = JSON.parse(raw.toString());
+          if (message.type === "runner.auxiliary.authenticate") {
+            socket.send(
+              JSON.stringify({
+                ...fence,
+                auxiliaryStreamId,
+                browserAttachPublicKeys: [attachKey],
+                browserWireVersion: 1,
+                heartbeatIntervalMs: 60_000,
+                module: "browser",
+                serverTime: new Date().toISOString(),
+                streamLeaseExpiresAt: new Date(Date.now() + 120_000).toISOString(),
+                type: "host.auxiliary.welcome",
+              }),
+            );
+          }
+          if (message.type === "browser.health") relayed.resolve(message.browserRuntime);
+        });
+        return;
+      }
+      socket.send(
+        JSON.stringify({
+          challengeId: `rch_${randomUUID()}`,
+          expiresAt: new Date(Date.now() + 30_000).toISOString(),
+          hostSessionId: randomUUID(),
+          nonce: randomUUID(),
+          proofFormatVersion: 2,
+          type: "host.challenge",
+        }),
+      );
+      socket.on("message", (raw) => {
+        const message = RunnerToHostMessageSchema.parse(JSON.parse(raw.toString()));
+        if (message.type === "runner.enroll") {
+          descriptor = message.descriptor;
+          fence = {
+            bootId: descriptor.bootId,
+            connectionGeneration: 1,
+            connectionId: `rcn_${randomUUID()}` as RunnerConnectionFence["connectionId"],
+            connectionLeaseId: `rls_${randomUUID()}` as RunnerConnectionFence["connectionLeaseId"],
+            runnerId: descriptor.runnerId,
+          };
+          socket.send(
+            JSON.stringify({
+              ...fence,
+              allowedModules: ["browser"],
+              environmentIds: [],
+              heartbeatIntervalMs: 60_000,
+              serverTime: new Date().toISOString(),
+              connectionLeaseExpiresAt: new Date(Date.now() + 120_000).toISOString(),
+              type: "host.welcome",
+            }),
+          );
+        }
+        if (message.type === "runner.modules.report") {
+          browserSocket?.send(
+            JSON.stringify({
+              ...fence,
+              auxiliaryStreamId: browserStreamId,
+              module: "browser",
+              requestId: "health-without-agents",
+              type: "browser.health.request",
+            }),
+          );
+        }
+        if (message.type === "runner.auxiliary.ticket-request") {
+          socket.send(
+            JSON.stringify({
+              ...fence,
+              expiresAt: new Date(Date.now() + 60_000).toISOString(),
+              module: "browser",
+              requestId: message.requestId,
+              ticket: "ticket.for.browser",
+              type: "host.auxiliary.ticket",
+            }),
+          );
+        }
+      });
+    });
+    const daemon = runRunnerDaemon(
+      {
+        OPENSTEER_AGENT_SKILLS_DIRECTORY: "/nonexistent/opensteer/agent-skills",
+        OPENSTEER_BROWSER_HARNESS: "/nonexistent/opensteer/browser-harness.mjs",
+        OPENSTEER_LOCAL_WORKSPACE_ROOT: "/nonexistent/opensteer/workspaces",
+        OPENSTEER_NATIVE_FS_HELPER: "/nonexistent/opensteer/helper",
+        OPENSTEER_NODE_EXECUTABLE: "/nonexistent/opensteer/node",
+        OPENSTEER_HOST_URL: `http://127.0.0.1:${address.port}`,
+        OPENSTEER_BROWSER_BRIDGE_URL: `http://127.0.0.1:${address.port}`,
+        OPENSTEER_BROWSER_BRIDGE_TOKEN: "b".repeat(32),
+        OPENSTEER_BROWSER_RUNTIME_ID: runtimeId,
+        OPENSTEER_RUNNER_DATA_DIR: directory,
+        OPENSTEER_RUNNER_ENROLLMENT_TOKEN: "s".repeat(32),
+        OPENSTEER_RUNNER_KIND: "local",
+        OPENSTEER_RUNNER_MODULES: "browser",
+      },
+      abort.signal,
+      {
+        onConnected: (identity) => {
+          connected = identity;
+        },
+      },
+    );
+    try {
+      await expect(
+        withTimeout(relayed.promise, 3_000, {
+          timeoutError: () => new Error("The browser-only Runner never relayed health"),
+        }),
+      ).resolves.toMatchObject({ runtimeId, state: "ready" });
+      expect(Object.keys(descriptor!.modules)).toEqual(["browser"]);
+      expect(descriptor?.modules.browser).toMatchObject({
+        runtimeId,
+        cdpBoundary: 1,
+        sharedControl: 1,
+        stateImport: true,
+        fileStaging: true,
+      });
+      expect(descriptor?.modules.browser?.signIn).toBeUndefined();
+      expect(connected).toEqual({ environmentId: null, runnerId: descriptor?.runnerId });
+      await expect(inspectRunnerIdentity(directory)).resolves.toMatchObject({
+        environmentId: null,
+        enrolled: true,
+      });
+      expect(await readdir(directory)).toEqual([".runner.lock", "identity.json"]);
+    } finally {
+      abort.abort();
+      await daemon;
+      for (const client of webSockets.clients) client.terminate();
+      await new Promise<void>((resolve) => webSockets.close(() => resolve()));
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it.skipIf(process.platform === "win32")(
     "starts nothing but shell and advertises exactly that",
     async () => {

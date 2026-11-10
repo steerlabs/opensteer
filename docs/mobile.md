@@ -1,6 +1,7 @@
 # Opensteer on a phone
 
-The mobile app is a Deployment client; execution stays on Runners. It never installs or offers to
+The mobile app is a Deployment client; agent execution stays on computers. A phone may also lend
+its in-app browser while foregrounded. It never installs or offers to
 install apps, including [Agent Phone](agent-phone.md). Files and terminal stay on web and desktop,
 because each would add a protocol and UI to maintain. [Connections](connections.md) owns discovery
 and credentials; [Host boundaries](host-boundaries.md) owns compatibility and session authority.
@@ -102,9 +103,23 @@ and network state is re-read on foreground because Expo gets no listener events 
 is said, so no screen adds its own line ([what a person is told](connections.md#what-a-person-is-told)).
 
 Media is visibility-bound: release pictures when hidden, backgrounded or no longer authorized, and
-return picture credit even when decoding fails. Routes name exact tabs or owner-view generations; a
-closed target stays closed and is never replaced by a sibling. Starting browsers and connecting
-Chrome stay on computers.
+return viewer picture credit even when decoding fails. Phone-to-Host native credit is separate:
+Android waits for OkHttp's outbound queue to drain, while iPhone waits for socket write completion,
+not enqueue acceptance; an iPhone picture-write timeout cancels that transport before releasing credit.
+Routes name exact tabs or owner-view generations; a
+closed target stays closed and is never replaced by a sibling. Connecting Chrome stays on computers.
+
+A phone the Host lists as a browser device of the Deployment being viewed opens a conversation's
+links in its own browser, in the profile last used on it, else a Guest there; loopback,
+private-network, `.local` and bare-host addresses mean the computer's network and open on the
+conversation's computer ([link-places.ts](../packages/client/src/host/link-places.ts)). If opening
+there fails, the link goes to the system as before, which is also where every link goes on a phone
+that is not such a device. New tab offers every profile, and a profile opens on its home.
+
+A tab list shows a page's picture only when this phone already presented one
+([browser-last-picture.ts](../packages/client/src/host/browser-last-picture.ts)); a row never asks
+for one, because each would cost a stream on cellular. A kept picture is dropped when its tab
+closes or loads another page, so it never shows a page the tab no longer has.
 
 A zero-reorder H.264 stream does not guarantee immediate Android output: the software AVC decoder
 can hold pictures until more input arrives, and
@@ -143,7 +158,24 @@ A tab, Mac app or phone has one bar, its own, and no native bar above it. The co
 argument doesn't carry over: a transcript scrolls under a transparent bar, but a streamed page can't
 leave room for chrome it doesn't know about, so a native bar's row always costs a page its height,
 and its title only repeated the address. [The bar](../apps/mobile/src/browser/toolbar.tsx) never
-floats over a page either, for the same reason.
+floats over a streamed page either, for the same reason.
+
+A page on this phone can leave room, so there it behaves as the platform's browser does: the bar,
+status row and call dock float over the page, and the bar shrinks to a pill while the person reads
+down and returns as they head back or reach either end. The page is told which edges they cover,
+once, at their whole height; it never changes size as the bar moves, because a resize would reflow
+it under the finger, advance its geometry revision and change the picture other devices watch.
+WebKit takes those edges as obscured insets, so the page scrolls under the bar. Android's WebView
+has no such inset and ignores system-bar insets for `env(safe-area-inset-*)`, so there the page's
+viewport ends where the controls begin: what a page pins to its foot stays clear of them, at the
+cost of not scrolling under the shrunk pill. The shrink is decided on the UI thread from the page's
+own scroll ([floating-bar.ts](../apps/mobile/src/browser/floating-bar.ts)), and only the person's
+own scrolling moves it. Beside its conversation, and on a tall regular screen, the bar stands
+still, as Safari's does on iPad. Back goes through the page while it has history and leaves the tab
+once it has none: an edge swipe on iPhone, the system Back on Android. Pull to refresh reloads
+through the same native navigation as Reload. A held link or image gets WebKit's menu on iPhone and
+the platform's context menu on Android, which offers copy, share and the system browser; opening it
+in a new tab needs the Host and is not offered there yet.
 
 The native bar is put away only by a view that draws its own, so a state with none, such as an ended
 tab, keeps the native Back and can always be left. An Opensteer App keeps the native bar: it has no
@@ -155,9 +187,33 @@ title keeps them, and costs the page 24 points at its top where hiding costs non
 the vertical bar by its one-sided safe area, a notch's being two-sided, measured above the panes
 because a pane beside another has one-sided insets of its own.
 
-The page's history stands inside the address capsule and the way out stands outside it, because two
-identical chevrons in one row read as one control. Fit never happens by itself: a page's size is
-shared with agents and other screens, so a tab keeps its shape until the person chooses Fit.
+On a phone the bar's one chevron is the way out, and the page's Back sits in More beside Forward:
+two identical chevrons in one row read as one control, and the address needs the room. A cut-off
+site name is the worst thing the bar can show, so the capsule holds only the site and, when the tab
+runs on another device than this one (`deviceElsewhere`), that device's shape, whose name is a tap
+away. Where the page is wide, Back and Forward stand in the capsule, as Safari's do on iPad. Fit
+never happens by itself: a page's size is shared with agents and other screens, so a tab keeps its
+shape until the person chooses Fit.
+
+A place opened from a conversation says at its foot what that conversation is doing, with its
+Stop, or that it needs the person, with Answer, which goes back to the conversation's own dock.
+It speaks for that conversation only, not for whoever ranks first in the place, and not at all
+where the conversation is already beside the page. The page eases into the room the row leaves
+rather than running under it, and a call's bar docks over the place's bar for the same reason.
+
+## The page above a conversation
+
+While a conversation's own Run works in a place, the page stands under the bar and folds into a
+small picture beside Around ([rule](../packages/client/src/host/run-page.ts)). Open or folded is
+presentation, held in memory per conversation and never in a route, so Back and links stay one
+navigation model. It takes the page's own shape and never resizes the page, for the reason Fit never
+happens by itself, and takes at most half the room between the bar and the dock, so a docked
+Request or the keyboard folds it rather than crowding the conversation. A streamed page only
+watches: a tap opens the full tab. Until a picture arrives it is a named row, because a kept
+picture must never stand for the page as it is now. Phone-width web (700px and narrower) follows the
+same rules with the page under the conversation header, folding into the header's picture; under
+another page the picture stands in the sheet's handle and opens the full tab. Wider web has only the
+header picture, which opens the place in the middle.
 
 ## The sidebar's ends
 
@@ -219,11 +275,40 @@ an integration's review, couldn't present and the person couldn't approve. Andro
 rather than `useAnimatedKeyboard`, which clears the decor insets listener on exit and leaves form
 sheets without keyboard handling.
 
+## Phone browser identity
+
+Android's everyday app lends only its browser, not the screen or integrations of the separate
+Agent Phone app. Its phone enrollment grant still includes `browser, integrations`; advertising
+only browser does not broaden that grant. Enrollment tokens are minted and redeemed natively.
+Settings adds it as “This phone” through the same enrollment flow as iPhone. A phone's own page
+shows the browser and apps the Host lists it advertising, never what its platform implies; the
+platform only names it. The shared phone
+manager joins its native connection and WebView pool; viewing another Deployment does not retarget
+the enrolled identity. Native registration and pending erasure finish before identity preparation,
+and the connection advertises only after the WebView's qualification completes.
+Debug builds and providers that keep web debugging reachable can still offer the browser, pictures,
+basic input and staged files when those checks pass. They omit agent CDP rather than disabling the
+whole browser. A release build alone does not prove that debugging can be disabled.
+To support Android 24 and later, a Keystore AES-GCM key seals the native Ed25519 seed in
+no-backup storage; this is not a hardware-backed, non-exportable Ed25519 key.
+Removing the phone or signing out fences admission before erasure. A durable denial marker keeps
+its enrollment unusable until all that Deployment's profiles are physically deleted, including
+loaded Android profiles that require a process restart. Sign-out does not wait for that restart.
+“Pending restart” is not completed erasure: the native startup gate deletes retired stores before
+loading any page. A persisted retiring identity covers even stores not yet tombstoned when the
+process ended; unfinished Guest deletion also keeps retirement pending. Android Guest uses one
+app-private throwaway disk profile per session, shared by its tabs and popups, never by another
+session or Deployment. The last tab or session ending clears cookies and web storage, but service
+workers and caches can remain until startup deletion. Confirmed Guest deletion drops its manifest
+row; pending erasure and named-profile deletion authority stay durable. A full manifest refuses new
+profiles rather than writing an unreadable next startup. The person's system file picker may survive backgrounding for its
+original page; agent-staged choosers cannot.
+
 ## This iPhone's apps
 
 While the app is open, an iPhone can serve Calendar, Contacts, Reminders, current Location and
-Photos metadata to agents as a local Runner with only the integrations module
-([native module](../apps/mobile/modules/iphone-apps/ios)). It exposes no screen, files, other apps
+Photos metadata to agents as a local Runner with the integrations module, plus the browser module
+once its browser qualifies ([native module](../apps/mobile/modules/iphone-apps/ios)). It exposes no screen, files, other apps
 or Messages. The Host decides each app's agent access; iOS separately decides whether Opensteer may
 use the store.
 

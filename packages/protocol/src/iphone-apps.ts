@@ -28,8 +28,8 @@ export function runnerDescriptorProfileRefusal(
     descriptor.capabilities.length !== 0 ||
     descriptor.device?.form !== "phone" ||
     descriptor.device.platform !== "ios" ||
-    modules.length !== 1 ||
-    modules[0] !== "integrations" ||
+    !modules.includes("integrations") ||
+    modules.some((module) => module !== "integrations" && module !== "browser") ||
     integrations?.platform !== "ios" ||
     integrations.loginText !== undefined ||
     integrations.passwordSignIn !== undefined ||

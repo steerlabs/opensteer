@@ -661,6 +661,8 @@ export interface BrowserProfileDeletionSummary {
 }
 
 export interface BrowserProfileSummary {
+  /** The computer it lives on; null for an old profile not opened yet, or from an older Host. */
+  homeRunnerId: string | null;
   id: string;
   name: string;
 }
@@ -837,6 +839,11 @@ export interface HostSnapshot {
   browserAvailable: boolean;
   browserPlacements: BrowserPlacementSummary[];
   browserProfiles: BrowserProfileSummary[];
+  /**
+   * The computers this person may make a profile on, as the Host decides.
+   * Absent from a Host older than profile homes, which is offered no choice.
+   */
+  browserProfileHomes?: readonly string[] | undefined;
   browserProfileDeletions?: BrowserProfileDeletionSummary[] | undefined;
   browserSessions: BrowserSessionSummary[];
   connection: HostConnectionState;

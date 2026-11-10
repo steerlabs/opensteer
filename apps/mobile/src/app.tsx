@@ -37,12 +37,12 @@ import { AppState, Platform, StyleSheet, View } from "react-native";
 import { NavigationContainerRefContext, type InitialState } from "@react-navigation/native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
-import type { MockHostClient } from "@opensteer/client/mock";
+import { mockIphoneRunnerId, type MockHostClient } from "@opensteer/client/mock";
 import { createNetworkHostPort } from "./client/host-port.js";
 import { createMockHostPort } from "./client/mock-host-port.js";
 import { OpenComputer } from "./screens/open-computer.js";
 import { MobileClient, operationDetail } from "./client/mobile-client.js";
-import { mockDeploymentConnections } from "./client/mock-mode.js";
+import { mockDeploymentConnections, mockDeploymentId } from "./client/mock-mode.js";
 import { readMobileConfiguration } from "./config.js";
 import { resolveApplicationLink, routeComputerLink, routePairingLink } from "./links.js";
 import { Navigation, navigationTheme } from "./navigation.js";
@@ -80,6 +80,10 @@ import { color, space } from "./theme.js";
 import { IphoneApprovalPrompt } from "./iphone-apps/approval-prompt.js";
 import { IphoneAppsProvider, useIphoneAppsState } from "./iphone-apps/context.js";
 import { IphoneAppsController } from "./iphone-apps/controller.js";
+import { startPhoneBrowserRuntime } from "./phone-browser/runtime.js";
+import { createIphoneBrowserPlatform } from "./phone-browser/iphone-platform.js";
+import { createAndroidBrowserPlatform } from "./phone-browser/android-platform.js";
+import { androidPhoneBridge, enrollAndroidPhone } from "./platform/phone-connection.js";
 import { createFakeIphoneApps, type FakeIphoneApps } from "./iphone-apps/fake-bridge.js";
 import { iphoneNotTold, opensteerOn } from "./iphone-apps/model.js";
 import { createShownApprovalsFile } from "./iphone-apps/shown-approvals-file.js";
@@ -111,6 +115,7 @@ const configuration = readMobileConfiguration(
     EXPO_PUBLIC_OPENSTEER_BUILD_PROFILE: process.env.EXPO_PUBLIC_OPENSTEER_BUILD_PROFILE,
     EXPO_PUBLIC_OPENSTEER_MOCK: process.env.EXPO_PUBLIC_OPENSTEER_MOCK,
     EXPO_PUBLIC_OPENSTEER_MOCK_HOME: process.env.EXPO_PUBLIC_OPENSTEER_MOCK_HOME,
+    EXPO_PUBLIC_OPENSTEER_MOCK_PHONE: process.env.EXPO_PUBLIC_OPENSTEER_MOCK_PHONE,
   },
   { development: __DEV__ },
 );
@@ -162,18 +167,40 @@ function mobileClient(): MobileRoot {
   const mockHosts = new Map<string, MockHostClient>();
   let fakeIphone: FakeIphoneApps | null = null;
   if (configuration.mock) {
+    const android = Platform.OS === "android";
     fakeIphone = createFakeIphoneApps({
+      browser: configuration.mockPhone !== "no-browser",
+      erasesOnRestart: android,
       host: (deploymentId) => mockHosts.get(deploymentId) ?? null,
-      supported: Platform.OS === "ios",
+      ...(android
+        ? { deviceName: "Pixel 9", offers: [], platform: "android" as const }
+        : { runnerId: mockIphoneRunnerId }),
+      scenario:
+        configuration.mockPhone === "away" || configuration.mockPhone === "needs-update"
+          ? configuration.mockPhone
+          : null,
     });
+    // The mock world's own iPhone, which lends a browser there, is this phone.
+    if (!android && configuration.mockPhone === null)
+      fakeIphone.device.enrolledTo({ deploymentId: mockDeploymentId, name: "Alex's iPhone" });
   }
   const iphone = new IphoneAppsController({
-    bridge: fakeIphone?.bridge ?? iphoneApps,
+    bridge: fakeIphone?.bridge ?? androidPhoneBridge ?? iphoneApps,
+    ...(Platform.OS === "android" && !configuration.mock && androidPhoneBridge !== null
+      ? { enrollNative: enrollAndroidPhone }
+      : {}),
     shownApprovals: createShownApprovalsFile({
       filePath: `${root}${storeName}/iphone-approvals-shown.json`,
       privateFiles,
     }),
   });
+  if (!configuration.mock) {
+    const phoneBrowserPlatform =
+      Platform.OS === "android"
+        ? createAndroidBrowserPlatform()
+        : createIphoneBrowserPlatform(iphoneApps);
+    if (phoneBrowserPlatform) startPhoneBrowserRuntime(phoneBrowserPlatform);
+  }
   const lifecycle = createMobileLifecycle({ appState: AppState, network: Network });
   const platform = Platform.OS === "android" ? "android" : "ios";
   const port = configuration.mock

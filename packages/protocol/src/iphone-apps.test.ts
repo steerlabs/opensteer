@@ -15,6 +15,69 @@ const raw = {
   runtimeVersion: "test",
 };
 describe("immutable iPhone profile admission", () => {
+  it("admits the Android browser under an ordinary non-iPhone Runner identity", () => {
+    const descriptor = RunnerDescriptorSchema.parse({
+      ...raw,
+      device: { form: "phone", platform: "android" },
+      modules: {
+        browser: {
+          runtimeId: "android-browser",
+          wireVersion: 1,
+          localProfileStorage: {
+            storageInstanceId: "11111111-1111-4111-8111-111111111111",
+            engine: "android-webview",
+          },
+          navigationVersion: 1,
+          navigationAttributionVersion: 1,
+          workspaceTabRestoreVersion: 1,
+          popupFollowVersion: 1,
+          sharedControl: 1,
+          targetControl: 1,
+          rasterDemand: 1,
+          basicInput: 1,
+          surfaceState: 1,
+          cdpBoundary: 1,
+          fileStaging: true,
+        },
+      },
+    });
+    expect(runnerDescriptorProfileRefusal(null, descriptor)).toBeNull();
+    expect(descriptor.modules.browser).not.toHaveProperty("editing");
+    expect(descriptor.modules.browser).not.toHaveProperty("clipboard");
+  });
+  it("admits the phone browser beside iPhone integrations without adding authority", () => {
+    const descriptor = RunnerDescriptorSchema.parse({
+      ...raw,
+      modules: {
+        ...raw.modules,
+        browser: {
+          runtimeId: "iphone-browser",
+          wireVersion: 1,
+          localProfileStorage: {
+            storageInstanceId: "11111111-1111-4111-8111-111111111111",
+            engine: "wkwebview",
+          },
+          navigationVersion: 1,
+          navigationAttributionVersion: 1,
+          workspaceTabRestoreVersion: 1,
+          popupFollowVersion: 1,
+          sharedControl: 1,
+          targetControl: 1,
+          rasterDemand: 1,
+          basicInput: 1,
+          surfaceState: 1,
+          agentActions: 1,
+        },
+      },
+    });
+    expect(runnerDescriptorProfileRefusal("iphone", descriptor)).toBeNull();
+    expect(runnerDescriptorProfileRefusal(null, descriptor)?.reason).toBe(
+      "runner-device-profile-mismatch",
+    );
+    expect(descriptor.modules.browser).not.toHaveProperty("cdpBoundary");
+    expect(descriptor.modules.browser).not.toHaveProperty("editing");
+    expect(descriptor.modules.browser).not.toHaveProperty("clipboard");
+  });
   it("recognizes iOS without granting it to old identities", () => {
     const descriptor = RunnerDescriptorSchema.parse(raw);
     expect(runnerDescriptorProfileRefusal("iphone", descriptor)).toBeNull();
@@ -62,6 +125,25 @@ describe("immutable iPhone profile admission", () => {
       runnerDescriptorProfileRefusal("iphone", RunnerDescriptorSchema.parse({ ...raw, ...patch }))
         ?.reason,
     ).toBe("runner-device-profile-mismatch");
+  });
+  it("admits browser-capable phones while preserving the installed integrations-only descriptor", () => {
+    for (const browser of [
+      undefined,
+      {
+        runtimeId: "phone",
+        agentActions: 1,
+        localProfileStorage: {
+          storageInstanceId: "11111111-1111-4111-8111-111111111111",
+          engine: "wkwebview",
+        },
+      },
+    ]) {
+      const descriptor = RunnerDescriptorSchema.parse({
+        ...raw,
+        modules: { ...raw.modules, ...(browser ? { browser } : {}) },
+      });
+      expect(runnerDescriptorProfileRefusal("iphone", descriptor)).toBeNull();
+    }
   });
   it("gives the dedicated upgrade reason for protocol mismatches", () => {
     for (const protocolVersion of [undefined, 1, 3, 4]) {

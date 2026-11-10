@@ -19,6 +19,8 @@ const execFile = promisify(execFileCallback);
  */
 export const previousPublicRelease = "e4dd721c5f9b2bdac124c59d2c0c11bb676ccaac";
 
+export const browserHomesPublicRelease = "d51e99853ddae55cf44fb22a62b681a05456ce7c";
+
 /** The shelves a released client draws a task list on. */
 interface ReleasedTaskList {
   readonly working: readonly { threadId: string }[];

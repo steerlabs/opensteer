@@ -48,7 +48,7 @@ import {
   type TranscriptGroup,
   type Turn,
 } from "./agent-activity-model.js";
-import { threadActivityIndicator } from "./thread-activity.js";
+import { threadActivityIndicator, threadWatch } from "./thread-activity.js";
 import { drawnTranscriptRowKeys } from "./transcript-projection.js";
 import { visibleTranscript } from "./transcript.js";
 import {
@@ -2356,6 +2356,75 @@ it("automatic background work has no Chat indicator, while a new human input sti
       groups: groupTranscriptEntries([automatic, input({ runId: null })]),
     }),
   ).toEqual({ kind: "typing" });
+});
+
+describe("threadWatch", () => {
+  const thread = { id: "thread-a", inputQueuePaused: false, status: "running" as const };
+  const queued = { createdAt: at(0), id: "run-a", runOrdinal: 1, threadId: "thread-a" };
+  const asked = {
+    assignments: [],
+    request: { originatingThreadId: "thread-a" },
+  } as unknown as import("@opensteer/core").WaitingRequest;
+
+  it("says what the Run is doing in its live line's words, and reaches that Run's Stop", () => {
+    const clicking = command("open https://example.com", { state: "running" });
+    const watch = threadWatch({
+      entries: [run({ status: "running" }), clicking],
+      runQueue: [
+        { ...queued, status: "running" },
+        { ...queued, id: "run-other", status: "running", threadId: "thread-b" },
+      ],
+      thread,
+      waitingRequests: [],
+    });
+    expect(watch).toEqual({
+      kind: "working",
+      runId: "run-a",
+      stopping: false,
+      words: toolPresentation(clicking).activeLabel,
+    });
+  });
+
+  it("says the reader is needed before anything else, even after the Run ended", () => {
+    expect(
+      threadWatch({
+        entries: [],
+        runQueue: [],
+        thread: { ...thread, status: "idle" },
+        waitingRequests: [asked],
+      }),
+    ).toEqual({ kind: "needs-you" });
+  });
+
+  it("says nothing for an idle Thread or another Thread's question", () => {
+    const other = {
+      ...asked,
+      request: { originatingThreadId: "thread-b" },
+    } as unknown as import("@opensteer/core").WaitingRequest;
+    expect(
+      threadWatch({
+        entries: [run({ status: "running" })],
+        runQueue: [{ ...queued, status: "running" }],
+        thread: { ...thread, status: "idle" },
+        waitingRequests: [other],
+      }),
+    ).toBeNull();
+  });
+
+  it("names a question someone else answers, and a Stop already asked for", () => {
+    const base = { entries: [], runQueue: [{ ...queued, status: "waiting" as const }] };
+    expect(
+      threadWatch({ ...base, thread: { ...thread, status: "waiting" }, waitingRequests: [] }),
+    ).toMatchObject({ kind: "working", words: "Waiting on someone" });
+    expect(
+      threadWatch({
+        entries: [run({ status: "running", stopping: true })],
+        runQueue: [{ ...queued, status: "running" }],
+        thread,
+        waitingRequests: [],
+      }),
+    ).toMatchObject({ runId: "run-a", stopping: true, words: "Stopping" });
+  });
 });
 
 describe("traceWindow", () => {

@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { Alert, TextInput, View } from "react-native";
 import { useNavigation } from "@react-navigation/native";
+import { deviceRemovalConfirmation } from "@opensteer/client/computers";
 import { mutationIdempotencyKey, type HostClient } from "@opensteer/client/host";
 import {
   MachineAccessPolicySchema,
@@ -177,36 +178,30 @@ export function SettingsDeviceCapabilities({
           />
         </>
       ) : null}
-      {machine.allowedModules.includes("browser") ? (
-        <AppText>Browser · {machine.status}</AppText>
-      ) : null}
       {error ? <AppText>{error}</AppText> : null}
       {machine.revocable ? (
         <SecondaryButton
           label="Remove device"
           disabled={pending}
-          onPress={() =>
-            Alert.alert(
-              `Remove ${machine.name}?`,
-              "Agents lose access to this device. Signed-in sessions stay signed in. Browser data on the device is not erased.",
-              [
-                { text: "Cancel", style: "cancel" },
-                {
-                  text: "Remove device",
-                  style: "destructive",
-                  onPress: () => {
-                    void run(() =>
-                      host.dispatch({
-                        type: "machine.revoke",
-                        machineId: machine.id,
-                        idempotencyKey: mutationIdempotencyKey("device-remove"),
-                      }),
-                    );
-                  },
+          onPress={() => {
+            const ask = deviceRemovalConfirmation(machine, host.getSnapshot().browserProfiles);
+            Alert.alert(ask.title, ask.message, [
+              { text: "Cancel", style: "cancel" },
+              {
+                text: ask.confirm,
+                style: "destructive",
+                onPress: () => {
+                  void run(() =>
+                    host.dispatch({
+                      type: "machine.revoke",
+                      machineId: machine.id,
+                      idempotencyKey: mutationIdempotencyKey("device-remove"),
+                    }),
+                  );
                 },
-              ],
-            )
-          }
+              },
+            ]);
+          }}
         />
       ) : null}
     </View>

@@ -7,8 +7,11 @@ import { useHostRead } from "@opensteer/client/react";
 import { connectDeviceDraftText } from "@opensteer/client/settings";
 import { useNavigation } from "@react-navigation/native";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { thisPhoneNoun } from "../computers/phone-noun.js";
 import { useComputerUseData } from "../computers/use-computer-use-data.js";
 import { useIphoneApps, useIphoneAppsState } from "../iphone-apps/context.js";
+import { iphonePermissionOf } from "../iphone-apps/controller.js";
+import { iphoneAppIds } from "../iphone-apps/model.js";
 import { useHostValue, useMobileState } from "../ui/mobile-client-context.js";
 import { useLeaveSheets } from "./leave-sheets.js";
 import { DevicesSettingsForm } from "./settings-devices-form.js";
@@ -68,6 +71,11 @@ export function DevicesSettingsController(): ReactNode {
               available: snapshot.iphoneAppsAvailable,
               deploymentName,
               deviceName: iphoneApps.snapshot.deviceName,
+              noun: thisPhoneNoun,
+              pendingErasure: iphoneApps.snapshot.pendingErasure === true,
+              sharesApps: iphoneAppIds.some(
+                (app) => iphonePermissionOf(iphoneApps.snapshot, app) !== null,
+              ),
               heldBy:
                 enrollment === null
                   ? null
@@ -99,7 +107,8 @@ export function DevicesSettingsController(): ReactNode {
           computers={
             page === "devices"
               ? computers
-                  .filter((row) => row.opens !== null)
+                  // This phone is listed in every state, including those with nothing to open.
+                  .filter((row) => row.opens !== null || row.key === "this-iphone")
                   .map((row) => ({
                     ...row,
                     detail: row.detail
@@ -164,16 +173,19 @@ export function DevicesSettingsController(): ReactNode {
                 },
               ],
             },
-            ...(iphoneApps.snapshot.supported && snapshot?.iphoneAppsAvailable
+            ...(iphoneApps.snapshot.supported &&
+            snapshot?.iphoneAppsAvailable &&
+            iphoneApps.snapshot.enrollment === null &&
+            iphoneApps.snapshot.pendingErasure !== true
               ? [
                   {
                     key: "iphone",
-                    title: "This iPhone",
+                    title: `This ${thisPhoneNoun}`,
                     rows: [
                       {
                         key: "share",
                         kind: "button" as const,
-                        label: "Share this iPhone’s apps",
+                        label: `Add this ${thisPhoneNoun}`,
                         onPress: () => {
                           setAdding(false);
                           if (selection.deploymentId)

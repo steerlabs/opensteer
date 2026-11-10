@@ -18,6 +18,8 @@ import { Link } from "react-router";
 import { unwrapRpcResult } from "@opensteer/client/host";
 import { useShell } from "../../app-shell.js";
 import { currentDeviceMachineId } from "../../computers-page.js";
+import { deviceBrowser, deviceLendsApps } from "@opensteer/client/computers";
+import { isAgentPhone } from "@opensteer/client/integrations";
 import { SettingsError, SectionHeader } from "../primitives.js";
 import { useSettingsRead } from "../use-settings-read.js";
 import { actionErrorMessage } from "../../../ui-utils.js";
@@ -137,7 +139,16 @@ export function AgentDevicesSection() {
                             : app.definitionId.replace(/^apple-/, "").replaceAll("-", " "),
                       )
                       .join(", ") ||
-                    (device.device?.platform === "android" ? "Agent Phone" : "Apps and files")
+                    (isAgentPhone(device)
+                      ? "Agent Phone"
+                      : snapshot.machines.some(
+                            (machine) =>
+                              machine.id === device.id &&
+                              !deviceLendsApps(machine) &&
+                              deviceBrowser(machine, [])?.kind === "lent",
+                          )
+                        ? "Browser"
+                        : "Apps and files")
                   : device.status === "offline"
                     ? "Offline"
                     : device.status}

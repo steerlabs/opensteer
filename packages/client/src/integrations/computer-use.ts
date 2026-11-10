@@ -211,14 +211,8 @@ export function computerUseDefinition(
   return definitions.find((definition) => definition.computerApp?.kind === "gui") ?? null;
 }
 
-/**
- * Whether this computer is an Android phone, which agents use whole through
- * the Agent Phone app on it. The phone's Runner says so in its device; the
- * Host routes nothing on that, but every sentence about the computer depends
- * on it.
- */
-export function isAndroidPhone(machine: Pick<MachineSummary, "device">): boolean {
-  return machine.device?.platform === "android";
+export function isAgentPhone(machine: Pick<MachineSummary, "device">): boolean {
+  return machine.device?.platform === "android" && machine.device.app !== "opensteer";
 }
 
 /**
@@ -249,7 +243,7 @@ export function computerUseView(input: {
   const definition = computerUseDefinition(input.definitions);
   if (!definition) return null;
   const { machine } = input;
-  if (isAndroidPhone(machine)) return null;
+  if (isAgentPhone(machine)) return null;
   const report = machine.computerUse ?? null;
   // A disconnected Runner cannot have a confirmed live session. Keep its
   // approved apps visible, but never describe an old report as active use.
@@ -464,7 +458,7 @@ export function computerUseAutomaticFootnote(view: ComputerUseView): string {
  */
 export function computerUseMachineLine(machine: MachineSummary, hostConnected: boolean): string {
   if (!hostConnected) return "Status unavailable";
-  if (isAndroidPhone(machine)) return phoneUseMachineLine(machine);
+  if (isAgentPhone(machine)) return phoneUseMachineLine(machine);
   const state = computerUseState(machine);
   switch (state.kind) {
     case "offline":
@@ -549,7 +543,7 @@ export function phoneUseView(input: {
   readonly machine: MachineSummary;
 }): PhoneUseView | null {
   const { machine } = input;
-  if (!isAndroidPhone(machine)) return null;
+  if (!isAgentPhone(machine)) return null;
   const definition = phoneUseDefinition(input.definitions);
   if (!definition) return null;
   // A blocked connection grants nothing.

@@ -1,3 +1,4 @@
+import { browserDeviceGrantsMigration } from "@opensteer/database";
 import type {
   ComputerAppApprovalAnswer,
   ComputerAppApprovalOutcome,
@@ -221,7 +222,7 @@ integration.sequential("iPhone integrations Host contract", () => {
         .executeTakeFirstOrThrow(),
     ).toEqual({
       deviceProfile: "iphone",
-      allowedModules: ["integrations"],
+      allowedModules: ["browser", "integrations"],
       ownerUserId: host.ownerId,
       runnerKind: "local",
     });
@@ -256,7 +257,7 @@ integration.sequential("iPhone integrations Host contract", () => {
     const phone = keep(await connectPhone(host, minted.token));
     expect(await host.store.runnerForAuthentication(phone.runnerId)).toMatchObject({
       deviceProfile: "iphone",
-      allowedModules: ["integrations"],
+      allowedModules: ["browser", "integrations"],
     });
     expect((await machines(host)).find(({ id }) => id === phone.runnerId)).toMatchObject({
       device: { form: "phone", platform: "ios" },
@@ -463,6 +464,9 @@ integration.sequential("iPhone integrations Host contract", () => {
         migrationDatabase,
       );
       await iphoneDeviceProfileMigration.up(migrationDatabase);
+      await migrationDatabase
+        .transaction()
+        .execute((transaction) => browserDeviceGrantsMigration.up(transaction));
       expect(
         await migrationDatabase.selectFrom("runners").select("deviceProfile").execute(),
       ).toEqual([{ deviceProfile: null }, { deviceProfile: null }]);
@@ -1102,7 +1106,10 @@ async function connectPhone(
   descriptor = iphoneDescriptor(),
   reportOnConnect = true,
 ) {
-  const primary = await connectPrimary(host.hostPort, descriptor, { token });
+  const socket = new WebSocket(`ws://127.0.0.1:${host.hostPort}/internal/v1/runners`);
+  const welcomed = waitForMessage(socket, (frame) => frame.type === "host.welcome");
+  const primary = await connectPrimary(host.hostPort, descriptor, { token }, socket);
+  expect(await welcomed).toMatchObject({ allowedModules: ["integrations"] });
   let stream: Awaited<ReturnType<typeof openAuxiliaryStream>>;
   const invocations: z.infer<typeof HostIntegrationsInvokeSchema>[] = [];
   const phone = {

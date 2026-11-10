@@ -1,7 +1,7 @@
 # Browser sessions
 
-A named profile keeps Chromium-native browser data on its owning computer. Its live sessions share
-an engine host; each Guest session has its own ephemeral browser. Sessions partition page access
+A named profile keeps native browser data on its home device. Its live sessions share
+an engine host; each Guest session has its own throwaway browser. Sessions partition page access
 even when they share a profile, and a session's identity is fixed at creation. Checks:
 [browser-and-passwords](../.agents/skills/browser-and-passwords/SKILL.md).
 
@@ -11,7 +11,11 @@ The Host database owns durable tab descriptors; live sessions and CDP handles di
 connection. Restoring makes a new binding and never restarts a finished Run. A selected dormant tab
 restores only on its saved computer and profile, waiting rather than substitute another computer or
 Guest. Each opening of a tab restores it automatically at most once; after a failure it waits for
-the person's Retry, because every attempt starts a Browser Session. Guest website state never persists, and trigger and watch browsers write no tabs. Only a
+the person's Retry, because every attempt starts a Browser Session. Guest website state is never
+reused across sessions: Android uses one private on-disk profile for all tabs and popups in that
+session, tombstoned before first use, cleared when its last tab or session ends, and deleted at the
+next startup. Other sessions never reuse it. This is not RAM-only browsing.
+Trigger and watch browsers write no tabs. Only a
 lineage's latest session can close its tabs, late updates never resurrect a closed row, and reopen
 makes a new row. Only committed navigation becomes a restore URL, except that a failed navigation
 restores to the address it tried, as browsers do, without any credentials typed into it. An overlong
@@ -32,12 +36,61 @@ settles; its usage is written once per new tab or page, not on every switch betw
 
 ## Agent access and input
 
-A Run's CDP connection binds to one session for life, reaches only its pages and popups, and
-rechecks access and grants on every command. Agent target selection never moves the person's focus.
+A browser device declares abilities, not a device class. The Host places a session on its profile's
+home and admits only what that browser advertises; it never substitutes another home or infers
+abilities from a phone engine name. Host tab open, close, resume and context operations use the
+ordinary command channel even when the browser does not speak CDP; resume requires `surfaceState`.
+
+When Host discovery advertises `browser-backend-v1`, a Run negotiates its backend for one exact
+session; without it, the Run uses CDP. An advertised negotiation error never falls back.
+`cdpBoundary` selects CDP first, otherwise
+`agentActions` selects typed actions. Both require `sharedControl`. An attachment pins that choice,
+reaches only that session's pages and popups, and rechecks Run access and grants on every command.
+Requesting the other backend refuses `unsupported-operation`, not an upgrade request. Agent target
+selection never moves the person's focus.
 Input, navigation and geometry share a per-surface ordered lane; observations stay outside it, so an
 agent script waiting for a person's click cannot block that click. A lost answer after a key press
 or insertion is never replayed. Person activity is an observation, not an input gate, and never
 records keys or text.
+
+Typed actions expose bounded navigation, DOM-derived semantic reads, locators, native input,
+dialogs, viewport captures and optional staged-file selection, not CDP or arbitrary JavaScript.
+Document and geometry IDs fence stale actions; a dialog has its own one-use identity. Geometry
+advances with size, zoom, insets and the keyboard, never with scrolling, on every browser device:
+counting scrolls would send a message per frame and refuse agents' points mid-scroll. A lost answer
+after submission is `outcome-unknown`, never permission to retry a click or insertion. The wire is
+defined in [browser-actions](../packages/protocol/src/browser-actions.ts).
+
+Browsers may negotiate live/suspended surface state. A suspended tab keeps its last in-memory
+picture, or just its named row if none exists, and refuses addressed commands and input with
+`target-suspended`. Watching does not resume, reload or create a native view. Selecting a sleeping
+tab uses the same saved-tab activation as any other browser; the Host resumes its existing surface
+instead of opening another tab. Agents keep their explicit resume path. Older peers without
+surface-state negotiation keep their existing behavior.
+
+A phone keeps at most two live views: its visible tab and one covered tab. The covered place belongs
+to an exact agent attachment or to people elsewhere. Each Android Harness connection owns its CDP
+router, permit and pipes, even when another connection belongs to the same Run; closing one never
+retires the other. An attachment may switch tabs after its prior input settles; agents may replace
+people, but another attachment cannot claim even the owner's already-live tab. People may
+replace another people-owned tab only when nobody receives its picture, preventing competing
+devices from repeatedly waking each other's tabs. Replacing retains the old page and fences queued
+input, never takes the phone's visible tab, and never reloads a retained page. Detaching retains an
+unwatched tab; a watched one passes to people until its last picture receiver leaves. Presenting it
+locally frees the covered place. Memory pressure may still discard retained pages.
+Native picture credit follows transport capacity, not enqueue acceptance or a viewer's ACK.
+Android admits no further capture while its socket still holds picture bytes; it captures the
+current page after drain rather than buffering old pictures. Native attachment revocation fences
+queued CDP writes and staging before side effects and releases debugging without a JavaScript round trip.
+
+The phone marks its local presentation intent before asking the Host to reopen a saved tab. That
+resume needs no covered place, even while an agent owns the other live view. After a brief
+background, the Host creates a new session and the phone adopts surviving profile tabs without
+reloading; fresh local viewer admission still precedes presentation. The Host's initial and dormant
+surface list is authoritative for that profile lineage: omitted retired tabs are destroyed. Guest
+tabs have no saved lineage and end when their session loses its connection. Native local mounting
+revives a retained or discarded tab directly in the visible place; resuming it through the covered
+place first would incorrectly displace or be refused by an agent.
 
 A failed navigation leaves Chromium's error document committed, and a surface's address stays the
 one it tried to reach, so a person sees where they meant to go and the catalog names a real origin.
@@ -70,7 +123,27 @@ After a fill, page scripts and agent JavaScript can read the value ([Passwords](
 
 ## Remote editing and clipboard
 
-Editing is negotiated per runtime, Host and viewer. Each frame's private editing world, hidden from
+Editing is negotiated per runtime, Host and viewer. `basicInput` is a separate narrow ability, not
+full `editing` or engine `clipboard`: it admits text insertion, backward deletion, Enter,
+select-all, marked composition and plain-text copy/paste. Range replacement, cut, rich clipboard,
+other editing commands and OS shortcuts refuse. Paste carries only the controlling person's
+explicit bytes, never a phone clipboard read; copy returns only non-sensitive selection to that
+viewer. Browsers without this ability retain the full editing contract's existing admission rules.
+
+On iPhone the agent has no arbitrary-script, clipboard or paste action and the native helper never
+reads UIPasteboard. A website may still ask iOS for Paste permission. The person can approve that
+system UI; Opensteer does not claim to prevent the website or its DOM from then receiving clipboard
+data. A JavaScript clipboard shim would not be a security boundary and is not used as one. Android's
+CDP backend must qualify machine-clipboard denial independently before it is enabled.
+It must also prove that releasing the last native CDP permit makes the WebView debugger inaccessible.
+Debug app builds never declare CDP; a release on a debuggable system or provider that fails shutdown
+also omits it. The phone still offers each independently qualified browser/viewer/file ability, and
+agent backend negotiation returns `unsupported-operation` rather than falling back.
+Android cannot map a page-opened popup to an agent's trusted CDP target. That tab remains usable by
+people, but an agent receives: “A page opened this tab and this phone cannot hand it to an agent;
+open its address in a new tab instead.” Opensteer never reloads or recreates it to bypass that refusal.
+
+For full editing, each frame's private editing world, hidden from
 agent CDP, reports field kind, sensitivity and a caret, never values or surrounding text. A
 replacement first verifies the exact text around the caret, else refuses. Rebuilding the hidden
 caret mirror between keystrokes would split Blink's Undo grouping, so the observer updates its nodes
@@ -125,11 +198,21 @@ holds no grants. Grants decide which agents may use a profile, never whether its
 Guest state cannot be promoted, so choose the profile before signing in.
 
 Deletion revokes grants and schedules erasure on the owning computer (`pending-computer` while it is
-offline). Electron keeps a Session until exit, so an opened profile stays `pending-restart` until
-the next start erases it: never move or delete a live Session directory to finish sooner.
+offline). Electron keeps a Session until exit, and Android WebView cannot delete a loaded profile,
+so an opened profile stays `pending-restart` until the next start erases it: never move or delete a
+live store directory to finish sooner. Android retirement remains `erasure-pending` until Guest
+stores are deleted too. Its durable retiring identity survives interruption before tombstoning;
+startup completes that erasure before any profile can load.
 
-A profile belongs permanently to its computer, storage root and engine. The first signed attach
-records the binding and publishes empty native files atomically; an engine-owned directory is never
+Removing a computer deletes its homed profiles in the same transaction. Their storage erasure is
+terminal `unconfirmed`, not pending work and never a claim that files were erased. The removed device
+clears its own storage when it learns of removal; a phone also clears it at sign-out.
+
+A profile created by a caller that knows about homes always has one. A previous-release
+caller that cannot choose gets a profile that takes its home on first open; from then on it is fixed. The
+database also adopts a previous store's first storage binding as its home and enforces the same
+home/storage match for both writers. Offline homes refuse opens by name, without falling back.
+The first signed attach binds its storage root and engine on that home and publishes empty native files atomically; an engine-owned directory is never
 moved. The Host records initialization so missing established storage is distinguishable from
 never-created storage. A missing directory, root identity, sentinel or cookie mirror refuses to open
 and keeps what remains: never an empty replacement, another computer or Guest. There is no portable
@@ -171,6 +254,8 @@ without its signing inputs, like web and mobile, tells the person to use a Mac.
 
 ## Chrome sign-ins
 
+Chrome sign-in import is the one explicit, person-started exception to sign-ins never moving between
+devices. It requires the target browser's state-import ability; phone browsers do not support it.
 After a person connects Chrome with the [extension](../apps/browser-extension/README.md), each
 sign-in copies one site's current cookies into one live session; nothing syncs. Public suffixes and
 bare intranet names are refused because they would cover every tenant, and

@@ -698,7 +698,7 @@ export class BrowserRuntime implements NativePresentationSource {
         const sessionGeneration = ++this.generation;
         let stage = "profile-state";
         try {
-          const acquired = await wait(this.acquireHost(claims, hostKey, ticket, signal));
+          const acquired = await this.acquireHost(claims, hostKey, ticket, signal);
           if (!acquired.host) throw new Error("Browser acquisition returned no host.");
           host = acquired.host;
           createdHost = acquired.createdHost;
@@ -930,14 +930,12 @@ export class BrowserRuntime implements NativePresentationSource {
         let localDirectory: string | undefined;
         if (claims.identity.kind === "profile-local") {
           const identity = claims.identity;
-          localDirectory = await wait(
-            this.localStore!.provision(
-              identity.binding,
-              identity.initialized,
-              (directory) =>
-                this.launcher.localProfiles!.createFiles(directory, identity.binding, signal),
-              signal,
-            ),
+          localDirectory = await this.localStore!.provision(
+            identity.binding,
+            identity.initialized,
+            (directory) =>
+              this.launcher.localProfiles!.createFiles(directory, identity.binding, signal),
+            signal,
           );
           if (!identity.initialized)
             await wait(this.acknowledgeProfileReady(identity, ticket, signal));

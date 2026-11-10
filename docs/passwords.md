@@ -2,7 +2,9 @@
 
 Saved logins let agents fill websites or type into permitted Mac and Android apps, and let the
 person fill Opensteer browser pages themselves ([Filling for people](#filling-for-people)); saved
-cards work only in websites. The Personal Mac
+cards work only in websites. Website fills work only in the Personal main computer's browser, never
+a browser on another computer or phone; the Host refuses an agent's fill there with
+`main-browser-required`. The Personal Mac
 owns the vault; the requester can approve a sign-in from any signed-in device. Cookie reuse is
 [Chrome sign-ins](browser-sessions.md#chrome-sign-ins); passkeys use the [OS passkey
 manager](browser-sessions.md#passkeys). Checks live in the [browser-and-passwords

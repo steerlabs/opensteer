@@ -22,6 +22,7 @@ import {
   computerUseStatusLine,
   computerUseTone,
   computerUseView,
+  isAgentPhone,
   phoneUseStatusLine,
   phoneUseTone,
   phoneUseView,
@@ -37,6 +38,36 @@ const notes = { bundleId: "com.apple.Notes", displayName: "Notes", teamId: "APPL
 const calendar = { bundleId: "com.apple.iCal", displayName: "Calendar", teamId: "APPLECOMP1" };
 /** Studio, seen from somewhere other than Studio. */
 const studio = { here: false, machineName: "Studio" };
+
+describe("Agent Phone identity", () => {
+  it.each(["online", "offline", "needs-update"] as const)(
+    "does not offer whole-phone use for an Opensteer phone that is %s",
+    (status) => {
+      const browserPhone = phone({
+        device: { form: "phone", platform: "android", app: "opensteer" },
+        status,
+        modules: {},
+        computerUse: null,
+      });
+      expect(isAgentPhone(browserPhone)).toBe(false);
+      expect(
+        phoneUseView({
+          hostConnected: true,
+          connections: [],
+          definitions: [display()],
+          machine: browserPhone,
+        }),
+      ).toBeNull();
+    },
+  );
+
+  it("keeps current and older Agent Phones distinct from iPhones and Macs", () => {
+    expect(isAgentPhone(phone({}))).toBe(true);
+    expect(isAgentPhone(phone({ modules: {}, status: "offline" }))).toBe(true);
+    expect(isAgentPhone(machine({ device: { form: "phone", platform: "ios" } }))).toBe(false);
+    expect(isAgentPhone(machine({ device: { form: "laptop", platform: "macos" } }))).toBe(false);
+  });
+});
 
 describe("a live Computer use line", () => {
   function step(kind: "app" | "phone", overrides: Partial<ToolEntry> = {}): ToolEntry {

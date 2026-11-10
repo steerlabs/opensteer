@@ -190,8 +190,11 @@ export function opensteerOn(deploymentName: string): string {
  * Adding
  * ------------------------------------------------------------------------- */
 
-export function addIphoneIntro(opensteer: string): string {
-  return `Agents in ${opensteer} can use the apps you turn on, while Opensteer is open on this iPhone.`;
+/** What Add lends: the apps switched on below, or this phone's browser when it has no apps to share. */
+export function addIphoneIntro(opensteer: string, sharesApps = true, noun = "iPhone"): string {
+  return sharesApps
+    ? `Agents in ${opensteer} can use the apps you turn on, while Opensteer is open on this ${noun}.`
+    : `Agents in ${opensteer} can use this ${noun}’s browser while Opensteer is open on it.`;
 }
 
 export const addIphoneNameHint = "This is how it's listed on Computers.";
@@ -206,8 +209,8 @@ export function addIphoneFootnote(opensteer: string, companies: string = generic
 }
 
 /** Add's label says how many apps it turns on, since switching them is only a draft until then. */
-export function addIphoneButton(name: string, apps: number): string {
-  const iphone = name === "" ? "this iPhone" : name;
+export function addIphoneButton(name: string, apps: number, noun = "iPhone"): string {
+  const iphone = name === "" ? `this ${noun}` : name;
   if (apps === 0) return `Add ${iphone}`;
   return `Add & share ${apps} ${apps === 1 ? "app" : "apps"}`;
 }
@@ -217,32 +220,39 @@ export function addIphoneDraft(app: IphoneAppId): IntegrationAccess | null {
   return app === "iphone-photos" ? null : iphoneDefaultAccess(app, null);
 }
 
-export function addIphoneNeedsUpdate(opensteer: string): string {
-  return `Update ${opensteer} to add this iPhone.`;
+export function addIphoneNeedsUpdate(opensteer: string, noun = "iPhone"): string {
+  return `Update ${opensteer} to add this ${noun}.`;
 }
 
-export function addIphoneFailureText(failure: IphoneAddFailure, opensteer: string): string {
+/** Said under a disabled Add while the last removal still waits to erase this phone's browser. */
+export const addIphoneAfterRestart = "Restart Opensteer to add it again.";
+
+export function addIphoneFailureText(
+  failure: IphoneAddFailure,
+  opensteer: string,
+  noun = "iPhone",
+): string {
   switch (failure.kind) {
     case "remote-access-off":
       return `Turn on remote access on ${opensteer} first, then try again.`;
     case "host-unreachable":
-      return `This iPhone can't reach ${opensteer}. Check your connection and try again.`;
+      return `This ${noun} can't reach ${opensteer}. Check your connection and try again.`;
     case "host-mismatch":
-      return "That address now belongs to a different Opensteer, so this iPhone didn't connect. Try again later.";
+      return `That address now belongs to a different Opensteer, so this ${noun} didn't connect. Try again later.`;
     case "too-long":
-      return "Adding this iPhone took too long. Try again.";
+      return `Adding this ${noun} took too long. Try again.`;
     case "needs-update":
-      return "Update Opensteer on this iPhone, then try again.";
+      return `Update Opensteer on this ${noun}, then try again.`;
     case "profile-mismatch":
-      return "This iPhone couldn't be added. Remove it from Computers on another device, then add it again.";
+      return `This ${noun} couldn't be added. Remove it from Computers on another device, then add it again.`;
     case "host-update":
-      return addIphoneNeedsUpdate(opensteer);
+      return addIphoneNeedsUpdate(opensteer, noun);
     case "enrolled-elsewhere":
-      return "This iPhone is already added to another Opensteer. Remove it there first.";
+      return `This ${noun} is already added to another Opensteer. Remove it there first.`;
     case "host-said":
       return failure.message;
     case "failed":
-      return "This iPhone wasn't added. Try again.";
+      return `This ${noun} wasn't added. Try again.`;
   }
 }
 
@@ -257,27 +267,33 @@ export interface IphoneStatusLine {
   readonly tone: IphoneTone;
 }
 
+/**
+ * Whether this phone is connected, and what agents can use while it is. The
+ * apps clause is said only for a phone the Host lists as lending apps.
+ */
 export function iphoneStatusLine(
   snapshot: IphoneAppsSnapshot,
   opensteer: string,
+  sharesApps = true,
+  noun = "iPhone",
 ): IphoneStatusLine {
   switch (snapshot.issue) {
     case "remote-access-off":
       return { text: `${opensteer} has remote access turned off`, tone: "amber" };
     case "needs-update":
-      return { text: "Update Opensteer on this iPhone", tone: "amber" };
+      return { text: `Update Opensteer on this ${noun}`, tone: "amber" };
     case "protocol-error":
       return { text: `Update Opensteer here and on ${opensteer}, then reopen it`, tone: "amber" };
     case "host-unreachable":
       return { text: `Can't reach ${opensteer} · Trying again`, tone: "amber" };
     case "host-mismatch":
       return {
-        text: "That address now belongs to a different Opensteer, so this iPhone didn't connect.",
+        text: `That address now belongs to a different Opensteer, so this ${noun} didn't connect.`,
         tone: "amber",
       };
     case "profile-mismatch":
       return {
-        text: "This iPhone couldn't be added. Remove it from Computers on another device, then add it again.",
+        text: `This ${noun} couldn't be added. Remove it from Computers on another device, then add it again.`,
         tone: "amber",
       };
     case "enrollment-expired":
@@ -290,7 +306,9 @@ export function iphoneStatusLine(
   if (snapshot.issueMessage !== null) return { text: snapshot.issueMessage, tone: "amber" };
   switch (snapshot.connection) {
     case "online":
-      return { text: "Online · Agents can use its apps while Opensteer is open", tone: "green" };
+      return sharesApps
+        ? { text: "Online · Agents can use its apps while Opensteer is open", tone: "green" }
+        : { text: "Online", tone: "green" };
     case "connecting":
       return { text: `Connecting to ${opensteer}…`, tone: "amber" };
     case "retrying":
@@ -703,12 +721,6 @@ export function iphoneApprovalLines(approval: IphoneAppsApproval): readonly stri
     ...(caveat === null ? [] : [caveat]),
   ];
 }
-
-export function iphoneRemoveTitle(name: string, opensteer: string): string {
-  return `Remove ${name} from ${opensteer}?`;
-}
-
-export const iphoneRemoveMessage = "Agents will stop using its apps. You can add it again later.";
 
 export function iphoneNotTold(
   name: string,
