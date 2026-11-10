@@ -12,6 +12,7 @@ import { SessionCookieMirror } from "./session-cookie-mirror.js";
 
 const roots: string[] = [];
 afterEach(async () => {
+  vi.useRealTimers();
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 const binding = (): LocalProfileBinding => ({
@@ -82,7 +83,8 @@ async function fixture() {
         changed = () => {};
       };
     },
-    onFailure: vi.fn(),
+    onSaveFailed: vi.fn(),
+    onSaveRecovered: vi.fn(),
     publish: vi.fn(async (file: string, contents: string, assertCurrent: () => void) => {
       assertCurrent();
       writes.push(contents);
@@ -416,18 +418,178 @@ it("never publishes a rejected restoration or a failed capture across a service 
   await rejected.stop();
 });
 
-it("fences a write failure and preserves the previously published mirror", async () => {
+it.each(["capture", "publish"])(
+  "retries a %s failure and preserves the previously published mirror",
+  async (stage) => {
+    const f = await fixture();
+    const mirror = f.create();
+    await mirror.initialize();
+    vi.useFakeTimers();
+    const before = await readFile(path.join(f.directory, "session-cookies.v1.json"), "utf8");
+    if (stage === "capture") f.capture.mockRejectedValueOnce(new Error("capture timed out"));
+    else f.options.publish.mockRejectedValueOnce(new Error("disk full"));
+    f.setJar([cookie("new")]);
+    try {
+      await expect(mirror.flush()).rejects.toThrow();
+      expect(f.options.onSaveFailed).toHaveBeenCalledOnce();
+      expect(await readFile(path.join(f.directory, "session-cookies.v1.json"), "utf8")).toBe(
+        before,
+      );
+      const attempts = f.capture.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(999);
+      expect(f.capture).toHaveBeenCalledTimes(attempts);
+      await vi.advanceTimersByTimeAsync(1);
+      await vi.waitFor(() =>
+        expect(f.options.onSaveRecovered, "retry never recovered").toHaveBeenCalledOnce(),
+      );
+      expect(f.writes).toHaveLength(2);
+      await mirror.mutate(async () => {});
+      expect(f.options.onSaveFailed).toHaveBeenCalledOnce();
+      expect(f.options.onSaveRecovered).toHaveBeenCalledOnce();
+    } finally {
+      await mirror.stop();
+    }
+  },
+);
+
+it("rejects only the waiters covered by a failed capture", async () => {
   const f = await fixture();
   const mirror = f.create();
   await mirror.initialize();
-  const before = await readFile(path.join(f.directory, "session-cookies.v1.json"), "utf8");
-  f.options.publish.mockRejectedValueOnce(new Error("disk full"));
-  f.setJar([cookie("new")]);
-  await expect(mirror.flush()).rejects.toThrow("persistence failed");
-  await expect(mirror.mutate(async () => {})).rejects.toThrow();
-  expect(f.options.onFailure).toHaveBeenCalled();
-  expect(await readFile(path.join(f.directory, "session-cookies.v1.json"), "utf8")).toBe(before);
-  await mirror.stop();
+  vi.useFakeTimers();
+  const entered = deferred();
+  const release = deferred();
+  f.capture.mockImplementationOnce(async () => {
+    entered.resolve();
+    await release.promise;
+    throw new Error("capture timed out");
+  });
+  try {
+    const first = expect(mirror.flush()).rejects.toThrow();
+    await bounded(entered.promise, "failed capture started");
+    const later = mirror.flush();
+    const settled = vi.fn();
+    void later.then(settled, settled);
+    release.resolve();
+    await first;
+    expect(settled).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await bounded(later, "later flush completed");
+    expect(settled).toHaveBeenCalledOnce();
+  } finally {
+    release.resolve();
+    await mirror.stop();
+  }
+});
+
+it("republishes after an ambiguous write even when the jar returns to the last confirmed contents", async () => {
+  const f = await fixture();
+  const mirror = f.create();
+  await mirror.initialize();
+  vi.useFakeTimers();
+  f.options.publish.mockImplementationOnce(async (file, content) => {
+    await writeFile(file, content, { mode: 0o600 });
+    throw new Error("fsync failed after rename");
+  });
+  try {
+    f.setJar([cookie("unconfirmed")]);
+    await expect(mirror.flush()).rejects.toThrow();
+    f.setJar([cookie()]);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.waitFor(() =>
+      expect(f.options.onSaveRecovered, "ambiguous write never reconciled").toHaveBeenCalledOnce(),
+    );
+    expect(f.options.publish).toHaveBeenCalledTimes(3);
+    await mirror.stop();
+    f.setJar([]);
+    const reopened = f.create();
+    try {
+      await reopened.recover();
+      expect(f.restore).toHaveBeenCalledWith([expect.objectContaining({ value: "one" })]);
+    } finally {
+      await reopened.stop();
+    }
+  } finally {
+    await mirror.stop();
+  }
+});
+
+it.each(["operation", "pre-flush", "post-flush"])(
+  "reconciles a rejected mutate at %s without a cookie event",
+  async (stage) => {
+    const f = await fixture();
+    const mirror = f.create();
+    await mirror.initialize();
+    vi.useFakeTimers();
+    if (stage === "pre-flush") f.capture.mockRejectedValueOnce(new Error("read failed"));
+    const operation = vi.fn(async () => {
+      f.setJar([]);
+      if (stage === "operation") throw new Error("partially applied import");
+      f.options.publish.mockRejectedValueOnce(new Error("disk full"));
+    });
+    try {
+      await expect(mirror.mutate(operation)).rejects.toThrow();
+      if (stage === "pre-flush") f.setJar([]);
+      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.waitFor(() =>
+        expect(f.writes, "rejected mutation never reconciled").toHaveLength(2),
+      );
+      await mirror.flush();
+      if (stage === "pre-flush") expect(operation).not.toHaveBeenCalled();
+    } finally {
+      await mirror.stop();
+    }
+  },
+);
+
+it("coalesces retries with capped backoff, resets on success and cancels on suspension and stop", async () => {
+  const f = await fixture();
+  const mirror = f.create();
+  await mirror.initialize();
+  vi.useFakeTimers();
+  f.capture.mockRejectedValue(new Error("capture timed out"));
+  try {
+    await expect(mirror.flush()).rejects.toThrow();
+    for (const delay of [1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000]) {
+      const attempts = f.capture.mock.calls.length;
+      f.change();
+      f.change();
+      await vi.advanceTimersByTimeAsync(delay - 1);
+      expect(f.capture).toHaveBeenCalledTimes(attempts);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(f.capture).toHaveBeenCalledTimes(attempts + 1);
+    }
+    expect(f.options.onSaveFailed).toHaveBeenCalledOnce();
+    f.capture.mockResolvedValue([]);
+    await vi.advanceTimersByTimeAsync(30_000);
+    await vi.waitFor(() =>
+      expect(f.options.onSaveRecovered, "backoff never recovered").toHaveBeenCalledOnce(),
+    );
+    f.capture.mockRejectedValue(new Error("capture timed out again"));
+    await expect(mirror.flush()).rejects.toThrow();
+    const attempts = f.capture.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(f.capture).toHaveBeenCalledTimes(attempts + 1);
+    expect(f.options.onSaveFailed).toHaveBeenCalledTimes(2);
+    mirror.suspend();
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(f.capture).toHaveBeenCalledTimes(attempts + 1);
+    f.capture.mockResolvedValue([]);
+    await mirror.recover();
+    expect(f.options.onSaveRecovered).toHaveBeenCalledTimes(2);
+    f.capture.mockRejectedValue(new Error("capture timed out after recovery"));
+    await expect(mirror.flush()).rejects.toThrow();
+    const recoveredAttempts = f.capture.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(f.capture).toHaveBeenCalledTimes(recoveredAttempts + 1);
+    await mirror.stop();
+    await expect(mirror.flush()).rejects.toThrow();
+    await expect(mirror.mutate(async () => {})).rejects.toThrow();
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    await mirror.stop();
+  }
 });
 
 it("does not poison persistence when an import deadline aborts before writing", async () => {
@@ -442,7 +604,7 @@ it("does not poison persistence when an import deadline aborts before writing", 
     }, deadline.signal),
   ).rejects.toThrow();
   await mirror.flush();
-  expect(f.options.onFailure).not.toHaveBeenCalled();
+  expect(f.options.onSaveFailed).not.toHaveBeenCalled();
   await mirror.stop();
 });
 

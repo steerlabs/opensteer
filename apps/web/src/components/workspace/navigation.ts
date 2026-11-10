@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useNavigationType, type To } from "react-router";
 import { z } from "zod";
 import {
@@ -379,6 +379,8 @@ export function isSetupPath(pathname: string): boolean {
 }
 
 export interface WorkspaceNavigation {
+  /** Changes on a place choice, including reselecting the current tab. */
+  readonly placeOpening: number;
   /** Where a conversation-area page is, keeping the place in the middle. */
   readonly conversationHref: (to: string) => To;
   /**
@@ -467,6 +469,7 @@ export function useWorkspaceNavigation(
   const navigationType = useNavigationType();
   const { search } = location;
   const { deploymentId, userId } = scope;
+  const [placeOpening, setPlaceOpening] = useState(0);
   // Every imperative choice reads the address as it is when it runs, never as
   // it was when a callback was made: an answer that lands later must not write
   // an older conversation or place back.
@@ -505,6 +508,7 @@ export function useWorkspaceNavigation(
       options: { readonly replace?: boolean; readonly state?: unknown } = {},
     ) => {
       placeEpoch.current += 1;
+      if (!options.replace) setPlaceOpening((value) => value + 1);
       if (selection.kind === "talk") rememberTalk({ deploymentId, userId });
       else if (selection.kind === "launcher") rememberNewTab({ deploymentId, userId });
       const current = latest.current;
@@ -669,6 +673,7 @@ export function useWorkspaceNavigation(
   return useMemo(
     () => ({
       address,
+      placeOpening,
       beginPlaceOperation,
       conversationHref,
       hideComputer,
@@ -688,6 +693,7 @@ export function useWorkspaceNavigation(
     }),
     [
       address,
+      placeOpening,
       beginPlaceOperation,
       conversationHref,
       hideComputer,
