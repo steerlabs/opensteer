@@ -14,9 +14,17 @@ const native = vi.hoisted(() => ({
     onLayout(): void;
     focused: boolean;
     softKeyboard: boolean;
+    keyboardMayReplaceText?: boolean;
   },
   respond: vi.fn(async (_instruction: unknown): Promise<void> => undefined),
   finishComposition: vi.fn(async () => undefined),
+}));
+vi.mock("react-native", () => ({
+  Platform: { OS: "ios" },
+  View: ({ children }: { children?: import("react").ReactNode }) => <div>{children}</div>,
+}));
+vi.mock("../../../src/ui/primitives.js", () => ({
+  AppText: ({ children }: { children?: import("react").ReactNode }) => <span>{children}</span>,
 }));
 vi.mock("expo", async () => {
   const React = await import("react");
@@ -33,6 +41,7 @@ vi.mock("expo", async () => {
   };
 });
 import { RemoteTextInput } from "../src/remote-text-input.js";
+import { NativeEditingProxy } from "../src/editing-proxy.js";
 const context = {
   contextId: "00000000-0000-4000-8000-000000000001",
   field: { kind: "text", multiline: true, sensitive: false },
@@ -46,6 +55,21 @@ afterEach(async () => {
   native.respond.mockReset();
   native.respond.mockImplementation(async () => undefined);
   native.finishComposition.mockClear();
+});
+it("only disables native keyboard replacements when target abilities forbid range edits", async () => {
+  for (const rangeEdits of [true, false, true]) {
+    await act(async () =>
+      root.render(
+        <NativeEditingProxy
+          context={context}
+          abilities={{ composition: true, rangeEdits, commands: true, clipboard: "text" }}
+          sendOperation={() => true}
+          onDone={() => undefined}
+        />,
+      ),
+    );
+    expect(native.props?.keyboardMayReplaceText).toBe(rangeEdits ? undefined : false);
+  }
 });
 it("applies the reset in the numbered acknowledgement before draining native input", async () => {
   const set = { value: "", selectionStart: 0, selectionEnd: 0 };

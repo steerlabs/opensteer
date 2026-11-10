@@ -1,0 +1,4 @@
+ios/.build/
+tests/.gradle/
+tests/.kotlin/
+tests/build/
