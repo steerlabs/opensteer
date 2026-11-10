@@ -1635,6 +1635,9 @@ importers:
 
   packages/core:
     dependencies:
+      '@noble/hashes':
+        specifier: 2.4.0
+        version: 2.4.0
       '@opensteer/shared':
         specifier: workspace:*
         version: link:../shared

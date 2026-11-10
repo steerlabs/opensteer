@@ -1,3 +1,5 @@
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { AppIdSchema, AppTitleSchema } from "./apps.js";
 import { PlaceIdentitySchema, PlaceIdentityViewSchema } from "./places.js";
 import { z } from "zod";
@@ -50,7 +52,7 @@ import {
 } from "./requests.js";
 import { ThreadTitleSchema } from "./thread-title.js";
 import { WorkspaceIconNameSchema } from "./workspace-icons.js";
-import { ToolOutputSchema, ToolOutputViewSchema } from "./tool-output.js";
+import { ToolOutputSchema, ToolOutputViewSchema, utf8Prefix } from "./tool-output.js";
 
 export const ToolIdentitySchema = z.strictObject({
   name: z.string().min(1).max(255),
@@ -572,6 +574,13 @@ const eventDataViewSchemas = {
   "tool.completed": z.object({
     ...eventDataSchemas["tool.completed"].shape,
     output: ToolOutputViewSchema,
+    outputPreview: z
+      .object({
+        bytes: z.number().int().nonnegative(),
+        cut: z.boolean(),
+        digest: z.string().length(64),
+      })
+      .optional(),
   }),
   "tool.started": z.object({
     ...eventDataSchemas["tool.started"].shape,
@@ -747,3 +756,25 @@ export type RunnerEventData<T extends keyof typeof runnerEventDataSchemas> = z.i
 >;
 
 export { eventDataSchemas, runnerEventDataSchemas };
+
+/** Client-only projection; durable events and agent reads retain the stored output. */
+export function previewToolOutput(event: AgentEventView): AgentEventView {
+  if (event.type !== "tool.completed" || event.data.outputPreview) return event;
+  const text = event.data.output.text;
+  const bytes = new TextEncoder().encode(text).byteLength;
+  // Structured status results and computer headlines drive collapsed rows.
+  const firstLine = text.split("\n", 2).join("\n");
+  const preview = bytes <= 2048 ? text : utf8Prefix(firstLine, 1024);
+  return {
+    ...event,
+    data: {
+      ...event.data,
+      output: { ...event.data.output, text: preview },
+      outputPreview: { bytes, cut: preview !== text, digest: toolOutputDigest(text) },
+    },
+  };
+}
+
+export function toolOutputDigest(text: string): string {
+  return bytesToHex(sha256(new TextEncoder().encode(text)));
+}

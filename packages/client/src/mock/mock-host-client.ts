@@ -1,3 +1,4 @@
+import { previewToolOutput } from "@opensteer/core";
 import { seedMockSubagents } from "./mock-subagents.js";
 import { NodeDetailStore, type NodeDetailSubscription } from "../host/node-detail.js";
 import { hostDeploymentPolicy } from "../host/deployment-policy.js";
@@ -2506,6 +2507,31 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
     },
     // The preview projects transcripts directly; it keeps no durable event log
     // to page back through. Turn paging needs no additional projection here.
+    "tool.output.get": async ({ threadId, runId, callId, nodeId }) => {
+      const entry = (client.getSnapshot().transcripts[threadId] ?? []).find(
+        (entry) =>
+          entry.kind === "tool" &&
+          entry.runId === runId &&
+          entry.callId === callId &&
+          entry.nodeId === nodeId,
+      );
+      const event = client.nodeEvents.find(
+        (event) =>
+          event.type === "tool.completed" &&
+          event.threadId === threadId &&
+          event.runId === runId &&
+          event.data.callId === callId &&
+          event.data.nodeId === nodeId,
+      );
+      const output =
+        entry?.kind === "tool"
+          ? entry.output
+          : event?.type === "tool.completed"
+            ? event.data.output
+            : undefined;
+      if (!output) throw new Error("Tool output not found");
+      return rpcSuccess({ output });
+    },
     "thread.events.list": async ({ threadId }) => {
       const thread = client.getSnapshot().threads.find((item) => item.id === threadId);
       if (!thread) throw new Error("Thread not found.");
@@ -2519,7 +2545,7 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
         }),
       );
     },
-    "node.events.list": async ({ threadId, nodeId, through, before, limit = 100 }) => {
+    "node.events.list": async ({ threadId, nodeId, through, before, toolOutputs, limit = 100 }) => {
       const own = (client.getSnapshot().transcripts[threadId] ?? []).find(
         (entry) => entry.kind === "node" && entry.nodeId === nodeId,
       );
@@ -2538,7 +2564,9 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
           (!through || compareSequence(event.sequence, through) <= 0) &&
           (!before || compareSequence(event.sequence, SequenceSchema.parse(before)) < 0),
       );
-      const events = all.slice(-limit);
+      const events = all
+        .slice(-limit)
+        .map((event) => (toolOutputs === "preview" ? previewToolOutput(event) : event));
       const hasMore = all.length > events.length;
       return rpcSuccess(
         hostApi["node.events.list"].success.parse({

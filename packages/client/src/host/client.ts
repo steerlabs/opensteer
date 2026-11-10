@@ -459,6 +459,7 @@ export interface ToolEntry {
   nodeId?: string;
   /** Undefined until the call completes; canonical text is ready for every client. */
   output: ToolOutput | undefined;
+  outputPreview?: { bytes: number; cut: boolean; digest: string } | undefined;
   runId: string | null;
   /**
    * `failed` is the tool's own report of an error. `stopped` is a call the Run

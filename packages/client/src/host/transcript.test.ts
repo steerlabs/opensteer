@@ -1888,3 +1888,29 @@ describe("subagent cards", () => {
     });
   });
 });
+
+it("projects history without changing stored output and keeps whole live output on completion", async () => {
+  const { previewToolOutput } = await import("@opensteer/core");
+  const text = `Looked at Notes\nObservation a of Notes — 10 elements. Screenshot a\n${"🙂".repeat(4000)}`;
+  const completed = event("tool.completed", { callId: "lazy", isError: false, output: { text } });
+  const projected = previewToolOutput(completed);
+  expect(completed.data.output.text).toBe(text);
+  expect(projected.type === "tool.completed" && projected.data.outputPreview).toEqual({
+    bytes: new TextEncoder().encode(text).byteLength,
+    cut: true,
+    digest: expect.any(String),
+  });
+  const historical = fold([projected]);
+  expect(historical[0]).toMatchObject({ outputPreview: { cut: true } });
+  const live = historical.map((entry) =>
+    entry.kind === "tool" ? { ...entry, streamText: text } : entry,
+  );
+  const settled = foldTranscriptEvent(live, projected);
+  expect(settled[0]).toMatchObject({ output: { text }, outputPreview: { cut: false } });
+  const changed = historical.map((entry) =>
+    entry.kind === "tool" ? { ...entry, streamText: `${text.slice(0, -2)}😎` } : entry,
+  );
+  expect(foldTranscriptEvent(changed, projected)[0]).toMatchObject({
+    outputPreview: { cut: true },
+  });
+});

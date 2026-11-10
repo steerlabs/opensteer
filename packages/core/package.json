@@ -13,6 +13,7 @@
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
+    "@noble/hashes": "2.4.0",
     "@opensteer/shared": "workspace:*",
     "zod": "catalog:"
   },

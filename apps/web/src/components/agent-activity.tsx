@@ -1,3 +1,4 @@
+import { useToolOutput } from "@opensteer/client/react";
 import { copyText } from "@opensteer/shared/clipboard";
 import { placeIdentityKey, voiceCallSeed } from "@opensteer/core";
 import { AppCard } from "./apps/app-card.js";
@@ -1818,17 +1819,30 @@ function Step({
   );
 }
 
-function ToolDetail({ tool }: { tool: ToolEntry }) {
+function ToolDetail({ tool: preview }: { tool: ToolEntry }) {
+  const client = useContext(TranscriptHostClientContext);
+  const { threadId } = useContext(Speakers);
+  const detail = useToolOutput(client, threadId, preview);
+  const tool = detail.tool;
   const body = useMemo(() => toolBody(tool), [tool]);
   const Section = body.collapsed ? DisclosedSection : OpenSection;
   return (
     <div className="trace-step__body">
+      {detail.loading ? <span role="status">Loading output…</span> : null}
+      {detail.error ? (
+        <button onClick={detail.reload} type="button">
+          Could not load output. Retry
+        </button>
+      ) : null}
       {body.summary ? <p className="trace-step__summary">{body.summary}</p> : null}
       {body.command ? <pre className="trace-code trace-code--command">{body.command}</pre> : null}
       {body.argumentsText ? <Section label="Input" text={body.argumentsText} /> : null}
-      {body.output ? (
-        <Section label={body.outputLabel} text={body.output} />
-      ) : tool.state === "running" || body.summary ? null : (
+      {body.output && !detail.loading && !detail.error ? (
+        <>
+          <CopyMark label="Copy output" text={tool.output?.text ?? body.output} />
+          <Section label={body.outputLabel} text={body.output} />
+        </>
+      ) : tool.state === "running" || body.summary || detail.loading || detail.error ? null : (
         <span className="trace-step__empty">No output</span>
       )}
     </div>
