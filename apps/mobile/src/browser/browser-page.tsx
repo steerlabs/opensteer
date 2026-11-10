@@ -148,6 +148,7 @@ const maxZoom = 4;
  * from either.
  */
 export function BrowserPage(props: {
+  readonly nativeContent?: ReactNode;
   /** In front of the reader, with the app in the foreground. */
   readonly active: boolean;
   readonly connected: boolean;
@@ -264,7 +265,7 @@ export function BrowserPage(props: {
     }
   }, [editable]);
   useEffect(() => {
-    if (!props.active || !props.connected) {
+    if (!props.active || !props.connected || props.nativeContent) {
       setTyping(false);
       return;
     }
@@ -272,7 +273,7 @@ export function BrowserPage(props: {
       setProblem(message);
       if (!editing.get().negotiated) setTyping(false);
     });
-  }, [editing, props.active, props.connected]);
+  }, [editing, props.active, props.connected, props.nativeContent]);
   const channelReady =
     props.active && props.connected && session.state === "ready" && feed.status === "live";
   const { review: closeReview, ask: askClose, dismiss: dismissClose } = useActionReview(hostClient);
@@ -785,191 +786,198 @@ export function BrowserPage(props: {
           Drag/select · Drag once to select or move content
         </AppText>
       ) : null}
-      <GestureDetector gesture={zoom.gesture}>
-        <View onLayout={onStage} style={styles.stage}>
-          <Animated.View
-            {...(arrival === 0 || reduceMotion ? {} : { entering: arriveFrom(arrival) })}
-            pointerEvents="box-none"
-            style={styles.arrival}
-          >
-            <Animated.View style={[styles.picture, box, placed]}>
-              <BrowserStream
-                active={props.active}
-                tabId={tabId}
-                documentId={liveTab?.documentId}
-                hostClient={hostClient}
-                interactive
-                inputEnabled={closeReview === null && !addressOpen && pageMenu === null}
-                inputEpoch={`${navigationKey}:${keyboardOpen}:${slideTo}`}
-                dragSelect={dragSelect}
-                onDragEnd={() => setDragSelect(false)}
-                label={label}
-                onPageSize={onPageSize}
-                onPresentedGeometry={setDrawnGeometry}
-                onPointerDown={() => {
-                  setPageFocused(true);
-                  menuInteraction.current++;
-                  editing.dismissMenu();
-                  proxy.current?.interrupt();
-                }}
-                zoom={zoom.scale}
-                onScroll={() => setMayType(false)}
-                onTap={() => {
-                  setAddressOpen(false);
-                  setAddressDraft(null);
-                  setPageFocused(true);
-                  // A page that reports its fields keeps the keyboard up from one
-                  // field to the next and puts it away when nothing has focus.
-                  if (!editing.get().negotiated) setTyping(false);
-                  setMayType(true);
-                }}
-                session={session}
-              />
-            </Animated.View>
-          </Animated.View>
-          {offer !== null ? (
+      {props.nativeContent ?? (
+        <GestureDetector gesture={zoom.gesture}>
+          <View onLayout={onStage} style={styles.stage}>
             <Animated.View
-              entering={appear}
-              exiting={exit}
+              {...(arrival === 0 || reduceMotion ? {} : { entering: arriveFrom(arrival) })}
               pointerEvents="box-none"
-              style={[
-                styles.fitBand,
-                offer.place === "below"
-                  ? {
-                      bottom: status.height,
-                      height: rested.height - picture.height,
-                      left: 0,
-                      right: 0,
-                    }
-                  : { bottom: status.height, right: 0, top: 0, width: picture.left },
-              ]}
+              style={styles.arrival}
             >
-              <Pressable
-                accessibilityHint="Resizes the page to fill your screen"
-                accessibilityLabel="Fit to screen"
-                accessibilityRole="button"
-                onPress={fit}
-                style={({ pressed }) => pressed && styles.pressed}
-              >
-                <GlassSurface
+              <Animated.View style={[styles.picture, box, placed]}>
+                <BrowserStream
+                  active={props.active}
+                  tabId={tabId}
+                  documentId={liveTab?.documentId}
+                  hostClient={hostClient}
                   interactive
-                  shape="capsule"
-                  style={offer.words ? styles.fitChip : styles.fitGlyph}
-                >
-                  <Symbol
-                    name="arrow.up.left.and.arrow.down.right"
-                    size={14}
-                    tint={color.ember}
-                    weight="semibold"
-                  />
-                  {offer.words ? <AppText role="secondaryMedium">Fit to screen</AppText> : null}
-                </GlassSurface>
-              </Pressable>
+                  inputEnabled={closeReview === null && !addressOpen && pageMenu === null}
+                  inputEpoch={`${navigationKey}:${keyboardOpen}:${slideTo}`}
+                  dragSelect={dragSelect}
+                  onDragEnd={() => setDragSelect(false)}
+                  label={label}
+                  onPageSize={onPageSize}
+                  onPresentedGeometry={setDrawnGeometry}
+                  onPointerDown={() => {
+                    setPageFocused(true);
+                    menuInteraction.current++;
+                    editing.dismissMenu();
+                    proxy.current?.interrupt();
+                  }}
+                  zoom={zoom.scale}
+                  onScroll={() => setMayType(false)}
+                  onTap={() => {
+                    setAddressOpen(false);
+                    setAddressDraft(null);
+                    setPageFocused(true);
+                    // A page that reports its fields keeps the keyboard up from one
+                    // field to the next and puts it away when nothing has focus.
+                    if (!editing.get().negotiated) setTyping(false);
+                    setMayType(true);
+                  }}
+                  session={session}
+                />
+              </Animated.View>
             </Animated.View>
-          ) : null}
-          {addressOpen ? (
-            <Pressable
-              accessibilityLabel="Keep this page"
-              accessibilityRole="button"
-              onPress={() => {
-                setAddressDraft(null);
-                setAddressOpen(false);
-              }}
-              style={styles.dim}
-            />
-          ) : null}
-          {pageProblem === null && !refused && !feed.inputError && !passkey ? null : (
-            <View pointerEvents="box-none" style={styles.top}>
-              {passkey ? (
-                <View style={styles.card}>
-                  <AppText role="secondary">{passkeyNotice}</AppText>
-                </View>
-              ) : null}
-              {pageProblem !== null || refused ? (
-                <Notice
-                  detail={pageProblem ?? refusedNotice}
-                  title="Page unavailable"
-                  tone="neutral"
-                />
-              ) : feed.inputError ? (
-                // The page refused a touch or key, and says why; the next one clears it.
-                <Notice
-                  detail={feed.inputError}
-                  title="That didn’t reach the page"
-                  tone="neutral"
-                />
-              ) : null}
-            </View>
-          )}
-          {dialog === null ? null : (
-            <PageDialog
-              channelReady={channelReady}
-              dialog={dialog}
-              onAnswer={(accept) =>
-                send({
-                  type: "dialog.respond",
-                  accept,
-                  dialogId: dialog.id,
-                  ...(accept && dialog.type === "prompt" ? { promptText } : {}),
-                })
-              }
-              onPrompt={(text) => setPrompt({ id: dialog.id, text })}
-              promptText={promptText}
-              site={site}
-            />
-          )}
-          {signingIn && signInSite !== null && tab !== undefined ? (
-            <View style={[styles.card, styles.bottom, { bottom: space[12] + status.height }]}>
-              <View style={styles.row}>
-                <View style={styles.grow}>
-                  <ChromeSignInAction
-                    connected={props.connected}
-                    hostClient={hostClient}
-                    key={`${session.id}:${signInSite}`}
-                    sessionId={session.id}
-                    tabId={tabId}
-                    site={signInSite}
-                    url={tab.url}
-                    workspaceName={props.workspaceName}
-                  />
-                </View>
+            {offer !== null ? (
+              <Animated.View
+                entering={appear}
+                exiting={exit}
+                pointerEvents="box-none"
+                style={[
+                  styles.fitBand,
+                  offer.place === "below"
+                    ? {
+                        bottom: status.height,
+                        height: rested.height - picture.height,
+                        left: 0,
+                        right: 0,
+                      }
+                    : { bottom: status.height, right: 0, top: 0, width: picture.left },
+                ]}
+              >
                 <Pressable
-                  accessibilityLabel="Close"
+                  accessibilityHint="Resizes the page to fill your screen"
+                  accessibilityLabel="Fit to screen"
                   accessibilityRole="button"
-                  hitSlop={space[8]}
-                  onPress={() => setSigningIn(false)}
-                  style={styles.iconButton}
+                  onPress={fit}
+                  style={({ pressed }) => pressed && styles.pressed}
                 >
-                  <Symbol name="xmark" size={13} tint={color.muted} weight="semibold" />
+                  <GlassSurface
+                    interactive
+                    shape="capsule"
+                    style={offer.words ? styles.fitChip : styles.fitGlyph}
+                  >
+                    <Symbol
+                      name="arrow.up.left.and.arrow.down.right"
+                      size={14}
+                      tint={color.ember}
+                      weight="semibold"
+                    />
+                    {offer.words ? <AppText role="secondaryMedium">Fit to screen</AppText> : null}
+                  </GlassSurface>
                 </Pressable>
-              </View>
-            </View>
-          ) : !keyboardOpen && mayType && ready && editable && !editingState.negotiated ? (
-            <Animated.View
-              entering={appear}
-              exiting={exit}
-              style={[styles.keyboard, { bottom: space[12] + status.height }]}
-            >
+              </Animated.View>
+            ) : null}
+            {addressOpen ? (
               <Pressable
-                accessibilityHint="Types into the page"
-                accessibilityLabel="Keyboard"
+                accessibilityLabel="Keep this page"
                 accessibilityRole="button"
                 onPress={() => {
-                  setPageFocused(true);
-                  setTyping(true);
+                  setAddressDraft(null);
+                  setAddressOpen(false);
                 }}
-                style={({ pressed }) => pressed && styles.pressed}
+                style={styles.dim}
+              />
+            ) : null}
+            {pageProblem === null && !refused && !feed.inputError && !passkey ? null : (
+              <View pointerEvents="box-none" style={styles.top}>
+                {passkey ? (
+                  <View style={styles.card}>
+                    <AppText role="secondary">{passkeyNotice}</AppText>
+                  </View>
+                ) : null}
+                {pageProblem !== null || refused ? (
+                  <Notice
+                    detail={pageProblem ?? refusedNotice}
+                    title="Page unavailable"
+                    tone="neutral"
+                  />
+                ) : feed.inputError ? (
+                  // The page refused a touch or key, and says why; the next one clears it.
+                  <Notice
+                    detail={feed.inputError}
+                    title="That didn’t reach the page"
+                    tone="neutral"
+                  />
+                ) : null}
+              </View>
+            )}
+            {dialog === null ? null : (
+              <PageDialog
+                channelReady={channelReady}
+                dialog={dialog}
+                onAnswer={(accept) =>
+                  send({
+                    type: "dialog.respond",
+                    accept,
+                    dialogId: dialog.id,
+                    ...(accept && dialog.type === "prompt" ? { promptText } : {}),
+                  })
+                }
+                onPrompt={(text) => setPrompt({ id: dialog.id, text })}
+                promptText={promptText}
+                site={site}
+              />
+            )}
+            {signingIn && signInSite !== null && tab !== undefined ? (
+              <View style={[styles.card, styles.bottom, { bottom: space[12] + status.height }]}>
+                <View style={styles.row}>
+                  <View style={styles.grow}>
+                    <ChromeSignInAction
+                      connected={props.connected}
+                      hostClient={hostClient}
+                      key={`${session.id}:${signInSite}`}
+                      sessionId={session.id}
+                      tabId={tabId}
+                      site={signInSite}
+                      url={tab.url}
+                      workspaceName={props.workspaceName}
+                    />
+                  </View>
+                  <Pressable
+                    accessibilityLabel="Close"
+                    accessibilityRole="button"
+                    hitSlop={space[8]}
+                    onPress={() => setSigningIn(false)}
+                    style={styles.iconButton}
+                  >
+                    <Symbol name="xmark" size={13} tint={color.muted} weight="semibold" />
+                  </Pressable>
+                </View>
+              </View>
+            ) : !keyboardOpen && mayType && ready && editable && !editingState.negotiated ? (
+              <Animated.View
+                entering={appear}
+                exiting={exit}
+                style={[styles.keyboard, { bottom: space[12] + status.height }]}
               >
-                <GlassSurface interactive shape="capsule" style={styles.keyboardFace}>
-                  <Symbol name="keyboard" size={19} tint={color.text} />
-                </GlassSurface>
-              </Pressable>
-            </Animated.View>
-          ) : null}
-          {status.row}
-        </View>
-      </GestureDetector>
-      {ready && tab !== undefined && !addressOpen && !dialog && !signingIn ? (
+                <Pressable
+                  accessibilityHint="Types into the page"
+                  accessibilityLabel="Keyboard"
+                  accessibilityRole="button"
+                  onPress={() => {
+                    setPageFocused(true);
+                    setTyping(true);
+                  }}
+                  style={({ pressed }) => pressed && styles.pressed}
+                >
+                  <GlassSurface interactive shape="capsule" style={styles.keyboardFace}>
+                    <Symbol name="keyboard" size={19} tint={color.text} />
+                  </GlassSurface>
+                </Pressable>
+              </Animated.View>
+            ) : null}
+            {status.row}
+          </View>
+        </GestureDetector>
+      )}
+      {!props.nativeContent &&
+      ready &&
+      tab !== undefined &&
+      !addressOpen &&
+      !dialog &&
+      !signingIn ? (
         <PageTyping
           ref={proxy}
           focused={pageFocused}

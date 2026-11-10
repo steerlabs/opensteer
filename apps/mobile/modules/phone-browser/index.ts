@@ -3,9 +3,11 @@ import type * as Browser from "./types";
 
 export type * from "./types";
 
-type PhoneBrowserModule = NativeModule<{
-  event: (event: Browser.PhoneBrowserNativeEvent) => void;
-}> &
+type PhoneBrowserModule = InstanceType<
+  typeof NativeModule<{
+    event: (event: Browser.PhoneBrowserNativeEvent) => void;
+  }>
+> &
   Omit<Browser.PhoneBrowserNativePort, "onEvent">;
 
 const native = requireNativeModule<PhoneBrowserModule>("PhoneBrowser");

@@ -1,9 +1,7 @@
-import { AppState, Platform } from "react-native";
+import { AppState } from "react-native";
 import { randomUUID } from "expo-crypto";
 import { useSyncExternalStore } from "react";
-import type { IphoneAppsBridge } from "../platform/iphone-apps.js";
-import { createIphoneBrowserConnection } from "../iphone-apps/browser-transport.js";
-import { composeIphoneBrowserPort } from "./iphone-port.js";
+import type { PhoneBrowserPlatform } from "./platform.js";
 import { PhoneBrowserManager } from "./manager.js";
 
 let manager: PhoneBrowserManager | null = null;
@@ -14,10 +12,8 @@ const publish = (value: PhoneBrowserManager | null) => {
   for (const listener of listeners) listener();
 };
 
-export function startIphoneBrowserRuntime(bridge: IphoneAppsBridge): void {
-  if (started || Platform.OS !== "ios") return;
-  const connection = createIphoneBrowserConnection();
-  if (!connection) return;
+export function startPhoneBrowserRuntime(platform: PhoneBrowserPlatform): void {
+  if (started) return;
   started = true;
   let identity = "";
   let deploymentId = "";
@@ -26,9 +22,7 @@ export function startIphoneBrowserRuntime(bridge: IphoneAppsBridge): void {
   let initializing: PhoneBrowserManager | null = null;
   let turn = Promise.resolve();
   const reconcile = () => {
-    const snapshot = bridge.getSnapshot();
-    const enrollment =
-      snapshot.supported && snapshot.enrollment?.state === "enrolled" ? snapshot.enrollment : null;
+    const enrollment = platform.getEnrollment();
     const next = enrollment ? `${enrollment.deploymentId}:${enrollment.runnerId}` : "";
     if (next === identity && (manager || initializing)) {
       if (manager) {
@@ -58,10 +52,10 @@ export function startIphoneBrowserRuntime(bridge: IphoneAppsBridge): void {
       .then(async () => {
         await stopped;
         if (revision !== generation || !enrollment || !foreground) return;
-        const { phoneBrowser } = await import("../../modules/phone-browser/index.js");
+        const native = await platform.loadNativePort();
         if (revision !== generation || !foreground) return;
         const candidate = new PhoneBrowserManager({
-          native: composeIphoneBrowserPort(phoneBrowser, connection),
+          native,
           deploymentId: enrollment.deploymentId,
           runnerId: enrollment.runnerId,
           uuid: randomUUID,
@@ -86,21 +80,19 @@ export function startIphoneBrowserRuntime(bridge: IphoneAppsBridge): void {
       });
     void turn.catch(() => undefined);
   };
-  bridge.subscribe(reconcile);
+  platform.subscribeEnrollment(reconcile);
   AppState.addEventListener("change", (state) => {
     foreground = state === "active";
     reconcile();
   });
-  connection.onErasure(async (event) => {
-    if (event.deploymentId === deploymentId && manager) await manager.eraseDeployment();
+  platform.subscribeErasure(async (erasedDeploymentId) => {
+    if (erasedDeploymentId === deploymentId && manager) await manager.eraseDeployment();
   });
-  void import("../../modules/phone-browser/index.js")
-    .then(() => connection.retryErasure())
-    .catch(() => undefined);
+  void platform.retryErasure().catch(() => undefined);
   reconcile();
 }
 
-export function useIphoneBrowserManager(): PhoneBrowserManager | null {
+export function usePhoneBrowserManager(): PhoneBrowserManager | null {
   return useSyncExternalStore(
     (listener) => {
       listeners.add(listener);

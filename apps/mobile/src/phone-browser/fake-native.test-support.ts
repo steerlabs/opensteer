@@ -207,6 +207,19 @@ export class FakePhoneBrowserNative implements PhoneBrowserNativePort {
     this.#check(input, "createTab");
     if (!this.permits.has(input.allocationPermit))
       throw new PhoneBrowserError("forbidden", "No allocation permit.");
+    if (input.restoreFrom) {
+      const retained = this.tabs.get(input.tabId);
+      if (
+        !retained ||
+        retained.state === "live" ||
+        retained.sessionId !== input.restoreFrom.sessionId ||
+        retained.metadata.generation !== input.restoreFrom.generation
+      )
+        throw new PhoneBrowserError("target-closed", "The retained tab changed.");
+      retained.sessionId = input.sessionId;
+      retained.metadata = { ...retained.metadata, generation: ++this.#next };
+      return retained.metadata;
+    }
     const metadata: NativeTabMetadata = {
       generation: ++this.#next,
       revision: 1,

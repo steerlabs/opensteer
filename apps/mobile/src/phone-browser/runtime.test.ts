@@ -1,5 +1,6 @@
 import { expect, test, vi } from "vitest";
-import type { IphoneAppsBridge } from "../platform/iphone-apps.js";
+import { FakePhoneBrowserNative } from "./fake-native.test-support.js";
+import type { PhoneBrowserPlatform } from "./platform.js";
 
 const state = vi.hoisted(() => ({
   change: (_state: string) => {},
@@ -17,19 +18,6 @@ vi.mock("react-native", () => ({
   },
 }));
 vi.mock("expo-crypto", () => ({ randomUUID: () => "uuid" }));
-vi.mock("expo", () => ({
-  NativeModule: class {},
-  requireNativeModule: () => ({}),
-  requireNativeView: () => () => null,
-}));
-vi.mock("../iphone-apps/browser-transport.js", () => ({
-  createIphoneBrowserConnection: () => ({
-    onErasure: () => {},
-    retryErasure: async () => {},
-  }),
-}));
-vi.mock("../../modules/phone-browser/index.js", () => ({ phoneBrowser: {} }));
-vi.mock("./iphone-port.js", () => ({ composeIphoneBrowserPort: () => ({}) }));
 vi.mock("./manager.js", () => ({
   PhoneBrowserManager: class {
     initialize = state.initialize;
@@ -41,19 +29,18 @@ vi.mock("./manager.js", () => ({
 test("leaving foreground fences an initializing manager before qualification completes", async () => {
   const initialization = Promise.withResolvers<void>();
   state.initialize.mockReturnValue(initialization.promise);
-  const { startIphoneBrowserRuntime } = await import("./runtime.js");
-  const bridge = {
-    getSnapshot: () => ({
-      supported: true,
-      enrollment: {
-        state: "enrolled",
-        deploymentId: "deployment",
-        runnerId: "runner",
-      },
+  const { startPhoneBrowserRuntime } = await import("./runtime.js");
+  const platform: PhoneBrowserPlatform = {
+    getEnrollment: () => ({
+      deploymentId: "deployment",
+      runnerId: "runner",
     }),
-    subscribe: () => () => {},
-  } as unknown as IphoneAppsBridge;
-  startIphoneBrowserRuntime(bridge);
+    subscribeEnrollment: () => () => {},
+    loadNativePort: async () => new FakePhoneBrowserNative(),
+    subscribeErasure: () => () => {},
+    retryErasure: async () => {},
+  };
+  startPhoneBrowserRuntime(platform);
   await vi.waitFor(() => expect(state.initialize).toHaveBeenCalledOnce());
   state.change("background");
   expect(state.dispose).toHaveBeenCalledOnce();

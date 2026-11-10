@@ -54,6 +54,7 @@ export interface NativeQualification {
 }
 
 export type PhoneBrowserNativeEvent =
+  | (NativeTabRef & { readonly type: "closed" })
   | (NativeTabRef & { readonly type: "tabChanged"; readonly metadata: NativeTabMetadata })
   | (NativeTabRef & { readonly type: "documentChanged"; readonly metadata: NativeTabMetadata })
   | (NativeTabRef & {
@@ -132,6 +133,7 @@ export interface PhoneBrowserNativePort {
       allocationPermit: string;
       storeHandle: string | null;
       state: "live" | "retained";
+      restoreFrom?: { readonly sessionId: string; readonly generation: number };
       viewport: { width: number; height: number };
       url?: string;
       navigationId?: string;

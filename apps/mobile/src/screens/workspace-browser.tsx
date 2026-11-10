@@ -41,6 +41,8 @@ import {
 } from "@react-navigation/native";
 import {
   memo,
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -99,6 +101,8 @@ import {
 import { tabSiteLabel } from "../browser/site-label.js";
 import { newTaskDraftBlank, newTaskDraftId, newTaskDraftKey } from "../client/thread-drafts.js";
 import { useHereDeviceId } from "../computers/here-device.js";
+import { usePhoneBrowserManager } from "../phone-browser/runtime.js";
+import { usePhoneTabPresentation } from "../phone-browser/presentation.js";
 import { MacAppView } from "../computers/mac-app-view.js";
 import { computerSymbols } from "./settings-model.js";
 import { color, space, touchTarget } from "../theme.js";
@@ -890,6 +894,10 @@ function tabListed(session: HostSnapshot["browserSessions"][number], tabId: stri
  * saved tab's lineage moving to a new session moves the route with it; the
  * tab is the same, so nothing else changes.
  */
+const LocalPhoneTab = lazy(() =>
+  import("../phone-browser/local-tab.js").then(({ LocalPhoneTab }) => ({ default: LocalPhoneTab })),
+);
+
 function BrowserTab(props: {
   readonly active: boolean;
   readonly connected: boolean;
@@ -917,6 +925,9 @@ function BrowserTab(props: {
   readonly tabId: string;
 }): ReactNode {
   const { hostClient, place, snapshot, tabId } = props;
+  const phoneManager = usePhoneBrowserManager();
+  usePhoneTabPresentation(phoneManager, tabId);
+  const local = phoneManager?.localPresentation(props.deploymentId, tabId) ?? null;
   const navigation = useNavigation();
   const saved = place?.workspaceTab;
   const lineageSession =
@@ -994,9 +1005,22 @@ function BrowserTab(props: {
     if (popupEnded && props.active) latestClosed.current();
   }, [popupEnded, props.active]);
 
-  if (live && session !== null)
+  if ((live || local) && session !== null)
     return (
       <BrowserPage
+        nativeContent={
+          local && phoneManager ? (
+            <Suspense fallback={<TabStatus title="Opening…" waiting />}>
+              <LocalPhoneTab
+                active={props.active}
+                hostClient={hostClient}
+                manager={phoneManager}
+                admission={local}
+                status={(message) => <TabStatus title={message} />}
+              />
+            </Suspense>
+          ) : undefined
+        }
         active={props.active}
         arrival={shown.current.arrival}
         connected={props.connected}
@@ -1019,6 +1043,18 @@ function BrowserTab(props: {
           snapshot.workspaces.find(({ id }) => id === session.workspaceId)?.name ?? "this workspace"
         }
       />
+    );
+  if (local && phoneManager)
+    return (
+      <Suspense fallback={<TabStatus title="Opening…" waiting />}>
+        <LocalPhoneTab
+          active={props.active}
+          hostClient={hostClient}
+          manager={phoneManager}
+          admission={local}
+          status={(message) => <TabStatus title={message} />}
+        />
+      </Suspense>
     );
   return (
     <>
