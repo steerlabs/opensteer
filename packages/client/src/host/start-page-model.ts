@@ -254,7 +254,10 @@ export function startPageIndex(input: {
     if (
       !machine ||
       (machine.ownership !== "mine" &&
-        !(snapshot.deploymentShape?.kind === "personal" && machine.ownership === "deployment"))
+        !(
+          snapshot.deploymentPolicy?.ownership === "single-user" &&
+          machine.ownership === "deployment"
+        ))
     )
       continue;
     const kind = app.target.kind === "phone" ? "phone" : "apps";

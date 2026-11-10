@@ -46,7 +46,7 @@ type PasswordsBridge = Pick<
 export function PasswordsSection({ view }: { readonly view: SettingsView }) {
   const { desktopBridge, hostClient, snapshot } = useShell();
   const home = useHomeComputer();
-  const personal = snapshot.deploymentShape?.kind === "personal";
+  const personal = snapshot.deploymentPolicy?.ownership === "single-user";
   const onThisMac = desktopBridge !== null && personal && view.facts.onThisComputer;
   return (
     <>

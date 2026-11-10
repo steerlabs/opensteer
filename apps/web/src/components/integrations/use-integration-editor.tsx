@@ -91,7 +91,7 @@ export function useIntegrationEditor({
     desktopBridge === null
       ? null
       : currentDeviceMachineId({
-          deploymentKind: snapshot.deploymentShape?.kind ?? null,
+          deploymentPolicy: snapshot.deploymentPolicy ?? null,
           hostsDeploymentOnThisComputer: desktopDeployment?.onThisComputer === true,
           localRunnerId: localExecutionStatus?.runner.runnerId ?? null,
           machines: snapshot.machines,

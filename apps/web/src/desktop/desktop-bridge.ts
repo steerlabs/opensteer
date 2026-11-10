@@ -1,3 +1,4 @@
+import type { DeploymentClientPolicy } from "@opensteer/core";
 import type { ViewerClipboardBridge } from "@opensteer/client/editing";
 import type {
   DesktopLocalExecutionStatus,
@@ -47,11 +48,11 @@ export function localRunnerStateLabel(state: LocalRunnerState): string {
  * the switches on its own page decide the rest.
  */
 export function localJoinOffer(input: {
-  readonly deploymentKind: "personal" | "server" | null;
+  readonly deploymentPolicy: DeploymentClientPolicy | null;
   readonly status: DesktopLocalExecutionStatus | null;
 }): { readonly runAgents: boolean } | null {
-  const { deploymentKind, status } = input;
+  const { deploymentPolicy, status } = input;
   if (status === null || !status.available || status.runner.enrolled) return null;
   if (status.platform !== "windows") return { runAgents: false };
-  return deploymentKind === "server" ? { runAgents: true } : null;
+  return deploymentPolicy?.ownership === "members" ? { runAgents: true } : null;
 }

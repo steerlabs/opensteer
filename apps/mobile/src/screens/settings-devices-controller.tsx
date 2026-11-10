@@ -57,7 +57,7 @@ export function DevicesSettingsController(): ReactNode {
     const enrollment = iphoneApps.snapshot.enrollment;
     return computersSettingsRows({
       apps: apps.data,
-      deploymentKind: snapshot.deploymentShape?.kind ?? null,
+      deploymentPolicy: snapshot.deploymentPolicy ?? null,
       deploymentName,
       here:
         !iphoneApps.snapshot.supported || selection.deploymentId === null

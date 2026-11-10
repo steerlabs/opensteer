@@ -1,3 +1,4 @@
+import type { DeploymentClientPolicy } from "@opensteer/core";
 import { useToast } from "../toast.js";
 import { copyText } from "@opensteer/shared/clipboard";
 import { usePersonalRemoteAccess } from "@opensteer/client/react";
@@ -26,7 +27,7 @@ import { Icon } from "../icon.js";
  */
 export function AddComputerDialog({
   client,
-  deploymentKind,
+  deploymentPolicy,
   deploymentName,
   homeName,
   hostedOnThisComputer,
@@ -39,7 +40,7 @@ export function AddComputerDialog({
   snapshot,
 }: {
   readonly client: HostClient;
-  readonly deploymentKind: "personal" | "server" | null;
+  readonly deploymentPolicy: DeploymentClientPolicy | null;
   readonly deploymentName: string;
   /** The Mac a Personal Opensteer runs on. */
   readonly homeName: string;
@@ -61,7 +62,7 @@ export function AddComputerDialog({
   const { deploymentAccess, desktopBridge } = useShell();
   const accountAvailable = !desktopBridge || deploymentAccess?.account.available !== false;
   const adding = localExecutionAction?.kind === "add";
-  const personal = deploymentKind === "personal";
+  const personal = deploymentPolicy?.ownership === "single-user";
   const reachable = usePersonalReachable({ hostedOnThisComputer, personal });
 
   return (
@@ -134,7 +135,7 @@ export function AddComputerDialog({
         ) : null}
       </section>
 
-      {deploymentKind === "server" ? (
+      {deploymentPolicy?.ownership === "members" ? (
         <details className="add-computer__advanced">
           <summary>A server without a screen</summary>
           <HeadlessEnrollment client={client} snapshot={snapshot} />

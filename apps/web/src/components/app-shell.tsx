@@ -495,10 +495,9 @@ export function AppShell({
     null;
   // The grant this computer would join under. A Personal Deployment admits
   // other computers only to be reached, so its grant is exactly `shell`.
-  const localGrant = useMemo<readonly ["agents", "browser", "shell"] | readonly ["shell"]>(
-    () =>
-      snapshot.deploymentShape?.kind === "server" ? ["agents", "browser", "shell"] : ["shell"],
-    [snapshot.deploymentShape?.kind],
+  const localGrant = useMemo<readonly ("agents" | "browser" | "shell")[]>(
+    () => [...(snapshot.deploymentPolicy?.localRunnerDefaultModules ?? ["shell"])],
+    [snapshot.deploymentPolicy],
   );
   // Every navigation closes the drawer; the destination is on screen now.
   useEffect(() => {

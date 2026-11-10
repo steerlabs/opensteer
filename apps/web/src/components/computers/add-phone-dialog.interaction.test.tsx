@@ -111,7 +111,10 @@ describe("AddPhoneDialog setup lifecycle", () => {
         <MemoryRouter>
           <AddPhoneDialog
             client={client}
-            deploymentKind="server"
+            deploymentPolicy={{
+              ownership: "members",
+              localRunnerDefaultModules: ["agents", "browser", "shell"],
+            }}
             deploymentName="My Opensteer"
             desktopBridge={desktopBridge}
             homeName="Mac mini"

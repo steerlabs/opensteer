@@ -37,7 +37,10 @@ describe("machineReachOptions", () => {
   it("withholds an owner only where there is no owner to reach", () => {
     expect(
       machineReachOptions({
-        deploymentKind: "server",
+        deploymentPolicy: {
+          ownership: "members",
+          localRunnerDefaultModules: ["agents", "browser", "shell"],
+        },
         deploymentName: "Acme",
         ownerReachAvailable: false,
         ownership: "deployment",
@@ -50,7 +53,7 @@ describe("machineReachOptions", () => {
     // too. Reading ownership alone is what used to hide the choice.
     expect(
       machineReachOptions({
-        deploymentKind: "personal",
+        deploymentPolicy: { ownership: "single-user", localRunnerDefaultModules: ["shell"] },
         deploymentName: "Acme",
         ownerReachAvailable: true,
         ownership: "deployment",
@@ -61,7 +64,10 @@ describe("machineReachOptions", () => {
   it("offers the whole Deployment only where there is more than one person", () => {
     const forKind = (deploymentKind: "personal" | "server") =>
       machineReachOptions({
-        deploymentKind,
+        deploymentPolicy: {
+          ownership: deploymentKind === "personal" ? "single-user" : "members",
+          localRunnerDefaultModules: [],
+        },
         deploymentName: "Acme",
         ownerReachAvailable: true,
         ownership: "mine",
@@ -581,7 +587,10 @@ function sectionElement(input: {
     <MachineAccessSection
       access={input.access ?? accessWith([])}
       client={input.client}
-      deploymentKind="server"
+      deploymentPolicy={{
+        ownership: "members",
+        localRunnerDefaultModules: ["agents", "browser", "shell"],
+      }}
       deploymentName="Acme"
       desktopBridge={input.desktopBridge ?? null}
       machineId={machineId}

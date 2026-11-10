@@ -528,7 +528,8 @@ function selectCanOpen(snapshot: HostSnapshot): boolean {
       machine.computerUse !== undefined &&
       machine.computerUse !== null &&
       (machine.ownership === "mine" ||
-        (snapshot.deploymentShape?.kind === "personal" && machine.ownership === "deployment")),
+        (snapshot.deploymentPolicy?.ownership === "single-user" &&
+          machine.ownership === "deployment")),
   );
 }
 

@@ -157,7 +157,7 @@ function Plugins({
       setAddEntry(entry);
       if (add?.product.id !== product.id) {
         setAddPlaces([]);
-        setAddEverywhere(host.getSnapshot().deploymentShape?.kind === "personal");
+        setAddEverywhere(host.getSnapshot().deploymentPolicy?.ownership === "single-user");
       }
       addConsent.current = null;
       setAddInstalled(false);
@@ -491,7 +491,7 @@ function Plugins({
             ]),
         })),
 
-        ...(host.getSnapshot().deploymentShape?.kind === "personal"
+        ...(host.getSnapshot().deploymentPolicy?.ownership === "single-user"
           ? [
               {
                 key: "everywhere",
@@ -643,7 +643,10 @@ function Plugins({
             `${key}:status`,
             pluginState(row).group === "Needs you" || pluginState(row).label === "Waiting"
               ? pluginState(row).label
-              : pluginPlacementLabel(row, host.getSnapshot().deploymentShape?.kind === "personal"),
+              : pluginPlacementLabel(
+                  row,
+                  host.getSnapshot().deploymentPolicy?.ownership === "single-user",
+                ),
           ),
         );
         if (group !== "Needs you") items.push(toggle(row));
@@ -865,7 +868,7 @@ function Plugins({
                 key: "places",
                 title: "Where it’s on",
                 rows: [
-                  ...(host.getSnapshot().deploymentShape?.kind === "personal"
+                  ...(host.getSnapshot().deploymentPolicy?.ownership === "single-user"
                     ? [
                         {
                           key: "everywhere",

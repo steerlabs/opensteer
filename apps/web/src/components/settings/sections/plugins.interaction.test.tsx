@@ -49,6 +49,7 @@ const view: SettingsView = {
   administrator: true,
   deployment: null,
   kind: "personal",
+  deploymentPolicy: { ownership: "single-user", localRunnerDefaultModules: ["shell"] },
   machineOwner: true,
   name: "My Mac",
   facts: { desktop: false, onThisComputer: false, remote: false },

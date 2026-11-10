@@ -67,6 +67,7 @@ export function SettingsShell() {
             administrator: shell.snapshot.user?.instanceRole === "administrator",
             deployment,
             kind,
+            deploymentPolicy: shell.snapshot.deploymentPolicy,
             machineOwner: identity?.machineOwner === true,
             name: settingsDeploymentName({ deployment, identityConfig: identity }),
             facts: {
@@ -89,6 +90,7 @@ export function SettingsShell() {
       deployment,
       identity,
       kind,
+      shell.snapshot.deploymentPolicy,
       shell.desktopBridge,
       shell.snapshot.connection,
       shell.snapshot.sessionSurface,
@@ -118,7 +120,7 @@ export function SettingsShell() {
   }, [mobile, navigationOpen]);
 
   const home = shell.snapshot.machines.find((machine) =>
-    hostsDeployment(machine, shell.snapshot.deploymentShape?.kind ?? null),
+    hostsDeployment(machine, shell.snapshot.deploymentPolicy ?? null),
   );
   if (!view || !context)
     return (
@@ -299,7 +301,7 @@ export function SettingsSectionRoute({
       ) : (
         <>
           <AccountSection />
-          {view.kind === "personal" && view.administrator ? (
+          {view.deploymentPolicy?.ownership === "single-user" && view.administrator ? (
             <RemoteAccessSection view={view} compact />
           ) : null}
           <SignedInDevicesSection view={view} />

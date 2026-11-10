@@ -305,6 +305,10 @@ function page(
     ? {
         ...base,
         deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
+        deploymentPolicy: {
+          ownership: "members",
+          localRunnerDefaultModules: ["agents", "browser", "shell"],
+        },
         identityConfig: base.identityConfig && {
           ...base.identityConfig,
           deployment: { kind: "self-hosted", name: "Design server" },

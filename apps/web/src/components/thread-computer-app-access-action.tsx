@@ -47,7 +47,7 @@ export function ThreadComputerAppAccessAction({
     onThatMac:
       machine !== undefined &&
       fullAccessOnThisMac({
-        hostsDeployment: hostsDeployment(machine, snapshot.deploymentShape?.kind ?? null),
+        hostsDeployment: hostsDeployment(machine, snapshot.deploymentPolicy ?? null),
         hostsDeploymentOnThisComputer: desktopDeployment?.onThisComputer === true,
         inDesktopApp: desktopBridge !== null,
         lentByThisDesktop: localExecutionStatus?.runner.runnerId === runnerId,

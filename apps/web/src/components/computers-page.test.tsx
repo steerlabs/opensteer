@@ -73,7 +73,7 @@ describe("currentDeviceMachineId", () => {
 
     expect(
       currentDeviceMachineId({
-        deploymentKind: "personal",
+        deploymentPolicy: { ownership: "single-user", localRunnerDefaultModules: ["shell"] },
         hostsDeploymentOnThisComputer: true,
         localRunnerId: null,
         machines,
@@ -81,7 +81,7 @@ describe("currentDeviceMachineId", () => {
     ).toBe(macMiniId);
     expect(
       currentDeviceMachineId({
-        deploymentKind: "personal",
+        deploymentPolicy: { ownership: "single-user", localRunnerDefaultModules: ["shell"] },
         hostsDeploymentOnThisComputer: false,
         localRunnerId: null,
         machines,
@@ -842,6 +842,10 @@ function serverSnapshot(client: MockHostClient): ShellContext["snapshot"] {
   return {
     ...client.getSnapshot(),
     deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
+    deploymentPolicy: {
+      ownership: "members",
+      localRunnerDefaultModules: ["agents", "browser", "shell"],
+    },
   };
 }
 

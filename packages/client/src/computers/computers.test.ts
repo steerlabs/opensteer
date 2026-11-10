@@ -100,7 +100,7 @@ describe("computersOverview", () => {
 
   it("puts the Mac a Personal Opensteer runs on at the top, never among the others", () => {
     const overview = computersOverview({
-      deploymentKind: "personal",
+      deploymentPolicy: { ownership: "single-user", localRunnerDefaultModules: ["shell"] },
       deploymentName: "Mac mini",
       hereId: null,
       machines: [machine({ id: "rnr_laptop" }), home, service],
@@ -117,7 +117,7 @@ describe("computersOverview", () => {
   it("names a Personal Opensteer whose Mac has not connected by the Opensteer's name", () => {
     expect(
       computersOverview({
-        deploymentKind: "personal",
+        deploymentPolicy: { ownership: "single-user", localRunnerDefaultModules: ["shell"] },
         deploymentName: "Studio",
         hereId: null,
         machines: [],
@@ -134,7 +134,10 @@ describe("computersOverview", () => {
     });
     const theirs = machine({ id: "rnr_theirs", ownerName: "Sam", ownership: "other" });
     const overview = computersOverview({
-      deploymentKind: "server",
+      deploymentPolicy: {
+        ownership: "members",
+        localRunnerDefaultModules: ["agents", "browser", "shell"],
+      },
       deploymentName: "Acme",
       hereId: null,
       machines: [theirs, machine({ id: "rnr_mine" }), shared, service],

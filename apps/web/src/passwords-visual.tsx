@@ -84,6 +84,10 @@ function useShellContext(): ShellContext {
     settingsState === "server"
       ? {
           ...live,
+          deploymentPolicy: {
+            ownership: "members" as const,
+            localRunnerDefaultModules: ["agents", "browser", "shell"] as const,
+          },
           deploymentShape: {
             defaultWorkspaceBacking: "local-directory" as const,
             kind: "server" as const,

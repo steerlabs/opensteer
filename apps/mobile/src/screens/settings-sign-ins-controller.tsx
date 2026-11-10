@@ -20,7 +20,7 @@ export function SignInsSettingsController(): ReactNode {
       snapshot === null
         ? null
         : passwordsSettingsModel({
-            deploymentKind: snapshot.deploymentShape?.kind ?? null,
+            deploymentPolicy: snapshot.deploymentPolicy ?? null,
             deploymentName:
               selectedRow?.name ?? snapshot.identityConfig?.deployment.name ?? "your Mac",
             machines: snapshot.machines,

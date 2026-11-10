@@ -26,17 +26,38 @@ function onPlatform(
 
 describe("localJoinOffer", () => {
   it("joins with both facts off wherever the shell module runs", () => {
-    expect(localJoinOffer({ deploymentKind: "server", status: onPlatform("macos") })).toEqual({
+    expect(
+      localJoinOffer({
+        deploymentPolicy: {
+          ownership: "members",
+          localRunnerDefaultModules: ["agents", "browser", "shell"],
+        },
+        status: onPlatform("macos"),
+      }),
+    ).toEqual({
       runAgents: false,
     });
-    expect(localJoinOffer({ deploymentKind: "personal", status: onPlatform("linux") })).toEqual({
+    expect(
+      localJoinOffer({
+        deploymentPolicy: { ownership: "single-user", localRunnerDefaultModules: ["shell"] },
+        status: onPlatform("linux"),
+      }),
+    ).toEqual({
       runAgents: false,
     });
   });
 
   it("joins a Windows computer running agents, which is the only way it can join", () => {
     // `shell` is deferred on Windows, so there is no reach-only shape to start.
-    expect(localJoinOffer({ deploymentKind: "server", status: onPlatform("windows") })).toEqual({
+    expect(
+      localJoinOffer({
+        deploymentPolicy: {
+          ownership: "members",
+          localRunnerDefaultModules: ["agents", "browser", "shell"],
+        },
+        status: onPlatform("windows"),
+      }),
+    ).toEqual({
       runAgents: true,
     });
   });
@@ -44,23 +65,40 @@ describe("localJoinOffer", () => {
   it("offers a Windows computer nothing on a Personal Deployment", () => {
     // Personal admits other computers only to be reached, and this one cannot.
     expect(
-      localJoinOffer({ deploymentKind: "personal", status: onPlatform("windows") }),
+      localJoinOffer({
+        deploymentPolicy: { ownership: "single-user", localRunnerDefaultModules: ["shell"] },
+        status: onPlatform("windows"),
+      }),
     ).toBeNull();
-    expect(localJoinOffer({ deploymentKind: null, status: onPlatform("windows") })).toBeNull();
+    expect(localJoinOffer({ deploymentPolicy: null, status: onPlatform("windows") })).toBeNull();
   });
 
   it("offers nothing without a slot, or once the slot has been used", () => {
-    expect(localJoinOffer({ deploymentKind: "server", status: null })).toBeNull();
     expect(
       localJoinOffer({
-        deploymentKind: "server",
+        deploymentPolicy: {
+          ownership: "members",
+          localRunnerDefaultModules: ["agents", "browser", "shell"],
+        },
+        status: null,
+      }),
+    ).toBeNull();
+    expect(
+      localJoinOffer({
+        deploymentPolicy: {
+          ownership: "members",
+          localRunnerDefaultModules: ["agents", "browser", "shell"],
+        },
         status: { ...onPlatform("macos"), available: false },
       }),
     ).toBeNull();
     const joined = onPlatform("macos");
     expect(
       localJoinOffer({
-        deploymentKind: "server",
+        deploymentPolicy: {
+          ownership: "members",
+          localRunnerDefaultModules: ["agents", "browser", "shell"],
+        },
         status: { ...joined, runner: { ...joined.runner, enrolled: true } },
       }),
     ).toBeNull();

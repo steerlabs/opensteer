@@ -61,8 +61,8 @@ export function PasswordsSuggestion(props: {
 }
 
 function selectHomeName(snapshot: HostSnapshot): string | null {
-  const kind = snapshot.deploymentShape?.kind ?? null;
-  return snapshot.machines.find((machine) => hostsDeployment(machine, kind))?.name ?? null;
+  const policy = snapshot.deploymentPolicy ?? null;
+  return snapshot.machines.find((machine) => hostsDeployment(machine, policy))?.name ?? null;
 }
 
 const styles = StyleSheet.create({

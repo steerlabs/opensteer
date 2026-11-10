@@ -1,3 +1,4 @@
+import type { DeploymentClientPolicy } from "@opensteer/core";
 import type {
   IntegrationConnectionSummary,
   IntegrationDefinitionSummaryView,
@@ -51,7 +52,7 @@ export interface ComputersOverview {
 }
 
 export function computersOverview(input: {
-  readonly deploymentKind: DeploymentKind | null;
+  readonly deploymentPolicy: DeploymentClientPolicy | null;
   readonly deploymentName: string;
   /** The machine the reader is sitting at, when a desktop can say so. */
   readonly hereId: string | null;
@@ -64,8 +65,9 @@ export function computersOverview(input: {
     input.machines.filter((machine) => !isServiceMachine(machine)),
     input.hereId,
   );
-  if (input.deploymentKind === "personal") {
-    const home = computers.find((machine) => hostsDeployment(machine, "personal")) ?? null;
+  if (input.deploymentPolicy?.ownership === "single-user") {
+    const home =
+      computers.find((machine) => hostsDeployment(machine, input.deploymentPolicy)) ?? null;
     return {
       addTo: "others",
       groups: [
@@ -121,10 +123,10 @@ export function isServiceMachine(machine: MachineSummary): boolean {
  */
 export function hostsDeployment(
   machine: MachineSummary,
-  deploymentKind: DeploymentKind | null,
+  deploymentPolicy: DeploymentClientPolicy | null,
 ): boolean {
   return (
-    deploymentKind === "personal" &&
+    deploymentPolicy?.ownership === "single-user" &&
     machine.ownership === "deployment" &&
     !isServiceMachine(machine)
   );

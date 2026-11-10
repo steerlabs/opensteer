@@ -1,3 +1,4 @@
+import type { DeploymentClientPolicy } from "@opensteer/core";
 import { Link } from "react-router";
 import { ComputerAppsSection } from "./computer-apps/computer-apps-section.js";
 import { AddComputerDialog } from "./computers/add-computer-dialog.js";
@@ -115,15 +116,16 @@ export function machineRemovalPrompt(machine: MachineSummary): string {
  * browser knows neither, so it never claims to be anywhere.
  */
 export function currentDeviceMachineId(input: {
-  readonly deploymentKind: "personal" | "server" | null;
+  readonly deploymentPolicy: DeploymentClientPolicy | null;
   readonly hostsDeploymentOnThisComputer: boolean;
   readonly localRunnerId: string | null;
   readonly machines: readonly MachineSummary[];
 }): string | null {
   if (input.localRunnerId !== null) return input.localRunnerId;
-  if (!input.hostsDeploymentOnThisComputer || input.deploymentKind !== "personal") return null;
+  if (!input.hostsDeploymentOnThisComputer || input.deploymentPolicy?.ownership !== "single-user")
+    return null;
   return (
-    input.machines.find((machine) => hostsDeployment(machine, input.deploymentKind))?.id ?? null
+    input.machines.find((machine) => hostsDeployment(machine, input.deploymentPolicy))?.id ?? null
   );
 }
 
@@ -153,9 +155,9 @@ export function ComputersPage() {
     snapshot,
   } = useShell();
   const deploymentName = useDeploymentName();
-  const deploymentKind = snapshot.deploymentShape?.kind ?? null;
+  const deploymentPolicy = snapshot.deploymentPolicy ?? null;
   const hereId = currentDeviceMachineId({
-    deploymentKind,
+    deploymentPolicy,
     hostsDeploymentOnThisComputer: desktopDeployment?.onThisComputer === true,
     localRunnerId: localExecutionStatus?.runner.runnerId ?? null,
     machines: snapshot.machines,
@@ -165,7 +167,7 @@ export function ComputersPage() {
   const [addingPhone, setAddingPhone] = useState(false);
   const apps = useComputerAppData(hostClient, snapshot.machineRevision);
   const overview = computersOverview({
-    deploymentKind,
+    deploymentPolicy,
     deploymentName,
     hereId,
     machines: snapshot.machines,
@@ -176,7 +178,7 @@ export function ComputersPage() {
   // Deployment on screen and has not used it. The Personal Deployment hosted
   // on this very computer has no slot at all — its Runner is the Main — so no
   // offer is ever made there.
-  const offer = localJoinOffer({ deploymentKind, status: localExecutionStatus });
+  const offer = localJoinOffer({ deploymentPolicy, status: localExecutionStatus });
   const homeName = overview.home.kind === "mac" ? overview.home.name : deploymentName;
 
   const macOsDesktop = desktopBridge !== null && localExecutionStatus?.platform === "macos";
@@ -225,7 +227,7 @@ export function ComputersPage() {
             adding={localExecutionAction?.kind === "add"}
             computerName={localExecutionStatus.computerName}
             error={localExecutionError}
-            homeName={deploymentKind === "personal" ? homeName : null}
+            homeName={deploymentPolicy?.ownership === "single-user" ? homeName : null}
             onAdd={() =>
               void addThisComputer({
                 kind: "add",
@@ -258,13 +260,15 @@ export function ComputersPage() {
         ) : null}
         {/* A Personal Opensteer's services are the app's own business; a
             server's administrator may need to rename or retire one. */}
-        {administrator && deploymentKind === "server" && overview.services.length > 0 ? (
+        {administrator &&
+        deploymentPolicy?.ownership === "members" &&
+        overview.services.length > 0 ? (
           <Services client={hostClient} services={overview.services} />
         ) : null}
         {/* The question people most often bring here belongs next door:
             computers are what agents use, devices are where you open Opensteer. */}
         <p className="settings-footnote">
-          {deploymentKind === "personal" ? (
+          {deploymentPolicy?.ownership === "single-user" ? (
             <>
               To open {homeName} on your phone or another device, use{" "}
               <Link to="/settings/devices">Remote access</Link>.
@@ -280,7 +284,7 @@ export function ComputersPage() {
       {adding ? (
         <AddComputerDialog
           client={hostClient}
-          deploymentKind={deploymentKind}
+          deploymentPolicy={deploymentPolicy}
           deploymentName={deploymentName}
           hostedOnThisComputer={desktopDeployment?.onThisComputer === true}
           homeName={homeName}
@@ -296,7 +300,7 @@ export function ComputersPage() {
       {addingPhone ? (
         <AddPhoneDialog
           client={hostClient}
-          deploymentKind={deploymentKind}
+          deploymentPolicy={deploymentPolicy}
           deploymentName={deploymentName}
           desktopBridge={desktopBridge}
           homeName={homeName}
@@ -752,7 +756,7 @@ export function ComputerDetailPage() {
  * words of the person reading it.
  */
 export function computerDetailLead(input: {
-  readonly deploymentKind: "personal" | "server" | null;
+  readonly deploymentPolicy: DeploymentClientPolicy | null;
   readonly deploymentName: string;
   readonly homeName: string;
   readonly machine: MachineSummary;
@@ -767,10 +771,10 @@ export function computerDetailLead(input: {
   if (isIphone(machine) && machine.ownership !== "other") {
     return `Agents can use only the apps turned on for ${machine.name}, and only while Opensteer is open on it.`;
   }
-  if (hostsDeployment(machine, input.deploymentKind)) {
+  if (hostsDeployment(machine, input.deploymentPolicy)) {
     return `Your Opensteer runs here. Keep ${machine.name} on and awake so agents can keep working while you’re away.`;
   }
-  if (input.deploymentKind === "personal") {
+  if (input.deploymentPolicy?.ownership === "single-user") {
     return `Agents work on ${input.homeName}. Choose what they can use on ${machine.name}.`;
   }
   if (machine.ownership === "other") {
@@ -796,9 +800,9 @@ function ComputerDetail({ machine }: { readonly machine: MachineSummary }) {
   } = useShell();
   const navigate = useNavigate();
   const deploymentName = useDeploymentName();
-  const deploymentKind = snapshot.deploymentShape?.kind ?? null;
+  const deploymentPolicy = snapshot.deploymentPolicy ?? null;
   const hereId = currentDeviceMachineId({
-    deploymentKind,
+    deploymentPolicy,
     hostsDeploymentOnThisComputer: desktopDeployment?.onThisComputer === true,
     localRunnerId: localExecutionStatus?.runner.runnerId ?? null,
     machines: snapshot.machines,
@@ -819,7 +823,7 @@ function ComputerDetail({ machine }: { readonly machine: MachineSummary }) {
     setName(machine.name);
   }, [machine.name]);
   const here = hereId !== null && machine.id === hereId;
-  const mainRunner = hostsDeployment(machine, deploymentKind);
+  const mainRunner = hostsDeployment(machine, deploymentPolicy);
   // Whether this page runs in the desktop app on this very Mac — a lent one,
   // or the one hosting this Personal Deployment, which has no lent slot. It is
   // the one answer for everything only that Mac can do: open a macOS grant,
@@ -840,7 +844,7 @@ function ComputerDetail({ machine }: { readonly machine: MachineSummary }) {
   // An iPhone lends only its own apps, which its apps section covers.
   const iphone = isIphone(machine);
   const homeName =
-    snapshot.machines.find((candidate) => hostsDeployment(candidate, deploymentKind))?.name ??
+    snapshot.machines.find((candidate) => hostsDeployment(candidate, deploymentPolicy))?.name ??
     deploymentName;
   const runsAgentsSwitch = here && !mainRunner && machine.allowedModules.includes("agents");
   const removable = machine.revocable && !mainRunner;
@@ -1039,14 +1043,14 @@ function ComputerDetail({ machine }: { readonly machine: MachineSummary }) {
           </div>
         </header>
         <p className="computer-lead">
-          {computerDetailLead({ deploymentKind, deploymentName, homeName, machine })}
+          {computerDetailLead({ deploymentPolicy, deploymentName, homeName, machine })}
         </p>
 
         {/* Whether a teammate's computer lends itself to agents is theirs to
             decide, so their page only says so when agents do work there. */}
         {!phone &&
         !iphone &&
-        deploymentKind === "server" &&
+        deploymentPolicy?.ownership === "members" &&
         machine.status !== "pending" &&
         (machine.ownership !== "other" || machine.modules.agents) ? (
           <section aria-labelledby="runs-agents-title" className="computers-section">
@@ -1201,7 +1205,7 @@ function ComputerDetail({ machine }: { readonly machine: MachineSummary }) {
             <MachineAccessSection
               access={machine.access}
               client={hostClient}
-              deploymentKind={deploymentKind}
+              deploymentPolicy={deploymentPolicy}
               deploymentName={deploymentName}
               // The desktop can only name folders on the computer it runs on.
               desktopBridge={here ? desktopBridge : null}
@@ -1300,7 +1304,7 @@ function ComputerDetail({ machine }: { readonly machine: MachineSummary }) {
       {pluggingIn ? (
         <AddPhoneDialog
           client={hostClient}
-          deploymentKind={deploymentKind}
+          deploymentPolicy={deploymentPolicy}
           deploymentName={deploymentName}
           desktopBridge={desktopBridge}
           homeName={homeName}

@@ -49,7 +49,7 @@ export function ThreadFullDiskAccessAction({
   const machine = snapshot.machines.find((candidate) => candidate.id === machineId);
   const onThatMac = fullAccessOnThisMac({
     hostsDeployment:
-      machine !== undefined && hostsDeployment(machine, snapshot.deploymentShape?.kind ?? null),
+      machine !== undefined && hostsDeployment(machine, snapshot.deploymentPolicy ?? null),
     hostsDeploymentOnThisComputer: desktopDeployment?.onThisComputer === true,
     inDesktopApp: desktopBridge !== null,
     lentByThisDesktop: localExecutionStatus?.runner.runnerId === machineId,

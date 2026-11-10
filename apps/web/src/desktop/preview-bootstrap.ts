@@ -20,6 +20,10 @@ export function previewBootstrap(
 ) {
   const workspace = previewWorkspace(selected, ids.workspaceId, ids.environmentId);
   return {
+    deploymentPolicy:
+      selected.kind === "personal"
+        ? { ownership: "single-user", localRunnerDefaultModules: ["shell"] }
+        : { ownership: "members", localRunnerDefaultModules: ["agents", "browser", "shell"] },
     deploymentId: selected.id,
     notificationPreferences: [{ workspaceId: workspace.id, muted: false, revision: "0" }],
     browser: {

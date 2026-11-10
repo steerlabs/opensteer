@@ -130,7 +130,7 @@ export function useSessions(): SessionsState {
 export function useHomeComputer(): { readonly icon: IconName; readonly name: string | null } {
   const { snapshot } = useShell();
   const home = snapshot.machines.find((machine) =>
-    hostsDeployment(machine, snapshot.deploymentShape?.kind ?? null),
+    hostsDeployment(machine, snapshot.deploymentPolicy ?? null),
   );
   return {
     icon: home ? computerIcon(computerGlyph(home)) : "desktop",

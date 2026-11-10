@@ -10,6 +10,7 @@ interface EngineInstallationRow {
 
 interface SettingsHost {
   readonly deploymentShape: HostSnapshot["deploymentShape"];
+  readonly deploymentPolicy: HostSnapshot["deploymentPolicy"];
   readonly engineInstallations: readonly EngineInstallationRow[];
   readonly harnessUpdateAvailable: boolean;
   readonly hostConnected: boolean;
@@ -60,6 +61,7 @@ export function useSettingsHost(hostClient: HostClient | null): SettingsHost | n
         : installations;
     const next: SettingsHost = {
       deploymentShape: snapshot.deploymentShape,
+      deploymentPolicy: snapshot.deploymentPolicy,
       engineInstallations,
       harnessUpdateAvailable: snapshot.harnessUpdateAvailable === true,
       hostConnected: canRespondToRequests(snapshot),

@@ -51,7 +51,7 @@ function AccountSettingsContent({
   const isCurrent = useSettingsLease(selection.hostClient);
   const remote = usePersonalRemoteAccess(
     page === "account" &&
-      snapshot?.deploymentShape?.kind === "personal" &&
+      snapshot?.deploymentPolicy?.ownership === "single-user" &&
       selection.hostClient?.getSnapshot().user?.instanceRole === "administrator"
       ? selection.hostClient
       : null,
