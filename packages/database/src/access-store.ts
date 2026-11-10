@@ -27,8 +27,8 @@ export const accessCapacity = {
   depth: 8,
   edges: 8192,
   matchingEntries: 256,
-  effectivePairs: 8192,
-  affectedPairs: 16384,
+  effectivePairs: 1024,
+  affectedPairs: 2048,
   requestWorkspaces: 256,
 } as const;
 
@@ -36,7 +36,9 @@ type Database = Kysely<DatabaseSchema>;
 type AccessTransaction = Transaction<DatabaseSchema>;
 type Pair = { readonly userId: UserId; readonly workspaceId: WorkspaceId };
 type Entry = Selectable<AccessEntryTable>;
-type Membership = Selectable<WorkspaceMembershipTable>;
+type Membership = Omit<Selectable<WorkspaceMembershipTable>, "generation"> & {
+  readonly generation: number | string;
+};
 type Graph = Awaited<ReturnType<typeof readGraph>>;
 type Level = "use" | "manage" | null;
 type Effective = { readonly level: Level; readonly until: Date | null };
@@ -108,11 +110,16 @@ async function requireNewAuthority(database: Database): Promise<void> {
     });
 }
 
-async function readGraph(database: Database) {
-  const users = await database
+async function readGraph(
+  database: Database,
+  memberIds?: readonly UserId[],
+  retainedEntryIds: readonly string[] = [],
+) {
+  let userQuery = database
     .selectFrom("users")
-    .select(["id", "memberKind", "memberState", "admittedAt"])
-    .execute();
+    .select(["id", "memberKind", "memberState", "admittedAt"]);
+  if (memberIds) userQuery = userQuery.where("id", "in", memberIds);
+  const users = await userQuery.execute();
   const projects = await database
     .selectFrom("workspaces")
     .select(["id", "createdBy"])
@@ -120,17 +127,58 @@ async function readGraph(database: Database) {
     .where("deletedAt", "is", null)
     .where("status", "not in", ["deleting", "deleted"])
     .execute();
-  const groups = await database
-    .selectFrom("accessGroups")
-    .selectAll()
-    .where("deletedAt", "is", null)
-    .execute();
-  const edges = await database.selectFrom("accessGroupMembers").selectAll().execute();
-  const entries = await database
+  const ancestors = memberIds
+    ? (
+        await sql<{ id: string }>`with recursive ancestors(id) as (
+    select id from access_groups where builtin = 'everyone' and deleted_at is null
+    union select group_id from access_group_members where member_kind = 'user' and member_id in (${sql.join(memberIds)})
+    union select edge.group_id from access_group_members edge join ancestors on edge.member_kind = 'group' and edge.member_id = ancestors.id::text
+  ) select id from ancestors`.execute(database)
+      ).rows.map((row) => row.id)
+    : undefined;
+  let groupQuery = database.selectFrom("accessGroups").selectAll().where("deletedAt", "is", null);
+  if (ancestors)
+    groupQuery = ancestors.length
+      ? groupQuery.where("id", "in", ancestors)
+      : groupQuery.where(sql<boolean>`false`);
+  const groups = await groupQuery.execute();
+  let edgeQuery = database.selectFrom("accessGroupMembers").selectAll();
+  if (memberIds)
+    edgeQuery = edgeQuery.where((eb) =>
+      eb.or([
+        eb.and([eb("memberKind", "=", "user"), eb("memberId", "in", memberIds)]),
+        ...(ancestors?.length
+          ? [eb.and([eb("memberKind", "=", "group"), eb("memberId", "in", ancestors)])]
+          : []),
+      ]),
+    );
+  const edges = await edgeQuery.execute();
+  let entryQuery = database
     .selectFrom("accessEntries")
     .selectAll()
     .where("revokedAt", "is", null)
-    .execute();
+    .where((eb) =>
+      eb.or([
+        ...(retainedEntryIds.length ? [eb("id", "in", retainedEntryIds)] : []),
+        eb("expiresAt", "is", null),
+        eb("expiresAt", ">", sql<Date>`clock_timestamp()`),
+        sql<boolean>`exists (select 1 from workspace_memberships membership
+        where membership.state = 'active' and membership.effective_until is not null
+          and membership.workspace_id = access_entries.target_id and membership.effective_until <= access_entries.expires_at
+          and (access_entries.subject_kind <> 'user' or membership.user_id = access_entries.subject_id)
+          ${memberIds ? sql`and membership.user_id in (${sql.join(memberIds)})` : sql``})`,
+      ]),
+    );
+  if (memberIds)
+    entryQuery = entryQuery.where((eb) =>
+      eb.or([
+        eb.and([eb("subjectKind", "=", "user"), eb("subjectId", "in", memberIds)]),
+        ...(ancestors?.length
+          ? [eb.and([eb("subjectKind", "=", "group"), eb("subjectId", "in", ancestors)])]
+          : []),
+      ]),
+    );
+  const entries = await entryQuery.execute();
   return { users, projects, groups, edges, entries };
 }
 
@@ -213,8 +261,6 @@ function entriesByPair(
       if (!live && !input.includeExpiredFor?.has(key)) continue;
       let value = pairs.get(key);
       if (!value) {
-        if (pairs.size >= accessCapacity.affectedPairs)
-          capacityError("affectedPairs", pairs.size + 1);
         value = { pair, entries: [] };
         pairs.set(key, value);
       }
@@ -256,20 +302,17 @@ function checkCapacity(old: Graph, next: Graph, asOf: Date): void {
   const measure = (graph: Graph) => {
     const pairs = entriesByPair(graph, { asOf });
     let effectivePairs = 0;
-    let matchingEntries = 0;
     for (const { entries } of pairs.values()) {
       const count = entries.filter(
         (entry) => entry.grantedAt <= asOf && (!entry.expiresAt || entry.expiresAt > asOf),
       ).length;
       if (count) effectivePairs++;
-      matchingEntries = Math.max(matchingEntries, count);
     }
     return {
       projects: graph.projects.length,
       groups: graph.groups.filter((group) => !group.builtin).length,
       depth: groupPeople(graph).depth,
       edges: graph.edges.length,
-      matchingEntries,
       effectivePairs,
     };
   };
@@ -278,6 +321,13 @@ function checkCapacity(old: Graph, next: Graph, asOf: Date): void {
   for (const key of Object.keys(after) as (keyof typeof after)[])
     if (after[key] > accessCapacity[key] && after[key] > before[key])
       capacityError(key, after[key]);
+  const oldPairs = entriesByPair(old, { asOf });
+  for (const [key, value] of entriesByPair(next, { asOf }))
+    if (
+      value.entries.length > accessCapacity.matchingEntries &&
+      value.entries.length > (oldPairs.get(key)?.entries.length ?? 0)
+    )
+      capacityError("matchingEntries", value.entries.length);
 }
 
 function propose(graph: Graph, change: AccessMutation, actorId: UserId, now: Date): Graph {
@@ -517,14 +567,20 @@ async function lockMemberships(
   transaction: AccessTransaction,
   pairs: readonly Pair[],
 ): Promise<void> {
+  const scopes = new Map<WorkspaceId, UserId[]>();
+  for (const pair of pairs) {
+    const users = scopes.get(pair.workspaceId) ?? [];
+    users.push(pair.userId);
+    scopes.set(pair.workspaceId, users);
+  }
   if (pairs.length)
     await transaction
       .selectFrom("workspaceMemberships")
       .select("id")
       .where((eb) =>
         eb.or(
-          pairs.map((pair) =>
-            eb.and([eb("workspaceId", "=", pair.workspaceId), eb("userId", "=", pair.userId)]),
+          [...scopes].map(([workspaceId, userIds]) =>
+            eb.and([eb("workspaceId", "=", workspaceId), eb("userId", "in", userIds)]),
           ),
         ),
       )
@@ -534,47 +590,13 @@ async function lockMemberships(
   heldMemberships.set(transaction, new Set(pairs.map(pairKey)));
 }
 
-async function writeEffects(
-  transaction: AccessTransaction,
-  pair: Pair,
-  previousGeneration: number,
-  generation: number,
-  causeId: CommandId,
-  now: Date,
-): Promise<void> {
-  await transaction
-    .insertInto("securityEffects")
-    .values(
-      (
-        [
-          "close-realtime",
-          "stop-runs",
-          "revoke-mounts",
-          "revoke-browser",
-          "revoke-credentials",
-          "revoke-triggers",
-        ] as const
-      ).map((kind) => ({
-        ...pair,
-        id: createId("securityEffect"),
-        kind,
-        causeId,
-        membershipGeneration: generation,
-        membershipGenerationCutoff: previousGeneration,
-        nextAttemptAt: now,
-        status: "pending" as const,
-        lastError: null,
-      })),
-    )
-    .execute();
-}
-
 export async function recomputeProjectMemberships(
   transaction: AccessTransaction,
   input: {
     readonly pairs: readonly Pair[];
     readonly asOf: Date;
     readonly causeId: CommandId;
+    readonly graph?: Graph;
   },
 ): Promise<readonly MembershipTransition[]> {
   if (!writerTransactions.has(transaction))
@@ -583,7 +605,9 @@ export async function recomputeProjectMemberships(
   if (input.pairs.some((pair) => !held?.has(pairKey(pair))))
     throw new Error("Membership scope was not reserved");
   if (!input.pairs.length) return [];
-  const graph = await readGraph(transaction);
+  const graph =
+    input.graph ??
+    (await readGraph(transaction, [...new Set(input.pairs.map((pair) => pair.userId))]));
   const pairs = new Set(input.pairs.map(pairKey));
   const entries = entriesByPair(graph, {
     asOf: input.asOf,
@@ -601,6 +625,7 @@ export async function recomputeProjectMemberships(
     ).map((row) => [pairKey(row), row]),
   );
   const transitions: MembershipTransition[] = [];
+  const changedRows = new Map<string, Membership>();
   for (const pair of input.pairs) {
     const grants = entries.get(pairKey(pair))?.entries ?? [];
     let row = memberships.get(pairKey(pair));
@@ -647,19 +672,14 @@ export async function recomputeProjectMemberships(
         revokedAt: state === "revoked" ? (row?.revokedAt ?? now) : null,
         revokedBy: null,
       } as const;
-      if (row)
-        row = await transaction
-          .updateTable("workspaceMemberships")
-          .set(values)
-          .where("id", "=", row.id)
-          .returningAll()
-          .executeTakeFirstOrThrow();
-      else
-        row = await transaction
-          .insertInto("workspaceMemberships")
-          .values({ ...values, ...pair, id: createId("workspaceMembership"), invitedBy: null })
-          .returningAll()
-          .executeTakeFirstOrThrow();
+      row = {
+        ...row,
+        ...values,
+        ...pair,
+        id: row?.id ?? createId("workspaceMembership"),
+        invitedBy: row?.invitedBy ?? null,
+      };
+      changedRows.set(pairKey(pair), row);
       if (changed) {
         transitions.push({
           ...pair,
@@ -669,18 +689,67 @@ export async function recomputeProjectMemberships(
           role,
           effectiveUntil: next.until,
         });
-        if (previousGeneration !== null && generation > previousGeneration)
-          await writeEffects(
-            transaction,
-            pair,
-            previousGeneration,
-            generation,
-            input.causeId,
-            input.asOf,
-          );
       }
     }
   }
+  const rows = [...changedRows.values()];
+  const inserts = rows.filter((row) => !memberships.has(pairKey(row)));
+  for (let offset = 0; offset < inserts.length; offset += 1000)
+    await transaction
+      .insertInto("workspaceMemberships")
+      .values(inserts.slice(offset, offset + 1000))
+      .execute();
+  const updates = rows
+    .filter((row) => memberships.has(pairKey(row)))
+    .map((row) => ({
+      id: row.id,
+      state: row.state,
+      role: row.role,
+      generation: row.generation,
+      effective_until: row.effectiveUntil,
+      updated_at: row.updatedAt,
+      joined_at: row.joinedAt,
+      revoked_at: row.revokedAt,
+      revoked_by: row.revokedBy,
+    }));
+  if (updates.length)
+    await sql`update workspace_memberships membership set
+    state = change.state, role = change.role, generation = change.generation,
+    effective_until = change.effective_until, updated_at = change.updated_at,
+    joined_at = change.joined_at, revoked_at = change.revoked_at, revoked_by = change.revoked_by
+    from jsonb_to_recordset(${JSON.stringify(updates)}::jsonb) as change (
+      id text, state text, role text, generation bigint, effective_until timestamptz,
+      updated_at timestamptz, joined_at timestamptz, revoked_at timestamptz, revoked_by text
+    ) where membership.id = change.id`.execute(transaction);
+  const effects = transitions
+    .filter((change) => change.previousGeneration !== null)
+    .flatMap((change) =>
+      [
+        "close-realtime",
+        "stop-runs",
+        "revoke-mounts",
+        "revoke-browser",
+        "revoke-credentials",
+        "revoke-triggers",
+      ].map((kind) => ({
+        id: createId("securityEffect"),
+        kind,
+        workspace_id: change.workspaceId,
+        user_id: change.userId,
+        membership_generation: change.generation,
+        membership_generation_cutoff: change.previousGeneration,
+      })),
+    );
+  if (effects.length)
+    await sql`insert into security_effects (
+    id, kind, workspace_id, user_id, membership_generation, membership_generation_cutoff,
+    cause_id, next_attempt_at, status, last_error
+  ) select id, kind, workspace_id, user_id, membership_generation, membership_generation_cutoff,
+    ${input.causeId}, ${input.asOf}, 'pending', null
+    from jsonb_to_recordset(${JSON.stringify(effects)}::jsonb) as effect (
+      id text, kind text, workspace_id text, user_id text,
+      membership_generation bigint, membership_generation_cutoff bigint
+    )`.execute(transaction);
   return transitions;
 }
 
@@ -691,105 +760,166 @@ async function applySource(
   input: AccessMutationInput,
   now: Date,
 ): Promise<void> {
-  const change = input.change;
-  if (change.kind === "create-project") {
+  for (const change of input.changes)
+    if (change.kind === "create-project")
+      await transaction
+        .insertInto("workspaces")
+        .values({
+          id: change.workspaceId,
+          kind: "project",
+          createdBy: input.actor.userId,
+          name: change.name.trim(),
+          color: change.color,
+          backing: jsonValue(change.backing),
+          status: "provisioning",
+        })
+        .execute();
+  const oldGroups = new Set(old.groups.map((group) => group.id));
+  const nextGroups = new Set(next.groups.map((group) => group.id));
+  const deletedGroups = old.groups
+    .filter((group) => !nextGroups.has(group.id))
+    .map((group) => group.id);
+  if (deletedGroups.length) {
     await transaction
-      .insertInto("workspaces")
-      .values({
-        id: change.workspaceId,
-        kind: "project",
-        createdBy: input.actor.userId,
-        name: change.name.trim(),
-        color: change.color,
-        backing: jsonValue(change.backing),
-        status: "provisioning",
-      })
+      .selectFrom("accessGroups")
+      .select("id")
+      .where("id", "in", deletedGroups)
+      .orderBy("id")
+      .forNoKeyUpdate()
       .execute();
-    await transaction
-      .insertInto("accessEntries")
-      .values(next.entries.find((entry) => entry.id === change.entryId)!)
-      .execute();
-  }
-  if (change.kind === "create-group") {
-    await transaction
-      .insertInto("accessGroups")
-      .values(next.groups.find((group) => group.id === change.id)!)
-      .execute();
-  } else if (change.kind === "delete-group") {
     await transaction
       .updateTable("accessGroups")
       .set({ deletedAt: now })
-      .where("id", "=", change.groupId)
+      .where("id", "in", deletedGroups)
       .execute();
-    const edges = old.edges
-      .filter(
-        (edge) =>
-          edge.groupId === change.groupId ||
-          (edge.memberKind === "group" && edge.memberId === change.groupId),
-      )
-      .sort((first, second) =>
-        `${first.groupId}/${first.memberKind}/${first.memberId}`.localeCompare(
-          `${second.groupId}/${second.memberKind}/${second.memberId}`,
-        ),
-      );
-    for (const edge of edges)
+  }
+  const addedGroups = next.groups.filter((group) => !oldGroups.has(group.id));
+  for (const change of input.changes)
+    if (change.kind === "create-group" && !nextGroups.has(change.id))
+      addedGroups.push({
+        id: change.id,
+        name: change.name.trim(),
+        builtin: change.builtin ?? null,
+        createdBy: input.actor.userId,
+        createdAt: now,
+        deletedAt: now,
+      });
+  if (addedGroups.length)
+    await transaction.insertInto("accessGroups").values(addedGroups).execute();
+  const edgeKey = (edge: Graph["edges"][number]) =>
+    JSON.stringify([edge.groupId, edge.memberKind, edge.memberId]);
+  const oldEdges = new Set(old.edges.map(edgeKey));
+  const nextEdges = new Set(next.edges.map(edgeKey));
+  const removedEdges = old.edges.filter((edge) => !nextEdges.has(edgeKey(edge)));
+  if (removedEdges.length) {
+    const matches = sql<boolean>`(group_id, member_kind, member_id) in (
+      select group_id, member_kind, member_id from jsonb_to_recordset(${JSON.stringify(removedEdges.map((edge) => ({ group_id: edge.groupId, member_kind: edge.memberKind, member_id: edge.memberId })))}::jsonb)
+        as edge(group_id uuid, member_kind text, member_id text)
+    )`;
+    await transaction
+      .selectFrom("accessGroupMembers")
+      .select("groupId")
+      .where(matches)
+      .orderBy("groupId")
+      .orderBy("memberKind")
+      .orderBy("memberId")
+      .forNoKeyUpdate()
+      .execute();
+    await transaction.deleteFrom("accessGroupMembers").where(matches).execute();
+  }
+  const addedEdges = next.edges.filter((edge) => !oldEdges.has(edgeKey(edge)));
+  if (addedEdges.length)
+    await transaction.insertInto("accessGroupMembers").values(addedEdges).execute();
+  const oldEntries = new Set(old.entries.map((entry) => entry.id));
+  const nextEntries = new Set(next.entries.map((entry) => entry.id));
+  const removedEntries = old.entries
+    .filter((entry) => !nextEntries.has(entry.id))
+    .map((entry) => entry.id);
+  if (removedEntries.length || deletedGroups.length) {
+    const removed = (query: typeof transaction) =>
+      query
+        .selectFrom("accessEntries")
+        .select("id")
+        .where("revokedAt", "is", null)
+        .where((eb) =>
+          eb.or([
+            ...(removedEntries.length ? [eb("id", "in", removedEntries)] : []),
+            ...(deletedGroups.length
+              ? [eb.and([eb("subjectKind", "=", "group"), eb("subjectId", "in", deletedGroups)])]
+              : []),
+          ]),
+        );
+    const ids = (await removed(transaction).orderBy("id").forNoKeyUpdate().execute()).map(
+      (entry) => entry.id,
+    );
+    if (ids.length)
       await transaction
-        .deleteFrom("accessGroupMembers")
-        .where("groupId", "=", edge.groupId)
-        .where("memberKind", "=", edge.memberKind)
-        .where("memberId", "=", edge.memberId)
-        .execute();
-  } else if (change.kind === "add-group-member" || change.kind === "remove-group-member") {
-    const memberKind = change.member.kind === "person" ? "user" : "group";
-    const memberId = change.member.kind === "person" ? change.member.userId : change.member.groupId;
-    if (change.kind === "remove-group-member")
-      await transaction
-        .deleteFrom("accessGroupMembers")
-        .where("groupId", "=", change.groupId)
-        .where("memberKind", "=", memberKind)
-        .where("memberId", "=", memberId)
-        .execute();
-    else if (
-      !old.edges.some(
-        (edge) =>
-          edge.groupId === change.groupId &&
-          edge.memberKind === memberKind &&
-          edge.memberId === memberId,
-      )
-    )
-      await transaction
-        .insertInto("accessGroupMembers")
-        .values({ groupId: change.groupId, memberKind, memberId, addedBy: input.actor.userId })
+        .updateTable("accessEntries")
+        .set({ revokedAt: now, revokedBy: input.actor.userId })
+        .where("id", "in", ids)
         .execute();
   }
-  const removed = old.entries
-    .filter((entry) => !next.entries.some((value) => value.id === entry.id))
-    .sort((first, second) => first.id.localeCompare(second.id));
-  for (const entry of removed)
-    await transaction
-      .updateTable("accessEntries")
-      .set({ revokedAt: now, revokedBy: input.actor.userId })
-      .where("id", "=", entry.id)
-      .execute();
-  if (change.kind === "grant")
-    await transaction
-      .insertInto("accessEntries")
-      .values(next.entries.find((entry) => entry.id === change.id)!)
-      .execute();
-  if (change.kind === "member") {
-    const before = old.users.find((user) => user.id === change.userId)!;
-    const after = next.users.find((user) => user.id === change.userId)!;
-    if (before.memberState !== after.memberState && after.memberState !== "active") {
-      const admins = await transaction
-        .selectFrom("users")
-        .select("id")
-        .where("instanceRole", "=", "administrator")
-        .where("memberState", "=", "active")
-        .where("admittedAt", "is not", null)
-        .execute();
-      if (admins.length === 1 && admins[0]!.id === change.userId)
-        refuse("The last active administrator cannot be removed");
+  const addedEntries = next.entries.filter((entry) => !oldEntries.has(entry.id));
+  const transientIds = input.changes.flatMap((change) =>
+    change.kind === "grant" && !nextEntries.has(change.id) ? [change.id] : [],
+  );
+  if (transientIds.length) {
+    let graph = old;
+    for (const change of input.changes) {
+      graph = propose(graph, change, input.actor.userId, now);
+      if (change.kind === "grant" && transientIds.includes(change.id))
+        addedEntries.push({
+          ...graph.entries.find((entry) => entry.id === change.id)!,
+          revokedAt: now,
+          revokedBy: input.actor.userId,
+        });
     }
+  }
+  if (addedEntries.length)
+    await transaction.insertInto("accessEntries").values(addedEntries).execute();
+  for (const change of input.changes)
+    if (change.kind === "delete-project")
+      await transaction
+        .updateTable("workspaces")
+        .set({
+          status: "deleting",
+          deletedAt: null,
+          deletionRequestedAt: now,
+          deletionRequestedBy: input.actor.userId,
+          purgeAfter: change.purgeAfter,
+          updatedAt: now,
+        })
+        .where("id", "=", change.workspaceId)
+        .execute();
+  const changedUsers = next.users
+    .filter((after) => {
+      const before = old.users.find((user) => user.id === after.id)!;
+      return (
+        before.memberKind !== after.memberKind ||
+        before.memberState !== after.memberState ||
+        before.admittedAt?.getTime() !== after.admittedAt?.getTime()
+      );
+    })
+    .sort((first, second) => first.id.localeCompare(second.id));
+  if (changedUsers.some((after) => after.memberState !== "active")) {
+    const admins = await transaction
+      .selectFrom("users")
+      .select("id")
+      .where("instanceRole", "=", "administrator")
+      .where("memberState", "=", "active")
+      .where("admittedAt", "is not", null)
+      .execute();
+    if (
+      admins.length &&
+      !admins.some(
+        (admin) =>
+          !changedUsers.some((user) => user.id === admin.id && user.memberState !== "active"),
+      )
+    )
+      refuse("The last active administrator cannot be removed");
+  }
+  for (const after of changedUsers) {
+    const before = old.users.find((user) => user.id === after.id)!;
     await transaction
       .updateTable("users")
       .set({
@@ -804,27 +934,15 @@ async function applySource(
             }
           : {}),
       })
-      .where("id", "=", change.userId)
+      .where("id", "=", after.id)
       .execute();
   }
-  if (change.kind === "delete-project")
-    await transaction
-      .updateTable("workspaces")
-      .set({
-        status: "deleting",
-        deletedAt: null,
-        deletionRequestedAt: now,
-        deletionRequestedBy: input.actor.userId,
-        purgeAfter: change.purgeAfter,
-        updatedAt: now,
-      })
-      .where("id", "=", change.workspaceId)
-      .execute();
 }
 
 async function authorizeMutation(
   transaction: AccessTransaction,
   input: AccessMutationInput,
+  change: AccessMutation,
 ): Promise<void> {
   const actor = await transaction
     .selectFrom("users")
@@ -840,7 +958,6 @@ async function authorizeMutation(
   )
     throw new OpensteerError({ code: "forbidden", message: "Active admitted human is required" });
   if (actor.instanceRole === "administrator") return;
-  const change = input.change;
   let workspaceId: WorkspaceId | undefined;
   if (change.kind === "grant" && change.target.kind === "project")
     workspaceId = change.target.workspaceId;
@@ -874,9 +991,34 @@ export async function mutateAccess(
   database: Database,
   input: AccessMutationInput,
 ): Promise<AccessMutationResult> {
+  if (!input.changes.length) refuse("At least one access change is required");
+  const introducedIds = input.changes.flatMap((change) =>
+    change.kind === "grant"
+      ? [change.id]
+      : change.kind === "create-project"
+        ? [change.entryId]
+        : [],
+  );
+  if (new Set(introducedIds).size !== introducedIds.length) refuse("Access entries are immutable");
+  const memberIds = input.changes.every((change) => change.kind === "member")
+    ? [
+        ...new Set(
+          input.changes.map(
+            (change) => (change as Extract<AccessMutation, { kind: "member" }>).userId,
+          ),
+        ),
+      ]
+    : undefined;
+  const requestScope = new Set<WorkspaceId>();
   const plans = new WeakMap<
     AccessTransaction,
-    { old: Graph; next: Graph; pairs: Pair[]; revision: number }
+    {
+      old: Graph;
+      next: Graph;
+      pairs: Pair[];
+      revision: number;
+      growing: boolean;
+    }
   >();
   const fingerprint = createHash("sha256").update(JSON.stringify(input)).digest("hex");
   try {
@@ -890,13 +1032,14 @@ export async function mutateAccess(
           pending: true,
         }))
           ids.add(id);
-        if (ids.size > accessCapacity.requestWorkspaces)
-          capacityError("requestWorkspaces", ids.size);
+        for (const id of ids) requestScope.add(id);
+        if (plan.growing && requestScope.size > accessCapacity.requestWorkspaces)
+          capacityError("requestWorkspaces", requestScope.size);
         return [...ids];
       },
       async (transaction) => {
         await lockMemberships(transaction, plans.get(transaction)!.pairs);
-        await authorizeMutation(transaction, input);
+        for (const change of input.changes) await authorizeMutation(transaction, input, change);
         const receipt = await transaction
           .selectFrom("securityAudit")
           .select("metadata")
@@ -916,15 +1059,20 @@ export async function mutateAccess(
             pairs: plan.pairs,
             asOf: now,
             causeId: input.commandIdentity,
+            graph: plan.old,
           })),
         ];
-        const next = propose(plan.old, input.change, input.actor.userId, now);
+        const next = input.changes.reduce(
+          (graph, change) => propose(graph, change, input.actor.userId, now),
+          plan.old,
+        );
         await applySource(transaction, plan.old, next, input, now);
         transitions.push(
           ...(await recomputeProjectMemberships(transaction, {
             pairs: plan.pairs,
             asOf: now,
             causeId: input.commandIdentity,
+            graph: next,
           })),
         );
         const revision = plan.revision + 1;
@@ -960,7 +1108,11 @@ export async function mutateAccess(
           .where("singletonKey", "=", "primary")
           .forNoKeyUpdate()
           .executeTakeFirstOrThrow();
-        const old = await readGraph(transaction);
+        const old = await readGraph(
+          transaction,
+          memberIds,
+          input.changes.flatMap((change) => (change.kind === "revoke" ? [change.entryId] : [])),
+        );
         const now = await databaseTime(transaction);
         const receipt = await transaction
           .selectFrom("securityAudit")
@@ -974,21 +1126,69 @@ export async function mutateAccess(
             next: old,
             pairs: [],
             revision: safeGeneration(state.revision),
+            growing: false,
           });
           return;
         }
-        const next = propose(old, input.change, input.actor.userId, now);
+        if (
+          introducedIds.length &&
+          (await transaction
+            .selectFrom("accessEntries")
+            .select("id")
+            .where("id", "in", introducedIds)
+            .executeTakeFirst())
+        )
+          refuse("Access entries are immutable");
+        const next = input.changes.reduce(
+          (graph, change) => propose(graph, change, input.actor.userId, now),
+          old,
+        );
         checkCapacity(old, next, now);
-        const memberships = await transaction
+        let membershipQuery = transaction
           .selectFrom("workspaceMemberships")
           .selectAll()
-          .where("state", "=", "active")
-          .execute();
+          .where("state", "=", "active");
+        if (memberIds) membershipQuery = membershipQuery.where("userId", "in", memberIds);
+        const memberships = await membershipQuery.execute();
+        if (memberIds) {
+          const projected = entriesByPair(next, { asOf: now }).size;
+          const delta = projected - memberships.length;
+          if (delta > 0) {
+            const total = await transaction
+              .selectFrom("workspaceMemberships")
+              .select(sql<string>`count(*)`.as("count"))
+              .where("state", "=", "active")
+              .executeTakeFirstOrThrow();
+            if (Number(total.count) + delta > accessCapacity.effectivePairs)
+              capacityError("effectivePairs", Number(total.count) + delta);
+          }
+        }
+        const pairs = new Map<string, Pair>();
+        let intermediate = old;
+        for (const change of input.changes) {
+          const proposed = propose(intermediate, change, input.actor.userId, now);
+          for (const pair of affectedPairs(intermediate, proposed, memberships, change, now))
+            pairs.set(pairKey(pair), pair);
+          intermediate = proposed;
+        }
+        const beforePairs = entriesByPair(old, { asOf: now });
+        const afterPairs = entriesByPair(next, { asOf: now });
+        const growing = [...afterPairs].some(([key, value]) => {
+          const before = beforePairs.get(key)?.entries ?? [];
+          return (
+            value.entries.length > before.length ||
+            (effective(value.entries, now).level === "manage" &&
+              effective(before, now).level !== "manage")
+          );
+        });
+        if (growing && pairs.size > accessCapacity.affectedPairs)
+          capacityError("affectedPairs", pairs.size);
         plans.set(transaction, {
           old,
           next,
-          pairs: affectedPairs(old, next, memberships, input.change, now),
+          pairs: [...pairs.values()],
           revision: safeGeneration(state.revision),
+          growing,
         });
       },
     );

@@ -70,7 +70,7 @@ export interface AccessMutationInput {
   readonly actor: AuthenticatedHuman;
   readonly expectedRevision: number;
   readonly commandIdentity: CommandId;
-  readonly change: AccessMutation;
+  readonly changes: readonly AccessMutation[];
 }
 
 export type AccessDecision =
