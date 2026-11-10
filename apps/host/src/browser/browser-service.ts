@@ -40,6 +40,8 @@ import {
   BrowserHistoryUrlSchema,
   browserHostMethods,
   browserPageSite,
+  browserSessionTabLimit,
+  browserSessionTabsFullReason,
   BrowserProfileAccessSchema,
   BrowserServerMessageSchema,
   browserStateImportHostTimeoutMs,
@@ -712,6 +714,7 @@ export class BrowserService {
   readonly #onPresenceChanged: NonNullable<BrowserServiceOptions["onPresenceChanged"]>;
   readonly #onUsageChanged: NonNullable<BrowserServiceOptions["onUsageChanged"]>;
   readonly #onError: NonNullable<BrowserServiceOptions["onError"]>;
+  readonly #reservedTabs = new Map<BrowserSessionId, number>();
   readonly #activityClock: Clock;
   readonly #actingWindowMs: number;
   readonly #actorMetadataTimeoutMs: number;
@@ -1625,6 +1628,8 @@ export class BrowserService {
     return this.#serializeKey(`tab-open:${ownerId}:${command.idempotencyKey}`, async () => {
       budget.signal.throwIfAborted();
       let admitted: BrowserTabOpenBinding | undefined;
+      // Until its page is recorded, an open counts against the session it chose.
+      let reserved: BrowserSessionId | undefined;
       try {
         let pendingFinish: (() => Promise<void>) | undefined;
         const select = async () => {
@@ -1662,24 +1667,37 @@ export class BrowserService {
             identityKey = resolved.identityKey;
             runnerId = placement.runnerId;
             const sessions = await this.#repository.listBrowserSessions(ownerId);
-            record =
-              sessions
-                .filter(
-                  (candidate) =>
-                    candidate.workspaceId === workspace.id &&
-                    candidate.state === "ready" &&
-                    candidate.origin === "workspace" &&
-                    candidate.opener?.kind === "person" &&
-                    candidate.opener.userId === ownerId &&
-                    candidate.profileId === profileId &&
-                    samePlacement(placement, placementOf(candidate)) &&
-                    this.#brokers.get(candidate.id)?.live,
-                )
-                .sort(
-                  (left, right) =>
-                    left.createdAt.getTime() - right.createdAt.getTime() ||
-                    left.id.localeCompare(right.id),
-                )[0] ?? null;
+            const candidates = sessions
+              .filter(
+                (candidate) =>
+                  candidate.workspaceId === workspace.id &&
+                  candidate.state === "ready" &&
+                  candidate.origin === "workspace" &&
+                  candidate.opener?.kind === "person" &&
+                  candidate.opener.userId === ownerId &&
+                  candidate.profileId === profileId &&
+                  samePlacement(placement, placementOf(candidate)) &&
+                  this.#brokers.get(candidate.id)?.live,
+              )
+              .sort(
+                (left, right) =>
+                  left.createdAt.getTime() - right.createdAt.getTime() ||
+                  left.id.localeCompare(right.id),
+              );
+            record = null;
+            for (const candidate of candidates) {
+              const saved = (await this.#workspaceTabs?.tabIds(candidate.id)) ?? [];
+              // Read together after the await: an open is reserved until its page is listed.
+              const listed = this.#brokers.get(candidate.id)?.surfaceIds ?? [];
+              const held =
+                new Set([...saved, ...listed]).size + (this.#reservedTabs.get(candidate.id) ?? 0);
+              if (held < browserSessionTabLimit) {
+                record = candidate;
+                reserved = candidate.id;
+                this.#reservedTabs.set(reserved, (this.#reservedTabs.get(reserved) ?? 0) + 1);
+                break;
+              }
+            }
             if (!record)
               opening = {
                 ownerId,
@@ -1766,19 +1784,29 @@ export class BrowserService {
             outcome: { kind: "failed", reason: "failed" },
           });
           const settled = await this.#repository.getBrowserTabOpen(ownerId, command.idempotencyKey);
-          if (settled?.outcome.kind === "failed") throw this.#tabOpenFailure(settled);
+          if (settled?.outcome.kind === "failed") throw this.#tabOpenFailure(settled, error);
         }
         throw error;
+      } finally {
+        if (reserved) {
+          const left = (this.#reservedTabs.get(reserved) ?? 1) - 1;
+          if (left > 0) this.#reservedTabs.set(reserved, left);
+          else this.#reservedTabs.delete(reserved);
+        }
       }
     });
   }
 
-  #tabOpenFailure(binding: BrowserTabOpenBinding): OpensteerError {
+  #tabOpenFailure(binding: BrowserTabOpenBinding, cause?: unknown): OpensteerError {
+    const full = cause instanceof OpensteerError && cause.reason === browserSessionTabsFullReason;
     return this.#tabOpenRefusal(
       "browser-tab-open-failed",
       binding.outcome.kind === "failed" && binding.outcome.reason === "interrupted"
         ? "Opening was interrupted by a Host restart. Retry to open a new page."
-        : "The browser could not open this page. Retry to open a new page.",
+        : full
+          ? "This browser holds all the tabs it can. Retry to open the page in another browser."
+          : "The browser could not open this page. Retry to open a new page.",
+      cause,
     );
   }
 
@@ -1795,8 +1823,13 @@ export class BrowserService {
     );
   }
 
-  #tabOpenRefusal(reason: BrowserTabOpenRefusalReason, message: string): OpensteerError {
+  #tabOpenRefusal(
+    reason: BrowserTabOpenRefusalReason,
+    message: string,
+    cause?: unknown,
+  ): OpensteerError {
     return new OpensteerError({
+      ...(cause === undefined ? {} : { cause }),
       code: "conflict",
       reason,
       message,
@@ -4470,6 +4503,11 @@ class HostedBrowserBroker {
   #durableTabs: BrowserWorkspaceTabDescriptor[] = [];
   readonly #durableClosed = new Set<BrowserSurfaceId>();
   #durableRevision = 0;
+  /** The pages the Runtime listed last; it lists a new tab before answering its open. */
+  get surfaceIds(): readonly BrowserSurfaceId[] {
+    return this.#snapshot?.surfaces.map((surface) => surface.id) ?? [];
+  }
+
   get workspaceTabRestoreVersion(): 1 | undefined {
     return this.#durableRevision > 0 ? 1 : undefined;
   }

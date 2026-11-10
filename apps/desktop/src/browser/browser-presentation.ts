@@ -530,11 +530,14 @@ export class DesktopBrowserPresentationManager {
           (presentation.page !== page && presentation.pending !== page)
         )
           return;
+        const first = !page.placement;
         page.placement = placement;
+        if (first) this.#order(owner);
         if (presentation.page === page && owner.current === presentation)
           this.#placed(presentation, page);
       });
-      this.#order(owner);
+      // A surface change cleared this presentation's scene; its glass goes now.
+      this.#glass(owner);
       native.setStage(this.#dips(presentation), owner.window.isFocused());
       this.#follow(presentation, page);
       const paint = new AbortController();
@@ -895,8 +898,10 @@ export class DesktopBrowserPresentationManager {
   #order(owner: Owner): void {
     if (owner.window.isDestroyed()) return;
     const pages: PageSlot[] = [];
+    // A pending page joins the window at its first placement, never before.
     for (const presentation of this.#presentations.values())
-      if (presentation.owner === owner && presentation.pending) pages.push(presentation.pending);
+      if (presentation.owner === owner && presentation.pending?.placement)
+        pages.push(presentation.pending);
     if (owner.current?.page) pages.push(owner.current.page);
     const views = pages.map((page) => page.native.view);
     if (owner.overlays.size || !owner.current?.page) views.push(owner.window.appView);

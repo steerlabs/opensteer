@@ -101,6 +101,7 @@ function fixture() {
     focus: vi.fn(),
     getZoomFactor: () => 1,
   });
+  const children: unknown[] = [];
   const window = Object.assign(new EventEmitter(), {
     webContents: contents,
     appView: {},
@@ -108,7 +109,13 @@ function fixture() {
     isFocused: () => true,
     isVisible: () => true,
     isMinimized: () => false,
-    contentView: { children: [] as unknown[], addChildView: vi.fn() },
+    contentView: {
+      children,
+      addChildView: vi.fn((view: unknown) => {
+        if (children.includes(view)) children.splice(children.indexOf(view), 1);
+        children.push(view);
+      }),
+    },
   });
   manager.attachWindow(window as unknown as ElectronAppWindow);
   const pageContents = Object.assign(new EventEmitter(), {
@@ -397,6 +404,58 @@ it("rejects a failed surface replacement update and releases the old native page
     type: "ended",
     reason: "page-closed",
   });
+});
+
+it("switches to an unplaced page without exposing it or keeping the old page's glass", async () => {
+  onPlatform("darwin");
+  const f = fixture();
+  f.native.waitForPaint = () => Promise.resolve();
+  f.socket("admitted");
+  const target = await f.manager.present(f.sender, f.request);
+  await Promise.resolve();
+  const { appView, contentView } = f.window;
+  expect(contentView.children).toEqual([appView, f.native.view]);
+  const scene = {
+    croppedBottom: true,
+    croppedRight: false,
+    cursors: [],
+    geometryRevision: 0,
+    reducedMotion: true,
+  };
+  f.manager.setGlass(f.sender, { ...target, scene });
+  expect(glass.update).toHaveBeenLastCalledWith(rect, scene, true);
+  const nextId = BrowserSurfaceIdSchema.parse("bsf_00000000-0000-4000-8000-000000000002");
+  const next = {
+    ...f.native,
+    view: {
+      webContents: Object.assign(new EventEmitter(), {
+        isCrashed: () => false,
+        stopFindInPage: vi.fn(),
+      }),
+    },
+    mount: vi.fn<(window: unknown, stage: unknown, placed: (p: NativePlacement) => void) => void>(),
+    unmount: vi.fn(),
+    waitForPaint: () => new Promise<void>(() => {}),
+  };
+  f.source.presentSurface.mockImplementation(
+    () =>
+      ({
+        ...f.surface,
+        surfaceId: nextId,
+        page: { ...f.surface.page, native: next },
+        release: vi.fn(),
+      }) as unknown as PresentedSurface,
+  );
+  await f.manager.update(f.sender, { presentationId: target.presentationId, surfaceId: nextId });
+  expect(next.mount).toHaveBeenCalledOnce();
+  expect(contentView.children).toEqual([appView, f.native.view]);
+  expect(glass.update).toHaveBeenLastCalledWith(rect, null, true);
+  next.mount.mock.calls[0]![2]({
+    bounds: rect,
+    crop: { right: false, bottom: false },
+    emulation: null,
+  });
+  expect(contentView.children).toEqual([appView, next.view, f.native.view]);
 });
 
 it("attributes native page input only to the window's admitted presentation consumer", async () => {

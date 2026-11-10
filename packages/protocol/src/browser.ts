@@ -180,6 +180,10 @@ export const BrowserBridgeAttachedSchema = createBrowserBridgeAttachedSchema();
 export type BrowserBridgeAttached = z.infer<typeof BrowserBridgeAttachedSchema>;
 
 export const browserWorkspaceTabUrlMaxLength = 16_384;
+/** How many tabs one browser session holds; its whole tab list travels in one message. */
+export const browserSessionTabLimit = 64;
+/** The runtime's refusal reason when a session already holds `browserSessionTabLimit` tabs. */
+export const browserSessionTabsFullReason = "session-tabs-full";
 
 export const BrowserWorkspaceTabDescriptorSchema = z.object({
   id: BrowserSurfaceIdSchema,
@@ -221,7 +225,10 @@ export const BrowserAttachTicketClaimsSchema = z
      */
     personFillVersion: z.literal(1).optional(),
     initialSurfaceId: BrowserSurfaceIdSchema.optional(),
-    dormantSurfaceIds: z.array(BrowserSurfaceIdSchema).max(63).optional(),
+    dormantSurfaceIds: z
+      .array(BrowserSurfaceIdSchema)
+      .max(browserSessionTabLimit - 1)
+      .optional(),
     expiresAt: IsoDateTimeSchema,
     identity: BrowserAttachTicketIdentitySchema,
     issuedAt: IsoDateTimeSchema,
@@ -297,7 +304,7 @@ export type BrowserSurface = z.infer<typeof BrowserSurfaceSchema>;
 
 export const BrowserSurfacesSchema = z
   .array(BrowserSurfaceSchema)
-  .max(64)
+  .max(browserSessionTabLimit)
   .superRefine((surfaces, context) => {
     const ids = new Set<string>();
     for (const [index, surface] of surfaces.entries()) {
@@ -848,8 +855,8 @@ const BaselineBrowserServerMessageSchema = z.discriminatedUnion("type", [
   BrowserSnapshotSchema,
   z.strictObject({
     type: z.literal("browser.workspace-tabs"),
-    tabs: z.array(BrowserWorkspaceTabDescriptorSchema).max(64),
-    closed: z.array(BrowserSurfaceIdSchema).max(64),
+    tabs: z.array(BrowserWorkspaceTabDescriptorSchema).max(browserSessionTabLimit),
+    closed: z.array(BrowserSurfaceIdSchema).max(browserSessionTabLimit),
   }),
   z.strictObject({
     ...browserBase,
@@ -1283,7 +1290,7 @@ export const BrowserTabCatalogSchema = z
     generation: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
     revision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
     inventoryRevision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
-    tabs: z.array(BrowserTabSummarySchema).max(64),
+    tabs: z.array(BrowserTabSummarySchema).max(browserSessionTabLimit),
   })
   .superRefine(refineBrowserTabCatalog);
 export type BrowserTabCatalog = z.infer<typeof BrowserTabCatalogSchema>;
@@ -1296,7 +1303,7 @@ export const BrowserTabSummaryViewSchema = z.object({
 export const BrowserTabCatalogViewSchema = z
   .object({
     ...BrowserTabCatalogSchema.shape,
-    tabs: z.array(BrowserTabSummaryViewSchema).max(64),
+    tabs: z.array(BrowserTabSummaryViewSchema).max(browserSessionTabLimit),
   })
   .superRefine(refineBrowserTabCatalog);
 export const BrowserTabsChangedSchema = z.object({
@@ -1500,7 +1507,7 @@ export const WorkspaceTabLineageSchema = z.object({
         createdAt: IsoDateTimeSchema.optional(),
       }),
     )
-    .max(64)
+    .max(browserSessionTabLimit)
     .optional(),
 });
 export type WorkspaceTabLineage = z.infer<typeof WorkspaceTabLineageSchema>;
