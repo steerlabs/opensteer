@@ -1403,7 +1403,7 @@ export class MockPlaceWorld {
       revision: session.tabCatalog.revision + 1,
       tabs: [
         ...session.tabCatalog.tabs.filter((held) => held.id !== tabId),
-        {
+        session.tabCatalog.tabs.find((held) => held.id === tabId) ?? {
           id: tab.id,
           title: tab.title,
           site: tab.site,
@@ -1422,7 +1422,14 @@ export class MockPlaceWorld {
       tabCatalog: catalog,
       tabs: [
         ...session.tabs.filter((held) => held.id !== tabId),
-        { id: tab.id, title: tab.title, url, active: true },
+        {
+          ...(session.tabs.find((held) => held.id === tabId) ?? {
+            id: tab.id,
+            title: tab.title,
+            url,
+          }),
+          active: true,
+        },
       ],
     };
     this.#update({

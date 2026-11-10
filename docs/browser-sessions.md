@@ -29,8 +29,8 @@ opened with Opensteer as the macOS default browser start no agent.
 
 A browser device declares abilities, not a device class. The Host places a session on its profile's
 home and admits only what that browser advertises; it never substitutes another home or infers
-abilities from a phone engine name. Host tab open, close and context operations use the ordinary
-command channel even when the browser does not speak CDP.
+abilities from a phone engine name. Host tab open, close, resume and context operations use the
+ordinary command channel even when the browser does not speak CDP; resume requires `surfaceState`.
 
 A Run negotiates its backend for one exact session: `cdpBoundary` selects CDP first, otherwise
 `agentActions` selects typed actions. Both require `sharedControl`. An attachment pins that choice,
@@ -50,8 +50,19 @@ defined in [browser-actions](../packages/protocol/src/browser-actions.ts).
 
 Browsers may negotiate live/suspended surface state. A suspended tab keeps its last in-memory
 picture, or just its named row if none exists, and refuses addressed commands and input with
-`target-suspended`. Watching does not resume, reload or create a native view. Resume is explicit;
-older peers without surface-state negotiation keep their existing behavior.
+`target-suspended`. Watching does not resume, reload or create a native view. Selecting a sleeping
+tab uses the same saved-tab activation as any other browser; the Host resumes its existing surface
+instead of opening another tab. Agents keep their explicit resume path. Older peers without
+surface-state negotiation keep their existing behavior.
+
+A phone keeps at most two live views: its visible tab and one covered tab. The covered place belongs
+to an agent attachment or to people elsewhere. An attachment may switch tabs after its prior input
+settles; agents may replace people, but another attachment cannot displace the owner. People may
+replace another people-owned tab only when nobody receives its picture, preventing competing
+devices from repeatedly waking each other's tabs. Replacing retains the old page and fences queued
+input, never takes the phone's visible tab, and never reloads a retained page. Detaching retains an
+unwatched tab; a watched one passes to people until its last picture receiver leaves. Presenting it
+locally frees the covered place. Memory pressure may still discard retained pages.
 
 A failed navigation leaves Chromium's error document committed, and a surface's address stays the
 one it tried to reach, so a person sees where they meant to go and the catalog names a real origin.

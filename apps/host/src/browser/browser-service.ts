@@ -887,7 +887,9 @@ export class BrowserService {
     ]);
     await Promise.all(sessions.map((session) => this.#restoreHoldings(session.id)));
     const [workspaceTabs, tabGroups] = await Promise.all([
-      this.#workspaceTabs?.list(ownerId),
+      this.#workspaceTabs
+        ?.list(ownerId)
+        .then((groups) => groups.map((group) => this.#personWorkspaceTabs(group))),
       this.#tabGroups?.layout(ownerId),
     ]);
     const bootstrap: HostedBrowserBootstrap = {
@@ -941,7 +943,25 @@ export class BrowserService {
     const resolved = (await this.#workspaceTabs?.lineageForSession(groupId)) ?? groupId;
     const group = await this.#workspaceTabs?.read(ownerId, resolved);
     if (!group) throw new OpensteerError({ code: "not_found", message: "Browser tabs not found." });
-    return group;
+    return this.#personWorkspaceTabs(group);
+  }
+
+  #personWorkspaceTabs(group: WorkspaceTabLineage): WorkspaceTabLineage {
+    return {
+      ...group,
+      ...(group.tabs
+        ? {
+            tabs: group.tabs.map((tab) => {
+              const broker = tab.sessionId ? this.#brokers.get(tab.sessionId) : undefined;
+              const state =
+                broker?.live && broker.surfaceState === 1
+                  ? broker.surfaceStateOf(tab.id)
+                  : undefined;
+              return state ? { ...tab, state } : tab;
+            }),
+          }
+        : {}),
+    };
   }
 
   activateWorkspaceTab(ownerId: UserId, tabId: BrowserSurfaceId) {
@@ -1050,6 +1070,18 @@ export class BrowserService {
               ...(url === "about:blank" ? {} : { url }),
             },
           },
+        });
+      }
+      if (
+        !agent &&
+        broker?.live &&
+        broker.surfaceState === 1 &&
+        broker.surfaceStateOf(tabId) === "suspended"
+      ) {
+        await broker.requestCdp({
+          type: "cdp.command",
+          requestId: randomUUID(),
+          command: { method: browserHostMethods.resumeTab, parameters: { surfaceId: tabId } },
         });
       }
       if (!(await tabs.get(ownerId, tabId))) {
@@ -2568,12 +2600,12 @@ export class BrowserService {
     this.#catalogNotices.delete(sessionId);
     return this.#serializeKey(`catalog:${sessionId}`, async () => {
       if (broker && this.#workspaceTabs) {
-        const { tabs, closed, revision, dirty } = broker.durableCatalog();
-        if (dirty) {
-          if (await this.#workspaceTabs.record(sessionId, tabs, closed))
-            this.#onSessionsChanged(workspaceId, [sessionId], "browser.catalog-flush");
-          broker.acknowledgeClosed(closed, revision);
-        }
+        const { tabs, closed, revision, dirty, surfaceStateRevision, surfaceStateDirty } =
+          broker.durableCatalog();
+        const changed = dirty && (await this.#workspaceTabs.record(sessionId, tabs, closed));
+        if (changed || surfaceStateDirty)
+          this.#onSessionsChanged(workspaceId, [sessionId], "browser.catalog-flush");
+        broker.acknowledgeClosed(closed, revision, surfaceStateRevision);
       }
       this.#onCatalogChanged(sessionId, workspaceId);
     });
@@ -4750,6 +4782,8 @@ class HostedBrowserBroker {
     return this.#durableRevision > 0 ? 1 : undefined;
   }
   #storedDurableRevision = 0;
+  #surfaceStateRevision = 0;
+  #announcedSurfaceStateRevision = 0;
   #durableIcon(tab: BrowserWorkspaceTabDescriptor) {
     const surface = this.#snapshot?.surfaces.find(
       (surface) => surface.id === tab.id && surface.url === tab.url,
@@ -4773,10 +4807,17 @@ class HostedBrowserBroker {
       closed: [...this.#durableClosed],
       revision: this.#durableRevision,
       dirty: this.#storedDurableRevision < this.#durableRevision,
+      surfaceStateRevision: this.#surfaceStateRevision,
+      surfaceStateDirty: this.#announcedSurfaceStateRevision < this.#surfaceStateRevision,
     };
   }
-  acknowledgeClosed(ids: readonly BrowserSurfaceId[], revision: number) {
+  acknowledgeClosed(
+    ids: readonly BrowserSurfaceId[],
+    revision: number,
+    surfaceStateRevision: number,
+  ) {
     this.#storedDurableRevision = revision;
+    this.#announcedSurfaceStateRevision = surfaceStateRevision;
     for (const id of ids) this.#durableClosed.delete(id);
   }
   readonly #onTabsChanged: () => void;
@@ -5059,6 +5100,10 @@ class HostedBrowserBroker {
 
   geometryOf(surfaceId: string): number | undefined {
     return this.#snapshot?.surfaces.find((surface) => surface.id === surfaceId)?.geometryRevision;
+  }
+
+  surfaceStateOf(surfaceId: string) {
+    return this.#snapshot?.surfaces.find((surface) => surface.id === surfaceId)?.state;
   }
 
   /**
@@ -5666,6 +5711,12 @@ class HostedBrowserBroker {
           this.#passkeys?.documentChanged(surface.id);
       }
       const previousIcons = this.#durableIconRefs();
+      if (
+        this.surfaceState === 1 &&
+        JSON.stringify(previousSurfaces.map(({ id, state }) => [id, state])) !==
+          JSON.stringify(message.surfaces.map(({ id, state }) => [id, state]))
+      )
+        this.#surfaceStateRevision++;
       const inventoryChanged =
         JSON.stringify(previousSurfaces.map(({ id, order }) => [id, order])) !==
         JSON.stringify(message.surfaces.map(({ id, order }) => [id, order]));
@@ -5699,9 +5750,11 @@ class HostedBrowserBroker {
             openerId,
             canGoBack,
             canGoForward,
+            state,
           }) => ({
             canGoBack,
             canGoForward,
+            state,
             id,
             order,
             title,
