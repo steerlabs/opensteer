@@ -21,7 +21,7 @@ public protocol IdentityRecordStore: AnyObject {
 }
 
 public enum IdentityStoreError: Error {
-  case enrolledElsewhere, notPrepared, wrongDeployment, missingIdentity, invalidIdentity
+  case enrolledElsewhere, notPrepared, wrongDeployment, missingIdentity, invalidIdentity, erasurePending
 }
 
 public struct PreparedIdentitySnapshot: Encodable {
@@ -51,10 +51,12 @@ public struct PersistedIphoneIdentity: Codable {
   public var enrollmentId: String?
   public var expiresAt: String?
   public var mintKey: String
+  public var browserErasurePending: Bool? = nil
+  public var browserReplayStorageInstanceId: String? = nil
 }
 
-/// The record is the install marker. No Keychain item outlives an absent or
-/// corrupt record; protected data unavailability is a thrown, retryable error.
+/// An absent install marker retires Keychain items; a corrupt marker refuses
+/// admission without losing a possible pending browser erasure obligation.
 public final class IdentityStore {
   private let vault: any IdentityVault
   private let record: any IdentityRecordStore
@@ -67,12 +69,13 @@ public final class IdentityStore {
 
   public func load() throws -> PersistedIphoneIdentity? {
     lock.lock(); defer { lock.unlock() }
-    guard let bytes = try record.read(),
-      let identity = try? JSONDecoder().decode(PersistedIphoneIdentity.self, from: bytes),
-      identity.version == 1 else {
+    guard let bytes = try record.read() else {
       try wipe()
       return nil
     }
+    guard let identity = try? JSONDecoder().decode(PersistedIphoneIdentity.self, from: bytes),
+      identity.version == 1 else { throw IdentityStoreError.invalidIdentity }
+    if identity.browserErasurePending == true { return identity }
     let tokenPresent = try vault.read(.enrollmentToken) != nil
     guard try vault.read(.runnerKey) != nil,
       (identity.state != .pending || tokenPresent) else {
@@ -87,6 +90,7 @@ public final class IdentityStore {
   public func prepare(deploymentId: String) throws -> PreparedIdentity {
     lock.lock(); defer { lock.unlock() }
     if let old = try load() {
+      guard old.browserErasurePending != true else { throw IdentityStoreError.erasurePending }
       guard old.deploymentId == deploymentId else { throw IdentityStoreError.enrolledElsewhere }
       return PreparedIdentity(deploymentId: old.deploymentId, runnerId: old.runnerId, mintKey: old.mintKey)
     }
@@ -108,6 +112,7 @@ public final class IdentityStore {
   ) throws {
     lock.lock(); defer { lock.unlock() }
     guard var identity = try load() else { throw IdentityStoreError.notPrepared }
+    guard identity.browserErasurePending != true else { throw IdentityStoreError.erasurePending }
     guard identity.deploymentId == deploymentId else { throw IdentityStoreError.wrongDeployment }
     guard identity.state != .enrolled else { throw IdentityStoreError.invalidIdentity }
     try vault.write(Data(enrollmentToken.utf8), account: .enrollmentToken)
@@ -124,6 +129,7 @@ public final class IdentityStore {
   @discardableResult public func markEnrolled() throws -> PersistedIphoneIdentity {
     lock.lock(); defer { lock.unlock() }
     guard var identity = try load(), identity.state == .pending else { throw IdentityStoreError.notPrepared }
+    guard identity.browserErasurePending != true else { throw IdentityStoreError.erasurePending }
     identity.state = .enrolled
     try save(identity)
     // The durable state wins if Keychain cleanup is briefly unavailable. A
@@ -135,6 +141,7 @@ public final class IdentityStore {
   public func discardPendingEnrollment() throws -> String {
     lock.lock(); defer { lock.unlock() }
     guard var identity = try load(), identity.state != .enrolled else { throw IdentityStoreError.notPrepared }
+    guard identity.browserErasurePending != true else { throw IdentityStoreError.erasurePending }
     try vault.remove(.enrollmentToken)
     identity.state = .prepared
     identity.enrollmentId = nil
@@ -167,6 +174,40 @@ public final class IdentityStore {
 
   public func wipe() throws {
     lock.lock(); defer { lock.unlock() }
+    if let bytes = try record.read() {
+      guard let identity = try? JSONDecoder().decode(PersistedIphoneIdentity.self, from: bytes), identity.version == 1 else { throw IdentityStoreError.invalidIdentity }
+      if identity.browserErasurePending == true { throw IdentityStoreError.erasurePending }
+    }
+    try wipeConfirmed()
+  }
+
+  public func markBrowserErasurePending() throws -> PersistedIphoneIdentity {
+    lock.lock(); defer { lock.unlock() }
+    guard var identity = try load() else { throw IdentityStoreError.missingIdentity }
+    identity.browserErasurePending = true
+    try save(identity)
+    return identity
+  }
+
+  public func markBrowserReplayInitialized(storageInstanceId: String) throws -> PersistedIphoneIdentity {
+    lock.lock(); defer { lock.unlock() }
+    guard var identity = try load(), identity.browserErasurePending != true,
+      identity.browserReplayStorageInstanceId == nil || identity.browserReplayStorageInstanceId == storageInstanceId else { throw IdentityStoreError.erasurePending }
+    identity.browserReplayStorageInstanceId = storageInstanceId
+    try save(identity)
+    return identity
+  }
+
+  @discardableResult public func completeBrowserErasure(deploymentId: String, confirmed: Bool) throws -> Bool {
+    lock.lock(); defer { lock.unlock() }
+    guard let identity = try load(), identity.deploymentId == deploymentId,
+      identity.browserErasurePending == true else { throw IdentityStoreError.wrongDeployment }
+    guard confirmed else { return false }
+    try wipeConfirmed()
+    return true
+  }
+
+  private func wipeConfirmed() throws {
     // Removing the sandbox marker first prevents a restart from restoring
     // sharing even if protected Keychain data cannot be erased yet.
     do { try record.remove() }

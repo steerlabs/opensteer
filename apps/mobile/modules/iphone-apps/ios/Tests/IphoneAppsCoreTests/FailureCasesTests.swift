@@ -289,7 +289,7 @@ final class FailureCasesTests: XCTestCase {
 
 }
 
-private final class MemoryIdentityVault: IdentityVault {
+final class MemoryIdentityVault: IdentityVault {
   private var values: [IdentityAccount: Data] = [:]
   func read(_ account: IdentityAccount) throws -> Data? { values[account] }
   func write(_ value: Data, account: IdentityAccount) throws { values[account] = value }
@@ -299,7 +299,7 @@ private final class MemoryIdentityVault: IdentityVault {
   func delete(_ account: IdentityAccount) { values.removeValue(forKey: account) }
 }
 
-private final class MemoryRecordStore: IdentityRecordStore {
+final class MemoryRecordStore: IdentityRecordStore {
   private var value: Data?
   func read() throws -> Data? { value }
   func write(_ value: Data) throws { self.value = value }
