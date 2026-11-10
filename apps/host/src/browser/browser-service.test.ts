@@ -34,6 +34,8 @@ import {
   type HostedBrowserSessionState,
 } from "@opensteer/protocol";
 import { BrowserPasskeyOfferSchema } from "@opensteer/protocol/passkeys";
+import type { Clock } from "@opensteer/shared/clock";
+import { ManualClock } from "@opensteer/shared/test-support/clock";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { createHash, generateKeyPairSync, randomUUID, verify, type KeyObject } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -2159,9 +2161,13 @@ describe("BrowserService", () => {
     const groupId = createBrowserSessionId();
     const tabId = BrowserSurfaceIdSchema.parse("page-1");
     const close = vi.fn(async () => ({ groupId }));
+    const onCatalogChanged = vi.fn(),
+      onSessionsChanged = vi.fn();
     const service = new BrowserService({
       ...nativeProfileOptions(),
       ...profileStateOptions,
+      onCatalogChanged,
+      onSessionsChanged,
       repository,
       connectTimeoutMs: 2000,
       signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
@@ -2206,6 +2212,13 @@ describe("BrowserService", () => {
       method: browserHostMethods.closeTab,
       parameters: { surfaceId: tabId, durable: true },
     });
+    // Its closed revision reaches viewers, so a slower earlier lineage cannot reopen it.
+    expect(onCatalogChanged).toHaveBeenCalledWith(sessionId, workspaceId, {
+      lineageChanged: true,
+    });
+    expect(onSessionsChanged.mock.calls.some(([, , source]) => source === "browser.tabs")).toBe(
+      false,
+    );
   });
   it("publishes a page's own title for the same document while its untitled read is still answering", async () => {
     const keys = generateKeyPairSync("ed25519");
@@ -2457,9 +2470,13 @@ describe("BrowserService", () => {
       const ownerId = createId("user");
       const workspaceId = createId("workspace");
       const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+      const onCatalogChanged = vi.fn(),
+        onSessionsChanged = vi.fn();
       const service = new BrowserService({
         ...nativeProfileOptions(),
         ...profileStateOptions,
+        onCatalogChanged,
+        onSessionsChanged,
         repository,
         connectTimeoutMs: 2000,
         signer: new BrowserAttachTicketSigner({
@@ -2469,7 +2486,7 @@ describe("BrowserService", () => {
         targetResolver: runnerTarget({ url: runtime.url, workspaceTabRestoreVersion: capable }),
         workspaceTabs: {
           list: async () => [],
-          record: async () => false,
+          record: async () => true,
           suspend: async () => undefined,
         } as unknown as WorkspaceTabStore,
       });
@@ -2480,6 +2497,32 @@ describe("BrowserService", () => {
       const bootstrap = await service.bootstrap(ownerId);
       expect(bootstrap.workspaceTabRestoreVersion).toBe(1);
       expect(bootstrap.sessions[0]?.workspaceTabRestoreVersion).toBe(capable ? 1 : undefined);
+      if (capable) {
+        runtime.sendServer({
+          type: "browser.workspace-tabs",
+          tabs: [
+            {
+              id: "page-1",
+              title: "Saved page",
+              url: "https://example.com",
+              order: 0,
+              openerId: null,
+              documentId: "document-1",
+            },
+          ],
+          closed: [],
+        });
+        await vi.waitFor(
+          () =>
+            expect(onCatalogChanged).toHaveBeenCalledWith(opened.session.id, workspaceId, {
+              lineageChanged: true,
+            }),
+          { timeout: 1000 },
+        );
+        expect(
+          onSessionsChanged.mock.calls.some(([, , source]) => source === "browser.catalog-flush"),
+        ).toBe(false);
+      }
     },
   );
   it("resolves an authorized group read from a replacement session outside bootstrap", async () => {
@@ -2959,7 +3002,11 @@ describe("BrowserService", () => {
   });
 
   async function actorAdmissionFixture(
-    options: { readonly holdAnswers?: boolean; readonly onError?: (error: unknown) => void } = {},
+    options: {
+      readonly holdAnswers?: boolean;
+      readonly onError?: (error: unknown) => void;
+      readonly activityClock?: Clock;
+    } = {},
   ) {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
@@ -2976,6 +3023,7 @@ describe("BrowserService", () => {
       repository,
       runtime,
       actorMetadataTimeoutMs: 25,
+      ...(options.activityClock ? { activityClock: options.activityClock } : {}),
       ...(options.onError ? { onError: options.onError } : {}),
     });
     const authority = { agentBindingId: `run:${runId}`, ownerId, workspaceId };
@@ -3005,8 +3053,19 @@ describe("BrowserService", () => {
       const parsed = BrowserClientMessageSchema.safeParse(JSON.parse(data));
       if (!parsed.success || parsed.data.type !== "cdp.command") return;
       forwarded.push(parsed.data);
+      const { command } = parsed.data;
+      // An attach names its page, as Chromium's answer does.
+      const attached =
+        command.method === "Target.attachToTarget" &&
+        typeof command.parameters?.targetId === "string"
+          ? command.parameters.targetId
+          : null;
       if (!options.holdAnswers)
-        runtime.sendServer({ type: "cdp.result", requestId: parsed.data.requestId, result: {} });
+        runtime.sendServer({
+          type: "cdp.result",
+          requestId: parsed.data.requestId,
+          result: attached ? { sessionId: `cdp-${attached}`, surfaceId: attached } : {},
+        });
     });
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     const answer = (requestId: string, result: Record<string, unknown>) =>
@@ -3024,9 +3083,9 @@ describe("BrowserService", () => {
     };
   }
 
-  async function runPlaceFixture() {
+  async function runPlaceFixture(activityClock?: Clock) {
     const onError = vi.fn();
-    const f = await actorAdmissionFixture({ onError });
+    const f = await actorAdmissionFixture({ onError, ...(activityClock ? { activityClock } : {}) });
     vi.useRealTimers();
     vi.spyOn(f.backing, "resolvePlaceActors").mockResolvedValue(f.audience);
     const acknowledge = () =>
@@ -3038,7 +3097,7 @@ describe("BrowserService", () => {
     expect(actorToken).toEqual(expect.any(String));
     f.runtime.sendServer({
       type: "browser.surfaces.changed",
-      surfaces: ["page-1", "page-2"].map((id, index) => ({
+      surfaces: ["page-1", "page-2", "page-3"].map((id, index) => ({
         id,
         active: index === 0,
         title: id,
@@ -3070,8 +3129,67 @@ describe("BrowserService", () => {
     };
   }
 
+  it("bounds interleaved activity writes and converges usage on the final surface", async () => {
+    const clock = new ManualClock(0);
+    const f = await runPlaceFixture(clock);
+    f.record.mockImplementation(
+      async (input) => ({ type: "place.entered", ...input }) as unknown as AgentEvent,
+    );
+    const usage = vi.spyOn(f.backing, "recordAgentBrowserUse");
+    for (let index = 0; index < 30; index++) await f.activity(`page-${(index % 3) + 1}`);
+    expect(f.record).toHaveBeenCalledTimes(1);
+    expect(usage.mock.calls.map(([input]) => input.tabId)).toEqual(["page-1", "page-2", "page-3"]);
+    clock.advanceBy(1000);
+    await f.drain();
+    expect(f.record.mock.calls.map(([input]) => input.data.place)).toEqual([
+      expect.objectContaining({ surfaceId: "page-1" }),
+      expect.objectContaining({ surfaceId: "page-3" }),
+    ]);
+    expect(usage.mock.calls.map(([input]) => input.tabId)).toEqual([
+      "page-1",
+      "page-2",
+      "page-3",
+      "page-3",
+    ]);
+    f.runtime.sendServer({
+      type: "browser.surfaces.changed",
+      surfaces: [1, 2, 3].map((index) => ({
+        id: `page-${index}`,
+        active: index === 1,
+        title: index === 2 ? "New page" : `page-${index}`,
+        url: "https://example.com",
+        geometryRevision: 1,
+      })),
+    });
+    await f.activity("page-2");
+    expect(usage).toHaveBeenCalledTimes(5);
+    expect(usage.mock.calls.at(-1)?.[0]).toMatchObject({
+      tabId: "page-2",
+      page: { title: "New page" },
+    });
+    await f.drain();
+    clock.advanceBy(1000);
+    await f.activity("page-1");
+    await f.drain();
+    expect(usage.mock.calls.at(-1)?.[0].tabId).toBe("page-1");
+  });
+
+  it("converges usage when a burst returns to its leading place without another place write", async () => {
+    const clock = new ManualClock(0);
+    const f = await runPlaceFixture(clock);
+    const usage = vi.spyOn(f.backing, "recordAgentBrowserUse");
+    await f.activity("page-1");
+    await f.activity("page-2");
+    await f.activity("page-1");
+    clock.advanceBy(1000);
+    await f.drain();
+    expect(f.record).toHaveBeenCalledTimes(1);
+    expect(usage.mock.calls.map(([input]) => input.tabId)).toEqual(["page-1", "page-2", "page-1"]);
+  });
+
   it("records native transitions in the browser's Run place lane and ignores activity-ended notices", async () => {
-    const f = await runPlaceFixture();
+    const clock = new ManualClock(0);
+    const f = await runPlaceFixture(clock);
     const actor = f.audience[0]!;
     const native = {
       ...actor,
@@ -3081,11 +3199,13 @@ describe("BrowserService", () => {
       ended: false,
     };
     await f.activity("page-1");
+    clock.advanceBy(1000);
     f.service.beginRunPlace(
       native.runId,
       native.generation,
     )({ place: native.place, title: native.title, site: null });
     f.service.noteNativeActivity(native);
+    clock.advanceBy(1000);
     await f.activity("page-1");
     f.service.noteNativeActivity({ ...native, ended: true });
     await f.drain();
@@ -3094,6 +3214,35 @@ describe("BrowserService", () => {
       "app",
       "browser",
     ]);
+  });
+
+  it("records a tab the agent switches back to only when its page changed", async () => {
+    const f = await runPlaceFixture();
+    const usage = vi.spyOn(f.backing, "recordAgentBrowserUse");
+    for (const targetId of ["page-1", "page-2", "page-1", "page-2"])
+      await f.cdp.request({
+        method: "Target.attachToTarget",
+        parameters: { targetId, flatten: true },
+      });
+    await vi.waitFor(() => expect(usage).toHaveBeenCalledTimes(2), { timeout: 1000 });
+    await f.cdp.request({ method: "Browser.getVersion" });
+    expect(usage.mock.calls.map(([input]) => input.tabId)).toEqual(["page-1", "page-2"]);
+  });
+
+  it("credits the settled tab after Stop ends the Run's actor", async () => {
+    const clock = new ManualClock(0);
+    const f = await runPlaceFixture(clock);
+    f.record.mockImplementation(
+      async (input) => ({ type: "place.entered", ...input }) as unknown as AgentEvent,
+    );
+    const usage = vi.spyOn(f.backing, "recordAgentBrowserUse");
+    await f.activity("page-1");
+    await f.activity("page-2");
+    await f.activity("page-1");
+    const actor = f.audience[0]!;
+    f.service.endRevokedRunActors([{ runId: actor.runId, bindingGeneration: actor.generation }]);
+    await f.drain();
+    expect(usage.mock.calls.map(([input]) => input.tabId)).toEqual(["page-1", "page-2", "page-1"]);
   });
 
   it("records no site for a place whose page failed to load, whatever address it shows", async () => {
@@ -5029,6 +5178,7 @@ function freshService(options: {
   readonly editing?: boolean | 1 | 2 | undefined;
   readonly clipboard?: boolean | undefined;
   readonly actorMetadataTimeoutMs?: number;
+  readonly activityClock?: Clock;
   readonly keys: { readonly privateKey: KeyObject };
   readonly onWorkspaceEvent?: (event: AgentEvent) => void;
   readonly repository: MemoryBrowserRepository;
@@ -5042,6 +5192,7 @@ function freshService(options: {
     ...(options.onHistoryChanged ? { onHistoryChanged: options.onHistoryChanged } : {}),
     ...(options.onError ? { onError: options.onError } : {}),
     connectTimeoutMs: 2_000,
+    ...(options.activityClock ? { activityClock: options.activityClock } : {}),
     ...(options.actorMetadataTimeoutMs === undefined
       ? {}
       : {

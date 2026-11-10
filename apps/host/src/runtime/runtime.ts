@@ -820,21 +820,40 @@ export async function createHostRuntime(
         realtime.publishBrowserSessionsChanged(workspaceId, [ownerId], "browser.profiles"),
       tabGroups: browserTabGroups,
       workspaceTabs: new WorkspaceTabStore(database),
-      onCatalogChanged: (sessionId) => {
+      onCatalogChanged: (sessionId, workspaceId, change) => {
         void browser
           .catalogsForViewers(sessionId)
           .then((catalogs) => {
-            for (const [ownerId, catalog] of catalogs) {
-              try {
-                realtime.sendToUsers([ownerId], {
-                  type: "host.browser-tabs-changed",
-                  sessionId,
-                  catalog,
-                });
-              } catch (error) {
-                reportBrowserPresenceError(error);
-              }
-            }
+            const connected = new Set(realtime.connectedUserIds());
+            return Promise.all(
+              [...catalogs].map(async ([ownerId, catalog]) => {
+                if (!connected.has(ownerId)) return;
+                try {
+                  realtime.sendToUsers([ownerId], {
+                    type: "host.browser-tabs-changed",
+                    sessionId,
+                    catalog,
+                  });
+                  if (change?.lineageChanged) {
+                    const group = await browser
+                      .readWorkspaceTabs(ownerId, sessionId)
+                      .catch((error: unknown) => {
+                        if (!(error instanceof OpensteerError && error.code === "not_found"))
+                          reportBrowserPresenceError(error);
+                        return undefined;
+                      });
+                    realtime.publishBrowserSessionsChanged(
+                      workspaceId,
+                      [ownerId],
+                      "browser.catalog-flush",
+                      group,
+                    );
+                  }
+                } catch (error) {
+                  reportBrowserPresenceError(error);
+                }
+              }),
+            );
           })
           .catch((error: unknown) => reportBrowserPresenceError(error));
       },
@@ -1677,6 +1696,8 @@ export async function createHostRuntime(
           }
         },
         onEventRefused: async (identity, event, refusal) => {
+          // This may end the Run, and a place left pending would then be refused.
+          await browser.drainRunPlaces(event.runId);
           const events = await store.failRunForRefusedRunnerEvent({
             bindingGeneration: event.bindingGeneration,
             message: refusal.message,
