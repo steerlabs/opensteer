@@ -4,7 +4,7 @@ import type { LocalProfileBinding } from "@opensteer/protocol";
 import { BrowserSessionIdSchema } from "@opensteer/protocol";
 import { gate } from "@opensteer/shared/test-support/observation";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import type { BaseWindow } from "electron";
+import { BaseWindow } from "electron";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readdir, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -1116,6 +1116,38 @@ describe("Electron geometry lifecycle", () => {
       await browser.close();
     }
   });
+
+  it.each([
+    ["geometry lock", { x: 280, y: 52, width: 800, height: 600 }],
+    ["resize barrier", { x: 280, y: 52, width: 1000, height: 700 }],
+  ] as const)(
+    "keeps a mounted page out of its window until its %s releases placement",
+    async (wait, stage) => {
+      const { browser, native, view, serialize, drain, releaseInput } = await launch();
+      const window = new BaseWindow({}) as unknown as (typeof electron.hosts)[number];
+      const joined: Bounds[] = [];
+      window.contentView.addChildView.mockImplementation((child: typeof view) =>
+        joined.push(child.getBounds()),
+      );
+      const held = gate({ label: `mounted page ${wait}`, deadlineMs: 1000 });
+      if (wait === "geometry lock") void serialize(() => held.enter());
+      else releaseInput.mockImplementationOnce(() => held.enter());
+      const placed = vi.fn();
+      try {
+        native.mount(window as unknown as BaseWindow, stage, placed);
+        await held.entered;
+        expect(joined).toEqual([]);
+        expect(placed).not.toHaveBeenCalled();
+        held.release();
+        await drain();
+        expect(joined).toEqual([stage]);
+        expect(placed).toHaveBeenCalledWith(expect.objectContaining({ bounds: stage }));
+      } finally {
+        held.release();
+        await browser.close();
+      }
+    },
+  );
 
   it.each(["resolve", "reject"] as const)(
     "recomputes a newer live epoch when the obsolete release barrier %ss",
