@@ -1160,8 +1160,45 @@ function safeChanges(old: Graph, next: Graph) {
   return z.array(SafeChangeSummarySchema).max(100).parse(summaries);
 }
 
+/** Projects granted to a group or to any group that contains it. */
+function projectsGrantedThrough(graph: Graph, groupId: string): WorkspaceId[] {
+  const ancestors = new Set([groupId]);
+  const queue = [groupId];
+  for (const child of queue)
+    for (const edge of graph.edges)
+      if (edge.memberKind === "group" && edge.memberId === child && !ancestors.has(edge.groupId)) {
+        ancestors.add(edge.groupId);
+        queue.push(edge.groupId);
+      }
+  return graph.entries
+    .filter(
+      (entry) =>
+        entry.targetKind === "project" &&
+        entry.subjectKind === "group" &&
+        ancestors.has(entry.subjectId),
+    )
+    .map((entry) => entry.targetId as WorkspaceId);
+}
+
 function auditScope(old: Graph, next: Graph, input: AccessMutationInput, pairs: readonly Pair[]) {
+  // Scope follows every source that changed, not only effective access: removing a
+  // suspended person revokes entries and group memberships without one transition.
   const projectIds = new Set(pairs.map((pair) => pair.workspaceId));
+  for (const [from, to] of [
+    [old, next],
+    [next, old],
+  ] as const) {
+    const kept = new Set(to.entries.map((entry) => entry.id));
+    for (const entry of from.entries)
+      if (entry.targetKind === "project" && !kept.has(entry.id))
+        projectIds.add(entry.targetId as WorkspaceId);
+    const edgeKey = (edge: Graph["edges"][number]) =>
+      `${edge.groupId}/${edge.memberKind}/${edge.memberId}`;
+    const keptEdges = new Set(to.edges.map(edgeKey));
+    for (const edge of from.edges)
+      if (!keptEdges.has(edgeKey(edge)))
+        for (const id of projectsGrantedThrough(from, edge.groupId)) projectIds.add(id);
+  }
   let target: AuditItem["target"] = null;
   for (const change of input.changes) {
     if (change.kind === "member") {
@@ -1179,24 +1216,8 @@ function auditScope(old: Graph, next: Graph, input: AccessMutationInput, pairs: 
         id: groupId,
         name: group?.name ?? (change.kind === "create-group" ? change.name : "Group"),
       };
-      for (const graph of [old, next]) {
-        const ancestors = new Set([groupId]);
-        const queue = [groupId];
-        for (const child of queue)
-          for (const edge of graph.edges) {
-            if (
-              edge.memberKind === "group" &&
-              edge.memberId === child &&
-              !ancestors.has(edge.groupId)
-            ) {
-              ancestors.add(edge.groupId);
-              queue.push(edge.groupId);
-            }
-          }
-        for (const entry of graph.entries)
-          if (entry.subjectKind === "group" && ancestors.has(entry.subjectId))
-            projectIds.add(entry.targetId as WorkspaceId);
-      }
+      for (const graph of [old, next])
+        for (const id of projectsGrantedThrough(graph, groupId)) projectIds.add(id);
       continue;
     }
     const workspaceId =
