@@ -12,7 +12,6 @@ import {
   deriveSurface,
   isHostRefusal,
   mutationIdempotencyKey,
-  pageSiteLabel,
   type HostClient,
   type UsageLimitNotice,
 } from "@opensteer/client/host";
@@ -39,7 +38,6 @@ import {
 import {
   AccessibilityInfo,
   Alert,
-  Image,
   Pressable,
   StyleSheet,
   TextInput,
@@ -267,18 +265,6 @@ export function Composer(props: {
   const [declinedPage, setDeclinedPage] = useState<string | null>(null);
   const includedPage =
     draftPage ?? (offeredKey === null || offeredKey === declinedPage ? null : offeredPage);
-  const pageSessionId = includedPage?.sessionId ?? null;
-  const pageTabId = includedPage?.tabId ?? null;
-  const pageFavicon = useHostSelector(
-    hostClient,
-    useCallback(
-      (snapshot) =>
-        snapshot.browserSessions
-          .find(({ id }) => id === pageSessionId)
-          ?.tabs.find(({ id }) => id === pageTabId)?.favicon ?? null,
-      [pageSessionId, pageTabId],
-    ),
-  );
 
   // A Host with quiet-tasks-v1 reopens a Done task when it is written to.
   const done = useHostSelector(hostClient, (snapshot) =>
@@ -897,8 +883,8 @@ export function Composer(props: {
       ) : (
         <ComposerBar
           shape={view.shape}
-          // Open, the page stands above the words; at rest it is a chip beside
-          // the `+`, so an empty bar keeps the capsule's height.
+          // The page stands above the words once the bar opens. At rest the
+          // capsule's one line belongs to the words, and the placeholder names it.
           {...(pageInBar === null || view.shape !== "rounded"
             ? {}
             : {
@@ -908,22 +894,15 @@ export function Composer(props: {
             ? {}
             : {
                 leading: (
-                  <View style={styles.leading}>
-                    <NativeMenu
-                      accessibilityHint="Change the model, and what else can be done here"
-                      accessibilityLabel="Thread actions"
-                      onPresent={hold}
-                      onSettle={settle}
-                      options={menuOptions}
-                    >
-                      <ComposerGlyph icon="plus" />
-                    </NativeMenu>
-                    {pageInBar === null || view.shape === "rounded" ? null : (
-                      <Animated.View entering={appear} exiting={exit}>
-                        <PageChip favicon={pageFavicon} onRemove={removePage} page={pageInBar} />
-                      </Animated.View>
-                    )}
-                  </View>
+                  <NativeMenu
+                    accessibilityHint="Change the model, and what else can be done here"
+                    accessibilityLabel="Thread actions"
+                    onPresent={hold}
+                    onSettle={settle}
+                    options={menuOptions}
+                  >
+                    <ComposerGlyph icon="plus" />
+                  </NativeMenu>
                 ),
               })}
           field={
@@ -963,13 +942,7 @@ export function Composer(props: {
                   // more: iOS gives no dismissal event for a native menu, and this
                   // is the moment the bar can stop holding its shape for one.
                   onTouchStart={settle}
-                  placeholder={
-                    pageInBar === null
-                      ? props.placeholder
-                      : view.shape === "rounded"
-                        ? "Ask about this page…"
-                        : "Ask…"
-                  }
+                  placeholder={pageInBar === null ? props.placeholder : "Ask about this page…"}
                   placeholderTextColor={color.muted}
                   ref={input}
                   selectionColor={color.ember}
@@ -1153,57 +1126,6 @@ function IncludedPage(props: {
 }
 
 /**
- * The page the next message includes, as the resting bar carries it: its icon
- * and site in a chip the height of a control. A tap offers to leave it out;
- * the menu holds no row of the bar, so the capsule stays as it is under it.
- */
-function PageChip(props: {
-  readonly favicon: string | null;
-  readonly onRemove: () => void;
-  readonly page: BrowserPageContentPart;
-}): ReactNode {
-  const title = props.page.title || "This page";
-  const site = pageSiteLabel(props.page.url) ?? title;
-  return (
-    <NativeMenu
-      accessibilityHint="Shows how to leave this page out of your message"
-      accessibilityLabel={`${title}. This page is included with your message`}
-      options={[
-        {
-          destructive: true,
-          icon: "xmark.circle",
-          id: "remove-page",
-          label: "Remove page",
-          onPress: props.onRemove,
-        },
-      ]}
-      title={title}
-      triggerStyle={styles.chipTarget}
-    >
-      <View style={styles.chip}>
-        {props.favicon === null ? (
-          <Symbol name="globe" size={12} tint={color.textSoft} />
-        ) : (
-          <Image
-            accessibilityIgnoresInvertColors
-            source={{ uri: props.favicon }}
-            style={styles.favicon}
-          />
-        )}
-        <AppText
-          maxFontSizeMultiplier={controlFontScaleLimit}
-          numberOfLines={1}
-          role="caption"
-          style={styles.pageTitle}
-        >
-          {site}
-        </AppText>
-      </View>
-    </NativeMenu>
-  );
-}
-
-/**
  * The field's padding, the same above and below. One line in the system font's
  * own height — about 20 points at the default size — plus this on each side
  * fills the 36-point lane, so a wrapped last line stays level with the controls
@@ -1282,20 +1204,6 @@ const styles = StyleSheet.create({
     paddingLeft: space[8] - 1,
   },
   pageRemove: { alignItems: "center", height: 26, justifyContent: "center", width: 26 },
-  chip: {
-    ...material.control,
-    alignItems: "center",
-    borderRadius: radius.full,
-    flexDirection: "row",
-    gap: space[4],
-    maxWidth: 112,
-    minHeight: 28,
-    paddingHorizontal: space[8],
-  },
-  // A control's full height, so the chip is as easy to hit as the `+` beside it.
-  chipTarget: { justifyContent: "center", minHeight: touchTarget },
-  favicon: { borderRadius: 3, height: 14, width: 14 },
-  leading: { alignItems: "center", flexDirection: "row" },
   pageTitle: { flexShrink: 1 },
   spacer: { flex: 1, minHeight: composerLaneHeight },
 });

@@ -242,6 +242,7 @@ vi.mock("react-native", async () => {
       }) => void;
       readonly accessibilityLabel?: string;
       readonly onChangeText?: (text: string) => void;
+      readonly onFocus?: () => void;
       readonly placeholder?: string;
       readonly value?: string;
     }) => {
@@ -256,6 +257,7 @@ vi.mock("react-native", async () => {
         <textarea
           aria-label={props.accessibilityLabel}
           onChange={(event) => props.onChangeText?.(event.currentTarget.value)}
+          onFocus={props.onFocus}
           onSelect={(event) =>
             props.onSelectionChange?.({
               nativeEvent: {
@@ -1277,6 +1279,14 @@ async function press(container: HTMLElement, name: string): Promise<void> {
   await settle();
 }
 
+/** A tap in the field, which opens the bar. */
+async function focus(container: HTMLElement): Promise<void> {
+  const field = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]');
+  if (field === null) throw new Error("No message field");
+  await act(async () => field.focus());
+  await settle();
+}
+
 async function type(container: HTMLElement, label: string, words: string): Promise<void> {
   const field = container.querySelector<HTMLTextAreaElement>(`textarea[aria-label="${label}"]`);
   if (field === null) throw new Error(`No field named ${label}`);
@@ -1405,10 +1415,12 @@ describe("a conversation with a page", () => {
     expect(container.querySelector('[aria-label="Docked request"]')?.textContent).toBe(
       "Review this approval",
     );
-    expect(pageChip(container)?.textContent).toBe("example.com");
+    // At rest the bar's one line is the words'; the page shows once the bar opens.
+    expect(pageChip(container)).toBeNull();
     expect(text(container)).not.toContain("Research page");
-    await type(container, "Message", "Explain this");
+    await focus(container);
     expect(pageChip(container)?.textContent).toBe("Research page");
+    await type(container, "Message", "Explain this");
     await press(container, "Send message");
     expect(host.dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1455,8 +1467,8 @@ describe("a conversation with a page", () => {
     const { container, drafts, root } = await mount(host, chatId, { draftPage: included });
     harness.activeHost = host.client;
     await act(async () => root.render(<HomeScreen route={{ params: { deploymentId } }} />));
-    expect(pageChip(container)).not.toBeNull();
     await type(container, "Message", "Explain this page");
+    expect(pageChip(container)).not.toBeNull();
     expect(host.dispatch).not.toHaveBeenCalled();
     await press(container, "Send message");
     expect(host.dispatch).toHaveBeenCalledWith(
@@ -1488,8 +1500,8 @@ describe("a conversation with a page", () => {
     const { container, root, pane } = await mount(host, workId, { withPage: { page: included } });
     expect(activate).toHaveBeenCalledWith(workId);
     expect(markRead).toHaveBeenCalled();
-    await press(container, "Remove page");
     await type(container, "Message", "Half a thought");
+    await press(container, "Remove page");
 
     // The window narrows: the pane stays mounted, out of view.
     activate.mockClear();
@@ -1567,13 +1579,14 @@ describe("a conversation with a page", () => {
     const files = new MemoryPrivateFilesystem();
     const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
     const first = await mount(host, workId, { draftPage: included, files });
+    await focus(first.container);
     expect(pageChip(first.container)).not.toBeNull();
     await press(first.container, "Remove page");
     expect(pageChip(first.container)).toBeNull();
     await act(async () => first.root.render(<div />));
     const { container } = await mount(host, workId, { files });
-    expect(pageChip(container)).toBeNull();
     await type(container, "Message", "Nothing attached");
+    expect(pageChip(container)).toBeNull();
     await press(container, "Send message");
     expect(host.dispatch).toHaveBeenCalledWith(
       expect.objectContaining({

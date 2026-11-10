@@ -498,12 +498,20 @@ export function derivePagePair(input: PairInput): {
     };
   }
   const span = xs[0]!;
-  if (room(span, bounds.width, insets.left, insets.right) < pageMinimumWidth + conversationNeeded)
-    return stackedRegion;
-  const conversationShare = Math.min(
-    Math.max(length(span) * 0.4, conversation),
-    scaled(conversationMaximumWidth, fontScale),
-  );
+  const free = room(span, bounds.width, insets.left, insets.right);
+  if (free < pageMinimumWidth + conversationNeeded) return stackedRegion;
+  // The conversation's share is of the room it can use; the inset at its own
+  // edge (the vertical bar, a notch) comes on top, or it would eat the share.
+  const conversationEdge = rtl
+    ? span.start <= 0
+      ? insets.left
+      : 0
+    : span.end >= bounds.width
+      ? insets.right
+      : 0;
+  const conversationShare =
+    Math.min(Math.max(free * 0.4, conversation), scaled(conversationMaximumWidth, fontScale)) +
+    conversationEdge;
   return {
     alone,
     pair: { gap: 0, mode: "side", pageWidth: Math.round(length(span) - conversationShare) },
