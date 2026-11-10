@@ -865,6 +865,76 @@ describeStore("dormant Project access", (it) => {
         action: "manage",
       }),
     ).toMatchObject({ allowed: true, membershipGeneration: 1 });
+
+    // Handing a new Project to someone else in the same list still records the creator's entry.
+    const successor = await access.member("Successor");
+    const handedOver = createId("workspace");
+    const creatorEntry = randomUUID();
+    const successorEntry = randomUUID();
+    await access.mutate([
+      {
+        kind: "create-project",
+        workspaceId: handedOver,
+        entryId: creatorEntry,
+        name: "Handed-over Project",
+        color: "blue",
+        backing: {
+          kind: "local-directory",
+          generation: 1,
+          bindingId: createId("workspaceBinding"),
+          ownerEnvironmentId: access.environmentId,
+          storageAuthorityId: createId("storageAuthority"),
+        },
+      },
+      {
+        kind: "grant",
+        id: successorEntry,
+        subject: { kind: "person", userId: successor },
+        target: { kind: "project", workspaceId: handedOver },
+        level: "manage",
+      },
+      { kind: "revoke", entryId: creatorEntry },
+    ]);
+    expect(
+      (
+        await storeFixture.database
+          .selectFrom("accessEntries")
+          .select(["id", "revokedBy"])
+          .where("targetId", "=", handedOver)
+          .execute()
+      ).sort((a, b) => (a.id < b.id ? -1 : 1)),
+    ).toEqual(
+      [
+        { id: creatorEntry, revokedBy: access.userId },
+        { id: successorEntry, revokedBy: null },
+      ].sort((a, b) => (a.id < b.id ? -1 : 1)),
+    );
+  });
+
+  it("returns a committed self-revoke's result when its command is retried", async ({
+    storeFixture,
+  }) => {
+    const access = await setup(storeFixture);
+    const manager = await access.member("Manager");
+    const entryId = randomUUID();
+    await access.mutate({
+      kind: "grant",
+      id: entryId,
+      subject: { kind: "person", userId: manager },
+      target: { kind: "project", workspaceId: access.workspace.id },
+      level: "manage",
+    });
+    const command = {
+      actor: { userId: manager },
+      expectedRevision: access.revision(),
+      commandIdentity: createId("command"),
+      changes: [{ kind: "revoke", entryId }],
+    } as const;
+    const committed = await mutateAccess(storeFixture.database, command);
+    expect(committed.transitions).toMatchObject([{ userId: manager, state: "revoked" }]);
+    // The response was lost: the manager can no longer manage, and the retry still answers.
+    expect(await mutateAccess(storeFixture.database, command)).toEqual(committed);
+    expect(await access.allowed(manager)).toEqual({ allowed: false });
   });
 
   const mutationKinds = [
