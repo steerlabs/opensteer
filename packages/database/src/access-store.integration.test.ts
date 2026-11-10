@@ -643,17 +643,10 @@ describeStore("dormant Project access", (it) => {
               .values(rows.slice(offset, offset + 1000))
               .execute();
         });
-        const fenced = Promise.withResolvers<void>();
         let statements = 0;
         const measured = measuredFixture.database.withPlugin({
           transformQuery(args) {
             statements++;
-            if (
-              args.node.kind === "SelectQueryNode" &&
-              JSON.stringify(args.node).includes('"name":"workspaces"') &&
-              JSON.stringify(args.node).includes("ForNoKeyUpdate")
-            )
-              fenced.resolve();
             return args.node;
           },
           async transformResult(args) {
@@ -662,7 +655,7 @@ describeStore("dormant Project access", (it) => {
         });
         const revision = access.revision();
         const started = performance.now();
-        const mutation = mutateAccess(measured, {
+        const result = await mutateAccess(measured, {
           actor: { userId: access.userId },
           commandIdentity: createId("command"),
           expectedRevision: revision,
@@ -671,25 +664,7 @@ describeStore("dormant Project access", (it) => {
               ? [{ kind: "delete-group", groupId }]
               : [{ kind: "member", userId: users[0]!, memberState: "suspended" }],
         });
-        await withTimeout(fenced.promise, 3000, {
-          timeoutError: () => new Error("Measured writer never acquired its authority fence"),
-        });
-        const waiting = performance.now();
-        const competitor = mutateAccess(measuredFixture.database, {
-          actor: { userId: access.userId },
-          commandIdentity: createId("command"),
-          expectedRevision: revision + 1,
-          changes: [
-            { kind: "create-group", id: randomUUID(), name: `Competing writer ${projectCount}` },
-          ],
-        });
-        const competitorResult = competitor.then(
-          () => ({ elapsed: performance.now() - waiting, accepted: true }),
-          () => ({ elapsed: performance.now() - waiting, accepted: false }),
-        );
-        const result = await mutation;
         const elapsed = performance.now() - started;
-        const waited = await competitorResult;
         const pairs = operation === "delete-group" ? peopleCount * projectCount : projectCount;
         expect(result.transitions).toHaveLength(pairs);
         expect(
@@ -698,13 +673,135 @@ describeStore("dormant Project access", (it) => {
           ),
         ).toBe(true);
         console.info(
-          `access maximum: operation=${operation} pairs=${pairs} statements=${statements} elapsedMs=${elapsed.toFixed(2)} competingMs=${waited.elapsed.toFixed(2)} competingAccepted=${waited.accepted}`,
+          `access maximum: operation=${operation} pairs=${pairs} statements=${statements} elapsedMs=${elapsed.toFixed(2)}`,
         );
         counts.push(statements);
-        expect(waited.accepted).toBe(true);
       }
       expect(counts[1]).toBe(counts[0]);
     });
+
+  it("keeps competing writes atomic on serialized success or retryable busy", async ({
+    storeFixture,
+  }) => {
+    const access = await setup(storeFixture);
+    const userId = await access.member();
+    const { database } = storeFixture;
+    const held = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const contenderReachedLock = Promise.withResolvers<void>();
+    const fences = new Set<unknown>();
+    const firstDatabase = database.withPlugin({
+      transformQuery(args) {
+        const node = JSON.stringify(args.node);
+        if (
+          args.node.kind === "SelectQueryNode" &&
+          node.includes('"name":"workspaces"') &&
+          node.includes("ForNoKeyUpdate")
+        )
+          fences.add(args.queryId);
+        return args.node;
+      },
+      async transformResult(args) {
+        if (fences.delete(args.queryId)) {
+          held.resolve();
+          await withTimeout(release.promise, 3000, {
+            timeoutError: () => new Error("First access writer was never released"),
+          });
+        }
+        return args.result;
+      },
+    });
+    const secondDatabase = database.withPlugin({
+      transformQuery(args) {
+        if (
+          database
+            .getExecutor()
+            .compileQuery(args.node, args.queryId)
+            .sql.includes("pg_advisory_xact_lock")
+        )
+          contenderReachedLock.resolve();
+        return args.node;
+      },
+      async transformResult(args) {
+        return args.result;
+      },
+    });
+    const commandIds = [createId("command"), createId("command")];
+    const groupIds = [randomUUID(), randomUUID()];
+    const entryIds = [randomUUID(), randomUUID()];
+    const write = (observed: Kysely<DatabaseSchema>, position: number) =>
+      mutateAccess(observed, {
+        actor: { userId: access.userId },
+        expectedRevision: access.revision() + position,
+        commandIdentity: commandIds[position]!,
+        changes: [
+          { kind: "create-group", id: groupIds[position]!, name: `Contender ${position}` },
+          {
+            kind: "grant",
+            id: entryIds[position]!,
+            subject: { kind: "person", userId },
+            target: { kind: "project", workspaceId: access.workspace.id },
+            level: position === 0 ? "use" : "manage",
+          },
+        ],
+      });
+    const first = Promise.allSettled([write(firstDatabase, 0)]);
+    let second: typeof first | undefined;
+    try {
+      await withTimeout(held.promise, 3000, {
+        timeoutError: () => new Error("First writer never held its Workspace fence"),
+      });
+      second = Promise.allSettled([write(secondDatabase, 1)]);
+      await withTimeout(contenderReachedLock.promise, 3000, {
+        timeoutError: () => new Error("Contender never attempted the writer lock"),
+      });
+    } finally {
+      release.resolve();
+      await first;
+      await second;
+    }
+    expect((await first)[0]!.status).toBe("fulfilled");
+    const outcome = (await second!)[0]!;
+    const committed = outcome.status === "fulfilled";
+    if (!committed)
+      expect(outcome.reason).toMatchObject({
+        code: "conflict",
+        retryable: true,
+        message: "Access writer is busy",
+      });
+    const count = committed ? 2 : 1;
+    expect(
+      await database.selectFrom("accessGroups").select("id").where("id", "in", groupIds).execute(),
+    ).toHaveLength(count);
+    expect(
+      await database.selectFrom("accessEntries").select("id").where("id", "in", entryIds).execute(),
+    ).toHaveLength(count);
+    expect(
+      await database
+        .selectFrom("securityAudit")
+        .select("requestId")
+        .where("requestId", "in", commandIds)
+        .execute(),
+    ).toHaveLength(count);
+    expect(
+      Number(
+        (await database.selectFrom("accessState").select("revision").executeTakeFirstOrThrow())
+          .revision,
+      ),
+    ).toBe(access.revision() + count);
+    expect(await access.membership(userId)).toMatchObject({
+      state: "active",
+      role: committed ? "owner" : "collaborator",
+      generation: String(count),
+    });
+    expect(
+      await database
+        .selectFrom("securityEffects")
+        .select("id")
+        .where("causeId", "in", commandIds)
+        .execute(),
+    ).toHaveLength(committed ? 6 : 0);
+  });
   it("does not activate authority writers on an existing Deployment", async ({ storeFixture }) => {
     const { database, createRunFixture } = storeFixture;
     const fixture = await createRunFixture("access-legacy", null, "project");
