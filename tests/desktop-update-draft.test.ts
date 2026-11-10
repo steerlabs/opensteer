@@ -273,7 +273,10 @@ test("the older fixture is an explicit input, verified before the N+1 build", as
           copyFileSync(path.join(published, name), path.join(dir, name));
         return "";
       }
-      return JSON.stringify([[release]]);
+      if (args[1] === "graphql")
+        return args.includes(`tag=${release.tag_name}`) ? String(release.id) : "";
+      expect(args.at(-1)).toBe(`repos/steerlabs/opensteer/releases/${release.id}`);
+      return JSON.stringify(release);
     };
     const fromTag = await intakeOlder(work, "v1.2.2-insider", n, fake);
     expect(fromTag).toMatchObject({ version: "1.2.2", revision: "c".repeat(40) });
