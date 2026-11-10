@@ -816,6 +816,24 @@ export function BrowserPage(props: {
   }));
 
   const label = site === null ? title : `${title}, ${site}`;
+  const pageDialog =
+    dialog === null ? null : (
+      <PageDialog
+        channelReady={channelReady}
+        dialog={dialog}
+        onAnswer={(accept) =>
+          send({
+            type: "dialog.respond",
+            accept,
+            dialogId: dialog.id,
+            ...(accept && dialog.type === "prompt" ? { promptText } : {}),
+          })
+        }
+        onPrompt={(text) => setPrompt({ id: dialog.id, text })}
+        promptText={promptText}
+        site={site}
+      />
+    );
   if (local)
     return (
       <View
@@ -848,6 +866,7 @@ export function BrowserPage(props: {
               style={styles.dim}
             />
           ) : null}
+          {pageDialog}
           {floats && top ? (
             <PageEdge
               bar={addressOpen ? editor : bar}
@@ -1035,23 +1054,7 @@ export function BrowserPage(props: {
                 ) : null}
               </View>
             )}
-            {dialog === null ? null : (
-              <PageDialog
-                channelReady={channelReady}
-                dialog={dialog}
-                onAnswer={(accept) =>
-                  send({
-                    type: "dialog.respond",
-                    accept,
-                    dialogId: dialog.id,
-                    ...(accept && dialog.type === "prompt" ? { promptText } : {}),
-                  })
-                }
-                onPrompt={(text) => setPrompt({ id: dialog.id, text })}
-                promptText={promptText}
-                site={site}
-              />
-            )}
+            {pageDialog}
             {signingIn && signInSite !== null && tab !== undefined ? (
               <View style={[styles.card, styles.bottom, { bottom: space[12] + status.height }]}>
                 <View style={styles.row}>

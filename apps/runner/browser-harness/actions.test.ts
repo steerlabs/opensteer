@@ -172,6 +172,25 @@ describe("actions Harness conformance", () => {
     ]);
   });
 
+  it("wakes a sleeping tab before its first action, however the tab was chosen", async () => {
+    const asleep = { ...binding, state: "suspended" as const };
+    const chosen = (socket: Socket) =>
+      socket.requests
+        .filter((request) => request.action.type.startsWith("surface."))
+        .map((request) => request.action.type);
+    const only = fixture();
+    only.socket.tabs = [asleep];
+    await only.harness.pageInfo();
+    expect(chosen(only.socket)).toEqual(["surface.resume"]);
+    await only.harness.pageInfo();
+    expect(chosen(only.socket)).toEqual(["surface.resume"]);
+
+    const named = new Socket();
+    named.tabs = [asleep];
+    await createActionsHarness(new ActionsClient(named, sessionId), asleep.surfaceId).pageInfo();
+    expect(chosen(named)).toEqual(["surface.resume"]);
+  });
+
   it("never sends text after an unsuccessful focus or replays an unknown focus outcome", async () => {
     for (const code of ["outcome-unknown", "stale-document", "not-actionable"] as const) {
       const { socket, harness } = fixture();

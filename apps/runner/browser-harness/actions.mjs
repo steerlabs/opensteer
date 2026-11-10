@@ -336,6 +336,8 @@ export class ActionsClient {
 export function createActionsHarness(client, initialTargetId) {
   let selected = initialTargetId;
   const bindings = new Map();
+  // Tabs this attachment claimed; listing a tab does not make it ours or wake it.
+  const claimed = new Set();
   const closed = new Set();
   const dialogs = new Map();
   let inventory;
@@ -344,6 +346,7 @@ export function createActionsHarness(client, initialTargetId) {
     if (event.type === "surface.closed") {
       closed.add(event.surfaceId);
       bindings.delete(event.surfaceId);
+      claimed.delete(event.surfaceId);
     }
     if (event.type === "dialog.changed") dialogs.set(event.surfaceId, event.dialog);
   });
@@ -367,11 +370,20 @@ export function createActionsHarness(client, initialTargetId) {
         );
       selected = inventory[0].surfaceId;
     }
-    if (!bindings.has(selected)) {
-      const result = await client.request({ surfaceId: selected }, { type: "surface.attach" });
-      bindings.set(selected, result.binding);
-    }
+    if (!claimed.has(selected)) await claim(selected);
     return bindings.get(selected);
+  };
+  const claim = async (surfaceId) => {
+    if (!bindings.has(surfaceId)) await listTabs();
+    const result = await client.request(
+      { surfaceId },
+      {
+        type: bindings.get(surfaceId)?.state === "suspended" ? "surface.resume" : "surface.attach",
+      },
+    );
+    bindings.set(surfaceId, result.binding);
+    claimed.add(surfaceId);
+    return result.binding;
   };
   const sendOn = async (binding, action, options = {}) => {
     try {
@@ -386,7 +398,10 @@ export function createActionsHarness(client, initialTargetId) {
           .request({ surfaceId: binding.surfaceId }, { type: "surface.attach" })
           .catch(() => null);
         if (fresh) bindings.set(binding.surfaceId, fresh.binding);
-        else bindings.delete(binding.surfaceId);
+        else {
+          bindings.delete(binding.surfaceId);
+          claimed.delete(binding.surfaceId);
+        }
       }
       throw error;
     }
@@ -699,13 +714,9 @@ export function createActionsHarness(client, initialTargetId) {
       const known = bindings.get(surfaceId);
       if (!known || closed.has(surfaceId))
         throw new BrowserActionError("target-closed", "That exact tab is no longer in the session");
-      const result = await client.request(
-        { surfaceId },
-        { type: known.state === "suspended" ? "surface.resume" : "surface.attach" },
-      );
-      bindings.set(surfaceId, result.binding);
+      const claimedBinding = await claim(surfaceId);
       selected = surfaceId;
-      return publicTab(result.binding);
+      return publicTab(claimedBinding);
     },
     newTab: async (url = "about:blank") => {
       const result = await client.request(
@@ -716,6 +727,7 @@ export function createActionsHarness(client, initialTargetId) {
         },
       );
       bindings.set(result.binding.surfaceId, result.binding);
+      claimed.add(result.binding.surfaceId);
       selected = result.binding.surfaceId;
       return selected;
     },
@@ -727,6 +739,7 @@ export function createActionsHarness(client, initialTargetId) {
         throw new BrowserActionError("target-closed", "Read listTabs before closing that tab");
       const result = await sendOn(binding, { type: "surface.close" });
       bindings.delete(binding.surfaceId);
+      claimed.delete(binding.surfaceId);
       closed.add(binding.surfaceId);
       return { success: result.outcome === "closed" || result.outcome === "already-closed" };
     },

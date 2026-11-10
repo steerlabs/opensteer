@@ -2594,7 +2594,7 @@ describe("real Chromium pages follow the person's view", () => {
             : [],
         );
     const line =
-      '[opensteer] This page shows a confirm dialog ("Delete this listing?"); the page answers no other command until the dialog is answered with Page.handleJavaScriptDialog.';
+      '[opensteer] This page shows a confirm dialog ("Delete this listing?"); the page answers no other command until the dialog is answered with respondDialog({ accept: true or false }).';
 
     // In the run whose click opened it, as Puppeteer's page.on("dialog") answers.
     await session.agent("Page.enable", {}, page);
