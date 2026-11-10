@@ -45,26 +45,52 @@ function scramVerifier(password: string): string {
 }
 
 /**
- * The two connections agent SQL runs on. Only the server's address comes from
- * the Host's connection string: nothing in its query (a user, a password,
- * startup options) can change who these connections log in as.
+ * Where and how a knowledge connection connects. The server and database are
+ * resolved exactly as pg resolves the Host's own connection, environment
+ * included; who connects, and every startup parameter, are fixed here.
  */
-export function createKnowledgeExecutorPool(
+export function knowledgeExecutorClientConfig(
   hostConnectionString: string,
   credentials: KnowledgeExecutorCredentials,
-): pg.Pool {
-  const url = new URL(hostConnectionString);
-  // pg-pool awaits onConnect and drops the connection when it rejects; its types say void.
-  const options: pg.PoolConfig & { onConnect(client: pg.PoolClient): Promise<void> } = {
-    host: decodeURIComponent(url.hostname).replace(/^\[(.*)\]$/u, "$1"),
-    port: url.port ? Number(url.port) : 5432,
-    database: decodeURIComponent(url.pathname.slice(1)),
+): pg.ClientConfig & { readonly Client: typeof pg.Client } {
+  const host = new pg.Client({ connectionString: hostConnectionString });
+  if (host.ssl)
+    throw new Error(
+      "The knowledge trial does not support an encrypted database connection yet; turn OPENSTEER_KNOWLEDGE off or connect the Host without TLS",
+    );
+  return {
+    Client: KnowledgeClient,
+    host: host.host,
+    port: host.port,
+    database: host.database,
     user: credentials.role,
     password: credentials.password,
     ssl: false,
     stream: () => new FramedSocket(),
-    application_name: "opensteer-knowledge",
+    client_encoding: "UTF8",
     connectionTimeoutMillis: 5_000,
+  };
+}
+
+/** Sends only the login, database and its own name at startup: no options, replication or timeouts. */
+class KnowledgeClient extends pg.Client {
+  getStartupConf(): Record<string, string> {
+    return {
+      user: this.user ?? "",
+      database: this.database ?? "",
+      application_name: "opensteer-knowledge",
+    };
+  }
+}
+
+/** The two connections agent SQL runs on, logged in as the restricted role and nothing else. */
+export function createKnowledgeExecutorPool(
+  hostConnectionString: string,
+  credentials: KnowledgeExecutorCredentials,
+): pg.Pool {
+  // pg-pool awaits onConnect and drops the connection when it rejects; its types say void.
+  const options: pg.PoolConfig & { onConnect(client: pg.PoolClient): Promise<void> } = {
+    ...knowledgeExecutorClientConfig(hostConnectionString, credentials),
     idleTimeoutMillis: 30_000,
     max: 2,
     async onConnect(client) {

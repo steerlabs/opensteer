@@ -437,15 +437,29 @@ integration("knowledge storage", () => {
     carrying.searchParams.set("user", user);
     carrying.searchParams.set("password", password);
     carrying.searchParams.set("options", `-c role=${user}`);
+    vi.stubEnv("PGOPTIONS", "-c work_mem=64MB -c standard_conforming_strings=off");
     const pool = createKnowledgeExecutorPool(carrying.toString(), context.credentials);
     try {
-      const { rows } = await pool.query<{ session: string; current: string }>(
-        "select session_user::text as session, current_user::text as current",
+      const { rows } = await pool.query<{
+        session: string;
+        current: string;
+        work_mem: string;
+        strings: string;
+      }>(
+        `select session_user::text as session, current_user::text as current,
+          current_setting('work_mem') as work_mem,
+          current_setting('standard_conforming_strings') as strings`,
       );
       expect(rows).toEqual([
-        { session: context.credentials.role, current: context.credentials.role },
+        {
+          session: context.credentials.role,
+          current: context.credentials.role,
+          work_mem: "4MB",
+          strings: "on",
+        },
       ]);
     } finally {
+      vi.unstubAllEnvs();
       await pool.end();
     }
     const superuser = createKnowledgeExecutorPool(context.url, { role: user, password });
