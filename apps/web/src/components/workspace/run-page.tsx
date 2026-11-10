@@ -247,9 +247,7 @@ export const RunPage = memo(function RunPage({
         >
           {hasPlacePicture(place) ? (
             <span
-              className={
-                live ? "run-page__picture" : "run-page__picture run-page__picture--still"
-              }
+              className={live ? "run-page__picture" : "run-page__picture run-page__picture--still"}
             >
               <PlacePicture
                 enabled
@@ -268,9 +266,7 @@ export const RunPage = memo(function RunPage({
           <>
             <span className="run-page__words">
               <span className="run-page__title">{place.title}</span>
-              {site && site !== place.title ? (
-                <span className="run-page__site">{site}</span>
-              ) : null}
+              {site && site !== place.title ? <span className="run-page__site">{site}</span> : null}
             </span>
             <Icon className="run-page__chevron" name="chevron-right" />
           </>
