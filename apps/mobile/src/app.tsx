@@ -37,12 +37,12 @@ import { AppState, Platform, StyleSheet, View } from "react-native";
 import { NavigationContainerRefContext, type InitialState } from "@react-navigation/native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
-import type { MockHostClient } from "@opensteer/client/mock";
+import { mockIphoneRunnerId, type MockHostClient } from "@opensteer/client/mock";
 import { createNetworkHostPort } from "./client/host-port.js";
 import { createMockHostPort } from "./client/mock-host-port.js";
 import { OpenComputer } from "./screens/open-computer.js";
 import { MobileClient, operationDetail } from "./client/mobile-client.js";
-import { mockDeploymentConnections } from "./client/mock-mode.js";
+import { mockDeploymentConnections, mockDeploymentId } from "./client/mock-mode.js";
 import { readMobileConfiguration } from "./config.js";
 import { resolveApplicationLink, routeComputerLink, routePairingLink } from "./links.js";
 import { Navigation, navigationTheme } from "./navigation.js";
@@ -168,8 +168,11 @@ function mobileClient(): MobileRoot {
   if (configuration.mock) {
     fakeIphone = createFakeIphoneApps({
       host: (deploymentId) => mockHosts.get(deploymentId) ?? null,
+      runnerId: mockIphoneRunnerId,
       supported: Platform.OS === "ios",
     });
+    // The mock world's own iPhone, which lends a browser there, is this phone.
+    fakeIphone.device.enrolledTo({ deploymentId: mockDeploymentId, name: "Alex's iPhone" });
   }
   const iphone = new IphoneAppsController({
     bridge: fakeIphone?.bridge ?? androidPhoneBridge ?? iphoneApps,

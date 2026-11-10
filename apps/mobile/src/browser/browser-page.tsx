@@ -33,7 +33,6 @@ import {
   Alert,
   I18nManager,
   Linking,
-  Platform,
   Pressable,
   Share,
   StyleSheet,
@@ -88,6 +87,7 @@ import { pageSite, viewedPage } from "./surface-route.js";
 import { ToolbarAsk, ToolbarLeave, useNativeBarAway } from "./place-bar.js";
 import { PlaceVoiceDock, usePlaceStatus } from "./place-foot.js";
 import { Toolbar, ToolbarButton, ToolbarCapsule, ToolbarMenu } from "./toolbar.js";
+import { systemBrowserLabel } from "./system-browser.js";
 
 /** The shape a page takes before its first picture says otherwise. */
 const defaultPageAspect = 16 / 9;
@@ -613,7 +613,7 @@ export function BrowserPage(props: {
           {
             icon: "safari",
             id: "open",
-            label: Platform.OS === "ios" ? "Open in Safari" : "Open in browser",
+            label: systemBrowserLabel,
             onPress: () => void Linking.openURL(pageUrl).catch(noop),
           },
         ],
