@@ -342,7 +342,7 @@ export class NodeDetailStore {
       if (watch !== this.#current || epoch !== watch.epoch) return;
       watch.nodes = nodes;
       let page = firstPage;
-      do {
+      for (;;) {
         if (before)
           page = await this.#options.read({
             threadId: watch.snapshot.threadId,
@@ -365,7 +365,7 @@ export class NodeDetailStore {
         if (cursors.has(next)) throw new Error("Node history did not advance.");
         cursors.add(next);
         before = next;
-      } while (true);
+      }
       for (const event of received) watch.events.set(event.eventId, event);
       for (const event of watch.buffered) watch.events.set(event.eventId, event);
       watch.buffered.length = 0;

@@ -3,6 +3,7 @@ import { constants } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
 import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { isRecord } from "@opensteer/shared/isRecord";
+import { noFollowFlag } from "@opensteer/shared/privateFiles";
 
 export interface WorkflowTranscriptCursor {
   readonly offset: number;
@@ -61,10 +62,7 @@ export async function readWorkflowAgentTranscript(input: {
     const resolved = await realpath(path);
     if (!contained(root, resolved) || extname(resolved) !== ".jsonl") return undefined;
     const before = await lstat(resolved);
-    const handle = await open(
-      resolved,
-      constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW,
-    );
+    const handle = await open(resolved, constants.O_RDONLY | constants.O_NONBLOCK | noFollowFlag());
     try {
       const stat = await handle.stat();
       const pathStat = await lstat(resolved);
