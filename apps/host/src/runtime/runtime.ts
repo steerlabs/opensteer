@@ -803,6 +803,7 @@ export async function createHostRuntime(
     const browser = new BrowserService({
       onMissingActor: (sessionId, bindingId) => logMissingBrowserActor(sessionId, bindingId),
       hostOrigin: config.canonicalOrigin,
+      personal: deploymentPolicy(deployment.deploymentShape).nativePasswords,
       localProfiles,
       eraseLocalProfiles: (runnerId) => runnerBrowsers.resumeDeletions(runnerId),
       passkeys: config.passkeys === true,

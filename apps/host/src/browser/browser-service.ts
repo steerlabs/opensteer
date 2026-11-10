@@ -574,6 +574,7 @@ type BrowserCdpWireResponse = Extract<
 
 interface BrowserServiceOptions {
   readonly hostOrigin: URL;
+  readonly personal?: boolean;
   readonly history?: BrowserHistoryStore;
   readonly onHistoryChanged?: (ownerId: UserId, profileId: BrowserProfileId) => void;
   readonly passkeys?: boolean;
