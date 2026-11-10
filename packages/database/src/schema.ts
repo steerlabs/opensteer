@@ -685,6 +685,18 @@ interface UserExecutionPreferenceTable {
   updatedAt: Timestamp;
 }
 
+export interface ProjectRuntimeSettingsTable {
+  workspaceId: WorkspaceId;
+  harnessInstanceId: HarnessInstanceId;
+  modelSelection: JsonColumn<ModelSelection>;
+  accessMode: ThreadAccessMode;
+  instructions: Generated<string>;
+  timeZone: Generated<string>;
+  revision: ColumnType<string, number | string | undefined, number | string>;
+  updatedBy: UserId;
+  updatedAt: Timestamp;
+}
+
 export interface WorkspaceTable {
   slug: Generated<string | null>;
   color: MarkColor;
@@ -2167,6 +2179,7 @@ export interface DatabaseSchema {
   executionEnvironments: ExecutionEnvironmentTable;
   harnessInstances: HarnessInstanceTable;
   harnessCatalogs: HarnessCatalogTable;
+  projectRuntimeSettings: ProjectRuntimeSettingsTable;
   userBackgroundModelPreferences: {
     userId: UserId;
     preferences: JsonColumn<AutomaticModelConfig>;

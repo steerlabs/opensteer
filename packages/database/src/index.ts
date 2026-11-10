@@ -11,6 +11,7 @@ export * from "./command-delivery.js";
 export * from "./connection.js";
 export * from "./deployment-authority.js";
 export * from "./deployment-execution-authority.js";
+export * from "./project-runtime-settings-store.js";
 export * from "./integration-auth-attempt-store.js";
 export * from "./integration-platform-store.js";
 export * from "./integration-store.js";

@@ -261,11 +261,10 @@ describeStore("dormant Project access", (it) => {
       const database = owned.database;
       await sql`drop schema public cascade; create schema public`.execute(database);
       const migrations = await migrationProvider().getMigrations();
-      delete migrations["0169_access_foundation"];
       const previous = await new Migrator({
         db: database,
         provider: { getMigrations: async () => migrations },
-      }).migrateToLatest();
+      }).migrateTo("0168_devices");
       if (previous.error) throw previous.error;
       const disabledAt = new Date("2026-01-02T03:04:05.000Z");
       const disabledId = createId("user");

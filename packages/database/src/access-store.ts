@@ -733,7 +733,7 @@ async function applySource(
       .orderBy("groupId")
       .orderBy("memberKind")
       .orderBy("memberId")
-      // Deleted edges need the deletion-strength fence.
+      // FOR UPDATE: Deletes the selected group edges.
       .forUpdate()
       .execute();
     await transaction.deleteFrom("accessGroupMembers").where(matches).execute();
