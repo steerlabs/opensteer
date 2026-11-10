@@ -274,9 +274,12 @@ const sqlExceptions: Record<
 > = {
   "packages/database/src/project-authority-guards.ts": {
     reason:
-      "Cold Project-principal creation requires persisted server/model-2 authority; Personal inserts return before querying Deployment state.",
+      "Project principal and Request creation require persisted server/model-2 authority; legacy Request writes return before querying Deployment state.",
     decisions: {
       "baseline/public.opensteer_project_principal_scope": {
+        "d.deployment_shape->>'kind' = 'server'": 1,
+      },
+      "baseline/public.opensteer_project_request_scope": {
         "d.deployment_shape->>'kind' = 'server'": 1,
       },
     },
