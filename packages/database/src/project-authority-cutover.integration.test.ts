@@ -131,6 +131,9 @@ describeStore("additive Project authority preparation", (it) => {
         ).rows;
       const freshDefinitions = await definitions();
       await sql`drop trigger project_principal_scope on principals; drop function opensteer_project_principal_scope();
+        drop trigger project_request_scope on requests;
+        drop function opensteer_project_request_scope();
+        alter table requests drop column originating_grant_id, drop constraint requests_requester_audience;
         alter table principals drop column workspace_id;
         alter table principals add constraint principals_kind_shape_check check ((kind = 'user' and user_id is not null) or (kind in ('channel-identity', 'system') and user_id is null));
         alter table runs drop column initiator_generation, drop column origin_connection_id;
