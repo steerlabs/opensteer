@@ -609,10 +609,12 @@ describe("SurfaceLedger", () => {
       context.addPage(popup);
       await ledger.resolveTarget(await popup.targetId());
     };
+    // The input's own timestamp must be exact, or a millisecond tick makes a late input young.
     const at = Date.now();
+    const now = vi.spyOn(Date, "now").mockReturnValue(at);
     ledger.recordViewerInput(ledger.snapshot()[0]!.id, scenario.viewer === null ? null : viewer);
     if (scenario.agent) ledger.recordAgentCommand(await root.targetId());
-    const now = vi.spyOn(Date, "now").mockReturnValue(at + (scenario.lateMs ?? 0));
+    now.mockReturnValue(at + (scenario.lateMs ?? 0));
     await open();
     await open();
     now.mockRestore();
