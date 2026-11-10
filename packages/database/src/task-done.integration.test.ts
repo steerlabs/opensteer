@@ -429,6 +429,25 @@ integration.sequential("Shared task Done", () => {
     matrix.return = { assignment, reports };
   });
 
+  it("gives a delegated task its parent's owner provenance", async () => {
+    const f = await fixture("provenance");
+    const parentRun = await running(f, "provenance");
+    const ownerStarted = (value: boolean) =>
+      database
+        .updateTable("threads")
+        .set({ ownerStarted: value })
+        .where("id", "=", f.thread.id)
+        .execute();
+    await ownerStarted(true);
+    const owned = await delegate(f, parentRun.id, "provenance-owned");
+    await ownerStarted(false);
+    const unowned = await delegate(f, parentRun.id, "provenance-unowned");
+    expect(await store.threadProvenance(owned.thread.id)).toMatchObject({ ownerStarted: true });
+    expect(await store.threadProvenance(unowned.thread.id)).toMatchObject({
+      ownerStarted: false,
+    });
+  });
+
   function delegate(f: Fixture, parentRunId: RunId, key: string) {
     return store.delegateThread({
       accessMode: "auto",
