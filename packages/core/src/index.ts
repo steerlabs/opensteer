@@ -1,5 +1,7 @@
 export * from "./collections.js";
 export * from "./access.js";
+export * from "./work-authority.js";
+export * from "./project-request-audience.js";
 export * from "./computer-app.js";
 export * from "./tool-identity.js";
 export * from "./attachments.js";
