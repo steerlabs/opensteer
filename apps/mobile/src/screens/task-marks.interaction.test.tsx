@@ -163,7 +163,7 @@ vi.mock("../threads/tasks-pane.js", () => ({
   TasksPane: ({ header }: { readonly header: ReactNode }) => <>{header}</>,
 }));
 vi.mock("../thread/thread-pane.js", () => ({ sameThreadHeader: () => false }));
-vi.mock("../thread/folded-page.js", () => ({ FoldedPage: () => null }));
+vi.mock("../thread/folded-page.js", () => ({ FoldedPage: () => null, foldedPageWidth: 46 }));
 vi.mock("../navigation-header.js", () => ({
   browserHeaderActions: () => ({}),
   headerActions: () => ({}),
@@ -171,6 +171,10 @@ vi.mock("../navigation-header.js", () => ({
 vi.mock("../ui/bar-title.js", () => ({
   barGlassInset: 8,
   barItemWidth: 44,
+  barNameFloor: 64,
+  barTitleWidth: () => 260,
+  barYield: () => 0,
+  useBarTitleRoom: () => 300,
   useBarTitleWidth: () => 260,
 }));
 vi.mock("../ui/glass.js", () => ({

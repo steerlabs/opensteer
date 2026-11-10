@@ -1,6 +1,7 @@
-import { Pressable, StyleSheet, View } from "react-native";
+import { Pressable, StyleSheet, View, type StyleProp, type TextStyle } from "react-native";
 import { taskMark, type ThreadSummary, type WorkspaceSummary } from "@opensteer/client/host";
 import { color, headerFontScaleLimit, space, touchTarget } from "../theme.js";
+import { barNameFloor } from "../ui/bar-title.js";
 import { AppText } from "../ui/primitives.js";
 import { WorkspaceMark } from "../ui/workspace-mark.js";
 import { ChatOrb } from "../ui/chat-orb.js";
@@ -12,31 +13,52 @@ import { TaskStatus, type TaskHeading } from "./task-status.js";
 export function ThreadName(props: {
   readonly maxFontSizeMultiplier?: number;
   readonly numberOfLines: number;
+  /** Hears the row's width with the name whole, or at `barNameFloor` if longer. */
+  readonly onNeed?: (width: number) => void;
   readonly title: string;
   readonly icon: ThreadSummary["icon"];
   readonly color: ThreadSummary["color"];
   readonly isHome: boolean;
   readonly isVoice?: boolean;
 }) {
+  const mark = props.isHome ? (
+    <ChatOrb size={22} />
+  ) : props.isVoice === true ? (
+    <Symbol name="waveform" size={20} tint={color.ember} weight="semibold" />
+  ) : (
+    <TaskMark mark={taskMark(props)} size={22} />
+  );
+  const name = (style: StyleProp<TextStyle>) => (
+    <AppText
+      {...(props.maxFontSizeMultiplier === undefined
+        ? {}
+        : { maxFontSizeMultiplier: props.maxFontSizeMultiplier })}
+      numberOfLines={props.numberOfLines}
+      role="title"
+      style={style}
+    >
+      {props.title}
+    </AppText>
+  );
+  const { onNeed } = props;
   return (
     <View style={styles.row}>
-      {props.isHome ? (
-        <ChatOrb size={22} />
-      ) : props.isVoice === true ? (
-        <Symbol name="waveform" size={20} tint={color.ember} weight="semibold" />
-      ) : (
-        <TaskMark mark={taskMark(props)} size={22} />
+      {mark}
+      {name(styles.nameText)}
+      {onNeed === undefined ? null : (
+        // A shown name can't say how wide it would be whole, so a hidden copy free of the bar does.
+        <View
+          accessibilityElementsHidden
+          importantForAccessibility="no-hide-descendants"
+          pointerEvents="none"
+          style={styles.ruler}
+        >
+          <View onLayout={(event) => onNeed(event.nativeEvent.layout.width)} style={styles.row}>
+            {mark}
+            {name(styles.floor)}
+          </View>
+        </View>
       )}
-      <AppText
-        {...(props.maxFontSizeMultiplier === undefined
-          ? {}
-          : { maxFontSizeMultiplier: props.maxFontSizeMultiplier })}
-        numberOfLines={props.numberOfLines}
-        role="title"
-        style={styles.nameText}
-      >
-        {props.title}
-      </AppText>
     </View>
   );
 }
@@ -99,8 +121,17 @@ export function ThreadSubtitle(props: {
 }
 
 const styles = StyleSheet.create({
+  floor: { maxWidth: barNameFloor },
   nameText: { flexShrink: 1 },
   row: { alignItems: "center", flexDirection: "row", flexShrink: 1, gap: space[6] },
   workspace: { flexShrink: 1 },
+  ruler: {
+    alignItems: "flex-start",
+    left: 0,
+    opacity: 0,
+    position: "absolute",
+    top: 0,
+    width: 1000,
+  },
   retry: { minHeight: touchTarget, minWidth: 48, alignItems: "center", justifyContent: "center" },
 });
