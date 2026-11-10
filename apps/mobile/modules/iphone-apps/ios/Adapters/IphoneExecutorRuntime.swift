@@ -31,6 +31,7 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
   private var permissionStates: [String: IphonePermission] = [:]
   private var hostClock: IphoneHostClock?
   private var primaryLeaseEnd: UInt64 = 0
+  private var primaryFence: PrimaryFence?
   private var stream: URLSessionWebSocketTask?
   private var streamFence: AuxiliaryFence?
   private var primary: URLSessionWebSocketTask?
@@ -39,6 +40,9 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
   private var observer: (([String: Any?]) -> Void)?
   private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
   private var drainTask: Task<Void, Never>?
+  private var browserActive = false
+  private var browserErasureInFlight = false
+  private var enrollmentStopped = false
 
   private init() {
     // The executor exists before JS. A locked phone defers Keychain reads until
@@ -60,7 +64,7 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
     let supported = UIDevice.current.userInterfaceIdiom == .phone && !ProcessInfo.processInfo.isiOSAppOnMac
     let unsupportedReason: String? = supported ? nil : "not-iphone"
     let enrollment: [String: Any?]?
-    if let identity, identity.state != .prepared {
+    if let identity, identity.state != .prepared, identity.browserErasurePending != true {
       enrollment = ["deploymentId": identity.deploymentId,
         "deploymentName": identity.deploymentName,
         "runnerId": identity.runnerId, "name": identity.name,
@@ -122,10 +126,17 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
     guard UIDevice.current.userInterfaceIdiom == .phone && !ProcessInfo.processInfo.isiOSAppOnMac else { return }
     if storage == nil { loadIdentity() }
     lock.lock()
+    let browserWasInactive = !browserActive
+    browserActive = true
+    if identity?.browserErasurePending == true {
+      foreground = true
+      lock.unlock(); retryBrowserErasure(); return
+    }
     if foreground {
       lock.unlock()
       refreshPermissions()
-      connectIfNeeded()
+      if browserWasInactive && IphoneBrowserTransport.shared.browserDescriptor() != nil { reconnect() }
+      else { connectIfNeeded() }
       return
     }
     foreground = true
@@ -145,6 +156,7 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
   }
 
   func enteredBackground() {
+    browserBecameInactive()
     lock.lock()
     foreground = false
     gate?.background()
@@ -185,6 +197,7 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
   }
 
   func terminate() {
+    IphoneBrowserTransport.shared.offline(reason: "terminated")
     lock.lock(); gate?.disconnect(); dispatcher?.cancelAll(); foreground = false; connectionTask?.cancel(); lock.unlock()
     closeSockets()
   }
@@ -202,7 +215,7 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
 
   func prepare(deploymentId: String) throws -> [String: String] {
     guard !deploymentId.isEmpty else { throw IdentityStoreError.notPrepared }
-    lock.lock(); let active = foreground; let storage = self.storage; lock.unlock()
+    lock.lock(); let active = foreground && !enrollmentStopped; let storage = self.storage; lock.unlock()
     guard active else { throw IphoneRuntimeError.notForeground }
     guard let storage else { throw IphoneRuntimeError.busy }
     let prepared = try storage.prepare(deploymentId: deploymentId)
@@ -232,7 +245,7 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
     _ = try HostTarget(hostUrl)
     guard !deploymentId.isEmpty, !hostInstanceId.isEmpty, !enrollmentId.isEmpty,
       !name.isEmpty, !token.isEmpty else { throw IphoneRuntimeError.invalidTarget }
-    lock.lock(); let storage = self.storage; let active = foreground; lock.unlock()
+    lock.lock(); let storage = self.storage; let active = foreground && !enrollmentStopped; lock.unlock()
     guard active else { throw IphoneRuntimeError.notForeground }
     guard let storage else { throw IphoneRuntimeError.busy }
     try storage.enroll(deploymentId: deploymentId, deploymentName: deploymentName,
@@ -245,7 +258,7 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
   func discardPendingEnrollment() throws -> [String: String] {
     lock.lock()
     let storage = self.storage
-    guard foreground else { lock.unlock(); throw IphoneRuntimeError.notForeground }
+    guard foreground, !enrollmentStopped else { lock.unlock(); throw IphoneRuntimeError.notForeground }
     guard identity?.state == .pending || identity?.state == .prepared else {
       lock.unlock(); throw IdentityStoreError.notPrepared
     }
@@ -276,22 +289,95 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
   }
 
   func disconnect() -> [String: String?] {
+    IphoneBrowserTransport.shared.offline(reason: "enrollment-removed")
     lock.lock()
     let ids: [String: String?] = ["deploymentId": identity?.deploymentId, "runnerId": identity?.runnerId]
+    enrollmentStopped = true
     gate?.disconnect() // synchronous admission fence before any network await
     dispatcher?.cancelAll()
     connectionTask?.cancel(); connectionTask = nil
-    identity = nil
     dispatcher = nil
     connection = "stopped"; issue = nil
-    do { try storage?.wipe() }
+    do {
+      if identity != nil { identity = try storage?.markBrowserErasurePending() }
+    }
     catch {
       issue = .failed
       issueMessage = "This iPhone could not remove its local enrollment. Reopen Opensteer and try again."
     }
+    let pending = identity?.browserErasurePending == true ? identity?.deploymentId : nil
+    let neverOfferedBrowser = identity?.browserReplayStorageInstanceId == nil
     lock.unlock()
     closeSockets(); publish()
+    if let pending {
+      if neverOfferedBrowser { retryBrowserErasure() }
+      else { IphoneBrowserTransport.shared.requestErasure(deploymentId: pending) }
+    }
     return ids
+  }
+
+  func browserBecameInactive() {
+    lock.lock(); browserActive = false; lock.unlock()
+    IphoneBrowserTransport.shared.offline(reason: "background")
+    Task { await reportBrowser(readiness: "unavailable") }
+  }
+
+  private func reportBrowser(readiness: String) async {
+    lock.lock(); let socket = primary; let fence = primaryFence; let clock = hostClock
+    let available = identity?.browserReplayStorageInstanceId != nil
+    lock.unlock()
+    guard available, let socket, let fence, let clock else { return }
+    try? await send(IphoneWire.modulesReport(fence, checkedAt: clock.isoNow(), browser: readiness), over: socket)
+  }
+
+  func configureBrowser(epoch: Int, deploymentId: String, runnerId: String, descriptor: [String: Any]) throws {
+    lock.lock()
+    guard foreground, browserActive, !enrollmentStopped, let identity, identity.deploymentId == deploymentId,
+      identity.runnerId == runnerId, identity.browserErasurePending != true else { lock.unlock(); throw PhoneBrowserFailure.forbidden }
+    let scope = identity.browserReplayStorageInstanceId
+    lock.unlock()
+    let localStorage = try WireField.object(descriptor, "localProfileStorage")
+    let storageId = try WireField.string(localStorage, "storageInstanceId")
+    guard scope == nil || scope == storageId else { throw PhoneBrowserFailure.forbidden }
+    do {
+      try IphoneBrowserTransport.shared.configure(epoch: epoch, deploymentId: deploymentId, descriptor: descriptor, allowCreate: scope == nil) {
+        self.lock.lock(); defer { self.lock.unlock() }
+        guard self.identity?.runnerId == runnerId, self.identity?.browserErasurePending != true,
+          let storage = self.storage else { throw PhoneBrowserFailure.forbidden }
+        self.identity = try storage.markBrowserReplayInitialized(storageInstanceId: storageId)
+      }
+    } catch { IphoneBrowserTransport.shared.disable(); throw error }
+    reconnect()
+  }
+
+  func setBrowserForeground(epoch: Int, active: Bool) throws {
+    guard epoch == IphoneBrowserTransport.shared.connection.epoch else { throw PhoneBrowserFailure.forbidden }
+    if !active { IphoneBrowserTransport.shared.offline(reason: "background"); return }
+    lock.lock(); let allowed = foreground && browserActive && identity?.browserErasurePending != true; lock.unlock()
+    guard allowed else { throw PhoneBrowserFailure.forbidden }
+    if !IphoneBrowserTransport.shared.connection.publishCurrent(), IphoneBrowserTransport.shared.browserDescriptor() != nil { reconnect() }
+  }
+
+  func retryBrowserErasure() {
+    lock.lock()
+    guard let identity, identity.browserErasurePending == true, !browserErasureInFlight else { lock.unlock(); return }
+    browserErasureInFlight = true
+    let deploymentId = identity.deploymentId
+    let neverOfferedBrowser = identity.browserReplayStorageInstanceId == nil
+    lock.unlock()
+    let finish: (Bool) -> Void = { [weak self] erased in
+      guard let self else { return }
+      self.lock.lock(); defer { self.lock.unlock(); self.publish() }
+      self.browserErasureInFlight = false
+      guard self.identity?.deploymentId == deploymentId else { return }
+      do {
+        guard try self.storage?.completeBrowserErasure(deploymentId: deploymentId, confirmed: erased) == true else { return }
+        self.identity = nil
+        self.enrollmentStopped = false
+      } catch { self.issue = .failed }
+    }
+    if neverOfferedBrowser { finish(true) }
+    else { IphoneBrowserTransport.shared.erase(deploymentId: deploymentId, completion: finish) }
   }
 
   func requestPermission(_ app: String) async throws -> String {
@@ -336,7 +422,7 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
 
   private func connectIfNeeded() {
     lock.lock()
-    guard foreground, let identity, identity.state != .prepared,
+    guard foreground, !enrollmentStopped, let identity, identity.state != .prepared, identity.browserErasurePending != true,
       connectionTask == nil, let gate else { lock.unlock(); return }
     connection = "connecting"; issue = nil; retryAt = nil
     let generation = gate.generation
@@ -349,13 +435,13 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
 
   private func current(_ generation: UInt64, authority: AdmissionGate? = nil) -> Bool {
     lock.lock(); defer { lock.unlock() }
-    return foreground && gate?.generation == generation && identity != nil &&
+    return foreground && !enrollmentStopped && gate?.generation == generation && identity != nil &&
       (authority == nil || gate === authority)
   }
 
   private func transportAlive(_ generation: UInt64, session expected: URLSession) -> Bool {
     lock.lock(); defer { lock.unlock() }
-    return gate?.generation == generation && identity != nil && session === expected
+    return !enrollmentStopped && gate?.generation == generation && identity != nil && session === expected
   }
 
   private func connectionLoop(identity initial: PersistedIphoneIdentity, generation: UInt64,
@@ -472,7 +558,8 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
     catch { throw IphoneConnectionFailure(.needsUpdate, violation: true) }
     let key = try storage!.runnerKey()
     let descriptor = IphoneProofs.descriptor(bootId: bootId, runnerId: initial.runnerId,
-      name: initial.name ?? "iPhone", runtimeVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0")
+      name: initial.name ?? "iPhone", runtimeVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0",
+      browser: IphoneBrowserTransport.shared.browserDescriptor())
     let token = initial.state == .pending ? try storage!.enrollmentToken() : nil
     guard initial.state != .pending || token != nil else { throw IphoneConnectionFailure(.enrollmentRefused) }
     try await send(IphoneWire.authenticateFrame(challenge: challenge, descriptor: descriptor, key: key, token: token), over: primary)
@@ -487,6 +574,8 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
     let primaryLeaseSeconds = max(0, welcome.leaseExpiresAt.timeIntervalSince(welcome.serverTime))
     guard primaryLeaseSeconds > 0 else { throw IphoneConnectionFailure(.protocolError, violation: true) }
     lock.lock(); primaryLeaseEnd = answer.receivedAt &+ UInt64(primaryLeaseSeconds * 1_000_000_000); lock.unlock()
+    lock.lock(); primaryFence = welcome.fence; lock.unlock()
+    IphoneBrowserTransport.shared.connection.renewPrimary(until: Int64(welcome.leaseExpiresAt.timeIntervalSince1970 * 1000))
     if initial.state == .pending {
       guard current(generation, authority: authority) else { throw CancellationError() }
       let enrolled = try storage!.markEnrolled()
@@ -549,6 +638,16 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
     connection = "online"; issue = nil; issueMessage = nil; retryAt = nil
     lock.unlock()
     try await send(IphoneWire.modulesReport(welcome.fence, checkedAt: hostClock.isoNow()), over: primary)
+    var browserSocket: URLSessionWebSocketTask?
+    if welcome.allowedModules.contains("browser"), (descriptor["modules"] as? [String: Any])?["browser"] != nil {
+      do { browserSocket = try await openBrowserStream(primary: primary, welcome: welcome, target: target,
+        key: key, generation: generation, session: session, hostClock: hostClock) }
+      catch let failure as IphoneConnectionFailure where failure.issue == .removed { throw failure }
+      catch { IphoneBrowserTransport.shared.offline(reason: "handshake-failed") }
+    }
+    if (descriptor["modules"] as? [String: Any])?["browser"] != nil {
+      await reportBrowser(readiness: browserSocket == nil ? "unavailable" : "ready")
+    }
     await sendStatus()
     publish()
     return try await withThrowingTaskGroup(of: Bool.self) { group in
@@ -558,19 +657,99 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
         streamFence: auxWelcome.fence, primaryMs: welcome.heartbeatIntervalMs, streamMs: auxWelcome.heartbeatIntervalMs,
         generation: generation, session: session, clock: hostClock) }
       group.addTask { try await self.statusLoop(generation: generation, session: session) }
+      if let browserSocket {
+        group.addTask {
+          do { return try await self.browserLoop(browserSocket, generation: generation, session: session) }
+          catch let failure as IphoneConnectionFailure where failure.issue == .removed { throw failure }
+          catch {
+            IphoneBrowserTransport.shared.offline(reason: "stream-closed")
+            await self.reportBrowser(readiness: "unavailable")
+            return try await self.statusLoop(generation: generation, session: session)
+          }
+        }
+      }
       do {
         let result = try await group.next() ?? false
         group.cancelAll()
         // A cancelled URLSession receive need not finish until its socket closes.
         stream.cancel(with: .goingAway, reason: nil)
         primary.cancel(with: .goingAway, reason: nil)
+        browserSocket?.cancel(with: .goingAway, reason: nil)
         return result
       } catch {
         group.cancelAll()
         stream.cancel(with: .goingAway, reason: nil)
         primary.cancel(with: .goingAway, reason: nil)
+        browserSocket?.cancel(with: .goingAway, reason: nil)
         throw error
       }
+    }
+  }
+
+  private func openBrowserStream(primary: URLSessionWebSocketTask, welcome: PrimaryWelcome, target: HostTarget,
+    key: Curve25519.Signing.PrivateKey, generation: UInt64, session: URLSession, hostClock: IphoneHostClock) async throws -> URLSessionWebSocketTask {
+    let requestId = "browser:\(UUID().uuidString.lowercased())"
+    try await send(IphoneWire.ticketRequest(welcome.fence, requestId: requestId, module: "browser"), over: primary)
+    var ticket: String?
+    while ticket == nil {
+      let received = try await receive(primary)
+      let frame = received.frame
+      if frame["type"] as? String == "host.error" { throw refusal(frame) }
+      guard try PrimaryFence(frame) == welcome.fence else { throw IphoneWireError.staleFence }
+      if frame["type"] as? String == "host.auxiliary.ticket" {
+        guard frame["requestId"] as? String == requestId, frame["module"] as? String == "browser",
+          try WireField.date(frame, "expiresAt") > hostClock.now() else { throw PhoneBrowserFailure.forbidden }
+        ticket = try WireField.string(frame, "ticket")
+      } else if frame["type"] as? String == "host.connection.lease-renewed" {
+        let seconds = try WireField.date(frame, "connectionLeaseExpiresAt").timeIntervalSince(hostClock.now())
+        guard seconds > 0 else { throw PhoneBrowserFailure.unavailable }
+        lock.lock(); primaryLeaseEnd = max(primaryLeaseEnd, received.receivedAt + UInt64(seconds * 1_000_000_000)); lock.unlock()
+      } else { throw PhoneBrowserFailure.forbidden }
+    }
+    lock.lock(); let allowed = browserActive; lock.unlock()
+    guard allowed, current(generation) else { throw PhoneBrowserFailure.unavailable }
+    let socket = openSocket(session: session, target: target, path: "/internal/v1/runners/auxiliary/browser")
+    socket.maximumMessageSize = FrameDecoder.maxBytes
+    socket.resume()
+    do {
+      let received = try await receive(socket)
+      if received.frame["type"] as? String == "host.auxiliary.rejected" { throw refusal(received.frame) }
+      let challenge = try IphoneWire.challenge(received.frame, auxiliary: true, module: "browser")
+      guard let ticket, try WireField.date(["expiresAt": challenge.expiresAt], "expiresAt") > hostClock.now() else { throw PhoneBrowserFailure.forbidden }
+      try await send(IphoneWire.auxiliaryAuthenticateFrame(challenge: challenge, key: key,
+        runnerId: welcome.fence.runnerId, bootId: bootId, ticket: ticket, module: "browser"), over: socket)
+      let answer = try await receive(socket)
+      if answer.frame["type"] as? String == "host.auxiliary.rejected" { throw refusal(answer.frame) }
+      let auxiliary = try IphoneWire.auxiliaryWelcome(answer.frame, primary: welcome.fence, module: "browser")
+      guard auxiliary.fence.module == "browser", current(generation) else { throw IphoneWireError.staleFence }
+      lock.lock(); let active = browserActive; lock.unlock()
+      guard active else { throw PhoneBrowserFailure.unavailable }
+      try IphoneBrowserTransport.shared.adopt(answer.frame, socket: socket)
+      return socket
+    } catch { socket.cancel(with: .goingAway, reason: nil); throw error }
+  }
+
+  private func browserLoop(_ socket: URLSessionWebSocketTask, generation: UInt64, session: URLSession) async throws -> Bool {
+    let heartbeatNs = UInt64(max(500, IphoneBrowserTransport.shared.heartbeatIntervalMs / 2)) * 1_000_000
+    return try await withThrowingTaskGroup(of: Bool.self) { group in
+      group.addTask {
+        while self.transportAlive(generation, session: session) && !Task.isCancelled {
+          let received = try await self.receive(socket)
+          guard self.transportAlive(generation, session: session) else { return false }
+          if received.frame["type"] as? String == "host.auxiliary.rejected" { throw self.refusal(received.frame) }
+          try IphoneBrowserTransport.shared.connection.receive(received.frame)
+        }
+        return false
+      }
+      group.addTask {
+        while self.transportAlive(generation, session: session) && !Task.isCancelled {
+          try await Task.sleep(nanoseconds: heartbeatNs)
+          try await IphoneBrowserTransport.shared.connection.sendHeartbeat()
+        }
+        return false
+      }
+      defer { group.cancelAll(); socket.cancel(with: .goingAway, reason: nil) }
+      return try await group.next() ?? false
     }
   }
 
@@ -648,6 +827,7 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
       lock.lock()
       if self.session === session { primaryLeaseEnd = received.receivedAt &+ UInt64(seconds * 1_000_000_000) }
       lock.unlock()
+      IphoneBrowserTransport.shared.connection.renewPrimary(until: Int64(expiry.timeIntervalSince1970 * 1000))
       renewed = true
     }
     return renewed
@@ -743,7 +923,9 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
     let stream = self.stream; self.stream = nil; streamFence = nil
     let session = self.session; self.session = nil
     primaryLeaseEnd = 0
+    primaryFence = nil
     lock.unlock()
+    IphoneBrowserTransport.shared.offline(reason: "primary-closed")
     stream?.cancel(with: .goingAway, reason: nil)
     primary?.cancel(with: .goingAway, reason: nil)
     session?.invalidateAndCancel()

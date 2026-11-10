@@ -39,6 +39,7 @@ public struct ConnectionPolicy {
     if closeCode == 4010 { return .removed }
     if enrolling && reason == nil { return .enrollmentRefused }
     switch reason {
+    case "runner-identity-revoked": return .removed
     case "runner-enrollment-expired": return .enrollmentExpired
     case "runner-enrollment-refused": return .enrollmentRefused
     case "personal-remote-access-off": return .remoteAccessOff

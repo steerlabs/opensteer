@@ -35,16 +35,19 @@ private struct ApprovalAnswerInput: Record {
 public final class IphoneAppsModule: Module {
   public func definition() -> ModuleDefinition {
     Name("IphoneApps")
-    Events("onChange")
+    Events("onChange", "onBrowserEvent", "onBrowserErasure")
     OnCreate { [weak self] in
       if #available(iOS 17, *) {
         IphoneExecutorRuntime.shared.setObserver { [weak self] snapshot in
           self?.sendEvent("onChange", snapshot)
         }
+        IphoneBrowserTransport.shared.setObserver({ [weak self] event in self?.sendEvent("onBrowserEvent", event) },
+          erasure: { [weak self] event in self?.sendEvent("onBrowserErasure", event) })
       }
     }
     OnDestroy {
       if #available(iOS 17, *) { IphoneExecutorRuntime.shared.setObserver(nil) }
+      if #available(iOS 17, *) { IphoneBrowserTransport.shared.setObserver(nil, erasure: nil) }
     }
     Function("getSnapshot") { () -> [String: Any?] in
       guard #available(iOS 17, *) else { return Self.unsupported("ios-version") }
@@ -92,10 +95,65 @@ public final class IphoneAppsModule: Module {
       return try await IphoneExecutorRuntime.shared.choosePhotos()
     }
 
+    Function("fenceBrowser") { (_ reason: String) throws -> Int in
+      guard #available(iOS 17, *) else { throw Self.refusal("unsupported") }
+      return IphoneBrowserTransport.shared.fence(reason: "manager-fenced")
+    }
+    AsyncFunction("configureBrowser") { (input: [String: Any]) throws -> Void in
+      guard #available(iOS 17, *) else { throw Self.refusal("unsupported") }
+      do {
+        try IphoneExecutorRuntime.shared.configureBrowser(epoch: Self.epoch(input),
+          deploymentId: WireField.string(input, "deploymentId"), runnerId: WireField.string(input, "runnerId"),
+          descriptor: WireField.object(input, "descriptor"))
+      } catch { throw Self.refusal("busy") }
+    }
+    AsyncFunction("setBrowserForeground") { (input: [String: Any]) throws -> Void in
+      guard #available(iOS 17, *) else { throw Self.refusal("unsupported") }
+      guard PhoneBrowserValidation.boolean(input["active"]), let active = input["active"] as? Bool else { throw Self.refusal("busy") }
+      do { try IphoneExecutorRuntime.shared.setBrowserForeground(epoch: Self.epoch(input), active: active) }
+      catch { throw Self.refusal("busy") }
+    }
+    AsyncFunction("verifyAttach") { (input: [String: Any]) throws -> [String: Any] in
+      guard #available(iOS 17, *) else { throw Self.refusal("unsupported") }
+      do { return try IphoneBrowserTransport.shared.connection.verifyAttach(epoch: Self.epoch(input), attachHandle: WireField.string(input, "attachHandle")) }
+      catch { throw Self.refusal("forbidden") }
+    }
+    AsyncFunction("commitAttach") { (input: [String: Any]) throws -> String in
+      guard #available(iOS 17, *) else { throw Self.refusal("unsupported") }
+      do { return try IphoneBrowserTransport.shared.connection.commitAttach(epoch: Self.epoch(input), attachHandle: WireField.string(input, "attachHandle"),
+        claimsDigest: WireField.string(input, "claimsDigest"), replayTransition: WireField.object(input, "replayTransition")) }
+      catch { throw Self.refusal("forbidden") }
+    }
+    AsyncFunction("sendRelay") { (input: [String: Any]) async throws -> Void in
+      guard #available(iOS 17, *) else { throw Self.refusal("unsupported") }
+      let epoch = try Self.epoch(input)
+      let message = try WireField.object(input, "message")
+      try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+        IphoneBrowserTransport.shared.connection.sendRelay(epoch: epoch, message: message) { error in
+          if error != nil { continuation.resume(throwing: Self.refusal("forbidden")) }
+          else { continuation.resume() }
+        }
+      }
+    }
+    AsyncFunction("closeChannel") { (input: [String: Any]) throws -> Void in
+      guard #available(iOS 17, *) else { throw Self.refusal("unsupported") }
+      do {
+        _ = try WireField.int(input, "code", range: 1000...4999)
+        try IphoneBrowserTransport.shared.connection.closeChannel(epoch: Self.epoch(input), channelId: WireField.string(input, "channelId"))
+      }
+      catch { throw Self.refusal("forbidden") }
+    }
+    AsyncFunction("retryBrowserErasure") { () -> Void in
+      if #available(iOS 17, *) { IphoneExecutorRuntime.shared.retryBrowserErasure() }
+    }
+
   }
 
   private static func refusal(_ code: String) -> Exception {
     Exception(name: "IphoneAppsError", description: "This iPhone cannot do that now.", code: code)
+  }
+  private static func epoch(_ input: [String: Any]) throws -> Int {
+    try WireField.int(input, "epoch", range: 0...9_007_199_254_740_991)
   }
   private static func map(_ error: Error) -> Exception {
     if let error = error as? IdentityStoreError {
@@ -103,6 +161,7 @@ public final class IphoneAppsModule: Module {
       case .enrolledElsewhere: return refusal("enrolled-elsewhere")
       case .notPrepared, .missingIdentity, .invalidIdentity: return refusal("not-prepared")
       case .wrongDeployment: return refusal("wrong-deployment")
+      case .erasurePending: return refusal("busy")
       }
     }
     if error is HostTargetError { return refusal("invalid-target") }
@@ -129,12 +188,14 @@ public final class IphoneAppsAppDelegateSubscriber: ExpoAppDelegateSubscriber {
         (UIApplication.didEnterBackgroundNotification, 1),
         (UIApplication.willEnterForegroundNotification, 2),
         (UIApplication.willTerminateNotification, 3),
+        (UIApplication.willResignActiveNotification, 4),
       ] {
         observations.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { _ in
           switch action {
           case 0: IphoneExecutorRuntime.shared.becameActive()
           case 1: IphoneExecutorRuntime.shared.enteredBackground()
           case 2: break // didBecomeActive replaces the transport generation.
+          case 4: IphoneExecutorRuntime.shared.browserBecameInactive()
           default: IphoneExecutorRuntime.shared.terminate()
           }
         })
