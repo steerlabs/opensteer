@@ -104,6 +104,7 @@ console.log(JSON.stringify({ hookSpecificOutput: {
             },
             close: () => handle.close(),
             interrupt: () => handle.interrupt(),
+            stopTask: (taskId) => handle.stopTask(taskId),
           };
         },
       },
