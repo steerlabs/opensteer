@@ -15,6 +15,8 @@ export interface RequestSession {
   answers: RequestFormDraft;
   /** Undefined means untouched, so the agent's suggestion still applies. */
   browserName: string | undefined;
+  /** The device a new profile keeps its sign-ins on, once the person picked one. */
+  browserHome: string | undefined;
   browserSelection: BrowserAccessSelection | null | undefined;
   chosenSourceId: string | null;
   /** An Allow the Host kept pending: Chrome is offline and it finishes by itself. */
@@ -40,6 +42,7 @@ function createSession(): RequestSession {
     allowed: null,
     answers: {},
     browserName: undefined,
+    browserHome: undefined,
     browserSelection: undefined,
     chosenSourceId: null,
     failure: null,

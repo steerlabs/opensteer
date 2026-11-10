@@ -1,5 +1,7 @@
+import { createId, type ThreadId } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import { MockHostClient } from "../mock/mock-host-client.js";
+import { browserAccessHomeChoice, browserAccessResponse } from "./browser-access.js";
 import {
   browserProfileAccessSummary,
   browserProfileDeleteConsequence,
@@ -139,6 +141,31 @@ describe("browser profile settings", () => {
       // Nothing to choose: one device, or a Host that does not say.
       expect(choice(null, { ...snapshot, browserProfileHomes: [id("Mac mini")] })).toBeNull();
       expect(choice(null, { ...snapshot, browserProfileHomes: undefined })).toBeNull();
+
+      // One an agent asked for starts where the Host would put it, never on the reader's device.
+      const asking = createId("thread");
+      const asked = (threadId: ThreadId, source = snapshot) =>
+        browserAccessHomeChoice(
+          {
+            ...source,
+            threads: [{ ...snapshot.threads[0]!, id: asking, environmentId: "env_studio" }],
+            environments: [
+              { ...snapshot.environments[0]!, id: "env_studio", runnerId: id("Studio Mac") },
+            ],
+          },
+          id("Alex's iPhone"),
+          { originatingThreadId: threadId },
+        )?.initial;
+      expect(asked(asking)).toBe(id("Studio Mac"));
+      expect(asked(createId("thread"))).toBe(id("Mac mini"));
+      expect(asked(asking, { ...snapshot, browserProfileHomes: [id("Mac mini")] })).toBe(undefined);
+      expect(browserAccessResponse({ kind: "new" }, " Travel ", id("Studio Mac"))).toEqual({
+        kind: "external",
+        value: {
+          decision: "fulfilled",
+          createProfile: { name: "Travel", homeRunnerId: id("Studio Mac") },
+        },
+      });
     } finally {
       mock.dispose();
     }

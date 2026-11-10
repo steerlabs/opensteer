@@ -2,6 +2,7 @@ import { PendingBrowserTabRows } from "../browser/pending-browser-tab.js";
 import {
   browserTabPicture,
   browserTabSections,
+  tabSectionPlaceTitle,
   browserTabStrip,
   placeAgents,
   placeAgentsWords,
@@ -226,6 +227,7 @@ function TabsForReader(props: {
     ({ index, item, section }: SectionListRenderItemInfo<PlaceItem, PlaceGroup>) => (
       <PlaceRow
         first={index === 0}
+        headed={section.headed}
         hostClient={hostClient}
         last={index === section.data.length - 1}
         needsYou={
@@ -366,6 +368,8 @@ function placeDetail(place: PlaceItem, showProfile: boolean): readonly string[] 
 
 interface PlaceRowProps {
   readonly first: boolean;
+  /** The row stands under its device's heading. */
+  readonly headed: boolean;
   readonly hostClient: HostClient;
   readonly last: boolean;
   /** A pending sign-in Request names this very tab. */
@@ -392,6 +396,7 @@ const PlaceRow = memo(function PlaceRow(props: PlaceRowProps): ReactNode {
   const words = placeAgentsWords(agents);
   const acting = agents.unnamedActing || agents.agents.some((agent) => agent.acting);
   const detail = placeDetail(place, props.showProfile);
+  const title = tabSectionPlaceTitle(place, props.headed);
   const unavailable = place.availability === "unavailable";
   const picture =
     props.shown && place.destination.kind === "browser" && place.destination.tabId
@@ -447,7 +452,7 @@ const PlaceRow = memo(function PlaceRow(props: PlaceRowProps): ReactNode {
       </View>
       <View style={styles.words}>
         <AppText numberOfLines={1} role="bodyMedium" tone={unavailable ? "muted" : "default"}>
-          {place.title}
+          {title}
         </AppText>
         {detail.length === 0 ? null : (
           <AppText numberOfLines={1} role="caption" tone="muted">
