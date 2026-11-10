@@ -179,6 +179,7 @@ export class BrowserSourceService {
   readonly #pendingHandshakes = new Set<WebSocket>();
   readonly #pendingByAddress = new Map<string, number>();
   readonly #turns = new Map<string, Promise<unknown>>();
+  readonly #signIns = new Map<string, Promise<void>>();
   readonly #pairChallenges = new Map<string, number[]>();
   readonly #drains = new Map<UserId, Promise<void>>();
   readonly #calls = new Map<string, number[]>();
@@ -639,17 +640,27 @@ export class BrowserSourceService {
   }
 
   async agentSignIn(input: AgentSignInInput): Promise<AgentBrowserSignInResult> {
-    const result = await this.#signIn(input);
-    this.#offers.note(
-      {
-        ownerId: input.ownerId,
-        runId: input.runId,
-        sessionId: input.sessionId ?? null,
-        site: parseSite(input.site),
-        threadId: input.threadId,
-      },
-      result,
-    );
+    const site = parseSite(input.site);
+    const key = `offer\0${input.threadId}\0${site}`;
+    const result = (this.#turns.get(key) ?? Promise.resolve()).then(async () => {
+      const result = await this.#signIn(input);
+      this.#offers.note(
+        {
+          ownerId: input.ownerId,
+          runId: input.runId,
+          sessionId: input.sessionId ?? null,
+          site,
+          threadId: input.threadId,
+        },
+        result,
+      );
+      return result;
+    });
+    const settled = Promise.allSettled([this.#signIns.get(key), result]).then(() => undefined);
+    this.#signIns.set(key, settled);
+    void settled.then(() => {
+      if (this.#signIns.get(key) === settled) this.#signIns.delete(key);
+    });
     return result;
   }
 
@@ -847,10 +858,16 @@ export class BrowserSourceService {
     offer: PasswordsOffer,
     found: readonly PasswordsOffer[],
   ): Promise<PasswordsOfferOutcome> {
-    const { requestId } = offer;
-    return requestId === null
-      ? this.#wakeIfWanted(offer, found)
-      : this.#inTurn(`request\0${requestId}`, () => this.#wakeIfWanted(offer, found));
+    const key = `offer\0${offer.threadId}\0${offer.site}`;
+    const signIns = this.#signIns.get(key);
+    return this.#inTurn(key, async () => {
+      await signIns;
+      if (!this.#offers.isCurrent(offer)) return "ended";
+      const { requestId } = offer;
+      return requestId === null
+        ? this.#wakeIfWanted(offer, found)
+        : this.#inTurn(`request\0${requestId}`, () => this.#wakeIfWanted(offer, found));
+    });
   }
 
   async #wakeIfWanted(
