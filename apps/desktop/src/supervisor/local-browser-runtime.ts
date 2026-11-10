@@ -63,6 +63,7 @@ export async function startLocalBrowserRuntime(
     downloads: options.downloads,
     localProfileRoot: profileRoot,
     pagePolicyPreloadPath: options.pagePolicyPreloadPath,
+    onLocalProfileDiagnostic: (diagnostic) => diagnostics.append(`${JSON.stringify(diagnostic)}\n`),
   });
   const preparation = launcher.prepare();
   const log = options.logPath ? new RotatingPersonalLog(options.logPath) : null;

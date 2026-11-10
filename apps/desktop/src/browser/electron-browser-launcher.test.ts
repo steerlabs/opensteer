@@ -43,6 +43,7 @@ const electron = vi.hoisted(() => ({
     options: { webPreferences?: { focusOnNavigation?: boolean } };
     webContents: {
       close: ReturnType<typeof vi.fn>;
+      forcefullyCrashRenderer: ReturnType<typeof vi.fn>;
       loadURL: ReturnType<typeof vi.fn>;
       getURL: ReturnType<typeof vi.fn<() => string>>;
       isDestroyed: ReturnType<typeof vi.fn<() => boolean>>;
@@ -99,6 +100,7 @@ vi.mock("electron", () => {
       }),
     };
     readonly focus = vi.fn();
+    readonly forcefullyCrashRenderer = vi.fn();
     readonly beginFrameSubscription = vi.fn(
       (callback: (image: { getSize(): { width: number; height: number } }) => void) =>
         setImmediate(() => callback({ getSize: () => ({ width: 800, height: 600 }) })),
@@ -523,6 +525,48 @@ function within(promise: Promise<unknown>): Promise<"fulfilled" | "rejected" | "
 }
 
 describe("Electron debugger teardown", () => {
+  it("forces page disposal when closing never destroys a target with outstanding input", async () => {
+    const hub = await hubPage("21");
+    const host = electron.hosts.at(-1)!;
+    const unbind = hub.page.bindGeometry!(
+      (operation) => operation(),
+      async () => undefined,
+    );
+    await hub.page.applyGeometry!({ person: { width: 800, height: 600 }, agent: null });
+    const agent = await hub.page.agentCdp();
+    const held = hub.hold("Input.dispatchKeyEvent");
+    void agent.send("Input.dispatchKeyEvent", { type: "keyDown", key: "a" }).catch(() => undefined);
+    await vi.waitFor(
+      () => expect(held.replies, "input never reached the renderer").toHaveLength(1),
+      { timeout: 1_000 },
+    );
+    hub.contents.close.mockImplementation(() => {});
+    vi.useFakeTimers();
+    try {
+      const closing = hub.browser.close();
+      const contextClosing = (
+        hub.browser.context as typeof hub.browser.context & {
+          close(): Promise<void>;
+        }
+      ).close();
+      const settled = vi.fn();
+      void closing.then(settled, settled);
+      await vi.advanceTimersByTimeAsync(1_999);
+      expect(settled, "concurrent close skipped in-flight page disposal").not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled, "browser teardown never settled").toHaveBeenCalledOnce();
+      await closing;
+      await contextClosing;
+      expect(hub.contents.forcefullyCrashRenderer).toHaveBeenCalledOnce();
+      expect(hub.contents.debugger.detach).toHaveBeenCalledOnce();
+      expect(host.destroy).toHaveBeenCalled();
+      expect(hub.browser.context.isConnected?.()).toBe(false);
+    } finally {
+      unbind();
+      hub.destroy();
+      vi.useRealTimers();
+    }
+  });
   it("lets the last channel go while a domain enable is never answered", async () => {
     const hub = await hubPage("10");
     const platform = await hub.page.cdp();
@@ -1849,6 +1893,7 @@ describe("native Electron profiles", () => {
     };
     const directory = path.join(root, "profiles", binding.profileId, "native");
     const onLocalProfileOpenTiming = vi.fn();
+    const onLocalProfileDiagnostic = vi.fn();
     const launcher = new ElectronBrowserLauncher({
       downloads: {
         accept: vi.fn(() => {
@@ -1858,6 +1903,7 @@ describe("native Electron profiles", () => {
       pagePolicyPreloadPath: "/policy.cjs",
       localProfileRoot: root,
       onLocalProfileOpenTiming,
+      onLocalProfileDiagnostic,
     });
     const sessionId = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
     return {
@@ -1866,6 +1912,7 @@ describe("native Electron profiles", () => {
       directory,
       launcher,
       onLocalProfileOpenTiming,
+      onLocalProfileDiagnostic,
       initialize: async () => {
         await launcher.localProfiles.createFiles(
           path.dirname(directory),
@@ -1878,6 +1925,7 @@ describe("native Electron profiles", () => {
           directory,
           binding,
           configure: () => {},
+          onDiagnostic: onLocalProfileDiagnostic,
         });
         await profile.ready();
       },
@@ -1899,6 +1947,209 @@ describe("native Electron profiles", () => {
       },
     };
   }
+  it("keeps an admitted page and request gate open after a cookie capture times out", async () => {
+    const f = await fixture();
+    const { acquireElectronLocalProfile } = await import("./electron-local-profile.js");
+    let browser: Awaited<ReturnType<typeof f.launch>> | undefined;
+    try {
+      await f.initialize();
+      browser = await f.launch();
+      const owner = acquireElectronLocalProfile({
+        root: f.root,
+        directory: f.directory,
+        binding: f.binding,
+        configure: () => {},
+      });
+      const page = electron.views.at(-1)!;
+      vi.useFakeTimers();
+      const entered = Promise.withResolvers<void>();
+      electron.bootstrap = (method) => {
+        if (method !== "Network.getAllCookies") return undefined;
+        entered.resolve();
+        return new Promise(() => {});
+      };
+      const failed = expect(owner.mirror.flush()).rejects.toThrow();
+      await withTimeout(entered.promise, 1_000, {
+        timeoutError: () => new Error("Cookie capture never started."),
+      });
+      await vi.advanceTimersByTimeAsync(5_000);
+      await failed;
+      expect(
+        page.webContents.close,
+        "save failure closed the admitted page",
+      ).not.toHaveBeenCalled();
+      expect(browser.context.isConnected?.()).toBe(true);
+      expect(() => owner.assertAdmitted()).not.toThrow();
+      const callback = vi.fn();
+      const native = vi.mocked(owner.session);
+      vi.mocked(native.webRequest.onBeforeRequest).mock.calls[0]![0]!(
+        { url: "https://site.test/" } as never,
+        callback,
+      );
+      expect(callback).toHaveBeenCalledExactlyOnceWith({ cancel: false });
+      expect(f.onLocalProfileDiagnostic).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ event: "browser.profile.save.failed" }),
+      );
+      electron.bootstrap = undefined;
+      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.waitFor(() =>
+        expect(f.onLocalProfileDiagnostic, "save retry never recovered").toHaveBeenCalledWith({
+          event: "browser.profile.save.recovered",
+        }),
+      );
+      expect(page.webContents.close).not.toHaveBeenCalled();
+    } finally {
+      electron.bootstrap = undefined;
+      await browser?.close().catch(() => undefined);
+      await f.launcher.localProfiles.release(f.directory);
+      vi.useRealTimers();
+      f.launcher.close();
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+  it("resolves close for a retired owner without trying to save its stopped mirror", async () => {
+    const f = await fixture();
+    const { acquireElectronLocalProfile } = await import("./electron-local-profile.js");
+    try {
+      await f.initialize();
+      const browser = await f.launch();
+      const owner = acquireElectronLocalProfile({
+        root: f.root,
+        directory: f.directory,
+        binding: f.binding,
+        configure: () => {},
+      });
+      await owner.retire();
+      expect(f.onLocalProfileDiagnostic).toHaveBeenCalledExactlyOnceWith({
+        event: "browser.profile.retired",
+        reason: "cancelled",
+      });
+      const flush = vi.spyOn(owner.mirror, "flush");
+      await expect(
+        withTimeout(browser.close(), 1_000, {
+          timeoutError: () => new Error("Retired browser close never settled."),
+        }),
+      ).resolves.toBeUndefined();
+      expect(flush).not.toHaveBeenCalled();
+      expect(browser.context.isConnected?.()).toBe(false);
+    } finally {
+      await f.launcher.localProfiles.release(f.directory);
+      f.launcher.close();
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+  it.each(["rejected", "hung"])("disposes before rejecting a %s final save", async (mode) => {
+    const f = await fixture();
+    const { acquireElectronLocalProfile } = await import("./electron-local-profile.js");
+    try {
+      await f.initialize();
+      const browser = await f.launch();
+      const page = electron.views.at(-1)!;
+      const owner = acquireElectronLocalProfile({
+        root: f.root,
+        directory: f.directory,
+        binding: f.binding,
+        configure: () => {},
+      });
+      const entered = Promise.withResolvers<void>();
+      const flush = vi
+        .spyOn(owner.session.cookies, "flushStore")
+        .mockImplementationOnce(async () => {
+          entered.resolve();
+          if (mode === "hung") await new Promise(() => {});
+          throw new Error("secret final save failure");
+        });
+      vi.useFakeTimers();
+      const closed = browser.close().catch((error: unknown) => error);
+      const settled = vi.fn();
+      void closed.then(settled);
+      await withTimeout(entered.promise, 1_000, {
+        timeoutError: () => new Error("Final save never started."),
+      });
+      if (mode === "hung") await vi.advanceTimersByTimeAsync(5_000);
+      await vi.waitFor(
+        () =>
+          expect(settled, "final save failure never settled after disposal").toHaveBeenCalledOnce(),
+        { timeout: 1_000 },
+      );
+      expect(await closed).toMatchObject({ reason: "browser-profile-persistence-failed" });
+      expect(browser.context.isConnected?.()).toBe(false);
+      expect(page.webContents.close).toHaveBeenCalled();
+      await expect(browser.cdp.send("Target.getTargets")).rejects.toThrow(/closed/);
+      expect(() => owner.assertReady()).not.toThrow();
+      flush.mockRestore();
+    } finally {
+      await f.launcher.localProfiles.release(f.directory);
+      vi.useRealTimers();
+      f.launcher.close();
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+  it("rejects a helper close timeout without retiring and reconciles a partial import", async () => {
+    const f = await fixture();
+    const { acquireElectronLocalProfile } = await import("./electron-local-profile.js");
+    let browser: Awaited<ReturnType<typeof f.launch>> | undefined;
+    try {
+      await f.initialize();
+      browser = await f.launch();
+      const owner = acquireElectronLocalProfile({
+        root: f.root,
+        directory: f.directory,
+        binding: f.binding,
+        configure: () => {},
+      });
+      const capture = vi.spyOn(owner.mirror, "flush");
+      const imported = Promise.withResolvers<void>();
+      electron.bootstrap = (method) => {
+        if (method === "Network.setCookies") imported.resolve();
+        return undefined;
+      };
+      vi.useFakeTimers();
+      const pending = browser.replaceSiteCookies(
+        "https://example.test",
+        [
+          {
+            name: "sid",
+            value: "partial",
+            domain: "example.test",
+            path: "/",
+            expires: -1,
+            httpOnly: true,
+            secure: true,
+            sameSite: "Lax",
+          },
+        ],
+        new AbortController().signal,
+      );
+      const rejected = expect(pending).rejects.toThrow("Browser cookie target did not close");
+      await withTimeout(imported.promise, 1_000, {
+        timeoutError: () => new Error("Cookie import was never applied."),
+      });
+      const helper = electron.views.at(-1)!;
+      helper.webContents.close.mockImplementationOnce(() => {});
+      await vi.advanceTimersByTimeAsync(2_000);
+      await rejected;
+      expect(helper.webContents.forcefullyCrashRenderer).toHaveBeenCalledOnce();
+      expect(() => owner.assertAdmitted()).not.toThrow();
+      const captures = electron.views
+        .flatMap((v) => v.webContents.debugger.sendCommand.mock.calls)
+        .filter(([method]) => method === "Network.getAllCookies").length;
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(
+        electron.views
+          .flatMap((v) => v.webContents.debugger.sendCommand.mock.calls)
+          .filter(([method]) => method === "Network.getAllCookies"),
+      ).toHaveLength(captures + 1);
+      expect(capture).toHaveBeenCalledOnce();
+    } finally {
+      electron.bootstrap = undefined;
+      await browser?.close().catch(() => undefined);
+      await f.launcher.localProfiles.release(f.directory);
+      vi.useRealTimers();
+      f.launcher.close();
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
   it("advertises engine support at startup without opening a browser or checking the keychain", async () => {
     const f = await fixture();
     const { safeStorage } = await import("electron");
@@ -2051,10 +2302,20 @@ describe("native Electron profiles", () => {
     );
     const decrypt = vi
       .spyOn(safeStorage, "decryptStringAsync")
-      .mockRejectedValue(new Error("locked"));
+      .mockRejectedValue(new Error("private-cookie https://private.test locked"));
     try {
       await expect(f.launch()).rejects.toThrow(/Unlock the login keychain.*Retry opening/u);
       await expect(f.launch()).rejects.toThrow(/Unlock the login keychain.*Retry opening/u);
+      expect(f.onLocalProfileDiagnostic).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "browser.profile.retired",
+          reason: "startup-failed",
+          error: expect.objectContaining({ name: "BrowserRuntimeError" }),
+        }),
+      );
+      expect(JSON.stringify(f.onLocalProfileDiagnostic.mock.calls)).not.toMatch(
+        /private-cookie|private\.test|locked/u,
+      );
       const native = vi.mocked(session.fromPath).mock.results.at(-1)!.value;
       expect(native).toBe(owner.session);
       expect(native.clearCache).not.toHaveBeenCalled();
@@ -2200,6 +2461,10 @@ describe("native Electron profiles", () => {
           );
       await expect(browser.profile!.ready()).rejects.toThrow();
       expect(disconnected).toHaveBeenCalledOnce();
+      expect(f.onLocalProfileDiagnostic).toHaveBeenCalledExactlyOnceWith({
+        event: "browser.profile.retired",
+        reason: "network-service-lost",
+      });
       browser = await f.launch(true);
       const recovered = vi.fn();
       before({ url: "https://site.test/" }, recovered);

@@ -7,6 +7,7 @@ import {
 } from "@opensteer/browser-core";
 import { type BrowserCookie } from "@opensteer/browser-profile";
 import {
+  BrowserRuntimeError,
   pageViewport,
   normalizeElectronCursor,
   siteCookieReplacementBatch,
@@ -65,6 +66,7 @@ import {
   releaseElectronLocalProfile,
   requireElectronLocalProfiles,
   type ElectronLocalProfile,
+  type ElectronLocalProfileDiagnostic,
 } from "./electron-local-profile.js";
 
 import type { BrowserPagePolicyConfig } from "@opensteer/browser-runtime-core/page-policy";
@@ -97,6 +99,7 @@ type PageOpenTiming = (stage: ElectronLocalProfileOpenTiming["stage"]) => void;
 
 interface ElectronBrowserLauncherOptions {
   readonly onLocalProfileOpenTiming?: (timing: ElectronLocalProfileOpenTiming) => void;
+  readonly onLocalProfileDiagnostic?: (diagnostic: ElectronLocalProfileDiagnostic) => void;
   readonly authenticator?: PasskeyAuthenticator;
   readonly clipboard?: EngineClipboard;
   readonly downloads: Pick<DesktopDownloads, "accept">;
@@ -126,6 +129,7 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
   readonly #views: ElectronBrowserViewPool;
   readonly #localProfileRoot: string | undefined;
   readonly #onLocalProfileOpenTiming: ElectronBrowserLauncherOptions["onLocalProfileOpenTiming"];
+  readonly #onLocalProfileDiagnostic: ElectronBrowserLauncherOptions["onLocalProfileDiagnostic"];
   readonly localProfiles: LocalProfileEngine = {
     engine: "electron",
     release: releaseElectronLocalProfile,
@@ -148,6 +152,7 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
     }
     this.#localProfileRoot = options.localProfileRoot;
     this.#onLocalProfileOpenTiming = options.onLocalProfileOpenTiming;
+    this.#onLocalProfileDiagnostic = options.onLocalProfileDiagnostic;
     this.#authenticator = options.authenticator;
     this.#pagePolicyPreloadPath = options.pagePolicyPreloadPath;
     this.#clipboard = options.clipboard;
@@ -180,6 +185,7 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
       const profile = acquireElectronLocalProfile({
         ...request.storage,
         root: this.#localProfileRoot,
+        ...(this.#onLocalProfileDiagnostic ? { onDiagnostic: this.#onLocalProfileDiagnostic } : {}),
         configure: (session, gate) =>
           this.#configureSession(
             session,
@@ -234,7 +240,10 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
         return browser;
       } catch (error) {
         removeCancellation();
-        if (!sharedOwner) void profile.retire().catch(() => undefined);
+        if (!sharedOwner)
+          void profile
+            .retire(signal?.aborted ? "cancelled" : "startup-failed", error)
+            .catch(() => undefined);
         await context?.close().catch(() => undefined);
         throw error;
       }
@@ -558,20 +567,49 @@ class ElectronLaunchedBrowser implements LaunchedBrowser {
   }
 
   async #close(): Promise<void> {
-    await (this.cdp as ElectronBrowserCdpBackend).close().catch(() => undefined);
-    await this.context.close();
-    if (this.#localProfile) {
-      if (this.#admitted) {
-        await this.#profileSession.cookies.flushStore();
-        await this.#localProfile.mirror.flush();
+    let saveFailure: BrowserRuntimeError | undefined;
+    try {
+      if (this.#localProfile && this.#admitted && !this.#localProfile.retired) {
+        const profile = this.#localProfile;
+        let saving = true;
+        try {
+          await withTimeout(
+            (async () => {
+              await this.#profileSession.cookies.flushStore();
+              if (saving && !profile.retired) await profile.mirror.flush();
+            })(),
+            5_000,
+            { timeoutError: () => new Error("Browser profile final save timed out.") },
+          );
+        } catch (cause) {
+          if (!this.#localProfile.retired)
+            saveFailure = new BrowserRuntimeError(
+              "conflict",
+              "Browser profile storage is unavailable. The profile was preserved.",
+              { cause, reason: "browser-profile-persistence-failed" },
+            );
+        } finally {
+          saving = false;
+        }
       }
-    } else {
+    } finally {
+      try {
+        await (this.cdp as ElectronBrowserCdpBackend).close();
+      } finally {
+        try {
+          await this.context.close();
+        } finally {
+          this.#notifyClosed();
+        }
+      }
+    }
+    if (!this.#localProfile) {
       await Promise.all([
         this.#profileSession.clearCache(),
         this.#profileSession.clearStorageData(),
       ]);
     }
-    this.#notifyClosed();
+    if (saveFailure) throw saveFailure;
   }
 
   #notifyClosed(): void {
@@ -612,6 +650,7 @@ class ElectronBrowserContext implements BrowserContext {
   readonly #profileSession: Session;
   readonly #localProfile: ElectronLocalProfile | undefined;
   readonly #untrack: (() => void) | undefined;
+  #closePromise: Promise<void> | undefined;
   #closed = false;
   #onPageTiming: PageOpenTiming | undefined;
   readonly #storageViews = new Set<WebContentsView>();
@@ -712,7 +751,12 @@ class ElectronBrowserContext implements BrowserContext {
     } else await replace();
   }
 
-  async close(): Promise<void> {
+  close(): Promise<void> {
+    this.#closePromise ??= this.#close();
+    return this.#closePromise;
+  }
+
+  async #close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
     this.#events.emit("close");
@@ -724,9 +768,12 @@ class ElectronBrowserContext implements BrowserContext {
     for (const view of this.#storageViews) {
       if (!view.webContents.isDestroyed()) view.webContents.close({ waitForBeforeUnload: false });
     }
-    await Promise.allSettled(pages.map((page) => page.close()));
-    this.#untrack?.();
-    this.#events.removeAllListeners();
+    try {
+      await Promise.allSettled(pages.map((page) => page.close()));
+    } finally {
+      this.#untrack?.();
+      this.#events.removeAllListeners();
+    }
   }
 
   pageByTargetId(targetId: string): Promise<ElectronBrowserPage | null> {
@@ -864,6 +911,12 @@ class ElectronBrowserContext implements BrowserContext {
         contents.close({ waitForBeforeUnload: false });
         await withTimeout(destroyed, 2_000, {
           timeoutError: () => new Error("Browser cookie target did not close."),
+        }).catch((error: unknown) => {
+          if (!contents.isDestroyed()) {
+            contents.forcefullyCrashRenderer();
+            contents.close({ waitForBeforeUnload: false });
+          }
+          throw error;
         });
       }
     }
@@ -1780,7 +1833,12 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     // an evaluation awaiting the person's input, so the hub finishes after it.
     const hubClosed = this.#hub.close();
     this.#webContents.close({ waitForBeforeUnload: false });
-    await hubClosed;
+    try {
+      await hubClosed;
+    } finally {
+      if (!this.#webContents.isDestroyed()) this.#webContents.close({ waitForBeforeUnload: false });
+      if (!this.#restingHost.isDestroyed()) this.#restingHost.destroy();
+    }
   }
 
   isClosed(): boolean {
@@ -1940,6 +1998,8 @@ class ElectronDebuggerHub {
   /** Settles once the hub's own Runtime.enable has reported every context. */
   #attachment: Promise<void> | null = null;
   #closed = false;
+  readonly #forcedDisposal = Promise.withResolvers<void>();
+  #closePromise: Promise<void> | undefined;
   /**
    * Resolves when the next Runtime command may go to Chromium. Browser-side
    * target identity and dialog ownership never wait for renderer contexts.
@@ -2357,14 +2417,33 @@ class ElectronDebuggerHub {
     this.#updateThrottling();
   }
 
-  async close(): Promise<void> {
+  close(): Promise<void> {
+    this.#closePromise ??= this.#close();
+    return this.#closePromise;
+  }
+
+  async #close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
     const channels = [...this.#channels];
     this.#channels.clear();
     for (const channel of channels) channel.clearListeners();
-    await this.#terminate(new Error("Electron CDP target is closing."));
-    this.#events.removeAllListeners();
+    try {
+      await withTimeout(this.#terminate(new Error("Electron CDP target is closing.")), 2_000, {
+        timeoutError: () => new Error("Electron CDP target teardown timed out."),
+      });
+    } catch (error) {
+      this.#forcedDisposal.resolve();
+      if (!this.#webContents.isDestroyed()) {
+        this.#webContents.forcefullyCrashRenderer();
+        this.#webContents.close({ waitForBeforeUnload: false });
+      }
+      throw error;
+    } finally {
+      if (this.#isAttached()) this.#debugger.detach();
+      this.#forgetContexts();
+      this.#events.removeAllListeners();
+    }
   }
 
   /**
@@ -2382,10 +2461,14 @@ class ElectronDebuggerHub {
     this.#renderingOwners.clear();
     this.#updateThrottling();
     const teardown = (async () => {
-      await this.#ownershipTail;
-      while (this.#outstandingInput.size > 0 && !this.#webContents.isDestroyed())
-        await Promise.race([Promise.all(this.#outstandingInput), this.#destroyed]);
-      if (this.#channels.size === 0 && this.#isAttached()) this.#debugger.detach();
+      await Promise.race([this.#ownershipTail, this.#forcedDisposal.promise]);
+      if (this.#outstandingInput.size > 0 && !this.#webContents.isDestroyed())
+        await Promise.race([
+          Promise.all(this.#outstandingInput),
+          this.#destroyed,
+          this.#forcedDisposal.promise,
+        ]);
+      if (!this.#closed && this.#channels.size === 0 && this.#isAttached()) this.#debugger.detach();
       this.#forgetContexts();
     })().finally(() => {
       if (this.#teardown === teardown) this.#teardown = null;
