@@ -371,19 +371,37 @@ async function verifyDraftAssets(repo: string, tag: string, run: Run, expectedBy
   }
 }
 
-// GitHub's by-tag endpoint returns only published releases, so drafts are found by
-// listing. A listing also distinguishes absence from authentication or network
-// failures; never create on an ambiguous error.
-async function findRelease(repo: string, tag: string, run: Run) {
-  const releases = z
-    .array(z.array(releaseSchema))
-    .parse(
-      JSON.parse(
-        await run("gh", ["api", "--paginate", "--slurp", `repos/${repo}/releases?per_page=100`]),
-      ),
-    )
-    .flat();
-  return releases.find((release) => release.tag_name === tag);
+const releaseIdQuery =
+  "query($owner:String!,$name:String!,$tag:String!){repository(owner:$owner,name:$name){release(tagName:$tag){databaseId}}}";
+
+// GitHub's by-tag endpoint hides drafts; GraphQL names a draft's id as well. Releases
+// grow with every push, so one is found by its tag, never by listing them all. An
+// empty answer means no release, while a failed request throws: never create on an
+// ambiguous error.
+export async function findRelease(repo: string, tag: string, run: Run) {
+  const [owner, name] = repo.split("/");
+  const id = (
+    await run("gh", [
+      "api",
+      "graphql",
+      "-f",
+      `query=${releaseIdQuery}`,
+      "-f",
+      `owner=${owner}`,
+      "-f",
+      `name=${name}`,
+      "-f",
+      `tag=${tag}`,
+      "--jq",
+      ".data.repository.release.databaseId",
+    ])
+  ).trim();
+  if (!id) return undefined;
+  return releaseSchema.parse(
+    JSON.parse(
+      await run("gh", ["api", `repos/${repo}/releases/${z.coerce.number().int().parse(id)}`]),
+    ),
+  );
 }
 
 export async function draft(
@@ -435,30 +453,30 @@ export async function draft(
   }
 }
 
-export function requireNewerStable(version: string, releases: z.infer<typeof releaseSchema>[]) {
+export function requireNewerStable(version: string, tags: readonly string[]) {
   const next = versionSchema.parse(version).split(".").map(BigInt);
-  for (const release of releases) {
-    if (release.draft || release.prerelease || !release.tag_name.startsWith("desktop-v")) continue;
-    const previous = versionSchema
-      .parse(release.tag_name.slice("desktop-v".length))
-      .split(".")
-      .map(BigInt);
+  for (const tag of tags) {
+    if (!tag.startsWith("desktop-v")) continue;
+    const previous = versionSchema.parse(tag.slice("desktop-v".length)).split(".").map(BigInt);
     const difference =
       next.map((value, i) => value - previous[i]!).find((value) => value !== 0n) ?? 0n;
     if (difference <= 0n)
       throw new Error("Stable version must be newer than every published Stable");
   }
 }
+// A draft gets its tag only when published, so the Stable tags are the published Stables.
 async function stableHeadGuard(repo: string, version: string, run: Run) {
-  const releases = z
-    .array(z.array(releaseSchema))
-    .parse(
-      JSON.parse(
-        await run("gh", ["api", "--paginate", "--slurp", `repos/${repo}/releases?per_page=100`]),
-      ),
-    )
-    .flat();
-  requireNewerStable(version, releases);
+  const refs = await run("git", [
+    "ls-remote",
+    "--tags",
+    "--refs",
+    `https://github.com/${repo}.git`,
+    "refs/tags/desktop-v*",
+  ]);
+  requireNewerStable(
+    version,
+    refs.split("\n").flatMap((line) => line.split("\trefs/tags/")[1] ?? []),
+  );
 }
 
 export async function verifyInsiderProvenance(
