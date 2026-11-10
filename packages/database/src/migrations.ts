@@ -1,3 +1,4 @@
+import { knowledgeMigration } from "./knowledge-schema.js";
 import { PLUGIN_SCHEMA_SQL } from "./plugin-schema.js";
 import { conversationUnreadPredicate } from "./message-visibility.js";
 import {
@@ -4720,6 +4721,7 @@ export function migrationProvider() {
         "0166_memory_pass_activity": memoryPassActivityMigration,
         "0167_quiet_tasks": quietTasksMigration,
         "0168_devices": devicesMigration,
+        "0169_knowledge": knowledgeMigration,
       };
     },
   };

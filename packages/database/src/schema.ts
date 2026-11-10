@@ -117,6 +117,7 @@ import type {
 } from "@opensteer/protocol";
 import type { TriggerProgram, TriggerProgramEvent, TriggerSource } from "@opensteer/triggers";
 import type { ColumnType, Generated, Selectable } from "kysely";
+import type { KnowledgeTables } from "./knowledge-schema.js";
 
 export type Timestamp = ColumnType<Date, Date | string | undefined, Date | string>;
 export type NullableTimestamp = ColumnType<
@@ -2045,7 +2046,7 @@ export interface AgentConnectionTable {
   revokedAt: NullableTimestamp;
 }
 
-export interface DatabaseSchema {
+export interface DatabaseSchema extends KnowledgeTables {
   agentConnections: AgentConnectionTable;
   apps: AppTable;
   appVersions: AppVersionTable;
