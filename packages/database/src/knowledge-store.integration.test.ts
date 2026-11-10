@@ -679,10 +679,18 @@ integration("knowledge storage", () => {
     expect(rowsOf(await select(context, "select repeat('x', 524000) as big"))[0]![0]).toHaveLength(
       524000,
     );
-    await expect(select(context, "select repeat('x', 524289) as big")).rejects.toMatchObject({
-      code: "resource_exhausted",
-      reason: "knowledge-row-too-large",
-    });
+    for (const statement of [
+      "select repeat('x', 524289) as big",
+      "select repeat('x', 524289) as a, 1 as q",
+      "select 1 as q, repeat('x', 524289) as a from facts",
+      'select 1 as "Q", 2 as r, 3 as "q.*", 4 as text, repeat(\'x\', 524289) as a',
+      "select q.q, repeat('x', 524289) as a from (select 1 as q) as q",
+      "select 1 as q, 2 as q, repeat('x', 524289) as a",
+    ])
+      await expect(select(context, statement), statement).rejects.toMatchObject({
+        code: "resource_exhausted",
+        reason: "knowledge-row-too-large",
+      });
     const statement =
       "insert into facts (topic, thing, property, value) values ($1, 'big', 'v', $2::jsonb)";
     await insert(context, statement, {

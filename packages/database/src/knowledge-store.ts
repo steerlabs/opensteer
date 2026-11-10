@@ -215,7 +215,7 @@ async function run(
     const result = await query(
       client,
       `select q.* from (\n${statement.text}\n) as q
-       where octet_length(q::text) <= ${rowBytes} or knowledge.result_row_too_large()
+       where octet_length((q.*)::text) <= ${rowBytes} or knowledge.result_row_too_large()
        limit ${rowLimit + 1}`,
       parameters,
     );
