@@ -9,6 +9,7 @@ import {
 import type { PhoneBrowserNativePort, NativeDocumentRef } from "./native-port.js";
 import { PhoneBrowserError } from "./native-port.js";
 import { agentObservationMethods } from "@opensteer/browser-core/agent-cdp-policy";
+import { BrowserStageFileParametersSchema } from "@opensteer/protocol/browser-actions";
 import type { PhoneTab } from "./state.js";
 
 export interface PhoneCdpOwner {
@@ -64,7 +65,6 @@ export class PhoneCdpSession {
       {
         uuid: owner.uuid,
         isNormalizedAbsolutePath: (value) =>
-          value === owner.filesRoot &&
           value.startsWith("/") &&
           value
             .slice(1)
@@ -96,7 +96,25 @@ export class PhoneCdpSession {
     this.#router.onEvent(owner.sessionId, owner.event);
   }
 
-  send(command: CdpCommand): Promise<unknown> {
+  async send(command: CdpCommand): Promise<unknown> {
+    if (this.#closed) throw new PhoneBrowserError("target-closed", "The attachment has ended.");
+    if (command.method === "Opensteer.stageFile") {
+      if (command.sessionId !== undefined)
+        throw new PhoneBrowserError("forbidden", "File staging belongs to the browser session.");
+      const parameters = BrowserStageFileParametersSchema.parse(command.parameters);
+      const staged = await this.#native.stageChunk({
+        fileId: parameters.fileId,
+        name: parameters.name,
+        offset: parameters.offset,
+        data: parameters.data,
+        ...(parameters.size === undefined ? {} : { size: parameters.size }),
+        epoch: this.#owner.epoch,
+        sessionId: this.#owner.sessionId,
+      });
+      return staged.complete
+        ? { path: `${this.#owner.filesRoot}/${parameters.fileId}/${parameters.name}` }
+        : {};
+    }
     return this.#router.send(this.#owner.sessionId, command);
   }
 

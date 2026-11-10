@@ -4,6 +4,40 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ProfileManifestTest {
+  @Test fun startupRetiresUntombstonedProfilesFromAnInterruptedDeploymentErasure() {
+    var durable: String? = null
+    val manifest = ProfileManifest({ durable }, { durable = it })
+    val pending = manifest.create(ProfileBinding("deployment", "runner", manifest.storageInstanceId, "profile", "binding"), false, false)
+    val alreadyRetiring = manifest.create(ProfileBinding("deployment", "old-runner", manifest.storageInstanceId, "old-profile", "old-binding"), false, false)
+    manifest.tombstone(alreadyRetiring.handle, "existing-deletion")
+    val unrelated = manifest.create(ProfileBinding("other-deployment", "runner", manifest.storageInstanceId, "other-profile", "other-binding"), false, false)
+    val restarted = ProfileManifest({ durable }, { durable = it })
+    assertNull(restarted.byHandle(pending.handle).deletionId)
+    restarted.retireDeployment("deployment")
+    val tombstoned = ProfileManifest({ durable }, { durable = it })
+    assertNotNull(tombstoned.byHandle(pending.handle).deletionId)
+    assertFalse(tombstoned.byHandle(pending.handle).deleted)
+    assertNull(tombstoned.byHandle(unrelated.handle).deletionId)
+    tombstoned.retireDeployment("deployment")
+    assertEquals("existing-deletion", tombstoned.byHandle(alreadyRetiring.handle).deletionId)
+    tombstoned.deleted(pending.handle)
+    assertTrue(ProfileManifest({ durable }, { durable = it }).byHandle(pending.handle).deleted)
+  }
+  @Test fun guestErasureRefusesRetirementUntilDeletionIsConfirmedAfterRestart() {
+    var durable: String? = null
+    val manifest = ProfileManifest({ durable }, { durable = it })
+    val guest = manifest.create(ProfileBinding("deployment", "runner", manifest.storageInstanceId, "profile", "binding"), false, true)
+    try {
+      manifest.requireGuestsErased("deployment")
+      fail("A tombstone is not confirmed erasure")
+    } catch (error: com.opensteer.phoneconnection.core.Refused) {
+      assertEquals("erasure-pending", error.reason)
+    }
+    manifest.requireGuestsErased("another-deployment")
+    val restarted = ProfileManifest({ durable }, { durable = it })
+    restarted.deleted(guest.handle)
+    restarted.requireGuestsErased("deployment")
+  }
   @Test fun repeatedEnrollmentInventoriesOnlyTheCurrentRunnerWithoutLosingOldErasure() {
     var durable: String? = null
     val manifest = ProfileManifest({ durable }, { durable = it })

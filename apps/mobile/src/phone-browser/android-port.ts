@@ -64,6 +64,7 @@ export function composeAndroidBrowserPort(
     commitAttach: (input) => invoke(() => connection.commitAttach(input)),
     sendRelay: (input) => invoke(() => connection.sendRelay(input)),
     closeChannel: (input) => invoke(() => connection.closeChannel(input)),
+    applyViewerInput: (input) => invoke(() => views.applyViewerInput(input)),
     attachAgent: (input) => invoke(() => views.attachAgent(input)),
     detachAgent: (input) => invoke(() => views.detachAgent(input)),
     authorizeCdp: (input) => invoke(() => views.authorizeCdp(input)),

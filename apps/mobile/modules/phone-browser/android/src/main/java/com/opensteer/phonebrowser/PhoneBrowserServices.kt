@@ -10,7 +10,7 @@ internal class PhoneBrowserServices(
   private val transport: () -> BrowserTransport,
   private val binding: (String) -> Map<String, Any>,
   private val current: (PhoneBrowserArtifact) -> Boolean,
-  private val rejectedFrame: (PhoneBrowserArtifact) -> Unit
+  private val completedFrame: (PhoneBrowserArtifact) -> Unit
 ) : PhoneBrowserAuthority, PhoneBrowserSink {
   private fun <Result> admitted(epoch: Int, action: (BrowserTransport) -> Result): Result {
     gate.check(epoch)
@@ -43,19 +43,20 @@ internal class PhoneBrowserServices(
   override fun acknowledge(epoch: Int, channelId: String, token: String) = admitted(epoch) { it.ack(epoch, channelId, token) }
   override fun deliver(artifact: PhoneBrowserArtifact) = admitted(artifact.epoch) { writer ->
     if (!current(artifact)) throw BrowserFailure("stale-document")
-    val completed: (Boolean) -> Unit = { accepted -> if (!accepted && artifact.token != null) rejectedFrame(artifact) }
+    val completed: (Boolean) -> Unit = { if (artifact.token != null) completedFrame(artifact) }
     if (artifact.requestId != null) {
       val attachment = artifact.attachmentId ?: throw BrowserFailure("forbidden")
       writer.requireAttachment(artifact.epoch, attachment, artifact.sessionId, artifact.channelId)
       writer.capture(artifact.epoch, artifact.channelId, artifact.requestId, artifact.bytes, attachment, { current(artifact) }, completed)
     } else {
+      if (artifact.token == null) throw BrowserFailure("forbidden")
       writer.viewer(artifact.epoch, artifact.channelId, artifact.sessionId, false)
       val geometry = artifact.geometry
       val header = nativeJson(mapOf("surfaceId" to artifact.tabId, "frameId" to artifact.captureRevision,
         "geometryRevision" to artifact.geometryRevision, "rasterWidth" to artifact.width, "rasterHeight" to artifact.height,
         "viewportWidth" to geometry.width, "viewportHeight" to geometry.height,
         "capture" to mapOf("revision" to artifact.captureRevision, "width" to geometry.width, "height" to geometry.height),
-        "encoding" to artifact.mimeType.removePrefix("image/"), "watchToken" to (artifact.token ?: throw BrowserFailure("forbidden")))) as JsonObject
+        "encoding" to artifact.mimeType.removePrefix("image/"))) as JsonObject
       writer.frame(artifact.epoch, artifact.channelId, header, artifact.bytes, { current(artifact) }, completed)
     }
   }

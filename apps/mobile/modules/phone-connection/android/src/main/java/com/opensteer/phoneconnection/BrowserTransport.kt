@@ -16,7 +16,7 @@ class BrowserTransport(
     private val fenceBrowser: (Int) -> Unit,
     private val monotonicNanos: () -> Long = System::nanoTime,
 ) {
-    private data class Channel(val capability: JsonObject, val credit: FrameCredit = FrameCredit(), var sequence: Long = 0,
+    private data class Channel(var capability: JsonObject, val credit: FrameCredit = FrameCredit(), var sequence: Long = 0,
         val captures: MutableMap<String, String?> = mutableMapOf(), var claims: JsonObject? = null, var admitted: Boolean = false, var lastFrameAt: Long? = null)
     data class Agent(val channelId: String, val attachmentId: String, val actorToken: String, val sessionId: String)
     private val agents = mutableMapOf<String, Agent>()
@@ -71,7 +71,14 @@ class BrowserTransport(
                 val lease = frame.obj("lease")
                 Wire.requireThat(lease.text("runtimeId") == tickets.runtimeId, "retired-capability")
                 val reference = admission.checkCapability(lease)
-                if (admission.capability != null && reference != admission.capability) fence()
+                val previous = admission.capability
+                if (previous != null && reference != previous) {
+                    val continuing = runCatching { admission.requireCurrent(admission.epoch, fence, previous) }.isSuccess
+                    if (continuing) {
+                        admission.acceptCapability(lease)
+                        channels.values.forEach { it.capability = reference }
+                    } else fence()
+                }
                 pendingGrant = lease; grantRequest = frame.text("requestId"); grantFrame = frame
             }
             "capability.revoke" -> {
@@ -148,8 +155,15 @@ class BrowserTransport(
         val permit = tickets.commit(handle, epoch, fence, digest, ReplayState.parse(transition, 4096))
         val verified = tickets.permit(permit, epoch, fence)
         val channel = channels[verified.channelId] ?: throw Refused("channel-gone")
-        if (channel.claims != null) Wire.requireThat(listOf("sessionId", "identity", "access", "subject").all { channel.claims!![it] == verified.claims[it] }, "forbidden")
-        else channel.claims = verified.claims
+        val previous = channel.claims
+        if (previous != null) {
+            val identity = verified.claims.obj("identity")
+            val priorIdentity = previous.obj("identity")
+            val sameIdentity = if (identity.text("kind") == "fresh") true
+                else if (identity.text("kind") == "profile-local" && priorIdentity.text("kind") == "profile-local")
+                identity.obj("binding") == priorIdentity.obj("binding") else identity == priorIdentity
+            Wire.requireThat(sameIdentity && listOf("sessionId", "access", "subject").all { previous[it] == verified.claims[it] }, "forbidden")
+        } else channel.claims = verified.claims
         channel.admitted = true
         permit
     }
@@ -223,8 +237,8 @@ class BrowserTransport(
     fun frame(epoch: Int, channelId: String, header: JsonObject, pixels: ByteArray, valid: () -> Boolean = { true }, completed: (Boolean) -> Unit) {
         val fence: Fence
         val channel: Channel
-        val token = (header["watchToken"] as? JsonPrimitive)?.content ?: UUID.randomUUID().toString()
-        if (pixels.isEmpty() || pixels.size > FrameCodec.MAX_FRAME) return completed(false)
+        val token = UUID.randomUUID().toString()
+        if (header.containsKey("watchToken") || pixels.isEmpty() || pixels.size > FrameCodec.MAX_FRAME) return completed(false)
         synchronized(admission) {
             fence = admission.fence ?: return completed(false)
             channel = try { requireChannel(epoch, fence, channelId, admission.capability ?: throw Refused("retired-capability")) }
@@ -236,7 +250,7 @@ class BrowserTransport(
         val ownedPixels = pixels.copyOf()
         worker.execute {
             val accepted = try {
-                val frame = FrameCodec.envelope(JsonObject(header + ("watchToken" to JsonPrimitive(token))), ownedPixels)
+                val frame = FrameCodec.envelope(header, ownedPixels)
                 val bytes = synchronized(admission) {
                     Wire.requireThat(requireChannel(epoch, fence, channelId, channel.capability) === channel, "channel-gone")
                     val relay = JsonObject(fence.fields + mapOf("type" to JsonPrimitive("browser.frame"), "capability" to channel.capability,
@@ -249,7 +263,7 @@ class BrowserTransport(
                     socket?.send(bytes.toByteString()) == true
                 }
             } catch (_: Exception) { false }
-            if (!accepted) channel.credit.ack(token)
+            channel.credit.ack(token)
             completed(accepted)
         }
     }

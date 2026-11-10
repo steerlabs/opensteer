@@ -3295,6 +3295,13 @@ export class BrowserService {
     request(command: BrowserCdpRequest["command"]): Promise<unknown>;
   }> {
     const { record, broker } = await this.#admitAgentBackend(input, "cdp", true);
+    const nativeAttachment =
+      this.#resolveTarget(placementOf(record))?.localProfileStorage?.engine === "android-webview"
+        ? {
+            attachmentId: randomUUID(),
+            actorToken: (await this.#actorToken(input, record.id)) ?? randomUUID(),
+          }
+        : null;
     let attachmentClosed = false;
     const assertAttached = (bindingWasEnded: boolean) => {
       if (
@@ -3304,10 +3311,46 @@ export class BrowserService {
       )
         throw new BrowserCdpConnectionEnded("This browser attachment has ended.");
     };
-    const unsubscribe = broker.subscribeCdp(onEvent, () => {
+    const close = () => {
+      if (attachmentClosed) return;
       attachmentClosed = true;
+      unsubscribe();
+      if (nativeAttachment) {
+        this.#actionAttachments.delete(nativeAttachment.attachmentId);
+        void broker
+          .sendHostCommand({
+            type: "agent.detach",
+            sessionId: record.id,
+            attachmentId: nativeAttachment.attachmentId,
+          })
+          .catch(() => undefined);
+      }
       onClosed?.();
-    });
+    };
+    const unsubscribe = broker.subscribeCdp(onEvent, close);
+    if (nativeAttachment) {
+      this.#actionAttachments.set(nativeAttachment.attachmentId, {
+        binding: input.agentBindingId,
+        profileId: record.profileId,
+        workspaceId: input.workspaceId,
+        ownerId: input.ownerId,
+        close,
+      });
+      try {
+        await this.#admitAgentBackend(input, "cdp");
+        assertAttached(false);
+        await broker.sendHostCommand({
+          type: "agent.attach",
+          sessionId: record.id,
+          backend: "cdp",
+          ...nativeAttachment,
+        });
+        assertAttached(false);
+      } catch (error) {
+        close();
+        throw error;
+      }
+    }
     const expired = { result: Promise.resolve({ status: "expired" }) };
     // Admission is everything before the command is handed to the browser; its
     // fences apply until then. The answer arrives on `result`.
@@ -3348,9 +3391,10 @@ export class BrowserService {
       // A late command may answer after its Run ended, but cannot recreate
       // its actor. A Run ending during admission still fences that command.
       const actorToken =
-        broker.targetedStreaming && !bindingWasEnded
+        nativeAttachment?.actorToken ??
+        (broker.targetedStreaming && !bindingWasEnded
           ? await this.#actorToken(input, record.id)
-          : undefined;
+          : undefined);
       if (!fillAllowed()) return expired;
       assertAttached(bindingWasEnded);
       const admitted = await this.#admitAgentBackend(input, "cdp");
@@ -3406,10 +3450,7 @@ export class BrowserService {
       };
     };
     return {
-      close: () => {
-        attachmentClosed = true;
-        unsubscribe();
-      },
+      close,
       dispatch,
       request: async (command) => (await dispatch(command)).result,
       session: publicSession(record),

@@ -78,6 +78,10 @@ class PhoneConnectionRuntime private constructor(context: Context) {
             "permissions" to Wire.fields("apple-calendar" to JsonPrimitive("not-determined"), "apple-contacts" to JsonPrimitive("not-determined"), "apple-reminders" to JsonPrimitive("not-determined")),
             "working" to JsonPrimitive(0), "pendingErasure" to JsonPrimitive(identity?.get("state") == JsonPrimitive("retiring")))
     }
+    @Synchronized fun retiringDeployment(): String? {
+        Wire.requireThat(!storageUnavailable, "identity-unavailable")
+        return identity?.takeIf { it["state"] == JsonPrimitive("retiring") }?.text("deploymentId")
+    }
     @Synchronized fun registerBrowser(browser: PhoneBrowserEndpoint): CompletableFuture<PhoneConnectionRuntime> {
         Wire.requireThat(!storageUnavailable, "identity-unavailable")
         Wire.requireThat(endpoint == null || endpoint === browser, "browser-already-registered")

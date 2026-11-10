@@ -38,7 +38,7 @@ internal class BrowserCapture(private val pool: PhoneBrowserPool) {
     (credits[input.tabId] ?: throw BrowserFailure("stale-frame")).ack(input.channelId, input.token)
     schedule()
   }
-  fun rejected(artifact: PhoneBrowserArtifact) {
+  fun completed(artifact: PhoneBrowserArtifact) {
     pool.main.post {
       if (pool.gate.epoch == artifact.epoch) {
         try { credits[artifact.tabId]?.ack(artifact.channelId, artifact.token ?: return@post) } catch (_: BrowserFailure) { }

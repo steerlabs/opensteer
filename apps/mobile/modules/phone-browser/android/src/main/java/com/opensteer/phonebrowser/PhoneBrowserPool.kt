@@ -189,7 +189,7 @@ internal class PhoneBrowserPool(
     }
   }
 
-  private fun construct(tab: NativeTab, loadBlank: Boolean = true) {
+  private fun construct(tab: NativeTab, loadBlank: Boolean = true, coveredPlace: Boolean = true) {
     if (tab.storeHandle.isNotEmpty()) {
       val serving = BrowserStartup.profiles?.serving(tab.storeHandle) ?: throw BrowserFailure("profile-missing")
       if (serving.name != tab.profileName) throw BrowserFailure("forbidden")
@@ -309,7 +309,7 @@ internal class PhoneBrowserPool(
       }
     }
     tab.view = browser
-    moveCovered(tab)
+    if (coveredPlace) moveCovered(tab)
     tab.document = CompletableFuture()
     tab.loading = true
     if (loadBlank) browser.loadUrl(tab.bootstrap)
@@ -399,22 +399,26 @@ internal class PhoneBrowserPool(
   }
 
   fun mount(epoch: Int, tabId: String, hostId: String, generation: Int) {
-    val tab = live(tabId)
-    await(tab.document)
-    val document = tab.document
     await(ui(epoch) { hostReady.getOrPut(hostId) { CompletableFuture() } })
-    val anchor = anchor(epoch, tab)
+    val tab = ui(epoch) {
+      val tab = tabs[tabId] ?: throw BrowserFailure("target-closed")
+      if (generation < tab.presentationGeneration) throw BrowserFailure("stale-presentation")
+      tab
+    }
+    val hadView = ui(epoch) { tab.view != null }
+    if (hadView) await(tab.document)
+    val anchor = if (hadView) anchor(epoch, tab) else tab.anchor
+    val document = tab.document
     val changedSize = ui(epoch) {
       val host = hosts[hostId] ?: throw BrowserFailure("host-not-ready")
-      tab.view!!.width != host.width || tab.view!!.height != host.height
+      tab.view?.width != host.width || tab.view?.height != host.height
     }
-    val viewport = if (changedSize) armResize(epoch, tab, anchor) else null
-    ui(epoch) {
-      if (tab.document !== document || !document.isDone || document.isCompletedExceptionally) throw BrowserFailure("stale-document")
+    val viewport = if (changedSize && hadView) armResize(epoch, tab, anchor) else null
+    revive(epoch, tabId) {
+      if (hadView && (tab.document !== document || !document.isDone || document.isCompletedExceptionally)) throw BrowserFailure("stale-document")
       if (generation < tab.presentationGeneration) throw BrowserFailure("stale-presentation")
       val host = hosts[hostId] ?: throw BrowserFailure("host-not-ready")
       if (!host.isAttachedToWindow) throw BrowserFailure("host-not-ready")
-      moveCovered(tab)
       val browser = tab.view!!
       detachView(browser)
       host.addView(browser, android.widget.LinearLayout.LayoutParams(-1, -1))
@@ -424,7 +428,8 @@ internal class PhoneBrowserPool(
     }
     if (viewport != null) await(viewport)
     ui(epoch) { if (generation != tab.presentationGeneration || tab.hostId != hostId) throw BrowserFailure("stale-presentation") }
-    restore(epoch, tab, anchor)
+    if (changedSize || !hadView) restore(epoch, tab, anchor)
+    ui(epoch) { schedulePictures() }
   }
 
   fun retain(epoch: Int, tabId: String, captureAnchor: Boolean = true) {
@@ -442,6 +447,13 @@ internal class PhoneBrowserPool(
   }
 
   fun resume(epoch: Int, tabId: String) {
+    revive(epoch, tabId, ::moveCovered)
+    val tab = live(tabId)
+    restore(epoch, tab, tab.anchor)
+    ui(epoch) { schedulePictures() }
+  }
+
+  private fun revive(epoch: Int, tabId: String, place: (NativeTab) -> Unit) {
     val tab = tabs[tabId] ?: throw BrowserFailure("target-closed")
     val restoreUrl = tab.url
     val originalGeneration = tab.generation
@@ -450,7 +462,8 @@ internal class PhoneBrowserPool(
       if (!foreground) throw BrowserFailure("foreground-required")
       ledger.resume(tabId).also {
         tab.live = true
-        if (it == TabState.DISCARDED) { tab.creating = true; tab.generation++; tab.document = CompletableFuture(); construct(tab) } else moveCovered(tab)
+        if (it == TabState.DISCARDED) { tab.creating = true; tab.generation++; tab.document = CompletableFuture(); construct(tab, coveredPlace = false) }
+        place(tab)
       }
     }
     if (previous == TabState.DISCARDED) {
@@ -459,8 +472,7 @@ internal class PhoneBrowserPool(
       blankCommitted?.invoke(tab)
       if (restoreUrl != "about:blank") navigate(epoch, tabId, restoreUrl)
     }
-    restore(epoch, tab, tab.anchor)
-    ui(epoch) { tab.creating = false; schedulePictures() }
+    ui(epoch) { tab.creating = false }
     } catch (error: Throwable) {
       RequestDeadline.cleanup { ui(gate.epoch) {
         if (tabs[tabId] === tab) {
@@ -473,6 +485,12 @@ internal class PhoneBrowserPool(
   }
 
   fun cover(epoch: Int, tabId: String) { val tab = live(tabId); anchor(epoch, tab); ui(epoch) { moveCovered(tab) } }
+
+  fun park(epoch: Int, tabId: String) = ui(epoch) {
+    val tab = tabs[tabId] ?: throw BrowserFailure("target-closed")
+    tab.view?.let(::detachView)
+    tab.hostId = null
+  }
 
   private fun moveCovered(tab: NativeTab) {
     if (!foreground) throw BrowserFailure("foreground-required")

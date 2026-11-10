@@ -56,18 +56,26 @@ class NativeJoinTest {
     fun agent() = client(Wire.fields("type" to JsonPrimitive("agent.attach"), "attachmentId" to JsonPrimitive("attachment"), "actorToken" to JsonPrimitive("actor"), "sessionId" to JsonPrimitive(session), "backend" to JsonPrimitive("cdp")))
     fun captureRequest() = client(Wire.fields("type" to JsonPrimitive("cdp.command"), "requestId" to JsonPrimitive("capture"), "actorToken" to JsonPrimitive("actor"),
       "command" to Wire.fields("method" to JsonPrimitive("Page.captureScreenshot"))))
+    fun signed(customClaims: JsonObject): Pair<JsonElement, JsonElement> {
+      val key = Ed25519PrivateKeyParameters(ByteArray(32) { 7 }, 0)
+      val der = byteArrayOf(0x30,0x2a,0x30,0x05,0x06,0x03,0x2b,0x65,0x70,0x03,0x21,0x00) + key.generatePublicKey().encoded
+      val pem = JsonPrimitive("-----BEGIN PUBLIC KEY-----\n" + Base64.toBase64String(der) + "\n-----END PUBLIC KEY-----")
+      val header = Wire.fields("alg" to JsonPrimitive("EdDSA"), "typ" to JsonPrimitive("opensteer-browser-attach+jwt"), "kid" to JsonPrimitive("fixture"))
+      val body = Wire.encode64(Wire.canonical(header).toByteArray()) + "." + Wire.encode64(Wire.canonical(customClaims).toByteArray())
+      val signer = Ed25519Signer().apply { init(true, key); val bytes = body.toByteArray(); update(bytes, 0, bytes.size) }
+      return pem to JsonPrimitive(body + "." + Wire.encode64(signer.generateSignature()))
+    }
+    fun operation(customClaims: JsonObject): String {
+      val token = signed(customClaims).second
+      client(Wire.fields("type" to JsonPrimitive("cdp.command"), "requestId" to JsonPrimitive("open"), "command" to Wire.fields("method" to JsonPrimitive("Opensteer.openTab"),
+        "parameters" to Wire.fields("operationAuthority" to token))))
+      val handle = events.last().text("authorityHandle")
+      val verified = writer.verifyAttach(gate.epoch, handle)
+      return writer.commitAttach(gate.epoch, handle, verified.text("claimsDigest"), ReplayState.parse(verified.obj("replayState"), 4096)
+        .claim(customClaims.text("nonce"), customClaims.time("expiresAt"), fences.number("now"), 4096).json())
+    }
     fun admit(customClaims: JsonObject? = null) {
-      var pem = tickets.getValue("publicKeyPem")
-      var token = tickets.getValue("cases").jsonArray.first().jsonObject.getValue("token")
-      if (customClaims != null) {
-        val key = Ed25519PrivateKeyParameters(ByteArray(32) { 7 }, 0)
-        val der = byteArrayOf(0x30,0x2a,0x30,0x05,0x06,0x03,0x2b,0x65,0x70,0x03,0x21,0x00) + key.generatePublicKey().encoded
-        pem = JsonPrimitive("-----BEGIN PUBLIC KEY-----\n" + Base64.toBase64String(der) + "\n-----END PUBLIC KEY-----")
-        val header = Wire.fields("alg" to JsonPrimitive("EdDSA"), "typ" to JsonPrimitive("opensteer-browser-attach+jwt"), "kid" to JsonPrimitive("fixture"))
-        val body = Wire.encode64(Wire.canonical(header).toByteArray()) + "." + Wire.encode64(Wire.canonical(customClaims).toByteArray())
-        val signer = Ed25519Signer().apply { init(true, key); val bytes = body.toByteArray(); update(bytes, 0, bytes.size) }
-        token = JsonPrimitive(body + "." + Wire.encode64(signer.generateSignature()))
-      }
+      val (pem, token) = customClaims?.let(::signed) ?: (tickets.getValue("publicKeyPem") to tickets.getValue("cases").jsonArray.first().jsonObject.getValue("token"))
       writer.online(socket, JsonObject(fences.obj("welcome") + mapOf("browserWireVersion" to JsonPrimitive(1), "browserAttachPublicKeys" to JsonArray(listOf(
         Wire.fields("keyId" to JsonPrimitive("fixture"), "publicKeyPem" to pem))))))
       writer.receive(relay("capability.grant", Wire.fields("requestId" to JsonPrimitive("grant"), "lease" to JsonObject(capability + ("expiresAt" to JsonPrimitive("2026-11-09T12:00:01.000Z"))))))
@@ -112,7 +120,7 @@ class NativeJoinTest {
     val (relay, bytes) = FrameCodec.decodeRelay(fixture.socket.binary.single())
     val (header, pixels) = FrameCodec.split(bytes)
     assertEquals(fixture.channel, relay.text("channelId"))
-    assertEquals(artifact.token, header.text("watchToken"))
+    assertFalse(header.containsKey("watchToken"))
     assertEquals(artifact.tabId, header.text("surfaceId"))
     assertEquals(artifact.geometryRevision, header.number("geometryRevision"))
     assertEquals(artifact.captureRevision, header.obj("capture").number("revision"))
@@ -120,7 +128,7 @@ class NativeJoinTest {
     assertEquals(200L, header.number("viewportHeight"))
     assertArrayEquals(artifact.bytes, pixels)
     assertFalse(fixture.events.any { it.toString().contains("reference") })
-    fixture.service.acknowledge(0, fixture.channel, artifact.token!!)
+    assertEquals(1, fixture.tick)
   }
   @Test fun localProfileAllocationUsesTheExactSignedBindingAndInitializationFlag() {
     val fixture = Fixture()
@@ -134,6 +142,29 @@ class NativeJoinTest {
     assertThrows(BrowserFailure::class.java) { fixture.service.requireAllocation(0, fixture.permit, null, null, binding, false) }
     assertThrows(BrowserFailure::class.java) { fixture.service.requireAllocation(0, fixture.permit, fixture.session, null) }
     assertThrows(BrowserFailure::class.java) { fixture.service.requireAllocation(0, fixture.permit, null, null, binding + ("runnerId" to "other"), true) }
+  }
+  @Test fun openingTicketsKeepChannelAuthorityAndCannotReplaceProfileBindings() {
+    val fixture = Fixture()
+    val binding = nativeJson(mapOf("version" to 1, "engine" to "android-webview", "deploymentId" to "dep_11111111-1111-4111-8111-111111111111",
+      "runnerId" to "rnr_11111111-1111-4111-8111-111111111111", "profileId" to "bpr_11111111-1111-4111-8111-111111111111",
+      "storageInstanceId" to "11111111-1111-4111-8111-111111111111", "bindingId" to "11111111-1111-4111-8111-111111111111")) as JsonObject
+    val identity = Wire.fields("kind" to JsonPrimitive("profile-local"), "binding" to binding, "initialized" to JsonPrimitive(false), "readyUrl" to JsonPrimitive("https://fixture.invalid/initial"))
+    fixture.admit(JsonObject(fixture.claims() + ("identity" to identity)))
+    val currentIdentity = JsonObject(identity + mapOf("initialized" to JsonPrimitive(true), "readyUrl" to JsonPrimitive("https://fixture.invalid/current")))
+    val operation = JsonObject(fixture.claims() + mapOf("nonce" to JsonPrimitive("operation-nonce-1111111111111111"), "identity" to currentIdentity))
+    val permit = fixture.operation(operation)
+    fixture.service.requireAllocation(0, permit, fixture.session, null, binding.mapValues { it.value.jsonPrimitive.let { value -> value.intOrNull ?: value.content } }, true)
+    val fresh = fixture.operation(JsonObject(operation + mapOf("nonce" to JsonPrimitive("fresh-operation-nonce-1111111111111111"), "identity" to Wire.fields("kind" to JsonPrimitive("fresh")))))
+    assertThrows(BrowserFailure::class.java) { fixture.service.requireAllocation(0, fresh, fixture.session, null, binding.mapValues { it.value.jsonPrimitive.let { value -> value.intOrNull ?: value.content } }, true) }
+    fixture.service.requireAllocation(0, fixture.permit, fixture.session, null, binding.mapValues { it.value.jsonPrimitive.let { value -> value.intOrNull ?: value.content } }, false)
+    for ((index, changed) in listOf(
+      operation + ("subject" to JsonPrimitive("another-subject")),
+      operation + ("access" to JsonPrimitive("read")),
+      operation + ("sessionId" to JsonPrimitive("bsn_22222222-2222-4222-8222-222222222222")),
+      operation + ("identity" to JsonObject(currentIdentity + ("binding" to JsonObject(binding + ("profileId" to JsonPrimitive("bpr_22222222-2222-4222-8222-222222222222"))))))
+    ).withIndex()) {
+      assertThrows(Refused::class.java) { fixture.operation(JsonObject(changed + ("nonce" to JsonPrimitive("refused-operation-nonce-$index-1111111111111111")))) }
+    }
   }
   @Test fun readOnlyWatchersNeverBecomeControllersOrAgents() {
     val fixture = Fixture()

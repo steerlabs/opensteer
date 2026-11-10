@@ -272,8 +272,9 @@ no-backup storage; this is not a hardware-backed, non-exportable Ed25519 key.
 Removing the phone or signing out fences admission before erasure. A durable denial marker keeps
 its enrollment unusable until all that Deployment's profiles are physically deleted, including
 loaded Android profiles that require a process restart. Sign-out does not wait for that restart.
-“Pending restart” is not completed erasure: the native startup gate deletes tombstoned stores before
-loading any page. Android Guest uses an app-private throwaway disk profile, never a reusable or
+“Pending restart” is not completed erasure: the native startup gate deletes retired stores before
+loading any page. A persisted retiring identity covers even stores not yet tombstoned when the
+process ended; unfinished Guest deletion also keeps retirement pending. Android Guest uses an app-private throwaway disk profile, never a reusable or
 RAM-only store. Ending it clears cookies and web storage, but service workers and caches can remain
 until that startup deletion. The person's system file picker may survive backgrounding for its
 original page; agent-staged choosers cannot.
