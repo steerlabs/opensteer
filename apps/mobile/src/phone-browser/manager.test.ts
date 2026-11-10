@@ -861,11 +861,35 @@ describe("phone browser manager", () => {
     expect(fixture.presentation("second").state).toBe("live-covered");
   });
 
-  test("opening another agent tab releases its own covered view before native allocation", async () => {
+  test("retained allocation needs neither live place and agent switching keeps the original document", async () => {
     const fixture = await setup();
+    await fixture.open("visible");
+    await fixture.present("visible");
     await fixture.agentAttach();
     await fixture.action({ type: "surface.resume" });
     fixture.native.tabs.get(fixture.surfaceId)!.form = "unsent form";
+    const before = fixture.native.calls.length;
+    await fixture.open("host-opened");
+    expect(fixture.server().at(-1)).not.toMatchObject({ type: "cdp.error" });
+    expect(fixture.presentation("host-opened").state).toBe("retained");
+    expect(fixture.presentation().state).toBe("live-covered");
+    expect(fixture.presentation("visible").state).toBe("live-visible");
+    expect(
+      fixture.native.calls.slice(before).filter(({ method }) => method === "createTab"),
+    ).toMatchObject([{ input: { tabId: "host-opened", state: "retained" } }]);
+    expect(fixture.native.calls.slice(before).some(({ method }) => method === "suspendTab")).toBe(
+      false,
+    );
+    await fixture.client({
+      type: "cdp.command",
+      requestId: uuid(),
+      command: { method: "Opensteer.resumeTab", parameters: { surfaceId: "host-opened" } },
+    });
+    expect(fixture.server().at(-1)).toMatchObject({ type: "cdp.error" });
+    expect(fixture.presentation("host-opened").state).toBe("retained");
+    await fixture.present("host-opened");
+    expect(fixture.presentation("host-opened").state).toBe("live-visible");
+    expect(fixture.presentation().state).toBe("live-covered");
     await fixture.sessionAction({ type: "surface.open", url: "https://second.example/" });
     expect(fixture.presentation().state).toBe("retained");
     const opened = fixture.server().at(-1);

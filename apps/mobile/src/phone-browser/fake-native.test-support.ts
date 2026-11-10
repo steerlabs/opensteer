@@ -82,6 +82,7 @@ export class FakePhoneBrowserNative implements PhoneBrowserNativePort {
   erasure: "deleted" | "pending-restart" = "deleted";
   mountError: PhoneBrowserError | null = null;
   #next = 0;
+  #covered: string | null = null;
   readonly qualification: NativeQualification;
 
   constructor(
@@ -131,6 +132,7 @@ export class FakePhoneBrowserNative implements PhoneBrowserNativePort {
     this.epoch++;
     this.calls.push({ method: "fence", input: reason });
     for (const tab of this.tabs.values()) if (tab.state === "live") tab.state = "retained";
+    this.#covered = null;
     this.pipes.clear();
     this.authorizations.clear();
     this.actionAttachments.clear();
@@ -287,6 +289,8 @@ export class FakePhoneBrowserNative implements PhoneBrowserNativePort {
       retained.metadata = { ...retained.metadata, generation: ++this.#next };
       return retained.metadata;
     }
+    if (input.state === "live" && this.#covered !== null)
+      throw new PhoneBrowserError("target-suspended", "Allocation claimed an occupied live place.");
     const metadata: NativeTabMetadata = {
       generation: ++this.#next,
       revision: 1,
@@ -309,17 +313,21 @@ export class FakePhoneBrowserNative implements PhoneBrowserNativePort {
       loads: 1,
       form: "",
     });
+    if (input.state === "live") this.#covered = input.tabId;
     return metadata;
   }
   async destroyTab(input: Input<"destroyTab">) {
     this.#tab(input, "destroyTab");
     this.tabs.delete(input.tabId);
+    if (this.#covered === input.tabId) this.#covered = null;
   }
   async suspendTab(input: Input<"suspendTab">) {
     this.#tab(input, "suspendTab").state = input.state;
+    if (this.#covered === input.tabId) this.#covered = null;
   }
   async resumeTab(input: Input<"resumeTab">) {
     const tab = this.#tab(input, "resumeTab");
+    this.#covered = input.tabId;
     return this.#activate(tab);
   }
   #activate(tab: FakeTab) {
@@ -344,6 +352,7 @@ export class FakePhoneBrowserNative implements PhoneBrowserNativePort {
     if (input.presentationGeneration < tab.presentationGeneration)
       throw new PhoneBrowserError("not-actionable", "The presentation was superseded.");
     tab.presentationGeneration = input.presentationGeneration;
+    if (this.#covered === input.tabId) this.#covered = null;
     return this.#activate(tab);
   }
   async unmountTab(input: Input<"unmountTab">) {

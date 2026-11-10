@@ -269,10 +269,8 @@ import WebKit
       tab.generation = nextGeneration
       tabs[tab.id] = tab
       do {
-        try state.activate(tab.id, covered: true)
         let view = try makeView(tab)
         view.frame.size = CGSize(width: input.viewport.width, height: input.viewport.height)
-        try holder().insertSubview(view, at: 0)
         loadBlank(view)
         changed(tab)
         return tab
@@ -303,9 +301,14 @@ import WebKit
         try authorization?()
       }
       if input.state == "retained" {
-        let retained = BrowserTabInput()
-        retained.epoch = input.epoch; retained.tabId = created.id
-        _ = try await suspend(retained)
+        try gate.perform(input.epoch) {
+          for id in try state.suspend(created.id) { releaseView(id) }
+          changed(created)
+        }
+      } else {
+        let live = BrowserTabInput()
+        live.epoch = input.epoch; live.tabId = created.id
+        _ = try await resume(live)
       }
       try authorization?()
       return metadata(created)
