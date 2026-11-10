@@ -456,6 +456,21 @@ const identityValueFunctions: Readonly<Record<string, string>> = {
   SVFOP_CURRENT_SCHEMA: "current_schema",
 };
 
+/** Everything the validator names as allowed, which one test pins so any addition is deliberate. */
+export const knowledgeSqlAllowLists = Object.freeze({
+  relations: [...relations],
+  collations: [...collations],
+  types: [...types],
+  operators: [...operators],
+  scalarFunctions: [...scalarFunctions],
+  aggregateFunctions: [...aggregateFunctions],
+  orderedSetAggregates: [...orderedSetAggregates],
+  windowFunctions: [...windowFunctions],
+  setReturningFunctions: [...setReturningFunctions],
+  dateTimeValueFunctions: [...dateTimeValueFunctions],
+  identityValueFunctions: Object.values(identityValueFunctions),
+});
+
 const refusedForms: Readonly<Record<string, string>> = {
   XmlExpr: "XML functions aren't allowed.",
   XmlSerialize: "XML functions aren't allowed.",
