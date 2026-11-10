@@ -112,14 +112,7 @@ const factColumns = `id, topic, thing, property, value, value #>> '{}' as text,
  * resumes at step 2. Add a step; never edit one that has shipped.
  */
 const knowledgeSchemaSteps: readonly string[] = [
-  `do $$ begin
-      create role ${knowledgeOwnerRole} nologin;
-    exception when duplicate_object or unique_violation then null;
-    end $$;
-    alter role ${knowledgeOwnerRole} with nologin nosuperuser nocreatedb nocreaterole noinherit
-      noreplication nobypassrls;
-
-    create schema knowledge authorization ${knowledgeOwnerRole};
+  `create schema knowledge authorization ${knowledgeOwnerRole};
 
     create table knowledge.topics (
       id text primary key check (octet_length(id) between 1 and 128),
@@ -375,6 +368,25 @@ export async function ensureKnowledge(
         : Number.NaN;
   if (!Number.isInteger(version) || version > knowledgeSchemaSteps.length)
     throw new Error("A different Opensteer build prepared this database's knowledge schema");
+  // The owner role is shared by every database in the cluster, which the advisory lock does not
+  // span, so it is created at most once and altered only when wrong.
+  await sql
+    .raw(
+      `do $$ begin
+        create role ${knowledgeOwnerRole} nologin nosuperuser nocreatedb nocreaterole noinherit
+          noreplication nobypassrls;
+      exception when duplicate_object or unique_violation then null;
+      end $$;
+      do $$ begin
+        if exists (select from pg_catalog.pg_roles where rolname = '${knowledgeOwnerRole}'
+            and (rolcanlogin or rolsuper or rolcreatedb or rolcreaterole or rolinherit
+              or rolreplication or rolbypassrls)) then
+          alter role ${knowledgeOwnerRole} with nologin nosuperuser nocreatedb nocreaterole
+            noinherit noreplication nobypassrls;
+        end if;
+      end $$;`,
+    )
+    .execute(transaction);
   for (const step of knowledgeSchemaSteps.slice(version)) await sql.raw(step).execute(transaction);
   if (version < knowledgeSchemaSteps.length)
     await sql

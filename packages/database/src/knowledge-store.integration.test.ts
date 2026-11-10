@@ -205,6 +205,35 @@ async function hotelId(context: Fixture): Promise<string> {
 // Skip outside the integration launcher, which supplies an isolated PostgreSQL clone.
 const integration = process.env.OPENSTEER_TEST_DATABASE_URL ? describe : describe.skip;
 integration("knowledge storage", () => {
+  it("prepares two databases of one cluster at once", async () => {
+    const databases = await Promise.all(
+      [0, 1].map(async () => {
+        const clone = await cloneTestDatabase("host");
+        const state = { role: "" };
+        const { database } = await ownTestDatabaseProducer(clone.url, async () => {
+          const database = createDatabase({ connectionString: clone.url, maxConnections: 1 });
+          return {
+            database,
+            async close() {
+              if (state.role)
+                await sql`drop owned by ${sql.id(state.role)}; drop role ${sql.id(state.role)}`.execute(
+                  database,
+                );
+              await database.destroy();
+            },
+          };
+        });
+        return { database, state };
+      }),
+    );
+    const prepared = await Promise.allSettled(
+      databases.map(async ({ database, state }) => {
+        state.role = (await prepareKnowledgeExecutor(database)).role;
+      }),
+    );
+    expect(prepared.map(({ status }) => status)).toEqual(["fulfilled", "fulfilled"]);
+  });
+
   it("creates knowledge only when asked, once under concurrent starts, and upgrades a trial build's", async () => {
     const clone = await cloneTestDatabase("host");
     const state = { role: "" };
