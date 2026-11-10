@@ -671,9 +671,7 @@ integration("session-scoped browser agent backends", () => {
     f.expire();
     await expect(f.actions()).rejects.toThrow("401");
     f.restoreTime();
-    const ended = withTimeout(closed(socket), 2_000, {
-      timeoutError: () => new Error("Revoked Run left its actions socket open"),
-    });
+    const ended = closed(socket);
     await stopRun(f.host, f.run, "revoke-agent");
     expect(await f.act(socket, { type: "session.tabs" })).toMatchObject({
       error: { code: "forbidden" },
@@ -681,7 +679,9 @@ integration("session-scoped browser agent backends", () => {
     await withTimeout(f.run.reportInterrupted(), 2_000, {
       timeoutError: () => new Error("Runner interruption was not acknowledged"),
     });
-    await ended;
+    await withTimeout(ended, 2_000, {
+      timeoutError: () => new Error("Revoked Run left its actions socket open"),
+    });
     await vi.waitFor(
       () =>
         expect(f.phone.receivedCommands()).toContainEqual(
