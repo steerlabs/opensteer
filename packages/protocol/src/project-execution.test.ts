@@ -30,6 +30,8 @@ const context = {
     url: "https://fixture.invalid/mcp",
   },
   bindingGeneration: 1,
+  grantId: createId("grant"),
+  runnerBootId: "rbt_00000000-0000-4000-8000-000000000001",
   executionLeaseMs: 90_000,
   egress: {
     maxRequestBytes: 1024,
@@ -176,7 +178,13 @@ describe("dormant Project execution", () => {
 const triggerId = createId("trigger");
 const revisionId = createId("triggerRevision");
 const occurrenceId = createId("triggerOccurrence");
-const envelope = { authority, projectSettingsRevision: 1, projectTimeZone: "UTC" };
+const envelope = {
+  executionLeaseMs: context.executionLeaseMs,
+  runnerBootId: context.runnerBootId,
+  authority,
+  projectSettingsRevision: 1,
+  projectTimeZone: "UTC",
+};
 const programContext = {
   anchorThreadId: context.threadId,
   event: {

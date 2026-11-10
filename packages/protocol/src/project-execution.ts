@@ -1,13 +1,10 @@
+import { RunnerBootIdSchema } from "./runner-identity.js";
 import {
-  EnvironmentIdSchema,
+  ProjectRunBindingSchema,
   DeploymentIdSchema,
   HostInstanceIdSchema,
   GrantIdSchema,
   ProjectAuthoritySchema,
-  RunIdSchema,
-  RunnerIdSchema,
-  ThreadIdSchema,
-  WorkspaceIdSchema,
 } from "@opensteer/core";
 import { z } from "zod";
 import {
@@ -19,26 +16,12 @@ import {
   WatchReconcileActivationSchema,
   WatchCapabilityPlanSchema,
   runnerCommandMaxSerializedBytes,
+  executionLeaseMsSchema,
 } from "./runner-execution.js";
 
 const generation = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 
-export const ProjectCapabilityScopeSchema = z
-  .strictObject({
-    authority: ProjectAuthoritySchema,
-    bindingGeneration: generation,
-    environmentId: EnvironmentIdSchema,
-    grantId: GrantIdSchema,
-    runId: RunIdSchema,
-    runnerBootId: z.string().min(1).max(255),
-    runnerId: RunnerIdSchema,
-    threadId: ThreadIdSchema,
-    workspaceId: WorkspaceIdSchema,
-  })
-  .refine((scope) => scope.workspaceId === scope.authority.principal.workspaceId, {
-    message: "Project capability must bind its authority's Workspace",
-    path: ["workspaceId"],
-  });
+export const ProjectCapabilityScopeSchema = ProjectRunBindingSchema;
 export type ProjectCapabilityScope = z.infer<typeof ProjectCapabilityScopeSchema>;
 
 export const ProjectCapabilityClaimsSchema = ProjectCapabilityScopeSchema.safeExtend({
@@ -78,6 +61,8 @@ export const ProjectRunExecutionContextSchema = RunExecutionContextSchema.omit({
   specialistId: true,
 })
   .extend({
+    grantId: GrantIdSchema,
+    runnerBootId: RunnerBootIdSchema,
     ...ProjectExecutionEnvelopeSchema.shape,
     workspaceKind: z.literal("project"),
     harness: RunExecutionContextSchema.shape.harness.extend({
@@ -116,7 +101,11 @@ export type ProjectExecuteRun = z.infer<typeof ProjectExecuteRunSchema>;
 export const ProjectTriggerExecutionContextSchema = TriggerExecutionContextSchema.omit({
   browserCdp: true,
 })
-  .extend(ProjectExecutionEnvelopeSchema.shape)
+  .extend({
+    ...ProjectExecutionEnvelopeSchema.shape,
+    runnerBootId: RunnerBootIdSchema,
+    executionLeaseMs: executionLeaseMsSchema,
+  })
   .refine(
     (context) =>
       context.workspaceId === context.authority.principal.workspaceId &&
@@ -146,6 +135,8 @@ export const ProjectWatchReconcileActivationSchema = WatchReconcileActivationSch
 })
   .extend({
     ...ProjectExecutionEnvelopeSchema.shape,
+    runnerBootId: RunnerBootIdSchema,
+    executionLeaseMs: executionLeaseMsSchema,
     capabilities: z.strictObject({ mcp: WatchCapabilityPlanSchema }),
   })
   .refine(

@@ -2,6 +2,7 @@ import type {
   CommandId,
   ContentPart,
   HumanRoot,
+  ProjectRunBinding,
   RunId,
   ThreadId,
   ThreadInput,
@@ -12,6 +13,7 @@ import type {
   ProjectCapabilityClaims,
   ProjectCapabilityScope,
   ProjectExecutableCommand,
+  ProjectRunControl,
 } from "@opensteer/protocol";
 
 export interface ProjectAdmissionPort {
@@ -37,6 +39,12 @@ export interface ProjectCapabilityPort {
 
 export interface ProjectDispatchPort {
   dispatch(command: ProjectExecutableCommand): Promise<void>;
+  control(input: {
+    readonly binding: ProjectRunBinding;
+    readonly commandId: CommandId;
+    readonly correlationId: string;
+    readonly control: ProjectRunControl;
+  }): Promise<void>;
 }
 
 export interface ProjectRecoveryPort {

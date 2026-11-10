@@ -45,3 +45,5 @@ export * from "./background-models.js";
 
 export * from "./model-selection.js";
 export * from "./model-candidates.js";
+
+export * from "./project-engine.js";

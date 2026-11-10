@@ -299,3 +299,5 @@ export const ReconcileWatchesSchema = RunnerCommandBaseSchema.extend({
 });
 
 export const runnerCommandMaxSerializedBytes = 1_024 * 1_024 - 4 * 1_024;
+
+export const pendingAgentEventMaxSerializedBytes = 480 * 1_024;
