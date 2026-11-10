@@ -26,7 +26,12 @@ import {
 } from "@opensteer/harness";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { OpencodeHarnessDriver } from "./opencode-driver.js";
-import { opencodeAccessModeConfiguration, opencodeToolIdentity } from "./configuration.js";
+import {
+  opencodeAccessModeConfiguration,
+  opencodeToolIdentity,
+  opencodePermissionRules,
+  opencodeChildPermissionRules,
+} from "./configuration.js";
 import { TESTED_OPENCODE_VERSION } from "./config.js";
 
 // A Run outside any task with nothing earlier to state, for a person whose
@@ -43,8 +48,10 @@ const fakeServer = fileURLToPath(
 );
 const noComputersNotice = "No other computers are reachable from this Run.";
 const temporaryDirectories: string[] = [];
+const fixtureAdapters: HarnessAdapter[] = [];
 
 afterEach(async () => {
+  await Promise.all(fixtureAdapters.splice(0).map((adapter) => adapter.close()));
   await Promise.allSettled(
     temporaryDirectories.splice(0).map((path) => rm(path, { force: true, recursive: true })),
   );
@@ -70,7 +77,7 @@ describe("OpenCode access modes", () => {
       question: "allow",
       read: "allow",
       skill: "allow",
-      task: { "*": "deny", explore: "allow", general: "allow" },
+      task: "allow",
       todowrite: "allow",
       webfetch: "ask",
       websearch: "ask",
@@ -87,7 +94,7 @@ describe("OpenCode access modes", () => {
       edit: "allow",
       external_directory: "ask",
       opensteer_thread_read: "allow",
-      task: { "*": "deny", explore: "allow", general: "allow" },
+      task: "allow",
       webfetch: "ask",
       websearch: "ask",
     });
@@ -95,9 +102,8 @@ describe("OpenCode access modes", () => {
 
   it("translates full-access into an allow-everything table", () => {
     const permission = opencodeAccessModeConfiguration("full-access", ["opensteer_thread_read"]);
-    // Only OpenCode's own subagents, which run under this same table.
     const { task, ...rest } = permission;
-    expect(task).toEqual({ "*": "deny", explore: "allow", general: "allow" });
+    expect(task).toBe("allow");
     for (const action of Object.values(rest)) expect(action).toBe("allow");
     expect(permission["*"]).toBe("allow");
     expect(permission.bash).toBe("allow");
@@ -115,6 +121,30 @@ describe("OpenCode access modes", () => {
         expect(Object.keys(permission).indexOf(tool)).toBeGreaterThan(0);
       }
     }
+  });
+});
+
+describe("OpenCode child permission copying (T3 Code, MIT)", () => {
+  it("seeds deny-all before restoring policy and retains the native recursion guard", () => {
+    const parent = opencodePermissionRules("approval-required");
+    expect(parent[0]).toEqual({ permission: "*", pattern: "*", action: "deny" });
+    const guard = { permission: "task", pattern: "*", action: "deny" } as const;
+    const inherited = parent.filter(
+      (rule) => rule.action === "deny" || rule.permission === "external_directory",
+    );
+    const child = opencodeChildPermissionRules(parent, [...inherited, guard]);
+    expect(child).toEqual([...parent, guard]);
+    expect(
+      opencodeChildPermissionRules(child, [
+        ...child.filter((rule) => rule.action === "deny"),
+        guard,
+      ]),
+    ).toEqual(child);
+    const oldParent = opencodePermissionRules("full-access");
+    expect(opencodeChildPermissionRules(parent, [...oldParent, guard], oldParent)).toEqual([
+      ...parent,
+      guard,
+    ]);
   });
 });
 
@@ -559,6 +589,7 @@ describe("OpenCode sign-in", () => {
     // Never `OPENCODE_CONFIG_CONTENT`: the configuration carries the Run's MCP
     // bearer tokens, and the model's own shell sees the environment.
     expect(environment.OPENCODE_CONFIG_CONTENT).toBeUndefined();
+    expect(environment.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS).toBe("true");
     const argv = capture.find((entry) => entry.kind === "process")?.argv as string[];
     expect(argv.slice(-5)).toEqual(["serve", "--hostname", "127.0.0.1", "--port", "0"]);
   });
@@ -755,6 +786,7 @@ describe("OpenCode sessions", () => {
 
     const entry = (await fixture.capture()).find((row) => row.kind === "config");
     expect(entry?.configMode).toBe(0o600);
+    expect((entry?.config as Record<string, unknown>).subagent_depth).toBeUndefined();
     const config = entry?.config as Record<string, unknown>;
     expect(config.autoupdate).toBe(false);
     expect(config.share).toBe("disabled");
@@ -1036,6 +1068,140 @@ describe("OpenCode sessions", () => {
     });
     await fixture.adapter.close();
   });
+});
+
+describe("OpenCode child transcripts", () => {
+  it("replaces a resumed child's previous broader policy before prompting its parent", async () => {
+    const fixture = await setup("stale-child-policy", { accessMode: "approval-required" });
+    const session = await fixture.adapter.startSession(fixture.context);
+    await session.execute(fixture.turn("Continue"));
+    await session.stop();
+    await fixture.adapter.close();
+    const capture = await fixture.capture();
+    const policy = capture.find(
+      (row) =>
+        row.kind === "request" && row.method === "PATCH" && row.path === "/session/ses_stalechild",
+    );
+    expect(JSON.parse(policy!.body as string).permission).toEqual([
+      ...opencodePermissionRules(
+        "approval-required",
+        fixture.context.agentTools.tools.map((name) => `opensteer_${name}`),
+      ),
+      { permission: "task", pattern: "*", action: "deny" },
+    ]);
+    expect(capture.indexOf(policy!)).toBeLessThan(
+      capture.findIndex((row) => row.kind === "prompt"),
+    );
+  });
+
+  it("aborts a background child when the Run is interrupted", async () => {
+    const fixture = await setup("subagents-detail-background-hold");
+    const session = await fixture.adapter.startSession(fixture.context);
+    const observer = observe(session.events);
+    const run = session.execute(fixture.turn("Research in the background"));
+    await observer.waitFor("run.phase");
+    await session.interrupt();
+    await run;
+    await session.stop();
+    await fixture.adapter.close();
+    expect(observer.events.filter((event) => event.type === "run.interrupted")).toHaveLength(1);
+    expect(
+      observer.events.filter((event) => event.type === "node.completed").at(-1)?.data.status,
+    ).toBe("interrupted");
+    expect(
+      (await fixture.capture()).some(
+        (row) =>
+          row.kind === "request" && row.path === "/session/ses_fakechild00000000000000001/abort",
+      ),
+    ).toBe(true);
+  });
+
+  it.each(["before", "after", "background", "nested-ask"])(
+    "routes nested child work with session metadata %s",
+    async (order) => {
+      const fixture = await setup(`subagents-detail-${order}`);
+      const session = await fixture.adapter.startSession(fixture.context);
+      const observer = observe(session.events);
+      const input = fixture.turn("Research");
+      const run = session.execute(input);
+      const opened = await observer.waitFor("request.opened");
+      if (order === "background") await observer.waitFor("run.phase");
+      const starts = observer.events.filter((event) => event.type === "node.started");
+      expect(starts).toHaveLength(2);
+      const childId = starts[0]!.data.nodeId;
+      const grandId = starts[1]!.data.nodeId;
+      expect(starts[0]!.data).toMatchObject({
+        parentNodeId: null,
+        sessionRef: "ses_fakechild00000000000000001",
+      });
+      expect(starts[1]!.data).toMatchObject({
+        parentNodeId: childId,
+        sessionRef: "ses_grandchild",
+      });
+      expect(opened.data.request).toMatchObject({
+        originatingNodeId: order === "nested-ask" ? grandId : childId,
+        originatingRunId: input.runId,
+        originatingThreadId: fixture.context.threadId,
+        originatingWorkspaceId: fixture.context.workspaceId,
+      });
+      expect(
+        observer.events.filter(
+          (event) => event.type === "node.completed" && event.data.nodeId === childId,
+        ),
+      ).toHaveLength(0);
+      await session.resolveRequest(opened.data.request.id, {
+        kind: "choice",
+        optionId: "allow-once",
+      });
+      await run;
+      await session.stop();
+      await fixture.adapter.close();
+      expect(
+        observer.events.filter((event) => event.type === "node.message").map((event) => event.data),
+      ).toEqual([
+        { nodeId: grandId, text: "Grandchild result" },
+        { nodeId: childId, text: "Child result" },
+      ]);
+      expect(
+        observer.events
+          .filter((event) => event.type === "reasoning.completed")
+          .map((event) => event.data),
+      ).toEqual([
+        { nodeId: grandId, blockId: "grand_reasoning", text: "Grandchild thought" },
+        { nodeId: childId, blockId: "child_reasoning", text: "Child thought" },
+      ]);
+      expect(
+        observer.events.filter(
+          (event) => event.type === "assistant.message" || event.type === "assistant.delta",
+        ),
+      ).toEqual([]);
+      expect(
+        observer.events.find(
+          (event) => event.type === "tool.started" && event.data.callId === "call_child_bash",
+        )?.data,
+      ).toMatchObject({ nodeId: childId, tool: { namespace: "opencode", name: "bash" } });
+      expect(
+        observer.events
+          .filter((event) => event.type === "node.completed")
+          .map((event) => event.data.status),
+      ).toEqual(["completed", "completed"]);
+      expect(
+        observer.events.some(
+          (event) => event.type === "node.progress" && event.data.nodeId === childId,
+        ),
+      ).toBe(true);
+      const requests = (await fixture.capture()).filter(
+        (row) => row.kind === "request" && row.method === "PATCH",
+      );
+      expect(requests).toHaveLength(3);
+      for (const row of requests)
+        expect(JSON.parse(row.body as string).permission[0]).toEqual({
+          permission: "*",
+          pattern: "*",
+          action: "deny",
+        });
+    },
+  );
 });
 
 describe("OpenCode approvals", () => {
@@ -1817,6 +1983,7 @@ async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixt
     instanceId: harnessInstanceId,
     sourceId: "opencode",
   });
+  fixtureAdapters.push(adapter);
   const environment: Record<string, string> = {
     FAKE_OPENCODE_CAPTURE_PATH: capturePath,
     ...(options.existingSession ? { FAKE_OPENCODE_EXISTING_SESSION: options.existingSession } : {}),
