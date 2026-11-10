@@ -1,4 +1,3 @@
-import { deploymentPolicy, deploymentClientPolicy } from "@opensteer/core";
 import {
   DeploymentConnectionInputSchema,
   type DeploymentConnectionInput,
@@ -62,9 +61,6 @@ function mockConnection(input: {
         canonicalOrigin: input.origin,
         deploymentId: DeploymentIdSchema.parse(input.deploymentId),
         deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
-        deploymentPolicy: deploymentClientPolicy(
-          deploymentPolicy({ defaultWorkspaceBacking: "local-directory", kind: "server" }),
-        ),
         hostInstanceId: HostInstanceIdSchema.parse(input.hostInstanceId),
         hostKey: { algorithm: "Ed25519" },
       },

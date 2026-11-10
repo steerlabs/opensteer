@@ -2612,6 +2612,7 @@ describe("MobileClient cold saved launch", () => {
       records: createSecureRecordStore({ keyPrefix: "mock-auth", secureStore: secure }),
     });
     const connection = mockDeploymentConnections()[0]!;
+    expect(connection.authority.document).not.toHaveProperty("deploymentPolicy");
     await client.catalog.upsertAndSelect(connection);
     await client.initialize();
     await client.select(connection.authority.document.deploymentId);
