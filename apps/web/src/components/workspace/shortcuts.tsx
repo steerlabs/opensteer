@@ -11,6 +11,7 @@ import { useTabCloser } from "./tab-closer.js";
 import { tabOrder } from "./tab-order.js";
 import { useToast } from "../toast.js";
 import { useWorkspace } from "./workspace-context.js";
+import { useHereId } from "../computers/here.js";
 
 /**
  * Native menu accelerators and the web keyboard listener share one command
@@ -29,6 +30,7 @@ export function useWorkspaceShortcuts({
   readonly onShowShortcuts: () => void;
 }) {
   const { nav, selection, startPage } = useWorkspace();
+  const hereId = useHereId();
   const requestClose = useTabCloser();
   const toast = useToast();
   const { pathname } = useLocation();
@@ -40,15 +42,27 @@ export function useWorkspaceShortcuts({
     requestClose,
     selection,
     startPage,
+    hereId,
   });
-  state.current = { nav, onNewTab, onShowShortcuts, pathname, requestClose, selection, startPage };
+  state.current = {
+    nav,
+    onNewTab,
+    onShowShortcuts,
+    pathname,
+    requestClose,
+    selection,
+    startPage,
+    hereId,
+  };
 
   useEffect(() => {
     const execute = (command: DesktopWorkspaceTabCommand) => {
-      const { nav, onNewTab, requestClose, selection, startPage } = state.current;
+      const { nav, onNewTab, requestClose, selection, startPage, hereId } = state.current;
       const places = tabOrder(
         placeList(hostClient.getSnapshot()),
         hostClient.getSnapshot().browserTabGroups,
+        hostClient.getSnapshot().machines,
+        hereId,
       );
       const shownKey =
         selection.kind === "place" ? destinationPlaceKey(selection.destination) : null;

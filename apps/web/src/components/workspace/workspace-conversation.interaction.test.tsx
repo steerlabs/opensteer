@@ -194,9 +194,9 @@ it("dismisses a close review when another client closes its target", async () =>
 });
 
 describe("a reply's live picture belongs to its working Run", () => {
-  /** The thread's one live picture above the composer. */
+  /** The thread's one live picture folded into its header. */
   const pictures = () => [
-    ...document.querySelectorAll<HTMLButtonElement>(".live-place .viewfinder"),
+    ...document.querySelectorAll<HTMLButtonElement>(".conv-header .viewfinder"),
   ];
   const picture = () => pictures()[0] ?? null;
   const chipTitles = (row: Element) =>
@@ -285,11 +285,12 @@ describe("a reply's live picture belongs to its working Run", () => {
     ).toContain(place.title);
   });
 
-  it("shows one live picture above the composer, hides it for the same stage and restores it", async () => {
+  it("shows one live picture in the header, hides it for the same stage and restores it", async () => {
     await mount("/");
     const { place } = await chatWorkingIn("Weekend ideas");
     expect(pictures()).toHaveLength(1);
     expect(picture()!.closest(".turn")).toBeNull();
+    expect(document.querySelector(".composer-dock .viewfinder")).toBeNull();
     expect(document.querySelector(".transcript .surface-chips")).toBeNull();
     await click(picture()!);
     expect(element(".place").getAttribute("data-place-key")).toBe(place.key);
@@ -422,7 +423,7 @@ describe("a reply's live picture belongs to its working Run", () => {
     const place = browserPlaces()[0]!;
     await act(async () => client.actInPlace(waiting, place.key));
     await pictureShows(place.key);
-    expect(picture()!.closest(".live-place")).not.toBeNull();
+    expect(picture()!.closest(".conv-header")).not.toBeNull();
   });
 });
 

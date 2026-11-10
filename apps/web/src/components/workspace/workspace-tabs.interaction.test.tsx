@@ -278,12 +278,12 @@ describe("tabs that read like a browser's", () => {
 
   it("a device's web tabs, then its apps with no line between, each in authoritative order, and + New tab last", async () => {
     await mount("/");
-    const places = placeList(client.getSnapshot());
+    const places = tabOrder(placeList(client.getSnapshot()));
     const web = places.filter((place) => place.kind === "browser").map((place) => place.key);
     const native = places.filter((place) => place.kind !== "browser").map((place) => place.key);
     expect(web.length).toBeGreaterThan(1);
     expect(native.length).toBeGreaterThan(0);
-    expect(rowKeys()).toEqual([...web, ...native]);
+    expect(rowKeys()).toEqual(places.map(({ key }) => key));
     const items = [...element(".side-section--tabs .side-list").children];
     const lastWeb = items.indexOf(row(web.at(-1)!));
     expect(items[lastWeb + 1]).toBe(row(native[0]!));
@@ -357,7 +357,7 @@ describe("tabs that read like a browser's", () => {
         (place) => place.kind === "browser" && isMockPage(place, source) && !placeHasAgents(place),
       )!;
     await mount((source) => `/${tabSearch(quietOf(source))}`);
-    const places = placeList(client.getSnapshot());
+    const places = tabOrder(placeList(client.getSnapshot()));
     const quiet = quietOf(client);
     const busy = places.filter(placeHasAgents).map((place) => place.key);
     expect(busy.length).toBeGreaterThan(0);

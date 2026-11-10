@@ -3,12 +3,11 @@ import type { HostClient, PlaceItem } from "@opensteer/client/host";
 import { Icon } from "../icon.js";
 import { Popover } from "../popover.js";
 import { PlaceMark } from "./place-mark.js";
-import { tabOrder } from "./tab-order.js";
 
 /** The places a message can carry, in the sidebar's order, filtered by what was typed. */
 export function pickablePlaces(places: readonly PlaceItem[], query: string): readonly PlaceItem[] {
   const needle = query.trim().toLocaleLowerCase();
-  return tabOrder(places).filter(
+  return places.filter(
     (place) =>
       place.availability !== "unavailable" &&
       (!needle ||

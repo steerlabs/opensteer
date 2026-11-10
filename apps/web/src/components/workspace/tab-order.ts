@@ -1,10 +1,9 @@
-import type { BrowserTabLayout } from "@opensteer/protocol";
-import { browserTabStrip, type PlaceItem } from "@opensteer/client/host";
+import type { BrowserTabLayout, MachineSummary } from "@opensteer/protocol";
+import { browserTabSections, browserTabStrip, type PlaceItem } from "@opensteer/client/host";
 
 /**
- * The sidebar's tabs as a browser lists them: the web tabs first, then the
- * Mac apps and phones. Each group keeps the Host's order, so an opened tab stays
- * right after the tab that opened it.
+ * Browser tabs and native places keep their own succession families,
+ * retaining the device sections' order within each family.
  */
 export function tabSections(places: readonly PlaceItem[]): {
   readonly web: readonly PlaceItem[];
@@ -20,6 +19,12 @@ export function tabSections(places: readonly PlaceItem[]): {
 export function tabOrder(
   places: readonly PlaceItem[],
   layout?: BrowserTabLayout,
+  machines: readonly MachineSummary[] = [],
+  hereId: string | null = null,
 ): readonly PlaceItem[] {
-  return browserTabStrip(places, layout).visible;
+  const strip = browserTabStrip(places, layout);
+  const visible = new Set(strip.visible.map((place) => place.key));
+  return browserTabSections({ strip, machines, hereId }).ordered.filter((place) =>
+    visible.has(place.key),
+  );
 }

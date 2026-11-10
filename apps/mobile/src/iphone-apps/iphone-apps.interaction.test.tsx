@@ -1139,7 +1139,10 @@ async function requestFromTask(
 }
 
 /** The Computer page's own reload: what the Host says now, after every change. */
-function useAppsData(host: MockHostClient): {
+function useAppsData(
+  host: MockHostClient,
+  runnerId: string,
+): {
   readonly data: ComputerUseData | null;
   readonly machine: MachineSummary | null;
   readonly reload: () => Promise<void>;
@@ -1164,12 +1167,10 @@ function useAppsData(host: MockHostClient): {
   }, [host, reload]);
   useEffect(() => {
     const read = () =>
-      setMachine(
-        host.getSnapshot().machines.find(({ device }) => device?.platform === "ios") ?? null,
-      );
+      setMachine(host.getSnapshot().machines.find(({ id }) => id === runnerId) ?? null);
     read();
     return host.subscribe(read);
-  }, [host]);
+  }, [host, runnerId]);
   return { data, machine, reload };
 }
 
@@ -1178,7 +1179,10 @@ function ThisIphone(props: {
   readonly onRemoved?: () => void;
   readonly phone: Phone;
 }): ReactNode {
-  const { data, machine, reload } = useAppsData(props.phone.host);
+  const { data, machine, reload } = useAppsData(
+    props.phone.host,
+    props.phone.fake.device.runnerId(),
+  );
   if (machine === null) return <p>No iPhone</p>;
   return (
     <IphoneAppsBlock
@@ -1195,7 +1199,10 @@ function ThisIphone(props: {
 }
 
 function OtherDevice(props: { readonly offline?: boolean; readonly phone: Phone }): ReactNode {
-  const { data, machine, reload } = useAppsData(props.phone.host);
+  const { data, machine, reload } = useAppsData(
+    props.phone.host,
+    props.phone.fake.device.runnerId(),
+  );
   if (machine === null) return <p>No iPhone</p>;
   return (
     <RemoteIphoneAppsBlock
