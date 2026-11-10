@@ -1,5 +1,5 @@
 import type { WorkspaceTabLineage } from "@opensteer/protocol";
-import type { HostClient, HostSnapshot } from "./client.js";
+import type { HostClient, HostSnapshot, WorkspaceTabActivationOptions } from "./client.js";
 import { browserPlaceUnavailableReason } from "./places.js";
 import { browserIdentity } from "./start-page-model.js";
 import { viewerScopeOf } from "./viewer-scope.js";
@@ -8,6 +8,7 @@ type ActivationResult = NonNullable<
   Awaited<ReturnType<NonNullable<HostClient["activateWorkspaceTab"]>>>
 >;
 interface Activation {
+  opening: string | undefined;
   readonly promise: Promise<ActivationResult | null>;
   readonly cancel: (notify: boolean) => void;
 }
@@ -23,6 +24,7 @@ interface ActivationPorts {
 /** Client-owned restoration survives selection changes and observes readiness before dispatch. */
 export class WorkspaceTabActivations {
   readonly #pending = new Map<string, Activation>();
+  readonly #failed = new Map<string, Activation>();
   #ids: readonly string[] = [];
   #disposed = false;
 
@@ -38,7 +40,7 @@ export class WorkspaceTabActivations {
 
   clear(notify = true): void {
     // Cancellation can publish a snapshot whose reader starts a replacement.
-    const operations = [...this.#pending.values()];
+    const operations = [...this.#pending.values(), ...this.#failed.values()];
     for (const operation of operations) operation.cancel(notify);
   }
 
@@ -47,10 +49,21 @@ export class WorkspaceTabActivations {
     this.clear(false);
   }
 
-  activate(tabId: string): Promise<ActivationResult | null> {
+  activate(
+    tabId: string,
+    options?: WorkspaceTabActivationOptions,
+  ): Promise<ActivationResult | null> {
     if (this.#disposed) return Promise.resolve(null);
+    const failed = this.#failed.get(tabId);
+    if (failed) {
+      if (options?.opening === failed.opening) return failed.promise;
+      failed.cancel(false);
+    }
     const held = this.#pending.get(tabId);
-    if (held) return held.promise;
+    if (held) {
+      if (options) held.opening = options.opening;
+      return held.promise;
+    }
     const scope = JSON.stringify(viewerScopeOf(this.#ports.snapshot()));
     let lineage: WorkspaceTabLineage | undefined;
     const read = () => {
@@ -71,9 +84,11 @@ export class WorkspaceTabActivations {
             placement?.unavailableReason,
           )
         : null;
+      const obsolete =
+        this.#disposed || JSON.stringify(viewerScopeOf(snapshot)) !== scope || closed;
       return {
-        ended:
-          this.#disposed || JSON.stringify(viewerScopeOf(snapshot)) !== scope || closed || !!reason,
+        obsolete,
+        ended: obsolete || !!reason,
         ready: !!lineage && snapshot.connection === "connected" && placement?.available === true,
         key: JSON.stringify([
           snapshot.connection,
@@ -101,7 +116,8 @@ export class WorkspaceTabActivations {
     ) => {
       if (settled) return;
       settled = true;
-      unsubscribe();
+      if (failure && operation.opening !== undefined) this.#failed.set(tabId, operation);
+      else unsubscribe();
       if (this.#pending.get(tabId) === operation) {
         this.#pending.delete(tabId);
         this.#ids = [...this.#pending.keys()];
@@ -111,11 +127,25 @@ export class WorkspaceTabActivations {
       if (failure) reject(failure.error);
       else resolve(value);
     };
-    const operation: Activation = { promise, cancel: (notify) => finish(null, undefined, notify) };
+    const operation: Activation = {
+      opening: options?.opening,
+      promise,
+      cancel: (notify) => {
+        if (this.#failed.get(tabId) === operation) {
+          this.#failed.delete(tabId);
+          unsubscribe();
+        }
+        finish(null, undefined, notify);
+      },
+    };
     this.#pending.set(tabId, operation);
     this.#ids = [...this.#pending.keys()];
     const observe = () => {
       const next = read();
+      if (settled) {
+        if (next.obsolete) operation.cancel(false);
+        return;
+      }
       const changed = next.key !== state.key;
       if (changed) revision++;
       state = next;

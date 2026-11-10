@@ -38,6 +38,7 @@ import {
   memo,
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -1085,13 +1086,15 @@ function SavedTab(props: {
   const [closing, setClosing] = useState(false);
   const closingNow = useRef(false);
   const [attempt, setAttempt] = useState(0);
+  const openingId = useId();
+  const opening = `${openingId}:${attempt}`;
   const activate = hostClient.activateWorkspaceTab;
   useLayoutEffect(() => {
     if (activate === undefined || lasting !== null) return;
     let cancelled = false;
     setFailure(null);
     void activate
-      .call(hostClient, tabId)
+      .call(hostClient, tabId, { opening })
       .then((result) => {
         if (cancelled || result === null) return;
         navigation.setParams({ sessionId: result.session.id, tabId: result.tabId });
@@ -1103,7 +1106,7 @@ function SavedTab(props: {
     return () => {
       cancelled = true;
     };
-  }, [activate, attempt, hostClient, lasting, navigation, tabId]);
+  }, [activate, hostClient, lasting, navigation, opening, tabId]);
   const close = () => {
     if (closingNow.current) return;
     closingNow.current = true;
