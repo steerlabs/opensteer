@@ -138,7 +138,7 @@ export class LocalMcpServerStore {
             "threads.workspaceId",
           )
           .where("workspaceMemberships.userId", "=", owner)
-          .where(effectiveMembershipPredicate())
+          .where(effectiveMembershipPredicate(transaction))
           .select(["threads.id as threadId", "threads.title as threadTitle", "threads.workspaceId"])
           .where("integrationInstallations.id", "=", locked.installationId)
           .executeTakeFirst();

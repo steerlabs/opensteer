@@ -59,7 +59,7 @@ export class AppStore {
         "apps.tabOpenedAt",
       ])
       .where("workspaceMemberships.userId", "=", userId)
-      .where(effectiveMembershipPredicate())
+      .where(effectiveMembershipPredicate(this.#database))
       .where("workspaces.status", "not in", ["deleting", "deleted"])
       .where("apps.tabOpenedAt", "is not", null)
       .orderBy("apps.tabOpenedAt", "desc")
@@ -92,7 +92,7 @@ export class AppStore {
           .select(["apps.workspaceId", "apps.tabOpenedAt", "workspaces.status"])
           .where("apps.id", "=", id)
           .where("workspaceMemberships.userId", "=", userId)
-          .where(effectiveMembershipPredicate())
+          .where(effectiveMembershipPredicate(transaction))
           .executeTakeFirst();
         if (!row) throw missing();
         if (open && (row.status === "deleting" || row.status === "deleted"))
@@ -139,7 +139,7 @@ export class AppStore {
       .selectAll("apps")
       .where("apps.id", "=", AppIdSchema.parse(appId))
       .where("workspaceMemberships.userId", "=", userId)
-      .where(effectiveMembershipPredicate())
+      .where(effectiveMembershipPredicate(this.#database))
       .executeTakeFirst();
     if (!row) throw missing();
     return AppSchema.parse({
@@ -183,7 +183,7 @@ export class AppStore {
       .select("workspaceId")
       .where("workspaceId", "=", input.workspaceId)
       .where("userId", "=", input.userId)
-      .where(effectiveMembershipPredicate())
+      .where(effectiveMembershipPredicate(this.#database, "state"))
       .executeTakeFirst();
     if (!membership) throw missing();
     const publisher = await this.#database
@@ -255,7 +255,7 @@ export class AppStore {
         "appVersions.server",
       ])
       .where("workspaceMemberships.userId", "=", input.userId)
-      .where(effectiveMembershipPredicate())
+      .where(effectiveMembershipPredicate(this.#database))
       .execute();
     return rows
       .filter((row) => threadInReach(input.reach, row))

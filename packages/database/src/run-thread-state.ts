@@ -65,7 +65,7 @@ export async function readRunThreadState(
         .select("threads.id")
         .where("threads.id", "=", earlierTask.parentThreadId)
         .where("workspaceMemberships.userId", "=", input.viewerId)
-        .where(effectiveMembershipPredicate())
+        .where(effectiveMembershipPredicate(database))
         .executeTakeFirst()
     : undefined;
   return RunThreadStateSchema.parse({

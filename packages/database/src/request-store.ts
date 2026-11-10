@@ -1595,7 +1595,7 @@ export class RequestStore {
             join
               .onRef("membership.workspaceId", "=", "requests.originatingWorkspaceId")
               .on("membership.userId", "=", input.userId)
-              .on(effectiveMembershipPredicate("membership")),
+              .on(effectiveMembershipPredicate(transaction, "membership.state")),
           )
           .where("requests.status", "=", "pending")
           .where((expression) =>
@@ -1731,7 +1731,7 @@ export class RequestStore {
             .select("id")
             .whereRef("workspaceMemberships.workspaceId", "=", "requests.originatingWorkspaceId")
             .where("workspaceMemberships.userId", "=", input.userId)
-            .where(effectiveMembershipPredicate()),
+            .where(effectiveMembershipPredicate(this.#database)),
         ),
       );
     if (input.workspaceId) query = query.where("originatingWorkspaceId", "=", input.workspaceId);
@@ -4659,7 +4659,7 @@ async function lockRequestWorkspaceAuthorities(
   for (const workspaceId of workspaceIds) {
     const membership = await transaction
       .selectFrom("workspaceMemberships")
-      .select(["generation", effectiveMembershipState()])
+      .select(["generation", effectiveMembershipState(transaction, "state")])
       .where("workspaceId", "=", workspaceId)
       .where("userId", "=", input.requestedBy)
       .executeTakeFirst();
@@ -4874,11 +4874,11 @@ async function heldAssignments(
       exists (
         select 1 from public.workspace_memberships as membership
         where membership.workspace_id = worker.workspace_id
-          and membership.user_id = ${userId} and ${effectiveMembershipPredicate("membership")}
+          and membership.user_id = ${userId} and ${effectiveMembershipPredicate(transaction, "membership.state", true)}
       ) and exists (
         select 1 from public.workspace_memberships as membership
         where membership.workspace_id = parent.workspace_id
-          and membership.user_id = ${userId} and ${effectiveMembershipPredicate("membership")}
+          and membership.user_id = ${userId} and ${effectiveMembershipPredicate(transaction, "membership.state", true)}
       ) as readable
     from chain
     join public.threads as worker on worker.id = chain.child_thread_id

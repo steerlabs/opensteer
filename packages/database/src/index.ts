@@ -2,7 +2,6 @@ export * from "./account-directory-store.js";
 export * from "./access-store.js";
 export * from "./access-expiry.js";
 export * from "./effective-membership.js";
-export * from "./effective-membership.js";
 export * from "./run-tool-admission.js";
 export * from "./attachment-store.js";
 export * from "./app-store.js";

@@ -26,7 +26,7 @@ export async function resolveMessageQuote(
     .selectAll("messages")
     .where("messages.id", "=", messageId)
     .where("workspaceMemberships.userId", "=", userId)
-    .where(effectiveMembershipPredicate())
+    .where(effectiveMembershipPredicate(transaction))
     .where(publishedMessagePredicate("threadInputs"))
     .executeTakeFirst();
   if (!row)

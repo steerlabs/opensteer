@@ -89,7 +89,7 @@ export async function readThreadHistory(
         .select("threads.id")
         .where("threads.id", "=", input.threadId)
         .where("workspaceMemberships.userId", "=", input.ownerId)
-        .where(effectiveMembershipPredicate())
+        .where(effectiveMembershipPredicate(transaction))
         .executeTakeFirst();
       if (!thread) return null;
       let visible = transaction

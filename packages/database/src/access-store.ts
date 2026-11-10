@@ -17,7 +17,7 @@ import {
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import { z } from "zod";
 import type { AccessEntryTable, DatabaseSchema, WorkspaceMembershipTable } from "./schema.js";
-import { effectiveMembershipPredicate } from "./effective-membership.js";
+import { projectMembershipAuthority } from "./effective-membership.js";
 import { discoverRequestWorkspaces, withRequestWorkspaceLocks } from "./request-workspace-locks.js";
 import { jsonValue, safeGeneration } from "./store-primitives.js";
 
@@ -27,6 +27,7 @@ export const accessCapacity = {
   depth: 8,
   edges: 8192,
   matchingEntries: 256,
+  // Qualified at 1,024-pair removal and 128-Project suspension; re-qualify before cutover.
   effectivePairs: 1024,
   affectedPairs: 2048,
   requestWorkspaces: 256,
@@ -987,6 +988,32 @@ async function authorizeMutation(
   });
 }
 
+async function clampExecutionLeases(
+  transaction: AccessTransaction,
+  pairs: readonly Pair[],
+): Promise<void> {
+  if (!pairs.length) return;
+  const result = await sql<{
+    id: string;
+    deadline: Date;
+  }>`select session.id, membership.effective_until as deadline
+    from provider_sessions session
+    join runs run on run.provider_session_id = session.id and run.binding_generation = session.binding_generation
+    join threads thread on thread.id = run.thread_id
+    join workspace_memberships membership on membership.workspace_id = thread.workspace_id
+      and membership.user_id = run.requested_by and membership.generation = run.membership_generation
+    join jsonb_to_recordset(${JSON.stringify(pairs)}::jsonb) as pair("workspaceId" text, "userId" text)
+      on pair."workspaceId" = membership.workspace_id and pair."userId" = membership.user_id
+    where session.active and membership.effective_until is not null
+      and session.lease_expires_at > membership.effective_until
+    order by session.id for no key update of session`.execute(transaction);
+  if (result.rows.length)
+    await sql`update provider_sessions session
+    set lease_expires_at = least(session.lease_expires_at, change.deadline)
+    from jsonb_to_recordset(${JSON.stringify(result.rows)}::jsonb) as change(id text, deadline timestamptz)
+    where session.id = change.id`.execute(transaction);
+}
+
 export async function mutateAccess(
   database: Database,
   input: AccessMutationInput,
@@ -1075,6 +1102,7 @@ export async function mutateAccess(
             graph: next,
           })),
         );
+        await clampExecutionLeases(transaction, plan.pairs);
         const revision = plan.revision + 1;
         if (!Number.isSafeInteger(revision)) throw new Error("Access revision exhausted");
         await transaction
@@ -1152,12 +1180,17 @@ export async function mutateAccess(
         const memberships = await membershipQuery.execute();
         if (memberIds) {
           const projected = entriesByPair(next, { asOf: now }).size;
-          const delta = projected - memberships.length;
+          const current = entriesByPair(old, { asOf: now }).size;
+          const delta = projected - current;
           if (delta > 0) {
             const total = await transaction
               .selectFrom("workspaceMemberships")
+              .innerJoin("workspaces", "workspaces.id", "workspaceMemberships.workspaceId")
               .select(sql<string>`count(*)`.as("count"))
-              .where("state", "=", "active")
+              .where(projectMembershipAuthority.predicate("workspaceMemberships.state", false))
+              .where("workspaces.kind", "=", "project")
+              .where("workspaces.deletedAt", "is", null)
+              .where("workspaces.status", "not in", ["deleting", "deleted"])
               .executeTakeFirstOrThrow();
             if (Number(total.count) + delta > accessCapacity.effectivePairs)
               capacityError("effectivePairs", Number(total.count) + delta);
@@ -1278,7 +1311,11 @@ export async function checkAccess(
     .$if(input.expectedMemberGeneration !== undefined, (query) =>
       query.where("users.authorityGeneration", "=", String(input.expectedMemberGeneration!)),
     )
-    .where(effectiveMembershipPredicate())
+    .where(
+      isNew
+        ? projectMembershipAuthority.predicate("workspaceMemberships.state", false)
+        : sql<boolean>`workspace_memberships.state = 'active'`,
+    )
     .executeTakeFirst();
   if (
     !membership ||
@@ -1321,6 +1358,7 @@ export async function expireAccessMemberships(
         asOf: await databaseTime(transaction),
         causeId,
       });
+      await clampExecutionLeases(transaction, pairs);
       if (transitions.length) {
         const revision = revisions.get(transaction)! + 1;
         if (!Number.isSafeInteger(revision)) throw new Error("Access revision exhausted");

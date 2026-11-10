@@ -279,7 +279,7 @@ export async function finalizeRunTransaction(
   // deliver them again, with the same IDs and the old snapshot still on its Run.
   const membership = await transaction
     .selectFrom("workspaceMemberships")
-    .select(["generation", effectiveMembershipState()])
+    .select(["generation", effectiveMembershipState(transaction, "state")])
     .where("workspaceId", "=", run.workspaceId)
     .where("userId", "=", run.requestedBy)
     .executeTakeFirst();

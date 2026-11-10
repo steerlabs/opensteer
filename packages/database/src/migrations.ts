@@ -53,6 +53,12 @@ export const accessFoundationMigration: Migration = {
       );
       create index workspace_memberships_due on public.workspace_memberships(effective_until)
         where state = 'active' and effective_until is not null;
+      drop index public.workspace_memberships_user_active;
+      drop index public.workspace_memberships_workspace_active;
+      create index workspace_memberships_user_active on public.workspace_memberships(user_id, workspace_id)
+        include (effective_until, state) where state = 'active';
+      create index workspace_memberships_workspace_active on public.workspace_memberships(workspace_id, role, user_id)
+        include (effective_until, state) where state = 'active';
       create table public.access_groups (
         id uuid primary key, name text not null check (length(btrim(name)) between 1 and 120),
         builtin text check (builtin = 'everyone'), created_by text not null references public.users(id),
@@ -87,9 +93,10 @@ export const accessFoundationMigration: Migration = {
       insert into public.access_state values ('primary', 1);
       create function public.opensteer_membership_is_effective(membership_state text, deadline timestamptz, member_id text)
       returns boolean language sql volatile parallel safe as $$
-        select membership_state = 'active' and (deadline is null or deadline > clock_timestamp())
-          and (not exists (select 1 from public.deployments where authority_model_version = 2 and deployment_shape->>'kind' = 'server')
-            or exists (select 1 from public.users where id = member_id and member_state = 'active' and admitted_at is not null))
+        select membership_state = 'active' and
+          (not exists (select 1 from public.deployments where authority_model_version = 2 and deployment_shape->>'kind' = 'server')
+            or ((deadline is null or deadline > clock_timestamp())
+              and exists (select 1 from public.users where id = member_id and member_state = 'active' and admitted_at is not null)))
       $$;
       alter table public.security_effects add column membership_generation_cutoff bigint;
       update public.security_effects set membership_generation_cutoff = membership_generation - 1;
@@ -99,6 +106,9 @@ export const accessFoundationMigration: Migration = {
       create function public.opensteer_security_effect_legacy_scope() returns trigger language plpgsql as $$
       begin
         if new.membership_generation_cutoff is null then
+          if new.cause_id is not null then
+            raise exception 'marked security effects require an explicit generation cutoff';
+          end if;
           new.membership_generation_cutoff := new.membership_generation - 1;
         end if;
         return new;

@@ -37,7 +37,7 @@ import {
   runHistoryMaxMessages,
   runHistoryMaxSerializedBytes,
 } from "@opensteer/protocol";
-import { type Kysely, sql } from "kysely";
+import { type Kysely, type Transaction, type RawBuilder, sql } from "kysely";
 import {
   jsonValue,
   boundedWindowLimit,
@@ -143,6 +143,84 @@ export async function renewActiveExecutionBindings(
   if (input.activeRunIds.length === 0) return [];
   // A lease that ran out stays out: the Runner has already stopped the Run on
   // its own deadline, and the Host's sweep is about to settle it.
+  const renewed = await database
+    .updateTable("providerSessions")
+    .set({ leaseExpiresAt: input.leaseExpiresAt, updatedAt: new Date() })
+    .where("active", "=", true)
+    .where("runnerId", "=", input.runnerId)
+    .where("runnerBootId", "=", input.runnerBootId)
+    .where("leaseExpiresAt", ">", new Date(executionNow()))
+    .where(
+      sql<boolean>`exists (
+          select 1
+          from runs run
+          join threads thread on thread.id = run.thread_id
+          join workspace_memberships membership
+            on membership.workspace_id = thread.workspace_id
+           and membership.user_id = run.requested_by
+          where run.id in (${sql.join(input.activeRunIds)})
+            and run.provider_session_id = provider_sessions.id
+            and run.binding_generation = provider_sessions.binding_generation
+            and run.status in ('starting', 'running', 'waiting')
+            and run.harness_instance_id = provider_sessions.harness_instance_id
+            and run.environment_id = thread.environment_id
+            and membership.state = 'active'
+            and membership.generation = run.membership_generation
+            and opensteer_user_can_execute_environment(
+              run.environment_id,
+              run.requested_by
+            )
+        )`,
+    )
+    .returning(["bindingGeneration", "id"])
+    .execute();
+  if (renewed.length === 0) return [];
+  const runs = await database
+    .selectFrom("runs")
+    .select(["bindingGeneration", "id", "providerSessionId"])
+    .where("id", "in", input.activeRunIds)
+    .where("status", "in", ["starting", "running", "waiting"])
+    .where(
+      "providerSessionId",
+      "in",
+      renewed.map((session) => session.id),
+    )
+    .execute();
+  return runs
+    .filter((run) =>
+      renewed.some(
+        (session) =>
+          session.id === run.providerSessionId &&
+          session.bindingGeneration === run.bindingGeneration,
+      ),
+    )
+    .map((run) => run.id);
+}
+
+export function renewActiveExecutionBindingsWithAuthority(
+  database: Kysely<DatabaseSchema>,
+  input: Parameters<typeof renewActiveExecutionBindings>[1],
+  executionNow: () => number = Date.now,
+): Promise<readonly RunId[]> {
+  if (!input.activeRunIds.length) return Promise.resolve([]);
+  return withExecutionMembershipLocks(database, input.activeRunIds, (transaction) =>
+    renewActiveBindingsUnderAuthority(transaction, input, executionNow),
+  );
+}
+
+async function renewActiveBindingsUnderAuthority(
+  database: Kysely<DatabaseSchema>,
+  input: {
+    readonly activeRunIds: readonly RunId[];
+    readonly leaseExpiresAt: Date;
+    readonly runnerBootId: string;
+    readonly runnerId: RunnerId;
+  },
+  executionNow: () => number = Date.now,
+): Promise<readonly RunId[]> {
+  if (input.activeRunIds.length === 0) return [];
+  // A lease that ran out stays out: the Runner has already stopped the Run on
+  // its own deadline, and the Host's sweep is about to settle it.
   const renewed = (
     await sql<{ id: ProviderSessionId; bindingGeneration: number }>`
     update provider_sessions set
@@ -159,7 +237,7 @@ export async function renewActiveExecutionBindings(
       and run.status in ('starting', 'running', 'waiting')
       and run.harness_instance_id = provider_sessions.harness_instance_id
       and run.environment_id = thread.environment_id
-      and ${effectiveMembershipPredicate("membership")}
+      and ${effectiveMembershipPredicate(database, "membership.state", true)}
       and membership.generation = run.membership_generation
       and opensteer_user_can_execute_environment(run.environment_id, run.requested_by)
     returning provider_sessions.id, provider_sessions.binding_generation
@@ -523,6 +601,15 @@ export async function loadRunDispatchContext(
   };
 }
 
+export function membershipLeaseExpiry(
+  requested: Date,
+  workspaceId: WorkspaceId,
+  userId: UserId,
+): RawBuilder<Date> {
+  return sql<Date>`least(${requested}, (select effective_until from workspace_memberships
+    where workspace_id = ${workspaceId} and user_id = ${userId}))`;
+}
+
 export async function acquireExecutionBinding(
   database: Kysely<DatabaseSchema>,
   input: {
@@ -536,6 +623,11 @@ export async function acquireExecutionBinding(
     readonly runId: RunId;
     readonly threadId: ThreadId;
   },
+  leaseExpiry: (
+    requested: Date,
+    workspaceId: WorkspaceId,
+    userId: UserId,
+  ) => Date | RawBuilder<Date> = (requested) => requested,
 ): Promise<
   ThreadExecutionBinding & {
     readonly continuationEvent?: AgentEvent;
@@ -793,10 +885,7 @@ export async function acquireExecutionBinding(
       .updateTable("providerSessions")
       .set({
         bindingGeneration: session.bindingGeneration + 1,
-        leaseExpiresAt: sql`least(${input.bindingLeaseExpiresAt}, (
-          select membership.effective_until from workspace_memberships membership
-          where membership.workspace_id = ${run.workspaceId} and membership.user_id = ${run.requestedBy}
-        ))`,
+        leaseExpiresAt: leaseExpiry(input.bindingLeaseExpiresAt, run.workspaceId, run.requestedBy),
         leaseTokenHash: input.leaseTokenHash,
         runnerBootId: input.runnerBootId,
         runnerId: input.runnerId,
@@ -843,6 +932,51 @@ export async function renewExecutionBinding(
   const run = await database
     .selectFrom("runs")
     .select(["providerSessionId", "threadId"])
+    .where("id", "=", input.runId)
+    .where("status", "in", ["starting", "running", "waiting"])
+    .executeTakeFirst();
+  if (!run?.providerSessionId || run.threadId !== input.threadId) return false;
+  const result = await database
+    .updateTable("providerSessions")
+    .set({ leaseExpiresAt: input.leaseExpiresAt, updatedAt: new Date() })
+    .where("active", "=", true)
+    .where("threadId", "=", input.threadId)
+    .where("id", "=", run.providerSessionId)
+    .where("runnerId", "=", input.runnerId)
+    .where("runnerBootId", "=", input.runnerBootId)
+    .where("bindingGeneration", "=", input.bindingGeneration)
+    .where("leaseTokenHash", "=", input.leaseTokenHash)
+    .where("leaseExpiresAt", ">", new Date(executionNow()))
+    .executeTakeFirst();
+  return result.numUpdatedRows === 1n;
+}
+
+export function renewExecutionBindingWithAuthority(
+  database: Kysely<DatabaseSchema>,
+  input: Parameters<typeof renewExecutionBinding>[1],
+  executionNow: () => number = Date.now,
+): Promise<boolean> {
+  return withExecutionMembershipLocks(database, [input.runId], (transaction) =>
+    renewBindingUnderAuthority(transaction, input, executionNow),
+  );
+}
+
+async function renewBindingUnderAuthority(
+  database: Kysely<DatabaseSchema>,
+  input: {
+    readonly bindingGeneration: number;
+    readonly leaseExpiresAt: Date;
+    readonly leaseTokenHash: string;
+    readonly runnerBootId: string;
+    readonly runnerId: RunnerId;
+    readonly runId: RunId;
+    readonly threadId: ThreadId;
+  },
+  executionNow: () => number = Date.now,
+): Promise<boolean> {
+  const run = await database
+    .selectFrom("runs")
+    .select(["providerSessionId", "threadId"])
     .where("runs.id", "=", input.runId)
     .where("runs.status", "in", ["starting", "running", "waiting"])
     .executeTakeFirst();
@@ -872,9 +1006,55 @@ export async function renewExecutionBinding(
     .where("run.status", "in", ["starting", "running", "waiting"])
     .whereRef("run.providerSessionId", "=", "providerSessions.id")
     .whereRef("run.membershipGeneration", "=", "membership.generation")
-    .where(effectiveMembershipPredicate("membership"))
+    .where(effectiveMembershipPredicate(database, "membership.state"))
     .executeTakeFirst();
   return result.numUpdatedRows === 1n;
+}
+
+async function withExecutionMembershipLocks<Result>(
+  database: Kysely<DatabaseSchema>,
+  runIds: readonly RunId[],
+  action: (transaction: Transaction<DatabaseSchema>) => Promise<Result>,
+): Promise<Result> {
+  return withDatabaseTransaction(database, async (transaction) => {
+    const runs = await transaction
+      .selectFrom("runs")
+      .innerJoin("threads", "threads.id", "runs.threadId")
+      .select(["runs.id", "runs.requestedBy", "runs.providerSessionId", "threads.workspaceId"])
+      .where("runs.id", "in", runIds)
+      .orderBy("runs.id")
+      .forNoKeyUpdate("runs")
+      .execute();
+    const workspaces = [...new Set(runs.map((run) => run.workspaceId))].sort();
+    for (const workspaceId of workspaces) await lockWorkspaceRow(transaction, workspaceId);
+    if (runs.length)
+      await transaction
+        .selectFrom("workspaceMemberships")
+        .select("id")
+        .where((expression) =>
+          expression.or(
+            runs.map((run) =>
+              expression.and([
+                expression("workspaceId", "=", run.workspaceId),
+                expression("userId", "=", run.requestedBy),
+              ]),
+            ),
+          ),
+        )
+        .orderBy("id")
+        .forShare()
+        .execute();
+    const sessions = runs.flatMap((run) => (run.providerSessionId ? [run.providerSessionId] : []));
+    if (sessions.length)
+      await transaction
+        .selectFrom("providerSessions")
+        .select("id")
+        .where("id", "in", sessions)
+        .orderBy("id")
+        .forNoKeyUpdate()
+        .execute();
+    return action(transaction);
+  });
 }
 
 /**

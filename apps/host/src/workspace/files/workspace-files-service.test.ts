@@ -10,6 +10,47 @@ import { WorkspaceFilesService } from "./workspace-files-service.js";
 afterEach(() => vi.useRealTimers());
 
 describe("WorkspaceFilesService", () => {
+  it("keeps model-1 streams on the original amortized reads without deadline work", async () => {
+    vi.useFakeTimers();
+    const fixture = membershipFixture(localWorkspace());
+    const membership = vi.fn(fixture.repository.workspaceMembershipForUser);
+    const timed = vi.fn(async () => {
+      throw new Error("Legacy Files read timed authority");
+    });
+    const service = new WorkspaceFilesService({
+      memberships: {
+        ...fixture.repository,
+        authorityModelVersion: 1,
+        workspaceMembershipForUser: membership,
+        workspaceMembershipAuthorityForUser: timed,
+      },
+      local: {
+        download: async () =>
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(new Uint8Array(128 * 1024));
+                controller.close();
+              },
+            }),
+          ),
+      } as never,
+    });
+    try {
+      const response = await service.download(
+        { ...fixture.admission, authorityDeadline: 0 },
+        "file",
+      );
+      const reader = response.body!.getReader();
+      expect((await reader.read()).value?.length).toBe(64 * 1024);
+      expect((await reader.read()).value?.length).toBe(64 * 1024);
+      expect((await reader.read()).done).toBe(true);
+      expect(membership).toHaveBeenCalledTimes(2);
+      expect(timed).not.toHaveBeenCalled();
+    } finally {
+      service.close();
+    }
+  });
   it("never releases a delayed result after its admission deadline, even if current membership is active", async () => {
     let now = 0;
     const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
@@ -22,7 +63,14 @@ describe("WorkspaceFilesService", () => {
           return directoryPage();
         },
       } as never,
-      memberships: fixture.repository,
+      memberships: {
+        ...fixture.repository,
+        authorityModelVersion: 2,
+        workspaceMembershipAuthorityForUser: async () => ({
+          ...fixture.membership(),
+          authorityDeadline: 2000,
+        }),
+      },
     });
     try {
       await expect(service.list(admission, { limit: 200, parentKey: "" })).rejects.toMatchObject({
@@ -33,6 +81,60 @@ describe("WorkspaceFilesService", () => {
       clock.mockRestore();
     }
   });
+  it.each(["result", "stream"] as const)(
+    "observes a same-generation shortening before the next file %s",
+    async (kind) => {
+      const fixture = membershipFixture(localWorkspace());
+      let deadline = 2000;
+      const clock = vi.spyOn(performance, "now").mockReturnValue(0);
+      const shorten = () => {
+        deadline = 1000;
+        clock.mockReturnValue(1001);
+      };
+      const service = new WorkspaceFilesService({
+        memberships: {
+          ...fixture.repository,
+          authorityModelVersion: 2,
+          workspaceMembershipAuthorityForUser: async () => ({
+            ...fixture.membership(),
+            authorityDeadline: deadline,
+          }),
+        },
+        local: {
+          list: async () => {
+            shorten();
+            return directoryPage();
+          },
+          download: async () =>
+            new Response(
+              new ReadableStream<Uint8Array>({
+                start(controller) {
+                  controller.enqueue(new Uint8Array(128 * 1024));
+                  controller.close();
+                },
+              }),
+            ),
+        } as never,
+      });
+      try {
+        const admission = { ...fixture.admission, authorityDeadline: 2000 };
+        if (kind === "result")
+          await expect(
+            service.list(admission, { parentKey: "", limit: 200 }),
+          ).rejects.toMatchObject({ code: "not_found" });
+        else {
+          const response = await service.download(admission, "file");
+          const reader = response.body!.getReader();
+          expect((await reader.read()).value?.length).toBe(64 * 1024);
+          shorten();
+          await expect(reader.read()).rejects.toMatchObject({ code: "not_found" });
+        }
+      } finally {
+        service.close();
+        clock.mockRestore();
+      }
+    },
+  );
   it("fails closed when a Workspace backing has no configured driver", async () => {
     const unavailable = membershipFixture({
       ...localWorkspace(),

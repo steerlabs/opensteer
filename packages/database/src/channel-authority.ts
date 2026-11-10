@@ -124,7 +124,7 @@ export async function resolveChannelAuthority(
   const linkedMembership = identity.linkedUserId
     ? await transaction
         .selectFrom("workspaceMemberships")
-        .select(["generation", effectiveMembershipState()])
+        .select(["generation", effectiveMembershipState(transaction, "state")])
         .where("workspaceId", "=", binding.workspaceId)
         .where("userId", "=", identity.linkedUserId)
         .executeTakeFirst()
@@ -160,7 +160,7 @@ export async function resolveChannelAuthority(
 
   const ownerMembership = await transaction
     .selectFrom("workspaceMemberships")
-    .select(["generation", effectiveMembershipState()])
+    .select(["generation", effectiveMembershipState(transaction, "state")])
     .where("workspaceId", "=", binding.workspaceId)
     .where("userId", "=", binding.createdBy)
     .executeTakeFirst();

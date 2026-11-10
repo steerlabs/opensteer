@@ -20,7 +20,7 @@ export class AgentConnectionStore {
       .innerJoin("workspaceMemberships", "workspaceMemberships.workspaceId", "workspaces.id")
       .select(["workspaces.id", "workspaces.name"])
       .where("workspaceMemberships.userId", "=", userId)
-      .where(effectiveMembershipPredicate())
+      .where(effectiveMembershipPredicate(this.database))
       .where("workspaceMemberships.role", "=", "owner")
       .where("workspaces.deletedAt", "is", null)
       .execute();
@@ -52,7 +52,7 @@ export class AgentConnectionStore {
           .where("workspaceMemberships.workspaceId", "=", input.reach.workspaceId)
           .where("workspaceMemberships.userId", "=", input.userId)
           .where("workspaceMemberships.role", "=", "owner")
-          .where(effectiveMembershipPredicate())
+          .where(effectiveMembershipPredicate(tx))
           .forShare()
           .executeTakeFirst();
         if (!membership)
@@ -129,7 +129,7 @@ export class AgentConnectionStore {
               .select("workspaceMemberships.id")
               .whereRef("workspaceMemberships.workspaceId", "=", "agentConnections.workspaceId")
               .whereRef("workspaceMemberships.userId", "=", "agentConnections.userId")
-              .where(effectiveMembershipPredicate())
+              .where(effectiveMembershipPredicate(this.database))
               .where("workspaceMemberships.role", "=", "owner")
               .where("workspaces.deletedAt", "is", null),
           ),

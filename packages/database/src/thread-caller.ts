@@ -109,7 +109,7 @@ export async function assertThreadCaller(
         .where("workspaceMemberships.workspaceId", "=", connection.workspaceId)
         .where("workspaceMemberships.userId", "=", caller.userId)
         .where("workspaceMemberships.role", "=", "owner")
-        .where(effectiveMembershipPredicate())
+        .where(effectiveMembershipPredicate(tx))
         .where("workspaces.deletedAt", "is", null)
         .executeTakeFirst();
       if (!membership) throw forbidden("Connected agent Workspace authority is unavailable");

@@ -1,4 +1,4 @@
-import { effectiveMembershipPredicate } from "./effective-membership.js";
+import { effectiveMembershipPredicate, membershipAuthority } from "./effective-membership.js";
 import { PrincipalIdSchema, type PrincipalId } from "@opensteer/channel-core";
 import {
   AgentEventSchema,
@@ -182,19 +182,20 @@ export async function requireActiveWorkspaceMembership(
   userId: UserId,
   lock = false,
 ): Promise<{ readonly role: "owner" | "collaborator"; readonly generation: number }> {
-  let query = transaction
-    .selectFrom("workspaceMemberships")
-    .select(["role", "state", "generation", "effectiveUntil"])
-    .where("workspaceId", "=", workspaceId)
-    .where("userId", "=", userId)
-    .where(effectiveMembershipPredicate());
+  let query = membershipAuthority(transaction).filterLocked(
+    transaction
+      .selectFrom("workspaceMemberships")
+      .select(membershipAuthority(transaction).lockedSelection)
+      .where("workspaceId", "=", workspaceId)
+      .where("userId", "=", userId),
+  );
   if (lock) query = query.forNoKeyUpdate();
   const membership = await query.executeTakeFirst(databaseOperationOptions());
   const current =
     lock && membership?.effectiveUntil
       ? await transaction
           .selectFrom("workspaceMemberships")
-          .select(effectiveMembershipPredicate().as("allowed"))
+          .select(effectiveMembershipPredicate(transaction).as("allowed"))
           .where("workspaceId", "=", workspaceId)
           .where("userId", "=", userId)
           .executeTakeFirst(databaseOperationOptions())

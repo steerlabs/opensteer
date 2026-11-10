@@ -214,7 +214,7 @@ export class NotificationStore {
       .select("agentNotificationMutes.muted")
       .where("workspaceMemberships.workspaceId", "=", entry.workspaceId)
       .where("workspaceMemberships.userId", "=", entry.userId)
-      .where(effectiveMembershipPredicate())
+      .where(effectiveMembershipPredicate(this.#database))
       .where("users.disabledAt", "is", null)
       .executeTakeFirst();
     if (!recipient) return "Recipient can no longer open this Thread";
@@ -479,7 +479,7 @@ async function personAnswered(
     .where("runs.id", "=", event.runId)
     .where("runs.threadId", "=", event.threadId)
     .where("threads.workspaceId", "=", event.workspaceId)
-    .where(effectiveMembershipPredicate())
+    .where(effectiveMembershipPredicate(transaction))
     .where("users.disabledAt", "is", null)
     .executeTakeFirst();
   if (
@@ -564,7 +564,7 @@ async function activeMembers(
       "workspaceMemberships.userId as userId",
     ])
     .where("workspaceMemberships.workspaceId", "=", workspaceId)
-    .where(effectiveMembershipPredicate())
+    .where(effectiveMembershipPredicate(transaction))
     .where("users.disabledAt", "is", null)
     .limit(1_000)
     .execute();

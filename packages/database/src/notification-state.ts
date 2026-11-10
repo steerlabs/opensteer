@@ -80,7 +80,7 @@ export class NotificationStateStore {
       join public.workspace_memberships membership
         on membership.workspace_id = thread.workspace_id
         and membership.user_id = ${input.userId}
-        and ${effectiveMembershipPredicate("membership")}
+        and ${effectiveMembershipPredicate(this.#database, "membership.state", true)}
       join public.users person on person.id = membership.user_id and person.disabled_at is null
       left join public.thread_read_markers marker
         on marker.thread_id = thread.id and marker.user_id = ${input.userId}
@@ -149,7 +149,7 @@ export class NotificationStateStore {
       .select("workspaceMemberships.workspaceId")
       .where("workspaceMemberships.workspaceId", "=", input.workspaceId)
       .where("workspaceMemberships.userId", "=", input.userId)
-      .where(effectiveMembershipPredicate())
+      .where(effectiveMembershipPredicate(this.#database))
       .where("users.disabledAt", "is", null)
       .executeTakeFirst();
     if (!authorized)
@@ -195,7 +195,7 @@ export class NotificationStateStore {
         .select("threads.id")
         .where("threads.id", "=", input.threadId)
         .where("workspaceMemberships.userId", "=", input.userId)
-        .where(effectiveMembershipPredicate())
+        .where(effectiveMembershipPredicate(transaction))
         .where("users.disabledAt", "is", null)
         .forNoKeyUpdate("threads")
         .executeTakeFirst();
@@ -260,7 +260,7 @@ export class NotificationStateStore {
         ])
         .where("workspaces.id", "in", batch)
         .where("workspaceMemberships.userId", "=", input.userId)
-        .where(effectiveMembershipPredicate())
+        .where(effectiveMembershipPredicate(this.#database))
         .where("users.disabledAt", "is", null)
         .execute();
       for (const row of rows) {
@@ -305,7 +305,7 @@ export class NotificationStateStore {
         "agentNotificationMutes.revision",
       ])
       .where("agentNotificationMutes.userId", "=", input.userId)
-      .where(effectiveMembershipPredicate())
+      .where(effectiveMembershipPredicate(this.#database))
       .where("users.disabledAt", "is", null);
     if (input.afterWorkspaceId)
       query = query.where("agentNotificationMutes.workspaceId", ">", input.afterWorkspaceId);
@@ -338,7 +338,7 @@ export class NotificationStateStore {
           .select("workspaceMemberships.workspaceId")
           .where("workspaceMemberships.workspaceId", "=", input.workspaceId)
           .where("workspaceMemberships.userId", "=", input.userId)
-          .where(effectiveMembershipPredicate())
+          .where(effectiveMembershipPredicate(transaction))
           .where("users.disabledAt", "is", null)
           .executeTakeFirst();
         if (!authorized)

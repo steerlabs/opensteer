@@ -1748,7 +1748,7 @@ export class ChannelStore {
           if (eligibleAuthorityUserId) {
             const inactiveMembership = await transaction
               .selectFrom("workspaceMemberships")
-              .select(effectiveMembershipState())
+              .select(effectiveMembershipState(transaction, "state"))
               .where("workspaceId", "=", binding.workspaceId)
               .where("userId", "=", eligibleAuthorityUserId)
               .forNoKeyUpdate()
@@ -1793,7 +1793,7 @@ export class ChannelStore {
           .select([
             "workspaceMemberships.generation",
             "workspaceMemberships.role",
-            effectiveMembershipState(),
+            effectiveMembershipState(transaction, "state"),
           ])
           .where("workspaceMemberships.workspaceId", "=", binding.workspaceId)
           .where("workspaceMemberships.userId", "=", authority.userId)
@@ -2493,7 +2493,7 @@ async function requireWorkspaceOwner(
 ): Promise<void> {
   const membership = await transaction
     .selectFrom("workspaceMemberships")
-    .select(["role", effectiveMembershipState()])
+    .select(["role", effectiveMembershipState(transaction, "state")])
     .where("workspaceId", "=", workspaceId)
     .where("userId", "=", userId)
     .executeTakeFirst();

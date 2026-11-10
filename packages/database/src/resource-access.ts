@@ -134,7 +134,7 @@ export async function resolveResourceAccess(
       .where("specialists.workspaceId", "=", input.workspaceId)
       .where("specialists.ownerUserId", "=", input.ownerUserId)
       .where("workspaceMemberships.userId", "=", input.ownerUserId)
-      .where(effectiveMembershipPredicate())
+      .where(effectiveMembershipPredicate(database))
       .executeTakeFirst();
     specialistAllowed =
       registration !== undefined &&

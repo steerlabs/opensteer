@@ -79,7 +79,7 @@ async function canRead(
     .select("threads.id")
     .where("threads.id", "=", threadId)
     .where("workspaceMemberships.userId", "=", ownerId)
-    .where(effectiveMembershipPredicate())
+    .where(effectiveMembershipPredicate(transaction))
     .executeTakeFirst();
 }
 

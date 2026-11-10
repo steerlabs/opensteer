@@ -25,7 +25,7 @@ export class SpecialistStore {
   private async authorize(workspaceId: WorkspaceId, actorUserId: UserId) {
     const member = await this.database
       .selectFrom("workspaceMemberships")
-      .select(effectiveMembershipState())
+      .select(effectiveMembershipState(this.database, "state"))
       .where("workspaceId", "=", workspaceId)
       .where("userId", "=", actorUserId)
       .executeTakeFirst();

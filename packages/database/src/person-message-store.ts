@@ -48,7 +48,7 @@ export async function publishPersonMessage(
         .select("users.id")
         .where("workspaceMemberships.workspaceId", "=", admission.workspaceId)
         .where("workspaceMemberships.userId", "=", run.requestedBy)
-        .where(effectiveMembershipPredicate())
+        .where(effectiveMembershipPredicate(transaction))
         .where("users.disabledAt", "is", null)
         .forShare("workspaceMemberships")
         .executeTakeFirst();

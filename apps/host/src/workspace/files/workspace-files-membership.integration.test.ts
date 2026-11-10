@@ -14,12 +14,13 @@ integration("Workspace Files membership generation", () => {
     connectionString: databaseUrl ?? "postgres://unconfigured",
     maxConnections: 2,
   });
-  const store = new OpensteerStore(database);
+  let store = new OpensteerStore(database);
 
   beforeAll(async () => migrateToLatest(database));
 
   beforeEach(async () => {
     await sql`truncate table deployments, users restart identity cascade`.execute(database);
+    store = await OpensteerStore.create(database);
   });
 
   afterAll(async () => database.destroy());
@@ -53,6 +54,7 @@ integration("Workspace Files membership generation", () => {
       },
     });
     await database.updateTable("deployments").set({ authorityModelVersion: 2 }).execute();
+    store = await OpensteerStore.create(database);
     await database
       .updateTable("users")
       .set({ admittedAt: new Date() })

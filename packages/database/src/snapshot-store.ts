@@ -228,7 +228,7 @@ export async function workspaceSnapshot(
                         .select("workspaceMemberships.id")
                         .whereRef("workspaceMemberships.workspaceId", "=", "threads.workspaceId")
                         .where("workspaceMemberships.userId", "=", options.viewerId!)
-                        .where(effectiveMembershipPredicate()),
+                        .where(effectiveMembershipPredicate(transaction)),
                     ),
                   ),
                 )
@@ -499,7 +499,7 @@ export async function taskPageForUser(
         )
         .innerJoin("users", "users.id", "workspaceMemberships.userId")
         .where("workspaceMemberships.userId", "=", input.userId)
-        .where(effectiveMembershipPredicate())
+        .where(effectiveMembershipPredicate(transaction))
         .where("users.disabledAt", "is", null)
         .where("workspaces.status", "!=", "deleted")
         .where("threads.listed", "=", true)
@@ -517,7 +517,7 @@ export async function taskPageForUser(
           .select("workspaceMemberships.workspaceId")
           .where("workspaceMemberships.workspaceId", "=", input.workspaceId)
           .where("workspaceMemberships.userId", "=", input.userId)
-          .where(effectiveMembershipPredicate())
+          .where(effectiveMembershipPredicate(transaction))
           .where("users.disabledAt", "is", null)
           .where("workspaces.status", "!=", "deleted")
           .executeTakeFirst();
@@ -770,7 +770,7 @@ export async function threadEventPageForOwner(
         ])
         .where("threads.id", "=", input.threadId)
         .where("workspaceMemberships.userId", "=", input.ownerId)
-        .where(effectiveMembershipPredicate())
+        .where(effectiveMembershipPredicate(transaction))
         .executeTakeFirst();
       if (!thread) return null;
       const [page, countRow] = await Promise.all([

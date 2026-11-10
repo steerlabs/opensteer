@@ -3,6 +3,7 @@ import { sql } from "kysely";
 import { expect } from "vitest";
 import { describeStore } from "./store.integration.test-support.js";
 import { AccountDirectoryStore } from "./account-directory-store.js";
+import { loadMembershipAuthority } from "./effective-membership.js";
 
 describeStore("effective SQL authority", (it) => {
   for (const [name, message] of [
@@ -128,6 +129,9 @@ describeStore("effective SQL authority", (it) => {
   }) => {
     const fixture = await storeFixture.createRunFixture("main-consent");
     const database = storeFixture.database;
+    await database.updateTable("deployments").set({ authorityModelVersion: 2 }).execute();
+    await database.updateTable("users").set({ admittedAt: new Date() }).execute();
+    await loadMembershipAuthority(database);
     await database
       .updateTable("workspaceMemberships")
       .set({ effectiveUntil: new Date("2020-01-01") })
@@ -151,6 +155,9 @@ describeStore("effective SQL authority", (it) => {
     const fixture = await storeFixture.createRunFixture("plugin-fanout", null, "project");
     const userId = await storeFixture.store.createUser("Effective member");
     const database = storeFixture.database;
+    await database.updateTable("deployments").set({ authorityModelVersion: 2 }).execute();
+    await database.updateTable("users").set({ admittedAt: new Date() }).execute();
+    await loadMembershipAuthority(database);
     await database
       .insertInto("workspaceMemberships")
       .values({
@@ -189,6 +196,9 @@ describeStore("effective SQL authority", (it) => {
   }) => {
     const fixture = await storeFixture.createRunFixture("directory-presence", null, "project");
     const database = storeFixture.database;
+    await database.updateTable("deployments").set({ authorityModelVersion: 2 }).execute();
+    await database.updateTable("users").set({ admittedAt: new Date() }).execute();
+    await loadMembershipAuthority(database);
     const directory = new AccountDirectoryStore(database);
     await directory.configureProvider({
       providerId: "fixture-account",

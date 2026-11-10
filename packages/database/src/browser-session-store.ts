@@ -115,6 +115,7 @@ export interface BrowserSessionWithAttachmentCountRecord extends BrowserSessionR
 }
 
 export function ownedBrowserSession(
+  database: Kysely<DatabaseSchema>,
   expression: ExpressionBuilder<DatabaseSchema, "browserProfiles" | "browserSessions">,
   ownerId: UserId,
 ) {
@@ -128,7 +129,7 @@ export function ownedBrowserSession(
           .select("workspaceMemberships.id")
           .whereRef("workspaceMemberships.workspaceId", "=", "browserSessions.workspaceId")
           .where("workspaceMemberships.userId", "=", ownerId)
-          .where(effectiveMembershipPredicate()),
+          .where(effectiveMembershipPredicate(database)),
       ),
     ]),
   ]);
@@ -681,7 +682,7 @@ export async function authorizedPlaceThreadIds(
     .select("threads.id")
     .where("threads.id", "in", threadIds)
     .where("workspaceMemberships.userId", "=", ownerId)
-    .where(effectiveMembershipPredicate())
+    .where(effectiveMembershipPredicate(database))
     .execute(databaseOperationOptions());
   return rows.map(({ id }) => id);
 }
@@ -735,7 +736,7 @@ export async function latestNativePlaces(
     select distinct on (a.thread_id) a.thread_id, a.run_id, a.integration, a.at
     from addressed a join threads t on t.id = a.thread_id
     join workspace_memberships m on m.workspace_id = t.workspace_id
-    where m.user_id = ${ownerId} and ${effectiveMembershipPredicate("m")}
+    where m.user_id = ${ownerId} and ${effectiveMembershipPredicate(database, "m.state", true)}
       and not exists (select 1 from browser_session_uses b where b.thread_id = a.thread_id and b.last_used_at > a.at)
     order by a.thread_id, a.at desc, a.sequence desc limit 4096
   `.execute(database, databaseOperationOptions());
@@ -824,7 +825,7 @@ export async function resolvePlaceActors(
     .select(["workspaceId", "userId"])
     .where("workspaceId", "in", [...new Set(lineage.rows.map((row) => row.workspaceId))])
     .where("userId", "in", input.ownerIds)
-    .where(effectiveMembershipPredicate())
+    .where(effectiveMembershipPredicate(database, "state"))
     .execute(databaseOperationOptions());
   return lineage.rows.flatMap((row) =>
     members
@@ -1249,7 +1250,7 @@ async function personBrowserThreadWorkspace(
     .select("threads.workspaceId")
     .where("threads.id", "=", input.threadId)
     .where("workspaceMemberships.userId", "=", input.ownerId)
-    .where(effectiveMembershipPredicate())
+    .where(effectiveMembershipPredicate(database))
     .executeTakeFirst(databaseOperationOptions());
   return thread?.workspaceId ?? null;
 }
@@ -1323,7 +1324,7 @@ export async function listBrowserSessionViewers(
     .selectFrom("workspaceMemberships")
     .select("userId")
     .where("workspaceId", "=", session.workspaceId)
-    .where(effectiveMembershipPredicate())
+    .where(effectiveMembershipPredicate(database, "state"))
     .execute(databaseOperationOptions());
   return { userIds: members.map(({ userId }) => userId), workspaceId: session.workspaceId };
 }
@@ -1412,7 +1413,7 @@ export async function getBrowserSessionForOwner(
       "browserSessions.workspaceId",
     ])
     .where("browserSessions.id", "=", sessionId)
-    .where((expression) => ownedBrowserSession(expression, ownerId))
+    .where((expression) => ownedBrowserSession(database, expression, ownerId))
     .executeTakeFirst(databaseOperationOptions());
   return row ?? null;
 }
@@ -1438,7 +1439,7 @@ export async function listBrowserSessions(
         "browserSessions.updatedAt",
         "browserSessions.workspaceId",
       ])
-      .where((expression) => ownedBrowserSession(expression, ownerId))
+      .where((expression) => ownedBrowserSession(database, expression, ownerId))
       // The bounded bootstrap catalog must never hide a live session behind
       // newer closed sessions kept as history.
       .orderBy(
@@ -1476,7 +1477,7 @@ export async function listBrowserSessionThreads(
     .where("browserSessionUses.runId", "is", null)
     .where("browserSessionUses.tabId", "is", null)
     .where("workspaceMemberships.userId", "=", input.ownerId)
-    .where(effectiveMembershipPredicate());
+    .where(effectiveMembershipPredicate(database));
   const rows = await database
     .selectFrom(ranked.as("ranked"))
     .select(["ranked.sessionId", "ranked.threadId"])
@@ -1520,7 +1521,7 @@ export async function getThreadBrowserUsage(
     .where("browserSessionUses.threadId", "=", input.threadId)
     .where("browserSessionUses.sessionId", "in", sessionIds)
     .where("workspaceMemberships.userId", "=", input.ownerId)
-    .where(effectiveMembershipPredicate());
+    .where(effectiveMembershipPredicate(database));
   const latestSeen = (column: "page_site" | "page_title") =>
     sql<
       string | null
@@ -1631,7 +1632,7 @@ export async function listActiveBrowserSessionsForAgent(
         .whereRef("browserSessionAttachments.sessionId", "=", "browserSessions.id")
         .as("activeAttachmentCount"),
     )
-    .where((expression) => ownedBrowserSession(expression, input.ownerId))
+    .where((expression) => ownedBrowserSession(database, expression, input.ownerId))
     .where("browserSessions.state", "in", ["starting", "ready", "closing"]);
   if (!input.allOwnerWorkspaces) {
     query = query.where("browserSessions.workspaceId", "=", input.workspaceId);
@@ -1834,7 +1835,7 @@ export async function createBrowserProfileGrant(
       .executeTakeFirstOrThrow(databaseOperationOptions());
     const membership = await transaction
       .selectFrom("workspaceMemberships")
-      .select(["role", effectiveMembershipState()])
+      .select(["role", effectiveMembershipState(transaction, "state")])
       .where("workspaceId", "=", input.workspaceId)
       .where("userId", "=", input.createdBy)
       .forNoKeyUpdate()
@@ -1966,7 +1967,7 @@ export async function listActiveBrowserProfileGrantsForWorkspace(
     .where("browserProfileGrants.revokedAt", "is", null)
     .where("browserProfileGrants.createdBy", "=", ownerId)
     .where("workspaceMemberships.userId", "=", ownerId)
-    .where(effectiveMembershipPredicate())
+    .where(effectiveMembershipPredicate(database))
     .orderBy("browserProfileGrants.createdAt", "asc")
     .limit(129)
     .execute(databaseOperationOptions());
@@ -2000,7 +2001,7 @@ export async function listActiveBrowserProfileGrants(
     .where("browserProfileGrants.revokedAt", "is", null)
     .where("browserProfileGrants.createdBy", "=", ownerId)
     .where("workspaceMemberships.userId", "=", ownerId)
-    .where(effectiveMembershipPredicate())
+    .where(effectiveMembershipPredicate(database))
     .orderBy("browserProfileGrants.createdAt", "asc")
     .limit(101)
     .execute(databaseOperationOptions());
@@ -2145,7 +2146,7 @@ export async function browserSessionOpenerForBinding(
     select t.id as thread_id, (w.home_thread_id = t.id) as home
     from lineage l join threads t on t.id = l.thread_id join workspaces w on w.id = t.workspace_id
     join workspace_memberships m on m.workspace_id = t.workspace_id
-    where (t.listed or w.home_thread_id = t.id) and m.user_id = ${ownerId} and ${effectiveMembershipPredicate("m")}
+    where (t.listed or w.home_thread_id = t.id) and m.user_id = ${ownerId} and ${effectiveMembershipPredicate(database, "m.state", true)}
     order by l.depth limit 1
   `.execute(database, databaseOperationOptions());
   const row = result.rows[0];

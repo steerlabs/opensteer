@@ -130,7 +130,7 @@ export async function validateIntegrationGrantInTransaction(
 ): Promise<void> {
   const membership = await transaction
     .selectFrom("workspaceMemberships")
-    .select(effectiveMembershipState())
+    .select(effectiveMembershipState(transaction, "state"))
     .where("workspaceId", "=", input.workspaceId)
     .where("userId", "=", input.ownerUserId)
     .executeTakeFirst();

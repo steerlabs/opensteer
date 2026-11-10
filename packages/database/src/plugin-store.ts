@@ -46,7 +46,7 @@ export class PluginStore {
               .select("id")
               .whereRef("workspaceMemberships.workspaceId", "=", "plugins.workspaceId")
               .where("userId", "=", actor.userId)
-              .where(effectiveMembershipPredicate()),
+              .where(effectiveMembershipPredicate(this.database, "state")),
           )
           .as("isActiveWorkspaceMember"),
       )
@@ -141,7 +141,7 @@ export class PluginStore {
     const member = workspaceId
       ? await this.database
           .selectFrom("workspaceMemberships")
-          .select(effectiveMembershipState())
+          .select(effectiveMembershipState(this.database, "state"))
           .where("workspaceId", "=", workspaceId)
           .where("userId", "=", actorUserId)
           .executeTakeFirst()
@@ -421,7 +421,7 @@ export class PluginStore {
           .executeTakeFirstOrThrow();
         const member = await tx
           .selectFrom("workspaceMemberships")
-          .select(["role", effectiveMembershipState()])
+          .select(["role", effectiveMembershipState(tx, "state")])
           .where("workspaceId", "=", input.workspaceId)
           .where("userId", "=", input.actorUserId)
           .executeTakeFirst();

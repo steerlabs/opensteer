@@ -404,7 +404,7 @@ export async function recoverThreadWorkQueues(
         });
         const membership = await transaction
           .selectFrom("workspaceMemberships")
-          .select(["generation", effectiveMembershipState()])
+          .select(["generation", effectiveMembershipState(transaction, "state")])
           .where("workspaceId", "=", observed.workspaceId)
           .where("userId", "=", run.requestedBy)
           .executeTakeFirst();
