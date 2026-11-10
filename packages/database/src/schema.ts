@@ -1164,9 +1164,10 @@ export interface RequestTable {
   originatingOccurrenceId: TriggerOccurrenceId | null;
   /** The subagent of the originating Run that asked, if not its own agent. */
   originatingNodeId: Generated<ExecutionNodeId | null>;
+  originatingGrantId: Generated<GrantId | null>;
   callId: string;
   targetWorkspaceId: WorkspaceId;
-  requestedBy: UserId;
+  requestedBy: UserId | null;
   requiredActor: Request["requiredActor"];
   presentation: JsonColumn<Request["presentation"]>;
   payload: JsonColumn<Request["payload"]>;
