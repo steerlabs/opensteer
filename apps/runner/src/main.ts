@@ -379,6 +379,7 @@ async function startAgentsRunner(input: {
   return {
     agents: {
       earlierBootsContained: earlierBoots === "proven",
+      ...(agentSkills.paths["opensteer:knowledge"] ? { knowledgeSkill: true as const } : {}),
       ...(config.browserBridge ? { browserBridge: config.browserBridge } : {}),
       ...(localWorkspace
         ? {
