@@ -1,3 +1,16 @@
+import {
+  assertEngineRunBinding,
+  engineRequestEvent,
+  personHarnessSession,
+  projectHarnessSession,
+  projectEngineContext,
+  type EngineHarnessRunInput,
+  type EngineHarnessEvent,
+  type EngineHarnessSession,
+  type ProjectHarnessSessionContext,
+  type ProjectHarnessSession,
+} from "@opensteer/harness";
+import type { HarnessExecutionAuthority } from "@opensteer/core";
 import { type ModelSelection, backgroundLightModels } from "@opensteer/core";
 import { type HarnessModelDescriptor, resolveLightModel } from "@opensteer/harness";
 import { type ClaudeExecutableInspection } from "./executable.js";
@@ -46,7 +59,6 @@ import {
   type RunUsage,
   type ThreadAccessMode,
   type ToolIdentity,
-  type UserId,
 } from "@opensteer/core";
 import {
   Deferred,
@@ -89,7 +101,6 @@ import {
   type HarnessCapabilities,
   type HarnessDriver,
   type HarnessDriverCreateContext,
-  type HarnessEvent,
   type HarnessInspectionContext,
   type HarnessInspectionResult,
   type HarnessLogoutSelection,
@@ -103,7 +114,6 @@ import {
   type HarnessSessionContext,
   type HarnessSourceDescriptor,
   type HarnessSteerInput,
-  type HarnessRunInput,
   type ResolvedAttachment,
 } from "@opensteer/harness";
 import {
@@ -382,8 +392,8 @@ interface ActiveTurn {
   readonly input: ClaudeTurnInput;
   readonly stderr: BoundedTextCollector;
   interrupted: boolean;
-  readonly requestedBy: UserId;
-  readonly runId: HarnessRunInput["runId"];
+  readonly authority: HarnessExecutionAuthority;
+  readonly runId: EngineHarnessRunInput["runId"];
   query?: ClaudeQueryHandle;
   sawInit: boolean;
   started: boolean;
@@ -1401,7 +1411,9 @@ class ClaudeHarnessAdapter implements HarnessAdapter {
     // adapter is not already serving before it asks the runtime for one.
     let reference = randomUUID();
     while (this.#sessions.holds(reference)) reference = randomUUID();
-    return this.#sessions.open(reference, () => this.#open(reference, context, { type: "start" }));
+    return personHarnessSession(
+      await this.#sessions.open(reference, () => this.#open(reference, context, { type: "start" })),
+    );
   }
 
   async resumeSession(
@@ -1410,8 +1422,35 @@ class ClaudeHarnessAdapter implements HarnessAdapter {
   ): Promise<HarnessSession> {
     this.#sessions.assertOpen();
     const reference = validateProviderSessionReference(providerSessionReference);
-    return this.#sessions.open(reference, () =>
-      this.#open(reference, context, { providerSessionReference: reference, type: "resume" }),
+    return personHarnessSession(
+      await this.#sessions.open(reference, () =>
+        this.#open(reference, context, { providerSessionReference: reference, type: "resume" }),
+      ),
+    );
+  }
+
+  async startProjectSession(context: ProjectHarnessSessionContext): Promise<ProjectHarnessSession> {
+    const common = projectEngineContext(context);
+    this.#sessions.assertOpen();
+    assertFreshProviderSessionContext(common);
+    const reference = randomUUID();
+    return projectHarnessSession(
+      await this.#sessions.open(reference, () => this.#open(reference, common, { type: "start" })),
+      context,
+    );
+  }
+  async resumeProjectSession(
+    reference: string,
+    context: ProjectHarnessSessionContext,
+  ): Promise<ProjectHarnessSession> {
+    const common = projectEngineContext(context);
+    this.#sessions.assertOpen();
+    reference = validateProviderSessionReference(reference);
+    return projectHarnessSession(
+      await this.#sessions.open(reference, () =>
+        this.#open(reference, common, { providerSessionReference: reference, type: "resume" }),
+      ),
+      context,
     );
   }
 
@@ -1445,15 +1484,16 @@ class ClaudeHarnessAdapter implements HarnessAdapter {
   }
 }
 
-class ClaudeHarnessSession implements HarnessSession {
+class ClaudeHarnessSession implements EngineHarnessSession {
   readonly providerSessionReference: string;
-  readonly events: AsyncIterable<HarnessEvent>;
+  readonly events: AsyncIterable<EngineHarnessEvent>;
   readonly #config: ClaudeHarnessConfig;
   readonly #context: HarnessSessionContext;
   readonly #dependencies: ClaudeHarnessDependencies;
-  readonly #publisher: TurnPublisher;
+  readonly #publisher: TurnPublisher<EngineHarnessEvent>;
   readonly #lifetimeAbortListener: () => void;
   readonly #onClose: (session: ClaudeHarnessSession) => void;
+  readonly #requestCallIds = new Map<RequestId, string>();
   readonly #pendingRequests = new Map<RequestId, PendingProviderRequest>();
   readonly #skillPlugin: ClaudeSkillPlugin | undefined;
   readonly #startedToolCalls = new Set<string>();
@@ -1497,7 +1537,7 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#onClose = onClose;
     this.#skillPlugin = skillPlugin;
     this.#hasProviderTranscript = mode.type === "resume";
-    this.#publisher = new TurnPublisher({
+    this.#publisher = new TurnPublisher<EngineHarnessEvent>({
       maxBytes: config.maxEventBytes,
       maxItems: config.maxEventItems,
     });
@@ -1537,7 +1577,7 @@ class ClaudeHarnessSession implements HarnessSession {
     );
   }
 
-  async execute(run: HarnessRunInput): Promise<void> {
+  async execute(run: EngineHarnessRunInput): Promise<void> {
     this.#assertUsable();
     if (this.#activeTurn) {
       throw new OpensteerError({
@@ -1561,7 +1601,7 @@ class ClaudeHarnessSession implements HarnessSession {
       environment,
       input: new ClaudeTurnInput(),
       interrupted: run.signal.aborted,
-      requestedBy: run.requestedBy,
+      authority: assertEngineRunBinding(run, this.#context),
       runId: run.runId,
       sawInit: false,
       started: false,
@@ -1632,6 +1672,16 @@ class ClaudeHarnessSession implements HarnessSession {
     });
   }
 
+  async refuseRequest(requestId: RequestId, callId: string, reason: string): Promise<void> {
+    const pending = this.#pendingRequests.get(requestId);
+    if (!pending || this.#requestCallIds.get(requestId) !== callId)
+      throw new Error("Project Request address does not match");
+    this.#requestCallIds.delete(requestId);
+    this.#pendingRequests.delete(requestId);
+    pending.abort();
+    pending.resolve({ behavior: "deny", message: reason });
+  }
+
   async resolveRequest(requestId: RequestId, response: RequestResponse): Promise<void> {
     this.#assertUsable();
     const pending = this.#pendingRequests.get(requestId);
@@ -1642,6 +1692,7 @@ class ClaudeHarnessSession implements HarnessSession {
       if (response.kind !== "choice") throw invalidClaudeRequestResponse();
       const result = pending.responses.get(response.optionId);
       if (!result) throw invalidClaudeRequestResponse();
+      this.#requestCallIds.delete(requestId);
       this.#pendingRequests.delete(requestId);
       pending.abort();
       const note = response.text?.trim();
@@ -1658,6 +1709,7 @@ class ClaudeHarnessSession implements HarnessSession {
         return [providerPrompt, question.multiSelect ? values.join(", ") : values[0]];
       }),
     );
+    this.#requestCallIds.delete(requestId);
     this.#pendingRequests.delete(requestId);
     pending.abort();
     pending.resolve({
@@ -1671,7 +1723,7 @@ class ClaudeHarnessSession implements HarnessSession {
     return this.#stopPromise;
   }
 
-  async #runTurn(run: HarnessRunInput, active: ActiveTurn): Promise<void> {
+  async #runTurn(run: EngineHarnessRunInput, active: ActiveTurn): Promise<void> {
     let startupTimer: NodeJS.Timeout | undefined;
     let turnTimer: NodeJS.Timeout | undefined;
     try {
@@ -1796,7 +1848,7 @@ class ClaudeHarnessSession implements HarnessSession {
   async #pushTurnInputs(
     active: ActiveTurn,
     inputs: readonly HarnessInput[],
-    turn: Pick<HarnessRunInput, "context" | "reports">,
+    turn: Pick<EngineHarnessRunInput, "context" | "reports">,
     attachments?: ReadonlyMap<string, ResolvedAttachment>,
   ): Promise<void> {
     if (inputs.length === 0) {
@@ -2053,6 +2105,25 @@ class ClaudeHarnessSession implements HarnessSession {
       if (active.abortController.signal.aborted || options.signal.aborted) {
         return { behavior: "deny", interrupt: true, message: "Opensteer interrupted the turn" };
       }
+      if (
+        active.authority.kind === "project" &&
+        ![
+          "AskUserQuestion",
+          "Bash",
+          "Read",
+          "Write",
+          "Edit",
+          "MultiEdit",
+          "Glob",
+          "Grep",
+          "Task",
+          "Agent",
+          "TodoWrite",
+          "NotebookEdit",
+        ].includes(toolName)
+      ) {
+        return { behavior: "deny", message: "This Request class is unavailable to a Project" };
+      }
       this.#ensureRunStarted(active);
       // Starting a subagent is not itself an action: everything it does asks.
       // A plugin safety check can still require approval of the launch itself.
@@ -2154,6 +2225,7 @@ class ClaudeHarnessSession implements HarnessSession {
       const abort = () => {
         const pending = this.#pendingRequests.get(requestId);
         if (!pending) return;
+        this.#requestCallIds.delete(requestId);
         this.#pendingRequests.delete(requestId);
         pending.abort();
         this.#publish({
@@ -2172,24 +2244,21 @@ class ClaudeHarnessSession implements HarnessSession {
         resolve: resolvePermission,
         type: "approval",
       });
-      this.#publish({
-        data: {
-          request: this.#pendingRequest(
-            requestId,
-            callId,
-            "harness.approval",
-            {
-              detail,
-              kind: "choice",
-              options: requestOptions,
-              risk: classifyToolRisk(toolName),
-              title: options.displayName ?? options.title ?? `Allow ${toolName}?`,
-            },
-            nodeId,
-          ),
-        },
-        type: "request.opened",
-      });
+      this.#publish(
+        this.#pendingRequest(
+          requestId,
+          callId,
+          "harness.approval",
+          {
+            detail,
+            kind: "choice",
+            options: requestOptions,
+            risk: classifyToolRisk(toolName),
+            title: options.displayName ?? options.title ?? `Allow ${toolName}?`,
+          },
+          nodeId,
+        ),
+      );
       options.signal.addEventListener("abort", abort, { once: true });
       if (options.signal.aborted) abort();
     });
@@ -2208,6 +2277,7 @@ class ClaudeHarnessSession implements HarnessSession {
       const abort = () => {
         const pending = this.#pendingRequests.get(requestId);
         if (!pending) return;
+        this.#requestCallIds.delete(requestId);
         this.#pendingRequests.delete(requestId);
         pending.abort();
         this.#publish({
@@ -2227,28 +2297,25 @@ class ClaudeHarnessSession implements HarnessSession {
         resolve: resolvePermission,
         type: "input",
       });
-      this.#publish({
-        data: {
-          request: this.#pendingRequest(
-            requestId,
-            callId,
-            "harness.input",
-            {
-              fields: questions.map(({ question }) => ({
-                ...(question.choices ? { choices: question.choices } : {}),
-                id: question.id,
-                multiSelect: question.multiSelect,
-                prompt: question.prompt,
-                secret: question.secret,
-              })),
-              kind: "form",
-              title: "More information needed",
-            },
-            nodeId,
-          ),
-        },
-        type: "request.opened",
-      });
+      this.#publish(
+        this.#pendingRequest(
+          requestId,
+          callId,
+          "harness.input",
+          {
+            fields: questions.map(({ question }) => ({
+              ...(question.choices ? { choices: question.choices } : {}),
+              id: question.id,
+              multiSelect: question.multiSelect,
+              prompt: question.prompt,
+              secret: question.secret,
+            })),
+            kind: "form",
+            title: "More information needed",
+          },
+          nodeId,
+        ),
+      );
       signal.addEventListener("abort", abort, { once: true });
       if (signal.aborted) abort();
     });
@@ -2260,7 +2327,7 @@ class ClaudeHarnessSession implements HarnessSession {
     kind: "harness.approval" | "harness.input",
     presentation: PendingRequest["presentation"],
     nodeId: ExecutionNodeId | undefined,
-  ): PendingRequest {
+  ): ReturnType<typeof engineRequestEvent> {
     const active = this.#activeTurn;
     if (!active || active.terminal) {
       throw new OpensteerError({
@@ -2268,7 +2335,8 @@ class ClaudeHarnessSession implements HarnessSession {
         message: "Claude opened a Request without an active turn",
       });
     }
-    return {
+    this.#requestCallIds.set(id, callId);
+    return engineRequestEvent(active.authority, {
       callId,
       cancellationReason: null,
       createdAt: new Date().toISOString(),
@@ -2282,14 +2350,13 @@ class ClaudeHarnessSession implements HarnessSession {
       originatingWorkspaceId: this.#context.workspaceId,
       payload: { kind },
       presentation,
-      requestedBy: active.requestedBy,
       requiredActor: "requester",
       resolvedAt: null,
       resolvedBy: null,
       response: null,
       status: "pending",
       targetWorkspaceId: this.#context.workspaceId,
-    };
+    });
   }
 
   #handleMessage(message: SDKMessage, active: ActiveTurn): void {
@@ -2877,7 +2944,10 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#publish(runEndedEvent("interrupted"));
   }
 
-  #publish(event: HarnessEvent, delivery: "must-deliver" | "disposable" = "must-deliver"): void {
+  #publish(
+    event: EngineHarnessEvent,
+    delivery: "must-deliver" | "disposable" = "must-deliver",
+  ): void {
     this.#publisher.publish(event, delivery);
   }
 
@@ -2891,6 +2961,7 @@ class ClaudeHarnessSession implements HarnessSession {
   #cancelPendingRequests(message: string, reason: "run-ended" | "source-closed"): void {
     let publishError: unknown;
     for (const [requestId, pending] of this.#pendingRequests) {
+      this.#requestCallIds.delete(requestId);
       this.#pendingRequests.delete(requestId);
       pending.abort();
       if (!this.#publisher.streamClosed) {

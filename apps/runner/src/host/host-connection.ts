@@ -1,3 +1,8 @@
+import {
+  ProjectHostToRunnerMessageSchema,
+  ProjectRunnerToHostMessageSchema,
+} from "@opensteer/protocol";
+import type { ProjectReport } from "../runtime/project-execution.js";
 import { join } from "node:path";
 import { RunFiles, RunFileError, type RunFilePort } from "../attachments/run-files.js";
 import type { HostRunFileRequest } from "@opensteer/protocol";
@@ -726,6 +731,7 @@ export class ReconnectingHostConnection {
       bootId: this.#bootId,
       capabilities: [
         ...runnerCapabilities(),
+        ...(agents?.runtime.projectExecutionAvailable ? ["project-authority-v1" as const] : []),
         ...(harnessDrivers.some((driver) => driver.driverKind === "codex")
           ? ["voice-run-v1" as const]
           : []),
@@ -1139,6 +1145,8 @@ export class ReconnectingHostConnection {
       this.#superviseModule(module, handler, socket, modules, moduleSignal),
     );
     const fullDiskAccess = this.#watchFullDiskAccess(socket, moduleSignal);
+    if (agents?.runtime.projectExecutionAvailable)
+      agents.runtime.projectConnect(this.#fence.fence, sink);
     const sendHeartbeat = (): void => {
       // The frame is built inside the promise: reading what this Runner is
       // busy with and stamping the fence are part of the send, so a failure in
@@ -1151,6 +1159,10 @@ export class ReconnectingHostConnection {
             type: "runner.heartbeat",
           }),
         )
+        .then(async () => {
+          if (agents?.runtime.projectExecutionAvailable)
+            await agents.runtime.projectHeartbeat(this.#fence.heartbeatTimestamp());
+        })
         .catch(() => socket.close(1011, "Heartbeat failed"));
     };
     const heartbeat = setInterval(() => {
@@ -1197,9 +1209,39 @@ export class ReconnectingHostConnection {
         executions: work.attachInventory(),
         type: "runner.executions.attach",
       });
+      if (agents?.runtime.projectExecutionAvailable) await agents.runtime.projectAnnounce();
       for (;;) {
         const next = await iterator.next();
         if (next.done) return;
+        const raw: unknown = JSON.parse(next.value.buffer.toString("utf8"));
+        if (
+          typeof raw === "object" &&
+          raw !== null &&
+          "type" in raw &&
+          raw.type === "host.command" &&
+          "command" in raw &&
+          typeof raw.command === "object" &&
+          raw.command !== null &&
+          "type" in raw.command &&
+          typeof raw.command.type === "string" &&
+          raw.command.type.endsWith(".project") &&
+          !agents?.runtime.projectExecutionAvailable
+        )
+          throw new Error("Project command capability is unavailable");
+        if (
+          typeof raw === "object" &&
+          raw !== null &&
+          "type" in raw &&
+          typeof raw.type === "string" &&
+          raw.type.startsWith("host.project.")
+        ) {
+          if (!agents?.runtime.projectExecutionAvailable || next.value.isBinary)
+            throw new Error("Project transport is unavailable");
+          const project = ProjectHostToRunnerMessageSchema.parse(raw);
+          if (!this.#fence.accepts(project)) throw new Error("Project connection fence is stale");
+          await agents.runtime.projectMessage(project);
+          continue;
+        }
         const message = parseHostFrame(next.value);
         if (message.type === "host.challenge") {
           throw new Error("Host repeated the Runner authentication handshake");
@@ -2047,6 +2089,12 @@ export class CausallyOrderedRunnerSink implements RunnerMessageSink {
     this.#refresh = refresh;
   }
 
+  sendProject(message: ProjectReport): Promise<void> {
+    if (this.#closed || !this.#delegate.sendProject)
+      return Promise.reject(new Error("Project connection is closed"));
+    return this.#delegate.sendProject(message);
+  }
+
   refreshRunCredentials(runId: RunId): Promise<RefreshedRunCredentials | undefined> {
     if (this.#closed || !this.#refresh) return Promise.resolve(undefined);
     return this.#refresh(runId);
@@ -2157,7 +2205,11 @@ export class WebSocketMessageSink implements RunnerMessageSink {
     this.#socket = socket;
   }
 
-  send(message: RunnerOperationalReport): Promise<void> {
+  sendProject(message: ProjectReport): Promise<void> {
+    return this.send(message);
+  }
+
+  send(message: RunnerOperationalReport | ProjectReport): Promise<void> {
     if (this.#closed) return Promise.reject(new Error("Host connection is closed"));
     let frame: string;
     try {
@@ -2165,9 +2217,11 @@ export class WebSocketMessageSink implements RunnerMessageSink {
       // this is, so nothing upstream can address a superseded connection.
       // Storage replies echo the complete storage fence from their request.
       // A second top-level fence would violate their strict wire schema.
-      let parsed = RunnerOperationalMessageSchema.parse(
-        "fence" in message ? message : { ...this.#fence.fence, ...message },
-      );
+      let parsed = message.type.startsWith("runner.project.")
+        ? ProjectRunnerToHostMessageSchema.parse({ ...this.#fence.fence, ...message })
+        : RunnerOperationalMessageSchema.parse(
+            "fence" in message ? message : { ...this.#fence.fence, ...message },
+          );
       frame = serializeJsonFrame(parsed);
       if (
         parsed.type === "runner.harness-catalog" &&
@@ -2267,6 +2321,7 @@ function fitHarnessCatalogFrame(
 
 function runnerCommandEffectScope(command: RunnerCommand): string | undefined {
   switch (command.type) {
+    case "run.execute.project":
     case "run.execute":
       return `run:${command.context.runId}`;
     case "request.resolve":
@@ -2274,10 +2329,12 @@ function runnerCommandEffectScope(command: RunnerCommand): string | undefined {
     case "run.steer":
     case "workspace.mount":
       return `run:${command.runId}`;
+    case "trigger.execute.project":
     case "trigger.execute":
       return `trigger:${command.context.occurrenceId}`;
     case "trigger.interrupt":
       return `trigger:${command.occurrenceId}`;
+    case "watch.reconcile.project":
     case "watch.reconcile":
       return `watch-environment:${command.environmentId}`;
     case "workspace.detach":

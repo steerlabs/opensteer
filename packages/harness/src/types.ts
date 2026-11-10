@@ -1,3 +1,11 @@
+import type {
+  HarnessExecutionAuthority,
+  PersonHarnessExecutionAuthority,
+  ProjectHarnessExecutionAuthority,
+  ProjectEngineRequestEvent,
+  ProjectRunBinding,
+  ProjectEngineResponse,
+} from "@opensteer/core";
 import { deploymentPolicy, OpensteerError } from "@opensteer/core";
 import type {
   AgentEventType,
@@ -387,15 +395,56 @@ export interface HarnessRunContext {
   readonly threadState: RunThreadState;
 }
 
-export interface HarnessRunInput {
+export interface HarnessRunCommon {
   readonly attachments?: ReadonlyMap<string, ResolvedAttachment>;
-  readonly context: HarnessRunContext;
   readonly environment: Readonly<Record<string, string>>;
   readonly inputs: readonly HarnessInput[];
   readonly reports: HarnessRunReports;
   readonly runId: RunId;
-  readonly requestedBy: UserId;
   readonly signal: AbortSignal;
+}
+
+export type ProjectHarnessRunContext = Omit<HarnessRunContext, "requesterTimeZone"> & {
+  readonly projectTimeZone: string;
+  readonly projectSettingsRevision: number;
+};
+export type HarnessRunInput<A extends HarnessExecutionAuthority = PersonHarnessExecutionAuthority> =
+  HarnessRunCommon &
+    (A extends ProjectHarnessExecutionAuthority
+      ? {
+          readonly executionAuthority: A;
+          readonly requestedBy?: never;
+          readonly context: ProjectHarnessRunContext;
+        }
+      : {
+          readonly requestedBy: UserId;
+          readonly executionAuthority?: never;
+          readonly context: HarnessRunContext;
+        });
+export type ProjectHarnessEvent =
+  Exclude<HarnessEvent, { type: "request.opened" | "voice.heard" }> | ProjectEngineRequestEvent;
+export type EngineHarnessEvent = HarnessEvent | ProjectEngineRequestEvent;
+export type EngineHarnessRunInput = HarnessRunInput<HarnessExecutionAuthority>;
+export type ProjectHarnessSessionContext = Omit<
+  HarnessSessionContext,
+  "voiceCall" | "machineAccessNotice" | "machineAccessPlatform" | "machineAccessRelaySocket"
+> & {
+  readonly binding: ProjectRunBinding;
+};
+export interface ProjectHarnessSession {
+  readonly providerSessionReference: string;
+  readonly events: AsyncIterable<ProjectHarnessEvent>;
+  execute(run: HarnessRunInput<ProjectHarnessExecutionAuthority>): Promise<void>;
+  interrupt(): Promise<void>;
+  steer?(input: HarnessSteerInput): Promise<void>;
+  resolveRequest(requestId: RequestId, response: ProjectEngineResponse): Promise<void>;
+  refuseRequest(requestId: RequestId, callId: string, reason: string): Promise<void>;
+  stop(): Promise<void>;
+}
+export interface EngineHarnessSession extends Omit<HarnessSession, "events" | "execute"> {
+  readonly events: AsyncIterable<EngineHarnessEvent>;
+  execute(run: EngineHarnessRunInput): Promise<void>;
+  refuseRequest(requestId: RequestId, callId: string, reason: string): Promise<void>;
 }
 
 /**
@@ -488,6 +537,11 @@ export type HarnessGenerateTextResult =
     };
 
 export interface HarnessAdapter {
+  startProjectSession?(context: ProjectHarnessSessionContext): Promise<ProjectHarnessSession>;
+  resumeProjectSession?(
+    reference: string,
+    context: ProjectHarnessSessionContext,
+  ): Promise<ProjectHarnessSession>;
   generateText?(input: HarnessGenerateTextInput): Promise<HarnessGenerateTextResult>;
   readonly capabilities: HarnessCapabilities;
   readonly instanceId: HarnessInstanceId;

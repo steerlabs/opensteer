@@ -38,7 +38,7 @@ import {
   type HarnessSessionContext,
   type HarnessRuntimeBoundary,
 } from "@opensteer/harness";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { MINIMUM_CLAUDE_CODE_VERSION, TESTED_CLAUDE_CODE_VERSION } from "./config.js";
 import {
   ClaudeHarnessDriver,
@@ -3788,3 +3788,101 @@ it("maps real namespaces to Claude plugins and loose skills to a private project
   );
   await fixture.adapter.close();
 });
+
+it.each(["Bash", "mcp__browser__sign_in"])(
+  "handles Project provider Requests for %s without a person",
+  async (toolName) => {
+    let result: PermissionResult | null | undefined;
+    const sdk = new FakeSdk((parameters) =>
+      generatedQuery(async function* () {
+        const sessionId = providerSessionId(parameters.options);
+        yield initMessage(sessionId);
+        result = await parameters.options.canUseTool?.(
+          toolName,
+          { command: "true" },
+          {
+            requestId: "project-request",
+            signal: new AbortController().signal,
+            toolUseID: "project-call",
+          },
+        );
+        yield successMessage(sessionId, "Done");
+      }),
+    );
+    const fixture = await openSession(sdk, {
+      runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
+    });
+    await fixture.session.stop();
+    const {
+      machineAccessNotice: _notice,
+      machineAccessPlatform: _platform,
+      machineAccessRelaySocket: _relay,
+      voiceCall: _voice,
+      ...common
+    } = fixture.context;
+    const binding = {
+      authority: {
+        version: 1 as const,
+        principal: {
+          kind: "project" as const,
+          principalId: "project:test",
+          workspaceId: common.workspaceId,
+        },
+        origin: null,
+      },
+      environmentId: common.environmentId,
+      threadId: common.threadId,
+      workspaceId: common.workspaceId,
+      runId: createId("run"),
+      grantId: createId("grant"),
+      runnerId: createId("runner"),
+      runnerBootId: "boot",
+      bindingGeneration: 1,
+    };
+    const session = await fixture.adapter.startProjectSession!({ ...common, binding });
+    const events: import("@opensteer/harness").ProjectHarnessEvent[] = [];
+    const consume = (async () => {
+      for await (const event of session.events) events.push(event);
+    })();
+    const running = session.execute({
+      environment: {},
+      inputs: [humanInput("Run")],
+      reports: { messages: [], omittedCount: 0, throughSequence: null },
+      runId: binding.runId,
+      executionAuthority: { kind: "project", binding },
+      context: {
+        assignment: null,
+        threadState: noThreadContext.threadState,
+        projectTimeZone: "UTC",
+        projectSettingsRevision: 1,
+      },
+      signal: new AbortController().signal,
+    });
+    try {
+      if (toolName === "Bash") {
+        await vi.waitFor(
+          () =>
+            expect(events.some((event) => event.type === "request.proposed.project")).toBe(true),
+          { timeout: 2_000 },
+        );
+        const proposal = events.find((event) => event.type === "request.proposed.project");
+        if (!proposal || proposal.type !== "request.proposed.project")
+          throw new Error("Project approval never arrived");
+        expect(proposal.data.request).not.toHaveProperty("requestedBy");
+        await session.refuseRequest(
+          proposal.data.request.id,
+          proposal.data.request.callId,
+          "no-eligible-manager",
+        );
+      }
+      await running;
+      expect(result).toMatchObject({ behavior: "deny" });
+      if (toolName !== "Bash")
+        expect(events.some((event) => event.type === "request.proposed.project")).toBe(false);
+    } finally {
+      await session.stop();
+      await consume;
+      await fixture.adapter.close();
+    }
+  },
+);

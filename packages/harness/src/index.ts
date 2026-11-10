@@ -31,3 +31,4 @@ export * from "./types.js";
 export { programEnvironment } from "./program-environment.js";
 
 export { resolveLightModel } from "./light-model.js";
+export * from "./project-session.js";

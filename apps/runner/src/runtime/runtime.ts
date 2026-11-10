@@ -1,3 +1,13 @@
+import { ProjectExecution, type ProjectReport } from "./project-execution.js";
+import { ProjectProgramExecution } from "./project-program-execution.js";
+import type { ProjectSink } from "./project-execution.js";
+import type {
+  ProjectHostToRunnerMessage,
+  ProjectExecutableCommand,
+  RunnerConnectionFence,
+} from "@opensteer/protocol";
+import { HarnessIdSchema, ProjectRunBindingSchema } from "@opensteer/core";
+import type { ProjectHarnessSessionContext } from "@opensteer/harness";
 import type { RunFileExecution } from "@opensteer/protocol";
 import { RunFileError, type RunFileAccess } from "../attachments/run-files.js";
 import { AppServerManager } from "../apps/app-server-manager.js";
@@ -141,6 +151,7 @@ export type HarnessDriverAvailability = Pick<RunnerHarnessDriver, "driverKind" |
 };
 
 export interface RunnerMessageSink {
+  sendProject?(message: ProjectReport): Promise<void>;
   send(message: RunnerOperationalReport): Promise<void>;
   /** Undefined when the Host gave no answer; the Run keeps its tokens and retries. */
   refreshRunCredentials?(runId: RunId): Promise<RefreshedRunCredentials | undefined>;
@@ -450,6 +461,29 @@ export class RunnerRuntime {
   >;
   #draining = false;
 
+  readonly #project: ProjectExecution;
+  readonly #projectPrograms: ProjectProgramExecution;
+  get projectExecutionAvailable(): boolean {
+    return (
+      platform() === "linux" &&
+      this.#harnessRuntimeBoundary.kind === "isolated-service" &&
+      !!this.#harnessSandbox
+    );
+  }
+  projectConnect(fence: RunnerConnectionFence, sink: ProjectSink): void {
+    if (!this.projectExecutionAvailable) throw new Error("Project execution is unavailable");
+    this.#project.connect(fence, sink);
+  }
+  projectHeartbeat(sentAt: string): Promise<void> {
+    return this.#project.heartbeat(sentAt);
+  }
+  projectAnnounce(): Promise<void> {
+    return this.#project.announce();
+  }
+  projectMessage(message: ProjectHostToRunnerMessage): Promise<void> {
+    return this.#project.handle(message);
+  }
+
   constructor(options: RunnerRuntimeOptions) {
     this.#executionClock = options.executionClock;
     this.#executionNow = options.executionClock?.now ?? (() => Date.now());
@@ -530,6 +564,185 @@ export class RunnerRuntime {
       terminate: (id, stopEngine) => this.#containment.terminate(id, stopEngine),
     });
     this.#warm = new WarmEnginePool({ retire: (engine) => this.#retireWarmEngine(engine) });
+    this.#projectPrograms = new ProjectProgramExecution({
+      privateDirectory: join(this.#privateStateDirectory, "project-programs"),
+      nodeExecutable: options.nodeExecutable ?? process.execPath,
+      workspaceManager: this.#workspaceManager,
+      executor: this.#programExecutor,
+      mode: this.#mode,
+      planLaunch: (id, launch) => this.#planProgramLaunch(id, launch),
+      terminate: async (id) => {
+        await this.#containment.terminate(id);
+      },
+    });
+    this.#project = new ProjectExecution({
+      bootId: options.bootId,
+      environmentId: options.environmentId,
+      privateDirectory: this.#privateStateDirectory,
+      maxConcurrent: options.maxConcurrentRuns,
+      now: this.#executionNow,
+      programs: (command, runtime) => this.#projectPrograms.dispatch(command, runtime),
+      start: async (command, entry) => {
+        const context = command.context;
+        const workspace = await this.#workspaceManager.prepare({
+          instructionsPath: context.workspaceInstructionsPath,
+          plan: context.workspaceAccess,
+          signal: entry.abort.signal,
+        });
+        const reconciled = this.#harnesses.state(context.harnessInstanceId);
+        if (
+          !reconciled ||
+          reconciled.definition.runtimeRevision !== context.harness.runtimeRevision ||
+          reconciled.definition.stateKind !== "isolated" ||
+          reconciled.definition.driverKind !== context.harness.driverKind
+        )
+          throw new Error("Project engine profile revision is unavailable");
+        const adapter = await this.#harnesses.adapter(context.harnessInstanceId);
+        if (!adapter.startProjectSession || !adapter.resumeProjectSession)
+          throw new Error("Engine has no Project adapter");
+        const driverKind = HarnessIdSchema.parse(context.harness.driverKind);
+        const environment = await this.#harnessEnvironment(driverKind);
+        const { providerState } = await prepareHarnessProviderState(
+          { ...context.harness, driverKind, id: context.harnessInstanceId },
+          await this.#providerStateOptions(driverKind),
+        );
+        const threadStateDirectory = join(
+          this.#privateStateDirectory,
+          "project-sessions",
+          context.providerSessionId,
+        );
+        await mkdir(threadStateDirectory, { recursive: true, mode: 0o700 });
+        const attachments = await this.#prepareAttachments(
+          context.attachments,
+          context.threadId,
+          driverKind,
+          entry.abort.signal,
+        );
+        this.#requireInputAttachments(command.inputs, attachments);
+        this.#requireInputAttachments(command.reports.messages, attachments);
+        const attachmentDirectory =
+          context.attachments && this.#attachmentCache
+            ? await this.#attachmentCache.directory(context.threadId)
+            : undefined;
+        const scope = `project-${context.grantId}`;
+        const assertCurrent = () => {
+          if (entry.revoked || entry.abort.signal.aborted || entry.deadline <= this.#executionNow())
+            throw new Error("Project execution lease ended");
+        };
+        const proxy = new CredentialProxy({
+          routes: {
+            "agent-tools": {
+              token: () => {
+                assertCurrent();
+                return entry.credentials.agentTools;
+              },
+              upstream: context.agentTools.url,
+            },
+          },
+          transport: { mode: this.#mode },
+        });
+        const egressProxy = new CredentialProxy({
+          maxBodyBytes: Math.ceil((context.egress.maxRequestBytes * 4) / 3) + 64 * 1024,
+          routes: {
+            "agent-tools": {
+              token: () => {
+                assertCurrent();
+                return entry.credentials.egress;
+              },
+              upstream: context.egress.relayUrl,
+            },
+          },
+          transport: { mode: this.#mode },
+        });
+        const stop = () => {
+          egressProxy.revoke();
+          proxy.revoke();
+          void this.#containment.terminate(scope);
+        };
+        entry.abort.signal.addEventListener("abort", stop, { once: true });
+        try {
+          const proxied = await proxy.start();
+          const egress = await egressProxy.start();
+          const binding = ProjectRunBindingSchema.parse({
+            authority: context.authority,
+            bindingGeneration: context.bindingGeneration,
+            environmentId: context.environmentId,
+            grantId: context.grantId,
+            runId: context.runId,
+            runnerBootId: context.runnerBootId,
+            runnerId: this.#project.identity().runnerId,
+            threadId: context.threadId,
+            workspaceId: context.workspaceId,
+          });
+          const sessionContext: ProjectHarnessSessionContext = {
+            binding,
+            accessMode: context.accessMode,
+            agentTools: {
+              ...context.agentTools,
+              token: proxied.secret,
+              url: proxied.urls["agent-tools"],
+            },
+            environmentId: context.environmentId,
+            environment: {
+              ...environment,
+              TZ: context.projectTimeZone,
+              OPENSTEER_EGRESS_URL: egress.urls["agent-tools"],
+              OPENSTEER_EGRESS_TOKEN: egress.secret,
+            },
+            history: context.history,
+            historyWindow: context.historyWindow,
+            initialContext: context.initialContext,
+            harnessInstanceId: context.harnessInstanceId,
+            instructions: workspace.instructions,
+            modelSelection: context.modelSelection,
+            platformGuide: context.agentTools.instructions,
+            providerState,
+            runtimeBoundary: this.#harnessRuntimeBoundary,
+            signal: entry.abort.signal,
+            skills: undefined,
+            threadId: context.threadId,
+            threadStateDirectory,
+            workspaceId: context.workspaceId,
+            workspacePath: workspace.path,
+            writableRoots: [workspace.path],
+            ...(attachmentDirectory
+              ? { attachmentDirectory, attachmentRoot: this.#attachmentCache!.root }
+              : {}),
+            wrapProcessLaunch: this.#containment.wrap(
+              scope,
+              await this.#wrapProcessLaunch({
+                environment,
+                providerState,
+                threadStateDirectory,
+                workspacePath: workspace.path,
+                writableRoots: [workspace.path],
+                launchDirectory: undefined,
+                pluginCacheDirectories: [],
+                ...(attachmentDirectory ? { attachmentDirectory } : {}),
+              }),
+            ),
+          };
+          const session = context.providerSessionReference
+            ? await adapter.resumeProjectSession(context.providerSessionReference, sessionContext)
+            : await adapter.startProjectSession(sessionContext);
+          return {
+            session: { ...session, execute: (run) => session.execute({ ...run, attachments }) },
+            cleanup: async () => {
+              entry.abort.signal.removeEventListener("abort", stop);
+              await proxy.close();
+              await egressProxy.close();
+              await this.#containment.terminate(scope);
+            },
+          };
+        } catch (error) {
+          entry.abort.signal.removeEventListener("abort", stop);
+          await proxy.close();
+          await egressProxy.close();
+          await this.#containment.terminate(scope);
+          throw error;
+        }
+      },
+    });
   }
 
   voice(userId: UserId, command: RunnerVoiceCommand): Promise<RunnerVoiceResult> {
@@ -1567,7 +1780,24 @@ export class RunnerRuntime {
     return false;
   }
 
-  handleCommand(command: RunnerCommand, sink: RunnerMessageSink): Promise<CommandDecision> {
+  handleCommand(
+    command: RunnerCommand | ProjectExecutableCommand,
+    sink: RunnerMessageSink,
+  ): Promise<CommandDecision> {
+    if (
+      command.type === "run.execute.project" ||
+      command.type === "trigger.execute.project" ||
+      command.type === "watch.reconcile.project"
+    ) {
+      if (!this.projectExecutionAvailable || !sink.sendProject)
+        return Promise.resolve(reject("forbidden", "Project execution is unavailable", false));
+      return this.#project.dispatch(command);
+    }
+    if (
+      ("context" in command && "authority" in command.context) ||
+      (command.type === "watch.reconcile" && command.desired.some((item) => "authority" in item))
+    )
+      return Promise.resolve(reject("forbidden", "Project authority on legacy command", false));
     return this.#ledger.execute(command, async () => {
       if (command.environmentId !== this.#environmentId) {
         return reject("forbidden", "Command targets a different execution environment", false);
@@ -2123,6 +2353,8 @@ export class RunnerRuntime {
 
   async close(): Promise<void> {
     this.#draining = true;
+    await this.#project.close();
+    await this.#projectPrograms.close();
     await this.#cancelBackgroundText(() => true);
     const voiceClosed = this.#voice.close();
     const appsClosed = this.appServers.stopAll();

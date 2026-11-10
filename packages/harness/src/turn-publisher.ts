@@ -1,6 +1,6 @@
 import type { OpensteerError } from "@opensteer/core";
 import { BoundedEventStream, type PublishOptions } from "./event-stream.js";
-import { isHarnessLiveEvent, type HarnessEvent } from "./types.js";
+import { isHarnessLiveEvent, type HarnessEvent, type EngineHarnessEvent } from "./types.js";
 
 /** The part of a driver's own turn record the terminal-once rule owns. */
 export interface PublishedTurn {
@@ -20,14 +20,14 @@ export interface PublishedTurn {
  * failure is the one that explains what happened; a later one is usually its
  * consequence, so it never overwrites the cause.
  */
-export class TurnPublisher {
-  readonly events: AsyncIterable<HarnessEvent>;
-  readonly #stream: BoundedEventStream<HarnessEvent>;
+export class TurnPublisher<E extends EngineHarnessEvent = HarnessEvent> {
+  readonly events: AsyncIterable<E>;
+  readonly #stream: BoundedEventStream<E>;
   #streamClosed = false;
   #unusable: OpensteerError | undefined;
 
   constructor(options: { readonly maxBytes: number; readonly maxItems: number }) {
-    this.#stream = new BoundedEventStream<HarnessEvent>({
+    this.#stream = new BoundedEventStream<E>({
       maxBytes: options.maxBytes,
       maxItems: options.maxItems,
     });
@@ -52,12 +52,15 @@ export class TurnPublisher {
    * through to the caller, which is the only way a driver learns that events
    * it must deliver are being lost.
    */
-  publish(event: HarnessEvent, delivery: PublishOptions["delivery"] = "must-deliver"): void {
+  publish(event: E, delivery: PublishOptions["delivery"] = "must-deliver"): void {
     try {
       // Streaming text is progress whatever a driver asked for: the completing
       // durable event carries it whole, so it must never displace that event.
       this.#stream.publish(event, {
-        delivery: isHarnessLiveEvent(event) ? "disposable" : delivery,
+        delivery:
+          event.type !== "request.proposed.project" && isHarnessLiveEvent(event)
+            ? "disposable"
+            : delivery,
       });
     } catch (error) {
       // A bounded stream closes itself on a must-deliver overflow, so the
