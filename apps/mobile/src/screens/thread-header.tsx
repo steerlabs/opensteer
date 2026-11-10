@@ -1,16 +1,17 @@
 import { useHostSelector, useRunPageView } from "@opensteer/client/react";
 import { runPageOpened, type HostClient, type SurfaceDestination } from "@opensteer/client/host";
 import { StackActions, useNavigation } from "@react-navigation/native";
-import { useCallback, useLayoutEffect, useMemo, useState, type ReactNode } from "react";
-import { Platform, StyleSheet, View } from "react-native";
+import { useCallback, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Platform, StyleSheet, View, type LayoutChangeEvent } from "react-native";
 import { headerFontScaleLimit, space } from "../theme.js";
 import {
   AroundButton,
   aroundHeaderOptions,
   barOverContentOptions,
+  type AroundWidths,
 } from "../thread/around-button.js";
 import { aroundGlanceSelector, sameAroundGlance } from "../thread/around-model.js";
-import { FoldedPage } from "../thread/folded-page.js";
+import { FoldedPage, foldedPageWidth } from "../thread/folded-page.js";
 import { surfaceRoute } from "../browser/surface-route.js";
 import { sameThreadHeader, type ThreadHeaderState } from "../thread/thread-pane.js";
 import { TaskStateIndicator } from "../thread/task-status.js";
@@ -18,7 +19,7 @@ import type { NativeMenuOption } from "../thread/composer-menu.js";
 import { ThreadMenu } from "../thread/thread-menu.js";
 import { ThreadName, ThreadSubtitle } from "../thread/thread-subtitle.js";
 import { AppText } from "../ui/primitives.js";
-import { barGlassInset, useBarTitleWidth } from "../ui/bar-title.js";
+import { barGlassInset, barTitleWidth, barYield, useBarTitleRoom } from "../ui/bar-title.js";
 import { GlassSurface, useLiquidGlass } from "../ui/glass.js";
 import { useHostUserId } from "../ui/mobile-client-context.js";
 
@@ -174,23 +175,52 @@ function ThreadTitle(
   const navigation = useNavigation();
   const selectAround = useMemo(() => aroundGlanceSelector(props.threadId), [props.threadId]);
   const glance = useHostSelector(props.hostClient, selectAround, sameAroundGlance);
-  // A folded page stands beside Around; the title takes only what they leave.
+  // A folded page stands beside Around; the title takes what they leave, and
+  // when that is short of its name, Around gives up parts until it is not.
   const [page, updatePage] = useRunPageView(props.hostClient, props.threadId);
   const foldedRunId = page.shown === "folded" ? page.runId : null;
   const room = page.room;
   const hasEnd = glance !== null || foldedRunId !== null;
   const glass = useLiquidGlass();
-  const [endWidth, setEndWidth] = useState(0);
-  const maxWidth = useBarTitleWidth(hasEnd ? endWidth + (glass ? 2 * barGlassInset : 0) : 0);
+  const [around, setAround] = useState<AroundWidths | null>(null);
+  const [need, setNeed] = useState<number | null>(null);
+  const onAroundWidths = useCallback(
+    (next: AroundWidths) =>
+      setAround((current) =>
+        current !== null &&
+        current.width === next.width &&
+        current.freed.join() === next.freed.join()
+          ? current
+          : next,
+      ),
+    [],
+  );
+  const barRoom = useBarTitleRoom();
+  const besideAround =
+    (hasEnd && glass ? 2 * barGlassInset : 0) + (foldedRunId === null ? 0 : foldedPageWidth);
+  const measured = glance === null ? null : around;
+  const yielded =
+    measured === null || need === null
+      ? 0
+      : barYield({
+          freed: measured.freed,
+          need,
+          room: barRoom,
+          trailing: besideAround + measured.width,
+        });
+  const maxWidth = barTitleWidth(
+    barRoom,
+    besideAround +
+      (measured === null
+        ? 0
+        : measured.freed.slice(0, yielded).reduce((left, freed) => left - freed, measured.width)),
+  );
   const { deploymentId, hostClient, threadId } = props;
   useLayoutEffect(() => {
     navigation.setOptions(
       aroundHeaderOptions(
         !hasEnd ? null : (
-          <View
-            onLayout={(event) => setEndWidth(event.nativeEvent.layout.width)}
-            style={styles.end}
-          >
+          <View style={styles.end}>
             {foldedRunId === null ? null : (
               <FoldedPage
                 hostClient={hostClient}
@@ -216,6 +246,8 @@ function ThreadTitle(
             {glance === null ? null : (
               <AroundButton
                 glance={glance}
+                onWidths={onAroundWidths}
+                yielded={yielded}
                 onPress={() => navigation.navigate("ThreadAround", { deploymentId, threadId })}
               />
             )}
@@ -230,14 +262,17 @@ function ThreadTitle(
     hasEnd,
     hostClient,
     navigation,
+    onAroundWidths,
     room,
     threadId,
     updatePage,
+    yielded,
   ]);
   return (
     <ThreadTitlePill
       {...props}
       maxWidth={maxWidth}
+      onNeed={setNeed}
       onFind={() => navigation.navigate("ThreadFind", { deploymentId, threadId })}
     />
   );
@@ -261,17 +296,33 @@ export function ThreadTitlePill(
     readonly hostClient: HostClient;
     readonly maxWidth: number;
     readonly onFind: () => void;
+    /** Hears how wide the title has to be to say the name whole, or to its floor. */
+    readonly onNeed?: (width: number) => void;
     readonly onOpenThread: (threadId: string) => void;
     readonly threadId: string;
   },
 ): ReactNode {
   const glass = useLiquidGlass();
-  const { deploymentId, threadId } = props;
+  const { deploymentId, onNeed, threadId } = props;
   const width = props.maxWidth;
+  // All of the title but its words is fixed, so it needs that plus what the name needs.
+  const sizes = useRef({ name: NaN, title: NaN, words: NaN });
+  const report = (part: keyof typeof sizes.current, size: number) => {
+    sizes.current[part] = size;
+    const need = sizes.current.title - sizes.current.words + sizes.current.name;
+    if (Number.isFinite(need)) onNeed?.(need);
+  };
+  const measure =
+    onNeed === undefined
+      ? () => ({})
+      : (part: keyof typeof sizes.current) => ({
+          onLayout: (event: LayoutChangeEvent) => report(part, event.nativeEvent.layout.width),
+        });
   const name = (
     <ThreadName
       maxFontSizeMultiplier={headerFontScaleLimit}
       numberOfLines={1}
+      {...(onNeed === undefined ? {} : { onNeed: (size: number) => report("name", size) })}
       title={props.title}
       icon={props.icon}
       color={props.color}
@@ -299,10 +350,15 @@ export function ThreadTitlePill(
   );
   if (glass || props.floating === true)
     return (
-      <GlassSurface interactive shape="capsule" style={[styles.capsule, { maxWidth: width }]}>
+      <GlassSurface
+        interactive
+        shape="capsule"
+        style={[styles.capsule, { maxWidth: width }]}
+        {...measure("title")}
+      >
         {menu(
           <>
-            <View style={styles.words}>
+            <View style={styles.words} {...measure("words")}>
               {name}
               {/* The one state worth a second line: nothing will answer until it is back. */}
               {props.connectionLabel === null ? null : (
@@ -324,9 +380,9 @@ export function ThreadTitlePill(
       </GlassSurface>
     );
   return (
-    <View style={[styles.title, { maxWidth: width }]}>
+    <View style={[styles.title, { maxWidth: width }]} {...measure("title")}>
       {menu(
-        <View style={styles.words}>
+        <View style={styles.words} {...measure("words")}>
           {name}
           <ThreadSubtitle
             workspaceName={props.workspaceName}

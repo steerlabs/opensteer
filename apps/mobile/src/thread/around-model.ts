@@ -325,6 +325,22 @@ export function sameAroundGlance(left: AroundGlance | null, right: AroundGlance 
 }
 
 /** What the header control says to a screen reader, part by part in the order it draws them. */
+/** Around's parts, in the order the bar shows them. */
+export const aroundParts = ["from", "places", "tasks", "agents", "schedules"] as const;
+export type AroundPart = (typeof aroundParts)[number];
+
+/**
+ * Which of the parts present give way, in order, when the bar is short of
+ * room for the conversation's name: schedules, then places, which the page
+ * beside Around often stands for. Who it works for, its tasks and its agents stay,
+ * and so does one part at least, so Around is never an empty button. Everything that
+ * gives way is still one tap away, in Around.
+ */
+export function aroundYieldable(present: readonly AroundPart[]): readonly AroundPart[] {
+  const order = (["schedules", "places"] as const).filter((part) => present.includes(part));
+  return order.length === present.length ? order.slice(0, -1) : order;
+}
+
 export function aroundLabel(glance: AroundGlance): string {
   const { family } = glance;
   return [
