@@ -90,7 +90,7 @@ export function AccessChangeDialog({
         </button>
         <button
           className={danger ? "btn btn--danger" : "btn btn--primary"}
-          disabled={pending || !preview?.allowed}
+          disabled={pending || !preview?.allowed || teamErrorIsStale(shown)}
           onClick={() => {
             setPending(true);
             setError(null);

@@ -64,6 +64,7 @@
 .popover.team-why-popover {
   width: min(340px, calc(100vw - 32px));
   padding: var(--space-14) var(--space-16);
+  background: var(--surface-raised);
 }
 
 .team-who__title {
@@ -466,6 +467,7 @@
 @media (max-width: 600px) {
   .team-entry {
     flex-wrap: wrap;
+    row-gap: var(--space-2);
   }
 
   .team-entry__actions {
