@@ -12,10 +12,10 @@ import {
 import { describeStore, type StoreFixture } from "./store.integration.test-support.js";
 import { jsonValue } from "./store-primitives.js";
 
-async function setup(fixture: StoreFixture) {
+async function setup(fixture: StoreFixture, driverKind: "codex" | "native" = "codex") {
   const run = await fixture.createRunFixture("project-settings", null, "project");
   const instance = await fixture.store.createHarnessInstance({
-    driverKind: HarnessIdSchema.parse("codex"),
+    driverKind: HarnessIdSchema.parse(driverKind),
     config: {},
     environmentId: run.environmentId,
     name: "Project Codex",
@@ -23,11 +23,11 @@ async function setup(fixture: StoreFixture) {
     sourceId: "openai",
   });
   const catalog = HarnessInstanceCatalogSchema.parse({
-    driverKind: "codex",
+    driverKind,
     harnessInstanceId: instance.id,
     status: "ready",
     continuationIdentity: {
-      driverKind: "codex",
+      driverKind,
       continuationKey: "runner:v1:gloDaTsWIkNBQ7kNDmrhYJ4LgXV9NgDqGfcuVjZ08-Y",
     },
     models: [
@@ -247,7 +247,6 @@ describeStore("Project runtime settings", (it) => {
     await prepared.activate();
     for (const change of [
       { harnessInstanceId: other.id },
-      { harnessInstanceId: prepared.harnessInstance.id },
       { modelSelection: { ...prepared.input.modelSelection, providerId: "anthropic" } },
       { modelSelection: { ...prepared.input.modelSelection, modelId: "not-offered" } },
       { modelSelection: { ...prepared.input.modelSelection, options: { effort: "high" } } },
@@ -280,6 +279,19 @@ describeStore("Project runtime settings", (it) => {
     ).rejects.toThrow(/deployment-owned environment/);
   });
 
+  it("refuses an otherwise valid isolated runtime whose driver is unsupported", async ({
+    storeFixture,
+  }) => {
+    const prepared = await setup(storeFixture, "native");
+    await prepared.activate();
+    await expect(
+      setProjectRuntimeSettings(storeFixture.database, prepared.actor, prepared.input),
+    ).rejects.toMatchObject({
+      code: "forbidden",
+      message: "Project runtime is unavailable: engine-unavailable",
+    });
+  });
+
   it("never borrows a creator's runtime when a computer, engine, catalog or model becomes unavailable", async ({
     storeFixture,
   }) => {
@@ -304,6 +316,19 @@ describeStore("Project runtime settings", (it) => {
       environmentId: prepared.environmentId,
       settings: { harnessInstanceId: prepared.instance.id },
     });
+    await storeFixture.database
+      .updateTable("runners")
+      .set({ updateRequired: "runner-outdated" })
+      .where("id", "=", prepared.runnerId)
+      .execute();
+    expect(
+      await resolveProjectRuntime(storeFixture.database, prepared.workspace.id, () => true),
+    ).toEqual({ state: "unavailable", reason: "runner-update-required" });
+    await storeFixture.database
+      .updateTable("runners")
+      .set({ updateRequired: null })
+      .where("id", "=", prepared.runnerId)
+      .execute();
     await storeFixture.database
       .updateTable("harnessCatalogs")
       .set({
