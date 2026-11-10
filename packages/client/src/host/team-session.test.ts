@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { HostClient, HostSnapshot } from "./client.js";
 import { TeamSession } from "./team-session.js";
 
@@ -60,47 +60,55 @@ function fakeHost() {
   return { host, requests, set };
 }
 
-const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+const deadline = { timeout: 2000 };
 
 describe("team data follows who is signed in", () => {
   it("never shows viewer A's team to viewer B on the same client, and reads B's afresh", async () => {
     const { host, requests, set } = fakeHost();
     const session = new TeamSession(host);
-    session.subscribe(() => {});
+    const seen: (string | undefined)[] = [];
+    session.subscribe(() => seen.push(session.getState().summary?.me.id));
     session.start();
-    await settle();
+    await vi.waitFor(() => expect(requests).toHaveLength(1), deadline);
     requests.shift()!.resolve();
-    await settle();
-    expect(session.getState().summary?.projects[0]?.name).toBe("A's secret project");
+    await vi.waitFor(
+      () => expect(session.getState().summary?.projects[0]?.name).toBe("A's secret project"),
+      deadline,
+    );
     session.holdLink("invite-a", "https://acme.example/join/a#secret");
 
     set({ session: "authentication-required", user: null });
     expect(session.getState()).toMatchObject({ summary: null, team: null, links: new Map() });
 
+    seen.length = 0;
     set({ session: "authenticated", user: { id: "viewer-b" } as never, sessionId: "session-b" });
-    const forB = session.getState();
-    expect(forB.summary).toBeNull();
-    expect(forB.links.size).toBe(0);
-    await settle();
-    expect(requests.map(({ viewer }) => viewer)).toEqual(["viewer-b"]);
+    expect(session.getState().summary).toBeNull();
+    expect(session.getState().links.size).toBe(0);
+    await vi.waitFor(
+      () => expect(requests.map(({ viewer }) => viewer)).toEqual(["viewer-b"]),
+      deadline,
+    );
     requests.shift()!.resolve();
-    await settle();
-    expect(session.getState().summary?.projects[0]?.name).toBe("B's project");
+    await vi.waitFor(
+      () => expect(session.getState().summary?.projects[0]?.name).toBe("B's project"),
+      deadline,
+    );
+    expect(seen).not.toContain("viewer-a");
   });
 
   it("ignores a read still in flight for the previous viewer or Deployment", async () => {
     const { host, requests, set } = fakeHost();
     const session = new TeamSession(host);
-    session.subscribe(() => {});
+    const seen: (string | undefined)[] = [];
+    session.subscribe(() => seen.push(session.getState().summary?.me.id));
     session.start();
-    await settle();
+    await vi.waitFor(() => expect(requests).toHaveLength(1), deadline);
     const late = requests.shift()!;
     set({ deploymentId: deploymentB, user: { id: "viewer-b" } as never });
+    await vi.waitFor(() => expect(requests).toHaveLength(1), deadline);
     late.resolve();
-    await settle();
-    expect(session.getState().summary).toBeNull();
     requests.shift()!.resolve();
-    await settle();
-    expect(session.getState().summary?.me.id).toBe("viewer-b");
+    await vi.waitFor(() => expect(session.getState().summary?.me.id).toBe("viewer-b"), deadline);
+    expect(seen).not.toContain("viewer-a");
   });
 });
