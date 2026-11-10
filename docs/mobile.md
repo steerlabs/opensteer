@@ -160,16 +160,22 @@ leave room for chrome it doesn't know about, so a native bar's row always costs 
 and its title only repeated the address. [The bar](../apps/mobile/src/browser/toolbar.tsx) never
 floats over a streamed page either, for the same reason.
 
-A page on this phone can leave room, so there it behaves as Safari's does: the bar, status row and
-call dock float over the page, and the bar shrinks to a pill while the person reads down and returns
-as they head back or reach either end. WebKit is told which edges they cover, once; the page never
-changes size as the bar moves, because a resize would reflow it under the finger, advance its
-geometry revision and change the picture other devices watch. The shrink is decided on the UI
-thread from the page's own scroll ([floating-bar.ts](../apps/mobile/src/browser/floating-bar.ts),
-shared with Android), and only the person's own scrolling moves it. Beside its conversation, and
-on a tall regular screen, the bar stands still, as Safari's does on iPad. An edge swipe goes back
-through the page while it has history and leaves the tab once it has none; pull to refresh reloads
-through the same native navigation as Reload.
+A page on this phone can leave room, so there it behaves as the platform's browser does: the bar,
+status row and call dock float over the page, and the bar shrinks to a pill while the person reads
+down and returns as they head back or reach either end. The page is told which edges they cover,
+once, at their whole height; it never changes size as the bar moves, because a resize would reflow
+it under the finger, advance its geometry revision and change the picture other devices watch.
+WebKit takes those edges as obscured insets, so the page scrolls under the bar. Android's WebView
+has no such inset and ignores system-bar insets for `env(safe-area-inset-*)`, so there the page's
+viewport ends where the controls begin: what a page pins to its foot stays clear of them, at the
+cost of not scrolling under the shrunk pill. The shrink is decided on the UI thread from the page's
+own scroll ([floating-bar.ts](../apps/mobile/src/browser/floating-bar.ts)), and only the person's
+own scrolling moves it. Beside its conversation, and on a tall regular screen, the bar stands
+still, as Safari's does on iPad. Back goes through the page while it has history and leaves the tab
+once it has none: an edge swipe on iPhone, the system Back on Android. Pull to refresh reloads
+through the same native navigation as Reload. A held link or image gets WebKit's menu on iPhone and
+the platform's context menu on Android, which offers copy, share and the system browser; opening it
+in a new tab needs the Host and is not offered there yet.
 
 The native bar is put away only by a view that draws its own, so a state with none, such as an ended
 tab, keeps the native Back and can always be left. An Opensteer App keeps the native bar: it has no

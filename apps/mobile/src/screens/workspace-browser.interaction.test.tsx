@@ -1708,6 +1708,8 @@ describe("the page's bar", () => {
   it("names nobody in an empty tab, and leaves Ask", () => {
     const { container } = openPage([]);
     expect(container.querySelector('[data-testid="page-toolbar"]')).not.toBeNull();
+    // A streamed page keeps its bar standing; only a page on this phone floats one.
+    expect(container.querySelector('[data-testid="local-page"]')).toBeNull();
     const ask = askMenu();
     expect(ask.getAttribute("aria-label")).toBe("Ask");
     expect([...ask.querySelectorAll("button")].map((button) => button.textContent)).toEqual([

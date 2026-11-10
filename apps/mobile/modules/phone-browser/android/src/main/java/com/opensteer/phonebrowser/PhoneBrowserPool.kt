@@ -28,7 +28,6 @@ import androidx.webkit.WebViewCompat
 import androidx.webkit.WebMessageCompat
 import expo.modules.kotlin.AppContext
 import expo.modules.kotlin.views.ExpoView
-import expo.modules.kotlin.viewevent.EventDispatcher
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
 import java.util.UUID
@@ -77,6 +76,7 @@ internal class NativeTab(val id: String, val profileName: String, var url: Strin
   var navigationVersion = 0
   var committedVersion = -1
   var hostId: String? = null
+  var presented: PhoneBrowserPoolHost? = null
   var presentationGeneration = -1
   @Volatile var geometryRevision = 0L
   var loading = false
@@ -127,7 +127,7 @@ internal class PhoneBrowserPool(
   fun detach(host: PhoneBrowserPoolHost) {
     if (hosts[host.hostId] !== host) return
     hostReady[host.hostId] = CompletableFuture()
-    tabs.values.filter { it.view?.parent === host }.forEach { moveCovered(it) }
+    tabs.values.filter { it.view?.parent === host.frame }.forEach { moveCovered(it) }
   }
 
   fun <Result> ui(epoch: Int, action: () -> Result): Result {
@@ -199,7 +199,10 @@ internal class PhoneBrowserPool(
     tab.documentId = null
     tab.navigationVersion++
     val browser = object : WebView(context) {
-      override fun onScrollChanged(x: Int, y: Int, oldX: Int, oldY: Int) { super.onScrollChanged(x, y, oldX, oldY); changedGeometry(tab) }
+      override fun overScrollBy(deltaX: Int, deltaY: Int, scrollX: Int, scrollY: Int, scrollRangeX: Int, scrollRangeY: Int, maxOverScrollX: Int, maxOverScrollY: Int, isTouchEvent: Boolean): Boolean {
+        tab.presented?.overscrolled(deltaY, scrollY)
+        return super.overScrollBy(deltaX, deltaY, scrollX, scrollY, scrollRangeX, scrollRangeY, maxOverScrollX, maxOverScrollY, isTouchEvent)
+      }
       override fun onSizeChanged(w: Int, h: Int, oldW: Int, oldH: Int) { super.onSizeChanged(w, h, oldW, oldH); changedGeometry(tab) }
       override fun onApplyWindowInsets(insets: WindowInsets): WindowInsets { changedGeometry(tab); return super.onApplyWindowInsets(insets) }
       override fun onCreateInputConnection(info: EditorInfo): InputConnection? {
@@ -283,14 +286,14 @@ internal class PhoneBrowserPool(
       override fun onPageFinished(view: WebView, url: String) {
         if (tabs[tab.id] !== tab || tab.view !== view) return
         tab.loading = false
-        tab.canGoBack = view.canGoBack()
+        tab.canGoBack = canGoBack(tab, view)
         tab.canGoForward = view.canGoForward()
         changed(tab, "tabChanged")
       }
       override fun doUpdateVisitedHistory(view: WebView, url: String, isReload: Boolean) {
         if (tab.view !== view) return
         if (url != tab.bootstrap) tab.url = url
-        tab.canGoBack = view.canGoBack(); tab.canGoForward = view.canGoForward()
+        tab.canGoBack = canGoBack(tab, view); tab.canGoForward = view.canGoForward()
         changed(tab, "tabChanged")
       }
       override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
@@ -411,7 +414,7 @@ internal class PhoneBrowserPool(
     val document = tab.document
     val changedSize = ui(epoch) {
       val host = hosts[hostId] ?: throw BrowserFailure("host-not-ready")
-      tab.view?.width != host.width || tab.view?.height != host.height
+      tab.view?.width != host.pageSize.first || tab.view?.height != host.pageSize.second
     }
     val viewport = if (changedSize && hadView) armResize(epoch, tab, anchor) else null
     revive(epoch, tabId) {
@@ -421,8 +424,8 @@ internal class PhoneBrowserPool(
       if (!host.isAttachedToWindow) throw BrowserFailure("host-not-ready")
       val browser = tab.view!!
       detachView(browser)
-      host.addView(browser, android.widget.LinearLayout.LayoutParams(-1, -1))
-      size(browser, host.width, host.height)
+      host.present(tab, browser)
+      size(browser, host.pageSize.first, host.pageSize.second)
       tab.hostId = hostId
       tab.presentationGeneration = generation
     }
@@ -523,6 +526,7 @@ internal class PhoneBrowserPool(
 
   private fun size(view: WebView, width: Int, height: Int) {
     if (width <= 0 || height <= 0) throw BrowserFailure("invalid-viewport")
+    (view.parent as? PageFrame)?.let { it.resize(width, height); return }
     view.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY))
     view.layout(0, 0, width, height)
   }
@@ -544,6 +548,24 @@ internal class PhoneBrowserPool(
     if (tabs[tab.id] !== tab) return
     tab.revision++
     emit(name, ref(tab) + mapOf("metadata" to metadata(tab)) + extra)
+    tab.presented?.changed(tab)
+  }
+
+  /** The page's history, without the blank document every tab starts from. */
+  private fun canGoBack(tab: NativeTab, view: WebView): Boolean {
+    if (!view.canGoBack()) return false
+    val history = view.copyBackForwardList()
+    return history.currentIndex > 0 && history.getItemAtIndex(history.currentIndex - 1)?.url != tab.bootstrap
+  }
+
+  /** The person's pull on the page they are looking at: the same native steps the manager's Reload takes. */
+  fun personReload(tab: NativeTab): Boolean {
+    val browser = tab.view ?: return false
+    if (tabs[tab.id] !== tab || ledger.state(tab.id) != TabState.LIVE || tab.creating) return false
+    tab.navigationId = null
+    retireDocument(tab)
+    browser.reload()
+    return true
   }
 
   fun changedGeometry(tab: NativeTab) {
@@ -552,7 +574,7 @@ internal class PhoneBrowserPool(
       val visible = android.graphics.Rect(); browser.getWindowVisibleDisplayFrame(visible)
       (browser.rootView.height - visible.bottom).coerceAtLeast(0)
     }
-    val geometry = listOf<Number>(browser.width, browser.height, browser.scale, browser.scrollX, browser.scrollY, keyboard)
+    val geometry = PageGeometry.native(browser.width, browser.height, browser.scale, keyboard)
     if (geometry == tab.geometry) return
     tab.geometry = geometry
     tab.geometryRevision++
@@ -576,7 +598,10 @@ internal class PhoneBrowserPool(
           if (array.length() != 7) return@evaluateJavascript
           val next = List(7) { array.getDouble(it) }
           if (next.any { !it.isFinite() || kotlin.math.abs(it) > 100000000 } || next[0] <= 0 || next[1] <= 0 || next[2] <= 0) return@evaluateJavascript
-          if (next != tab.rendererGeometry) { tab.rendererGeometry = next; tab.geometryRevision++; changed(tab, "geometry") }
+          if (next == tab.rendererGeometry) return@evaluateJavascript
+          val moved = PageGeometry.renderer(next) != PageGeometry.renderer(tab.rendererGeometry)
+          tab.rendererGeometry = next
+          if (moved) { tab.geometryRevision++; changed(tab, "geometry") }
         } catch (_: Exception) { }
       }
     }
@@ -707,6 +732,8 @@ internal class PhoneBrowserPool(
 
   private fun detachView(browser: WebView) {
     val parent = browser.parent as? ViewGroup
+    // A leaving native-stack screen holds each of its views in a transition, which would keep the page's parent.
+    parent?.endViewTransition(browser)
     parent?.removeView(browser)
     if (parent?.parent === covered) covered?.removeView(parent)
   }
@@ -721,23 +748,6 @@ internal class PhoneBrowserPool(
   }
 
   companion object { var current: PhoneBrowserPool? = null }
-}
-
-class PhoneBrowserPoolHost(context: Context, appContext: AppContext) : ExpoView(context, appContext) {
-  val onReady by EventDispatcher()
-  var hostId = UUID.randomUUID().toString()
-  private var notified = false
-  override val shouldUseAndroidLayout = true
-  override fun onAttachedToWindow() { super.onAttachedToWindow(); notified = false; PhoneBrowserPool.current?.register(this) }
-  override fun onDetachedFromWindow() { PhoneBrowserPool.current?.detach(this); notified = false; super.onDetachedFromWindow() }
-  override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
-    for (index in 0 until childCount) {
-      getChildAt(index).measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY))
-      getChildAt(index).layout(0, 0, width, height)
-    }
-    PhoneBrowserPool.current?.register(this)
-  }
-  internal fun ready() { if (!notified) { notified = true; onReady(mapOf("hostId" to hostId)) } }
 }
 
 class PhoneBrowserPicture(context: Context, appContext: AppContext) : ExpoView(context, appContext) {
