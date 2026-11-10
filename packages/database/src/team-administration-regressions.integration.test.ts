@@ -3,7 +3,12 @@ import { createId, type AccessMutation, type UserId } from "@opensteer/core";
 import { sql } from "kysely";
 import { expect } from "vitest";
 import { describeStore, type StoreFixture } from "./store.integration.test-support.js";
-import { acceptTeamInvitation, mutateAccess, previewAccess } from "./access-store.js";
+import {
+  acceptTeamInvitation,
+  mutateAccess,
+  previewAccess,
+  previewMemberAccess,
+} from "./access-store.js";
 import { TeamAccessReadStore } from "./team-access-read-store.js";
 import { teamAdministrationMigration } from "./team-administration-migration.js";
 
@@ -411,6 +416,12 @@ describeStore("team administration review regressions", (it) => {
       counts: { peopleLosing: 1 },
       changes: [expect.anything(), expect.anything()],
     });
+    expect(
+      await previewMemberAccess(
+        prepared.database,
+        prepared.input([{ kind: "member", userId: person, memberState: "suspended" }], 3),
+      ),
+    ).toMatchObject({ allowed: true, projectsLosing: 2, projectsChangingLevel: 0 });
   });
 
   it("pages Unicode names using the SQL sort key and collation without skipping rows", async ({
@@ -419,7 +430,11 @@ describeStore("team administration review regressions", (it) => {
     const prepared = await prepare(storeFixture);
     const names = ["İ", "İx", "ẞ", "ß", "Σ", "σ", "ς", "I", "i", "é", "É"];
     const people = await Promise.all(names.map((name) => admit(storeFixture, name)));
-    const groups = names.map((name, index) => ({ id: randomUUID(), name: `${name}${index}`, createdBy: prepared.userId }));
+    const groups = names.map((name, index) => ({
+      id: randomUUID(),
+      name: `${name}${index}`,
+      createdBy: prepared.userId,
+    }));
     await prepared.database.insertInto("accessGroups").values(groups).execute();
     const reads = new TeamAccessReadStore(prepared.database);
     const expected = (
@@ -437,6 +452,7 @@ describeStore("team administration review regressions", (it) => {
         limit: 1,
         ...(cursor ? { cursor } : {}),
       });
+      expect(JSON.stringify(result)).not.toContain("sortKey");
       actual.push(...result.items.map((row) => row.id));
       if (!result.nextCursor) break;
       const body = JSON.parse(
@@ -480,7 +496,7 @@ describeStore("team administration review regressions", (it) => {
       await sql`insert into auth_sessions (id, user_id, token, expires_at, absolute_expires_at, device_label, created_at, updated_at, last_seen_at) select 'ses_' || item, ${prepared.userId}, 'token_' || item, now() + interval '1 day', now() + interval '1 day', 'test', now(), now(), now() from generate_series(1, 100) item`.execute(
         transaction,
       );
-      await sql`insert into agent_connections (id, user_id, label, client_name, access_mode, resource, expires_at, created_at) select 'mcn_' || gen_random_uuid()::text, ${prepared.userId}, 'test', 'test', 'full-access', 'test', now() + interval '1 day', now() from generate_series(1, 100) item`.execute(
+      await sql`insert into agent_connections (id, user_id, label, client_name, access_mode, resource, workspace_id, expires_at, created_at) select 'mcn_' || gen_random_uuid()::text, ${prepared.userId}, 'test', 'test', 'full-access', 'test', ${prepared.workspace.id}, now() + interval '1 day', now() from generate_series(1, 100) item`.execute(
         transaction,
       );
       const scans = async () =>
@@ -508,6 +524,7 @@ describeStore("team administration review regressions", (it) => {
         { convalidated: false },
       ]);
     });
+    await prepared.database.updateTable("agentConnections").set({ workspaceId: null }).execute();
     await expect(
       prepared.database.updateTable("authSessions").set({ memberGeneration: "0" }).execute(),
     ).rejects.toMatchObject({ code: "23514" });

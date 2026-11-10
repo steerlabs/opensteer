@@ -7,6 +7,7 @@ import {
 } from "@opensteer/core";
 import {
   SafeChangeSummarySchema,
+  AuditItemSchema,
   type Page,
   type PageResult,
   type GroupRef,
@@ -114,6 +115,15 @@ export class TeamAccessReadStore {
     };
   }
 
+  #namePage<Item extends { id: string; sortKey: string }>(
+    rows: readonly Item[],
+    limit: number,
+    scope: string,
+  ) {
+    const page = this.#page(rows, limit, scope, (row) => ({ sort: row.sortKey, id: row.id }));
+    return { ...page, items: page.items.map(({ sortKey: _sortKey, ...row }) => row) };
+  }
+
   async #project(
     context: ReadContext,
     workspaceId: WorkspaceId,
@@ -145,17 +155,17 @@ export class TeamAccessReadStore {
     database: Kysely<DatabaseSchema>,
     condition: ReturnType<typeof sql>,
     limit: number,
-  ): Promise<MemberRow[]> {
-    const rows = await sql<Omit<MemberRow, "joinedAt"> & { joinedAt: Date }>`
+  ): Promise<(MemberRow & { sortKey: string })[]> {
+    const rows = await sql<Omit<MemberRow, "joinedAt"> & { joinedAt: Date; sortKey: string }>`
       ${groupPeople}
-      select u.id, u.display_name as name, u.email, u.member_kind as kind, u.member_state as state,
+      select u.id, u.display_name as name, lower(u.display_name collate "C") collate "C" as sort_key, u.email, u.member_kind as kind, u.member_state as state,
         (u.instance_role = 'administrator') as administrator, u.admitted_at as joined_at,
         coalesce((select jsonb_agg(jsonb_build_object('id', g.id, 'name', g.name, 'builtin', g.builtin) order by lower(g.name), g.id)
           from (select g.* from access_groups g join group_people gp on gp.group_id = g.id where gp.user_id = u.id order by lower(g.name), g.id limit 5) g), '[]'::jsonb) as groups_preview,
         (select count(*)::int from group_people gp where gp.user_id = u.id) as group_count,
         (select jsonb_build_object('id', inviter.id, 'name', inviter.display_name) from team_invitations i join users inviter on inviter.id = i.created_by
           where i.accepted_by = u.id order by i.accepted_at desc, i.id desc limit 1) as invited_by
-      from users u where u.admitted_at is not null and ${condition} order by lower(u.display_name), u.id limit ${limit}`.execute(
+      from users u where u.admitted_at is not null and ${condition} order by sort_key, u.id collate "C" limit ${limit}`.execute(
       database,
     );
     return rows.rows.map((row) => ({ ...row, joinedAt: row.joinedAt.toISOString() }));
@@ -172,16 +182,11 @@ export class TeamAccessReadStore {
       const limit = input.limit ?? 30;
       const scope = this.#scope(actor, ["people", input.query, input.state]);
       const position = this.#position(input.cursor, scope);
-      const condition = sql`(lower(u.display_name), u.id) > (${position.sort}, ${position.id})
+      const condition = sql`(lower(u.display_name collate "C") collate "C", u.id collate "C") > (${position.sort}, ${position.id})
         and (${input.query ?? ""} = '' or position(lower(${input.query ?? ""}) in lower(u.display_name)) > 0 or position(lower(${input.query ?? ""}) in u.email) > 0)
         and (${input.state ?? null}::text is null or u.member_state = ${input.state ?? null})`;
       return {
-        ...this.#page(
-          await this.#members(database, condition, limit + 1),
-          limit,
-          scope,
-          (member) => ({ sort: member.name.toLowerCase(), id: member.id }),
-        ),
+        ...this.#namePage(await this.#members(database, condition, limit + 1), limit, scope),
         accessRevision,
       };
     });
@@ -262,8 +267,9 @@ export class TeamAccessReadStore {
       const { database, accessRevision } = context;
       if (context.user.instanceRole !== "administrator" && input.userId !== actor.userId)
         teamRefusal("team-admin-required");
-      const member = (await this.#members(database, sql`u.id = ${input.userId}`, 1))[0];
-      if (!member) teamRefusal("team-object-unavailable", "not_found");
+      const memberRow = (await this.#members(database, sql`u.id = ${input.userId}`, 1))[0];
+      if (!memberRow) teamRefusal("team-object-unavailable", "not_found");
+      const { sortKey: _sortKey, ...member } = memberRow;
       const effective = await database
         .selectFrom("workspaceMemberships")
         .innerJoin("workspaces", "workspaces.id", "workspaceMemberships.workspaceId")
@@ -280,8 +286,10 @@ export class TeamAccessReadStore {
       const groupScope = this.#scope(actor, ["member-groups", input.userId]);
       const groupPosition = this.#position(groupPage.cursor, groupScope);
       const groups = (
-        await sql<GroupRef>`${groupPeople} select g.id, g.name, g.builtin from access_groups g join group_people gp on gp.group_id = g.id
-        where gp.user_id = ${input.userId} and (lower(g.name), g.id::text) > (${groupPosition.sort}, ${groupPosition.id}) order by lower(g.name), g.id limit ${(groupPage.limit ?? 30) + 1}`.execute(
+        await sql<
+          GroupRef & { sortKey: string }
+        >`${groupPeople} select g.id, g.name, g.builtin, lower(g.name collate "C") collate "C" as sort_key from access_groups g join group_people gp on gp.group_id = g.id
+        where gp.user_id = ${input.userId} and (lower(g.name collate "C") collate "C", g.id::text collate "C") > (${groupPosition.sort}, ${groupPosition.id}) order by sort_key, g.id::text collate "C" limit ${(groupPage.limit ?? 30) + 1}`.execute(
           database,
         )
       ).rows;
@@ -290,13 +298,20 @@ export class TeamAccessReadStore {
       const connectionPosition = this.#position(connectionPage.cursor, connectionScope);
       const connections = await database
         .selectFrom("agentConnections")
-        .select(["id", "label", "createdAt", "lastUsedAt", "revokedAt"])
+        .select([
+          "id",
+          "label",
+          "createdAt",
+          "lastUsedAt",
+          "revokedAt",
+          sql<string>`lower(label collate "C") collate "C"`.as("sortKey"),
+        ])
         .where("userId", "=", input.userId)
         .where(
-          sql<boolean>`(lower(label), id) > (${connectionPosition.sort}, ${connectionPosition.id})`,
+          sql<boolean>`(lower(label collate "C") collate "C", id collate "C") > (${connectionPosition.sort}, ${connectionPosition.id})`,
         )
-        .orderBy(sql`lower(label)`)
-        .orderBy("id")
+        .orderBy("sortKey")
+        .orderBy(sql`id collate "C"`)
         .limit((connectionPage.limit ?? 30) + 1)
         .execute();
       return {
@@ -314,16 +329,8 @@ export class TeamAccessReadStore {
           sql`e.subject_kind = 'user' and e.subject_id = ${input.userId}`,
           ["member", input.userId],
         ),
-        groups: this.#page(groups, groupPage.limit ?? 30, groupScope, (group) => ({
-          sort: group.name.toLowerCase(),
-          id: group.id,
-        })),
-        connections: this.#page(
-          connections,
-          connectionPage.limit ?? 30,
-          connectionScope,
-          (connection) => ({ sort: connection.label.toLowerCase(), id: connection.id }),
-        ),
+        groups: this.#namePage(groups, groupPage.limit ?? 30, groupScope),
+        connections: this.#namePage(connections, connectionPage.limit ?? 30, connectionScope),
       };
     });
   }
@@ -368,26 +375,29 @@ export class TeamAccessReadStore {
       const limit = input.groupId ? 1 : (input.limit ?? 30);
       const rows = (
         await sql<
-          GroupRef & { directCount: number; effectivePeopleCount: number; parentCount: number }
+          GroupRef & {
+            directCount: number;
+            effectivePeopleCount: number;
+            parentCount: number;
+            sortKey: string;
+          }
         >`
-        ${groupPeople} select g.id, g.name, g.builtin,
+        ${groupPeople} select g.id, g.name, g.builtin, lower(g.name collate "C") collate "C" as sort_key,
           (case when g.builtin = 'everyone' then (select count(*) from group_people gp where gp.group_id = g.id) else (select count(*) from access_group_members e where e.group_id = g.id) end)::int as direct_count,
           (select count(*)::int from group_people gp where gp.group_id = g.id) as effective_people_count,
           (select count(*)::int from access_group_members e where e.member_kind = 'group' and e.member_id = g.id::text) as parent_count
         from access_groups g where g.deleted_at is null and (${input.groupId ?? null}::uuid is null or g.id = ${input.groupId ?? null}::uuid)
-          and (lower(g.name), g.id::text) > (${position.sort}, ${position.id}) and position(lower(${input.query ?? ""}) in lower(g.name)) > 0
-        order by lower(g.name), g.id limit ${limit + 1}`.execute(context.database)
+          and (lower(g.name collate "C") collate "C", g.id::text collate "C") > (${position.sort}, ${position.id}) and position(lower(${input.query ?? ""}) in lower(g.name)) > 0
+        order by sort_key, g.id::text collate "C" limit ${limit + 1}`.execute(context.database)
       ).rows;
       if (!input.groupId)
         return {
-          ...this.#page(rows, limit, scope, (group) => ({
-            sort: group.name.toLowerCase(),
-            id: group.id,
-          })),
+          ...this.#namePage(rows, limit, scope),
           accessRevision: context.accessRevision,
         };
-      const group = rows[0];
-      if (!group) teamRefusal("team-object-unavailable", "not_found");
+      const groupRow = rows[0];
+      if (!groupRow) teamRefusal("team-object-unavailable", "not_found");
+      const { sortKey: _sortKey, ...group } = groupRow;
       const memberScope = this.#scope(actor, ["group-members", group.id]);
       const memberPosition = this.#position(input.cursor, memberScope);
       const members = (
@@ -398,14 +408,15 @@ export class TeamAccessReadStore {
           name: string;
           memberKind: "full" | "guest";
           id: string;
+          sortKey: string;
         }>`
-        select * from (
+        select *, lower(name collate "C") collate "C" as sort_key from (
           select 'person' as kind, u.id as user_id, null::text as group_id, u.id, u.display_name as name, u.member_kind from users u where
             (${group.builtin === "everyone"} and u.admitted_at is not null and u.member_state = 'active' and u.member_kind = 'full')
             or exists(select 1 from access_group_members e where e.group_id = ${group.id}::uuid and e.member_kind = 'user' and e.member_id = u.id)
           union all select 'group', null, g.id::text, g.id::text, g.name, null::text from access_group_members e join access_groups g on e.member_kind = 'group' and e.member_id = g.id::text
             where e.group_id = ${group.id}::uuid and g.deleted_at is null
-        ) member where (lower(name), id) > (${memberPosition.sort}, ${memberPosition.id}) order by lower(name), id limit ${(input.limit ?? 30) + 1}`.execute(
+        ) member where (lower(name collate "C") collate "C", id collate "C") > (${memberPosition.sort}, ${memberPosition.id}) order by sort_key, id collate "C" limit ${(input.limit ?? 30) + 1}`.execute(
           context.database,
         )
       ).rows;
@@ -421,10 +432,7 @@ export class TeamAccessReadStore {
         .execute();
       return {
         ...group,
-        directMembers: this.#page(members, input.limit ?? 30, memberScope, (member) => ({
-          sort: member.name.toLowerCase(),
-          id: member.id,
-        })),
+        directMembers: this.#namePage(members, input.limit ?? 30, memberScope),
         parents,
         accessRevision: context.accessRevision,
       };
@@ -600,6 +608,13 @@ export class TeamAccessReadStore {
           "securityAudit.targetId",
           "securityAudit.targetType",
           "securityAudit.metadata",
+          sql<unknown>`coalesce(security_audit.metadata -> 'target', case security_audit.target_type
+            when 'project' then (select jsonb_build_object('kind', 'project', 'id', w.id, 'name', left(w.name, 120)) from workspaces w where w.id = security_audit.target_id)
+            when 'member' then (select jsonb_build_object('kind', 'member', 'id', u.id, 'name', left(u.display_name, 120)) from users u where u.id = security_audit.target_id)
+            when 'group' then (select jsonb_build_object('kind', 'group', 'id', g.id, 'name', g.name) from access_groups g where g.id::text = security_audit.target_id)
+            when 'connection' then (select jsonb_build_object('kind', 'connection', 'id', c.id, 'name', c.label) from agent_connections c where c.id = security_audit.target_id)
+            when 'invitation' then jsonb_build_object('kind', 'invitation', 'id', security_audit.target_id, 'name', 'Invitation')
+          end)`.as("target"),
         ])
         .where((expression) =>
           expression.or([
@@ -614,7 +629,9 @@ export class TeamAccessReadStore {
       if (input.actorId) query = query.where("securityAudit.actorUserId", "=", input.actorId);
       if (input.action) query = query.where("action", "=", input.action);
       if (input.target)
-        query = query.where("securityAudit.workspaceId", "=", input.target.workspaceId);
+        query = query.where(
+          sql<boolean>`(security_audit.workspace_id = ${input.target.workspaceId} or coalesce(security_audit.metadata -> 'projectIds', '[]'::jsonb) @> ${JSON.stringify([input.target.workspaceId])}::jsonb)`,
+        );
       const rows = await query
         .orderBy("securityAudit.createdAt")
         .orderBy("securityAudit.id")
@@ -623,6 +640,7 @@ export class TeamAccessReadStore {
       return this.#page(
         rows.map((row) => {
           const parsed = z.array(SafeChangeSummarySchema).max(100).safeParse(row.metadata.changes);
+          const target = AuditItemSchema.shape.target.safeParse(row.target);
           return {
             id: row.id,
             at: row.createdAt.toISOString(),
@@ -631,7 +649,7 @@ export class TeamAccessReadStore {
               row.actorUserId && row.displayName
                 ? { id: row.actorUserId, name: row.displayName }
                 : null,
-            target: null,
+            target: target.success ? target.data : null,
             changes: parsed.success ? parsed.data : [],
           };
         }),
@@ -662,8 +680,9 @@ export class TeamAccessReadStore {
 
   async memberMetadata(userId: UserId) {
     await requireTeamAuthority(this.database);
-    const member = (await this.#members(this.database, sql`u.id = ${userId}`, 1))[0];
-    if (!member) teamRefusal("team-object-unavailable", "not_found");
+    const memberRow = (await this.#members(this.database, sql`u.id = ${userId}`, 1))[0];
+    if (!memberRow) teamRefusal("team-object-unavailable", "not_found");
+    const { sortKey: _sortKey, ...member } = memberRow;
     return member;
   }
 

@@ -26,13 +26,19 @@ export const teamAdministrationMigration: Migration = {
       create index team_invitations_created on public.team_invitations(created_at, id);
       create index team_invitations_accepted on public.team_invitations(accepted_by, accepted_at, id)
         where accepted_by is not null;
-      alter table public.auth_sessions add column member_generation bigint
-        check (member_generation between 1 and 9007199254740991);
+      alter table public.auth_sessions add column member_generation bigint;
       alter table public.agent_connections
-        add column member_generation bigint check (member_generation between 1 and 9007199254740991),
-        add column membership_generation bigint check (
-          membership_generation between 1 and 9007199254740991 and workspace_id is not null
-        );
+        add column member_generation bigint,
+        add column membership_generation bigint;
+      alter table public.auth_sessions add constraint auth_sessions_member_generation_bounds
+        check (member_generation between 1 and 9007199254740991) not valid;
+      alter table public.agent_connections
+        add constraint agent_connections_member_generation_bounds
+          check (member_generation between 1 and 9007199254740991) not valid,
+        add constraint agent_connections_membership_generation_bounds check (
+          membership_generation is null or
+          (membership_generation between 1 and 9007199254740991 and workspace_id is not null)
+        ) not valid;
     `.execute(database);
   },
 };

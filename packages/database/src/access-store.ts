@@ -20,6 +20,7 @@ import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import { z } from "zod";
 import {
   SafeChangeSummarySchema,
+  type AuditItem,
   TeamReasonSchema,
   type AccessPreview,
   type TeamReason,
@@ -126,7 +127,7 @@ async function readGraph(database: Database, memberIds?: readonly UserId[]) {
   const users = await userQuery.execute();
   const projects = await database
     .selectFrom("workspaces")
-    .select(["id", "createdBy"])
+    .select(["id", "createdBy", "name"])
     .where("kind", "=", "project")
     .where("deletedAt", "is", null)
     .where("status", "not in", ["deleting", "deleted"])
@@ -330,6 +331,23 @@ async function planAccess(
       throw error;
     }
   }
+  const removedPeople = new Set(
+    next.users
+      .filter(
+        (user) =>
+          user.memberState === "removed" &&
+          old.users.find((before) => before.id === user.id)?.memberState !== "removed",
+      )
+      .map((user) => user.id),
+  );
+  if (removedPeople.size) {
+    next.entries = next.entries.filter(
+      (entry) => entry.subjectKind !== "user" || !removedPeople.has(entry.subjectId as UserId),
+    );
+    next.edges = next.edges.filter(
+      (edge) => edge.memberKind !== "user" || !removedPeople.has(edge.memberId as UserId),
+    );
+  }
   if (
     new Set(next.groups.map((group) => group.name.trim().toLowerCase())).size !== next.groups.length
   )
@@ -387,6 +405,37 @@ async function planAccess(
   for (const change of input.changes)
     for (const pair of affectedPairs(old, next, memberships, change))
       pairs.set(pairKey(pair), pair);
+  const reducingManagers = new Set(
+    memberships
+      .filter(
+        (membership) =>
+          membership.role === "owner" &&
+          pairs.has(pairKey(membership)) &&
+          effective(afterPairs.get(pairKey(membership))?.entries ?? []).level !== "manage",
+      )
+      .map((membership) => membership.workspaceId),
+  );
+  if (reducingManagers.size) {
+    const owners = await database
+      .selectFrom("workspaceMemberships")
+      .select(["workspaceId", "userId"])
+      .where("workspaceId", "in", [...reducingManagers])
+      .where("state", "=", "active")
+      .where("role", "=", "owner")
+      .execute();
+    for (const workspaceId of reducingManagers) {
+      const retained = owners.some(
+        (owner) => owner.workspaceId === workspaceId && !pairs.has(pairKey(owner)),
+      );
+      const projected = [...pairs.values()].some(
+        (pair) =>
+          pair.workspaceId === workspaceId &&
+          effective(afterPairs.get(pairKey(pair))?.entries ?? []).level === "manage",
+      );
+      if (!retained && !projected)
+        refuse("Project must retain an active manager until team cutover", "invalid-selection");
+    }
+  }
   const growing = [...afterPairs].some(
     ([key, value]) =>
       value.entries.length > (beforePairs.get(key)?.entries.length ?? 0) ||
@@ -434,7 +483,7 @@ function propose(graph: Graph, change: AccessMutation, actorId: UserId, now: Dat
       if (!change.name.trim()) refuse("Project name is required");
       if (next.projects.some((project) => project.id === change.workspaceId))
         refuse("Project already exists");
-      next.projects.push({ id: change.workspaceId, createdBy: actorId });
+      next.projects.push({ id: change.workspaceId, createdBy: actorId, name: change.name });
       next.entries.push({
         id: change.entryId,
         subjectKind: "user",
@@ -766,15 +815,20 @@ export async function recomputeProjectMemberships(
       revoked_at: row.revokedAt,
       revoked_by: row.revokedBy,
     }));
-  if (updates.length)
+  for (const batch of [
+    updates.filter((row) => row.state === "active" && row.role === "owner"),
+    updates.filter((row) => row.state !== "active" || row.role !== "owner"),
+  ]) {
+    if (!batch.length) continue;
     await sql`update workspace_memberships membership set
     state = change.state, role = change.role, generation = change.generation,
     updated_at = change.updated_at,
     joined_at = change.joined_at, revoked_at = change.revoked_at, revoked_by = change.revoked_by
-    from jsonb_to_recordset(${JSON.stringify(updates)}::jsonb) as change (
+    from jsonb_to_recordset(${JSON.stringify(batch)}::jsonb) as change (
       id text, state text, role text, generation bigint,
       updated_at timestamptz, joined_at timestamptz, revoked_at timestamptz, revoked_by text
     ) where membership.id = change.id`.execute(transaction);
+  }
   const effects = transitions
     .filter((change) => change.previousGeneration !== null)
     .flatMap((change) =>
@@ -1106,10 +1160,100 @@ function safeChanges(old: Graph, next: Graph) {
   return z.array(SafeChangeSummarySchema).max(100).parse(summaries);
 }
 
+function auditScope(old: Graph, next: Graph, input: AccessMutationInput, pairs: readonly Pair[]) {
+  const projectIds = new Set(pairs.map((pair) => pair.workspaceId));
+  let target: AuditItem["target"] = null;
+  for (const change of input.changes) {
+    if (change.kind === "member") {
+      const user = next.users.find((user) => user.id === change.userId)!;
+      target ??= { kind: "member", id: user.id, name: user.displayName.slice(0, 120) };
+      continue;
+    }
+    if ("groupId" in change || change.kind === "create-group") {
+      const groupId = change.kind === "create-group" ? change.id : change.groupId;
+      const group =
+        next.groups.find((group) => group.id === groupId) ??
+        old.groups.find((group) => group.id === groupId);
+      target ??= {
+        kind: "group",
+        id: groupId,
+        name: group?.name ?? (change.kind === "create-group" ? change.name : "Group"),
+      };
+      for (const graph of [old, next]) {
+        const ancestors = new Set([groupId]);
+        const queue = [groupId];
+        for (const child of queue)
+          for (const edge of graph.edges) {
+            if (
+              edge.memberKind === "group" &&
+              edge.memberId === child &&
+              !ancestors.has(edge.groupId)
+            ) {
+              ancestors.add(edge.groupId);
+              queue.push(edge.groupId);
+            }
+          }
+        for (const entry of graph.entries)
+          if (entry.subjectKind === "group" && ancestors.has(entry.subjectId))
+            projectIds.add(entry.targetId as WorkspaceId);
+      }
+      continue;
+    }
+    const workspaceId =
+      change.kind === "create-project" || change.kind === "delete-project"
+        ? change.workspaceId
+        : change.kind === "grant"
+          ? change.target.kind === "project"
+            ? change.target.workspaceId
+            : undefined
+          : old.entries.find((entry) => entry.id === change.entryId)?.targetId;
+    if (!workspaceId) continue;
+    projectIds.add(workspaceId as WorkspaceId);
+    const project =
+      next.projects.find((project) => project.id === workspaceId) ??
+      old.projects.find((project) => project.id === workspaceId);
+    target ??= { kind: "project", id: workspaceId, name: project?.name.slice(0, 120) ?? "Project" };
+  }
+  const remainingGroupMembers = new Set(
+    next.edges
+      .filter((edge) => edge.memberKind === "user")
+      .map((edge) => `${edge.groupId}/${edge.memberId}`),
+  );
+  const removedGroupMemberships = old.edges.filter(
+    (edge) =>
+      edge.memberKind === "user" && !remainingGroupMembers.has(`${edge.groupId}/${edge.memberId}`),
+  );
+  return {
+    target,
+    projectIds: [...projectIds].sort(),
+    removedGroupMemberships: removedGroupMemberships
+      .slice(0, accessCapacity.edges)
+      .map((edge) => ({ groupId: edge.groupId, userId: edge.memberId })),
+    removedGroupMembershipCount: removedGroupMemberships.length,
+  };
+}
+
 export async function previewAccess(
   database: Database,
   input: AccessMutationInput,
 ): Promise<AccessPreview> {
+  return (await previewAccessPlan(database, input)).preview;
+}
+
+export async function previewMemberAccess(database: Database, input: AccessMutationInput) {
+  const { preview, projectsLosing } = await previewAccessPlan(database, input);
+  return {
+    allowed: preview.allowed,
+    ...(preview.blockers[0] ? { reason: preview.blockers[0].reason } : {}),
+    projectsLosing,
+    projectsChangingLevel: preview.counts.levelChanges,
+  };
+}
+
+async function previewAccessPlan(
+  database: Database,
+  input: AccessMutationInput,
+): Promise<{ preview: AccessPreview; projectsLosing: number }> {
   if (!input.changes.length) refuse("At least one access change is required");
   return database
     .transaction()
@@ -1124,23 +1268,26 @@ export async function previewAccess(
         .where("singletonKey", "=", "primary")
         .executeTakeFirstOrThrow();
       const accessRevision = safeGeneration(state.revision);
-      const blocked = (error: OpensteerError, changeIndex = 0): AccessPreview => ({
-        accessRevision,
-        allowed: false,
-        blockers: [
-          {
-            changeIndex,
-            reason: TeamReasonSchema.parse(error.reason),
-            ...(typeof error.details?.limit === "string" &&
-            typeof error.details.maximum === "number"
-              ? { capacity: { limit: error.details.limit, maximum: error.details.maximum } }
-              : {}),
-          },
-        ],
-        counts: { peopleGaining: 0, peopleLosing: 0, levelChanges: 0 },
-        changes: [],
-        surviving: [],
-        truncated: false,
+      const blocked = (error: OpensteerError, changeIndex = 0) => ({
+        projectsLosing: 0,
+        preview: {
+          accessRevision,
+          allowed: false,
+          blockers: [
+            {
+              changeIndex,
+              reason: TeamReasonSchema.parse(error.reason),
+              ...(typeof error.details?.limit === "string" &&
+              typeof error.details.maximum === "number"
+                ? { capacity: { limit: error.details.limit, maximum: error.details.maximum } }
+                : {}),
+            },
+          ],
+          counts: { peopleGaining: 0, peopleLosing: 0, levelChanges: 0 },
+          changes: [],
+          surviving: [],
+          truncated: false,
+        } satisfies AccessPreview,
       });
       for (const [changeIndex, change] of input.changes.entries()) {
         try {
@@ -1163,6 +1310,9 @@ export async function previewAccess(
         const changes: AccessPreview["changes"] = [];
         const surviving: AccessPreview["surviving"] = [];
         const counts = { peopleGaining: 0, peopleLosing: 0, levelChanges: 0 };
+        const peopleGaining = new Set<UserId>();
+        const peopleLosing = new Set<UserId>();
+        let projectsLosing = 0;
         let detailCount = 0;
         let truncatedEntries = false;
         for (const pair of plan.pairs) {
@@ -1170,9 +1320,11 @@ export async function previewAccess(
           const previous = effective(before.get(key)?.entries ?? []).level;
           const current = effective(after.get(key)?.entries ?? []).level;
           if (previous !== current) {
-            if (!previous) counts.peopleGaining++;
-            else if (!current) counts.peopleLosing++;
-            else counts.levelChanges++;
+            if (!previous) peopleGaining.add(pair.userId);
+            else if (!current) {
+              peopleLosing.add(pair.userId);
+              projectsLosing++;
+            } else counts.levelChanges++;
             detailCount++;
             if (changes.length + surviving.length < 100)
               changes.push({
@@ -1201,14 +1353,19 @@ export async function previewAccess(
               });
           }
         }
+        counts.peopleGaining = peopleGaining.size;
+        counts.peopleLosing = peopleLosing.size;
         return {
-          accessRevision,
-          allowed: true,
-          blockers: [],
-          counts,
-          changes,
-          surviving,
-          truncated: detailCount > 100 || truncatedEntries,
+          projectsLosing,
+          preview: {
+            accessRevision,
+            allowed: true,
+            blockers: [],
+            counts,
+            changes,
+            surviving,
+            truncated: detailCount > 100 || truncatedEntries,
+          },
         };
       } catch (error) {
         if (error instanceof OpensteerError && TeamReasonSchema.safeParse(error.reason).success)
@@ -1455,7 +1612,12 @@ async function coordinateAccess(
             requestId: input.commandIdentity,
             targetId: null,
             targetType: "access",
-            metadata: jsonValue({ fingerprint, result, changes: safeChanges(plan.old, next) }),
+            metadata: jsonValue({
+              fingerprint,
+              result,
+              changes: safeChanges(plan.old, next),
+              ...auditScope(plan.old, next, input, plan.pairs),
+            }),
           })
           .execute();
         return result;
@@ -1463,7 +1625,16 @@ async function coordinateAccess(
       async (transaction) => {
         await takeWriterLock(transaction);
         await assertProjectAuthority(transaction);
+        const actor = admission ? null : await requireActor(transaction, input);
         if (admission) await readTeamAdmission(transaction, admission);
+        const receipt = await transaction
+          .selectFrom("securityAudit")
+          .select("id")
+          .where("action", "=", "access.mutated")
+          .where("requestId", "=", input.commandIdentity)
+          .executeTakeFirst();
+        if (!receipt && actor)
+          for (const change of input.changes) await authorizeMutation(transaction, actor, change);
         const state = await transaction
           .selectFrom("accessState")
           .select("revision")
@@ -1472,12 +1643,6 @@ async function coordinateAccess(
           .executeTakeFirstOrThrow();
         const old = await readGraph(transaction, memberIds);
         const now = await databaseTime(transaction);
-        const receipt = await transaction
-          .selectFrom("securityAudit")
-          .select("id")
-          .where("action", "=", "access.mutated")
-          .where("requestId", "=", input.commandIdentity)
-          .executeTakeFirst();
         if (receipt) {
           plans.set(transaction, {
             old,

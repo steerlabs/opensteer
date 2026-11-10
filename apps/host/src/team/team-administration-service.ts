@@ -22,6 +22,7 @@ import {
   mutateAccess,
   mutateTeamInvitation,
   previewAccess,
+  previewMemberAccess,
   readDeploymentAuthority,
   readTeamInvitation,
   resolveProjectRuntime,
@@ -380,7 +381,7 @@ export class TeamAdministrationService {
       case "team.member.preview": {
         const parsed = teamReadSchemas[procedure].input.parse(input);
         const impact = await this.#reads.memberImpact(actor, parsed.userId);
-        const preview = await previewAccess(this.#database, {
+        const preview = await previewMemberAccess(this.#database, {
           actor,
           expectedRevision: impact.accessRevision,
           commandIdentity: createId("command"),
@@ -388,10 +389,7 @@ export class TeamAdministrationService {
         });
         return {
           ...impact,
-          allowed: preview.allowed,
-          ...(preview.blockers[0] ? { reason: preview.blockers[0].reason } : {}),
-          projectsLosing: preview.counts.peopleLosing,
-          projectsChangingLevel: preview.counts.levelChanges,
+          ...preview,
         };
       }
       case "team.audit.list":
@@ -503,6 +501,23 @@ export class TeamAdministrationService {
     const identity = `${actor.userId}:${command.type}:${command.idempotencyKey}`;
     const commandId = CommandIdSchema.parse(`cmd_${uuidFor(identity)}`);
     const base = { type: command.type, commandId };
+    const administratorOnly =
+      command.type === "team.member.change" ||
+      command.type === "team.access.selfGrant" ||
+      command.type === "team.invitation.create" ||
+      command.type === "team.invitation.revoke" ||
+      (command.type === "team.access.apply" &&
+        command.changes.some((change) => change.kind !== "grant" && change.kind !== "revoke"));
+    if (administratorOnly && user.instanceRole !== "administrator") {
+      const receipt = await this.#database
+        .selectFrom("securityAudit")
+        .select("id")
+        .where("action", "=", "access.mutated")
+        .where("requestId", "=", commandId)
+        .where("actorUserId", "=", actor.userId)
+        .executeTakeFirst();
+      if (!receipt) refuse("team-admin-required");
+    }
     if (command.type === "team.project.settings.set") {
       const settings = await setProjectRuntimeSettings(this.#database, actor, {
         ...command.settings,
@@ -571,7 +586,6 @@ export class TeamAdministrationService {
         changes = command.changes;
         break;
       case "team.access.selfGrant":
-        if (user.instanceRole !== "administrator") refuse("team-admin-required");
         changes = [
           {
             kind: "grant",
