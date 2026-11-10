@@ -291,6 +291,20 @@ integration("Host vertical slice", () => {
       `ws://127.0.0.1:${hostPort}/internal/v1/runners`,
     );
     runnerSocket = runnerConnection.socket;
+    let acknowledgedIdleWatch = false;
+    runnerSocket.on("message", (frame) => {
+      const message = JSON.parse(frame.toString()) as HostToRunnerMessage;
+      if (message.type !== "host.command" || message.command.type !== "watch.reconcile") return;
+      runnerConnection.socket.send(
+        JSON.stringify({
+          ...runnerFence(message),
+          commandId: message.command.commandId,
+          correlationId: message.command.correlationId,
+          type: "runner.command-accepted",
+        }),
+      );
+      acknowledgedIdleWatch = true;
+    });
     respondToHarnessInspections(runnerSocket, readyCodexCatalog);
     const runnerEnrollment = await enrollRunnerSocket(
       runnerSocket,
@@ -678,6 +692,11 @@ integration("Host vertical slice", () => {
         ownership: "mine",
         status: "online",
       }),
+    );
+    await vi.waitFor(
+      () =>
+        expect(acknowledgedIdleWatch, "idle Watch reconciliation was not acknowledged").toBe(true),
+      { timeout: 5_000 },
     );
     const runnerClosed = waitForClose(runnerConnection.socket);
     const revoked = await testRpcData(
