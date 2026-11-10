@@ -27,9 +27,12 @@ struct BrowserHelperRefusal: CodedError {
     guard request["sessionId"] as? String == tab.sessionId, request["surfaceId"] as? String == tab.id,
       request["documentId"] as? String == tab.documentId,
       let action = request["action"] as? [String: Any], let type = action["type"] as? String,
-      let timeout = request["timeoutMs"] as? Int, (1...30000).contains(timeout),
+      let timeout = BrowserWireNumber.integer(request["timeoutMs"]), (1...30000).contains(timeout),
       try JSONSerialization.data(withJSONObject: request).count <= 432 * 1024 else { throw BrowserRefusal.invalidArgument }
-    if let geometry = request["geometryRevision"] as? Int, geometry != tab.geometryRevision { throw BrowserRefusal.staleGeometry }
+    if let value = request["geometryRevision"] {
+      guard let geometry = BrowserWireNumber.integer(value) else { throw BrowserRefusal.invalidArgument }
+      guard geometry == tab.geometryRevision else { throw BrowserRefusal.staleGeometry }
+    }
     let remaining = min(timeout, Int(min(30000, max(0, input.deadline - Date().timeIntervalSince1970 * 1000))))
     guard remaining > 0 else { throw BrowserRefusal.timeout }
     let primitive = BrowserActionInput()
@@ -37,6 +40,29 @@ struct BrowserHelperRefusal: CodedError {
     primitive.geometryRevision = input.geometryRevision; primitive.timeoutMs = remaining
     primitive.actorToken = input.actorToken
     switch type {
+    case "file.choose":
+      guard #available(iOS 18.4, *) else { throw BrowserRefusal.unsupportedOperation }
+      guard let point = action["point"] as? [String: Double], action["locator"] == nil else { throw BrowserRefusal.unsupportedOperation }
+      guard let ids = action["stagedFileIds"] as? [String], !ids.isEmpty, tab.stagedSelection == nil,
+        tab.chooser == nil, !tab.inputBusy else { throw BrowserRefusal.notActionable }
+      _ = try files.selected(ids, session: tab.sessionId)
+      guard let view = tab.webView, let window = view.window, let x = point["x"], let y = point["y"],
+        x.isFinite, y.isFinite, x >= 0, y >= 0, x < view.bounds.width, y < view.bounds.height else { throw BrowserRefusal.notActionable }
+      try protectResponder(view, window: window)
+      let operation = UUID()
+      try gate.perform(input.epoch) {
+        tab.inputBusy = true
+        tab.stagedSelection = BrowserStagedSelection(operationId: operation, epoch: input.epoch, documentId: input.documentId, fileIds: ids)
+      }
+      defer {
+        tab.inputBusy = false
+        if tab.stagedSelection?.operationId == operation || tab.chosenSelectionId == operation { cancelChooser(tab) }
+      }
+      guard try await helper(tab, function: "tap", arguments: ["argument": ["x": x, "y": y, "requireFile": true]],
+        epoch: input.epoch, timeoutMs: remaining) as? Bool == true else { throw BrowserRefusal.notActionable }
+      _ = try authorize(input, viewer: false)
+      guard let chosen = tab.chosenFiles else { throw BrowserRefusal.notActionable }
+      return ["type": type, "files": chosen]
     case "page.navigate", "page.history":
       let navigation = BrowserNavigationInput()
       navigation.epoch = input.epoch; navigation.tabId = tab.id
@@ -56,8 +82,12 @@ struct BrowserHelperRefusal: CodedError {
       let staged = BrowserStageInput()
       staged.epoch = input.epoch; staged.sessionId = tab.sessionId
       guard let id = action["fileId"] as? String, let name = action["name"] as? String,
-        let offset = action["offset"] as? Int, let data = action["data"] as? String else { throw BrowserRefusal.invalidArgument }
-      staged.fileId = id; staged.name = name; staged.offset = offset; staged.data = data; staged.size = action["size"] as? Int
+        let offset = BrowserWireNumber.integer(action["offset"]), let data = action["data"] as? String else { throw BrowserRefusal.invalidArgument }
+      staged.fileId = id; staged.name = name; staged.offset = offset; staged.data = data
+      if let value = action["size"] {
+        guard let size = BrowserWireNumber.integer(value) else { throw BrowserRefusal.invalidArgument }
+        staged.size = size
+      }
       var result = try files.portStage(staged); result["type"] = type
       return result
     case "text.insert", "text.key", "text.selectAll", "scroll", "pointer.tap":
@@ -66,7 +96,7 @@ struct BrowserHelperRefusal: CodedError {
         guard let key = action["key"] as? String, ["Enter", "Backspace"].contains(key) else { throw BrowserRefusal.unsupportedOperation }
         primitive.action.kind = key == "Enter" ? "text.enter" : "text.backspace"
       }
-      if type == "pointer.tap", action["count"] as? Int != 1 { throw BrowserRefusal.unsupportedOperation }
+      if type == "pointer.tap", BrowserWireNumber.integer(action["count"]) != 1 { throw BrowserRefusal.unsupportedOperation }
       if type == "scroll", action["locator"] != nil {
         return try await invokeAgent(input, tab: tab, name: "scroll", args: action, timeout: remaining)
       }
@@ -168,14 +198,14 @@ struct BrowserHelperRefusal: CodedError {
     primitive.geometryRevision = input.geometryRevision; primitive.contextId = tab.contextId
     switch type {
     case "input.pointer", "input.wheel":
-      guard message["geometryRevision"] as? Int == tab.geometryRevision,
-        message["captureRevision"] as? Int == tab.captureRevision else { throw BrowserRefusal.staleGeometry }
+      guard BrowserWireNumber.integer(message["geometryRevision"]) == tab.geometryRevision,
+        BrowserWireNumber.integer(message["captureRevision"]) == tab.captureRevision else { throw BrowserRefusal.staleGeometry }
       if type == "input.pointer" {
         guard (message["modifiers"] as? [String] ?? []).isEmpty else { throw BrowserRefusal.unsupportedOperation }
         if message["action"] as? String == "leave" { return }
-        if message["action"] as? String == "move", (message["buttons"] as? Int ?? 0) == 0 { return }
+        if message["action"] as? String == "move", (BrowserWireNumber.integer(message["buttons"]) ?? 0) == 0 { return }
         guard ["up", "down"].contains(message["action"] as? String ?? ""), message["button"] as? String == "left",
-          (message["clickCount"] as? Int ?? 1) == 1,
+          (BrowserWireNumber.integer(message["clickCount"]) ?? 1) == 1,
           let x = message["x"] as? Double, let y = message["y"] as? Double, (0...1).contains(x), (0...1).contains(y),
           let view = tab.webView else { throw BrowserRefusal.unsupportedOperation }
         if message["action"] as? String == "down" { return }
@@ -191,7 +221,7 @@ struct BrowserHelperRefusal: CodedError {
     case "input.compose":
       guard let composition = message["composition"] as? [String: Any], composition["contextId"] as? String == tab.contextId,
         (composition["before"] as? String ?? "").isEmpty, (composition["after"] as? String ?? "").isEmpty, let text = composition["text"] as? String,
-        let start = composition["selectionStart"] as? Int, let end = composition["selectionEnd"] as? Int else { throw BrowserRefusal.notActionable }
+        let start = BrowserWireNumber.integer(composition["selectionStart"]), let end = BrowserWireNumber.integer(composition["selectionEnd"]) else { throw BrowserRefusal.notActionable }
       primitive.action.kind = "text.mark"; primitive.action.text = text
       primitive.action.selectionStart = start; primitive.action.selectionLength = end - start
     case "input.cancel":

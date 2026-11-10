@@ -46,6 +46,9 @@ import WebKit
   var markedByRemote = false
   var chooser: BrowserChooser?
   var stagedChooser = false
+  var stagedSelection: BrowserStagedSelection?
+  var chosenFiles: [[String: Any]]?
+  var chosenSelectionId: UUID?
   var popupOpener: String?
 
   init(id: String, sessionId: String, url: URL?, storeHandle: String = "") {
@@ -193,7 +196,15 @@ import WebKit
     let view = BrowserWebView(frame: CGRect(x: 0, y: 0, width: 390, height: 600), configuration: configuration)
     view.isInspectable = false
     let personInput = BrowserPersonGesture { [weak self, weak tab] point in
-      if let self, let tab { self.activity(tab, kind: "person", pointer: ["x": point.x, "y": point.y]) }
+      if let self, let tab {
+        if tab.stagedSelection != nil {
+          self.cancelChooser(tab)
+          let pending = tab.pendingCalls.values
+          tab.pendingCalls.removeAll(); tab.callEpochs.removeAll()
+          for cancel in pending { cancel(BrowserRefusal.notActionable) }
+        }
+        self.activity(tab, kind: "person", pointer: ["x": point.x, "y": point.y])
+      }
     }
     view.addGestureRecognizer(personInput)
     view.geometryChanged = { [weak self, weak tab] in if let self, let tab { _ = self.geometry(tab) } }

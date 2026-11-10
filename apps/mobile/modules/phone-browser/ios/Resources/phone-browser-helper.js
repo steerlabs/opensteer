@@ -125,6 +125,8 @@
         ? document.querySelector(point.selector)
         : document.elementFromPoint(point.x, point.y);
       if (!(element instanceof HTMLElement)) return false;
+      if (point.requireFile && (!(element instanceof HTMLInputElement) || element.type !== "file"))
+        return false;
       element.click();
       return true;
     },

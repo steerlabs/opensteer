@@ -1,5 +1,18 @@
 import ExpoModulesCore
 
+private func browserAsyncFunction<Input: AnyArgument, Output>(_ name: String,
+  _ body: sending @escaping @Sendable (Input) async throws -> sending Output) -> ConcurrentFunctionDefinition<Input, Input, Output> {
+  AsyncFunction(name) { [body] (input: Input) async throws -> sending Output in
+    do { return try await body(input) }
+    catch let error as Exception { throw error }
+    catch let error as CodedError {
+      throw Exception(name: "PhoneBrowserError", description: error.description, code: error.code)
+    } catch {
+      throw Exception(name: "PhoneBrowserError", description: "outcome-unknown", code: "outcome-unknown")
+    }
+  }
+}
+
 extension BrowserRefusal: CodedError {
   public var code: String { rawValue }
   public var description: String { rawValue }
@@ -87,64 +100,64 @@ public final class PhoneBrowserModule: Module {
       Task { @MainActor in PhoneBrowserPool.shared.invalidateWork(before: epoch) }
       return epoch
     }
-    AsyncFunction("initialize") { (input: BrowserInitializeInput) async throws -> [String: Any] in
+    browserAsyncFunction("initialize") { (input: BrowserInitializeInput) async throws -> [String: Any] in
       guard #available(iOS 17, *) else {
         return ["platform": "ios", "runtimeId": "unavailable", "storageInstanceId": "unavailable", "browser": false,
           "sharedControl": false, "agentActions": false, "cdpBoundary": false, "fileStaging": false]
       }
       return try await PhoneBrowserPool.shared.qualification(input)
     }
-    AsyncFunction("setForeground") { (input: BrowserForegroundInput) async throws in
+    browserAsyncFunction("setForeground") { (input: BrowserForegroundInput) async throws in
       guard #available(iOS 17, *) else { throw BrowserRefusal.unsupportedOperation }
       try await MainActor.run {
         let pool = PhoneBrowserPool.shared
         try pool.gate.perform(input.epoch) { pool.setForeground(input.active) }
       }
     }
-    AsyncFunction("ensureProfile") { (input: BrowserProfileInput) async throws -> String in
+    browserAsyncFunction("ensureProfile") { (input: BrowserProfileInput) async throws -> String in
       guard #available(iOS 17, *) else { throw BrowserRefusal.unsupportedOperation }
       return try await Self.ensureProfile(input)
     }
-    AsyncFunction("listProfiles") { (input: BrowserDeploymentInput) async throws -> [[String: Any]] in
+    browserAsyncFunction("listProfiles") { (input: BrowserDeploymentInput) async throws -> [[String: Any]] in
       guard #available(iOS 17, *) else { throw BrowserRefusal.unsupportedOperation }
       return try await MainActor.run {
         let pool = PhoneBrowserPool.shared
         return try pool.gate.perform(input.epoch) { pool.stores.inventory(input.deploymentId) }
       }
     }
-    AsyncFunction("eraseProfile") { (input: BrowserProfileInput) async throws -> String in
+    browserAsyncFunction("eraseProfile") { (input: BrowserProfileInput) async throws -> String in
       guard #available(iOS 17, *) else { throw BrowserRefusal.unsupportedOperation }
       return try await PhoneBrowserPool.shared.eraseProfile(input)["state"] as? String ?? "pending-restart"
     }
-    AsyncFunction("eraseDeployment") { (input: BrowserDeploymentInput) async throws -> [[String: Any]] in
+    browserAsyncFunction("eraseDeployment") { (input: BrowserDeploymentInput) async throws -> [[String: Any]] in
       guard #available(iOS 17, *) else { throw BrowserRefusal.unsupportedOperation }
       _ = try await PhoneBrowserPool.shared.eraseDeployment(input)
       return await PhoneBrowserPool.shared.stores.inventory(input.deploymentId)
     }
-    AsyncFunction("createTab") { (input: BrowserCreateInput) async throws -> [String: Any] in
+    browserAsyncFunction("createTab") { (input: BrowserCreateInput) async throws -> [String: Any] in
       guard #available(iOS 17, *) else { throw BrowserRefusal.unsupportedOperation }
       return try await PhoneBrowserPool.shared.portCreate(input)
     }
-    AsyncFunction("destroyTab") { (input: BrowserTabInput) async throws in
+    browserAsyncFunction("destroyTab") { (input: BrowserTabInput) async throws in
       guard #available(iOS 17, *) else { throw BrowserRefusal.unsupportedOperation }
       try await MainActor.run {
         let pool = PhoneBrowserPool.shared
         try pool.gate.perform(input.epoch) { _ = try pool.checked(input, live: false); pool.destroy(input.tabId) }
       }
     }
-    AsyncFunction("suspendTab") { (input: BrowserTabInput) async throws in
+    browserAsyncFunction("suspendTab") { (input: BrowserTabInput) async throws in
       guard #available(iOS 17, *) else { throw BrowserRefusal.unsupportedOperation }
       try await PhoneBrowserPool.shared.portSuspend(input)
     }
-    AsyncFunction("resumeTab") { (input: BrowserTabInput) async throws -> [String: Any] in
+    browserAsyncFunction("resumeTab") { (input: BrowserTabInput) async throws -> [String: Any] in
       guard #available(iOS 17, *) else { throw BrowserRefusal.unsupportedOperation }
       return try await PhoneBrowserPool.shared.portResume(input)
     }
-    AsyncFunction("mountTab") { (input: BrowserMountInput) async throws -> [String: Any] in
+    browserAsyncFunction("mountTab") { (input: BrowserMountInput) async throws -> [String: Any] in
       guard #available(iOS 17, *) else { throw BrowserRefusal.unsupportedOperation }
       return try await PhoneBrowserPool.shared.portMount(input)
     }
-    AsyncFunction("unmountTab") { (input: BrowserUnmountInput) async throws in
+    browserAsyncFunction("unmountTab") { (input: BrowserUnmountInput) async throws in
       guard #available(iOS 17, *) else { throw BrowserRefusal.unsupportedOperation }
       try await MainActor.run {
         let pool = PhoneBrowserPool.shared
@@ -152,11 +165,11 @@ public final class PhoneBrowserModule: Module {
         try pool.unmount(input)
       }
     }
-    AsyncFunction("resizeTab") { (input: BrowserResizeInput) async throws -> [String: Any] in
+    browserAsyncFunction("resizeTab") { (input: BrowserResizeInput) async throws -> [String: Any] in
       guard #available(iOS 17, *) else { throw BrowserRefusal.unsupportedOperation }
       return try await PhoneBrowserPool.shared.portResize(input)
     }
-    AsyncFunction("navigate") { (input: BrowserNavigationInput) async throws in
+    browserAsyncFunction("navigate") { (input: BrowserNavigationInput) async throws in
       guard #available(iOS 17, *) else { throw BrowserRefusal.unsupportedOperation }
       try await MainActor.run {
         let pool = PhoneBrowserPool.shared
@@ -164,7 +177,7 @@ public final class PhoneBrowserModule: Module {
         _ = try pool.navigate(input)
       }
     }
-    AsyncFunction("respondDialog") { (input: BrowserDialogInput) async throws in
+    browserAsyncFunction("respondDialog") { (input: BrowserDialogInput) async throws in
       guard #available(iOS 17, *) else { throw BrowserRefusal.unsupportedOperation }
       try await MainActor.run {
         let pool = PhoneBrowserPool.shared
@@ -172,7 +185,7 @@ public final class PhoneBrowserModule: Module {
         try pool.respondDialog(input)
       }
     }
-    AsyncFunction("respondUpload") { (input: BrowserUploadInput) async throws -> [[String: Any]] in
+    browserAsyncFunction("respondUpload") { (input: BrowserUploadInput) async throws -> [[String: Any]] in
       guard #available(iOS 17, *) else { throw BrowserRefusal.unsupportedOperation }
       return try await MainActor.run {
         let pool = PhoneBrowserPool.shared
@@ -180,15 +193,15 @@ public final class PhoneBrowserModule: Module {
         return try pool.respondUpload(input)
       }
     }
-    AsyncFunction("performAction") { (input: BrowserWireInput) async throws -> [String: Any] in
+    browserAsyncFunction("performAction") { (input: BrowserWireInput) async throws -> [String: Any] in
       guard #available(iOS 17, *) else { throw BrowserRefusal.unsupportedOperation }
       return try await PhoneBrowserPool.shared.wireAction(input)
     }
-    AsyncFunction("applyViewerInput") { (input: BrowserWireInput) async throws in
+    browserAsyncFunction("applyViewerInput") { (input: BrowserWireInput) async throws in
       guard #available(iOS 17, *) else { throw BrowserRefusal.unsupportedOperation }
       try await PhoneBrowserPool.shared.wireViewer(input)
     }
-    AsyncFunction("setCaptureDemand") { (input: BrowserCaptureDemand) async throws in
+    browserAsyncFunction("setCaptureDemand") { (input: BrowserCaptureDemand) async throws in
       guard #available(iOS 17, *) else { throw BrowserRefusal.unsupportedOperation }
       try await MainActor.run {
         let pool = PhoneBrowserPool.shared
@@ -202,7 +215,7 @@ public final class PhoneBrowserModule: Module {
         }
       }
     }
-    AsyncFunction("ackFrame") { (input: BrowserAckInput) async throws in
+    browserAsyncFunction("ackFrame") { (input: BrowserAckInput) async throws in
       guard #available(iOS 17, *) else { throw BrowserRefusal.unsupportedOperation }
       try await MainActor.run {
         let pool = PhoneBrowserPool.shared
@@ -214,15 +227,15 @@ public final class PhoneBrowserModule: Module {
         }
       }
     }
-    AsyncFunction("captureOnce") { (input: BrowserCaptureInput) async throws -> String in
+    browserAsyncFunction("captureOnce") { (input: BrowserCaptureInput) async throws -> String in
       guard #available(iOS 17, *) else { throw BrowserRefusal.unsupportedOperation }
       return try await Self.captureOnce(input)
     }
-    AsyncFunction("stageChunk") { (input: BrowserStageInput) async throws -> [String: Any] in
+    browserAsyncFunction("stageChunk") { (input: BrowserStageInput) async throws -> [String: Any] in
       guard #available(iOS 17, *) else { throw BrowserRefusal.unsupportedOperation }
       return try await MainActor.run { try PhoneBrowserPool.shared.files.portStage(input) }
     }
-    AsyncFunction("finishSessionFiles") { (input: BrowserSessionInput) async throws in
+    browserAsyncFunction("finishSessionFiles") { (input: BrowserSessionInput) async throws in
       guard #available(iOS 17, *) else { throw BrowserRefusal.unsupportedOperation }
       try await MainActor.run {
         let pool = PhoneBrowserPool.shared
@@ -233,7 +246,7 @@ public final class PhoneBrowserModule: Module {
         }
       }
     }
-    AsyncFunction("cancelDownload") { (input: BrowserDownloadInput) async throws in
+    browserAsyncFunction("cancelDownload") { (input: BrowserDownloadInput) async throws in
       guard #available(iOS 17, *) else { throw BrowserRefusal.unsupportedOperation }
       try await MainActor.run {
         let pool = PhoneBrowserPool.shared

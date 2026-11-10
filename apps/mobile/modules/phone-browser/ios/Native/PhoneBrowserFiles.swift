@@ -3,6 +3,13 @@ import WebKit
 import UniformTypeIdentifiers
 import ExpoModulesCore
 
+struct BrowserStagedSelection {
+  let operationId: UUID
+  let epoch: Int
+  let documentId: String
+  let fileIds: [String]
+}
+
 @available(iOS 17, *)
 @MainActor final class BrowserChooser {
   let id = UUID().uuidString
@@ -248,20 +255,40 @@ import ExpoModulesCore
 
 @available(iOS 17, *)
 @MainActor extension PhoneBrowserPool {
-  func cancelChooser(_ tab: PhoneBrowserTab) { let chooser = tab.chooser; tab.chooser = nil; tab.stagedChooser = false; chooser?.finish(nil) }
+  func cancelChooser(_ tab: PhoneBrowserTab) {
+    let chooser = tab.chooser
+    tab.chooser = nil; tab.stagedChooser = false; tab.stagedSelection = nil; tab.chosenFiles = nil; tab.chosenSelectionId = nil
+    chooser?.finish(nil)
+  }
 
   @available(iOS 18.4, *)
   func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters,
     initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping ([URL]?) -> Void) {
     guard foreground, let tab = tabs.values.first(where: { $0.webView === webView }) else { completionHandler(nil); return }
     let staged = tab.stagedChooser
+    let selection = tab.stagedSelection
     cancelChooser(tab)
     let chooser = BrowserChooser(documentId: tab.documentId, epoch: gate.current, multiple: parameters.allowsMultipleSelection,
       completion: completionHandler)
     tab.chooser = chooser
+    if let selection {
+      do {
+        try gate.perform(selection.epoch) {
+          guard selection.documentId == tab.documentId else { throw BrowserRefusal.staleDocument }
+          let selected = try files.selected(selection.fileIds, session: tab.sessionId)
+          guard chooser.multiple || selected.count <= 1 else { throw BrowserRefusal.invalidArgument }
+          tab.chosenFiles = selected.map { ["fileId": $0.id, "name": $0.name, "size": $0.bytes] }
+          tab.chosenSelectionId = selection.operationId
+          tab.chooser = nil
+          chooser.finish(selected.map(\.url))
+        }
+      } catch { cancelChooser(tab) }
+      return
+    }
     emit?("upload", ["tabId": tab.id, "documentId": tab.documentId, "chooserId": chooser.id, "accept": [], "multiple": chooser.multiple])
     if !staged {
-      guard state.visible == tab.id, let presenter = presenter() else { cancelChooser(tab); return }
+      guard !tab.inputBusy, tab.agentOperations.isEmpty, state.visible == tab.id,
+        let presenter = presenter() else { cancelChooser(tab); return }
       let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.item], asCopy: true)
       picker.allowsMultipleSelection = chooser.multiple; picker.delegate = files; chooser.picker = picker
       presenter.present(picker, animated: true)
