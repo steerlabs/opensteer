@@ -375,7 +375,8 @@ it("rejects a failed surface replacement update and releases the old native page
   });
 });
 
-it("adds a pending page to the window only at its first placement, beneath the current page", async () => {
+it("switches to an unplaced page without exposing it or keeping the old page's glass", async () => {
+  onPlatform("darwin");
   const f = fixture();
   f.native.waitForPaint = () => Promise.resolve();
   f.socket("admitted");
@@ -383,6 +384,15 @@ it("adds a pending page to the window only at its first placement, beneath the c
   await Promise.resolve();
   const { appView, contentView } = f.window;
   expect(contentView.children).toEqual([appView, f.native.view]);
+  const scene = {
+    croppedBottom: true,
+    croppedRight: false,
+    cursors: [],
+    geometryRevision: 0,
+    reducedMotion: true,
+  };
+  f.manager.setGlass(f.sender, { ...target, scene });
+  expect(glass.update).toHaveBeenLastCalledWith(rect, scene, true);
   const nextId = BrowserSurfaceIdSchema.parse("bsf_00000000-0000-4000-8000-000000000002");
   const next = {
     ...f.native,
@@ -408,6 +418,7 @@ it("adds a pending page to the window only at its first placement, beneath the c
   await f.manager.update(f.sender, { presentationId: target.presentationId, surfaceId: nextId });
   expect(next.mount).toHaveBeenCalledOnce();
   expect(contentView.children).toEqual([appView, f.native.view]);
+  expect(glass.update).toHaveBeenLastCalledWith(rect, null, true);
   next.mount.mock.calls[0]![2]({
     bounds: rect,
     crop: { right: false, bottom: false },

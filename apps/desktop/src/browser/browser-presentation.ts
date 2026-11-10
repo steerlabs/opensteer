@@ -495,6 +495,8 @@ export class DesktopBrowserPresentationManager {
         if (presentation.page === page && owner.current === presentation)
           this.#placed(presentation, page);
       });
+      // A surface change cleared this presentation's scene; its glass goes now.
+      this.#glass(owner);
       native.setStage(this.#dips(presentation), owner.window.isFocused());
       this.#follow(presentation, page);
       const paint = new AbortController();
