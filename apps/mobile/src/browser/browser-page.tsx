@@ -19,6 +19,7 @@ import {
 import { BrowserSurfaceIdSchema, type BrowserPageContentPart } from "@opensteer/core";
 import { browserPromptTextMaxLength, browserViewportFits } from "@opensteer/protocol";
 import * as Clipboard from "expo-clipboard";
+import * as Haptics from "expo-haptics";
 import {
   useCallback,
   useEffect,
@@ -59,6 +60,7 @@ import Animated, {
   type SharedValue,
 } from "react-native-reanimated";
 import type { EditingOperation } from "@opensteer/client/editing";
+import type { BrowserAutofillState } from "@opensteer/client/host";
 import type { EditingCaret, EditingContext } from "@opensteer/protocol/editing";
 import { createMobileBrowserEditing } from "./browser-editing.js";
 import {
@@ -71,12 +73,14 @@ import { operationDetail } from "../client/mobile-client.js";
 import { color, material, radius, space, touchTarget, type as textType } from "../theme.js";
 import type { NativeMenuOption, NativeMenuSection } from "../thread/composer-menu.js";
 import { GlassSurface } from "../ui/glass.js";
-import { appear, duration, exit } from "../ui/motion.js";
+import { appear, duration, exit, move } from "../ui/motion.js";
 import { AppText, Notice } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { AddressCapsule, AddressEditor, type OpenTabSuggestion } from "./address-bar.js";
 import { BrowserStream, submitBrowserCommand, useBrowserFeedState } from "./browser-stream.js";
 import { ChromeSignInAction } from "./chrome-sign-in-action.js";
+import { LoginChips } from "./login-chips.js";
+import { createPageAutofill } from "./page-autofill.js";
 import { FollowBand } from "./pair-chrome.js";
 import { pageSite, viewedPage } from "./surface-route.js";
 import { ToolbarAsk, ToolbarLeave, useNativeBarAway } from "./place-bar.js";
@@ -86,6 +90,8 @@ import { Toolbar, ToolbarButton, ToolbarCapsule, ToolbarMenu } from "./toolbar.j
 const defaultPageAspect = 16 / 9;
 /** A command the page refused: its feed went away after the view last drew. */
 const refusedNotice = "The page is reconnecting. Try again in a moment.";
+/** How long a fill that did not happen is said, over a page the person is still using. */
+const fillNoticeMs = 5000;
 /** Where a page's bar moves from under it to over it, as Safari's does on iPad. */
 const regularWidth = 600;
 /** What the page's bar adds while a Thread is beside it. */
@@ -251,6 +257,45 @@ export function BrowserPage(props: {
       if (!editing.get().negotiated) setTyping(false);
     });
   }, [editing, props.active, props.connected]);
+  const [confirmingLogin, setConfirmingLogin] = useState<string | null>(null);
+  const [fillNotice, setFillNotice] = useState<string | null>(null);
+  useEffect(() => {
+    if (fillNotice === null) return;
+    const timer = setTimeout(() => setFillNotice(null), fillNoticeMs);
+    return () => clearTimeout(timer);
+  }, [fillNotice]);
+  const autofill = useMemo(
+    () =>
+      createPageAutofill({
+        editing,
+        authenticate: async () =>
+          (await import("../thread/password-approval-auth.js")).authenticatePasswordApproval(
+            "fill",
+          ),
+        onConfirming: setConfirmingLogin,
+        // The device check can take the app out of the foreground and the
+        // keyboard with it; the person is still typing into the field.
+        onChosen: () => {
+          setFillNotice(null);
+          setPageFocused(true);
+          setTyping(true);
+        },
+        onFilled: () => void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success),
+        onUnfilled: (detail) => {
+          void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+          setFillNotice(detail);
+        },
+      }),
+    [editing],
+  );
+  useEffect(() => autofill.stop, [autofill]);
+  const chooseLogin = useCallback(
+    (loginId: string) => {
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      void autofill.choose(loginId);
+    },
+    [autofill],
+  );
   const channelReady =
     props.active && props.connected && session.state === "ready" && feed.status === "live";
   const { review: closeReview, ask: askClose, dismiss: dismissClose } = useActionReview(hostClient);
@@ -821,7 +866,11 @@ export function BrowserPage(props: {
               style={styles.dim}
             />
           ) : null}
-          {pageProblem === null && !refused && !feed.inputError && !passkey ? null : (
+          {pageProblem === null &&
+          !refused &&
+          !feed.inputError &&
+          !passkey &&
+          !fillNotice ? null : (
             <View pointerEvents="box-none" style={styles.top}>
               {passkey ? (
                 <View style={styles.card}>
@@ -841,6 +890,10 @@ export function BrowserPage(props: {
                   title="That didn’t reach the page"
                   tone="neutral"
                 />
+              ) : fillNotice !== null ? (
+                <Animated.View entering={appear} exiting={exit}>
+                  <Notice detail={fillNotice} title="Your login wasn’t filled" tone="neutral" />
+                </Animated.View>
               ) : null}
             </View>
           )}
@@ -925,6 +978,9 @@ export function BrowserPage(props: {
           abilities={editingState.abilities}
           legacy={!editingState.negotiated}
           sendOperation={(operation) => editing.send(operation)}
+          autofill={editingState.autofill}
+          confirmingLogin={confirmingLogin}
+          onChooseLogin={chooseLogin}
         />
       ) : null}
       {keyboardOpen || top ? null : addressOpen ? (
@@ -1235,7 +1291,9 @@ function noop(): void {}
 /**
  * The page keyboard's own bar, where the page's bar was: the proxy the
  * system keyboard types through, and Done. It uses the same proxy as phone
- * and Mac take-over.
+ * and Mac take-over. While the page offers saved logins for the field, the
+ * proxy's capsule draws in to its glyph and the logins take its place; the
+ * proxy stays mounted, because it holds the keyboard.
  */
 export function PageTyping(props: {
   readonly onDone: () => void;
@@ -1247,7 +1305,12 @@ export function PageTyping(props: {
   readonly abilities?: EditingTargetAbilities;
   readonly legacy?: boolean;
   readonly ref?: Ref<NativeEditingProxyHandle>;
+  readonly autofill?: BrowserAutofillState | null;
+  readonly confirmingLogin?: string | null;
+  readonly onChooseLogin?: (loginId: string) => void;
 }): ReactNode {
+  const offer = props.autofill?.offer;
+  const chooseLogin = props.onChooseLogin;
   const input =
     props.legacy && props.softKeyboard !== false ? (
       <LegacyInput sendOperation={props.sendOperation} onDone={props.onDone} />
@@ -1270,12 +1333,24 @@ export function PageTyping(props: {
       style={props.softKeyboard === false ? styles.hardwareInput : undefined}
     >
       <Toolbar edge="bottom" {...(props.softKeyboard === false ? {} : { testID: "page-typing" })}>
-        <ToolbarCapsule style={styles.typingField}>
-          <View style={styles.typingGlyph}>
-            <Symbol name="keyboard" size={16} tint={color.muted} />
-          </View>
-          {input}
-        </ToolbarCapsule>
+        <Animated.View
+          layout={move}
+          style={offer && chooseLogin ? styles.typingRound : styles.typingField}
+        >
+          <ToolbarCapsule style={styles.grow}>
+            <View style={styles.typingGlyph}>
+              <Symbol name="keyboard" size={16} tint={color.muted} />
+            </View>
+            {input}
+          </ToolbarCapsule>
+        </Animated.View>
+        {offer && chooseLogin ? (
+          <LoginChips
+            busy={props.confirmingLogin ?? props.autofill?.pending ?? null}
+            offer={offer}
+            onChoose={chooseLogin}
+          />
+        ) : null}
         <ToolbarButton label="Done" onPress={props.onDone} selected symbol="checkmark" />
       </Toolbar>
     </View>
@@ -1373,5 +1448,6 @@ const styles = StyleSheet.create({
   stage: { backgroundColor: color.background, flex: 1, minHeight: 0, overflow: "hidden" },
   top: { gap: space[8], left: space[12], position: "absolute", right: space[12], top: space[12] },
   typingField: { flex: 1, minWidth: 0 },
+  typingRound: { width: touchTarget },
   typingGlyph: { paddingEnd: space[4], paddingStart: space[14] },
 });

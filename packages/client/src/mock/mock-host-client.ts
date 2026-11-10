@@ -32,6 +32,7 @@ import { MockDesktopUpdates, type MockDesktopUpdateScenario } from "./mock-deskt
 import { MockSettingsFixtures } from "./settings-fixtures.js";
 import type { PasswordSignInCard } from "@opensteer/protocol";
 import { BrowserCursorStore } from "../host/browser-cursor.js";
+import { MockSignInPage } from "./mock-sign-in-page.js";
 import type { PersonShowMessage, PluginRow } from "@opensteer/protocol";
 import { RunPlaceStore } from "../host/run-place.js";
 import { compareTaskOrder } from "../host/task-entries.js";
@@ -3851,6 +3852,9 @@ export class MockHostClient implements HostClient {
   readonly #ownerViews: MockComputerViews;
   readonly #browserPresentationScope = {};
   readonly #browserCursor = new BrowserCursorStore();
+  readonly #signInPage = new MockSignInPage((sessionId, command) =>
+    this.sendBrowserCommand(sessionId, command),
+  );
   readonly #cursorPoints = new Map<
     string,
     Extract<import("@opensteer/protocol/browser").BrowserServerMessage, { type: "browser.cursor" }>
@@ -4009,7 +4013,11 @@ export class MockHostClient implements HostClient {
           listener,
         ),
     };
-    this.browserFrames = { ...frames, cursor: this.#browserCursor };
+    this.browserFrames = {
+      ...frames,
+      cursor: this.#browserCursor,
+      editing: this.#signInPage.editing,
+    };
     this.browserWatchFrames = frames;
     this.rpc = createInMemoryHostApiClient(mockHostApiHandlers(this.#state), mockRpcContext());
     this.#tabGroups = new BrowserTabGroupClient(
@@ -5015,6 +5023,17 @@ export class MockHostClient implements HostClient {
   }
 
   sendBrowserCommand(sessionId: string, command: BrowserCommand): void {
+    const surfaceId = "surfaceId" in command ? command.surfaceId : undefined;
+    if (
+      this.#signInPage.command(
+        sessionId,
+        command,
+        this.getSnapshot()
+          .browserSessions.find((session) => session.id === sessionId)
+          ?.tabs.find((tab) => tab.id === surfaceId)?.title,
+      )
+    )
+      return;
     if (command.type === "cursor.reset" || command.type === "input.cancel") {
       if (command.surfaceId)
         this.#cursorPoints.delete(JSON.stringify([sessionId, command.surfaceId]));
