@@ -330,6 +330,23 @@ export async function resolveProjectRuntime(
 ): Promise<ProjectRuntimeResolution> {
   const settings = await getProjectRuntimeSettings(database, workspaceId);
   if (!settings) return { state: "unavailable", reason: "not-configured" };
+  const runtime = await resolveAdmittedProjectRuntime(
+    database,
+    workspaceId,
+    settings,
+    runnerIsConnected,
+  );
+  return runtime;
+}
+
+export async function resolveAdmittedProjectRuntime<
+  Settings extends Pick<ProjectRuntimeSettings, "harnessInstanceId" | "modelSelection">,
+>(
+  database: Kysely<DatabaseSchema>,
+  workspaceId: WorkspaceId,
+  settings: Settings,
+  runnerIsConnected: (runnerId: RunnerId) => boolean,
+) {
   const runtime = await selectedRuntime(
     database,
     workspaceId,
@@ -338,15 +355,15 @@ export async function resolveProjectRuntime(
   );
   if (runtime.state !== "ready") return runtime;
   if (!runnerIsConnected(runtime.instance.runnerId))
-    return { state: "unavailable", reason: "computer-offline" };
+    return { state: "unavailable", reason: "computer-offline" } as const;
   if (
     runtime.instance.updateRequired ||
     !runtime.instance.capabilities.includes("project-authority-v1")
   )
-    return { state: "unavailable", reason: "runner-update-required" };
+    return { state: "unavailable", reason: "runner-update-required" } as const;
   return {
     state: "ready",
     settings: { ...settings, modelSelection: runtime.modelSelection },
     environmentId: runtime.instance.environmentId,
-  };
+  } as const;
 }

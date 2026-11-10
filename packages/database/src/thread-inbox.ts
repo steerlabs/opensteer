@@ -2103,7 +2103,7 @@ async function cancelStaleReportMemberships(
   return events;
 }
 
-async function assertThreadInputCapacity(
+export async function assertThreadInputCapacity(
   transaction: Transaction<DatabaseSchema>,
   threadId: ThreadId,
   contentBytes: number,
